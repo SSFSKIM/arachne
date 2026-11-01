@@ -1,0 +1,42 @@
+# Renders the documentation examples' control frames in the docs-examples gate's own
+# environment (.github/ci-kit.yml) and uploads them as the `docs-examples-control-data`
+# artifact. Run it on a `control-data/**` branch, or dispatch it on any branch; commit the
+# artifact's files to tests/test_docs_examples/control_data/.
+name: control-data
+on:
+  push:
+    branches: ['control-data/**']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      UV_PYTHON: "3.14"
+      GALLIUM_DRIVER: softpipe
+      # As the docs-examples gate: one BLAS kernel and one thread.
+      OPENBLAS_CORETYPE: Haswell
+      OPENBLAS_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Apply the CI environment
+        uses: SSFSKIM/ci-kit/setup@v1
+      - name: Install
+        run: pipx install uv==0.12.3 && uv sync --all-extras --locked
+      - name: Render the control frames
+        run: |
+          grep -m1 "model name" /proc/cpuinfo
+          rm -rf tests/test_docs_examples/control_data
+          xvfb-run -a -s "-screen 0 1280x1024x24" \
+            uv run python -m pytest tests/test_docs_examples/test_docs_examples.py \
+            --dist=load --no-cov --set_test
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: docs-examples-control-data
+          path: tests/test_docs_examples/control_data/
+          if-no-files-found: error
