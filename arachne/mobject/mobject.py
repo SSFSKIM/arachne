@@ -42,6 +42,7 @@ from ..utils.iterables import (
 from ..utils.paths import straight_path
 from ..utils.simple_functions import clip
 from ..utils.space_ops import angle_between_vectors, normalize, rotation_matrix
+from .values import FrozenPoints, adopt, freeze
 
 if TYPE_CHECKING:
     from typing import Self, TypeAlias
@@ -465,6 +466,27 @@ class Mobject:
 
     def __repr__(self) -> str:
         return str(self.name)
+
+    @property
+    def points(self) -> FrozenPoints:
+        """The mobject's points, as a read-only array.
+
+        Reading, slicing and computing with it work as on any array. Writing
+        into it raises :class:`ValueError`: assign new points instead, with
+        ``mob.points = new_points`` or :meth:`set_points`, which copy the array
+        they are given, or map them with
+        :meth:`apply_points_function_about_point`.
+        """
+        return self._points
+
+    @points.setter
+    def points(self, value: Point3DLike_Array) -> None:
+        self._points = freeze(value, FrozenPoints)
+
+    def set_points(self, points: Point3DLike_Array) -> Self:
+        """Set :attr:`points` to a copy of ``points``."""
+        self.points = points
+        return self
 
     def reset_points(self) -> Self:
         """Sets :attr:`points` to be an empty array."""
@@ -1404,8 +1426,9 @@ class Mobject:
         """
         total_vector = reduce(op.add, vectors)
         for mob in self.family_members_with_points():
-            mob.points = mob.points.astype("float")
-            mob.points += total_vector
+            mob._points = adopt(
+                np.asarray(mob.points, dtype=float) + total_vector, FrozenPoints
+            )
 
         return self
 
@@ -1703,9 +1726,10 @@ class Mobject:
         # Make a copy to prevent mutation of the original array if about_point is a view
         about_point = np.array(about_point, copy=True)
         for mob in self.family_members_with_points():
-            mob.points -= about_point
-            mob.points = func(mob.points)
-            mob.points += about_point
+            # func may write into the array it is given, which is a fresh one.
+            mob._points = adopt(
+                func(mob.points - about_point) + about_point, FrozenPoints
+            )
         return self
 
     def pose_at_angle(self, **kwargs: Any) -> Self:

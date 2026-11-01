@@ -11,6 +11,7 @@ import numpy as np
 
 from ...constants import *
 from ...mobject.mobject import Mobject
+from ...mobject.values import FrozenPointColors, adopt, freeze
 from ...utils.bezier import interpolate
 from ...utils.color import (
     BLACK,
@@ -32,10 +33,8 @@ if TYPE_CHECKING:
     import numpy.typing as npt
 
     from arachne.typing import (
-        FloatRGBA_Array,
         FloatRGBALike_Array,
         ManimFloat,
-        Point3D_Array,
         Point3DLike,
         Point3DLike_Array,
     )
@@ -74,9 +73,21 @@ class PMobject(Mobject):
         self.stroke_width = stroke_width
         super().__init__(**kwargs)
 
+    @property
+    def rgbas(self) -> FrozenPointColors:
+        """The colour of each point, as a read-only ``(n, 4)`` array.
+
+        Change it with :meth:`set_color` or by assigning a new array.
+        """
+        return self._rgbas
+
+    @rgbas.setter
+    def rgbas(self, value: FloatRGBALike_Array) -> None:
+        self._rgbas = freeze(value, FrozenPointColors)
+
     def reset_points(self) -> Self:
-        self.rgbas: FloatRGBA_Array = np.zeros((0, 4))
-        self.points: Point3D_Array = np.zeros((0, 3))
+        self.rgbas = np.zeros((0, 4))
+        self.points = np.zeros((0, 3))
         return self
 
     def get_array_attrs(self) -> list[str]:
@@ -112,7 +123,9 @@ class PMobject(Mobject):
         rgba = color_to_rgba(color)
         mobs = self.family_members_with_points() if family else [self]
         for mob in mobs:
-            mob.rgbas[:, :] = rgba
+            rgbas = np.empty_like(np.asarray(mob.rgbas))
+            rgbas[:, :] = rgba
+            mob._rgbas = adopt(rgbas, FrozenPointColors)
         self.color = ManimColor.parse(color)
         return self
 

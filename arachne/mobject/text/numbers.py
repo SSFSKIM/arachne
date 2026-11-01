@@ -299,7 +299,7 @@ class DecimalNumber(VMobject):
             # Dumb hack...due to how scene handles families
             # of animated mobjects
             # for compatibility with updaters to not leave first number in place while updating
-            mob.points[:] = 0
+            mob.points = np.zeros_like(np.asarray(mob.points))
 
         self.init_colors()
         return self

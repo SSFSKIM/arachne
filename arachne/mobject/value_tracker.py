@@ -9,12 +9,20 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from arachne.mobject.mobject import Mobject
+from arachne.mobject.values import FrozenTrackerPoints, adopt
 from arachne.utils.paths import straight_path
 
 if TYPE_CHECKING:
     from typing import Self
 
-    from arachne.typing import PathFuncType
+    from arachne.typing import PathFuncType, Point3DLike_Array
+
+
+def _as_float(value: Any) -> np.float64:
+    """``value`` cast as storing it in a float array casts it."""
+    cell = np.empty(1)
+    cell[0] = value
+    return cell[0]
 
 
 class ValueTracker(Mobject):
@@ -27,6 +35,11 @@ class ValueTracker(Mobject):
     still be animated and manipulated just like anything else.
 
     This value changes continuously when animated using the :attr:`animate` syntax.
+
+    The value is held as a number. :attr:`points` is a read-only view of it,
+    ``[[value, 0, 0]]``, kept so that code treating the tracker as a point keeps
+    working: assigning points, or moving the tracker as a mobject, sets the value
+    from the first coordinate.
 
     Examples
     --------
@@ -74,19 +87,46 @@ class ValueTracker(Mobject):
 
     """
 
+    _value: Any
+
     def __init__(self, value: float = 0, **kwargs: Any) -> None:
         super().__init__(**kwargs)
-        self.set(points=np.zeros((1, 3)))
         self.set_value(value)
+
+    # The value is the storage behind the points property: Mobject's setter and
+    # its in-house writers assign _points, which lands here.
+    @property
+    def _points(self) -> FrozenTrackerPoints:
+        return adopt(self._value_as_point()[np.newaxis], FrozenTrackerPoints)
+
+    @_points.setter
+    def _points(self, points: Point3DLike_Array) -> None:
+        points = np.asarray(points)
+        if points.shape[:1] == (0,):
+            raise ValueError(
+                f"A {type(self).__name__} holds one value, so its points can't be "
+                "empty: use set_value(value)"
+            )
+        self._set_value_from_point(points[0])
+
+    def _value_as_point(self) -> np.ndarray:
+        return np.array([self._value, 0.0, 0.0])
+
+    def _set_value_from_point(self, point: np.ndarray) -> None:
+        self._value = _as_float(point[0])
+
+    def reset_points(self) -> Self:
+        self.set_value(0)
+        return self
 
     def get_value(self) -> float:
         """Get the current value of this ValueTracker."""
-        value: float = self.points[0, 0]
+        value: float = self._value
         return value
 
     def set_value(self, value: float) -> Self:
         """Sets a new scalar value to the ValueTracker."""
-        self.points[0, 0] = value
+        self._value = _as_float(value)
         return self
 
     def increment_value(self, d_value: float) -> Self:
@@ -206,8 +246,9 @@ class ValueTracker(Mobject):
 class ComplexValueTracker(ValueTracker):
     """Tracks a complex-valued parameter.
 
-    The value is internally stored as a points array [a, b, 0]. This can be accessed directly
-    to represent the value geometrically, see the usage example.
+    The value is held as a complex number, and :attr:`points` shows it as the point
+    ``[a, b, 0]``, which can be read directly to represent the value geometrically, see the
+    usage example.
     When the value is set through :attr:`animate`, the value will take a straight path from the
     source point to the destination point.
 
@@ -230,12 +271,19 @@ class ComplexValueTracker(ValueTracker):
                 self.play(tracker.animate.set_value(tracker.get_value() / (-2 + 3j)))
     """
 
+    def _value_as_point(self) -> np.ndarray:
+        return np.array([self._value.real, self._value.imag, 0.0])
+
+    def _set_value_from_point(self, point: np.ndarray) -> None:
+        self._value = complex(_as_float(point[0]), _as_float(point[1]))
+
     def get_value(self) -> complex:  # type: ignore [override]
         """Get the current value of this ComplexValueTracker as a complex number."""
-        return complex(*self.points[0, :2])
+        value: complex = self._value
+        return value
 
     def set_value(self, value: complex | float) -> Self:
         """Sets a new complex value to the ComplexValueTracker."""
         z = complex(value)
-        self.points[0, :2] = (z.real, z.imag)
+        self._value = complex(_as_float(z.real), _as_float(z.imag))
         return self

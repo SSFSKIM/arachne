@@ -15,6 +15,7 @@ import itertools as it
 import math
 import sys
 from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping, Sequence
+from operator import attrgetter
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import numpy as np
@@ -24,6 +25,13 @@ from arachne.constants import *
 from arachne.mobject.mobject import Mobject
 from arachne.mobject.three_d.three_d_utils import (
     get_3d_vmob_gradient_start_and_end_points,
+)
+from arachne.mobject.values import (
+    EMPTY_PAINT,
+    FrozenColors,
+    FrozenPoints,
+    Paint,
+    adopt,
 )
 from arachne.utils.bezier import (
     bezier,
@@ -74,6 +82,23 @@ if TYPE_CHECKING:
 #   That's kind of weird.
 
 
+def _paint_field(name: str) -> property:
+    """A VMobject property reading and replacing one field of its paint.
+
+    A field the paint lacks reads as a missing attribute, as it did in CE.
+    """
+
+    def assign(self: VMobject, value: Any) -> None:
+        self._paint = self._paint.replace(**{name: value})
+
+    # attrgetter reads in C: the style fields are read on every draw.
+    return property(
+        attrgetter(f"_paint.{name}"),
+        assign,
+        doc=f"The ``{name}`` field of :attr:`paint`.",
+    )
+
+
 class VMobject(Mobject):
     """A vectorized mobject.
 
@@ -99,8 +124,37 @@ class VMobject(Mobject):
         for options.
     """
 
-    sheen_factor = 0.0
     target: VMobject
+
+    # The style: one immutable Paint, behind the seven field properties below.
+    _paint: Paint = EMPTY_PAINT
+
+    @property
+    def paint(self) -> Paint:
+        """The style as one immutable value.
+
+        The style setters (:meth:`set_fill`, :meth:`set_stroke`, :meth:`set_color`
+        and the rest) build a new :class:`~.Paint`, so a paint read here never
+        changes. Its fields are also the properties :attr:`fill_rgbas`,
+        :attr:`stroke_rgbas`, :attr:`background_stroke_rgbas`,
+        :attr:`stroke_width`, :attr:`background_stroke_width`,
+        :attr:`sheen_direction` and :attr:`sheen_factor`.
+        """
+        return self._paint
+
+    @paint.setter
+    def paint(self, paint: Paint) -> None:
+        if not isinstance(paint, Paint):
+            raise TypeError(f"paint must be a Paint, not {type(paint).__name__}")
+        self._paint = paint
+
+    fill_rgbas = _paint_field("fill_rgbas")
+    stroke_rgbas = _paint_field("stroke_rgbas")
+    background_stroke_rgbas = _paint_field("background_stroke_rgbas")
+    stroke_width = _paint_field("stroke_width")
+    background_stroke_width = _paint_field("background_stroke_width")
+    sheen_direction = _paint_field("sheen_direction")
+    sheen_factor = _paint_field("sheen_factor")
 
     def __init__(
         self,
@@ -261,17 +315,23 @@ class VMobject(Mobject):
         # Match up current rgbas array with the newly calculated
         # one. 99% of the time they'll be the same.
         curr_rgbas = getattr(self, array_name)
-        if len(curr_rgbas) < len(rgbas):
+        stretched = len(curr_rgbas) < len(rgbas)
+        if stretched:
             curr_rgbas = stretch_array_to_length(curr_rgbas, len(rgbas))
-            setattr(self, array_name, curr_rgbas)
         elif len(rgbas) < len(curr_rgbas):
             rgbas = stretch_array_to_length(rgbas, len(curr_rgbas))
+        if color is None and opacity is None:
+            if stretched:
+                setattr(self, array_name, curr_rgbas)
+            return self
         # Only update rgb if color was not None, and only
         # update alpha channel if opacity was passed in
+        new_rgbas = np.array(curr_rgbas)
         if color is not None:
-            curr_rgbas[:, :3] = rgbas[:, :3]
+            new_rgbas[:, :3] = rgbas[:, :3]
         if opacity is not None:
-            curr_rgbas[:, 3] = rgbas[:, 3]
+            new_rgbas[:, 3] = rgbas[:, 3]
+        setattr(self, array_name, adopt(new_rgbas, FrozenColors))
         return self
 
     def set_fill(
@@ -788,10 +848,6 @@ class VMobject(Mobject):
                 submob.z_index_group = self
         return self
 
-    def set_points(self, points: Point3DLike_Array) -> Self:
-        self.points: Point3D_Array = np.array(points)
-        return self
-
     def resize_points(
         self,
         new_length: int,
@@ -836,15 +892,16 @@ class VMobject(Mobject):
         assert len(anchors1) == len(handles1) == len(handles2) == len(anchors2)
         nppcc = self.n_points_per_cubic_curve  # 4
         total_len = nppcc * len(anchors1)
-        self.points = np.empty((total_len, self.dim))
+        points = np.empty((total_len, self.dim))
         # the following will, from the four sets, dispatch them in points such that
-        # self.points = [
+        # points = [
         #     anchors1[0], handles1[0], handles2[0], anchors1[0], anchors1[1],
         #     handles1[1], ...
         # ]
         arrays = [anchors1, handles1, handles2, anchors2]
         for index, array in enumerate(arrays):
-            self.points[index::nppcc] = array
+            points[index::nppcc] = array
+        self._points = adopt(points, FrozenPoints)
         return self
 
     def clear_points(self) -> Self:
@@ -872,7 +929,7 @@ class VMobject(Mobject):
         points = np.empty((n + len(new_points), self.dim))
         points[:n] = self.points
         points[n:] = new_points
-        self.points = points
+        self._points = adopt(points, FrozenPoints)
         return self
 
     def start_new_path(self, point: Point3DLike) -> Self:
@@ -1960,26 +2017,19 @@ class VMobject(Mobject):
     def interpolate_color(
         self, mobject1: VMobject, mobject2: VMobject, alpha: float
     ) -> Self:
-        attrs = [
-            "fill_rgbas",
-            "stroke_rgbas",
-            "background_stroke_rgbas",
-            "stroke_width",
-            "background_stroke_width",
-            "sheen_direction",
-            "sheen_factor",
-        ]
-        for attr in attrs:
-            setattr(
-                self,
-                attr,
-                interpolate(getattr(mobject1, attr), getattr(mobject2, attr), alpha),
-            )
+        # The seven style fields, interpolated one by one and assigned as one paint.
+        fields = {}
+        for attr in Paint.FIELDS:
+            value = interpolate(getattr(mobject1, attr), getattr(mobject2, attr), alpha)
             if alpha == 1.0:
-                val = getattr(mobject2, attr)
-                if isinstance(val, np.ndarray):
-                    val = val.copy()
-                setattr(self, attr, val)
+                value = getattr(mobject2, attr)
+                if isinstance(value, np.ndarray):
+                    value = np.array(value)
+            kind = Paint.FIELD_KINDS[attr]
+            if kind is not None and isinstance(value, np.ndarray):
+                value = adopt(value, kind)  # a fresh array either way
+            fields[attr] = value
+        self._paint = self._paint.replace(**fields)
         return self
 
     def pointwise_become_partial(
@@ -2057,26 +2107,27 @@ class VMobject(Mobject):
             )
         else:
             # Allocate space for (upper_index-lower_index+1) Bézier curves.
-            self.points = np.empty((nppc * (upper_index - lower_index + 1), self.dim))
+            points = np.empty((nppc * (upper_index - lower_index + 1), self.dim))
             # Look at the "lower_index"-th Bezier curve and select its part from
-            # t=lower_residue to t=1. This is the first curve in self.points.
-            self.points[:nppc] = partial_bezier_points(
+            # t=lower_residue to t=1. This is the first curve in points.
+            points[:nppc] = partial_bezier_points(
                 vmobject_points[nppc * lower_index : nppc * (lower_index + 1)],
                 lower_residue,
                 1,
             )
             # If there are more curves between the "lower_index"-th and the
-            # "upper_index"-th Béziers, add them all to self.points.
-            self.points[nppc:-nppc] = vmobject_points[
+            # "upper_index"-th Béziers, add them all to points.
+            points[nppc:-nppc] = vmobject_points[
                 nppc * (lower_index + 1) : nppc * upper_index
             ]
             # Look at the "upper_index"-th Bézier curve and select its part from
-            # t=0 to t=upper_residue. This is the last curve in self.points.
-            self.points[-nppc:] = partial_bezier_points(
+            # t=0 to t=upper_residue. This is the last curve in points.
+            points[-nppc:] = partial_bezier_points(
                 vmobject_points[nppc * upper_index : nppc * (upper_index + 1)],
                 0,
                 upper_residue,
             )
+            self._points = adopt(points, FrozenPoints)
 
         return self
 
