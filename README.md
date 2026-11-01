@@ -137,4 +137,4 @@ Our full code of conduct, and how we enforce it, can be read on [our website](ht
 
 ## License
 
-The software is double-licensed under the MIT license, with copyright by 3blue1brown LLC (see LICENSE), and copyright by Manim Community Developers (see LICENSE.community).
+This repository is Arachne, a fork of Manim Community Edition. The code inherited from Manim Community Edition and 3Blue1Brown's Manim stays under its original MIT licenses (`LICENSES/`). No license is granted for Arachne's own changes and additions. See `NOTICE.md`.

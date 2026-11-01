@@ -6,8 +6,7 @@ authors = [
   {name = "The Manim Community Developers", email = "contact@manim.community"},
   {name = "Grant '3Blue1Brown' Sanderson", email = "grant@3blue1brown.com"},
 ]
-license = "MIT"
-license-files = ["LICENSE", "LICENSE.community"]
+license-files = ["NOTICE.md", "LICENSES/manim-3b1b-MIT.txt", "LICENSES/manim-community-MIT.txt"]
 readme = "README.md"
 classifiers = [
     "Development Status :: 4 - Beta",
