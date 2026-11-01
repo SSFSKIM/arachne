@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING, Any, overload
 import numpy as np
 
 from arachne._config import config, logger
-from arachne.mobject.placement import Placement
 from arachne.mobject.values import FrozenArray, Paint
 
 if TYPE_CHECKING:
@@ -87,6 +86,23 @@ def _hash_ndarray(array: np.ndarray) -> str:
     encoded_descriptor = json.dumps(descriptor, separators=(",", ":"))
     # This compacts array content before the existing CRC32 play-key pipeline.
     return f"NDARRAY:{encoded_descriptor}:{array.shape}:{digest.hexdigest()}"
+
+
+def _with_effective_points(own: dict[str, Any]) -> dict[str, Any]:
+    """A mobject's attributes with its points as one ``_points`` entry, last,
+    whether they are stored or placed and whether a placement was read yet: the
+    hash follows the geometry, not how it is held.
+    """
+    placement = own.get("_placement")
+    points = own.get("_points")
+    if placement is not None and (points is None or points is placement.materialized):
+        points = placement.points
+    rest = {
+        key: value for key, value in own.items() if key not in ("_points", "_placement")
+    }
+    if points is not None:
+        rest["_points"] = points
+    return rest
 
 
 class _Memoizer:
@@ -286,9 +302,6 @@ class _CustomEncoder(json.JSONEncoder):
             return self._cleaned_iterable({"code": code, "nonlocals": cvardict})
         elif isinstance(obj, Paint):
             return f"PAINT:{obj.key.hex()}"
-        elif isinstance(obj, Placement):
-            # Placed points hash as the points they place.
-            return _hash_ndarray(obj.points)
         elif isinstance(obj, np.ndarray):
             plain = obj.__class__ is np.ndarray or isinstance(obj, FrozenArray)
             if not plain or obj.dtype.hasobject:
@@ -303,6 +316,8 @@ class _CustomEncoder(json.JSONEncoder):
             # Indeed, there is certainly no case where scene-caching will receive only a non instancied object, as this is never used in the library or encouraged to be used user-side.
             if isinstance(temp, MappingProxyType):
                 return "MappingProxy"
+            if "_placement" in temp or "_points" in temp:
+                temp = _with_effective_points(temp)
             return self._cleaned_iterable(temp)
         elif isinstance(obj, np.uint8):
             return int(obj)
