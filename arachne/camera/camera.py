@@ -152,7 +152,19 @@ class Camera:
         # Contains the correct method to process a list of Mobjects of the
         # corresponding class.  If a Mobject is not an instance of a class in
         # this dict (or an instance of a class that inherits from a class in
-        # this dict), then it cannot be rendered.
+        # this dict), then it cannot be rendered. It is made here, not on the
+        # first draw, so that a camera's cache key never depends on whether
+        # it has drawn: a cached play is not drawn.
+        from ..mobject.types.image_mobject import AbstractImageMobject
+
+        self.display_funcs: dict[
+            type[Mobject], Callable[[list[Mobject], PixelArray], Any]
+        ] = {
+            VMobject: self.display_multiple_vectorized_mobjects,  # type: ignore[dict-item]
+            PMobject: self.display_multiple_point_cloud_mobjects,  # type: ignore[dict-item]
+            AbstractImageMobject: self.display_multiple_image_mobjects,  # type: ignore[dict-item]
+            Mobject: lambda batch, pa: batch,  # Do nothing
+        }
 
         self.init_background()
         self.resize_frame_shape()
@@ -212,16 +224,6 @@ class Camera:
         :exc:`TypeError`
             When mobject is not an instance of a class that can be rendered.
         """
-        from ..mobject.types.image_mobject import AbstractImageMobject
-
-        self.display_funcs: dict[
-            type[Mobject], Callable[[list[Mobject], PixelArray], Any]
-        ] = {
-            VMobject: self.display_multiple_vectorized_mobjects,  # type: ignore[dict-item]
-            PMobject: self.display_multiple_point_cloud_mobjects,  # type: ignore[dict-item]
-            AbstractImageMobject: self.display_multiple_image_mobjects,  # type: ignore[dict-item]
-            Mobject: lambda batch, pa: batch,  # Do nothing
-        }
         # We have to check each type in turn because we are dealing with
         # super classes.  For example, if square = Square(), then
         # type(square) != VMobject, but isinstance(square, VMobject) == True.

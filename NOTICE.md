@@ -23,6 +23,13 @@ These ideas came from other projects; no code was taken from them.
   `Paint` value): [ManimGX](https://github.com/academa-labs/manimgx) by Academa, Inc. (MIT).
 - Holding cost laws with tests that count work (values built, hashed and copied) instead of timing it: ManimGX, as
   above.
+- A rational scene clock, on which durations become simple fractions and spans line up exactly
+  (`arachne/timeline/clock.py`): ManimGX's `clock.py`, as above.
+- Naming the mobjects a finding is about from the local variables of the scene's frames
+  (`arachne/timeline/source.py`): ManimGX's `cli/diagnostics.py`, as above.
+- Finding the scene's own line by walking the stack out of the library, and refusing `play()` while another play
+  runs, as from an updater (`arachne/timeline/source.py`, `arachne/manager.py`): Manim Community Edition
+  [pull request #5006](https://github.com/ManimCommunity/manim/pull/5006).
 
 ## Arachne's own work
 

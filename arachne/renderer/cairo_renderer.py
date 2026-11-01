@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from fractions import Fraction
 from typing import TYPE_CHECKING, Any
 
 from arachne.utils.hashing import get_hash_from_play_call
@@ -10,6 +11,8 @@ from .._config.video_encoder import video_encoder_fingerprint
 from ..camera.camera import Camera
 from ..mobject.mobject import Mobject, _AnimationBuilder
 from ..scene.scene_file_writer import SceneFileWriter
+from ..timeline.clock import TICK_RATE, exact, frames_in
+from ..timeline.draw import Drawing
 from ..utils.exceptions import EndSceneEarlyException
 from ..utils.iterables import list_update
 from .protocol import RendererCapabilities
@@ -19,6 +22,7 @@ if TYPE_CHECKING:
     from arachne.animation.animation import Animation
     from arachne.scene.scene import Scene
     from arachne.scene.scene_file_writer import _SceneFileWriterSettings
+    from arachne.timeline.record import PlayRecord
 
     from ..typing import PixelArray
 
@@ -56,7 +60,7 @@ class CairoRenderer:
         self.skip_animations = skip_animations
         self.animations_hashes: list[str | None] = []
         self.num_plays = 0
-        self.time = 0.0
+        self._clock = Fraction(0)
         self.static_image: PixelArray | None = None
 
     def init_scene(
@@ -67,74 +71,119 @@ class CairoRenderer:
     ) -> None:
         self.file_writer: Any = self._file_writer_class(file_writer_settings)
 
+    @property
+    def time(self) -> float:
+        """The scene clock as a float: the exact :attr:`clock`'s value."""
+        return float(self._clock)
+
+    @time.setter
+    def time(self, value: float | Fraction) -> None:
+        self._clock = exact(value)
+
+    @property
+    def clock(self) -> Fraction:
+        """The scene clock, exactly."""
+        return self._clock
+
     def play(
         self,
         scene: Scene,
         *args: Animation | Mobject | _AnimationBuilder,
         **kwargs: Any,
     ) -> None:
+        """Run one play forward, record it, and draw its frames from the record.
+
+        Skipping (a skipped section, ``-n``, a still output) and cached frames
+        leave the play's frames undrawn; the play runs all the same, so what
+        follows it never depends on whether it was drawn.
+        """
         # Reset skip_animations to the original state.
         # Needed when rendering only some animations, and skipping others.
         self.skip_animations = self._original_skipping_status
         self.update_skipping_status()
 
         scene.compile_animation_data(*args, **kwargs)
-
-        if self.skip_animations:
+        skipped = self.skip_animations
+        cache_key: str | None = None
+        if skipped:
             logger.debug(f"Skipping animation {self.num_plays}")
-            hash_current_animation = None
-            self.time += scene.duration
+        elif config["disable_caching"]:
+            logger.info("Caching disabled.")
+            cache_key = f"uncached_{self.num_plays:05}"
         else:
-            if config["disable_caching"]:
-                logger.info("Caching disabled.")
-                hash_current_animation = f"uncached_{self.num_plays:05}"
-            else:
-                assert scene.animations is not None
-                hash_current_animation = get_hash_from_play_call(
-                    scene,
-                    self.camera,
-                    scene.animations,
-                    scene.mobjects,
-                    backend="cairo",
-                    encoder_fingerprint=video_encoder_fingerprint(
-                        scene.session_spec.video_encoder,
-                    ),
-                    renderer_state=(),
-                )
-                if self.file_writer.is_already_cached(hash_current_animation):
-                    logger.info(
-                        f"Animation {self.num_plays} : Using cached data (hash : %(hash_current_animation)s)",
-                        {"hash_current_animation": hash_current_animation},
-                    )
-                    self.skip_animations = True
-                    self.time += scene.duration
+            assert scene.animations is not None
+            cache_key = get_hash_from_play_call(
+                scene,
+                self.camera,
+                scene.animations,
+                scene.mobjects,
+                backend="cairo",
+                encoder_fingerprint=video_encoder_fingerprint(
+                    scene.session_spec.video_encoder,
+                ),
+                renderer_state=self._grid_phase(scene),
+            )
+
+        play = scene.timeline.play(skipped=skipped, cache_key=cache_key)
+
+        frames = frames_in(play.start, play.end, exact(self.camera.frame_rate))
+        if not frames:
+            # A play shorter than the gap between two frames shows in none.
+            cache_key = None
+        draw = cache_key is not None and scene.timeline.draws
+        if draw and self.file_writer.is_already_cached(cache_key):
+            logger.info(
+                f"Animation {self.num_plays} : Using cached data (hash : %(hash_current_animation)s)",
+                {"hash_current_animation": cache_key},
+            )
+            draw = False
         # adding None as a partial movie file will make file_writer ignore the latter.
-        self.file_writer.add_partial_movie_file(hash_current_animation)
-        self.animations_hashes.append(hash_current_animation)
+        self.file_writer.add_partial_movie_file(cache_key)
+        self.animations_hashes.append(cache_key)
         logger.debug(
             "List of the first few animation hashes of the scene: %(h)s",
             {"h": str(self.animations_hashes[:5])},
         )
-
-        self.file_writer.begin_animation(
-            not self.skip_animations,
-            animation_index=self.num_plays,
-        )
-        scene.begin_animations()
-
-        # Save a static image, to avoid rendering non moving objects.
-        self.save_static_frame_data(scene, scene.static_mobjects)
-
-        if scene.is_current_animation_frozen_frame():
-            self.update_frame(scene, mobjects=scene.moving_mobjects)
-            # self.duration stands for the total run time of all the animations.
-            # In this case, as there is only a wait, it will be the length of the wait.
-            self.freeze_current_frame(scene.duration)
-        else:
-            scene.play_internal()
-        self.file_writer.end_animation(not self.skip_animations)
-
+        static = None
+        if draw:
+            static = self._draw_play(scene, play, frames)
+        elif play.held and play.static and scene.timeline.draws:
+            # CE draws a frozen frame's static picture whatever it skips.
+            with Drawing(scene.timeline.ensure_record()) as drawing:
+                static = drawing.static(play)
+        # As in CE, a frozen frame's static picture stays the renderer's
+        # background after it (what update_frame draws over), and no other
+        # play's does.
+        self.static_image = static if play.held else None
         self.num_plays += 1
+
+    def _grid_phase(self, scene: Scene) -> tuple[str, str]:
+        """Where the play about to run falls on the frame grid and on the tick:
+        a cached play's frames are only reusable at the same phases.
+        """
+        start = scene.time
+        fps = exact(self.camera.frame_rate)
+        return (str((start * fps) % 1), str((start * TICK_RATE) % 1))
+
+    def _draw_play(
+        self, scene: Scene, play: PlayRecord, frames: list[Fraction]
+    ) -> PixelArray | None:
+        """Draw the play's frames, one per instant of the frame grid in its
+        span, from its recorded samples, and return its static picture.
+        """
+        record = scene.timeline.ensure_record()
+        self.file_writer.begin_animation(True, animation_index=self.num_plays)
+        with Drawing(record) as drawing:
+            static = drawing.static(play)
+            if play.held:
+                pixels = drawing.sample(play, play.samples[0], static)
+                self.file_writer.write_frame(pixels, repeat=len(frames))
+            else:
+                for t in frames:
+                    pixels = drawing.sample(play, play.capture_at(t), static)
+                    self.file_writer.write_frame(pixels)
+        self.file_writer.end_animation(True)
+        return static
 
     def update_frame(  # TODO Description in Docstring
         self,
@@ -203,11 +252,11 @@ class CairoRenderer:
             The frame to add, as a pixel array.
         num_frames
             The number of times to add frame.
+
+        The scene clock is the timeline's: writing frames does not move it.
         """
-        dt = 1 / self.camera.frame_rate
         if self.skip_animations:
             return
-        self.time += num_frames * dt
         self.file_writer.write_frame(frame, repeat=num_frames)
 
     def freeze_current_frame(self, duration: float) -> None:
@@ -287,13 +336,23 @@ class CairoRenderer:
         if self.num_plays and (output.is_video or output.is_image_sequence):
             self.file_writer.finish()
         elif not self.num_plays:
-            self.static_image = None
-            self.update_frame(scene)
+            self._draw_final(scene)
 
         # Automatically selected video output falls back to a last-frame PNG
         # when a scene has no play calls.
         if output.is_still or (not self.num_plays and output.fallback_to_still):
             if self.num_plays:
-                self.static_image = None
-                self.update_frame(scene)
+                self._draw_final(scene)
             self.file_writer.save_image(self.get_frame())
+
+    def _draw_final(self, scene: Scene) -> None:
+        """Draw the scene as its script left it into the camera: from the
+        record's final capture once the run has ended.
+        """
+        self.static_image = None
+        record = scene.timeline.record
+        if record is None or record.final is None:
+            self.update_frame(scene)
+            return
+        with Drawing(record) as drawing:
+            drawing.final()

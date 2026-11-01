@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import sys
+from fractions import Fraction
 from unittest.mock import Mock
 
 import pytest
@@ -11,7 +11,6 @@ from arachne import (
     Scene,
     ValueTracker,
     Wait,
-    np,
 )
 
 from .simple_scenes import (
@@ -23,36 +22,56 @@ from .simple_scenes import (
     SquareToCircle,
 )
 
+# CE evaluated each play once per output frame on the play's own grid, and a
+# skipped, cached or still play once, at its end. Arachne evaluates every play
+# at its start and at each 60 Hz tick of the scene clock whatever is drawn
+# (deliberate break 4), and frames read the record on one global grid
+# (break 3). The t-value tests below hold the new rule.
+
+
+def _frames_written(scene):
+    """The repeat counts of the frames the scene's renderer writes."""
+    writer = scene.renderer.file_writer
+    written = []
+    write_frame = writer.write_frame
+
+    def counting(pixels, *, repeat=1):
+        written.append(repeat)
+        return write_frame(pixels, repeat=repeat)
+
+    writer.write_frame = counting
+    return written
+
+
+def _instants(play):
+    return [capture.instant for capture in play.samples]
+
 
 @pytest.mark.parametrize("frame_rate", argvalues=[15, 30, 60])
 def test_t_values(config, using_temp_config, disabling_caching, frame_rate):
-    """Test that the framerate corresponds to the number of t values generated"""
+    """A play is evaluated on the tick; the frame rate only picks which of
+    its instants are kept and drawn, one frame per instant of its grid.
+    """
     config.frame_rate = frame_rate
     scene = SquareToCircle()
-    scene.update_to_time = Mock()
+    written = _frames_written(scene)
     scene.render()
-    assert scene.update_to_time.call_count == config["frame_rate"]
-    np.testing.assert_allclose(
-        ([call.args[0] for call in scene.update_to_time.call_args_list]),
-        np.arange(0, 1, 1 / config["frame_rate"]),
-    )
+    (play,) = scene.record.plays
+    assert sum(written) == frame_rate
+    assert _instants(play) == [Fraction(k, frame_rate) for k in range(frame_rate)]
+    assert play.route == "ticked"
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 8),
-    reason="Mock object has a different implementation in python 3.7, which makes it broken with this logic.",
-)
 def test_t_values_with_skip_animations(using_temp_config, disabling_caching):
-    """Test the behaviour of scene.skip_animations"""
+    """A skipped play runs in full, and draws nothing."""
     scene = SquareToCircle()
-    scene.update_to_time = Mock()
     scene.renderer._original_skipping_status = True
+    written = _frames_written(scene)
     scene.render()
-    assert scene.update_to_time.call_count == 1
-    np.testing.assert_almost_equal(
-        scene.update_to_time.call_args.args[0],
-        1.0,
-    )
+    (play,) = scene.record.plays
+    assert play.skipped
+    assert play.end == 1
+    assert sum(written) == 0
 
 
 def test_static_wait_detection(using_temp_config, disabling_caching):
@@ -99,17 +118,21 @@ def test_frozen_frame(using_temp_config, disabling_caching):
 
 
 def test_t_values_with_cached_data(using_temp_config):
-    """Test the proper generation and use of the t values when an animation is cached."""
+    """Cached plays run forward like any other; their frames are not drawn."""
     scene = SceneWithMultipleCalls()
     # Mocking the file_writer will skip all the writing process.
     scene.renderer.file_writer = Mock(scene.renderer.file_writer)
     scene.renderer.update_skipping_status = Mock()
     # Simulate that all animations are cached.
     scene.renderer.file_writer.is_already_cached.return_value = True
-    scene.update_to_time = Mock()
 
     scene.render()
-    assert scene.update_to_time.call_count == 10
+    plays = scene.record.plays
+    assert [(play.start, play.end) for play in plays] == [
+        (Fraction(i), Fraction(i + 1)) for i in range(10)
+    ]
+    assert all(not play.skipped for play in plays)
+    scene.renderer.file_writer.write_frame.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -117,22 +140,26 @@ def test_t_values_with_cached_data(using_temp_config):
     [{"save_last_frame": True}, {"format": "png"}],
 )
 def test_t_values_save_last_frame(config, using_temp_config, still_config):
-    """Still output fast-forwards each play and only evaluates its final state."""
+    """Still output runs each play forward in full, draws none of its frames,
+    and draws the last frame from the record's final state.
+    """
     config.update(still_config)
     scene = SquareToCircle()
-    scene.update_to_time = Mock()
+    written = _frames_written(scene)
     scene.render()
-    scene.update_to_time.assert_called_once_with(1)
+    (play,) = scene.record.plays
+    assert play.skipped
+    assert play.end == 1
+    assert sum(written) == 0
+    assert scene.record.final is not None
 
 
 def test_png_sequence_evaluates_every_frame(config, using_temp_config):
     config.format = "png-sequence"
     scene = SquareToCircle()
-    scene.update_to_time = Mock()
 
     scene.render()
 
-    assert scene.update_to_time.call_count == config.frame_rate
     assert scene.renderer.file_writer.frame_count == config.frame_rate
     assert scene.renderer.file_writer.final_file_path.is_dir()
     assert (scene.renderer.file_writer.final_file_path / "0000.png").is_file()
