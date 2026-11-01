@@ -21,6 +21,8 @@ These ideas came from other projects; no code was taken from them.
 
 - Immutable geometry and paint values behind a mutable-looking mobject API (read-only points, style as one immutable
   `Paint` value): [ManimGX](https://github.com/academa-labs/manimgx) by Academa, Inc. (MIT).
+- Holding cost laws with tests that count work (values built, hashed and copied) instead of timing it: ManimGX, as
+  above.
 
 ## Arachne's own work
 

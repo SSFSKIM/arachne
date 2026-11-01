@@ -119,11 +119,10 @@ def test_an_operation_leaves_the_old_value_unchanged():
     assert square.points is not old
 
 
-def test_deepcopy_gives_an_equal_read_only_value():
+def test_deepcopy_shares_the_read_only_value():
     circle = Circle()
     clone = copy.deepcopy(circle)
-    assert clone.points is not circle.points
-    np.testing.assert_array_equal(clone.points, circle.points)
+    assert clone.points is circle.points
     assert isinstance(clone.points, FrozenPoints)
     with pytest.raises(ValueError, match=POINTS_FIX):
         clone.points[0] = 0
