@@ -293,9 +293,15 @@ def plain_container(data: bytes, z: zipfile.ZipFile) -> bool:
 
 
 def npz_in_schema(data: bytes) -> tuple[bool, bytes]:
-    """Whether ``data`` is a graphical-units control file: one uint8 ``frame_data`` (H,W,C) or (N,H,W,C)."""
+    """Whether ``data`` is a graphical-units control file: one uint8 ``frame_data`` (H,W,C) or (N,H,W,C).
+
+    When it is, also returns the decompressed ``frame_data.npy`` member, for the term scan. The
+    member must be exactly an NPY header plus the array's bytes, because ``np.load`` ignores
+    anything after the array.
+    """
     try:
         import numpy as np
+        from numpy.lib import format as npy
     except ImportError as exc:
         # the check cannot rule on an .npz without numpy, so it fails closed
         raise UsageError("numpy is needed to check .npz files") from exc
@@ -303,22 +309,35 @@ def npz_in_schema(data: bytes) -> tuple[bool, bytes]:
         with zipfile.ZipFile(io.BytesIO(data)) as z:
             if z.namelist() != ["frame_data.npy"] or not plain_container(data, z):
                 return False, b""
-        with np.load(io.BytesIO(data), allow_pickle=False) as npz:
-            arr = npz["frame_data"]
+            member = z.read("frame_data.npy")
+        stream = io.BytesIO(member)
+        version = npy.read_magic(stream)
+        if version == (1, 0):
+            shape, _, dtype = npy.read_array_header_1_0(stream)
+        elif version == (2, 0):
+            shape, _, dtype = npy.read_array_header_2_0(stream)
+        else:
+            return False, b""
     except Exception:
         return False, b""
-    ok = arr.dtype == np.uint8 and arr.ndim in (3, 4) and arr.shape[-1] in (3, 4)
-    return ok, (arr.tobytes() if ok else b"")
+    if dtype != np.uint8 or len(shape) not in (3, 4) or shape[-1] not in (3, 4):
+        return False, b""
+    size = 1
+    for n in shape:
+        size *= n
+    if len(member) != stream.tell() + size * dtype.itemsize:
+        return False, b""  # bytes after the array, or a short array
+    return True, member
 
 
 def check_binary(path: str, label: str, data: bytes, deny: Denylist) -> list[str]:
     """Rule a binary file; findings name it by ``label``, which is safe to print."""
     suffix = PurePosixPath(path).suffix.lower()
     if suffix == ".npz":
-        ok, pixels = npz_in_schema(data)
+        ok, member = npz_in_schema(data)
         if not ok:
             return [f"{label}: npz outside the control-data schema"]
-        scanned = deny.hits_bytes(data) + deny.hits_bytes(pixels)
+        scanned = deny.hits_bytes(data) + deny.hits_bytes(member)
         return [
             f"{label}: denylisted term #{i} in binary content"
             for i in sorted(set(scanned))
