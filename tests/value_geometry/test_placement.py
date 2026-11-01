@@ -278,3 +278,49 @@ def test_a_parametric_plot_is_placed_and_drawn_from_its_points():
     plot.shift(2 * UP)
     assert plot._current_placement() is not None
     np.testing.assert_allclose(plot.points, reference, rtol=0, atol=TOLERANCE)
+
+
+class ShiftsAfterMapping(VMobject):
+    """A subclass whose point map also shifts up, as a user's override might."""
+
+    def apply_points_function_about_point(
+        self, func, about_point=None, about_edge=None
+    ):
+        super().apply_points_function_about_point(func, about_point, about_edge)
+        return self.shift(UP)
+
+
+@pytest.mark.parametrize(
+    "points", [8, 4 * MIN_PLACED_POINTS], ids=["small", "placed size"]
+)
+@pytest.mark.parametrize(
+    "move",
+    [
+        pytest.param(lambda m: m.scale(2, about_point=ORIGIN), id="scale"),
+        pytest.param(lambda m: m.rotate(0.5, about_point=ORIGIN), id="rotate"),
+    ],
+)
+def test_scale_and_rotate_go_through_an_overridden_point_map(move, points):
+    # CE's scale and rotate called apply_points_function_about_point.
+    mob = ShiftsAfterMapping().set_points(np.zeros((points, 3)))
+    move(mob)
+    np.testing.assert_array_equal(mob.get_center(), [0, 1, 0])
+
+
+def test_shift_never_went_through_the_point_map():
+    # CE's shift added the vector to each member's points directly.
+    mob = ShiftsAfterMapping().set_points(np.zeros((8, 3)))
+    mob.shift(RIGHT)
+    np.testing.assert_array_equal(mob.get_center(), [1, 0, 0])
+
+
+def test_the_hash_follows_the_geometry_not_its_storage():
+    base = curve()
+    placed, stored = base.copy(), base.copy()
+    placed.shift(RIGHT)
+    stored.points = stored.points + RIGHT
+    assert placed._current_placement() is not None
+    before = get_json(placed)
+    _ = placed.points  # compute the placed points
+    assert get_json(placed) == before
+    assert get_json(stored) == before

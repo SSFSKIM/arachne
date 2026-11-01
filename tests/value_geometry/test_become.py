@@ -34,6 +34,12 @@ from arachne.mobject.values import Paint, count_work
 NO_WORK = {"arrays": 0, "paints": 0, "hashes": 0, "deep_copies": 0}
 
 
+def placed_curve() -> VMobject:
+    """A mobject large enough for shift, scale and rotate to place it."""
+    points = np.random.default_rng(0).random((10_000, 3))
+    return VMobject().set_points(points).set_fill(RED, 0.5)
+
+
 def ce_become(receiver: Mobject, mobject: Mobject) -> Mobject:
     """CE 0.22.1's ``become`` without its ``match_*`` options, as it was written
     (``mobject.py:3426-3451``): align, then copy points and interpolate the
@@ -138,6 +144,16 @@ def test_become_never_drops_a_member():
             ),
             id="an equal family",
         ),
+        pytest.param(
+            lambda: (lambda placed: (placed, placed.copy()))(
+                placed_curve().shift(RIGHT)
+            ),
+            id="a placed family and its copy",
+        ),
+        pytest.param(
+            lambda: (placed_curve(), placed_curve().shift(UP).rotate(0.3)),
+            id="onto a placed mobject",
+        ),
     ],
 )
 def test_become_between_equal_families_does_no_work(make):
@@ -187,3 +203,13 @@ def test_restore_becomes_the_saved_state():
     square.restore()
     assert square.points is square.saved_state.points
     assert square.paint is square.saved_state.paint
+
+
+def test_become_takes_a_placement_without_computing_its_points():
+    receiver, argument = placed_curve(), placed_curve().shift(UP).scale(2)
+    placement = argument._current_placement()
+    receiver.become(argument)
+    assert receiver._current_placement() is placement
+    assert placement.materialized is None
+    np.testing.assert_array_equal(receiver.points, argument.points)
+    assert receiver.points is argument.points

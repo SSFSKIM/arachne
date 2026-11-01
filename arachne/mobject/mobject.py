@@ -1599,7 +1599,7 @@ class Mobject:
         :meth:`move_to`
 
         """
-        self._apply_about_point(
+        self._map_about_point(
             lambda points: scale_factor * points,
             _axis_scale(scale_factor),
             about_point,
@@ -1680,7 +1680,7 @@ class Mobject:
         rot_matrix = rotation_matrix(angle, axis)
         linear = np.array(rot_matrix.T, dtype=float)
         linear.flags.writeable = False
-        self._apply_about_point(
+        self._map_about_point(
             lambda points: np.dot(points, rot_matrix.T), linear, about_point, about_edge
         )
         return self
@@ -1844,6 +1844,25 @@ class Mobject:
         about_edge: Vector3DLike | None = None,
     ) -> Self:
         return self._apply_about_point(func, None, about_point, about_edge)
+
+    def _map_about_point(
+        self,
+        func: MultiMappingFunction,
+        linear: np.ndarray,
+        about_point: Point3DLike | None,
+        about_edge: Vector3DLike | None,
+    ) -> None:
+        """Apply ``func`` (``points @ linear``) about a point the way CE did,
+        through :meth:`apply_points_function_about_point`, unless this class
+        keeps Mobject's own, in which case large members are placed.
+        """
+        if (
+            type(self).apply_points_function_about_point
+            is Mobject.apply_points_function_about_point
+        ):
+            self._apply_about_point(func, linear, about_point, about_edge)
+        else:
+            self.apply_points_function_about_point(func, about_point, about_edge)
 
     def _apply_about_point(
         self,
@@ -3711,9 +3730,25 @@ class Mobject:
         """
         self.align_data(mobject, skip_point_alignment=True)
         for sm1, sm2 in zip(self.get_family(), mobject.get_family(), strict=True):
-            sm1.points = sm2.points
+            sm1._take_points(sm2)
             sm1._take_style(sm2)
         return self
+
+    def _take_points(self, mobject: Mobject) -> None:
+        """Take ``mobject``'s points value, sharing it; placed points are taken
+        as their placement, so taking them computes nothing.
+        """
+        placement = mobject._current_placement()
+        if placement is None or not self._places_points:
+            self.points = mobject.points
+            return
+        own = self.__dict__
+        own["_placement"] = placement
+        computed = placement.materialized
+        if computed is None:
+            own.pop("_points", None)
+        else:
+            own["_points"] = computed
 
     def _take_style(self, mobject: Mobject) -> None:
         """Take ``mobject``'s style, as interpolating to it at alpha 1 does."""
