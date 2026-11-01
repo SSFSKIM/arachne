@@ -157,3 +157,35 @@ def test_a_value_prints_as_the_array_it_holds():
     assert repr(square.points) == repr(np.array(square.points))
     assert repr(square.points[0]).startswith("array(")
     assert str(square.points) == str(np.array(square.points))
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        pytest.param("dtype", np.int64, id="dtype"),
+        pytest.param("shape", (-1,), id="shape"),
+        pytest.param("strides", (8, 8), id="strides"),
+        pytest.param("real", 0.0, id="real"),
+        pytest.param("imag", 0.0, id="imag"),
+        pytest.param("flat", 0.0, id="flat"),
+    ],
+)
+def test_reinterpreting_or_filling_through_an_attribute_raises(name, value):
+    square = Square()
+    before = np.array(square.points)
+    with pytest.raises(ValueError, match=POINTS_FIX):
+        setattr(square.points, name, value)
+    assert square.points.dtype == before.dtype
+    assert square.points.shape == before.shape
+    np.testing.assert_array_equal(square.points, before)
+
+
+def test_metadata_still_reads_and_a_plain_copy_still_reshapes():
+    points = Square().points
+    assert points.dtype == np.float64
+    assert points.shape[1] == 3
+    assert points.strides == np.array(points).strides
+    assert points.real.shape == points.shape
+    plain = points.copy()
+    plain.shape = (-1,)
+    assert plain.shape == (points.size,)
