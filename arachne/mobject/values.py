@@ -89,6 +89,10 @@ class FrozenArray(np.ndarray):
     def copy(self, order: Any = "C") -> np.ndarray:
         return np.array(self, order=order, copy=True)
 
+    # A value prints as the array it holds, as CE's arrays did.
+    def __repr__(self) -> str:
+        return repr(self.view(np.ndarray))
+
     def __copy__(self) -> Any:
         return _frozen_copy(self)
 

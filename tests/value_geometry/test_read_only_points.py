@@ -150,3 +150,10 @@ def test_a_dot_still_moves_and_measures():
     np.testing.assert_allclose(dot.get_center(), [1, 2, 0])
     dot.set_x(-1)
     np.testing.assert_allclose(dot.get_center(), [-1, 2, 0])
+
+
+def test_a_value_prints_as_the_array_it_holds():
+    square = Square()
+    assert repr(square.points) == repr(np.array(square.points))
+    assert repr(square.points[0]).startswith("array(")
+    assert str(square.points) == str(np.array(square.points))
