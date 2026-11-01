@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, overload
 import numpy as np
 
 from arachne._config import config, logger
+from arachne.mobject.placement import Placement
 from arachne.mobject.values import FrozenArray, Paint
 
 if TYPE_CHECKING:
@@ -86,6 +87,14 @@ def _hash_ndarray(array: np.ndarray) -> str:
     encoded_descriptor = json.dumps(descriptor, separators=(",", ":"))
     # This compacts array content before the existing CRC32 play-key pipeline.
     return f"NDARRAY:{encoded_descriptor}:{array.shape}:{digest.hexdigest()}"
+
+
+def _is_mobject_state(own: dict[str, Any]) -> bool:
+    """Whether ``own`` holds a mobject's points: stored, placed, or both."""
+    placement = own.get("_placement")
+    if placement is not None:
+        return isinstance(placement, Placement)
+    return isinstance(own.get("_points"), FrozenArray)
 
 
 def _with_effective_points(own: dict[str, Any]) -> dict[str, Any]:
@@ -316,7 +325,7 @@ class _CustomEncoder(json.JSONEncoder):
             # Indeed, there is certainly no case where scene-caching will receive only a non instancied object, as this is never used in the library or encouraged to be used user-side.
             if isinstance(temp, MappingProxyType):
                 return "MappingProxy"
-            if "_placement" in temp or "_points" in temp:
+            if _is_mobject_state(temp):
                 temp = _with_effective_points(temp)
             return self._cleaned_iterable(temp)
         elif isinstance(obj, np.uint8):

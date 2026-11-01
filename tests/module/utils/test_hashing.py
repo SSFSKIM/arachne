@@ -46,6 +46,20 @@ def test_JSON_with_object():
     )
 
 
+def test_JSON_with_attributes_named_like_a_mobjects():
+    # Names the engine uses inside a mobject mean nothing on other objects.
+    class Label:
+        def __init__(self):
+            self._points = [1, 2]
+            self._placement = "above"
+            self.text = "x"
+
+    assert (
+        hashing.get_json(Label())
+        == '{"_points": [1, 2], "_placement": "above", "text": "x"}'
+    )
+
+
 def test_JSON_with_function():
     def test(uhu):
         uhu += 2
