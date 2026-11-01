@@ -109,6 +109,31 @@ def _bezier_parameters(n_points: int) -> FrozenArray:
     return adopt(np.linspace(0, 1, n_points), FrozenArray)
 
 
+def _interpolable(start: Paint, end: Paint) -> bool:
+    """Whether CE's field-by-field interpolation from ``start`` to ``end`` runs:
+    every field is set on both sides, numbers pair with numbers, and arrays with
+    arrays whose shapes broadcast.
+    """
+    first, second = start.__dict__, end.__dict__
+    for name in Paint.FIELDS:
+        if name not in first or name not in second:
+            return False
+        a, b = first[name], second[name]
+        if isinstance(a, np.ndarray) and isinstance(b, np.ndarray):
+            if a.shape == b.shape:
+                continue
+            try:
+                np.broadcast_shapes(a.shape, b.shape)
+            except ValueError:
+                return False
+        elif not (isinstance(a, _NUMBERS) and isinstance(b, _NUMBERS)):
+            return False
+    return True
+
+
+_NUMBERS = (int, float, np.number)
+
+
 class VMobject(Mobject):
     """A vectorized mobject.
 
@@ -2042,6 +2067,20 @@ class VMobject(Mobject):
             fields[attr] = value
         self._paint = self._paint.replace(**fields)
         return self
+
+    def _take_style(self, mobject: Mobject) -> None:
+        # Interpolating to mobject at alpha 1 ends with mobject's seven fields,
+        # which are its paint: take the paint itself. Where that interpolation
+        # would raise (a field missing, or arrays that don't broadcast) or a
+        # subclass interpolates its own way, interpolate as CE did.
+        if (
+            isinstance(mobject, VMobject)
+            and type(self).interpolate_color is VMobject.interpolate_color
+            and _interpolable(self._paint, mobject._paint)
+        ):
+            self._paint = mobject._paint
+        else:
+            self.interpolate_color(self, mobject, 1)
 
     def pointwise_become_partial(
         self,

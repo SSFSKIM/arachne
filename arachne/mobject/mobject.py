@@ -3463,11 +3463,28 @@ class Mobject:
             if match_center:
                 mobject.move_to(self.get_center())
 
+        return self._assign_values(mobject)
+
+    def _assign_values(self, mobject: Mobject) -> Self:
+        """Give this family ``mobject``'s values, position by position, as CE's
+        ``become`` does.
+
+        The two families are aligned first, exactly as CE aligns them: the one
+        with fewer members, ``mobject`` included, is padded with faded copies,
+        and no member is ever dropped. Then each member takes its partner's
+        points and style (for a :class:`~.VMobject`, the seven fields of its
+        :class:`~.Paint`). The values are shared, never copied; the child trees
+        stay each family's own.
+        """
         self.align_data(mobject, skip_point_alignment=True)
         for sm1, sm2 in zip(self.get_family(), mobject.get_family(), strict=True):
-            sm1.points = sm2.points  # shared: values never change
-            sm1.interpolate_color(sm1, sm2, 1)
+            sm1.points = sm2.points
+            sm1._take_style(sm2)
         return self
+
+    def _take_style(self, mobject: Mobject) -> None:
+        """Take ``mobject``'s style, as interpolating to it at alpha 1 does."""
+        self.interpolate_color(self, mobject, 1)
 
     def match_points(self, mobject: Mobject, copy_submobjects: bool = True) -> Self:
         """Edit points, positions, and submobjects to be identical
