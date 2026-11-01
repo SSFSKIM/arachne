@@ -7,15 +7,17 @@ from fractions import Fraction
 import numpy as np
 import pytest
 
+from arachne import BLUE
+
 from .conftest import render
-from .scenes import Drawn, FixedOrientation
+from .scenes import Background, Drawn, FixedOrientation
 
 
 def _pixels(image) -> np.ndarray:
     return np.asarray(image)
 
 
-@pytest.mark.parametrize("scene_class", [Drawn, FixedOrientation])
+@pytest.mark.parametrize("scene_class", [Drawn, FixedOrientation, Background])
 def test_a_render_draws_what_the_session_draws_at_each_instant(session_of, scene_class):
     _, frames = render(scene_class, 6)
     session = session_of(scene_class.__name__)
@@ -62,6 +64,24 @@ def test_a_centre_function_is_drawn_at_each_wait_binding(session_of):
     assert (first_x < second_x) == (first_centre < second_centre)
     # Asked again, in the other order, the answer is the same.
     assert np.array_equal(_pixels(session.frame(Fraction(1, 4))), _pixels(first))
+
+
+def test_a_camera_value_is_drawn_as_it_was_at_each_instant(session_of):
+    """The script turns the background from red to blue between two waits;
+    frames drawn after it ended show red in the first and blue in the second,
+    from the camera values the forward run recorded, and the camera keeps
+    its live value afterwards.
+    """
+    session = session_of("Background")
+    first = _pixels(session.frame(Fraction(1, 4)))[0, 0, :3]
+    second = _pixels(session.frame(Fraction(3, 4)))[0, 0, :3]
+    assert first.argmax() == 0  # red
+    assert first[0] > 200
+    assert second.argmax() == 2  # blue
+    assert second[2] > 200
+    again = _pixels(session.frame(Fraction(1, 4)))[0, 0, :3]
+    assert np.array_equal(again, first)
+    assert session.scene.camera.background_color.to_hex() == BLUE.to_hex()
 
 
 def test_frame_draws_at_a_quality(session_of):

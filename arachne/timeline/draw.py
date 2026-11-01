@@ -28,57 +28,173 @@ if TYPE_CHECKING:
     from .record import Capture, NodeState, PlayRecord, Record
 
 
+#: Camera attributes that are not drawing inputs a scene sets: the pixel
+#: shape and what is built from it (a session draws at its own quality), and
+#: caches.
+_NOT_CAMERA_VALUES = frozenset(
+    {
+        "pixel_width",
+        "pixel_height",
+        "pixel_array",
+        "background",
+        "pixel_array_to_cairo_context",
+        "display_funcs",
+        "canvas",
+        "background_colored_vmobject_displayer",
+        "rotation_matrix",
+        "frame_rate",
+        "fixed_in_frame_mobjects",
+        "fixed_orientation_mobjects",
+    }
+)
+#: The values the background is built from (``Camera.init_background``).
+_BACKGROUND_INPUTS = frozenset(
+    {"_background_color", "_background_opacity", "background_image"}
+)
+
+
 @dataclass(frozen=True)
 class CameraExtras:
-    """A ThreeDCamera's drawing inputs that are not mobjects: the mobjects
+    """A camera's drawing inputs that are not mobjects.
+
+    ``values`` are the camera's own plain values a draw reads (background
+    colour, opacity and image, frame centre and size, line-width multiple,
+    z-index use, a ThreeDCamera's shading and projection settings): every
+    attribute holding a number, string, colour or small array, but the pixel
+    shape and what is built from it. A ThreeDCamera also has the mobjects
     fixed in the frame, and each fixed-orientation mobject's centre as its
     function returned it at the captured instant.
     """
 
-    fixed_in_frame: frozenset[Mobject]
-    centers: tuple[tuple[Mobject, np.ndarray], ...]
+    values: tuple[tuple[str, Any], ...]
+    fixed_in_frame: frozenset[Mobject] = frozenset()
+    centers: tuple[tuple[Mobject, np.ndarray], ...] = ()
 
     @classmethod
     def observe(
         cls, camera: Camera, previous: CameraExtras | None
     ) -> CameraExtras | None:
         """Evaluate ``camera``'s inputs now; ``previous`` itself when they are
-        what it already holds. ``None`` for a camera that has none.
+        what it already holds. ``None`` for an object that is not a camera.
         """
+        from arachne.camera.camera import Camera
         from arachne.camera.three_d_camera import ThreeDCamera
 
-        if not isinstance(camera, ThreeDCamera):
+        if not isinstance(camera, Camera):
             return None
-        orientations = camera.fixed_orientation_mobjects
-        fixed = camera.fixed_in_frame_mobjects
-        values: dict[int, np.ndarray] = {}
-        centers = []
-        for mob, center_func in orientations.items():
-            value = values.get(id(center_func))
-            if value is None:
-                value = np.array(center_func(), dtype=float)
-                value.flags.writeable = False
-                values[id(center_func)] = value
-            centers.append((mob, value))
-        frozen = frozenset(fixed)
+        values = _camera_values(camera, previous.values if previous else None)
+        fixed: frozenset[Mobject] = frozenset()
+        centers: tuple[tuple[Mobject, np.ndarray], ...] = ()
+        if isinstance(camera, ThreeDCamera):
+            fixed = frozenset(camera.fixed_in_frame_mobjects)
+            centers = _centers(camera.fixed_orientation_mobjects)
         if previous is None:
-            return cls(frozen, tuple(centers))
-        if previous.fixed_in_frame == frozen:
-            frozen = previous.fixed_in_frame
-        same_centers = len(previous.centers) == len(centers) and all(
+            return cls(values, fixed, centers)
+        if previous.fixed_in_frame == fixed:
+            fixed = previous.fixed_in_frame
+        if len(previous.centers) == len(centers) and all(
             a is c and np.array_equal(b, d)
             for (a, b), (c, d) in zip(previous.centers, centers, strict=True)
-        )
-        if same_centers and frozen is previous.fixed_in_frame:
+        ):
+            centers = previous.centers
+        if (
+            values is previous.values
+            and fixed is previous.fixed_in_frame
+            and centers is previous.centers
+        ):
             return previous
-        return cls(frozen, previous.centers if same_centers else tuple(centers))
+        return cls(values, fixed, centers)
 
     def install(self, camera: Camera) -> None:
         """Give ``camera`` these inputs."""
-        camera.fixed_in_frame_mobjects = set(self.fixed_in_frame)  # type: ignore[attr-defined]
-        camera.fixed_orientation_mobjects = {  # type: ignore[attr-defined]
-            mob: _constant(value) for mob, value in self.centers
-        }
+        from arachne.camera.three_d_camera import ThreeDCamera
+
+        _set_camera_values(camera, self.values)
+        if isinstance(camera, ThreeDCamera):
+            camera.fixed_in_frame_mobjects = set(self.fixed_in_frame)
+            camera.fixed_orientation_mobjects = {
+                mob: _constant(value) for mob, value in self.centers
+            }
+
+
+def _centers(
+    orientations: dict[Mobject, Callable[[], Any]],
+) -> tuple[tuple[Mobject, np.ndarray], ...]:
+    values: dict[int, np.ndarray] = {}
+    centers = []
+    for mob, center_func in orientations.items():
+        value = values.get(id(center_func))
+        if value is None:
+            value = np.array(center_func(), dtype=float)
+            value.flags.writeable = False
+            values[id(center_func)] = value
+        centers.append((mob, value))
+    return tuple(centers)
+
+
+def _camera_values(
+    camera: Camera, previous: tuple[tuple[str, Any], ...] | None
+) -> tuple[tuple[str, Any], ...]:
+    """The camera's plain drawing values now, by attribute name; ``previous``
+    itself when they are the same.
+    """
+    from arachne.utils.color import ManimColor
+
+    found: list[tuple[str, Any]] = []
+    for key, value in vars(camera).items():
+        if key in _NOT_CAMERA_VALUES:
+            continue
+        if isinstance(value, np.ndarray):
+            if value.size > 16:
+                continue
+            value = value.copy()
+            value.flags.writeable = False
+        elif not (
+            value is None
+            or isinstance(value, (bool, int, float, str, np.generic, ManimColor))
+        ):
+            continue
+        found.append((key, value))
+    values = tuple(found)
+    if (
+        previous is not None
+        and len(previous) == len(values)
+        and all(
+            a == c and _same_value(b, d)
+            for (a, b), (c, d) in zip(previous, values, strict=True)
+        )
+    ):
+        return previous
+    return values
+
+
+def _same_value(a: Any, b: Any) -> bool:
+    if a is b:
+        return True
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, np.ndarray):
+        return a.shape == b.shape and bool(np.array_equal(a, b))
+    return bool(a == b)
+
+
+def _set_camera_values(camera: Camera, values: tuple[tuple[str, Any], ...]) -> None:
+    """Give ``camera`` the plain ``values``, rebuilding its background when
+    what it is built from changed.
+    """
+    own = vars(camera)
+    rebuild = False
+    for key, value in values:
+        current = own.get(key, _MISSING)
+        if current is not _MISSING and _same_value(current, value):
+            continue
+        own[key] = value.copy() if isinstance(value, np.ndarray) else value
+        rebuild = rebuild or key in _BACKGROUND_INPUTS
+    if rebuild:
+        camera.init_background()
+
+
+_MISSING = object()
 
 
 def _constant(value: np.ndarray) -> Callable[[], np.ndarray]:
@@ -127,10 +243,13 @@ class Drawing:
             state.install(mob)
         self._saved.clear()
         if self._camera_saved is not None:
-            camera: Any = self.camera
-            camera.fixed_in_frame_mobjects, camera.fixed_orientation_mobjects = (
-                self._camera_saved
-            )
+            values, orientation = self._camera_saved
+            _set_camera_values(self.camera, values)
+            if orientation is not None:
+                camera: Any = self.camera
+                camera.fixed_in_frame_mobjects, camera.fixed_orientation_mobjects = (
+                    orientation
+                )
             self._camera_saved = None
 
     def show(self, capture: Capture, roots: Sequence[Mobject]) -> None:
@@ -148,11 +267,14 @@ class Drawing:
             state.install(mob)
         if capture.camera is not None:
             if self._camera_saved is None:
+                # The live inputs, saved as they are (calling no centre function).
                 camera: Any = self.camera
-                self._camera_saved = (
-                    camera.fixed_in_frame_mobjects,
-                    camera.fixed_orientation_mobjects,
+                orientation = (
+                    (camera.fixed_in_frame_mobjects, camera.fixed_orientation_mobjects)
+                    if hasattr(camera, "fixed_orientation_mobjects")
+                    else None
                 )
+                self._camera_saved = (_camera_values(camera, None), orientation)
             capture.camera.install(self.camera)
 
     def static(self, play: PlayRecord) -> PixelArray | None:
