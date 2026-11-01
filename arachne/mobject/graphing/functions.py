@@ -13,7 +13,6 @@ from isosurfaces import plot_isoline
 
 from arachne import config
 from arachne.mobject.graphing.scale import LinearBase, _ScaleBase
-from arachne.mobject.opengl.opengl_compatibility import ConvertToOpenGL
 from arachne.mobject.types.vectorized_mobject import VMobject
 
 if TYPE_CHECKING:
@@ -25,7 +24,7 @@ if TYPE_CHECKING:
 from arachne.utils.color import PURE_YELLOW
 
 
-class ParametricFunction(VMobject, metaclass=ConvertToOpenGL):
+class ParametricFunction(VMobject):
     """A parametric curve.
 
     Parameters
@@ -238,7 +237,7 @@ class FunctionGraph(ParametricFunction):
         return self.parametric_function(x)
 
 
-class ImplicitFunction(VMobject, metaclass=ConvertToOpenGL):
+class ImplicitFunction(VMobject):
     def __init__(
         self,
         func: Callable[[float, float], float],

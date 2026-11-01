@@ -27,8 +27,6 @@ from arachne.mobject.graphing.functions import ImplicitFunction, ParametricFunct
 from arachne.mobject.graphing.number_line import NumberLine
 from arachne.mobject.graphing.scale import LinearBase
 from arachne.mobject.mobject import Mobject
-from arachne.mobject.opengl.opengl_compatibility import ConvertToOpenGL
-from arachne.mobject.opengl.opengl_surface import OpenGLSurface
 from arachne.mobject.text.tex_mobject import MathTex
 from arachne.mobject.three_d.three_dimensions import Surface
 from arachne.mobject.types.vectorized_mobject import (
@@ -787,11 +785,8 @@ class CoordinateSystem:
                             )
                             color_list.append(mob_color)
                             break
-            if config.renderer == RendererType.OPENGL:
-                graph.set_color(color_list)
-            else:
-                graph.set_stroke(color_list)
-                graph.set_sheen_direction(RIGHT)
+            graph.set_stroke(color_list)
+            graph.set_sheen_direction(RIGHT)
 
         return graph
 
@@ -944,7 +939,7 @@ class CoordinateSystem:
         ) = None,
         colorscale_axis: int = 2,
         **kwargs: Any,
-    ) -> Surface | OpenGLSurface:
+    ) -> Surface:
         """Generates a surface based on a function.
 
         Parameters
@@ -994,28 +989,17 @@ class CoordinateSystem:
                         )
                     self.add(axes, trig_plane)
         """
-        if config.renderer == RendererType.CAIRO:
-            surface = Surface(
-                lambda u, v: self.c2p(u, v, function(u, v)),
-                u_range=u_range,
-                v_range=v_range,
-                **kwargs,
-            )
-            if colorscale:
-                surface.set_fill_by_value(
-                    axes=self.copy(),
-                    colorscale=colorscale,
-                    axis=colorscale_axis,
-                )
-        elif config.renderer == RendererType.OPENGL:
-            surface = OpenGLSurface(
-                lambda u, v: self.c2p(u, v, function(u, v)),
-                u_range=u_range,
-                v_range=v_range,
+        surface = Surface(
+            lambda u, v: self.c2p(u, v, function(u, v)),
+            u_range=u_range,
+            v_range=v_range,
+            **kwargs,
+        )
+        if colorscale:
+            surface.set_fill_by_value(
                 axes=self.copy(),
                 colorscale=colorscale,
-                colorscale_axis=colorscale_axis,
-                **kwargs,
+                axis=colorscale_axis,
             )
 
         return surface
@@ -1873,7 +1857,7 @@ class CoordinateSystem:
     def _origin_shift(axis_range: Sequence[float]) -> float: ...
 
 
-class Axes(VGroup, CoordinateSystem, metaclass=ConvertToOpenGL):
+class Axes(VGroup, CoordinateSystem):
     """Creates a set of axes.
 
     Parameters
@@ -2456,7 +2440,6 @@ class ThreeDAxes(Axes):
         z_normal: Vector3DLike = DOWN,
         num_axis_pieces: int = 20,
         light_source: Point3DLike = 9 * DOWN + 7 * LEFT + 10 * OUT,
-        # opengl stuff (?)
         depth: Any = None,
         gloss: float = 0.5,
         **kwargs: dict[str, Any],
@@ -2512,9 +2495,8 @@ class ThreeDAxes(Axes):
         self.add(z_axis)
         self.z_axis = z_axis
 
-        if config.renderer == RendererType.CAIRO:
-            self._add_3d_pieces()
-            self._set_axis_shading()
+        self._add_3d_pieces()
+        self._set_axis_shading()
 
     def _add_3d_pieces(self) -> None:
         for axis in self.axes:

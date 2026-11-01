@@ -386,10 +386,8 @@ The ``-p`` flag opens the animation once it is rendered.
 can be combined; Manim reveals the artifact first and then opens it for preview.
 
 The separate ``-l`` (or ``--live-preview``) option asks a capable renderer to
-display frames while rendering. The OpenGL renderer supports this mode. Live
-preview with the default ``--format=auto`` does not produce a media file; you
-must pass a concrete format such as ``--format=mp4`` to display and record
-simultaneously.
+display frames while rendering. The Cairo renderer has no live preview, so the
+option is refused.
 
 This was a quick review of some of the most frequent command-line flags.
 For a thorough review of all flags available, see the :doc:`thematic guide on

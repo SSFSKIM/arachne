@@ -26,17 +26,7 @@ DOCS_DIR = REPO_DIR / "docs" / "source"
 
 # Blocks that are not frame tests, by name, with the reason: they cannot run as
 # written, or their frame does not follow the engine alone.
-_NOT_EXPORTED = (
-    "uses an OpenGL mobject class that `from arachne import *` does not export; its "
-    "module is not in the rendered documentation, so the block has never run"
-)
 EXCLUDED: dict[str, str] = {
-    "Example-2": _NOT_EXPORTED,
-    "ShuffleSubmobjectsExample-2": _NOT_EXPORTED,
-    "DotInterpolation": _NOT_EXPORTED,
-    "ArcShapeIris": _NOT_EXPORTED,
-    "AddToOpenGLVGroup": _NOT_EXPORTED,
-    "DashedVMobjectExample": _NOT_EXPORTED,
     "ConvexHull3DExample": (
         "renders differently from run to run: ConvexHull3D orders its faces by "
         "iterating a set of objects, whose order follows their memory addresses"

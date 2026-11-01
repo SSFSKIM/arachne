@@ -9,7 +9,7 @@ from typing import Any
 
 from .cli_colors import parse_cli_ctx
 from .logger_utils import make_logger
-from .utils import ManimConfig, ManimFrame, make_config_parser
+from .utils import RENDERER_REMOVED, ManimConfig, ManimFrame, make_config_parser
 
 __all__ = [
     "logger",
@@ -73,6 +73,8 @@ def tempconfig(temp: ManimConfig | dict[str, Any]) -> Generator[None, None, None
 
     """
     global config
+    if "renderer" in temp:
+        raise AttributeError(RENDERER_REMOVED)
     original = config.copy()
 
     temp = {k: v for k, v in temp.items() if k in original}

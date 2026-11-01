@@ -7,14 +7,11 @@ import numpy as np
 import pytest
 from click.testing import CliRunner
 
-from arachne import RIGHT, WHITE, Scene, Square, Tex, Text, Vector, tempconfig
+from arachne import WHITE, Scene, Square, Tex, Text, tempconfig
 from arachne._config.output import OutputFormat, OutputSpec
 from arachne._config.render_session import resolve_render_session
 from arachne._config.utils import ManimConfig
 from arachne.cli.render.commands import render
-from arachne.constants import RendererType
-from arachne.mobject.opengl.opengl_vectorized_mobject import OpenGLVMobject
-from arachne.mobject.types.vectorized_mobject import VMobject
 from arachne.renderer.protocol import RendererCapabilities
 from tests.assert_utils import assert_dir_filled, assert_file_exists
 
@@ -60,17 +57,6 @@ def test_max_files_cached_uses_minus_one_for_unlimited(config):
 
     with pytest.raises(ValueError, match="non-negative integer or -1"):
         config.max_files_cached = float("inf")
-
-
-def test_tempconfig_restores_renderer_class_bases(config):
-    with tempconfig({"renderer": "opengl"}):
-        assert config.renderer == RendererType.OPENGL
-        assert issubclass(Vector, OpenGLVMobject)
-
-    assert config.renderer == RendererType.CAIRO
-    assert issubclass(Vector, VMobject)
-    assert not issubclass(Vector, OpenGLVMobject)
-    Vector(RIGHT)
 
 
 @pytest.mark.parametrize(
@@ -382,24 +368,6 @@ def test_cli_distinguishes_preview_from_live_preview(tmp_path):
     assert result.exception is None
     assert result.return_value.preview is True
     assert result.return_value.live_preview is True
-
-
-def test_opengl_cli_no_longer_disables_automatic_output(tmp_path, config):
-    scene_file = tmp_path / "scene.py"
-    scene_file.write_text("# --jupyter returns before loading this file\n")
-    result = CliRunner().invoke(
-        render,
-        [str(scene_file), "--jupyter", "--renderer=opengl"],
-        standalone_mode=False,
-    )
-    assert result.exception is None
-
-    config.format = "auto"
-    config.digest_args(result.return_value)
-
-    assert config.renderer is RendererType.OPENGL
-    assert config.format == "auto"
-    assert _resolve_output(config).format is OutputFormat.MP4
 
 
 def test_absent_cli_output_options_preserve_config_file_values(tmp_path):

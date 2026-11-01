@@ -21,13 +21,11 @@ from typing import TYPE_CHECKING, Any, Literal, Self
 
 import numpy as np
 
-from arachne import config, logger
+from arachne import logger
 from arachne.constants import *
 from arachne.mobject.geometry.arc import Circle
 from arachne.mobject.geometry.polygram import Square
 from arachne.mobject.mobject import *
-from arachne.mobject.opengl.opengl_compatibility import ConvertToOpenGL
-from arachne.mobject.opengl.opengl_mobject import OpenGLMobject
 from arachne.mobject.types.vectorized_mobject import VectorizedPoint, VGroup, VMobject
 from arachne.utils.color import (
     BLUE,
@@ -46,7 +44,7 @@ if TYPE_CHECKING:
     from arachne.typing import Point3D, Point3DLike, Vector3D, Vector3DLike
 
 
-class ThreeDVMobject(VMobject, metaclass=ConvertToOpenGL):
+class ThreeDVMobject(VMobject):
     u_index: int
     v_index: int
     u1: float
@@ -58,7 +56,7 @@ class ThreeDVMobject(VMobject, metaclass=ConvertToOpenGL):
         super().__init__(shade_in_3d=shade_in_3d, **kwargs)
 
 
-class Surface(VGroup, metaclass=ConvertToOpenGL):
+class Surface(VGroup):
     """Creates a Parametric Surface using a checkerboard pattern.
 
     Parameters
@@ -340,11 +338,7 @@ class Surface(VGroup, metaclass=ConvertToOpenGL):
                             new_colors[i],
                             color_index,
                         )
-                        if config.renderer == RendererType.OPENGL:
-                            assert isinstance(mob, OpenGLMobject)
-                            mob.set_color(mob_color, recurse=False)
-                        elif config.renderer == RendererType.CAIRO:
-                            mob.set_color(mob_color, family=False)
+                        mob.set_color(mob_color, family=False)
                         break
 
         return self
@@ -450,12 +444,7 @@ class Sphere(Surface):
         v_range: tuple[float, float] = (0, PI),
         **kwargs: Any,
     ) -> None:
-        if config.renderer == RendererType.OPENGL:
-            res_value = (101, 51)
-        elif config.renderer == RendererType.CAIRO:
-            res_value = (24, 12)
-        else:
-            raise Exception("Unknown renderer")
+        res_value = (24, 12)
 
         resolution = resolution if resolution is not None else res_value
 
@@ -882,13 +871,8 @@ class Cylinder(Surface):
     def add_bases(self) -> Self:
         """Adds the end caps of the cylinder."""
         opacity: float
-        if config.renderer == RendererType.OPENGL:
-            assert isinstance(self, OpenGLMobject)
-            color = self.color
-            opacity = self.opacity
-        elif config.renderer == RendererType.CAIRO:
-            color = self.fill_color
-            opacity = self.fill_opacity
+        color = self.fill_color
+        opacity = self.fill_opacity
 
         self.base_top = Circle(
             radius=self.radius,
@@ -1072,7 +1056,7 @@ class Line3D(Cylinder):
         :class:`numpy.array`
             Center of the :class:`Mobjects <.Mobject>` or point, or edge if direction is given.
         """
-        if isinstance(mob_or_point, (Mobject, OpenGLMobject)):
+        if isinstance(mob_or_point, Mobject):
             mob = mob_or_point
             if direction is None:
                 return mob.get_center()
@@ -1321,10 +1305,7 @@ class Torus(Surface):
         resolution: int | tuple[int, int] | None = None,
         **kwargs: Any,
     ) -> None:
-        if config.renderer == RendererType.OPENGL:
-            res_value = (101, 101)
-        elif config.renderer == RendererType.CAIRO:
-            res_value = (24, 24)
+        res_value = (24, 24)
 
         resolution = resolution if resolution is not None else res_value
 

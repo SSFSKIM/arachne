@@ -50,7 +50,6 @@ from typing import TYPE_CHECKING, Any, Self, cast
 import numpy as np
 
 from arachne.constants import *
-from arachne.mobject.opengl.opengl_compatibility import ConvertToOpenGL
 from arachne.mobject.types.vectorized_mobject import VGroup, VMobject
 from arachne.utils.color import BLACK, BLUE, RED, WHITE, ParsableManimColor
 from arachne.utils.iterables import adjacent_pairs
@@ -74,12 +73,11 @@ if TYPE_CHECKING:
     from arachne.typing import (
         Point3D,
         Point3DLike,
-        QuadraticSpline,
         Vector3DLike,
     )
 
 
-class TipableVMobject(VMobject, metaclass=ConvertToOpenGL):
+class TipableVMobject(VMobject):
     """Meant for shared functionality between Arc and Line.
     Functionality can be classified broadly into these groups:
 
@@ -341,44 +339,6 @@ class Arc(TipableVMobject):
         self.scale(self.radius, about_point=ORIGIN)
         self.shift(self.arc_center)
         return self
-
-    # Points are set a bit differently when rendering via OpenGL.
-    # TODO: refactor Arc so that only one strategy for setting points
-    # has to be used.
-    def init_points(self) -> Self:
-        self.set_points(
-            Arc._create_quadratic_bezier_points(
-                angle=self.angle,
-                start_angle=self.start_angle,
-                n_components=self.num_components,
-            ),
-        )
-        self.scale(self.radius, about_point=ORIGIN)
-        self.shift(self.arc_center)
-        return self
-
-    @staticmethod
-    def _create_quadratic_bezier_points(
-        angle: float, start_angle: float = 0, n_components: int = 8
-    ) -> QuadraticSpline:
-        samples = np.array(
-            [
-                [np.cos(a), np.sin(a), 0]
-                for a in np.linspace(
-                    start_angle,
-                    start_angle + angle,
-                    2 * n_components + 1,
-                )
-            ],
-        )
-        theta = angle / n_components
-        samples[1::2] /= np.cos(theta / 2)
-
-        points = np.zeros((3 * n_components, 3))
-        points[0::3] = samples[0:-1:2]
-        points[1::3] = samples[1::2]
-        points[2::3] = samples[2::2]
-        return points
 
     def _set_pre_positioned_points(self) -> None:
         anchors = np.array(
@@ -1112,7 +1072,7 @@ class Annulus(Circle):
         return self
 
 
-class CubicBezier(VMobject, metaclass=ConvertToOpenGL):
+class CubicBezier(VMobject):
     """A cubic Bézier curve.
 
     Example
@@ -1147,7 +1107,7 @@ class CubicBezier(VMobject, metaclass=ConvertToOpenGL):
         self.add_cubic_bezier_curve(start_anchor, start_handle, end_handle, end_anchor)
 
 
-class ArcPolygon(VMobject, metaclass=ConvertToOpenGL):
+class ArcPolygon(VMobject):
     """A generalized polygon allowing for points to be connected with arcs.
 
     This version tries to stick close to the way :class:`Polygon` is used. Points
@@ -1268,7 +1228,7 @@ class ArcPolygon(VMobject, metaclass=ConvertToOpenGL):
         self.arcs = arcs
 
 
-class ArcPolygonFromArcs(VMobject, metaclass=ConvertToOpenGL):
+class ArcPolygonFromArcs(VMobject):
     """A generalized polygon allowing for points to be connected with arcs.
 
     This version takes in pre-defined arcs to generate the arcpolygon and introduces

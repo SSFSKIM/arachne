@@ -41,16 +41,9 @@ Another frequently used flag is ``-p`` ("preview"), which makes Manim
 open the rendered artifact after rendering. This behavior is the same for all
 renderers.
 
-Renderers may also support a live preview while the scene is evaluated. The
-OpenGL renderer provides this with ``-l`` (or ``--live-preview``):
-
-.. code-block:: bash
-
-   arachne --renderer=opengl -l <file.py> SceneName
-
-With ``--format=auto``, live preview does not write a media file, keeping the
-interactive workflow fast. Pass a concrete format, such as ``--format=mp4``,
-to record the scene while displaying the live preview.
+The ``-l`` (or ``--live-preview``) option asks the renderer to display
+frames while the scene is evaluated. The Cairo renderer has no live preview,
+so the option is refused.
 
 Advanced examples
 =================

@@ -9,9 +9,6 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from arachne.mobject.opengl.opengl_compatibility import ConvertToOpenGL
-from arachne.mobject.opengl.opengl_point_cloud_mobject import OpenGLPMobject
-
 from ...constants import *
 from ...mobject.mobject import Mobject
 from ...utils.bezier import interpolate
@@ -44,7 +41,7 @@ if TYPE_CHECKING:
     )
 
 
-class PMobject(Mobject, metaclass=ConvertToOpenGL):
+class PMobject(Mobject):
     """A disc made of a cloud of Dots
 
     Examples
@@ -251,7 +248,7 @@ class PMobject(Mobject, metaclass=ConvertToOpenGL):
 
 
 # TODO, Make the two implementations below non-redundant
-class Mobject1D(PMobject, metaclass=ConvertToOpenGL):
+class Mobject1D(PMobject):
     def __init__(self, density: int = DEFAULT_POINT_DENSITY_1D, **kwargs: Any) -> None:
         self.density = density
         self.epsilon = 1.0 / self.density
@@ -277,7 +274,7 @@ class Mobject1D(PMobject, metaclass=ConvertToOpenGL):
         return self
 
 
-class Mobject2D(PMobject, metaclass=ConvertToOpenGL):
+class Mobject2D(PMobject):
     def __init__(self, density: int = DEFAULT_POINT_DENSITY_2D, **kwargs: Any) -> None:
         self.density = density
         self.epsilon = 1.0 / self.density
@@ -308,10 +305,9 @@ class PGroup(PMobject):
     """
 
     def __init__(self, *pmobs: Any, **kwargs: Any) -> None:
-        if not all(isinstance(m, (PMobject, OpenGLPMobject)) for m in pmobs):
+        if not all(isinstance(m, PMobject) for m in pmobs):
             raise ValueError(
-                "All submobjects must be of type PMobject or OpenGLPMObject"
-                " if using the opengl renderer",
+                "All submobjects must be of type PMobject",
             )
         super().__init__(**kwargs)
         self.add(*pmobs)

@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
+import svgelements as se
+
 from arachne import *
+from arachne.mobject.svg.svg_mobject import VMobjectFromSVGPath
 from tests.helpers.path_utils import get_svg_resource
 
 
@@ -248,3 +252,16 @@ def test_close_command_closes_last_move_not_the_starting_one():
         ),
         decimal=5,
     )
+
+
+def test_opengl_path_flags_leave_points_untouched():
+    # The flags applied to the removed OpenGL renderer: they are accepted and
+    # change nothing.
+    plain = VMobjectFromSVGPath(se.Path("M 0 0 Q 0 4 4 4 Z"))
+    flagged = VMobjectFromSVGPath(
+        se.Path("M 0 0 Q 0 4 4 4 Z"),
+        long_lines=True,
+        should_subdivide_sharp_curves=True,
+        should_remove_null_curves=True,
+    )
+    assert np.array_equal(flagged.points, plain.points)

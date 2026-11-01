@@ -36,5 +36,3 @@ docker run --rm -v "$PWD/docker:/test:ro" manimcommunity/manim:TAG \
 - The image does not include the `ffmpeg` CLI binary.
 - The default TeX installation is minimal and does not include `ctex`.
   `tlmgr` installs further packages from the same frozen TeX Live release.
-- Headless OpenGL rendering relies on EGL/GL runtime libraries available in the
-  image.

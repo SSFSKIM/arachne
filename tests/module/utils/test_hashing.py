@@ -6,6 +6,7 @@ import weakref
 from zlib import crc32
 
 import numpy as np
+import pytest
 
 import arachne.utils.hashing as hashing
 from arachne import ImageMobject, Square
@@ -318,7 +319,6 @@ def test_play_hash_includes_backend_encoder_and_renderer_state():
     }
     original = cache_key(**renderer_state)
     changed_inputs = [
-        cache_key(backend="opengl", **renderer_state),
         cache_key(encoder="other", **renderer_state),
         cache_key(**{**renderer_state, "meshes": [HashableObject("changed")]}),
         cache_key(
@@ -332,6 +332,8 @@ def test_play_hash_includes_backend_encoder_and_renderer_state():
 
     assert len(original) == 64
     assert all(changed != original for changed in changed_inputs)
+    with pytest.raises(ValueError, match="Unsupported cache backend"):
+        cache_key(backend="opengl", **renderer_state)
 
 
 def test_JSON_with_tuple():

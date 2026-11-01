@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from arachne.mobject.mobject import Mobject
-from arachne.mobject.opengl.opengl_compatibility import ConvertToOpenGL
 from arachne.utils.paths import straight_path
 
 if TYPE_CHECKING:
@@ -18,7 +17,7 @@ if TYPE_CHECKING:
     from arachne.typing import PathFuncType
 
 
-class ValueTracker(Mobject, metaclass=ConvertToOpenGL):
+class ValueTracker(Mobject):
     """A mobject that can be used for tracking (real-valued) parameters.
     Useful for animating parameter changes.
 

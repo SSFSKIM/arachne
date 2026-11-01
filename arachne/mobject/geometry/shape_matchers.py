@@ -18,7 +18,6 @@ from arachne.constants import (
 from arachne.mobject.geometry.line import Line
 from arachne.mobject.geometry.polygram import RoundedRectangle
 from arachne.mobject.mobject import Mobject
-from arachne.mobject.opengl.opengl_mobject import OpenGLMobject
 from arachne.mobject.types.vectorized_mobject import VGroup
 from arachne.utils.color import BLACK, PURE_YELLOW, RED, ParsableManimColor
 
@@ -57,7 +56,7 @@ class SurroundingRectangle(RoundedRectangle):
     ) -> None:
         from arachne.mobject.mobject import Group
 
-        if not all(isinstance(mob, (Mobject, OpenGLMobject)) for mob in mobjects):
+        if not all(isinstance(mob, Mobject) for mob in mobjects):
             raise TypeError(
                 "Expected all inputs for parameter mobjects to be a Mobjects"
             )

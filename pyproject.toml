@@ -29,8 +29,6 @@ dependencies = [
     "isosurfaces>=0.1.1",
     "manimpango>=0.7.0,<1.0.0",
     "mapbox-earcut>=1.0.0",
-    "moderngl-window>=2.0.0",
-    "moderngl>=5.7.0,<6.0.0",
     "networkx>=2.6",
     "numpy>=2.1",
     "pillow>=11.0",
@@ -40,13 +38,11 @@ dependencies = [
     "rich>=12.0.0",
     "scipy>=1.13.0",
     "scipy>=1.15.0 ; python_full_version >= '3.13'",
-    "screeninfo>=0.7.0",
     "skia-pathops>=0.9.0",
     "srt>=3.0.0",
     "svgelements>=1.9.0",
     "tqdm>=4.21.0",
     "typing-extensions>=4.12.0",
-    "watchdog>=2.0.0",
 ]
 
 
@@ -57,9 +53,6 @@ dependencies = [
 repository = "https://github.com/SSFSKIM/arachne"
 
 [project.optional-dependencies]
-gui = [
-    "dearpygui>=1.0.0",
-]
 jupyterlab = [
     "jupyterlab>=4.3.4",
     "notebook>=7.3.2",

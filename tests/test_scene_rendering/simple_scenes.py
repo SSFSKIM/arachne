@@ -14,7 +14,6 @@ __all__ = [
     "SceneForFrozenFrameTests",
     "SceneWithNonStaticWait",
     "StaticScene",
-    "InteractiveStaticScene",
     "SceneWithSections",
     "ElaborateSceneWithSections",
 ]
@@ -99,13 +98,6 @@ class StaticScene(Scene):
     def construct(self):
         dot = Dot().set_color(GREEN)
         self.add(dot)
-
-
-class InteractiveStaticScene(Scene):
-    def construct(self):
-        dot = Dot().set_color(GREEN)
-        self.add(dot)
-        self.interactive_mode = True
 
 
 class SceneWithSections(Scene):

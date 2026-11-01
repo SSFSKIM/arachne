@@ -3,9 +3,9 @@ from __future__ import annotations
 from .collect import EXCLUDED, _blocks_in_text, collect, sample_indices
 
 # Every ``.. arachne::`` block Sphinx renders, in docstrings and in docs/source.
-EXPECTED_BLOCKS = 487
-EXPECTED_STILL = 294
-EXPECTED_EXCLUDED = 8
+EXPECTED_BLOCKS = 461
+EXPECTED_STILL = 281
+EXPECTED_EXCLUDED = 2
 
 
 def test_collector_finds_every_block():

@@ -24,7 +24,6 @@ import numpy as np
 
 from arachne.constants import *
 from arachne.mobject.geometry.arc import ArcBetweenPoints
-from arachne.mobject.opengl.opengl_compatibility import ConvertToOpenGL
 from arachne.mobject.types.vectorized_mobject import VGroup, VMobject
 from arachne.utils.color import BLUE, WHITE, ParsableManimColor
 from arachne.utils.iterables import adjacent_n_tuples, adjacent_pairs
@@ -45,7 +44,7 @@ if TYPE_CHECKING:
     from arachne.utils.color import ParsableManimColor
 
 
-class Polygram(VMobject, metaclass=ConvertToOpenGL):
+class Polygram(VMobject):
     """A generalized :class:`Polygon`, allowing for disconnected sets of edges.
 
     Parameters
@@ -752,7 +751,7 @@ class RoundedRectangle(Rectangle):
         self.round_corners(self.corner_radius)
 
 
-class Cutout(VMobject, metaclass=ConvertToOpenGL):
+class Cutout(VMobject):
     """A shape with smaller cutouts.
 
     Parameters
