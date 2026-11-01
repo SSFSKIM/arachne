@@ -9,20 +9,13 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from arachne.mobject.mobject import Mobject
-from arachne.mobject.values import FrozenTrackerPoints, adopt
+from arachne.mobject.values import FrozenTrackerPoints, adopt, freeze
 from arachne.utils.paths import straight_path
 
 if TYPE_CHECKING:
     from typing import Self
 
     from arachne.typing import PathFuncType, Point3DLike_Array
-
-
-def _as_float(value: Any) -> np.float64:
-    """``value`` cast as storing it in a float array casts it."""
-    cell = np.empty(1)
-    cell[0] = value
-    return cell[0]
 
 
 class ValueTracker(Mobject):
@@ -36,10 +29,11 @@ class ValueTracker(Mobject):
 
     This value changes continuously when animated using the :attr:`animate` syntax.
 
-    The value is held as a number. :attr:`points` is a read-only view of it,
-    ``[[value, 0, 0]]``, kept so that code treating the tracker as a point keeps
-    working: assigning points, or moving the tracker as a mobject, sets the value
-    from the first coordinate.
+    The value is the first coordinate of the tracker's one point, as in CE.
+    :attr:`points` is read-only, as every mobject's is: :meth:`set_value` builds
+    a new point that keeps the other coordinates, and moving the tracker as a
+    mobject moves the whole point, so it measures and lays out in a group as it
+    did in CE.
 
     Examples
     --------
@@ -87,46 +81,47 @@ class ValueTracker(Mobject):
 
     """
 
-    _value: Any
+    _tracker_points: FrozenTrackerPoints
 
     def __init__(self, value: float = 0, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.set_value(value)
 
-    # The value is the storage behind the points property: Mobject's setter and
-    # its in-house writers assign _points, which lands here.
+    # Mobject's points setter and its in-house writers assign _points, which
+    # lands here. A tracker keeps its points as floats, so a value set into them
+    # keeps its fraction, and never empty, since the value is read from them.
     @property
     def _points(self) -> FrozenTrackerPoints:
-        return adopt(self._value_as_point()[np.newaxis], FrozenTrackerPoints)
+        return self._tracker_points
 
     @_points.setter
     def _points(self, points: Point3DLike_Array) -> None:
-        points = np.asarray(points)
-        if points.shape[:1] == (0,):
+        points = freeze(np.asanyarray(points, dtype=float), FrozenTrackerPoints)
+        if len(points) == 0:
             raise ValueError(
-                f"A {type(self).__name__} holds one value, so its points can't be "
-                "empty: use set_value(value)"
+                f"A {type(self).__name__} reads its value from its point, so its "
+                "points can't be empty: use set_value(value)"
             )
-        self._set_value_from_point(points[0])
+        self._tracker_points = points
 
-    def _value_as_point(self) -> np.ndarray:
-        return np.array([self._value, 0.0, 0.0])
-
-    def _set_value_from_point(self, point: np.ndarray) -> None:
-        self._value = _as_float(point[0])
+    def _set_first_point_coordinates(self, coordinates: slice, values: Any) -> None:
+        """Set ``coordinates`` of the first point to ``values``, keeping the rest."""
+        points = np.array(self._tracker_points)
+        points[0, coordinates] = values
+        self._tracker_points = adopt(points, FrozenTrackerPoints)
 
     def reset_points(self) -> Self:
-        self.set_value(0)
+        self._tracker_points = adopt(np.zeros((1, self.dim)), FrozenTrackerPoints)
         return self
 
     def get_value(self) -> float:
         """Get the current value of this ValueTracker."""
-        value: float = self._value
+        value: float = self._tracker_points[0, 0]
         return value
 
     def set_value(self, value: float) -> Self:
         """Sets a new scalar value to the ValueTracker."""
-        self._value = _as_float(value)
+        self._set_first_point_coordinates(slice(0, 1), value)
         return self
 
     def increment_value(self, d_value: float) -> Self:
@@ -246,8 +241,8 @@ class ValueTracker(Mobject):
 class ComplexValueTracker(ValueTracker):
     """Tracks a complex-valued parameter.
 
-    The value is held as a complex number, and :attr:`points` shows it as the point
-    ``[a, b, 0]``, which can be read directly to represent the value geometrically, see the
+    The value ``a + bj`` is the first two coordinates of the tracker's point ``[a, b, 0]``,
+    which can be read directly to represent the value geometrically, see the
     usage example.
     When the value is set through :attr:`animate`, the value will take a straight path from the
     source point to the destination point.
@@ -271,19 +266,12 @@ class ComplexValueTracker(ValueTracker):
                 self.play(tracker.animate.set_value(tracker.get_value() / (-2 + 3j)))
     """
 
-    def _value_as_point(self) -> np.ndarray:
-        return np.array([self._value.real, self._value.imag, 0.0])
-
-    def _set_value_from_point(self, point: np.ndarray) -> None:
-        self._value = complex(_as_float(point[0]), _as_float(point[1]))
-
     def get_value(self) -> complex:  # type: ignore [override]
         """Get the current value of this ComplexValueTracker as a complex number."""
-        value: complex = self._value
-        return value
+        return complex(*self._tracker_points[0, :2])
 
     def set_value(self, value: complex | float) -> Self:
         """Sets a new complex value to the ComplexValueTracker."""
         z = complex(value)
-        self._value = complex(_as_float(z.real), _as_float(z.imag))
+        self._set_first_point_coordinates(slice(0, 2), (z.real, z.imag))
         return self
