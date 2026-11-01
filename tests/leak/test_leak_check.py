@@ -435,6 +435,41 @@ def test_npz_with_trailing_bytes_fails(repo: Repo, extra: bytes):
     )
 
 
+def npz_with_member(member: bytes) -> bytes:
+    """A one-member npz written the way NumPy writes one, with ``member`` as frame_data.npy."""
+    buf = io.BytesIO()
+    with (
+        zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as z,
+        z.open("frame_data.npy", "w", force_zip64=True) as f,
+    ):
+        f.write(member)
+    return buf.getvalue()
+
+
+def npy_bytes(arr: np.ndarray) -> bytes:
+    buf = io.BytesIO()
+    np.lib.format.write_array(buf, arr, allow_pickle=False)
+    return buf.getvalue()
+
+
+def test_hand_built_control_npz_passes(repo: Repo):
+    member = npy_bytes(np.zeros((2, 2, 3), dtype=np.uint8))
+    repo.commit({"tests/control_data/H.npz": npz_with_member(member)})
+    result = run_check(repo)
+    assert result.returncode == 0, result.stdout
+
+
+@pytest.mark.parametrize("tail", [b"zorblaxian", b"other words after the array"])
+def test_npz_member_with_bytes_after_the_array_fails(repo: Repo, tail: bytes):
+    member = npy_bytes(np.zeros((2, 2, 3), dtype=np.uint8)) + tail
+    repo.commit({"tests/control_data/M.npz": npz_with_member(member)})
+    result = run_check(repo)
+    assert result.returncode == 1
+    assert (
+        "tests/control_data/M.npz: npz outside the control-data schema" in result.stdout
+    )
+
+
 def test_npz_with_leading_bytes_fails(repo: Repo):
     repo.commit({"tests/control_data/L.npz": b"zorblaxian" + control_npz()})
     result = run_check(repo)
