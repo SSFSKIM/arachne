@@ -165,6 +165,31 @@ def test_become_between_equal_families_does_no_work(make):
     assert work.as_dict() == NO_WORK
 
 
+class SetsPointsAbove(VMobject):
+    """A subclass whose points setter moves what it is given up, as a user's
+    override might.
+    """
+
+    @VMobject.points.setter
+    def points(self, value):
+        VMobject.points.fset(self, np.asarray(value) + UP)
+
+
+@pytest.mark.parametrize(
+    "argument",
+    [
+        pytest.param(lambda: placed_curve().shift(RIGHT), id="placed"),
+        pytest.param(lambda: Square().shift(RIGHT), id="stored"),
+    ],
+)
+def test_become_goes_through_an_overridden_points_setter(argument):
+    # CE's become assigned each member's points through the property.
+    source = argument()
+    receiver = SetsPointsAbove().set_points(np.zeros((len(source.points), 3)))
+    receiver.become(source)
+    np.testing.assert_allclose(receiver.points, source.points + UP, rtol=0, atol=1e-12)
+
+
 def test_an_always_redraw_style_rebuild_does_no_value_work():
     # A rebuilt mobject of the same family shape costs its own construction
     # and nothing in become.

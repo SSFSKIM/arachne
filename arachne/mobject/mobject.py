@@ -3736,10 +3736,15 @@ class Mobject:
 
     def _take_points(self, mobject: Mobject) -> None:
         """Take ``mobject``'s points value, sharing it; placed points are taken
-        as their placement, so taking them computes nothing.
+        as their placement, so taking them computes nothing, unless this class
+        sets ``points`` its own way.
         """
         placement = mobject._current_placement()
-        if placement is None or not self._places_points:
+        if (
+            placement is None
+            or not self._places_points
+            or type(self).points is not Mobject.points
+        ):
             self.points = mobject.points
             return
         own = self.__dict__
