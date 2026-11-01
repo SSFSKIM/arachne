@@ -5,6 +5,8 @@ Arachne is a visual engine for explanatory math videos. It is a fork of
 stages. Until a stage replaces it, a part of the engine works as it does in Manim Community Edition, and that
 project's documentation describes it.
 
+Changes reach `main` through pull requests, merged when every required check is green at an up-to-date head.
+
 The package imports as `arachne` and its command is `arachne`:
 
 ```sh
