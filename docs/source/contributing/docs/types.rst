@@ -115,8 +115,7 @@ which are a way of representing a curve using a sequence of points.
    To learn more about Béziers, take a look at https://pomax.github.io/bezierinfo/
 
 
-Manim supports two different renderers, which each have different representations of
-Béziers: Cairo uses cubic Bézier curves, while OpenGL uses quadratic Bézier curves.
+Mobjects store cubic Bézier curves, the curves Cairo draws.
 
 Type hints like :class:`~.typing.BezierPoints` represent a single bezier curve, and :class:`~.typing.BezierPath`
 represents multiple Bézier curves. A :class:`~.typing.Spline` is when the Bézier curves in a :class:`~.typing.BezierPath`
@@ -140,7 +139,6 @@ Images
 ------
 There are several representations of images in Manim. The most common is
 the representation as a NumPy array of floats representing the pixels of an image.
-This is especially common when it comes to the OpenGL renderer.
 
 This is the use case of the :class:`~.typing.PixelArray` type hint. Sometimes, Manim may use ``PIL.Image.Image``,
 which is not the same as :class:`~.typing.PixelArray`. In this case, use the ``PIL.Image.Image`` typehint.

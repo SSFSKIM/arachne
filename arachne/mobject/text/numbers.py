@@ -8,9 +8,7 @@ from typing import Any, Self
 
 import numpy as np
 
-from arachne import config
 from arachne.constants import *
-from arachne.mobject.opengl.opengl_compatibility import ConvertToOpenGL
 from arachne.mobject.text.tex_mobject import MathTex, SingleStringMathTex, Tex
 from arachne.mobject.text.text_mobject import Text
 from arachne.mobject.types.vectorized_mobject import VMobject
@@ -20,7 +18,7 @@ from arachne.typing import Vector3DLike
 string_to_mob_map: dict[str, SingleStringMathTex] = {}
 
 
-class DecimalNumber(VMobject, metaclass=ConvertToOpenGL):
+class DecimalNumber(VMobject):
     r"""An mobject representing a decimal number.
 
     Parameters
@@ -297,13 +295,11 @@ class DecimalNumber(VMobject, metaclass=ConvertToOpenGL):
         for sm1, sm2 in zip(self.submobjects, old_submobjects, strict=False):
             sm1.match_style(sm2)
 
-        if config.renderer == RendererType.CAIRO:
-            for mob in old_family:
-                # Dumb hack...due to how scene handles families
-                # of animated mobjects
-                # for compatibility with updaters to not leave first number in place while updating,
-                # not needed with opengl renderer
-                mob.points[:] = 0
+        for mob in old_family:
+            # Dumb hack...due to how scene handles families
+            # of animated mobjects
+            # for compatibility with updaters to not leave first number in place while updating
+            mob.points[:] = 0
 
         self.init_colors()
         return self
@@ -342,7 +338,7 @@ class Integer(DecimalNumber):
         return int(np.round(super().get_value()))
 
 
-class Variable(VMobject, metaclass=ConvertToOpenGL):
+class Variable(VMobject):
     """A class for displaying text that shows "label = value" with
     the value continuously updated from a :class:`~.ValueTracker`.
 

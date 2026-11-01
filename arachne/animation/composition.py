@@ -7,18 +7,14 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from arachne._config import config
 from arachne.animation.animation import Animation, prepare_animation
-from arachne.constants import RendererType
 from arachne.mobject.mobject import Group, Mobject
-from arachne.mobject.opengl.opengl_mobject import OpenGLGroup, OpenGLMobject
 from arachne.scene.scene import Scene
 from arachne.utils.iterables import remove_list_redundancies
 from arachne.utils.parameter_parsing import flatten_iterable_parameters
 from arachne.utils.rate_functions import linear
 
 if TYPE_CHECKING:
-    from arachne.mobject.opengl.opengl_vectorized_mobject import OpenGLVGroup
     from arachne.mobject.types.vectorized_mobject import VGroup
 
 __all__ = ["AnimationGroup", "Succession", "LaggedStart", "LaggedStartMap"]
@@ -54,7 +50,7 @@ class AnimationGroup(Animation):
     def __init__(
         self,
         *animations: Animation | Iterable[Animation],
-        group: Group | VGroup | OpenGLGroup | OpenGLVGroup | None = None,
+        group: Group | VGroup | None = None,
         run_time: float | None = None,
         rate_func: Callable[[float], float] = linear,
         lag_ratio: float = 0,
@@ -67,12 +63,7 @@ class AnimationGroup(Animation):
             mobjects = remove_list_redundancies(
                 [anim.mobject for anim in self.animations if not anim.is_introducer()],
             )
-            if config["renderer"] == RendererType.OPENGL:
-                self.group: Group | VGroup | OpenGLGroup | OpenGLVGroup = OpenGLGroup(
-                    *mobjects
-                )
-            else:
-                self.group = Group(*mobjects)
+            self.group: Group | VGroup = Group(*mobjects)
         else:
             self.group = group
         super().__init__(
@@ -80,7 +71,7 @@ class AnimationGroup(Animation):
         )
         self.run_time: float = self.init_run_time(run_time)
 
-    def get_all_mobjects(self) -> Sequence[Mobject | OpenGLMobject]:
+    def get_all_mobjects(self) -> Sequence[Mobject]:
         return list(self.group)
 
     def begin(self) -> None:

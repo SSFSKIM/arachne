@@ -8,7 +8,6 @@ from collections.abc import Callable, Sequence
 from typing import Any, Self
 
 from arachne.mobject.mobject import Mobject
-from arachne.mobject.opengl.opengl_compatibility import ConvertToOpenGL
 from arachne.mobject.types.vectorized_mobject import VGroup, VMobject
 from arachne.utils.color import (
     BLUE_B,
@@ -102,7 +101,7 @@ class AnimatedBoundary(VGroup):
         return self
 
 
-class TracedPath(VMobject, metaclass=ConvertToOpenGL):
+class TracedPath(VMobject):
     """Traces the path of a point returned by a function call.
 
     Parameters

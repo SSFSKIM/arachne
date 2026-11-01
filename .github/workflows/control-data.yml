@@ -15,7 +15,6 @@ jobs:
     timeout-minutes: 60
     env:
       UV_PYTHON: "3.14"
-      GALLIUM_DRIVER: softpipe
       # As the docs-examples gate: one BLAS kernel and one thread.
       OPENBLAS_CORETYPE: Haswell
       OPENBLAS_NUM_THREADS: "1"
@@ -31,8 +30,7 @@ jobs:
         run: |
           grep -m1 "model name" /proc/cpuinfo
           rm -rf tests/test_docs_examples/control_data
-          xvfb-run -a -s "-screen 0 1280x1024x24" \
-            uv run python -m pytest tests/test_docs_examples/test_docs_examples.py \
+          uv run python -m pytest tests/test_docs_examples/test_docs_examples.py \
             --dist=load --no-cov --set_test
       - uses: actions/upload-artifact@v7
         if: always()

@@ -20,7 +20,6 @@ if TYPE_CHECKING:
     from arachne.animation.animation import Animation
     from arachne.camera.camera import Camera
     from arachne.mobject.mobject import Mobject
-    from arachne.renderer.opengl_renderer import OpenGLCamera
     from arachne.scene.scene import Scene
 
 __all__ = ["KEYS_TO_FILTER_OUT", "get_hash_from_play_call", "get_json"]
@@ -415,7 +414,7 @@ def get_json(obj: Any, *, include_pixel_array: bool = False) -> str:
 
 def get_hash_from_play_call(
     scene_object: Scene,
-    camera_object: Camera | OpenGLCamera,
+    camera_object: Camera,
     animations_list: Iterable[Animation],
     current_mobjects_list: Iterable[Mobject],
     *,
@@ -450,7 +449,7 @@ def get_hash_from_play_call(
     :class:`str`
         A filename-safe digest of all visual cache inputs.
     """
-    if backend not in {"cairo", "opengl"}:
+    if backend != "cairo":
         raise ValueError(f"Unsupported cache backend: {backend}")
     if not encoder_fingerprint:
         raise ValueError("An encoder fingerprint is required for cache identity.")

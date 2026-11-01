@@ -8,7 +8,8 @@ from typing import TYPE_CHECKING
 from click import BadParameter
 from cloup import Choice, IntRange, option, option_group
 
-from arachne.constants import QUALITIES, RendererType
+from arachne._config.utils import RENDERER_REMOVED
+from arachne.constants import QUALITIES
 
 if TYPE_CHECKING:
     from click import Context, Option
@@ -91,6 +92,12 @@ def validate_encoder_options(
             )
         options[key] = option_value
     return options
+
+
+def reject_renderer(ctx: Context, param: Option, value: str | None) -> None:
+    """Refuse ``--renderer`` with any value: the OpenGL renderer was removed."""
+    if value is not None:
+        raise BadParameter(RENDERER_REMOVED, ctx=ctx, param=param)
 
 
 def validate_resolution(
@@ -249,12 +256,10 @@ render_options = option_group(
     ),
     option(
         "--renderer",
-        type=Choice(
-            [renderer_type.value for renderer_type in RendererType],
-            case_sensitive=False,
-        ),
-        help="Select a renderer for your Scene.",
-        default=None,
+        callback=reject_renderer,
+        expose_value=False,
+        hidden=True,
+        help="Removed: Cairo is the renderer.",
     ),
     option(
         "--save_sections",
@@ -268,17 +273,5 @@ render_options = option_group(
         is_flag=True,
         default=None,
         help="Render scenes with alpha channel.",
-    ),
-    option(
-        "--use_projection_fill_shaders",
-        is_flag=True,
-        help="Use shaders for OpenGLVMobject fill which are compatible with transformation matrices.",
-        default=None,
-    ),
-    option(
-        "--use_projection_stroke_shaders",
-        is_flag=True,
-        help="Use shaders for OpenGLVMobject stroke which are compatible with transformation matrices.",
-        default=None,
     ),
 )

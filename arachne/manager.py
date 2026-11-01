@@ -9,7 +9,7 @@ import srt
 
 from . import logger
 from .scene.section import DefaultSectionType
-from .utils.exceptions import EndSceneEarlyException, RerunSceneException
+from .utils.exceptions import EndSceneEarlyException
 from .utils.file_ops import open_media_file
 
 if TYPE_CHECKING:
@@ -19,7 +19,6 @@ if TYPE_CHECKING:
     from .camera.camera import Camera
     from .mobject.mobject import Mobject, _AnimationBuilder
     from .renderer.cairo_renderer import CairoRenderer
-    from .renderer.opengl_renderer import OpenGLCamera, OpenGLRenderer
     from .scene.scene import Scene
     from .scene.scene_file_writer import SceneFileWriter
 
@@ -73,12 +72,12 @@ class Manager(Generic[SceneT]):
         scene.manager = self
 
     @property
-    def renderer(self) -> CairoRenderer | OpenGLRenderer:
+    def renderer(self) -> CairoRenderer:
         """Return the scene's current renderer."""
         return self.scene.renderer
 
     @property
-    def camera(self) -> Camera | OpenGLCamera:
+    def camera(self) -> Camera:
         """Return the current renderer's camera."""
         return self.renderer.camera
 
@@ -124,7 +123,7 @@ class Manager(Generic[SceneT]):
     def skip_animations(self, value: bool) -> None:
         self.renderer.skip_animations = value
 
-    def render(self, preview: bool = False) -> bool:
+    def render(self, preview: bool = False) -> None:
         """Run the complete render lifecycle for the managed scene.
 
         The lifecycle invokes :meth:`setup`, :meth:`construct`,
@@ -137,13 +136,6 @@ class Manager(Generic[SceneT]):
         ----------
         preview
             Whether the rendered media should be opened after rendering.
-
-        Returns
-        -------
-        bool
-            ``True`` when an interactive rerun was requested; otherwise
-            ``False``. This matches the return value of
-            :meth:`~arachne.scene.scene.Scene.render`.
         """
         presentation = self.session_spec.presentation
         open_after_render = preview or presentation.open_after_render
@@ -156,17 +148,6 @@ class Manager(Generic[SceneT]):
         except EndSceneEarlyException:
             # Reaching the configured animation boundary ends the scene normally.
             pass
-        except RerunSceneException:
-            self.scene.remove(*self.scene.mobjects)
-            # TODO: The CairoRenderer does not have the method clear_screen().
-            self.renderer.clear_screen()  # type: ignore[union-attr]
-            self.num_plays = 0
-            # The rerun replaces the file writer; tear down its encode jobs so
-            # no worker is still writing a partial file the new writer may
-            # reuse. Encoder failures propagate: a rerun must not silently
-            # continue past corrupt output.
-            self.file_writer.abort_encode_jobs(reraise_encoder_failures=True)
-            return True
         except BaseException:
             # A mid-play exception leaves an unsealed encode job whose
             # non-daemon worker would hang the process at exit.
@@ -181,8 +162,6 @@ class Manager(Generic[SceneT]):
                 preview=open_after_render,
                 show_in_file_browser=presentation.show_in_file_browser,
             )
-
-        return False
 
     def setup(self) -> None:
         """Run the managed scene's :meth:`~arachne.scene.scene.Scene.setup` hook."""

@@ -18,7 +18,6 @@ import copy
 import errno
 import logging
 import os
-import re
 import sys
 from collections.abc import Iterator, Mapping, MutableMapping
 from pathlib import Path
@@ -28,12 +27,10 @@ import numpy as np
 
 from arachne import constants
 from arachne._config.output import OutputFormat
-from arachne.constants import RendererType
 from arachne.utils.color import ManimColor
 from arachne.utils.tex import TexTemplate
 
 if TYPE_CHECKING:
-    from enum import EnumMeta
     from typing import Self
 
     from arachne.typing import StrPath, Vector3D
@@ -41,6 +38,11 @@ if TYPE_CHECKING:
 __all__ = ["config_file_paths", "make_config_parser", "ManimConfig", "ManimFrame"]
 
 logger = logging.getLogger("arachne")
+
+RENDERER_REMOVED = (
+    "The OpenGL renderer was removed: Cairo is the renderer. "
+    "Remove the renderer setting."
+)
 
 
 def config_file_paths() -> list[Path]:
@@ -267,7 +269,6 @@ class ManimConfig(MutableMapping):
         "disable_caching_warning",
         "dry_run",
         "encoder_queue_size",
-        "enable_wireframe",
         "format",
         "frame_height",
         "frame_rate",
@@ -305,20 +306,11 @@ class ManimConfig(MutableMapping):
         "tex_template_file",
         "text_dir",
         "upto_animation_number",
-        "renderer",
-        "enable_gui",
-        "gui_location",
-        "use_projection_fill_shaders",
-        "use_projection_stroke_shaders",
         "verbosity",
         "video_codec",
         "video_dir",
         "video_encoder_options",
         "sections_dir",
-        "fullscreen",
-        "window_position",
-        "window_size",
-        "window_monitor",
         "write_all",
         "zero_pad",
         "no_latex_cleanup",
@@ -377,12 +369,7 @@ class ManimConfig(MutableMapping):
 
         """
         if isinstance(obj, ManimConfig):
-            renderer = obj.renderer
             self._d.update(obj._d)
-            if renderer is not None:
-                # Apply the renderer through its setter so that the
-                # ConvertToOpenGL class bases stay in sync with the config value.
-                self.renderer = renderer
             if obj.tex_template:
                 self.tex_template = obj.tex_template
 
@@ -444,43 +431,12 @@ class ManimConfig(MutableMapping):
         else:
             raise ValueError(f"attempted to set {key} to {val}; must be in {values}")
 
-    def _set_from_enum(self, key: str, enum_value: Any, enum_class: EnumMeta) -> None:
-        """Set ``key`` to the enum object with value ``enum_value`` in the given
-        ``enum_class``.
-
-        Tests::
-
-            >>> from enum import Enum
-            >>> class Fruit(Enum):
-            ...     APPLE = 1
-            ...     BANANA = 2
-            ...     CANTALOUPE = 3
-            >>> test_config = ManimConfig()
-            >>> test_config._set_from_enum("fruit", 1, Fruit)
-            >>> test_config._d['fruit']
-            <Fruit.APPLE: 1>
-            >>> test_config._set_from_enum("fruit", Fruit.BANANA, Fruit)
-            >>> test_config._d['fruit']
-            <Fruit.BANANA: 2>
-            >>> test_config._set_from_enum("fruit", 42, Fruit)
-            Traceback (most recent call last):
-            ...
-            ValueError: 42 is not a valid Fruit
-        """
-        self._d[key] = enum_class(enum_value)
-
     def _set_boolean(self, key: str, val: Any) -> None:
         """Set ``key`` to ``val`` if ``val`` is Boolean."""
         if val in [True, False]:
             self._d[key] = val
         else:
             raise ValueError(f"{key} must be boolean")
-
-    def _set_tuple(self, key: str, val: tuple[Any]) -> None:
-        if isinstance(val, tuple):
-            self._d[key] = val
-        else:
-            raise ValueError(f"{key} must be tuple")
 
     def _set_str(self, key: str, val: Any) -> None:
         """Set ``key`` to ``val`` if ``val`` is a string."""
@@ -575,6 +531,8 @@ class ManimConfig(MutableMapping):
             config = ManimConfig().digest_parser(parser)
 
         """
+        if parser.has_option("CLI", "renderer"):
+            raise AttributeError(RENDERER_REMOVED)
         self._parser = parser
 
         self.format = parser["CLI"].get("format", fallback="auto", raw=True)
@@ -603,11 +561,6 @@ class ManimConfig(MutableMapping):
             "log_to_file",
             "disable_caching",
             "disable_caching_warning",
-            "enable_gui",
-            "fullscreen",
-            "use_projection_fill_shaders",
-            "use_projection_stroke_shaders",
-            "enable_wireframe",
             "no_latex_cleanup",
             "dry_run",
         ]:
@@ -624,7 +577,6 @@ class ManimConfig(MutableMapping):
             "pixel_height",
             "pixel_width",
             "seed",
-            "window_monitor",
             "zero_pad",
         ]:
             setattr(self, key, parser["CLI"].getint(key))
@@ -644,8 +596,6 @@ class ManimConfig(MutableMapping):
             "input_file",
             "output_file",
             "background_color",
-            "renderer",
-            "window_position",
             "preview_command",
         ]:
             setattr(self, key, parser["CLI"].get(key, fallback="", raw=True))
@@ -659,21 +609,6 @@ class ManimConfig(MutableMapping):
             # "frame_height",
         ]:
             setattr(self, key, parser["CLI"].getfloat(key))
-
-        # tuple keys
-        gui_location = tuple(
-            map(int, re.split(r"[;,\-]", parser["CLI"]["gui_location"])),
-        )
-        self.gui_location = gui_location
-
-        window_size = parser["CLI"][
-            "window_size"
-        ]  # if not "default", get a tuple of the position
-        if window_size != "default":
-            window_size_numbers = tuple(map(int, re.split(r"[;,\-]", window_size)))
-            self.window_size = window_size_numbers
-        else:
-            self.window_size = window_size
 
         # plugins
         plugins = parser["CLI"].get("plugins", fallback="", raw=True)
@@ -777,14 +712,8 @@ class ManimConfig(MutableMapping):
             "transparent",
             "scene_names",
             "verbosity",
-            "renderer",
             "background_color",
-            "enable_gui",
-            "fullscreen",
-            "use_projection_fill_shaders",
-            "use_projection_stroke_shaders",
             "zero_pad",
-            "enable_wireframe",
             "dry_run",
             "no_latex_cleanup",
             "preview_command",
@@ -841,10 +770,6 @@ class ManimConfig(MutableMapping):
         # Handle --tex_template
         if args.tex_template:
             self.tex_template = TexTemplate.from_file(args.tex_template)
-
-        # Handle --gui_location flag.
-        if args.gui_location is not None:
-            self.gui_location = args.gui_location
 
         return self
 
@@ -975,15 +900,6 @@ class ManimConfig(MutableMapping):
     @save_sections.setter
     def save_sections(self, value: bool) -> None:
         self._set_boolean("save_sections", value)
-
-    @property
-    def enable_wireframe(self) -> bool:
-        """Whether to enable wireframe debugging mode in opengl."""
-        return self._d["enable_wireframe"]
-
-    @enable_wireframe.setter
-    def enable_wireframe(self, value: bool) -> None:
-        self._set_boolean("enable_wireframe", value)
 
     @property
     def no_latex_cleanup(self) -> bool:
@@ -1272,15 +1188,6 @@ class ManimConfig(MutableMapping):
             raise ValueError("encoder_queue_size must be a positive integer")
 
     @property
-    def window_monitor(self) -> int:
-        """The monitor on which the scene will be rendered."""
-        return self._d["window_monitor"]
-
-    @window_monitor.setter
-    def window_monitor(self, value: int) -> None:
-        self._set_pos_number("window_monitor", value, True)
-
-    @property
     def disable_caching(self) -> bool:
         """Whether to use scene caching."""
         return self._d["disable_caching"]
@@ -1358,73 +1265,28 @@ class ManimConfig(MutableMapping):
         self._set_boolean("dry_run", val)
 
     @property
-    def renderer(self) -> RendererType:
-        """The currently active renderer.
+    def renderer(self) -> NoReturn:
+        """Removed: Cairo is the only renderer.
 
-        Populated with one of the available renderers in :class:`.RendererType`.
+        Reading or setting ``renderer`` raises, so that a script written for
+        the OpenGL renderer fails with an explanation instead of rendering
+        something else.
 
         Tests::
 
             >>> test_config = ManimConfig()
-            >>> test_config.renderer is None  # a new ManimConfig is unpopulated
-            True
-            >>> test_config.renderer = 'opengl'
-            >>> test_config.renderer
-            <RendererType.OPENGL: 'opengl'>
-            >>> test_config.renderer = 42
+            >>> test_config.renderer = "opengl"
             Traceback (most recent call last):
             ...
-            ValueError: 42 is not a valid RendererType
-
-        Check that capitalization of renderer types is irrelevant::
-
-            >>> test_config.renderer = 'OpenGL'
-            >>> test_config.renderer = 'cAirO'
+            AttributeError: The OpenGL renderer was removed: Cairo is the renderer. Remove the renderer setting.
+            >>> hasattr(test_config, "renderer")
+            False
         """
-        return self._d["renderer"]
+        raise AttributeError(RENDERER_REMOVED)
 
     @renderer.setter
-    def renderer(self, value: str | RendererType) -> None:
-        """The setter of the renderer property.
-
-        Takes care of switching inheritance bases using the
-        :class:`.ConvertToOpenGL` metaclass.
-        """
-        if isinstance(value, str):
-            value = value.lower()
-        renderer = RendererType(value)
-        try:
-            from arachne.mobject.opengl.opengl_compatibility import ConvertToOpenGL
-            from arachne.mobject.opengl.opengl_mobject import OpenGLMobject
-            from arachne.mobject.opengl.opengl_vectorized_mobject import OpenGLVMobject
-
-            from ..mobject.mobject import Mobject
-            from ..mobject.types.vectorized_mobject import VMobject
-
-            for cls in ConvertToOpenGL._converted_classes:
-                if renderer == RendererType.OPENGL:
-                    conversion_dict = {
-                        Mobject: OpenGLMobject,
-                        VMobject: OpenGLVMobject,
-                    }
-                else:
-                    conversion_dict = {
-                        OpenGLMobject: Mobject,
-                        OpenGLVMobject: VMobject,
-                    }
-
-                cls.__bases__ = tuple(
-                    conversion_dict.get(base, base) for base in cls.__bases__
-                )
-        except ImportError:
-            # The renderer is set during the initial import of the
-            # library for the first time. The imports above cause an
-            # ImportError due to circular imports. However, the
-            # metaclass sets stuff up correctly in this case, so we
-            # can just do nothing.
-            pass
-
-        self._set_from_enum("renderer", renderer, RendererType)
+    def renderer(self, value: Any) -> NoReturn:
+        raise AttributeError(RENDERER_REMOVED)
 
     @property
     def media_dir(self) -> str:
@@ -1434,69 +1296,6 @@ class ManimConfig(MutableMapping):
     @media_dir.setter
     def media_dir(self, value: str | Path) -> None:
         self._set_dir("media_dir", value)
-
-    @property
-    def window_position(self) -> str:
-        """Set the position of preview window. You can use directions, e.g. UL/DR/ORIGIN/LEFT...or the position(pixel) of the upper left corner of the window, e.g. '960,540'."""
-        return self._d["window_position"]
-
-    @window_position.setter
-    def window_position(self, value: str) -> None:
-        self._d.__setitem__("window_position", value)
-
-    @property
-    def window_size(self) -> str | tuple[int, ...]:
-        """The size of the opengl window. 'default' to automatically scale the window based on the display monitor."""
-        return self._d["window_size"]
-
-    @window_size.setter
-    def window_size(self, value: str | tuple[int, ...]) -> None:
-        self._d.__setitem__("window_size", value)
-
-    @property
-    def enable_gui(self) -> bool:
-        """Enable GUI interaction."""
-        return self._d["enable_gui"]
-
-    @enable_gui.setter
-    def enable_gui(self, value: bool) -> None:
-        self._set_boolean("enable_gui", value)
-
-    @property
-    def gui_location(self) -> tuple[int, ...]:
-        """Location parameters for the GUI window (e.g., screen coordinates or layout settings)."""
-        return self._d["gui_location"]
-
-    @gui_location.setter
-    def gui_location(self, value: tuple[Any]) -> None:
-        self._set_tuple("gui_location", value)
-
-    @property
-    def fullscreen(self) -> bool:
-        """Expand the window to its maximum possible size."""
-        return self._d["fullscreen"]
-
-    @fullscreen.setter
-    def fullscreen(self, value: bool) -> None:
-        self._set_boolean("fullscreen", value)
-
-    @property
-    def use_projection_fill_shaders(self) -> bool:
-        """Use shaders for OpenGLVMobject fill which are compatible with transformation matrices."""
-        return self._d["use_projection_fill_shaders"]
-
-    @use_projection_fill_shaders.setter
-    def use_projection_fill_shaders(self, value: bool) -> None:
-        self._set_boolean("use_projection_fill_shaders", value)
-
-    @property
-    def use_projection_stroke_shaders(self) -> bool:
-        """Use shaders for OpenGLVMobject stroke which are compatible with transformation matrices."""
-        return self._d["use_projection_stroke_shaders"]
-
-    @use_projection_stroke_shaders.setter
-    def use_projection_stroke_shaders(self, value: bool) -> None:
-        self._set_boolean("use_projection_stroke_shaders", value)
 
     @property
     def zero_pad(self) -> int:

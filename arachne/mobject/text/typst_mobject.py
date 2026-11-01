@@ -135,7 +135,6 @@ from arachne import config
 from arachne.constants import (
     DEFAULT_FONT_SIZE,
     SCALE_FACTOR_PER_FONT_POINT,
-    RendererType,
 )
 from arachne.mobject.svg.svg_mobject import SVGMobject
 from arachne.mobject.types.vectorized_mobject import VGroup, VMobject
@@ -757,10 +756,7 @@ class Typst(SVGMobject):
             if submobject.color != BLACK:
                 continue
             submobject.color = self.color
-            if config.renderer == RendererType.OPENGL:
-                submobject.init_colors()
-            elif config.renderer == RendererType.CAIRO:
-                submobject.init_colors(propagate_colors=propagate_colors)
+            submobject.init_colors(propagate_colors=propagate_colors)
         return self
 
 

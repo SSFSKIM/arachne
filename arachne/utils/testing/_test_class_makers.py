@@ -4,7 +4,6 @@ from collections.abc import Callable
 from typing import Any
 
 from arachne.renderer.cairo_renderer import CairoRenderer
-from arachne.renderer.opengl_renderer import OpenGLRenderer
 from arachne.scene.scene import Scene
 from arachne.scene.scene_file_writer import SceneFileWriter, _SceneFileWriterSettings
 from arachne.typing import PixelArray, StrPath
@@ -15,7 +14,7 @@ from ._frames_testers import _FramesTester
 def _make_test_scene_class(
     base_scene: type[Scene],
     construct_test: Callable[[Scene], None],
-    test_renderer: CairoRenderer | OpenGLRenderer | None,
+    test_renderer: CairoRenderer | None,
 ) -> type[Scene]:
     # TODO: Get the type annotation right for the base_scene argument.
     class _TestedScene(base_scene):  # type: ignore[valid-type, misc]

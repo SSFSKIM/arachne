@@ -24,7 +24,7 @@ from arachne.cli.render.ease_of_access_options import ease_of_access_options
 from arachne.cli.render.global_options import global_options
 from arachne.cli.render.output_options import output_options
 from arachne.cli.render.render_options import render_options
-from arachne.constants import EPILOG, RendererType
+from arachne.constants import EPILOG
 from arachne.manager import Manager
 from arachne.utils.module_ops import scene_classes_from_file
 
@@ -87,32 +87,12 @@ def render(**kwargs: Any) -> ClickArgs | dict[str, Any]:
         scene_classes = scene_classes_from_file(file)
         _validate_scene_batch_output_name(scene_classes)
 
-        if config.renderer == RendererType.OPENGL:
-            from arachne.renderer.opengl_renderer import OpenGLRenderer
-
-            renderer = OpenGLRenderer()
-            keep_running = True
-            while keep_running:
-                for SceneClass in scene_classes:
-                    with tempconfig({}):
-                        scene = SceneClass(renderer)
-                        # Attach explicitly, but preserve custom Scene.render overrides.
-                        Manager(scene)
-                        rerun = scene.render()
-                    if rerun or config["write_all"]:
-                        renderer.num_plays = 0
-                        continue
-                    keep_running = False
-                    break
-                if config["write_all"]:
-                    keep_running = False
-        else:
-            for SceneClass in scene_classes:
-                with tempconfig({}):
-                    scene = SceneClass()
-                    # Attach explicitly, but preserve custom Scene.render overrides.
-                    Manager(scene)
-                    scene.render()
+        for SceneClass in scene_classes:
+            with tempconfig({}):
+                scene = SceneClass()
+                # Attach explicitly, but preserve custom Scene.render overrides.
+                Manager(scene)
+                scene.render()
     except Exception:
         error_console.print_exception()
         sys.exit(1)

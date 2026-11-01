@@ -15,7 +15,6 @@ from arachne.mobject.geometry.arc import Dot
 from arachne.mobject.geometry.line import Arrow, Line, Vector
 from arachne.mobject.geometry.polygram import Rectangle
 from arachne.mobject.graphing.coordinate_systems import Axes, NumberPlane
-from arachne.mobject.opengl.opengl_mobject import OpenGLMobject
 from arachne.mobject.text.tex_mobject import MathTex, Tex
 from arachne.utils.config_ops import update_dict_recursively
 
@@ -1016,7 +1015,7 @@ class LinearTransformationScene(VectorScene):
         LinearTransformationScene
             The scene with the title added to it.
         """
-        if not isinstance(title, (Mobject, OpenGLMobject)):
+        if not isinstance(title, Mobject):
             title = Tex(title).scale(scale_factor)
         title.to_edge(UP)
         title.add_background_rectangle()

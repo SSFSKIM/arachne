@@ -43,7 +43,6 @@ class _SessionConfigSource(Protocol):
     preview: bool
     live_preview: bool
     show_in_file_browser: bool
-    enable_gui: bool
     dry_run: bool
     pixel_width: int
     pixel_height: int
@@ -60,7 +59,7 @@ def resolve_render_session(
     renderer_name: str,
 ) -> RenderSessionSpec:
     """Resolve and validate one renderer-independent session request."""
-    live_preview = config.live_preview or config.enable_gui
+    live_preview = config.live_preview
     dry_run = config.dry_run
     requested_format = OutputFormat.parse(config.format)
     fallback_to_still = False
@@ -92,8 +91,7 @@ def resolve_render_session(
 
     if live_preview and not capabilities.live_preview:
         raise ValueError(
-            f"{renderer_name} does not support live preview. "
-            "Select a renderer with live-preview support or remove --live-preview.",
+            f"{renderer_name} does not support live preview. Remove --live-preview.",
         )
     if live_preview and dry_run:
         raise ValueError("--live-preview cannot be combined with --dry_run.")

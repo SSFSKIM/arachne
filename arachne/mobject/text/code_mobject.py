@@ -21,13 +21,12 @@ from pygments.token import Text as TextToken
 from arachne.constants import *
 from arachne.mobject.geometry.arc import Dot
 from arachne.mobject.geometry.shape_matchers import SurroundingRectangle
-from arachne.mobject.opengl.opengl_compatibility import ConvertToOpenGL
 from arachne.mobject.types.vectorized_mobject import VGroup, VMobject
 from arachne.typing import StrPath
 from arachne.utils.color import BLACK, WHITE
 
 
-class Code(VMobject, metaclass=ConvertToOpenGL):
+class Code(VMobject):
     """A highlighted source code listing.
 
     Examples

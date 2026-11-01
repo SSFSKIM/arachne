@@ -70,7 +70,6 @@ RUN apt-get -o Acquire::Retries=5 update -qq \
         libcairo2-dev \
         libffi-dev \
         libpango1.0-dev \
-        libegl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=uv /uv /usr/local/bin/uv
@@ -104,7 +103,6 @@ FROM python:${PYTHON_VERSION}-slim
 
 # Runtime libs only:
 #  - no ffmpeg: PyAV (av package) bundles its own ffmpeg libraries in av.libs/
-#  - OpenGL: keep EGL for headless rendering and libGL as required by moderngl/glcontext
 #  - fonts-noto-core instead of fonts-noto (drops CJK noto fonts)
 RUN apt-get -o Acquire::Retries=5 update -qq \
     && apt-get -o Acquire::Retries=5 install --no-install-recommends -y \
@@ -113,8 +111,6 @@ RUN apt-get -o Acquire::Retries=5 update -qq \
         libpangocairo-1.0-0 \
         libpangoft2-1.0-0 \
         libffi8 \
-        libegl1 \
-        libgl1 \
         ghostscript \
         fonts-noto-core \
         fontconfig \

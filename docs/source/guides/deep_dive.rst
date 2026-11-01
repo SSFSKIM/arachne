@@ -259,9 +259,9 @@ the ``Scene.__init__`` method is called, given that we did not implement our own
 method. Inspecting the corresponding code (see
 `here <https://github.com/ManimCommunity/manim/blob/main/manim/scene/scene.py>`__)
 reveals that ``Scene.__init__`` first sets several attributes of the scene objects that do not
-depend on any configuration options set in ``config``. Then the scene inspects the value of
-``config.renderer``, and based on its value, either instantiates a ``CairoRenderer`` or an
-``OpenGLRenderer`` object and assigns it to its ``renderer`` attribute.
+depend on any configuration options set in ``config``. Then the scene instantiates a
+``CairoRenderer`` object (unless a renderer was passed in) and assigns it to its ``renderer``
+attribute.
 
 After selecting the renderer, the scene resolves the mutable configuration into
 one immutable render-session specification. In abbreviated form, initialization
@@ -301,16 +301,15 @@ container, codec, pixel format, dimensions, exact frame rate, and codec options.
 It records dry-run execution separately from artifact selection. A dry run
 requests semantic scene evaluation without rasterizing
 frames or using media and cache resources. In contrast, ``format = none`` only
-suppresses the primary artifact; an OpenGL live preview with automatic output
-still rasterizes and displays frames without writing a file. Both requests have
+suppresses the primary artifact; a live preview with automatic output would
+still rasterize and display frames without writing a file. Both requests have
 an effective output format of ``none``, so the session's ``dry_run`` field
 preserves the intended execution behavior.
 
 The current renderer loops do not yet enforce no-raster dry runs; the session
 field preserves that request for Manager-owned execution. Resolution also
 validates requests against the selected renderer's capabilities. For example,
-Cairo rejects live preview, while OpenGL advertises support for it. A concrete
-format records the live preview as well.
+Cairo rejects live preview, which it does not support.
 
 The scene then resolves existing directory templates once into an immutable
 output plan containing exact scene-specific artifact, section, image-sequence,
@@ -320,17 +319,15 @@ name and cannot change the format.
 
 The scene combines the output plan and segment profile with the encoder-pool,
 cache-maintenance, and sound-asset inputs in immutable
-``_SceneFileWriterSettings``. Both renderers instantiate a
+``_SceneFileWriterSettings``. The renderer instantiates a
 :class:`.SceneFileWriter` from these settings. The writer does not retain a
 renderer reference or read mutable global configuration. Directories are created
 lazily when their owning operation first writes. The writer remains Manim's
 interface to ``libav`` for media assembly. The Cairo renderer (see the
 implementation `here
 <https://github.com/ManimCommunity/manim/blob/main/manim/renderer/cairo_renderer.py>`__)
-does not require further renderer-specific initialization. OpenGL creates a
-window only when the resolved presentation specification requests a live preview.
-The ``-p`` / ``--preview`` option does not create this window; it opens the
-completed artifact after rendering.
+does not require further renderer-specific initialization. The ``-p`` /
+``--preview`` option opens the completed artifact after rendering.
 
 After the renderer has been instantiated and initialized its file writer, the scene
 populates further initial attributes (notable mention: the ``mobjects`` attribute
@@ -628,12 +625,8 @@ sounds like a simple task -- the problem is that ``Scene.mobjects``
 is not a "flat" list of mobjects, but a list of mobjects which
 might contain mobjects themselves, and so on.
 
-Stepping through the code in :meth:`.Scene.add`, we see that first
-it is checked whether we are currently using the OpenGL renderer
-(which we are not) -- adding mobjects to the scene works slightly
-different (and actually easier!) for the OpenGL renderer. Then, the
-code branch for the Cairo renderer is entered and the list of so-called
-foreground mobjects (which are rendered on top of all other mobjects)
+Stepping through the code in :meth:`.Scene.add`, we see that the list
+of so-called foreground mobjects (which are rendered on top of all other mobjects)
 is added to the list of passed mobjects. This is to ensure that the
 foreground mobjects will stay above of the other mobjects, even after
 adding the new ones. In our case, the list of foreground mobjects
@@ -755,16 +748,8 @@ The ``play`` call: preparing to enter Manim's render loop
 We are finally there, the render loop is in our reach. Let us
 walk through the code that is run when :meth:`.Scene.play` is called.
 
-.. hint::
-
-  Recall that this article is specifically about the Cairo renderer.
-  Up to here, things were more or less the same for the OpenGL renderer
-  as well; while some base mobjects might be different, the control flow
-  and lifecycle of mobjects is still more or less the same. There are more
-  substantial differences when it comes to the rendering loop.
-
-As you will see when inspecting the method, :meth:`.Scene.play` first handles
-an OpenGL interactive-thread guard and then delegates to :meth:`.Manager.play`.
+As you will see when inspecting the method, :meth:`.Scene.play` delegates
+to :meth:`.Manager.play`.
 The manager records the current renderer time and calls the renderer's ``play``
 method, in our case :meth:`.CairoRenderer.play`. Once the renderer returns, the
 manager uses the elapsed time to schedule an optional subcaption (see
@@ -864,8 +849,6 @@ and ``static_mobjects`` attributes.
 
 .. NOTE::
 
-  The mechanism that determines static and moving mobjects is
-  specific for the Cairo renderer, the OpenGL renderer works differently.
   Basically, moving mobjects are determined by checking whether they,
   any of their children, or any of the mobjects "below" them (in the
   sense of the order in which mobjects are processed in the scene)
@@ -1033,9 +1016,7 @@ camera is asked to capture the scene:
 After all batches have been processed, the camera has an image representation
 of the Scene at the current time stamp in form of a NumPy array stored in its
 ``pixel_array`` attribute. The renderer passes a top-left-origin,
-C-contiguous ``uint8`` RGBA array to its :class:`.SceneFileWriter`. OpenGL uses
-the same array contract and performs GPU readback at this renderer boundary only
-when file output needs a frame. This concludes one iteration of the render loop,
+C-contiguous ``uint8`` RGBA array to its :class:`.SceneFileWriter`. This concludes one iteration of the render loop,
 and once the time progression has been processed completely, a final bit
 of cleanup is performed before the :meth:`.Scene.play_internal` call is completed.
 

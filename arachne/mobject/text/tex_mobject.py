@@ -38,8 +38,6 @@ from arachne.mobject.types.vectorized_mobject import VGroup, VMobject
 from arachne.utils.tex import TexTemplate
 from arachne.utils.tex_file_writing import tex_to_svg_file
 
-from ..opengl.opengl_compatibility import ConvertToOpenGL
-
 MATHTEX_SUBSTRING = "substring"
 
 
@@ -217,10 +215,7 @@ class SingleStringMathTex(SVGMobject):
             if submobject.color != BLACK:
                 continue
             submobject.color = self.color
-            if config.renderer == RendererType.OPENGL:
-                submobject.init_colors()
-            elif config.renderer == RendererType.CAIRO:
-                submobject.init_colors(propagate_colors=propagate_colors)
+            submobject.init_colors(propagate_colors=propagate_colors)
         return self
 
 
@@ -604,7 +599,7 @@ class MathTex(SingleStringMathTex):
         return self
 
 
-class MathTexPart(VMobject, metaclass=ConvertToOpenGL):
+class MathTexPart(VMobject):
     tex_string: str
 
     def __repr__(self) -> str:

@@ -1,15 +1,10 @@
 from __future__ import annotations
 
 import os
-from unittest.mock import Mock, call
 
-import numpy as np
-
-from arachne import tempconfig
 from arachne.utils import caching
 from arachne.utils.caching import (
     clear_segment_cache,
-    handle_caching_play,
     prune_segment_cache,
 )
 
@@ -109,73 +104,3 @@ def test_clear_segment_cache_removes_only_recognized_segments(tmp_path):
 
 def test_clear_segment_cache_accepts_missing_directory(tmp_path):
     assert clear_segment_cache(tmp_path / "missing") == 0
-
-
-def test_opengl_cache_inputs_and_per_play_policy(monkeypatch):
-    encoder = object()
-    fingerprint = Mock(return_value="encoder-token")
-    hash_play = Mock(return_value="cache-key")
-    monkeypatch.setattr(caching, "video_encoder_fingerprint", fingerprint)
-    monkeypatch.setattr(caching, "get_hash_from_play_call", hash_play)
-
-    class FakeScene:
-        def __init__(self):
-            self.mobjects = [object()]
-            self.meshes = [object()]
-            self.session_spec = Mock(video_encoder=encoder)
-
-        def compile_animations(self, *args, **kwargs):
-            return []
-
-        def add_mobjects_from_animations(self, animations):
-            pass
-
-    class FakeRenderer:
-        _original_skipping_status = False
-        skip_animations = False
-        num_plays = 0
-        animations_hashes = []
-        camera = object()
-        background_color = np.array([0.1, 0.2, 0.3, 1.0])
-        anti_alias_width = 1.5
-        file_writer = Mock()
-
-        def update_skipping_status(self):
-            pass
-
-        @handle_caching_play
-        def play(self, scene, *args, **kwargs):
-            self.num_plays += 1
-
-    scene = FakeScene()
-    renderer = FakeRenderer()
-    renderer.animations_hashes = []
-    renderer.file_writer.is_already_cached.side_effect = [False, True]
-
-    with tempconfig({"disable_caching": False}):
-        renderer.play(scene)
-        with tempconfig({"disable_caching": True}):
-            renderer.play(scene)
-        renderer.play(scene)
-
-    assert fingerprint.call_args_list == [call(encoder), call(encoder)]
-    assert hash_play.call_count == 2
-    assert hash_play.call_args.kwargs == {
-        "backend": "opengl",
-        "encoder_fingerprint": "encoder-token",
-        "renderer_state": {
-            "meshes": scene.meshes,
-            "background_color": renderer.background_color,
-            "anti_alias_width": renderer.anti_alias_width,
-        },
-    }
-    assert renderer.animations_hashes == [
-        "cache-key",
-        "uncached_00001",
-        "cache-key",
-    ]
-    assert renderer.file_writer.add_partial_movie_file.call_args_list == [
-        call("cache-key"),
-        call("uncached_00001"),
-        call("cache-key"),
-    ]

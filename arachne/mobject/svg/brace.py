@@ -12,7 +12,6 @@ import svgelements as se
 from arachne.mobject.geometry.arc import Arc
 from arachne.mobject.geometry.line import Line
 from arachne.mobject.mobject import Mobject
-from arachne.mobject.opengl.opengl_compatibility import ConvertToOpenGL
 from arachne.mobject.text.tex_mobject import MathTex, SingleStringMathTex, Tex
 from arachne.mobject.text.text_mobject import Text
 
@@ -202,7 +201,7 @@ class Brace(VMobjectFromSVGPath):
         return vect / np.linalg.norm(vect)
 
 
-class BraceLabel(VMobject, metaclass=ConvertToOpenGL):
+class BraceLabel(VMobject):
     """Create a brace with a label attached.
 
     Parameters

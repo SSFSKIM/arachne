@@ -22,7 +22,6 @@ from typing import TYPE_CHECKING, Any, cast
 import numpy as np
 
 from arachne.data_structures import MethodWithArgs
-from arachne.mobject.opengl.opengl_compatibility import ConvertToOpenGL
 
 from .. import config, logger
 from ..constants import *
@@ -496,12 +495,9 @@ class Mobject:
         at ``index`` (following the semantics of :meth:`list.insert`). Mobjects that
         are already present are moved to the new position instead of being duplicated.
         """
-        # TODO: The logic of adding/inserting submobjects is inconsistent with that of
-        # OpenGLMobjects. Mobjects *do* move already-present submobjects if they are
-        # reinserted, and input is deduplicated by keeping the *last* (rightmost)
-        # occurrence of an element, while OpenGLMobjects *don't* move already-present
-        # submobjects and they deduplicate input by keeping the *first* occurrence.
-        # This behavior should be made consistent when technically possible.
+        # Mobjects move already-present submobjects if they are reinserted, and
+        # input is deduplicated by keeping the *last* (rightmost) occurrence of an
+        # element.
 
         self._assert_valid_submobjects(mobjects)
 
@@ -1694,7 +1690,6 @@ class Mobject:
     # Note, much of these are now redundant with default behavior of
     # above methods
 
-    # TODO: name is inconsistent with OpenGLMobject.apply_points_function()
     def apply_points_function_about_point(
         self,
         func: MultiMappingFunction,
@@ -2671,7 +2666,7 @@ class Mobject:
         Parameters
         ----------
         recurse
-            Just for consistency with get_family method in OpenGLMobject.
+            Kept for compatibility; the whole family is always listed.
 
         Returns
         -------
@@ -3542,7 +3537,7 @@ class Mobject:
         return self
 
 
-class Group(Mobject, metaclass=ConvertToOpenGL):
+class Group(Mobject):
     """Groups together multiple :class:`Mobjects <.Mobject>`.
 
     Notes

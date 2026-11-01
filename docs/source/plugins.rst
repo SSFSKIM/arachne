@@ -116,18 +116,9 @@ for details) is to include the following in your ``pyproject.toml``:
 A note on Renderer Compatibility
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Depending on which renderer is currently active, custom mobjects
-created in your plugin might want to behave differently as the
-corresponding mobject base classes are (unfortunately) not fully
-compatible.
-
-The currently active renderer can be queried by checking the value
-of ``arachne.config.renderer``. All possible renderer types are given
-by :class:`.constants.RendererType`. The module :mod:`.arachne.mobject.utils`
-contains utility functions that return the base class for the currently
-active renderer.
-
-A simple form of renderer compatibility (by hot-swapping the class
-inheritance chain) for Mobjects directly inheriting from
-:class:`.Mobject` or :class:`.VMobject` can be achieved by using the
-:class:`.mobject.opengl.opengl_compatibility.ConvertToOpenGL` metaclass.
+Cairo is the only renderer: Manim's OpenGL renderer and its mobject classes
+were removed, together with the ``renderer`` option. Custom mobjects derive
+from :class:`.Mobject` or :class:`.VMobject` directly. The functions in
+:mod:`.arachne.mobject.utils` that returned the base class for the active
+renderer remain for plugins written against both renderers, and always
+return the Cairo classes.

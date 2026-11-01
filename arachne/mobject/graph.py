@@ -28,8 +28,6 @@ from arachne.animation.creation import Create, Uncreate
 from arachne.mobject.geometry.arc import Dot, LabeledDot
 from arachne.mobject.geometry.line import Line
 from arachne.mobject.mobject import Mobject, override_animate
-from arachne.mobject.opengl.opengl_compatibility import ConvertToOpenGL
-from arachne.mobject.opengl.opengl_mobject import OpenGLMobject
 from arachne.mobject.text.tex_mobject import MathTex
 from arachne.mobject.types.vectorized_mobject import VGroup, VMobject
 from arachne.utils.color import BLACK
@@ -480,7 +478,7 @@ def _determine_graph_layout(
             ) from e
 
 
-class GenericGraph(VMobject, metaclass=ConvertToOpenGL):
+class GenericGraph(VMobject):
     """Abstract base class for graphs (that is, a collection of vertices
     connected with edges).
 
@@ -724,7 +722,7 @@ class GenericGraph(VMobject, metaclass=ConvertToOpenGL):
             label = MathTex(vertex, color=label_fill_color)
         elif vertex in self._labels:
             label = self._labels[vertex]
-        elif not isinstance(label, (Mobject, OpenGLMobject)):
+        elif not isinstance(label, Mobject):
             label = None
 
         base_vertex_config = copy(self.default_vertex_config)

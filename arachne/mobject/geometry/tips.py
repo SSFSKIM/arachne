@@ -20,7 +20,6 @@ import numpy as np
 from arachne.constants import *
 from arachne.mobject.geometry.arc import Circle
 from arachne.mobject.geometry.polygram import Square, Triangle
-from arachne.mobject.opengl.opengl_compatibility import ConvertToOpenGL
 from arachne.mobject.types.vectorized_mobject import VMobject
 from arachne.utils.space_ops import angle_of_vector
 
@@ -28,7 +27,7 @@ if TYPE_CHECKING:
     from arachne.typing import Point3D, Vector3D
 
 
-class ArrowTip(VMobject, metaclass=ConvertToOpenGL):
+class ArrowTip(VMobject):
     r"""Base class for arrow tips.
 
     .. seealso::

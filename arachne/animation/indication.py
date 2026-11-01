@@ -48,7 +48,6 @@ from arachne.mobject.geometry.arc import Circle, Dot
 from arachne.mobject.geometry.line import Line
 from arachne.mobject.geometry.polygram import Rectangle
 from arachne.mobject.geometry.shape_matchers import SurroundingRectangle
-from arachne.mobject.opengl.opengl_mobject import OpenGLMobject
 from arachne.scene.scene import Scene
 
 from .. import config
@@ -161,7 +160,7 @@ class Indicate(Transform):
         self.scale_factor = scale_factor
         super().__init__(mobject, rate_func=rate_func, **kwargs)
 
-    def create_target(self) -> Mobject | OpenGLMobject:
+    def create_target(self) -> Mobject:
         target = self.mobject.copy()
         target.scale(self.scale_factor)
         target.set_color(self.color)
