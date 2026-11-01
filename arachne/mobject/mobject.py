@@ -1422,6 +1422,9 @@ class Mobject:
         :meth:`move_to`
         """
         total_vector = reduce(op.add, vectors)
+        if not np.any(total_vector):
+            # A shift by zero restates the points: nothing to build.
+            return self
         for mob in self.family_members_with_points():
             mob._points = adopt(
                 np.asarray(mob.points, dtype=float) + total_vector, FrozenPoints
@@ -3462,7 +3465,7 @@ class Mobject:
 
         self.align_data(mobject, skip_point_alignment=True)
         for sm1, sm2 in zip(self.get_family(), mobject.get_family(), strict=True):
-            sm1.points = np.array(sm2.points)
+            sm1.points = sm2.points  # shared: values never change
             sm1.interpolate_color(sm1, sm2, 1)
         return self
 
@@ -3484,7 +3487,7 @@ class Mobject:
                     self.wait(0.5)
         """
         for sm1, sm2 in zip(self.get_family(), mobject.get_family(), strict=False):
-            sm1.points = np.array(sm2.points)
+            sm1.points = sm2.points  # shared: values never change
         return self
 
     def _throw_error_if_no_points(self) -> None:

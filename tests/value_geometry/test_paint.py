@@ -160,7 +160,9 @@ def test_interpolate_color_matches_the_field_by_field_rule():
         np.testing.assert_array_equal(getattr(mid, name), interpolate(a, b, 0.25))
     mid.interpolate_color(start, end, 1.0)
     assert mid.paint == end.paint
-    assert mid.fill_rgbas is not end.fill_rgbas
+    # At alpha 1 CE copied the end's arrays; values are shared instead.
+    for name in ("fill_rgbas", "stroke_rgbas", "background_stroke_rgbas"):
+        assert getattr(mid, name) is getattr(end, name)
 
 
 def test_match_style_and_family_setters():
@@ -171,10 +173,12 @@ def test_match_style_and_family_setters():
     assert group[1].paint != target.paint
 
 
-def test_deepcopy_gives_an_equal_paint_with_its_own_arrays():
+def test_deepcopy_shares_the_paint_until_one_side_changes():
     square = Square().set_fill(RED, 0.5)
     clone = copy.deepcopy(square)
-    assert clone.paint == square.paint
-    assert clone.fill_rgbas is not square.fill_rgbas
+    assert clone.paint is square.paint
     clone.set_fill(BLUE)
     assert clone.paint != square.paint
+    np.testing.assert_array_equal(
+        square.fill_rgbas, Square().set_fill(RED, 0.5).fill_rgbas
+    )

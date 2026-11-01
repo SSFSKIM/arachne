@@ -19,20 +19,69 @@ __all__ = [
     "FrozenVector",
     "EMPTY_PAINT",
     "Paint",
+    "WORK",
+    "Work",
     "adopt",
+    "count_work",
     "freeze",
 ]
 
 import copy
 import hashlib
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, NoReturn, TypeVar, cast
 
 import numpy as np
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
 _Kind = TypeVar("_Kind", bound="FrozenArray")
+
+
+class Work:
+    """Counts of the work values do: the arrays and paints they build, the
+    content keys they compute and the values they deep-copy.
+
+    One instance, :data:`WORK`, counts for the whole process, and its counts
+    only grow; :func:`count_work` measures what a piece of code costs.
+    """
+
+    __slots__ = ("arrays", "paints", "hashes", "deep_copies")
+
+    def __init__(self) -> None:
+        self.arrays = 0
+        self.paints = 0
+        self.hashes = 0
+        self.deep_copies = 0
+
+    def as_dict(self) -> dict[str, int]:
+        """The counts, by name."""
+        return {name: getattr(self, name) for name in self.__slots__}
+
+    def __repr__(self) -> str:
+        fields = ", ".join(f"{name}={count}" for name, count in self.as_dict().items())
+        return f"Work({fields})"
+
+
+#: The process's work counts.
+WORK = Work()
+
+
+@contextmanager
+def count_work() -> Iterator[Work]:
+    """Count the work values do inside a ``with`` block.
+
+    The :class:`Work` it yields holds the block's own counts once the block
+    has finished.
+    """
+    spent = Work()
+    before = WORK.as_dict()
+    try:
+        yield spent
+    finally:
+        for name, count in WORK.as_dict().items():
+            setattr(spent, name, count - before[name])
 
 
 class FrozenArray(np.ndarray):
@@ -96,11 +145,14 @@ class FrozenArray(np.ndarray):
     def __repr__(self) -> str:
         return repr(self.view(np.ndarray))
 
+    # A copy shares the value. It can't change, and a change on either side
+    # replaces it rather than writing into it. A read-only view of memory that
+    # something else may still write (a camera's framebuffer) is copied.
     def __copy__(self) -> Any:
-        return _frozen_copy(self)
+        return self if _immutable(self) else _frozen_copy(self)
 
     def __deepcopy__(self, memo: dict[int, Any]) -> Any:
-        return _frozen_copy(self)
+        return self if _immutable(self) else _frozen_copy(self)
 
     def __reduce__(self) -> Any:
         return (_restore, (type(self), np.array(self)))
@@ -256,6 +308,7 @@ def freeze(value: Any, kind: type[_Kind]) -> _Kind:
         if type(value) is kind:
             return cast(_Kind, value)
         return cast(_Kind, value.view(kind))
+    WORK.arrays += 1
     array = np.array(value)
     array.flags.writeable = False
     return cast(_Kind, array.view(kind))
@@ -265,13 +318,33 @@ def adopt(array: np.ndarray, kind: type[_Kind]) -> _Kind:
     """Return a freshly computed ``array`` as a read-only array of ``kind``.
 
     Unlike :func:`freeze` it doesn't copy, so it is only for arrays that the
-    calling code has just built and holds no other reference to.
+    calling code has just built and holds no other reference to. Such an
+    array may be a view of a buffer built with it (``np.linspace`` returns
+    one, as does a reshape); that buffer is made read-only too, so that copies
+    can share the value.
     """
-    array.flags.writeable = False
+    WORK.arrays += 1
+    owner = array
+    while True:
+        owner.flags.writeable = False
+        if not isinstance(owner.base, np.ndarray):
+            break
+        owner = owner.base
     return cast(_Kind, array.view(kind))
 
 
+def _immutable(value: np.ndarray) -> bool:
+    """Whether nothing can write ``value``'s memory: the array that owns the
+    memory is read-only as well.
+    """
+    owner = value
+    while isinstance(owner.base, np.ndarray):
+        owner = owner.base
+    return not owner.flags.writeable
+
+
 def _frozen_copy(value: FrozenArray) -> FrozenArray:
+    WORK.deep_copies += 1
     return adopt(np.array(value), type(value))
 
 
@@ -331,6 +404,7 @@ class Paint:
     sheen_factor: Any
 
     def __init__(self, **fields: Any) -> None:
+        WORK.paints += 1
         self.__dict__["_key"] = None
         self._assign(fields)
 
@@ -351,6 +425,7 @@ class Paint:
 
         The fields it doesn't change are shared with this paint.
         """
+        WORK.paints += 1
         new = object.__new__(Paint)
         new.__dict__.update(self.__dict__)
         new.__dict__["_key"] = None
@@ -367,6 +442,7 @@ class Paint:
         own = self.__dict__
         key: bytes | None = own["_key"]
         if key is None:
+            WORK.hashes += 1
             digest = hashlib.blake2b(digest_size=16)
             for name in self.FIELDS:
                 if name in own:
@@ -399,17 +475,23 @@ class Paint:
     def __copy__(self) -> Paint:
         return self
 
+    # A paint is immutable, so a copy shares it, unless a field holds an object
+    # that someone could still change (a width given as a list), which is copied.
     def __deepcopy__(self, memo: dict[int, Any]) -> Paint:
-        # Copies its arrays, as CE's deep copies of a mobject do; numbers are
-        # immutable already.
+        own = self.__dict__
+        mutable = [
+            name
+            for name, value in own.items()
+            if name != "_key" and not _immutable_field(value)
+        ]
+        if not mutable:
+            return self
+        WORK.paints += 1
         new = object.__new__(Paint)
-        own = new.__dict__
-        own.update(self.__dict__)
-        for name, value in own.items():
-            if isinstance(value, FrozenArray):
-                own[name] = _frozen_copy(value)
-            elif name != "_key" and not isinstance(value, (int, float)):
-                own[name] = copy.deepcopy(value, memo)
+        new.__dict__.update(own)
+        for name in mutable:
+            WORK.deep_copies += 1
+            new.__dict__[name] = copy.deepcopy(own[name], memo)
         return new
 
     def __reduce__(self) -> Any:
@@ -421,6 +503,12 @@ class Paint:
 
 def _paint_from_fields(fields: dict[str, Any]) -> Paint:
     return Paint(**fields)
+
+
+def _immutable_field(value: Any) -> bool:
+    if value is None or isinstance(value, (int, float, complex, str, np.generic)):
+        return True
+    return isinstance(value, FrozenArray) and _immutable(value)
 
 
 #: The paint of a VMobject whose style was never set: CE's class default for

@@ -15,6 +15,7 @@ import itertools as it
 import math
 import sys
 from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping, Sequence
+from functools import cache
 from operator import attrgetter
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -28,6 +29,7 @@ from arachne.mobject.three_d.three_d_utils import (
 )
 from arachne.mobject.values import (
     EMPTY_PAINT,
+    FrozenArray,
     FrozenColors,
     FrozenPoints,
     Paint,
@@ -97,6 +99,14 @@ def _paint_field(name: str) -> property:
         assign,
         doc=f"The ``{name}`` field of :attr:`paint`.",
     )
+
+
+@cache
+def _bezier_parameters(n_points: int) -> FrozenArray:
+    """The parameters of a Bézier curve's ``n_points`` control points, evenly
+    spaced from 0 to 1: one read-only array shared by every VMobject.
+    """
+    return adopt(np.linspace(0, 1, n_points), FrozenArray)
 
 
 class VMobject(Mobject):
@@ -205,8 +215,8 @@ class VMobject(Mobject):
         self.shade_in_3d: bool = shade_in_3d
         self.tolerance_for_point_equality: float = tolerance_for_point_equality
         self.n_points_per_cubic_curve: int = n_points_per_cubic_curve
-        self._bezier_t_values: npt.NDArray[np.float64] = np.linspace(
-            0, 1, n_points_per_cubic_curve
+        self._bezier_t_values: npt.NDArray[np.float64] = _bezier_parameters(
+            n_points_per_cubic_curve
         )
         self.cap_style: CapStyleType = cap_style
         super().__init__(**kwargs)
@@ -2022,12 +2032,13 @@ class VMobject(Mobject):
         for attr in Paint.FIELDS:
             value = interpolate(getattr(mobject1, attr), getattr(mobject2, attr), alpha)
             if alpha == 1.0:
+                # mobject2's own value, shared (the paint freezes, or shares,
+                # whatever it is given).
                 value = getattr(mobject2, attr)
-                if isinstance(value, np.ndarray):
-                    value = np.array(value)
-            kind = Paint.FIELD_KINDS[attr]
-            if kind is not None and isinstance(value, np.ndarray):
-                value = adopt(value, kind)  # a fresh array either way
+            else:
+                kind = Paint.FIELD_KINDS[attr]
+                if kind is not None and isinstance(value, np.ndarray):
+                    value = adopt(value, kind)  # a fresh array
             fields[attr] = value
         self._paint = self._paint.replace(**fields)
         return self
