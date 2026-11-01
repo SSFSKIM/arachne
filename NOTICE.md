@@ -15,6 +15,13 @@ whose copyright and permission notices are kept in full:
 Those notices apply to the code that came from those projects, including the history of this repository up to and
 including the Manim Community Edition v0.22.1 release commit.
 
+## Ideas credited
+
+These ideas came from other projects; no code was taken from them.
+
+- Immutable geometry and paint values behind a mutable-looking mobject API (read-only points, style as one immutable
+  `Paint` value): [ManimGX](https://github.com/academa-labs/manimgx) by Academa, Inc. (MIT).
+
 ## Arachne's own work
 
 No license is granted for the changes and additions made in this repository after the fork. All rights to them are

@@ -264,11 +264,17 @@ def test_play_hash_includes_mobject_pixels_but_not_camera_pixels():
     camera = HashableObject("camera", np.arange(8, dtype=np.uint8))
     mobject = ImageMobject(np.zeros((8, 8, 4), dtype=np.uint8))
 
+    def flip_one_pixel(image: ImageMobject) -> None:
+        # Pixel arrays are read-only values: build the changed array and assign it.
+        pixels = image.pixel_array.copy()
+        pixels[4, 4, 0] ^= 1
+        image.pixel_array = pixels
+
     original = _play_hash(scene, camera, [], [mobject])
-    mobject.pixel_array[4, 4, 0] ^= 1
+    flip_one_pixel(mobject)
     assert _play_hash(scene, camera, [], [mobject]) != original
 
-    mobject.pixel_array[4, 4, 0] ^= 1
+    flip_one_pixel(mobject)
     camera.pixel_array[0] ^= 1
     assert _play_hash(scene, camera, [], [mobject]) == original
 

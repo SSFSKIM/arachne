@@ -17,6 +17,7 @@ from ... import config
 from ...camera.moving_camera import MovingCamera
 from ...constants import *
 from ...mobject.mobject import Mobject
+from ...mobject.values import FrozenPixels, adopt, freeze
 from ...utils.bezier import interpolate
 from ...utils.color import (
     WHITE,
@@ -64,6 +65,19 @@ class AbstractImageMobject(Mobject):
         self.scale_to_resolution = scale_to_resolution
         self.set_resampling_algorithm(resampling_algorithm)
         super().__init__(**kwargs)
+
+    @property
+    def pixel_array(self) -> FrozenPixels:
+        """The image's pixels, as a read-only array.
+
+        Change them with :meth:`set_color` or :meth:`set_opacity`, or by assigning
+        a new array.
+        """
+        return self._pixel_array
+
+    @pixel_array.setter
+    def pixel_array(self, value: PixelArray) -> None:
+        self._pixel_array = freeze(value, FrozenPixels)
 
     def get_pixel_array(self) -> PixelArray:
         raise NotImplementedError()
@@ -198,18 +212,15 @@ class ImageMobject(AbstractImageMobject):
         if isinstance(filename_or_array, (str, pathlib.PurePath)):
             path = get_full_raster_image_path(filename_or_array)
             image = Image.open(path).convert(self.image_mode)
-            self.pixel_array = np.array(image)
+            pixels = np.array(image)
             self.path = path
         else:
-            self.pixel_array = np.array(filename_or_array)
+            pixels = np.array(filename_or_array)
         self.pixel_array_dtype = kwargs.get("pixel_array_dtype", "uint8")
-        self.pixel_array = change_to_rgba_array(
-            self.pixel_array, self.pixel_array_dtype
-        )
+        pixels = change_to_rgba_array(pixels, self.pixel_array_dtype)
         if self.invert_image:
-            self.pixel_array[:, :, :3] = (
-                np.iinfo(self.pixel_array_dtype).max - self.pixel_array[:, :, :3]
-            )
+            pixels[:, :, :3] = np.iinfo(self.pixel_array_dtype).max - pixels[:, :, :3]
+        self.pixel_array = pixels
         self.orig_alpha_pixel_array = self.pixel_array[:, :, 3].copy()
         super().__init__(scale_to_resolution, **kwargs)
 
@@ -224,9 +235,11 @@ class ImageMobject(AbstractImageMobject):
         family: bool = True,
     ) -> Self:
         rgb = color_to_int_rgb(color)
-        self.pixel_array[:, :, :3] = rgb
+        pixels = self.pixel_array.copy()
+        pixels[:, :, :3] = rgb
         if alpha is not None:
-            self.pixel_array[:, :, 3] = int(255 * alpha)
+            pixels[:, :, 3] = int(255 * alpha)
+        self._pixel_array = adopt(pixels, FrozenPixels)
         for submob in self.submobjects:
             submob.set_color(color, alpha, family)
         self.color = ManimColor(color)
@@ -241,7 +254,9 @@ class ImageMobject(AbstractImageMobject):
             The alpha value of the object, 1 being opaque and 0 being
             transparent.
         """
-        self.pixel_array[:, :, 3] = self.orig_alpha_pixel_array * alpha
+        pixels = self.pixel_array.copy()
+        pixels[:, :, 3] = self.orig_alpha_pixel_array * alpha
+        self._pixel_array = adopt(pixels, FrozenPixels)
         self.stroke_opacity = alpha
         return self
 
@@ -294,11 +309,10 @@ class ImageMobject(AbstractImageMobject):
             mobject2.stroke_opacity,
             alpha,
         )
-        self.pixel_array = interpolate(
-            mobject1.pixel_array,
-            mobject2.pixel_array,
-            alpha,
-        ).astype(self.pixel_array_dtype)
+        pixels = np.asarray(
+            interpolate(mobject1.pixel_array, mobject2.pixel_array, alpha)
+        )
+        self._pixel_array = adopt(pixels.astype(self.pixel_array_dtype), FrozenPixels)
         return self
 
     def get_style(self) -> dict[str, Any]:
@@ -328,12 +342,19 @@ class ImageMobjectFromCamera(AbstractImageMobject):
                 "buff": 0,
             }
         self.default_display_frame_config = default_display_frame_config
-        self.pixel_array = self.camera.pixel_array
+        self._show_camera_pixels()
         super().__init__(scale_to_resolution=False, **kwargs)
+
+    def _show_camera_pixels(self) -> None:
+        # The camera's framebuffer, which it redraws in place every frame: a
+        # read-only view of camera state rather than a value of this mobject.
+        live = self.camera.pixel_array.view(FrozenPixels)
+        live.flags.writeable = False
+        self._pixel_array = live
 
     # TODO: Get rid of this.
     def get_pixel_array(self) -> PixelArray:
-        self.pixel_array = self.camera.pixel_array
+        self._show_camera_pixels()
         return self.pixel_array
 
     def add_display_frame(self, **kwargs: Any) -> Self:
@@ -353,9 +374,8 @@ class ImageMobjectFromCamera(AbstractImageMobject):
             f"Mobject 1 ({mobject1}) : {mobject1.pixel_array.shape}\n"
             f"Mobject 2 ({mobject2}) : {mobject2.pixel_array.shape}"
         )
-        self.pixel_array = interpolate(
-            mobject1.pixel_array,
-            mobject2.pixel_array,
-            alpha,
-        ).astype(self.pixel_array_dtype)
+        pixels = np.asarray(
+            interpolate(mobject1.pixel_array, mobject2.pixel_array, alpha)
+        )
+        self._pixel_array = adopt(pixels.astype(self.pixel_array_dtype), FrozenPixels)
         return self

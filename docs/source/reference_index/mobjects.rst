@@ -20,4 +20,5 @@ Mobjects
    ~mobject.types
    ~mobject.utils
    ~mobject.value_tracker
+   ~mobject.values
    ~mobject.vector_field

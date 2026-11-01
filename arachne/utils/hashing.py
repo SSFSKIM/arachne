@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, overload
 import numpy as np
 
 from arachne._config import config, logger
+from arachne.mobject.values import FrozenArray, Paint
 
 if TYPE_CHECKING:
     from arachne.animation.animation import Animation
@@ -30,6 +31,7 @@ KEYS_TO_FILTER_OUT = {
     "original_id",
     "background",
     "pixel_array",
+    "_pixel_array",  # where an image mobject keeps its pixel_array value
     "pixel_array_to_cairo_context",
 }
 
@@ -281,8 +283,11 @@ class _CustomEncoder(json.JSONEncoder):
                 # See https://github.com/ManimCommunity/manim/pull/402.
                 code = ""
             return self._cleaned_iterable({"code": code, "nonlocals": cvardict})
+        elif isinstance(obj, Paint):
+            return f"PAINT:{obj.key.hex()}"
         elif isinstance(obj, np.ndarray):
-            if obj.__class__ is not np.ndarray or obj.dtype.hasobject:
+            plain = obj.__class__ is np.ndarray or isinstance(obj, FrozenArray)
+            if not plain or obj.dtype.hasobject:
                 if obj.size > 1000:
                     obj = np.resize(obj, (100, 100))
                     return f"TRUNCATED ARRAY: {repr(obj)}"
@@ -339,7 +344,7 @@ class _CustomEncoder(json.JSONEncoder):
             for k, v in dct.items():
                 v = self._memoizer.check_already_processed(v)
                 if k in KEYS_TO_FILTER_OUT and not (
-                    self.include_pixel_array and k == "pixel_array"
+                    self.include_pixel_array and k in ("pixel_array", "_pixel_array")
                 ):
                     continue
                 # We check if the k is of the right format (supported by JSON)
