@@ -83,16 +83,19 @@ _SCENE_SOURCE = textwrap.dedent(
     from arachne import FadeIn, Scene, Square
 
 
+    # Each play lasts whole 15 fps frames, so every play starts at the same
+    # phase of the scene's frame grid and the duplicate tail play draws the
+    # same frames as the one before it.
     class {_SCENE_NAME}(Scene):
         def construct(self):
             for index in range({_UNIQUE_PLAYS}):
                 square = Square(side_length=0.2 + index / 100)
-                self.play(FadeIn(square), run_time=0.1)
+                self.play(FadeIn(square), run_time=0.2)
                 self.clear()
 
-            self.play(FadeIn(Square(side_length=0.75)), run_time=0.1)
+            self.play(FadeIn(Square(side_length=0.75)), run_time=0.2)
             self.clear()
-            self.play(FadeIn(Square(side_length=0.75)), run_time=0.1)
+            self.play(FadeIn(Square(side_length=0.75)), run_time=0.2)
     """
 )
 
@@ -157,16 +160,17 @@ def test_parallel_encoding_cache_behavior(tmp_path):
 
 @pytest.mark.slow
 def test_disable_caching_is_evaluated_per_play(config, tmp_path):
+    # Whole 15 fps frames each, so equal plays share a frame-grid phase.
     class DynamicCachePolicyScene(Scene):
         def construct(self):
-            self.play(FadeIn(Square()), run_time=0.1)
+            self.play(FadeIn(Square()), run_time=0.2)
             self.clear()
             with tempconfig({"disable_caching": True}):
-                self.play(FadeIn(Square()), run_time=0.1)
+                self.play(FadeIn(Square()), run_time=0.2)
             self.clear()
-            self.play(FadeIn(Square()), run_time=0.1)
+            self.play(FadeIn(Square()), run_time=0.2)
             self.clear()
-            self.play(FadeIn(Square()), run_time=0.1)
+            self.play(FadeIn(Square()), run_time=0.2)
 
     with tempconfig(
         {

@@ -13,6 +13,7 @@ import operator as op
 import random
 import types
 import warnings
+import weakref
 from collections.abc import Callable, Iterable, Iterator, MutableSet, Sequence
 from contextlib import suppress
 from functools import partialmethod, reduce
@@ -25,6 +26,7 @@ from arachne.data_structures import MethodWithArgs
 
 from .. import config, logger
 from ..constants import *
+from ..timeline.origins import ORIGINS
 from ..utils.color import (
     BLACK,
     PURE_YELLOW,
@@ -107,6 +109,24 @@ class _PlacedPoints:
         points: FrozenPoints = placement.points
         own["_points"] = points
         return points
+
+
+# The members family alignment adds to the smaller of two families: CE's
+# faded copies and point mobjects. state_at leaves them out while they are
+# fully transparent.
+_PADDING: weakref.WeakSet[Mobject] = weakref.WeakSet()
+
+
+def _pad(mob: Mobject) -> Mobject:
+    _PADDING.add(mob)
+    return mob
+
+
+def is_alignment_padding(mob: Mobject) -> bool:
+    """Whether ``mob`` was added by family alignment (``become``,
+    ``Transform``) to pad the smaller family.
+    """
+    return mob in _PADDING
 
 
 def _placeable_vector(vector: Any) -> np.ndarray | None:
@@ -215,6 +235,14 @@ class Mobject:
         cls.animation_overrides = {}
         cls._add_intrinsic_animation_overrides()
         cls._original__init__ = cls.__init__
+
+    def __new__(cls, *args: Any, **kwargs: Any) -> Self:
+        mob = super().__new__(cls)
+        # While a scene records, every mobject (a copy too) is tagged with the
+        # line of the scene's code that made it.
+        if ORIGINS.active:
+            ORIGINS.tag(mob)
+        return mob
 
     def __init__(
         self,
@@ -3493,7 +3521,7 @@ class Mobject:
         curr = len(self.submobjects)
         if curr == 0:
             # If empty, simply add n point mobjects
-            self.submobjects = [self.get_point_mobject() for k in range(n)]
+            self.submobjects = [_pad(self.get_point_mobject()) for k in range(n)]
             return None
 
         target = curr + n
@@ -3504,7 +3532,7 @@ class Mobject:
         new_submobs = []
         for submob, sf in zip(self.submobjects, split_factors, strict=True):
             new_submobs.append(submob)
-            new_submobs.extend(submob.copy().fade(1) for _ in range(1, sf))
+            new_submobs.extend(_pad(submob.copy().fade(1)) for _ in range(1, sf))
         self.submobjects = new_submobs
         return self
 

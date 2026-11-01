@@ -13,6 +13,7 @@ import inspect
 import platform
 import random
 from collections.abc import Callable, Iterable, Sequence
+from fractions import Fraction
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -38,11 +39,14 @@ from ..constants import *
 from ..manager import Manager
 from ..renderer.cairo_renderer import CairoRenderer
 from ..scene.scene_file_writer import _SceneFileWriterSettings
+from ..timeline.recorder import Recorder
 from ..utils.family import extract_mobject_family_members
 from ..utils.iterables import list_difference_update, list_update
 
 if TYPE_CHECKING:
     from typing import Self
+
+    from ..timeline.record import Record
 
 
 class Scene:
@@ -87,7 +91,10 @@ class Scene:
     ) -> None:
         self.camera_class = camera_class
         self.always_update_mobjects = always_update_mobjects
-        self.random_seed = random_seed if random_seed is not None else config.seed
+        # Seeded whatever the configuration says, so two runs of a scene agree.
+        if random_seed is None:
+            random_seed = config.seed if config.seed is not None else 0
+        self.random_seed = random_seed
         self.skip_animations = skip_animations
 
         self.animations: list[Animation] | None = None
@@ -161,6 +168,8 @@ class Scene:
         self.mobjects: list[Mobject] = []
         # TODO, remove need for foreground mobjects
         self.foreground_mobjects: list[Mobject] = []
+        #: Records the scene's run, keeping the instants of its frame grid.
+        self.timeline = Recorder(self, grid=config.frame_rate)
 
         random.seed(self.random_seed)
         np.random.seed(self.random_seed)  # noqa: NPY002 (only way to set seed globally)
@@ -170,21 +179,30 @@ class Scene:
         return self.renderer.camera
 
     @property
-    def time(self) -> float:
-        """The time since the start of the scene."""
-        return self.renderer.time
+    def time(self) -> Fraction:
+        """The exact scene time, as a :class:`~fractions.Fraction`: the
+        instant being evaluated during a play, the end of the last play
+        between plays. ``self.renderer.time`` is the same instant as a float.
+        """
+        return self.renderer.clock
+
+    @property
+    def record(self) -> Record | None:
+        """The forward record of this scene's run, once it has started."""
+        return self.timeline.record
 
     def __deepcopy__(self, clone_from_id: dict[int, Any]) -> Scene:
         cls = self.__class__
         result = cls.__new__(cls)
         clone_from_id[id(self)] = result
         for k, v in self.__dict__.items():
-            if k in ["manager", "renderer", "time_progression"]:
+            if k in ["manager", "renderer", "time_progression", "timeline"]:
                 continue
             if k == "camera_class":
                 setattr(result, k, v)
             setattr(result, k, copy.deepcopy(v, clone_from_id))
         result.manager = None
+        result.timeline = Recorder(result, grid=self.timeline.grid)
 
         return result
 
@@ -895,32 +913,44 @@ class Scene:
         time_progression
             The CommandLine Progress Bar.
         """
+        description, unbounded = self._progress_description(animations)
+        return self.get_time_progression(
+            duration,
+            description,
+            n_iterations=-1 if unbounded else None,
+            override_skip_animations=unbounded,
+        )
+
+    def _progress_description(self, animations: list[Animation]) -> tuple[str, bool]:
+        """The progress bar's text for a play, and whether a stop condition
+        leaves its length open.
+        """
         if len(animations) == 1 and isinstance(animations[0], Wait):
             stop_condition = animations[0].stop_condition
             if stop_condition is not None:
-                time_progression = self.get_time_progression(
-                    duration,
-                    f"Waiting for {stop_condition.__name__}",
-                    n_iterations=-1,  # So it doesn't show % progress
-                    override_skip_animations=True,
-                )
-            else:
-                time_progression = self.get_time_progression(
-                    duration,
-                    f"Waiting {self.renderer.num_plays}",
-                )
-        else:
-            time_progression = self.get_time_progression(
-                duration,
-                "".join(
-                    [
-                        f"Animation {self.renderer.num_plays}: ",
-                        str(animations[0]),
-                        (", etc." if len(animations) > 1 else ""),
-                    ],
-                ),
-            )
-        return time_progression
+                return f"Waiting for {stop_condition.__name__}", True
+            return f"Waiting {self.renderer.num_plays}", False
+        description = "".join(
+            [
+                f"Animation {self.renderer.num_plays}: ",
+                str(animations[0]),
+                (", etc." if len(animations) > 1 else ""),
+            ],
+        )
+        return description, False
+
+    def _play_progress(self, instants: Sequence[Fraction]) -> tqdm[Fraction]:
+        """A progress bar over the instants a play is evaluated at."""
+        assert self.animations is not None
+        description, unbounded = self._progress_description(self.animations)
+        return tqdm(
+            instants,
+            desc=description,
+            total=None if unbounded else len(instants),
+            leave=config["progress_bar"] == "leave",
+            ascii=True if platform.system() == "Windows" else None,
+            disable=config["progress_bar"] == "none",
+        )
 
     def get_time_progression(
         self,
@@ -984,19 +1014,8 @@ class Scene:
                 f"{run_time:g} <= 0 seconds which Manim cannot render. "
                 f"The {parameter_name} must be a positive number."
             )
-
-        # config.frame_rate holds the number of frames per second
-        fps = config.frame_rate
-        seconds_per_frame = 1 / fps
-        if run_time < seconds_per_frame:
-            logger.warning(
-                f"The original {parameter_name} of {method_name}, "
-                f"{run_time:g} seconds, is too short for the current frame "
-                f"rate of {fps:g} FPS. Rendering with the shortest possible "
-                f"{parameter_name} of {seconds_per_frame:g} seconds instead."
-            )
-            run_time = seconds_per_frame
-
+        # A play shorter than a frame keeps its length: durations never depend
+        # on the frame rate, since the frames sample one grid for the scene.
         return run_time
 
     def get_run_time(self, animations: list[Animation]) -> float:
@@ -1196,41 +1215,12 @@ class Scene:
             and self.animations[0].is_static_wait
         )
 
-    def play_internal(self, skip_rendering: bool = False) -> None:
-        """
-        This method is used to prep the animations for rendering,
-        apply the arguments and parameters required to them,
-        render them, and write them to the video file.
-
-        Parameters
-        ----------
-        skip_rendering
-            Whether the rendering should be skipped, by default False
-        """
-        assert self.animations is not None
-        self.duration = self.get_run_time(self.animations)
-        self.time_progression = self._get_animation_time_progression(
-            self.animations,
-            self.duration,
-        )
-        for t in self.time_progression:
-            self.update_to_time(t)
-            if not skip_rendering and not self.skip_animation_preview:
-                self.renderer.render(self, t, self.moving_mobjects)
-            if self.stop_condition is not None and self.stop_condition():
-                self.time_progression.close()
-                break
-
-        for animation in self.animations:
-            animation.finish()
-            animation.clean_up_from_scene(self)
-        if not self.renderer.skip_animations:
-            self.update_mobjects(0)
-        self.renderer.static_image = None
-        # Closing the progress bar at the end of the play.
-        self.time_progression.close()
-
     def update_to_time(self, t: float) -> None:
+        """Bring the current animations to the play's local time ``t``, with
+        ``dt`` the time since the last call, CE's way: one animation after
+        the other. A play itself evaluates its instants through its route
+        (:mod:`arachne.timeline.routes`).
+        """
         dt = t - self.last_t
         self.last_t = t
         assert self.animations is not None
@@ -1241,8 +1231,18 @@ class Scene:
         self.update_mobjects(dt)
         self.update_self(dt)
 
+    def mark(self, label: str, **data: Any) -> None:
+        """Place a marker named ``label`` on the scene's timeline at the
+        current instant, with ``data`` beside it.
+
+        A marker changes nothing on screen. It is kept in the scene's record
+        (:attr:`record`) with its time and source line, for tools that read
+        the timeline.
+        """
+        self.timeline.mark("mark", {"label": label, **data})
+
     def add_subcaption(
-        self, content: str, duration: float = 1, offset: float = 0
+        self, content: str, duration: float | Fraction = 1, offset: float | Fraction = 0
     ) -> None:
         r"""Adds an entry in the corresponding subcaption file
         at the current time stamp.

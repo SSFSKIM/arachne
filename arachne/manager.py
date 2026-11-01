@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import datetime
+from fractions import Fraction
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 
 import srt
 
 from . import logger
 from .scene.section import DefaultSectionType
+from .timeline.clock import exact
 from .utils.exceptions import EndSceneEarlyException
 from .utils.file_ops import open_media_file
 
@@ -70,6 +72,8 @@ class Manager(Generic[SceneT]):
             raise ValueError("A manager is already attached to this scene.")
         self.scene = scene
         scene.manager = self
+        # The source line of the play running now, or None between plays.
+        self._playing: str | None = None
 
     @property
     def renderer(self) -> CairoRenderer:
@@ -142,18 +146,25 @@ class Manager(Generic[SceneT]):
         if open_after_render and not self.output_spec.enabled:
             raise ValueError("Previewing after render requires a media artifact.")
 
-        self.setup()
+        timeline = self.scene.timeline
+        timeline.begin_run()
         try:
-            self.construct()
-        except EndSceneEarlyException:
-            # Reaching the configured animation boundary ends the scene normally.
-            pass
+            self.setup()
+            try:
+                self.construct()
+            except EndSceneEarlyException:
+                # Reaching the configured animation boundary ends the scene normally.
+                pass
+            except BaseException:
+                # A mid-play exception leaves an unsealed encode job whose
+                # non-daemon worker would hang the process at exit.
+                self.file_writer.abort_encode_jobs()
+                raise
+            self.tear_down()
         except BaseException:
-            # A mid-play exception leaves an unsealed encode job whose
-            # non-daemon worker would hang the process at exit.
-            self.file_writer.abort_encode_jobs()
+            timeline.abandon_run()
             raise
-        self.tear_down()
+        timeline.end_run()
         self.post_construct()
 
         if open_after_render or presentation.show_in_file_browser:
@@ -214,7 +225,7 @@ class Manager(Generic[SceneT]):
         self,
         *args: Animation | Mobject | _AnimationBuilder,
         subcaption: str | None = None,
-        subcaption_duration: float | None = None,
+        subcaption_duration: float | Fraction | None = None,
         subcaption_offset: float = 0,
         **kwargs: Any,
     ) -> None:
@@ -234,10 +245,31 @@ class Manager(Generic[SceneT]):
             Offset in seconds from the beginning of the play call.
         kwargs
             Additional animation arguments forwarded to the renderer.
+
+        Raises
+        ------
+        RuntimeError
+            When called while another play or wait runs, as from an updater.
         """
-        start_time = self.time
-        self.renderer.play(self.scene, *args, **kwargs)
-        run_time = self.time - start_time
+        # The re-entrancy guard follows ManimCommunity/manim PR #5006's.
+        timeline = self.scene.timeline
+        if self._playing is not None:
+            line = timeline.location()
+            raise RuntimeError(
+                "play() and wait() can't be called while another play or wait "
+                "runs, as from an updater"
+                + (f", at {line}" if line is not None else "")
+                + f" (the play running is the one at {self._playing})."
+                " Call it from construct() once that play has ended."
+            )
+        start_time = self.scene.time
+        line = timeline.location()
+        self._playing = str(line) if line is not None else "an unknown line"
+        try:
+            self.renderer.play(self.scene, *args, **kwargs)
+        finally:
+            self._playing = None
+        run_time = self.scene.time - start_time
 
         if subcaption:
             if subcaption_duration is None:
@@ -248,7 +280,7 @@ class Manager(Generic[SceneT]):
             self.scene.add_subcaption(
                 content=subcaption,
                 duration=subcaption_duration,
-                offset=-run_time + subcaption_offset,
+                offset=exact(subcaption_offset) - run_time,
             )
 
     def next_section(
@@ -269,9 +301,13 @@ class Manager(Generic[SceneT]):
             Whether animation output in this section should be skipped.
         """
         self.file_writer.next_section(name, section_type, skip_animations)
+        self.scene.timeline.mark(
+            "section",
+            {"name": name, "type": str(section_type), "skip": skip_animations},
+        )
 
     def add_subcaption(
-        self, content: str, duration: float = 1, offset: float = 0
+        self, content: str, duration: float | Fraction = 1, offset: float | Fraction = 0
     ) -> None:
         """Add a subcaption at the current scene time.
 
@@ -291,6 +327,11 @@ class Manager(Generic[SceneT]):
             end=datetime.timedelta(seconds=float(self.time + offset + duration)),
         )
         self.file_writer.subcaptions.append(subtitle)
+        self.scene.timeline.mark(
+            "subcaption",
+            {"content": content, "duration": duration},
+            t=max(self.scene.time + exact(offset), Fraction(0)),
+        )
 
     def add_sound(
         self,
@@ -318,3 +359,8 @@ class Manager(Generic[SceneT]):
         if self.skip_animations:
             return
         self.file_writer.add_sound(sound_file, self.time + time_offset, gain, **kwargs)
+        self.scene.timeline.mark(
+            "sound",
+            {"file": str(sound_file), "gain": gain},
+            t=max(self.scene.time + exact(time_offset), Fraction(0)),
+        )

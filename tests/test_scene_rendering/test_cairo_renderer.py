@@ -11,13 +11,14 @@ from .simple_scenes import *
 
 
 def test_render(using_temp_config, disabling_caching):
+    # Frames are drawn from the record and handed to the writer directly,
+    # not through update_frame and add_frame as in CE.
     scene = SquareToCircle()
     renderer = scene.renderer
-    renderer.update_frame = Mock(wraps=renderer.update_frame)
-    renderer.add_frame = Mock(wraps=renderer.add_frame)
+    writer = renderer.file_writer
+    writer.write_frame = Mock(wraps=writer.write_frame)
     scene.render()
-    assert renderer.add_frame.call_count == config["frame_rate"]
-    assert renderer.update_frame.call_count == config["frame_rate"]
+    assert writer.write_frame.call_count == config["frame_rate"]
     assert_file_exists(renderer.file_writer.final_file_path)
     assert config.output_file == ""
 

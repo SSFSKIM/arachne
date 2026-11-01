@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Sequence
+from fractions import Fraction
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -10,12 +11,14 @@ import numpy as np
 from arachne.animation.animation import Animation, prepare_animation
 from arachne.mobject.mobject import Group, Mobject
 from arachne.scene.scene import Scene
+from arachne.timeline.clock import exact
 from arachne.utils.iterables import remove_list_redundancies
 from arachne.utils.parameter_parsing import flatten_iterable_parameters
 from arachne.utils.rate_functions import linear
 
 if TYPE_CHECKING:
     from arachne.mobject.types.vectorized_mobject import VGroup
+    from arachne.timeline.events import EventPlan
 
 __all__ = ["AnimationGroup", "Succession", "LaggedStart", "LaggedStartMap"]
 
@@ -150,6 +153,22 @@ class AnimationGroup(Animation):
         self.anims_with_timings["start"][1:] = np.add.accumulate(lags)
         self.anims_with_timings["end"] = self.anims_with_timings["start"] + run_times
 
+    def _exact_timings(self) -> tuple[list[Fraction], list[Fraction]]:
+        """The parts' start and end in group time, as exact fractions.
+
+        They are the timings of :meth:`build_animations_with_timings`, computed
+        on the scene clock's exact durations instead of in floating point.
+        """
+        run_times = [exact(anim.run_time) for anim in self.animations]
+        lag = exact(self.lag_ratio)
+        starts: list[Fraction] = []
+        start = Fraction(0)
+        for run_time in run_times:
+            starts.append(start)
+            start += run_time * lag
+        ends = [s + run_time for s, run_time in zip(starts, run_times, strict=True)]
+        return starts, ends
+
     def interpolate(self, alpha: float) -> None:
         # Note, if the run_time of AnimationGroup has been
         # set to something other than its default, these
@@ -274,15 +293,85 @@ class Succession(AnimationGroup):
             self.active_animation.finish()
         self.update_active_animation(self.active_index + 1)
 
+    # While a scene plays this Succession, its events (finishing the active part
+    # and beginning the next) are run by the play, through these, in the phase
+    # order of arachne.timeline.events; outside a play it handles them itself.
+    _event_plan: EventPlan | None = None
+    _pending_time: float | None = None
+    _next_index: int | None = None
+    _event_instants: list[Fraction | None]
+    _exact_ends: list[Fraction]
+
     def interpolate(self, alpha: float) -> None:
         current_time = self.rate_func(alpha) * self.max_end_time
+        if self._event_plan is not None:
+            # Phase 1 only: evaluate the running part at this instant. A part
+            # whose window ends here is left to its finish (phase 2), which
+            # evaluates it at 1 once, as CE's does.
+            self._pending_time = current_time
+            active = self.active_animation
+            if (
+                active is not None
+                and self._next_index is None
+                and not self._active_part_due()
+            ):
+                active.interpolate(self._active_subalpha(current_time))
+            return
         while self.active_end_time is not None and current_time >= self.active_end_time:
             self.next_animation()
         if self.active_animation is not None and self.active_start_time is not None:
-            elapsed = current_time - self.active_start_time
-            active_run_time = self.active_animation.run_time
-            subalpha = elapsed / active_run_time if active_run_time != 0.0 else 1.0
-            self.active_animation.interpolate(subalpha)
+            self.active_animation.interpolate(self._active_subalpha(current_time))
+
+    def _active_subalpha(self, current_time: float) -> float:
+        assert self.active_animation is not None
+        assert self.active_start_time is not None
+        elapsed = current_time - self.active_start_time
+        active_run_time = self.active_animation.run_time
+        return elapsed / active_run_time if active_run_time != 0.0 else 1.0
+
+    def _active_part_due(self) -> bool:
+        """Whether the active part's window has ended at the play's instant."""
+        plan = self._event_plan
+        if (
+            plan is None
+            or self._pending_time is None
+            or self._next_index is not None
+            or getattr(self, "active_animation", None) is None
+        ):
+            return False
+        index = self.active_index
+        instant = self._event_instants[index]
+        if instant is not None:
+            return instant <= plan.now
+        # No exact instant: due at the first instant its group time has crossed.
+        return Fraction(self._pending_time) >= self._exact_ends[index]
+
+    def _finish_due_part(self) -> bool:
+        """Phase 2: finish the active part if its window has ended."""
+        if not self._active_part_due():
+            return False
+        assert self.active_animation is not None
+        self.active_animation.finish()
+        self._next_index = self.active_index + 1
+        return True
+
+    def _begin_next_part(self) -> bool:
+        """Phase 3: begin the part after the one just finished."""
+        index = self._next_index
+        if index is None:
+            return False
+        self._next_index = None
+        self.update_active_animation(index)
+        return self.active_animation is not None
+
+    def _evaluate_begun_part(self) -> None:
+        """Evaluate a part begun at this instant, as CE evaluates it in the
+        sample that began it, unless it is already due to finish.
+        """
+        active = self.active_animation
+        if active is None or self._pending_time is None or self._active_part_due():
+            return
+        active.interpolate(max(0.0, self._active_subalpha(self._pending_time)))
 
 
 class LaggedStart(AnimationGroup):

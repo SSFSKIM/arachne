@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import datetime
+from fractions import Fraction
 from unittest.mock import Mock, patch
 
 import pytest
@@ -205,6 +206,8 @@ def test_manager_render_finalizes_after_early_scene_end(dry_run):
     lifecycle: list[str] = []
     renderer = Mock()
     renderer.num_plays = 0
+    # The scene clock, which the record reads when the script ends.
+    renderer.clock = Fraction(0)
     renderer.scene_finished.side_effect = lambda scene: lifecycle.append(
         "post_construct"
     )
