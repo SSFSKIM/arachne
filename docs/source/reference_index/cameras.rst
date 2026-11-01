@@ -1,7 +1,7 @@
 Cameras
 =======
 
-.. currentmodule:: manim
+.. currentmodule:: arachne
 
 .. autosummary::
    :toctree: ../reference

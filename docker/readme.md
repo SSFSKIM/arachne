@@ -17,7 +17,7 @@ from the root directory of the repository.
 To check a built image, render the verification scene (LaTeX, XeLaTeX, Pango, video encoding):
 ```
 docker run --rm -v "$PWD/docker:/test:ro" manimcommunity/manim:TAG \
-    manim render -ql --media_dir /tmp/media /test/verify_image.py VerifyImage
+    arachne render -ql --media_dir /tmp/media /test/verify_image.py VerifyImage
 ```
 
 # Build notes

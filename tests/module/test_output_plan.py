@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from manim import Scene, __version__
-from manim._config.output import OutputFormat, OutputSpec
-from manim._config.output_plan import (
+from arachne import Scene, __version__
+from arachne._config.output import OutputFormat, OutputSpec
+from arachne._config.output_plan import (
     MediaLayoutSpec,
     resolve_file_log_path,
     resolve_media_layout,
@@ -15,7 +15,7 @@ from manim._config.output_plan import (
     resolve_output_plan,
     resolve_requested_output_name,
 )
-from manim.cli.render.commands import _validate_scene_batch_output_name
+from arachne.cli.render.commands import _validate_scene_batch_output_name
 
 
 def _layout(tmp_path: Path, *, sections: bool = False) -> MediaLayoutSpec:
@@ -92,7 +92,7 @@ def test_resolve_gif_plan(tmp_path, transparent, segment_extension):
     )
 
     assert plan.primary_artifact == (
-        layout.video_dir / f"ExampleScene_ManimCE_v{__version__}.gif"
+        layout.video_dir / f"ExampleScene_Arachne_v{__version__}.gif"
     )
     assert plan.segment_extension == segment_extension
     assert plan.segment_path("hash") == layout.partial_movie_dir / (
@@ -112,7 +112,7 @@ def test_resolve_automatic_video_plan_with_fallback(tmp_path):
 
     assert plan.primary_artifact == layout.video_dir / "ExampleScene.mp4"
     assert plan.fallback_image == (
-        layout.images_dir / f"ExampleScene_ManimCE_v{__version__}.png"
+        layout.images_dir / f"ExampleScene_Arachne_v{__version__}.png"
     )
 
 
@@ -127,7 +127,7 @@ def test_resolve_png_plan(tmp_path):
     )
 
     assert plan.primary_artifact == (
-        layout.images_dir / f"ExampleScene_ManimCE_v{__version__}.png"
+        layout.images_dir / f"ExampleScene_Arachne_v{__version__}.png"
     )
     assert plan.fallback_image is None
     with pytest.raises(ValueError, match="does not contain an image sequence"):

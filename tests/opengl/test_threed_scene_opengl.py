@@ -5,7 +5,7 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
-from manim import DEGREES, ThreeDScene, Transform, config, linear
+from arachne import DEGREES, ThreeDScene, Transform, config, linear
 
 
 def test_set_camera_orientation(using_opengl_renderer):

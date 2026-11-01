@@ -13,19 +13,19 @@ import numpy as np
 import pytest
 from click.testing import CliRunner
 
-from manim import FadeIn, Scene, Square, capture, tempconfig
-from manim._config import config
-from manim._config.output import OutputFormat, OutputSpec
-from manim._config.output_plan import (
+from arachne import FadeIn, Scene, Square, capture, tempconfig
+from arachne._config import config
+from arachne._config.output import OutputFormat, OutputSpec
+from arachne._config.output_plan import (
     resolve_media_layout,
     resolve_module_name,
     resolve_output_plan,
     resolve_requested_output_name,
 )
-from manim._config.video_encoder import resolve_video_encoder
-from manim.cli.render.commands import render
-from manim.scene.scene_file_writer import SceneFileWriter, _SceneFileWriterSettings
-from manim.utils.exceptions import RerunSceneException
+from arachne._config.video_encoder import resolve_video_encoder
+from arachne.cli.render.commands import render
+from arachne.scene.scene_file_writer import SceneFileWriter, _SceneFileWriterSettings
+from arachne.utils.exceptions import RerunSceneException
 
 _ENCODER_THREAD_PREFIX = "partial-movie-encoder-"
 _VIDEO_OUTPUT = OutputSpec(
@@ -81,7 +81,7 @@ def _make_writer(
 _SCENE_NAME = "ParallelEncodingCacheScene"
 _SCENE_SOURCE = textwrap.dedent(
     f"""\
-    from manim import FadeIn, Scene, Square
+    from arachne import FadeIn, Scene, Square
 
 
     class {_SCENE_NAME}(Scene):
@@ -110,7 +110,7 @@ def _render_scene(media_dir, scene_file):
     command = [
         sys.executable,
         "-m",
-        "manim",
+        "arachne",
         "-ql",
         "--max-inflight-encoders",
         "3",
@@ -224,7 +224,7 @@ def _fake_segment_encoder(tmp_path, name):
 
 
 def _new_encode_job(tmp_path, name, encoder=None, frame_queue_size=8):
-    from manim.scene.scene_file_writer import _PartialMovieEncodeJob
+    from arachne.scene.scene_file_writer import _PartialMovieEncodeJob
 
     if encoder is None:
         encoder = _fake_segment_encoder(tmp_path, name)
@@ -447,7 +447,7 @@ def test_cache_limit_is_not_read_from_mutated_config(config, monkeypatch):
     writer.combine_to_movie = Mock()
     prune = Mock()
     monkeypatch.setattr(
-        "manim.scene.scene_file_writer.prune_segment_cache",
+        "arachne.scene.scene_file_writer.prune_segment_cache",
         prune,
     )
 
@@ -811,7 +811,7 @@ def test_end_scene_early_keeps_completed_partials(config, tmp_path):
 _MID_PLAY_FAILURE_SCENE_NAME = "MidPlayFailureScene"
 _MID_PLAY_FAILURE_SCENE_SOURCE = textwrap.dedent(
     f"""\
-    from manim import FadeIn, Scene, Square
+    from arachne import FadeIn, Scene, Square
 
 
     class {_MID_PLAY_FAILURE_SCENE_NAME}(Scene):
@@ -841,7 +841,7 @@ def test_mid_play_exception_does_not_hang_process(tmp_path):
     command = [
         sys.executable,
         "-m",
-        "manim",
+        "arachne",
         "-ql",
         "--disable_caching",
         "--max-inflight-encoders",
@@ -888,7 +888,7 @@ _BURST_PLAYS = 6
 # Distinct side lengths so every play gets its own cache key and partial file.
 _BURST_SCENE_SOURCE = textwrap.dedent(
     f"""\
-    from manim import FadeIn, Scene, Square
+    from arachne import FadeIn, Scene, Square
 
 
     class {_BURST_SCENE_NAME}(Scene):
@@ -905,7 +905,7 @@ def _render_scene_with_args(media_dir, scene_file, scene_name, extra_args=()):
     command = [
         sys.executable,
         "-m",
-        "manim",
+        "arachne",
         "-ql",
         "--media_dir",
         str(media_dir),

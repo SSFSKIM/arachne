@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from manim import BarChart, DecimalNumber, VGroup
+from arachne import BarChart, DecimalNumber, VGroup
 
 
 def _number_groups(axis):

@@ -5,7 +5,7 @@ import math
 import numpy as np
 import pytest
 
-from manim import (
+from arachne import (
     LEFT,
     ORIGIN,
     PI,
@@ -21,7 +21,7 @@ from manim import (
     config,
     tempconfig,
 )
-from manim import CoordinateSystem as CS
+from arachne import CoordinateSystem as CS
 
 
 def test_log_axis_coordinate_round_trip():

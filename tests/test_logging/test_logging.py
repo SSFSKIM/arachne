@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from manim import capture
+from arachne import capture
 
 from ..utils.logging_tester import *
 
@@ -16,7 +16,7 @@ def test_logging_to_file(tmp_path, python_version):
     command = [
         python_version,
         "-m",
-        "manim",
+        "arachne",
         "-ql",
         "-v",
         "DEBUG",
@@ -32,7 +32,7 @@ def test_logging_to_file(tmp_path, python_version):
 
 def test_library_logging_without_media_output(tmp_path, python_version):
     script = f"""
-from manim import Scene, tempconfig
+from arachne import Scene, tempconfig
 
 class LibraryScene(Scene):
     pass
@@ -59,7 +59,7 @@ def test_error_logging(tmp_path, python_version):
     command = [
         python_version,
         "-m",
-        "manim",
+        "arachne",
         "-ql",
         "--media_dir",
         str(tmp_path),
@@ -82,7 +82,7 @@ def test_tex_error_logs(tmp_path, python_version):
     command = [
         python_version,
         "-m",
-        "manim",
+        "arachne",
         "-ql",
         "--log_to_file",
         "-v",

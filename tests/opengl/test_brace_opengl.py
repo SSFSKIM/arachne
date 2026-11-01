@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from manim import *
+from arachne import *
 
 
 def test_brace_tip(config):

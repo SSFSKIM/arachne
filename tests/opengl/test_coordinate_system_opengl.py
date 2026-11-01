@@ -5,7 +5,7 @@ import math
 import numpy as np
 import pytest
 
-from manim import (
+from arachne import (
     LEFT,
     ORIGIN,
     PI,
@@ -19,9 +19,9 @@ from manim import (
     config,
     tempconfig,
 )
-from manim import CoordinateSystem as CS
-from manim.utils.color import BLUE, GREEN, ORANGE, PURE_YELLOW, RED
-from manim.utils.testing.frames_comparison import frames_comparison
+from arachne import CoordinateSystem as CS
+from arachne.utils.color import BLUE, GREEN, ORANGE, PURE_YELLOW, RED
+from arachne.utils.testing.frames_comparison import frames_comparison
 
 __module_test__ = "coordinate_system_opengl"
 

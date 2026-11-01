@@ -8,12 +8,12 @@ import numpy as np
 import pytest
 from av.codec.context import CodecContext
 
-from manim import tempconfig
-from manim._config import config
-from manim._config.output import OutputFormat, OutputSpec
-from manim._config.output_plan import resolve_media_layout, resolve_output_plan
-from manim._config.video_encoder import resolve_video_encoder
-from manim.scene.scene_file_writer import SceneFileWriter, _SceneFileWriterSettings
+from arachne import tempconfig
+from arachne._config import config
+from arachne._config.output import OutputFormat, OutputSpec
+from arachne._config.output_plan import resolve_media_layout, resolve_output_plan
+from arachne._config.video_encoder import resolve_video_encoder
+from arachne.scene.scene_file_writer import SceneFileWriter, _SceneFileWriterSettings
 
 _WIDTH = 16
 _HEIGHT = 12

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from manim import Animation, Mobject, override_animation
-from manim.utils.exceptions import MultiAnimationOverrideException
+from arachne import Animation, Mobject, override_animation
+from arachne.utils.exceptions import MultiAnimationOverrideException
 
 
 class AnimationA1(Animation):

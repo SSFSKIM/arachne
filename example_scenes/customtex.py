@@ -1,4 +1,4 @@
-from manim import *
+from arachne import *
 
 
 class TexTemplateFromCLI(Scene):

@@ -5,8 +5,8 @@ import numpy.testing as nt
 from _split_matrices import SPLIT_MATRICES
 from _subdivision_matrices import SUBDIVISION_MATRICES
 
-from manim.typing import ManimFloat
-from manim.utils.bezier import (
+from arachne.typing import ManimFloat
+from arachne.utils.bezier import (
     _get_subdivision_matrix,
     get_quadratic_approximation_of_cubic,
     get_smooth_cubic_bezier_handle_points,

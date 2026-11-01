@@ -16,7 +16,7 @@ query-filters:
     - exclude:
           id: py/unsafe-cyclic-import
 paths:
-    - manim
+    - arachne
 paths-ignore:
     - tests/
     - example_scenes/

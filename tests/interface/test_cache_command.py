@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from manim.__main__ import main
+from arachne.__main__ import main
 
 
 def _segment_directory(
@@ -53,7 +53,7 @@ def test_cache_clear_resolves_each_scene_without_importing_file(tmp_path):
             "FirstScene",
             "SecondScene",
         ],
-        prog_name="manim",
+        prog_name="arachne",
     )
 
     assert result.exception is None, result.output
@@ -109,7 +109,7 @@ def test_cache_clear_applies_config_file_and_path_overrides(
             str(scene_file),
             "ConfiguredScene",
         ],
-        prog_name="manim",
+        prog_name="arachne",
     )
 
     assert result.exception is None, result.output

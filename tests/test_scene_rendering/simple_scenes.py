@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from manim import *
+from arachne import *
 
 __all__ = [
     "SquareToCircle",

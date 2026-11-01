@@ -5,8 +5,8 @@ import av
 import numpy as np
 import pytest
 
-from manim._config.video_encoder import VideoEncoderSpec
-from manim.scene.video_segment_encoder import VideoSegmentEncoder
+from arachne._config.video_encoder import VideoEncoderSpec
+from arachne.scene.video_segment_encoder import VideoSegmentEncoder
 
 
 def _spec(*, width=4, height=2):

@@ -11,7 +11,7 @@ Otherwise, you are likely mixing up Manim versions. See {ref}`this FAQ answer <d
 for an explanation regarding why there are different versions. Under the
 assumption that you are trying to use the `manim` executable from the terminal to run
 a scene that has been written for the community version (i.e., there is
-`from manim import *`, or more specifically `from manim import Scene`),
+`from arachne import *`, or more specifically `from arachne import Scene`),
 then this error indicates that the `manim` executable has been overwritten
 by the one provided by `manimgl` (unfortunately, both `manim` and `manimgl`
 provide a `manim` executable).

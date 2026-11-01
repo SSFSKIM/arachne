@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from manim import DEGREES
-from manim.renderer.opengl_renderer import OpenGLCamera
+from arachne import DEGREES
+from arachne.renderer.opengl_renderer import OpenGLCamera
 
 
 def test_camera_interpolate_angles(using_opengl_renderer):

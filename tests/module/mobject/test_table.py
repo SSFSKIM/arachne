@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from manim import Circle, Table
-from manim.utils.color import GREEN
+from arachne import Circle, Table
+from arachne.utils.color import GREEN
 
 
 def test_highlighted_cell_color_access():

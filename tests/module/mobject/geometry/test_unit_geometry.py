@@ -5,7 +5,7 @@ import logging
 import numpy as np
 import pytest
 
-from manim import (
+from arachne import (
     DEGREES,
     DOWN,
     GREEN,
@@ -248,7 +248,7 @@ def test_line_with_buff_and_path_arc():
 
 
 def test_Circle_point_at_angle():
-    from manim import TAU
+    from arachne import TAU
 
     # Test basic angles
     circle = Circle(radius=1.0)

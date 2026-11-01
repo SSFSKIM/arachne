@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from manim.utils.qhull import QuickHull
+from arachne.utils.qhull import QuickHull
 
 
 def test_initial_simplex_is_affinely_independent():

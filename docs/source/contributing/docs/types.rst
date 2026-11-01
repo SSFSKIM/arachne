@@ -98,7 +98,7 @@ you will need something like:
 .. code-block:: python
 
    if TYPE_CHECKING:
-       from manim.utils.color import ParsableManimColor
+       from arachne.utils.color import ParsableManimColor
 
    # type hint stuff with ParsableManimColor
 

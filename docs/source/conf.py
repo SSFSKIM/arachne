@@ -11,8 +11,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-import manim
-from manim.utils.docbuild.module_parsing import parse_module_attributes
+import arachne
+from arachne.utils.docbuild.module_parsing import parse_module_attributes
 
 # -- Path setup --------------------------------------------------------------
 # If extensions (or modules to document with autodoc) are in another directory,
@@ -44,9 +44,9 @@ extensions = [
     "sphinx.ext.extlinks",
     "sphinx.ext.viewcode",
     "sphinxext.opengraph",
-    "manim.utils.docbuild.manim_directive",
-    "manim.utils.docbuild.autocolor_directive",
-    "manim.utils.docbuild.autoaliasattr_directive",
+    "arachne.utils.docbuild.manim_directive",
+    "arachne.utils.docbuild.autocolor_directive",
+    "arachne.utils.docbuild.autoaliasattr_directive",
     "sphinx.ext.graphviz",
     "sphinx.ext.inheritance_diagram",
     "sphinxcontrib.programoutput",
@@ -71,7 +71,7 @@ redirects = {
 ALIAS_DOCS_DICT = parse_module_attributes()[0]
 autodoc_typehints = "description"
 autodoc_type_aliases = {
-    alias_name: f"~manim.{module}.{alias_name}"
+    alias_name: f"~arachne.{module}.{alias_name}"
     for module, module_dict in ALIAS_DOCS_DICT.items()
     for category_dict in module_dict.values()
     for alias_name in category_dict
@@ -151,7 +151,7 @@ html_theme_options = {
         "color-foreground-secondary": "#ffffffd9",
     },
 }
-html_title = f"Manim Community v{manim.__version__}"
+html_title = f"Manim Community v{arachne.__version__}"
 
 # This specifies any additional css files that will override the theme's
 html_css_files = ["custom.css"]

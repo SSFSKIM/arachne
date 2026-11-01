@@ -94,7 +94,7 @@ with dict-like syntax:
 
 .. code-block:: pycon
 
-   >>> from manim import *
+   >>> from arachne import *
    >>> config.background_color = WHITE
    >>> config["background_color"] = WHITE
 
@@ -131,7 +131,7 @@ change the values of the global ``config`` object.
 The following example illustrates the video resolution chosen for examples
 rendered in our documentation with a reference frame.
 
-.. manim:: ShowScreenResolution
+.. arachne:: ShowScreenResolution
     :save_last_frame:
 
     class ShowScreenResolution(Scene):
@@ -160,9 +160,9 @@ can also be configured using a configuration file.  A configuration file is a
 file ending with the suffix ``.cfg``.
 
 To use a local configuration file when rendering your scene, you must create a
-file with the name ``manim.cfg`` in the same directory as your scene code.
+file with the name ``arachne.cfg`` in the same directory as your scene code.
 
-.. warning:: The config file **must** be named ``manim.cfg``. Currently, Manim
+.. warning:: The config file **must** be named ``arachne.cfg``. Currently, Manim
              does not support config files with any other name.
 
 The config file must start with the section header ``[CLI]``.  The
@@ -205,7 +205,7 @@ Now, executing the following command
 
    manim -o myscene --format=gif -c WHITE <file.py> SceneName
 
-is equivalent to executing the following command, provided that ``manim.cfg``
+is equivalent to executing the following command, provided that ``arachne.cfg``
 is in the same directory as <file.py>,
 
 .. code-block:: bash
@@ -223,7 +223,7 @@ a config file.  Moreover, any config option can be set via a config file,
 whether or not it has an associated CLI flag.  See the bottom of this document
 for a list of all CLI flags and config options.
 
-Manim will look for a ``manim.cfg`` config file in the same directory as the
+Manim will look for a ``arachne.cfg`` config file in the same directory as the
 file being rendered, and **not** in the directory of execution.  For example,
 
 .. code-block:: bash
@@ -243,7 +243,7 @@ affects all scene scripts found in the same folder.
 The user config file
 ====================
 
-As explained in the previous section, a :code:`manim.cfg` config file only
+As explained in the previous section, a :code:`arachne.cfg` config file only
 affects the scene scripts in its same folder.  However, the user may also
 create a special config file that will apply to all scenes rendered by that
 user. This is referred to as the **user-wide** config file, and it will apply
@@ -253,9 +253,9 @@ script is stored.
 The user-wide config file lives in a special folder, depending on the operating
 system.
 
-* Windows: :code:`UserDirectory`/AppData/Roaming/Manim/manim.cfg
-* MacOS: :code:`UserDirectory`/.config/manim/manim.cfg
-* Linux: :code:`UserDirectory`/.config/manim/manim.cfg
+* Windows: :code:`UserDirectory`/AppData/Roaming/Manim/arachne.cfg
+* MacOS: :code:`UserDirectory`/.config/manim/arachne.cfg
+* Linux: :code:`UserDirectory`/.config/manim/arachne.cfg
 
 Here, :code:`UserDirectory` is the user's home folder.
 

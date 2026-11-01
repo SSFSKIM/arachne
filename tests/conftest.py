@@ -8,7 +8,7 @@ import cairo
 import moderngl
 import pytest
 
-import manim
+import arachne
 
 
 def pytest_report_header(config):
@@ -72,28 +72,28 @@ def temp_media_dir(tmpdir, monkeypatch, request):
         monkeypatch.chdir(tmpdir)
         yield tmpdir
     else:
-        with manim.tempconfig({"media_dir": str(tmpdir)}):
-            assert manim.config.media_dir == str(tmpdir)
+        with arachne.tempconfig({"media_dir": str(tmpdir)}):
+            assert arachne.config.media_dir == str(tmpdir)
             yield tmpdir
 
 
 @pytest.fixture
 def manim_caplog(caplog):
-    logger = logging.getLogger("manim")
+    logger = logging.getLogger("arachne")
     logger.propagate = True
-    caplog.set_level(logging.INFO, logger="manim")
+    caplog.set_level(logging.INFO, logger="arachne")
     yield caplog
     logger.propagate = False
 
 
 @pytest.fixture
 def config():
-    saved = manim.config.copy()
-    manim.config.renderer = "cairo"
+    saved = arachne.config.copy()
+    arachne.config.renderer = "cairo"
     # we need to return the actual config so that tests
     # using tempconfig pass
-    yield manim.config
-    manim.config.update(saved)
+    yield arachne.config
+    arachne.config.update(saved)
 
 
 @pytest.fixture
@@ -111,7 +111,7 @@ def python_version():
 
 @pytest.fixture
 def reset_cfg_file():
-    cfgfilepath = Path(__file__).parent / "test_cli" / "manim.cfg"
+    cfgfilepath = Path(__file__).parent / "test_cli" / "arachne.cfg"
     original = cfgfilepath.read_text()
     yield
     cfgfilepath.write_text(original)

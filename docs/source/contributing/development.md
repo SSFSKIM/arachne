@@ -125,7 +125,7 @@ You are now ready to work on Manim!
    rendered in the {doc}`reference manual <../reference>`.
 
    :::{tip}
-   Use the {mod}`manim directive for Sphinx <manim.utils.docbuild.manim_directive>` to add examples
+   Use the {mod}`manim directive for Sphinx <arachne.utils.docbuild.manim_directive>` to add examples
    to the documentation!
    :::
 
@@ -207,7 +207,7 @@ sticks to our coding conventions.
   (the latest versions of Ubuntu, macOS, and Windows) for different versions of Python.
   The test suite consists of two different kinds of tests: integration tests
   and doctests. You can run them locally by executing `uv run pytest`
-  and `uv run pytest --doctest-modules manim`, respectively, from the
+  and `uv run pytest --doctest-modules arachne`, respectively, from the
   root directory of your cloned fork.
 - **Documentation**: We also build a version of the documentation corresponding
   to your pull request. Make sure not to introduce any Sphinx errors, and have

@@ -82,7 +82,7 @@ To check that everything works as expected, first import Manim by running
 
 .. code-block::
 
-   from manim import *
+   from arachne import *
 
 in a new code cell. Then create another cell containing the
 following code::

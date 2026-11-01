@@ -46,7 +46,7 @@ to ``square_to_circle.py``:
 
 .. code-block:: python
 
-    from manim import *
+    from arachne import *
 
 
     class SquareToCircle(Scene):

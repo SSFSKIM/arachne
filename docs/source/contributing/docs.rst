@@ -60,7 +60,7 @@ Custom Sphinx directives
 Manim implements **custom directives** for use with Autodoc and Autosummary, which
 are defined in :mod:`~.docbuild`:
 
-.. currentmodule:: manim.utils.docbuild
+.. currentmodule:: arachne.utils.docbuild
 
 .. autosummary::
 

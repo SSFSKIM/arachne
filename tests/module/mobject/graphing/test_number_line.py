@@ -3,8 +3,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from manim import DashedLine, LinearBase, LogBase, NumberLine
-from manim.mobject.text.numbers import Integer
+from arachne import DashedLine, LinearBase, LogBase, NumberLine
+from arachne.mobject.text.numbers import Integer
 
 
 def test_unit_vector():

@@ -7,7 +7,7 @@ import pytest
 
 @pytest.fixture
 def manim_cfg_file():
-    return Path(__file__).parent / "manim.cfg"
+    return Path(__file__).parent / "arachne.cfg"
 
 
 @pytest.fixture

@@ -1,13 +1,13 @@
 [flake8]
 # Exclude the grpc generated code
-exclude = ./manim/grpc/gen/*, __pycache__,.git,
+exclude = ./arachne/grpc/gen/*, __pycache__,.git,
 per-file-ignores = __init__.py:F401
 max-complexity = 29
 max-line-length = 88
 statistics = True
 # Prevents some flake8-rst-docstrings errors
 rst-roles = attr,class,func,meth,mod,obj,ref,doc,exc
-rst-directives = manim, SEEALSO, seealso
+rst-directives = arachne, SEEALSO, seealso
 docstring-convention=numpy
 
 select = A,A00,B,B9,C4,C90,D,E,F,F,PT,RST,SIM,W,F401
