@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import random
 from fractions import Fraction
 
 import pytest
 
 from arachne import Scene, Square, Wait
-from arachne.timeline.clock import TICK_DT, exact, frames_in, ticks_in
+from arachne.timeline.clock import TICK_DT, exact, frames_in, play_end, ticks_in
 
 from .conftest import render
-from .scenes import Cue, Grid
+from .scenes import Composed, Cue, Grid
 
 
 @pytest.mark.parametrize(
@@ -76,19 +77,68 @@ def test_no_one_frame_minimum():
     assert scene.time == Fraction(1, 100) + Fraction(1, 1000)
 
 
-def test_scene_time_is_exact_and_renderer_time_its_float():
-    """``scene.time`` is the exact clock and ``renderer.time`` its float. A
-    wait sized from the float clock, as a cue sizes it, lasts the simplest
-    fraction its float duration rounds to, so it lands within a rounding
-    error of its target; each grid frame still belongs to exactly one play.
+def test_a_play_ends_at_the_simplest_fraction_near_its_float_end():
+    """The end-window rule: plain durations add up exactly, and a wait sized
+    from the float clock ends at its target.
     """
-    scene, frames = render(Cue, 15)
-    plays = scene.record.plays
-    assert [play.end for play in plays[:2]] == [Fraction(1, 3), Fraction(2, 3)]
-    assert plays[2].end == Fraction(2, 3) + exact(2.5 - float(Fraction(2, 3)))
+    tenth = play_end(Fraction(0), 0.1)
+    assert tenth == Fraction(1, 10)
+    assert play_end(tenth, 0.2) == Fraction(3, 10)
+    end = Fraction(0)
+    for _ in range(3):
+        end = play_end(end, 0.1)
+    assert end == Fraction(3, 10)
+    two_thirds = Fraction(2, 3)
+    assert play_end(two_thirds, 2.5 - float(two_thirds)) == Fraction(5, 2)
+    # Exact durations are used as given, and nothing lasts no time but 0.
+    assert play_end(Fraction(1, 7), Fraction(1, 3)) == Fraction(10, 21)
+    assert play_end(Fraction(1, 7), 2) == Fraction(15, 7)
+    assert play_end(Fraction(1, 7), 0.0) == Fraction(1, 7)
+
+
+def test_a_positive_duration_never_ends_at_or_before_its_start():
+    ugly = Fraction(10**9 + 7, 3 * 10**9)
+    for d in (1e-20, 1e-17, 5e-17, 1e-16, 1e-12, 0.1, 1 / 3):
+        assert play_end(ugly, d) > ugly
+    rng = random.Random(7)
+    for _ in range(2000):
+        start = Fraction(rng.randrange(1, 10**7), rng.choice([7, 97, 10**6 + 3]))
+        d = rng.choice([1e-18, 1e-15, 1e-9, rng.random(), rng.random() * 100])
+        assert play_end(start, d) > start
+
+
+@pytest.mark.parametrize(("fps", "count"), [(15, 38), (30, 75), (60, 150)])
+def test_a_cue_lands_on_its_target(fps, count):
+    """``wait(2.5 - renderer.time)`` after 2/3 ends at 5/2 exactly, so it
+    holds exactly the frames of [0, 5/2) at a rate whose grid holds 5/2:
+    with the duration alone made exact it ended 4e-16 later and drew one
+    frame more at 30 and 60 fps.
+    """
+    scene, frames = render(Cue, fps)
+    assert [play.end for play in scene.record.plays] == [
+        Fraction(1, 3),
+        Fraction(2, 3),
+        Fraction(5, 2),
+    ]
+    assert len(frames) == count
+
+
+def test_scene_time_is_exact_and_renderer_time_its_float():
+    scene, _ = render(Cue, 15)
     assert isinstance(scene.time, Fraction)
-    assert scene.time == plays[2].end
+    assert scene.time == Fraction(5, 2)
     assert isinstance(scene.renderer.time, float)
-    assert scene.renderer.time == float(scene.time)
-    assert abs(scene.renderer.time - 2.5) < 1e-15
-    assert len(frames) == len(frames_in(Fraction(0), scene.time, Fraction(15)))
+    assert scene.renderer.time == 2.5
+
+
+@pytest.mark.parametrize("fps", [10, 30])
+def test_a_composition_lasts_its_parts_exact_sum(fps):
+    """``Succession(Wait(0.1), Wait(0.2))`` lasts 3/10, not the float sum
+    0.30000000000000004, so it holds 3 frames at 10 fps (not 4); a run time
+    given to a composition is the authored float, read by the end-window rule.
+    """
+    scene, frames = render(Composed, fps)
+    spans = [play.end - play.start for play in scene.record.plays]
+    assert spans == [Fraction(3, 10), Fraction(1, 2), Fraction(1, 2)]
+    assert len(frames) == len(frames_in(Fraction(0), Fraction(13, 10), Fraction(fps)))
+    assert len(frames) == 13 * fps // 10

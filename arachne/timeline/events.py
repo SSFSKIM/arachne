@@ -159,7 +159,7 @@ def plan_events(animations: Sequence[Animation], start: Fraction) -> EventPlan:
     """
     plan = EventPlan(now=start)
     for animation in animations:
-        run_time = exact(animation.run_time)
+        run_time = exact(animation._exact_run_time())
         alpha = (
             None
             if run_time == 0

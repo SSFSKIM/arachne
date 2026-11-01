@@ -11,8 +11,10 @@ import random
 import numpy as np
 
 from arachne import (
+    BLUE,
     DOWN,
     LEFT,
+    RED,
     RIGHT,
     UP,
     Animation,
@@ -20,6 +22,7 @@ from arachne import (
     Create,
     Dot,
     FadeIn,
+    LaggedStart,
     Mobject,
     Scene,
     Square,
@@ -71,6 +74,29 @@ class Grid(Scene):
     def construct(self):
         for _ in range(3):
             self.play(FadeIn(Square()), run_time=0.1)
+
+
+class Composed(Scene):
+    """Compositions with implicit run times, and one with a run time given."""
+
+    def construct(self):
+        def part(run_time):
+            return Animation(Mobject(), run_time=run_time)
+
+        self.play(Succession(part(0.1), part(0.2)))
+        self.play(LaggedStart(part(1 / 3), part(1 / 3), lag_ratio=0.5))
+        self.play(Succession(part(0.1), part(0.2)), run_time=0.5)
+
+
+class Background(Scene):
+    """The camera's background colour changes between two waits."""
+
+    def construct(self):
+        self.add(Square())
+        self.camera.background_color = RED
+        self.wait(0.5)
+        self.camera.background_color = BLUE
+        self.wait(0.5)
 
 
 class Cue(Scene):

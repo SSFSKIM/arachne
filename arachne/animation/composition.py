@@ -157,9 +157,9 @@ class AnimationGroup(Animation):
         """The parts' start and end in group time, as exact fractions.
 
         They are the timings of :meth:`build_animations_with_timings`, computed
-        on the scene clock's exact durations instead of in floating point.
+        on the parts' exact durations instead of in floating point.
         """
-        run_times = [exact(anim.run_time) for anim in self.animations]
+        run_times = [exact(anim._exact_run_time()) for anim in self.animations]
         lag = exact(self.lag_ratio)
         starts: list[Fraction] = []
         start = Fraction(0)
@@ -168,6 +168,16 @@ class AnimationGroup(Animation):
             start += run_time * lag
         ends = [s + run_time for s, run_time in zip(starts, run_times, strict=True)]
         return starts, ends
+
+    def _exact_run_time(self) -> float | Fraction:
+        """The group's run time, exactly: when it is its parts' (no run time
+        was given, or the one given equals theirs), the latest exact end of
+        its parts, so ``Succession(Wait(0.1), Wait(0.2))`` lasts ``3/10``, not
+        the float sum ``0.30000000000000004``; else the run time given.
+        """
+        if self.animations and self.run_time == self.max_end_time:
+            return max(self._exact_timings()[1])
+        return self.run_time
 
     def interpolate(self, alpha: float) -> None:
         # Note, if the run_time of AnimationGroup has been
