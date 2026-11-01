@@ -22,6 +22,7 @@ import io
 import json
 import os
 import re
+import struct
 import subprocess
 import sys
 import zipfile
@@ -248,6 +249,49 @@ def changed_files(
     ]
 
 
+def _only_zip64_fields(extra: bytes) -> bool:
+    """Whether a zip extra field holds nothing but ZIP64 size records (id 0x0001)."""
+    pos = 0
+    while pos < len(extra):
+        if pos + 4 > len(extra):
+            return False
+        kind, size = struct.unpack("<HH", extra[pos : pos + 4])
+        if kind != 0x0001:
+            return False
+        pos += 4 + size
+    return pos == len(extra)
+
+
+def plain_container(data: bytes, z: zipfile.ZipFile) -> bool:
+    """Whether a one-member zip has exactly the layout NumPy's writer emits, and nothing else.
+
+    One local header at offset 0 (its extra field holding only ZIP64 sizes), the member's
+    compressed bytes, the central directory right after them, an optional ZIP64 end record and
+    locator, and an end record with no comment as the file's last 22 bytes: no archive or member
+    comment, no data descriptor, and no gap, prefix or trailing bytes where text could hide.
+    """
+    (info,) = z.infolist()
+    if len(data) < 22 or data[-22:-18] != b"PK\x05\x06" or data[-2:] != b"\0\0":
+        return False  # the end record is not last, or it carries a comment
+    if z.comment or info.comment or info.flag_bits & 0x08 or info.header_offset != 0:
+        return False
+    if not data.startswith(b"PK\x03\x04") or not _only_zip64_fields(info.extra):
+        return False
+    name_len, extra_len = struct.unpack("<HH", data[26:30])
+    if not _only_zip64_fields(data[30 + name_len : 30 + name_len + extra_len]):
+        return False
+    if 30 + name_len + extra_len + info.compress_size != z.start_dir:
+        return False  # bytes between the member and the central directory
+    central_end = z.start_dir + 46 + len(info.filename.encode()) + len(info.extra)
+    between = data[central_end : len(data) - 22]
+    zip64_end = (
+        len(between) == 76
+        and between[:4] == b"PK\x06\x06"
+        and between[56:60] == b"PK\x06\x07"
+    )
+    return between == b"" or zip64_end
+
+
 def npz_in_schema(data: bytes) -> tuple[bool, bytes]:
     """Whether ``data`` is a graphical-units control file: one uint8 ``frame_data`` (H,W,C) or (N,H,W,C)."""
     try:
@@ -257,7 +301,7 @@ def npz_in_schema(data: bytes) -> tuple[bool, bytes]:
         raise UsageError("numpy is needed to check .npz files") from exc
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as z:
-            if z.namelist() != ["frame_data.npy"]:
+            if z.namelist() != ["frame_data.npy"] or not plain_container(data, z):
                 return False, b""
         with np.load(io.BytesIO(data), allow_pickle=False) as npz:
             arr = npz["frame_data"]
@@ -267,23 +311,25 @@ def npz_in_schema(data: bytes) -> tuple[bool, bytes]:
     return ok, (arr.tobytes() if ok else b"")
 
 
-def check_binary(path: str, data: bytes, deny: Denylist) -> list[str]:
+def check_binary(path: str, label: str, data: bytes, deny: Denylist) -> list[str]:
+    """Rule a binary file; findings name it by ``label``, which is safe to print."""
     suffix = PurePosixPath(path).suffix.lower()
     if suffix == ".npz":
         ok, pixels = npz_in_schema(data)
         if not ok:
-            return [f"{shown(path)}: npz outside the control-data schema"]
+            return [f"{label}: npz outside the control-data schema"]
+        scanned = deny.hits_bytes(data) + deny.hits_bytes(pixels)
         return [
-            f"{shown(path)}: denylisted term #{i} in binary content"
-            for i in deny.hits_bytes(pixels)
+            f"{label}: denylisted term #{i} in binary content"
+            for i in sorted(set(scanned))
         ]
     magic = IMAGE_MAGIC.get(suffix)
     if magic is None or not data.startswith(magic):
-        return [f"{shown(path)}: binary file not allowed"]
+        return [f"{label}: binary file not allowed"]
     if suffix == ".webp" and data[8:12] != b"WEBP":
-        return [f"{shown(path)}: binary file not allowed"]
+        return [f"{label}: binary file not allowed"]
     return [
-        f"{shown(path)}: denylisted term #{i} in binary content"
+        f"{label}: denylisted term #{i} in binary content"
         for i in deny.hits_bytes(data)
     ]
 
@@ -347,10 +393,7 @@ def check_commit(
             or b"\0" in data[:BINARY_SNIFF_BYTES]
             or path.lower().endswith(".npz")
         ):
-            found = check_binary(path, data, deny)
-            if path_hits:
-                found = [f"{where}: {p.split(': ', 1)[1]}" for p in found]
-            problems += found
+            problems += check_binary(path, where, data, deny)
             continue
         for number, text in added.get(path, []):
             stats["lines"] += 1
