@@ -24,7 +24,8 @@ PACKAGE_DIR = Path(arachne.__file__).parent
 REPO_DIR = PACKAGE_DIR.parent
 DOCS_DIR = REPO_DIR / "docs" / "source"
 
-# Blocks that cannot render at all, by name, with the reason.
+# Blocks that are not frame tests, by name, with the reason: they cannot run as
+# written, or their frame does not follow the engine alone.
 _NOT_EXPORTED = (
     "uses an OpenGL mobject class that `from arachne import *` does not export; its "
     "module is not in the rendered documentation, so the block has never run"
