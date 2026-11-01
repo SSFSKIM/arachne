@@ -165,6 +165,33 @@ def _byteswap(self: FrozenArray, inplace: bool = False) -> Any:
 
 FrozenArray.byteswap = _byteswap
 
+
+def _guarded_attribute(name: str) -> property:
+    descriptor = getattr(np.ndarray, name)
+
+    def read(self: FrozenArray) -> Any:
+        return descriptor.__get__(self, type(self))
+
+    def write(self: FrozenArray, value: Any) -> None:
+        if not self._writable():
+            self._refuse()
+        descriptor.__set__(self, value)
+
+    return property(
+        read,
+        write,
+        doc=f"As ``numpy.ndarray.{name}``; assigning it on a read-only value is "
+        "refused with :class:`ValueError`.",
+    )
+
+
+# Attributes whose assignment reinterprets the buffer in place (dtype, shape,
+# strides) or writes into it (real, imag, flat), which numpy allows or refuses
+# without naming the fix.
+for _name in ("dtype", "shape", "strides", "real", "imag", "flat"):
+    setattr(FrozenArray, _name, _guarded_attribute(_name))
+del _name
+
 # The numpy functions that write into their first argument, by its name.
 _WRITING_FUNCTIONS: dict[Callable[..., Any], str] = {
     np.copyto: "dst",
@@ -350,6 +377,11 @@ class Paint:
         return key
 
     def __setattr__(self, name: str, value: Any) -> NoReturn:
+        raise AttributeError(
+            "A Paint is immutable: build a new one with paint.replace(...)"
+        )
+
+    def __delattr__(self, name: str) -> NoReturn:
         raise AttributeError(
             "A Paint is immutable: build a new one with paint.replace(...)"
         )

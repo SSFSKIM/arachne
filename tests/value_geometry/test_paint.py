@@ -105,6 +105,36 @@ def test_a_paint_is_immutable():
     assert paint.stroke_width != 9
 
 
+def test_a_paint_refuses_deletion_and_keeps_its_key():
+    paint = Square().paint
+    key = paint.key
+    with pytest.raises(AttributeError, match="replace"):
+        del paint.stroke_width
+    with pytest.raises(AttributeError, match="replace"):
+        del paint.sheen_factor
+    assert paint.stroke_width == Square().paint.stroke_width
+    assert paint.key == key == Paint(**paint.fields()).key
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        pytest.param("dtype", np.int64, id="dtype"),
+        pytest.param("shape", (-1,), id="shape"),
+        pytest.param("strides", (8, 8), id="strides"),
+    ],
+)
+def test_a_paint_array_cant_be_reinterpreted_under_its_key(name, value):
+    paint = Square().paint
+    key = paint.key
+    before = np.array(paint.fill_rgbas)
+    with pytest.raises(ValueError, match="set_fill"):
+        setattr(paint.fill_rgbas, name, value)
+    np.testing.assert_array_equal(paint.fill_rgbas, before)
+    assert paint.fill_rgbas.dtype == before.dtype
+    assert paint.key == key == Paint(**paint.fields()).key
+
+
 def test_an_unset_field_reads_as_missing():
     assert not hasattr(EMPTY_PAINT, "fill_rgbas")
     mob = VMobject.__new__(VMobject)
