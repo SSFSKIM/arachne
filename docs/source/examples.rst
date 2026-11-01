@@ -28,7 +28,7 @@ Enjoy this taste of Manim!
 Basic Concepts
 ==============
 
-.. manim:: ManimCELogo
+.. arachne:: ManimCELogo
     :save_last_frame:
     :ref_classes: MathTex Circle Square Triangle
 
@@ -50,7 +50,7 @@ Basic Concepts
 
 
 
-.. manim:: BraceAnnotation
+.. arachne:: BraceAnnotation
     :save_last_frame:
     :ref_classes: Brace
     :ref_methods: Brace.get_text Brace.get_tex
@@ -66,7 +66,7 @@ Basic Concepts
             b2text = b2.get_tex("x-x_1")
             self.add(line, dot, dot2, b1, b2, b1text, b2text)
 
-.. manim:: VectorArrow
+.. arachne:: VectorArrow
     :save_last_frame:
     :ref_classes: Dot Arrow NumberPlane Text
 
@@ -79,7 +79,7 @@ Basic Concepts
             tip_text = Text('(2, 2)').next_to(arrow.get_end(), RIGHT)
             self.add(numberplane, dot, arrow, origin_text, tip_text)
 
-.. manim:: GradientImageFromArray
+.. arachne:: GradientImageFromArray
     :save_last_frame:
     :ref_classes: ImageMobject
 
@@ -93,7 +93,7 @@ Basic Concepts
             image.background_rectangle = SurroundingRectangle(image, color=GREEN)
             self.add(image, image.background_rectangle)
 
-.. manim:: BooleanOperations
+.. arachne:: BooleanOperations
     :ref_classes: Union Intersection Exclusion Difference
 
     class BooleanOperations(Scene):
@@ -133,7 +133,7 @@ Basic Concepts
 Animations
 ==========
 
-.. manim:: PointMovingOnShapes
+.. arachne:: PointMovingOnShapes
     :ref_classes: Circle Dot Line GrowFromCenter Transform MoveAlongPath Rotating
 
     class PointMovingOnShapes(Scene):
@@ -152,7 +152,7 @@ Animations
             self.play(Rotating(dot, about_point=[2, 0, 0]), run_time=1.5)
             self.wait()
 
-.. manim:: MovingAround
+.. arachne:: MovingAround
     :ref_methods: Mobject.shift VMobject.set_fill Mobject.scale Mobject.rotate
 
     class MovingAround(Scene):
@@ -164,7 +164,7 @@ Animations
             self.play(square.animate.scale(0.3))
             self.play(square.animate.rotate(0.4))
 
-.. manim:: MovingAngle
+.. arachne:: MovingAngle
     :ref_classes: Angle
     :ref_methods: Mobject.rotate
 
@@ -215,7 +215,7 @@ Animations
 
    You can use multiple ValueTrackers simultaneously.
 
-.. manim:: MovingDots
+.. arachne:: MovingDots
 
     class MovingDots(Scene):
         def construct(self):
@@ -232,7 +232,7 @@ Animations
             self.play(y.animate.set_value(4))
             self.wait()
 
-.. manim:: MovingGroupToDestination
+.. arachne:: MovingGroupToDestination
 
     class MovingGroupToDestination(Scene):
         def construct(self):
@@ -242,8 +242,8 @@ Animations
             self.play(group.animate.shift(dest.get_center() - group[2].get_center()))
             self.wait(0.5)
 
-.. manim:: MovingFrameBox
-    :ref_modules: manim.mobject.svg.tex_mobject
+.. arachne:: MovingFrameBox
+    :ref_modules: arachne.mobject.svg.tex_mobject
     :ref_classes: MathTex SurroundingRectangle
 
     class MovingFrameBox(Scene):
@@ -264,7 +264,7 @@ Animations
             )
             self.wait()
 
-.. manim:: RotationUpdater
+.. arachne:: RotationUpdater
     :ref_methods: Mobject.add_updater Mobject.remove_updater
 
     class RotationUpdater(Scene):
@@ -284,7 +284,7 @@ Animations
             line_moving.remove_updater(updater_back)
             self.wait(0.5)
 
-.. manim:: PointWithTrace
+.. arachne:: PointWithTrace
     :ref_classes: Rotating
     :ref_methods: VMobject.set_points_as_corners Mobject.add_updater
 
@@ -309,9 +309,9 @@ Animations
 Plotting with Manim
 ===================
 
-.. manim:: SinAndCosFunctionPlot
+.. arachne:: SinAndCosFunctionPlot
     :save_last_frame:
-    :ref_modules: manim.mobject.coordinate_systems
+    :ref_modules: arachne.mobject.coordinate_systems
     :ref_classes: MathTex
     :ref_methods: Axes.plot Axes.get_vertical_line_to_graph Axes.input_to_graph_point Axes.get_axis_labels
 
@@ -350,7 +350,7 @@ Plotting with Manim
 
 
 
-.. manim:: ArgMinExample
+.. arachne:: ArgMinExample
 
    class ArgMinExample(Scene):
        def construct(self):
@@ -376,9 +376,9 @@ Plotting with Manim
            self.play(t.animate.set_value(x_space[minimum_index]))
            self.wait()
 
-.. manim:: GraphAreaPlot
+.. arachne:: GraphAreaPlot
     :save_last_frame:
-    :ref_modules: manim.mobject.coordinate_systems
+    :ref_modules: arachne.mobject.coordinate_systems
     :ref_methods: Axes.plot Axes.get_vertical_line_to_graph Axes.get_area Axes.get_axis_labels
 
     class GraphAreaPlot(Scene):
@@ -407,7 +407,7 @@ Plotting with Manim
 
             self.add(ax, labels, curve_1, curve_2, line_1, line_2, riemann_area, area)
 
-.. manim:: PolygonOnAxes
+.. arachne:: PolygonOnAxes
     :ref_classes: Axes Polygon
 
     class PolygonOnAxes(Scene):
@@ -465,9 +465,9 @@ Plotting with Manim
             self.play(t.animate.set_value(5))
 
 
-.. manim:: HeatDiagramPlot
+.. arachne:: HeatDiagramPlot
     :save_last_frame:
-    :ref_modules: manim.mobject.coordinate_systems
+    :ref_modules: arachne.mobject.coordinate_systems
     :ref_methods: Axes.plot_line_graph Axes.get_axis_labels
 
     class HeatDiagramPlot(Scene):
@@ -495,8 +495,8 @@ Plotting with Manim
 Special Camera Settings
 =======================
 
-.. manim:: FollowingGraphCamera
-    :ref_modules: manim.scene.moving_camera_scene
+.. arachne:: FollowingGraphCamera
+    :ref_modules: arachne.scene.moving_camera_scene
     :ref_classes: MovingCameraScene MoveAlongPath Restore
     :ref_methods: Axes.plot Mobject.add_updater
 
@@ -526,8 +526,8 @@ Special Camera Settings
 
             self.play(Restore(self.camera.frame))
 
-.. manim:: MovingZoomedSceneAround
-    :ref_modules: manim.scene.zoomed_scene
+.. arachne:: MovingZoomedSceneAround
+    :ref_modules: arachne.scene.zoomed_scene
     :ref_classes: ZoomedScene BackgroundRectangle UpdateFromFunc
     :ref_methods: Mobject.add_updater ZoomedScene.get_zoomed_display_pop_out_animation
 
@@ -595,7 +595,7 @@ Special Camera Settings
             self.play(Uncreate(zoomed_display_frame), FadeOut(frame))
             self.wait()
 
-.. manim:: FixedInFrameMObjectTest
+.. arachne:: FixedInFrameMObjectTest
     :save_last_frame:
     :ref_classes: ThreeDScene
     :ref_methods: ThreeDScene.set_camera_orientation ThreeDScene.add_fixed_in_frame_mobjects
@@ -610,7 +610,7 @@ Special Camera Settings
             self.add(axes)
             self.wait()
 
-.. manim:: ThreeDLightSourcePosition
+.. arachne:: ThreeDLightSourcePosition
     :save_last_frame:
     :ref_classes: ThreeDScene ThreeDAxes Surface
     :ref_methods: ThreeDScene.set_camera_orientation
@@ -631,7 +631,7 @@ Special Camera Settings
             self.add(axes, sphere)
 
 
-.. manim:: ThreeDCameraRotation
+.. arachne:: ThreeDCameraRotation
     :ref_classes: ThreeDScene ThreeDAxes
     :ref_methods: ThreeDScene.begin_ambient_camera_rotation ThreeDScene.stop_ambient_camera_rotation
 
@@ -647,7 +647,7 @@ Special Camera Settings
             self.move_camera(phi=75 * DEGREES, theta=30 * DEGREES)
             self.wait()
 
-.. manim:: ThreeDCameraIllusionRotation
+.. arachne:: ThreeDCameraIllusionRotation
     :ref_classes: ThreeDScene ThreeDAxes
     :ref_methods: ThreeDScene.begin_3dillusion_camera_rotation ThreeDScene.stop_3dillusion_camera_rotation
 
@@ -661,7 +661,7 @@ Special Camera Settings
             self.wait(PI/2)
             self.stop_3dillusion_camera_rotation()
 
-.. manim:: ThreeDSurfacePlot
+.. arachne:: ThreeDSurfacePlot
    :save_last_frame:
    :ref_classes: ThreeDScene Surface
 
@@ -697,7 +697,7 @@ Special Camera Settings
 Advanced Projects
 =================
 
-.. manim:: OpeningManim
+.. arachne:: OpeningManim
     :ref_classes: Tex MathTex Write FadeIn LaggedStart NumberPlane Create
     :ref_methods: NumberPlane.prepare_for_nonlinear_transform
 
@@ -754,7 +754,7 @@ Advanced Projects
             self.play(Transform(grid_title, grid_transform_title))
             self.wait()
 
-.. manim:: SineCurveUnitCircle
+.. arachne:: SineCurveUnitCircle
     :ref_classes: MathTex Circle Dot Line VGroup
     :ref_methods: Mobject.add_updater Mobject.remove_updater
     :ref_functions: always_redraw

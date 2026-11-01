@@ -5,8 +5,8 @@ from io import StringIO
 
 import pytest
 
-from manim import RED, WHITE
-from manim.mobject.text.text_mobject import MarkupText, Text
+from arachne import RED, WHITE
+from arachne.mobject.text.text_mobject import MarkupText, Text
 
 
 def test_font_size():

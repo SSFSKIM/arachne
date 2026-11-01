@@ -1,8 +1,8 @@
-from manim.constants import LEFT
-from manim.mobject.graphing.probability import BarChart
-from manim.mobject.text.tex_mobject import MathTex
-from manim.utils.color import BLUE, GREEN, PURE_YELLOW, RED, WHITE
-from manim.utils.testing.frames_comparison import frames_comparison
+from arachne.constants import LEFT
+from arachne.mobject.graphing.probability import BarChart
+from arachne.mobject.text.tex_mobject import MathTex
+from arachne.utils.color import BLUE, GREEN, PURE_YELLOW, RED, WHITE
+from arachne.utils.testing.frames_comparison import frames_comparison
 
 __module_test__ = "probability"
 

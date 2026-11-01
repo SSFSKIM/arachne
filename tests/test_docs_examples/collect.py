@@ -1,8 +1,8 @@
-"""Collect the documentation examples: every ``.. manim::`` block that Sphinx renders.
+"""Collect the documentation examples: every ``.. arachne::`` block that Sphinx renders.
 
 Blocks come from the package's docstrings (every bare string statement, which covers
 module, class, function and attribute docstrings) and from ``docs/source/**/*.rst``.
-A ``.. manim::`` line inside a literal block (after a paragraph ending in ``::`` or
+A ``.. arachne::`` line inside a literal block (after a paragraph ending in ``::`` or
 inside a ``code``/``code-block`` directive) only shows the syntax and is not a block.
 
 Each block becomes one :class:`DocsExample`. Names are the block's scene class name;
@@ -18,15 +18,15 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-import manim
+import arachne
 
-PACKAGE_DIR = Path(manim.__file__).parent
+PACKAGE_DIR = Path(arachne.__file__).parent
 REPO_DIR = PACKAGE_DIR.parent
 DOCS_DIR = REPO_DIR / "docs" / "source"
 
 # Blocks that cannot render at all, by name, with the reason.
 _NOT_EXPORTED = (
-    "uses an OpenGL mobject class that `from manim import *` does not export; its "
+    "uses an OpenGL mobject class that `from arachne import *` does not export; its "
     "module is not in the rendered documentation, so the block has never run"
 )
 EXCLUDED: dict[str, str] = {
@@ -47,7 +47,7 @@ EXCLUDED: dict[str, str] = {
 }
 
 # Directive syntax as docutils reads it: one optional space before the ``::``.
-_DIRECTIVE = re.compile(r"^(?P<indent>\s*)\.\.[ ]+manim[ ]?::[ ]+(?P<scene>\S+)\s*$")
+_DIRECTIVE = re.compile(r"^(?P<indent>\s*)\.\.[ ]+arachne[ ]?::[ ]+(?P<scene>\S+)\s*$")
 _LITERAL_DIRECTIVE = re.compile(
     r"^\s*\.\.[ ]+(code|code-block|sourcecode|literalinclude|parsed-literal)[ ]?::"
 )
@@ -56,7 +56,7 @@ _ANY_DIRECTIVE = re.compile(r"^\s*\.\.[ ]+[\w:+.-]+[ ]?::")
 
 @dataclass(frozen=True)
 class DocsExample:
-    """One ``.. manim::`` block."""
+    """One ``.. arachne::`` block."""
 
     name: str
     scene: str

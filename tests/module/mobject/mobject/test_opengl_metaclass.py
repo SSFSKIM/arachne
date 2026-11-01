@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from manim import Mobject
-from manim.mobject.opengl.opengl_compatibility import ConvertToOpenGL
-from manim.mobject.opengl.opengl_mobject import OpenGLMobject
+from arachne import Mobject
+from arachne.mobject.opengl.opengl_compatibility import ConvertToOpenGL
+from arachne.mobject.opengl.opengl_mobject import OpenGLMobject
 
 
 def test_metaclass_registry(config):

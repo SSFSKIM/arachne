@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from manim import Animation, override_animation
-from manim.mobject.opengl.opengl_mobject import OpenGLMobject
-from manim.utils.exceptions import MultiAnimationOverrideException
+from arachne import Animation, override_animation
+from arachne.mobject.opengl.opengl_mobject import OpenGLMobject
+from arachne.utils.exceptions import MultiAnimationOverrideException
 
 
 class AnimationA1(Animation):

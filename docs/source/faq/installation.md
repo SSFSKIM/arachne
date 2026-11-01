@@ -58,7 +58,7 @@ You can! The thing that usually gives it away is the `import` statement
 at the top of the file; depending on how the code imports Manim you can tell
 for which version of the code it was written for:
 
-- If the code imports from `manim` (i.e., `from manim import *`, `import manim as mn`, etc.),
+- If the code imports from `manim` (i.e., `from arachne import *`, `import arachne as mn`, etc.),
   then the code you are reading is supposed to be run with the community maintained version.
 - If the import reads `import manimlib` (or `from manimlib import *`), you are likely
   reading a file to be rendered with ManimGL.

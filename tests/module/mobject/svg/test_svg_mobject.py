@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from manim import *
+from arachne import *
 from tests.helpers.path_utils import get_svg_resource
 
 

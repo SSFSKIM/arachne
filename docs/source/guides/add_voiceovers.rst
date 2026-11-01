@@ -34,7 +34,7 @@ and then record it during rendering:
 
 .. code-block:: python
 
-    from manim import *
+    from arachne import *
     from manim_voiceover import VoiceoverScene
     from manim_voiceover.services.recorder import RecorderService
 

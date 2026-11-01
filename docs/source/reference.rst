@@ -15,88 +15,88 @@ Animations
 **********
 
 .. inheritance-diagram::
-   manim.animation.animation
-   manim.animation.changing
-   manim.animation.composition
-   manim.animation.creation
-   manim.animation.fading
-   manim.animation.growing
-   manim.animation.indication
-   manim.animation.movement
-   manim.animation.numbers
-   manim.animation.rotation
-   manim.animation.specialized
-   manim.animation.speedmodifier
-   manim.animation.transform
-   manim.animation.transform_matching_parts
-   manim.animation.updaters.mobject_update_utils
-   manim.animation.updaters.update
+   arachne.animation.animation
+   arachne.animation.changing
+   arachne.animation.composition
+   arachne.animation.creation
+   arachne.animation.fading
+   arachne.animation.growing
+   arachne.animation.indication
+   arachne.animation.movement
+   arachne.animation.numbers
+   arachne.animation.rotation
+   arachne.animation.specialized
+   arachne.animation.speedmodifier
+   arachne.animation.transform
+   arachne.animation.transform_matching_parts
+   arachne.animation.updaters.mobject_update_utils
+   arachne.animation.updaters.update
    :parts: 1
-   :top-classes: manim.animation.animation.Animation
+   :top-classes: arachne.animation.animation.Animation
 
 Cameras
 *******
 
 .. inheritance-diagram::
-   manim.camera.camera
-   manim.camera.mapping_camera
-   manim.camera.moving_camera
-   manim.camera.multi_camera
-   manim.camera.three_d_camera
+   arachne.camera.camera
+   arachne.camera.mapping_camera
+   arachne.camera.moving_camera
+   arachne.camera.multi_camera
+   arachne.camera.three_d_camera
    :parts: 1
-   :top-classes: manim.camera.camera.Camera, manim.mobject.mobject.Mobject
+   :top-classes: arachne.camera.camera.Camera, arachne.mobject.mobject.Mobject
 
 Mobjects
 ********
 
 .. inheritance-diagram::
-   manim.mobject.frame
-   manim.mobject.geometry.arc
-   manim.mobject.geometry.boolean_ops
-   manim.mobject.geometry.line
-   manim.mobject.geometry.polygram
-   manim.mobject.geometry.shape_matchers
-   manim.mobject.geometry.tips
-   manim.mobject.graph
-   manim.mobject.graphing.coordinate_systems
-   manim.mobject.graphing.functions
-   manim.mobject.graphing.number_line
-   manim.mobject.graphing.probability
-   manim.mobject.graphing.scale
-   manim.mobject.logo
-   manim.mobject.matrix
-   manim.mobject.mobject
-   manim.mobject.table
-   manim.mobject.three_d.polyhedra
-   manim.mobject.three_d.three_d_utils
-   manim.mobject.three_d.three_dimensions
-   manim.mobject.svg.brace
-   manim.mobject.svg.svg_mobject
-   manim.mobject.text.code_mobject
-   manim.mobject.text.numbers
-   manim.mobject.text.tex_mobject
-   manim.mobject.text.text_mobject
-   manim.mobject.text.typst_mobject
-   manim.mobject.types.image_mobject
-   manim.mobject.types.point_cloud_mobject
-   manim.mobject.types.vectorized_mobject
-   manim.mobject.value_tracker
-   manim.mobject.vector_field
+   arachne.mobject.frame
+   arachne.mobject.geometry.arc
+   arachne.mobject.geometry.boolean_ops
+   arachne.mobject.geometry.line
+   arachne.mobject.geometry.polygram
+   arachne.mobject.geometry.shape_matchers
+   arachne.mobject.geometry.tips
+   arachne.mobject.graph
+   arachne.mobject.graphing.coordinate_systems
+   arachne.mobject.graphing.functions
+   arachne.mobject.graphing.number_line
+   arachne.mobject.graphing.probability
+   arachne.mobject.graphing.scale
+   arachne.mobject.logo
+   arachne.mobject.matrix
+   arachne.mobject.mobject
+   arachne.mobject.table
+   arachne.mobject.three_d.polyhedra
+   arachne.mobject.three_d.three_d_utils
+   arachne.mobject.three_d.three_dimensions
+   arachne.mobject.svg.brace
+   arachne.mobject.svg.svg_mobject
+   arachne.mobject.text.code_mobject
+   arachne.mobject.text.numbers
+   arachne.mobject.text.tex_mobject
+   arachne.mobject.text.text_mobject
+   arachne.mobject.text.typst_mobject
+   arachne.mobject.types.image_mobject
+   arachne.mobject.types.point_cloud_mobject
+   arachne.mobject.types.vectorized_mobject
+   arachne.mobject.value_tracker
+   arachne.mobject.vector_field
    :parts: 1
-   :top-classes: manim.mobject.mobject.Mobject
+   :top-classes: arachne.mobject.mobject.Mobject
 
 Scenes
 ******
 
 .. inheritance-diagram::
-   manim.scene.moving_camera_scene
-   manim.scene.scene
-   manim.scene.scene_file_writer
-   manim.scene.three_d_scene
-   manim.scene.vector_space_scene
-   manim.scene.zoomed_scene
+   arachne.scene.moving_camera_scene
+   arachne.scene.scene
+   arachne.scene.scene_file_writer
+   arachne.scene.three_d_scene
+   arachne.scene.vector_space_scene
+   arachne.scene.zoomed_scene
    :parts: 1
-   :top-classes: manim.scene.scene.Scene, manim.scene.scene.RerunSceneHandler
+   :top-classes: arachne.scene.scene.Scene, arachne.scene.scene.RerunSceneHandler
 
 
 Module Index

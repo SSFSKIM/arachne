@@ -8,13 +8,13 @@ from unittest.mock import Mock, patch
 import pytest
 import srt
 
-from manim import Manager, Scene, tempconfig
-from manim._config.output import OutputFormat
-from manim.animation.animation import Wait
-from manim.constants import RendererType
-from manim.renderer.protocol import RendererCapabilities
-from manim.scene.scene import SceneInteractRerun
-from manim.utils.exceptions import EndSceneEarlyException, RerunSceneException
+from arachne import Manager, Scene, tempconfig
+from arachne._config.output import OutputFormat
+from arachne.animation.animation import Wait
+from arachne.constants import RendererType
+from arachne.renderer.protocol import RendererCapabilities
+from arachne.scene.scene import SceneInteractRerun
+from arachne.utils.exceptions import EndSceneEarlyException, RerunSceneException
 
 
 def test_manager_attaches_to_existing_scene(dry_run):
@@ -92,7 +92,7 @@ def test_manager_warns_when_automatic_video_falls_back_to_still(config):
     renderer.file_writer.final_file_path = "scene.png"
     manager = Manager(scene)
 
-    with patch("manim.manager.logger.warning") as warning:
+    with patch("arachne.manager.logger.warning") as warning:
         manager.post_construct()
 
     renderer.scene_finished.assert_called_once_with(scene)

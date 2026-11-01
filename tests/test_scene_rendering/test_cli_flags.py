@@ -8,9 +8,9 @@ import pytest
 from click.testing import CliRunner
 from PIL import Image
 
-from manim import capture, get_video_metadata
-from manim.__main__ import __version__, main
-from manim.utils.file_ops import add_version_before_extension
+from arachne import capture, get_video_metadata
+from arachne.__main__ import __version__, main
+from arachne.utils.file_ops import add_version_before_extension
 
 from ..utils.video_tester import video_comparison
 
@@ -25,7 +25,7 @@ def test_basic_scene_with_default_values(tmp_path, manim_cfg_file, simple_scenes
     command = [
         sys.executable,
         "-m",
-        "manim",
+        "arachne",
         "--media_dir",
         str(tmp_path),
         str(simple_scenes_path),
@@ -53,7 +53,7 @@ def test_resolution_flag(tmp_path, manim_cfg_file, simple_scenes_path):
         command = [
             sys.executable,
             "-m",
-            "manim",
+            "arachne",
             "--media_dir",
             str(tmp_path),
             "--resolution",
@@ -82,7 +82,7 @@ def test_basic_scene_l_flag(tmp_path, manim_cfg_file, simple_scenes_path):
     command = [
         sys.executable,
         "-m",
-        "manim",
+        "arachne",
         "-ql",
         "--media_dir",
         str(tmp_path),
@@ -103,7 +103,7 @@ def test_n_flag(tmp_path, simple_scenes_path):
     command = [
         sys.executable,
         "-m",
-        "manim",
+        "arachne",
         "-ql",
         "-n 3,6",
         "--media_dir",
@@ -121,7 +121,7 @@ def test_s_flag_no_animations(tmp_path, manim_cfg_file, simple_scenes_path):
     command = [
         sys.executable,
         "-m",
-        "manim",
+        "arachne",
         "-ql",
         "-s",
         "--media_dir",
@@ -146,7 +146,7 @@ def test_s_flag(tmp_path, manim_cfg_file, simple_scenes_path, still_flag):
     command = [
         sys.executable,
         "-m",
-        "manim",
+        "arachne",
         "-ql",
         still_flag,
         "--media_dir",
@@ -170,7 +170,7 @@ def test_s_flag_opengl_renderer(tmp_path, manim_cfg_file, simple_scenes_path):
     command = [
         sys.executable,
         "-m",
-        "manim",
+        "arachne",
         "-ql",
         "-s",
         "--renderer",
@@ -196,7 +196,7 @@ def test_r_flag(tmp_path, manim_cfg_file, simple_scenes_path):
     command = [
         sys.executable,
         "-m",
-        "manim",
+        "arachne",
         "-ql",
         "-s",
         "--media_dir",
@@ -223,7 +223,7 @@ def test_a_flag(tmp_path, manim_cfg_file, infallible_scenes_path):
     command = [
         sys.executable,
         "-m",
-        "manim",
+        "arachne",
         "-ql",
         "--media_dir",
         str(tmp_path),
@@ -239,7 +239,7 @@ def test_a_flag(tmp_path, manim_cfg_file, infallible_scenes_path):
     assert one_is_not_empty, "running manim with -a flag did not render the first scene"
 
     two_is_not_empty = (
-        tmp_path / "images" / "infallible_scenes" / f"Wait2_ManimCE_v{__version__}.png"
+        tmp_path / "images" / "infallible_scenes" / f"Wait2_Arachne_v{__version__}.png"
     ).is_file()
     assert two_is_not_empty, (
         "running manim with -a flag did not render an image, possible leak of the config dictionary."
@@ -268,7 +268,7 @@ def test_output_file_rejects_multi_scene_render(
     command = [
         sys.executable,
         "-m",
-        "manim",
+        "arachne",
         "--media_dir",
         str(tmp_path),
         "-o",
@@ -295,7 +295,7 @@ def test_custom_output_name_gif(tmp_path, simple_scenes_path):
     command = [
         sys.executable,
         "-m",
-        "manim",
+        "arachne",
         "-ql",
         "--media_dir",
         str(tmp_path),
@@ -339,7 +339,7 @@ def test_custom_output_name_mp4(tmp_path, simple_scenes_path):
     command = [
         sys.executable,
         "-m",
-        "manim",
+        "arachne",
         "-ql",
         "--media_dir",
         str(tmp_path),
@@ -404,7 +404,7 @@ def test_gif_format_output(tmp_path, manim_cfg_file, simple_scenes_path):
     command = [
         sys.executable,
         "-m",
-        "manim",
+        "arachne",
         "-ql",
         "--media_dir",
         str(tmp_path),
@@ -436,7 +436,7 @@ def test_mp4_format_output(tmp_path, manim_cfg_file, simple_scenes_path):
     command = [
         sys.executable,
         "-m",
-        "manim",
+        "arachne",
         "-ql",
         "--media_dir",
         str(tmp_path),
@@ -474,7 +474,7 @@ def test_videos_not_created_when_png_format_set(
     command = [
         sys.executable,
         "-m",
-        "manim",
+        "arachne",
         "-ql",
         "--media_dir",
         str(tmp_path),
@@ -512,7 +512,7 @@ def test_images_are_created_when_png_sequence_format_set(
     command = [
         sys.executable,
         "-m",
-        "manim",
+        "arachne",
         "-ql",
         "--media_dir",
         str(tmp_path),
@@ -541,7 +541,7 @@ def test_images_are_created_when_png_sequence_format_set_for_opengl(
     command = [
         sys.executable,
         "-m",
-        "manim",
+        "arachne",
         "-ql",
         "--renderer",
         "opengl",
@@ -572,7 +572,7 @@ def test_png_sequence_images_are_zero_padded(
     command = [
         sys.executable,
         "-m",
-        "manim",
+        "arachne",
         "-ql",
         "--media_dir",
         str(tmp_path),
@@ -607,7 +607,7 @@ def test_opengl_png_sequence_images_are_zero_padded(
     command = [
         sys.executable,
         "-m",
-        "manim",
+        "arachne",
         "-ql",
         "--renderer",
         "opengl",
@@ -640,7 +640,7 @@ def test_webm_format_output(tmp_path, manim_cfg_file, simple_scenes_path):
     command = [
         sys.executable,
         "-m",
-        "manim",
+        "arachne",
         "-ql",
         "--media_dir",
         str(tmp_path),
@@ -678,7 +678,7 @@ def test_default_format_output_for_transparent_flag(
     command = [
         sys.executable,
         "-m",
-        "manim",
+        "arachne",
         "-ql",
         "--media_dir",
         str(tmp_path),
@@ -711,7 +711,7 @@ def test_mov_can_be_set_as_output_format(tmp_path, manim_cfg_file, simple_scenes
     command = [
         sys.executable,
         "-m",
-        "manim",
+        "arachne",
         "-ql",
         "--media_dir",
         str(tmp_path),
@@ -744,7 +744,7 @@ def test_reproducible_animation(tmp_path: Path, manim_cfg_file, simple_scenes_pa
     command = [
         sys.executable,
         "-m",
-        "manim",
+        "arachne",
         "-ql",
         "--media_dir",
         str(tmp_path),
@@ -761,7 +761,7 @@ def test_reproducible_animation(tmp_path: Path, manim_cfg_file, simple_scenes_pa
     command = [
         sys.executable,
         "-m",
-        "manim",
+        "arachne",
         "-ql",
         "--media_dir",
         str(tmp_path),
@@ -788,7 +788,7 @@ def test_reproducible_animation(tmp_path: Path, manim_cfg_file, simple_scenes_pa
 )
 def test_input_file_via_cfg(tmp_path, manim_cfg_file, simple_scenes_path):
     scene_name = "SquareToCircle"
-    (tmp_path / "manim.cfg").write_text(
+    (tmp_path / "arachne.cfg").write_text(
         f"""
 [CLI]
 input_file = {simple_scenes_path}
@@ -798,7 +798,7 @@ input_file = {simple_scenes_path}
     command = [
         sys.executable,
         "-m",
-        "manim",
+        "arachne",
         "-ql",
         "--media_dir",
         ".",
@@ -824,7 +824,7 @@ dry_run = true
     command = [
         sys.executable,
         "-m",
-        "manim",
+        "arachne",
         "--config_file",
         str(config_file),
         "--media_dir",

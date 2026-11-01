@@ -8,7 +8,7 @@ Quickstart
   following the steps in :doc:`../installation`. For
   information on using Manim with Jupyterlab or Jupyter notebook, go to the
   documentation for the
-  :meth:`IPython magic command <manim.utils.ipython_magic.ManimMagic.manim>`,
+  :meth:`IPython magic command <arachne.utils.ipython_magic.ManimMagic.manim>`,
   ``%%manim``.
 
 
@@ -54,7 +54,7 @@ Animating a circle
 
    .. code-block:: python
 
-     from manim import *
+     from arachne import *
 
 
      class CreateCircle(Scene):
@@ -74,7 +74,7 @@ Animating a circle
 Manim will output rendering information, then create an MP4 file.
 Your default movie player will play the MP4 file, displaying the following animation.
 
-.. manim:: CreateCircle
+.. arachne:: CreateCircle
    :hide_source:
 
    class CreateCircle(Scene):
@@ -104,7 +104,7 @@ The first line imports all of the contents of the library:
 
 .. code-block:: python
 
-   from manim import *
+   from arachne import *
 
 This is the recommended way of using Manim, as a single script often uses
 multiple names from the Manim namespace. In your script, you imported and used
@@ -170,7 +170,7 @@ With our circle animation complete, let's move on to something a little more com
 
 The following animation will render:
 
-.. manim:: SquareToCircle2
+.. arachne:: SquareToCircle2
    :hide_source:
 
    class SquareToCircle2(Scene):
@@ -218,7 +218,7 @@ Next, let's go over some basic techniques for positioning ``Mobject``\s.
 
 The following animation will render:
 
-.. manim:: SquareAndCircle2
+.. arachne:: SquareAndCircle2
    :hide_source:
 
    class SquareAndCircle2(Scene):
@@ -284,7 +284,7 @@ and animating those method calls with ``.animate``.
 
 The following animation will render:
 
-.. manim:: AnimatedSquareToCircle2
+.. arachne:: AnimatedSquareToCircle2
    :hide_source:
 
    class AnimatedSquareToCircle2(Scene):
@@ -326,7 +326,7 @@ Try other methods, like ``flip`` or ``shift``, and see what happens.
 
 The following animation will render:
 
-.. manim:: DifferentRotations2
+.. arachne:: DifferentRotations2
    :hide_source:
 
    class DifferentRotations2(Scene):
@@ -386,7 +386,7 @@ The use of ``ReplacementTransform`` or ``Transform`` is mostly up to personal pr
 However, in some cases it is more beneficial to use ``Transform``, like when you are transforming several mobjects one after the other.
 The code below avoids having to keep a reference to the last mobject that was transformed.
 
-.. manim:: TransformCycle
+.. arachne:: TransformCycle
 
     class TransformCycle(Scene):
         def construct(self):

@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
 
-from manim.utils.space_ops import *
-from manim.utils.space_ops import shoelace
+from arachne.utils.space_ops import *
+from arachne.utils.space_ops import shoelace
 
 
 def test_rotate_vector():

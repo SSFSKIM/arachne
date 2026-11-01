@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from manim import (
+from arachne import (
     BLUE,
     Circle,
     Difference,
@@ -13,7 +13,7 @@ from manim import (
 )
 
 # not exported by default, so directly import
-from manim.utils.testing.frames_comparison import frames_comparison
+from arachne.utils.testing.frames_comparison import frames_comparison
 
 __module_test__ = "boolean_ops"
 

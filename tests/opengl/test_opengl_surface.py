@@ -1,7 +1,7 @@
 import numpy as np
 
-from manim.mobject.opengl.opengl_surface import OpenGLSurface
-from manim.mobject.opengl.opengl_three_dimensions import OpenGLSurfaceMesh
+from arachne.mobject.opengl.opengl_surface import OpenGLSurface
+from arachne.mobject.opengl.opengl_three_dimensions import OpenGLSurfaceMesh
 
 
 def test_surface_initialization(using_opengl_renderer):

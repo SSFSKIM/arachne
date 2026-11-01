@@ -60,7 +60,7 @@ on the screen when it is not being animated.  To remove a mobject from the
 screen, simply call the :meth:`~.Scene.remove` method from the containing
 :class:`.Scene`.
 
-.. manim:: CreatingMobjects
+.. arachne:: CreatingMobjects
 
     class CreatingMobjects(Scene):
         def construct(self):
@@ -78,7 +78,7 @@ Let's define a new :class:`.Scene` called ``Shapes`` and :meth:`~.Scene.add`
 some mobjects to it.  This script generates a static picture that displays a
 circle, a square, and a triangle:
 
-.. manim:: Shapes
+.. arachne:: Shapes
 
     class Shapes(Scene):
         def construct(self):
@@ -109,7 +109,7 @@ There are many other possible ways to place mobjects on the screen, for example
 :meth:`.move_to`, :meth:`.next_to`, and :meth:`.align_to`.  The next scene
 ``MobjectPlacement`` uses all three.
 
-.. manim:: MobjectPlacement
+.. arachne:: MobjectPlacement
 
     class MobjectPlacement(Scene):
         def construct(self):
@@ -156,7 +156,7 @@ Styling mobjects
 
 The following scene changes the default aesthetics of the mobjects.
 
-.. manim:: MobjectStyling
+.. arachne:: MobjectStyling
 
     class MobjectStyling(Scene):
         def construct(self):
@@ -191,7 +191,7 @@ Mobject on-screen order
 The next scene is exactly the same as the ``MobjectStyling`` scene from the
 previous section, except for exactly one line.
 
-.. manim:: MobjectZOrder
+.. arachne:: MobjectZOrder
 
     class MobjectZOrder(Scene):
         def construct(self):
@@ -223,7 +223,7 @@ Animations
 At the heart of manim is animation.  Generally, you can add an animation to
 your scene by calling the :meth:`~.Scene.play` method.
 
-.. manim:: SomeAnimations
+.. arachne:: SomeAnimations
 
     class SomeAnimations(Scene):
         def construct(self):
@@ -257,7 +257,7 @@ Any property of a mobject that can be changed can be animated.  In fact, any
 method that changes a mobject's property can be used as an animation, through
 the use of :meth:`.animate`.
 
-.. manim:: AnimateExample
+.. arachne:: AnimateExample
     :ref_classes: Animation
 
     class AnimateExample(Scene):
@@ -283,7 +283,7 @@ Animation run time
 By default, any animation passed to :meth:`play` lasts for exactly one second.
 Use the :code:`run_time` argument to control the duration.
 
-.. manim:: RunTime
+.. arachne:: RunTime
 
     class RunTime(Scene):
         def construct(self):
@@ -336,7 +336,7 @@ Once you set the calculated value for the :class:`~.DecimalNumber`, you are done
 
 Once you have defined your ``Count`` animation, you can play it in your :class:`~.Scene` for any duration you want for any :class:`~.DecimalNumber` with any rate function.
 
-.. manim:: CountingScene
+.. arachne:: CountingScene
     :ref_classes: Animation DecimalNumber
     :ref_methods: Animation.interpolate_mobject Scene.play
 
@@ -378,7 +378,7 @@ These points can be used to add other mobjects respectively to each other,
 e.g. by methods like :meth:`~.Mobject.get_center` , :meth:`~.Mobject.get_top`
 and :meth:`~.Mobject.get_start`. Here is an example of some important coordinates:
 
-.. manim:: MobjectExample
+.. arachne:: MobjectExample
     :save_last_frame:
 
     class MobjectExample(Scene):
@@ -408,7 +408,7 @@ Transforming mobjects into other mobjects
 =========================================
 It is also possible to transform a mobject into another mobject like this:
 
-.. manim:: ExampleTransform
+.. arachne:: ExampleTransform
 
     class ExampleTransform(Scene):
         def construct(self):
@@ -425,7 +425,7 @@ Here it might help to use the `flip` function and reposition the points via the
 `roll <https://numpy.org/doc/stable/reference/generated/numpy.roll.html>`_
 function of numpy:
 
-.. manim:: ExampleRotation
+.. arachne:: ExampleRotation
 
     class ExampleRotation(Scene):
         def construct(self):

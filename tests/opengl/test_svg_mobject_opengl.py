@@ -3,8 +3,8 @@ from __future__ import annotations
 import numpy as np
 import svgelements as se
 
-from manim import *
-from manim.mobject.svg.svg_mobject import VMobjectFromSVGPath
+from arachne import *
+from arachne.mobject.svg.svg_mobject import VMobjectFromSVGPath
 from tests.helpers.path_utils import get_svg_resource
 
 

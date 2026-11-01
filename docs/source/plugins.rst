@@ -59,13 +59,13 @@ You can list plugins as such:
 
 Using Plugins in Projects
 *************************
-For enabling a plugin ``manim.cfg`` or command line parameters should be used.
+For enabling a plugin ``arachne.cfg`` or command line parameters should be used.
 
 .. important::
 
     The plugins should be module name of the plugin and not PyPi name.
 
-Enabling plugins through ``manim.cfg``
+Enabling plugins through ``arachne.cfg``
 
 .. code-block:: ini
 
@@ -93,7 +93,7 @@ on PyPI.org which serves as an in-depth tutorial for creating plugins.
     pip install manim-plugintemplate
 
 The only requirement of manim plugins is that they specify an entry point
-with the group, ``"manim.plugins"``. This allows Manim to discover plugins
+with the group, ``"arachne.plugins"``. This allows Manim to discover plugins
 available in the user's environment. Everything regarding the plugin's
 directory structure, build system, and naming are completely up to your
 discretion as an author.
@@ -104,7 +104,7 @@ for details) is to include the following in your ``pyproject.toml``:
 
 .. code-block:: toml
 
-    [project.entry-points."manim.plugins"]
+    [project.entry-points."arachne.plugins"]
     "name" = "object_reference"
 
 .. versionremoved:: 0.18.1
@@ -122,8 +122,8 @@ corresponding mobject base classes are (unfortunately) not fully
 compatible.
 
 The currently active renderer can be queried by checking the value
-of ``manim.config.renderer``. All possible renderer types are given
-by :class:`.constants.RendererType`. The module :mod:`.manim.mobject.utils`
+of ``arachne.config.renderer``. All possible renderer types are given
+by :class:`.constants.RendererType`. The module :mod:`.arachne.mobject.utils`
 contains utility functions that return the base class for the currently
 active renderer.
 

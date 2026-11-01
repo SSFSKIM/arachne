@@ -7,15 +7,15 @@ import numpy as np
 import pytest
 from click.testing import CliRunner
 
-from manim import RIGHT, WHITE, Scene, Square, Tex, Text, Vector, tempconfig
-from manim._config.output import OutputFormat, OutputSpec
-from manim._config.render_session import resolve_render_session
-from manim._config.utils import ManimConfig
-from manim.cli.render.commands import render
-from manim.constants import RendererType
-from manim.mobject.opengl.opengl_vectorized_mobject import OpenGLVMobject
-from manim.mobject.types.vectorized_mobject import VMobject
-from manim.renderer.protocol import RendererCapabilities
+from arachne import RIGHT, WHITE, Scene, Square, Tex, Text, Vector, tempconfig
+from arachne._config.output import OutputFormat, OutputSpec
+from arachne._config.render_session import resolve_render_session
+from arachne._config.utils import ManimConfig
+from arachne.cli.render.commands import render
+from arachne.constants import RendererType
+from arachne.mobject.opengl.opengl_vectorized_mobject import OpenGLVMobject
+from arachne.mobject.types.vectorized_mobject import VMobject
+from arachne.renderer.protocol import RendererCapabilities
 from tests.assert_utils import assert_dir_filled, assert_file_exists
 
 

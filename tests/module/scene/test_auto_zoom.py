@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from manim import *
+from arachne import *
 
 
 def test_zoom():

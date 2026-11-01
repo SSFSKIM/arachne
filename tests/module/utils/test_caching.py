@@ -5,9 +5,9 @@ from unittest.mock import Mock, call
 
 import numpy as np
 
-from manim import tempconfig
-from manim.utils import caching
-from manim.utils.caching import (
+from arachne import tempconfig
+from arachne.utils import caching
+from arachne.utils.caching import (
     clear_segment_cache,
     handle_caching_play,
     prune_segment_cache,

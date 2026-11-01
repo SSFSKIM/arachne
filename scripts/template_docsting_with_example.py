@@ -49,7 +49,7 @@ class SomeClass:
 
     Examples
     --------
-    .. manim:: AddTextLetterByLetterScene
+    .. arachne:: AddTextLetterByLetterScene
         :save_last_frame:
 
         class AddTextLetterByLetterScene(Scene):

@@ -8,16 +8,16 @@ from unittest.mock import patch
 
 from click.testing import CliRunner
 
-from manim import __version__, capture
-from manim.__main__ import main
-from manim.cli.checkhealth.checks import HEALTH_CHECKS
+from arachne import __version__, capture
+from arachne.__main__ import main
+from arachne.cli.checkhealth.checks import HEALTH_CHECKS
 
 
 def test_manim_version():
     command = [
         sys.executable,
         "-m",
-        "manim",
+        "arachne",
         "--version",
     ]
     out, err, exit_code = capture(command)
@@ -28,11 +28,11 @@ def test_manim_version():
 def test_manim_cfg_subcommand():
     command = ["cfg"]
     runner = CliRunner()
-    result = runner.invoke(main, command, prog_name="manim")
+    result = runner.invoke(main, command, prog_name="arachne")
     expected_output = f"""\
-Manim Community v{__version__}
+Arachne v{__version__} (forked from Manim Community v0.22.1)
 
-Usage: manim cfg [OPTIONS] COMMAND [ARGS]...
+Usage: arachne cfg [OPTIONS] COMMAND [ARGS]...
 
   Manages Manim configuration files.
 
@@ -52,11 +52,11 @@ Made with <3 by Manim Community developers.
 def test_manim_plugins_subcommand():
     command = ["plugins"]
     runner = CliRunner()
-    result = runner.invoke(main, command, prog_name="manim")
+    result = runner.invoke(main, command, prog_name="arachne")
     expected_output = f"""\
-Manim Community v{__version__}
+Arachne v{__version__} (forked from Manim Community v0.22.1)
 
-Usage: manim plugins [OPTIONS]
+Usage: arachne plugins [OPTIONS]
 
   Manages Manim plugins.
 
@@ -103,11 +103,11 @@ def test_manim_checkhealth_failing_subcommand():
 def test_manim_init_subcommand():
     command = ["init"]
     runner = CliRunner()
-    result = runner.invoke(main, command, prog_name="manim")
+    result = runner.invoke(main, command, prog_name="arachne")
     expected_output = f"""\
-Manim Community v{__version__}
+Arachne v{__version__} (forked from Manim Community v0.22.1)
 
-Usage: manim init [OPTIONS] COMMAND [ARGS]...
+Usage: arachne init [OPTIONS] COMMAND [ARGS]...
 
   Create a new project or insert a new scene.
 
@@ -127,10 +127,10 @@ def test_manim_init_project(tmp_path):
     command = ["init", "project", "--default", "testproject"]
     runner = CliRunner()
     with runner.isolated_filesystem(temp_dir=tmp_path) as tmp_dir:
-        result = runner.invoke(main, command, prog_name="manim", input="Default\n")
+        result = runner.invoke(main, command, prog_name="arachne", input="Default\n")
         assert not result.exception
         assert (Path(tmp_dir) / "testproject/main.py").exists()
-        assert (Path(tmp_dir) / "testproject/manim.cfg").exists()
+        assert (Path(tmp_dir) / "testproject/arachne.cfg").exists()
 
 
 def test_manim_init_scene(tmp_path):
@@ -139,14 +139,14 @@ def test_manim_init_scene(tmp_path):
     runner = CliRunner()
     with runner.isolated_filesystem(temp_dir=tmp_path) as tmp_dir:
         result = runner.invoke(
-            main, command_named, prog_name="manim", input="Default\n"
+            main, command_named, prog_name="arachne", input="Default\n"
         )
         assert not result.exception
         assert (Path(tmp_dir) / "my_awesome_file.py").exists()
         file_content = (Path(tmp_dir) / "my_awesome_file.py").read_text()
         assert "NamedFileTestScene(Scene):" in file_content
         result = runner.invoke(
-            main, command_unnamed, prog_name="manim", input="Default\n"
+            main, command_unnamed, prog_name="arachne", input="Default\n"
         )
         assert (Path(tmp_dir) / "main.py").exists()
         file_content = (Path(tmp_dir) / "main.py").read_text()

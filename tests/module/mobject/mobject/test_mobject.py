@@ -5,7 +5,7 @@ from itertools import product
 import numpy as np
 import pytest
 
-from manim import (
+from arachne import (
     DL,
     DR,
     PI,

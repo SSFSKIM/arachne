@@ -5,8 +5,8 @@ import av
 import numpy as np
 import pytest
 
-from manim import DR, Circle, Create, Scene, Star, tempconfig
-from manim.utils.commands import capture, get_video_metadata
+from arachne import DR, Circle, Create, Scene, Star, tempconfig
+from arachne.utils.commands import capture, get_video_metadata
 
 
 class StarScene(Scene):
@@ -166,7 +166,7 @@ def test_unicode_partial_movie(config, tmpdir, simple_scenes_path):
     command = [
         sys.executable,
         "-m",
-        "manim",
+        "arachne",
         "--media_dir",
         str(tmpdir / unicode_str),
         str(simple_scenes_path),
@@ -185,7 +185,7 @@ def test_unicode_partial_movie(config, tmpdir, simple_scenes_path):
 def test_webm_audio_codec_checks_encoder_availability(
     monkeypatch, vorbis_modes, expected
 ):
-    from manim.scene import scene_file_writer
+    from arachne.scene import scene_file_writer
 
     available = {"libopus", "vorbis", "aac"}
     if vorbis_modes:

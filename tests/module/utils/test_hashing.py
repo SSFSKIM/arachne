@@ -7,8 +7,8 @@ from zlib import crc32
 
 import numpy as np
 
-import manim.utils.hashing as hashing
-from manim import ImageMobject, Square
+import arachne.utils.hashing as hashing
+from arachne import ImageMobject, Square
 
 ALREADY_PROCESSED_PLACEHOLDER = hashing._Memoizer.ALREADY_PROCESSED_PLACEHOLDER
 _CACHE_IDENTITY = {

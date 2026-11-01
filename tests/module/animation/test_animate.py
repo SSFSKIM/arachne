@@ -3,12 +3,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from manim.animation.creation import Uncreate
-from manim.mobject.geometry.arc import Dot
-from manim.mobject.geometry.line import Line
-from manim.mobject.geometry.polygram import Square
-from manim.mobject.mobject import override_animate
-from manim.mobject.types.vectorized_mobject import VGroup
+from arachne.animation.creation import Uncreate
+from arachne.mobject.geometry.arc import Dot
+from arachne.mobject.geometry.line import Line
+from arachne.mobject.geometry.polygram import Square
+from arachne.mobject.mobject import override_animate
+from arachne.mobject.types.vectorized_mobject import VGroup
 
 
 def test_simple_animate():

@@ -4,17 +4,17 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from manim.animation.animation import Animation, Wait
-from manim.animation.composition import AnimationGroup, LaggedStartMap, Succession
-from manim.animation.creation import Create, Write
-from manim.animation.fading import FadeIn, FadeOut
-from manim.constants import DOWN, UP
-from manim.mobject.geometry.arc import Circle
-from manim.mobject.geometry.line import Line
-from manim.mobject.geometry.polygram import RegularPolygon, Square
-from manim.mobject.types.vectorized_mobject import VGroup
-from manim.scene.scene import Scene
-from manim.utils.rate_functions import linear, there_and_back
+from arachne.animation.animation import Animation, Wait
+from arachne.animation.composition import AnimationGroup, LaggedStartMap, Succession
+from arachne.animation.creation import Create, Write
+from arachne.animation.fading import FadeIn, FadeOut
+from arachne.constants import DOWN, UP
+from arachne.mobject.geometry.arc import Circle
+from arachne.mobject.geometry.line import Line
+from arachne.mobject.geometry.polygram import RegularPolygon, Square
+from arachne.mobject.types.vectorized_mobject import VGroup
+from arachne.scene.scene import Scene
+from arachne.utils.rate_functions import linear, there_and_back
 
 
 def test_succession_timing():

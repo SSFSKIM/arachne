@@ -295,7 +295,7 @@ IDE of your choice. All modern Python IDEs (for example VS Code
 with the Python extension, or PyCharm) should automatically detect
 the local environment created by `uv` such that if you put
 ```py
-import manim
+import arachne
 ```
 into a new file `my-first-animation.py`, the import is resolved
 correctly and autocompletion is available.
@@ -320,7 +320,7 @@ global system path, without the need to activate any virtual
 environment or prefixing your commands with `uv run`.
 
 Note that when using this approach, setting up your code editor
-to properly resolve `import manim` requires additional work, as
+to properly resolve `import arachne` requires additional work, as
 the global tool environment is not automatically detected: the
 base path of all tool environments can be determined by running
 ```

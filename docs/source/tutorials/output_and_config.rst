@@ -66,7 +66,7 @@ high quality.  Manim will take considerably longer to render this file, and it
 will play it once it's done since we are using the ``-p`` flag.  The output
 should look like this:
 
-.. manim:: SquareToCircle3
+.. arachne:: SquareToCircle3
    :hide_source:
    :quality: high
 
@@ -152,7 +152,7 @@ Customizing output directories
 ******************************
 
 The canonical layout can be customized through the ordinary directory options in
-the ``[CLI]`` section of ``manim.cfg``. These options support placeholders and may
+the ``[CLI]`` section of ``arachne.cfg``. These options support placeholders and may
 refer to one another; for example:
 
 .. code-block:: ini

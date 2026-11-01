@@ -1,6 +1,6 @@
 import pytest
 
-from manim.utils.iterables import list_difference_update, list_update
+from arachne.utils.iterables import list_difference_update, list_update
 
 ORDERED_ITERABLE_TYPES = [
     # Common non-list iterables

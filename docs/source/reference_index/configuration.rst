@@ -4,7 +4,7 @@ Configuration
 Module Index
 ------------
 
-.. currentmodule:: manim
+.. currentmodule:: arachne
 
 .. autosummary::
    :toctree: ../reference

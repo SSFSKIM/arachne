@@ -5,10 +5,10 @@ bundled TeX packages), XeLaTeX with fontspec, dvisvgm, Pango text, and video
 encoding via PyAV::
 
     docker run --rm -v "$PWD/docker:/test:ro" manimcommunity/manim:TAG \
-        manim render -ql --media_dir /tmp/media /test/verify_image.py VerifyImage
+        arachne render -ql --media_dir /tmp/media /test/verify_image.py VerifyImage
 """
 
-from manim import *
+from arachne import *
 
 XELATEX = TexTemplate(
     tex_compiler="xelatex",

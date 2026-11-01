@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from manim import *
+from arachne import *
 
 # This module is used in the CLI tests in tests_CLi.py.
 

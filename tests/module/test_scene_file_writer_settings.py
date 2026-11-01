@@ -4,9 +4,9 @@ from unittest.mock import Mock
 
 import pytest
 
-import manim
-from manim import Scene, config, tempconfig
-from manim.scene import scene_file_writer as writer_module
+import arachne
+from arachne import Scene, config, tempconfig
+from arachne.scene import scene_file_writer as writer_module
 
 
 def test_scene_resolves_consistent_writer_settings_with_empty_assets_root():
@@ -34,8 +34,8 @@ def test_scene_resolves_consistent_writer_settings_with_empty_assets_root():
 
 def test_writer_settings_are_private_and_not_exported_from_top_level_manim():
     assert not hasattr(writer_module, "SceneFileWriterSettings")
-    assert not hasattr(manim, "SceneFileWriterSettings")
-    assert not hasattr(manim, "_SceneFileWriterSettings")
+    assert not hasattr(arachne, "SceneFileWriterSettings")
+    assert not hasattr(arachne, "_SceneFileWriterSettings")
 
 
 def test_writer_settings_reject_plan_output_mismatches():

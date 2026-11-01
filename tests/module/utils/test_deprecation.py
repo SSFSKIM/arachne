@@ -5,7 +5,7 @@ from typing import Any, Self
 
 import pytest
 
-from manim.utils.deprecation import deprecated, deprecated_params
+from arachne.utils.deprecation import deprecated, deprecated_params
 
 
 def _get_caplog_record_msg(manim_caplog: pytest.LogCaptureFixture, i: int = 0) -> str:

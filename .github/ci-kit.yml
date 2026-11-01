@@ -52,7 +52,7 @@ gates:
     timeout: 60
   - name: doctest
     run: |
-      uv run python -m pytest -v --no-cov --ignore-glob="*opengl*" --doctest-modules manim
+      uv run python -m pytest -v --no-cov --ignore-glob="*opengl*" --doctest-modules arachne
       cd docs && uv run make doctest O=-tskip-manim
     env: {UV_PYTHON: "3.14"}
   - name: lint

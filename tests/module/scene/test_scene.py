@@ -4,7 +4,7 @@ import datetime
 
 import pytest
 
-from manim import (
+from arachne import (
     Circle,
     Dot,
     FadeIn,
@@ -16,7 +16,7 @@ from manim import (
     Square,
     Succession,
 )
-from manim.animation.animation import Wait
+from arachne.animation.animation import Wait
 
 
 def test_scene_add_remove(dry_run):
@@ -169,7 +169,7 @@ def test_reproducible_scene(dry_run):
 
 
 def test_random_color_reproducibility_with_seed(dry_run):
-    from manim import random_color, tempconfig
+    from arachne import random_color, tempconfig
 
     with tempconfig({"seed": 123}):
         # First run: create scene (which seeds global random state) and generate colors

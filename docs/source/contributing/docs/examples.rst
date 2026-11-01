@@ -23,7 +23,7 @@ What makes a great example
 
 * Examples should be brief yet still easy to understand.
 
-* Examples don't require the ``from manim import *`` statement, this will be added automatically when the docs are built.
+* Examples don't require the ``from arachne import *`` statement, this will be added automatically when the docs are built.
 
 * There should be a balance of animated and non-animated examples.
 
@@ -48,14 +48,14 @@ Writing examples
 ~~~~~~~~~~~~~~~~
 
 When you want to add/edit examples, they can be found in the ``docs/source/`` directory, or directly in the manim source code (e.g. ``manim/mobject/mobject.py``). The examples are written in
-``rst`` format and use the manim directive (see :mod:`manim.utils.docbuild.manim_directive` ), ``.. manim::``. Every example is in its own block, and looks like this:
+``rst`` format and use the manim directive (see :mod:`arachne.utils.docbuild.manim_directive` ), ``.. arachne::``. Every example is in its own block, and looks like this:
 
 .. code:: rst
 
     Formulas
     ========
 
-    .. manim:: Formula1
+    .. arachne:: Formula1
         :save_last_frame:
 
         class Formula1(Scene):
@@ -65,17 +65,17 @@ When you want to add/edit examples, they can be found in the ``docs/source/`` di
                 self.wait(1)
 
 In the building process of the docs, all ``rst`` files are scanned, and the
-manim directive (``.. manim::``) blocks are identified as scenes that will be run
+manim directive (``.. arachne::``) blocks are identified as scenes that will be run
 by the current version of manim.
 Here is the syntax:
 
-* ``.. manim:: [SCENE_NAME]`` has no indentation and ``SCENE_NAME`` refers to the name of the class below.
+* ``.. arachne:: [SCENE_NAME]`` has no indentation and ``SCENE_NAME`` refers to the name of the class below.
 
 * The flags are followed in the next line (no blank line here!), with the indentation level of one tab.
 
-All possible flags can be found at :mod:`manim.utils.docbuild.manim_directive`.
+All possible flags can be found at :mod:`arachne.utils.docbuild.manim_directive`.
 
-In the example above, the ``Formula1`` following ``.. manim::`` is the scene
+In the example above, the ``Formula1`` following ``.. arachne::`` is the scene
 that the directive expects to render; thus, in the python code, the class
 has the same name: ``class Formula1(Scene)``.
 

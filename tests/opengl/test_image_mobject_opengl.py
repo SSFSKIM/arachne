@@ -3,8 +3,8 @@ from __future__ import annotations
 import numpy as np
 from PIL import Image
 
-from manim import Scene
-from manim.mobject.opengl.opengl_image_mobject import OpenGLImageMobject
+from arachne import Scene
+from arachne.mobject.opengl.opengl_image_mobject import OpenGLImageMobject
 
 RED = np.array([255, 0, 0, 255])
 BLUE = np.array([0, 0, 255, 255])

@@ -4,7 +4,7 @@ import numpy as np
 import numpy.testing as nt
 import pytest
 
-from manim.utils.color import (
+from arachne.utils.color import (
     BLACK,
     BLUE,
     GREEN,
@@ -13,7 +13,7 @@ from manim.utils.color import (
     YELLOW,
     ManimColor,
 )
-from manim.utils.color.core import (
+from arachne.utils.color.core import (
     RandomColorGenerator,
     average_color,
     color_gradient,

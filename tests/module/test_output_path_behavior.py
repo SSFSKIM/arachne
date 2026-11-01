@@ -6,16 +6,16 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
-from manim import __version__
-from manim._config.output import OutputFormat, OutputSpec
-from manim._config.output_plan import (
+from arachne import __version__
+from arachne._config.output import OutputFormat, OutputSpec
+from arachne._config.output_plan import (
     resolve_media_layout,
     resolve_module_name,
     resolve_output_plan,
     resolve_requested_output_name,
 )
-from manim._config.video_encoder import resolve_video_encoder
-from manim.scene.scene_file_writer import SceneFileWriter, _SceneFileWriterSettings
+from arachne._config.video_encoder import resolve_video_encoder
+from arachne.scene.scene_file_writer import SceneFileWriter, _SceneFileWriterSettings
 
 
 def _make_writer(
@@ -107,10 +107,10 @@ def test_gif_primary_and_segment_paths(
     quality_dir = tmp_path / "videos" / "example.scene" / "480p15"
 
     assert writer.movie_file_path == (
-        quality_dir / f"ExampleScene_ManimCE_v{__version__}.gif"
+        quality_dir / f"ExampleScene_Arachne_v{__version__}.gif"
     )
     assert writer.gif_file_path == (
-        quality_dir / f"ExampleScene_ManimCE_v{__version__}.gif"
+        quality_dir / f"ExampleScene_Arachne_v{__version__}.gif"
     )
     writer.add_partial_movie_file("cache-key")
     assert writer.partial_movie_files == [
@@ -129,7 +129,7 @@ def test_default_png_and_automatic_video_fallback_paths(config, tmp_path):
         tmp_path
         / "images"
         / "example.scene"
-        / f"ExampleScene_ManimCE_v{__version__}.png"
+        / f"ExampleScene_Arachne_v{__version__}.png"
     )
 
     png_writer.save_image(np.zeros((1, 1, 4), dtype=np.uint8))

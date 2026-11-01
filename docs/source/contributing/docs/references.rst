@@ -35,7 +35,7 @@ class; ``:attr:`MyClass.color`​`` referring to an attribute in a
 different class in the same file.
 
 3. If it's on a different file, then you may either use the full dotted
-   name (e.g. ``~manim.animations.Animation``) or simply use the
+   name (e.g. ``~arachne.animations.Animation``) or simply use the
    shortened way (``~.Animation``). Note that, if there is ambiguity,
    then the full dotted name must be used where the actual class can't
    be deduced. Also, note the ``~`` before the path - this is so that it

@@ -1,4 +1,4 @@
-from manim import *
+from arachne import *
 
 # French Cursive LaTeX font example from http://jf.burnol.free.fr/showcase.html
 

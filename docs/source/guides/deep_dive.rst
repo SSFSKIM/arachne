@@ -25,7 +25,7 @@ We aim to give an appropriate amount of detail describing what happens when
 Manim reads your scene code and produces the corresponding animation. Throughout
 this article, we will focus on the following toy example::
 
-    from manim import *
+    from arachne import *
 
     class ToyExample(Scene):
         def construct(self):
@@ -55,7 +55,7 @@ faded out.
 
 Actually rendering the code yields the following video:
 
-.. manim:: ToyExample
+.. arachne:: ToyExample
     :hide_source:
 
     class ToyExample(Scene):
@@ -135,7 +135,7 @@ do this is
 
 ::
 
-    from manim import *
+    from arachne import *
 
 which (while being a debatable strategy in general) imports a lot of classes and
 functions shipped with the library and makes them available in your global name space.
@@ -190,7 +190,7 @@ The answer to this question depends on how exactly you are running the code.
 To make things a bit clearer, let us first consider the case that you
 have created a file ``toy_example.py`` which looks like this::
 
-    from manim import *
+    from arachne import *
 
     class ToyExample(Scene):
         def construct(self):
@@ -242,7 +242,7 @@ then calls the scene's render method in the
 
 **Jupyter notebooks.** In Jupyter notebooks, the communication with the library
 is handled by the ``%%manim`` magic command, which is implemented in the
-``manim.utils.ipython_magic`` module. There is
+``arachne.utils.ipython_magic`` module. There is
 :meth:`some documentation <.ManimMagic.manim>` available for the magic command.
 The implementation instantiates the requested scene and calls its render method;
 the scene attaches a manager lazily through that entry point.
@@ -464,7 +464,7 @@ of a :class:`.VMobject` with 8 points (and thus made out of 8/4 = 2 cubic
 Bézier curves). The resulting :class:`.VMobject` is drawn in green.
 The handles are drawn as red dots with a line to their closest anchor.
 
-.. manim:: VMobjectDemo
+.. arachne:: VMobjectDemo
     :save_last_frame:
 
     class VMobjectDemo(Scene):
@@ -655,17 +655,17 @@ are contained as children (in any nesting level). If so, **their parent
 mobject is deconstructed** and their siblings are inserted directly
 one level higher. Consider the following example::
 
-  >>> from manim import Scene, Square, Circle, Group
+  >>> from arachne import Scene, Square, Circle, Group
   >>> test_scene = Scene()
   >>> mob1 = Square()
   >>> mob2 = Circle()
   >>> mob_group = Group(mob1, mob2)
   >>> test_scene.add(mob_group)
-  <manim.scene.scene.Scene object at ...>
+  <arachne.scene.scene.Scene object at ...>
   >>> test_scene.mobjects
   [Group]
   >>> test_scene.restructure_mobjects(to_remove=[mob1])
-  <manim.scene.scene.Scene object at ...>
+  <arachne.scene.scene.Scene object at ...>
   >>> test_scene.mobjects
   [Circle]
 

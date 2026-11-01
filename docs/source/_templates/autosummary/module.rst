@@ -4,7 +4,7 @@
 
 .. automodule:: {{ fullname }}
 
-   {# SEE manim.utils.docbuild.autoaliasattr_directive #}
+   {# SEE arachne.utils.docbuild.autoaliasattr_directive #}
    {# FOR INFORMATION ABOUT THE CUSTOM autoaliasattr DIRECTIVE! #}
    .. autoaliasattr:: {{ fullname }}
 

@@ -20,8 +20,8 @@ from typing import Any
 
 import numpy as np
 
-from manim import *
-from manim.typing import Point3D, Vector3DLike
+from arachne import *
+from arachne.typing import Point3D, Vector3DLike
 
 # ─── Helper functions (from functions.py) ─────────────────────────────────────
 

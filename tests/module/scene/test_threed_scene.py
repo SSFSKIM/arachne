@@ -1,4 +1,4 @@
-from manim import DEGREES, Circle, Square, ThreeDScene
+from arachne import DEGREES, Circle, Square, ThreeDScene
 
 
 def test_fixed_mobjects():

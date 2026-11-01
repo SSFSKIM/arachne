@@ -5,8 +5,8 @@ from fractions import Fraction
 
 import pytest
 
-from manim._config.output import OutputFormat, OutputSpec
-from manim._config.video_encoder import (
+from arachne._config.output import OutputFormat, OutputSpec
+from arachne._config.video_encoder import (
     VideoEncoderSpec,
     resolve_video_encoder,
     to_av_frame_rate,

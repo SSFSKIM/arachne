@@ -5,9 +5,9 @@ from pathlib import Path
 
 import numpy as np
 
-from manim import WHITE, Scene, Square, tempconfig
-from manim._config.render_session import resolve_render_session
-from manim.renderer.protocol import RendererCapabilities
+from arachne import WHITE, Scene, Square, tempconfig
+from arachne._config.render_session import resolve_render_session
+from arachne.renderer.protocol import RendererCapabilities
 
 
 def _resolve_output(config):

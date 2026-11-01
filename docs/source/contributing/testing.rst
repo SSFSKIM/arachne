@@ -53,7 +53,7 @@ To run the doctests embedded in Manim's source code, use:
 
 .. code-block:: bash
 
-   uv run pytest --doctest-modules manim
+   uv run pytest --doctest-modules arachne
 
 Types of Tests
 --------------
@@ -150,8 +150,8 @@ way that you would use ``self`` in a scene's ``construct`` method:
 
 .. code-block:: python
 
-   from manim import Circle
-   from manim.utils.testing.frames_comparison import frames_comparison
+   from arachne import Circle
+   from arachne.utils.testing.frames_comparison import frames_comparison
 
    __module_test__ = "geometry"
 
@@ -166,7 +166,7 @@ frames of an animation are significant:
 
 .. code-block:: python
 
-   from manim import Circle, Create
+   from arachne import Circle, Create
 
 
    @frames_comparison(last_frame=False)
@@ -177,7 +177,7 @@ You can also select a different base scene when necessary:
 
 .. code-block:: python
 
-   from manim import ThreeDScene
+   from arachne import ThreeDScene
 
 
    @frames_comparison(base_scene=ThreeDScene)
@@ -234,7 +234,7 @@ video relative to the media directory:
 
    import sys
 
-   from manim import capture
+   from arachne import capture
    from tests.utils.video_tester import video_comparison
 
 

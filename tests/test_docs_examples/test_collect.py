@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from .collect import EXCLUDED, _blocks_in_text, collect, sample_indices
 
-# Every ``.. manim::`` block Sphinx renders, in docstrings and in docs/source.
+# Every ``.. arachne::`` block Sphinx renders, in docstrings and in docs/source.
 EXPECTED_BLOCKS = 487
 EXPECTED_STILL = 294
 EXPECTED_EXCLUDED = 8
@@ -40,17 +40,17 @@ def test_literal_blocks_are_not_examples():
         [
             "Write it like this::",
             "",
-            "    .. manim:: Shown",
+            "    .. arachne:: Shown",
             "",
             "        class Shown(Scene): ...",
             "",
             ".. code-block:: rst",
             "",
-            "    .. manim:: AlsoShown",
+            "    .. arachne:: AlsoShown",
             "",
             ".. note::",
             "",
-            "    .. manim:: Rendered",
+            "    .. arachne:: Rendered",
             "        :save_last_frame:",
             "",
             "        class Rendered(Scene):",
@@ -66,14 +66,14 @@ def test_literal_blocks_are_not_examples():
 
 
 def test_directive_may_have_one_space_before_its_colons():
-    text = ".. manim :: Spaced\n\n    class Spaced(Scene): ...\n"
+    text = ".. arachne :: Spaced\n\n    class Spaced(Scene): ...\n"
     assert [scene for scene, *_ in _blocks_in_text(text, "doc")] == ["Spaced"]
 
 
 def test_doctest_blocks_keep_only_their_code():
     text = "\n".join(
         [
-            ".. manim:: Doctested",
+            ".. arachne:: Doctested",
             "",
             "    >>> dot = Dot()",
             "    >>> dot.color",

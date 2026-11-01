@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from manim import (
+from arachne import (
     Dot,
     Mobject,
     Scene,

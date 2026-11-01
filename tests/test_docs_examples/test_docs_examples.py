@@ -1,6 +1,6 @@
 """The documentation examples as frame tests.
 
-Each ``.. manim::`` block runs its own scene class, as the block writes it, at the
+Each ``.. arachne::`` block runs its own scene class, as the block writes it, at the
 graphical units' configuration, and its frames are compared with the control data in
 ``control_data/`` through the graphical units' frame testers:
 
@@ -23,12 +23,12 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-import manim.scene.scene as scene_module
-from manim import tempconfig
-from manim.renderer.cairo_renderer import CairoRenderer
-from manim.utils.testing._frames_testers import _ControlDataWriter, _FramesTester
-from manim.utils.testing._test_class_makers import DummySceneFileWriter
-from manim.utils.testing.frames_comparison import _config_test
+import arachne.scene.scene as scene_module
+from arachne import tempconfig
+from arachne.renderer.cairo_renderer import CairoRenderer
+from arachne.utils.testing._frames_testers import _ControlDataWriter, _FramesTester
+from arachne.utils.testing._test_class_makers import DummySceneFileWriter
+from arachne.utils.testing.frames_comparison import _config_test
 
 from .collect import DOCS_DIR, EXCLUDED, DocsExample, collect, sample_indices
 
@@ -95,7 +95,7 @@ def render(example: DocsExample, tmp_path: Path) -> _CapturingWriter:
         patch.object(scene_module, "CairoRenderer", _CapturingRenderer),
     ):
         exec(
-            compile("from manim import *\n" + example.code, example.origin, "exec"),
+            compile("from arachne import *\n" + example.code, example.origin, "exec"),
             namespace,
         )
         scene = namespace[example.scene]()

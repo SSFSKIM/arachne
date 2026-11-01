@@ -81,7 +81,7 @@ ENV UV_COMPILE_BYTECODE=1 \
     UV_PYTHON_DOWNLOADS=never \
     UV_PROJECT_ENVIRONMENT=/opt/venv
 
-WORKDIR /opt/manim
+WORKDIR /opt/arachne
 
 # Third-party dependencies, pinned by uv.lock. This layer is only rebuilt when
 # pyproject.toml or uv.lock change, not on every change to the manim sources.
@@ -93,11 +93,11 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # manim itself (non-editable, so the sources are not needed at runtime).
 # pip is added to the virtualenv from the bundled wheel (no download), so that
 # derived images can still `pip install` plugins.
-COPY . /opt/manim
+COPY . /opt/arachne
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --no-editable --extra jupyterlab \
     && /opt/venv/bin/python -m ensurepip \
-    && /opt/venv/bin/manim --version
+    && /opt/venv/bin/arachne --version
 
 # ── Stage 3: runtime ─────────────────────────────────────────────────────────
 FROM python:${PYTHON_VERSION}-slim
@@ -125,7 +125,7 @@ ARG NB_USER=manimuser
 ARG NB_UID=1000
 ENV USER=${NB_USER} \
     NB_UID=${NB_UID} \
-    HOME=/manim
+    HOME=/arachne
 
 RUN adduser --disabled-password \
         --gecos "Default user" \

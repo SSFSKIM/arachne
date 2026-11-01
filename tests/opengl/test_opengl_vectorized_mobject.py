@@ -3,9 +3,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from manim import Circle, Line, Square, VDict, VGroup, VMobject
-from manim.mobject.opengl.opengl_mobject import OpenGLMobject
-from manim.mobject.opengl.opengl_vectorized_mobject import (
+from arachne import Circle, Line, Square, VDict, VGroup, VMobject
+from arachne.mobject.opengl.opengl_mobject import OpenGLMobject
+from arachne.mobject.opengl.opengl_vectorized_mobject import (
     OpenGLVGroup,
     OpenGLVMobject,
 )
