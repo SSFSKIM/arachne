@@ -1,0 +1,95 @@
+name: leak-check
+
+# Runs on every push to every branch or tag, on every pull request (editing its title or body
+# reruns it), and by hand over an explicit range. The denylist reaches the job only as the
+# LEAK_DENYLIST secret; without it the job fails.
+
+on:
+  push:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      range:
+        description: "Commit range to check, <base>..<head> (for example v0.22.1..main)"
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  FORK_BASE: v0.22.1
+  GITLEAKS_VERSION: 8.30.1
+  GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+
+jobs:
+  leak-check:
+    name: leak-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+
+      - name: Install numpy (for the .npz rule)
+        run: python -m pip install --quiet --only-binary=:all: numpy==2.5.2
+
+      - name: Resolve the commit range
+        id: range
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          INPUT_RANGE: ${{ inputs.range }}
+        run: |
+          zero=0000000000000000000000000000000000000000
+          case "$EVENT" in
+            push)
+              if [ "$AFTER" = "$zero" ]; then
+                range=""  # a deletion publishes nothing
+              elif [ "$BEFORE" != "$zero" ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+                range="$BEFORE..$AFTER"
+              elif [ "$REF" = refs/heads/main ]; then
+                range="$FORK_BASE..$AFTER"
+              else
+                range="origin/main..$AFTER"  # a new branch, or one whose old tip is gone
+              fi ;;
+            pull_request)
+              range="$(git merge-base "$PR_BASE" "$PR_HEAD")..$PR_HEAD" ;;
+            workflow_dispatch)
+              range="$INPUT_RANGE" ;;
+            *)
+              echo "leak-check: unexpected event $EVENT"; exit 2 ;;
+          esac
+          echo "range: ${range:-<none>}"
+          echo "range=$range" >> "$GITHUB_OUTPUT"
+
+      - name: Denylisted terms
+        if: steps.range.outputs.range != ''
+        env:
+          LEAK_DENYLIST: ${{ secrets.LEAK_DENYLIST }}
+          RANGE: ${{ steps.range.outputs.range }}
+        run: >-
+          python scripts/leak_check.py --range "$RANGE" --denylist-env LEAK_DENYLIST
+          --event "$GITHUB_EVENT_PATH" --allow-emails-from "$FORK_BASE"
+
+      - name: Secrets (gitleaks)
+        if: steps.range.outputs.range != ''
+        env:
+          RANGE: ${{ steps.range.outputs.range }}
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/gitleaks.tar.gz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "$GITLEAKS_SHA256  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" git --no-banner --redact --log-opts="$RANGE" .
