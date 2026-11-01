@@ -86,7 +86,10 @@ class FrozenArray(np.ndarray):
             self._refuse()
         super().__setitem__(key, value)
 
+    # The overrides carry their own docstrings: an inherited numpy docstring
+    # would bring numpy's doctests into the reference pages.
     def copy(self, order: Any = "C") -> np.ndarray:
+        """A plain, writable copy of the array."""
         return np.array(self, order=order, copy=True)
 
     # A value prints as the array it holds, as CE's arrays did.
@@ -103,6 +106,9 @@ class FrozenArray(np.ndarray):
         return (_restore, (type(self), np.array(self)))
 
     def setflags(self, write: Any = None, align: Any = None, uic: Any = None) -> None:
+        """As :meth:`numpy.ndarray.setflags`, except that a read-only value can't be
+        made writable.
+        """
         if write and not self._writable():
             self._refuse()
         super().setflags(write=write, align=align, uic=uic)
@@ -117,6 +123,10 @@ def _refusing(name: str) -> Callable[..., Any]:
         return method(self, *args, **kwargs)
 
     refusing.__name__ = name
+    refusing.__doc__ = (
+        f"As ``numpy.ndarray.{name}``, refused with :class:`ValueError` on a "
+        "read-only value."
+    )
     return refusing
 
 
@@ -145,6 +155,9 @@ del _name
 
 
 def _byteswap(self: FrozenArray, inplace: bool = False) -> Any:
+    """As :meth:`numpy.ndarray.byteswap`; swapping a read-only value in place is
+    refused with :class:`ValueError`.
+    """
     if inplace and not self._writable():
         self._refuse()
     return np.ndarray.byteswap(self, inplace)

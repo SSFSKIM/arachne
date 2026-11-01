@@ -80,16 +80,13 @@ class Mobject:
     getting and setting generic attributes with ``get_*``
     and ``set_*`` methods. See :meth:`set` for more details.
 
+    The object's points are the read-only array :attr:`points` (see also
+    :class:`~.VMobject`).
+
     Attributes
     ----------
     submobjects : List[:class:`Mobject`]
         The contained objects.
-    points : :class:`numpy.ndarray`
-        The points of the objects.
-
-        .. seealso::
-
-            :class:`~.VMobject`
 
     """
 
