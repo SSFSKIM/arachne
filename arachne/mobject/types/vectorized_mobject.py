@@ -23,7 +23,8 @@ import numpy as np
 from PIL.Image import Image
 
 from arachne.constants import *
-from arachne.mobject.mobject import Mobject
+from arachne.mobject.mobject import Mobject, _family_extent
+from arachne.mobject.placement import UNKNOWN
 from arachne.mobject.three_d.three_d_utils import (
     get_3d_vmob_gradient_start_and_end_points,
 )
@@ -1880,6 +1881,24 @@ class VMobject(Mobject):
         return np.array(
             tuple(it.chain(*(sm.get_anchors() for sm in self.get_family())))
         )
+
+    def _boundary_extent(self) -> Any:
+        # The family's anchors, read from each value's kept anchor bounds.
+        if type(self).get_points_defining_boundary is not (
+            VMobject.get_points_defining_boundary
+        ):
+            return UNKNOWN
+        family = self.get_family()
+        for mob in family:
+            kind = type(mob)
+            if not (
+                isinstance(mob, VMobject)
+                and kind.get_anchors is VMobject.get_anchors
+                and kind.get_start_anchors is VMobject.get_start_anchors
+                and kind.get_end_anchors is VMobject.get_end_anchors
+            ):
+                return UNKNOWN
+        return _family_extent(family, True)
 
     def get_arc_length(self, sample_points_per_curve: int | None = None) -> float:
         """Return the approximated length of the whole curve.

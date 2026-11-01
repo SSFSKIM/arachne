@@ -13,6 +13,7 @@ Mobjects
    ~mobject.logo
    ~mobject.matrix
    ~mobject.mobject
+   ~mobject.placement
    ~mobject.svg
    ~mobject.table
    ~mobject.text
