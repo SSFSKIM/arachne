@@ -409,6 +409,60 @@ def test_npz_with_extra_zip_member_fails(repo: Repo):
     assert "z.npz: npz outside the control-data schema" in run_check(repo).stdout
 
 
+def control_npz() -> bytes:
+    return npz_bytes(frame_data=np.zeros((2, 4, 5, 4), dtype=np.uint8))
+
+
+def test_npz_with_an_archive_comment_fails(repo: Repo):
+    buf = io.BytesIO(control_npz())
+    with zipfile.ZipFile(buf, "a") as z:
+        z.comment = b"notes from zorblaxian"
+    repo.commit({"tests/control_data/C.npz": buf.getvalue()})
+    result = run_check(repo)
+    assert result.returncode == 1
+    assert (
+        "tests/control_data/C.npz: npz outside the control-data schema" in result.stdout
+    )
+
+
+@pytest.mark.parametrize("extra", [b"zorblaxian", b"plain trailing words"])
+def test_npz_with_trailing_bytes_fails(repo: Repo, extra: bytes):
+    repo.commit({"tests/control_data/T.npz": control_npz() + extra})
+    result = run_check(repo)
+    assert result.returncode == 1
+    assert (
+        "tests/control_data/T.npz: npz outside the control-data schema" in result.stdout
+    )
+
+
+def test_npz_with_leading_bytes_fails(repo: Repo):
+    repo.commit({"tests/control_data/L.npz": b"zorblaxian" + control_npz()})
+    result = run_check(repo)
+    assert result.returncode == 1
+    assert "L.npz: npz outside the control-data schema" in result.stdout
+
+
+def test_uncompressed_npz_container_bytes_are_scanned(repo: Repo):
+    text = np.frombuffer(b"zorblaxian!!", dtype=np.uint8).reshape(1, 1, 4, 3)
+    buf = io.BytesIO()
+    np.savez(buf, frame_data=text)
+    repo.commit({"u.npz": buf.getvalue()})
+    result = run_check(repo)
+    assert result.returncode == 1
+    assert result.stdout.count("u.npz: denylisted term #1 in binary content") == 1
+
+
+@pytest.mark.parametrize(
+    "name", ["a: zorblaxian.dat", "x: y: zorblaxian.npz", "dir: zorblaxian/b.png"]
+)
+def test_binary_finding_never_names_a_term_bearing_path(repo: Repo, name: str):
+    sha = repo.commit({name: b"\0binary bytes"})
+    result = run_check(repo)  # run_check asserts no term reaches stdout or stderr
+    assert result.returncode == 1
+    assert f"commit {sha[:12]}: file path denylisted term #1" in result.stdout
+    assert f"commit {sha[:12]} file #1: " in result.stdout
+
+
 def test_allowed_image_passes(repo: Repo):
     repo.commit({"docs/logo.png": PNG_MAGIC + b"\0\0\0\rIHDR rest"})
     assert run_check(repo).returncode == 0
