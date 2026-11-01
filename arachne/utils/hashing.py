@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, overload
 import numpy as np
 
 from arachne._config import config, logger
+from arachne.mobject.placement import Placement
 from arachne.mobject.values import FrozenArray, Paint
 
 if TYPE_CHECKING:
@@ -285,6 +286,9 @@ class _CustomEncoder(json.JSONEncoder):
             return self._cleaned_iterable({"code": code, "nonlocals": cvardict})
         elif isinstance(obj, Paint):
             return f"PAINT:{obj.key.hex()}"
+        elif isinstance(obj, Placement):
+            # Placed points hash as the points they place.
+            return _hash_ndarray(obj.points)
         elif isinstance(obj, np.ndarray):
             plain = obj.__class__ is np.ndarray or isinstance(obj, FrozenArray)
             if not plain or obj.dtype.hasobject:

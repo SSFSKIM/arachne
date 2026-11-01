@@ -17,7 +17,7 @@ from collections.abc import Callable, Iterable, Iterator, MutableSet, Sequence
 from contextlib import suppress
 from functools import partialmethod, reduce
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, cast, overload
 
 import numpy as np
 
@@ -42,6 +42,13 @@ from ..utils.iterables import (
 from ..utils.paths import straight_path
 from ..utils.simple_functions import clip
 from ..utils.space_ops import angle_between_vectors, normalize, rotation_matrix
+from .placement import (
+    MIN_PLACED_POINTS,
+    UNKNOWN,
+    Placement,
+    anchor_bounds,
+    point_bounds,
+)
 from .values import FrozenPoints, adopt, freeze
 
 if TYPE_CHECKING:
@@ -73,6 +80,103 @@ _NonTimeBasedUpdater: TypeAlias = Callable[["Mobject"], object]
 _Updater: TypeAlias = _NonTimeBasedUpdater | _TimeBasedUpdater
 
 
+class _PlacedPoints:
+    """``Mobject._points`` when a :class:`~.Placement` holds the points: they
+    are computed from it on first reading and kept in the instance.
+
+    A non-data descriptor, so a mobject whose points are in its own
+    ``_points`` reads them as fast as an attribute.
+    """
+
+    @overload
+    def __get__(self, mob: None, owner: type | None = None) -> _PlacedPoints: ...
+
+    @overload
+    def __get__(self, mob: Mobject, owner: type | None = None) -> FrozenPoints: ...
+
+    def __get__(
+        self, mob: Mobject | None, owner: type | None = None
+    ) -> FrozenPoints | _PlacedPoints:
+        if mob is None:
+            return self
+        own = mob.__dict__
+        try:
+            placement = own["_placement"]
+        except KeyError:
+            raise AttributeError("_points") from None
+        points: FrozenPoints = placement.points
+        own["_points"] = points
+        return points
+
+
+def _placeable_vector(vector: Any) -> np.ndarray | None:
+    """``vector`` as a read-only offset a placement can take: three finite
+    coordinates, else ``None``.
+    """
+    array = np.array(vector, dtype=float)
+    if array.shape != (3,) or not np.isfinite(array).all():
+        return None
+    array.flags.writeable = False
+    return array
+
+
+def _axis_scale(factor: Any) -> np.ndarray | None:
+    """A scale factor as the three axis factors of a placement, or ``None``
+    when it is no such factor.
+    """
+    try:
+        array = np.array(factor, dtype=float)
+    except (TypeError, ValueError):
+        return None
+    if array.ndim == 0:
+        array = np.full(3, array)
+    elif array.shape != (3,):
+        return None
+    if not np.isfinite(array).all():
+        return None
+    array.flags.writeable = False
+    return array
+
+
+_UNSET: Any = object()
+
+
+def _offset_about(point: np.ndarray, linear: np.ndarray) -> np.ndarray | None:
+    """The offset that makes ``points @ linear`` a map about ``point``, or
+    ``None`` when ``point`` is no placeable vector.
+    """
+    centre = _placeable_vector(point)
+    if centre is None:
+        return None
+    offset = centre - (centre * linear if linear.ndim == 1 else centre @ linear)
+    offset.flags.writeable = False
+    return offset
+
+
+def _family_extent(family: Iterable[Mobject], anchors: bool) -> Any:
+    """The least and greatest coordinates over a family's points (or, with
+    ``anchors``, its VMobjects' anchors), from each value's kept bounds:
+    ``None`` if there are none, :data:`~.placement.UNKNOWN` if any member's
+    can't be read exactly.
+    """
+    least = greatest = None
+    for mob in family:
+        every = cast(int, mob.n_points_per_cubic_curve) if anchors else None
+        bounds = mob._point_bounds(every)
+        if bounds is None:
+            continue
+        if bounds is UNKNOWN:
+            return UNKNOWN
+        if least is None:
+            least, greatest = bounds
+        else:
+            least = np.minimum(least, bounds[0])
+            greatest = np.maximum(greatest, bounds[1])
+    if least is None:
+        return None
+    return least, greatest
+
+
 class Mobject:
     """Mathematical Object: base class for objects that can be displayed on screen.
 
@@ -96,6 +200,13 @@ class Mobject:
         type[Animation],
         FunctionOverride,
     ] = {}
+
+    # The points live in the instance's _points, unless shift, scale or rotate
+    # placed them (a Placement in _placement), in which case _points is
+    # computed from the placement on first reading. A mobject type whose
+    # storage differs (ValueTracker) turns placing off.
+    _points = _PlacedPoints()
+    _places_points = True
 
     @classmethod
     def __init_subclass__(cls, **kwargs: Any) -> None:
@@ -479,6 +590,7 @@ class Mobject:
     @points.setter
     def points(self, value: Point3DLike_Array) -> None:
         self._points = freeze(value, FrozenPoints)
+        self.__dict__.pop("_placement", None)
 
     def set_points(self, points: Point3DLike_Array) -> Self:
         """Set :attr:`points` to a copy of ``points``."""
@@ -1425,7 +1537,14 @@ class Mobject:
         if not np.any(total_vector):
             # A shift by zero restates the points: nothing to build.
             return self
+        offset: Any = _UNSET  # computed when the first member is placed
         for mob in self.family_members_with_points():
+            if offset is not None and mob._placeable():
+                if offset is _UNSET:
+                    offset = _placeable_vector(total_vector)
+                if offset is not None:
+                    mob._place(None, offset)
+                    continue
             mob._points = adopt(
                 np.asarray(mob.points, dtype=float) + total_vector, FrozenPoints
             )
@@ -1480,8 +1599,11 @@ class Mobject:
         :meth:`move_to`
 
         """
-        self.apply_points_function_about_point(
-            lambda points: scale_factor * points, about_point, about_edge
+        self._apply_about_point(
+            lambda points: scale_factor * points,
+            _axis_scale(scale_factor),
+            about_point,
+            about_edge,
         )
         return self
 
@@ -1556,8 +1678,10 @@ class Mobject:
 
         """
         rot_matrix = rotation_matrix(angle, axis)
-        self.apply_points_function_about_point(
-            lambda points: np.dot(points, rot_matrix.T), about_point, about_edge
+        linear = np.array(rot_matrix.T, dtype=float)
+        linear.flags.writeable = False
+        self._apply_about_point(
+            lambda points: np.dot(points, rot_matrix.T), linear, about_point, about_edge
         )
         return self
 
@@ -1719,18 +1843,72 @@ class Mobject:
         about_point: Point3DLike | None = None,
         about_edge: Vector3DLike | None = None,
     ) -> Self:
+        return self._apply_about_point(func, None, about_point, about_edge)
+
+    def _apply_about_point(
+        self,
+        func: MultiMappingFunction,
+        linear: np.ndarray | None,
+        about_point: Point3DLike | None,
+        about_edge: Vector3DLike | None,
+    ) -> Self:
+        """Map the family's points by ``func`` about a point. When ``func`` is
+        ``points @ linear`` (``linear`` given as for :class:`~.Placement`), a
+        large member's placement composes the map instead.
+        """
         if about_point is None:
             if about_edge is None:
                 about_edge = ORIGIN
             about_point = self.get_critical_point(about_edge)
         # Make a copy to prevent mutation of the original array if about_point is a view
         about_point = np.array(about_point, copy=True)
+        # The offset of points @ linear about the point, computed when the
+        # first member is placed (None: no member can be).
+        offset: Any = _UNSET if linear is not None else None
         for mob in self.family_members_with_points():
+            if offset is not None and mob._placeable():
+                if offset is _UNSET:
+                    offset = _offset_about(about_point, linear)
+                if offset is not None:
+                    mob._place(linear, offset)
+                    continue
             # func may write into the array it is given, which is a fresh one.
             mob._points = adopt(
                 func(mob.points - about_point) + about_point, FrozenPoints
             )
         return self
+
+    def _placeable(self) -> bool:
+        return self._places_points and self._point_count() >= MIN_PLACED_POINTS
+
+    def _current_placement(self) -> Placement | None:
+        """The placement that holds this mobject's points, if one does."""
+        own = self.__dict__
+        placement: Placement | None = own.get("_placement")
+        if placement is not None:
+            points = own.get("_points")
+            if points is None or points is placement.materialized:
+                return placement
+            del own["_placement"]  # points were assigned since
+        return None
+
+    def _place(self, linear: np.ndarray | None, offset: np.ndarray) -> None:
+        """Follow the points' placement by ``points @ linear + offset``."""
+        placement = self._current_placement() or Placement(self._points)
+        own = self.__dict__
+        own["_placement"] = placement.then(linear, offset)
+        own.pop("_points", None)
+
+    def _point_bounds(self, anchors_every: int | None = None) -> Any:
+        """The bounds of this mobject's own points (:mod:`~.placement`),
+        without computing placed points the bounds don't need.
+        """
+        placement = self._current_placement()
+        if placement is not None:
+            return placement.bounds(anchors_every)
+        if anchors_every is None:
+            return point_bounds(self._points)
+        return anchor_bounds(self._points, anchors_every)
 
     def pose_at_angle(self, **kwargs: Any) -> Self:
         self.rotate(TAU / 14, RIGHT + UP, **kwargs)
@@ -2337,6 +2515,13 @@ class Mobject:
         """
         assert dim >= 0
         assert dim <= 2
+        if reduce_func is max or reduce_func is min:
+            extent = _family_extent(self.get_family(), False)
+            if extent is not UNKNOWN:
+                if extent is None:
+                    return None
+                extremum: float = extent[1 if reduce_func is max else 0][dim]
+                return extremum
         if len(self.submobjects) == 0 and len(self.points) == 0:
             # If we have no points and no submobjects, return None
             return None
@@ -2389,12 +2574,46 @@ class Mobject:
     def get_points_defining_boundary(self) -> Point3D_Array:
         return self.get_all_points()
 
+    def _boundary_extent(self) -> Any:
+        """The least and greatest coordinates of
+        :meth:`get_points_defining_boundary`, from the values' kept bounds:
+        ``None`` if there are no points, :data:`~.placement.UNKNOWN` where the
+        points must be read as CE read them (a type that defines the boundary
+        its own way, or a coordinate that isn't finite).
+        """
+        if type(self).get_points_defining_boundary is not (
+            Mobject.get_points_defining_boundary
+        ):
+            return UNKNOWN
+        return _family_extent(self.get_family(), False)
+
     def get_num_points(self) -> int:
-        return len(self.points)
+        return self._point_count()
+
+    def _point_count(self) -> int:
+        own = self.__dict__
+        points = own.get("_points")
+        if points is not None:
+            return len(points)
+        placement = own.get("_placement")
+        if placement is not None:
+            return len(placement)
+        return len(self._points)
 
     def get_extremum_along_dim(
         self, points: Point3DLike_Array | None = None, dim: int = 0, key: int = 0
     ) -> float:
+        if points is None:
+            extent = self._boundary_extent()
+            if extent is not UNKNOWN and extent is not None:
+                if key < 0:
+                    least: float = extent[0][dim]
+                    return least
+                if key == 0:
+                    middle: float = (extent[0][dim] + extent[1][dim]) / 2
+                    return middle
+                greatest: float = extent[1][dim]
+                return greatest
         np_points: Point3D_Array = (
             self.get_points_defining_boundary()
             if points is None
@@ -2427,6 +2646,20 @@ class Mobject:
 
         """
         result = np.zeros(self.dim)
+        extent = self._boundary_extent()
+        if extent is not UNKNOWN:
+            if extent is None:
+                return result
+            least, greatest = extent
+            for dim in range(self.dim):
+                key = np.array(direction[dim])
+                if key < 0:
+                    result[dim] = least[dim]
+                elif key == 0:
+                    result[dim] = (least[dim] + greatest[dim]) / 2
+                else:
+                    result[dim] = greatest[dim]
+            return result
         all_points = self.get_points_defining_boundary()
         if len(all_points) == 0:
             return result
@@ -2569,7 +2802,7 @@ class Mobject:
 
     def has_points(self) -> bool:
         """Check if :class:`~.Mobject` contains points."""
-        return len(self.points) > 0
+        return self._point_count() > 0
 
     def has_no_points(self) -> bool:
         """Check if :class:`~.Mobject` *does not* contains points."""

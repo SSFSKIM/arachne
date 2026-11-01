@@ -82,6 +82,8 @@ class ValueTracker(Mobject):
     """
 
     _tracker_points: FrozenTrackerPoints
+    # A tracker's one point is its value: it is never placed.
+    _places_points = False
 
     def __init__(self, value: float = 0, **kwargs: Any) -> None:
         super().__init__(**kwargs)
