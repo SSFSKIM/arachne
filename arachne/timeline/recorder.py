@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from .clock import exact
+from .clock import exact, play_end
 from .draw import CameraExtras, camera_nodes
 from .origins import ORIGINS
 from .record import Identity, Marker, PlayRecord, Record
@@ -151,13 +151,15 @@ class Recorder:
         record = self.ensure_record()
         animations = scene.animations or []
         start = scene.time
-        requested = exact(scene.duration)
+        requested_end = play_end(
+            start, max(animation._exact_run_time() for animation in animations)
+        )
         frames = list(scene_frames(sys._getframe(1)))
         is_wait = len(animations) == 1 and isinstance(animations[0], Wait)
         play = PlayRecord(
             index=len(record.plays),
             start=start,
-            end=start + requested,
+            end=requested_end,
             kind="wait" if is_wait else "play",
             route="",
             source_line=scene_location(frames[0], _base_dir(record))
@@ -165,7 +167,7 @@ class Recorder:
             else None,
             held=False,
             skipped=skipped,
-            requested_end=start + requested,
+            requested_end=requested_end,
             animations=tuple(str(animation) for animation in animations),
             names=names_from_frames(frames, scene),
             random_state=(random.getstate(), np.random.get_state()),  # noqa: NPY002

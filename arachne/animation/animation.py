@@ -12,6 +12,7 @@ __all__ = ["Animation", "Wait", "Add", "override_animation"]
 
 from collections.abc import Callable, Iterable, Sequence
 from copy import deepcopy
+from fractions import Fraction
 from functools import partialmethod
 from typing import TYPE_CHECKING, Any, Self
 
@@ -406,6 +407,14 @@ class Animation:
         -------
         float
             The time the animation takes in seconds.
+        """
+        return self.run_time
+
+    def _exact_run_time(self) -> float | Fraction:
+        """The run time as the scene clock takes it: the authored value, which
+        the clock reads by its end-window rule when it is a float. A
+        composition whose run time is its parts' gives their exact sum
+        instead (:meth:`.AnimationGroup._exact_run_time`).
         """
         return self.run_time
 
