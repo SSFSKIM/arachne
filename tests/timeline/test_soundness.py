@@ -9,6 +9,7 @@ evaluation.
 from __future__ import annotations
 
 import itertools
+import re
 from fractions import Fraction
 from pathlib import Path
 
@@ -243,6 +244,56 @@ def test_a_value_picked_from_items_that_may_be_none_ticks(session_of):
     _same_at_shared_instants(soundness_scenes.PickedNone, (4, 15, 30))
 
 
+def test_a_value_picked_from_an_array_of_objects_ticks(session_of):
+    _ticked_with(session_of, "ObjectArrayFill", "dtype='O'")
+    _same_at_shared_instants(soundness_scenes.ObjectArrayFill, (4, 15, 30))
+
+
+@pytest.mark.parametrize(
+    ("body", "reason"),
+    [
+        (
+            lambda m, a: m.set_fill(np.array([None, RED])[int(a > 0.5)]),
+            "numpy.array is given None",
+        ),
+        (
+            lambda m, a: m.set_fill(np.array([None, RED], dtype=object)[0]),
+            "numpy.array is given dtype=object",
+        ),
+        (
+            lambda m, a: m.set_fill(np.asarray([RED, None], "O")[0]),
+            "numpy.asarray is given dtype='O'",
+        ),
+        (lambda m, a: m.set_fill(np.full(2, None)[0]), "numpy.full is given None"),
+        (
+            lambda m, a: m.set_fill(np.where(a > 0.5, None, RED)[()]),
+            "numpy.where is given None",
+        ),
+        (
+            lambda m, a: m.set_fill(RED, np.max([None, a])),
+            "numpy.max is given None",
+        ),
+        (
+            lambda m, a: m.set_fill(RED, np.zeros(2).astype("O")[0]),
+            "astype is given dtype='O'",
+        ),
+    ],
+    ids=["inferred", "object", "asarray", "full", "where", "max", "astype"],
+)
+def test_an_array_holding_none_or_objects_is_refused(body, reason):
+    with pytest.raises(Refused, match=re.escape(reason)):
+        prove_setter_body(body, Dot(), None, takes_alpha=True)
+
+
+def test_an_array_of_numbers_written_out_is_admitted():
+    prove_setter_body(
+        lambda m, a: m.set_fill(RED, np.array([0.5, a], dtype="float")[1]),
+        Dot(),
+        None,
+        takes_alpha=True,
+    )
+
+
 def test_a_stored_method_reads_its_receiver(session_of):
     _ticked_with(session_of, "BoundReceiver", "writes after it")
     _same_at_shared_instants(soundness_scenes.BoundReceiver)
@@ -465,16 +516,31 @@ def test_a_mobject_overriding_a_draw_method_is_drawn_as_the_scene_runs(session_o
     assert not np.array_equal(frames[0], frames[-1])
 
 
-def test_a_mobject_overriding_a_draw_method_that_joins_mid_play_is_never_drawn(
+def test_a_mobject_overriding_a_draw_method_that_joins_mid_play_is_drawn_live(
     session_of,
 ):
-    """Its play's frames were to be drawn from the record: the render stops
-    with the reason rather than run the override after the play.
+    """Its play's frames were to be drawn from the record: the scene is
+    executed again, drawing that play as it runs, as CE draws it.
     """
     session = session_of("FillJoinsMidPlay", SOUNDNESS_SCENES)
     assert session.record.refusal.startswith("draw.user_override: CountingFill.")
-    with pytest.raises(RecordRefused, match="joined the scene during play 0"):
-        render(soundness_scenes.FillJoinsMidPlay, 6)
+    scene, frames = render(soundness_scenes.FillJoinsMidPlay, 6)
+    assert scene.record.execution.number == 2
+    assert list(scene.record.execution.known) == [0]
+    cls = soundness_scenes.CountingFill
+    with tempconfig(
+        {**SMALL, "frame_rate": 6, "dry_run": True, "disable_caching": True}
+    ):
+        camera = soundness_scenes.FillJoinsMidPlay().renderer.camera
+        camera.reset()
+        blank = camera.pixel_array.copy()
+        cls.colour = RED
+        camera.capture_mobjects([cls(radius=0.3)])
+        dot = camera.pixel_array.copy()
+    expected = [dot if k / 6 > 0.4 else blank for k in range(6)]
+    assert len(frames) == len(expected)
+    for k, (frame, reference) in enumerate(zip(frames, expected, strict=True)):
+        assert np.array_equal(frame, reference), k
 
 
 def test_what_the_engine_puts_on_an_instance_is_the_engine_s_draw():

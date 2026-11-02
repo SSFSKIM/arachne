@@ -13,7 +13,7 @@ from ..mobject.mobject import Mobject, _AnimationBuilder
 from ..scene.scene_file_writer import SceneFileWriter
 from ..timeline.clock import TICK_RATE, exact, frames_in
 from ..timeline.draw import Drawing, LiveFrames
-from ..timeline.routes import RecordRefused
+from ..timeline.execution import Reexecute
 from ..utils.exceptions import EndSceneEarlyException
 from ..utils.iterables import list_update
 from .protocol import RendererCapabilities
@@ -63,6 +63,16 @@ class CairoRenderer:
         self.num_plays = 0
         self._clock = Fraction(0)
         self.static_image: PixelArray | None = None
+
+    def renew(self) -> None:
+        """Start afresh for another execution of the scene: a new camera of
+        the same class, no plays, the clock at zero.
+        """
+        self.__init__(  # type: ignore[misc]
+            self._file_writer_class,
+            type(self.camera),
+            self._original_skipping_status,
+        )
 
     def init_scene(
         self,
@@ -139,14 +149,10 @@ class CairoRenderer:
             # A play shorter than the gap between two frames shows in none.
             cache_key = None
         draw = cache_key is not None and timeline.draws
-        refusal = timeline.ensure_record().refusal
-        if draw and refusal is not None:
+        if draw and play.draw_refusal is not None:
             # A mobject the record can't draw joined while the play ran: its
-            # frames could only be drawn now by running the scene's code.
-            raise RecordRefused(
-                f"{refusal}; it joined the scene during play {play.index}, whose"
-                " frames were to be drawn from the record"
-            )
+            # frames are drawn as the scene runs, in an execution that knows.
+            raise Reexecute(play.index, play.draw_refusal)
         if draw and self.file_writer.is_already_cached(cache_key):
             logger.info(
                 f"Animation {self.num_plays} : Using cached data (hash : %(hash_current_animation)s)",

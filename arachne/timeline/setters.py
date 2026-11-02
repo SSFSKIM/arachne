@@ -102,8 +102,27 @@ def _setter_functions() -> dict[Any, Setter]:
 
 
 def builtin_class(cls: type) -> bool:
-    """Whether ``cls`` is defined in the engine."""
-    return cls.__module__ == "arachne" or cls.__module__.startswith("arachne.")
+    """Whether ``cls`` is a class the engine defines (by identity, taken when
+    ``arachne`` was imported: :mod:`.frozen`).
+    """
+    from .frozen import engine_class
+
+    return engine_class(cls)
+
+
+def freeze_tables() -> None:
+    """Build every table this module admits by, before a scene runs."""
+    _setter_functions()
+    engine_classes()
+    _constructors()
+    for names in (
+        _VALUE_READS,
+        _MEMBER_READS,
+        _BUILDS,
+        _READS_ITS_ARGUMENTS,
+        _FRESH_CHANGES,
+    ):
+        _functions_named(names)
 
 
 def _class_of(receiver: Any) -> type:

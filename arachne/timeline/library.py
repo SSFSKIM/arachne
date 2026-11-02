@@ -30,6 +30,13 @@ environment, a file). The admitted form is part of the entry:
 - ``takes_mobjects``: it may be given mobjects, of which it reads only
   their count or identity, or which it hands back in a container (``len``,
   ``isinstance``, ``list``, ``zip``).
+- ``content``: the positional arguments whose elements its result holds
+  (``numpy.array``'s ``object``, ``numpy.where``'s two choices). An array
+  built of None, or of anything that is not a number, is an array of
+  objects, whose items are those objects: none of them may be or hold None.
+- ``dtype_at``: where ``dtype`` stands by position, if it may. A ``dtype``,
+  by position or by name, must be written out as a number type
+  (``"float"``): an array of objects is not a number.
 
 Methods of plain values (an array's ``sum``, a string's ``format``) are
 admitted the same way, by name, from :data:`VALUE_METHODS`: the receiver is
@@ -62,6 +69,8 @@ class Entry:
     allocates: bool = False
     calls: bool = False
     takes_mobjects: bool = False
+    content: tuple[int, ...] = ()
+    dtype_at: int | None = None
 
 
 def _kw(*names: str) -> frozenset[str]:
@@ -272,6 +281,21 @@ _NUMPY: dict[str, tuple[int | None, frozenset[str], bool]] = {
     "where": (3, _kw(), True),
     "zeros": (1, _kw("dtype"), True),
 }
+#: The positional arguments whose elements a numpy function's result holds,
+#: where they are not its first alone.
+_NUMPY_CONTENT: dict[str, tuple[int, ...]] = {
+    "append": (0, 1),
+    "arange": (),
+    "eye": (),
+    "full": (1,),
+    "identity": (),
+    "linspace": (0, 1),
+    "ones": (),
+    "where": (1, 2),
+    "zeros": (),
+}
+#: Where ``dtype`` stands by position.
+_NUMPY_DTYPE_AT = {"array": 1, "asarray": 1}
 _NUMPY_LINALG: dict[str, tuple[int | None, frozenset[str], bool]] = {
     "det": (1, _kw(), True),
     "inv": (1, _kw(), True),
@@ -368,6 +392,11 @@ def _inputs(ufunc: np.ufunc) -> int:
     return int(ufunc.nargs - ufunc.nout)
 
 
+def _ufunc_entry(name: str, ufunc: np.ufunc) -> Entry:
+    inputs = _inputs(ufunc)
+    return Entry(name, inputs, allocates=True, content=tuple(range(inputs)))
+
+
 def _entries() -> Iterable[tuple[Any, Entry]]:
     import importlib
 
@@ -380,7 +409,7 @@ def _entries() -> Iterable[tuple[Any, Entry]]:
     for name in _UFUNCS:
         ufunc = getattr(np, name)
         assert isinstance(ufunc, np.ufunc), name
-        yield ufunc, Entry(f"numpy.{name}", _inputs(ufunc), allocates=True)
+        yield ufunc, _ufunc_entry(f"numpy.{name}", ufunc)
     for space, prefix, table in (
         (np, "numpy", _NUMPY),
         (np.linalg, "numpy.linalg", _NUMPY_LINALG),
@@ -389,9 +418,19 @@ def _entries() -> Iterable[tuple[Any, Entry]]:
             value = getattr(space, name)
             if isinstance(value, np.ufunc):
                 # np.abs and its kin are ufuncs under another name.
-                yield value, Entry(f"{prefix}.{name}", _inputs(value), allocates=True)
+                yield value, _ufunc_entry(f"{prefix}.{name}", value)
             else:
-                yield value, Entry(f"{prefix}.{name}", positional, keywords, allocates)
+                yield (
+                    value,
+                    Entry(
+                        f"{prefix}.{name}",
+                        positional,
+                        keywords,
+                        allocates,
+                        content=_NUMPY_CONTENT.get(name, (0,)),
+                        dtype_at=_NUMPY_DTYPE_AT.get(name),
+                    ),
+                )
     for tables, calls in ((_ENGINE, False), (_ENGINE_CALLING, True)):
         for module_name, names in tables.items():
             module = importlib.import_module(module_name)

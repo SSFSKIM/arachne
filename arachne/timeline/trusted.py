@@ -46,6 +46,7 @@ from arachne.animation.animation import Add, Animation, Wait
 from arachne.animation.updaters.update import UpdateFromAlphaFunc, UpdateFromFunc
 
 from .dispatch import family_refusal, instance_shadows, user_overrides
+from .frozen import engine_class
 from .rates import admitted_path, admitted_rate, is_monotone
 
 if TYPE_CHECKING:
@@ -219,7 +220,7 @@ def _refuse(
                 f"{name}'s rate function {animation.rate_func!r} is not one of CE's"
             )
         return
-    if name in NEVER_ADMITTED and kind.__module__.startswith("arachne."):
+    if name in NEVER_ADMITTED and engine_class(kind):
         found.append(NEVER_ADMITTED[name])
         return
     if not admitted_rate(animation.rate_func):

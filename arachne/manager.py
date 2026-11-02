@@ -11,6 +11,7 @@ import srt
 from . import logger
 from .scene.section import DefaultSectionType
 from .timeline.clock import exact
+from .timeline.execution import Reexecute, play_keys
 from .utils.exceptions import EndSceneEarlyException
 from .utils.file_ops import open_media_file
 
@@ -136,6 +137,12 @@ class Manager(Generic[SceneT]):
         raised while constructing the scene abort active encoding jobs before
         they are propagated.
 
+        A play that was to be drawn from the scene's record and that a mobject
+        the record can't draw joined mid-play (:mod:`.timeline.execution`)
+        has the scene executed again from the start, the same scene object
+        initialised anew with the arguments it was made with, drawing that
+        play as it runs. Each such play costs one execution.
+
         Parameters
         ----------
         preview
@@ -146,6 +153,44 @@ class Manager(Generic[SceneT]):
         if open_after_render and not self.output_spec.enabled:
             raise ValueError("Previewing after render requires a media artifact.")
 
+        known: dict[int, str] = {}
+        earlier: list[tuple[int, tuple[bytes, ...]]] = []
+        while True:
+            try:
+                self._execute()
+                break
+            except Reexecute as again:
+                record = self.scene.timeline.ensure_record()
+                if again.play in known:
+                    # A known play is drawn as it runs and never raises this.
+                    raise RuntimeError(
+                        f"play {again.play} was to be drawn as it runs"
+                    ) from again
+                known[again.play] = again.reason
+                earlier.append((record.execution.number, play_keys(record)))
+                logger.info(
+                    "Play %(play)s: %(reason)s. Executing %(scene)s again (execution"
+                    " %(n)s), drawing that play as it runs.",
+                    {
+                        "play": again.play,
+                        "reason": again.reason,
+                        "scene": type(self.scene).__name__,
+                        "n": len(earlier) + 1,
+                    },
+                )
+                self._renew_scene()
+                self.scene.timeline.reexecuting(known, earlier)
+        self.post_construct()
+
+        if open_after_render or presentation.show_in_file_browser:
+            open_media_file(
+                self.file_writer,
+                preview=open_after_render,
+                show_in_file_browser=presentation.show_in_file_browser,
+            )
+
+    def _execute(self) -> None:
+        """Execute the scene's script once, recording it."""
         timeline = self.scene.timeline
         timeline.begin_run()
         try:
@@ -165,14 +210,20 @@ class Manager(Generic[SceneT]):
             timeline.abandon_run()
             raise
         timeline.end_run()
-        self.post_construct()
 
-        if open_after_render or presentation.show_in_file_browser:
-            open_media_file(
-                self.file_writer,
-                preview=open_after_render,
-                show_in_file_browser=presentation.show_in_file_browser,
-            )
+    def _renew_scene(self) -> None:
+        """Initialise the scene anew, as it was made, for another execution:
+        the same object, so whoever holds it holds the execution that ends.
+        """
+        scene = self.scene
+        arguments = scene._arguments
+        # A renderer the scene was given (rather than made) is used again.
+        scene.renderer.renew()
+        vars(scene).clear()
+        scene._arguments = arguments
+        args, kwargs = arguments
+        type(scene).__init__(scene, *args, **kwargs)
+        scene.manager = self
 
     def setup(self) -> None:
         """Run the managed scene's :meth:`~arachne.scene.scene.Scene.setup` hook."""
