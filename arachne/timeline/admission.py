@@ -30,6 +30,7 @@ from dataclasses import dataclass, field, replace
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
+from .dispatch import engine_patches, user_overrides
 from .purity import Proof, Refused, prove_builder, prove_readout, prove_setter_body
 from .source import SourceLine, relative_path
 
@@ -131,6 +132,15 @@ def admit(
     refusal = refusal or camera_refusal(camera)
     if refusal is not None:
         return Admission(TICKED, (refusal,))
+    patched = engine_patches()
+    if patched:
+        return Admission(
+            TICKED,
+            (
+                f"the scene replaces the engine's {', '.join(patched)}, which every"
+                " instance then runs in place of what the proofs vouch for",
+            ),
+        )
     animations = list(scene.animations or [])
     reasons: list[str] = []
     callbacks: list[Callback] = []
@@ -146,6 +156,9 @@ def admit(
             )
         callbacks.extend(_animation_callbacks(scene, animations, reasons))
         callbacks.extend(_updater_callbacks(scene, animations))
+        updating = _update_replaced(scene)
+        if updating is not None:
+            reasons.append(updating)
     callbacks.extend(_camera_callbacks(scene, camera))
     callbacks = [_relative_line(callback, base_dir) for callback in callbacks]
     callback_animations = [
@@ -299,6 +312,25 @@ def _updater_callbacks(
 
     for mob in scene.mobjects:
         yield from visit(mob)
+
+
+def _update_replaced(scene: Scene) -> str | None:
+    """Why ``Scene.update_mobjects`` may not run the updaters the proofs
+    read: a mobject whose ``update`` (which runs its updaters, then its
+    children's) is a scene's code, on the instance or in its class.
+    """
+    classes: dict[type, bool] = {}
+    for mob in scene.mobjects:
+        for member in mob.get_family():
+            cls = type(member)
+            if cls not in classes:
+                classes[cls] = "update" in user_overrides(cls)
+            if classes[cls] or callable(vars(member).get("update")):
+                return (
+                    f"a {type(member).__name__}'s update is the scene's code, so what"
+                    " runs at a tick is not the updaters it holds"
+                )
+    return None
 
 
 def _resumed_during_play(animations: Sequence[Animation]) -> set[int]:

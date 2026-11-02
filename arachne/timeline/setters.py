@@ -16,20 +16,21 @@ resolves to another function and is not admitted.
   called on, returning a value, one of its own members, or a mobject they
   build.
 - Calls a callback may make on a mobject it built in the same call
-  (:func:`fresh_method`), and the constructors and functions it may call.
+  (:func:`fresh_method`), and the constructors it may call
+  (:func:`constructor_kind`); the library functions are :mod:`.library`'s.
 """
 
 from __future__ import annotations
 
 __all__ = [
-    "PURE_BUILTINS",
     "SETTERS",
     "Setter",
     "builtin_class",
     "constructor_kind",
+    "engine_classes",
     "fresh_method",
-    "pure_function",
     "method_function",
+    "pure_module",
     "read_kind",
     "returned_class",
     "setter_for",
@@ -40,8 +41,6 @@ import types
 from dataclasses import dataclass
 from functools import cache
 from typing import Any
-
-import numpy as np
 
 
 @dataclass(frozen=True)
@@ -255,7 +254,7 @@ _READS_ITS_ARGUMENTS = (
 
 
 @cache
-def _engine_classes() -> tuple[type, ...]:
+def engine_classes() -> tuple[type, ...]:
     """Every engine class a mobject or camera can be."""
     import arachne
 
@@ -277,7 +276,7 @@ def _engine_classes() -> tuple[type, ...]:
 @cache
 def _functions_named(names: tuple[str, ...]) -> frozenset[Any]:
     functions: set[Any] = set()
-    for cls in _engine_classes():
+    for cls in engine_classes():
         for name in names:
             function = cls.__dict__.get(name)
             if function is not None:
@@ -306,52 +305,76 @@ def read_kind(receiver: Any, name: str) -> str | None:
 
 def fresh_method(receiver: Any, name: str) -> str | None:
     """Whether a callback may call ``receiver.name`` on a mobject it built in
-    the same call, and what it returns: ``"mobject"``, ``"value"``, or
-    ``None`` when the call is not admitted. ``"reads"`` is appended (as
-    ``"mobject+reads"``) when the method may take a scene mobject as an
-    argument without changing it.
+    the same call, and what it returns: ``"mobject"`` (the receiver, changed,
+    or a mobject it builds), ``"value"``, or ``None`` when the call is not
+    admitted. ``"+reads"`` is appended (as ``"mobject+reads"``) when the
+    method may take a scene mobject as an argument without changing it.
+
+    Admitted by identity: the engine's own function under a name of
+    :data:`_FRESH_CHANGES`, :data:`_BUILDS` or :data:`_VALUE_READS`. Each
+    changes the receiver alone, from its arguments, and draws, reads and
+    writes nothing else (no ``shuffle``, ``save_image``, ``add_updater``).
     """
     if not builtin_class(_class_of(receiver)):
         return None
     function = _method_function(receiver, name)
-    if not callable(function) or name.startswith("_") or name in _NEVER_ON_FRESH:
+    if function is None:
         return None
-    if isinstance(function, (staticmethod, classmethod, property)):
-        return None
-    kind = "value"
-    try:
-        annotation = inspect.signature(function).return_annotation
-    except (TypeError, ValueError):
-        annotation = None
-    if annotation == "Self" or returned_class(function) is not None:
-        kind = "mobject"
-    if function in _functions_named(_READS_ITS_ARGUMENTS):
-        kind += "+reads"
-    return kind
+    if function in _functions_named(_VALUE_READS):
+        return "value"
+    if function in _functions_named(_FRESH_CHANGES) or function in _functions_named(
+        _BUILDS
+    ):
+        if function in _functions_named(_READS_ITS_ARGUMENTS):
+            return "mobject+reads"
+        return "mobject"
+    return None
 
 
-#: Methods of a fresh mobject that reach beyond it: callbacks, animations,
-#: and the scene.
-_NEVER_ON_FRESH = frozenset(
-    {
-        "add_updater",
-        "remove_updater",
-        "clear_updaters",
-        "update",
-        "suspend_updating",
-        "resume_updating",
-        "animate",
-        "generate_target",
-        "save_state",
-        "restore",
-        "add_to_back",
-        "become",
-        "match_points",
-        "align_data",
-        "align_submobjects",
-        "interpolate",
-        "add_background_rectangle",
-    }
+#: Methods a callback may call on a mobject it built: each changes that
+#: mobject (its family) from its arguments alone.
+_FRESH_CHANGES = (
+    "shift",
+    "scale",
+    "rotate",
+    "flip",
+    "stretch",
+    "center",
+    "move_to",
+    "next_to",
+    "align_to",
+    "to_edge",
+    "to_corner",
+    "set_x",
+    "set_y",
+    "set_z",
+    "set_color",
+    "set_fill",
+    "set_stroke",
+    "set_opacity",
+    "set_z_index",
+    "scale_to_fit_width",
+    "scale_to_fit_height",
+    "stretch_to_fit_width",
+    "stretch_to_fit_height",
+    "match_x",
+    "match_y",
+    "match_z",
+    "match_coord",
+    "match_height",
+    "match_width",
+    "match_depth",
+    "match_dim_size",
+    "match_style",
+    "match_color",
+    "replace",
+    "surround",
+    "put_start_and_end_on",
+    "arrange",
+    "arrange_in_grid",
+    "add",
+    "set_value",
+    "set_points_as_corners",
 )
 
 
@@ -404,84 +427,115 @@ _READER_CONSTRUCTORS = (
     "DecimalNumber",
     "Integer",
 )
+#: Constructors that take values (and mobjects the callback built) only.
+#: Each builds a new mobject from its arguments alone: none reads a file
+#: (``ImageMobject``, ``SVGMobject``, ``Code``), the camera
+#: (``ImageMobjectFromCamera``) or a random generator (``Graph``'s layouts),
+#: and none attaches an updater (``Variable``, ``TracedPath``).
+_VALUE_CONSTRUCTORS = (
+    "AnnotationDot",
+    "AnnularSector",
+    "Annulus",
+    "Arc",
+    "ArcBrace",
+    "ArcPolygon",
+    "Arrow3D",
+    "Axes",
+    "BraceLabel",
+    "BraceText",
+    "BulletedList",
+    "Circle",
+    "ComplexPlane",
+    "Cone",
+    "Cube",
+    "CubicBezier",
+    "Cylinder",
+    "DashedVMobject",
+    "DecimalMatrix",
+    "DecimalTable",
+    "Difference",
+    "Dot3D",
+    "Ellipse",
+    "Exclusion",
+    "FunctionGraph",
+    "Group",
+    "ImplicitFunction",
+    "IntegerMatrix",
+    "IntegerTable",
+    "Intersection",
+    "LabeledDot",
+    "Line3D",
+    "MarkupText",
+    "MathTable",
+    "MathTex",
+    "Matrix",
+    "Mobject",
+    "MobjectMatrix",
+    "MobjectTable",
+    "NumberLine",
+    "NumberPlane",
+    "ParametricFunction",
+    "Paragraph",
+    "PolarPlane",
+    "Polygon",
+    "Polygram",
+    "Prism",
+    "Rectangle",
+    "RegularPolygon",
+    "RegularPolygram",
+    "RoundedRectangle",
+    "Sector",
+    "SingleStringMathTex",
+    "Sphere",
+    "Square",
+    "Star",
+    "Surface",
+    "Table",
+    "Tex",
+    "Text",
+    "ThreeDAxes",
+    "Title",
+    "Torus",
+    "Triangle",
+    "Union",
+    "UnitInterval",
+    "VDict",
+    "VGroup",
+    "VMobject",
+    "ValueTracker",
+    "VectorizedPoint",
+)
+
+
+@cache
+def _constructors() -> dict[type, str]:
+    import arachne
+
+    found: dict[type, str] = {}
+    for names, kind in (
+        (_VALUE_CONSTRUCTORS, "values"),
+        (_READER_CONSTRUCTORS, "reads"),
+    ):
+        for name in names:
+            found[getattr(arachne, name)] = kind
+    return found
 
 
 def constructor_kind(cls: Any) -> str | None:
     """How a callback may build an instance of ``cls``: ``"reads"`` (it may
     take scene mobjects as arguments), ``"values"`` (it may take only values
-    and mobjects the callback built), or ``None`` (not a built-in mobject).
+    and mobjects the callback built), or ``None`` (not an admitted
+    constructor). Admitted by identity: the engine's own class.
     """
-    from arachne.mobject.mobject import Mobject
-
-    if not (isinstance(cls, type) and issubclass(cls, Mobject) and builtin_class(cls)):
+    if not isinstance(cls, type):
         return None
-    if cls.__name__ in _READER_CONSTRUCTORS:
-        return "reads"
-    return "values"
+    return _constructors().get(cls)
 
 
-#: Builtins with no effect beyond their result.
-PURE_BUILTINS: frozenset[Any] = frozenset(
-    {
-        abs,
-        min,
-        max,
-        round,
-        int,
-        float,
-        complex,
-        bool,
-        len,
-        range,
-        sum,
-        zip,
-        enumerate,
-        reversed,
-        sorted,
-        list,
-        tuple,
-        dict,
-        set,
-        frozenset,
-        pow,
-        divmod,
-        any,
-        all,
-        isinstance,
-        str,
-        map,
-        filter,
-        slice,
-    }
-)
-
-#: numpy functions a callback may not call: draws, I/O, and writes into an
-#: array given to them.
-_NUMPY_REFUSED = frozenset(
-    {
-        "save",
-        "savez",
-        "savez_compressed",
-        "savetxt",
-        "load",
-        "loadtxt",
-        "genfromtxt",
-        "fromfile",
-        "memmap",
-        "copyto",
-        "put",
-        "place",
-        "putmask",
-        "fill_diagonal",
-        "seterr",
-        "seterrcall",
-        "setbufsize",
-        "set_printoptions",
-        "random",
-    }
-)
-#: Engine modules whose functions compute values and change nothing.
-_PURE_MODULES = (
+#: Engine modules a callback may read names off (constants and the
+#: functions the library table admits; a function it calls must be an
+#: entry, :mod:`.library`).
+_READABLE_MODULES = (
     "arachne.utils.space_ops",
     "arachne.utils.bezier",
     "arachne.utils.simple_functions",
@@ -490,37 +544,9 @@ _PURE_MODULES = (
 )
 
 
-def pure_function(function: Any) -> bool:
-    """Whether ``function`` is a library function whose only effect is its
-    result: a pure builtin, a ``math`` function, a numpy function that draws,
-    writes and reads nothing else, or a function of the engine's value
-    modules.
-    """
-    if function in PURE_BUILTINS:
-        return True
-    if (
-        isinstance(function, types.BuiltinFunctionType)
-        and getattr(function, "__module__", None) == "math"
-    ):
-        return True
-    if isinstance(function, np.ufunc):
-        return True
-    module = getattr(function, "__module__", None) or ""
-    name = getattr(function, "__name__", "")
-    if module.startswith("numpy"):
-        if module.startswith("numpy.random") or name in _NUMPY_REFUSED:
-            return False
-        return any(getattr(space, name, None) is function for space in (np, np.linalg))
-    if isinstance(function, types.FunctionType) and module.startswith(_PURE_MODULES):
-        return True
-    from arachne.utils.color.core import ManimColor
-
-    return function is ManimColor
-
-
 def pure_module(module: types.ModuleType) -> bool:
     """Whether a callback may read names off ``module``."""
     name = module.__name__
     if name in ("math", "numpy", "numpy.linalg", "arachne"):
         return True
-    return name.startswith(_PURE_MODULES) or name.startswith("arachne.constants")
+    return name.startswith(_READABLE_MODULES) or name.startswith("arachne.constants")

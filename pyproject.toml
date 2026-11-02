@@ -98,6 +98,7 @@ module-name = "arachne"
 [tool.pytest.ini_options]
 markers = "slow: Mark the test as slow. Can be skipped with --skip_slow"
 addopts = "--no-cov-on-fail --cov=arachne --cov-report xml --cov-report term -n auto --dist=loadfile --durations=0"
+filterwarnings = ["ignore:The '__version__' attribute is deprecated:DeprecationWarning:cloup"]
 
 [tool.isort]
 profile = "black"
