@@ -29,7 +29,6 @@ __all__ = [
 ]
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from functools import cache
 from typing import TYPE_CHECKING
 
 from arachne.animation import (
@@ -46,6 +45,7 @@ from arachne.animation import (
 from arachne.animation.animation import Add, Animation, Wait
 from arachne.animation.updaters.update import UpdateFromAlphaFunc, UpdateFromFunc
 
+from .dispatch import family_refusal, instance_shadows, user_overrides
 from .rates import admitted_path, admitted_rate, is_monotone
 
 if TYPE_CHECKING:
@@ -208,6 +208,10 @@ def _refuse(
 ) -> None:
     kind = type(animation)
     name = kind.__name__
+    shadows = instance_shadows(animation)
+    if shadows:
+        found.append(f"{name}'s {', '.join(shadows)} is replaced on the instance")
+        return
     if kind in CALLBACK_ANIMATIONS:
         # Its function is route 2's to prove; its timing is the algebra's.
         if not admitted_rate(animation.rate_func):
@@ -243,15 +247,9 @@ def _refuse(
     if reason is not None:
         found.append(f"{name}: {reason}")
         return
-    for mobject in _mobjects_of(animation):
-        for member in mobject.get_family():
-            overrides = user_overrides(type(member))  # type: ignore[arg-type]
-            if overrides:
-                found.append(
-                    f"{name} animates a {type(member).__name__}, whose class overrides"
-                    f" the engine's {', '.join(overrides)}"
-                )
-                return
+    dispatch = family_refusal(_mobjects_of(animation))
+    if dispatch is not None:
+        found.append(f"{name} animates {dispatch}")
 
 
 def _mobjects_of(animation: Animation) -> list[Mobject]:
@@ -266,59 +264,6 @@ def _mobjects_of(animation: Animation) -> list[Mobject]:
         if isinstance(value, Mobject):
             found.append(value)
     return found
-
-
-#: What a scene's subclass of an engine mobject may define without taking
-#: its instances out of the algebra.
-_OWN_DEFINITIONS = frozenset(
-    {
-        "__init__",
-        "__module__",
-        "__qualname__",
-        "__doc__",
-        "__dict__",
-        "__weakref__",
-        "__annotations__",
-        "__firstlineno__",
-        "__static_attributes__",
-        "__orig_bases__",
-        "__parameters__",
-    }
-)
-#: Hooks that change every attribute access, defined or not by the engine.
-_ACCESS_HOOKS = frozenset(
-    {"__getattr__", "__getattribute__", "__setattr__", "__delattr__"}
-)
-
-
-@cache
-def user_overrides(cls: type) -> tuple[str, ...]:
-    """The engine methods (and properties) a class defined outside the
-    engine overrides: an animation calls them on the mobject (``interpolate``,
-    ``pointwise_become_partial``, ``align_points`` and the rest), so an
-    override runs scene code inside an evaluation. Empty for the engine's own
-    classes, and for a subclass that only defines ``__init__``, class values
-    or methods of its own.
-    """
-    from .setters import builtin_class
-
-    engine: set[str] = set()
-    for klass in cls.__mro__:
-        if klass is object or builtin_class(klass):
-            engine.update(vars(klass))
-    found: list[str] = []
-    for klass in cls.__mro__:
-        if klass is object or builtin_class(klass):
-            continue
-        for key, value in vars(klass).items():
-            if key in _OWN_DEFINITIONS:
-                continue
-            code = callable(value) or isinstance(
-                value, (property, staticmethod, classmethod)
-            )
-            if code and (key in engine or key in _ACCESS_HOOKS) and key not in found:
-                found.append(key)
-    return tuple(found)
 
 
 def _conflicts(

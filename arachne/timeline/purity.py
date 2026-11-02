@@ -16,8 +16,13 @@ why it can't:
   helper either calls): it returns a value.
 
 Wherever it reads, it may read only registered state: mobjects (their
-values are recorded), the scene clock, immutable constants and the functions
-the engine vouches for; and it may change nothing but the outputs above. A
+values are recorded), the scene clock, immutable constants of exactly the
+engine's value types, and the library entries (:mod:`.library`); every
+mobject it reaches must run the engine's own methods (:mod:`.dispatch`); and
+it may change nothing but the outputs above. Admission is by allowlist: a
+call, value or receiver the proof does not positively admit is a refusal,
+and a value that may be ``None`` (an item picked from ``[None, RED]``)
+counts as ``None``. A
 ``nonlocal`` or ``global`` write, an attribute or item assignment, a call
 that changes a scene mobject other than an admitted setter, a relative
 change to the mobject it writes (``shift``, ``rotate``, a setter whose
@@ -48,12 +53,12 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from enum import Enum
 from fractions import Fraction
-from numbers import Number
 from typing import Any
 
 import numpy as np
 
-from . import setters
+from . import library, setters
+from .dispatch import family_refusal
 
 #: How deep the proof follows calls into helper functions.
 MAX_DEPTH = 4
@@ -99,8 +104,16 @@ class Proof:
     clock: bool = False
 
     def read(self, mobjects: Iterable[Any]) -> None:
+        """Record reads of ``mobjects``. Whatever a callback does with a
+        mobject it reaches (a read, a setter, a group's setter on each
+        child) runs the methods of its family, so each member must run the
+        engine's own (:mod:`.dispatch`).
+        """
         for mob in mobjects:
             if not any(mob is seen for seen in self.reads):
+                reason = family_refusal([mob])
+                if reason is not None:
+                    raise Refused(f"it reaches {reason}")
                 self.reads.append(mob)
 
     def bind(self, binding: Binding) -> None:
@@ -176,9 +189,14 @@ class _Known:
 
 @dataclass(frozen=True)
 class _Items:
-    """A container whose items are these abstract values."""
+    """A container whose items are these abstract values. ``exact`` when
+    they are its items in order (a literal, a tuple the callback read);
+    otherwise each stands for any number of items (a comprehension, a
+    library function's result), and an item taken out of it is their join.
+    """
 
     items: tuple[Any, ...]
+    exact: bool = False
 
 
 @dataclass(frozen=True)
@@ -290,6 +308,7 @@ class _Prover:
         #: sets.
         self.setter_mode = False
         self._callables_seen: set[int] = set()
+        self._mobjects_seen: set[int] = set()
 
     # Names
 
@@ -343,8 +362,11 @@ class _Prover:
         if value is None:
             return NONE
         if isinstance(value, np.ndarray):
-            if value.dtype == object:
-                raise Refused(f"{name} is an array of objects")
+            if type(value) is not np.ndarray or value.dtype == object:
+                raise Refused(
+                    f"{name} is a {type(value).__name__} of {value.dtype}, not an"
+                    " array of numbers"
+                )
             return EXTERNAL
         if _constant(value):
             return VALUE
@@ -352,8 +374,10 @@ class _Prover:
             if not setters.pure_module(value):
                 raise Refused(f"{name} is the module {value.__name__}")
             return _Known(value)
-        if isinstance(value, (list, tuple)):
-            return _Items(tuple(self._classify(item, f"{name}[]") for item in value))
+        if type(value) in (list, tuple):
+            return _Items(
+                tuple(self._classify(item, f"{name}[]") for item in value), exact=True
+            )
         if isinstance(value, (types.FunctionType, types.MethodType, type)) or callable(
             value
         ):
@@ -442,8 +466,17 @@ class _Prover:
         if isinstance(target, ast.Name):
             env[target.id] = value
         elif isinstance(target, (ast.Tuple, ast.List)):
+            if (
+                isinstance(value, _Items)
+                and value.exact
+                and len(value.items) == len(target.elts)
+            ):
+                for element, item in zip(target.elts, value.items, strict=True):
+                    self.assign(element, item, env)
+                return
+            item = _element(value)
             for element in target.elts:
-                self.assign(element, _element(value), env)
+                self.assign(element, item, env)
         else:
             raise Refused("it assigns to an attribute or an item")
 
@@ -484,7 +517,6 @@ class _Prover:
                 f"{type(mobject).__name__}.{method} is not an admitted setter"
             )
         before = list(self.proof.reads)
-        arguments = [*node.args, *(keyword.value for keyword in node.keywords)]
         params = setter.params
         if (
             any(isinstance(a, ast.Starred) for a in node.args)
@@ -503,18 +535,26 @@ class _Prover:
             if not (isinstance(value, _Fresh) and value.owned):
                 raise Refused(f"{method} is given a mobject it would change")
         else:
-            for argument in arguments:
+            named = [
+                *zip(params, node.args, strict=False),
+                *((k.arg, k.value) for k in node.keywords),
+            ]
+            for param, argument in named:
                 value = self.expression(argument, function, env)
                 if value is NONE or _holds_none(value):
                     raise Refused(
                         f"{method} is given None, which leaves what it sets as it was"
                     )
-                if isinstance(value, (_Fresh, _LambdaValue)) or (
-                    isinstance(value, _Known) and callable(value.obj)
-                ):
-                    raise Refused(
-                        f"{method} is given a {type(value).__name__.strip('_')}"
+                takes_mobject = "mobject" in (param or "")
+                if not (
+                    _all_plain(value)
+                    or (
+                        takes_mobject
+                        and isinstance(value, _Scene)
+                        and len(value.roots) == 1
                     )
+                ):
+                    raise Refused(f"{method} is given {_describe(value)} as {param}")
         family = {id(m) for m in mobject.get_family()}
         read_now = self.proof.reads[len(before) :]
         if any(
@@ -633,7 +673,9 @@ class _Prover:
         if isinstance(cls_value, property):
             if not setters.builtin_class(cls):
                 raise Refused(f"it reads the property {name} of a user class")
-            return VALUE
+            # The engine's property: a value of the mobject's, which may be a
+            # live view of its data (``points``).
+            return EXTERNAL
         if fresh:
             raise Refused(f"it reads {name} off a mobject it built")
         if isinstance(on, _Scene) and len(on.roots) == 1:
@@ -646,8 +688,11 @@ class _Prover:
             if isinstance(value, (list, tuple)) and all(
                 isinstance(v, Mobject) for v in value
             ):
-                return _Scene(tuple(value)) if value else VALUE
-            if isinstance(value, np.ndarray) and value.dtype != object:
+                if not value:
+                    return VALUE
+                self.proof.read(value)
+                return _Scene(tuple(value))
+            if type(value) is np.ndarray and value.dtype != object:
                 return EXTERNAL
             if value is None:
                 return NONE
@@ -668,11 +713,21 @@ class _Prover:
         if isinstance(on, _Fresh):
             return on
         if isinstance(on, _Items):
+            index = node.slice
+            if isinstance(index, ast.Slice):
+                return _Items(on.items)
+            if (
+                on.exact
+                and isinstance(index, ast.Constant)
+                and type(index.value) is int
+                and -len(on.items) <= index.value < len(on.items)
+            ):
+                return on.items[index.value]
             return _element(on)
         if on is VALUE or on is EXTERNAL:
             # An index of an array it read is a view of it.
             return on
-        raise Refused(f"it indexes {type(on).__name__.strip('_')}")
+        raise Refused(f"it indexes {_describe(on)}")
 
     def _Slice(self, node: ast.Slice, function: Any, env: dict[str, Any]) -> Any:
         for part in (node.lower, node.upper, node.step):
@@ -684,8 +739,14 @@ class _Prover:
         return self.expression(node.value, function, env)
 
     def _BinOp(self, node: ast.BinOp, function: Any, env: dict[str, Any]) -> Any:
-        self._plain(self.expression(node.left, function, env), "computes with")
-        self._plain(self.expression(node.right, function, env), "computes with")
+        left = self.expression(node.left, function, env)
+        right = self.expression(node.right, function, env)
+        self._plain(left, "computes with")
+        self._plain(right, "computes with")
+        operands = [v for v in (left, right) if isinstance(v, _Items)]
+        if operands:
+            # ``rows + []`` is a new list holding the same items.
+            return _Items(tuple(item for v in operands for item in v.items))
         return VALUE
 
     def _UnaryOp(self, node: ast.UnaryOp, function: Any, env: dict[str, Any]) -> Any:
@@ -718,17 +779,14 @@ class _Prover:
         self._plain(self.expression(node.test, function, env), "tests")
         body = self.expression(node.body, function, env)
         orelse = self.expression(node.orelse, function, env)
-        if isinstance(body, _Fresh) and isinstance(orelse, _Fresh):
-            return _Fresh(body.owned and orelse.owned)
-        if _is_plain(body) and _is_plain(orelse):
-            for plain in (EXTERNAL, NONE):
-                if plain in (body, orelse):
-                    return plain
-            return VALUE
-        raise Refused("a conditional chooses between things that are not plain values")
+        return _join([body, orelse])
 
     def _Tuple(self, node: ast.Tuple, function: Any, env: dict[str, Any]) -> Any:
-        return _Items(tuple(self.expression(e, function, env) for e in node.elts))
+        if any(isinstance(e, ast.Starred) for e in node.elts):
+            return _Items(tuple(self.expression(e, function, env) for e in node.elts))
+        return _Items(
+            tuple(self.expression(e, function, env) for e in node.elts), exact=True
+        )
 
     _List = _Tuple
 
@@ -738,11 +796,15 @@ class _Prover:
         return VALUE
 
     def _Dict(self, node: ast.Dict, function: Any, env: dict[str, Any]) -> Any:
+        held = []
         for key, value in zip(node.keys, node.values, strict=True):
             if key is not None:
                 self._plain(self.expression(key, function, env), "keys with")
-            self._plain(self.expression(value, function, env), "maps to")
-        return VALUE
+            item = self.expression(value, function, env)
+            self._plain(item, "maps to")
+            held.append(_flat_plain(item))
+        # What it maps to is what an item taken out of it is.
+        return _join(held)
 
     def _comprehension(
         self, node: Any, function: Any, env: dict[str, Any]
@@ -767,15 +829,16 @@ class _Prover:
     def _DictComp(self, node: ast.DictComp, function: Any, env: dict[str, Any]) -> Any:
         inner = self._comprehension(node, function, env)
         self._plain(self.expression(node.key, function, inner), "keys with")
-        self._plain(self.expression(node.value, function, inner), "maps to")
-        return VALUE
+        value = self.expression(node.value, function, inner)
+        self._plain(value, "maps to")
+        return _flat_plain(value)
 
     def _Lambda(self, node: ast.Lambda, function: Any, env: dict[str, Any]) -> Any:
         return _LambdaValue(node, dict(env))
 
     def _Call(self, node: ast.Call, function: Any, env: dict[str, Any]) -> Any:
         callee = self.expression(node.func, function, env)
-        _check_outputs(callee, node)
+        _check_form(callee, node)
         arguments = [self.expression(a, function, env) for a in node.args]
         keywords = {
             k.arg: self.expression(k.value, function, env) for k in node.keywords
@@ -813,60 +876,87 @@ class _Prover:
                 elif isinstance(value, _Fresh) or _holds_fresh(value):
                     owned = owned and _all_owned(value)
             return _Fresh(owned, target)
-        if setters.pure_function(target):
+        found = library.entry(target)
+        if found is not None:
+            return self.library_call(found, target, arguments, keywords, function)
+        if _is_rate_function(target):
             for value in values:
-                self.check_callable_argument(value, function)
-                if (
-                    isinstance(value, _Fresh) or _holds_fresh(value)
-                ) and target not in (
-                    len,
-                    isinstance,
-                    list,
-                    tuple,
-                    reversed,
-                    zip,
-                    enumerate,
-                ):
-                    raise Refused(f"{_name(target)} is given a mobject")
-            if any(isinstance(v, _Scene) or _holds_scene(v) for v in values):
-                return _Scene(_roots(values))
-            if target in (
-                list,
-                tuple,
-                reversed,
-                zip,
-                enumerate,
-                sorted,
-                filter,
-            ) and any(isinstance(v, _Fresh) or _holds_fresh(v) for v in values):
-                return _Items(
-                    tuple(v for v in values if isinstance(v, (_Fresh, _Items)))
-                )
-            if any(v is EXTERNAL or _holds_external(v) for v in values) and not (
-                _allocates(target)
-            ):
-                # It may hand back what it was given, or a view of it.
-                return EXTERNAL
+                self._plain(value, "times with")
             return VALUE
         if isinstance(target, types.FunctionType) and not _engine_function(target):
             return self.call_user(target, None, arguments, keywords)
-        if isinstance(target, types.FunctionType) and _is_rate_function(target):
-            return VALUE
-        raise Refused(f"it calls {_name(target)}, which the engine does not vouch for")
+        raise Refused(f"it calls {_qualified(target)}, which no library entry admits")
 
-    def check_callable_argument(self, value: Any, function: Any) -> None:
-        """A callable passed on (``plot(f)``) must itself be a readout."""
+    def library_call(
+        self,
+        found: library.Entry,
+        target: Any,
+        arguments: list[Any],
+        keywords: dict[str | None, Any],
+        function: Any,
+    ) -> Any:
+        """A call to a library entry, in its admitted form (checked by
+        :func:`_check_form`): what it may be given, and what it returns.
+        """
+        given = [*arguments, *keywords.values()]
+        if target is isinstance:
+            # Its second argument is a class it compares with, not calls.
+            given = given[:1]
+        callables = [value for value in given if _is_callable_value(value)]
+        others = [value for value in given if not _is_callable_value(value)]
+        if callables and not found.calls:
+            raise Refused(f"{found.name} is given a callable")
+        results = [self.check_callable_argument(v, function) for v in callables]
+        for result in results:
+            if not _all_plain(result):
+                raise Refused(
+                    f"{found.name} is given a function that returns {_describe(result)}"
+                )
+        if found.takes_mobjects:
+            return _container_result(target, arguments, others)
+        for value in others:
+            if not _all_plain(value):
+                raise Refused(f"{found.name} is given {_describe(value)}")
+        if found.allocates:
+            return VALUE
+        # It may hand back what it was given (or a view of it): an array the
+        # callback did not make, or None.
+        return _join([_flat_plain(value) for value in [*others, *results]] or [VALUE])
+
+    def check_callable_argument(self, value: Any, function: Any) -> Any:
+        """A callable passed on (``plot(f)``, ``sorted(key=f)``) must itself
+        be a readout, or a library entry: the abstract value it returns.
+        Anything else that may be called is refused; a value that is not
+        callable is returned as it is.
+        """
         if isinstance(value, _LambdaValue):
-            self.call_lambda(value, None, {}, function)
-        elif isinstance(value, _Known) and isinstance(value.obj, types.FunctionType):
+            return self.call_lambda(value, None, {}, function)
+        if isinstance(value, _Method):
+            return self.call_method(value, None, function)
+        if isinstance(value, _Items):
+            for item in value.items:
+                self.check_callable_argument(item, function)
+            return value
+        if isinstance(value, _Known) and _is_callable_value(value):
+            from arachne.mobject.mobject import Mobject
+
             target = value.obj
-            if setters.pure_function(target) or _is_rate_function(target):
-                return
-            if _engine_function(target):
-                raise Refused(f"it passes on {_name(target)}")
-            self.call_user(target, None, None, {})
-        elif isinstance(value, _Method):
-            self.call_method(value, None, function)
+            if library.entry(target) is not None or _is_rate_function(target):
+                return VALUE
+            if (
+                isinstance(target, type)
+                and issubclass(target, Mobject)
+                and setters.builtin_class(target)
+            ):
+                # An engine mobject class the engine instantiates
+                # (``tip_shape=ArrowSquareTip``).
+                return VALUE
+            if isinstance(target, types.FunctionType) and not _engine_function(target):
+                return self.call_user(target, None, None, {})
+            raise Refused(
+                f"it passes on {_qualified(target)}, which no library entry admits"
+            )
+        return value
 
     def call_lambda(
         self,
@@ -878,18 +968,19 @@ class _Prover:
         node = callee.node
         env = dict(callee.env)
         names = [a.arg for a in (*node.args.posonlyargs, *node.args.args)]
+        # What the caller passes, unknown, is a value it did not make.
         for index, name in enumerate(names):
             env[name] = (
                 arguments[index]
                 if arguments is not None and index < len(arguments)
-                else VALUE
+                else EXTERNAL
             )
         for argument in node.args.kwonlyargs:
-            env[argument.arg] = keywords.get(argument.arg, VALUE)
+            env[argument.arg] = keywords.get(argument.arg, EXTERNAL)
         if node.args.vararg:
-            env[node.args.vararg.arg] = VALUE
+            env[node.args.vararg.arg] = _Items((EXTERNAL,))
         if node.args.kwarg:
-            env[node.args.kwarg.arg] = VALUE
+            env[node.args.kwarg.arg] = EXTERNAL
         return self.within(lambda: self.expression(node.body, function, env))
 
     def call_user(
@@ -911,7 +1002,7 @@ class _Prover:
             if index < len(given):
                 env[name] = given[index]
             elif arguments is None:
-                env[name] = VALUE
+                env[name] = EXTERNAL
             elif name in keywords:
                 env[name] = keywords[name]
             elif index >= first_default:
@@ -924,11 +1015,13 @@ class _Prover:
             if argument.arg in keywords:
                 env[argument.arg] = keywords[argument.arg]
             else:
-                default = (target.__kwdefaults__ or {}).get(argument.arg, VALUE)
+                defaults_ = target.__kwdefaults__ or {}
                 env[argument.arg] = (
-                    default
-                    if default is VALUE
-                    else self.classify(default, "default", argument.arg, target)
+                    self.classify(
+                        defaults_[argument.arg], "default", argument.arg, target
+                    )
+                    if argument.arg in defaults_
+                    else EXTERNAL
                 )
         return self.within(lambda: self.run_body(node, target, env, _Role.READOUT))
 
@@ -949,11 +1042,13 @@ class _Prover:
         for value in values:
             self.check_callable_argument(value, function)
         if on is VALUE or on is EXTERNAL:
-            if name in _VALUE_METHODS:
-                if any(isinstance(v, (_Scene, _Fresh)) for v in values):
-                    raise Refused(f"{name} is given a mobject")
-                return on if name in _VIEW_METHODS else VALUE
-            raise Refused(f"it calls {name} on a value")
+            form = library.value_method(name)
+            if form is None:
+                raise Refused(f"it calls {name} on a value, which no entry admits")
+            for value in values:
+                if not _all_plain(value):
+                    raise Refused(f"{name} is given {_describe(value)}")
+            return on if form[2] else VALUE
         if isinstance(on, _Known):
             obj = on.obj
             if obj is self.scene:
@@ -1016,10 +1111,13 @@ class _Prover:
         """Every callable the mobjects (their families included) store, which
         a read of them may call: ``underlying_function`` and ``function`` of a
         graph, a vector field's ``func``. Each must be proven a readout, or be
-        a pure library function; the engine's own wrappers are vouched for and
-        what they close over is proven in turn.
+        a library entry; the engine's own wrappers are proven through what
+        they hold (:meth:`prove_engine_closure`).
         """
         for mob in mobjects:
+            if id(mob) in self._mobjects_seen:
+                continue
+            self._mobjects_seen.add(id(mob))
             for member in mob.get_family():
                 for key, value in vars(member).items():
                     if _stored_callable(value):
@@ -1035,29 +1133,80 @@ class _Prover:
         if id(value) in self._callables_seen:
             return
         self._callables_seen.add(id(value))
-        if setters.pure_function(value) or _is_rate_function(value):
+        if library.entry(value) is not None or _is_rate_function(value):
             return
         if isinstance(value, types.MethodType):
-            target = value.__func__
-            if _engine_function(target) and setters.builtin_class(type(value.__self__)):
+            receiver, target = value.__self__, value.__func__
+            if _engine_function(target):
+                self.prove_engine_method(receiver, value.__name__, target, name)
                 return
             if not isinstance(target, types.FunctionType):
                 raise Refused(f"{name} is a callable the proof can't read")
-            self.call_user(target, self._classify(value.__self__, "self"), None, {})
+            self.call_user(target, self.classify(receiver, None, "self"), None, {})
             return
         if isinstance(value, types.FunctionType):
             if _engine_function(value):
-                inner = [
-                    *(c.cell_contents for c in value.__closure__ or () if _filled(c)),
-                    *(value.__defaults__ or ()),
-                ]
-                for item in inner:
-                    if _stored_callable(item):
-                        self.prove_callable(item, f"{name} (what it calls)")
+                self.prove_engine_closure(value, name)
                 return
             self.call_user(value, None, None, {})
             return
         raise Refused(f"{name} is a {type(value).__name__}, which the proof can't read")
+
+    def prove_engine_method(
+        self, receiver: Any, method: str, target: Any, name: str
+    ) -> None:
+        """An engine method bound to its receiver (``line.n2p``): calling it
+        reads the receiver, so it must be a read the engine vouches for, and
+        the receiver is read, for the dependency order.
+        """
+        from arachne.mobject.mobject import Mobject
+
+        if not (
+            isinstance(receiver, Mobject)
+            and setters.read_kind(receiver, method) == "value"
+            and setters.method_function(receiver, method) is target
+        ):
+            raise Refused(
+                f"{name} is {type(receiver).__name__}.{method}, which is not a read"
+                " the engine vouches for"
+            )
+        self.proof.read([receiver])
+        self.prove_stored_callables([receiver])
+
+    def prove_engine_closure(self, function: Any, name: str) -> None:
+        """An engine function a mobject stores (``plot``'s wrapper of the
+        user's function): what it holds is what it calls and reads. A
+        mobject it holds is read; a callable is proven; plain values and
+        containers of them are its data; anything else is refused.
+        """
+        held = [
+            *(c.cell_contents for c in function.__closure__ or () if _filled(c)),
+            *(function.__defaults__ or ()),
+            *(function.__kwdefaults__ or {}).values(),
+        ]
+        for item in held:
+            self._engine_held(item, name)
+
+    def _engine_held(self, item: Any, name: str) -> None:
+        from arachne.mobject.mobject import Mobject
+
+        if isinstance(item, Mobject):
+            self.proof.read([item])
+            self.prove_stored_callables([item])
+        elif isinstance(item, (list, tuple)):
+            for inner in item:
+                self._engine_held(inner, name)
+        elif isinstance(item, dict):
+            for inner in item.values():
+                self._engine_held(inner, name)
+        elif _stored_callable(item):
+            self.prove_callable(item, f"{name} (what it calls)")
+        elif not (
+            item is None
+            or _constant(item)
+            or (type(item) is np.ndarray and item.dtype != object)
+        ):
+            raise Refused(f"{name} holds a {type(item).__name__} the proof can't read")
 
     def _plain(self, value: Any, verb: str) -> None:
         if _is_plain(value):
@@ -1068,77 +1217,35 @@ class _Prover:
             raise Refused(f"it {verb} a scene mobject itself")
         if isinstance(value, _Fresh):
             raise Refused(f"it {verb} a mobject it built")
-        if isinstance(value, _Known) and not callable(value.obj):
-            return
-        raise Refused(f"it {verb} a {type(value).__name__.strip('_')}")
+        raise Refused(f"it {verb} {_describe(value)}")
 
 
 _MISSING = object()
 
 #: Attributes of plain values that are values themselves.
 _VALUE_ATTRIBUTES = frozenset({"T", "real", "imag", "shape", "size", "ndim", "dtype"})
-#: Attributes and methods of an array that are views of it: what it was, a
-#: value the callback made or one it read, they are.
+#: Attributes of an array that are views of it: what it was, a value the
+#: callback made or one it read, they are.
 _VIEW_ATTRIBUTES = frozenset({"T", "real", "imag"})
-_VIEW_METHODS = frozenset({"reshape", "T", "real", "imag", "astype"})
-#: Methods of plain values that write into an array given at this position
-#: (``out``), counted from the first argument after the receiver.
-_OUT_POSITIONS = {
-    "dot": 1,
-    "clip": 2,
-    "round": 1,
-    "sum": 2,
-    "mean": 2,
-    "max": 1,
-    "min": 1,
-}
-
-#: Methods of plain values (arrays, numbers, strings) with no effect beyond
-#: their result.
-_VALUE_METHODS = frozenset(
-    {
-        "copy",
-        "dot",
-        "sum",
-        "mean",
-        "max",
-        "min",
-        "reshape",
-        "flatten",
-        "tolist",
-        "astype",
-        "round",
-        "clip",
-        "conjugate",
-        "real",
-        "imag",
-        "format",
-        "upper",
-        "lower",
-        "strip",
-        "split",
-        "join",
-        "replace",
-        "item",
-        "T",
-        "__abs__",
-    }
-)
 
 
 def _constant(value: Any) -> bool:
-    """Whether ``value`` can't change: a number, string, colour or other
-    immutable value, or a tuple of them.
+    """Whether ``value`` can't change and runs no code of a scene's when
+    computed with: a number, string, colour or engine enum of exactly its
+    type (a subclass may define its own arithmetic), or a tuple of them.
     """
     from arachne.utils.color.core import ManimColor
 
-    if value is None or isinstance(value, (bool, int, float, complex, str, bytes)):
+    from .setters import builtin_class
+
+    kind = type(value)
+    if value is None or kind in (bool, int, float, complex, str, bytes, Fraction):
         return True
-    if isinstance(value, (Fraction, Number, np.generic, ManimColor, Enum)):
-        return True
-    if isinstance(value, np.ndarray):
-        return not value.flags.writeable and value.dtype != object
-    if isinstance(value, (tuple, frozenset)):
+    if isinstance(value, np.generic):
+        return kind.__module__ == "numpy" and value.dtype != object
+    if isinstance(value, (ManimColor, Enum)):
+        return builtin_class(kind)
+    if kind in (tuple, frozenset):
         return all(_constant(item) for item in value)
     return False
 
@@ -1184,104 +1291,148 @@ def _stored_callable(value: Any) -> bool:
     return callable(value) and not isinstance(value, (type, Mobject, np.ndarray))
 
 
-def _allocates(target: Any) -> bool:
-    """Whether calling ``target`` always returns a new value, never one of
-    its arguments or a view of one.
+def _check_form(callee: Any, node: ast.Call) -> None:
+    """Refuse a call to a library entry, or to a method of a plain value,
+    outside its admitted form (:mod:`.library`): more arguments by position
+    than it admits (an output array, or options its contract does not
+    cover), or a keyword it does not admit (``out=``, ``where=``).
     """
-    import math
-
-    if isinstance(target, np.ufunc):
-        return True
-    if target in (
-        int,
-        float,
-        complex,
-        bool,
-        len,
-        abs,
-        round,
-        str,
-        sum,
-        any,
-        all,
-        pow,
-        divmod,
-        isinstance,
-    ):
-        return True
-    return getattr(target, "__module__", None) == math.__name__
-
-
-def _check_outputs(callee: Any, node: ast.Call) -> None:
-    """Refuse a call that may write into an array it is given: ``out=`` or
-    ``where=`` (which leaves outputs unassigned), or an output array passed
-    positionally to a numpy function or an array method.
-    """
-    names = {keyword.arg for keyword in node.keywords}
-    if names & {"out", "where"}:
-        raise Refused("it passes out= or where=, which write into an array")
-    positional = len(node.args)
     starred = any(isinstance(a, ast.Starred) for a in node.args)
+    keywords: frozenset[str] | None
     if isinstance(callee, _Known):
-        target = callee.obj
-        if isinstance(target, np.ufunc):
-            if starred or positional > target.nargs - target.nout:
-                raise Refused(f"{_name(target)} is given an output array")
+        found = library.entry(callee.obj)
+        if found is None:
             return
-        module = getattr(target, "__module__", None) or ""
-        if module.startswith("numpy"):
-            index = _out_index(target)
-            if starred or (index is not None and positional > index):
-                raise Refused(f"{_name(target)} is given an output array")
+        name, positional, keywords = found.name, found.positional, found.keywords
+        if starred and (positional is not None or found.takes_mobjects or found.calls):
+            raise Refused(f"it unpacks arguments into {name}")
     elif isinstance(callee, _Method) and _is_plain(callee.on):
-        position = _OUT_POSITIONS.get(callee.name)
-        if position is not None and (starred or positional > position):
-            raise Refused(f"{callee.name} is given an output array")
+        form = library.value_method(callee.name)
+        if form is None:
+            return
+        positional, keywords, _ = form
+        name = callee.name
+        if starred and positional is not None:
+            raise Refused(f"it unpacks arguments into {name}")
+    else:
+        return
+    if positional is not None and len(node.args) > positional:
+        raise Refused(
+            f"{name} is given {len(node.args)} arguments by position, past what its"
+            " entry admits (an output array, or options its contract does not cover)"
+        )
+    for keyword in node.keywords:
+        if keywords is not None and keyword.arg not in keywords:
+            raise Refused(
+                f"{name} is given {keyword.arg}=, which its entry does not admit"
+            )
 
 
-def _out_index(target: Any) -> int | None:
-    """The position of ``target``'s ``out`` parameter: ``None`` when it has
-    none, 1 (anything after the first argument) when its signature can't be
-    read.
+def _is_callable_value(value: Any) -> bool:
+    if isinstance(value, (_LambdaValue, _Method)):
+        return True
+    return isinstance(value, _Known) and callable(value.obj)
+
+
+def _container_result(target: Any, arguments: list[Any], given: list[Any]) -> Any:
+    """What ``len``, ``isinstance`` and the container builtins return, given
+    mobjects or values: a count or a truth, or a container of what they were
+    given.
     """
-    try:
-        parameters = list(inspect.signature(target).parameters)
-    except (TypeError, ValueError):
-        return 1
-    return parameters.index("out") if "out" in parameters else None
+    for value in given:
+        if (
+            isinstance(value, (_Known, _LambdaValue, _Method))
+            and target is not isinstance
+        ):
+            raise Refused(f"{_qualified(target)} is given {_describe(value)}")
+    if target in (len, isinstance):
+        return VALUE
+    if target is zip:
+        return _Items((_Items(tuple(_element(a) for a in arguments), exact=True),))
+    if target is enumerate:
+        return _Items((_Items((VALUE, _element(arguments[0])), exact=True),))
+    return _Items(tuple(_element(a) for a in arguments[:1]))
+
+
+def _join(values: Iterable[Any]) -> Any:
+    """The abstract value that stands for any of ``values``: one picked by
+    an index, a branch or a loop. A value that may be None is None; one that
+    may be an array the callback did not make is one; mobjects are any of
+    them. Values of different kinds are refused.
+    """
+    values = list(values)
+    if not values:
+        return VALUE
+    if all(_is_plain(v) for v in values):
+        for plain in (NONE, EXTERNAL):
+            if any(v is plain for v in values):
+                return plain
+        return VALUE
+    if all(isinstance(v, _Scene) for v in values):
+        roots: list[Any] = []
+        for value in values:
+            roots.extend(r for r in value.roots if not any(r is s for s in roots))
+        return _Scene(tuple(roots))
+    if all(isinstance(v, _Fresh) for v in values):
+        classes = {v.cls for v in values}
+        return _Fresh(
+            all(v.owned for v in values), classes.pop() if len(classes) == 1 else None
+        )
+    if all(isinstance(v, _Items) for v in values):
+        return _Items(tuple(item for value in values for item in value.items))
+    raise Refused(
+        "it picks one of things of different kinds ("
+        + ", ".join(sorted({_describe(v) for v in values}))
+        + ")"
+    )
 
 
 def _element(value: Any) -> Any:
     """The abstract value of an item of ``value`` (iterated or unpacked)."""
     if isinstance(value, _Items):
-        if not value.items:
-            return VALUE
-        scenes = [item for item in value.items if isinstance(item, _Scene)]
-        if scenes:
-            return _Scene(tuple(root for item in scenes for root in item.roots))
-        fresh = [item for item in value.items if isinstance(item, _Fresh)]
-        if fresh:
-            return _Fresh(all(f.owned for f in fresh), fresh[0].cls)
-        nested = [item for item in value.items if isinstance(item, _Items)]
-        if nested:
-            return nested[0]
-        if any(item is EXTERNAL for item in value.items):
-            return EXTERNAL
-        return VALUE
-    if isinstance(value, (_Scene, _Fresh)) or value is EXTERNAL:
+        return _join(value.items)
+    if isinstance(value, (_Scene, _Fresh)) or value is VALUE or value is EXTERNAL:
         return value
-    return VALUE
+    raise Refused(f"it iterates {_describe(value)}")
+
+
+def _all_plain(value: Any) -> bool:
+    """Whether ``value`` is a plain value or a container of them only."""
+    if _is_plain(value):
+        return True
+    return isinstance(value, _Items) and all(_all_plain(item) for item in value.items)
+
+
+def _flat_plain(value: Any) -> Any:
+    """The join of the plain values ``value`` is or holds."""
+    if isinstance(value, _Items):
+        return _join([_flat_plain(item) for item in value.items] or [VALUE])
+    return value
+
+
+def _describe(value: Any) -> str:
+    if value is NONE:
+        return "None"
+    if value is EXTERNAL or value is VALUE:
+        return "a value"
+    if isinstance(value, _Scene):
+        return "a scene mobject"
+    if isinstance(value, _Fresh):
+        return "a mobject it built"
+    if isinstance(value, _Items):
+        return "a container"
+    if isinstance(value, _Known):
+        return f"{_qualified(value.obj)}"
+    if isinstance(value, _LambdaValue):
+        return "a lambda"
+    if isinstance(value, _Method):
+        return f"the method {value.name}"
+    return type(value).__name__.strip("_")
 
 
 def _holds_none(value: Any) -> bool:
     return isinstance(value, _Items) and any(
         item is NONE or _holds_none(item) for item in value.items
-    )
-
-
-def _holds_external(value: Any) -> bool:
-    return isinstance(value, _Items) and any(
-        item is EXTERNAL or _holds_external(item) for item in value.items
     )
 
 
@@ -1334,6 +1485,15 @@ def _name(target: Any) -> str:
     )
 
 
+def _qualified(target: Any) -> str:
+    """``target``'s module and name (``numpy.put_along_axis``)."""
+    module = getattr(target, "__module__", None)
+    if isinstance(target, np.ufunc):
+        module = "numpy"
+    name = _name(target)
+    return f"{module}.{name}" if module and module != "builtins" else name
+
+
 # Entry points
 
 
@@ -1379,10 +1539,12 @@ def prove_builder(function: Callable[..., Any], scene: Any) -> Proof:
     prover = _Prover(scene, proof)
     if isinstance(function, types.MethodType):
         target = function.__func__
-        assert isinstance(target, types.FunctionType)
-        result = prover.call_user(
-            target, prover._classify(function.__self__, "self"), [], {}
-        )
+        on = prover.classify(function.__self__, None, "self")
+        if _engine_function(target) or not isinstance(target, types.FunctionType):
+            # The engine's method (``ax.copy``): one of the reads it vouches for.
+            result = prover.call_method(_Method(on, function.__name__), [], function)
+        else:
+            result = prover.call_user(target, on, [], {})
     else:
         node = _function_node(function)
         if node.args.args or node.args.posonlyargs:
@@ -1409,9 +1571,6 @@ def prove_readout(function: Callable[..., Any], scene: Any) -> Proof:
         if node.args.args or node.args.posonlyargs:
             raise Refused("it takes arguments")
         result = prover.run_body(node, function, {}, _Role.READOUT)
-    if not (result is VALUE or result is EXTERNAL) and not (
-        isinstance(result, _Items)
-        and all(item is VALUE or item is EXTERNAL for item in result.items)
-    ):
+    if not _all_plain(result) or result is NONE or _holds_none(result):
         raise Refused("it does not return a plain value")
     return proof

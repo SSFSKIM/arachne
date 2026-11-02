@@ -15,8 +15,23 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from arachne import DOWN, RED, UP, Dot, ValueTracker
-from arachne.timeline.purity import Refused, prove_setter_body
+from arachne import (
+    DOWN,
+    RED,
+    UP,
+    Dot,
+    Graph,
+    ImageMobjectFromCamera,
+    ParametricFunction,
+    SVGMobject,
+    TracedPath,
+    ValueTracker,
+    Variable,
+    VGroup,
+)
+from arachne.timeline import setters
+from arachne.timeline.dispatch import engine_patches
+from arachne.timeline.purity import Refused, prove_builder, prove_setter_body
 
 from . import soundness_scenes
 from .conftest import render
@@ -51,8 +66,8 @@ def _same_at_shared_instants(scene_class, rates=(4, 30)) -> None:
     ("name", "reason"),
     [
         ("ArrayAugmented", "changes in place a name or value it did not make"),
-        ("ArrayOutKeyword", "out= or where="),
-        ("ArrayOutPositional", "is given an output array"),
+        ("ArrayOutKeyword", "numpy.add is given out=, which its entry does not admit"),
+        ("ArrayOutPositional", "numpy.add is given 3 arguments by position, past"),
     ],
 )
 def test_a_callback_writing_into_an_array_it_read_ticks(session_of, name, reason):
@@ -201,6 +216,183 @@ def test_a_display_camera_is_drawn_with_its_own_values_at_each_instant(session_o
     assert np.array_equal(earlier, frames[2])
     assert np.array_equal(later, frames[6])
     assert not np.array_equal(earlier, later)
+
+
+# Fix wave 2: admission by allowlist.
+
+
+@pytest.mark.parametrize(
+    ("name", "reason"),
+    [
+        ("PutAlongAxis", "numpy.put_along_axis, which no library entry admits"),
+        ("RandomColour", "random_color, which no library entry admits"),
+    ],
+)
+def test_a_library_call_outside_the_table_ticks(session_of, name, reason):
+    _ticked_with(session_of, name, reason)
+    _same_at_shared_instants(getattr(soundness_scenes, name))
+
+
+def test_a_value_picked_from_items_that_may_be_none_ticks(session_of):
+    _ticked_with(session_of, "PickedNone", "is given None")
+    _same_at_shared_instants(soundness_scenes.PickedNone, (4, 15, 30))
+
+
+def test_a_stored_method_reads_its_receiver(session_of):
+    _ticked_with(session_of, "BoundReceiver", "writes after it")
+    _same_at_shared_instants(soundness_scenes.BoundReceiver)
+
+
+def test_an_instance_interpolate_takes_a_transform_off_route_1(session_of):
+    session = _ticked_with(session_of, "InstanceInterpolate", "on the instance")
+    counter = session.module.InstanceInterpolate.calls
+    before = len(counter)
+    session.state_at(Fraction(1, 7))
+    session.frame(Fraction(1, 7))
+    assert len(counter) == before
+
+
+def test_an_instance_setter_reached_through_a_group_ticks(session_of):
+    _ticked_with(session_of, "InstanceSetFill", "on the instance")
+    _same_at_shared_instants(soundness_scenes.InstanceSetFill)
+
+
+# What else the prover admitted by default.
+
+
+def test_an_animation_method_replaced_on_the_instance_takes_it_off_route_1(
+    session_of,
+):
+    session = _ticked_with(
+        session_of, "InstanceAnimation", "interpolate_mobject is replaced"
+    )
+    counter = session.module.InstanceAnimation.calls
+    before = len(counter)
+    session.state_at(Fraction(1, 7))
+    session.frame(Fraction(1, 7))
+    assert len(counter) == before
+
+
+def test_a_mobject_whose_update_is_replaced_ticks(session_of):
+    _ticked_with(session_of, "InstanceUpdate", "update is the scene's code")
+    _same_at_shared_instants(soundness_scenes.InstanceUpdate)
+
+
+def test_an_engine_method_replaced_by_the_scene_ticks_every_play(session_of):
+    _ticked_with(session_of, "PatchedEngine", "replaces the engine's Dot.interpolate")
+    assert engine_patches() == ()
+
+
+def test_a_builder_calling_a_random_method_of_what_it_built_ticks(session_of):
+    _ticked_with(session_of, "ShuffledBuilder", "it calls VGroup.shuffle")
+    _same_at_shared_instants(soundness_scenes.ShuffledBuilder)
+
+
+class _Arithmetic(float):
+    """A number whose arithmetic is a scene's code."""
+
+    def __add__(self, other):
+        return float(self) + other + 1
+
+
+class _Array(np.ndarray):
+    """An array whose arithmetic is a scene's code."""
+
+
+class _Callable:
+    def __call__(self, t):
+        return np.array([t, t, 0.0])
+
+
+def test_values_are_registered_by_their_exact_type():
+    d = Dot()
+    number = _Arithmetic(1.0)
+    with pytest.raises(Refused, match="_Arithmetic"):
+        prove_setter_body(lambda m: m.set_x(number + 1), d, None)
+    array = np.zeros(3).view(_Array)
+    with pytest.raises(Refused, match="not an array of numbers"):
+        prove_setter_body(lambda m: m.move_to(array + 1), d, None)
+
+
+def test_a_ufunc_made_from_a_python_function_is_no_library_entry():
+    d = Dot()
+    made = np.frompyfunc(lambda x: x, 1, 1)
+    with pytest.raises(Refused, match="no library entry admits"):
+        prove_setter_body(lambda m, a: m.set_x(made(a)), d, None, takes_alpha=True)
+
+
+def test_a_callable_handed_to_a_constructor_must_be_proven():
+    shape = _Callable()
+    with pytest.raises(Refused, match="no library entry admits"):
+        prove_builder(lambda: ParametricFunction(shape, t_range=[0, 1]), None)
+
+
+def test_a_function_mapped_over_an_array_it_did_not_make_may_not_change_it():
+    rows = np.zeros((2, 3))
+
+    def bump(row):
+        row += 0.1
+        return row
+
+    with pytest.raises(Refused, match="did not make"):
+        prove_setter_body(lambda m: m.move_to(list(map(bump, rows))[0]), Dot(), None)
+
+
+_ROWS = [np.zeros(3)]
+
+
+def _through_dict(m):
+    q = {"a": _ROWS[0]}["a"]
+    q += 0.02
+    m.move_to(q)
+
+
+def _through_dict_comprehension(m):
+    q = {k: _ROWS[0] for k in "a"}["a"]  # noqa: C420
+    q += 0.02
+    m.move_to(q)
+
+
+def _through_dict_call(m):
+    q = dict([("a", _ROWS[0])])["a"]  # noqa: C406
+    q += 0.02
+    m.move_to(q)
+
+
+def _through_concatenation(m):
+    q = (_ROWS + [])[0]
+    q += 0.02
+    m.move_to(q)
+
+
+@pytest.mark.parametrize(
+    "drift",
+    [
+        _through_dict,
+        _through_dict_comprehension,
+        _through_dict_call,
+        _through_concatenation,
+    ],
+)
+def test_a_container_holding_an_array_it_read_still_holds_that_array(drift):
+    with pytest.raises(Refused, match="did not make"):
+        prove_setter_body(drift, Dot(), None)
+
+
+def test_mobjects_listed_on_a_mobject_are_read():
+    holder, label = Dot(), Dot()
+    holder.labels = [label]
+    proof = prove_setter_body(lambda m: m.set_x(holder.labels[0].get_x()), Dot(), None)
+    assert any(read is label for read in proof.reads)
+
+
+def test_methods_of_a_built_mobject_and_constructors_are_admitted_by_name_only():
+    assert setters.fresh_method(VGroup, "shift") == "mobject"
+    for name in ("shuffle", "save_image", "show", "add_updater", "apply_function"):
+        assert setters.fresh_method(VGroup, name) is None, name
+    assert setters.constructor_kind(Dot) == "reads"
+    for cls in (Variable, ImageMobjectFromCamera, SVGMobject, Graph, TracedPath):
+        assert setters.constructor_kind(cls) is None, cls
 
 
 def test_setters_are_proven_on_their_argument_domain_only():

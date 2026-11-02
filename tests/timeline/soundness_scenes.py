@@ -18,14 +18,18 @@ from arachne import (
     Axes,
     Dot,
     Mobject,
+    NumberLine,
     Rotate,
     Scene,
     Square,
     Transform,
     UpdateFromAlphaFunc,
     ValueTracker,
+    VGroup,
     ZoomedScene,
+    always_redraw,
     linear,
+    random_color,
 )
 
 
@@ -214,3 +218,174 @@ class ZoomBackground(ZoomedScene):
         self.play(dot.animate.shift(RIGHT * 0.1), run_time=0.5)
         self.zoomed_camera.background_color = BLUE
         self.play(dot.animate.shift(RIGHT * 0.1), run_time=0.5)
+
+
+# What the prover once admitted by default.
+
+
+class PutAlongAxis(_Ramp):
+    """A numpy function that writes into the closure array it is given."""
+
+    def attach(self, dot, t):
+        p = np.zeros(3)
+
+        def drift():
+            np.put_along_axis(p, np.array([0]), p[:1] + 0.02, axis=0)
+            return p
+
+        dot.add_updater(lambda m: m.move_to(drift()))
+
+
+class RandomColour(_Ramp):
+    """An engine helper that draws from the random generator's hidden state."""
+
+    def attach(self, dot, t):
+        dot.add_updater(lambda m: m.set_color(random_color()))
+
+
+class PickedNone(Scene):
+    """A fill picked from ``[None, RED]``: None outside 0.3 < alpha < 0.4,
+    which leaves the fill as it was.
+    """
+
+    def construct(self):
+        d = Square(fill_opacity=1)
+        self.add(d)
+        self.play(
+            UpdateFromAlphaFunc(
+                d, lambda m, a: m.set_fill([None, RED][int(0.3 < a < 0.4)])
+            )
+        )
+
+
+class BoundReceiver(Scene):
+    """A graph whose function is a number line's ``n2p``: the dot reading the
+    graph reads the line, whose own updater runs after the dot's.
+    """
+
+    def construct(self):
+        t = ValueTracker(0)
+        ax = Axes(x_range=[0, 3], y_range=[0, 3], x_length=5, y_length=3)
+        graph = ax.plot(lambda x: x / 2)
+        line = NumberLine(x_range=[0, 3], length=3)
+        graph.function = line.n2p
+        dot = Dot()
+        dot.add_updater(lambda m: m.move_to(ax.i2gp(0, graph)))
+        line.add_updater(lambda m: m.set_y(t.get_value()))
+        self.add(ax, graph, dot, line)
+        self.play(t.animate.set_value(2))
+
+
+class InstanceInterpolate(Scene):
+    """A linear Transform of a dot whose ``interpolate`` is replaced on the
+    instance by one that counts its calls.
+    """
+
+    calls: list[int] = []
+
+    def construct(self):
+        d = Dot()
+        original = d.interpolate
+
+        def counted(*args, **kwargs):
+            InstanceInterpolate.calls.append(1)
+            return original(*args, **kwargs)
+
+        d.interpolate = counted
+        self.add(d)
+        self.play(Transform(d, Dot(RIGHT * 2)), rate_func=linear)
+
+
+class InstanceSetFill(_Ramp):
+    """A group ``set_fill`` updater whose child's ``set_fill`` is replaced on
+    the instance by one that also moves it a step per call.
+    """
+
+    def attach(self, dot, t):
+        d = Square(fill_opacity=1)
+        original = d.set_fill
+
+        def stepping(*args, **kwargs):
+            d.shift(0.02 * RIGHT)
+            return original(*args, **kwargs)
+
+        d.set_fill = stepping
+        group = VGroup(d)
+        group.add_updater(lambda m: m.set_fill(RED, t.get_value()))
+        self.add(group)
+
+
+# Found reviewing what else the prover admitted by default.
+
+
+class InstanceAnimation(Scene):
+    """A linear Transform whose own ``interpolate_mobject`` is replaced on
+    the animation, counting its calls.
+    """
+
+    calls: list[int] = []
+
+    def construct(self):
+        d = Dot()
+        animation = Transform(d, Dot(RIGHT * 2), rate_func=linear)
+        original = animation.interpolate_mobject
+
+        def counted(alpha):
+            InstanceAnimation.calls.append(1)
+            return original(alpha)
+
+        animation.interpolate_mobject = counted
+        self.add(d)
+        self.play(animation)
+
+
+class ShuffledBuilder(_Ramp):
+    """A redraw that shuffles the group it builds: a draw from the random
+    generator, at every evaluation.
+    """
+
+    def attach(self, dot, t):
+        shown = always_redraw(
+            lambda: (
+                VGroup(*[Dot(radius=0.04 * k) for k in range(1, 6)]).shuffle().arrange()
+            )
+        )
+        self.add(shown)
+
+
+class InstanceUpdate(_Ramp):
+    """A dot whose ``update``, which the scene calls at every tick, is
+    replaced on the instance by one that also moves it a step.
+    """
+
+    def attach(self, dot, t):
+        original = dot.update
+
+        def stepping(dt=0, recursive=True):
+            dot.shift(0.02 * RIGHT)
+            return original(dt, recursive)
+
+        dot.update = stepping
+
+
+class PatchedEngine(Scene):
+    """A linear Transform while the engine's ``Dot.interpolate`` is replaced
+    by one that counts its calls (put back once the scene ends).
+    """
+
+    calls: list[int] = []
+
+    def construct(self):
+        original = Dot.interpolate
+
+        def counted(mob, *args, **kwargs):
+            PatchedEngine.calls.append(1)
+            return original(mob, *args, **kwargs)
+
+        Dot.interpolate = counted
+        try:
+            d = Dot()
+            self.add(d)
+            self.play(Transform(d, Dot(RIGHT * 2)), rate_func=linear)
+        finally:
+            del Dot.interpolate
