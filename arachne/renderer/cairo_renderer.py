@@ -159,9 +159,7 @@ class CairoRenderer:
                 {"hash_current_animation": cache_key},
             )
             draw = False
-        # adding None as a partial movie file will make file_writer ignore the latter.
-        self.file_writer.add_partial_movie_file(cache_key)
-        self.animations_hashes.append(cache_key)
+        self._register_play(cache_key)
         logger.debug(
             "List of the first few animation hashes of the scene: %(h)s",
             {"h": str(self.animations_hashes[:5])},
@@ -193,22 +191,40 @@ class CairoRenderer:
         if draw and self.file_writer.is_already_cached(cache_key):
             draw = False
         live = None
+        opened = False
         if draw:
-            self.file_writer.begin_animation(True, animation_index=self.num_plays)
-            live = LiveFrames(
-                scene,
-                fps,
-                lambda pixels, repeat: self.file_writer.write_frame(
-                    pixels, repeat=repeat
-                ),
-            )
+            # The play's segment opens at its first frame: a stop condition
+            # can end the play before the frame grid reaches it, and then it
+            # has no segment, as a play drawn from the record would not.
+
+            def write(pixels: PixelArray, repeat: int) -> None:
+                nonlocal opened
+                if not opened:
+                    opened = True
+                    # Registered before the segment opens, which looks its
+                    # path up by play index.
+                    self._register_play(cache_key)
+                    self.file_writer.begin_animation(
+                        True, animation_index=self.num_plays
+                    )
+                self.file_writer.write_frame(pixels, repeat=repeat)
+
+            live = LiveFrames(scene, fps, write)
         play = timeline.play(skipped=skipped, cache_key=cache_key, live=live)
-        if live is not None:
+        if opened:
             self.file_writer.end_animation(True)
-        self.file_writer.add_partial_movie_file(cache_key)
-        self.animations_hashes.append(cache_key)
+        else:
+            self._register_play(cache_key if not draw else None)
         self.static_image = live._static if live is not None and play.held else None
         self.num_plays += 1
+
+    def _register_play(self, cache_key: str | None) -> None:
+        """Give the play about to be drawn its place in the writer's list of
+        segments (``None``: no segment) and in the list of play hashes.
+        """
+        # adding None as a partial movie file will make file_writer ignore the latter.
+        self.file_writer.add_partial_movie_file(cache_key)
+        self.animations_hashes.append(cache_key)
 
     def _grid_phase(self, scene: Scene) -> tuple[str, str]:
         """Where the play about to run falls on the frame grid and on the tick:
