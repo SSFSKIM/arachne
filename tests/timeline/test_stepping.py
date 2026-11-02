@@ -309,6 +309,7 @@ def test_the_captures_tell_history_kept_at_the_frames_from_every_tick(session_of
         "ClassRead",
         "ArrayAlias",
         "ModuleAlias",
+        "ConstantWrite",
     ],
 )
 @pytest.mark.parametrize("fps", [4, 15])
