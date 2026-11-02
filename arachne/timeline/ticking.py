@@ -451,16 +451,61 @@ class _Reach:
             return
         self._codes.add(id(code))
         names = _names_of(code)
-        dynamic = names & _DYNAMIC
-        if dynamic:
-            raise Unbounded(f"uses {', '.join(sorted(dynamic))}", code)
+        if names & _DYNAMIC:
+            names |= _attribute_constants(function, code)
         self.names |= names
         namespace = function.__globals__
-        loaded = [n for n in names if n in namespace]
-        if loaded:
-            self.ids.add(id(namespace))
-        for name in loaded:
-            self.visit(namespace[name])
+        for name in names:
+            # The binding itself, which a ``global`` statement rebinds.
+            self.ids.add(_global_key(namespace, name))
+            if name in namespace:
+                self.visit(namespace[name])
+
+
+def _global_key(namespace: dict[str, Any], name: str) -> int:
+    """A stand-in id for the module global ``name``: negative, so it never
+    meets an object's id.
+    """
+    return -1 - (hash((id(namespace), name)) & (2**62 - 1))
+
+
+#: Calls that name an attribute by a value: bounded when it is a constant.
+_BY_NAME = frozenset({"getattr", "setattr", "delattr", "hasattr"})
+
+
+def _attribute_constants(function: Any, code: types.CodeType) -> set[str]:
+    """The attributes the code names through ``getattr`` and its kin, each
+    by a string constant; :class:`Unbounded` for any other dynamic access.
+    """
+    from . import purity
+
+    dynamic = _names_of(code) & _DYNAMIC
+    if dynamic - _BY_NAME:
+        raise Unbounded(f"uses {', '.join(sorted(dynamic - _BY_NAME))}", code)
+    try:
+        node = purity._function_node(function)
+    except purity.Refused as refused:
+        raise Unbounded(
+            f"uses {', '.join(sorted(dynamic))} ({refused})", code
+        ) from None
+    calls = {id(c.func): c for c in ast.walk(node) if isinstance(c, ast.Call)}
+    found: set[str] = set()
+    for item in ast.walk(node):
+        used = (
+            item.id
+            if isinstance(item, ast.Name)
+            else item.attr
+            if isinstance(item, ast.Attribute)
+            else None
+        )
+        if used not in _BY_NAME:
+            continue
+        call = calls.get(id(item))
+        name = call.args[1] if call is not None and len(call.args) > 1 else None
+        if not (isinstance(name, ast.Constant) and isinstance(name.value, str)):
+            raise Unbounded(f"uses {used} with a name it computes", code)
+        found.add(name.value)
+    return found
 
 
 def reach(callables: Iterable[Any], mobjects: Iterable[Any] = ()) -> frozenset[int]:
@@ -831,23 +876,30 @@ def _copies(animations: Iterable[Animation]) -> list[Any]:
     return found
 
 
-def _animation_node(animation: Animation) -> _Node:
+def _animation_node(animation: Animation, check: _Writes) -> _Node:
+    """An animation's interpolation, which runs at every tick: what it reads
+    matters only when stepping work reads what it writes. It reads anything
+    it holds (a path, a rate function, a mobject it follows); it writes its
+    mobject's family, a callback animation also what its function may change,
+    and an animation of another shape anything it reaches.
+    """
     from . import trusted
 
-    mobjects = trusted._mobjects_of(animation)
-    name = type(animation).__name__
-    if type(animation) in trusted.LEAVES and not trusted.refusals([animation]):
-        # Interpolated from its mobjects alone: what it writes is what
-        # stepping work may read through it.
-        return _Node(
-            name,
-            "transparent",
-            reach((), mobjects),
-            frozenset(trusted.writes(animation)),
-        )
-    # Anything else it holds may be read as it interpolates (a path, a
-    # function, a mobject it follows).
-    return _Node(name, "step", reach([animation], mobjects))
+    reads = reach([animation], trusted._mobjects_of(animation))
+    if type(animation) in trusted.LEAVES:
+        writes = frozenset(trusted.writes(animation))
+    elif isinstance(animation, trusted.CALLBACK_ANIMATIONS):
+        function = animation.update_function
+        writes = frozenset(trusted.writes(animation))
+        try:
+            owners = frozenset(list(inspect.signature(function).parameters)[:1])
+        except (TypeError, ValueError):
+            owners = frozenset()
+        if check.elsewhere(function, owners):
+            writes = reads
+    else:
+        writes = reads
+    return _Node(type(animation).__name__, "transparent", reads, writes)
 
 
 def _updater_node(
@@ -946,9 +998,12 @@ def plan_ticks(
                 raise Unbounded(
                     f"{type(animation).__name__} is the scene's own animation class"
                 )
-            if not isinstance(animation, AnimationGroup):
-                nodes.append(_animation_node(animation))
         check = _Writes()
+        nodes.extend(
+            _animation_node(animation, check)
+            for animation in trusted.iter_animations(animations)
+            if not isinstance(animation, AnimationGroup)
+        )
         reaches: dict[int, frozenset[int]] = {}
         for member, updater in _updaters((*_copies(animations), *scene.mobjects)):
             nodes.append(_updater_node(member, updater, check, reaches))
