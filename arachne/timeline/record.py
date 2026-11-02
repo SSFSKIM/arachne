@@ -242,6 +242,12 @@ class PlayRecord:
     #: ticks leave out, or why it ticks everything. ``None`` when every tick
     #: is full anyway (no grid, a frozen frame, another route).
     tick_plan: TickPlan | None = field(default=None, repr=False)
+    #: Every plan the play stepped by, in order, each with the first tick it
+    #: governs: its first, then one for each plan made again (an event tick,
+    #: a full tick whose skipped callbacks changed the updaters) or for the
+    #: fall back to ticking everything (a plan whose ``unbounded`` is set).
+    #: :attr:`tick_plan` is the last.
+    tick_plans: tuple[tuple[Fraction, TickPlan], ...] = field(default=(), repr=False)
     #: How many of its ticks were full and how many only stepped.
     full_ticks: int = 0
     stepping_ticks: int = 0
@@ -267,6 +273,11 @@ class PlayRecord:
         """
         assert self._record is not None
         return RegisteredState(self._record, self._record._captures[self.static_seq])
+
+    def set_tick_plan(self, plan: TickPlan, first_tick: Fraction) -> None:
+        """Step by ``plan`` from the tick ``first_tick`` on."""
+        self.tick_plan = plan
+        self.tick_plans = (*self.tick_plans, (first_tick, plan))
 
     def sample_keys(
         self, decimals: int = SAMPLE_DECIMALS

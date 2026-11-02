@@ -368,6 +368,7 @@ def test_the_stepping_families_hold_what_stepping_reads_and_writes(session_of):
     [
         ("NewReader", "UpdateFromAlphaFunc"),
         ("ReaderRemoved", "UpdateFromAlphaFunc"),
+        ("HiddenInstaller", "UpdateFromAlphaFunc"),
     ],
 )
 def test_a_play_whose_callbacks_change_its_updaters_ticks_everything(
@@ -397,3 +398,18 @@ def test_a_skipped_callback_that_adds_a_reader_has_the_play_plan_again(
     assert play.stepping_ticks == 12 - 3
     (reason,) = [r for r in play.admission.reasons if r.startswith(STRUCTURAL)]
     assert "updater install" in reason
+    # The plans it stepped by: its first, then ticking everything from the
+    # tick after the frame at 0.2 s.
+    (start, first), (then, last) = play.tick_plans
+    assert (start, then) == (play.start, Fraction(13, 60))
+    assert first.steps_only
+    assert last.unbounded == reason
+    assert play.tick_plan is last
+
+
+def test_a_guard_calling_getters_it_holds_steps_with_what_it_checks(session_of):
+    play = _same_as_full_ticks(session_of, "GetterGuard", 4).record.plays[-1]
+    assert not any(r.startswith("tick.") for r in play.admission.reasons)
+    assert play.tick_plan.pulled == 1
+    assert len(play.tick_plan.skipped) == 1
+    assert play.stepping_ticks == 60 - 4

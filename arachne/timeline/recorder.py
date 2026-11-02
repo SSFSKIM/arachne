@@ -121,7 +121,7 @@ class PlayRun:
             full.add(ticks[-1])
         return frozenset(ticks) - full
 
-    def stepped(self, *, full: bool, event: bool = False) -> None:
+    def stepped(self, tick: Fraction, *, full: bool, event: bool = False) -> None:
         """Count a tick, and keep the plan true to the updaters there are: a
         stepping tick that ran one the plan never weighed ends stepping for
         the play; an event tick (a part begun, its copies made), and any full
@@ -132,7 +132,7 @@ class PlayRun:
         if not full:
             play.stepping_ticks += 1
             if met_unforeseen():
-                self._unbounded(f"{UNBOUNDED}: an updater joined while it played")
+                self._unbounded(f"{UNBOUNDED}: an updater joined while it played", tick)
             return
         play.full_ticks += 1
         plan = play.tick_plan
@@ -145,14 +145,14 @@ class PlayRun:
                     _base_dir(self.recorder.ensure_record()),
                 )
                 if replanned.unbounded is not None:
-                    self._unbounded(replanned.unbounded)
+                    self._unbounded(replanned.unbounded, tick)
                 else:
-                    play.tick_plan = replanned
+                    play.set_tick_plan(replanned, tick + Fraction(1, TICK_RATE))
 
-    def _unbounded(self, reason: str) -> None:
-        """Tick everything from here on, for ``reason``."""
+    def _unbounded(self, reason: str, tick: Fraction) -> None:
+        """Tick everything after ``tick``, for ``reason``."""
         play = self.play
-        play.tick_plan = TickPlan(unbounded=reason)
+        play.set_tick_plan(TickPlan(unbounded=reason), tick + Fraction(1, TICK_RATE))
         if play.admission is not None:
             play.admission = replace(
                 play.admission, reasons=(*play.admission.reasons, reason)
@@ -428,11 +428,12 @@ class Recorder:
                 and scene.stop_condition is None
             ):
                 # Which of its ticks only step: those no frame reads.
-                play.tick_plan = plan_ticks(scene, animations, _base_dir(record))
-                if play.tick_plan.unbounded is not None:
+                tick_plan = plan_ticks(scene, animations, _base_dir(record))
+                play.set_tick_plan(tick_plan, start)
+                if tick_plan.unbounded is not None:
                     admission = replace(
                         admission,
-                        reasons=(*admission.reasons, play.tick_plan.unbounded),
+                        reasons=(*admission.reasons, tick_plan.unbounded),
                     )
             play.admission = admission
             play.route = admission.route
