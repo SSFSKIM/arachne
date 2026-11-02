@@ -1757,10 +1757,41 @@ class _Site:
         return _NO_EFFECT if owned else _ELSEWHERE
 
     def call(self, call: ast.Call) -> _Effect:
+        """What ``call`` may change: what its callee does, and the arrays it
+        hands for a result to be written into.
+        """
+        effect = self._callee_effect(call)
+        func = call.func
+        method = None
+        if isinstance(func, ast.Attribute) and self._called(func.value) is _UNKNOWN:
+            method = func.attr
+        written = [k.value for k in call.keywords if k.arg == "out"]
+        written += _numpy_writes(self._called(func), call, method)
+        for argument in written:
+            effect |= _ELSEWHERE
+            items = (
+                argument.elts
+                if isinstance(argument, (ast.Tuple, ast.List))
+                else [argument]
+            )
+            for item in items:
+                effect |= self.into(
+                    item.value if isinstance(item, ast.Starred) else item
+                )
+        return effect
+
+    def _called(self, func: ast.AST) -> Any:
+        """The object ``func`` names, as :meth:`resolve` finds it, and a
+        ufunc's or an array's attribute (``np.add.at``, ``values.clip``).
+        """
+        if isinstance(func, ast.Attribute):
+            base = self._called(func.value)
+            if isinstance(base, (np.ufunc, np.ndarray, np.generic)):
+                return getattr(base, func.attr, _UNKNOWN)
+        return self.resolve(func)
+
+    def _callee_effect(self, call: ast.Call) -> _Effect:
         writes = self.writes
-        for keyword in call.keywords:
-            if keyword.arg == "out":
-                return _ELSEWHERE | self.into(keyword.value)
         func = call.func
         if isinstance(func, ast.Name):
             target = self.bindings.get(func.id, _UNKNOWN)
@@ -2024,6 +2055,93 @@ def _native_effect(target: types.BuiltinFunctionType) -> _Effect:
     # A list may be a mobject's members: whether it changes the structure
     # is the callback's reach's to say.
     return _Effect(elsewhere=True, arrays=True, unknown=True)
+
+
+def _numpy_callable(target: Any) -> bool:
+    """Whether ``target`` is NumPy's: a ufunc, a method of an array, of a
+    NumPy scalar or of a ufunc, or a function of a NumPy module. A class
+    is not: what it makes it makes anew.
+    """
+    if isinstance(target, np.ufunc):
+        return True
+    if isinstance(target, type) or type(target).__module__.split(".")[0] not in (
+        "numpy",
+        "builtins",
+    ):
+        return False  # never a scene object's own attribute lookup
+    if isinstance(
+        getattr(target, "__self__", None), (np.ndarray, np.generic, np.ufunc)
+    ):
+        return True
+    owner = getattr(target, "__objclass__", None)
+    if isinstance(owner, type) and issubclass(owner, (np.ndarray, np.generic)):
+        return True
+    module = getattr(target, "__module__", None)
+    return isinstance(module, str) and module.split(".")[0] == "numpy"
+
+
+def _out_position(target: Any) -> tuple[int, bool] | None:
+    """Where NumPy callable ``target`` takes, by position, an array it
+    writes: the first such position, and whether every later one is one
+    too (a ufunc's outputs follow its inputs); ``None`` when no position
+    is. A signature that can't be read leaves every position one
+    (default-deny).
+    """
+    if isinstance(target, np.ufunc):
+        return target.nargs - target.nout, True  # its inputs, then its outputs
+    if isinstance(getattr(target, "__self__", None), np.ufunc) and (
+        target.__name__ == "at"
+    ):
+        return 0, False  # ``np.add.at(a, indices, b)`` changes ``a``
+    try:
+        parameters = list(inspect.signature(target).parameters.values())
+    except (TypeError, ValueError):
+        return 0, True
+    for index, parameter in enumerate(parameters):
+        if parameter.kind is parameter.VAR_POSITIONAL:
+            return None
+        if parameter.name == "out" and parameter.kind in (
+            parameter.POSITIONAL_ONLY,
+            parameter.POSITIONAL_OR_KEYWORD,
+        ):
+            return index, False
+    return None
+
+
+def _numpy_writes(target: Any, call: ast.Call, method: str | None) -> list[ast.expr]:
+    """The arguments of ``call`` that NumPy may write into by position, or
+    through keywords unpacked from a mapping: those at the position its
+    callable ``target`` takes an output at (when ``target`` is unknown,
+    the position an array's ``method`` of that name takes it at), and
+    every one an unpacked ``*args`` before that position may move there.
+    """
+    numpy = target is not _UNKNOWN and _numpy_callable(target)
+    if numpy:
+        position = _out_position(target)
+    else:
+        descriptor = (
+            getattr(np.ndarray, method, None)
+            if method is not None and target is _UNKNOWN
+            else None
+        )
+        numpy = callable(descriptor)
+        found = _out_position(descriptor) if numpy else None
+        # The receiver is the descriptor's first parameter.
+        position = None if found is None else (max(found[0] - 1, 0), found[1])
+    written: list[ast.expr] = []
+    if position is not None:
+        start, onward = position
+        args = call.args
+        star = next(
+            (k for k, a in enumerate(args) if isinstance(a, ast.Starred)), len(args)
+        )
+        if star <= start:
+            written += args[star:]
+        else:
+            written += args[start:] if onward else args[start : start + 1]
+    if numpy:
+        written += [k.value for k in call.keywords if k.arg is None]
+    return written
 
 
 def _user_function(value: Any) -> TypeGuard[types.FunctionType]:

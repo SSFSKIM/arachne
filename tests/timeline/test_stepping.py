@@ -28,10 +28,11 @@ from arachne.timeline.ticking import (
     unaffected,
 )
 
-from . import stepping_scenes
+from . import soundness_scenes, stepping_scenes
 from .conftest import render
 
 STEPPING_SCENES = Path(stepping_scenes.__file__)
+SOUNDNESS_SCENES = Path(soundness_scenes.__file__)
 
 COLLAPSE_WARNING = "ignore:put_start_and_end_on has been called:UserWarning"
 
@@ -275,12 +276,12 @@ def test_a_fade_beside_a_dt_updater_that_reads_it_not_stays_stepping():
 # The switch a differential sweep compares with
 
 
-def _same_as_full_ticks(session_of, name: str, fps: int):
+def _same_as_full_ticks(session_of, name: str, fps: int, scenes=STEPPING_SCENES):
     """Every capture a stepping session keeps equals the one a session that
     ticks everything keeps at the same instant; the stepping session.
     """
-    stepped = session_of(name, STEPPING_SCENES, frame_rate=fps)
-    full = session_of(name, STEPPING_SCENES, frame_rate=fps, stepping=False)
+    stepped = session_of(name, scenes, frame_rate=fps)
+    full = session_of(name, scenes, frame_rate=fps, stepping=False)
     assert all(
         p.stepping_ticks == 0 and all(not plan.applied for _, plan in p.tick_plans)
         for p in full.record.plays
@@ -651,6 +652,44 @@ def test_a_write_through_a_class_or_a_setter_pulls_its_writer(session_of, name):
     reads: the plan pulls the writer.
     """
     _same_as_full_ticks(session_of, name, 4)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "ArrayOutPositionalRead",
+        "SecondOutRead",
+        "HeldUfuncOutRead",
+        "UfuncAtRead",
+        "FunctionOutRead",
+        "MethodOutRead",
+        "BoundMethodOutRead",
+        "StarredOutRead",
+        "KeywordsOutRead",
+    ],
+)
+def test_an_array_numpy_writes_its_result_into_pulls_the_writer(session_of, name):
+    """An argument in a ufunc's output slots, at a function's or an array
+    method's ``out`` by position, the array a ufunc's ``at`` changes, or
+    one an unpacked ``*args`` or ``**kwargs`` may put there: the dt-free
+    updater writes the array a dt updater integrates, and the plan pulls it.
+    """
+    play = _same_as_full_ticks(session_of, name, 4, SOUNDNESS_SCENES).record.plays[-1]
+    assert play.stepping_ticks > 0
+    assert play.tick_plan.pulled == 1
+
+
+def test_numpy_calls_given_only_inputs_still_step_past_their_updater(session_of):
+    """The same callables, a ufunc held under a local name and an array's
+    method on a local array among them, given only their inputs: nothing
+    they are handed is written, and the updater is stepped past.
+    """
+    play = _same_as_full_ticks(
+        session_of, "InputsOnlyRead", 4, SOUNDNESS_SCENES
+    ).record.plays[-1]
+    assert play.stepping_ticks > 0
+    assert play.tick_plan.pulled == 0
+    assert len(play.tick_plan.skipped) == 2
 
 
 @pytest.mark.xfail(
