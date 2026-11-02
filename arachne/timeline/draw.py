@@ -28,15 +28,16 @@ if TYPE_CHECKING:
     from .record import Capture, NodeState, PlayRecord, Record
 
 
-#: Camera attributes that are not drawing inputs a scene sets: the pixel
-#: shape and what is built from it (a session draws at its own quality), and
-#: caches.
+#: Camera attributes that are not plain drawing values: the pixel shape and
+#: what is built from it (a session draws at its own quality), caches, and
+#: the background array, recorded apart (``CameraExtras.background``).
 _NOT_CAMERA_VALUES = frozenset(
     {
         "pixel_width",
         "pixel_height",
         "pixel_array",
         "background",
+        "_built_background",
         "pixel_array_to_cairo_context",
         "display_funcs",
         "canvas",
@@ -61,14 +62,18 @@ class CameraExtras:
     colour, opacity and image, frame centre and size, line-width multiple,
     z-index use, a ThreeDCamera's shading and projection settings): every
     attribute holding a number, string, colour or small array, but the pixel
-    shape and what is built from it. A ThreeDCamera also has the mobjects
-    fixed in the frame, and each fixed-orientation mobject's centre as its
-    function returned it at the captured instant.
+    shape and what is built from it. ``background`` is a background array the
+    scene supplied (``Camera.set_background``), as it was then; ``None``
+    when the background is the one the camera builds from its values. A
+    ThreeDCamera also has the mobjects fixed in the frame, and each
+    fixed-orientation mobject's centre as its function returned it at the
+    captured instant.
     """
 
     values: tuple[tuple[str, Any], ...]
     fixed_in_frame: frozenset[Mobject] = frozenset()
     centers: tuple[tuple[Mobject, np.ndarray], ...] = ()
+    background: np.ndarray | None = None
 
     @classmethod
     def observe(
@@ -83,13 +88,16 @@ class CameraExtras:
         if not isinstance(camera, Camera):
             return None
         values = _camera_values(camera, previous.values if previous else None)
+        background = _supplied_background(
+            camera, previous.background if previous else None
+        )
         fixed: frozenset[Mobject] = frozenset()
         centers: tuple[tuple[Mobject, np.ndarray], ...] = ()
         if isinstance(camera, ThreeDCamera):
             fixed = frozenset(camera.fixed_in_frame_mobjects)
             centers = _centers(camera.fixed_orientation_mobjects)
         if previous is None:
-            return cls(values, fixed, centers)
+            return cls(values, fixed, centers, background)
         if previous.fixed_in_frame == fixed:
             fixed = previous.fixed_in_frame
         if len(previous.centers) == len(centers) and all(
@@ -101,15 +109,22 @@ class CameraExtras:
             values is previous.values
             and fixed is previous.fixed_in_frame
             and centers is previous.centers
+            and background is previous.background
         ):
             return previous
-        return cls(values, fixed, centers)
+        return cls(values, fixed, centers, background)
 
     def install(self, camera: Camera) -> None:
         """Give ``camera`` these inputs."""
         from arachne.camera.three_d_camera import ThreeDCamera
 
         _set_camera_values(camera, self.values)
+        if self.background is None:
+            camera.background = camera._built_background
+        else:
+            camera.background = _fit(
+                self.background, camera.pixel_height, camera.pixel_width
+            )
         if isinstance(camera, ThreeDCamera):
             camera.fixed_in_frame_mobjects = set(self.fixed_in_frame)
             camera.fixed_orientation_mobjects = {
@@ -197,6 +212,40 @@ def _set_camera_values(camera: Camera, values: tuple[tuple[str, Any], ...]) -> N
 _MISSING = object()
 
 
+def _supplied_background(
+    camera: Camera, previous: np.ndarray | None
+) -> np.ndarray | None:
+    """The background array the scene supplied, as a read-only copy
+    (``previous`` itself when it holds the same pixels); ``None`` when the
+    background is the one the camera built from its values.
+    """
+    live = camera.background
+    if live is None or live is camera._built_background:
+        return None
+    if (
+        previous is not None
+        and previous.shape == live.shape
+        and previous.dtype == live.dtype
+        and np.array_equal(previous, live)
+    ):
+        return previous
+    copy = np.array(live)
+    copy.flags.writeable = False
+    return copy
+
+
+def _fit(background: np.ndarray, height: int, width: int) -> np.ndarray:
+    """``background`` at a pixel shape of ``height`` by ``width``: itself at
+    its own, else resampled to the nearest pixel (a session drawing at
+    another quality than the script ran at).
+    """
+    if background.shape[:2] == (height, width):
+        return background
+    rows = np.arange(height) * background.shape[0] // height
+    columns = np.arange(width) * background.shape[1] // width
+    return background[rows][:, columns]
+
+
 def _constant(value: np.ndarray) -> Callable[[], np.ndarray]:
     return lambda: value
 
@@ -228,7 +277,7 @@ class Drawing:
         self.record = record
         self.camera: Camera = record._scene.renderer.camera
         self._saved: dict[int, tuple[Mobject, NodeState]] = {}
-        self._camera_saved: tuple[Any, Any] | None = None
+        self._camera_saved: tuple[Any, Any, Any] | None = None
 
     def __enter__(self) -> Drawing:
         return self
@@ -243,8 +292,9 @@ class Drawing:
             state.install(mob)
         self._saved.clear()
         if self._camera_saved is not None:
-            values, orientation = self._camera_saved
+            values, backgrounds, orientation = self._camera_saved
             _set_camera_values(self.camera, values)
+            self.camera.background, self.camera._built_background = backgrounds
             if orientation is not None:
                 camera: Any = self.camera
                 camera.fixed_in_frame_mobjects, camera.fixed_orientation_mobjects = (
@@ -274,7 +324,11 @@ class Drawing:
                     if hasattr(camera, "fixed_orientation_mobjects")
                     else None
                 )
-                self._camera_saved = (_camera_values(camera, None), orientation)
+                self._camera_saved = (
+                    _camera_values(camera, None),
+                    (camera.background, camera._built_background),
+                    orientation,
+                )
             capture.camera.install(self.camera)
 
     def static(self, play: PlayRecord) -> PixelArray | None:

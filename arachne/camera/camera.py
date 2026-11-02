@@ -299,6 +299,10 @@ class Camera:
                 dtype=self.pixel_array_dtype,
             )
             self.background[:, :] = background_rgba
+        # The array built from the camera's own inputs. A background that is
+        # any other array was supplied (set_background); a draw from the
+        # record cannot rebuild that one, so the record keeps it.
+        self._built_background: PixelArray = self.background
 
     def get_image(
         self, pixel_array: PixelArray | list | tuple | None = None

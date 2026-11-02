@@ -99,6 +99,20 @@ class Background(Scene):
         self.wait(0.5)
 
 
+class SuppliedBackground(Scene):
+    """The script gives the camera a red, then a blue background array
+    between two waits (``Camera.set_background``).
+    """
+
+    def construct(self):
+        self.add(Square())
+        shape = (self.camera.pixel_height, self.camera.pixel_width, 4)
+        self.camera.set_background(np.full(shape, (255, 0, 0, 255), dtype=np.uint8))
+        self.wait(0.5)
+        self.camera.set_background(np.full(shape, (0, 0, 255, 255), dtype=np.uint8))
+        self.wait(0.5)
+
+
 class Cue(Scene):
     """Waits sized from the float clock, as a cue sizes them."""
 
