@@ -10,14 +10,16 @@ import pytest
 from arachne import BLUE
 
 from .conftest import render
-from .scenes import Background, Drawn, FixedOrientation
+from .scenes import Background, Drawn, FixedOrientation, SuppliedBackground
 
 
 def _pixels(image) -> np.ndarray:
     return np.asarray(image)
 
 
-@pytest.mark.parametrize("scene_class", [Drawn, FixedOrientation, Background])
+@pytest.mark.parametrize(
+    "scene_class", [Drawn, FixedOrientation, Background, SuppliedBackground]
+)
 def test_a_render_draws_what_the_session_draws_at_each_instant(session_of, scene_class):
     _, frames = render(scene_class, 6)
     session = session_of(scene_class.__name__)
@@ -82,6 +84,27 @@ def test_a_camera_value_is_drawn_as_it_was_at_each_instant(session_of):
     again = _pixels(session.frame(Fraction(1, 4)))[0, 0, :3]
     assert np.array_equal(again, first)
     assert session.scene.camera.background_color.to_hex() == BLUE.to_hex()
+
+
+def _corner(image) -> list[int]:
+    return _pixels(image)[0, 0, :3].tolist()
+
+
+def test_a_supplied_background_is_drawn_as_it_was_at_each_instant(session_of):
+    """The script sets a red, then a blue background array between two
+    waits; frames drawn after it ended show red, then blue, also at another
+    quality, and the camera keeps its live background afterwards.
+    """
+    session = session_of("SuppliedBackground")
+    live = session.scene.camera.background
+    assert _corner(session.frame(Fraction(1, 4))) == [255, 0, 0]
+    assert _corner(session.frame(Fraction(3, 4))) == [0, 0, 255]
+    assert _corner(session.frame(Fraction(1, 4))) == [255, 0, 0]
+    assert session.scene.camera.background is live
+    low = session.frame(Fraction(1, 4), "low_quality")
+    assert low.size == (854, 480)
+    assert _corner(low) == [255, 0, 0]
+    assert _corner(session.frame(Fraction(3, 4), "low_quality")) == [0, 0, 255]
 
 
 def test_frame_draws_at_a_quality(session_of):
