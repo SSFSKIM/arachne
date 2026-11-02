@@ -46,36 +46,43 @@ import numpy as np
 
 @dataclass(frozen=True)
 class Setter:
-    """An admitted setter: the class that defines it and its name.
+    """An admitted setter: the class that defines it, its name, and the
+    arguments it is admitted with.
 
-    ``fresh_argument`` says the setter takes a mobject argument that must be
-    one the callback built in the same call (``become`` aligns its argument's
-    family to its own, so given a scene mobject it would change it).
+    ``params`` is the argument domain its property test covers: the leading
+    parameters a call may pass, positionally or by name, every one a value
+    (never ``None``, which leaves what it sets as it was). A call passing
+    anything else (a mask, ``family=False``, an aligned edge) is outside the
+    proof. ``fresh_argument`` says the setter takes a mobject argument that
+    must be one the callback built in the same call (``become`` aligns its
+    argument's family to its own, so given a scene mobject it would change it).
     """
 
     owner: str
     name: str
+    params: tuple[str, ...]
     fresh_argument: bool = False
 
 
+_MOBJECT = "arachne.mobject.mobject.Mobject"
+_VMOBJECT = "arachne.mobject.types.vectorized_mobject.VMobject"
+
 #: The admitted setters, by the defining class's dotted path and method name.
 SETTERS: tuple[Setter, ...] = (
-    Setter("arachne.mobject.mobject.Mobject", "move_to"),
-    Setter("arachne.mobject.mobject.Mobject", "set_x"),
-    Setter("arachne.mobject.mobject.Mobject", "set_y"),
-    Setter("arachne.mobject.mobject.Mobject", "set_z"),
-    Setter("arachne.mobject.mobject.Mobject", "next_to"),
-    Setter("arachne.mobject.mobject.Mobject", "set_color"),
-    Setter("arachne.mobject.mobject.Mobject", "become", fresh_argument=True),
-    Setter("arachne.mobject.types.vectorized_mobject.VMobject", "set_color"),
-    Setter("arachne.mobject.types.vectorized_mobject.VMobject", "set_fill"),
-    Setter("arachne.mobject.types.vectorized_mobject.VMobject", "set_stroke"),
-    Setter("arachne.mobject.types.vectorized_mobject.VMobject", "set_opacity"),
-    Setter(
-        "arachne.mobject.types.vectorized_mobject.VMobject", "set_points_as_corners"
-    ),
-    Setter("arachne.mobject.value_tracker.ValueTracker", "set_value"),
-    Setter("arachne.mobject.text.numbers.DecimalNumber", "set_value"),
+    Setter(_MOBJECT, "move_to", ("point_or_mobject",)),
+    Setter(_MOBJECT, "set_x", ("x",)),
+    Setter(_MOBJECT, "set_y", ("y",)),
+    Setter(_MOBJECT, "set_z", ("z",)),
+    Setter(_MOBJECT, "next_to", ("mobject_or_point", "direction", "buff")),
+    Setter(_MOBJECT, "set_color", ("color",)),
+    Setter(_MOBJECT, "become", ("mobject",), fresh_argument=True),
+    Setter(_VMOBJECT, "set_color", ("color",)),
+    Setter(_VMOBJECT, "set_fill", ("color", "opacity")),
+    Setter(_VMOBJECT, "set_stroke", ("color", "width", "opacity")),
+    Setter(_VMOBJECT, "set_opacity", ("opacity",)),
+    Setter(_VMOBJECT, "set_points_as_corners", ("points",)),
+    Setter("arachne.mobject.value_tracker.ValueTracker", "set_value", ("value",)),
+    Setter("arachne.mobject.text.numbers.DecimalNumber", "set_value", ("number",)),
 )
 
 

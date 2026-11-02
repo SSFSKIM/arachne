@@ -6,6 +6,7 @@ the geometry they are given are not admitted.
 
 from __future__ import annotations
 
+import inspect
 import random
 import warnings
 from collections.abc import Callable
@@ -32,7 +33,7 @@ from arachne import (
     ValueTracker,
     VMobject,
 )
-from arachne.timeline.setters import SETTERS, Setter, setter_for
+from arachne.timeline.setters import SETTERS, Setter, _resolve, setter_for
 
 #: Earlier call sequences tried per pair, and their longest length.
 TRIALS = 25
@@ -58,7 +59,7 @@ CASES: dict[
 ] = {
     ("arachne.mobject.mobject.Mobject", "move_to"): (
         lambda: Square().shift(LEFT),
-        lambda d: (_point(d),),
+        lambda d: (d.choice([_point, lambda e: Dot(_point(e))])(d),),
     ),
     ("arachne.mobject.mobject.Mobject", "set_x"): (
         lambda: Square().shift(UP),
@@ -74,7 +75,7 @@ CASES: dict[
     ),
     ("arachne.mobject.mobject.Mobject", "next_to"): (
         lambda: Square(side_length=0.5),
-        lambda d: (Dot(_point(d)), d.choice(DIRECTIONS)),
+        lambda d: (Dot(_point(d)), d.choice(DIRECTIONS), d.uniform(0, 1)),
     ),
     ("arachne.mobject.mobject.Mobject", "set_color"): (
         lambda: Mobject(),
@@ -192,15 +193,48 @@ def test_every_admitted_pair_has_a_property_case():
 @pytest.mark.parametrize(
     "setter", SETTERS, ids=lambda s: f"{s.owner.rsplit('.', 1)[1]}.{s.name}"
 )
+def test_a_setter_domain_is_the_leading_parameters_of_the_method(setter: Setter):
+    function = _resolve(setter.owner).__dict__[setter.name]
+    parameters = list(inspect.signature(function).parameters)[1:]
+    assert parameters[: len(setter.params)] == list(setter.params)
+
+
+def _shapes(setter: Setter) -> list[tuple[int, bool]]:
+    """Every way a call may pass the domain: its first ``k`` parameters,
+    the ones after the first by name or not.
+    """
+    return [
+        (count, by_name)
+        for count in range(1, len(setter.params) + 1)
+        for by_name in ((False, True) if count > 1 else (False,))
+    ]
+
+
+@pytest.mark.parametrize(
+    "setter", SETTERS, ids=lambda s: f"{s.owner.rsplit('.', 1)[1]}.{s.name}"
+)
 def test_an_admitted_setter_gives_one_state_whatever_came_before(setter: Setter):
+    """On its whole domain: each number of leading arguments a call site may
+    pass, positionally or by name (a call site passes the same ones each
+    time).
+    """
     start, arguments = CASES[(setter.owner, setter.name)]
     receiver = start()
     assert setter_for(receiver, setter.name) == setter
+    for count, by_name in _shapes(setter):
 
-    def call(mob: Any, args: tuple) -> None:
-        getattr(mob, setter.name)(*_rebuild(args))
+        def call(mob: Any, args: tuple, count=count, by_name=by_name) -> None:
+            args = _rebuild(args)[:count]
+            if by_name:
+                named = dict(zip(setter.params[1:count], args[1:], strict=True))
+                getattr(mob, setter.name)(args[0], **named)
+            else:
+                getattr(mob, setter.name)(*args)
 
-    assert history_free(start, call, arguments, seed=hash(setter.name) % 1000)
+        assert history_free(start, call, arguments, seed=hash(setter.name) % 1000), (
+            count,
+            by_name,
+        )
 
 
 def _polyline() -> VMobject:

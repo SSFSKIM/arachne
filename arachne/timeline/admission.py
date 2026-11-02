@@ -91,7 +91,14 @@ def camera_refusal(camera: Any) -> str | None:
     from arachne.camera.three_d_camera import ThreeDCamera
 
     kind = type(camera)
-    if kind in (Camera, MovingCamera, MultiCamera, ThreeDCamera):
+    if kind is MultiCamera:
+        # It draws each display through that display's own camera.
+        for display in camera.image_mobjects_from_cameras:
+            reason = camera_refusal(display.camera)
+            if reason is not None:
+                return reason
+        return None
+    if kind in (Camera, MovingCamera, ThreeDCamera):
         return None
     if isinstance(camera, MappingCamera):
         return (
@@ -141,9 +148,14 @@ def admit(
         callbacks.extend(_updater_callbacks(scene, animations))
     callbacks.extend(_camera_callbacks(scene, camera))
     callbacks = [_relative_line(callback, base_dir) for callback in callbacks]
-    callback_animations = [a for a in animations if _is_callback_animation(a)]
-    others = [a for a in animations if not _is_callback_animation(a)]
-    algebra = [] if held else trusted.refusals(others)
+    callback_animations = [
+        a for a in trusted.iter_animations(animations) if _is_callback_animation(a)
+    ]
+    algebra = (
+        []
+        if held
+        else trusted.refusals(animations, _callback_writes(animations, callbacks))
+    )
     if not reasons and not algebra and not callbacks and not callback_animations:
         return Admission(TRUSTED)
     refused = [c for c in callbacks if c.refusal is not None]
@@ -166,6 +178,24 @@ def admit(
 
 
 # Collecting callbacks
+
+
+def _callback_writes(
+    animations: Sequence[Animation], callbacks: Sequence[Callback]
+) -> dict[int, set[int]]:
+    """What each callback animation's function writes, by the animation's
+    id, from its proof: the mobjects it sets, the families included.
+    """
+    from . import trusted
+
+    by_function = {id(c.function): c for c in callbacks if c.proof is not None}
+    found: dict[int, set[int]] = {}
+    for animation in trusted.iter_animations(animations):
+        if _is_callback_animation(animation):
+            callback = by_function.get(id(animation.update_function))  # type: ignore[attr-defined]
+            if callback is not None and callback.proof is not None:
+                found[id(animation)] = _family_ids(callback.proof.writes)
+    return found
 
 
 def _is_callback_animation(animation: Animation) -> bool:
@@ -337,6 +367,9 @@ def _classify_updater(scene: Scene, mob: Mobject, updater: Any) -> Callback:
 
 
 def _camera_callbacks(scene: Scene, camera: Any) -> Iterator[Callback]:
+    for display in vars(camera).get("image_mobjects_from_cameras", ()):
+        if display.camera is not camera:
+            yield from _camera_callbacks(scene, display.camera)
     orientations = getattr(camera, "fixed_orientation_mobjects", None)
     if not orientations:
         return

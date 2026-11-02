@@ -235,28 +235,28 @@ def evaluate_instant(
 
 def snapshot_animations(
     animations: tuple[Any, ...],
-) -> tuple[tuple[Any, dict[str, Any], tuple[tuple[np.ndarray, np.ndarray], ...]], ...]:
-    """Every animation of a play with what its ``__dict__`` holds now (values
-    by reference, a writable array or a list copied, since CE changes those
-    in place) and the arrays its path function binds, with their contents.
+) -> tuple[tuple[Any, dict[str, Any]], ...]:
+    """Every animation of a play with what its ``__dict__`` holds now: values
+    by reference, every array and list copied (CE changes some in place, and
+    a read-only view changes with its base), and its path function holding
+    detached copies of the arrays it binds.
     """
-    from .rates import path_arrays
+    from .rates import frozen_path
     from .trusted import iter_animations
 
     snapshot = []
     for animation in iter_animations(animations):
-        path = getattr(animation, "path_func", None)
-        arrays = (
-            tuple((a, a.copy()) for a in path_arrays(path)) if path is not None else ()
-        )
-        snapshot.append((animation, _copied(vars(animation)), arrays))
+        state = _copied(vars(animation))
+        if state.get("_path_func") is not None:
+            state["_path_func"] = frozen_path(state["_path_func"])
+        snapshot.append((animation, state))
     return tuple(snapshot)
 
 
 def _copied(state: dict[str, Any]) -> dict[str, Any]:
     copied = {}
     for key, value in state.items():
-        if isinstance(value, np.ndarray) and value.flags.writeable:
+        if isinstance(value, np.ndarray):
             value = value.copy()
         elif isinstance(value, list):
             value = list(value)
@@ -279,17 +279,12 @@ def _evaluator(
             base, [m for a in play._animations if (m := a.mobject) is not None]
         )
         states = play._animation_states[base.seq]
-        saved = [(animation, dict(vars(animation))) for animation, _, _ in states]
-        saved_arrays = [
-            (array, array.copy()) for _, _, arrays in states for array, _ in arrays
-        ]
+        saved = [(animation, dict(vars(animation))) for animation, _ in states]
         try:
-            for animation, state, arrays in states:
+            for animation, state in states:
                 vars(animation).clear()
                 vars(animation).update(_copied(state))
-                for array, contents in arrays:
-                    np.copyto(array, contents)
-            successions = [a for a, _, _ in states if isinstance(a, Succession)]
+            successions = [a for a, _ in states if isinstance(a, Succession)]
             plan = EventPlan(successions=successions, now=t)
             for succession in successions:
                 succession._event_plan = plan
@@ -301,8 +296,6 @@ def _evaluator(
             for animation, state in saved:
                 vars(animation).clear()
                 vars(animation).update(state)
-            for array, contents in saved_arrays:
-                np.copyto(array, contents)
 
     return evaluate
 

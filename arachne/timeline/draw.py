@@ -72,7 +72,9 @@ class CameraExtras:
     fixed-orientation mobject's centre as its function returned it at the
     captured instant. A MultiCamera has the displays it draws its
     sub-cameras into (``image_mobjects_from_cameras``), which a scene adds
-    and removes as it goes (a ``ZoomedScene`` activating its zoom).
+    and removes as it goes (a ``ZoomedScene`` activating its zoom), and the
+    inputs of each display's own camera, which draws into it
+    (``sub_cameras``, recorded the same way).
     """
 
     values: tuple[tuple[str, Any], ...]
@@ -80,6 +82,7 @@ class CameraExtras:
     centers: tuple[tuple[Mobject, np.ndarray], ...] = ()
     background: FrozenBackground | None = None
     displays: tuple[Mobject, ...] | None = None
+    sub_cameras: tuple[tuple[Camera, CameraExtras], ...] = ()
 
     @classmethod
     def observe(
@@ -101,8 +104,9 @@ class CameraExtras:
             fixed = frozenset(camera.fixed_in_frame_mobjects)
             centers = _centers(camera.fixed_orientation_mobjects)
         displays = _displays(camera)
+        sub_cameras = _sub_cameras(camera, displays, previous)
         if previous is None:
-            return cls(values, fixed, centers, background, displays)
+            return cls(values, fixed, centers, background, displays, sub_cameras)
         if (
             displays is not None
             and previous.displays is not None
@@ -123,9 +127,10 @@ class CameraExtras:
             and centers is previous.centers
             and background is previous.background
             and displays is previous.displays
+            and sub_cameras is previous.sub_cameras
         ):
             return previous
-        return cls(values, fixed, centers, background, displays)
+        return cls(values, fixed, centers, background, displays, sub_cameras)
 
     def install(self, camera: Camera) -> None:
         """Give ``camera`` these inputs."""
@@ -145,6 +150,57 @@ class CameraExtras:
             }
         if self.displays is not None:
             camera.image_mobjects_from_cameras = list(self.displays)  # type: ignore[attr-defined]
+
+
+def _saved_inputs(camera: Any) -> tuple[Any, Any, Any, Any]:
+    """A camera's live inputs, as they are (calling no centre function)."""
+    orientation = (
+        (camera.fixed_in_frame_mobjects, camera.fixed_orientation_mobjects)
+        if hasattr(camera, "fixed_orientation_mobjects")
+        else None
+    )
+    return (
+        _camera_values(camera, None),
+        (camera.background, camera._built_background),
+        orientation,
+        vars(camera).get("image_mobjects_from_cameras"),
+    )
+
+
+def _restore_inputs(camera: Any, saved: tuple[Any, Any, Any, Any]) -> None:
+    values, backgrounds, orientation, displays = saved
+    _set_camera_values(camera, values)
+    camera.background, camera._built_background = backgrounds
+    if orientation is not None:
+        camera.fixed_in_frame_mobjects, camera.fixed_orientation_mobjects = orientation
+    if displays is not None:
+        camera.image_mobjects_from_cameras = displays
+
+
+def _sub_cameras(
+    camera: Camera,
+    displays: tuple[Mobject, ...] | None,
+    previous: CameraExtras | None,
+) -> tuple[tuple[Camera, CameraExtras], ...]:
+    """The inputs of each display's camera now; ``previous.sub_cameras``
+    itself when they are the same.
+    """
+    from arachne.camera.camera import Camera
+
+    before = previous.sub_cameras if previous is not None else ()
+    earlier = {id(sub): extras for sub, extras in before}
+    found: list[tuple[Camera, CameraExtras]] = []
+    for display in displays or ():
+        sub = getattr(display, "camera", None)
+        if isinstance(sub, Camera) and sub is not camera:
+            extras = CameraExtras.observe(sub, earlier.get(id(sub)))
+            assert extras is not None
+            found.append((sub, extras))
+    if len(found) == len(before) and all(
+        a is c and b is d for (a, b), (c, d) in zip(found, before, strict=True)
+    ):
+        return before
+    return tuple(found)
 
 
 def _displays(camera: Camera) -> tuple[Mobject, ...] | None:
@@ -300,7 +356,9 @@ class Drawing:
         self.record = record
         self.camera: Camera = record._scene.renderer.camera
         self._saved: dict[int, tuple[Mobject, NodeState]] = {}
-        self._camera_saved: tuple[Any, Any, Any, Any] | None = None
+        #: Every camera given recorded inputs (the scene's, and the cameras
+        #: of its displays), with what it held before.
+        self._cameras_saved: dict[int, tuple[Any, tuple[Any, Any, Any, Any]]] = {}
         #: Display cameras whose picture was replaced, with what they held.
         self._pictures_saved: dict[int, tuple[Any, PixelArray]] = {}
 
@@ -316,18 +374,9 @@ class Drawing:
         for mob, state in self._saved.values():
             state.install(mob)
         self._saved.clear()
-        if self._camera_saved is not None:
-            values, backgrounds, orientation, displays = self._camera_saved
-            _set_camera_values(self.camera, values)
-            self.camera.background, self.camera._built_background = backgrounds
-            camera: Any = self.camera
-            if orientation is not None:
-                camera.fixed_in_frame_mobjects, camera.fixed_orientation_mobjects = (
-                    orientation
-                )
-            if displays is not None:
-                camera.image_mobjects_from_cameras = displays
-            self._camera_saved = None
+        for camera, saved in self._cameras_saved.values():
+            _restore_inputs(camera, saved)
+        self._cameras_saved.clear()
         for sub_camera, picture in self._pictures_saved.values():
             sub_camera.pixel_array = picture
         self._pictures_saved.clear()
@@ -339,22 +388,8 @@ class Drawing:
         from .record import NodeState
 
         if capture.camera is not None:
-            if self._camera_saved is None:
-                # The live inputs, saved as they are (calling no centre function).
-                camera: Any = self.camera
-                orientation = (
-                    (camera.fixed_in_frame_mobjects, camera.fixed_orientation_mobjects)
-                    if hasattr(camera, "fixed_orientation_mobjects")
-                    else None
-                )
-                self._camera_saved = (
-                    _camera_values(camera, None),
-                    (camera.background, camera._built_background),
-                    orientation,
-                    vars(camera).get("image_mobjects_from_cameras"),
-                )
             # First, so the camera's own mobjects reached below are the capture's.
-            capture.camera.install(self.camera)
+            self._install_camera(self.camera, capture.camera)
         saved = self._saved
         reached = list(self.record._walk(capture, [*roots, *camera_nodes(self.camera)]))
         for mob, _ in reached:
@@ -364,6 +399,16 @@ class Drawing:
             state.install(mob)
         if capture.camera is not None and capture.camera.displays is not None:
             self._show_display_pictures(capture, [mob for mob, _ in reached])
+
+    def _install_camera(self, camera: Camera, extras: CameraExtras) -> None:
+        """Give ``camera`` and its displays' cameras their recorded inputs,
+        saving what they held first.
+        """
+        if id(camera) not in self._cameras_saved:
+            self._cameras_saved[id(camera)] = (camera, _saved_inputs(camera))
+        extras.install(camera)
+        for sub_camera, sub_extras in extras.sub_cameras:
+            self._install_camera(sub_camera, sub_extras)
 
     def _show_display_pictures(self, capture: Capture, reached: list[Mobject]) -> None:
         """A display on screen whose camera the MultiCamera does not draw into

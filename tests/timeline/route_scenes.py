@@ -16,8 +16,14 @@ from arachne import (
     RED,
     RIGHT,
     UP,
+    Add,
+    Animation,
     AnimationGroup,
+    ApplyComplexFunction,
+    ApplyFunction,
     ApplyMatrix,
+    ApplyMethod,
+    ApplyPointwiseFunction,
     Arrow,
     Axes,
     Blink,
@@ -26,6 +32,7 @@ from arachne import (
     Circle,
     Circumscribe,
     ClockwiseTransform,
+    CounterclockwiseTransform,
     Create,
     CyclicReplace,
     DecimalNumber,
@@ -38,17 +45,22 @@ from arachne import (
     FocusOn,
     GrowArrow,
     GrowFromCenter,
+    GrowFromEdge,
+    GrowFromPoint,
     Indicate,
     LaggedStart,
     LaggedStartMap,
     Line,
     MoveAlongPath,
+    MoveToTarget,
     ReplacementTransform,
     Restore,
     Rotate,
     Rotating,
+    ScaleInPlace,
     Scene,
     ShowPassingFlash,
+    ShowPassingFlashWithThinningStrokeWidth,
     ShrinkToCenter,
     SpinInFromNothing,
     Square,
@@ -80,6 +92,12 @@ def _square(scene, *at):
     square = Square(side_length=1).move_to(*at) if at else Square(side_length=1)
     scene.add(square)
     return square
+
+
+def _targeted(mob):
+    mob.generate_target()
+    mob.target.shift(RIGHT).scale(0.5)
+    return mob
 
 
 #: One play per entry of the trusted algebra, built from its scene.
@@ -139,6 +157,28 @@ TRUSTED_PLAYS = {
     "Broadcast": lambda s: Broadcast(Circle(), n_mobs=3),
     "Flash": lambda s: Flash(ORIGIN),
     "Circumscribe": lambda s: Circumscribe(_square(s)),
+    "Animation": lambda s: Animation(_square(s)),
+    "Add": lambda s: Add(Square()),
+    "CounterclockwiseTransform": lambda s: CounterclockwiseTransform(
+        _square(s, LEFT), Circle().shift(RIGHT)
+    ),
+    "MoveToTarget": lambda s: MoveToTarget(_targeted(_square(s))),
+    "ApplyMethod": lambda s: ApplyMethod(_square(s).shift, RIGHT),
+    "ApplyPointwiseFunction": lambda s: ApplyPointwiseFunction(
+        lambda p: p + np.array([p[1], 0, 0]) * 0.3, _square(s)
+    ),
+    "ScaleInPlace": lambda s: ScaleInPlace(_square(s), 0.5),
+    "ApplyFunction": lambda s: ApplyFunction(
+        lambda m: m.shift(UP).scale(0.5), _square(s)
+    ),
+    "ApplyComplexFunction": lambda s: ApplyComplexFunction(
+        lambda z: z * complex(0.8, 0.3), _square(s)
+    ),
+    "GrowFromPoint": lambda s: GrowFromPoint(Circle(), LEFT),
+    "GrowFromEdge": lambda s: GrowFromEdge(Square(), DOWN),
+    "ShowPassingFlashWithThinningStrokeWidth": lambda s: (
+        ShowPassingFlashWithThinningStrokeWidth(Circle(color=RED))
+    ),
     "TransformMatchingShapes": lambda s: TransformMatchingShapes(
         s.add(VGroup(Square(), Circle().shift(RIGHT))).mobjects[-1],
         VGroup(Circle().shift(LEFT), Square().shift(DOWN)),

@@ -69,16 +69,21 @@ class Refused(Exception):
 class Binding:
     """A name the callback read, and what it held when the play began.
 
-    ``where`` is ``"cell"`` (a closure cell), ``"global"`` or ``"attribute"``
-    (an attribute of the scene); ``contents`` holds a container's items, or a
-    copy of a writable array, as they were, so a later restore can tell
-    whether they still are.
+    ``where`` is ``"cell"`` (a closure cell), ``"global"``, ``"attribute"``
+    (an attribute of the scene) or ``"default"`` (a default argument);
+    ``holder`` is what holds the name: the cell itself, the globals
+    namespace, the scene, or the function whose default it is. Two names
+    alike in different holders are two bindings. ``contents`` is a detached,
+    read-only snapshot of everything mutable the value holds (a container's
+    items, nested ones included, and every array's numbers), so a later
+    restore can tell whether it still holds them.
     """
 
     where: str
     name: str
     value: Any
     contents: Any = None
+    holder: Any = None
 
 
 @dataclass
@@ -100,7 +105,10 @@ class Proof:
 
     def bind(self, binding: Binding) -> None:
         if not any(
-            b.where == binding.where and b.name == binding.name for b in self.bindings
+            b.where == binding.where
+            and b.holder is binding.holder
+            and b.name == binding.name
+            for b in self.bindings
         ):
             self.bindings.append(binding)
 
@@ -113,6 +121,28 @@ class _Value:
 
 
 VALUE = _Value()
+
+
+class _External(_Value):
+    """A plain value the callback did not make: an array (or a view of one)
+    read from a closure cell, a global, a default, the scene or a mobject.
+    Reading it is fine; changing it in place is not.
+    """
+
+
+EXTERNAL = _External()
+
+
+class _NoneValue(_Value):
+    """``None``: given to a setter, it leaves what it sets as it was."""
+
+
+NONE = _NoneValue()
+_PLAIN = (VALUE, EXTERNAL, NONE)
+
+
+def _is_plain(value: Any) -> bool:
+    return any(value is plain for plain in _PLAIN)
 
 
 @dataclass(frozen=True)
@@ -256,6 +286,10 @@ class _Prover:
         self.scene = scene
         self.proof = proof
         self.depth = 0
+        #: Proving a setter body: no conditional in it may choose what it
+        #: sets.
+        self.setter_mode = False
+        self._callables_seen: set[int] = set()
 
     # Names
 
@@ -270,18 +304,24 @@ class _Prover:
                 value = cell.cell_contents
             except ValueError as error:
                 raise Refused(f"{name} is not bound yet") from error
-            return self.classify(value, "cell", name)
+            return self.classify(value, "cell", name, cell)
         if name in function.__globals__:
-            return self.classify(function.__globals__[name], "global", name)
+            return self.classify(
+                function.__globals__[name], "global", name, function.__globals__
+            )
         if hasattr(builtins, name):
             return self.classify(getattr(builtins, name), None, name)
         raise Refused(f"{name} is not defined")
 
-    def classify(self, value: Any, where: str | None, name: str) -> Any:
-        """The abstract value of an object a callback reads by name."""
+    def classify(
+        self, value: Any, where: str | None, name: str, holder: Any = None
+    ) -> Any:
+        """The abstract value of an object a callback reads by name, bound in
+        ``holder`` (a cell, a namespace, the scene or a function).
+        """
         abstract = self._classify(value, name)
         if where is not None:
-            self.proof.bind(Binding(where, name, value, _contents(value)))
+            self.proof.bind(Binding(where, name, value, _contents(value), holder))
         if isinstance(abstract, _Scene):
             self.proof.read(abstract.roots)
         elif isinstance(abstract, _Items):
@@ -300,11 +340,13 @@ class _Prover:
             if value is not self.scene:
                 raise Refused(f"{name} is another scene")
             return _Known(value)
-        if _constant(value):
-            return VALUE
+        if value is None:
+            return NONE
         if isinstance(value, np.ndarray):
             if value.dtype == object:
                 raise Refused(f"{name} is an array of objects")
+            return EXTERNAL
+        if _constant(value):
             return VALUE
         if isinstance(value, types.ModuleType):
             if not setters.pure_module(value):
@@ -346,14 +388,14 @@ class _Prover:
             and isinstance(body[0].value.value, str)
         ):
             body = body[1:]
-        result: Any = VALUE
+        result: Any = NONE
         for index, statement in enumerate(body):
             last = index == len(body) - 1
             if isinstance(statement, ast.Return):
                 if not last:
                     raise Refused("it returns early")
                 if statement.value is None:
-                    return VALUE
+                    return NONE
                 if role is _Role.SETTER:
                     return self.setter_expression(statement.value, function, env)
                 return self.expression(statement.value, function, env)
@@ -374,12 +416,16 @@ class _Prover:
                 for target in targets:
                     self.assign(target, value, env)
             elif isinstance(statement, ast.AugAssign):
+                # In place: only a value the callback computed itself may
+                # change (an array it read may be the scene's, or a closure's).
                 if (
                     not isinstance(statement.target, ast.Name)
-                    or statement.target.id not in env
+                    or env.get(statement.target.id) is not VALUE
                 ):
-                    raise Refused("it changes a name or object it did not make")
-                self.expression(statement.value, function, env)
+                    raise Refused("it changes in place a name or value it did not make")
+                self._plain(
+                    self.expression(statement.value, function, env), "computes with"
+                )
                 env[statement.target.id] = VALUE
             elif isinstance(statement, ast.Pass):
                 continue
@@ -439,6 +485,17 @@ class _Prover:
             )
         before = list(self.proof.reads)
         arguments = [*node.args, *(keyword.value for keyword in node.keywords)]
+        params = setter.params
+        if (
+            any(isinstance(a, ast.Starred) for a in node.args)
+            or any(k.arg is None for k in node.keywords)
+            or len(node.args) > len(params)
+            or any(k.arg not in params[len(node.args) :] for k in node.keywords)
+        ):
+            raise Refused(
+                f"{method} is given arguments its property test does not cover"
+                f" (it covers {', '.join(params)})"
+            )
         if setter.fresh_argument:
             if node.keywords or len(node.args) != 1:
                 raise Refused(f"{method} is given options that read its receiver")
@@ -448,6 +505,10 @@ class _Prover:
         else:
             for argument in arguments:
                 value = self.expression(argument, function, env)
+                if value is NONE or _holds_none(value):
+                    raise Refused(
+                        f"{method} is given None, which leaves what it sets as it was"
+                    )
                 if isinstance(value, (_Fresh, _LambdaValue)) or (
                     isinstance(value, _Known) and callable(value.obj)
                 ):
@@ -479,7 +540,7 @@ class _Prover:
         return method(node, function, env)
 
     def _Constant(self, node: ast.Constant, function: Any, env: dict[str, Any]) -> Any:
-        return VALUE
+        return NONE if node.value is None else VALUE
 
     def _JoinedStr(
         self, node: ast.JoinedStr, function: Any, env: dict[str, Any]
@@ -527,7 +588,7 @@ class _Prover:
                 if isinstance(value, types.FunctionType):
                     return _Method(on, name)
                 value = getattr(obj, name)
-                return self.classify(value, "attribute", f"self.{name}")
+                return self.classify(value, "attribute", f"self.{name}", obj)
             if obj is getattr(self.scene, "renderer", None):
                 if name == "time":
                     self.proof.clock = True
@@ -554,8 +615,10 @@ class _Prover:
             return self.mobject_attribute(on, name, fresh=False)
         if isinstance(on, _Fresh):
             return self.mobject_attribute(on, name, fresh=True)
-        if on is VALUE:
-            return VALUE if name in _VALUE_ATTRIBUTES else _Method(VALUE, name)
+        if on is VALUE or on is EXTERNAL:
+            if name in _VIEW_ATTRIBUTES:
+                return on
+            return VALUE if name in _VALUE_ATTRIBUTES else _Method(on, name)
         raise Refused(f"it reads {name} off {type(on).__name__.strip('_')}")
 
     def mobject_attribute(self, on: _Scene | _Fresh, name: str, *, fresh: bool) -> Any:
@@ -584,11 +647,11 @@ class _Prover:
                 isinstance(v, Mobject) for v in value
             ):
                 return _Scene(tuple(value)) if value else VALUE
-            if (
-                _constant(value)
-                or isinstance(value, np.ndarray)
-                and value.dtype != object
-            ):
+            if isinstance(value, np.ndarray) and value.dtype != object:
+                return EXTERNAL
+            if value is None:
+                return NONE
+            if _constant(value):
                 return VALUE
             raise Refused(
                 f"it reads {name}, a {type(value).__name__} the record does not register"
@@ -606,8 +669,9 @@ class _Prover:
             return on
         if isinstance(on, _Items):
             return _element(on)
-        if on is VALUE:
-            return VALUE
+        if on is VALUE or on is EXTERNAL:
+            # An index of an array it read is a view of it.
+            return on
         raise Refused(f"it indexes {type(on).__name__.strip('_')}")
 
     def _Slice(self, node: ast.Slice, function: Any, env: dict[str, Any]) -> Any:
@@ -629,8 +693,15 @@ class _Prover:
         return VALUE
 
     def _BoolOp(self, node: ast.BoolOp, function: Any, env: dict[str, Any]) -> Any:
-        for value in node.values:
-            self._plain(self.expression(value, function, env), "tests")
+        if self.setter_mode and self.depth == 0:
+            raise Refused("a conditional (and/or) chooses what is set")
+        values = [self.expression(value, function, env) for value in node.values]
+        for value in values:
+            self._plain(value, "tests")
+        # ``a or b`` is one of its operands itself.
+        for plain in (NONE, EXTERNAL):
+            if any(v is plain for v in values):
+                return plain
         return VALUE
 
     def _Compare(self, node: ast.Compare, function: Any, env: dict[str, Any]) -> Any:
@@ -640,12 +711,19 @@ class _Prover:
         return VALUE
 
     def _IfExp(self, node: ast.IfExp, function: Any, env: dict[str, Any]) -> Any:
+        if self.setter_mode and self.depth == 0:
+            # In the body itself; a helper's conditional value is followed
+            # (a None it may return reaches the setter as None).
+            raise Refused("a conditional decides what is set")
         self._plain(self.expression(node.test, function, env), "tests")
         body = self.expression(node.body, function, env)
         orelse = self.expression(node.orelse, function, env)
         if isinstance(body, _Fresh) and isinstance(orelse, _Fresh):
             return _Fresh(body.owned and orelse.owned)
-        if body is VALUE and orelse is VALUE:
+        if _is_plain(body) and _is_plain(orelse):
+            for plain in (EXTERNAL, NONE):
+                if plain in (body, orelse):
+                    return plain
             return VALUE
         raise Refused("a conditional chooses between things that are not plain values")
 
@@ -697,6 +775,7 @@ class _Prover:
 
     def _Call(self, node: ast.Call, function: Any, env: dict[str, Any]) -> Any:
         callee = self.expression(node.func, function, env)
+        _check_outputs(callee, node)
         arguments = [self.expression(a, function, env) for a in node.args]
         keywords = {
             k.arg: self.expression(k.value, function, env) for k in node.keywords
@@ -725,6 +804,7 @@ class _Prover:
         kind = setters.constructor_kind(target)
         if kind is not None:
             owned = True
+            self.prove_stored_callables(_roots(values))
             for value in values:
                 self.check_callable_argument(value, function)
                 if isinstance(value, _Scene) or _holds_scene(value):
@@ -762,6 +842,11 @@ class _Prover:
                 return _Items(
                     tuple(v for v in values if isinstance(v, (_Fresh, _Items)))
                 )
+            if any(v is EXTERNAL or _holds_external(v) for v in values) and not (
+                _allocates(target)
+            ):
+                # It may hand back what it was given, or a view of it.
+                return EXTERNAL
             return VALUE
         if isinstance(target, types.FunctionType) and not _engine_function(target):
             return self.call_user(target, None, arguments, keywords)
@@ -830,7 +915,9 @@ class _Prover:
             elif name in keywords:
                 env[name] = keywords[name]
             elif index >= first_default:
-                env[name] = self.classify(defaults[index - first_default], None, name)
+                env[name] = self.classify(
+                    defaults[index - first_default], "default", name, target
+                )
             else:
                 raise Refused(f"{target.__name__} is called without {name}")
         for argument in node.args.kwonlyargs:
@@ -841,7 +928,7 @@ class _Prover:
                 env[argument.arg] = (
                     default
                     if default is VALUE
-                    else self.classify(default, None, argument.arg)
+                    else self.classify(default, "default", argument.arg, target)
                 )
         return self.within(lambda: self.run_body(node, target, env, _Role.READOUT))
 
@@ -861,11 +948,11 @@ class _Prover:
         values = values or []
         for value in values:
             self.check_callable_argument(value, function)
-        if on is VALUE:
+        if on is VALUE or on is EXTERNAL:
             if name in _VALUE_METHODS:
                 if any(isinstance(v, (_Scene, _Fresh)) for v in values):
                     raise Refused(f"{name} is given a mobject")
-                return VALUE
+                return on if name in _VIEW_METHODS else VALUE
             raise Refused(f"it calls {name} on a value")
         if isinstance(on, _Known):
             obj = on.obj
@@ -888,6 +975,8 @@ class _Prover:
                 raise Refused(f"{name} is given a mobject the callback built")
             if any(isinstance(v, _Scene) or _holds_scene(v) for v in values):
                 self.proof.read(_roots(values))
+            # A read may call what the mobjects store (a graph's function).
+            self.prove_stored_callables([*on.roots, *_roots(values)])
             if kind == "value":
                 return VALUE
             if kind == "member":
@@ -905,6 +994,7 @@ class _Prover:
             if kind is None:
                 raise Refused(f"it calls {cls.__name__}.{name}")
             reads = kind.endswith("+reads")
+            self.prove_stored_callables(_roots(values))
             for value in values:
                 if isinstance(value, _Scene) or _holds_scene(value):
                     if not reads:
@@ -922,10 +1012,57 @@ class _Prover:
             return _Fresh(True, cls if returned is None else returned)
         raise Refused(f"it calls {name} on {type(on).__name__.strip('_')}")
 
-    def _plain(self, value: Any, verb: str) -> None:
-        if value is VALUE:
+    def prove_stored_callables(self, mobjects: Iterable[Any]) -> None:
+        """Every callable the mobjects (their families included) store, which
+        a read of them may call: ``underlying_function`` and ``function`` of a
+        graph, a vector field's ``func``. Each must be proven a readout, or be
+        a pure library function; the engine's own wrappers are vouched for and
+        what they close over is proven in turn.
+        """
+        for mob in mobjects:
+            for member in mob.get_family():
+                for key, value in vars(member).items():
+                    if _stored_callable(value):
+                        name = f"{type(member).__name__}.{key}"
+                        try:
+                            self.prove_callable(value, name)
+                        except Refused as refused:
+                            raise Refused(
+                                f"a read calls {name}, and {refused}"
+                            ) from None
+
+    def prove_callable(self, value: Any, name: str) -> None:
+        if id(value) in self._callables_seen:
             return
-        if isinstance(value, _Items) and all(item is VALUE for item in value.items):
+        self._callables_seen.add(id(value))
+        if setters.pure_function(value) or _is_rate_function(value):
+            return
+        if isinstance(value, types.MethodType):
+            target = value.__func__
+            if _engine_function(target) and setters.builtin_class(type(value.__self__)):
+                return
+            if not isinstance(target, types.FunctionType):
+                raise Refused(f"{name} is a callable the proof can't read")
+            self.call_user(target, self._classify(value.__self__, "self"), None, {})
+            return
+        if isinstance(value, types.FunctionType):
+            if _engine_function(value):
+                inner = [
+                    *(c.cell_contents for c in value.__closure__ or () if _filled(c)),
+                    *(value.__defaults__ or ()),
+                ]
+                for item in inner:
+                    if _stored_callable(item):
+                        self.prove_callable(item, f"{name} (what it calls)")
+                return
+            self.call_user(value, None, None, {})
+            return
+        raise Refused(f"{name} is a {type(value).__name__}, which the proof can't read")
+
+    def _plain(self, value: Any, verb: str) -> None:
+        if _is_plain(value):
+            return
+        if isinstance(value, _Items) and all(_is_plain(item) for item in value.items):
             return
         if isinstance(value, _Scene):
             raise Refused(f"it {verb} a scene mobject itself")
@@ -940,6 +1077,21 @@ _MISSING = object()
 
 #: Attributes of plain values that are values themselves.
 _VALUE_ATTRIBUTES = frozenset({"T", "real", "imag", "shape", "size", "ndim", "dtype"})
+#: Attributes and methods of an array that are views of it: what it was, a
+#: value the callback made or one it read, they are.
+_VIEW_ATTRIBUTES = frozenset({"T", "real", "imag"})
+_VIEW_METHODS = frozenset({"reshape", "T", "real", "imag", "astype"})
+#: Methods of plain values that write into an array given at this position
+#: (``out``), counted from the first argument after the receiver.
+_OUT_POSITIONS = {
+    "dot": 1,
+    "clip": 2,
+    "round": 1,
+    "sum": 2,
+    "mean": 2,
+    "max": 1,
+    "min": 1,
+}
 
 #: Methods of plain values (arrays, numbers, strings) with no effect beyond
 #: their result.
@@ -992,18 +1144,111 @@ def _constant(value: Any) -> bool:
 
 
 def _contents(value: Any) -> Any:
-    """What a binding's value holds that could change behind it: a list's or
-    dict's items, a writable array's numbers.
+    """What a binding's value holds that could change behind it, detached
+    and read-only: an array's numbers (whatever its flags: a read-only view
+    changes with its base), and a container's items with theirs, nested
+    containers included. ``None`` when nothing it holds can change.
     """
-    if isinstance(value, list):
-        return tuple(value)
-    if isinstance(value, dict):
-        return tuple(value.items())
-    if isinstance(value, np.ndarray) and value.flags.writeable:
-        copy = value.copy()
+    if isinstance(value, np.ndarray):
+        copy = np.array(value, copy=True)
         copy.flags.writeable = False
         return copy
+    if isinstance(value, (list, tuple)):
+        items = tuple(_snapshot(item) for item in value)
+        if isinstance(value, tuple) and all(
+            a is b for a, b in zip(items, value, strict=True)
+        ):
+            return None
+        return items
+    if isinstance(value, dict):
+        return tuple((key, _snapshot(item)) for key, item in value.items())
     return None
+
+
+def _snapshot(value: Any) -> Any:
+    contents = _contents(value)
+    return value if contents is None else contents
+
+
+def _filled(cell: Any) -> bool:
+    try:
+        cell.cell_contents  # noqa: B018
+    except ValueError:
+        return False
+    return True
+
+
+def _stored_callable(value: Any) -> bool:
+    from arachne.mobject.mobject import Mobject
+
+    return callable(value) and not isinstance(value, (type, Mobject, np.ndarray))
+
+
+def _allocates(target: Any) -> bool:
+    """Whether calling ``target`` always returns a new value, never one of
+    its arguments or a view of one.
+    """
+    import math
+
+    if isinstance(target, np.ufunc):
+        return True
+    if target in (
+        int,
+        float,
+        complex,
+        bool,
+        len,
+        abs,
+        round,
+        str,
+        sum,
+        any,
+        all,
+        pow,
+        divmod,
+        isinstance,
+    ):
+        return True
+    return getattr(target, "__module__", None) == math.__name__
+
+
+def _check_outputs(callee: Any, node: ast.Call) -> None:
+    """Refuse a call that may write into an array it is given: ``out=`` or
+    ``where=`` (which leaves outputs unassigned), or an output array passed
+    positionally to a numpy function or an array method.
+    """
+    names = {keyword.arg for keyword in node.keywords}
+    if names & {"out", "where"}:
+        raise Refused("it passes out= or where=, which write into an array")
+    positional = len(node.args)
+    starred = any(isinstance(a, ast.Starred) for a in node.args)
+    if isinstance(callee, _Known):
+        target = callee.obj
+        if isinstance(target, np.ufunc):
+            if starred or positional > target.nargs - target.nout:
+                raise Refused(f"{_name(target)} is given an output array")
+            return
+        module = getattr(target, "__module__", None) or ""
+        if module.startswith("numpy"):
+            index = _out_index(target)
+            if starred or (index is not None and positional > index):
+                raise Refused(f"{_name(target)} is given an output array")
+    elif isinstance(callee, _Method) and _is_plain(callee.on):
+        position = _OUT_POSITIONS.get(callee.name)
+        if position is not None and (starred or positional > position):
+            raise Refused(f"{callee.name} is given an output array")
+
+
+def _out_index(target: Any) -> int | None:
+    """The position of ``target``'s ``out`` parameter: ``None`` when it has
+    none, 1 (anything after the first argument) when its signature can't be
+    read.
+    """
+    try:
+        parameters = list(inspect.signature(target).parameters)
+    except (TypeError, ValueError):
+        return 1
+    return parameters.index("out") if "out" in parameters else None
 
 
 def _element(value: Any) -> Any:
@@ -1020,10 +1265,24 @@ def _element(value: Any) -> Any:
         nested = [item for item in value.items if isinstance(item, _Items)]
         if nested:
             return nested[0]
+        if any(item is EXTERNAL for item in value.items):
+            return EXTERNAL
         return VALUE
-    if isinstance(value, (_Scene, _Fresh)):
+    if isinstance(value, (_Scene, _Fresh)) or value is EXTERNAL:
         return value
     return VALUE
+
+
+def _holds_none(value: Any) -> bool:
+    return isinstance(value, _Items) and any(
+        item is NONE or _holds_none(item) for item in value.items
+    )
+
+
+def _holds_external(value: Any) -> bool:
+    return isinstance(value, _Items) and any(
+        item is EXTERNAL or _holds_external(item) for item in value.items
+    )
 
 
 def _holds_scene(value: Any) -> bool:
@@ -1091,6 +1350,7 @@ def prove_setter_body(
     """
     proof = Proof()
     prover = _Prover(scene, proof)
+    prover.setter_mode = True
     node = _function_node(function)
     names = [a.arg for a in (*node.args.posonlyargs, *node.args.args)]
     expected = 2 if takes_alpha else 1
@@ -1104,7 +1364,7 @@ def prove_setter_body(
         offset = index - (len(names) - len(defaults))
         if offset < 0:
             raise Refused(f"it takes an argument {name} nobody passes")
-        env[name] = prover.classify(defaults[offset], None, name)
+        env[name] = prover.classify(defaults[offset], "default", name, function)
     prover.run_body(node, function, env, _Role.SETTER)
     if not proof.writes:
         raise Refused("it sets nothing")
@@ -1149,8 +1409,9 @@ def prove_readout(function: Callable[..., Any], scene: Any) -> Proof:
         if node.args.args or node.args.posonlyargs:
             raise Refused("it takes arguments")
         result = prover.run_body(node, function, {}, _Role.READOUT)
-    if result is not VALUE and not (
-        isinstance(result, _Items) and all(item is VALUE for item in result.items)
+    if not (result is VALUE or result is EXTERNAL) and not (
+        isinstance(result, _Items)
+        and all(item is VALUE or item is EXTERNAL for item in result.items)
     ):
         raise Refused("it does not return a plain value")
     return proof

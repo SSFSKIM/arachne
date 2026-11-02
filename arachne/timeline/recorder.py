@@ -143,6 +143,9 @@ class Recorder:
         """
         record = self.ensure_record()
         if record.refusal is None:
+            # A display added since may draw through a camera the record can't.
+            record.refusal = camera_refusal(self.scene.renderer.camera)
+        if record.refusal is None:
             displays = vars(self.scene.renderer.camera).get(
                 "image_mobjects_from_cameras"
             )
