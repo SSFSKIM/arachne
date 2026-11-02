@@ -13,7 +13,14 @@ import pytest
 from arachne.timeline.clock import TICK_DT
 
 from .conftest import SCENES, line_of, render
-from .scenes import DtSteps, LazyTargetOffTick, LazyTargetOnTick, PlayInUpdater, Seeded
+from .scenes import (
+    DtSteps,
+    LazyTargetOffTick,
+    LazyTargetOffTickTicked,
+    LazyTargetOnTick,
+    PlayInUpdater,
+    Seeded,
+)
 
 
 @pytest.mark.parametrize("fps", [4, 15, 30])
@@ -63,8 +70,37 @@ def test_a_succession_event_between_ticks_runs_at_the_next_tick(fps):
     """The part boundary is at 1/7 s; a ticked play takes it at the first
     tick at or after it, 9/60, whatever the frame rate.
     """
-    scene, _ = render(LazyTargetOffTick, fps)
+    scene, _ = render(LazyTargetOffTickTicked, fps)
+    assert scene.record.plays[0].route == "ticked"
     assert scene.a.get_center()[0] == pytest.approx(6 * 9 / 60)
+
+
+@pytest.mark.parametrize("fps", [4, 30])
+def test_a_trusted_succession_part_begins_at_its_exact_instant(fps):
+    """The same boundary in a trusted play is taken at 1/7 itself, between
+    ticks and frames: ``a`` copies ``b`` where it was then, x = 6/7.
+    """
+    scene, _ = render(LazyTargetOffTick, fps)
+    play = scene.record.plays[0]
+    assert play.route == "trusted"
+    assert play.events[0] == Fraction(1, 7)
+    assert scene.a.get_center()[0] == pytest.approx(6 / 7)
+
+
+def test_a_trusted_play_answers_between_its_instants(session_of):
+    """Between the event and the end the record evaluates the Transform at
+    the instant asked: ``a`` runs from x = -3 at 1/7 to 6/7 at 1, linearly.
+    """
+    session = session_of("LazyTargetOffTick")
+    start = session.state_at(0).named("a").box
+    assert session.state_at(Fraction(1, 7)).named("a").box == start
+    for t in (Fraction(2, 7), Fraction(1, 2), Fraction(17, 20)):
+        state = session.state_at(t)
+        assert state.answer == "analytic"
+        box = state.named("a").box
+        x = (box[0] + box[2]) / 2
+        expected = -3 + (6 / 7 + 3) * float((t - Fraction(1, 7)) / Fraction(6, 7))
+        assert x == pytest.approx(expected, abs=1e-9)
 
 
 def test_the_record_holds_the_part_begun_at_its_tick(session_of):
@@ -72,7 +108,7 @@ def test_the_record_holds_the_part_begun_at_its_tick(session_of):
     tick before the event, and moving from the tick of the event on, whose
     sample (as CE's) evaluates the part it began.
     """
-    session = session_of("LazyTargetOffTick")
+    session = session_of("LazyTargetOffTickTicked")
     start = session.state_at(0).named("a").box
     assert session.state_at(Fraction(8, 60)).named("a").box == start
     # Between ticks the record answers with the last tick at or before.

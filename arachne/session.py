@@ -25,6 +25,7 @@ from .timeline.clock import exact
 from .timeline.draw import Drawing
 from .timeline.origins import ORIGINS
 from .timeline.recorder import Recorder
+from .timeline.routes import draw
 
 if TYPE_CHECKING:
     from types import ModuleType
@@ -113,16 +114,21 @@ class Session:
         """The frame at ``t``, drawn from the record as a render draws it;
         at ``quality`` (a key of :data:`~arachne.constants.QUALITIES`) when
         given, else at the pixel size the scene was executed with.
+
+        Raises :class:`~arachne.timeline.routes.Unavailable` at an instant a
+        state-function play was not sampled at, and
+        :class:`~arachne.timeline.routes.RecordRefused` for a scene whose
+        camera the record can't draw.
         """
         self._use_quality(quality)
         record = self.record
-        play, capture = record.capture_at(exact(t))
         with Drawing(record) as drawing:
-            if play is None:
-                pixels = drawing.final()
-            else:
-                static = self._static_picture(drawing, play)
-                pixels = drawing.sample(play, capture, static)
+            pixels = draw(
+                drawing,
+                record,
+                exact(t),
+                lambda play: self._static_picture(drawing, play),
+            )
         return self.scene.renderer.camera.get_image(pixels)
 
     def _static_picture(self, drawing: Drawing, play: Any) -> PixelArray | None:

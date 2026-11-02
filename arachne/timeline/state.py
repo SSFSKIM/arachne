@@ -4,6 +4,7 @@ from __future__ import annotations
 
 __all__ = ["NodeView", "State", "build_state"]
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any
@@ -48,7 +49,9 @@ class State:
     that family alignment adds are left out), the play holding ``t`` and the
     route that answered.
 
-    ``answer`` says how: ``"recorded"`` is a capture of the forward run.
+    ``answer`` says how: ``"recorded"`` is a capture of the forward run,
+    ``"analytic"`` a trusted play evaluated at ``t`` from its last capture
+    before it.
     """
 
     t: Fraction
@@ -81,9 +84,11 @@ def build_state(
     *,
     route: str | None,
     answer: str,
+    prepare: Callable[[Drawing], None] | None = None,
 ) -> State:
     """The :class:`State` a capture holds, read with every reachable mobject
-    given its captured values.
+    given its captured values; ``prepare`` runs once they are (a trusted
+    play's evaluation at an instant between its captures).
     """
     camera = record._scene.renderer.camera
     hidden = {id(mob) for mob in camera_nodes(camera)}
@@ -91,6 +96,8 @@ def build_state(
     views: list[NodeView] = []
     with Drawing(record) as drawing:
         drawing.show(capture, capture.draw_list())
+        if prepare is not None:
+            prepare(drawing)
         if hasattr(camera, "reset_rotation_matrix"):
             # A ThreeDCamera projects with the matrix of its recorded trackers.
             camera.reset_rotation_matrix()

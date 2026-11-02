@@ -32,14 +32,18 @@ from fractions import Fraction
 from operator import is_
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
+
 from .clock import exact, frames_in
 from .origins import Origin, origin_of
 from .source import SourceLine
 
 if TYPE_CHECKING:
+    from arachne.animation.animation import Animation
     from arachne.mobject.mobject import Mobject
     from arachne.scene.scene import Scene
 
+    from .admission import Admission
     from .draw import CameraExtras
     from .state import State
 
@@ -221,7 +225,17 @@ class PlayRecord:
     random_state: tuple[Any, Any] | None = field(default=None, repr=False)
     #: The partial movie key its frames are cached under, if any.
     cache_key: str | None = None
+    #: Why it took its route, and its callbacks with their proofs.
+    admission: Admission | None = field(default=None, repr=False)
+    #: The instants of its composition events (a Succession part ending and
+    #: the next beginning), exact or found by bisection, in order.
+    events: tuple[Fraction, ...] = ()
     _record: Record | None = field(default=None, repr=False)
+    #: The animations it played, as objects.
+    _animations: tuple[Animation, ...] = field(default=(), repr=False)
+    #: For a trusted play: what every animation of it held at each capture,
+    #: by capture seq, so it can be evaluated at any instant from there.
+    _animation_states: dict[int, Any] = field(default_factory=dict, repr=False)
 
     @property
     def duration(self) -> Fraction:
@@ -235,9 +249,28 @@ class PlayRecord:
         assert self._record is not None
         return RegisteredState(self._record, self._record._captures[self.static_seq])
 
+    def base_at(self, t: Fraction) -> Capture:
+        """The capture of the last instant the play was evaluated at, at or
+        before ``t``.
+        """
+        index = bisect.bisect_right(self._instants, t) - 1
+        if index < 0:
+            raise LookupError(f"{t} is before play {self.index} began.")
+        return self.samples[index]
+
+    def sample_at(self, t: Fraction) -> Capture | None:
+        """The capture of the instant ``t`` itself, if the play was evaluated
+        there and the record kept it.
+        """
+        index = bisect.bisect_left(self._instants, t)
+        if index < len(self._instants) and self._instants[index] == t:
+            return self.samples[index]
+        return None
+
     def capture_at(self, t: Fraction) -> Capture:
-        """The capture that answers ``t``: the last evaluated instant at or
-        before it.
+        """The capture that answers ``t`` as a ticked play's: the last
+        evaluated instant at or before it. (Other routes answer through
+        :mod:`.routes`.)
         """
         index = bisect.bisect_right(self._instants, t) - 1
         if index < 0:
@@ -324,11 +357,19 @@ class Record:
         self.plays: list[PlayRecord] = []
         self.markers: list[Marker] = []
         self.duration = Fraction(0)
+        #: Why no instant can be drawn or answered from this record, if so:
+        #: its camera draws through inputs the record does not hold, and its
+        #: frames were drawn while the scene ran.
+        self.refusal: str | None = None
         self.final: Capture | None = None
         #: The names the scene's code had for its mobjects when it ended.
         self.final_names: dict[int, str] = {}
         self._nodes: dict[int, _Node] = {}
         self._captures: list[Capture] = []
+        #: Per MultiCamera display (by id): the first capture its camera was
+        #: drawn into at, and that camera's picture before it, which the
+        #: display shows wherever it is on screen before then.
+        self._display_joins: dict[int, tuple[int, np.ndarray]] = {}
 
     # Capturing
 
@@ -383,7 +424,37 @@ class Record:
             seq, instant, kind, roots, foreground, moving, updaters, camera, until
         )
         self._captures.append(capture)
+        if camera is not None and camera.displays:
+            for display in camera.displays:
+                if id(display) not in self._display_joins:
+                    picture = display.camera.pixel_array.copy()  # type: ignore[attr-defined]
+                    picture.flags.writeable = False
+                    self._display_joins[id(display)] = (seq, picture)
         return capture
+
+    def display_left(self, displays: Sequence[Mobject]) -> Mobject | None:
+        """A display that was drawn into before and is not among ``displays``
+        (a MultiCamera's now), if any: it shows the last picture its camera
+        drew, which only drawing as the scene runs knows.
+        """
+        current = {id(display) for display in displays}
+        for capture in reversed(self._captures):
+            extras = capture.camera
+            if extras is not None and extras.displays is not None:
+                for display in extras.displays:
+                    if id(display) not in current:
+                        return display
+                return None
+        return None
+
+    def display_picture(self, display: Mobject, capture: Capture) -> np.ndarray | None:
+        """The picture ``display`` shows at ``capture`` when its camera is not
+        drawn into there: its camera's first picture, before it ever was.
+        """
+        joined = self._display_joins.get(id(display))
+        if joined is None or joined[0] < capture.seq:
+            return None
+        return joined[1]
 
     # Reading
 

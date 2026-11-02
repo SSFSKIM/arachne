@@ -12,7 +12,7 @@ from ..camera.camera import Camera
 from ..mobject.mobject import Mobject, _AnimationBuilder
 from ..scene.scene_file_writer import SceneFileWriter
 from ..timeline.clock import TICK_RATE, exact, frames_in
-from ..timeline.draw import Drawing
+from ..timeline.draw import Drawing, LiveFrames
 from ..utils.exceptions import EndSceneEarlyException
 from ..utils.iterables import list_update
 from .protocol import RendererCapabilities
@@ -124,13 +124,20 @@ class CairoRenderer:
                 renderer_state=self._grid_phase(scene),
             )
 
-        play = scene.timeline.play(skipped=skipped, cache_key=cache_key)
+        timeline = scene.timeline
+        fps = exact(self.camera.frame_rate)
+        if timeline.refusal() is not None:
+            # The record can't draw this camera's frames: draw them as the
+            # play runs, as CE does.
+            self._play_live(scene, skipped, cache_key, fps)
+            return
+        play = timeline.play(skipped=skipped, cache_key=cache_key)
 
-        frames = frames_in(play.start, play.end, exact(self.camera.frame_rate))
+        frames = frames_in(play.start, play.end, fps)
         if not frames:
             # A play shorter than the gap between two frames shows in none.
             cache_key = None
-        draw = cache_key is not None and scene.timeline.draws
+        draw = cache_key is not None and timeline.draws
         if draw and self.file_writer.is_already_cached(cache_key):
             logger.info(
                 f"Animation {self.num_plays} : Using cached data (hash : %(hash_current_animation)s)",
@@ -155,6 +162,37 @@ class CairoRenderer:
         # background after it (what update_frame draws over), and no other
         # play's does.
         self.static_image = static if play.held else None
+        self.num_plays += 1
+
+    def _play_live(
+        self, scene: Scene, skipped: bool, cache_key: str | None, fps: Fraction
+    ) -> None:
+        """Run one play of a scene whose record can't draw its frames
+        (``Record.refusal``), drawing each frame from the live scene while
+        the play runs.
+        """
+        timeline = scene.timeline
+        if not frames_in(scene.time, timeline.requested_end(), fps):
+            cache_key = None
+        draw = cache_key is not None and timeline.draws
+        if draw and self.file_writer.is_already_cached(cache_key):
+            draw = False
+        live = None
+        if draw:
+            self.file_writer.begin_animation(True, animation_index=self.num_plays)
+            live = LiveFrames(
+                scene,
+                fps,
+                lambda pixels, repeat: self.file_writer.write_frame(
+                    pixels, repeat=repeat
+                ),
+            )
+        play = timeline.play(skipped=skipped, cache_key=cache_key, live=live)
+        if live is not None:
+            self.file_writer.end_animation(True)
+        self.file_writer.add_partial_movie_file(cache_key)
+        self.animations_hashes.append(cache_key)
+        self.static_image = live._static if live is not None and play.held else None
         self.num_plays += 1
 
     def _grid_phase(self, scene: Scene) -> tuple[str, str]:
@@ -351,7 +389,9 @@ class CairoRenderer:
         """
         self.static_image = None
         record = scene.timeline.record
-        if record is None or record.final is None:
+        if record is None or record.final is None or record.refusal is not None:
+            # Nothing recorded, or a camera the record can't draw: the live
+            # scene is the script's last state.
             self.update_frame(scene)
             return
         with Drawing(record) as drawing:

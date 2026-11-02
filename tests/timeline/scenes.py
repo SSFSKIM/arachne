@@ -160,14 +160,18 @@ class PlayInUpdater(Scene):
         self.play(dot.animate.shift(UP))  # @outer
 
 
-def _lazy_target(scene: Scene, part_time: float) -> tuple[Mobject, Mobject]:
+def _lazy_target(
+    scene: Scene, part_time: float, *, ticked: bool = False
+) -> tuple[Mobject, Mobject]:
     """``a`` transforms into ``b``, the second part of a Succession, while a
     parallel animation (after it in the play) moves ``b`` to the right at 6
-    units a second.
+    units a second. ``ticked`` adds a dt updater elsewhere, so the play ticks.
     """
     a = Dot(LEFT * 3)
     b = Dot()
     scene.add(a, b)
+    if ticked:
+        scene.add(Mobject().add_updater(lambda m, dt: None))
     scene.play(
         Succession(
             Animation(Mobject(), run_time=part_time),
@@ -186,10 +190,21 @@ class LazyTargetOnTick(Scene):
 
 
 class LazyTargetOffTick(Scene):
-    """The Succession's second part begins at 1/7, between ticks."""
+    """The Succession's second part begins at 1/7, between ticks: a trusted
+    play, so at 1/7 exactly.
+    """
 
     def construct(self):
         self.a, self.b = _lazy_target(self, 1 / 7)
+
+
+class LazyTargetOffTickTicked(Scene):
+    """As LazyTargetOffTick, with a dt updater in the scene: the play ticks,
+    and the part begins at the first tick after 1/7.
+    """
+
+    def construct(self):
+        self.a, self.b = _lazy_target(self, 1 / 7, ticked=True)
 
 
 class Padding(Scene):

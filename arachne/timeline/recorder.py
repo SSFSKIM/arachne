@@ -22,11 +22,13 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from .admission import admit, camera_refusal
 from .clock import exact, play_end
-from .draw import CameraExtras, camera_nodes
+from .draw import CameraExtras, LiveFrames, camera_nodes
+from .events import plan_events
 from .origins import ORIGINS
 from .record import Identity, Marker, PlayRecord, Record
-from .routes import Route, choose_route
+from .routes import ROUTE_CLASSES, Route, snapshot_animations
 from .source import SourceLine, names_from_frames, scene_frames, scene_location
 
 if TYPE_CHECKING:
@@ -37,7 +39,13 @@ if TYPE_CHECKING:
 class PlayRun:
     """One play while its route evaluates it."""
 
-    def __init__(self, recorder: Recorder, play: PlayRecord, route: Route) -> None:
+    def __init__(
+        self,
+        recorder: Recorder,
+        play: PlayRecord,
+        route: Route,
+        live: LiveFrames | None = None,
+    ) -> None:
         self.recorder = recorder
         self.scene = recorder.scene
         self.play = play
@@ -47,26 +55,37 @@ class PlayRun:
         self.held = play.held
         #: Where the play ended; the route sets it.
         self.end = play.requested_end
+        self.live = live
         self._extras: CameraExtras | None = None
 
     def set_clock(self, instant: Fraction) -> None:
-        """Make the scene clock read ``instant``."""
+        """Make the scene clock read ``instant``, drawing first whatever frames
+        a live drawing still owes the instant before it.
+        """
+        if self.live is not None:
+            self.live.flush(instant)
         self.scene.renderer.time = instant
 
-    def sample(self, instant: Fraction, *, until: Fraction) -> None:
+    def sample(self, instant: Fraction, *, until: Fraction, keep: bool = False) -> None:
         """The play has been evaluated at ``instant``, and holds until its next
-        evaluated instant ``until``: capture it if the record keeps it.
+        evaluated instant ``until``: capture it if the record keeps it (always
+        when ``keep``).
 
         The camera's executable inputs are evaluated at every instant, kept
         or not, so a stateful one is called as often whatever the record keeps.
         """
         recorder = self.recorder
         self._extras = CameraExtras.observe(self.scene.renderer.camera, self._extras)
-        if not recorder.keeps(instant, until):
+        if self.live is not None:
+            self.live.pending(instant, until)
+        if not (keep or recorder.keeps(instant, until)):
             return
-        capture = recorder.capture("sample", instant, self.play, self._extras, until)
-        self.play.samples.append(capture)
-        self.play._instants.append(instant)
+        play = self.play
+        capture = recorder.capture("sample", instant, play, self._extras, until)
+        play.samples.append(capture)
+        play._instants.append(instant)
+        if play.route == "trusted" and not play.held:
+            play._animation_states[capture.seq] = snapshot_animations(play._animations)
 
     def progress(self, instants: list[Fraction]) -> Any:
         """A progress bar over ``instants``."""
@@ -107,7 +126,26 @@ class Recorder:
                     seed=scene.random_seed,
                 ),
             )
+            self.record.refusal = camera_refusal(scene.renderer.camera)
         return self.record
+
+    def refusal(self) -> str | None:
+        """Why the record can't draw the play about to run, if so
+        (``Record.refusal``): its camera, or a MultiCamera display its camera
+        left, which shows the last picture drawn into it.
+        """
+        record = self.ensure_record()
+        if record.refusal is None:
+            displays = vars(self.scene.renderer.camera).get(
+                "image_mobjects_from_cameras"
+            )
+            if displays is not None and record.display_left(displays) is not None:
+                record.refusal = (
+                    "camera.display_left: a zoomed display left its MultiCamera and"
+                    " shows the last picture drawn into it, so the frames from then on"
+                    " are drawn while the scene runs and the record answers no instant"
+                )
+        return record.refusal
 
     def begin_run(self) -> None:
         """The scene's script is about to run: tag the mobjects it makes."""
@@ -143,17 +181,33 @@ class Recorder:
 
     # Plays
 
-    def play(self, *, skipped: bool, cache_key: str | None) -> PlayRecord:
-        """Run the play the scene has compiled, and record it."""
+    def requested_end(self) -> Fraction:
+        """Where the play the scene has compiled ends unless a stop condition
+        ends it first.
+        """
+        animations = self.scene.animations or []
+        return play_end(
+            self.scene.time,
+            max(animation._exact_run_time() for animation in animations),
+        )
+
+    def play(
+        self,
+        *,
+        skipped: bool,
+        cache_key: str | None,
+        live: LiveFrames | None = None,
+    ) -> PlayRecord:
+        """Run the play the scene has compiled, and record it. ``live`` draws
+        its frames while it runs, for a record that can't (``Record.refusal``).
+        """
         from arachne.animation.animation import Wait
 
         scene = self.scene
         record = self.ensure_record()
         animations = scene.animations or []
         start = scene.time
-        requested_end = play_end(
-            start, max(animation._exact_run_time() for animation in animations)
-        )
+        requested_end = self.requested_end()
         frames = list(scene_frames(sys._getframe(1)))
         is_wait = len(animations) == 1 and isinstance(animations[0], Wait)
         play = PlayRecord(
@@ -173,6 +227,7 @@ class Recorder:
             random_state=(random.getstate(), np.random.get_state()),  # noqa: NPY002
             cache_key=cache_key,
             _record=record,
+            _animations=tuple(animations),
         )
         record.plays.append(play)
 
@@ -180,14 +235,30 @@ class Recorder:
         play.moving = tuple(scene.moving_mobjects)
         play.static = tuple(scene.static_mobjects)
         play.held = bool(scene.is_current_animation_frozen_frame())
-        route = choose_route(scene)
-        play.route = route.name
-        camera = scene.renderer.camera
-        run = PlayRun(self, play, route)
-        run._extras = CameraExtras.observe(camera, None)
-        play.static_seq = self.capture("static", start, play, run._extras).seq
-
-        route.run(run)
+        plan = plan_events(animations, start, requested_end)
+        try:
+            admission = admit(
+                scene,
+                plan,
+                held=play.held,
+                base_dir=_base_dir(record),
+                refusal=self.refusal(),
+            )
+            play.admission = admission
+            play.route = admission.route
+            play.events = tuple(plan.instants(start, requested_end + 1))
+            route = ROUTE_CLASSES[admission.route]()
+            camera = scene.renderer.camera
+            run = PlayRun(self, play, route, live)
+            run._extras = CameraExtras.observe(camera, None)
+            play.static_seq = self.capture("static", start, play, run._extras).seq
+            if live is not None:
+                live.begin(play)
+            route.run(run, plan)
+            if live is not None:
+                live.end(run.end)
+        finally:
+            plan.release()
 
         if not play.held:
             for animation in animations:

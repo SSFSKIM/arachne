@@ -14,7 +14,13 @@ both are credited in ``NOTICE.md``.
 
 from __future__ import annotations
 
-__all__ = ["SourceLine", "names_from_frames", "scene_frames", "scene_location"]
+__all__ = [
+    "SourceLine",
+    "names_from_frames",
+    "relative_path",
+    "scene_frames",
+    "scene_location",
+]
 
 import os
 import sysconfig
@@ -86,11 +92,12 @@ def scene_location(frame: FrameType | None, base_dir: str | None) -> SourceLine 
         filename = scene_frame.f_code.co_filename
         if filename.startswith("<"):
             return None
-        return SourceLine(_relative(filename, base_dir), scene_frame.f_lineno)
+        return SourceLine(relative_path(filename, base_dir), scene_frame.f_lineno)
     return None
 
 
-def _relative(filename: str, base_dir: str | None) -> str:
+def relative_path(filename: str, base_dir: str | None) -> str:
+    """``filename`` relative to ``base_dir`` when it is inside it."""
     if base_dir is not None:
         try:
             return Path(filename).resolve().relative_to(base_dir).as_posix()
