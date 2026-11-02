@@ -266,7 +266,8 @@ class FixedOrientation(ThreeDScene):
 
 class Captured(Scene):
     """A group whose members are never added on their own, a dot added and
-    then removed, and a square made and never added.
+    then removed, a square made and never added, and a circle first shown
+    in the last play.
     """
 
     def construct(self):
@@ -274,7 +275,9 @@ class Captured(Scene):
         self.add(self.group)
         self.dot = Dot()
         self.add(self.dot)
-        self.wait(0.1)
+        self.wait(0.1)  # @captured-wait
         self.remove(self.dot)
         self.unused = Square()
         self.play(self.group.animate.shift(RIGHT), run_time=0.5)
+        self.late = Circle(radius=0.5)
+        self.play(FadeIn(self.late), run_time=0.5)
