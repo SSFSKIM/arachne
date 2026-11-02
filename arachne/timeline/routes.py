@@ -53,11 +53,10 @@ from typing import TYPE_CHECKING, Any, Protocol
 import numpy as np
 
 from . import ce_clock
-from .clock import TICK_DT, frames_in, ticks_in
+from .clock import frames_in, ticks_in
 from .events import EventPlan
 from . import hooks
 from .hooks import animate, update_mobjects, update_self
-from .reference import BRUTE_FORCE, BruteForce
 from .ticking import skipping
 
 # DIAGNOSTIC: every animation's alpha is CE's t / run_time over its float
@@ -120,7 +119,7 @@ class TickedRoute:
         scene = run.scene
         start, end = run.start, run.requested_end
         stop = scene.stop_condition
-        ticks = list(ticks_in(start, end))
+        ticks, dts = ce_clock.frame_steps(start, end)  # DIAGNOSTIC: CE's dt
         run.set_clock(start)
         _evaluate(run, plan, start, 0.0, ticks[0] if ticks else end)
         run.started()
@@ -129,38 +128,25 @@ class TickedRoute:
         # first included, and ends the play at that frame's end.
         ended = ce_clock.frame_end(start, end) if stop is not None and stop() else None
         if ended is None:
-            # A verification run decides each tick apart from the plan
-            # (:mod:`.reference`).
-            brute = (
-                BruteForce(run, ticks) if run.recorder.stepping == BRUTE_FORCE else None
-            )
-            stepping = run.stepping_ticks(ticks) if brute is None else frozenset()
+            # DIAGNOSTIC: every step is a full one, as in CE (no plan, and no
+            # brute-force verification either: CE has neither).
+            stepping: frozenset = frozenset()
             progress = run.progress(ticks)
             try:
                 for index, tick in enumerate(progress):
                     run.set_clock(tick)
                     following = ticks[index + 1] if index + 1 < len(ticks) else end
-                    if brute is not None:
-                        full = brute.full(tick, following)
-                        if full:
-                            _evaluate(run, plan, tick, TICK_DT, following)
-                        else:
-                            with brute.dt_work_only():
-                                evaluate_instant(scene, plan, start, tick, TICK_DT)
+                    tick_plan = (
+                        run.stepping_plan(tick)
+                        if tick in stepping and not run.recorder.keeps(tick, following)
+                        else None
+                    )
+                    if tick_plan is not None:
+                        with skipping(tick_plan):
+                            evaluate_instant(scene, plan, start, tick, dts[index])
                     else:
-                        tick_plan = (
-                            run.stepping_plan(tick)
-                            if tick in stepping
-                            and not run.recorder.keeps(tick, following)
-                            else None
-                        )
-                        full = tick_plan is None
-                        if tick_plan is not None:
-                            with skipping(tick_plan):
-                                evaluate_instant(scene, plan, start, tick, TICK_DT)
-                        else:
-                            _evaluate(run, plan, tick, TICK_DT, following)
-                    run.stepped(tick, full=full)
+                        _evaluate(run, plan, tick, dts[index], following)
+                    run.stepped(tick, full=tick_plan is None)
                     run.sample(tick, until=following)
                     if (
                         stop is not None
@@ -177,6 +163,7 @@ class TickedRoute:
         run.end = end
         if not ticks or ticks[-1] < end:
             _events_at_end(run, plan)
+        run.set_clock(end)  # DIAGNOSTIC: CE finishes the play with its clock at the end
 
 
 def _events_at_end(run: PlayRun, plan: EventPlan) -> None:
