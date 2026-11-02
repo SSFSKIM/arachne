@@ -140,7 +140,7 @@ def _ease_in_elastic(t: np.ndarray) -> np.ndarray:
     result[t == 0] = 0
     result[t == 1] = 1
     u = t[~ends]
-    result[~ends] = -np.power(2.0, 10 * u - 10) * np.sin((u * 10 - 10.75) * c4)
+    result[~ends] = -_pow2(10 * u - 10) * np.sin((u * 10 - 10.75) * c4)
     return result
 
 
@@ -151,7 +151,7 @@ def _ease_out_elastic(t: np.ndarray) -> np.ndarray:
     result[t == 0] = 0
     result[t == 1] = 1
     u = t[~ends]
-    result[~ends] = np.power(2.0, -10 * u) * np.sin((u * 10 - 0.75) * c4) + 1
+    result[~ends] = _pow2(-10 * u) * np.sin((u * 10 - 0.75) * c4) + 1
     return result
 
 
@@ -163,11 +163,9 @@ def _ease_in_out_elastic(t: np.ndarray) -> np.ndarray:
     low = (t != 0) & (t != 1) & (t < 0.5)
     high = (t != 0) & (t != 1) & ~(t < 0.5)
     u = t[low]
-    result[low] = -(np.power(2.0, 20 * u - 10) * np.sin((20 * u - 11.125) * c5)) / 2
+    result[low] = -(_pow2(20 * u - 10) * np.sin((20 * u - 11.125) * c5)) / 2
     u = t[high]
-    result[high] = (
-        np.power(2.0, -20 * u + 10) * np.sin((20 * u - 11.125) * c5)
-    ) / 2 + 1
+    result[high] = (_pow2(-20 * u + 10) * np.sin((20 * u - 11.125) * c5)) / 2 + 1
     return result
 
 
@@ -177,8 +175,8 @@ def _ease_in_out_expo(t: np.ndarray) -> np.ndarray:
     result[t == 1] = 1
     low = (t != 0) & (t != 1) & (t < 0.5)
     high = (t != 0) & (t != 1) & ~(t < 0.5)
-    result[low] = np.power(2.0, 20 * t[low] - 10) / 2
-    result[high] = (2 - np.power(2.0, -20 * t[high] + 10)) / 2
+    result[low] = _pow2(20 * t[low] - 10) / 2
+    result[high] = (2 - _pow2(-20 * t[high] + 10)) / 2
     return result
 
 
@@ -208,13 +206,18 @@ def _twin(function: Callable[..., float], twin: ArrayFunction) -> None:
     _TWINS[function] = twin
 
 
+#: Python's own ``pow`` over arrays. numpy's ``power`` rounds differently
+#: from the C library's ``pow`` that Python's ``**`` calls, by fast paths
+#: (``x**2`` as ``x*x``) and by the SIMD kernels some CPUs select, so a twin
+#: that must equal CE's Python arithmetic calls it element by element.
+_PYTHON_POW = np.frompyfunc(pow, 2, 1)
+
+
 def _pow(base: np.ndarray, exponent: float) -> np.ndarray:
-    """Python's ``pow(base, exponent)`` (and ``base ** exponent``) on floats,
-    elementwise: an array of exponents keeps numpy off its fast paths
-    (``x**2`` as ``x*x``), which round differently from the C ``pow`` Python
-    calls.
-    """
-    return np.power(base, np.full_like(base, float(exponent)))
+    """Python's ``base ** exponent`` on floats, elementwise."""
+    return np.asarray(
+        _PYTHON_POW(np.asarray(base, dtype=float), float(exponent)), dtype=float
+    )
 
 
 _twin(rf.linear, _unit_interval(lambda t: t))
@@ -370,7 +373,7 @@ _twin(
 
 def _pow2(exponent: np.ndarray) -> np.ndarray:
     """Python's ``pow(2, x)`` for float ``x``, elementwise."""
-    return np.power(2.0, exponent)
+    return np.asarray(_PYTHON_POW(2.0, np.asarray(exponent, dtype=float)), dtype=float)
 
 
 #: CE's rate functions, admitted by identity: every module attribute that is
