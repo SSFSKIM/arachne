@@ -7,15 +7,15 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from arachne import ORIGIN, OUT
+from arachne import ORIGIN, OUT, RIGHT, UP
 from arachne.timeline.rates import (
     MONOTONE_RATE_FUNCTIONS,
     RATE_FUNCTIONS,
     admitted_path,
     admitted_rate,
     array_twin,
+    frozen_path,
     is_monotone,
-    path_arrays,
 )
 from arachne.utils import paths
 from arachne.utils import rate_functions as rf
@@ -94,10 +94,18 @@ def test_ce_paths_are_admitted_and_others_are_not():
     assert not admitted_path(paths.path_along_arc(np.array(1.0)))
 
 
-def test_a_path_binding_a_script_array_lists_it_for_snapshots():
-    centres = np.array([ORIGIN, OUT])
+def test_a_frozen_path_holds_detached_copies_of_every_array_it_binds():
+    """A read-only view still changes with its base, so it is copied too."""
+    base = np.array([ORIGIN, OUT])
+    centres = base.view()
+    centres.flags.writeable = False
     circles = paths.path_along_circles(1.0, centres)
     assert admitted_path(circles)
-    assert any(array is centres for array in path_arrays(circles))
-    centres.flags.writeable = False
-    assert all(array is not centres for array in path_arrays(circles))
+    frozen = frozen_path(circles)
+    start, end = np.array([RIGHT]), np.array([UP])
+    expected = circles(start, end, 0.3)
+    base[0] = 5
+    assert not np.array_equal(circles(start, end, 0.3), expected)
+    assert np.array_equal(frozen(start, end, 0.3), expected)
+    assert admitted_path(frozen)
+    assert frozen_path(interpolate) is interpolate

@@ -11,8 +11,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from arachne import Blink, FocusOn, Scene, tempconfig
+from arachne.animation.animation import prepare_animation
+from arachne.timeline.trusted import GROUPS, LEAVES, iter_animations
+
 from . import route_scenes
-from .conftest import render
+from .conftest import SMALL, render
 
 ROUTE_SCENES = Path(route_scenes.__file__)
 
@@ -39,6 +43,22 @@ def test_a_trusted_play_evaluated_ahead_equals_it_evaluated_frame_by_frame(
         assert np.array_equal(frame, np.asarray(session.frame(t))), (name, k)
     # A held wait is one sample answering its whole span.
     assert analytic > 30 or play.held
+
+
+def test_every_entry_of_the_algebra_has_its_own_play():
+    """Two entries are tested elsewhere: FocusOn's target dot follows the
+    focus point by an updater, so its play ticks (tested with the refusals);
+    Blink's parts are UpdateFromFunc, so its play is a state function
+    (``Readouts`` in the admission tests).
+    """
+    with tempconfig(SMALL):
+        scene = Scene()
+        played: set[type] = set()
+        for build in route_scenes.TRUSTED_PLAYS.values():
+            played |= {
+                type(a) for a in iter_animations([prepare_animation(build(scene))])
+            }
+    assert set(LEAVES) | set(GROUPS) <= played | {FocusOn, Blink}
 
 
 @pytest.mark.parametrize(

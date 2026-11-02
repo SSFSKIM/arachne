@@ -20,10 +20,11 @@ __all__ = [
     "admitted_path",
     "admitted_rate",
     "array_twin",
+    "frozen_path",
     "is_monotone",
-    "path_arrays",
 ]
 
+import types
 from collections.abc import Callable
 from numbers import Real
 from typing import Any
@@ -541,7 +542,7 @@ def admitted_path(function: Any) -> bool:
     the straight path (``interpolate``) or a closure of CE's arc, spiral or
     circle paths whose angle is a number. The arrays a closure binds may be
     the script's own (``Rotate`` binds its ``about_point``): a trusted play
-    runs no script code, and :func:`path_arrays` lets an evaluation after
+    runs no script code, and :func:`frozen_path` lets an evaluation after
     the play see them as the play did.
     """
     if function is interpolate:
@@ -563,11 +564,35 @@ def admitted_path(function: Any) -> bool:
     return False
 
 
-def path_arrays(function: Any) -> tuple[np.ndarray, ...]:
-    """The arrays an admitted path's closure binds that can still change."""
-    cells = _closure(function) or {}
-    return tuple(
-        value
-        for value in cells.values()
-        if isinstance(value, np.ndarray) and value.flags.writeable
+def frozen_path(function: Any) -> Any:
+    """``function`` with every array its closure binds replaced by a
+    detached, read-only copy of what it holds now; ``function`` itself when it
+    binds none. A read-only view still changes with its base, so every array
+    is copied, whatever its flags.
+    """
+    cells = getattr(function, "__closure__", None)
+    if not cells:
+        return function
+    try:
+        contents = [cell.cell_contents for cell in cells]
+    except ValueError:  # an empty cell
+        return function
+    if not any(isinstance(value, np.ndarray) for value in contents):
+        return function
+    frozen = tuple(
+        types.CellType(_detached(value) if isinstance(value, np.ndarray) else value)
+        for value in contents
     )
+    return types.FunctionType(
+        function.__code__,
+        function.__globals__,
+        function.__name__,
+        function.__defaults__,
+        frozen,
+    )
+
+
+def _detached(array: np.ndarray) -> np.ndarray:
+    copy = np.array(array, copy=True)
+    copy.flags.writeable = False
+    return copy

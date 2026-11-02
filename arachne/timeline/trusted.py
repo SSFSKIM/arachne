@@ -24,10 +24,12 @@ __all__ = [
     "NEVER_ADMITTED",
     "iter_animations",
     "refusals",
+    "user_overrides",
     "writes",
 ]
 
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from functools import cache
 from typing import TYPE_CHECKING
 
 from arachne.animation import (
@@ -62,7 +64,6 @@ _TRANSFORMS: tuple[type[Animation], ...] = (
     transform._MethodAnimation,
     transform.ApplyMethod,
     transform.ApplyPointwiseFunction,
-    transform.ApplyPointwiseFunctionToCenter,
     transform.FadeToColor,
     transform.ScaleInPlace,
     transform.ShrinkToCenter,
@@ -152,18 +153,25 @@ def iter_animations(animations: Sequence[Animation]) -> Iterator[Animation]:
             yield from iter_animations(parts)
 
 
-def writes(animation: Animation) -> set[int]:
+def writes(
+    animation: Animation, callback_writes: Mapping[int, set[int]] | None = None
+) -> set[int]:
     """The ids of the mobjects ``animation``'s interpolation writes: its
-    mobject's family for a leaf, the union of its parts' for a group.
+    mobject's family for a leaf, the union of its parts' for a group, and for
+    a callback animation what its function's proof writes
+    (``callback_writes``, by the animation's id).
     """
     if isinstance(animation, composition.AnimationGroup):
         found: set[int] = set()
         for part in animation.animations:
-            found |= writes(part)
+            found |= writes(part, callback_writes)
         return found
     if type(animation) in (Wait, Add) or type(animation) is Animation:
         return set()
     mobject: Mobject | None = animation.mobject
+    if callback_writes is not None and id(animation) in callback_writes:
+        own = {id(member) for member in mobject.get_family()} if mobject else set()
+        return own | callback_writes[id(animation)]
     return (
         {id(member) for member in mobject.get_family()}
         if mobject is not None
@@ -171,16 +179,20 @@ def writes(animation: Animation) -> set[int]:
     )
 
 
-def refusals(animations: Sequence[Animation]) -> list[str]:
-    """Why the play of ``animations`` is outside the trusted algebra: empty
-    when every animation is admitted and no two that run at once write the
-    same mobject.
+def refusals(
+    animations: Sequence[Animation],
+    callback_writes: Mapping[int, set[int]] | None = None,
+) -> list[str]:
+    """Why the play of ``animations`` is outside the algebra routes 1 and 2
+    evaluate: empty when every animation is admitted and no two that run at
+    once write the same mobject, a callback animation's writes
+    (``callback_writes``) included.
     """
     found: list[str] = []
     for animation in animations:
-        _refuse(animation, found)
+        _refuse(animation, found, callback_writes)
     if not found:
-        _conflicts(animations, "the play", found)
+        _conflicts(animations, "the play", found, callback_writes)
     return found
 
 
@@ -189,10 +201,19 @@ def refusals(animations: Sequence[Animation]) -> list[str]:
 CALLBACK_ANIMATIONS: tuple[type[Animation], ...] = (UpdateFromFunc, UpdateFromAlphaFunc)
 
 
-def _refuse(animation: Animation, found: list[str]) -> None:
+def _refuse(
+    animation: Animation,
+    found: list[str],
+    callback_writes: Mapping[int, set[int]] | None,
+) -> None:
     kind = type(animation)
     name = kind.__name__
     if kind in CALLBACK_ANIMATIONS:
+        # Its function is route 2's to prove; its timing is the algebra's.
+        if not admitted_rate(animation.rate_func):
+            found.append(
+                f"{name}'s rate function {animation.rate_func!r} is not one of CE's"
+            )
         return
     if name in NEVER_ADMITTED and kind.__module__.startswith("arachne."):
         found.append(NEVER_ADMITTED[name])
@@ -210,9 +231,9 @@ def _refuse(animation: Animation, found: list[str]) -> None:
             )
             return
         for part in animation.animations:  # type: ignore[attr-defined]
-            _refuse(part, found)
+            _refuse(part, found, callback_writes)
         if not isinstance(animation, composition.Succession):
-            _conflicts(animation.animations, name, found)  # type: ignore[attr-defined]
+            _conflicts(animation.animations, name, found, callback_writes)  # type: ignore[attr-defined]
         return
     check = LEAVES.get(kind)
     if check is None:
@@ -221,13 +242,95 @@ def _refuse(animation: Animation, found: list[str]) -> None:
     reason = check(animation)
     if reason is not None:
         found.append(f"{name}: {reason}")
+        return
+    for mobject in _mobjects_of(animation):
+        for member in mobject.get_family():
+            overrides = user_overrides(type(member))  # type: ignore[arg-type]
+            if overrides:
+                found.append(
+                    f"{name} animates a {type(member).__name__}, whose class overrides"
+                    f" the engine's {', '.join(overrides)}"
+                )
+                return
 
 
-def _conflicts(parts: Sequence[Animation], where: str, found: list[str]) -> None:
+def _mobjects_of(animation: Animation) -> list[Mobject]:
+    """The mobjects a leaf animation interpolates and copies: its mobject,
+    its target and the copies it made when it began.
+    """
+    from arachne.mobject.mobject import Mobject
+
+    found = []
+    for key in ("mobject", "target_mobject", "starting_mobject", "target_copy"):
+        value = vars(animation).get(key)
+        if isinstance(value, Mobject):
+            found.append(value)
+    return found
+
+
+#: What a scene's subclass of an engine mobject may define without taking
+#: its instances out of the algebra.
+_OWN_DEFINITIONS = frozenset(
+    {
+        "__init__",
+        "__module__",
+        "__qualname__",
+        "__doc__",
+        "__dict__",
+        "__weakref__",
+        "__annotations__",
+        "__firstlineno__",
+        "__static_attributes__",
+        "__orig_bases__",
+        "__parameters__",
+    }
+)
+#: Hooks that change every attribute access, defined or not by the engine.
+_ACCESS_HOOKS = frozenset(
+    {"__getattr__", "__getattribute__", "__setattr__", "__delattr__"}
+)
+
+
+@cache
+def user_overrides(cls: type) -> tuple[str, ...]:
+    """The engine methods (and properties) a class defined outside the
+    engine overrides: an animation calls them on the mobject (``interpolate``,
+    ``pointwise_become_partial``, ``align_points`` and the rest), so an
+    override runs scene code inside an evaluation. Empty for the engine's own
+    classes, and for a subclass that only defines ``__init__``, class values
+    or methods of its own.
+    """
+    from .setters import builtin_class
+
+    engine: set[str] = set()
+    for klass in cls.__mro__:
+        if klass is object or builtin_class(klass):
+            engine.update(vars(klass))
+    found: list[str] = []
+    for klass in cls.__mro__:
+        if klass is object or builtin_class(klass):
+            continue
+        for key, value in vars(klass).items():
+            if key in _OWN_DEFINITIONS:
+                continue
+            code = callable(value) or isinstance(
+                value, (property, staticmethod, classmethod)
+            )
+            if code and (key in engine or key in _ACCESS_HOOKS) and key not in found:
+                found.append(key)
+    return tuple(found)
+
+
+def _conflicts(
+    parts: Sequence[Animation],
+    where: str,
+    found: list[str],
+    callback_writes: Mapping[int, set[int]] | None = None,
+) -> None:
     """Record a conflict when two parts that run at once write one mobject."""
     seen: set[int] = set()
     for part in parts:
-        written = writes(part)
+        written = writes(part, callback_writes)
         if seen & written:
             found.append(f"two parts of {where} write the same mobject")
             return
