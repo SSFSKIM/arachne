@@ -54,6 +54,8 @@ jobs:
           INPUT_RANGE: ${{ inputs.range }}
         run: |
           zero=0000000000000000000000000000000000000000
+          # On a tag push AFTER is the annotated tag's object: leak_check.py checks the object (its
+          # name, message and tagger) as well as the commits it points at.
           case "$EVENT" in
             push)
               if [ "$AFTER" = "$zero" ]; then

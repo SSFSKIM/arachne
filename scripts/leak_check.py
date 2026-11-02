@@ -7,6 +7,8 @@ allowlist, names against the denylist). Binary files are ruled by type: archives
 files pass only in the graphical units' control-data schema, a few image types pass after a
 magic-byte check, and anything else binary fails. With ``--event`` (a GitHub event payload) or
 ``--branch`` it also checks a pull request's title, body and branch name, or a pushed ref's name.
+A pushed annotated tag is checked as a tag object too (its name, message and tagger): the range's
+head when it names one, and a tag push event's new object.
 
 The denylist is a secret. Matching is a case-insensitive substring match, and a failure names
 where it is and the entry's position in the list, never the entry itself.
@@ -26,6 +28,7 @@ import struct
 import subprocess
 import sys
 import zipfile
+import zlib
 from pathlib import PurePosixPath
 
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
@@ -292,12 +295,47 @@ def plain_container(data: bytes, z: zipfile.ZipFile) -> bool:
     return between == b"" or zip64_end
 
 
+def member_bytes(data: bytes, info: zipfile.ZipInfo) -> bytes | None:
+    """The one member's contents, read from its whole declared compressed extent, or None.
+
+    ``zipfile`` stops at the end of the first deflate stream, so the rest of the extent (a second
+    stream, or any bytes) would go unread and unscanned. Here the extent must be exactly one stream
+    that ends at its last byte, and decompress to the declared size and CRC.
+    """
+    name_len, extra_len = struct.unpack("<HH", data[26:30])
+    start = 30 + name_len + extra_len
+    raw = data[start : start + info.compress_size]
+    if len(raw) != info.compress_size:
+        return None
+    if info.compress_type == zipfile.ZIP_STORED:
+        member = raw
+    elif info.compress_type == zipfile.ZIP_DEFLATED:
+        stream = zlib.decompressobj(-15)
+        try:
+            member = stream.decompress(
+                raw, info.file_size + 1
+            )  # bounded: one byte past the declared size
+            if stream.unconsumed_tail:
+                return None
+            member += stream.flush()
+        except zlib.error:
+            return None
+        if not stream.eof or stream.unused_data:
+            return None  # the stream ended early (bytes follow it), or never ended
+    else:
+        return None
+    if len(member) != info.file_size or zlib.crc32(member) != info.CRC:
+        return None
+    return member
+
+
 def npz_in_schema(data: bytes) -> tuple[bool, bytes]:
     """Whether ``data`` is a graphical-units control file: one uint8 ``frame_data`` (H,W,C) or (N,H,W,C).
 
     When it is, also returns the decompressed ``frame_data.npy`` member, for the term scan. The
-    member must be exactly an NPY header plus the array's bytes, because ``np.load`` ignores
-    anything after the array.
+    member must fill its declared compressed extent with one stream (``member_bytes``), and be
+    exactly an NPY header plus the array's bytes, because ``np.load`` ignores anything after the
+    array.
     """
     try:
         import numpy as np
@@ -309,7 +347,9 @@ def npz_in_schema(data: bytes) -> tuple[bool, bytes]:
         with zipfile.ZipFile(io.BytesIO(data)) as z:
             if z.namelist() != ["frame_data.npy"] or not plain_container(data, z):
                 return False, b""
-            member = z.read("frame_data.npy")
+            member = member_bytes(data, z.infolist()[0])
+        if member is None:
+            return False, b""
         stream = io.BytesIO(member)
         version = npy.read_magic(stream)
         if version == (1, 0):
@@ -367,16 +407,7 @@ def check_commit(
         ("committer", committer, committer_email),
     ):
         problems += [f"commit {short}: {role} name term #{i}" for i in deny.hits(name)]
-        email = email.lower()
-        allowed = email in allowed_emails or any(
-            fnmatch.fnmatchcase(email, p) for p in ALLOWED_EMAIL_PATTERNS
-        )
-        if not allowed:
-            problems.append(f"commit {short}: {role} email not allowed")
-        else:
-            problems += [
-                f"commit {short}: {role} email term #{i}" for i in deny.hits(email)
-            ]
+        problems += email_problems(f"commit {short}", role, email, deny, allowed_emails)
     problems += [f"commit {short}: message term #{i}" for i in deny.hits(message)]
 
     parent = parents.split()[0] if parents.split() else EMPTY_TREE
@@ -420,6 +451,73 @@ def check_commit(
                 f"{where}:{number}: denylisted term #{i}" for i in deny.hits(text)
             ]
     return problems
+
+
+def email_problems(
+    where: str, role: str, email: str, deny: Denylist, allowed_emails: set[str]
+) -> list[str]:
+    email = email.lower()
+    allowed = email in allowed_emails or any(
+        fnmatch.fnmatchcase(email, p) for p in ALLOWED_EMAIL_PATTERNS
+    )
+    if not allowed:
+        return [f"{where}: {role} email not allowed"]
+    return [f"{where}: {role} email term #{i}" for i in deny.hits(email)]
+
+
+def tag_chain(git: Git, rev: str) -> list[str]:
+    """The annotated tag objects ``rev`` names, outermost first (a tag of a tag included)."""
+    sha = decode(git.run("rev-parse", "--verify", "--end-of-options", rev)).strip()
+    chain: list[str] = []
+    while decode(git.run("cat-file", "-t", sha)).strip() == "tag":
+        chain.append(sha)
+        header = git.run("cat-file", "tag", sha).partition(b"\n\n")[0]
+        target = [ln[7:] for ln in header.split(b"\n") if ln.startswith(b"object ")]
+        if len(target) != 1:
+            raise UsageError(f"tag {sha[:12]}: cannot read its target")
+        sha = decode(target[0]).strip()
+    return chain
+
+
+_TAGGER = re.compile(rb"^tagger (.*) <([^<>]*)> \d+ [+-]\d{4}$")
+
+
+def check_tag(
+    git: Git, sha: str, deny: Denylist, allowed_emails: set[str]
+) -> list[str]:
+    """A pushed annotated tag object: its name, its message, and its tagger (name against the
+    denylist, email against the allowlist), which the commits it points at do not carry.
+    """
+    where = f"tag {sha[:12]}"
+    header, _, message = git.run("cat-file", "tag", sha).partition(b"\n\n")
+    problems = [f"{where}: message term #{i}" for i in deny.hits(decode(message))]
+    for line in header.split(b"\n"):
+        if line.startswith(b"tag "):
+            problems += [
+                f"{where}: name term #{i}" for i in deny.hits(decode(line[4:]))
+            ]
+        elif line.startswith(b"tagger "):
+            m = _TAGGER.match(line)
+            if m is None:
+                raise UsageError(f"{where}: cannot read its tagger")
+            name, email = decode(m.group(1)), decode(m.group(2))
+            problems += [f"{where}: tagger name term #{i}" for i in deny.hits(name)]
+            problems += email_problems(where, "tagger", email, deny, allowed_emails)
+    return problems
+
+
+def pushed_tags(git: Git, head: str, event: dict) -> list[str]:
+    """The annotated tag objects being published: the range's head when it names one (the pre-push
+    hook passes the pushed object), and a tag push event's new object.
+    """
+    revs = [head]
+    after = event.get("after") or ""
+    if (event.get("ref") or "").startswith("refs/tags/") and after.strip("0"):
+        revs.append(after)
+    seen: list[str] = []
+    for rev in revs:
+        seen += [t for t in tag_chain(git, rev) if t not in seen]
+    return seen
 
 
 def check_metadata(event: dict, branch: str | None, deny: Denylist) -> list[str]:
@@ -526,6 +624,8 @@ def main(argv: list[str] | None = None) -> int:
         ).split()
         stats = {"files": 0, "lines": 0}
         problems = check_metadata(event, args.branch, deny)
+        for sha in pushed_tags(git, head, event):
+            problems += check_tag(git, sha, deny, allowed_emails)
         for sha in commits:
             problems += check_commit(git, sha, deny, allowed_emails, stats)
     except UsageError as exc:
