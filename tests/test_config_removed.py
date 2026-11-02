@@ -2,6 +2,9 @@
 what replaces it, rather than being ignored: the options Manim CE 0.22
 replaced (``write_to_movie`` became ``format``), the OpenGL renderer's
 options, and any name that was never an option.
+
+Deliberate break 7 (strict configuration: an unknown name raises, and each of
+the 17 removed options names its replacement), approved 2026-11-02.
 """
 
 from __future__ import annotations
