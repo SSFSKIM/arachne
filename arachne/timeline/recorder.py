@@ -26,7 +26,7 @@ import numpy as np
 from arachne._config import logger
 
 from .admission import admit, camera_refusal
-from .clock import exact, play_end
+from .clock import TICK_RATE, exact, play_end
 from .dispatch import draw_refusal
 from .draw import CameraExtras, LiveFrames, camera_nodes
 from .events import plan_events
@@ -35,6 +35,7 @@ from .origins import ORIGINS
 from .record import Identity, Marker, PlayRecord, Record
 from .routes import ROUTE_CLASSES, Route, snapshot_animations
 from .source import SourceLine, names_from_frames, scene_frames, scene_location
+from .ticking import UNBOUNDED, TickPlan, current_keys, met_unforeseen, plan_ticks
 
 if TYPE_CHECKING:
     from arachne.mobject.mobject import Mobject
@@ -102,6 +103,59 @@ class PlayRun:
     def progress(self, instants: list[Fraction]) -> Any:
         """A progress bar over ``instants``."""
         return self.scene._play_progress(instants)
+
+    def stepping_ticks(self, ticks: list[Fraction]) -> frozenset[Fraction]:
+        """The ticks of a ticked play that may only step (:mod:`.ticking`):
+        none with a stop condition (it is read at every tick) or a plan that
+        skips nothing; else every tick but the last and those its events are
+        taken at. A tick a frame reads is full as well (``keeps``).
+        """
+        plan = self.play.tick_plan
+        if self.scene.stop_condition is not None or plan is None or not plan.steps_only:
+            return frozenset()
+        full = {
+            Fraction(math.ceil(event * TICK_RATE), TICK_RATE)
+            for event in self.play.events
+        }
+        if ticks:
+            full.add(ticks[-1])
+        return frozenset(ticks) - full
+
+    def stepped(self, *, full: bool, event: bool = False) -> None:
+        """Count a tick, and keep the plan true to the updaters there are: a
+        stepping tick that ran one the plan never weighed ends stepping for
+        the play; an event tick (a part begun, its copies made) plans again
+        when the updaters changed.
+        """
+        play = self.play
+        if not full:
+            play.stepping_ticks += 1
+            if met_unforeseen():
+                self._unbounded(f"{UNBOUNDED}: an updater joined while it played")
+            return
+        play.full_ticks += 1
+        plan = play.tick_plan
+        if event and plan is not None and plan.steps_only:
+            keys = current_keys(self.scene, play._animations)
+            if not keys <= plan.known:
+                replanned = plan_ticks(
+                    self.scene,
+                    list(play._animations),
+                    _base_dir(self.recorder.ensure_record()),
+                )
+                if replanned.unbounded is not None:
+                    self._unbounded(replanned.unbounded)
+                else:
+                    play.tick_plan = replanned
+
+    def _unbounded(self, reason: str) -> None:
+        """Tick everything from here on, for ``reason``."""
+        play = self.play
+        play.tick_plan = TickPlan(unbounded=reason)
+        if play.admission is not None:
+            play.admission = replace(
+                play.admission, reasons=(*play.admission.reasons, reason)
+            )
 
 
 class Recorder:
@@ -356,6 +410,19 @@ class Recorder:
                 base_dir=_base_dir(record),
                 refusal=refusal,
             )
+            if (
+                admission.route == "ticked"
+                and not play.held
+                and self.grid is not None
+                and scene.stop_condition is None
+            ):
+                # Which of its ticks only step: those no frame reads.
+                play.tick_plan = plan_ticks(scene, animations, _base_dir(record))
+                if play.tick_plan.unbounded is not None:
+                    admission = replace(
+                        admission,
+                        reasons=(*admission.reasons, play.tick_plan.unbounded),
+                    )
             play.admission = admission
             play.route = admission.route
             play.events = tuple(plan.instants(start, requested_end + 1))

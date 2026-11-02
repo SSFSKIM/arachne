@@ -17,8 +17,9 @@ import os
 import sys
 from fractions import Fraction
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
+from ._config import config as global_config
 from ._config import tempconfig
 from .constants import QUALITIES
 from .timeline.clock import exact
@@ -62,15 +63,18 @@ class Session:
         file: StrPath,
         scene: str,
         *,
-        grid: Fraction | float | None = None,
+        grid: Fraction | float | None | Literal["render"] = "render",
         config: dict[str, Any] | None = None,
     ) -> Session:
         """Execute the scene class named ``scene`` from ``file`` and record it.
 
-        ``grid`` is the frame rate whose instants the record keeps; ``None``
-        keeps every instant the run evaluated. ``config`` overrides the
-        configuration the scene is executed under; nothing is written either
-        way.
+        ``grid`` is the frame rate whose instants the record keeps: by
+        default the frame rate of the render the configuration describes, so
+        the session's answers equal that render's frames (a ticked play's
+        dt-free callbacks run at the instants a frame reads,
+        :mod:`.timeline.ticking`); ``None`` keeps and fully evaluates every
+        instant the run reaches. ``config`` overrides the configuration the
+        scene is executed under; nothing is written either way.
         """
         path = Path(file).resolve()
         base_dir = str(path.parent)
@@ -93,7 +97,11 @@ class Session:
                             f"{path.name} defines no scene named {scene!r}."
                         )
                     instance: Scene = scene_class()
-                    instance.timeline = Recorder(instance, grid=grid, draws=False)
+                    instance.timeline = Recorder(
+                        instance,
+                        grid=global_config.frame_rate if grid == "render" else grid,
+                        draws=False,
+                    )
                     instance.render()
                 except BaseException:
                     sys.modules.pop(module.__name__, None)

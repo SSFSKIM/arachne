@@ -40,11 +40,13 @@ def _assert_shared_frames_agree(scene_class) -> None:
         route_scenes.Readouts,
         route_scenes.RefusedOverlappingTransforms,
         route_scenes.Conditional,
-        route_scenes.LateReader,
     ],
     ids=lambda c: c.__name__,
 )
 def test_samples_agree_at_the_instants_frame_rates_share(scene_class):
+    """History-free plays only: a late reader shows the previous frame's
+    value, as in CE (test_admission).
+    """
     _assert_shared_frames_agree(scene_class)
 
 

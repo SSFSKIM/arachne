@@ -91,7 +91,7 @@ def test_a_trusted_play_answers_between_its_instants(session_of):
     """Between the event and the end the record evaluates the Transform at
     the instant asked: ``a`` runs from x = -3 at 1/7 to 6/7 at 1, linearly.
     """
-    session = session_of("LazyTargetOffTick")
+    session = session_of("LazyTargetOffTick", grid=None)
     start = session.state_at(0).named("a").box
     assert session.state_at(Fraction(1, 7)).named("a").box == start
     for t in (Fraction(2, 7), Fraction(1, 2), Fraction(17, 20)):

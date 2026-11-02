@@ -67,12 +67,14 @@ def render(scene_class: type, fps: int, **settings) -> tuple[object, list[np.nda
 @pytest.fixture
 def session_of():
     """Open a scene of ``scenes.py`` (or of ``path``) in a session at the
-    small frame size.
+    small frame size, on its render's grid unless ``grid`` says otherwise.
     """
     opened: list[Session] = []
 
-    def open_session(name: str, path: Path = SCENES, **settings) -> Session:
-        session = Session.open(path, name, config={**SMALL, **settings})
+    def open_session(
+        name: str, path: Path = SCENES, *, grid="render", **settings
+    ) -> Session:
+        session = Session.open(path, name, grid=grid, config={**SMALL, **settings})
         opened.append(session)
         return session
 

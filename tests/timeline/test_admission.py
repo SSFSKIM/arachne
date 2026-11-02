@@ -5,11 +5,16 @@ dependency order of the play's callbacks; anything else ticks.
 
 from __future__ import annotations
 
+import itertools
 from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
 import pytest
+
+from arachne import LEFT, RIGHT, UP, VMobject
+from arachne.timeline.clock import frames_in
+from arachne.utils.bezier import interpolate
 
 from . import route_scenes
 from .conftest import render
@@ -88,20 +93,34 @@ def test_a_setter_that_depends_on_the_geometry_it_is_given_ticks(session_of):
     )
 
 
-@pytest.mark.filterwarnings(COLLAPSE_WARNING)
-def test_a_path_collapsed_at_alpha_three_tenths_is_the_same_at_4_and_30_fps():
-    """The ends meet at 0.3 s, a tick: CE collapses the path there for good,
-    and every frame rate sees it, since the play steps on the tick.
+def _collapse_as_ce_draws_it(fps: int) -> np.ndarray:
+    """``Collapse``'s path as CE leaves it at ``fps``: its updater called at
+    each frame of the one-second play, then once more as the play ends.
     """
-    slow, slow_frames = render(route_scenes.Collapse, 4)
-    fast, fast_frames = render(route_scenes.Collapse, 30)
-    assert np.array_equal(slow.mobjects[0].points, fast.mobjects[0].points)
-    # The collapse kept: every point at one place.
-    assert np.ptp(fast.mobjects[0].points, axis=0).max() == 0
-    shared = [k for k in range(len(slow_frames)) if k * 30 % 4 == 0]
-    assert len(shared) >= 2
-    for k in shared:
-        assert np.array_equal(slow_frames[k], fast_frames[k * 30 // 4]), k
+    path = VMobject().set_points_as_corners([LEFT, 0.5 * UP, RIGHT])
+
+    def update(value: float) -> None:
+        path.put_start_and_end_on(LEFT, LEFT + RIGHT * abs(value))
+
+    for k in range(fps):
+        update(interpolate(-0.3, 0.7, k / fps))
+    update(0.7)
+    return path.points
+
+
+@pytest.mark.filterwarnings(COLLAPSE_WARNING)
+@pytest.mark.parametrize(("fps", "collapsed"), [(4, False), (30, True)])
+def test_a_path_collapsed_at_alpha_three_tenths_is_as_ce_draws_it_at_each_rate(
+    fps, collapsed
+):
+    """The ends meet at 0.3 s. CE collapses the path there for good when a
+    frame falls there (30 fps), and never at 4 fps. No stepping work reads
+    the path, so its dt-free updater runs where CE runs it, at the frames.
+    """
+    scene, _ = render(route_scenes.Collapse, fps)
+    points = scene.mobjects[0].points
+    np.testing.assert_allclose(points, _collapse_as_ce_draws_it(fps), atol=1e-12)
+    assert (np.ptp(points, axis=0).max() == 0) == collapsed
 
 
 @pytest.mark.parametrize("name", list(route_scenes.IMPURE))
@@ -133,11 +152,19 @@ def test_a_callback_reading_what_a_later_one_writes_ticks(session_of):
 
 
 @pytest.mark.parametrize("fps", [4, 30])
-def test_a_late_reader_reads_the_tick_before_whatever_the_frame_rate(fps):
-    scene, _ = render(route_scenes.LateReader, fps)
-    reference, _ = render(route_scenes.LateReader, 60)
-    tag, expected = scene.mobjects[0], reference.mobjects[0]
-    assert np.array_equal(tag.points, expected.points)
+def test_a_late_reader_reads_the_frame_before_as_in_ce(session_of, fps):
+    """``tag`` reads ``dot`` before ``dot``'s updater runs: CE shows it next
+    to where ``dot`` was at the frame before. Nothing stepping reads either,
+    so both run at the frames.
+    """
+    session = session_of("LateReader", ROUTE_SCENES, frame_rate=fps)
+    play = session.record.plays[0]
+    instants = frames_in(play.start, play.end, Fraction(fps))
+    assert len(instants) == fps
+    for before, t in itertools.pairwise(instants):
+        x0, _, x1, _ = session.state_at(before).named("dot").box
+        t0, _, t1, _ = session.state_at(t).named("tag").box
+        assert (t0 + t1) / 2 == pytest.approx((x0 + x1) / 2), t
 
 
 @pytest.mark.parametrize("name", ["AnimationAsUpdater", "IllusionRotation"])
