@@ -35,7 +35,13 @@ from .origins import ORIGINS
 from .record import Identity, Marker, PlayRecord, Record
 from .routes import ROUTE_CLASSES, Route, snapshot_animations
 from .source import SourceLine, names_from_frames, scene_frames, scene_location
-from .ticking import UNBOUNDED, TickPlan, current_keys, met_unforeseen, plan_ticks
+from .ticking import (
+    UNBOUNDED,
+    TickPlan,
+    current_structure,
+    met_unforeseen,
+    plan_ticks,
+)
 
 if TYPE_CHECKING:
     from arachne.mobject.mobject import Mobject
@@ -136,18 +142,21 @@ class PlayRun:
             return
         play.full_ticks += 1
         plan = play.tick_plan
-        if plan is not None and plan.steps_only and (event or plan.rechecks):
-            keys = current_keys(self.scene, play._animations)
-            if keys != plan.known:
-                replanned = plan_ticks(
-                    self.scene,
-                    list(play._animations),
-                    _base_dir(self.recorder.ensure_record()),
-                )
-                if replanned.unbounded is not None:
-                    self._unbounded(replanned.unbounded, tick)
-                else:
-                    play.set_tick_plan(replanned, tick + Fraction(1, TICK_RATE))
+        if (
+            plan is not None
+            and plan.steps_only
+            and (event or plan.rechecks)
+            and current_structure(self.scene, play._animations) != plan.structure
+        ):
+            replanned = plan_ticks(
+                self.scene,
+                list(play._animations),
+                _base_dir(self.recorder.ensure_record()),
+            )
+            if replanned.unbounded is not None:
+                self._unbounded(replanned.unbounded, tick)
+            else:
+                play.set_tick_plan(replanned, tick + Fraction(1, TICK_RATE))
 
     def _unbounded(self, reason: str, tick: Fraction) -> None:
         """Tick everything after ``tick``, for ``reason``."""

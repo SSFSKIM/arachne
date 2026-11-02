@@ -386,6 +386,26 @@ def test_a_play_whose_callbacks_change_its_updaters_ticks_everything(
     assert play.full_ticks == 60
 
 
+@pytest.mark.parametrize(
+    "name", ["SkippedAdder", "MemberJoins", "SubmobjectAdded", "SubmobjectDropped"]
+)
+def test_a_skipped_callback_that_changes_the_structure_is_never_stepped_past(
+    session_of, name
+):
+    """It adds a mobject carrying a dt updater, adds or drops a group's
+    member carrying one, or puts into a group a reader reads a dot another
+    callback moves: the play plans again after the frame it does so at, or
+    it ticks everything for it from the start (when stepping work reads what
+    it writes). Either way the frames are those of ticking everything.
+    """
+    play = _same_as_full_ticks(session_of, name, 15).record.plays[-1]
+    first = play.tick_plans[0][1]
+    if first.steps_only:
+        assert [t for t, _ in play.tick_plans] == [play.start, Fraction(13, 60)]
+    else:
+        assert first.unbounded.startswith(f"{STRUCTURAL}: updater ")
+
+
 def test_a_skipped_callback_that_adds_a_reader_has_the_play_plan_again(
     session_of,
 ):

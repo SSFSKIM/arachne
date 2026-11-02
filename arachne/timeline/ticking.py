@@ -85,6 +85,7 @@ __all__ = [
     "STRUCTURAL",
     "UNBOUNDED",
     "TickPlan",
+    "current_structure",
     "loads_dt",
     "plan_ticks",
     "reach",
@@ -173,8 +174,10 @@ class TickPlan:
     #: The ids of what the work a stepping tick runs may read or write.
     stepped_ids: frozenset[int] = frozenset()
     #: Whether a skipped callback may change which updaters there are: the
-    #: play plans again after each full tick that changed them.
+    #: play plans again after each full tick that changed them, or moved a
+    #: mobject (:func:`current_structure`, as it was planned for).
     rechecks: bool = False
+    structure: frozenset[tuple[str, int, int]] = frozenset()
 
     def stepping_families(self) -> frozenset[int]:
         """The ids of everything the stepping set (dt updaters, the scene's
@@ -218,14 +221,23 @@ def met_unforeseen() -> bool:
     return met
 
 
-def current_keys(
+def current_structure(
     scene: Scene, animations: Iterable[Animation]
-) -> frozenset[tuple[int, int]]:
-    """Every updater the scene's tick may run now."""
-    return frozenset(
-        (id(member), id(updater))
-        for member, updater in _updaters((*_copies(animations), *scene.mobjects))
-    )
+) -> frozenset[tuple[str, int, int]]:
+    """What a plan weighs that callbacks may change as a play runs: every
+    updater the scene's tick may run, and every mobject's place, under the
+    scene or in its parent (a member joining a family another callback
+    writes changes what a reader of the family reads).
+    """
+    roots = (*_copies(animations), *scene.mobjects)
+    found: set[tuple[str, int, int]] = {
+        ("updater", id(member), id(updater)) for member, updater in _updaters(roots)
+    }
+    for root in roots:
+        found.add(("member", id(scene), id(root)))
+        for member in root.get_family():
+            found.update(("member", id(member), id(sub)) for sub in member.submobjects)
+    return frozenset(found)
 
 
 # Which updaters integrate
@@ -1912,6 +1924,7 @@ def plan_ticks(
         pulled=pulled,
         stepped_ids=_stepped_ids(nodes),
         rechecks=any(node.restructures or node.unknown for node in nodes),
+        structure=current_structure(scene, animations),
     )
 
 

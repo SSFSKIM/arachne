@@ -630,6 +630,100 @@ class SkippedInstaller(Scene):
         self.play(t.animate.set_value(1), rate_func=linear)
 
 
+class SkippedAdder(Scene):
+    """A dt-free updater nothing reads adds to the scene, a fifth of the way
+    in, a dot carrying a dt updater that reads a dot a dt-free updater moves.
+    """
+
+    def construct(self):
+        t = ValueTracker(0)
+        source = Dot()
+        source.add_updater(lambda m: m.set_x(t.get_value()))
+        reader = Dot(color=RED, radius=0.05)
+        reader.add_updater(lambda m, dt: m.shift(dt * source.get_x() * RIGHT))
+        scene = self
+
+        def add(m):
+            if t.get_value() >= 0.2 - 1e-9 and reader not in scene.mobjects:
+                scene.add(reader)
+
+        adder = Dot(color=GREEN, radius=0.05).shift(DOWN)
+        adder.add_updater(add)
+        self.add(t, source, adder, _idle())
+        self.play(t.animate.set_value(1), rate_func=linear)
+
+
+class MemberJoins(Scene):
+    """A dt updater reads a group's centre; a fifth of the way in, a
+    dt-free updater nothing reads puts into the group a dot another dt-free
+    updater moves.
+    """
+
+    def construct(self):
+        t = ValueTracker(0)
+        dot = Dot()
+        mover = Dot(color=BLUE, radius=0.05).shift(UP)
+        mover.add_updater(lambda m: dot.set_x(t.get_value()))
+        group = VGroup(Dot(LEFT))
+        output = Dot(color=RED, radius=0.05)
+        output.add_updater(lambda m, dt: m.shift(dt * group.get_center()[0] * UP))
+
+        def join(m):
+            if t.get_value() >= 0.2 - 1e-9 and dot not in group.submobjects:
+                group.add(dot)
+
+        joiner = Dot(color=GREEN, radius=0.05).shift(DOWN)
+        joiner.add_updater(join)
+        self.add(t, mover, group, output, joiner, _idle())
+        self.play(t.animate.set_value(1), rate_func=linear)
+
+
+class SubmobjectAdded(Scene):
+    """A dt-free updater nothing reads adds to a group, a fifth of the way
+    in, a dot carrying a dt updater that reads a dot a dt-free updater moves.
+    """
+
+    def construct(self):
+        t = ValueTracker(0)
+        source = Dot()
+        source.add_updater(lambda m: m.set_x(t.get_value()))
+        child = Dot(color=RED, radius=0.05)
+        child.add_updater(lambda m, dt: m.shift(dt * source.get_x() * UP))
+        group = VGroup(Dot(LEFT))
+
+        def add(m):
+            if t.get_value() >= 0.2 - 1e-9 and child not in group.submobjects:
+                group.add(child)
+
+        adder = Dot(color=GREEN, radius=0.05).shift(DOWN)
+        adder.add_updater(add)
+        self.add(t, source, group, adder, _idle())
+        self.play(t.animate.set_value(1), rate_func=linear)
+
+
+class SubmobjectDropped(Scene):
+    """A dt-free updater drops from a group, a fifth of the way in, a dot
+    whose dt updater reads a dot a dt-free updater moves.
+    """
+
+    def construct(self):
+        t = ValueTracker(0)
+        source = Dot()
+        source.add_updater(lambda m: m.set_x(t.get_value()))
+        child = Dot(color=RED, radius=0.05)
+        child.add_updater(lambda m, dt: m.shift(dt * source.get_x() * UP))
+        group = VGroup(Dot(LEFT), child)
+
+        def drop(m):
+            if t.get_value() >= 0.2 - 1e-9 and child in group.submobjects:
+                group.remove(child)
+
+        dropper = Dot(color=GREEN, radius=0.05).shift(DOWN)
+        dropper.add_updater(drop)
+        self.add(t, source, group, dropper, _idle())
+        self.play(t.animate.set_value(1), rate_func=linear)
+
+
 class ReaderRemoved(Scene):
     """An ``UpdateFromAlphaFunc`` takes, half way in, the dt updater from a
     dot that reads a dot whose dt-free updater keeps history.
