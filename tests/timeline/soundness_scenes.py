@@ -81,6 +81,129 @@ class ArrayOutPositional(_Ramp):
         dot.add_updater(lambda m: m.move_to(np.add(p, 0.02 * RIGHT, p)))
 
 
+class _OutRead(Scene):
+    """A dt-free updater writes a closure array through an argument NumPy
+    writes its result into; a dt updater integrates the array's item, and
+    an idle updater keeps the play stepping.
+    """
+
+    def writer(self, values: np.ndarray):
+        raise NotImplementedError
+
+    def construct(self):
+        values = np.array([1.0])
+        producer = Dot(radius=0.05)
+        producer.add_updater(self.writer(values))
+        output = Dot(color=RED, radius=0.05)
+        output.add_updater(lambda m, dt: m.shift(dt * values[0] * RIGHT))
+        idle = Dot(radius=0.05)
+        idle.add_updater(lambda m: None)
+        self.add(producer, output, idle)
+        self.wait(1)
+
+
+class ArrayOutPositionalRead(_OutRead):
+    """``np.add(values, step, values)``: past the ufunc's two inputs."""
+
+    def writer(self, values):
+        return lambda m: np.add(values, 0.01, values)
+
+
+class SecondOutRead(_OutRead):
+    """The second output of a two-output ufunc, by position."""
+
+    def writer(self, values):
+        spare = np.zeros(1)
+        return lambda m: np.divmod(values + 7.01, 7.0, spare, values)
+
+
+class HeldUfuncOutRead(_OutRead):
+    """The ufunc called under a name of the scene's own."""
+
+    def writer(self, values):
+        add = np.add
+        return lambda m: add(values, 0.01, values)
+
+
+class UfuncAtRead(_OutRead):
+    """``np.add.at``: a ufunc's method writing its first argument in place."""
+
+    def writer(self, values):
+        return lambda m: np.add.at(values, 0, 0.01)
+
+
+class FunctionOutRead(_OutRead):
+    """``np.clip``'s fourth parameter, ``out``, given by position."""
+
+    def writer(self, values):
+        return lambda m: np.clip(values + 0.01, 0, 9, values)
+
+
+class MethodOutRead(_OutRead):
+    """An array's method on a local array the check can't resolve, with
+    its ``out`` by position.
+    """
+
+    def writer(self, values):
+        def step(m):
+            moved = values + 0.01
+            moved.clip(0, 9, values)
+
+        return step
+
+
+class BoundMethodOutRead(_OutRead):
+    """The closure array's own method writing into it: ``values.dot(scale,
+    values)``.
+    """
+
+    def writer(self, values):
+        scale = np.array([[1.01]])
+        return lambda m: values.dot(scale, values)
+
+
+class StarredOutRead(_OutRead):
+    """The arguments unpacked from a tuple: which lands in ``out`` is not
+    in the source.
+    """
+
+    def writer(self, values):
+        arguments = (values, 0.01, values)
+        return lambda m: np.add(*arguments)
+
+
+class KeywordsOutRead(_OutRead):
+    """``out`` unpacked from a dict of keywords."""
+
+    def writer(self, values):
+        keywords = {"out": values}
+        return lambda m: np.add(values, 0.01, **keywords)
+
+
+class InputsOnlyRead(_OutRead):
+    """The positive control: the same calls given only inputs, their results
+    put on the updater's own mobject; the closure array never changes.
+    """
+
+    def writer(self, values):
+        scale = np.array([[1.01]])
+        add = np.add
+
+        def step(m):
+            moved = values + 0.01
+            m.set_x(
+                np.add(values, 0.01)[0]
+                + add(values, 0.01)[0]
+                + np.divmod(values, 7.0)[1][0]
+                + np.clip(values, 0, 9)[0]
+                + values.sum(0)
+                + values.dot(scale)[0]
+                + moved.clip(0, 9)[0]
+            )
+
+        return step
+
+
 class PartialFill(Scene):
     """A fill set only between alpha 0.3 and 0.4, left as it was elsewhere."""
 
