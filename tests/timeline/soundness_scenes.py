@@ -28,6 +28,7 @@ from arachne import (
     VGroup,
     ZoomedScene,
     always_redraw,
+    color_to_rgb,
     linear,
     random_color,
 )
@@ -389,3 +390,46 @@ class PatchedEngine(Scene):
             self.play(Transform(d, Dot(RIGHT * 2)), rate_func=linear)
         finally:
             del Dot.interpolate
+
+
+class CountingFill(Dot):
+    """A user's dot whose fill the camera reads from a class value the
+    script rebinds, counting the reads.
+    """
+
+    colour = RED
+    calls: list[int] = []
+
+    def get_fill_rgbas(self):
+        CountingFill.calls.append(1)
+        return np.array([[*color_to_rgb(CountingFill.colour), 1.0]])
+
+
+class OverriddenFill(Scene):
+    """That dot drawn through two waits, red then blue: drawn after the
+    scene ran, the first wait would show blue.
+    """
+
+    def construct(self):
+        CountingFill.colour = RED
+        d = CountingFill(radius=0.3)
+        self.add(d)
+        self.wait(0.5)
+        CountingFill.colour = BLUE
+        self.wait(0.5)
+
+
+class FillJoinsMidPlay(Scene):
+    """That dot added by an updater halfway through a play."""
+
+    def construct(self):
+        t = ValueTracker(0)
+        holder = VGroup()
+
+        def join(m, dt):
+            if not m.submobjects and t.get_value() > 0.5:
+                m.add(CountingFill(radius=0.3))
+
+        holder.add_updater(join)
+        self.add(holder)
+        self.play(t.animate.set_value(1))
