@@ -186,14 +186,24 @@ def test_a_skipped_section_runs_and_is_recorded():
     assert dot.get_center()[0] == pytest.approx(1.0)
 
 
-def test_a_record_names_every_mobject_it_captured_once(session_of):
+def test_a_record_names_every_mobject_it_captured_once_in_first_capture_order(
+    session_of,
+):
     session = session_of("Captured")
-    scene = session.scene
-    captured = list(session.record.mobjects())
-    ids = [id(mob) for mob in captured]
-    assert len(ids) == len(set(ids))
-    # Members never added on their own, and a mobject since removed.
-    for mob in [scene.group, *scene.group.submobjects, scene.dot]:
-        assert id(mob) in ids
-    # Made, never shown.
-    assert id(scene.unused) not in ids
+    scene, record = session.scene, session.record
+    captured = list(record.mobjects())
+    # The wait's own placeholder mobject, captured with its play.
+    placeholder = captured[4]
+    assert record.origin(placeholder).source_line == _line("captured-wait")
+    # The group and its members (never added on their own), a dot since
+    # removed, then the circle first shown in the last play; never the
+    # square that was made and not shown.
+    expected = [
+        scene.group,
+        *scene.group.submobjects,
+        scene.dot,
+        placeholder,
+        scene.late,
+    ]
+    assert [id(mob) for mob in captured] == [id(mob) for mob in expected]
+    assert id(scene.unused) not in {id(mob) for mob in captured}
