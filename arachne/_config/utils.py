@@ -401,9 +401,11 @@ class ManimConfig(MutableMapping):
         option.fset(self, val)  # fset is the property's setter
 
     def __setattr__(self, name: str, value: Any) -> None:
-        # An option is a property: a name that is none is a setting that
-        # would otherwise be kept and never read.
-        if not name.startswith("_") and not hasattr(type(self), name):
+        # An option is a property: any other public name, a method's
+        # included, is a setting that would be kept and never read.
+        if not name.startswith("_") and not isinstance(
+            getattr(type(self), name, None), property
+        ):
             raise AttributeError(no_option(name))
         super().__setattr__(name, value)
 

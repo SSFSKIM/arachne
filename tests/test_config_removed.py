@@ -91,6 +91,25 @@ def test_setting_a_name_that_is_no_option_raises(config):
         config["frame_rat"] = 30
 
 
+@pytest.mark.parametrize("name", ["get", "copy", "update", "keys", "digest_args"])
+def test_a_method_name_is_no_option(config, name):
+    method = getattr(config, name)
+    with pytest.raises(AttributeError, match=f"no configuration option '{name}'"):
+        setattr(config, name, 42)
+    with pytest.raises(AttributeError, match=f"no configuration option '{name}'"):
+        config[name] = 42
+    assert getattr(config, name) == method
+
+
+def test_a_method_name_assigned_as_an_attribute_raises(config):
+    with pytest.raises(AttributeError, match="no configuration option 'get'"):
+        config.get = 42
+    with pytest.raises(AttributeError, match="no configuration option 'copy'"):
+        config.copy = 42
+    with pytest.raises(AttributeError, match="no configuration option 'update'"):
+        config.update = 42
+
+
 def test_options_are_still_set(config):
     config.format = "none"
     config["frame_rate"] = 30
