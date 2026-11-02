@@ -7,10 +7,16 @@ from fractions import Fraction
 import numpy as np
 import pytest
 
-from arachne import BLUE
+from arachne import BLUE, RED, Camera
 
 from .conftest import render
-from .scenes import Background, Drawn, FixedOrientation, SuppliedBackground
+from .scenes import (
+    Background,
+    Drawn,
+    FixedOrientation,
+    SuppliedBackground,
+    WrittenBackground,
+)
 
 
 def _pixels(image) -> np.ndarray:
@@ -105,6 +111,33 @@ def test_a_supplied_background_is_drawn_as_it_was_at_each_instant(session_of):
     assert low.size == (854, 480)
     assert _corner(low) == [255, 0, 0]
     assert _corner(session.frame(Fraction(3, 4), "low_quality")) == [0, 0, 255]
+
+
+def test_a_background_is_replaced_never_written_in_place():
+    """A camera's background is read-only, the one it builds and one supplied
+    alike: a write into it would change frames the record already holds, so
+    it raises naming ``set_background``, and the caller's own array stays
+    theirs. (That a supplied background is drawn from the record as the
+    render drew it is test_a_render_draws_what_the_session_draws_at_each_instant.)
+    """
+    with pytest.raises(ValueError, match=r"set_background"):
+        render(WrittenBackground, 6)
+
+    camera = Camera()
+    with pytest.raises(ValueError, match=r"set_background"):
+        camera.background[:] = (255, 0, 0, 255)
+    built = camera.background
+    camera.background_color = RED
+    assert camera.background is not built
+    with pytest.raises(ValueError, match=r"set_background"):
+        camera.background[:] = (0, 0, 255, 255)
+
+    pixels = np.full(camera.background.shape, (255, 0, 0, 255), dtype=np.uint8)
+    camera.set_background(pixels)
+    pixels[:] = 0
+    assert camera.background[0, 0].tolist() == [255, 0, 0, 255]
+    with pytest.raises(ValueError, match=r"set_background"):
+        camera.background[0, 0] = (0, 0, 255, 255)
 
 
 def test_frame_draws_at_a_quality(session_of):

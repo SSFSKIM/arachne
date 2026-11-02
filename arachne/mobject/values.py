@@ -11,6 +11,7 @@ from __future__ import annotations
 
 __all__ = [
     "FrozenArray",
+    "FrozenBackground",
     "FrozenColors",
     "FrozenPixels",
     "FrozenPointColors",
@@ -286,6 +287,14 @@ class FrozenPixels(FrozenArray):
     replacement = (
         "use mob.set_color(...) or mob.set_opacity(...), or assign a new array "
         "with mob.pixel_array = pixels"
+    )
+
+
+class FrozenBackground(FrozenArray):
+    value_name = "A camera's background"
+    replacement = (
+        "pass a new array to camera.set_background(pixels), or set "
+        "camera.background_color or camera.background_opacity"
     )
 
 

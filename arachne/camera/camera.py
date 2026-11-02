@@ -21,6 +21,7 @@ from arachne.constants import *
 from arachne.mobject.mobject import Mobject
 from arachne.mobject.types.point_cloud_mobject import PMobject
 from arachne.mobject.types.vectorized_mobject import VMobject
+from arachne.mobject.values import FrozenBackground, adopt, freeze
 from arachne.utils.color import ManimColor, ParsableManimColor, color_to_int_rgba
 from arachne.utils.family import extract_mobject_family_members
 from arachne.utils.images import get_full_raster_image_path
@@ -178,6 +179,19 @@ class Camera:
         return copy.copy(self)
 
     @property
+    def background(self) -> FrozenBackground | None:
+        """The pixels each frame starts from, as a read-only array: the one
+        the camera builds from its background colour, opacity and image, or
+        one given to :meth:`set_background`. A frame already drawn or
+        recorded holds it, so it is replaced, never written in place.
+        """
+        return self._background
+
+    @background.setter
+    def background(self, value: PixelArray | None) -> None:
+        self._background = None if value is None else freeze(value, FrozenBackground)
+
+    @property
     def background_color(self) -> ManimColor:
         return self._background_color
 
@@ -287,22 +301,22 @@ class Camera:
             image = Image.open(path).convert(self.image_mode)
             # TODO, how to gracefully handle backgrounds
             # with different sizes?
-            self.background = np.array(image)[:height, :width]
-            self.background = self.background.astype(self.pixel_array_dtype)
+            built = np.array(image)[:height, :width].astype(self.pixel_array_dtype)
         else:
             background_rgba = color_to_int_rgba(
                 self.background_color,
                 self.background_opacity,
             )
-            self.background = np.zeros(
+            built = np.zeros(
                 (height, width, self.n_channels),
                 dtype=self.pixel_array_dtype,
             )
-            self.background[:, :] = background_rgba
+            built[:, :] = background_rgba
+        self._background = adopt(built, FrozenBackground)
         # The array built from the camera's own inputs. A background that is
         # any other array was supplied (set_background); a draw from the
         # record cannot rebuild that one, so the record keeps it.
-        self._built_background: PixelArray = self.background
+        self._built_background: FrozenBackground = self._background
 
     def get_image(
         self, pixel_array: PixelArray | list | tuple | None = None
@@ -383,11 +397,14 @@ class Camera:
             The pixel array to set the background to.
         convert_from_floats
             Whether or not to convert floats values to proper RGB valid ones, by default False
+
+        The camera keeps a read-only copy: changing ``pixel_array`` afterwards
+        does not change the background (see :attr:`background`).
         """
         self.background = (
-            self.convert_pixel_array(pixel_array)
+            adopt(self.convert_pixel_array(pixel_array), FrozenBackground)
             if convert_from_floats
-            else np.array(pixel_array)
+            else pixel_array
         )
 
     # TODO, this should live in utils, not as a method of Camera
