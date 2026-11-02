@@ -27,8 +27,9 @@ import numpy as np
 
 from arachne._config import logger
 
+from . import ce_clock
 from .admission import admit, camera_refusal
-from .clock import TICK_RATE, exact, play_end
+from .clock import TICK_RATE, exact
 from .dispatch import draw_refusal, scene_hooks
 from .draw import CameraExtras, LiveFrames, camera_nodes
 from .events import EventPlan, plan_events
@@ -98,6 +99,11 @@ class PlayRun:
             instant,
             dt,
             0.0 if last is None else float(instant - last),
+        )
+        # DIAGNOSTIC: the hooks see CE's own progression, its float t and t - last_t.
+        frame.t = ce_clock.frame_time(self.start, instant)
+        frame.frame_dt = frame.t - (
+            0.0 if last is None else ce_clock.frame_time(self.start, last)
         )
         recorder = self.recorder
         recorder.frame = frame
@@ -462,7 +468,9 @@ class Recorder:
 
     # Plays
 
-    def requested_end(self, start: Fraction | None = None) -> Fraction:
+    def requested_end(
+        self, start: Fraction | None = None, *, held: bool = False
+    ) -> Fraction:
         """Where the play the scene has compiled, beginning at ``start`` (the
         scene clock unless given), ends unless a stop condition ends it first:
         its animations' longest run time, or what the scene's own
@@ -472,12 +480,12 @@ class Recorder:
         if start is None:
             start = scene.time
         if scene_hooks(scene, ("get_run_time",)):
-            return play_end(start, scene.duration)
-        animations = scene.animations or []
-        return play_end(
-            start,
-            max(animation._exact_run_time() for animation in animations),
-        )
+            run_time = scene.duration
+        else:
+            run_time = max(
+                animation._exact_run_time() for animation in scene.animations or []
+            )
+        return ce_clock.play_end(start, run_time, held)  # DIAGNOSTIC: CE's clock
 
     def play(
         self,
@@ -526,6 +534,8 @@ class Recorder:
         play.moving = tuple(scene.moving_mobjects)
         play.static = tuple(scene.static_mobjects)
         play.held = bool(scene.is_current_animation_frozen_frame())
+        if play.held:  # DIAGNOSTIC: CE's clock sizes a frozen frame as int(d / dt) frames
+            play.requested_end = play.end = self.requested_end(start, held=True)
         play.frame_hooks = scene_hooks(scene, FRAME_HOOKS)
         play.play_internal_overridden = bool(scene_hooks(scene, ("play_internal",)))
         extras = CameraExtras.observe(scene.renderer.camera, None)
@@ -673,6 +683,7 @@ class Recorder:
                 record.refusal = joined
         # The animations finish with CE's own event handling.
         plan.release()
+        ce_clock.advance(scene.renderer, run.end, play.held)  # DIAGNOSTIC: CE's clock
         scene.renderer.time = run.end
         if not play.held:
             for animation in scene.animations or []:
@@ -681,7 +692,7 @@ class Recorder:
             scene.update_mobjects(0)
         # The play's local time last evaluated: its end. A later
         # update_to_time(t) passes dt = t - last_t, as in CE.
-        scene.last_t = float(run.end - play.start)
+        scene.last_t = ce_clock.last_t(play.start, run.end, play.held)  # DIAGNOSTIC: CE's
 
     def base_dt(self, name: str, dt: float) -> float:
         """The ``dt`` the body of the frame hook ``name`` runs with: the
