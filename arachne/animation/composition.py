@@ -73,6 +73,18 @@ class AnimationGroup(Animation):
             self.group, rate_func=self.rate_func, lag_ratio=lag_ratio, **kwargs
         )
         self.run_time: float = self.init_run_time(run_time)
+        # Whether a run time was given, here or by any later assignment; when
+        # none was, the group lasts its parts' exact end (_exact_run_time).
+        self._run_time_given = run_time is not None
+
+    @property
+    def run_time(self) -> float:
+        return self._run_time
+
+    @run_time.setter
+    def run_time(self, value: float) -> None:
+        Animation.run_time.fset(self, value)  # type: ignore[attr-defined]
+        self._run_time_given = True
 
     def get_all_mobjects(self) -> Sequence[Mobject]:
         return list(self.group)
@@ -170,12 +182,12 @@ class AnimationGroup(Animation):
         return starts, ends
 
     def _exact_run_time(self) -> float | Fraction:
-        """The group's run time, exactly: when it is its parts' (no run time
-        was given, or the one given equals theirs), the latest exact end of
-        its parts, so ``Succession(Wait(0.1), Wait(0.2))`` lasts ``3/10``, not
-        the float sum ``0.30000000000000004``; else the run time given.
+        """The group's run time, exactly: when no run time was given to it, the
+        latest exact end of its parts, so ``Succession(Wait(0.1), Wait(0.2))``
+        lasts ``3/10``, not the float sum ``0.30000000000000004``; else the run
+        time given, whatever its value.
         """
-        if self.animations and self.run_time == self.max_end_time:
+        if self.animations and not self._run_time_given:
             return max(self._exact_timings()[1])
         return self.run_time
 

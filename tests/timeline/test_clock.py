@@ -7,7 +7,7 @@ from fractions import Fraction
 
 import pytest
 
-from arachne import Scene, Square, Wait
+from arachne import Scene, Square, Succession, Wait
 from arachne.timeline.clock import TICK_DT, exact, frames_in, play_end, ticks_in
 
 from .conftest import render
@@ -142,3 +142,25 @@ def test_a_composition_lasts_its_parts_exact_sum(fps):
     assert spans == [Fraction(3, 10), Fraction(1, 2), Fraction(1, 2)]
     assert len(frames) == len(frames_in(Fraction(0), Fraction(13, 10), Fraction(fps)))
     assert len(frames) == 13 * fps // 10
+
+
+def test_a_run_time_given_to_a_composition_is_used_as_given():
+    """A composition lasts its parts' exact sum only when no run time was
+    given to it: an exact run time equal to the parts' float sum is kept, both
+    when given at construction and when set afterwards.
+    """
+    float_sum = Fraction(0.1 + 0.2)
+    assert float_sum != Fraction(3, 10)
+
+    implicit = Succession(Wait(0.1), Wait(0.2))
+    assert implicit._exact_run_time() == Fraction(3, 10)
+
+    given = Succession(Wait(0.1), Wait(0.2), run_time=float_sum)
+    assert given._exact_run_time() == float_sum
+
+    assigned = Succession(Wait(0.1), Wait(0.2))
+    assigned.run_time = float_sum
+    assert assigned._exact_run_time() == float_sum
+
+    set_later = Succession(Wait(0.1), Wait(0.2)).set_run_time(float_sum)
+    assert set_later._exact_run_time() == float_sum
