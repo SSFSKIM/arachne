@@ -57,11 +57,18 @@ from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
 import numpy as np
 
+from . import ce_clock
 from .clock import TICK_DT, TICK_RATE, frames_in, ticks_in
 from .events import EventPlan
-from .hooks import _alpha, animate, update_mobjects, update_self
+from . import hooks
+from .hooks import animate, update_mobjects, update_self
 from .reference import BRUTE_FORCE, BruteForce
 from .ticking import skipping
+
+# DIAGNOSTIC: every animation's alpha is CE's t / run_time over its float
+# progression (ce_clock.alpha), here and in the hooks' animate; the exact
+# instant still schedules the composition events.
+hooks._alpha = _alpha = ce_clock.alpha
 
 if TYPE_CHECKING:
     from arachne.scene.scene import Scene
@@ -124,7 +131,9 @@ class TickedRoute:
         _evaluate(run, plan, start, 0.0, ticks[0] if ticks else end)
         run.started()
         run.sample(start, until=ticks[0] if ticks else end)
-        ended = start if stop is not None and stop() else None
+        # DIAGNOSTIC: CE checks the stop condition after each frame it draws, the
+        # first included, and ends the play at that frame's end.
+        ended = ce_clock.frame_end(start, end) if stop is not None and stop() else None
         if ended is None:
             # A verification run decides each tick apart from the plan
             # (:mod:`.reference`).
@@ -159,8 +168,12 @@ class TickedRoute:
                             _evaluate(run, plan, tick, TICK_DT, following)
                     run.stepped(tick, full=full)
                     run.sample(tick, until=following)
-                    if stop is not None and stop():
-                        ended = tick
+                    if (
+                        stop is not None
+                        and (frame_end := ce_clock.frame_end(tick, end)) is not None
+                        and stop()
+                    ):  # DIAGNOSTIC: after a frame only, ending at its end, as CE
+                        ended = frame_end
                         break
             finally:
                 progress.close()

@@ -11,6 +11,7 @@ from .._config.video_encoder import video_encoder_fingerprint
 from ..camera.camera import Camera
 from ..mobject.mobject import Mobject, _AnimationBuilder
 from ..scene.scene_file_writer import SceneFileWriter
+from ..timeline.ce_clock import float_time as ce_float_time
 from ..timeline.clock import TICK_RATE, exact, frames_in
 from ..timeline.draw import Drawing, LiveFrames
 from ..timeline.execution import Reexecute
@@ -85,7 +86,7 @@ class CairoRenderer:
     @property
     def time(self) -> float:
         """The scene clock as a float: the exact :attr:`clock`'s value."""
-        return float(self._clock)
+        return ce_float_time(self)  # DIAGNOSTIC: CE's float clock
 
     @time.setter
     def time(self, value: float | Fraction) -> None:
