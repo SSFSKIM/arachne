@@ -37,9 +37,11 @@ from typing import Any
 
 import numpy as np
 
-from .clock import exact
+from .clock import exact, frames_in
 
-__all__ = ["advance", "alpha", "float_time", "frame_end", "frame_time", "last_t", "play_end"]
+__all__ = [
+    "advance", "alpha", "float_time", "frame_end", "frame_steps", "frame_time", "last_t", "play_end",
+]
 
 
 def _fps() -> Fraction:
@@ -141,3 +143,22 @@ def float_time(renderer: Any) -> float:
     for _ in range(int(steps)):
         value += dt
     return value
+
+
+def frame_steps(start: Fraction, end: Fraction) -> tuple[list[Fraction], list[float]]:
+    """The clock+dt build: the instants a ticked play steps at after its
+    start, and the ``dt`` each passes, as CE's ``update_to_time`` steps a
+    play: once per frame, after the play's first frame (its start, evaluated
+    at ``dt = 0``), up to the last frame before its end, which is not
+    stepped; each ``dt`` is ``t - last_t`` over CE's own float progression
+    (:func:`frame_time`), not a constant ``1/fps``.
+    """
+    fps = _fps()
+    ticks = [t for t in frames_in(start, end, fps) if start < t < end]
+    dts = []
+    last = 0.0
+    for tick in ticks:
+        t = frame_time(start, tick)
+        dts.append(t - last)
+        last = t
+    return ticks, dts
