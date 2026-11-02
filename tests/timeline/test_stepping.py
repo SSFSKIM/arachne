@@ -535,6 +535,26 @@ def test_on_step_sees_every_stepping_tick_and_no_full_one(session_of):
     assert len(seen) == 60 - 4
 
 
+@pytest.mark.parametrize("stepping", [True, False])
+def test_on_tick_sees_every_tick_and_whether_it_was_full(session_of, stepping):
+    """The diagnostic hook is called after every tick of a ticked play,
+    stepping or full, and says which: with stepping off, every one is full.
+    """
+    seen: list[tuple[Fraction, bool]] = []
+    session = session_of(
+        "Unchanged",
+        STEPPING_SCENES,
+        frame_rate=4,
+        stepping=stepping,
+        on_tick=lambda scene, tick, full: seen.append((tick, full)),
+    )
+    play = session.record.plays[-1]
+    assert [t for t, _ in seen] == [Fraction(k, 60) for k in range(1, 61)]
+    assert sum(not full for _, full in seen) == play.stepping_ticks
+    assert sum(full for _, full in seen) == play.full_ticks
+    assert play.stepping_ticks == (60 - 4 if stepping else 0)
+
+
 def _same_frames(session_of, name: str, fps: int):
     """Every frame of a stepping session equals that of one that ticks
     everything; the stepping session's last play.

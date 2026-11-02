@@ -168,18 +168,21 @@ class PlayRun:
         )
 
     def stepped(self, tick: Fraction, *, full: bool) -> None:
-        """Count a tick, and show a stepping tick to the recorder's
-        ``on_step``. A stepping tick that ran an updater the plan never
-        weighed (one stepping work itself added as it ran) ends stepping for
-        the play.
+        """Count a tick, and show it to the recorder's diagnostic hooks
+        (``on_tick`` every tick, ``on_step`` a stepping one). A stepping tick
+        that ran an updater the plan never weighed (one stepping work itself
+        added as it ran) ends stepping for the play.
         """
         play = self.play
+        recorder = self.recorder
+        if recorder.on_tick is not None:
+            recorder.on_tick(self.scene, tick, full)
         if full:
             play.full_ticks += 1
             return
         play.stepping_ticks += 1
-        if self.recorder.on_step is not None:
-            self.recorder.on_step(self.scene, tick)
+        if recorder.on_step is not None:
+            recorder.on_step(self.scene, tick)
         if met_unforeseen():
             self._unbounded(
                 f"{UNBOUNDED}: an updater joined while it played",
@@ -210,9 +213,12 @@ class Recorder:
     compare with (:meth:`.PlayRecord.sample_keys`); its plays still make
     their plans, not applied (:attr:`.TickPlan.applied`).
 
-    ``on_step``, a diagnostic, is called as ``on_step(scene, tick)`` after
-    each stepping tick (one that ran the stepping set only): a comparison
-    observes there what stepping work changed.
+    ``on_tick`` and ``on_step`` are diagnostics, called after each tick of a
+    ticked play, as ``on_tick(scene, tick, full)`` (``full`` false for a
+    stepping tick), and after each stepping tick only (one that ran the
+    stepping set alone), as ``on_step(scene, tick)``: a comparison observes
+    there what each tick changed, the record keeping no tick a frame does
+    not read. Unset, they cost nothing.
     """
 
     def __init__(
@@ -223,12 +229,14 @@ class Recorder:
         draws: bool = True,
         stepping: bool = True,
         on_step: Callable[[Scene, Fraction], object] | None = None,
+        on_tick: Callable[[Scene, Fraction, bool], object] | None = None,
     ) -> None:
         self.scene = scene
         self.grid = exact(grid) if grid is not None else None
         self.draws = draws
         self.stepping = stepping
         self.on_step = on_step
+        self.on_tick = on_tick
         self.record: Record | None = None
         self._tagging = False
         #: Which execution of the scene this is, with the plays an earlier
