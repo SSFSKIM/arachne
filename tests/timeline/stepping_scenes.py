@@ -27,6 +27,7 @@ from arachne import (
     Dot,
     FadeIn,
     Line,
+    Mobject,
     MoveAlongPath,
     Scene,
     Square,
@@ -552,6 +553,57 @@ class NewReader(Scene):
             UpdateFromAlphaFunc(output, install),
             rate_func=linear,
         )
+
+
+class HiddenInstaller(Scene):
+    """An ``UpdateFromAlphaFunc`` calls, through a dict, a dot's
+    ``add_updater`` it holds as a value: a call its source can't resolve,
+    into what changes the structure.
+    """
+
+    def construct(self):
+        t = ValueTracker(0)
+        source = Dot()
+        source.add_updater(lambda m: m.set_x(t.get_value()))
+        output = Dot(color=RED, radius=0.05)
+        actions = {"install": output.add_updater}
+
+        def reader(mob, dt):
+            mob.shift(dt * source.get_x() * RIGHT)
+
+        def install(m, alpha):
+            if alpha >= 0.25 and not output.updaters:
+                actions["install"](reader)
+
+        self.add(t, source, output, _idle())
+        self.play(
+            t.animate.set_value(1),
+            UpdateFromAlphaFunc(output, install),
+            rate_func=linear,
+        )
+
+
+class GetterGuard(Scene):
+    """A dt updater checks two views of one quantity through getters it
+    unpacks from pairs, as the plugin's guards do: calls its source can't
+    resolve, into code that changes no structure.
+    """
+
+    def construct(self):
+        t = ValueTracker(0)
+        source = Dot()
+        source.add_updater(lambda m: m.set_x(t.get_value()))
+        sides = [("dot", source.get_x), ("tracker", t.get_value)]
+
+        def check(m, dt):
+            if dt > 0:
+                values = [get() for _, get in sides]
+                assert abs(values[0] - values[1]) < 1e-9
+
+        guard = Mobject()
+        guard.add_updater(check)
+        self.add(t, source, guard, _idle())
+        self.play(t.animate.set_value(1), rate_func=linear)
 
 
 class SkippedInstaller(Scene):

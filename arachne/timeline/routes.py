@@ -127,10 +127,10 @@ class TickedRoute:
                     ):
                         with skipping(tick_plan):
                             evaluate_instant(scene, plan, start, tick, TICK_DT)
-                        run.stepped(full=False)
+                        run.stepped(tick, full=False)
                     else:
                         evaluate_instant(scene, plan, start, tick, TICK_DT)
-                        run.stepped(full=True, event=tick not in stepping)
+                        run.stepped(tick, full=True, event=tick not in stepping)
                     run.sample(tick, until=following)
                     if stop is not None and stop():
                         ended = tick
