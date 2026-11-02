@@ -355,12 +355,32 @@ class RegisteredState:
         for mob, state in self.nodes():
             digest.update(type(mob).__qualname__.encode())
             digest.update(len(state.submobjects).to_bytes(4, "big"))
-            for key, value in sorted(zip(state.keys, state.values, strict=True)):
-                part = _value_key(value, decimals)
-                if part is not None:
-                    digest.update(key.encode())
-                    digest.update(part)
+            for key, part in content_fields(state, decimals):
+                digest.update(key.encode())
+                digest.update(part)
         return digest.digest()
+
+
+#: The fields of a mobject that name an object of this process, not content:
+#: ``original_id`` is ``str(id(...))`` of what a copy was made from (CE's
+#: caching filters it for the same reason).
+IDENTITY_FIELDS = frozenset({"original_id"})
+
+
+def content_fields(
+    state: NodeState, decimals: int | None = None
+) -> Iterator[tuple[str, bytes]]:
+    """Each field of ``state`` a content key covers, by name in sorted order,
+    with its value's key (:func:`_value_key`): none naming an object of this
+    process (:data:`IDENTITY_FIELDS`), so that two executions in two
+    processes key the same content alike.
+    """
+    for key, value in sorted(zip(state.keys, state.values, strict=True)):
+        if key in IDENTITY_FIELDS:
+            continue
+        part = _value_key(value, decimals)
+        if part is not None:
+            yield key, part
 
 
 def _value_key(value: Any, decimals: int | None = None) -> bytes | None:

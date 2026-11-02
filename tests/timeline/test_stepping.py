@@ -631,3 +631,15 @@ def test_a_write_through_a_class_or_a_setter_pulls_its_writer(session_of, name):
     reads: the plan pulls the writer.
     """
     _same_as_full_ticks(session_of, name, 4)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="known residual (tech-debt-tracker.md): the write check does not read "
+    "a method of an object the callback made itself",
+)
+def test_a_method_of_an_object_the_callback_made_is_read_for_its_writes(session_of):
+    """A dt-free updater makes a helper of the scene's own class at each run
+    and calls its method, which moves a tracker a dt updater integrates.
+    """
+    _same_as_full_ticks(session_of, "FreshMethod", 4)
