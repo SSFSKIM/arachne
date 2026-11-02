@@ -554,6 +554,30 @@ class NewReader(Scene):
         )
 
 
+class SkippedInstaller(Scene):
+    """A dt-free updater nothing reads gives a dot, a fifth of the way in (a
+    frame at 15 fps), a dt updater reading a dot a dt-free updater moves:
+    the play plans again after that frame's full tick.
+    """
+
+    def construct(self):
+        t = ValueTracker(0)
+        source = Dot()
+        source.add_updater(lambda m: m.set_x(t.get_value()))
+        output = Dot(color=RED, radius=0.05)
+
+        def install(m):
+            if t.get_value() >= 0.2 - 1e-9 and not output.updaters:
+                output.add_updater(
+                    lambda mob, dt: mob.shift(dt * source.get_x() * RIGHT)
+                )
+
+        installer = Dot(color=GREEN, radius=0.05).shift(DOWN)
+        installer.add_updater(install)
+        self.add(t, source, output, installer, _idle())
+        self.play(t.animate.set_value(1), rate_func=linear)
+
+
 class ReaderRemoved(Scene):
     """An ``UpdateFromAlphaFunc`` takes, half way in, the dt updater from a
     dot that reads a dot whose dt-free updater keeps history.
