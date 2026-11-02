@@ -5,9 +5,11 @@ from __future__ import annotations
 import io
 import json
 import os
+import struct
 import subprocess
 import sys
 import zipfile
+import zlib
 from pathlib import Path
 
 import numpy as np
@@ -470,6 +472,92 @@ def test_npz_member_with_bytes_after_the_array_fails(repo: Repo, tail: bytes):
     )
 
 
+def npz_with_raw_member(raw: bytes, size: int, crc: int, method: int = 8) -> bytes:
+    """A one-member npz built by hand: ``raw`` is the member's whole declared compressed extent."""
+    name = b"frame_data.npy"
+    local = struct.pack(
+        "<4sHHHHHIIIHH",
+        b"PK\x03\x04",
+        20,
+        0,
+        method,
+        0,
+        0x21,
+        crc,
+        len(raw),
+        size,
+        len(name),
+        0,
+    )
+    central = struct.pack(
+        "<4sHHHHHHIIIHHHHHII",
+        b"PK\x01\x02", 20, 20, 0, method, 0, 0x21, crc, len(raw), size, len(name), 0, 0, 0, 0, 0, 0,
+    )  # fmt: skip
+    head = local + name
+    end = struct.pack(
+        "<4sHHHHIIH",
+        b"PK\x05\x06",
+        0,
+        0,
+        1,
+        1,
+        len(central) + len(name),
+        len(head) + len(raw),
+        0,
+    )
+    return head + raw + central + name + end
+
+
+def deflated(data: bytes) -> bytes:
+    c = zlib.compressobj(9, zlib.DEFLATED, -15)
+    return c.compress(data) + c.flush()
+
+
+def test_hand_built_raw_deflate_control_npz_passes(repo: Repo):
+    member = npy_bytes(np.zeros((2, 2, 3), dtype=np.uint8))
+    npz = npz_with_raw_member(deflated(member), len(member), zlib.crc32(member))
+    repo.commit({"tests/control_data/R.npz": npz})
+    result = run_check(repo)
+    assert result.returncode == 0, result.stdout
+
+
+@pytest.mark.parametrize(
+    "hidden",
+    [
+        deflated(b"notes kept at zorblaxian, " * 4),
+        b"\x01\x02 raw bytes after the stream",
+    ],
+    ids=["a second deflate stream", "raw bytes after the stream"],
+)
+def test_npz_member_hiding_data_after_its_deflate_stream_fails(
+    repo: Repo, hidden: bytes
+):
+    """zipfile stops at the first deflate stream's end; the declared extent may hold more."""
+    member = npy_bytes(np.zeros((2, 2, 3), dtype=np.uint8))
+    raw = deflated(member) + hidden
+    assert b"zorblaxian" not in raw  # the term is only in the deflated second stream
+    npz = npz_with_raw_member(raw, len(member), zlib.crc32(member))
+    with zipfile.ZipFile(io.BytesIO(npz)) as z:
+        assert (
+            z.read("frame_data.npy") == member
+        )  # the standard reader sees a clean file
+    repo.commit({"tests/control_data/D.npz": npz})
+    result = run_check(repo)
+    assert result.returncode == 1
+    assert (
+        "tests/control_data/D.npz: npz outside the control-data schema" in result.stdout
+    )
+
+
+def test_npz_member_whose_declared_size_disagrees_fails(repo: Repo):
+    member = npy_bytes(np.zeros((2, 2, 3), dtype=np.uint8))
+    npz = npz_with_raw_member(deflated(member), len(member) + 4, zlib.crc32(member))
+    repo.commit({"tests/control_data/S.npz": npz})
+    result = run_check(repo)
+    assert result.returncode == 1
+    assert "S.npz: npz outside the control-data schema" in result.stdout
+
+
 def test_npz_with_leading_bytes_fails(repo: Repo):
     repo.commit({"tests/control_data/L.npz": b"zorblaxian" + control_npz()})
     result = run_check(repo)
@@ -529,6 +617,65 @@ def test_text_file_marked_binary_fails_closed(repo: Repo):
     result = run_check(repo)
     assert result.returncode == 1
     assert "hidden.txt: binary file not allowed" in result.stdout
+
+
+# --- annotated tags -------------------------------------------------------------------------------
+
+
+def tag(
+    repo: Repo, name: str, message: str, target: str = "HEAD",
+    tagger: str = "Someone", email: str = CLEAN_EMAIL,
+) -> str:  # fmt: skip
+    who = {"GIT_COMMITTER_NAME": tagger, "GIT_COMMITTER_EMAIL": email}
+    repo.git("tag", "-a", name, "-m", message, target, env=who)
+    return repo.git("rev-parse", f"refs/tags/{name}")
+
+
+def test_clean_annotated_tag_passes(repo: Repo):
+    repo.commit({"a.txt": "fine\n"})
+    tag(repo, "v1", "A release")
+    result = run_check(repo, rng=f"{repo.base}..v1")
+    assert result.returncode == 0, result.stdout
+
+
+@pytest.mark.parametrize(
+    ("kw", "finding"),
+    [
+        ({"message": "Release notes from zorblaxian"}, "message term #1"),
+        ({"tagger": "Frobnitz Corp builder"}, "tagger name term #3"),
+        ({"email": "someone@private.example"}, "tagger email not allowed"),
+    ],
+)
+def test_pushed_annotated_tag_object_is_checked(repo: Repo, kw: dict, finding: str):
+    repo.commit({"a.txt": "fine\n"})
+    sha = tag(repo, "v1", **{"message": "A release", **kw})
+    result = run_check(
+        repo, rng=f"{repo.base}..{sha}"
+    )  # the hook's range: the tag object itself
+    assert result.returncode == 1
+    assert f"tag {sha[:12]}: {finding}" in result.stdout
+    assert "email" not in finding or "private.example" not in result.stdout
+
+
+def test_tag_push_event_checks_the_tag_object(repo: Repo, tmp_path: Path):
+    head = repo.commit({"a.txt": "fine\n"})
+    sha = tag(repo, "v1", "Release notes from zorblaxian")
+    event = tmp_path / "event.json"
+    event.write_text(
+        json.dumps({"ref": "refs/tags/v1", "before": "0" * 40, "after": sha})
+    )
+    result = run_check(repo, "--event", str(event), rng=f"{repo.base}..{head}")
+    assert result.returncode == 1
+    assert f"tag {sha[:12]}: message term #1" in result.stdout
+
+
+def test_a_tag_of_a_tag_is_checked_to_the_commit(repo: Repo):
+    repo.commit({"a.txt": "fine\n"})
+    inner = tag(repo, "inner", "Notes from zorblaxian")
+    outer = tag(repo, "outer", "A clean wrapper", target=inner)
+    result = run_check(repo, rng=f"{repo.base}..{outer}")
+    assert result.returncode == 1
+    assert f"tag {inner[:12]}: message term #1" in result.stdout
 
 
 # --- failing closed -------------------------------------------------------------------------------
