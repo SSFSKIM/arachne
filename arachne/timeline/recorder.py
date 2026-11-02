@@ -17,16 +17,20 @@ import os
 import random
 import sys
 from collections.abc import Mapping
+from dataclasses import replace
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+
+from arachne._config import logger
 
 from .admission import admit, camera_refusal
 from .clock import exact, play_end
 from .dispatch import draw_refusal
 from .draw import CameraExtras, LiveFrames, camera_nodes
 from .events import plan_events
+from .execution import Execution, divergence
 from .origins import ORIGINS
 from .record import Identity, Marker, PlayRecord, Record
 from .routes import ROUTE_CLASSES, Route, snapshot_animations
@@ -117,6 +121,16 @@ class Recorder:
         self.draws = draws
         self.record: Record | None = None
         self._tagging = False
+        #: Which execution of the scene this is, with the plays an earlier
+        #: one found must be drawn as they run (:mod:`.execution`).
+        self.execution = Execution()
+        #: Why the camera's frames can't be drawn from the record, once found:
+        #: from then on every play is drawn as it runs.
+        self._camera_refusal: str | None = None
+        #: The play :meth:`refusal` last answered for, and its answer.
+        self._refusal_for: tuple[int, str | None] | None = None
+        #: The earlier executions, as (number, play_keys), to compare with.
+        self._earlier: list[tuple[int, tuple[bytes, ...]]] = []
 
     # The run
 
@@ -134,31 +148,55 @@ class Recorder:
                     seed=scene.random_seed,
                 ),
             )
-            self.record.refusal = camera_refusal(scene.renderer.camera)
+            self.record.execution = self.execution
+            self._camera_refusal = camera_refusal(scene.renderer.camera)
+            self.record.refusal = self._camera_refusal
         return self.record
 
     def refusal(self) -> str | None:
-        """Why the record can't draw the play about to run, if so
-        (``Record.refusal``): its camera, or a MultiCamera display its camera
-        left, which shows the last picture drawn into it.
+        """Why the record can't draw the play about to run, so that it is
+        drawn as it runs, if so: its camera, or a MultiCamera display its
+        camera left, which shows the last picture drawn into it (and every
+        play after it); a mobject it holds whose drawing runs the scene's
+        code; or an earlier execution's finding that one joins mid-play
+        (:mod:`.execution`). The record keeps the first as its own
+        (``Record.refusal``): it answers no instant.
         """
         record = self.ensure_record()
+        index = len(record.plays)
+        if self._refusal_for is not None and self._refusal_for[0] == index:
+            return self._refusal_for[1]
+        reason = self._camera() or self.execution.known.get(index)
+        if reason is None:
+            reason = self._draw_refusal()
         if record.refusal is None:
+            record.refusal = reason
+        self._refusal_for = (index, reason)
+        return reason
+
+    def _camera(self) -> str | None:
+        """Why the camera's frames can't be drawn from the record, once
+        found, for good.
+        """
+        if self._camera_refusal is None:
             # A display added since may draw through a camera the record can't.
-            record.refusal = camera_refusal(self.scene.renderer.camera)
-        if record.refusal is None:
+            self._camera_refusal = camera_refusal(self.scene.renderer.camera)
+        if self._camera_refusal is None:
             displays = vars(self.scene.renderer.camera).get(
                 "image_mobjects_from_cameras"
             )
-            if displays is not None and record.display_left(displays) is not None:
-                record.refusal = (
+            record = self.record
+            if (
+                displays is not None
+                and record is not None
+                and record.display_left(displays) is not None
+            ):
+                self._camera_refusal = (
                     "camera.display_left: a zoomed display left its MultiCamera and"
                     " shows the last picture drawn into it, so the frames from then on"
                     " are drawn while the scene runs and the record answers no instant"
                 )
-        if record.refusal is None:
-            record.refusal = self._draw_refusal()
-        return record.refusal
+        return self._camera_refusal
 
     def _draw_refusal(self) -> str | None:
         """:func:`.draw_refusal` of what the camera draws now and what the
@@ -184,6 +222,16 @@ class Recorder:
             ],
         )
 
+    def reexecuting(
+        self, known: Mapping[int, str], earlier: list[tuple[int, tuple[bytes, ...]]]
+    ) -> None:
+        """This run executes the scene again (:mod:`.execution`): the
+        ``known`` plays are drawn as they run, and the run is compared with
+        the ``earlier`` executions' plays (each ``(number, play_keys)``).
+        """
+        self.execution = Execution(number=len(earlier) + 1, known=dict(known))
+        self._earlier = list(earlier)
+
     def begin_run(self) -> None:
         """The scene's script is about to run: tag the mobjects it makes."""
         record = self.ensure_record()
@@ -197,8 +245,24 @@ class Recorder:
         record = self.ensure_record()
         try:
             if record.refusal is None:
-                # What the script added after its last play: the final frame.
+                # What the script added after its last play: the final frame,
+                # drawn from the live scene.
                 record.refusal = self._draw_refusal()
+            if self.execution.number > 1:
+                self.execution = record.execution = replace(
+                    self.execution,
+                    divergence=divergence(record, self._earlier),
+                )
+                if self.execution.divergence is not None:
+                    logger.warning(
+                        "Execution %(n)s of %(scene)s differs from an earlier one:"
+                        " %(why)s",
+                        {
+                            "n": self.execution.number,
+                            "scene": record.scene_class,
+                            "why": self.execution.divergence,
+                        },
+                    )
             camera = self.scene.renderer.camera
             extras = CameraExtras.observe(camera, None)
             now = self.scene.time
@@ -245,6 +309,9 @@ class Recorder:
 
         scene = self.scene
         record = self.ensure_record()
+        refusal = self.refusal()
+        # What the captures find as mobjects enter them from here on.
+        record.entry_refusal()
         animations = scene.animations or []
         start = scene.time
         requested_end = self.requested_end()
@@ -282,7 +349,7 @@ class Recorder:
                 plan,
                 held=play.held,
                 base_dir=_base_dir(record),
-                refusal=self.refusal(),
+                refusal=refusal,
             )
             play.admission = admission
             play.route = admission.route
@@ -297,9 +364,14 @@ class Recorder:
             route.run(run, plan)
             if live is not None:
                 live.end(run.end)
-            if record.refusal is None:
-                # A mobject a callback added while the play ran.
-                record.refusal = self._draw_refusal()
+            joined = record.entry_refusal()
+            if refusal is None:
+                # A mobject a callback added while the play ran, found as it
+                # entered a capture or still there at the end.
+                joined = joined or self._draw_refusal()
+                play.draw_refusal = joined
+                if record.refusal is None:
+                    record.refusal = joined
         finally:
             plan.release()
 

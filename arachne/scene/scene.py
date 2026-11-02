@@ -81,6 +81,15 @@ class Scene:
 
     """
 
+    #: What it was made with: an execution made again starts from the same
+    #: (:meth:`.Manager.render`).
+    _arguments: tuple[tuple[Any, ...], dict[str, Any]]
+
+    def __new__(cls, *args: Any, **kwargs: Any) -> Self:
+        scene = super().__new__(cls)
+        scene._arguments = (args, kwargs)
+        return scene
+
     def __init__(
         self,
         renderer: CairoRenderer | None = None,

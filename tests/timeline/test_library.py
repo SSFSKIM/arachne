@@ -29,6 +29,20 @@ def _calls(function):
     ]
 
 
+def _dtype_calls(function):
+    """``_calls`` up to three values, with ``"float"`` second, where an
+    entry takes ``dtype`` (:attr:`.Entry.dtype_at`).
+    """
+    x = 1.0
+    f = function
+    return [
+        lambda: f(),
+        lambda: f(x),
+        lambda: f(x, "float"),
+        lambda: f(x, "float", x),
+    ]
+
+
 def _with_out(function):
     x = 1.0
     f = function
@@ -47,7 +61,11 @@ def test_no_entry_takes_more_positional_arguments_than_the_test_writes():
 def test_an_entry_is_admitted_in_its_call_form_and_refused_past_it(item):
     function, found = item
     assert entry(function) is found
-    calls = _calls(function)
+    if found.dtype_at is None:
+        calls = _calls(function)
+    else:
+        assert found.dtype_at == 1, found
+        calls = _dtype_calls(function)
     most = 2 if found.positional is None else found.positional
     prove_readout(calls[most], None)
     if found.positional is not None:
@@ -55,6 +73,12 @@ def test_an_entry_is_admitted_in_its_call_form_and_refused_past_it(item):
             prove_readout(calls[most + 1], None)
     with pytest.raises(Refused, match="out="):
         prove_readout(_with_out(function), None)
+
+
+@pytest.mark.parametrize("function", [np.array, np.asarray], ids=lambda f: f.__name__)
+def test_a_dtype_by_position_is_a_number_type_written_out(function):
+    with pytest.raises(Refused, match="is given dtype=x"):
+        prove_readout(_calls(function)[2], None)
 
 
 def test_functions_alike_in_name_or_module_are_not_entries():

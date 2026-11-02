@@ -59,6 +59,7 @@ import numpy as np
 
 from . import library, setters
 from .dispatch import family_refusal
+from .frozen import engine_code
 
 #: How deep the proof follows calls into helper functions.
 MAX_DEPTH = 4
@@ -917,6 +918,14 @@ class _Prover:
         for value in others:
             if not _all_plain(value):
                 raise Refused(f"{found.name} is given {_describe(value)}")
+        for index in found.content:
+            if index < len(arguments) and (
+                arguments[index] is NONE or _holds_none(arguments[index])
+            ):
+                raise Refused(
+                    f"{found.name} is given None, which its result would hold"
+                    " (an array of objects)"
+                )
         if found.allocates:
             return VALUE
         # It may hand back what it was given (or a view of it): an array the
@@ -1295,15 +1304,18 @@ def _check_form(callee: Any, node: ast.Call) -> None:
     """Refuse a call to a library entry, or to a method of a plain value,
     outside its admitted form (:mod:`.library`): more arguments by position
     than it admits (an output array, or options its contract does not
-    cover), or a keyword it does not admit (``out=``, ``where=``).
+    cover), a keyword it does not admit (``out=``, ``where=``), or a
+    ``dtype`` other than a number type written out.
     """
     starred = any(isinstance(a, ast.Starred) for a in node.args)
     keywords: frozenset[str] | None
+    dtype_at: int | None
     if isinstance(callee, _Known):
         found = library.entry(callee.obj)
         if found is None:
             return
         name, positional, keywords = found.name, found.positional, found.keywords
+        dtype_at = found.dtype_at
         if starred and (positional is not None or found.takes_mobjects or found.calls):
             raise Refused(f"it unpacks arguments into {name}")
     elif isinstance(callee, _Method) and _is_plain(callee.on):
@@ -1312,6 +1324,7 @@ def _check_form(callee: Any, node: ast.Call) -> None:
             return
         positional, keywords, _ = form
         name = callee.name
+        dtype_at = 0 if name == "astype" else None
         if starred and positional is not None:
             raise Refused(f"it unpacks arguments into {name}")
     else:
@@ -1326,6 +1339,30 @@ def _check_form(callee: Any, node: ast.Call) -> None:
             raise Refused(
                 f"{name} is given {keyword.arg}=, which its entry does not admit"
             )
+    dtypes = [k.value for k in node.keywords if k.arg == "dtype"]
+    if dtype_at is not None and len(node.args) > dtype_at:
+        dtypes.append(node.args[dtype_at])
+    for dtype in dtypes:
+        _check_dtype(name, dtype)
+
+
+def _check_dtype(name: str, node: ast.expr) -> None:
+    """Refuse a ``dtype`` other than a number type written out: an array of
+    objects holds whatever it is given, None included.
+    """
+    value = node.value if isinstance(node, ast.Constant) else _MISSING
+    if value is None:
+        return
+    try:
+        kind = np.dtype(value).kind if isinstance(value, str) else None
+    except TypeError:
+        kind = None
+    if kind is None or kind not in "biufc":
+        raise Refused(
+            f"{name} is given dtype={ast.unparse(node)}: the proof admits a number"
+            ' type written as a string ("float"), never an array of objects,'
+            " which holds whatever it is given"
+        )
 
 
 def _is_callable_value(value: Any) -> bool:
@@ -1467,9 +1504,11 @@ def _roots(values: Iterable[Any]) -> tuple[Any, ...]:
 
 
 def _engine_function(function: Any) -> bool:
-    """Whether ``function`` is the engine's own code."""
-    module = getattr(function, "__module__", None) or ""
-    return module == "arachne" or module.startswith("arachne.")
+    """Whether ``function`` is the engine's own code, by its code object
+    (:func:`.engine_code`): no ``__module__`` or ``functools.wraps`` makes a
+    scene's function the engine's.
+    """
+    return engine_code(function)
 
 
 def _is_rate_function(function: Any) -> bool:

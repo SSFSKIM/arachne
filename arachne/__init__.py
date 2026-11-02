@@ -117,3 +117,7 @@ else:
         ipy.register_magics(ManimMagic)
 
 from .plugins import *
+from .timeline.frozen import freeze as _freeze
+
+_freeze()
+del _freeze

@@ -5,6 +5,7 @@ runs scene code during an evaluation, so its play must tick.
 
 from __future__ import annotations
 
+import functools
 import random
 
 import numpy as np
@@ -420,16 +421,178 @@ class OverriddenFill(Scene):
 
 
 class FillJoinsMidPlay(Scene):
-    """That dot added by an updater halfway through a play."""
+    """That dot, red, added by an updater partway through a play."""
 
     def construct(self):
+        CountingFill.colour = RED
         t = ValueTracker(0)
         holder = VGroup()
 
         def join(m, dt):
-            if not m.submobjects and t.get_value() > 0.5:
+            if not m.submobjects and t.get_value() > 0.4:
                 m.add(CountingFill(radius=0.3))
 
         holder.add_updater(join)
         self.add(holder)
-        self.play(t.animate.set_value(1))
+        self.play(t.animate.set_value(1), rate_func=linear)
+
+
+# Identity, not metadata.
+
+
+class WrappedInterpolate(Scene):
+    """``InstanceInterpolate`` with its counter dressed as the engine's
+    method by ``functools.wraps``.
+    """
+
+    calls: list[int] = []
+
+    def construct(self):
+        d = Dot()
+        original = d.interpolate
+
+        @functools.wraps(original)
+        def counted(*args, **kwargs):
+            WrappedInterpolate.calls.append(1)
+            return original(*args, **kwargs)
+
+        d.interpolate = counted
+        self.add(d)
+        self.play(Transform(d, Dot(RIGHT * 2)), rate_func=linear)
+
+
+class WrappedPatch(Scene):
+    """``PatchedEngine`` with its counter dressed as the engine's
+    ``interpolate`` by ``functools.wraps``.
+    """
+
+    calls: list[int] = []
+
+    def construct(self):
+        original = Dot.interpolate
+
+        @functools.wraps(original)
+        def counted(mob, *args, **kwargs):
+            WrappedPatch.calls.append(1)
+            return original(mob, *args, **kwargs)
+
+        Dot.interpolate = counted
+        try:
+            d = Dot()
+            self.add(d)
+            self.play(Transform(d, Dot(RIGHT * 2)), rate_func=linear)
+        finally:
+            del Dot.interpolate
+
+
+# What an array holds.
+
+
+class ObjectArrayFill(Scene):
+    """``PickedNone`` with the choice made by an array of objects."""
+
+    def construct(self):
+        d = Square(fill_opacity=1)
+        self.add(d)
+        self.play(
+            UpdateFromAlphaFunc(
+                d,
+                lambda m, a: m.set_fill(
+                    np.array([None, RED], dtype="O")[int(0.3 < a < 0.4)]
+                ),
+            )
+        )
+
+
+# What drawing runs: protocols, and mobjects that come and go mid-play.
+
+
+class HashDot(Dot):
+    """A user's dot whose class defines ``__hash__``, counting its calls."""
+
+    calls: list[int] = []
+
+    def __hash__(self):
+        HashDot.calls.append(1)
+        return object.__hash__(self)
+
+
+class HashedDot(Scene):
+    """That dot moved, then held."""
+
+    dot_class: type = HashDot
+
+    def construct(self):
+        d = self.dot_class(radius=0.3)
+        self.add(d)
+        self.play(d.animate.shift(RIGHT), rate_func=linear)
+        self.wait(0.5)
+
+
+def play_fill_between(scene, low, high):
+    """A second's play during which an updater holds a ``CountingFill``
+    while its tracker is in ``[low, high)``: the dot joins and leaves within
+    the play.
+    """
+    t = ValueTracker(0)
+    holder = VGroup()
+
+    def show(m):
+        inside = low <= t.get_value() < high
+        if inside and not m.submobjects:
+            m.add(CountingFill(radius=0.3))
+        elif not inside and m.submobjects:
+            m.remove(*m.submobjects)
+
+    holder.add_updater(show)
+    scene.add(holder)
+    scene.play(t.animate.set_value(1), rate_func=linear)
+    scene.remove(holder)
+
+
+class TransientFill(Scene):
+    """A red ``CountingFill`` that joins and leaves within play 0, then a
+    wait.
+    """
+
+    def construct(self):
+        CountingFill.colour = RED
+        play_fill_between(self, 0.3, 0.6)
+        self.wait(0.5)
+
+
+class TwoTransientFills(Scene):
+    """``TransientFill``'s play, a wait, and the same play in blue."""
+
+    def construct(self):
+        CountingFill.colour = RED
+        play_fill_between(self, 0.3, 0.6)
+        self.wait(0.5)
+        CountingFill.colour = BLUE
+        play_fill_between(self, 0.3, 0.6)
+
+
+class CaughtTransientFill(Scene):
+    """``TransientFill``'s play inside a ``try`` that catches every error."""
+
+    def construct(self):
+        CountingFill.colour = RED
+        try:  # noqa: SIM105 (written as scenes write it)
+            play_fill_between(self, 0.3, 0.6)
+        except Exception:  # noqa: BLE001, S110 (a scene that swallows errors)
+            pass
+        self.wait(0.5)
+
+
+class DriftingTransientFill(Scene):
+    """``TransientFill`` beside a square placed by how many times the scene
+    has run: each execution begins its play from another state.
+    """
+
+    runs: list[int] = []
+
+    def construct(self):
+        DriftingTransientFill.runs.append(1)
+        CountingFill.colour = RED
+        self.add(Square().shift(RIGHT * len(DriftingTransientFill.runs)))
+        play_fill_between(self, 0.3, 0.6)

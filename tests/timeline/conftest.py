@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from arachne import tempconfig
+from arachne.manager import Manager
 from arachne.session import Session
 
 SCENES = Path(__file__).parent / "scenes.py"
@@ -24,9 +25,10 @@ def line_of(tag: str) -> int:
 
 def render(scene_class: type, fps: int, **settings) -> tuple[object, list[np.ndarray]]:
     """Render ``scene_class`` at ``fps`` with nothing written, and return the
-    scene and every frame its renderer drew, repeats expanded.
+    scene and every frame its renderer drew, repeats expanded: those of the
+    execution that ended the render, when the scene was executed again.
     """
-    frames: list[np.ndarray] = []
+    executions: list[list[np.ndarray]] = []
     with tempconfig(
         {
             **SMALL,
@@ -37,14 +39,29 @@ def render(scene_class: type, fps: int, **settings) -> tuple[object, list[np.nda
         }
     ):
         scene = scene_class()
-        writer = scene.renderer.file_writer
+        manager = Manager(scene)
 
-        def collect(pixels, *, repeat=1):
-            frames.extend([pixels] * repeat)
+        def collect() -> None:
+            # On the writer instance: a class the engine defines, patched,
+            # would take every play off its route.
+            frames: list[np.ndarray] = []
+            executions.append(frames)
 
-        writer.write_frame = collect
+            def write_frame(pixels, *, repeat=1):
+                frames.extend([pixels] * repeat)
+
+            scene.renderer.file_writer.write_frame = write_frame
+
+        renew = manager._renew_scene
+
+        def renewed() -> None:
+            renew()
+            collect()
+
+        manager._renew_scene = renewed
+        collect()
         scene.render()
-    return scene, frames
+    return scene, executions[-1]
 
 
 @pytest.fixture

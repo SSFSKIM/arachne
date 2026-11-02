@@ -35,6 +35,8 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from .clock import exact, frames_in
+from .dispatch import draw_member_refusal, draw_names
+from .execution import Execution
 from .origins import Origin, origin_of
 from .source import SourceLine
 
@@ -225,6 +227,9 @@ class PlayRecord:
     random_state: tuple[Any, Any] | None = field(default=None, repr=False)
     #: The partial movie key its frames are cached under, if any.
     cache_key: str | None = None
+    #: Why its frames can't be drawn from the record though they were to be:
+    #: a mobject joined while it ran whose drawing runs the scene's code.
+    draw_refusal: str | None = None
     #: Why it took its route, and its callbacks with their proofs.
     admission: Admission | None = field(default=None, repr=False)
     #: The instants of its composition events (a Succession part ending and
@@ -359,9 +364,17 @@ class Record:
         self.markers: list[Marker] = []
         self.duration = Fraction(0)
         #: Why no instant can be drawn or answered from this record, if so:
-        #: its camera draws through inputs the record does not hold, and its
-        #: frames were drawn while the scene ran.
+        #: its camera draws through inputs the record does not hold, or a
+        #: mobject runs the scene's code as it is drawn, and its frames were
+        #: drawn while the scene ran.
         self.refusal: str | None = None
+        #: Which execution of the scene made it.
+        self.execution = Execution()
+        #: The first mobject found as it entered a capture since
+        #: :meth:`entry_refusal` was last asked whose drawing runs the
+        #: scene's code, and the mobjects checked since (by id).
+        self._entry_refusal: str | None = None
+        self._entry_checked: set[int] = set()
         self.final: Capture | None = None
         #: The names the scene's code had for its mobjects when it ended.
         self.final_names: dict[int, str] = {}
@@ -400,6 +413,9 @@ class Record:
         )
         nodes = self._nodes
         seen: set[int] = set()
+        checked = self._entry_checked
+        names: tuple[frozenset[str], frozenset[str]] | None = None
+        classes: dict[type, str | None] = {}
         stack = [
             *reversed(extra_roots),
             *reversed(moving),
@@ -420,6 +436,15 @@ class Record:
             if state is not last:
                 node.seqs.append(seq)
                 node.states.append(state)
+            if self._entry_refusal is None and (
+                key not in checked or state is not last
+            ):
+                # A mobject entering the capture, or changed since it did,
+                # is drawn from it: check what drawing it runs as it enters.
+                checked.add(key)
+                if names is None:
+                    names = draw_names(scene.renderer.camera)
+                self._entry_refusal = draw_member_refusal(names, mob, classes)
             stack.extend(reversed(state.submobjects))
         capture = Capture(
             seq, instant, kind, roots, foreground, moving, updaters, camera, until
@@ -432,6 +457,16 @@ class Record:
                     picture.flags.writeable = False
                     self._display_joins[id(display)] = (seq, picture)
         return capture
+
+    def entry_refusal(self) -> str | None:
+        """Why a mobject found as it entered a capture since this was last
+        asked can't be drawn from the record, if one can't; and check every
+        mobject afresh from now on.
+        """
+        reason = self._entry_refusal
+        self._entry_refusal = None
+        self._entry_checked.clear()
+        return reason
 
     def display_left(self, displays: Sequence[Mobject]) -> Mobject | None:
         """A display that was drawn into before and is not among ``displays``
