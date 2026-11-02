@@ -158,15 +158,20 @@ class Recorder:
         drawn as it runs, if so: its camera, or a MultiCamera display its
         camera left, which shows the last picture drawn into it (and every
         play after it); a mobject it holds whose drawing runs the scene's
-        code; or an earlier execution's finding that one joins mid-play
-        (:mod:`.execution`). The record keeps the first as its own
+        code; or, from the earliest play an earlier execution found refusing
+        mid-play on, that finding (:mod:`.execution`). The record keeps the first as its own
         (``Record.refusal``): it answers no instant.
         """
         record = self.ensure_record()
         index = len(record.plays)
         if self._refusal_for is not None and self._refusal_for[0] == index:
             return self._refusal_for[1]
-        reason = self._camera() or self.execution.known.get(index)
+        reason = self._camera()
+        live_from = self.execution.live_from
+        if reason is None and live_from is not None and index >= live_from:
+            # From the earliest known refusal on, the record draws nothing:
+            # the plays an execution runs may shift from the last one's.
+            reason = self.execution.known[live_from]
         if reason is None:
             reason = self._draw_refusal()
         if record.refusal is None:

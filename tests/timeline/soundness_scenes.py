@@ -596,3 +596,53 @@ class DriftingTransientFill(Scene):
         CountingFill.colour = RED
         self.add(Square().shift(RIGHT * len(DriftingTransientFill.runs)))
         play_fill_between(self, 0.3, 0.6)
+
+
+class ShiftingTransientFill(Scene):
+    """``TransientFill``'s play after one more wait each time the scene runs:
+    its one refusal is found at another play index in each execution.
+    Stops at its fifth run, rather than run on.
+    """
+
+    runs: list[int] = []
+
+    def construct(self):
+        ShiftingTransientFill.runs.append(1)
+        if len(ShiftingTransientFill.runs) > 4:
+            raise RuntimeError("executed a fifth time")
+        CountingFill.colour = RED
+        for _ in ShiftingTransientFill.runs:
+            self.wait(0.5)
+        play_fill_between(self, 0.3, 0.6)
+
+
+class SetUpTransientFill(Scene):
+    """``TransientFill`` whose ``setup`` opens a resource its ``tear_down``
+    closes, noting each step.
+    """
+
+    steps: list[str] = []
+    open: list[int] = []
+
+    def setup(self):
+        SetUpTransientFill.steps.append("setup")
+        SetUpTransientFill.open.append(1)
+
+    def tear_down(self):
+        SetUpTransientFill.steps.append("tear_down")
+        SetUpTransientFill.open.pop()
+
+    def construct(self):
+        CountingFill.colour = RED
+        play_fill_between(self, 0.3, 0.6)
+
+
+class AnchoredTransientFill(Scene):
+    """``TransientFill`` reading an attribute its caller set on the scene
+    after making it, before rendering it.
+    """
+
+    def construct(self):
+        CountingFill.colour = RED
+        self.add(Square().shift(self.anchor))
+        play_fill_between(self, 0.3, 0.6)

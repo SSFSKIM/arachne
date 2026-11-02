@@ -1505,8 +1505,9 @@ def _roots(values: Iterable[Any]) -> tuple[Any, ...]:
 
 def _engine_function(function: Any) -> bool:
     """Whether ``function`` is the engine's own code, by its code object
-    (:func:`.engine_code`): no ``__module__`` or ``functools.wraps`` makes a
-    scene's function the engine's.
+    (:func:`.engine_code`, which compares code by equality): no
+    ``__module__`` or ``functools.wraps`` makes a scene's function the
+    engine's.
     """
     return engine_code(function)
 

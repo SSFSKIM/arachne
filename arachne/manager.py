@@ -139,9 +139,10 @@ class Manager(Generic[SceneT]):
 
         A play that was to be drawn from the scene's record and that a mobject
         the record can't draw joined mid-play (:mod:`.timeline.execution`)
-        has the scene executed again from the start, the same scene object
-        initialised anew with the arguments it was made with, drawing that
-        play as it runs. Each such play costs one execution.
+        has the scene executed again from the start: :meth:`tear_down` closes
+        the interrupted execution, and the same scene object, initialised
+        anew with the arguments it was made with, draws that play and every
+        later one as it runs. Each such refusal costs at most one execution.
 
         Parameters
         ----------
@@ -161,11 +162,15 @@ class Manager(Generic[SceneT]):
                 break
             except Reexecute as again:
                 record = self.scene.timeline.ensure_record()
-                if again.play in known:
-                    # A known play is drawn as it runs and never raises this.
+                if known and again.play >= min(known):
+                    # Every play from the earliest known refusal on is drawn
+                    # as it runs and never raises this.
                     raise RuntimeError(
                         f"play {again.play} was to be drawn as it runs"
                     ) from again
+                # The interrupted execution ends as an execution does; its
+                # encoders were aborted and its run abandoned on the way out.
+                self.tear_down()
                 known[again.play] = again.reason
                 earlier.append((record.execution.number, play_keys(record)))
                 logger.info(

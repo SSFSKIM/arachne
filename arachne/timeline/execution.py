@@ -7,13 +7,16 @@ mobject can still join while the play runs and leave before it ends; the
 record finds it as it enters a capture (:meth:`.Record._capture`), and by
 then the play is no longer being drawn as it runs. The render does not
 stop there: it executes the scene again from the start (:class:`Reexecute`),
-knowing that play's refusal in advance, and draws that play as it runs.
+knowing that play's refusal in advance, and draws that play and every play
+after it as it runs.
 
 Each re-execution is an execution of its own: its record says which
 (:class:`Execution`) and whether it began each play its predecessors ran
-from the same state. Known refusals accumulate, so each costs at most one
-extra execution, and a play known to refuse is drawn as it runs, never
-again from the record: the executions end.
+from the same state. From the earliest play known to refuse on, nothing is
+drawn from the record, so another execution is needed only for a refusal
+found before it, which moves that threshold earlier: a refusal costs at
+most one extra execution, and the executions end, however the plays an
+execution runs shift from one to the next.
 """
 
 from __future__ import annotations
@@ -50,12 +53,20 @@ class Execution:
 
     #: 1 for the first; each re-execution counts on.
     number: int = 1
-    #: The plays drawn as the scene ran because an earlier execution found,
-    #: mid-play, that the record can't draw them, with why.
+    #: The plays an earlier execution found, mid-play, that the record
+    #: can't draw, with why: from the earliest of them on, every play is
+    #: drawn as the scene runs (:attr:`live_from`).
     known: Mapping[int, str] = field(default_factory=dict)
     #: Where this execution began a play from another state than an earlier
     #: one did, or ``None`` when every play both ran began the same.
     divergence: str | None = None
+
+    @property
+    def live_from(self) -> int | None:
+        """The first play drawn as the scene runs because a refusal is
+        known, or ``None``.
+        """
+        return min(self.known) if self.known else None
 
 
 def play_keys(record: Record) -> tuple[bytes, ...]:
