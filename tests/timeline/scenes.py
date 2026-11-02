@@ -113,6 +113,15 @@ class SuppliedBackground(Scene):
         self.wait(0.5)
 
 
+class WrittenBackground(Scene):
+    """The script writes red into the camera's background in place."""
+
+    def construct(self):
+        self.add(Square())
+        self.camera.background[:] = (255, 0, 0, 255)
+        self.wait(0.5)
+
+
 class Cue(Scene):
     """Waits sized from the float clock, as a cue sizes them."""
 

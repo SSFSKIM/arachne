@@ -23,6 +23,7 @@ import numpy as np
 if TYPE_CHECKING:
     from arachne.camera.camera import Camera
     from arachne.mobject.mobject import Mobject
+    from arachne.mobject.values import FrozenBackground
     from arachne.typing import PixelArray
 
     from .record import Capture, NodeState, PlayRecord, Record
@@ -36,7 +37,7 @@ _NOT_CAMERA_VALUES = frozenset(
         "pixel_width",
         "pixel_height",
         "pixel_array",
-        "background",
+        "_background",
         "_built_background",
         "pixel_array_to_cairo_context",
         "display_funcs",
@@ -63,8 +64,8 @@ class CameraExtras:
     z-index use, a ThreeDCamera's shading and projection settings): every
     attribute holding a number, string, colour or small array, but the pixel
     shape and what is built from it. ``background`` is a background array the
-    scene supplied (``Camera.set_background``), as it was then; ``None``
-    when the background is the one the camera builds from its values. A
+    scene supplied (``Camera.set_background``), read-only like every camera
+    background; ``None`` when it is the one the camera builds from its values. A
     ThreeDCamera also has the mobjects fixed in the frame, and each
     fixed-orientation mobject's centre as its function returned it at the
     captured instant.
@@ -73,7 +74,7 @@ class CameraExtras:
     values: tuple[tuple[str, Any], ...]
     fixed_in_frame: frozenset[Mobject] = frozenset()
     centers: tuple[tuple[Mobject, np.ndarray], ...] = ()
-    background: np.ndarray | None = None
+    background: FrozenBackground | None = None
 
     @classmethod
     def observe(
@@ -88,9 +89,7 @@ class CameraExtras:
         if not isinstance(camera, Camera):
             return None
         values = _camera_values(camera, previous.values if previous else None)
-        background = _supplied_background(
-            camera, previous.background if previous else None
-        )
+        background = _supplied_background(camera)
         fixed: frozenset[Mobject] = frozenset()
         centers: tuple[tuple[Mobject, np.ndarray], ...] = ()
         if isinstance(camera, ThreeDCamera):
@@ -212,38 +211,29 @@ def _set_camera_values(camera: Camera, values: tuple[tuple[str, Any], ...]) -> N
 _MISSING = object()
 
 
-def _supplied_background(
-    camera: Camera, previous: np.ndarray | None
-) -> np.ndarray | None:
-    """The background array the scene supplied, as a read-only copy
-    (``previous`` itself when it holds the same pixels); ``None`` when the
-    background is the one the camera built from its values.
+def _supplied_background(camera: Camera) -> FrozenBackground | None:
+    """The background array the scene supplied, itself: it is read-only, so
+    it holds the pixels it held when supplied. ``None`` when the background
+    is the one the camera built from its values.
     """
     live = camera.background
     if live is None or live is camera._built_background:
         return None
-    if (
-        previous is not None
-        and previous.shape == live.shape
-        and previous.dtype == live.dtype
-        and np.array_equal(previous, live)
-    ):
-        return previous
-    copy = np.array(live)
-    copy.flags.writeable = False
-    return copy
+    return live
 
 
-def _fit(background: np.ndarray, height: int, width: int) -> np.ndarray:
+def _fit(background: FrozenBackground, height: int, width: int) -> FrozenBackground:
     """``background`` at a pixel shape of ``height`` by ``width``: itself at
     its own, else resampled to the nearest pixel (a session drawing at
     another quality than the script ran at).
     """
+    from arachne.mobject.values import FrozenBackground, adopt
+
     if background.shape[:2] == (height, width):
         return background
     rows = np.arange(height) * background.shape[0] // height
     columns = np.arange(width) * background.shape[1] // width
-    return background[rows][:, columns]
+    return adopt(np.asarray(background)[rows][:, columns], FrozenBackground)
 
 
 def _constant(value: np.ndarray) -> Callable[[], np.ndarray]:
