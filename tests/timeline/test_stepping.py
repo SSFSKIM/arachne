@@ -197,6 +197,12 @@ def test_a_play_whose_reads_cant_be_bounded_ticks_everything(session_of, name, w
     assert play.full_ticks == 60
 
 
+def test_getattr_by_a_constant_name_is_a_bounded_read(session_of):
+    play = session_of("NamedRead", STEPPING_SCENES, frame_rate=4).record.plays[-1]
+    assert not any(r.startswith(UNBOUNDED) for r in play.admission.reasons)
+    assert play.stepping_ticks == 60 - 4
+
+
 def test_an_updater_that_joins_at_an_event_is_planned_for(session_of):
     """A Succession part begins at 0.5 s and copies a dot whose updater a
     trace reads: the event tick plans again, and stepping goes on.

@@ -199,6 +199,22 @@ class DynamicRead(Scene):
         self.play(dot.animate.shift(UP))
 
 
+class NamedRead(Scene):
+    """A dt updater reading an attribute ``getattr`` names by a constant: a
+    bounded read, so the play steps.
+    """
+
+    def construct(self):
+        dot = Dot()
+        shown = always_redraw(lambda: Square(side_length=0.3).next_to(dot, UP))
+        mover = Dot(color=RED)
+        mover.add_updater(
+            lambda m, dt: m.shift(dt * RIGHT).set_y(getattr(dot, "radius", 0))
+        )
+        self.add(dot, shown, mover)
+        self.play(dot.animate.shift(UP))
+
+
 class OwnAnimation(Animation):
     """An animation class the scene defines: what it reads is its own code."""
 
