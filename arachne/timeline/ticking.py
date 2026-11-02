@@ -590,7 +590,9 @@ def _scene_class(klass: type) -> bool:
     """Whether ``klass`` is defined by the scene's code."""
     module = sys.modules.get(klass.__module__)
     filename = getattr(module, "__file__", None)
-    return bool(filename) and not engine_class(klass) and not _internal(filename)
+    if not isinstance(filename, str) or not filename:
+        return False
+    return not engine_class(klass) and not _internal(filename)
 
 
 #: The key every reach of a writable array carries, and every write in place
@@ -1449,20 +1451,21 @@ def _aliases(node: ast.AST) -> dict[str, ast.AST]:
             targets = [item.target]
         elif isinstance(item, ast.With):
             targets = [w.optional_vars for w in item.items if w.optional_vars]
-        for target in targets:
-            for name in ast.walk(target):
+        for stored in targets:
+            for name in ast.walk(stored):
                 if isinstance(name, ast.Name) and not (
-                    isinstance(item, ast.AugAssign) and name is target
+                    isinstance(item, ast.AugAssign) and name is stored
                 ):
                     bound.setdefault(name.id, []).extend([None, None])
-    return {
-        name: values[0]
-        for name, values in bound.items()
-        if len(values) == 1
-        and isinstance(values[0], (ast.Name, ast.Attribute))
-        and isinstance(_root(values[0]), ast.Name)
-        and _root(values[0]).id != name
-    }
+    found: dict[str, ast.AST] = {}
+    for local, values in bound.items():
+        held = values[0] if len(values) == 1 else None
+        if not isinstance(held, (ast.Name, ast.Attribute)):
+            continue
+        root = _root(held)
+        if isinstance(root, ast.Name) and root.id != local:
+            found[local] = held
+    return found
 
 
 @dataclass(frozen=True)
