@@ -16,7 +16,7 @@ import math
 import os
 import random
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any
@@ -41,6 +41,7 @@ from .ticking import (
     current_structure,
     met_unforeseen,
     plan_ticks,
+    unaffected,
 )
 
 if TYPE_CHECKING:
@@ -69,6 +70,9 @@ class PlayRun:
         self.end = play.requested_end
         self.live = live
         self._extras: CameraExtras | None = None
+        #: The last structure found to leave the plan true, though it is not
+        #: the one the plan was made for (:meth:`stepping_plan`).
+        self._kept_structure: tuple[int, ...] | None = None
 
     def set_clock(self, instant: Fraction) -> None:
         """Make the scene clock read ``instant``, drawing first whatever frames
@@ -127,42 +131,68 @@ class PlayRun:
             full.add(ticks[-1])
         return frozenset(ticks) - full
 
-    def stepped(self, tick: Fraction, *, full: bool, event: bool = False) -> None:
-        """Count a tick, and keep the plan true to the updaters there are: a
-        stepping tick that ran one the plan never weighed ends stepping for
-        the play; an event tick (a part begun, its copies made), and any full
-        tick of a plan whose skipped callbacks may change the updaters, plans
-        again when they changed, before the next stepping tick.
+    def stepping_plan(self, tick: Fraction) -> TickPlan | None:
+        """The plan stepping tick ``tick`` steps by, or ``None`` when it runs
+        in full. Before it steps, the structure is compared with the one the
+        plan was made for (:func:`.current_structure`): anything that changed
+        it since (an updater added or taken, a member joining or leaving, by
+        whatever code: the play's first evaluation, a skipped callback at a
+        full tick, a list held under another name, ``become``'s copies) has
+        the play plan again first, unless the change leaves the plan true
+        (:func:`.unaffected`). A plan not :attr:`~.TickPlan.applied` is kept
+        the same way, and the tick runs in full.
         """
         play = self.play
-        if not full:
-            play.stepping_ticks += 1
-            if met_unforeseen():
-                self._unbounded(f"{UNBOUNDED}: an updater joined while it played", tick)
-            return
-        play.full_ticks += 1
         plan = play.tick_plan
-        if (
-            plan is not None
-            and plan.steps_only
-            and (event or plan.rechecks)
-            and current_structure(self.scene, play._animations) != plan.structure
-        ):
-            replanned = plan_ticks(
-                self.scene,
-                list(play._animations),
-                _base_dir(self.recorder.ensure_record()),
-            )
-            if replanned.unbounded is not None:
-                self._unbounded(replanned.unbounded, tick)
+        if plan is None or not plan.steps_only:
+            return None
+        structure = current_structure(self.scene, play._animations)
+        if structure not in (plan.structure, self._kept_structure):
+            if unaffected(plan, self.scene, play._animations):
+                self._kept_structure = structure
             else:
-                play.set_tick_plan(replanned, tick + Fraction(1, TICK_RATE))
+                plan = plan_ticks(
+                    self.scene,
+                    list(play._animations),
+                    _base_dir(self.recorder.ensure_record()),
+                )
+                if plan.unbounded is not None:
+                    self._unbounded(plan.unbounded, tick)
+                    return None
+                self._set_plan(plan, tick)
+        return plan if plan.steps_only and self.recorder.stepping else None
 
-    def _unbounded(self, reason: str, tick: Fraction) -> None:
-        """Tick everything after ``tick``, for ``reason``."""
+    def _set_plan(self, plan: TickPlan, first: Fraction) -> None:
+        self.play.set_tick_plan(
+            plan if self.recorder.stepping else replace(plan, applied=False), first
+        )
+
+    def stepped(self, tick: Fraction, *, full: bool) -> None:
+        """Count a tick, and show a stepping tick to the recorder's
+        ``on_step``. A stepping tick that ran an updater the plan never
+        weighed (one stepping work itself added as it ran) ends stepping for
+        the play.
+        """
         play = self.play
-        play.set_tick_plan(TickPlan(unbounded=reason), tick + Fraction(1, TICK_RATE))
-        if play.admission is not None:
+        if full:
+            play.full_ticks += 1
+            return
+        play.stepping_ticks += 1
+        if self.recorder.on_step is not None:
+            self.recorder.on_step(self.scene, tick)
+        if met_unforeseen():
+            self._unbounded(
+                f"{UNBOUNDED}: an updater joined while it played",
+                tick + Fraction(1, TICK_RATE),
+            )
+
+    def _unbounded(self, reason: str, first: Fraction) -> None:
+        """Tick everything from tick ``first``, for ``reason`` (the play's
+        admission records it when the plan is applied).
+        """
+        play = self.play
+        self._set_plan(TickPlan(unbounded=reason), first)
+        if play.admission is not None and self.recorder.stepping:
             play.admission = replace(
                 play.admission, reasons=(*play.admission.reasons, reason)
             )
@@ -177,7 +207,12 @@ class Recorder:
     from the record as soon as the play has run. ``stepping`` says whether a
     ticked play's ticks no frame reads only step (:mod:`.ticking`); with
     ``False`` every tick is full, the reference a stepping run's captures
-    compare with (:meth:`.PlayRecord.sample_keys`).
+    compare with (:meth:`.PlayRecord.sample_keys`); its plays still make
+    their plans, not applied (:attr:`.TickPlan.applied`).
+
+    ``on_step``, a diagnostic, is called as ``on_step(scene, tick)`` after
+    each stepping tick (one that ran the stepping set only): a comparison
+    observes there what stepping work changed.
     """
 
     def __init__(
@@ -187,11 +222,13 @@ class Recorder:
         grid: Fraction | float | None,
         draws: bool = True,
         stepping: bool = True,
+        on_step: Callable[[Scene, Fraction], object] | None = None,
     ) -> None:
         self.scene = scene
         self.grid = exact(grid) if grid is not None else None
         self.draws = draws
         self.stepping = stepping
+        self.on_step = on_step
         self.record: Record | None = None
         self._tagging = False
         #: Which execution of the scene this is, with the plays an earlier
@@ -433,13 +470,16 @@ class Recorder:
                 admission.route == "ticked"
                 and not play.held
                 and self.grid is not None
-                and self.stepping
                 and scene.stop_condition is None
             ):
-                # Which of its ticks only step: those no frame reads.
+                # Which of its ticks only step: those no frame reads. A run
+                # that ticks everything makes the plan all the same, for a
+                # comparison to read, and applies none of it.
                 tick_plan = plan_ticks(scene, animations, _base_dir(record))
+                if not self.stepping:
+                    tick_plan = replace(tick_plan, applied=False)
                 play.set_tick_plan(tick_plan, start)
-                if tick_plan.unbounded is not None:
+                if tick_plan.unbounded is not None and self.stepping:
                     admission = replace(
                         admission,
                         reasons=(*admission.reasons, tick_plan.unbounded),

@@ -46,7 +46,7 @@ from arachne import (
     linear,
 )
 from arachne.utils.bezier import interpolate
-from tests.timeline import stepping_producer
+from tests.timeline import stepping_classes, stepping_producer
 from tests.timeline import stepping_shared as shared
 
 COLOURS = [RED, ORANGE, YELLOW, GREEN, BLUE, PURPLE] * 3
@@ -845,3 +845,404 @@ class ConstantWrite(Scene):
             self.play(t.animate.set_value(1), rate_func=linear)
         finally:
             ORIGIN[0] = 0.0
+
+
+class StartInstall(Scene):
+    """A dt-free updater nothing reads gives a dot, when the play first
+    evaluates (its start, a full instant), a dt updater that reads a dot a
+    dt-free updater moves.
+    """
+
+    def construct(self):
+        clock(self)
+        t = ValueTracker(0)
+        source = Dot()
+        source.add_updater(lambda m: m.set_x(t.get_value()))
+        output = Dot(color=RED, radius=0.05)
+
+        def install(m):
+            if not output.updaters:
+                output.add_updater(lambda o, dt: o.shift(dt * source.get_x() * RIGHT))
+
+        installer = Dot(color=GREEN, radius=0.05).shift(DOWN)
+        installer.add_updater(install)
+        self.add(t, source, installer, output, _idle())
+        self.play(t.animate.set_value(1), rate_func=linear)
+
+
+class AliasAppend(Scene):
+    """A dt-free updater nothing reads appends, a fifth of the way in, a dot
+    carrying a dt reader to a group's members, through a local name for the
+    list.
+    """
+
+    def construct(self):
+        clock(self)
+        t = ValueTracker(0)
+        source = Dot()
+        source.add_updater(lambda m: m.set_x(t.get_value()))
+        child = Dot(color=RED, radius=0.05)
+        child.add_updater(lambda m, dt: m.shift(dt * source.get_x() * RIGHT))
+        group = VGroup()
+
+        def install(m):
+            if t.get_value() >= 0.2 - 1e-9 and child not in group.submobjects:
+                parts = group.submobjects
+                parts.append(child)
+
+        installer = Dot(color=GREEN, radius=0.05).shift(DOWN)
+        installer.add_updater(install)
+        self.add(t, source, installer, group, _idle())
+        self.play(t.animate.set_value(1), rate_func=linear)
+
+
+class AliasAugment(Scene):
+    """As :class:`AliasAppend`, with ``+=`` on the local name."""
+
+    def construct(self):
+        clock(self)
+        t = ValueTracker(0)
+        source = Dot()
+        source.add_updater(lambda m: m.set_x(t.get_value()))
+        child = Dot(color=RED, radius=0.05)
+        child.add_updater(lambda m, dt: m.shift(dt * source.get_x() * RIGHT))
+        group = VGroup()
+
+        def install(m):
+            if t.get_value() >= 0.2 - 1e-9 and child not in group.submobjects:
+                parts = group.submobjects
+                parts += [child]
+
+        installer = Dot(color=GREEN, radius=0.05).shift(DOWN)
+        installer.add_updater(install)
+        self.add(t, source, installer, group, _idle())
+        self.play(t.animate.set_value(1), rate_func=linear)
+
+
+class BoolAlias(Scene):
+    """A dt-free updater changes in place an array a dt updater reads,
+    through a name an ``or`` binds to it.
+    """
+
+    def construct(self):
+        original = np.array([1.0])
+        output = Dot(color=RED, radius=0.05)
+        output.add_updater(lambda m, dt: m.shift(dt * original[0] * RIGHT))
+
+        def update(m):
+            value = original or original
+            value += 0.01
+
+        producer = Dot(color=GREEN, radius=0.05).shift(DOWN)
+        producer.add_updater(update)
+        self.add(producer, output, _idle())
+        self.wait(1)
+
+
+class IfAlias(Scene):
+    """As :class:`BoolAlias`, through a conditional expression."""
+
+    def construct(self):
+        original = np.array([1.0])
+        spare = np.array([1.0])
+        output = Dot(color=RED, radius=0.05)
+        output.add_updater(lambda m, dt: m.shift(dt * original[0] * RIGHT))
+
+        def update(m):
+            value = original if m.get_x() < 1 else spare
+            value += 0.01
+
+        producer = Dot(color=GREEN, radius=0.05).shift(DOWN)
+        producer.add_updater(update)
+        self.add(producer, output, _idle())
+        self.wait(1)
+
+
+class BecomeRoot(Scene):
+    """A dot whose own dt-free updater has it become, a quarter of the way
+    in, a group of two: the copies of itself ``become`` pads it with carry
+    that updater, which from then on moves them.
+    """
+
+    def construct(self):
+        clock(self)
+        root = Dot(color=RED, radius=0.05)
+
+        def update(m):
+            if m is root:
+                if self.time >= 0.25 - 1e-9 and m.has_points():
+                    m.become(VGroup(Dot(LEFT), Dot(RIGHT)))
+            else:
+                m.shift(0.01 * RIGHT)
+
+        root.add_updater(update)
+        self.add(root, _idle())
+        self.wait(1)
+
+
+class ClassShadow(Scene):
+    """A dt updater integrates ``holder.source``, which ``holder`` inherits
+    from its class's base; a dt-free updater binds the attribute on the
+    class itself, a quarter of the way in, to a tracker another dt-free
+    updater moves.
+    """
+
+    def construct(self):
+        a, b = ValueTracker(0), ValueTracker(0)
+        a.add_updater(lambda m: m.set_value(float(self.time)))
+        b.add_updater(lambda m: m.set_value(10 * float(self.time)))
+
+        class Parent:
+            pass
+
+        class Child(Parent):
+            pass
+
+        Parent.source = a
+        holder = Child()
+        changer = Mobject()
+        changer.add_updater(stepping_producer.rebind_source(Child, b, self))
+        output = ValueTracker(0)
+        output.add_updater(stepping_classes.read_source(holder))
+        shown = Dot(color=RED, radius=0.05)
+        shown.add_updater(lambda m: m.set_x(output.get_value()))
+        self.add(a, b, changer, output, shown, _idle())
+        self.wait(1)
+
+
+class SetterWrite(Scene):
+    """A dt-free updater assigns a property whose setter moves a tracker a
+    dt updater integrates.
+    """
+
+    def construct(self):
+        source = ValueTracker(0)
+
+        class Control:
+            def __init__(self, source):
+                self._source = source
+
+            @property
+            def value(self):
+                return 0
+
+            @value.setter
+            def value(self, v):
+                self._source.set_value(v)
+
+        control = Control(source)
+
+        def update(m):
+            control.value = float(self.time)
+
+        producer = Mobject()
+        producer.add_updater(update)
+        output = ValueTracker(0)
+        output.add_updater(lambda m, dt: m.increment_value(dt * source.get_value()))
+        shown = Dot(color=RED, radius=0.05)
+        shown.add_updater(lambda m: m.set_x(output.get_value()))
+        self.add(producer, source, output, shown, _idle())
+        self.wait(1)
+
+
+class OwnSetter(Scene):
+    """A dt-free updater assigns a property of its own mobject whose setter
+    moves a tracker a dt updater integrates.
+    """
+
+    def construct(self):
+        source = ValueTracker(0)
+
+        class Knob(Dot):
+            @property
+            def level(self):
+                return 0
+
+            @level.setter
+            def level(self, v):
+                source.set_value(v)
+
+        def update(m):
+            m.level = float(self.time)
+
+        knob = Knob(color=GREEN, radius=0.05).shift(DOWN)
+        knob.add_updater(update)
+        output = ValueTracker(0)
+        output.add_updater(lambda m, dt: m.increment_value(dt * source.get_value()))
+        shown = Dot(color=RED, radius=0.05)
+        shown.add_updater(lambda m: m.set_x(output.get_value()))
+        self.add(knob, source, output, shown, _idle())
+        self.wait(1)
+
+
+class SceneInstaller(Scene):
+    """A play with no stepping work: a dt-free updater gives the scene, a
+    quarter of the way in, an updater integrating a tracker a dt-free updater
+    moves.
+    """
+
+    def construct(self):
+        t = ValueTracker(0)
+        source = ValueTracker(0)
+        source.add_updater(lambda m: m.set_value(t.get_value()))
+        output = ValueTracker(0)
+
+        def install(m):
+            if self.time >= 0.25 and not self.updaters:
+                self.add_updater(
+                    lambda dt: output.increment_value(dt * source.get_value())
+                )
+
+        installer = Mobject()
+        installer.add_updater(install)
+        shown = Dot(color=RED, radius=0.05)
+        shown.add_updater(lambda m: m.set_x(output.get_value()))
+        self.add(t, source, output, installer, shown, _idle())
+        self.play(t.animate.set_value(1), rate_func=linear)
+
+
+class EventAdd(Scene):
+    """A part of a ``Succession`` fades in, a quarter of the way in, a dot
+    whose dt updater reads a dot a dt-free updater moves.
+    """
+
+    def construct(self):
+        clock(self)
+        t = ValueTracker(0)
+        source = Dot()
+        source.add_updater(lambda m: m.set_x(t.get_value()))
+        child = Dot(color=RED, radius=0.05)
+        child.add_updater(lambda m, dt: m.shift(dt * source.get_x() * RIGHT))
+        self.add(t, source, _idle())
+        self.play(
+            t.animate.set_value(1),
+            Succession(Wait(0.25), FadeIn(child, run_time=0.75)),
+            rate_func=linear,
+        )
+
+
+class AddRemove(Scene):
+    """A dt-free updater adds a dot carrying a dt updater to a group and
+    takes it out again, within each run: the structure is the same after.
+    """
+
+    def construct(self):
+        clock(self)
+        child = Dot(color=RED, radius=0.05)
+        child.add_updater(lambda m, dt: m.shift(dt * RIGHT))
+        group = VGroup()
+
+        def both(m):
+            group.add(child)
+            group.remove(child)
+
+        installer = Dot(color=GREEN, radius=0.05).shift(DOWN)
+        installer.add_updater(both)
+        self.add(installer, group, _idle())
+        self.wait(1)
+
+
+class GroupBecome(Scene):
+    """A group's dt-free updater has it become, a quarter of the way in, a
+    group of two: ``become`` pads it with copies of its member, whose own
+    dt-free updater they take along.
+    """
+
+    def construct(self):
+        clock(self)
+        member = Dot(color=RED, radius=0.05)
+        member.add_updater(lambda m: m.shift(0.01 * RIGHT))
+        group = VGroup(member)
+
+        def grow(m):
+            if self.time >= 0.25:
+                m.become(VGroup(Dot(LEFT), Dot(RIGHT)))
+
+        group.add_updater(grow)
+        self.add(group, _idle())
+        self.wait(1)
+
+
+class InstanceShadow(Scene):
+    """As :class:`ClassShadow`, with the attribute bound on the instance,
+    which shadows the class's for it alone.
+    """
+
+    def construct(self):
+        a, b = ValueTracker(0), ValueTracker(0)
+        a.add_updater(lambda m: m.set_value(float(self.time)))
+        b.add_updater(lambda m: m.set_value(10 * float(self.time)))
+
+        class Parent:
+            pass
+
+        class Child(Parent):
+            pass
+
+        Parent.source = a
+        holder = Child()
+        changer = Mobject()
+        changer.add_updater(stepping_producer.rebind_source(holder, b, self))
+        output = ValueTracker(0)
+        output.add_updater(stepping_classes.read_source(holder))
+        shown = Dot(color=RED, radius=0.05)
+        shown.add_updater(lambda m: m.set_x(output.get_value()))
+        self.add(a, b, changer, output, shown, _idle())
+        self.wait(1)
+
+
+class NativeAlias(Scene):
+    """A dt-free updater appends to a list through ``push = values.append``;
+    a dt updater integrates the list's last item.
+    """
+
+    def construct(self):
+        t = ValueTracker(0)
+        values = [0.0]
+        push = values.append
+        producer = Mobject()
+        producer.add_updater(lambda m: push(t.get_value()))
+        output = Dot(color=RED, radius=0.05)
+        output.add_updater(lambda m, dt: m.shift(dt * values[-1] * RIGHT))
+        self.add(t, producer, output, _idle())
+        self.play(t.animate.set_value(1), rate_func=linear)
+
+
+class EngineMethodAlias(Scene):
+    """A dt-free updater moves a dot through ``move = source.set_x``; a dt
+    updater integrates the dot's place.
+    """
+
+    def construct(self):
+        t = ValueTracker(0)
+        source = Dot()
+        move = source.set_x
+        producer = Mobject()
+        producer.add_updater(lambda m: move(t.get_value()))
+        output = Dot(color=RED, radius=0.05)
+        output.add_updater(lambda m, dt: m.shift(dt * source.get_x() * UP))
+        self.add(t, source, producer, output, _idle())
+        self.play(t.animate.set_value(1), rate_func=linear)
+
+
+class LabelSwap(Scene):
+    """A dt-free updater nothing stepping reads replaces, at each frame, the
+    member of a group with a new dot (a redrawn label); a dt updater reads
+    another dot.
+    """
+
+    def construct(self):
+        t = ValueTracker(0)
+        source = Dot()
+        source.add_updater(lambda m: m.set_x(t.get_value()))
+        label = VGroup(Dot(DOWN, color=GREEN))
+
+        def redraw(m):
+            m.remove(*m.submobjects)
+            m.add(Dot(DOWN + t.get_value() * RIGHT, color=GREEN, radius=0.05))
+
+        label.add_updater(redraw)
+        output = Dot(color=RED, radius=0.05)
+        output.add_updater(lambda m, dt: m.shift(dt * source.get_x() * UP))
+        self.add(t, source, label, output, _idle())
+        self.play(t.animate.set_value(1), rate_func=linear)

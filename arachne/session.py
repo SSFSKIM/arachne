@@ -29,6 +29,7 @@ from .timeline.recorder import Recorder
 from .timeline.routes import draw
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from types import ModuleType
 
     from PIL import Image
@@ -66,6 +67,7 @@ class Session:
         grid: Fraction | float | None | Literal["render"] = "render",
         config: dict[str, Any] | None = None,
         stepping: bool = True,
+        on_step: Callable[[Scene, Fraction], object] | None = None,
     ) -> Session:
         """Execute the scene class named ``scene`` from ``file`` and record it.
 
@@ -75,7 +77,8 @@ class Session:
         dt-free callbacks run at the instants a frame reads,
         :mod:`.timeline.ticking`); ``None`` keeps and fully evaluates every
         instant the run reaches. ``stepping=False`` runs every tick of a
-        ticked play in full (``Recorder``'s switch). ``config`` overrides the
+        ticked play in full (``Recorder``'s switch); ``on_step`` is
+        ``Recorder``'s diagnostic hook. ``config`` overrides the
         configuration the scene is executed under; nothing is written either
         way.
         """
@@ -105,6 +108,7 @@ class Session:
                         grid=global_config.frame_rate if grid == "render" else grid,
                         draws=False,
                         stepping=stepping,
+                        on_step=on_step,
                     )
                     instance.render()
                 except BaseException:
