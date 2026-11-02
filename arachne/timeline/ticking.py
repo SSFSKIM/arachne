@@ -17,20 +17,30 @@ only **steps**:
 - every animation's interpolation, the functions of ``UpdateFromFunc`` and
   ``UpdateFromAlphaFunc`` included;
 - the camera's inputs (as every tick evaluates them);
-- and the closure of the dt-free callbacks any of those may read, in either
-  phase order: a reader that runs before its producer reads the previous
-  tick's value, so the producer must have run there too.
+- and the closure of the dt-free callbacks those may read, in either phase
+  order (a reader that runs before its producer reads the previous tick's
+  value, so the producer must have run there too).
+
+The principle: a callback runs at a stepping tick only if a stepping
+callback (a dt updater that reads ``dt``, a scene updater, a camera input)
+reads, directly or transitively, what it writes; its own reads matter only
+when it runs there. Interpolation always runs, but what it reads joins the
+closure only when stepping work reads what it writes (its mobject's family).
 
 What a callback may read is bounded by what its code can reach
 (:func:`reach`): its closure cells, the globals and attributes its code
 names, its defaults, the object a bound method holds, the mobject it updates
 with its family, and what those hold (``TracedPath``'s
-``traced_point_func`` included). What a dt-free callback may write is the
-mobject it updates (``always_redraw``'s target), unless its source shows a
-change anywhere else (``_Writes``), in which case everything it
-reaches. A callback whose reach can't be bounded (dynamic attribute access,
-more objects than the bound follows) makes the play tick everything, under
-the reason ``tick.unbounded_read``.
+``traced_point_func`` included). What a dt-free callback, or the function of
+an ``UpdateFromFunc``/``UpdateFromAlphaFunc``, may write is the mobject it
+updates (``always_redraw``'s target), unless its source shows a change
+anywhere else (``_Writes``): then it writes everything it reaches, which
+stepping work may read whenever the play has any. The play ticks everything,
+under the reason ``tick.unbounded_read``, when a reach that matters can't be
+bounded (dynamic attribute access, more objects than the bound follows): a
+stepping callback's, one pulled into the closure, or one whose writes are
+everything it reaches in a play with stepping work. An unbounded read of a
+callback nothing pulls, whose writes are bounded, leaves the play stepping.
 
 :class:`TickPlan` is the outcome; :func:`skipping` installs its skipped
 updaters for one stepping tick, which :meth:`.Mobject.update` consults.
@@ -864,18 +874,26 @@ def _is_mobject(value: Any) -> bool:
 # The plan
 
 
+#: A node's writes when its source shows a change beyond what it updates:
+#: anything it reaches.
+_REACHED = None
+
+
 @dataclass
 class _Node:
     what: str
-    #: "step" runs at every tick; "instant" only at full ticks unless pulled;
-    #: "transparent" (a trusted animation's interpolation) runs at every tick
-    #: and passes on its reads only when stepping work reads what it writes.
+    #: "step" runs at every tick and reads there; "instant" (a dt-free
+    #: updater or redraw) runs at full ticks only, unless pulled; "transparent"
+    #: (an animation's interpolation) runs at every tick, but what it reads
+    #: there matters only when stepping work reads what it writes.
     role: str
-    #: What it may read: a set, or how to find it. A dt-free callback that
-    #: writes only what it updates is reached only once something pulls it,
-    #: since until then what it reads matters to no stepping tick.
+    #: What it may read: a set, or how to find it. A node that is not
+    #: stepping is reached only once something pulls it: until then what it
+    #: reads matters at no stepping tick, so an unbounded read pulled by
+    #: nothing leaves the play stepping.
     reach_of: frozenset[int] | Callable[[], frozenset[int]]
-    writes: frozenset[int] = frozenset()
+    #: What it may write: a set, or ``_REACHED`` for anything it reaches.
+    writes: frozenset[int] | None = frozenset()
     keys: tuple[tuple[int, int], ...] = ()
     active: bool = False
 
@@ -884,6 +902,13 @@ class _Node:
         if callable(self.reach_of):
             self.reach_of = self.reach_of()
         return self.reach_of
+
+    def written(self) -> frozenset[int]:
+        """What it may write. Anything it reaches is only asked for when the
+        play has stepping work; reaching it unboundedly then raises
+        :class:`Unbounded`, since stepping work may read any of it.
+        """
+        return self.reads if self.writes is _REACHED else self.writes
 
 
 def _family_ids(mob: Any) -> frozenset[int]:
@@ -928,35 +953,35 @@ def _copies(animations: Iterable[Animation]) -> list[Any]:
 
 def _animation_node(animation: Animation, check: _Writes) -> _Node:
     """An animation's interpolation, which runs at every tick: what it reads
-    matters only when stepping work reads what it writes. It reads anything
-    it holds (a path, a rate function, a mobject it follows); it writes its
-    mobject's family, a callback animation also what its function may change,
-    and an animation of another shape anything it reaches.
+    (anything it holds: a path, a rate function, a mobject it follows) joins
+    the closure only when stepping work reads what it writes, its mobject's
+    family. A callback animation writes what its function may change,
+    bounded as an updater's writes are.
     """
     from . import trusted
 
-    reads = reach([animation], trusted._mobjects_of(animation))
-    if type(animation) in trusted.LEAVES:
-        writes = frozenset(trusted.writes(animation))
-    elif isinstance(animation, trusted.CALLBACK_ANIMATIONS):
+    writes: frozenset[int] | None = frozenset(trusted.writes(animation))
+    if isinstance(animation, trusted.CALLBACK_ANIMATIONS):
         function = vars(animation)["update_function"]
-        writes = frozenset(trusted.writes(animation))
         try:
             owners = frozenset(list(inspect.signature(function).parameters)[:1])
         except (TypeError, ValueError):
             owners = frozenset()
         if check.elsewhere(function, owners):
-            writes = reads
-    else:
-        writes = reads
-    return _Node(type(animation).__name__, "transparent", reads, writes)
+            writes = _REACHED
+    return _Node(
+        type(animation).__name__,
+        "transparent",
+        lambda: reach([animation], trusted._mobjects_of(animation)),
+        writes,
+    )
 
 
 def _updater_node(
     member: Any,
     updater: Any,
     check: _Writes,
-    reaches: dict[int, frozenset[int]],
+    reaches: dict[tuple[int, int, int], frozenset[int]],
 ) -> _Node:
     from .admission import _redraw_code
 
@@ -981,24 +1006,26 @@ def _updater_node(
             parameters = []
         owners = frozenset(parameters[:1])
         what = "updater " + _describe(function)
-    own = _family_ids(member) | _family_ids(target)
 
     def reads() -> frozenset[int]:
-        if id(function) not in reaches:
-            reaches[id(function)] = reach([function])
-        return reaches[id(function)] | own
+        # The mobject it is handed is read through too: ``m.source`` is as
+        # much a read as a closure cell.
+        found = (id(function), id(member), id(target))
+        if found not in reaches:
+            reaches[found] = reach([function], [member, target])
+        return reaches[found]
 
     if loads_dt(updater):
         return _Node(what, "step", reads(), keys=(key,))
-    if check.elsewhere(function, owners):
-        found = reads()
-        return _Node(what, "instant", found, found, keys=(key,))
-    return _Node(what, "instant", reads, _family_ids(target), keys=(key,))
+    writes = _REACHED if check.elsewhere(function, owners) else _family_ids(target)
+    return _Node(what, "instant", reads, writes, keys=(key,))
 
 
 def _closure(nodes: list[_Node]) -> int:
-    """Activate every node stepping work may read through; return how many
-    dt-free updaters that pulls onto the stepping tick.
+    """Activate every node stepping work reads, directly or through what
+    reads it; return how many dt-free updaters that pulls onto the stepping
+    tick. With no stepping work nothing is read at a stepping tick, so
+    nothing is pulled, whatever the others may write.
     """
     needed: set[int] = set()
     for node in nodes:
@@ -1006,11 +1033,11 @@ def _closure(nodes: list[_Node]) -> int:
             node.active = True
             needed |= node.reads
     pulled = 0
-    changed = True
+    changed = any(node.role == "step" for node in nodes)
     while changed:
         changed = False
         for node in nodes:
-            if not node.active and node.writes & needed:
+            if not node.active and node.written() & needed:
                 node.active = True
                 needed |= node.reads
                 changed = True
@@ -1060,7 +1087,7 @@ def plan_ticks(
             for animation in trusted.iter_animations(animations)
             if not isinstance(animation, AnimationGroup)
         )
-        reaches: dict[int, frozenset[int]] = {}
+        reaches: dict[tuple[int, int, int], frozenset[int]] = {}
         for member, updater in _updaters((*_copies(animations), *scene.mobjects)):
             nodes.append(_updater_node(member, updater, check, reaches))
         nodes.extend(
