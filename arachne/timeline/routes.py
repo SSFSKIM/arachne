@@ -16,7 +16,10 @@ route a play takes is decided when it begins (:mod:`.admission`).
 - ``"ticked"`` (route 3): the play steps on the global 60 Hz tick, its events
   taken at the first tick at or after their instants, and an instant reads
   the last tick at or before it. Sound by construction: a sample is the
-  forward run's own state.
+  forward run's own state. A tick that no frame of the record's grid reads,
+  no event falls on and that does not end the play only steps: its dt-free
+  callbacks run at the frames, as CE runs them, unless stepping work may
+  read them (:mod:`.ticking`).
 
 A frozen frame (a held wait) is one sample on any route, and that sample
 answers its whole span.
@@ -46,6 +49,7 @@ import numpy as np
 
 from .clock import TICK_DT, frames_in, ticks_in
 from .events import EventPlan
+from .ticking import skipping
 
 if TYPE_CHECKING:
     from arachne.scene.scene import Scene
@@ -108,12 +112,25 @@ class TickedRoute:
         run.sample(start, until=ticks[0] if ticks else end)
         ended = start if stop is not None and stop() else None
         if ended is None:
+            stepping = run.stepping_ticks(ticks)
             progress = run.progress(ticks)
             try:
                 for index, tick in enumerate(progress):
                     run.set_clock(tick)
-                    evaluate_instant(scene, plan, start, tick, TICK_DT)
                     following = ticks[index + 1] if index + 1 < len(ticks) else end
+                    tick_plan = run.play.tick_plan
+                    if (
+                        tick in stepping
+                        and tick_plan is not None
+                        and tick_plan.steps_only
+                        and not run.recorder.keeps(tick, following)
+                    ):
+                        with skipping(tick_plan):
+                            evaluate_instant(scene, plan, start, tick, TICK_DT)
+                        run.stepped(full=False)
+                    else:
+                        evaluate_instant(scene, plan, start, tick, TICK_DT)
+                        run.stepped(full=True, event=tick not in stepping)
                     run.sample(tick, until=following)
                     if stop is not None and stop():
                         ended = tick

@@ -31,7 +31,7 @@ def test_a_trusted_play_evaluated_ahead_equals_it_evaluated_frame_by_frame(
     """
     scene_class = getattr(route_scenes, f"Trusted{name}")
     _, frames = render(scene_class, 60)
-    session = session_of(scene_class.__name__, ROUTE_SCENES)
+    session = session_of(scene_class.__name__, ROUTE_SCENES, grid=None)
     play = session.record.plays[0]
     assert play.route == "trusted", play.admission.reasons
     analytic = 0

@@ -48,6 +48,7 @@ if TYPE_CHECKING:
     from .admission import Admission
     from .draw import CameraExtras
     from .state import State
+    from .ticking import TickPlan
 
 
 class NodeState:
@@ -232,6 +233,13 @@ class PlayRecord:
     draw_refusal: str | None = None
     #: Why it took its route, and its callbacks with their proofs.
     admission: Admission | None = field(default=None, repr=False)
+    #: A ticked play's stepping plan (:mod:`.ticking`): what its stepping
+    #: ticks leave out, or why it ticks everything. ``None`` when every tick
+    #: is full anyway (no grid, a frozen frame, another route).
+    tick_plan: TickPlan | None = field(default=None, repr=False)
+    #: How many of its ticks were full and how many only stepped.
+    full_ticks: int = 0
+    stepping_ticks: int = 0
     #: The instants of its composition events (a Succession part ending and
     #: the next beginning), exact or found by bisection, in order.
     events: tuple[Fraction, ...] = ()

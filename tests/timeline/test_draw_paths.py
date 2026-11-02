@@ -6,9 +6,9 @@ The renderer draws a play from its record through its own loop
 (a session, a capture of the render's record) goes through
 :func:`arachne.timeline.routes.draw`. These tests hold the two to one
 picture: the render's decoded MP4 against ``routes.draw`` over the same
-run's record, and against a session's record, which keeps only the
-instants its routes evaluate and so draws trusted plays between captures
-analytically.
+run's record, and against a session's record, on the render's grid (a
+session's default) and keeping every instant its routes evaluate, which
+draws trusted plays between captures analytically.
 """
 
 from __future__ import annotations
@@ -92,12 +92,18 @@ def test_the_render_writes_what_routes_draw_gives_from_its_record(
     assert_frames_equal(shown, drawn)
 
 
+@pytest.mark.parametrize("grid", ["render", None], ids=["render_grid", "every_instant"])
 @pytest.mark.parametrize(("scene_class", "frames", "routes"), CASES)
-def test_the_render_writes_what_a_session_draws(tmp_path, scene_class, frames, routes):
+def test_the_render_writes_what_a_session_draws(
+    tmp_path, scene_class, frames, routes, grid
+):
     scene, _, video = render_to_video(scene_class, tmp_path, **LOSSLESS)
     instants = grid_instants(scene.timeline.ensure_record(), Fraction(FPS))
     session = Session.open(
-        SCENES_FILE, scene_class.__name__, config={**SMALL, "frame_rate": FPS}
+        SCENES_FILE,
+        scene_class.__name__,
+        grid=grid,
+        config={**SMALL, "frame_rate": FPS},
     )
     try:
         record = session.record
@@ -105,10 +111,11 @@ def test_the_render_writes_what_a_session_draws(tmp_path, scene_class, frames, r
         drawn, kinds = drawn_from(record, instants)
     finally:
         session.close()
-    if "trusted" in routes and not all(
-        play.held for play in record.plays if play.route == "trusted"
+    if grid is None and any(
+        not play.held for play in record.plays if play.route == "trusted"
     ):
-        # A session keeps a trusted play's start and event instants only, so
-        # the grid's frames between them are evaluated.
+        # Kept at every instant evaluated, a trusted play holds its start and
+        # event instants only, so the grid's frames between them are
+        # evaluated.
         assert "analytic" in kinds
     assert_frames_equal(decoded(video), drawn)

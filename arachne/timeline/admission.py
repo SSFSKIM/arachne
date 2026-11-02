@@ -14,7 +14,10 @@ state-function play, the proof of every callback.
    the camera's centre functions) is proven a function of the instant
    (:mod:`.purity`); and no callback reads what another writes after it in
    CE's update order, which would hand it the previous sample's value.
-3. **Ticked** (route 3): everything else, stepped on the 60 Hz tick.
+3. **Ticked** (route 3): everything else, stepped on the 60 Hz tick; at a
+   tick no frame reads, only the work that integrates and what it may read
+   runs (:mod:`.ticking`). A dt updater whose code never reads ``dt`` still
+   ticks its play: the tick plan, not admission, treats it as dt-free.
 
 A play whose camera draws through inputs the record can't hold
 (:func:`camera_refusal`) ticks too, and its frames are drawn while it runs.

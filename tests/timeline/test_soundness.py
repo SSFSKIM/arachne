@@ -1,5 +1,8 @@
 """Admission is by proof: what the proof can't cover ticks, with a named
-reason, and comes out the same whichever instants are evaluated.
+reason. A history-free play then comes out the same whichever instants are
+evaluated; a dt-free callback that keeps history (it changes something at
+every call) is evaluated where CE evaluates it, once per frame, so it
+depends on the frame rate as it does in CE.
 
 Each scene here once passed for a state function or a trusted play while
 its frames depended on the frame rate, or ran scene code during an
@@ -35,6 +38,7 @@ from arachne import (
 )
 from arachne.camera.camera import Camera
 from arachne.timeline import setters
+from arachne.timeline.clock import frames_in
 from arachne.timeline.dispatch import draw_methods, draw_refusal, engine_patches
 from arachne.timeline.purity import Refused, prove_builder, prove_setter_body
 from arachne.timeline.routes import RecordRefused
@@ -65,6 +69,23 @@ def _same_at_shared_instants(scene_class, rates=(4, 30)) -> None:
             )
 
 
+def _steps_once_per_frame(session_of, name: str, kind: str = "Dot") -> None:
+    """The scene's callback moves its ``kind`` 0.02 right at every call: at
+    each rate it is called as CE calls it, once per frame, the play's first
+    frame included, so frame ``k`` shows it ``k + 1`` steps along.
+    """
+    for fps in (4, 15):
+        session = session_of(name, SOUNDNESS_SCENES, frame_rate=fps)
+        play = session.record.plays[-1]
+        assert play.stepping_ticks > 0, (fps, play.admission.reasons)
+        instants = frames_in(play.start, play.end, Fraction(fps))
+        assert len(instants) == fps
+        for k, t in enumerate(instants):
+            nodes = [n for n in session.state_at(t).nodes if n.type == kind]
+            (x_min, _, x_max, _) = nodes[0].box
+            assert (x_min + x_max) / 2 == pytest.approx(0.02 * (k + 1)), (fps, k)
+
+
 # 1. Changing an array the callback did not make.
 
 
@@ -78,7 +99,7 @@ def _same_at_shared_instants(scene_class, rates=(4, 30)) -> None:
 )
 def test_a_callback_writing_into_an_array_it_read_ticks(session_of, name, reason):
     _ticked_with(session_of, name, reason)
-    _same_at_shared_instants(getattr(soundness_scenes, name))
+    _steps_once_per_frame(session_of, name)
 
 
 # 2. A setter given less than its whole argument.
@@ -236,7 +257,12 @@ def test_a_display_camera_is_drawn_with_its_own_values_at_each_instant(session_o
 )
 def test_a_library_call_outside_the_table_ticks(session_of, name, reason):
     _ticked_with(session_of, name, reason)
-    _same_at_shared_instants(getattr(soundness_scenes, name))
+
+
+def test_a_library_call_writing_into_its_argument_is_called_once_per_frame(
+    session_of,
+):
+    _steps_once_per_frame(session_of, "PutAlongAxis")
 
 
 def test_a_value_picked_from_items_that_may_be_none_ticks(session_of):
@@ -295,8 +321,9 @@ def test_an_array_of_numbers_written_out_is_admitted():
 
 
 def test_a_stored_method_reads_its_receiver(session_of):
+    # Reading the previous frame's value, it depends on the frame rate as in
+    # CE (the late reader's per-frame result: test_admission).
     _ticked_with(session_of, "BoundReceiver", "writes after it")
-    _same_at_shared_instants(soundness_scenes.BoundReceiver)
 
 
 def test_an_instance_interpolate_takes_a_transform_off_route_1(session_of):
@@ -310,7 +337,7 @@ def test_an_instance_interpolate_takes_a_transform_off_route_1(session_of):
 
 def test_an_instance_setter_reached_through_a_group_ticks(session_of):
     _ticked_with(session_of, "InstanceSetFill", "on the instance")
-    _same_at_shared_instants(soundness_scenes.InstanceSetFill)
+    _steps_once_per_frame(session_of, "InstanceSetFill", "Square")
 
 
 # What else the prover admitted by default.
@@ -330,7 +357,11 @@ def test_an_animation_method_replaced_on_the_instance_takes_it_off_route_1(
 
 
 def test_a_mobject_whose_update_is_replaced_ticks(session_of):
-    _ticked_with(session_of, "InstanceUpdate", "update is the scene's code")
+    # What a tick runs is the scene's code, so every tick is full.
+    session = _ticked_with(session_of, "InstanceUpdate", "update is the scene's code")
+    play = session.record.plays[-1]
+    assert any(r.startswith("tick.unbounded_read: ") for r in play.admission.reasons)
+    assert play.stepping_ticks == 0
     _same_at_shared_instants(soundness_scenes.InstanceUpdate)
 
 
@@ -340,8 +371,8 @@ def test_an_engine_method_replaced_by_the_scene_ticks_every_play(session_of):
 
 
 def test_a_builder_calling_a_random_method_of_what_it_built_ticks(session_of):
+    # A draw per call: once per frame, as in CE.
     _ticked_with(session_of, "ShuffledBuilder", "it calls VGroup.shuffle")
-    _same_at_shared_instants(soundness_scenes.ShuffledBuilder)
 
 
 class _Arithmetic(float):

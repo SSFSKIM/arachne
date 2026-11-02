@@ -23,7 +23,7 @@ __all__ = [
 
 from fractions import Fraction
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from .clock import exact
 from .record import Capture, Identity, Marker, PlayRecord, Record
@@ -38,13 +38,13 @@ def record(
     scene_file: StrPath,
     scene_class: str,
     *,
-    grid: Fraction | float | None = None,
+    grid: Fraction | float | None | Literal["render"] = "render",
 ) -> Record:
     """Execute ``scene_class`` from ``scene_file`` and return its record.
 
-    ``grid`` is the frame rate whose instants the record keeps; ``None``
-    keeps every instant the scene was evaluated at, so the record answers
-    any time.
+    ``grid`` is the frame rate whose instants the record keeps: by default
+    the configured render's (:meth:`.Session.open`); ``None`` keeps every
+    instant the scene was evaluated at, so the record answers any time.
     """
     from arachne.session import Session
 
