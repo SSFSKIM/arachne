@@ -1246,3 +1246,35 @@ class LabelSwap(Scene):
         output.add_updater(lambda m, dt: m.shift(dt * source.get_x() * UP))
         self.add(t, source, label, output, _idle())
         self.play(t.animate.set_value(1), rate_func=linear)
+
+
+class FreshMethod(Scene):
+    """A dt-free updater makes, at each run, a helper of the scene's own
+    class and calls its method, which moves a tracker a dt updater
+    integrates (a known residual: the write check does not read a method of
+    an object the callback made).
+    """
+
+    def construct(self):
+        t = ValueTracker(0)
+        source = ValueTracker(0)
+
+        class Pusher:
+            def __init__(self, target):
+                self.target = target
+
+            def push(self, value):
+                self.target.set_value(value)
+
+        def update(m):
+            helper = Pusher(source)
+            helper.push(t.get_value())
+
+        producer = Mobject()
+        producer.add_updater(update)
+        output = ValueTracker(0)
+        output.add_updater(lambda m, dt: m.increment_value(dt * source.get_value()))
+        shown = Dot(color=RED, radius=0.05)
+        shown.add_updater(lambda m: m.set_x(output.get_value()))
+        self.add(t, producer, source, output, shown, _idle())
+        self.play(t.animate.set_value(1), rate_func=linear)
