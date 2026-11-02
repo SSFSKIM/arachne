@@ -124,8 +124,9 @@ class PlayRun:
     def stepped(self, *, full: bool, event: bool = False) -> None:
         """Count a tick, and keep the plan true to the updaters there are: a
         stepping tick that ran one the plan never weighed ends stepping for
-        the play; an event tick (a part begun, its copies made) plans again
-        when the updaters changed.
+        the play; an event tick (a part begun, its copies made), and any full
+        tick of a plan whose skipped callbacks may change the updaters, plans
+        again when they changed, before the next stepping tick.
         """
         play = self.play
         if not full:
@@ -135,9 +136,9 @@ class PlayRun:
             return
         play.full_ticks += 1
         plan = play.tick_plan
-        if event and plan is not None and plan.steps_only:
+        if plan is not None and plan.steps_only and (event or plan.rechecks):
             keys = current_keys(self.scene, play._animations)
-            if not keys <= plan.known:
+            if keys != plan.known:
                 replanned = plan_ticks(
                     self.scene,
                     list(play._animations),

@@ -383,3 +383,17 @@ def test_a_play_whose_callbacks_change_its_updaters_ticks_everything(
     assert play.tick_plan.unbounded == reason
     assert play.stepping_ticks == 0
     assert play.full_ticks == 60
+
+
+def test_a_skipped_callback_that_adds_a_reader_has_the_play_plan_again(
+    session_of,
+):
+    """It runs at full ticks only, so the reader it adds at a frame is
+    planned for before the next stepping tick: the new plan finds the adder
+    itself writing what the reader reads, and ticks everything from there.
+    """
+    play = _same_as_full_ticks(session_of, "SkippedInstaller", 15).record.plays[-1]
+    # Before the frame at 0.2 s: its 12 ticks less the frames at 0, 1/15, 2/15.
+    assert play.stepping_ticks == 12 - 3
+    (reason,) = [r for r in play.admission.reasons if r.startswith(STRUCTURAL)]
+    assert "updater install" in reason

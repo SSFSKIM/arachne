@@ -159,6 +159,9 @@ class TickPlan:
     pulled: int = 0
     #: The ids of what the work a stepping tick runs may read or write.
     stepped_ids: frozenset[int] = frozenset()
+    #: Whether a skipped callback may change which updaters there are: the
+    #: play plans again after each full tick that changed them.
+    rechecks: bool = False
 
     def stepping_families(self) -> frozenset[int]:
         """The ids of everything the stepping set (dt updaters, the scene's
@@ -1753,14 +1756,18 @@ def plan_ticks(
                     reach(list(centres.values()), centres),
                 )
             )
+        # Work a stepping tick runs must not change which updaters there are:
+        # the tick would meet work no plan weighed, after skipping what it
+        # reads, or keep running work gone. (Skipped work changes them only
+        # at a full tick, after which the play plans again.)
         if any(node.role == "instant" for node in nodes):
             for node in nodes:
-                if node.restructures:
-                    return TickPlan(
-                        unbounded=f"{STRUCTURAL}: {node.what} "
-                        "may add or remove updaters or mobjects"
-                    )
+                if node.restructures and node.role != "instant":
+                    return _structural(node)
         pulled = _closure(nodes)
+        for node in nodes:
+            if node.restructures and node.active:
+                return _structural(node)
     except Unbounded as refused:
         return unbounded(refused.describe(base_dir))
     return TickPlan(
@@ -1774,6 +1781,13 @@ def plan_ticks(
         stepping=sum(1 for node in nodes if node.role == "step" and node.keys),
         pulled=pulled,
         stepped_ids=_stepped_ids(nodes),
+        rechecks=any(node.restructures for node in nodes),
+    )
+
+
+def _structural(node: _Node) -> TickPlan:
+    return TickPlan(
+        unbounded=f"{STRUCTURAL}: {node.what} may add or remove updaters or mobjects"
     )
 
 
