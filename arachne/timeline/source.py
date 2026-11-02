@@ -22,6 +22,7 @@ __all__ = [
     "scene_location",
 ]
 
+import functools
 import os
 import sysconfig
 from collections.abc import Iterator
@@ -98,12 +99,20 @@ def scene_location(frame: FrameType | None, base_dir: str | None) -> SourceLine 
 
 def relative_path(filename: str, base_dir: str | None) -> str:
     """``filename`` relative to ``base_dir`` when it is inside it."""
-    if base_dir is not None:
-        try:
-            return Path(filename).resolve().relative_to(base_dir).as_posix()
-        except ValueError:
-            pass
-    return Path(filename).as_posix()
+    if base_dir is None:
+        return Path(filename).as_posix()
+    # Asked for every mobject a scene makes (its origin), so the resolving is
+    # remembered; a relative name resolves against the working directory.
+    where = None if os.path.isabs(filename) else os.getcwd()
+    return _relative_path(filename, base_dir, where)
+
+
+@functools.lru_cache(maxsize=4096)
+def _relative_path(filename: str, base_dir: str, where: str | None) -> str:
+    try:
+        return Path(filename).resolve().relative_to(base_dir).as_posix()
+    except ValueError:
+        return Path(filename).as_posix()
 
 
 #: How deep names reach into groups: ``name[i][j][k]``.
