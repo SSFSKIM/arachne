@@ -27,20 +27,41 @@ reads, directly or transitively, what it writes; its own reads matter only
 when it runs there. Interpolation always runs, but what it reads joins the
 closure only when stepping work reads what it writes (its mobject's family).
 
-What a callback may read is bounded by what its code can reach
-(:func:`reach`): its closure cells, the globals and attributes its code
-names, its defaults, the object a bound method holds, the mobject it updates
-with its family, and what those hold (``TracedPath``'s
-``traced_point_func`` included). What a dt-free callback, or the function of
-an ``UpdateFromFunc``/``UpdateFromAlphaFunc``, may write is the mobject it
-updates (``always_redraw``'s target), unless its source shows a change
-anywhere else (``_Writes``): then it writes everything it reaches, which
-stepping work may read whenever the play has any. The play ticks everything,
-under the reason ``tick.unbounded_read``, when a reach that matters can't be
-bounded (dynamic attribute access, more objects than the bound follows): a
-stepping callback's, one pulled into the closure, or one whose writes are
-everything it reaches in a play with stepping work. An unbounded read of a
-callback nothing pulls, whose writes are bounded, leaves the play stepping.
+Both bounds are default-deny: an access is bounded only along a path the
+analysis resolves at plan time, and anything else counts as reaching
+anything. What a callback may read is what its code can reach
+(:func:`reach`): its closure cells, the globals its code names (one key per
+binding), its defaults, the object a bound method holds, the mobject it
+updates with its family, and what those hold, through the attributes its
+code names, on the instance or on the scene's own class that holds them
+(keyed by that class), into containers it follows whole, and into arrays by
+the memory they share (``TracedPath``'s ``traced_point_func`` included). A
+module the scene imports is read binding by binding, one key per attribute
+whatever alias it is imported under. A name computed at run time
+(``getattr`` with a computed name, ``getattr`` held under another name), or
+an object whose contents it can't follow, is unbounded.
+
+What a dt-free callback, or the function of an
+``UpdateFromFunc``/``UpdateFromAlphaFunc``, may write is the mobject it
+updates with its family (``always_redraw``'s target), unless its source
+shows a change anywhere else (``_Writes``): a store or a call that reaches
+something other than that family, or than what the callback made itself,
+along a path it can't resolve to that family (an attribute the mobject
+holds, an element of a list it made). Then it writes everything it reaches,
+which stepping work may read whenever the play has any. The play ticks
+everything, under the reason ``tick.unbounded_read``, when a reach that
+matters can't be bounded: a stepping callback's, one pulled into the
+closure, or one whose writes are everything it reaches in a play with
+stepping work. An unbounded read of a callback nothing pulls, whose writes
+are bounded, leaves the play stepping.
+
+A callback that may add or remove updaters or mobjects, or suspend them, as
+it plays (``add``, ``remove``, ``add_updater``, ``clear_updaters``, a
+``become`` that pads its mobject with members carrying updaters) would leave
+a stepping tick meeting work no plan weighed, or running work gone: a play
+holding one, whichever callback it is, ticks everything under the reason
+``tick.structural_mutation``. A composition's own events (a part beginning)
+plan again instead.
 
 :class:`TickPlan` is the outcome; :func:`skipping` installs its skipped
 updaters for one stepping tick, which :meth:`.Mobject.update` consults.
@@ -49,6 +70,7 @@ updaters for one stepping tick, which :meth:`.Mobject.update` consults.
 from __future__ import annotations
 
 __all__ = [
+    "STRUCTURAL",
     "UNBOUNDED",
     "TickPlan",
     "loads_dt",
@@ -59,14 +81,18 @@ __all__ = [
 
 import ast
 import builtins
+import collections
 import contextlib
 import dis
 import functools
 import inspect
+import operator
+import random
+import sys
 import types
 import weakref
 from collections.abc import Callable, Iterable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any
 
@@ -83,6 +109,10 @@ if TYPE_CHECKING:
 #: The reason family of a play that ticks everything because a callback's
 #: reads can't be bounded.
 UNBOUNDED = "tick.unbounded_read"
+
+#: The reason family of a play that ticks everything because a callback may
+#: add or remove updaters or mobjects as it plays.
+STRUCTURAL = "tick.structural_mutation"
 
 #: How many objects a reach follows before it gives up.
 REACH_LIMIT = 50_000
@@ -104,6 +134,10 @@ _DYNAMIC = frozenset(
         "compile",
         "__dict__",
         "__import__",
+        "__getattribute__",
+        "attrgetter",
+        "methodcaller",
+        "getattr_static",
     }
 )
 
@@ -123,6 +157,17 @@ class TickPlan:
     #: stepping work may read them.
     stepping: int = 0
     pulled: int = 0
+    #: The ids of what the work a stepping tick runs may read or write.
+    stepped_ids: frozenset[int] = frozenset()
+
+    def stepping_families(self) -> frozenset[int]:
+        """The ids of everything the stepping set (dt updaters, the scene's
+        updaters, every interpolation, and the callbacks pulled with them)
+        may read or write: each mobject among them with its family, and the
+        containers, cells and bindings they hold. A difference outside these
+        and outside :attr:`skipped`'s mobjects is not stepping's.
+        """
+        return self.stepped_ids
 
     @property
     def steps_only(self) -> bool:
@@ -342,6 +387,10 @@ class _Reach:
             return
         self._seen.add(key)
         self._tick()
+        if key in _DYNAMIC_IDS:
+            # Held as a value, under a name of the code's own choosing: its
+            # uses can't be told from the names the code spells.
+            raise Unbounded(f"holds {value.__name__} as a value")
         if isinstance(value, Mobject):
             self.mobject(value)
         elif isinstance(value, Scene):
@@ -376,12 +425,13 @@ class _Reach:
                             member.fget if isinstance(member, property) else member
                         )
         elif isinstance(value, np.ndarray):
-            if value.flags.writeable:
-                self.ids.add(key)
+            storage = _storage_key(value)
+            if storage is not None:
+                self.ids.add(storage)
             if value.dtype == object:
                 for item in value.flat:
                     self.visit(item)
-        elif isinstance(value, (list, tuple, set, frozenset)):
+        elif isinstance(value, (list, tuple, set, frozenset, collections.deque)):
             if not isinstance(value, (tuple, frozenset)):
                 self.ids.add(key)
             for item in value:
@@ -403,11 +453,17 @@ class _Reach:
             self.visit(value.fget)
         elif engine_class(type(value)):
             return  # the engine's values (colours, paints, frozen arrays)
-        else:
-            # A plain object (the scene's own helper, a generator, a random
-            # state): shared state, followed through the attributes code names.
+        elif isinstance(value, _OPAQUE_STATE):
+            self.ids.add(key)  # its own state, which holds no mobject
+        elif hasattr(value, "__dict__") or getattr(type(value), "__slots__", None):
+            # A plain object (the scene's own helper): shared state, followed
+            # through the attributes code names.
             self.ids.add(key)
             self._attributes(value)
+        else:
+            raise Unbounded(
+                f"reaches a {type(value).__name__}, whose contents it can't follow"
+            )
 
     def mobject(self, mob: Mobject) -> None:
         for member in mob.get_family():
@@ -420,11 +476,37 @@ class _Reach:
                 self.visit(item)
             if not engine_class(type(member)):
                 self._class_code(type(member))
+                self.ids.add(id(type(member)))
 
     def _class_code(self, cls: type) -> None:
-        """A user class's methods: what its instances' methods may read."""
+        """A user class's methods: what its instances' methods may read; and
+        the values its classes hold, which every instance reads as its own.
+        """
         for function in _user_methods(cls).values():
             self.visit(function)
+        for klass in cls.__mro__:
+            if not _scene_class(klass):
+                continue
+            for name in vars(klass):
+                self._class_attribute(cls, name)
+
+    def _class_attribute(self, cls: type, name: str) -> None:
+        """What ``name`` reads on an instance of ``cls`` that does not hold
+        it: the value the nearest of the scene's own classes defining it
+        holds, keyed by that class (a store to it rebinds the class's).
+        """
+        for klass in cls.__mro__:
+            if not _scene_class(klass):
+                continue
+            if name in vars(klass):
+                value = vars(klass)[name]
+                if name.startswith("__") or isinstance(
+                    value, (types.FunctionType, staticmethod, classmethod, property)
+                ):
+                    return  # a method: _user_methods follows it
+                self.ids.add(id(klass))
+                self.visit(value)
+                return
 
     def _attributes(self, obj: Any) -> None:
         """Follow the attributes of ``obj`` that the code reached so far names,
@@ -442,9 +524,16 @@ class _Reach:
             for name in getattr(type(obj), "__slots__", ()):
                 if hasattr(obj, name):
                     own[name] = getattr(obj, name)
+        module = isinstance(obj, types.ModuleType)
         for name in names:
             if name in own:
+                if module:
+                    # The binding itself, as a global's: one key for every
+                    # alias the module is imported under.
+                    self.ids.add(_global_key(own, name))
                 self.visit(own[name])
+            elif not module:
+                self._class_attribute(type(obj), name)
         if isinstance(obj, Scene):
             if names & {"camera", "renderer"}:
                 self.visit(obj.renderer.camera)
@@ -492,12 +581,54 @@ class _Reach:
                 self.visit(namespace[name])
 
 
+def _scene_class(klass: type) -> bool:
+    """Whether ``klass`` is defined by the scene's code."""
+    module = sys.modules.get(klass.__module__)
+    filename = getattr(module, "__file__", None)
+    return bool(filename) and not engine_class(klass) and not _internal(filename)
+
+
+def _storage_key(array: np.ndarray) -> int | None:
+    """One key for every array sharing ``array``'s memory, through the
+    chain of views to what owns it; ``None`` for memory nothing writes (the
+    engine's constant vectors, ``ORIGIN`` and its kin, which every mobject
+    made with a default holds, are taken as unwritten).
+    """
+    owner: Any = array
+    writable = array.flags.writeable
+    while isinstance(owner, np.ndarray) and owner.base is not None:
+        owner = owner.base
+        writable = writable or (isinstance(owner, np.ndarray) and owner.flags.writeable)
+    if not writable or id(owner) in _constant_arrays():
+        return None
+    return id(owner)
+
+
+@functools.cache
+def _constant_arrays() -> frozenset[int]:
+    from arachne import constants
+
+    return frozenset(
+        id(value) for value in vars(constants).values() if isinstance(value, np.ndarray)
+    )
+
+
 def _global_key(namespace: dict[str, Any], name: str) -> int:
     """A stand-in id for the module global ``name``: negative, so it never
     meets an object's id.
     """
     return -1 - (hash((id(namespace), name)) & (2**62 - 1))
 
+
+#: The callables behind :data:`_DYNAMIC`'s names, found by identity
+#: whatever name the code binds them to.
+_DYNAMIC_CALLABLES = tuple(
+    getattr(builtins, name) for name in sorted(_DYNAMIC) if hasattr(builtins, name)
+) + (operator.attrgetter, operator.methodcaller, inspect.getattr_static)
+_DYNAMIC_IDS = frozenset(map(id, _DYNAMIC_CALLABLES))
+
+#: Objects whose state is their own and holds no mobject: followed by id.
+_OPAQUE_STATE = (random.Random, np.random.Generator, np.random.RandomState)
 
 #: Calls that name an attribute by a value: bounded when it is a constant.
 _BY_NAME = frozenset({"getattr", "setattr", "delattr", "hasattr"})
@@ -621,40 +752,143 @@ def _root(node: ast.AST) -> ast.AST:
     return node
 
 
+@dataclass(frozen=True)
+class _Effect:
+    """What a callback's source shows it may do beyond what it updates."""
+
+    #: It may change something but the mobject it updates (with its family)
+    #: and the objects it made itself.
+    elsewhere: bool = False
+    #: It may change which updaters run or which mobjects there are (add,
+    #: remove, suspend): work no plan weighed, or work a plan weighed gone.
+    restructures: bool = False
+
+    def __or__(self, other: _Effect) -> _Effect:
+        return _Effect(
+            self.elsewhere or other.elsewhere,
+            self.restructures or other.restructures,
+        )
+
+
+_NO_EFFECT = _Effect()
+_ELSEWHERE = _Effect(elsewhere=True)
+_ANY_EFFECT = _Effect(elsewhere=True, restructures=True)
+
+#: Methods that may change a mobject's or the scene's members or updaters,
+#: or whether they run.
+_RESTRUCTURERS = frozenset(
+    {
+        "add",
+        "add_to_back",
+        "add_updater",
+        "add_foreground_mobject",
+        "add_foreground_mobjects",
+        "add_n_more_submobjects",
+        "align_data",
+        "align_submobjects",
+        "become",
+        "bring_to_back",
+        "bring_to_front",
+        "clear",
+        "clear_updaters",
+        "insert",
+        "match_updaters",
+        "remove",
+        "remove_foreground_mobject",
+        "remove_foreground_mobjects",
+        "remove_updater",
+        "replace_submobject",
+        "resume_updating",
+        "set_submobjects",
+        "suspend_updating",
+    }
+)
+#: The lists that are a mobject's or the scene's structure.
+_STRUCTURE_LISTS = frozenset(
+    {"updaters", "submobjects", "mobjects", "foreground_mobjects", "moving_mobjects"}
+)
+
+
 class _Writes:
-    """Whether a function's source shows a change to anything but its
-    ``owners`` (the parameter naming the mobject it updates) and objects it
-    made itself.
+    """What a function's source shows it may change beyond its ``owners``
+    (the parameter naming the mobject it updates, ``owner`` when known) and
+    the objects it made itself, and whether it may change the structure
+    (``_Effect``).
+
+    Default-deny: a change is local only when it reaches the owner, a member
+    of its family or an object the function made, through a path resolved at
+    plan time (the owner's own attributes, read on the instance, each to a
+    mobject of its family). Anything else changes something elsewhere.
     """
 
     def __init__(self) -> None:
-        self._checked: set[tuple[int, frozenset[str]]] = set()
+        #: Each function's effect, by its identity, owners and owner: the
+        #: function is kept so that its id is not reused.
+        self._effects: dict[tuple[int, frozenset[str], int], tuple[Any, _Effect]] = {}
 
-    def elsewhere(self, function: Any, owners: frozenset[str], depth: int = 0) -> bool:
-        from . import purity
+    def elsewhere(
+        self, function: Any, owners: frozenset[str], owner: Any = None
+    ) -> bool:
+        return self.effect(function, owners, owner).elsewhere
 
+    def effect(
+        self,
+        function: Any,
+        owners: frozenset[str],
+        owner: Any = None,
+        depth: int = 0,
+        made: frozenset[str] = frozenset(),
+    ) -> _Effect:
+        """``made`` names parameters bound to an object being made (a
+        constructor's ``self``): its own, as what the function makes is.
+        """
         if isinstance(function, types.MethodType):
             function = function.__func__
-            owners = frozenset()
+            owners, owner = frozenset(), None
         code = _code_of(function)
         if code is None or not isinstance(function, types.FunctionType):
-            return True
+            return _ANY_EFFECT
         if engine_code(function) or not _user_code(code):
-            return True  # judged by what it reaches
-        if (id(code), owners) in self._checked:
-            return False
-        self._checked.add((id(code), owners))
-        if depth > MAX_DEPTH:
-            return True
+            # Judged by what it reaches, and by the names its code uses.
+            names = _names_of(code)
+            return _Effect(
+                elsewhere=True,
+                restructures=bool(names & (_RESTRUCTURERS | _STRUCTURE_LISTS)),
+            )
+        key = (id(function), owners | made, id(owner))
+        found = self._effects.get(key)
+        if found is not None:
+            return found[1]
+        # Calls back into itself add nothing to what it is found to do.
+        self._effects[key] = (function, _NO_EFFECT)
+        effect = (
+            _ANY_EFFECT
+            if depth > MAX_DEPTH
+            else self._scan(function, owners, owner, depth, made)
+        )
+        self._effects[key] = (function, effect)
+        return effect
+
+    def _scan(
+        self,
+        function: Any,
+        owners: frozenset[str],
+        owner: Any,
+        depth: int,
+        made: frozenset[str],
+    ) -> _Effect:
+        from . import purity
+
         try:
             node = _source_node(function)
         except purity.Refused:
-            return True
-        bindings = self._bindings(function)
-        fresh = self._fresh(node, bindings)
+            return _ANY_EFFECT
+        site = _Site(self, owners, owner, self._bindings(function), depth)
+        site.fresh = self._fresh(node, site.bindings) | made
+        effect = _NO_EFFECT
         for item in ast.walk(node):
             if isinstance(item, (ast.Global, ast.Nonlocal)):
-                return True
+                effect |= _ELSEWHERE
             targets: list[ast.AST] = []
             if isinstance(item, ast.Assign):
                 targets = list(item.targets)
@@ -663,32 +897,18 @@ class _Writes:
                 if (
                     isinstance(item, ast.AugAssign)
                     and isinstance(item.target, ast.Name)
-                    and item.target.id not in fresh
+                    and item.target.id not in site.fresh
                 ):
-                    return True  # in place on what the name holds
+                    effect |= _ELSEWHERE  # in place on what the name holds
             elif isinstance(item, ast.Delete):
                 targets = list(item.targets)
-            if any(self._store_elsewhere(t, owners, fresh) for t in targets):
-                return True
-            if isinstance(item, ast.Call) and self._call_elsewhere(
-                item, owners, fresh, bindings, depth
-            ):
-                return True
-        return False
-
-    def _store_elsewhere(
-        self, target: ast.AST, owners: frozenset[str], fresh: set[str]
-    ) -> bool:
-        if isinstance(target, (ast.Tuple, ast.List)):
-            return any(self._store_elsewhere(t, owners, fresh) for t in target.elts)
-        if isinstance(target, ast.Starred):
-            return self._store_elsewhere(target.value, owners, fresh)
-        if isinstance(target, ast.Name):
-            return False
-        root = _root(target)
-        return not (
-            isinstance(root, ast.Name) and (root.id in owners or root.id in fresh)
-        )
+            for target in targets:
+                effect |= site.store(target)
+            if isinstance(item, ast.Call):
+                effect |= site.call(item)
+            if effect == _ANY_EFFECT:
+                break
+        return effect
 
     def _bindings(self, function: types.FunctionType) -> dict[str, Any]:
         """What each name the function's code uses is bound to when it is
@@ -765,28 +985,177 @@ class _Writes:
                     return isinstance(getattr(holder, func.attr, None), type)
         return False
 
-    def _call_elsewhere(
-        self,
-        call: ast.Call,
-        owners: frozenset[str],
-        fresh: set[str],
-        bindings: dict[str, Any],
-        depth: int,
-    ) -> bool:
+    def callee(self, name: str, target: Any, depth: int) -> _Effect:
+        """What calling ``target``, bound to ``name``, may do."""
+        if target is _UNKNOWN or target is _PARAMETER:
+            return _ANY_EFFECT
+        if isinstance(target, type):
+            # A new object; the scene's own class runs its own code to make it.
+            init = vars(target).get("__init__") if not engine_class(target) else None
+            if isinstance(init, types.FunctionType) and _user_code(init.__code__):
+                made = frozenset(init.__code__.co_varnames[:1])
+                return self.effect(init, frozenset(), None, depth + 1, made)
+            return _NO_EFFECT
+        if isinstance(target, types.BuiltinFunctionType):
+            name = target.__name__  # whatever the code calls it
+            if (
+                getattr(target, "__self__", None) is builtins
+                or target.__module__ == "builtins"
+            ):
+                if name in ("exec", "eval", "setattr"):
+                    return _ANY_EFFECT
+                return _ELSEWHERE if name in _IMPURE_BUILTINS else _NO_EFFECT
+            module = getattr(target, "__module__", "") or ""
+            impure = (
+                module.split(".")[0] == "random"
+                or "random" in module
+                or name in _MUTATORS
+            )
+            return _ELSEWHERE if impure else _NO_EFFECT
+        if isinstance(target, np.ufunc):
+            return _NO_EFFECT
+        if isinstance(target, (types.FunctionType, types.MethodType)):
+            code = _code_of(target)
+            if code is not None and _user_code(code):
+                return self.effect(target, frozenset(), None, depth + 1)
+            module = getattr(target, "__module__", "") or ""
+            impure = (
+                module.split(".")[0] == "random"
+                or ".random" in module
+                or name in _MUTATORS
+            )
+            return _ELSEWHERE if impure else _NO_EFFECT
+        return _ANY_EFFECT
+
+
+@dataclass
+class _Site:
+    """One function's source being read for its effect."""
+
+    writes: _Writes
+    owners: frozenset[str]
+    owner: Any
+    bindings: dict[str, Any]
+    depth: int
+    fresh: set[str] = field(default_factory=set)
+
+    def resolve(self, node: ast.AST) -> Any:
+        """The object ``node`` names when the function runs, resolved at plan
+        time through the owner's attributes (on the instance) and a mobject's
+        members; :data:`_UNKNOWN` when it can't be.
+        """
+        from arachne.mobject.mobject import Mobject
+
+        if isinstance(node, ast.Name):
+            if node.id in self.owners:
+                return _UNKNOWN if self.owner is None else self.owner
+            return _UNKNOWN
+        if isinstance(node, ast.Attribute):
+            base = self.resolve(node.value)
+            if isinstance(base, Mobject):
+                return vars(base).get(node.attr, _UNKNOWN)
+            return _UNKNOWN
+        if isinstance(node, ast.Subscript):
+            base = self.resolve(node.value)
+            if isinstance(base, Mobject) and engine_code(type(base).__getitem__):
+                # One of its members, or a group of them.
+                return _MEMBERS_OF(base)
+        return _UNKNOWN
+
+    def owned(self, receiver: ast.AST) -> bool:
+        """Whether ``receiver`` is the owner, a member of its family, or what
+        the function made: the receiver itself, not what it holds.
+        """
+        if isinstance(receiver, ast.Name):
+            return receiver.id in self.owners or receiver.id in self.fresh
+        if self.owner is None or not isinstance(_root(receiver), ast.Name):
+            return False
+        found = self.resolve(receiver)
+        if isinstance(found, _MEMBERS_OF):
+            found = found.mobject
+        family = _family_ids(self.owner)
+        return id(found) in family
+
+    def restructures_by(self, name: str, receiver: ast.AST) -> bool:
+        """Whether calling method ``name`` on ``receiver`` may change a
+        mobject's or the scene's structure.
+        """
+        if (
+            isinstance(receiver, ast.Attribute)
+            and receiver.attr in _STRUCTURE_LISTS
+            and name not in _READERS
+            and name not in ("count", "index")
+        ):
+            return True  # the structure's own list, changed in place
+        if name not in _RESTRUCTURERS:
+            return False
+        if isinstance(receiver, ast.Name) and receiver.id in self.fresh:
+            return False
+        if name == "become":
+            # It pads its mobject with copies of its own members, which take
+            # their updaters along.
+            found = self._bound(receiver)
+            if isinstance(found, _MEMBERS_OF):
+                found = found.mobject
+            return not _quiet_family(found)
+        holder = self._bound(receiver)
+        return not isinstance(holder, (types.ModuleType, list, set, dict))
+
+    def _bound(self, receiver: ast.AST) -> Any:
+        if isinstance(receiver, ast.Name):
+            if receiver.id in self.owners:
+                return _UNKNOWN if self.owner is None else self.owner
+            found = self.bindings.get(receiver.id, _UNKNOWN)
+            return found if found is not _PARAMETER else _UNKNOWN
+        return self.resolve(receiver)
+
+    def store(self, target: ast.AST) -> _Effect:
+        if isinstance(target, (ast.Tuple, ast.List)):
+            effect = _NO_EFFECT
+            for item in target.elts:
+                effect |= self.store(item)
+            return effect
+        if isinstance(target, ast.Starred):
+            return self.store(target.value)
+        if isinstance(target, ast.Name):
+            return _NO_EFFECT
+        if not isinstance(target, (ast.Attribute, ast.Subscript)):
+            return _ELSEWHERE
+        receiver = target.value
+        fresh = isinstance(receiver, ast.Name) and receiver.id in self.fresh
+        structure = (
+            isinstance(target, ast.Attribute) and target.attr in _STRUCTURE_LISTS
+        ) or (isinstance(receiver, ast.Attribute) and receiver.attr in _STRUCTURE_LISTS)
+        return _Effect(
+            elsewhere=not self.owned(receiver), restructures=structure and not fresh
+        )
+
+    def call(self, call: ast.Call) -> _Effect:
+        writes = self.writes
         if any(k.arg == "out" for k in call.keywords):
-            return True
+            return _ELSEWHERE
         func = call.func
         if isinstance(func, ast.Name):
-            target = bindings.get(func.id, _UNKNOWN)
-            return self._callee_elsewhere(func.id, target, depth)
+            target = self.bindings.get(func.id, _UNKNOWN)
+            return writes.callee(func.id, target, self.depth)
         if not isinstance(func, ast.Attribute):
-            return True
+            return _ANY_EFFECT
         name = func.attr
-        root = _root(func.value)
+        receiver = func.value
+        restructures = _Effect(restructures=self.restructures_by(name, receiver))
+        reader = name in _READERS or name.startswith(_READER_PREFIXES)
+        root = _root(receiver)
+        if self.owned(receiver):
+            if isinstance(receiver, ast.Name) and receiver.id in self.fresh:
+                return _NO_EFFECT
+            return restructures | self._own_method(name, receiver)
+        if isinstance(root, ast.Name) and (
+            root.id in self.owners or root.id in self.fresh
+        ):
+            # What the owner or a made object holds: not its own.
+            return restructures if reader else restructures | _ELSEWHERE
         if isinstance(root, ast.Name):
-            if root.id in owners or root.id in fresh:
-                return False
-            holder = bindings.get(root.id, _UNKNOWN)
+            holder = self.bindings.get(root.id, _UNKNOWN)
             if isinstance(holder, types.ModuleType):
                 module = getattr(holder, "__name__", "")
                 if (
@@ -794,71 +1163,84 @@ class _Writes:
                     or ".random" in module
                     or name == "random"
                 ):
-                    return True
+                    return _ELSEWHERE
+                if receiver is not root:
+                    return restructures | _ELSEWHERE
                 if not _internal(getattr(holder, "__file__", "") or ""):
-                    return self._callee_elsewhere(
-                        name, getattr(holder, name, _UNKNOWN), depth
+                    return writes.callee(
+                        name, getattr(holder, name, _UNKNOWN), self.depth
                     )
-                return name in _MUTATORS
-            if name in _READERS or name.startswith(_READER_PREFIXES):
-                return False
+                return _ELSEWHERE if name in _MUTATORS else _NO_EFFECT
+            if reader:
+                return restructures
             from . import library
 
             if name in library.VALUE_METHODS and not _is_mobject(holder):
-                return False
-            if (
-                holder is not _UNKNOWN
-                and holder is not _PARAMETER
-                and func.value is root
-            ):
+                return restructures
+            if holder is not _UNKNOWN and holder is not _PARAMETER and receiver is root:
                 member = inspect.getattr_static(type(holder), name, None)
                 if isinstance(member, (staticmethod, classmethod)):
                     member = member.__func__
                 if isinstance(member, types.FunctionType) and _user_code(
                     member.__code__
                 ):
-                    return self.elsewhere(member, frozenset(), depth + 1)
-            return True
+                    return restructures | writes.effect(
+                        member, frozenset(), None, self.depth + 1
+                    )
+            return restructures | _ELSEWHERE
         if isinstance(root, ast.Call):
             # A method of what a call returned: a new object when the call
             # makes one; else whatever it returned may be shared.
-            reader = name in _READERS or name.startswith(_READER_PREFIXES)
-            return not reader and not self._made(root, bindings)
-        return not isinstance(
+            if reader or writes._made(root, self.bindings):
+                return _NO_EFFECT
+            return restructures | _ELSEWHERE
+        if isinstance(
             root,
             (ast.Constant, ast.JoinedStr, ast.List, ast.Tuple, ast.Dict, ast.ListComp),
-        )
+        ):
+            return _NO_EFFECT
+        return restructures | _ELSEWHERE
 
-    def _callee_elsewhere(self, name: str, target: Any, depth: int) -> bool:
-        if target is _UNKNOWN or target is _PARAMETER:
-            return True
-        if isinstance(target, type):
-            return False  # it makes a new object
-        if isinstance(target, types.BuiltinFunctionType):
-            if (
-                getattr(target, "__self__", None) is builtins
-                or target.__module__ == "builtins"
-            ):
-                return name in _IMPURE_BUILTINS
-            module = getattr(target, "__module__", "") or ""
-            return (
-                module.split(".")[0] == "random"
-                or "random" in module
-                or name in _MUTATORS
-            )
-        if isinstance(target, np.ufunc):
-            return False
-        if isinstance(target, (types.FunctionType, types.MethodType)):
-            code = _code_of(target)
-            if code is not None and _user_code(code):
-                return self.elsewhere(target, frozenset(), depth + 1)
-            module = getattr(target, "__module__", "") or ""
-            return (
-                module.split(".")[0] == "random"
-                or ".random" in module
-                or name in _MUTATORS
-            )
-        return True
+    def _own_method(self, name: str, receiver: ast.AST) -> _Effect:
+        """A method called on the owner's family: the scene's own method
+        is read for what it does, with its ``self`` as the owner.
+        """
+        found = self._bound(receiver)
+        if isinstance(found, _MEMBERS_OF):
+            # Some member's: what each of their classes defines.
+            for member in found.mobject.get_family():
+                defined = inspect.getattr_static(type(member), name, None)
+                code = _code_of(getattr(defined, "fget", defined))
+                if code is not None and _user_code(code):
+                    return _ANY_EFFECT
+            return _NO_EFFECT
+        if found is _UNKNOWN:
+            return _NO_EFFECT
+        member = inspect.getattr_static(type(found), name, None)
+        if isinstance(member, (staticmethod, classmethod)):
+            return _ANY_EFFECT
+        if isinstance(member, property):
+            member = member.fget
+        if isinstance(member, types.FunctionType) and _user_code(member.__code__):
+            first = member.__code__.co_varnames[:1]
+            return self.writes.effect(member, frozenset(first), found, self.depth + 1)
+        return _NO_EFFECT
+
+
+@dataclass(frozen=True)
+class _MEMBERS_OF:  # noqa: N801 (a marker)
+    """Some members of ``mobject`` (what indexing it gives)."""
+
+    mobject: Any
+
+
+def _quiet_family(mob: Any) -> bool:
+    """Whether ``mob`` is a mobject none of whose members but itself carry
+    updaters: padding it (``become``) copies nothing that runs.
+    """
+    if not _is_mobject(mob):
+        return False
+    return not any(member.updaters for member in mob.get_family()[1:])
 
 
 _UNKNOWN = object()
@@ -896,6 +1278,8 @@ class _Node:
     writes: frozenset[int] | None = frozenset()
     keys: tuple[tuple[int, int], ...] = ()
     active: bool = False
+    #: Whether it may change which updaters run or which mobjects there are.
+    restructures: bool = False
 
     @property
     def reads(self) -> frozenset[int]:
@@ -915,11 +1299,26 @@ def _family_ids(mob: Any) -> frozenset[int]:
     return frozenset(id(member) for member in mob.get_family())
 
 
-def _describe(function: Any) -> str:
+def _family_writes(mob: Any) -> frozenset[int]:
+    """What a change to ``mob``'s family may change: its members, and the
+    memory of the arrays they hold, which another mobject's may share.
+    """
+    found = set(_family_ids(mob))
+    for member in mob.get_family():
+        for value in vars(member).values():
+            if isinstance(value, np.ndarray):
+                storage = _storage_key(value)
+                if storage is not None:
+                    found.add(storage)
+    return frozenset(found)
+
+
+def _describe(function: Any, base_dir: str | None) -> str:
     code = _code_of(function)
     if code is None:
         return repr(function)
-    return f"{code.co_name} at {code.co_filename}:{code.co_firstlineno}"
+    where = relative_path(code.co_filename, base_dir)
+    return f"{code.co_name} at {where}:{code.co_firstlineno}"
 
 
 def _updaters(roots: Iterable[Any]) -> Iterator[tuple[Any, Any]]:
@@ -961,20 +1360,27 @@ def _animation_node(animation: Animation, check: _Writes) -> _Node:
     from . import trusted
 
     writes: frozenset[int] | None = frozenset(trusted.writes(animation))
+    effect = _NO_EFFECT
     if isinstance(animation, trusted.CALLBACK_ANIMATIONS):
         function = vars(animation)["update_function"]
-        try:
-            owners = frozenset(list(inspect.signature(function).parameters)[:1])
-        except (TypeError, ValueError):
-            owners = frozenset()
-        if check.elsewhere(function, owners):
+        effect = check.effect(function, _owners(function), animation.mobject)
+        if effect.elsewhere:
             writes = _REACHED
     return _Node(
         type(animation).__name__,
         "transparent",
         lambda: reach([animation], trusted._mobjects_of(animation)),
         writes,
+        restructures=effect.restructures,
     )
+
+
+def _owners(function: Any) -> frozenset[str]:
+    """The parameter naming the mobject a callback is handed."""
+    try:
+        return frozenset(list(inspect.signature(function).parameters)[:1])
+    except (TypeError, ValueError):
+        return frozenset()
 
 
 def _updater_node(
@@ -982,6 +1388,7 @@ def _updater_node(
     updater: Any,
     check: _Writes,
     reaches: dict[tuple[int, int, int], frozenset[int]],
+    base_dir: str | None,
 ) -> _Node:
     from .admission import _redraw_code
 
@@ -996,16 +1403,14 @@ def _updater_node(
             )
         )
         target, function = cells["mob"], cells["func"]
-        owners: frozenset[str] = frozenset()
-        what = "redraw " + _describe(function)
+        what = "redraw " + _describe(function, base_dir)
+        effect = check.effect(function, frozenset())
+        # ``become`` pads the target with copies of its members.
+        effect |= _Effect(restructures=not _quiet_family(target))
     else:
         target, function = member, updater
-        try:
-            parameters = list(inspect.signature(updater).parameters)
-        except (TypeError, ValueError):
-            parameters = []
-        owners = frozenset(parameters[:1])
-        what = "updater " + _describe(function)
+        what = "updater " + _describe(function, base_dir)
+        effect = check.effect(function, _owners(updater), target)
 
     def reads() -> frozenset[int]:
         # The mobject it is handed is read through too: ``m.source`` is as
@@ -1015,10 +1420,14 @@ def _updater_node(
             reaches[found] = reach([function], [member, target])
         return reaches[found]
 
+    writes = _REACHED if effect.elsewhere else _family_writes(target)
     if loads_dt(updater):
-        return _Node(what, "step", reads(), keys=(key,))
-    writes = _REACHED if check.elsewhere(function, owners) else _family_ids(target)
-    return _Node(what, "instant", reads, writes, keys=(key,))
+        return _Node(
+            what, "step", reads(), writes, (key,), restructures=effect.restructures
+        )
+    return _Node(
+        what, "instant", reads, writes, (key,), restructures=effect.restructures
+    )
 
 
 def _closure(nodes: list[_Node]) -> int:
@@ -1089,9 +1498,15 @@ def plan_ticks(
         )
         reaches: dict[tuple[int, int, int], frozenset[int]] = {}
         for member, updater in _updaters((*_copies(animations), *scene.mobjects)):
-            nodes.append(_updater_node(member, updater, check, reaches))
+            nodes.append(_updater_node(member, updater, check, reaches, base_dir))
         nodes.extend(
-            _Node("scene updater " + _describe(function), "step", reach([function]))
+            _Node(
+                "scene updater " + _describe(function, base_dir),
+                "step",
+                reach([function]),
+                _REACHED,
+                restructures=check.effect(function, frozenset()).restructures,
+            )
             for function in scene.updaters
         )
         centres = getattr(camera, "fixed_orientation_mobjects", None) or {}
@@ -1103,6 +1518,13 @@ def plan_ticks(
                     reach(list(centres.values()), centres),
                 )
             )
+        if any(node.role == "instant" for node in nodes):
+            for node in nodes:
+                if node.restructures:
+                    return TickPlan(
+                        unbounded=f"{STRUCTURAL}: {node.what} "
+                        "may add or remove updaters or mobjects"
+                    )
         pulled = _closure(nodes)
     except Unbounded as refused:
         return unbounded(refused.describe(base_dir))
@@ -1116,4 +1538,17 @@ def plan_ticks(
         known=frozenset(key for node in nodes for key in node.keys),
         stepping=sum(1 for node in nodes if node.role == "step" and node.keys),
         pulled=pulled,
+        stepped_ids=_stepped_ids(nodes),
     )
+
+
+def _stepped_ids(nodes: list[_Node]) -> frozenset[int]:
+    """What the work a stepping tick runs may read or write."""
+    found: set[int] = set()
+    for node in nodes:
+        if node.active:
+            found |= node.reads
+        if node.active or node.role == "transparent":
+            with contextlib.suppress(Unbounded):
+                found |= node.written()
+    return frozenset(found)

@@ -50,6 +50,11 @@ if TYPE_CHECKING:
     from .state import State
     from .ticking import TickPlan
 
+#: How many decimals :meth:`PlayRecord.sample_keys` compares numbers to: a
+#: callback stepping skips computes the same values along another float path
+#: (``next_to`` moves a mobject by where it was), ulps apart.
+SAMPLE_DECIMALS = 9
+
 
 class NodeState:
     """One version of a mobject's state: its ``__dict__``'s keys and values,
@@ -263,6 +268,25 @@ class PlayRecord:
         assert self._record is not None
         return RegisteredState(self._record, self._record._captures[self.static_seq])
 
+    def sample_keys(
+        self, decimals: int = SAMPLE_DECIMALS
+    ) -> tuple[tuple[Fraction, bytes], ...]:
+        """Each kept capture's instant and content key, its numbers rounded
+        to ``decimals`` (:meth:`RegisteredState.content_key`): equal between
+        a stepping run and one that ticks everything
+        (``Recorder(stepping=False)``) when stepping changed nothing a frame
+        reads. A callback that keeps history differs by design: stepping
+        runs it at the frames, as CE does.
+        """
+        assert self._record is not None
+        return tuple(
+            (
+                capture.instant,
+                RegisteredState(self._record, capture).content_key(decimals),
+            )
+            for capture in self.samples
+        )
+
     def base_at(self, t: Fraction) -> Capture:
         """The capture of the last instant the play was evaluated at, at or
         before ``t``.
@@ -311,31 +335,39 @@ class RegisteredState:
         """Every node reachable from the scene, with its state, depth first."""
         yield from self._record._walk(self.capture, self.capture.roots)
 
-    def content_key(self) -> bytes:
+    def content_key(self, decimals: int | None = None) -> bytes:
         """A digest of the tree's shape and its nodes' values, equal across
-        two executions when what they hold is the same.
+        two executions when what they hold is the same; with ``decimals``,
+        when their numbers agree to that many decimals.
         """
         digest = hashlib.blake2b(digest_size=16)
         for mob, state in self.nodes():
             digest.update(type(mob).__qualname__.encode())
             digest.update(len(state.submobjects).to_bytes(4, "big"))
             for key, value in sorted(zip(state.keys, state.values, strict=True)):
-                part = _value_key(value)
+                part = _value_key(value, decimals)
                 if part is not None:
                     digest.update(key.encode())
                     digest.update(part)
         return digest.digest()
 
 
-def _value_key(value: Any) -> bytes | None:
-    """A content key for a value a content key covers, else ``None``."""
+def _value_key(value: Any, decimals: int | None = None) -> bytes | None:
+    """A content key for a value a content key covers, else ``None``; its
+    floats rounded to ``decimals`` when given.
+    """
     from arachne.mobject.placement import Placement
     from arachne.mobject.values import FrozenArray, Paint
 
     if isinstance(value, (Paint, Placement)):
         return value.key
     if isinstance(value, FrozenArray):
+        if decimals is not None and value.dtype.kind in "fc":
+            # Adding zero turns -0.0, which rounding makes, into 0.0.
+            value = np.round(value, decimals) + 0.0
         return hashlib.blake2b(value.tobytes(), digest_size=16).digest()
+    if isinstance(value, float) and decimals is not None:
+        return repr(round(value, decimals) + 0.0).encode()
     if value is None or isinstance(value, (bool, int, float, str)):
         return repr(value).encode()
     return None

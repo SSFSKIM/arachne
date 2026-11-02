@@ -164,15 +164,24 @@ class Recorder:
     ``grid`` is the frame rate whose instants the record keeps (a render's),
     or ``None`` to keep every evaluated instant (a session's, which answers
     any time). ``draws`` says whether the renderer draws each play's frames
-    from the record as soon as the play has run.
+    from the record as soon as the play has run. ``stepping`` says whether a
+    ticked play's ticks no frame reads only step (:mod:`.ticking`); with
+    ``False`` every tick is full, the reference a stepping run's captures
+    compare with (:meth:`.PlayRecord.sample_keys`).
     """
 
     def __init__(
-        self, scene: Scene, *, grid: Fraction | float | None, draws: bool = True
+        self,
+        scene: Scene,
+        *,
+        grid: Fraction | float | None,
+        draws: bool = True,
+        stepping: bool = True,
     ) -> None:
         self.scene = scene
         self.grid = exact(grid) if grid is not None else None
         self.draws = draws
+        self.stepping = stepping
         self.record: Record | None = None
         self._tagging = False
         #: Which execution of the scene this is, with the plays an earlier
@@ -414,6 +423,7 @@ class Recorder:
                 admission.route == "ticked"
                 and not play.held
                 and self.grid is not None
+                and self.stepping
                 and scene.stop_condition is None
             ):
                 # Which of its ticks only step: those no frame reads.

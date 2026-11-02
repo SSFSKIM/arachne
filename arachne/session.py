@@ -65,6 +65,7 @@ class Session:
         *,
         grid: Fraction | float | None | Literal["render"] = "render",
         config: dict[str, Any] | None = None,
+        stepping: bool = True,
     ) -> Session:
         """Execute the scene class named ``scene`` from ``file`` and record it.
 
@@ -73,8 +74,10 @@ class Session:
         the session's answers equal that render's frames (a ticked play's
         dt-free callbacks run at the instants a frame reads,
         :mod:`.timeline.ticking`); ``None`` keeps and fully evaluates every
-        instant the run reaches. ``config`` overrides the configuration the
-        scene is executed under; nothing is written either way.
+        instant the run reaches. ``stepping=False`` runs every tick of a
+        ticked play in full (``Recorder``'s switch). ``config`` overrides the
+        configuration the scene is executed under; nothing is written either
+        way.
         """
         path = Path(file).resolve()
         base_dir = str(path.parent)
@@ -101,6 +104,7 @@ class Session:
                         instance,
                         grid=global_config.frame_rate if grid == "render" else grid,
                         draws=False,
+                        stepping=stepping,
                     )
                     instance.render()
                 except BaseException:

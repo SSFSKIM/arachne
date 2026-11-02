@@ -7,6 +7,8 @@ carries a dt updater, unless the scene says otherwise.
 
 from __future__ import annotations
 
+from builtins import getattr as lookup
+
 import numpy as np
 
 from arachne import (
@@ -29,16 +31,21 @@ from arachne import (
     Square,
     Succession,
     TracedPath,
+    Transform,
+    UpdateFromAlphaFunc,
     UpdateFromFunc,
     ValueTracker,
     VGroup,
     VMobject,
     Wait,
+    Wiggle,
     always_redraw,
     config,
     linear,
 )
 from arachne.utils.bezier import interpolate
+from tests.timeline import stepping_producer
+from tests.timeline import stepping_shared as shared
 
 COLOURS = [RED, ORANGE, YELLOW, GREEN, BLUE, PURPLE] * 3
 
@@ -351,3 +358,296 @@ class FadeBeside(Scene):
         square = Square()
         square.add_updater(_wander(t))
         self.play(FadeIn(square), t.animate.set_value(1), rate_func=linear)
+
+
+# Paths to what a stepping reader reads, each resolved or counted as
+# reaching anything. Each play also holds a dot whose dt-free updater nothing
+# reads, so that its other ticks step.
+
+
+def _idle() -> Dot:
+    """A dot whose dt-free updater nothing reads: the plan skips it."""
+    idle = Dot(color=BLUE, radius=0.05).shift(2 * DOWN)
+    idle.add_updater(lambda m: m.set_x(2))
+    return idle
+
+
+class OwnerWrite(Scene):
+    """A dt-free updater writes, through an attribute of the mobject it
+    updates, the dot a dt updater reads.
+    """
+
+    def construct(self):
+        t = ValueTracker(0)
+        source = Dot()
+        holder = Dot(color=BLUE)
+        holder.source = source
+        holder.add_updater(lambda m: m.source.set_x(t.get_value()))
+        output = Dot(color=RED, radius=0.05)
+        output.add_updater(lambda m, dt: m.shift(dt * source.get_x() * RIGHT))
+        self.add(t, holder, source, output, _idle())
+        self.play(t.animate.set_value(1), rate_func=linear)
+
+
+class ContainerWrite(Scene):
+    """A dt-free updater writes the dot a dt updater reads through a list it
+    makes: the list is its own, what it holds is not.
+    """
+
+    def construct(self):
+        t = ValueTracker(0)
+        source = Dot()
+        holder = Dot(color=BLUE)
+
+        def update(m):
+            values = [source]
+            values[0].set_x(t.get_value())
+
+        holder.add_updater(update)
+        output = Dot(color=RED, radius=0.05)
+        output.add_updater(lambda m, dt: m.shift(dt * source.get_x() * RIGHT))
+        self.add(t, holder, source, output, _idle())
+        self.play(t.animate.set_value(1), rate_func=linear)
+
+
+class ReusedFactory(Scene):
+    """Two dt-free updaters made by one function, each writing the dot it
+    closes over: the second writes the dot a dt updater reads.
+    """
+
+    def construct(self):
+        t = ValueTracker(0)
+        first, second = Dot(color=BLUE), Dot(color=GREEN)
+
+        def writer(target):
+            return lambda m: target.set_x(t.get_value())
+
+        one, two = Dot(radius=0.05), Dot(radius=0.05)
+        one.add_updater(writer(first))
+        two.add_updater(writer(second))
+        output = Dot(color=RED, radius=0.05)
+        output.add_updater(lambda m, dt: m.shift(dt * second.get_x() * RIGHT))
+        self.add(t, first, second, one, two, output, _idle())
+        self.play(t.animate.set_value(1), rate_func=linear)
+
+
+class ClassRead(Scene):
+    """A dt updater reads a dot through an attribute its holder's class
+    holds, not the holder.
+    """
+
+    def construct(self):
+        t = ValueTracker(0)
+        source = Dot()
+        source.add_updater(lambda m: m.set_x(t.get_value()))
+
+        class Holder:
+            pass
+
+        Holder.source = source
+        holder = Holder()
+        output = Dot(color=RED, radius=0.05)
+        output.add_updater(lambda m, dt: m.shift(dt * holder.source.get_x() * RIGHT))
+        self.add(t, source, output, _idle())
+        self.play(t.animate.set_value(1), rate_func=linear)
+
+
+class ArrayAlias(Scene):
+    """A dt-free updater writes an array; a dt updater reads a view of it."""
+
+    def construct(self):
+        t = ValueTracker(0)
+        original = np.array([0.0])
+        view = original[:]
+        holder = Dot(color=BLUE)
+
+        def update(m):
+            original[0] = t.get_value()
+
+        holder.add_updater(update)
+        output = Dot(color=RED, radius=0.05)
+        output.add_updater(lambda m, dt: m.shift(dt * view[0] * RIGHT))
+        self.add(t, holder, output, _idle())
+        self.play(t.animate.set_value(1), rate_func=linear)
+
+
+class ModuleAlias(Scene):
+    """A dt-free updater writes a module's attribute under one alias; a dt
+    updater reads it under another.
+    """
+
+    def construct(self):
+        shared.value = 0.0
+        t = ValueTracker(0)
+        holder = Dot(color=BLUE)
+        holder.add_updater(stepping_producer.publish(t))
+        output = Dot(color=RED, radius=0.05)
+        output.add_updater(lambda m, dt: m.shift(dt * shared.value * RIGHT))
+        self.add(t, holder, output, _idle())
+        self.play(t.animate.set_value(1), rate_func=linear)
+
+
+class PropertyRead(Scene):
+    """A dt updater reads a property of a dot a dt-free updater resizes."""
+
+    def construct(self):
+        t = ValueTracker(0)
+        other = Dot()
+        other.add_updater(lambda m: m.scale_to_fit_width(0.25 + t.get_value()))
+        output = Dot(color=RED, radius=0.05)
+        output.add_updater(lambda m, dt: m.shift(dt * other.width * RIGHT))
+        self.add(t, other, output, _idle())
+        self.play(t.animate.set_value(1), rate_func=linear)
+
+
+class MethodRead(Scene):
+    """A dt updater reads a dot a dt-free updater moves, through a method."""
+
+    def construct(self):
+        t = ValueTracker(0)
+        other = Dot()
+        other.add_updater(lambda m: m.set_x(t.get_value()))
+        output = Dot(color=RED, radius=0.05)
+        output.add_updater(lambda m, dt: m.shift(dt * other.get_center()[0] * RIGHT))
+        self.add(t, other, output, _idle())
+        self.play(t.animate.set_value(1), rate_func=linear)
+
+
+class GroupRead(Scene):
+    """A dt updater reads a group whose member a dt-free updater moves."""
+
+    def construct(self):
+        t = ValueTracker(0)
+        other = Dot()
+        other.add_updater(lambda m: m.set_x(t.get_value()))
+        group = VGroup(other)
+        output = Dot(color=RED, radius=0.05)
+        output.add_updater(lambda m, dt: m.shift(dt * group.get_center()[0] * RIGHT))
+        self.add(t, group, output, _idle())
+        self.play(t.animate.set_value(1), rate_func=linear)
+
+
+# Callbacks that change which updaters there are
+
+
+class NewReader(Scene):
+    """An ``UpdateFromAlphaFunc`` gives a dot, a quarter of the way in, a dt
+    updater reading a dot a dt-free updater moves.
+    """
+
+    def construct(self):
+        t = ValueTracker(0)
+        source = Dot()
+        source.add_updater(lambda m: m.set_x(t.get_value()))
+        output = Dot(color=RED, radius=0.05)
+
+        def install(m, alpha):
+            if alpha >= 0.25 and not m.updaters:
+                m.add_updater(lambda mob, dt: mob.shift(dt * source.get_x() * RIGHT))
+
+        self.add(t, source, output, _idle())
+        self.play(
+            t.animate.set_value(1),
+            UpdateFromAlphaFunc(output, install),
+            rate_func=linear,
+        )
+
+
+class ReaderRemoved(Scene):
+    """An ``UpdateFromAlphaFunc`` takes, half way in, the dt updater from a
+    dot that reads a dot whose dt-free updater keeps history.
+    """
+
+    def construct(self):
+        source = Dot()
+        source.add_updater(lambda m: m.shift(0.02 * RIGHT))
+        output = Dot(color=RED, radius=0.05)
+        output.add_updater(lambda m, dt: m.shift(dt * source.get_x() * UP))
+
+        def remove(m, alpha):
+            if alpha >= 0.5:
+                m.clear_updaters()
+
+        self.add(source, output, _idle())
+        self.play(UpdateFromAlphaFunc(output, remove), rate_func=linear)
+
+
+class AliasedLookup(Scene):
+    """A dt updater reads an attribute it names at run time through
+    ``getattr`` under another name: its reads can't be bounded.
+    """
+
+    def construct(self):
+        t = ValueTracker(0)
+        source = Dot()
+        source.add_updater(lambda m: m.set_x(t.get_value()))
+        holder = Dot(color=BLUE)
+        holder.source = source
+        name = "source"
+        output = Dot(color=RED, radius=0.05)
+        output.add_updater(
+            lambda m, dt: m.shift(dt * lookup(holder, name).get_x() * RIGHT)
+        )
+        self.add(t, source, output, _idle())
+        self.play(t.animate.set_value(1), rate_func=linear)
+
+
+# Interpolation a stepping reader reads
+
+
+def _middle_reader(middle) -> Dot:
+    """A dot whose dt updater moves right at the speed of ``middle``'s y."""
+    output = Dot(color=RED, radius=0.05)
+    output.add_updater(lambda m, dt: m.shift(dt * middle.get_y() * RIGHT))
+    return output
+
+
+class AlphaReader(Scene):
+    """A dt updater reads a dot an ``UpdateFromAlphaFunc`` places at a dot a
+    dt-free updater moves.
+    """
+
+    def construct(self):
+        t = ValueTracker(0)
+        source = Dot()
+        source.add_updater(lambda m: m.set_y(t.get_value()))
+        middle = Dot(color=BLUE)
+        self.add(t, source, middle, _middle_reader(middle), _idle())
+        self.play(
+            t.animate.set_value(1),
+            UpdateFromAlphaFunc(middle, lambda m, a: m.set_y(source.get_y())),
+            rate_func=linear,
+        )
+
+
+class TargetReader(Scene):
+    """A dt updater reads a dot transforming into a dot a dt-free updater
+    moves.
+    """
+
+    def construct(self):
+        t = ValueTracker(0)
+        source = Dot()
+        source.add_updater(lambda m: m.set_y(t.get_value()))
+        middle = Dot(color=BLUE)
+        self.add(t, source, middle, _middle_reader(middle), _idle())
+        self.play(t.animate.set_value(1), Transform(middle, source), rate_func=linear)
+
+
+class WiggleReader(Scene):
+    """A dt updater reads a square that wiggles while a dt-free updater
+    moves it.
+    """
+
+    def construct(self):
+        t = ValueTracker(0)
+        middle = Square(side_length=0.5)
+        middle.add_updater(lambda m: m.set_x(t.get_value()))
+        output = Dot(color=RED, radius=0.05)
+        output.add_updater(lambda m, dt: m.shift(dt * middle.get_x() * UP))
+        self.add(t, middle, output, _idle())
+        self.play(
+            t.animate.set_value(1),
+            Wiggle(middle, suspend_mobject_updating=False),
+            rate_func=linear,
+        )

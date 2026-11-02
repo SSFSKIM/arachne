@@ -72,9 +72,11 @@ def session_of():
     opened: list[Session] = []
 
     def open_session(
-        name: str, path: Path = SCENES, *, grid="render", **settings
+        name: str, path: Path = SCENES, *, grid="render", stepping=True, **settings
     ) -> Session:
-        session = Session.open(path, name, grid=grid, config={**SMALL, **settings})
+        session = Session.open(
+            path, name, grid=grid, config={**SMALL, **settings}, stepping=stepping
+        )
         opened.append(session)
         return session
 
