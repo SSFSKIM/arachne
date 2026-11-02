@@ -211,7 +211,9 @@ class Scene:
                 setattr(result, k, v)
             setattr(result, k, copy.deepcopy(v, clone_from_id))
         result.manager = None
-        result.timeline = Recorder(result, grid=self.timeline.grid)
+        result.timeline = Recorder(
+            result, grid=self.timeline.grid, stepping=self.timeline.stepping
+        )
 
         return result
 

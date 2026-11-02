@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 
 from arachne.timeline.clock import frames_in
-from arachne.timeline.ticking import UNBOUNDED, loads_dt
+from arachne.timeline.ticking import STRUCTURAL, UNBOUNDED, loads_dt
 
 from . import stepping_scenes
 from .conftest import render
@@ -183,6 +183,7 @@ def test_redraws_that_keep_history_are_built_at_the_frames_as_in_ce(session_of):
     ("name", "why"),
     [
         ("DynamicRead", "uses getattr"),
+        ("AliasedLookup", "holds getattr as a value"),
         ("OwnAnimationScene", "OwnAnimation is the scene's own animation class"),
     ],
 )
@@ -261,3 +262,123 @@ def test_a_fade_beside_a_dt_updater_that_reads_it_not_stays_stepping():
     assert play.tick_plan.pulled == 0
     assert play.tick_plan.skipped
     assert play.stepping_ticks == 60 - 4
+
+
+# The switch a differential sweep compares with
+
+
+def _same_as_full_ticks(session_of, name: str, fps: int):
+    """Every capture a stepping session keeps equals the one a session that
+    ticks everything keeps at the same instant; the stepping session.
+    """
+    stepped = session_of(name, STEPPING_SCENES, frame_rate=fps)
+    full = session_of(name, STEPPING_SCENES, frame_rate=fps, stepping=False)
+    assert all(p.tick_plan is None and p.stepping_ticks == 0 for p in full.record.plays)
+    for ours, theirs in zip(stepped.record.plays, full.record.plays, strict=True):
+        assert ours.sample_keys() == theirs.sample_keys(), (name, fps, ours.index)
+    return stepped
+
+
+@pytest.mark.parametrize("fps", [4, 15])
+def test_stepping_off_ticks_everything_on_the_same_grid(session_of, fps):
+    stepped = _same_as_full_ticks(session_of, "Unchanged", fps)
+    assert stepped.record.plays[-1].stepping_ticks == 60 - fps
+
+
+def test_the_captures_tell_history_kept_at_the_frames_from_every_tick(session_of):
+    """Redraws that keep history differ between the two runs by design: CE
+    builds them at its frames, which stepping keeps.
+    """
+    stepped = session_of("Staircases", STEPPING_SCENES, frame_rate=4)
+    full = session_of("Staircases", STEPPING_SCENES, frame_rate=4, stepping=False)
+    ours, theirs = stepped.record.plays[-1], full.record.plays[-1]
+    assert [t for t, _ in ours.sample_keys()] == [t for t, _ in theirs.sample_keys()]
+    assert ours.sample_keys() != theirs.sample_keys()
+
+
+# Every path to what a stepping reader reads: resolved to a mobject's family,
+# or counted as reaching anything
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "OwnerWrite",
+        "ContainerWrite",
+        "ReusedFactory",
+        "ClassRead",
+        "ArrayAlias",
+        "ModuleAlias",
+    ],
+)
+@pytest.mark.parametrize("fps", [4, 15])
+def test_a_producer_reached_through_any_path_steps_with_its_reader(
+    session_of, name, fps
+):
+    """Through an attribute of the mobject it updates, a list it makes, a
+    function another shares its code with, a class attribute, a view of an
+    array or a module imported under another name: the dt-free updater
+    stepping work reads steps, the dot nothing reads waits for the frames.
+    """
+    play = _same_as_full_ticks(session_of, name, fps).record.plays[-1]
+    assert not any(r.startswith(UNBOUNDED) for r in play.admission.reasons)
+    assert play.tick_plan.pulled >= 1
+    assert play.tick_plan.skipped
+    assert play.stepping_ticks == 60 - fps
+
+
+@pytest.mark.parametrize("name", ["PropertyRead", "MethodRead", "GroupRead"])
+def test_a_read_of_another_mobject_pulls_only_its_producer(session_of, name):
+    """A property, a method or a group's centre of a mobject the reader
+    closes over: its producer steps, the idle dot does not.
+    """
+    play = _same_as_full_ticks(session_of, name, 4).record.plays[-1]
+    assert not any(r.startswith(UNBOUNDED) for r in play.admission.reasons)
+    assert play.tick_plan.pulled == 1
+    assert len(play.tick_plan.skipped) == 1
+    assert play.stepping_ticks == 60 - 4
+
+
+@pytest.mark.parametrize("name", ["AlphaReader", "TargetReader", "WiggleReader"])
+@pytest.mark.parametrize("fps", [4, 15])
+def test_interpolation_a_stepping_reader_reads_keeps_its_inputs_on_the_tick(
+    session_of, name, fps
+):
+    """An ``UpdateFromAlphaFunc`` following a dot, a ``Transform`` into one,
+    a ``Wiggle`` of a mobject its updater moves: what the interpolation reads
+    steps with it, and the idle dot still waits for the frames.
+    """
+    play = _same_as_full_ticks(session_of, name, fps).record.plays[-1]
+    assert not any(r.startswith(UNBOUNDED) for r in play.admission.reasons)
+    assert len(play.tick_plan.skipped) == 1
+    assert play.stepping_ticks > 0
+
+
+def test_the_stepping_families_hold_what_stepping_reads_and_writes(session_of):
+    session = session_of("MethodRead", STEPPING_SCENES, frame_rate=4)
+    _, other, output, idle = session.scene.mobjects
+    families = session.record.plays[-1].tick_plan.stepping_families()
+    assert {id(other), id(output)} <= families
+    assert id(idle) not in families
+
+
+@pytest.mark.parametrize(
+    ("name", "why"),
+    [
+        ("NewReader", "UpdateFromAlphaFunc"),
+        ("ReaderRemoved", "UpdateFromAlphaFunc"),
+    ],
+)
+def test_a_play_whose_callbacks_change_its_updaters_ticks_everything(
+    session_of, name, why
+):
+    """A callback that may add or remove an updater as the play runs would
+    leave a stepping tick to meet work its plan never weighed, or keep
+    stepping work its plan weighed gone: the play ticks everything.
+    """
+    play = _same_as_full_ticks(session_of, name, 4).record.plays[-1]
+    (reason,) = [r for r in play.admission.reasons if r.startswith(STRUCTURAL)]
+    assert reason.startswith(f"{STRUCTURAL}: {why} ")
+    assert play.tick_plan.unbounded == reason
+    assert play.stepping_ticks == 0
+    assert play.full_ticks == 60
