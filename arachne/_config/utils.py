@@ -51,6 +51,8 @@ _OPENGL_OPTION = (
 #: Options Manim CE had that Arachne doesn't, with what replaces each: those
 #: CE 0.22 replaced (its changelog's migration notes) and the OpenGL
 #: renderer's. Setting, reading or configuring one raises, naming it.
+#: Deliberate break 7 (strict configuration: an unknown name raises, and each
+#: of the 17 removed options names its replacement), approved 2026-11-02.
 REMOVED_OPTIONS: dict[str, str] = {
     "write_to_movie": (
         "Manim CE 0.22 replaced it with format: "
@@ -94,7 +96,11 @@ REMOVED_SECTIONS: dict[str, str] = {
 
 
 def no_option(name: str) -> str:
-    """The error for ``name``, which is no configuration option."""
+    """The error for ``name``, which is no configuration option.
+
+    Deliberate break 7 (strict configuration: an unknown name raises, and each
+    of the 17 removed options names its replacement), approved 2026-11-02.
+    """
     message = f"Arachne has no configuration option {name!r}"
     if name in REMOVED_OPTIONS:
         message += f": {REMOVED_OPTIONS[name]}. Remove the setting"
@@ -401,6 +407,12 @@ class ManimConfig(MutableMapping):
         option.fset(self, val)  # fset is the property's setter
 
     def __setattr__(self, name: str, value: Any) -> None:
+        """Set option ``name``; any other public name raises (:func:`no_option`).
+
+        Deliberate break 7 (strict configuration: an unknown name raises, and
+        each of the 17 removed options names its replacement), approved
+        2026-11-02.
+        """
         # An option is a property: any other public name, a method's
         # included, is a setting that would be kept and never read.
         if not name.startswith("_") and not isinstance(
@@ -410,6 +422,12 @@ class ManimConfig(MutableMapping):
         super().__setattr__(name, value)
 
     def __getattr__(self, name: str) -> NoReturn:
+        """Reading a removed option raises, naming its replacement.
+
+        Deliberate break 7 (strict configuration: an unknown name raises, and
+        each of the 17 removed options names its replacement), approved
+        2026-11-02.
+        """
         # Only for a name found nowhere else.
         if name in REMOVED_OPTIONS:
             raise AttributeError(no_option(name))
