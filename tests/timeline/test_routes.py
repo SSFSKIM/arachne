@@ -75,6 +75,11 @@ def test_state_at_answers_each_route(session_of):
         session.state_at(play.start + Fraction(1, 7))
     with pytest.raises(Unavailable):
         session.frame(play.start + Fraction(1, 7))
+    # What restoring it will start from: the start capture and the
+    # animations' state there.
+    start = play.sample_at(play.start)
+    assert start is not None
+    assert list(play._animation_states) == [start.seq]
 
     trusted = session_of("TrustedTransform", ROUTE_SCENES)
     state = trusted.state_at(Fraction(1, 7))
