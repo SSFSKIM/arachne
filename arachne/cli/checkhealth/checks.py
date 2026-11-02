@@ -86,8 +86,9 @@ def healthcheck(
         "To fix the PATH issue properly: "
         "Usually, the Python package installer pip issues a warning "
         "during the installation which contains more information. "
-        "Consider reinstalling arachne via <pip uninstall arachne> "
-        "followed by <pip install arachne> to see the warning again, "
+        "Consider reinstalling arachne via <pip uninstall arachne-engine> "
+        "followed by <pip install git+https://github.com/SSFSKIM/arachne> "
+        "to see the warning again, "
         "then consult the internet on how to modify your system's "
         "PATH variable."
     ),
@@ -110,8 +111,9 @@ def is_manim_on_path() -> bool:
         "The command <arachne> does not belong to your installed version "
         "of this library, it likely belongs to manimgl / manimlib.\n\n"
         "Run arachne via <python -m arachne>, or uninstall "
-        "and reinstall arachne via <pip install --upgrade "
-        "--force-reinstall arachne> to fix this."
+        "and reinstall arachne via <pip install --upgrade --force-reinstall "
+        "git+https://github.com/SSFSKIM/arachne> to fix this (its distribution "
+        "is arachne-engine; PyPI's arachne is another project)."
     ),
     skip_on_failed=[is_manim_on_path],
 )

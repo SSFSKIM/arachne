@@ -81,6 +81,18 @@ def test_manim_checkhealth_subcommand():
     assert "No problems detected, your installation seems healthy!" in output_lines
 
 
+def test_checkhealth_recommends_installing_this_distribution():
+    """PyPI's ``arachne`` is another project: reinstall advice names this repository and the
+    distribution ``arachne-engine``.
+    """
+    advice = "\n".join(check.recommendation for check in HEALTH_CHECKS)
+    assert "pip install arachne>" not in advice
+    assert "pip uninstall arachne>" not in advice
+    assert "--force-reinstall arachne>" not in advice
+    assert "<pip uninstall arachne-engine>" in advice
+    assert "git+https://github.com/SSFSKIM/arachne" in advice
+
+
 def test_manim_checkhealth_failing_subcommand():
     command = ["checkhealth"]
     runner = CliRunner()
