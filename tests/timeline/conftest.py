@@ -78,6 +78,7 @@ def session_of():
         grid="render",
         stepping=True,
         on_step=None,
+        on_tick=None,
         **settings,
     ) -> Session:
         session = Session.open(
@@ -87,6 +88,7 @@ def session_of():
             config={**SMALL, **settings},
             stepping=stepping,
             on_step=on_step,
+            on_tick=on_tick,
         )
         opened.append(session)
         return session
