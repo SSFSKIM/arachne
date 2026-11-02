@@ -24,6 +24,7 @@ import numpy as np
 
 from .admission import admit, camera_refusal
 from .clock import exact, play_end
+from .dispatch import draw_refusal
 from .draw import CameraExtras, LiveFrames, camera_nodes
 from .events import plan_events
 from .origins import ORIGINS
@@ -155,7 +156,33 @@ class Recorder:
                     " shows the last picture drawn into it, so the frames from then on"
                     " are drawn while the scene runs and the record answers no instant"
                 )
+        if record.refusal is None:
+            record.refusal = self._draw_refusal()
         return record.refusal
+
+    def _draw_refusal(self) -> str | None:
+        """:func:`.draw_refusal` of what the camera draws now and what the
+        play about to run brings in (its animations' mobjects, Succession
+        parts included).
+        """
+        from . import trusted
+
+        scene = self.scene
+        camera = scene.renderer.camera
+        animated = [
+            animation.mobject
+            for animation in trusted.iter_animations(scene.animations or [])
+            if animation.mobject is not None
+        ]
+        return draw_refusal(
+            camera,
+            [
+                *scene.mobjects,
+                *scene.foreground_mobjects,
+                *animated,
+                *camera_nodes(camera),
+            ],
+        )
 
     def begin_run(self) -> None:
         """The scene's script is about to run: tag the mobjects it makes."""
@@ -169,6 +196,9 @@ class Recorder:
         """The script has ended: capture what it left."""
         record = self.ensure_record()
         try:
+            if record.refusal is None:
+                # What the script added after its last play: the final frame.
+                record.refusal = self._draw_refusal()
             camera = self.scene.renderer.camera
             extras = CameraExtras.observe(camera, None)
             now = self.scene.time
@@ -267,6 +297,9 @@ class Recorder:
             route.run(run, plan)
             if live is not None:
                 live.end(run.end)
+            if record.refusal is None:
+                # A mobject a callback added while the play ran.
+                record.refusal = self._draw_refusal()
         finally:
             plan.release()
 

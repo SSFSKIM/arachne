@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 
 from arachne import (
+    BLUE,
     DOWN,
     RED,
     UP,
@@ -24,17 +25,21 @@ from arachne import (
     ImageMobjectFromCamera,
     ParametricFunction,
     SVGMobject,
+    ThreeDAxes,
     TracedPath,
     ValueTracker,
     Variable,
     VGroup,
+    tempconfig,
 )
+from arachne.camera.camera import Camera
 from arachne.timeline import setters
-from arachne.timeline.dispatch import engine_patches
+from arachne.timeline.dispatch import draw_methods, draw_refusal, engine_patches
 from arachne.timeline.purity import Refused, prove_builder, prove_setter_body
+from arachne.timeline.routes import RecordRefused
 
 from . import soundness_scenes
-from .conftest import render
+from .conftest import SMALL, render
 
 SOUNDNESS_SCENES = Path(soundness_scenes.__file__)
 
@@ -404,3 +409,74 @@ def test_setters_are_proven_on_their_argument_domain_only():
         prove_setter_body(
             lambda m: m.move_to(UP, coor_mask=np.array([1, 0, 0])), d, None
         )
+
+
+# Drawing runs no scene code.
+
+
+def _drawn_serially(fps: int) -> list[np.ndarray]:
+    """``OverriddenFill``'s frames as CE draws them: the camera capturing the
+    dot at each frame of each wait, with the colour of that wait.
+    """
+    cls = soundness_scenes.CountingFill
+    frames: list[np.ndarray] = []
+    with tempconfig(
+        {**SMALL, "frame_rate": fps, "dry_run": True, "disable_caching": True}
+    ):
+        camera = soundness_scenes.OverriddenFill().renderer.camera
+        dot = cls(radius=0.3)
+        for colour in (RED, BLUE):
+            cls.colour = colour
+            camera.reset()
+            camera.capture_mobjects([dot])
+            frames.extend([camera.pixel_array.copy()] * (fps // 2))
+    return frames
+
+
+def test_the_draw_methods_are_read_from_the_camera_code():
+    names = draw_methods(Camera)
+    for name in (
+        "get_fill_rgbas",
+        "get_stroke_rgbas",
+        "get_stroke_width",
+        "get_gradient_start_and_end_points",
+        "pixel_array",
+    ):
+        assert name in names, name
+    assert "get_anchors" not in names
+
+
+def test_a_mobject_overriding_a_draw_method_is_drawn_as_the_scene_runs(session_of):
+    session = session_of("OverriddenFill", SOUNDNESS_SCENES)
+    record = session.record
+    assert record.refusal.startswith("draw.user_override: CountingFill.get_fill_rgbas:")
+    calls = session.module.CountingFill.calls
+    before = len(calls)
+    with pytest.raises(RecordRefused, match="draw.user_override"):
+        session.frame(Fraction(1, 4))
+    with pytest.raises(RecordRefused):
+        session.state_at(Fraction(1, 4))
+    assert len(calls) == before
+    _, frames = render(soundness_scenes.OverriddenFill, 6)
+    expected = _drawn_serially(6)
+    assert len(frames) == len(expected)
+    for k, (frame, reference) in enumerate(zip(frames, expected, strict=True)):
+        assert np.array_equal(frame, reference), k
+    assert not np.array_equal(frames[0], frames[-1])
+
+
+def test_a_mobject_overriding_a_draw_method_that_joins_mid_play_is_never_drawn(
+    session_of,
+):
+    """Its play's frames were to be drawn from the record: the render stops
+    with the reason rather than run the override after the play.
+    """
+    session = session_of("FillJoinsMidPlay", SOUNDNESS_SCENES)
+    assert session.record.refusal.startswith("draw.user_override: CountingFill.")
+    with pytest.raises(RecordRefused, match="joined the scene during play 0"):
+        render(soundness_scenes.FillJoinsMidPlay, 6)
+
+
+def test_what_the_engine_puts_on_an_instance_is_the_engine_s_draw():
+    """ThreeDAxes gives its pieces gradient points of their own."""
+    assert draw_refusal(Camera(), [ThreeDAxes()]) is None

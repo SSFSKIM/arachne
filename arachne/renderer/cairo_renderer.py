@@ -13,6 +13,7 @@ from ..mobject.mobject import Mobject, _AnimationBuilder
 from ..scene.scene_file_writer import SceneFileWriter
 from ..timeline.clock import TICK_RATE, exact, frames_in
 from ..timeline.draw import Drawing, LiveFrames
+from ..timeline.routes import RecordRefused
 from ..utils.exceptions import EndSceneEarlyException
 from ..utils.iterables import list_update
 from .protocol import RendererCapabilities
@@ -138,6 +139,14 @@ class CairoRenderer:
             # A play shorter than the gap between two frames shows in none.
             cache_key = None
         draw = cache_key is not None and timeline.draws
+        refusal = timeline.ensure_record().refusal
+        if draw and refusal is not None:
+            # A mobject the record can't draw joined while the play ran: its
+            # frames could only be drawn now by running the scene's code.
+            raise RecordRefused(
+                f"{refusal}; it joined the scene during play {play.index}, whose"
+                " frames were to be drawn from the record"
+            )
         if draw and self.file_writer.is_already_cached(cache_key):
             logger.info(
                 f"Animation {self.num_plays} : Using cached data (hash : %(hash_current_animation)s)",
