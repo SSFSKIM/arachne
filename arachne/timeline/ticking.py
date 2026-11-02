@@ -54,7 +54,8 @@ import dis
 import functools
 import inspect
 import types
-from collections.abc import Iterable, Iterator
+import weakref
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any
@@ -262,6 +263,36 @@ _IMMUTABLE = (
 )
 
 
+def _user_methods(cls: type) -> dict[str, types.FunctionType]:
+    """The functions a scene's own class and its own bases define, by name
+    (the nearest definition), properties' getters included; none for the
+    engine's classes.
+    """
+    try:
+        return _USER_METHODS[cls]
+    except (KeyError, TypeError):
+        pass
+    found: dict[str, types.FunctionType] = {}
+    for klass in reversed(cls.__mro__):
+        if engine_class(klass) or klass is object:
+            continue
+        for name, member in vars(klass).items():
+            if isinstance(member, (staticmethod, classmethod)):
+                member = member.__func__
+            if isinstance(member, property):
+                member = member.fget
+            if isinstance(member, types.FunctionType):
+                found[name] = member
+    with contextlib.suppress(TypeError):
+        _USER_METHODS[cls] = found
+    return found
+
+
+_USER_METHODS: weakref.WeakKeyDictionary[type, dict[str, types.FunctionType]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
 class _Reach:
     def __init__(self) -> None:
         self.ids: set[int] = set()
@@ -382,23 +413,18 @@ class _Reach:
 
     def _class_code(self, cls: type) -> None:
         """A user class's methods: what its instances' methods may read."""
-        for klass in cls.__mro__:
-            if engine_class(klass) or klass is object:
-                continue
-            for member in vars(klass).values():
-                if isinstance(member, (staticmethod, classmethod)):
-                    member = member.__func__
-                if isinstance(member, property):
-                    member = member.fget
-                if isinstance(member, types.FunctionType):
-                    self.visit(member)
+        for function in _user_methods(cls).values():
+            self.visit(function)
 
     def _attributes(self, obj: Any) -> None:
-        """Follow the attributes of ``obj`` that the code reached so far names."""
+        """Follow the attributes of ``obj`` that the code reached so far names,
+        those it has not followed yet.
+        """
         from arachne.scene.scene import Scene
 
-        names = frozenset(self.names)
-        self._filtered[id(obj)] = (obj, names)
+        done = self._filtered.get(id(obj), (obj, frozenset()))[1]
+        names = self.names - done
+        self._filtered[id(obj)] = (obj, frozenset(self.names))
         try:
             own = vars(obj)
         except TypeError:
@@ -421,16 +447,10 @@ class _Reach:
                 self.visit(list(obj.foreground_mobjects))
             if "updaters" in names:
                 self.visit(list(obj.updaters))
-        cls = type(obj)
-        if not isinstance(obj, types.ModuleType) and not engine_class(cls):
-            for name in names:
-                member = inspect.getattr_static(cls, name, None)
-                if isinstance(member, (staticmethod, classmethod)):
-                    member = member.__func__
-                if isinstance(member, property):
-                    member = member.fget
-                if isinstance(member, types.FunctionType):
-                    self.visit(member)
+        if not isinstance(obj, types.ModuleType):
+            methods = _user_methods(type(obj))
+            for name in names & methods.keys():
+                self.visit(methods[name])
 
     def callable(self, function: Any) -> None:
         if isinstance(function, types.MethodType):
@@ -472,6 +492,27 @@ def _global_key(namespace: dict[str, Any], name: str) -> int:
 #: Calls that name an attribute by a value: bounded when it is a constant.
 _BY_NAME = frozenset({"getattr", "setattr", "delattr", "hasattr"})
 
+#: Each code object's source node, or why it has none: finding it reads the
+#: file and the code's instructions, so a scene's plays share the answer.
+_SOURCE_NODES: dict[types.CodeType, ast.AST | Exception] = {}
+
+
+def _source_node(function: Any) -> Any:
+    """``purity._function_node``, remembered by code object."""
+    from . import purity
+
+    code = function.__code__
+    found = _SOURCE_NODES.get(code)
+    if found is None:
+        try:
+            found = purity._function_node(function)
+        except purity.Refused as refused:
+            found = refused
+        _SOURCE_NODES[code] = found
+    if isinstance(found, Exception):
+        raise found
+    return found
+
 
 def _attribute_constants(function: Any, code: types.CodeType) -> set[str]:
     """The attributes the code names through ``getattr`` and its kin, each
@@ -483,7 +524,7 @@ def _attribute_constants(function: Any, code: types.CodeType) -> set[str]:
     if dynamic - _BY_NAME:
         raise Unbounded(f"uses {', '.join(sorted(dynamic - _BY_NAME))}", code)
     try:
-        node = purity._function_node(function)
+        node = _source_node(function)
     except purity.Refused as refused:
         raise Unbounded(
             f"uses {', '.join(sorted(dynamic))} ({refused})", code
@@ -596,7 +637,7 @@ class _Writes:
         if depth > MAX_DEPTH:
             return True
         try:
-            node = purity._function_node(function)
+            node = _source_node(function)
         except purity.Refused:
             return True
         bindings = self._bindings(function)
@@ -830,10 +871,19 @@ class _Node:
     #: "transparent" (a trusted animation's interpolation) runs at every tick
     #: and passes on its reads only when stepping work reads what it writes.
     role: str
-    reads: frozenset[int]
+    #: What it may read: a set, or how to find it. A dt-free callback that
+    #: writes only what it updates is reached only once something pulls it,
+    #: since until then what it reads matters to no stepping tick.
+    reach_of: frozenset[int] | Callable[[], frozenset[int]]
     writes: frozenset[int] = frozenset()
     keys: tuple[tuple[int, int], ...] = ()
     active: bool = False
+
+    @property
+    def reads(self) -> frozenset[int]:
+        if callable(self.reach_of):
+            self.reach_of = self.reach_of()
+        return self.reach_of
 
 
 def _family_ids(mob: Any) -> frozenset[int]:
@@ -889,7 +939,7 @@ def _animation_node(animation: Animation, check: _Writes) -> _Node:
     if type(animation) in trusted.LEAVES:
         writes = frozenset(trusted.writes(animation))
     elif isinstance(animation, trusted.CALLBACK_ANIMATIONS):
-        function = animation.update_function
+        function = vars(animation)["update_function"]
         writes = frozenset(trusted.writes(animation))
         try:
             owners = frozenset(list(inspect.signature(function).parameters)[:1])
@@ -931,15 +981,19 @@ def _updater_node(
             parameters = []
         owners = frozenset(parameters[:1])
         what = "updater " + _describe(function)
-    if id(function) not in reaches:
-        reaches[id(function)] = reach([function])
-    reads = reaches[id(function)] | _family_ids(member) | _family_ids(target)
+    own = _family_ids(member) | _family_ids(target)
+
+    def reads() -> frozenset[int]:
+        if id(function) not in reaches:
+            reaches[id(function)] = reach([function])
+        return reaches[id(function)] | own
+
     if loads_dt(updater):
-        return _Node(what, "step", reads, keys=(key,))
-    writes = _family_ids(target)
+        return _Node(what, "step", reads(), keys=(key,))
     if check.elsewhere(function, owners):
-        writes = reads
-    return _Node(what, "instant", reads, writes, keys=(key,))
+        found = reads()
+        return _Node(what, "instant", found, found, keys=(key,))
+    return _Node(what, "instant", reads, _family_ids(target), keys=(key,))
 
 
 def _closure(nodes: list[_Node]) -> int:
@@ -991,6 +1045,8 @@ def plan_ticks(
         return unbounded(
             "the camera draws other cameras, whose inputs it does not weigh"
         )
+    # A scene may redefine its classes' methods between plays.
+    _USER_METHODS.clear()
     nodes: list[_Node] = []
     try:
         for animation in trusted.iter_animations(animations):
@@ -1020,9 +1076,9 @@ def plan_ticks(
                     reach(list(centres.values()), centres),
                 )
             )
+        pulled = _closure(nodes)
     except Unbounded as refused:
         return unbounded(refused.describe(base_dir))
-    pulled = _closure(nodes)
     return TickPlan(
         skipped=frozenset(
             key
