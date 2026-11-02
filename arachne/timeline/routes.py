@@ -1,33 +1,72 @@
 """How a play is evaluated, and how its instants are answered: its route.
 
 Every route evaluates a play forward, once, in the scene's own run, and
-leaves the play's samples in the record; :func:`answer` then reads an
-instant through the route of the play that holds it.
+leaves the play's samples in the record; :func:`answer` and :func:`draw`
+then read an instant through the route of the play that holds it. Which
+route a play takes is decided when it begins (:mod:`.admission`).
 
-- ``"ticked"`` (route 3): the play steps on the global 60 Hz tick, its
-  events taken at the first tick at or after their instants, and its ticks
-  are captured. Sound by construction: a sample is the forward run's own
-  state. Every play takes this route until the trusted (1) and
-  state-function (2) routes admit plays to themselves.
+- ``"trusted"`` (route 1): the play is evaluated at its start, at its event
+  instants and at the frames a render draws, and at any other instant it is
+  evaluated exactly there: the recorded state at the last of those instants
+  before it is installed and the play's animations are interpolated to the
+  instant (answer ``"analytic"``).
+- ``"state"`` (route 2): the play is sampled at the instants its consumer
+  reads (a render's frame grid; a session's 60 Hz tick) and at its events;
+  an unsampled instant is :class:`Unavailable` until restore lands (M5).
+- ``"ticked"`` (route 3): the play steps on the global 60 Hz tick, its events
+  taken at the first tick at or after their instants, and an instant reads
+  the last tick at or before it. Sound by construction: a sample is the
+  forward run's own state.
+
+A frozen frame (a held wait) is one sample on any route, and that sample
+answers its whole span.
 """
 
 from __future__ import annotations
 
-__all__ = ["ROUTES", "Route", "TickedRoute", "answer", "choose_route"]
+__all__ = [
+    "ROUTE_CLASSES",
+    "RecordRefused",
+    "Route",
+    "StateRoute",
+    "TickedRoute",
+    "TrustedRoute",
+    "Unavailable",
+    "answer",
+    "draw",
+    "evaluate_instant",
+    "snapshot_animations",
+]
 
 from collections.abc import Callable
 from fractions import Fraction
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
-from .clock import TICK_DT, ticks_in
-from .events import EventPlan, plan_events
+import numpy as np
+
+from .clock import TICK_DT, frames_in, ticks_in
+from .events import EventPlan
 
 if TYPE_CHECKING:
     from arachne.scene.scene import Scene
+    from arachne.typing import PixelArray
 
-    from .record import Record
+    from .draw import Drawing
+    from .record import Capture, PlayRecord, Record
     from .recorder import PlayRun
     from .state import State
+
+
+class Unavailable(LookupError):
+    """The record can't answer this instant: a state-function play (route 2)
+    was not sampled there, and restoring it is not built yet (M5).
+    """
+
+
+class RecordRefused(LookupError):
+    """The record answers no instant, for the reason it carries
+    (:attr:`.Record.refusal`): its frames were drawn while the scene ran.
+    """
 
 
 class Route(Protocol):
@@ -36,11 +75,20 @@ class Route(Protocol):
     #: The name the record carries: ``"trusted"``, ``"state"`` or ``"ticked"``.
     name: str
 
-    def run(self, run: PlayRun) -> None:
+    def run(self, run: PlayRun, plan: EventPlan) -> None:
         """Evaluate the play forward from its begun state to its end, hand
         each instant evaluated to ``run.sample``, and set ``run.end``.
         Finishing the animations is not the route's: the play does it after.
         """
+
+
+def _held(run: PlayRun) -> bool:
+    if run.held:
+        # A frozen frame: CE runs nothing during it.
+        run.sample(run.start, until=run.requested_end)
+        run.end = run.requested_end
+        return True
+    return False
 
 
 class TickedRoute:
@@ -48,50 +96,113 @@ class TickedRoute:
 
     name = "ticked"
 
-    def run(self, run: PlayRun) -> None:
+    def run(self, run: PlayRun, plan: EventPlan) -> None:
+        if _held(run):
+            return
         scene = run.scene
         start, end = run.start, run.requested_end
-        if run.held:
-            # A frozen frame: CE runs nothing during it.
-            run.sample(start, until=end)
-            run.end = end
-            return
-        plan = plan_events(scene.animations or [], start)
         stop = scene.stop_condition
+        ticks = list(ticks_in(start, end))
+        run.set_clock(start)
+        evaluate_instant(scene, plan, start, start, 0.0)
+        run.sample(start, until=ticks[0] if ticks else end)
+        ended = start if stop is not None and stop() else None
+        if ended is None:
+            progress = run.progress(ticks)
+            try:
+                for index, tick in enumerate(progress):
+                    run.set_clock(tick)
+                    evaluate_instant(scene, plan, start, tick, TICK_DT)
+                    following = ticks[index + 1] if index + 1 < len(ticks) else end
+                    run.sample(tick, until=following)
+                    if stop is not None and stop():
+                        ended = tick
+                        break
+            finally:
+                progress.close()
+        if ended is not None:
+            run.end = ended
+            return
+        run.end = end
+        if not ticks or ticks[-1] < end:
+            _events_at_end(run, plan)
+
+
+def _events_at_end(run: PlayRun, plan: EventPlan) -> None:
+    """The play ends after its last evaluated instant: the events there still
+    run in the phase order before the animations finish.
+    """
+    if not plan.successions:
+        return
+    end = run.requested_end
+    run.set_clock(end)
+    plan.begin_instant(end)
+    local = end - run.start
+    for animation in run.scene.animations or []:
+        animation.interpolate(_alpha(local, animation.run_time))
+    plan.run_events()
+
+
+class _SampledRoute:
+    """Evaluate a play at its start, its event instants and the instants its
+    consumer reads, and keep every one.
+    """
+
+    name = ""
+
+    def consumer_instants(self, run: PlayRun) -> list[Fraction]:
+        grid = run.recorder.grid
+        if grid is None:
+            return []
+        return frames_in(run.start, run.requested_end, grid)
+
+    def run(self, run: PlayRun, plan: EventPlan) -> None:
+        if _held(run):
+            return
+        scene = run.scene
+        start, end = run.start, run.requested_end
+        instants = sorted(
+            {start, *plan.instants(start, end)}
+            | {t for t in self.consumer_instants(run) if start <= t < end}
+        )
+        progress = run.progress(instants)
+        previous = start
         try:
-            ticks = list(ticks_in(start, end))
-            run.set_clock(start)
-            evaluate_instant(scene, plan, start, start, 0.0)
-            run.sample(start, until=ticks[0] if ticks else end)
-            ended = start if stop is not None and stop() else None
-            if ended is None:
-                progress = run.progress(ticks)
-                try:
-                    for index, tick in enumerate(progress):
-                        run.set_clock(tick)
-                        evaluate_instant(scene, plan, start, tick, TICK_DT)
-                        following = ticks[index + 1] if index + 1 < len(ticks) else end
-                        run.sample(tick, until=following)
-                        if stop is not None and stop():
-                            ended = tick
-                            break
-                finally:
-                    progress.close()
-            if ended is not None:
-                run.end = ended
-                return
-            run.end = end
-            if plan.successions and (not ticks or ticks[-1] < end):
-                # The play ends between ticks: the events there still run in
-                # the phase order before the animations finish.
-                run.set_clock(end)
-                plan.begin_instant(end)
-                local = end - start
-                for animation in scene.animations or []:
-                    animation.interpolate(_alpha(local, animation.run_time))
-                plan.run_events()
+            for index, instant in enumerate(progress):
+                run.set_clock(instant)
+                evaluate_instant(scene, plan, start, instant, float(instant - previous))
+                following = instants[index + 1] if index + 1 < len(instants) else end
+                run.sample(instant, until=following, keep=True)
+                previous = instant
         finally:
-            plan.release()
+            progress.close()
+        run.end = end
+        _events_at_end(run, plan)
+
+
+class TrustedRoute(_SampledRoute):
+    """Route 1: analytic at any instant."""
+
+    name = "trusted"
+
+
+class StateRoute(_SampledRoute):
+    """Route 2: sampled where its consumer reads, on the tick in a session."""
+
+    name = "state"
+
+    def consumer_instants(self, run: PlayRun) -> list[Fraction]:
+        if run.recorder.grid is None:
+            return list(ticks_in(run.start, run.requested_end))
+        return super().consumer_instants(run)
+
+
+#: The route of each name.
+ROUTE_CLASSES: dict[str, type[Route]] = {
+    "trusted": TrustedRoute,
+    "state": StateRoute,
+    "ticked": TickedRoute,
+}
 
 
 def _alpha(local: Fraction, run_time: float) -> float:
@@ -119,34 +230,138 @@ def evaluate_instant(
     scene.update_self(dt)
 
 
-def choose_route(scene: Scene) -> Route:
-    """The route the play about to run takes."""
-    return TickedRoute()
+# The trusted algebra, evaluated at an instant
 
 
-def _answer_recorded(record: Record, t: Fraction) -> State:
+def snapshot_animations(
+    animations: tuple[Any, ...],
+) -> tuple[tuple[Any, dict[str, Any], tuple[tuple[np.ndarray, np.ndarray], ...]], ...]:
+    """Every animation of a play with what its ``__dict__`` holds now (values
+    by reference, a writable array or a list copied, since CE changes those
+    in place) and the arrays its path function binds, with their contents.
+    """
+    from .rates import path_arrays
+    from .trusted import iter_animations
+
+    snapshot = []
+    for animation in iter_animations(animations):
+        path = getattr(animation, "path_func", None)
+        arrays = (
+            tuple((a, a.copy()) for a in path_arrays(path)) if path is not None else ()
+        )
+        snapshot.append((animation, _copied(vars(animation)), arrays))
+    return tuple(snapshot)
+
+
+def _copied(state: dict[str, Any]) -> dict[str, Any]:
+    copied = {}
+    for key, value in state.items():
+        if isinstance(value, np.ndarray) and value.flags.writeable:
+            value = value.copy()
+        elif isinstance(value, list):
+            value = list(value)
+        copied[key] = value
+    return copied
+
+
+def _evaluator(
+    play: PlayRecord, base: Capture, t: Fraction
+) -> Callable[[Drawing], None]:
+    """What brings the shown base capture of a trusted play to ``t``: its
+    animations, given the state they had at the base, interpolated to ``t``
+    as the forward run does there (phase 1 only: no event lies between the
+    base and ``t``, since every event instant is a base).
+    """
+    from arachne.animation.composition import Succession
+
+    def evaluate(drawing: Drawing) -> None:
+        drawing.show(
+            base, [m for a in play._animations if (m := a.mobject) is not None]
+        )
+        states = play._animation_states[base.seq]
+        saved = [(animation, dict(vars(animation))) for animation, _, _ in states]
+        saved_arrays = [
+            (array, array.copy()) for _, _, arrays in states for array, _ in arrays
+        ]
+        try:
+            for animation, state, arrays in states:
+                vars(animation).clear()
+                vars(animation).update(_copied(state))
+                for array, contents in arrays:
+                    np.copyto(array, contents)
+            successions = [a for a, _, _ in states if isinstance(a, Succession)]
+            plan = EventPlan(successions=successions, now=t)
+            for succession in successions:
+                succession._event_plan = plan
+            plan.begin_instant(t)
+            local = t - play.start
+            for animation in play._animations:
+                animation.interpolate(_alpha(local, animation.run_time))
+        finally:
+            for animation, state in saved:
+                vars(animation).clear()
+                vars(animation).update(state)
+            for array, contents in saved_arrays:
+                np.copyto(array, contents)
+
+    return evaluate
+
+
+def _resolve(
+    record: Record, t: Fraction
+) -> tuple[PlayRecord | None, Capture, Callable[[Drawing], None] | None, str]:
+    """The play holding ``t``, the capture to show, what brings it to ``t``
+    (``None`` when the capture is the instant's own) and the answer's kind.
+    """
+    if record.refusal is not None:
+        raise RecordRefused(record.refusal)
+    play = record.play_at(t)
+    if play is None:
+        _, capture = record.capture_at(t)
+        return None, capture, None, "recorded"
+    if play.held or play.route == "ticked":
+        return play, play.capture_at(t), None, "recorded"
+    if play.route == "state":
+        sample = play.sample_at(t)
+        if sample is None:
+            raise Unavailable(
+                f"Play {play.index} is a state-function play (route 2) the record did"
+                f" not sample at {t}; answering it there needs restore, which arrives"
+                " with M5."
+            )
+        return play, sample, None, "recorded"
+    base = play.base_at(t)
+    if base.instant == t:
+        return play, base, None, "recorded"
+    return play, base, _evaluator(play, base, t), "analytic"
+
+
+def answer(record: Record, t: Fraction) -> State:
+    """The scene's state at ``t``, from the route of the play holding it."""
     from .state import build_state
 
-    play, capture = record.capture_at(t)
+    play, capture, evaluate, kind = _resolve(record, t)
     return build_state(
         record,
         t,
         play,
         capture,
         route=play.route if play else None,
-        answer="recorded",
+        answer=kind,
+        prepare=evaluate,
     )
 
 
-#: How each route answers an instant of one of its plays.
-ROUTES: dict[str, Callable[[Record, Fraction], State]] = {
-    "ticked": _answer_recorded,
-}
-
-
-def answer(record: Record, t: Fraction) -> State:
-    """The scene's state at ``t``, from the route of the play holding it."""
-    play = record.play_at(t)
+def draw(
+    drawing: Drawing,
+    record: Record,
+    t: Fraction,
+    static: Callable[[PlayRecord], PixelArray | None],
+) -> PixelArray:
+    """The frame at ``t``, drawn from the record through the route of the play
+    holding it; ``static(play)`` gives the play's static picture.
+    """
+    play, capture, evaluate, _ = _resolve(record, t)
     if play is None:
-        return _answer_recorded(record, t)
-    return ROUTES[play.route](record, t)
+        return drawing.final()
+    return drawing.sample(play, capture, static(play), prepare=evaluate)

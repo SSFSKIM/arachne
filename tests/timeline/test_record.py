@@ -33,7 +33,15 @@ def test_plays_have_exact_spans_kinds_lines_and_held_flags(session_of):
         _line("moving-wait"),
         _line("wait-until"),
     ]
-    assert all(play.route == "ticked" for play in record.plays)
+    # The Create and the frozen wait are trusted; once the dot's dt updater is
+    # in the scene, every play ticks.
+    assert [play.route for play in record.plays] == [
+        "trusted",
+        "trusted",
+        "ticked",
+        "ticked",
+        "ticked",
+    ]
     assert record.duration == Fraction(8, 7)
     assert record.identity.seed == 0
     assert record.identity.source_digest is not None
@@ -139,13 +147,20 @@ def test_a_render_keeps_only_what_its_grid_reads():
     scene, frames = render(Timeline, 4)
     record = scene.record
     assert record.grid == 4
+    # A trusted play is evaluated at its frames, and analytic between them.
     first = record.plays[0]
+    assert first.route == "trusted"
     assert [capture.instant for capture in first.samples] == [
         Fraction(0),
         Fraction(1, 4),
     ]
+    assert record.state_at(Fraction(1, 8)).answer == "analytic"
+    # A ticked play keeps only the ticks a frame reads.
+    ticked = record.plays[2]
+    assert ticked.route == "ticked"
+    assert [capture.instant for capture in ticked.samples] == [Fraction(3, 4)]
     with pytest.raises(LookupError, match="kept only"):
-        first.capture_at(Fraction(1, 8))
+        ticked.capture_at(Fraction(4, 5))
     assert len(frames) == 5
 
 

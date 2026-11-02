@@ -11,10 +11,11 @@ it began (``Scene.begin_animations``), with what the scene added to it since.
 
 from __future__ import annotations
 
-__all__ = ["CameraExtras", "Drawing", "camera_nodes"]
+__all__ = ["CameraExtras", "Drawing", "LiveFrames", "camera_nodes"]
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from fractions import Fraction
 from types import TracebackType
 from typing import TYPE_CHECKING, Any
 
@@ -47,6 +48,7 @@ _NOT_CAMERA_VALUES = frozenset(
         "frame_rate",
         "fixed_in_frame_mobjects",
         "fixed_orientation_mobjects",
+        "image_mobjects_from_cameras",
     }
 )
 #: The values the background is built from (``Camera.init_background``).
@@ -68,13 +70,16 @@ class CameraExtras:
     background; ``None`` when it is the one the camera builds from its values. A
     ThreeDCamera also has the mobjects fixed in the frame, and each
     fixed-orientation mobject's centre as its function returned it at the
-    captured instant.
+    captured instant. A MultiCamera has the displays it draws its
+    sub-cameras into (``image_mobjects_from_cameras``), which a scene adds
+    and removes as it goes (a ``ZoomedScene`` activating its zoom).
     """
 
     values: tuple[tuple[str, Any], ...]
     fixed_in_frame: frozenset[Mobject] = frozenset()
     centers: tuple[tuple[Mobject, np.ndarray], ...] = ()
     background: FrozenBackground | None = None
+    displays: tuple[Mobject, ...] | None = None
 
     @classmethod
     def observe(
@@ -95,8 +100,16 @@ class CameraExtras:
         if isinstance(camera, ThreeDCamera):
             fixed = frozenset(camera.fixed_in_frame_mobjects)
             centers = _centers(camera.fixed_orientation_mobjects)
+        displays = _displays(camera)
         if previous is None:
-            return cls(values, fixed, centers, background)
+            return cls(values, fixed, centers, background, displays)
+        if (
+            displays is not None
+            and previous.displays is not None
+            and len(displays) == len(previous.displays)
+            and all(a is b for a, b in zip(displays, previous.displays, strict=True))
+        ):
+            displays = previous.displays
         if previous.fixed_in_frame == fixed:
             fixed = previous.fixed_in_frame
         if len(previous.centers) == len(centers) and all(
@@ -109,9 +122,10 @@ class CameraExtras:
             and fixed is previous.fixed_in_frame
             and centers is previous.centers
             and background is previous.background
+            and displays is previous.displays
         ):
             return previous
-        return cls(values, fixed, centers, background)
+        return cls(values, fixed, centers, background, displays)
 
     def install(self, camera: Camera) -> None:
         """Give ``camera`` these inputs."""
@@ -129,6 +143,16 @@ class CameraExtras:
             camera.fixed_orientation_mobjects = {
                 mob: _constant(value) for mob, value in self.centers
             }
+        if self.displays is not None:
+            camera.image_mobjects_from_cameras = list(self.displays)  # type: ignore[attr-defined]
+
+
+def _displays(camera: Camera) -> tuple[Mobject, ...] | None:
+    """A MultiCamera's displays, in the order it draws them; ``None`` for
+    another camera.
+    """
+    displays = vars(camera).get("image_mobjects_from_cameras")
+    return None if displays is None else tuple(displays)
 
 
 def _centers(
@@ -252,6 +276,15 @@ def camera_nodes(camera: Camera) -> list[Mobject]:
             found.append(value)
         elif isinstance(value, (list, tuple)):
             found.extend(item for item in value if isinstance(item, Mobject))
+    # A MultiCamera's displays draw their own cameras, whose frames move.
+    for display in vars(camera).get("image_mobjects_from_cameras", ()):
+        sub_camera = getattr(display, "camera", None)
+        if sub_camera is not None and sub_camera is not camera:
+            found.extend(
+                value
+                for value in vars(sub_camera).values()
+                if isinstance(value, Mobject)
+            )
     return found
 
 
@@ -267,7 +300,9 @@ class Drawing:
         self.record = record
         self.camera: Camera = record._scene.renderer.camera
         self._saved: dict[int, tuple[Mobject, NodeState]] = {}
-        self._camera_saved: tuple[Any, Any, Any] | None = None
+        self._camera_saved: tuple[Any, Any, Any, Any] | None = None
+        #: Display cameras whose picture was replaced, with what they held.
+        self._pictures_saved: dict[int, tuple[Any, PixelArray]] = {}
 
     def __enter__(self) -> Drawing:
         return self
@@ -282,15 +317,20 @@ class Drawing:
             state.install(mob)
         self._saved.clear()
         if self._camera_saved is not None:
-            values, backgrounds, orientation = self._camera_saved
+            values, backgrounds, orientation, displays = self._camera_saved
             _set_camera_values(self.camera, values)
             self.camera.background, self.camera._built_background = backgrounds
+            camera: Any = self.camera
             if orientation is not None:
-                camera: Any = self.camera
                 camera.fixed_in_frame_mobjects, camera.fixed_orientation_mobjects = (
                     orientation
                 )
+            if displays is not None:
+                camera.image_mobjects_from_cameras = displays
             self._camera_saved = None
+        for sub_camera, picture in self._pictures_saved.values():
+            sub_camera.pixel_array = picture
+        self._pictures_saved.clear()
 
     def show(self, capture: Capture, roots: Sequence[Mobject]) -> None:
         """Give every mobject reachable from ``roots`` (and the camera's own)
@@ -298,13 +338,6 @@ class Drawing:
         """
         from .record import NodeState
 
-        saved = self._saved
-        reached = list(self.record._walk(capture, [*roots, *camera_nodes(self.camera)]))
-        for mob, _ in reached:
-            if id(mob) not in saved:
-                saved[id(mob)] = (mob, NodeState.of(mob))
-        for mob, state in reached:
-            state.install(mob)
         if capture.camera is not None:
             if self._camera_saved is None:
                 # The live inputs, saved as they are (calling no centre function).
@@ -318,8 +351,43 @@ class Drawing:
                     _camera_values(camera, None),
                     (camera.background, camera._built_background),
                     orientation,
+                    vars(camera).get("image_mobjects_from_cameras"),
                 )
+            # First, so the camera's own mobjects reached below are the capture's.
             capture.camera.install(self.camera)
+        saved = self._saved
+        reached = list(self.record._walk(capture, [*roots, *camera_nodes(self.camera)]))
+        for mob, _ in reached:
+            if id(mob) not in saved:
+                saved[id(mob)] = (mob, NodeState.of(mob))
+        for mob, state in reached:
+            state.install(mob)
+        if capture.camera is not None and capture.camera.displays is not None:
+            self._show_display_pictures(capture, [mob for mob, _ in reached])
+
+    def _show_display_pictures(self, capture: Capture, reached: list[Mobject]) -> None:
+        """A display on screen whose camera the MultiCamera does not draw into
+        at ``capture`` shows its camera's picture as CE left it: the first one,
+        when the display joins later.
+        """
+        from arachne.mobject.types.image_mobject import ImageMobjectFromCamera
+
+        assert capture.camera is not None
+        assert capture.camera.displays is not None
+        joined = {id(display) for display in capture.camera.displays}
+        for mob in reached:
+            if not isinstance(mob, ImageMobjectFromCamera) or id(mob) in joined:
+                continue
+            picture = self.record.display_picture(mob, capture)
+            if picture is None:
+                continue
+            sub_camera: Any = mob.camera
+            if id(sub_camera) not in self._pictures_saved:
+                self._pictures_saved[id(sub_camera)] = (
+                    sub_camera,
+                    sub_camera.pixel_array,
+                )
+            sub_camera.pixel_array = picture
 
     def static(self, play: PlayRecord) -> PixelArray | None:
         """The play's static picture: its static mobjects as they were when
@@ -333,13 +401,22 @@ class Drawing:
         return self.camera.pixel_array.copy()
 
     def sample(
-        self, play: PlayRecord, capture: Capture, static: PixelArray | None
+        self,
+        play: PlayRecord,
+        capture: Capture,
+        static: PixelArray | None,
+        *,
+        prepare: Callable[[Drawing], None] | None = None,
     ) -> PixelArray:
         """The frame at ``capture``: the play's moving mobjects there over its
-        static picture, or the whole scene when nothing moves.
+        static picture, or the whole scene when nothing moves. ``prepare``
+        runs once the capture is shown (a trusted play's evaluation at an
+        instant between its captures).
         """
         targets = list(capture.moving) or capture.draw_list()
         self.show(capture, targets)
+        if prepare is not None:
+            prepare(self)
         if static is not None:
             self.camera.set_frame_to_background(static)
         else:
@@ -356,3 +433,74 @@ class Drawing:
         self.camera.reset()
         self.camera.capture_mobjects(targets)
         return self.camera.pixel_array.copy()
+
+
+class LiveFrames:
+    """Draws a play's frames from the live scene while it runs, as CE draws
+    them: for a record that can't draw them afterwards (``Record.refusal``).
+
+    The route hands it every evaluated instant (:meth:`pending`); the frames
+    an instant answers are drawn just before the next instant is evaluated
+    (:meth:`flush`), while the scene still holds it, and only those inside
+    the play's actual span.
+    """
+
+    def __init__(
+        self,
+        scene: Any,
+        fps: Fraction,
+        write: Callable[[PixelArray, int], None],
+    ) -> None:
+        self.scene = scene
+        self.camera: Camera = scene.renderer.camera
+        self.fps = fps
+        self.write = write
+        self._static: PixelArray | None = None
+        self._pending: tuple[Fraction, Fraction] | None = None
+        self._open = False
+
+    def begin(self, play: PlayRecord) -> None:
+        """The play's animations have begun: draw its static picture."""
+        self._open = True
+        self._pending = None
+        self._static = None
+        if play.static:
+            self.camera.reset()
+            self.camera.capture_mobjects(list(play.static))
+            self._static = self.camera.pixel_array.copy()
+
+    def pending(self, instant: Fraction, until: Fraction) -> None:
+        """The scene holds ``instant``, which answers up to ``until``."""
+        self._pending = (instant, until)
+
+    def flush(self, upto: Fraction) -> None:
+        """Draw the frames the pending instant answers before ``upto``."""
+        from .clock import frames_in
+
+        if self._pending is None or not self._open:
+            return
+        instant, until = self._pending
+        self._pending = None
+        frames = frames_in(instant, min(until, upto), self.fps)
+        if not frames:
+            return
+        scene = self.scene
+        foreground = set(map(id, scene.foreground_mobjects))
+        targets = list(scene.moving_mobjects) or [
+            *(m for m in scene.mobjects if id(m) not in foreground),
+            *scene.foreground_mobjects,
+        ]
+        if self._static is not None:
+            self.camera.set_frame_to_background(self._static)
+        else:
+            self.camera.reset()
+        self.camera.capture_mobjects(targets)
+        self.write(self.camera.pixel_array.copy(), len(frames))
+
+    def end(self, end: Fraction) -> PixelArray | None:
+        """The play ended at ``end``: draw what the last instant still owes,
+        and return its static picture.
+        """
+        self.flush(end)
+        self._open = False
+        return self._static

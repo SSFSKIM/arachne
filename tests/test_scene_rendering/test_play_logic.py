@@ -49,8 +49,8 @@ def _instants(play):
 
 @pytest.mark.parametrize("frame_rate", argvalues=[15, 30, 60])
 def test_t_values(config, using_temp_config, disabling_caching, frame_rate):
-    """A play is evaluated on the tick; the frame rate only picks which of
-    its instants are kept and drawn, one frame per instant of its grid.
+    """A trusted play is evaluated at the instants of the render's grid, one
+    frame drawn per instant.
     """
     config.frame_rate = frame_rate
     scene = SquareToCircle()
@@ -59,7 +59,7 @@ def test_t_values(config, using_temp_config, disabling_caching, frame_rate):
     (play,) = scene.record.plays
     assert sum(written) == frame_rate
     assert _instants(play) == [Fraction(k, frame_rate) for k in range(frame_rate)]
-    assert play.route == "ticked"
+    assert play.route == "trusted"
 
 
 def test_t_values_with_skip_animations(using_temp_config, disabling_caching):

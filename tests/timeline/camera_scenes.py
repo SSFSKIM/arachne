@@ -1,0 +1,154 @@
+"""Scenes the camera tests execute: camera callbacks, zoomed displays and a
+mapping camera.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+
+from arachne import (
+    DOWN,
+    LEFT,
+    RED,
+    RIGHT,
+    UP,
+    YELLOW,
+    Circle,
+    Dot,
+    FadeIn,
+    MappingCamera,
+    Scene,
+    Square,
+    ThreeDScene,
+    ZoomedScene,
+)
+
+
+class PureCentre(ThreeDScene):
+    """A fixed-orientation label whose centre function reads a moving dot:
+    the camera callback is a readout, so its plays are state functions.
+    """
+
+    def construct(self):
+        self.set_camera_orientation(phi=60 * np.pi / 180, theta=-45 * np.pi / 180)
+        dot = Dot(LEFT * 2, color=RED)
+        label = Square(side_length=0.4)
+        self.add(dot)
+        self.add_fixed_orientation_mobjects(
+            label, center_func=lambda: dot.get_center() + UP
+        )
+        self.play(dot.animate.shift(RIGHT * 3), run_time=1.1)
+        self.play(dot.animate.shift(DOWN * 2))
+
+
+class StatefulCentre(ThreeDScene):
+    """The same label with a centre function that counts its calls."""
+
+    def construct(self):
+        self.set_camera_orientation(phi=60 * np.pi / 180, theta=-45 * np.pi / 180)
+        dot = Dot(LEFT * 2, color=RED)
+        label = Square(side_length=0.4)
+        calls = []
+
+        def centre():
+            calls.append(1)
+            return dot.get_center() + UP * min(len(calls), 90) / 60
+
+        self.add(dot)
+        self.add_fixed_orientation_mobjects(label, center_func=centre)
+        self.play(dot.animate.shift(RIGHT * 3), run_time=1.1)
+
+
+class ZoomStill(ZoomedScene):
+    """Zooming switched on at once, then the zoomed frame moved over the
+    scene and a shape grown under it.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(
+            zoom_factor=0.3, zoomed_display_height=2, zoomed_display_width=3, **kwargs
+        )
+
+    def construct(self):
+        dot = Dot(color=YELLOW)
+        self.add(dot, Circle().shift(LEFT * 2))
+        self.zoomed_camera.frame.move_to(dot)
+        self.activate_zooming(animate=False)
+        self.play(self.zoomed_camera.frame.animate.shift(LEFT * 2))
+        self.play(FadeIn(Square().shift(LEFT * 2)), run_time=0.75)
+        self.wait(0.5)
+
+
+class ZoomAnimated(ZoomedScene):
+    """Zooming switched on with its own animations (the frame zooming in,
+    the display popping out), then the frame scaled.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(
+            zoom_factor=0.4, zoomed_display_height=2, zoomed_display_width=2, **kwargs
+        )
+
+    def construct(self):
+        self.add(Square(color=RED), Dot(RIGHT))
+        self.wait(0.25)
+        self.activate_zooming(animate=True)
+        self.play(self.zoomed_camera.frame.animate.scale(0.5).shift(RIGHT))
+
+
+class DisplayLater(ZoomedScene):
+    """The zoomed display is on screen from the start, but its camera joins
+    the scene's camera only at 1/2 s: until then the display shows its
+    camera's empty picture, after that the zoomed dot.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(
+            zoom_factor=0.3, zoomed_display_height=3, zoomed_display_width=3, **kwargs
+        )
+
+    def construct(self):
+        dot = Dot(radius=0.2, color=YELLOW)
+        self.add(dot)
+        self.zoomed_camera.frame.move_to(dot)
+        self.add_foreground_mobjects(self.zoomed_display)
+        self.play(dot.animate.shift(UP * 0.1), run_time=0.5)
+        self.renderer.camera.add_image_mobject_from_camera(self.zoomed_display)
+        self.play(dot.animate.shift(DOWN * 0.1), run_time=0.5)
+
+
+class DisplayLeaves(ZoomedScene):
+    """The zoomed display stays on screen after its camera leaves the
+    scene's camera at 1/2 s: it shows the last picture drawn into it.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(
+            zoom_factor=0.3, zoomed_display_height=3, zoomed_display_width=3, **kwargs
+        )
+
+    def construct(self):
+        dot = Dot(radius=0.2, color=YELLOW)
+        self.add(dot)
+        self.zoomed_camera.frame.move_to(dot)
+        self.activate_zooming()
+        self.play(dot.animate.shift(UP * 0.1), run_time=0.5)
+        self.renderer.camera.image_mobjects_from_cameras.remove(self.zoomed_display)
+        self.play(dot.animate.shift(DOWN * 0.5), run_time=0.5)
+
+
+class Mapped(Scene):
+    """A mapping camera that draws every point two units to the right."""
+
+    def __init__(self, **kwargs):
+        super().__init__(
+            camera_class=MappingCamera,
+            **kwargs,
+        )
+        self.renderer.camera.mapping_func = lambda p: p + 2 * RIGHT
+
+    def construct(self):
+        dot = Dot(LEFT * 3, radius=0.3)
+        self.add(dot)
+        self.play(dot.animate.shift(RIGHT * 2))
+        self.wait(0.25)
