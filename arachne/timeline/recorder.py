@@ -84,7 +84,14 @@ class PlayRun:
         capture = recorder.capture("sample", instant, play, self._extras, until)
         play.samples.append(capture)
         play._instants.append(instant)
-        if play.route == "trusted" and not play.held:
+        if play.held:
+            return
+        # The animations' state where a play is evaluated from: every kept
+        # instant of a trusted play; a state-function play's start and events,
+        # which restoring it (M5) evaluates from.
+        if play.route == "trusted" or (
+            play.route == "state" and (instant == play.start or instant in play.events)
+        ):
             play._animation_states[capture.seq] = snapshot_animations(play._animations)
 
     def progress(self, instants: list[Fraction]) -> Any:

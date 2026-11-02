@@ -233,8 +233,9 @@ class PlayRecord:
     _record: Record | None = field(default=None, repr=False)
     #: The animations it played, as objects.
     _animations: tuple[Animation, ...] = field(default=(), repr=False)
-    #: For a trusted play: what every animation of it held at each capture,
-    #: by capture seq, so it can be evaluated at any instant from there.
+    #: What every animation of it held, by capture seq, where it can be
+    #: evaluated from: each capture of a trusted play; the start and event
+    #: captures of a state-function play.
     _animation_states: dict[int, Any] = field(default_factory=dict, repr=False)
 
     @property
