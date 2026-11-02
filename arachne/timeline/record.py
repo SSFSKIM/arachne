@@ -494,6 +494,13 @@ class Record:
 
     # Reading
 
+    def mobjects(self) -> Iterator[Mobject]:
+        """Every mobject the record holds a version of, each once, in the
+        order the record first captured them: submobjects never added on
+        their own and mobjects since removed included.
+        """
+        return (node.mob for node in self._nodes.values())
+
     def node_state(self, mob: Mobject, capture: Capture) -> NodeState | None:
         """``mob``'s state at ``capture``."""
         node = self._nodes.get(id(mob))

@@ -184,3 +184,16 @@ def test_a_skipped_section_runs_and_is_recorded():
     # The dot moved through the skipped play and the wait, on the tick.
     dot = next(mob for mob in scene.mobjects if type(mob).__name__ == "Dot")
     assert dot.get_center()[0] == pytest.approx(1.0)
+
+
+def test_a_record_names_every_mobject_it_captured_once(session_of):
+    session = session_of("Captured")
+    scene = session.scene
+    captured = list(session.record.mobjects())
+    ids = [id(mob) for mob in captured]
+    assert len(ids) == len(set(ids))
+    # Members never added on their own, and a mobject since removed.
+    for mob in [scene.group, *scene.group.submobjects, scene.dot]:
+        assert id(mob) in ids
+    # Made, never shown.
+    assert id(scene.unused) not in ids
