@@ -228,3 +228,36 @@ def test_a_session_records_on_its_render_s_grid(session_of):
     assert session.record.plays[-1].stepping_ticks == 60 - fps
     for k, frame in enumerate(frames):
         assert np.array_equal(frame, np.asarray(session.frame(Fraction(k, fps)))), k
+
+
+# Reads through what a stepping callback is handed, and through interpolation
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["AttributeChain", "PathReader", "FunctionReader"],
+)
+@pytest.mark.parametrize("fps", [4, 15])
+def test_a_stepping_reader_keeps_what_it_reads_through_on_the_tick(
+    session_of, name, fps
+):
+    """A dt updater reads a dot through an attribute of its own mobject,
+    through ``MoveAlongPath``'s path or through an ``UpdateFromFunc``: the
+    dt-free updater moving what it reads steps with it, and only the redraw
+    nothing stepping reads waits for the frames.
+    """
+    scene, frames = render(getattr(stepping_scenes, name), fps)
+    play = _play(scene)
+    assert play.tick_plan.pulled == 1
+    assert len(play.tick_plan.skipped) == 1
+    assert play.stepping_ticks == 60 - fps
+    _same_as_every_tick(session_of, name, frames, fps)
+
+
+def test_a_fade_beside_a_dt_updater_that_reads_it_not_stays_stepping():
+    scene, _ = render(stepping_scenes.FadeBeside, 4)
+    play = _play(scene)
+    assert not any(r.startswith(UNBOUNDED) for r in play.admission.reasons)
+    assert play.tick_plan.pulled == 0
+    assert play.tick_plan.skipped
+    assert play.stepping_ticks == 60 - 4

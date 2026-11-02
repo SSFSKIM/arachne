@@ -23,6 +23,8 @@ from arachne import (
     Animation,
     Dot,
     FadeIn,
+    Line,
+    MoveAlongPath,
     Scene,
     Square,
     Succession,
@@ -271,3 +273,81 @@ class LateJoiner(Scene):
             Succession(Wait(0.5), FadeIn(joiner)),
             rate_func=linear,
         )
+
+
+def _wander(t: ValueTracker):
+    """A dt-free updater that moves its mobject with the tracker."""
+    return lambda m: m.set_x(np.sin(3 * t.get_value()))
+
+
+def _rising_reader(read):
+    """A dot whose dt updater rises with time and takes its x from ``read``."""
+    reader = Dot(color=RED, radius=0.05)
+    reader.add_updater(lambda m, dt: m.shift(dt * UP).set_x(read()))
+    return reader
+
+
+class AttributeChain(Scene):
+    """A dt updater that reads, through an attribute of the mobject it is
+    handed, a mobject a dt-free updater moves.
+    """
+
+    def construct(self):
+        t = ValueTracker(0)
+        source = Dot()
+        source.add_updater(_wander(t))
+        reader = Dot(color=RED, radius=0.05)
+        reader.source = source
+        reader.add_updater(lambda m, dt: m.shift(dt * UP).set_x(m.source.get_x()))
+        shown = always_redraw(lambda: Square(side_length=0.2).next_to(source, DOWN))
+        self.add(source, reader, shown)
+        self.play(t.animate.set_value(2), rate_func=linear)
+
+
+class PathReader(Scene):
+    """A dt updater reading a dot ``MoveAlongPath`` moves along a path that a
+    dt-free updater moves.
+    """
+
+    def construct(self):
+        t = ValueTracker(0)
+        path = Line(LEFT, RIGHT)
+        path.add_updater(lambda m: m.move_to(UP * np.sin(3 * t.get_value())))
+        dot = Dot()
+        reader = _rising_reader(dot.get_y)
+        shown = always_redraw(lambda: Square(side_length=0.2).next_to(dot, DOWN))
+        self.add(path, dot, reader, shown)
+        self.play(MoveAlongPath(dot, path), t.animate.set_value(2), rate_func=linear)
+
+
+class FunctionReader(Scene):
+    """A dt updater reading a dot an ``UpdateFromFunc`` places on a mobject
+    that a dt-free updater moves.
+    """
+
+    def construct(self):
+        t = ValueTracker(0)
+        helper = Dot(color=BLUE)
+        helper.add_updater(_wander(t))
+        dot = Dot()
+        reader = _rising_reader(dot.get_x)
+        shown = always_redraw(lambda: Square(side_length=0.2).next_to(dot, DOWN))
+        self.add(helper, dot, reader, shown)
+        self.play(
+            UpdateFromFunc(dot, lambda m: m.move_to(helper.get_center() + UP)),
+            t.animate.set_value(2),
+            rate_func=linear,
+        )
+
+
+class FadeBeside(Scene):
+    """A FadeIn whose mobject carries a dt-free updater, beside a dt updater
+    that reads neither: the fade's reads stay out of the closure.
+    """
+
+    def construct(self):
+        clock(self)
+        t = ValueTracker(0)
+        square = Square()
+        square.add_updater(_wander(t))
+        self.play(FadeIn(square), t.animate.set_value(1), rate_func=linear)
