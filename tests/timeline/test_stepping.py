@@ -13,12 +13,20 @@ from __future__ import annotations
 import functools
 from fractions import Fraction
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
+from arachne import Dot, VGroup
 from arachne.timeline.clock import frames_in
-from arachne.timeline.ticking import STRUCTURAL, UNBOUNDED, loads_dt
+from arachne.timeline.ticking import (
+    STRUCTURAL,
+    UNBOUNDED,
+    TickPlan,
+    loads_dt,
+    unaffected,
+)
 
 from . import stepping_scenes
 from .conftest import render
@@ -273,7 +281,10 @@ def _same_as_full_ticks(session_of, name: str, fps: int):
     """
     stepped = session_of(name, STEPPING_SCENES, frame_rate=fps)
     full = session_of(name, STEPPING_SCENES, frame_rate=fps, stepping=False)
-    assert all(p.tick_plan is None and p.stepping_ticks == 0 for p in full.record.plays)
+    assert all(
+        p.stepping_ticks == 0 and all(not plan.applied for _, plan in p.tick_plans)
+        for p in full.record.plays
+    )
     for ours, theirs in zip(stepped.record.plays, full.record.plays, strict=True):
         assert ours.sample_keys() == theirs.sample_keys(), (name, fps, ours.index)
     return stepped
@@ -433,3 +444,190 @@ def test_a_guard_calling_getters_it_holds_steps_with_what_it_checks(session_of):
     assert play.tick_plan.pulled == 1
     assert len(play.tick_plan.skipped) == 1
     assert play.stepping_ticks == 60 - 4
+
+
+# Structure that changes where no plan looks; names that alias an operand;
+# writes through a class or a setter
+
+
+@pytest.mark.parametrize("name", ["StartInstall", "AliasAppend", "AliasAugment"])
+def test_structure_changed_before_a_stepping_tick_plans_the_play_again(
+    session_of, name
+):
+    """A skipped callback gives a dot a dt reader as the play first
+    evaluates, or appends one to a group through a local name for its
+    members: the next stepping tick finds the structure changed and plans
+    again before it steps, so no step integrates stale input.
+    """
+    play = _same_as_full_ticks(session_of, name, 15).record.plays[-1]
+    assert len(play.tick_plans) >= 2
+
+
+@pytest.mark.parametrize("name", ["BoolAlias", "IfAlias"])
+def test_a_name_bound_to_an_operand_changes_what_it_names(session_of, name):
+    """``x = a or a`` and ``x = a if c else b`` bind ``x`` to an operand, not
+    a new value: ``x += 1`` then changes in place something the plan can't
+    name, which may be anything (the array a dt updater reads, a mobject's
+    members), and the play ticks everything.
+    """
+    play = _same_as_full_ticks(session_of, name, 4).record.plays[-1]
+    assert play.tick_plan.unbounded.startswith(f"{STRUCTURAL}: updater update ")
+
+
+def test_become_padding_with_copies_that_update_plans_again(session_of):
+    """``become`` pads a dot with copies of itself, its updater with them:
+    the play plans for the copies before the next stepping tick, which skips
+    them, so they move once a frame (as in CE) rather than once a tick, and
+    no stepping tick meets work it never weighed.
+    """
+    session = session_of("BecomeRoot", STEPPING_SCENES, frame_rate=4)
+    play = session.record.plays[-1]
+    assert not any(r.startswith("tick.") for r in play.admission.reasons)
+    assert [t for t, _ in play.tick_plans] == [play.start, Fraction(16, 60)]
+    # Made at the frame at 0.25 s, the copies move there and at the frame at
+    # 0.5 s: as a scene doing the same per frame by hand has them.
+    box = session.state_at(Fraction(1, 2)).named("root").box
+    assert (box[0] + box[2]) / 2 == pytest.approx(2 * 0.01)
+
+
+@pytest.mark.parametrize("name", ["SkippedInstaller", "SubmobjectAdded", "Unchanged"])
+def test_a_run_that_ticks_everything_plans_where_stepping_would(session_of, name):
+    """With stepping off, a play still makes its plans, and makes them
+    again at the ticks a stepping run would, for a comparison to read; it
+    applies none (every tick full, no reason recorded on its admission).
+    """
+    stepped = session_of(name, STEPPING_SCENES, frame_rate=15).record.plays[-1]
+    full = session_of(
+        name, STEPPING_SCENES, frame_rate=15, stepping=False
+    ).record.plays[-1]
+    assert [t for t, _ in full.tick_plans] == [t for t, _ in stepped.tick_plans]
+    for (_, ours), (_, theirs) in zip(stepped.tick_plans, full.tick_plans, strict=True):
+        assert ours.applied
+        assert not theirs.applied
+        assert len(theirs.skipped) == len(ours.skipped)
+        assert theirs.unbounded == ours.unbounded
+    assert full.stepping_ticks == 0
+    assert not any(r.startswith("tick.") for r in full.admission.reasons)
+
+
+def test_on_step_sees_every_stepping_tick_and_no_full_one(session_of):
+    """The diagnostic hook is called after each stepping tick, with the
+    scene and the tick, and after no full tick.
+    """
+    seen: list[Fraction] = []
+    session = session_of(
+        "Unchanged",
+        STEPPING_SCENES,
+        frame_rate=4,
+        on_step=lambda scene, tick: seen.append(tick),
+    )
+    play = session.record.plays[-1]
+    assert len(seen) == play.stepping_ticks == 60 - 4
+    assert not set(seen) & {Fraction(k, 4) for k in range(5)}
+    full = session_of(
+        "Unchanged",
+        STEPPING_SCENES,
+        frame_rate=4,
+        stepping=False,
+        on_step=lambda scene, tick: seen.append(tick),
+    )
+    assert full.record.plays[-1].stepping_ticks == 0
+    assert len(seen) == 60 - 4
+
+
+def _same_frames(session_of, name: str, fps: int):
+    """Every frame of a stepping session equals that of one that ticks
+    everything; the stepping session's last play.
+    """
+    stepped = session_of(name, STEPPING_SCENES, frame_rate=fps)
+    full = session_of(name, STEPPING_SCENES, frame_rate=fps, stepping=False)
+    for k in range(fps + 1):
+        at = Fraction(k, fps)
+        assert np.array_equal(
+            np.asarray(stepped.frame(at)), np.asarray(full.frame(at))
+        ), (name, at)
+    return stepped.record.plays[-1]
+
+
+@pytest.mark.parametrize("name", ["EventAdd", "AddRemove", "GroupBecome"])
+def test_structure_a_plan_can_see_change_keeps_stepping_exact(session_of, name):
+    """A part beginning adds a reader (the play plans again at its event);
+    an add and a remove within one run leave nothing to plan for; a group
+    ``become`` pads with copies of a member that carry its updater (the play
+    plans again before the next stepping tick). The frames are those of
+    ticking everything, and no tick everything was needed.
+    """
+    play = _same_frames(session_of, name, 4)
+    assert not any(r.startswith("tick.") for r in play.admission.reasons)
+    assert play.stepping_ticks > 0
+
+
+def test_an_attribute_an_instance_shadows_steps_with_what_it_reads(session_of):
+    """Rebinding the attribute on the instance a dt updater reads it on:
+    the plan pulls the rebinding and the tracker it binds, and steps.
+    """
+    play = _same_as_full_ticks(session_of, "InstanceShadow", 4).record.plays[-1]
+    assert play.tick_plan.steps_only
+
+
+def test_a_member_swapped_where_no_stepping_reaches_keeps_the_plan(session_of):
+    """A skipped redraw replaces a group's member at every frame, and
+    nothing stepping reads the group: the plan stays true, and is kept.
+    """
+    play = _same_as_full_ticks(session_of, "LabelSwap", 4).record.plays[-1]
+    assert len(play.tick_plans) == 1
+    assert play.stepping_ticks == 60 - 4
+
+
+def test_a_member_moved_into_what_stepping_reaches_is_a_change_to_plan_for():
+    """A dot moved from a group nothing stepping reaches into one it does
+    joins no family of the scene's anew, and still leaves the plan untrue;
+    a dot swapped inside the first group does not.
+    """
+    mover, kept = Dot(), Dot()
+    aside, read = VGroup(mover), VGroup(kept)
+    scene = SimpleNamespace(updaters=[], mobjects=[aside, read])
+    members = frozenset(map(id, (aside, mover, read, kept)))
+    plan = TickPlan(
+        skipped=frozenset({(0, 0)}),
+        stepped_ids=frozenset(map(id, (read, kept))),
+        roots=(id(aside), id(read)),
+        members=members,
+    )
+    assert unaffected(plan, scene, [])
+    aside.remove(mover)
+    aside.add(Dot())
+    assert unaffected(plan, scene, [])
+    read.add(mover)
+    assert not unaffected(plan, scene, [])
+
+
+def test_a_play_that_gains_its_first_stepping_work_plans_for_it(session_of):
+    """The play steps nothing (no dt updater) until a skipped callback gives
+    the scene an updater that integrates: the next stepping tick plans for
+    it, and steps it with what it reads.
+    """
+    play = _same_as_full_ticks(session_of, "SceneInstaller", 4).record.plays[-1]
+    (_, first), (_, then) = play.tick_plans
+    assert first.stepping == 0
+    assert first.steps_only
+    assert then.unbounded is not None or then.pulled >= 1
+
+
+@pytest.mark.parametrize("name", ["NativeAlias", "EngineMethodAlias"])
+def test_a_method_held_as_a_value_changes_what_it_is_bound_to(session_of, name):
+    """``push = values.append`` or ``move = dot.set_x``, called under its own
+    name: the call changes the list or the dot, which a dt updater reads,
+    and the plan pulls the callback making it.
+    """
+    play = _same_as_full_ticks(session_of, name, 4).record.plays[-1]
+    assert play.tick_plan.pulled == 1
+
+
+@pytest.mark.parametrize("name", ["ClassShadow", "SetterWrite", "OwnSetter"])
+def test_a_write_through_a_class_or_a_setter_pulls_its_writer(session_of, name):
+    """A store binding an attribute on a class an instance inherits it
+    through, or one running a property's setter, writes what a dt reader
+    reads: the plan pulls the writer.
+    """
+    _same_as_full_ticks(session_of, name, 4)

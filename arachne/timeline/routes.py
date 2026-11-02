@@ -118,19 +118,17 @@ class TickedRoute:
                 for index, tick in enumerate(progress):
                     run.set_clock(tick)
                     following = ticks[index + 1] if index + 1 < len(ticks) else end
-                    tick_plan = run.play.tick_plan
-                    if (
-                        tick in stepping
-                        and tick_plan is not None
-                        and tick_plan.steps_only
-                        and not run.recorder.keeps(tick, following)
-                    ):
+                    tick_plan = (
+                        run.stepping_plan(tick)
+                        if tick in stepping and not run.recorder.keeps(tick, following)
+                        else None
+                    )
+                    if tick_plan is not None:
                         with skipping(tick_plan):
                             evaluate_instant(scene, plan, start, tick, TICK_DT)
-                        run.stepped(tick, full=False)
                     else:
                         evaluate_instant(scene, plan, start, tick, TICK_DT)
-                        run.stepped(tick, full=True, event=tick not in stepping)
+                    run.stepped(tick, full=tick_plan is None)
                     run.sample(tick, until=following)
                     if stop is not None and stop():
                         ended = tick
