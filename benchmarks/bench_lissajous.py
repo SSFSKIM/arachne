@@ -406,8 +406,7 @@ def bench_scene(scene_cls: type[Scene]) -> list[float]:
             config.pixel_height = 1080
             config.frame_rate = 60
             config.media_dir = tmpdir
-            config.format = None
-            config.write_to_movie = False
+            config.format = "none"
             config.save_last_frame = False
             config.disable_caching = True
             config.dry_run = True

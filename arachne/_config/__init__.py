@@ -9,7 +9,13 @@ from typing import Any
 
 from .cli_colors import parse_cli_ctx
 from .logger_utils import make_logger
-from .utils import RENDERER_REMOVED, ManimConfig, ManimFrame, make_config_parser
+from .utils import (
+    RENDERER_REMOVED,
+    ManimConfig,
+    ManimFrame,
+    make_config_parser,
+    no_option,
+)
 
 __all__ = [
     "logger",
@@ -77,7 +83,9 @@ def tempconfig(temp: ManimConfig | dict[str, Any]) -> Generator[None, None, None
         raise AttributeError(RENDERER_REMOVED)
     original = config.copy()
 
-    temp = {k: v for k, v in temp.items() if k in original}
+    for key in temp:
+        if key not in original:
+            raise AttributeError(no_option(key))
 
     # In order to change the config that every module has access to, use
     # update(), DO NOT use assignment.  Assigning config = some_dict will just

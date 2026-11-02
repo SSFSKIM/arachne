@@ -44,6 +44,62 @@ RENDERER_REMOVED = (
     "Remove the renderer setting."
 )
 
+_OPENGL_OPTION = (
+    "it was an option of the OpenGL renderer, which was removed: Cairo is the renderer"
+)
+
+#: Options Manim CE had that Arachne doesn't, with what replaces each: those
+#: CE 0.22 replaced (its changelog's migration notes) and the OpenGL
+#: renderer's. Setting, reading or configuring one raises, naming it.
+REMOVED_OPTIONS: dict[str, str] = {
+    "write_to_movie": (
+        "Manim CE 0.22 replaced it with format: "
+        'format = "auto" (or "mp4", "mov", "webm", "gif") writes a video, '
+        'and format = "none" writes nothing'
+    ),
+    "save_pngs": 'Manim CE 0.22 replaced it with format = "png-sequence"',
+    "save_as_gif": 'Manim CE 0.22 replaced it with format = "gif"',
+    "movie_file_extension": "Manim CE 0.22 replaced it with format",
+    "force_window": (
+        "Manim CE 0.22 removed it; its window was the OpenGL renderer's, which "
+        "was removed"
+    ),
+    "custom_folders": (
+        "Manim CE 0.22 removed it; set media_dir, video_dir, sections_dir, "
+        "images_dir, text_dir, tex_dir and log_dir instead"
+    ),
+    "flush_cache": ("Manim CE 0.22 replaced it with the command `arachne cache clear`"),
+    "ffmpeg_loglevel": "Manim CE 0.22 renamed it media_loglevel",
+    **dict.fromkeys(
+        (
+            "enable_gui",
+            "enable_wireframe",
+            "fullscreen",
+            "gui_location",
+            "use_projection_fill_shaders",
+            "use_projection_stroke_shaders",
+            "window_monitor",
+            "window_position",
+            "window_size",
+        ),
+        _OPENGL_OPTION,
+    ),
+}
+
+#: Config file sections Arachne doesn't read, with what replaces each.
+REMOVED_SECTIONS: dict[str, str] = {
+    "ffmpeg": "Manim CE 0.22 renamed the [ffmpeg] section [media]",
+    "custom_folders": REMOVED_OPTIONS["custom_folders"],
+}
+
+
+def no_option(name: str) -> str:
+    """The error for ``name``, which is no configuration option."""
+    message = f"Arachne has no configuration option {name!r}"
+    if name in REMOVED_OPTIONS:
+        message += f": {REMOVED_OPTIONS[name]}. Remove the setting"
+    return message + "."
+
 
 def config_file_paths() -> list[Path]:
     """The paths where ``.cfg`` files will be searched for.
@@ -339,7 +395,25 @@ class ManimConfig(MutableMapping):
         return getattr(self, key)
 
     def __setitem__(self, key: str, val: Any) -> None:
-        getattr(ManimConfig, key).fset(self, val)  # fset is the property's setter
+        option = getattr(ManimConfig, key, None)
+        if not isinstance(option, property):
+            raise AttributeError(no_option(key))
+        option.fset(self, val)  # fset is the property's setter
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        # An option is a property: a name that is none is a setting that
+        # would otherwise be kept and never read.
+        if not name.startswith("_") and not hasattr(type(self), name):
+            raise AttributeError(no_option(name))
+        super().__setattr__(name, value)
+
+    def __getattr__(self, name: str) -> NoReturn:
+        # Only for a name found nowhere else.
+        if name in REMOVED_OPTIONS:
+            raise AttributeError(no_option(name))
+        raise AttributeError(
+            f"{type(self).__name__!r} object has no attribute {name!r}"
+        )
 
     def update(self, obj: ManimConfig | dict[str, Any]) -> None:  # type: ignore[override]
         """Digest the options found in another :class:`ManimConfig` or in a dict.
@@ -533,6 +607,14 @@ class ManimConfig(MutableMapping):
         """
         if parser.has_option("CLI", "renderer"):
             raise AttributeError(RENDERER_REMOVED)
+        for name in REMOVED_OPTIONS:
+            if parser.has_option("CLI", name):
+                raise AttributeError(no_option(name))
+        for section, replacement in REMOVED_SECTIONS.items():
+            if parser.has_section(section):
+                raise AttributeError(
+                    f"Arachne reads no [{section}] config section: {replacement}."
+                )
         self._parser = parser
 
         self.format = parser["CLI"].get("format", fallback="auto", raw=True)
