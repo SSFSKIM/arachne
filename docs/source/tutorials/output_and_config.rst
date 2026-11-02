@@ -14,7 +14,7 @@ At this point, you have just executed the following command.
 
 .. code-block:: bash
 
-   manim -pql scene.py SquareToCircle
+   arachne -pql scene.py SquareToCircle
 
 Let's dissect what just happened step by step.  First, this command executes
 manim on the file ``scene.py``, which contains our animation code.  Further,
@@ -59,7 +59,7 @@ the following command,
 
 .. code-block:: bash
 
-   manim -pqh scene.py SquareToCircle
+   arachne -pqh scene.py SquareToCircle
 
 The ``-ql`` flag (for low quality) has been replaced by the ``-qh`` flag, for
 high quality.  Manim will take considerably longer to render this file, and it
@@ -269,7 +269,7 @@ For videos to be created for each section you have to add the ``--save_sections`
 
 .. code-block:: bash
 
-   manim --save_sections scene.py
+   arachne --save_sections scene.py
 
 If you do this, the ``media`` folder will look like this:
 
@@ -366,7 +366,7 @@ When executing the command
 
 .. code-block:: bash
 
-   manim -pql scene.py SquareToCircle
+   arachne -pql scene.py SquareToCircle
 
 it specifies the scene to render.  This is not necessary now.  When a single
 file contains only one ``Scene`` class, it will just render the ``Scene``

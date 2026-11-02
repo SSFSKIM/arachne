@@ -8,7 +8,8 @@ There are several package managers that work with conda packages,
 namely `conda <https://docs.conda.io/projects/conda/en/latest/user-guide/install/download.html>`__,
 `mamba <https://mamba.readthedocs.io>`__ and `pixi <https://pixi.sh>`__.
 
-After installing your package manager, you can create a new environment and install ``manim`` inside by running
+Arachne is not packaged for conda. After installing your package manager, you can create a new
+environment holding Python and Cairo, and install Arachne into it from its repository, by running
 
 
 .. tab-set::
@@ -18,20 +19,17 @@ After installing your package manager, you can create a new environment and inst
       .. code-block:: bash
 
          # if you want to use mamba, just replace conda below with mamba
-         conda create -n my-manim-environment
-         conda activate my-manim-environment
-         conda install -c conda-forge manim
+         conda create -n my-arachne-environment -c conda-forge python=3.14 pip pycairo
+         conda activate my-arachne-environment
+         pip install git+https://github.com/SSFSKIM/arachne
 
    .. tab-item:: pixi
 
       .. code-block:: bash
 
          pixi init
-         pixi add manim
-
-
-Since all dependencies (except LaTeX) are handled by conda, you don't need to worry
-about needing to install additional dependencies.
+         pixi add python=3.14 pycairo
+         pixi add --pypi "arachne-engine @ git+https://github.com/SSFSKIM/arachne"
 
 
 

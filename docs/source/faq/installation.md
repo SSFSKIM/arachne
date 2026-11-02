@@ -104,7 +104,7 @@ likely lead to being suggested to follow our written guide.
 
 ---
 
-## Why does ManimPango fail to install when running `pip install manim`?
+## Why does ManimPango fail to install when running `pip install git+https://github.com/SSFSKIM/arachne`?
 
 This most likely means that pip was not able to use our pre-built wheels
 of the `manimpango` dependency. Let us know (via
@@ -124,14 +124,14 @@ of [ManimPango's README](https://github.com/ManimCommunity/ManimPango).
 ## I am using Windows and get the error `X is not recognized as an internal or external command, operable program or batch file`
 
 If you have followed {doc}`our local installation instructions </installation/uv>` and
-have not activated the corresponding virtual environment, make sure to use `uv run manim ...`
+have not activated the corresponding virtual environment, make sure to use `uv run arachne ...`
 instead of just `manim` (or activate the virtual environment by following the instructions
 printed when running `uv venv`).
 
 Otherwise there is a problem with the directories where your system is looking for
 executables (the `PATH` variable).
 If `python` is recognized, you can try running
-commands by prepending `python -m`. That is, `manim` becomes `python -m manim`,
+commands by prepending `python -m`. That is, `arachne` becomes `python -m arachne`,
 and `pip` becomes `python -m pip`.
 
 Otherwise see

@@ -18,7 +18,7 @@ install, use, and create your own plugins.
 
     The plugin feature is new and under active development. Expect updates
     for the best practices on installing, using, and creating plugins; as
-    well as new subcommands/flags for ``manim plugins``
+    well as new subcommands/flags for ``arachne plugins``
 
 .. tip::
 
@@ -33,13 +33,13 @@ command:
 
     pip install manim-*
 
-After installing a plugin, you may use the ``manim plugins`` command to list
+After installing a plugin, you may use the ``arachne plugins`` command to list
 your available plugins, see the following help output:
 
 .. code-block:: bash
 
-    manim plugins -h
-    Usage: manim plugins [OPTIONS]
+    arachne plugins -h
+    Usage: arachne plugins [OPTIONS]
 
       Manages Manim plugins.
 
@@ -53,7 +53,7 @@ You can list plugins as such:
 
 .. code-block:: bash
 
-    manim plugins -l
+    arachne plugins -l
     Plugins:
     • manim_plugintemplate
 
@@ -92,7 +92,7 @@ on PyPI.org which serves as an in-depth tutorial for creating plugins.
 
     pip install manim-plugintemplate
 
-The only requirement of manim plugins is that they specify an entry point
+The only requirement of arachne plugins is that they specify an entry point
 with the group, ``"arachne.plugins"``. This allows Manim to discover plugins
 available in the user's environment. Everything regarding the plugin's
 directory structure, build system, and naming are completely up to your

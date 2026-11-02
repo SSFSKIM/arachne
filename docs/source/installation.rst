@@ -34,7 +34,7 @@ Installing Manim locally via pip
 
 The recommended way of installing Manim is by using Python's package manager
 pip. If you already have a Python environment set up, you can simply run
-``pip install manim`` to install the library.
+``pip install git+https://github.com/SSFSKIM/arachne`` to install the library.
 
 Our :doc:`local installation guide <installation/uv>` provides more detailed
 instructions, including best practices for setting up a suitable local environment.
@@ -94,7 +94,7 @@ maintained by the community, ``manimcommunity/manim``:
 Interactive Jupyter notebooks for your browser
 **********************************************
 
-Manim ships with a built-in ``%%manim`` IPython magic command
+Manim ships with a built-in ``%%arachne`` IPython magic command
 designed for the use within `Jupyter notebooks <https://jupyter.org>`__.
 Our interactive tutorial over at https://try.manim.community illustrates
 how Manim can be used from within a Jupyter notebook.

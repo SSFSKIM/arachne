@@ -120,7 +120,7 @@ Importing the library
 ^^^^^^^^^^^^^^^^^^^^^
 
 You can ask Manim to render in several ways. For example, you can run
-``manim -qm -p file_name.py ToyExample`` or render directly from a Python script
+``arachne -qm -p file_name.py ToyExample`` or render directly from a Python script
 with a snippet like
 
 ::
@@ -230,7 +230,7 @@ if necessary. To illustrate this, let us briefly look at the two most common way
 of rendering scenes:
 
 **Command Line Interface.** When using the CLI and running the command
-``manim -qm -p toy_example.py ToyExample`` in your terminal, the actual
+``arachne -qm -p toy_example.py ToyExample`` in your terminal, the actual
 entry point is Manim's ``__main__.py`` file (located
 `here <https://github.com/ManimCommunity/manim/blob/main/manim/__main__.py>`__.
 Manim uses `Click <https://click.palletsprojects.com/en/8.0.x/>`__ to implement
@@ -241,9 +241,9 @@ then calls the scene's render method in the
 `render command <https://github.com/ManimCommunity/manim/blob/main/manim/cli/render/commands.py>`__.
 
 **Jupyter notebooks.** In Jupyter notebooks, the communication with the library
-is handled by the ``%%manim`` magic command, which is implemented in the
+is handled by the ``%%arachne`` magic command, which is implemented in the
 ``arachne.utils.ipython_magic`` module. There is
-:meth:`some documentation <.ManimMagic.manim>` available for the magic command.
+:meth:`some documentation <.ManimMagic.arachne>` available for the magic command.
 The implementation instantiates the requested scene and calls its render method;
 the scene attaches a manager lazily through that entry point.
 
