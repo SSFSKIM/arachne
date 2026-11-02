@@ -262,3 +262,19 @@ class FixedOrientation(ThreeDScene):
         self.wait(0.5)
         pivot = RIGHT * 3
         self.wait(0.5)
+
+
+class Captured(Scene):
+    """A group whose members are never added on their own, a dot added and
+    then removed, and a square made and never added.
+    """
+
+    def construct(self):
+        self.group = VGroup(Circle(), Square())
+        self.add(self.group)
+        self.dot = Dot()
+        self.add(self.dot)
+        self.wait(0.1)
+        self.remove(self.dot)
+        self.unused = Square()
+        self.play(self.group.animate.shift(RIGHT), run_time=0.5)
