@@ -195,7 +195,7 @@ class CairoRenderer:
         if draw:
             # The play's segment opens at its first frame: a stop condition
             # can end the play before the frame grid reaches it, and then it
-            # has no segment, as a play drawn from the record would not.
+            # has no segment, like a frameless play drawn from the record.
 
             def write(pixels: PixelArray, repeat: int) -> None:
                 nonlocal opened
