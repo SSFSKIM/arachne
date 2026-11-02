@@ -221,15 +221,39 @@ def test_a_mobject_that_joins_and_leaves_mid_play_is_drawn_as_the_scene_runs(
     _same_frames(frames, _drawn_serially(6, [("fill", RED), ("wait", 0.5)]))
 
 
-def test_each_play_refused_mid_play_costs_one_more_execution():
+def test_every_play_from_the_first_refused_on_is_drawn_as_the_scene_runs():
+    """Play 2 refuses as play 0 does, and is drawn as it runs in the same
+    second execution.
+    """
     scene, frames = render(soundness_scenes.TwoTransientFills, 6)
     execution = scene.record.execution
-    assert execution.number == 3
-    assert sorted(execution.known) == [0, 2]
+    assert execution.number == 2
+    assert sorted(execution.known) == [0]
+    assert execution.live_from == 0
     assert execution.divergence is None
     _same_frames(
         frames,
         _drawn_serially(6, [("fill", RED), ("wait", 0.5), ("fill", BLUE)]),
+    )
+
+
+def test_a_refusal_found_at_another_play_each_execution_costs_one_execution():
+    """One more wait each run moves the one refusal a play later each
+    execution: drawn as it runs from the first index found on, it costs one
+    extra execution, not one per index.
+    """
+    runs = soundness_scenes.ShiftingTransientFill.runs
+    runs.clear()
+    scene, frames = render(soundness_scenes.ShiftingTransientFill, 6)
+    execution = scene.record.execution
+    distinct_refusals = 1
+    assert execution.number == 1 + distinct_refusals
+    assert len(runs) == execution.number
+    assert list(execution.known) == [1]
+    # This execution ran two waits before its fill.
+    _same_frames(
+        frames,
+        _drawn_serially(6, [("wait", 0.5), ("wait", 0.5), ("fill", RED)]),
     )
 
 
@@ -245,3 +269,34 @@ def test_an_execution_that_begins_a_play_from_another_state_says_so():
     execution = scene.record.execution
     assert execution.number == 2
     assert execution.divergence == "play 0 began from another state than in execution 1"
+
+
+def test_a_retry_tears_down_what_the_interrupted_execution_set_up():
+    cls = soundness_scenes.SetUpTransientFill
+    cls.steps.clear()
+    cls.open.clear()
+    scene, frames = render(cls, 6)
+    assert scene.record.execution.number == 2
+    assert scene.record.execution.known[0].startswith("draw.user_override:")
+    assert cls.steps == ["setup", "tear_down", "setup", "tear_down"]
+    assert cls.open == []
+    _same_frames(frames, _drawn_serially(6, [("fill", RED)]))
+
+
+@pytest.mark.xfail(
+    raises=AttributeError,
+    strict=True,
+    reason=(
+        "a retry initialises the scene anew from its constructor arguments:"
+        " an attribute its caller set between making it and rendering it"
+        " (scene.anchor) is lost (debt)"
+    ),
+)
+def test_a_retry_keeps_what_the_caller_set_on_the_scene():
+    with tempconfig(
+        {**SMALL, "frame_rate": 6, "dry_run": True, "disable_caching": True}
+    ):
+        scene = soundness_scenes.AnchoredTransientFill()
+        scene.anchor = np.array([1.0, 0.0, 0.0])
+        scene.render()
+    assert scene.record.execution.number == 2

@@ -18,6 +18,12 @@ classes. Neither ``__module__``, ``__qualname__`` nor ``functools.wraps``
 changes a function's code, so none of them makes a scene's function the
 engine's. Code another library shares among every function it wraps
 (``contextlib``'s, ``reprlib``'s) is not the engine's.
+
+The set compares code objects by equality, which is structural, not by
+pointer: a copy of the engine's code (``f.__code__.replace()``) put in a
+scene's function passes. That is forging the engine's identity, which the
+proof does not cover (it covers scene code that uses the engine's and the
+libraries' APIs as documented, without patching them).
 """
 
 from __future__ import annotations
@@ -39,7 +45,9 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + os.sep
 
 
 def engine_code(function: Any) -> bool:
-    """Whether ``function`` is a Python function of the engine's own code."""
+    """Whether ``function`` is a Python function of the engine's own code
+    (its code object equal to one the engine compiled).
+    """
     if not _FROZEN:
         freeze()
     return isinstance(function, types.FunctionType) and function.__code__ in _CODES
