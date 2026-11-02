@@ -7,7 +7,7 @@ Binder
 
 `Binder <https://mybinder.readthedocs.io/en/latest/>`__ is an online
 platform that hosts shareable and customizable computing environments
-in the form of Jupyter notebooks. Manim ships with a built-in ``%%manim``
+in the form of Jupyter notebooks. Manim ships with a built-in ``%%arachne``
 Jupyter magic command which makes it easy to use in these notebooks.
 
 To see an example for such an environment, visit our interactive
@@ -70,7 +70,7 @@ then execute it.
        texlive texlive-latex-extra texlive-fonts-extra \
        texlive-latex-recommended texlive-science \
        tipa libpango1.0-dev
-   !pip install manim
+   !pip install git+https://github.com/SSFSKIM/arachne
    !pip install IPython==8.21.0
 
 You should start to see Colab installing all the dependencies specified
@@ -87,7 +87,7 @@ To check that everything works as expected, first import Manim by running
 in a new code cell. Then create another cell containing the
 following code::
 
-   %%manim -qm -v WARNING SquareToCircle
+   %%arachne -qm -v WARNING SquareToCircle
 
    class SquareToCircle(Scene):
       def construct(self):

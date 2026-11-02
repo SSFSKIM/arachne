@@ -156,17 +156,17 @@ to anything you like.
 ```bash
 uv init manimations
 cd manimations
-uv add manim
+uv add git+https://github.com/SSFSKIM/arachne
 ```
 
 Manim is now installed in your local project environment!
 
 :::{tip}
-If `uv add manim` reports that Microsoft Visual C++ is required, install the
+If `uv add git+https://github.com/SSFSKIM/arachne` reports that Microsoft Visual C++ is required, install the
 [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/).
 In the Visual Studio Installer, select the **Desktop development with C++**
 workload. After the installation finishes, open a new terminal and run
-`uv add manim` again.
+`uv add git+https://github.com/SSFSKIM/arachne` again.
 :::
 
 :::::
@@ -211,7 +211,7 @@ to anything you like.
 ```bash
 uv init manimations
 cd manimations
-uv add manim
+uv add git+https://github.com/SSFSKIM/arachne
 ```
 
 Manim is now installed in your local project environment!
@@ -263,7 +263,7 @@ to some other name) with a local environment containing Manim by running
 ```bash
 uv init manimations
 cd manimations
-uv add manim
+uv add git+https://github.com/SSFSKIM/arachne
 ```
 
 :::::
@@ -276,7 +276,7 @@ To render text and mathematical expressions with [Typst](https://typst.app/),
 add Manim's optional `typst` dependency to your project:
 
 ```bash
-uv add "manim[typst]"
+uv add "arachne-engine[typst] @ git+https://github.com/SSFSKIM/arachne"
 ```
 
 This dependency includes the Typst compiler, so no separate system-level Typst
@@ -287,7 +287,7 @@ for examples.
 To verify that your local Python project is setup correctly
 and that Manim is available, simply run
 ```bash
-uv run manim checkhealth
+uv run arachne checkhealth
 ```
 
 At this point, you can also open your project folder with the
@@ -313,9 +313,9 @@ on their tool mechanism.
 
 To install Manim as a global `uv` tool, simply run
 ```bash
-uv tool install manim
+uv tool install git+https://github.com/SSFSKIM/arachne
 ```
-after which the `manim` executable will be available on your
+after which the `arachne` executable will be available on your
 global system path, without the need to activate any virtual
 environment or prefixing your commands with `uv run`.
 
@@ -326,7 +326,7 @@ base path of all tool environments can be determined by running
 ```
 uv tool dir
 ```
-which should now contain a directory `manim` in which the appropriate
+which should now contain a directory `arachne-engine` in which the appropriate
 virtual environment is located. Set the Python interpreter of your IDE
 to this environment to make imports properly resolve themselves.
 :::
@@ -341,7 +341,7 @@ version you want to use as an argument to the `init` command:
 ```
 uv init --python 3.12 manimations
 cd manimations
-uv add manim
+uv add git+https://github.com/SSFSKIM/arachne
 ```
 To change the version for an existing package, you will need to
 edit the `pyproject.toml` file. If you are downgrading the python version, the
@@ -354,10 +354,10 @@ environment is updated!
 
 :::{dropdown} Installing the latest development version
 If you want to install the latest (potentially unstable!)
-development version of Manim from our source repository
-[on GitHub](https://github.com/ManimCommunity/manim), then
+development version of Arachne from its source repository
+[on GitHub](https://github.com/SSFSKIM/arachne), then
 simply run
 ```bash
-uv add git+https://github.com/ManimCommunity/manim.git@main
+uv add git+https://github.com/SSFSKIM/arachne@main
 ```
 :::

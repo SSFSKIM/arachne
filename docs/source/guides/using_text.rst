@@ -309,7 +309,7 @@ Manim also supports rendering text and formulas with Typst via
 .. important::
 
     Typst support requires the optional ``typst`` dependency. Install it with
-    ``uv add "manim[typst]"`` or ``pip install "manim[typst]"``. The optional
+    ``uv add "arachne-engine[typst] @ git+https://github.com/SSFSKIM/arachne"`` or ``pip install "arachne-engine[typst] @ git+https://github.com/SSFSKIM/arachne"``. The optional
     dependency includes the Typst compiler; no separate system installation is
     required.
 

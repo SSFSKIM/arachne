@@ -18,7 +18,7 @@ By far the most commonly used command in the CLI is the ``render`` command,
 which is used to render scene(s) to an output file.
 It is used with the following arguments:
 
-.. program-output:: manim render --help
+.. program-output:: arachne render --help
    :ellipsis: 9
 
 However, since Manim defaults to the :code:`render` command whenever no command
@@ -26,13 +26,13 @@ is specified, the following form is far more common and can be used instead:
 
 .. code-block:: bash
 
-   manim [OPTIONS] FILE [SCENES]
+   arachne [OPTIONS] FILE [SCENES]
 
 An example of using the above form is:
 
 .. code-block:: bash
 
-   manim -qm file.py SceneOne
+   arachne -qm file.py SceneOne
 
 This asks Manim to search for a Scene class called :code:`SceneOne` inside the
 file ``file.py`` and render it with medium quality (specified by the ``-qm`` flag).
@@ -46,7 +46,7 @@ OpenGL renderer provides this with ``-l`` (or ``--live-preview``):
 
 .. code-block:: bash
 
-   manim --renderer=opengl -l <file.py> SceneName
+   arachne --renderer=opengl -l <file.py> SceneName
 
 With ``--format=auto``, live preview does not write a media file, keeping the
 interactive workflow fast. Pass a concrete format, such as ``--format=mp4``,
@@ -60,7 +60,7 @@ instead of the whole video, you can execute
 
 .. code-block:: bash
 
-   manim -sqh <file.py> SceneName
+   arachne -sqh <file.py> SceneName
 
 The equivalent ``--format=png`` spelling uses the same fast mode that saves only
 the last frame. Use ``--format=png-sequence`` when every rendered frame should
@@ -74,15 +74,15 @@ open the file after it is rendered.
 
 .. code-block:: bash
 
-   manim -o myscene --format=gif -n 0,10 -c WHITE <file.py> SceneName
+   arachne -o myscene --format=gif -n 0,10 -c WHITE <file.py> SceneName
 
 A list of all CLI flags
 ========================
 
-.. command-output:: manim --help
-.. command-output:: manim render --help
-.. command-output:: manim cfg --help
-.. command-output:: manim plugins --help
+.. command-output:: arachne --help
+.. command-output:: arachne render --help
+.. command-output:: arachne cfg --help
+.. command-output:: arachne plugins --help
 
 The ManimConfig class
 *********************
@@ -203,14 +203,14 @@ Now, executing the following command
 
 .. code-block:: bash
 
-   manim -o myscene --format=gif -c WHITE <file.py> SceneName
+   arachne -o myscene --format=gif -c WHITE <file.py> SceneName
 
 is equivalent to executing the following command, provided that ``arachne.cfg``
 is in the same directory as <file.py>,
 
 .. code-block:: bash
 
-   manim <file.py> SceneName
+   arachne <file.py> SceneName
 
 .. tip:: The names of the configuration options admissible in config files are
          exactly the same as the **long names** of the corresponding command-
@@ -228,7 +228,7 @@ file being rendered, and **not** in the directory of execution.  For example,
 
 .. code-block:: bash
 
-   manim -o myscene -i -c WHITE <path/to/file.py> SceneName
+   arachne -o myscene -i -c WHITE <path/to/file.py> SceneName
 
 will use the config file found in ``path/to/file.py``, if any.  It will **not**
 use the config file found in the current working directory, even if it exists.
@@ -253,9 +253,9 @@ script is stored.
 The user-wide config file lives in a special folder, depending on the operating
 system.
 
-* Windows: :code:`UserDirectory`/AppData/Roaming/Manim/arachne.cfg
-* MacOS: :code:`UserDirectory`/.config/manim/arachne.cfg
-* Linux: :code:`UserDirectory`/.config/manim/arachne.cfg
+* Windows: :code:`UserDirectory`/AppData/Roaming/Arachne/arachne.cfg
+* MacOS: :code:`UserDirectory`/.config/arachne/arachne.cfg
+* Linux: :code:`UserDirectory`/.config/arachne/arachne.cfg
 
 Here, :code:`UserDirectory` is the user's home folder.
 
@@ -296,21 +296,21 @@ and the following folder-wide file
    [CLI]
    format = auto
 
-Then, executing :code:`manim <file.py> SceneName` will be equivalent to not
+Then, executing :code:`arachne <file.py> SceneName` will be equivalent to not
 using any config files and executing
 
 .. code-block:: bash
 
-   manim -o myscene -c WHITE <file.py> SceneName
+   arachne -o myscene -c WHITE <file.py> SceneName
 
 Any command-line flags have precedence over any config file.  For example,
-using the previous two config files and executing :code:`manim -c RED
+using the previous two config files and executing :code:`arachne -c RED
 <file.py> SceneName` is equivalent to not using any config files and
 executing
 
 .. code-block:: bash
 
-   manim -o myscene -c RED <file.py> SceneName
+   arachne -o myscene -c RED <file.py> SceneName
 
 There is also a **library-wide** config file that determines Manim's default
 behavior and applies to every user of the library.  It has the least
@@ -379,8 +379,8 @@ highest precedence is:
 Inspecting available config options
 ***********************************
 
-Run ``manim cfg show`` to inspect the currently resolved configuration and
-``manim render --help`` for the authoritative list of render CLI options. The
+Run ``arachne cfg show`` to inspect the currently resolved configuration and
+``arachne render --help`` for the authoritative list of render CLI options. The
 attributes available for programmatic configuration are documented on
 :class:`.ManimConfig`.
 
@@ -392,11 +392,11 @@ files should use the canonical ``format`` option directly.
 Accessing CLI command options
 *****************************
 
-Entering ``manim``, or ``manim --help``, will open the main help page.
+Entering ``arachne``, or ``arachne --help``, will open the main help page.
 
 .. code::
 
-   Usage: manim [OPTIONS] COMMAND [ARGS]...
+   Usage: arachne [OPTIONS] COMMAND [ARGS]...
 
      Animation engine for explanatory math videos.
 
@@ -415,7 +415,7 @@ Entering ``manim``, or ``manim --help``, will open the main help page.
      plugins  Manages Manim plugins.
      render   Render SCENE(S) from the input FILE.
 
-   See 'manim <command>' to read about a specific subcommand.
+   See 'arachne <command>' to read about a specific subcommand.
 
    Made with <3 by Manim Community developers.
 
@@ -423,5 +423,5 @@ Each of the subcommands has its own help page which can be accessed similarly:
 
 .. code::
 
-   manim render
-   manim render --help
+   arachne render
+   arachne render --help

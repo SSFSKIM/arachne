@@ -1,6 +1,13 @@
 Docker
 ======
 
+.. important::
+
+   Arachne publishes no Docker image. The images below are Manim Community
+   Edition's: they run CE's ``manim`` command, not ``arachne``. To use
+   Arachne in a container, install it there with
+   ``pip install git+https://github.com/SSFSKIM/arachne``.
+
 The community maintains a docker image, which can be found
 `on DockerHub <https://hub.docker.com/r/manimcommunity/manim>`__.
 For our image ``manimcommunity/manim``, there are the following tags:

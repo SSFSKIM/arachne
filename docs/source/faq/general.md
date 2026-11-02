@@ -16,7 +16,7 @@ then this error indicates that the `manim` executable has been overwritten
 by the one provided by `manimgl` (unfortunately, both `manim` and `manimgl`
 provide a `manim` executable).
 
-You can check whether this is the case by running `manim --version`, the output of
+You can check whether this is the case by running `arachne --version`, the output of
 the community maintained version starts with `Manim Community v...`. If this is not
 the case, you are running `manimgl`.
 
@@ -24,7 +24,7 @@ You can resolve this by either of the following steps:
 - Un- and reinstalling `manim`,
 - using the `manimce` executable in place of the `manim` one,
 - or replacing the call to the executable with a direct call to the
-  Python module via `python -m manim`.
+  Python module via `python -m arachne`.
 
 ---
 

@@ -8,8 +8,8 @@ Quickstart
   following the steps in :doc:`../installation`. For
   information on using Manim with Jupyterlab or Jupyter notebook, go to the
   documentation for the
-  :meth:`IPython magic command <arachne.utils.ipython_magic.ManimMagic.manim>`,
-  ``%%manim``.
+  :meth:`IPython magic command <arachne.utils.ipython_magic.ManimMagic.arachne>`,
+  ``%%arachne``.
 
 
 .. important::
@@ -17,8 +17,8 @@ Quickstart
   If you installed Manim in the recommended way, using the
   Python management tool ``uv``, then you either need to make sure the corresponding
   virtual environment is activated (follow the instructions printed on running ``uv venv``),
-  or you need to remember to prefix the ``manim`` command in the console with ``uv run``;
-  that is, ``uv run manim ...``.
+  or you need to remember to prefix the ``arachne`` command in the console with ``uv run``;
+  that is, ``uv run arachne ...``.
 
 Overview
 ********
@@ -40,7 +40,7 @@ Starting a new project
 
 Start by creating a new folder::
 
-   manim init project my-project --default
+   arachne init project my-project --default
 
 The ``my-project`` folder is the root folder for your project. It contains all the files that Manim needs to function,
 as well as any output that your project produces.
@@ -69,7 +69,7 @@ Animating a circle
 
    .. code-block:: bash
 
-     manim -pql main.py CreateCircle
+     arachne -pql main.py CreateCircle
 
 Manim will output rendering information, then create an MP4 file.
 Your default movie player will play the MP4 file, displaying the following animation.
@@ -166,7 +166,7 @@ With our circle animation complete, let's move on to something a little more com
 
 .. code-block:: bash
 
-   manim -pql scene.py SquareToCircle
+   arachne -pql scene.py SquareToCircle
 
 The following animation will render:
 
@@ -214,7 +214,7 @@ Next, let's go over some basic techniques for positioning ``Mobject``\s.
 
 .. code-block:: bash
 
-   manim -pql scene.py SquareAndCircle
+   arachne -pql scene.py SquareAndCircle
 
 The following animation will render:
 
@@ -280,7 +280,7 @@ and animating those method calls with ``.animate``.
 
 .. code-block:: bash
 
-   manim -pql scene.py AnimatedSquareToCircle
+   arachne -pql scene.py AnimatedSquareToCircle
 
 The following animation will render:
 
@@ -322,7 +322,7 @@ Try other methods, like ``flip`` or ``shift``, and see what happens.
 
 .. code-block:: bash
 
-   manim -pql scene.py DifferentRotations
+   arachne -pql scene.py DifferentRotations
 
 The following animation will render:
 
