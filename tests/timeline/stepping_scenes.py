@@ -17,6 +17,7 @@ from arachne import (
     GREEN,
     LEFT,
     ORANGE,
+    ORIGIN,
     PURPLE,
     RED,
     RIGHT,
@@ -651,3 +652,26 @@ class WiggleReader(Scene):
             Wiggle(middle, suspend_mobject_updating=False),
             rate_func=linear,
         )
+
+
+class ConstantWrite(Scene):
+    """A dt-free updater writes in place into its dot's centre, which is the
+    engine's ``ORIGIN`` every dot made with a default holds (writable, as in
+    CE); a dt updater reads ``ORIGIN``.
+    """
+
+    def construct(self):
+        t = ValueTracker(0)
+        holder = Dot(color=BLUE)
+
+        def update(m):
+            m.arc_center[0] = t.get_value()
+
+        holder.add_updater(update)
+        output = Dot(color=RED, radius=0.05)
+        output.add_updater(lambda m, dt: m.shift(dt * ORIGIN[0] * RIGHT))
+        self.add(t, holder, output, _idle())
+        try:
+            self.play(t.animate.set_value(1), rate_func=linear)
+        finally:
+            ORIGIN[0] = 0.0

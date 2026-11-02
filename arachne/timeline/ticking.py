@@ -425,6 +425,8 @@ class _Reach:
                             member.fget if isinstance(member, property) else member
                         )
         elif isinstance(value, np.ndarray):
+            if _array_root(value)[1]:
+                self.ids.add(_ANY_ARRAY)
             storage = _storage_key(value)
             if storage is not None:
                 self.ids.add(storage)
@@ -588,17 +590,31 @@ def _scene_class(klass: type) -> bool:
     return bool(filename) and not engine_class(klass) and not _internal(filename)
 
 
-def _storage_key(array: np.ndarray) -> int | None:
-    """One key for every array sharing ``array``'s memory, through the
-    chain of views to what owns it; ``None`` for memory nothing writes (the
-    engine's constant vectors, ``ORIGIN`` and its kin, which every mobject
-    made with a default holds, are taken as unwritten).
+#: The key every reach of a writable array carries, and every write in place
+#: to an array the plan does not key: such a write may change any of them.
+_ANY_ARRAY = -(2**62) - 1
+
+
+def _array_root(array: np.ndarray) -> tuple[Any, bool]:
+    """What owns ``array``'s memory, through its chain of views, and whether
+    any array along it can write that memory.
     """
     owner: Any = array
     writable = array.flags.writeable
     while isinstance(owner, np.ndarray) and owner.base is not None:
         owner = owner.base
         writable = writable or (isinstance(owner, np.ndarray) and owner.flags.writeable)
+    return owner, writable
+
+
+def _storage_key(array: np.ndarray) -> int | None:
+    """One key for every array sharing ``array``'s memory; ``None`` for
+    memory nothing can write, and for the engine's constant vectors
+    (``ORIGIN`` and its kin, which every mobject made with a default holds,
+    so that a key of theirs would tie every mobject to every other): a write
+    in place to one of those is a write to :data:`_ANY_ARRAY`.
+    """
+    owner, writable = _array_root(array)
     if not writable or id(owner) in _constant_arrays():
         return None
     return id(owner)
@@ -762,17 +778,75 @@ class _Effect:
     #: It may change which updaters run or which mobjects there are (add,
     #: remove, suspend): work no plan weighed, or work a plan weighed gone.
     restructures: bool = False
+    #: It may write in place to an array the plan does not key (one it can't
+    #: resolve, or the engine's constant vectors): any array.
+    arrays: bool = False
 
     def __or__(self, other: _Effect) -> _Effect:
         return _Effect(
             self.elsewhere or other.elsewhere,
             self.restructures or other.restructures,
+            self.arrays or other.arrays,
         )
 
 
 _NO_EFFECT = _Effect()
 _ELSEWHERE = _Effect(elsewhere=True)
-_ANY_EFFECT = _Effect(elsewhere=True, restructures=True)
+_ANY_EFFECT = _Effect(elsewhere=True, restructures=True, arrays=True)
+_IN_PLACE = _Effect(elsewhere=True, arrays=True)
+
+#: Mobject methods that return a new value (a number, a new array).
+_VALUE_GETTERS = frozenset(
+    {
+        "get_x",
+        "get_y",
+        "get_z",
+        "get_value",
+        "get_center",
+        "get_width",
+        "get_height",
+        "get_depth",
+        "get_left",
+        "get_right",
+        "get_top",
+        "get_bottom",
+        "get_corner",
+        "get_angle",
+        "get_length",
+        "point_from_proportion",
+    }
+)
+#: numpy functions that return a new array.
+_NUMPY_MAKERS = frozenset(
+    {
+        "array",
+        "zeros",
+        "ones",
+        "empty",
+        "full",
+        "zeros_like",
+        "ones_like",
+        "full_like",
+        "linspace",
+        "arange",
+        "concatenate",
+        "stack",
+        "vstack",
+        "hstack",
+        "column_stack",
+        "cross",
+        "dot",
+        "outer",
+        "clip",
+        "round",
+        "copy",
+    }
+)
+
+#: Methods of an array that change it in place.
+_ARRAY_MUTATORS = frozenset(
+    {"fill", "put", "sort", "resize", "itemset", "partition", "setfield", "byteswap"}
+)
 
 #: Methods that may change a mobject's or the scene's members or updaters,
 #: or whether they run.
@@ -800,6 +874,11 @@ _RESTRUCTURERS = frozenset(
         "replace_submobject",
         "resume_updating",
         "set_submobjects",
+        "shuffle",
+        "shuffle_submobjects",
+        "sort",
+        "sort_submobjects",
+        "invert",
         "suspend_updating",
     }
 )
@@ -885,6 +964,13 @@ class _Writes:
             return _ANY_EFFECT
         site = _Site(self, owners, owner, self._bindings(function), depth)
         site.fresh = self._fresh(node, site.bindings) | made
+        site.values = self._fresh(node, site.bindings, self._new_value)
+        parameters = set(_parameters(function))
+        site.aliases = {
+            name: value
+            for name, value in _aliases(node).items()
+            if name not in parameters
+        }
         effect = _NO_EFFECT
         for item in ast.walk(node):
             if isinstance(item, (ast.Global, ast.Nonlocal)):
@@ -894,12 +980,11 @@ class _Writes:
                 targets = list(item.targets)
             elif isinstance(item, (ast.AugAssign, ast.AnnAssign)):
                 targets = [item.target]
-                if (
-                    isinstance(item, ast.AugAssign)
-                    and isinstance(item.target, ast.Name)
-                    and item.target.id not in site.fresh
+                if isinstance(item, ast.AugAssign) and isinstance(
+                    item.target, (ast.Name, ast.Attribute)
                 ):
-                    effect |= _ELSEWHERE  # in place on what the name holds
+                    # In place on what the name or attribute holds.
+                    effect |= site.in_place(item.target)
             elif isinstance(item, ast.Delete):
                 targets = list(item.targets)
             for target in targets:
@@ -923,6 +1008,8 @@ class _Writes:
         ):
             with contextlib.suppress(ValueError):  # an empty cell
                 found[name] = cell.cell_contents
+        # A local is bound only as the function runs.
+        found.update(dict.fromkeys((*code.co_varnames, *code.co_cellvars), _UNKNOWN))
         positional = code.co_varnames[: code.co_argcount]
         found.update(
             dict.fromkeys(
@@ -936,8 +1023,16 @@ class _Writes:
         found.update(function.__kwdefaults__ or {})
         return found
 
-    def _fresh(self, node: ast.AST, bindings: dict[str, Any]) -> set[str]:
-        """Local names only ever bound to an object the function made."""
+    def _fresh(
+        self,
+        node: ast.AST,
+        bindings: dict[str, Any],
+        made: Callable[[ast.AST, dict[str, Any]], bool] | None = None,
+    ) -> set[str]:
+        """Local names only ever bound to an object the function made
+        (``made`` says which values are, :meth:`_made` by default).
+        """
+        made_by = self._made if made is None else made
         assigned: dict[str, bool] = {}
         for item in ast.walk(node):
             pairs: list[tuple[ast.AST, ast.AST | None]] = []
@@ -954,13 +1049,13 @@ class _Writes:
                 pairs = [(t, None) for t in targets]
             for target, value in pairs:
                 names = [n.id for n in ast.walk(target) if isinstance(n, ast.Name)]
-                made = (
+                new = (
                     value is not None
                     and isinstance(target, ast.Name)
-                    and self._made(value, bindings)
+                    and made_by(value, bindings)
                 )
                 for name in names:
-                    assigned[name] = assigned.get(name, True) and made
+                    assigned[name] = assigned.get(name, True) and new
         return {name for name, made in assigned.items() if made}
 
     def _made(self, value: ast.AST, bindings: dict[str, Any]) -> bool:
@@ -984,6 +1079,41 @@ class _Writes:
                 if isinstance(holder, types.ModuleType):
                     return isinstance(getattr(holder, func.attr, None), type)
         return False
+
+    def _new_value(self, value: ast.AST, bindings: dict[str, Any]) -> bool:
+        """Whether ``value`` is a value the expression makes: a number, a new
+        array, a group an operator builds (what a change in place to it can
+        reach is nothing shared).
+        """
+        if isinstance(
+            value,
+            (
+                ast.Constant,
+                ast.BinOp,
+                ast.UnaryOp,
+                ast.BoolOp,
+                ast.Compare,
+                ast.JoinedStr,
+            ),
+        ):
+            return True
+        if isinstance(value, ast.Subscript):
+            return self._new_value(value.value, bindings)
+        if not isinstance(value, ast.Call):
+            return self._made(value, bindings)
+        func = value.func
+        if isinstance(func, ast.Attribute) and func.attr in _VALUE_GETTERS:
+            return True
+        if isinstance(func, ast.Name):
+            target = bindings.get(func.id)
+            if any(target is maker for maker in (abs, round, sum, len)):
+                return True
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+            holder = bindings.get(func.value.id)
+            if getattr(holder, "__name__", None) == "numpy":
+                found = getattr(holder, func.attr, None)
+                return isinstance(found, np.ufunc) or func.attr in _NUMPY_MAKERS
+        return self._made(value, bindings)
 
     def callee(self, name: str, target: Any, depth: int) -> _Effect:
         """What calling ``target``, bound to ``name``, may do."""
@@ -1038,6 +1168,11 @@ class _Site:
     bindings: dict[str, Any]
     depth: int
     fresh: set[str] = field(default_factory=set)
+    #: Local names only ever bound to a value an expression makes.
+    values: set[str] = field(default_factory=set)
+    #: Local names bound once, to another name or an attribute of one.
+    aliases: dict[str, ast.AST] = field(default_factory=dict)
+    resolving: set[str] = field(default_factory=set)
 
     def resolve(self, node: ast.AST) -> Any:
         """The object ``node`` names when the function runs, resolved at plan
@@ -1049,7 +1184,14 @@ class _Site:
         if isinstance(node, ast.Name):
             if node.id in self.owners:
                 return _UNKNOWN if self.owner is None else self.owner
-            return _UNKNOWN
+            if node.id in self.aliases and node.id not in self.resolving:
+                self.resolving.add(node.id)
+                try:
+                    return self.resolve(self.aliases[node.id])
+                finally:
+                    self.resolving.discard(node.id)
+            found = self.bindings.get(node.id, _UNKNOWN)
+            return found if found is not _PARAMETER else _UNKNOWN
         if isinstance(node, ast.Attribute):
             base = self.resolve(node.value)
             if isinstance(base, Mobject):
@@ -1099,15 +1241,21 @@ class _Site:
                 found = found.mobject
             return not _quiet_family(found)
         holder = self._bound(receiver)
-        return not isinstance(holder, (types.ModuleType, list, set, dict))
+        return not isinstance(holder, (types.ModuleType, list, set, dict, np.ndarray))
 
     def _bound(self, receiver: ast.AST) -> Any:
-        if isinstance(receiver, ast.Name):
-            if receiver.id in self.owners:
-                return _UNKNOWN if self.owner is None else self.owner
-            found = self.bindings.get(receiver.id, _UNKNOWN)
-            return found if found is not _PARAMETER else _UNKNOWN
         return self.resolve(receiver)
+
+    def in_place(self, target: ast.AST) -> _Effect:
+        """What an operator in place (``+=``) on ``target`` may change: an
+        array in place, a mobject's members (a mobject's ``+=`` adds); a
+        number it only rebinds.
+        """
+        if isinstance(target, ast.Attribute) and isinstance(
+            self._bound(target), _IMMUTABLE
+        ):
+            return _NO_EFFECT
+        return self.into(target)
 
     def store(self, target: ast.AST) -> _Effect:
         if isinstance(target, (ast.Tuple, ast.List)):
@@ -1126,14 +1274,43 @@ class _Site:
         structure = (
             isinstance(target, ast.Attribute) and target.attr in _STRUCTURE_LISTS
         ) or (isinstance(receiver, ast.Attribute) and receiver.attr in _STRUCTURE_LISTS)
-        return _Effect(
+        effect = _Effect(
             elsewhere=not self.owned(receiver), restructures=structure and not fresh
         )
+        if isinstance(target, ast.Subscript):
+            effect |= self.into(receiver)
+        return effect
+
+    def into(self, receiver: ast.AST) -> _Effect:
+        """What a store into an item of what ``receiver`` holds may change
+        (an array's memory, a mobject's members), as a call writing to it
+        in place does.
+        """
+        if isinstance(receiver, ast.Name) and (
+            receiver.id in self.fresh or receiver.id in self.values
+        ):
+            return _NO_EFFECT
+        found = self._bound(receiver)
+        if found is _UNKNOWN or isinstance(found, _MEMBERS_OF):
+            return _ANY_EFFECT
+        owned = self.owned(receiver) or (
+            isinstance(receiver, ast.Attribute) and self.owned(receiver.value)
+        )
+        if isinstance(found, np.ndarray):
+            if not _array_root(found)[1]:
+                return _NO_EFFECT
+            if _storage_key(found) is None:
+                return _IN_PLACE  # the engine's constant
+            return _NO_EFFECT if owned else _ELSEWHERE
+        if _is_mobject(found):
+            return _Effect(elsewhere=not owned, restructures=True)
+        return _NO_EFFECT if owned else _ELSEWHERE
 
     def call(self, call: ast.Call) -> _Effect:
         writes = self.writes
-        if any(k.arg == "out" for k in call.keywords):
-            return _ELSEWHERE
+        for keyword in call.keywords:
+            if keyword.arg == "out":
+                return _ELSEWHERE | self.into(keyword.value)
         func = call.func
         if isinstance(func, ast.Name):
             target = self.bindings.get(func.id, _UNKNOWN)
@@ -1143,6 +1320,8 @@ class _Site:
         name = func.attr
         receiver = func.value
         restructures = _Effect(restructures=self.restructures_by(name, receiver))
+        if name in _ARRAY_MUTATORS:
+            restructures |= self.into(receiver)
         reader = name in _READERS or name.startswith(_READER_PREFIXES)
         root = _root(receiver)
         if self.owned(receiver):
@@ -1170,7 +1349,11 @@ class _Site:
                     return writes.callee(
                         name, getattr(holder, name, _UNKNOWN), self.depth
                     )
-                return _ELSEWHERE if name in _MUTATORS else _NO_EFFECT
+                if name in _MUTATORS:
+                    return _ELSEWHERE | (
+                        self.into(call.args[0]) if call.args else _IN_PLACE
+                    )
+                return _NO_EFFECT
             if reader:
                 return restructures
             from . import library
@@ -1225,6 +1408,58 @@ class _Site:
             first = member.__code__.co_varnames[:1]
             return self.writes.effect(member, frozenset(first), found, self.depth + 1)
         return _NO_EFFECT
+
+
+def _parameters(function: types.FunctionType) -> tuple[str, ...]:
+    code = function.__code__
+    count = code.co_argcount + code.co_kwonlyargcount
+    count += bool(code.co_flags & inspect.CO_VARARGS)
+    count += bool(code.co_flags & inspect.CO_VARKEYWORDS)
+    return code.co_varnames[:count]
+
+
+def _aliases(node: ast.AST) -> dict[str, ast.AST]:
+    """The local names a function binds exactly once, each to a name or an
+    attribute of one: what they hold is what that names.
+    """
+    bound: dict[str, list[ast.AST | None]] = {}
+    for item in ast.walk(node):
+        if isinstance(item, ast.Assign) and len(item.targets) == 1:
+            target, value = item.targets[0], item.value
+            if isinstance(target, ast.Name):
+                bound.setdefault(target.id, []).append(value)
+                continue
+        targets: list[ast.AST] = []
+        if isinstance(item, ast.Assign):
+            targets = list(item.targets)
+        elif isinstance(
+            item,
+            (
+                ast.AugAssign,
+                ast.AnnAssign,
+                ast.NamedExpr,
+                ast.For,
+                ast.comprehension,
+                ast.AsyncFor,
+            ),
+        ):
+            targets = [item.target]
+        elif isinstance(item, ast.With):
+            targets = [w.optional_vars for w in item.items if w.optional_vars]
+        for target in targets:
+            for name in ast.walk(target):
+                if isinstance(name, ast.Name) and not (
+                    isinstance(item, ast.AugAssign) and name is target
+                ):
+                    bound.setdefault(name.id, []).extend([None, None])
+    return {
+        name: values[0]
+        for name, values in bound.items()
+        if len(values) == 1
+        and isinstance(values[0], (ast.Name, ast.Attribute))
+        and isinstance(_root(values[0]), ast.Name)
+        and _root(values[0]).id != name
+    }
 
 
 @dataclass(frozen=True)
