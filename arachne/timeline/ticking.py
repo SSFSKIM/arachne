@@ -443,7 +443,10 @@ _USER_METHODS: weakref.WeakKeyDictionary[type, dict[str, types.FunctionType]] = 
 
 
 class _Reach:
-    def __init__(self) -> None:
+    def __init__(self, every_attribute: bool = False) -> None:
+        #: Follow every attribute of what it meets, not only those code names:
+        #: what a change into an object may reach (:func:`_written_into`).
+        self.every_attribute = every_attribute
         self.ids: set[int] = set()
         self.names: set[str] = set()
         self._seen: set[int] = set()
@@ -458,6 +461,16 @@ class _Reach:
         #: The code of the callables reached from: what it does itself the
         #: write check reads.
         self.roots: set[int] = set()
+        #: The stand-in ids of the module globals it reaches, and their names.
+        self.global_keys: set[int] = set()
+        self.global_names: set[str] = set()
+        #: Whether code it reaches may rebind a module global: a ``global``
+        #: statement's store or deletion, or an attribute stored (or deleted,
+        #: or set by ``setattr``) under a global's name, as through a module.
+        self.rebinds = False
+        self.stored_attributes: set[str] = set()
+        #: Whether it met writable memory no key names (the engine's constants).
+        self.unkeyed_arrays = False
 
     def done(self) -> frozenset[int]:
         while True:
@@ -467,6 +480,10 @@ class _Reach:
             if not pending:
                 found = _Reached(self.ids)
                 found.restructures = self.restructures
+                found.globals = frozenset(self.global_keys)
+                found.rebinds = self.rebinds or bool(
+                    self.stored_attributes & self.global_names
+                )
                 return found
             for obj in pending:
                 self._attributes(obj)
@@ -516,7 +533,8 @@ class _Reach:
                 self.visit(value.cell_contents)
         elif isinstance(value, types.ModuleType):
             filename = getattr(value, "__file__", None)
-            if filename and not _internal(filename):
+            if filename and not _internal(filename) and not self.every_attribute:
+                # (An object holding a module does not hold its bindings.)
                 self._attributes(value)
         elif isinstance(value, type):
             if not _internal(getattr(inspect.getmodule(value), "__file__", "") or ""):
@@ -532,6 +550,8 @@ class _Reach:
             storage = _storage_key(value)
             if storage is not None:
                 self.ids.add(storage)
+            elif _array_root(value)[1]:
+                self.unkeyed_arrays = True
             if value.dtype == object:
                 for item in value.flat:
                     self.visit(item)
@@ -572,6 +592,9 @@ class _Reach:
             methods = _user_methods(type(value))
             for hook in _IMPLICIT_HOOKS & methods.keys():
                 self.visit(methods[hook])
+            if self.every_attribute:
+                # What its class runs on it: its methods and properties.
+                self.visit(type(value))
         else:
             raise Unbounded(
                 f"reaches a {type(value).__name__}, whose contents it can't follow"
@@ -642,26 +665,28 @@ class _Reach:
                 if hasattr(obj, name):
                     own[name] = getattr(obj, name)
         module = isinstance(obj, types.ModuleType)
+        if self.every_attribute and not module:
+            names = set(own) | names
         for name in names:
             if name in own:
                 if module:
                     # The binding itself, as a global's: one key for every
                     # alias the module is imported under.
-                    self.ids.add(_global_key(own, name))
+                    self._global(own, name)
                 self.visit(own[name])
             elif not module:
                 self._class_attribute(type(obj), name)
         if isinstance(obj, Scene):
-            if names & {"camera", "renderer"}:
+            if self.every_attribute or names & {"camera", "renderer"}:
                 self.visit(obj.renderer.camera)
-            if names & {
+            if self.every_attribute or names & {
                 "mobjects",
                 "foreground_mobjects",
                 "get_mobject_family_members",
             }:
                 self.visit(list(obj.mobjects))
                 self.visit(list(obj.foreground_mobjects))
-            if "updaters" in names:
+            if self.every_attribute or "updaters" in names:
                 self.visit(list(obj.updaters))
         if not isinstance(obj, types.ModuleType):
             methods = _user_methods(type(obj))
@@ -694,12 +719,46 @@ class _Reach:
         self.names |= names
         if names & _STRUCTURE_NAMES and id(code) not in self.roots:
             self.restructures = True
+        rebinds, stored = _rebinding(code)
+        self.rebinds = self.rebinds or rebinds
+        self.stored_attributes |= stored
+        if names & {"setattr", "delattr"}:
+            self.stored_attributes |= names  # with the names it sets by
         namespace = function.__globals__
         for name in names:
             # The binding itself, which a ``global`` statement rebinds.
-            self.ids.add(_global_key(namespace, name))
+            self._global(namespace, name)
             if name in namespace:
                 self.visit(namespace[name])
+
+    def _global(self, namespace: dict[str, Any], name: str) -> None:
+        key = _global_key(namespace, name)
+        self.ids.add(key)
+        self.global_keys.add(key)
+        if name in namespace:
+            # A binding an attribute stored through its module rebinds.
+            self.global_names.add(name)
+
+
+@functools.cache
+def _rebinding(code: types.CodeType) -> tuple[bool, frozenset[str]]:
+    """Whether ``code`` (or code nested in it) stores or deletes a module
+    global by a ``global`` statement, and the attributes it stores or
+    deletes (a module's among them, which rebinds the global).
+    """
+    rebinds = False
+    stored: set[str] = set()
+    for instruction in dis.get_instructions(code):
+        if instruction.opname in ("STORE_GLOBAL", "DELETE_GLOBAL"):
+            rebinds = True
+        elif instruction.opname in ("STORE_ATTR", "DELETE_ATTR"):
+            stored.add(instruction.argval)
+    for constant in code.co_consts:
+        if isinstance(constant, types.CodeType):
+            inner, names = _rebinding(constant)
+            rebinds = rebinds or inner
+            stored |= names
+    return rebinds, frozenset(stored)
 
 
 def _scene_class(klass: type) -> bool:
@@ -844,10 +903,13 @@ def _attribute_constants(function: Any, code: types.CodeType) -> set[str]:
 class _Reached(frozenset[int]):
     """The ids a reach found; ``restructures`` says whether code it reaches
     may change the structure (what a call the write check can't resolve may
-    run is in it).
+    run is in it); ``globals`` holds the stand-in ids of the module globals
+    among them, and ``rebinds`` whether code it reaches may rebind one.
     """
 
     restructures: bool = False
+    globals: frozenset[int] = frozenset()
+    rebinds: bool = True
 
 
 def reach(callables: Iterable[Any], mobjects: Iterable[Any] = ()) -> frozenset[int]:
@@ -867,6 +929,38 @@ def reach(callables: Iterable[Any], mobjects: Iterable[Any] = ()) -> frozenset[i
     for function in callables:
         walk.visit(function)
     return walk.done()
+
+
+def _written_into(targets: Iterable[_Ref]) -> frozenset[int]:
+    """What a change into each of ``targets``, or into anything it holds,
+    may change: everything reachable from it, through every attribute. Not
+    a module global's binding (a change into an object rebinds none), and
+    not every array (:data:`_ANY_ARRAY`): an array it holds is changed
+    under its own key, and the engine's constants it holds (as every
+    mobject does) only by a write in place the write check could not
+    resolve, which names :data:`_IN_PLACE_UNRESOLVED`.
+    """
+    targets = list(targets)
+    walk = _Reach(every_attribute=True)
+    for target in targets:
+        if target is _IN_PLACE_UNRESOLVED:
+            walk.ids.add(_ANY_ARRAY)
+        elif not isinstance(target, _CodeRef):
+            walk.visit(target.value)
+            walk.ids.add(id(target.value))
+    found = walk.done()
+    # What a function (or a class's code) read, and so may have put into
+    # what it made, is what it reads through the names its code uses.
+    read_by = _Reach()
+    for target in targets:
+        if isinstance(target, _CodeRef):
+            read_by.visit(target.value)
+    read = read_by.done()
+    dropped = set(getattr(found, "globals", ())) | set(getattr(read, "globals", ()))
+    dropped.add(_ANY_ARRAY)
+    if _IN_PLACE_UNRESOLVED in targets:
+        dropped.discard(_ANY_ARRAY)
+    return frozenset((found | read) - dropped)
 
 
 # Writes: does a dt-free callback change anything but what it updates?
@@ -1056,6 +1150,19 @@ class _Effect:
     #: It calls what its source can't resolve (or what it can't read): that
     #: changes the structure if anything its code reaches may.
     unknown: bool = False
+    #: A change elsewhere whose object is not resolved: it may be anything
+    #: the callback reaches. Implied by ``elsewhere`` with no object named.
+    anywhere: bool = False
+    #: The objects its changes elsewhere go into, each with everything it
+    #: holds, when every one of them is resolved.
+    targets: frozenset[_Ref] = frozenset()
+    #: It changes what its caller hands it: its parameters' objects, which
+    #: a call site resolves to its own arguments.
+    writes_args: bool = False
+
+    def __post_init__(self) -> None:
+        if self.elsewhere and not (self.targets or self.writes_args):
+            object.__setattr__(self, "anywhere", True)
 
     def __or__(self, other: _Effect) -> _Effect:
         return _Effect(
@@ -1063,7 +1170,91 @@ class _Effect:
             self.restructures or other.restructures,
             self.arrays or other.arrays,
             self.unknown or other.unknown,
+            self.anywhere or other.anywhere,
+            self.targets | other.targets,
+            self.writes_args or other.writes_args,
         )
+
+    def without_args(self) -> _Effect:
+        """The effect with its writes into parameters taken out, for a call
+        site to put back as writes into its own arguments.
+        """
+        return _Effect(
+            self.elsewhere and (self.anywhere or bool(self.targets)),
+            self.restructures,
+            self.arrays,
+            self.unknown,
+            self.anywhere,
+            self.targets,
+        )
+
+
+class _Ref:
+    """An object a change goes into, compared by identity."""
+
+    __slots__ = ("value",)
+
+    def __init__(self, value: Any) -> None:
+        self.value = value
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, _Ref) and other.value is self.value
+
+    def __hash__(self) -> int:
+        return id(self.value)
+
+
+#: The target of a write in place to an array (or a mobject's members)
+#: the write check could not resolve: any array.
+_IN_PLACE_UNRESOLVED = _Ref(object())
+
+
+class _CodeRef(_Ref):
+    """Everything a function (or a class's code) reads: what it may have put
+    into an object it made and handed back.
+    """
+
+    __slots__ = ()
+
+
+#: A made object's source standing for what its maker was handed (a
+#: constructor's arguments, as its ``self`` is made), which a call site
+#: resolves to its own arguments.
+_ARGUMENTS = object()
+
+
+def _no_call_site(effect: _Effect) -> _Effect:
+    """``effect`` where no call site hands the parameters (a hook a store
+    runs): what it changes through them may be anything.
+    """
+    if not effect.writes_args:
+        return effect
+    return effect.without_args() | _ELSEWHERE
+
+
+def _code_writes(code: Any) -> _Effect:
+    return _Effect(elsewhere=True, targets=frozenset({_CodeRef(code)}))
+
+
+def _into(value: Any) -> _Effect:
+    """A change into ``value`` (a resolved object) or anything it holds."""
+    if isinstance(value, _MEMBERS_OF):
+        value = value.mobject
+    if value is None or (
+        isinstance(value, _IMMUTABLE_NATIVE)
+        and not isinstance(value, (tuple, frozenset))
+    ):
+        return _NO_EFFECT  # a number or a string: nothing changes in it
+    if isinstance(value, (types.ModuleType, type)):
+        # A module's bindings and a class's attributes are read through
+        # names, not ids: a change there may be to anything reached.
+        return _ELSEWHERE
+    if isinstance(value, np.ndarray):
+        if not _array_root(value)[1]:
+            return _NO_EFFECT  # memory nothing can write
+        if _storage_key(value) is None:
+            return _IN_PLACE  # the engine's constant
+    return _Effect(elsewhere=True, targets=frozenset({_Ref(value)}))
 
 
 _NO_EFFECT = _Effect()
@@ -1120,6 +1311,25 @@ _NUMPY_MAKERS = frozenset(
     }
 )
 
+#: Builtins that hand back one of their arguments, an item of one, or a
+#: new list of such items.
+_HANDING_BACK = (min, max, sorted, iter, next)
+
+#: numpy.linalg functions that return a new value.
+_LINALG_VALUES = frozenset(
+    {
+        "norm",
+        "det",
+        "inv",
+        "solve",
+        "pinv",
+        "eigvals",
+        "eigvalsh",
+        "matrix_rank",
+        "cond",
+    }
+)
+
 #: Methods of an array that change it in place.
 _ARRAY_MUTATORS = frozenset(
     {"fill", "put", "sort", "resize", "itemset", "partition", "setfield", "byteswap"}
@@ -1158,6 +1368,12 @@ _RESTRUCTURERS = frozenset(
         "invert",
         "suspend_updating",
     }
+)
+#: Restructurers that change the lists of the object they are called on
+#: (its members, its updaters) and no member's: on an object the callback
+#: made, a structure no other code holds.
+_OWN_LISTS_ONLY = frozenset(
+    {"add", "add_to_back", "insert", "remove", "remove_updater"}
 )
 #: The lists that are a mobject's or the scene's structure.
 _STRUCTURE_LISTS = frozenset(
@@ -1205,6 +1421,12 @@ class _Writes:
         #: attributes while one plan is made.
         self._hooks: dict[tuple[type, str, bool], list[tuple[Any, Any]]] = {}
         self._class_hooks: dict[type, list[tuple[Any, Any]]] = {}
+        #: Whether each of the scene's functions hands back an object it made,
+        #: by its identity (the function is kept so that its id is not reused).
+        self._returns: dict[int, tuple[Any, bool]] = {}
+        #: What a change into what each of them returns may change, by its
+        #: identity and the object it is called on (both kept).
+        self._returned: dict[tuple[int, int], tuple[Any, Any, _Effect]] = {}
 
     def assignment_hooks(
         self, cls: type, name: str, deleting: bool
@@ -1283,26 +1505,10 @@ class _Writes:
         this: Any,
         made_type: type | None,
     ) -> _Effect:
-        from . import purity
-
-        try:
-            node = _source_node(function)
-        except purity.Refused:
+        found = self._site(function, owners, owner, depth, made, this, made_type)
+        if found is None:
             return _UNKNOWN_CALL  # its code's names are the reach's to read
-        bindings = self._bindings(function)
-        if this is not None and function.__code__.co_argcount:
-            bindings[function.__code__.co_varnames[0]] = this
-        site = _Site(self, owners, owner, bindings, depth)
-        site.fresh = self._fresh(node, site.bindings) | made
-        site.made_from = _bound_values(node, site.fresh)
-        site.made_type = made_type
-        site.values = self._fresh(node, site.bindings, self._new_value)
-        parameters = set(_parameters(function))
-        site.aliases = {
-            name: value
-            for name, value in _aliases(node).items()
-            if name not in parameters
-        }
+        node, site = found
         effect = _NO_EFFECT
         for item in _walk(node):
             if isinstance(item, (ast.Global, ast.Nonlocal)):
@@ -1317,6 +1523,10 @@ class _Writes:
                 ):
                     # In place on what the name or attribute holds.
                     effect |= site.in_place(item.target)
+                if isinstance(item, ast.AugAssign) and isinstance(
+                    item.target, ast.Subscript
+                ):
+                    effect |= site.item_in_place(item.target.value)
             elif isinstance(item, ast.Delete):
                 targets = list(item.targets)
             for target in targets:
@@ -1326,6 +1536,108 @@ class _Writes:
             if effect == _ANY_EFFECT:
                 break
         return effect
+
+    def returns(self, function: types.FunctionType, this: Any = None) -> _Effect:
+        """What a change into what ``function`` (of the scene's) returns, or
+        into anything that holds, may change; ``writes_args`` for what its
+        caller hands it. ``this`` is the object a method is called on.
+        """
+        key = (id(function), id(this))
+        found = self._returned.get(key)
+        if found is not None:
+            return found[2]
+        # A call back into itself: what it returns may be anything.
+        self._returned[key] = (function, this, _ELSEWHERE)
+        effect = self._scan_returns(function, this)
+        self._returned[key] = (function, this, effect)
+        return effect
+
+    def _scan_returns(self, function: types.FunctionType, this: Any) -> _Effect:
+        found = self._site(function, frozenset(), None, 0, frozenset(), this, None)
+        if found is None:
+            return _ELSEWHERE
+        node, site = found
+        if isinstance(node, ast.Lambda):
+            return site.expr_writes(node.body)
+        own = _own_nodes(node)
+        if any(isinstance(item, (ast.Yield, ast.YieldFrom, ast.Await)) for item in own):
+            return _ELSEWHERE  # what it hands back is no value of a return
+        effect = _NO_EFFECT
+        for item in own:
+            if isinstance(item, ast.Return) and item.value is not None:
+                effect |= site.expr_writes(item.value)
+        return effect
+
+    def _site(
+        self,
+        function: Any,
+        owners: frozenset[str],
+        owner: Any,
+        depth: int,
+        made: frozenset[str],
+        this: Any,
+        made_type: type | None,
+    ) -> tuple[ast.AST, _Site] | None:
+        """``function``'s source and the site reading it; ``None`` when its
+        source can't be read.
+        """
+        from . import purity
+
+        try:
+            node = _source_node(function)
+        except purity.Refused:
+            return None
+        bindings = self._bindings(function)
+        # A parameter of a function it defines is that function's own, bound
+        # to whatever it is handed, under a name its own code may also use.
+        # A comprehension's variable, likewise, is its own; and a store to
+        # the owner's name binds it to something else.
+        nested = _nested_parameters(node)
+        bindings.update(dict.fromkeys(nested, _UNKNOWN))
+        first = function.__code__.co_varnames[:1]
+        if this is not None and first and first[0] not in nested:
+            bindings[first[0]] = this
+        rebound = {
+            item.id
+            for item in _walk(node)
+            if isinstance(item, ast.Name) and isinstance(item.ctx, (ast.Store, ast.Del))
+        }
+        site = _Site(self, owners - nested - rebound, owner, bindings, depth)
+        parameters = set(_parameters(function))
+        # A parameter holds what it was handed until a store rebinds it.
+        site.fresh = (self._fresh(node, site.bindings) - parameters) | made
+        site.made_from = _bound_values(node, site.fresh)
+        site.made_type = made_type
+        site.values = self._fresh(node, site.bindings, self._new_value) - parameters
+        site.aliases = {
+            name: value
+            for name, value in _aliases(node).items()
+            if name not in parameters
+        }
+        site.value_from = _bound_values(node, site.values)
+        site.fresh -= nested - made
+        site.values -= nested
+        site.aliases = {
+            name: value for name, value in site.aliases.items() if name not in nested
+        }
+        site.local_from = _local_values(node)
+        for name in parameters:
+            # What it was handed, and what any store binds it to.
+            site.local_from.setdefault(name, []).append(_PARAMETER)
+        code = function.__code__
+        site.code = code
+        site.first = code.co_varnames[0] if code.co_argcount else None
+        site.parameters = frozenset(parameters - rebound - nested)
+        site.bound = this is not None and site.first not in nested
+        site.sources = {
+            name: [source for value in values for source in site.made_sources(value)]
+            for name, values in site.made_from.items()
+        }
+        for name in made:
+            # The object a constructor makes holds what it was handed, and
+            # what the class's code reads.
+            site.sources[name] = [_ARGUMENTS, _CodeRef(function)]
+        return node, site
 
     def _bindings(self, function: types.FunctionType) -> dict[str, Any]:
         """What each name the function's code uses is bound to when it is
@@ -1391,6 +1703,11 @@ class _Writes:
         return {name for name, made in assigned.items() if made}
 
     def _made(self, value: ast.AST, bindings: dict[str, Any]) -> bool:
+        """Whether ``value`` is an object the expression makes: a container,
+        a copy, an object a class makes, one a function of the scene's makes
+        and hands back. What it holds may still be shared (its sources:
+        :meth:`_Site.made_sources`).
+        """
         if isinstance(
             value,
             (ast.List, ast.Dict, ast.Set, ast.ListComp, ast.DictComp, ast.SetComp),
@@ -1403,14 +1720,68 @@ class _Writes:
             root = _root(func)
             if isinstance(root, ast.Call):
                 return self._made(root, bindings)
+            target: Any = _UNKNOWN
             if isinstance(func, ast.Name):
-                target = bindings.get(func.id)
-                return isinstance(target, type)
-            if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
-                holder = bindings.get(func.value.id)
-                if isinstance(holder, types.ModuleType):
-                    return isinstance(getattr(holder, func.attr, None), type)
+                target = bindings.get(func.id, _UNKNOWN)
+            elif isinstance(func, ast.Attribute):
+                holder = _module_named(func.value, bindings)
+                if holder is not None:
+                    target = getattr(holder, func.attr, _UNKNOWN)
+            return self.makes(target)
         return False
+
+    def makes(self, target: Any) -> bool:
+        """Whether calling ``target`` hands back a new object."""
+        if any(target is maker for maker in _FRESH_RANDOM):
+            return True
+        if isinstance(target, type):
+            # A ``__new__`` of the scene's own may hand back one it keeps.
+            return not _user_function(inspect.getattr_static(target, "__new__", None))
+        return _user_function(target) and self.returns_made(target)
+
+    def returns_made(self, function: types.FunctionType) -> bool:
+        """Whether every value ``function`` returns is an object it made (or
+        ``None``): it is no generator, and each ``return`` gives a made value
+        or a local name only ever bound to one.
+        """
+        found = self._returns.get(id(function))
+        if found is not None:
+            return found[1]
+        self._returns[id(function)] = (function, False)  # a call back into itself
+        result = self._returns_made(function)
+        self._returns[id(function)] = (function, result)
+        return result
+
+    def _returns_made(self, function: types.FunctionType) -> bool:
+        from . import purity
+
+        try:
+            node = _source_node(function)
+        except purity.Refused:
+            return False
+        bindings = self._bindings(function)
+        own = _own_nodes(node)
+        if any(isinstance(item, (ast.Yield, ast.YieldFrom, ast.Await)) for item in own):
+            return False
+        fresh = self._fresh(node, bindings)
+        values: list[ast.AST | None] = (
+            [node.body]
+            if isinstance(node, ast.Lambda)
+            else [item.value for item in own if isinstance(item, ast.Return)]
+        )
+
+        def made(value: ast.AST | None) -> bool:
+            if value is None or (
+                isinstance(value, ast.Constant) and value.value is None
+            ):
+                return True
+            if isinstance(value, ast.IfExp):
+                return made(value.body) and made(value.orelse)
+            if isinstance(value, ast.Name):
+                return value.id in fresh
+            return self._made(value, bindings)
+
+        return all(made(value) for value in values)
 
     def _new_value(self, value: ast.AST, bindings: dict[str, Any]) -> bool:
         """Whether ``value`` is a value the expression makes: a number, a new
@@ -1436,6 +1807,13 @@ class _Writes:
             return self._new_value(value.value, bindings)
         if not isinstance(value, ast.Call):
             return self._made(value, bindings)
+        return self.value_call(value, bindings) or self._made(value, bindings)
+
+    def value_call(self, value: ast.Call, bindings: dict[str, Any]) -> bool:
+        """Whether the call ``value`` gives a number or a new array: a
+        mobject's getter of one, ``abs``, ``round``, ``len``, a ufunc, a
+        numpy function making an array, a function of :mod:`math`.
+        """
         func = value.func
         if isinstance(func, ast.Attribute) and func.attr in _VALUE_GETTERS:
             return True
@@ -1443,12 +1821,16 @@ class _Writes:
             target = bindings.get(func.id)
             if any(target is maker for maker in (abs, round, sum, len)):
                 return True
-        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
-            holder = bindings.get(func.value.id)
-            if getattr(holder, "__name__", None) == "numpy":
-                found = getattr(holder, func.attr, None)
+        if isinstance(func, ast.Attribute):
+            module = getattr(_module_named(func.value, bindings), "__name__", None)
+            if module in ("math", "cmath"):
+                return True
+            if module == "numpy.linalg":
+                return func.attr in _LINALG_VALUES
+            if module == "numpy":
+                found = getattr(np, func.attr, None)
                 return isinstance(found, np.ufunc) or func.attr in _NUMPY_MAKERS
-        return self._made(value, bindings)
+        return False
 
     def hook(self, function: Any, this: Any, receiver: Any, depth: int) -> _Effect:
         """What a hook of a class (a setter, ``__setattr__``, a descriptor's
@@ -1480,7 +1862,7 @@ class _Writes:
                     init, frozenset(), None, depth + 1, made, made_type=target
                 )
             for hook, this in self.class_hooks(target):
-                effect |= self.hook(hook, this, None, depth)
+                effect |= _no_call_site(self.hook(hook, this, None, depth))
             return effect
 
         if isinstance(target, types.BuiltinFunctionType):
@@ -1501,11 +1883,10 @@ class _Writes:
                 if method in _READERS or method.startswith(_READER_PREFIXES):
                     return _NO_EFFECT
                 return _Effect(
-                    elsewhere=True,
                     restructures=method in _RESTRUCTURERS,
                     arrays=True,
                     unknown=True,
-                )
+                ) | _into(target.__self__)
             return _ELSEWHERE if name in _MUTATORS else _NO_EFFECT
         return _ANY_EFFECT
 
@@ -1529,6 +1910,22 @@ class _Site:
     #: The class of the object a constructor makes (its ``self``).
     made_type: type | None = None
     resolving: set[str] = field(default_factory=set)
+    #: What went into each made object as it was made (its sources): an
+    #: expression, an object, :data:`_ARGUMENTS`, or ``None`` for anything.
+    sources: dict[str, list[Any]] = field(default_factory=dict)
+    #: What each local name in ``values`` is bound to.
+    value_from: dict[str, list[ast.AST]] = field(default_factory=dict)
+    #: The function's first parameter (a method's ``self``), if any.
+    first: str | None = None
+    #: The function's parameters.
+    parameters: frozenset[str] = frozenset()
+    #: Whether its first parameter is bound to the object it is called on.
+    bound: bool = False
+    #: What each other local name may be bound to: the values its stores
+    #: bind (a loop's iterable for its variable), ``None`` for one not known.
+    local_from: dict[str, list[Any]] = field(default_factory=dict)
+    #: The function's own code.
+    code: types.CodeType | None = None
 
     def classes(self, receiver: ast.AST) -> set[type] | None:
         """The classes of what ``receiver`` names, ``None`` when that can't be
@@ -1594,7 +1991,9 @@ class _Site:
         for cls in classes:
             for hook, this in self.writes.assignment_hooks(cls, target.attr, deleting):
                 if owned:
-                    effect |= self.writes.hook(hook, this, bound, self.depth)
+                    effect |= _no_call_site(
+                        self.writes.hook(hook, this, bound, self.depth)
+                    )
                 else:
                     effect |= _Effect(unknown=True)
         return effect
@@ -1660,7 +2059,14 @@ class _Site:
             return True  # the structure's own list, changed in place
         if name not in _RESTRUCTURERS:
             return False
-        if isinstance(receiver, ast.Name) and receiver.id in self.fresh:
+        if (
+            isinstance(receiver, ast.Name)
+            and receiver.id in self.fresh
+            and (
+                name in _OWN_LISTS_ONLY or not self.fresh_writes(receiver.id).elsewhere
+            )
+        ):
+            # Its own lists, or its family, which is all its own.
             return False
         if name == "become":
             # It pads its mobject with copies of its own members, which take
@@ -1701,6 +2107,19 @@ class _Site:
             return _NO_EFFECT
         return self.into(target)
 
+    def item_in_place(self, container: ast.AST) -> _Effect:
+        """What an operator in place on an item of ``container`` changes in
+        the item itself (``held[k] += v`` adds into an array ``held`` holds):
+        nothing for an array of numbers, whose memory the store into it
+        keys; any array, for anything else.
+        """
+        if isinstance(container, ast.Name) and container.id in self.values:
+            return _NO_EFFECT  # a number, or a new array
+        found = self._bound(container)
+        if isinstance(found, np.ndarray) and found.dtype != object:
+            return _NO_EFFECT
+        return _Effect(elsewhere=True, targets=frozenset({_IN_PLACE_UNRESOLVED}))
+
     def store(self, target: ast.AST, deleting: bool = False) -> _Effect:
         """What a store into (a deletion of) ``target`` may change."""
         if isinstance(target, (ast.Tuple, ast.List)):
@@ -1719,9 +2138,13 @@ class _Site:
         structure = (
             isinstance(target, ast.Attribute) and target.attr in _STRUCTURE_LISTS
         ) or self.structure_list(receiver)
-        effect = _Effect(
-            elsewhere=not self.owned(receiver), restructures=structure and not fresh
-        )
+        effect = _Effect(restructures=structure and not fresh)
+        if not self.owned(receiver):
+            effect |= self.write_to(receiver)
+        elif fresh and isinstance(target, ast.Attribute):
+            # A setter (the engine's among them) may change what it holds.
+            assert isinstance(receiver, ast.Name)
+            effect |= self.fresh_writes(receiver.id)
         if isinstance(target, ast.Subscript):
             effect |= self.into(receiver)
         else:
@@ -1742,19 +2165,323 @@ class _Site:
         )
         if self.structure_list(receiver):
             # ``parts += [child]``: a mobject's (or the scene's) own members.
-            return _Effect(elsewhere=not owned, restructures=True)
+            return _Effect(restructures=True) | (
+                _NO_EFFECT if owned else self.write_to(receiver)
+            )
         found = self._bound(receiver)
         if found is _UNKNOWN or isinstance(found, _MEMBERS_OF):
-            return _ANY_EFFECT
+            if owned:
+                return _Effect(restructures=True, arrays=True)
+            unresolved = _Effect(
+                elsewhere=True,
+                restructures=True,
+                arrays=True,
+                targets=frozenset({_IN_PLACE_UNRESOLVED}),
+            )
+            return unresolved | self.write_to(receiver)
         if isinstance(found, np.ndarray):
             if not _array_root(found)[1]:
                 return _NO_EFFECT
             if _storage_key(found) is None:
                 return _IN_PLACE  # the engine's constant
-            return _NO_EFFECT if owned else _ELSEWHERE
+            return _NO_EFFECT if owned else _into(found)
         if _is_mobject(found):
-            return _Effect(elsewhere=not owned, restructures=True)
-        return _NO_EFFECT if owned else _ELSEWHERE
+            return _Effect(restructures=True) | (_NO_EFFECT if owned else _into(found))
+        return _NO_EFFECT if owned else _into(found)
+
+    def write_to(
+        self, receiver: ast.AST, seen: frozenset[str] = frozenset()
+    ) -> _Effect:
+        """A change into what ``receiver`` names, or into anything it holds:
+        into what went into it, for an object the function made; into its
+        argument, for a parameter (the call site's to resolve); into the
+        object it resolves to, or the one its path starts from; into what
+        each of its stores bound, for any other local; anywhere, when none
+        of these is known. ``seen`` names locals already accounted for.
+        """
+        root = _root(receiver)
+        if isinstance(root, ast.Name):
+            if root.id in seen:
+                return _NO_EFFECT
+            if root.id in self.fresh:
+                return self.fresh_writes(root.id, seen)
+            if root.id in self.values:
+                return self.expr_writes(root)
+            if (
+                root.id in self.parameters
+                and root.id not in self.owners
+                and not (root.id == self.first and self.bound)
+            ):
+                return self.handed_to(root.id)
+        found = self.resolve(receiver)
+        if found is _UNKNOWN and receiver is not root and isinstance(root, ast.Name):
+            found = self.resolve(root)  # what it holds is reached through it
+        if found is not _UNKNOWN:
+            return _into(found)
+        if isinstance(root, ast.Name) and root.id in self.local_from:
+            # A local: what any of its stores bound, or what that holds.
+            effect = _NO_EFFECT
+            for value in self.local_from[root.id]:
+                if value is None:
+                    effect |= _ELSEWHERE
+                elif value is _PARAMETER:
+                    effect |= self.handed_to(root.id)
+                else:
+                    effect |= self.expr_writes(value, seen | {root.id})
+            return effect
+        return _ELSEWHERE
+
+    def handed_to(self, name: str) -> _Effect:
+        """What the parameter ``name`` holds as the function starts: what
+        its caller hands it, or the default it falls back to; the object a
+        method is called on, for its first.
+        """
+        if name == self.first and self.bound:
+            return _into(self.bindings[name])
+        handed = _Effect(elsewhere=True, writes_args=True)
+        default = self.bindings.get(name, _PARAMETER)
+        if default is _PARAMETER or default is _UNKNOWN:
+            return handed
+        return handed | _into(default)
+
+    def fresh_writes(self, name: str, seen: frozenset[str] = frozenset()) -> _Effect:
+        """A change into what the object ``name``, which the function made,
+        holds: into what went into it as it was made.
+        """
+        if name in seen:
+            return _NO_EFFECT
+        seen = seen | {name}
+        effect = _NO_EFFECT
+        for source in self.sources.get(name, [None]):
+            effect |= self.source_writes(source, seen)
+        return effect
+
+    def source_writes(self, source: Any, seen: frozenset[str] = frozenset()) -> _Effect:
+        if source is None:
+            return _ELSEWHERE
+        if source is _ARGUMENTS:
+            return _Effect(elsewhere=True, writes_args=True)
+        if isinstance(source, _Effect):
+            return source
+        if isinstance(source, _CodeRef):
+            return _code_writes(source.value)
+        if isinstance(source, _Ref):
+            return _into(source.value)
+        return self.expr_writes(source, seen)
+
+    def expr_writes(self, expr: ast.AST, seen: frozenset[str] = frozenset()) -> _Effect:
+        """A change into whatever ``expr`` evaluates to, or into anything it
+        holds. ``seen`` names locals already accounted for (a made object
+        being followed, a comprehension's variables, whose iterables are).
+        """
+        if isinstance(expr, (ast.Constant, ast.JoinedStr, ast.Compare)):
+            return _NO_EFFECT
+        if isinstance(expr, (ast.Starred, ast.NamedExpr)):
+            return self.expr_writes(expr.value, seen)
+        parts: list[ast.AST] = []
+        if isinstance(expr, ast.BinOp):
+            # (A mobject's ``+`` groups both; arithmetic on an array of
+            # numbers makes a new one.)
+            parts = [
+                part for part in (expr.left, expr.right) if not self._number_array(part)
+            ] or [ast.Constant(value=0)]
+        elif isinstance(expr, ast.UnaryOp):
+            parts = [expr.operand]
+        elif isinstance(expr, ast.BoolOp):
+            parts = list(expr.values)
+        elif isinstance(expr, ast.IfExp):
+            parts = [expr.body, expr.orelse]
+        elif isinstance(expr, (ast.List, ast.Tuple, ast.Set)):
+            parts = list(expr.elts)
+        elif isinstance(expr, ast.Dict):
+            parts = [key for key in expr.keys if key is not None]
+            parts += expr.values
+        elif isinstance(
+            expr, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)
+        ):
+            bound = {
+                name for comp in expr.generators for name in _names_bound(comp.target)
+            }
+            seen = seen | bound
+            parts = [comp.iter for comp in expr.generators]
+            parts += (
+                [expr.key, expr.value] if isinstance(expr, ast.DictComp) else [expr.elt]
+            )
+        if isinstance(expr, ast.Lambda):
+            parts = self._held_by_lambda(expr)
+        if parts:
+            effect = _NO_EFFECT
+            for part in parts:
+                effect |= self.expr_writes(part, seen)
+            return effect
+        if isinstance(expr, ast.Lambda):
+            return _NO_EFFECT
+        if isinstance(expr, ast.Call):
+            sources = self.call_sources(expr)
+            if sources is not None:
+                effect = _NO_EFFECT
+                for source in sources:
+                    effect |= self.source_writes(source, seen)
+                return effect
+            if self.writes.value_call(expr, self.bindings):
+                return _NO_EFFECT  # a number, or a new array
+            return self.returned_by(expr)
+        if isinstance(expr, ast.Name):
+            if expr.id in seen:
+                return _NO_EFFECT
+            if expr.id in self.fresh:
+                return self.fresh_writes(expr.id, seen)
+            if expr.id in self.values:
+                effect = _NO_EFFECT
+                for value in self.value_from.get(expr.id, [None]):
+                    effect |= (
+                        _ELSEWHERE
+                        if value is None
+                        else self.expr_writes(value, seen | {expr.id})
+                    )
+                return effect
+        if isinstance(expr, (ast.Name, ast.Attribute, ast.Subscript)):
+            return self.write_to(expr, seen)
+        return _ELSEWHERE
+
+    def returned_by(self, call: ast.Call) -> _Effect:
+        """A change into what ``call`` hands back, or anything that holds,
+        when it may hand back an object it did not make: what a function or
+        a method of the scene's returns; an attribute ``getattr`` reads by
+        a constant name, or its default; anything, for any other call.
+        """
+        func = call.func
+        target: Any = _UNKNOWN
+        this: Any = None
+        if isinstance(func, ast.Name):
+            target = self.bindings.get(func.id, _UNKNOWN)
+            if _by_constant_name(target, call) and target is getattr:
+                obj, name, *default = call.args
+                assert isinstance(name, ast.Constant)
+                assert isinstance(name.value, str)
+                read = ast.Attribute(value=obj, attr=name.value, ctx=ast.Load())
+                effect = self.write_to(read)
+                for each in default:
+                    effect |= self.expr_writes(each)
+                return effect
+        elif isinstance(func, ast.Attribute):
+            holder = self.resolve(func.value)
+            own = getattr(holder, "__dict__", None)
+            if isinstance(own, dict) and func.attr in own:
+                target = own[func.attr]  # a function it holds (a module's)
+            elif holder is not _UNKNOWN and not isinstance(
+                holder, (types.ModuleType, _MEMBERS_OF)
+            ):
+                target = inspect.getattr_static(type(holder), func.attr, None)
+                this = holder
+                if isinstance(target, staticmethod):
+                    this = None
+                elif isinstance(target, classmethod):
+                    this = type(holder)
+                target = getattr(target, "__func__", target)
+        if not _user_function(target):
+            return _ELSEWHERE
+        return self._handed(self.writes.returns(target, this), call)
+
+    def made_sources(self, value: ast.AST) -> list[Any]:
+        """What went into the object ``value`` makes (:meth:`_Writes._made`)."""
+        if isinstance(value, ast.Call):
+            found = self.call_sources(value)
+            return [None] if found is None else found
+        return [value]  # a container, or a comprehension: what its items hold
+
+    def call_sources(self, call: ast.Call) -> list[Any] | None:
+        """What went into the new object ``call`` hands back, or ``None``
+        when it may hand back an object it did not make: a class's object
+        holds what it was handed (and what the scene's own class's code
+        reads); what a function of the scene's returns, what its returns
+        hold (:meth:`_Writes.returns`); a copy what the original holds; a
+        method of a made object gives back that object or something it
+        holds.
+        """
+        func = call.func
+        arguments: list[Any] = [*call.args, *(k.value for k in call.keywords)]
+        if isinstance(func, ast.Attribute) and func.attr in ("copy", "deepcopy"):
+            if isinstance(self.resolve(func.value), types.ModuleType):
+                return arguments  # copy.copy(x), copy.deepcopy(x)
+            return [func.value]  # a shallow copy shares what the original holds
+        if isinstance(func, ast.Attribute) and self._generator(func.value):
+            return arguments  # a draw: numbers, or items of what it draws from
+        root = _root(func)
+        if isinstance(root, ast.Call):
+            inner = self.call_sources(root)
+            return None if inner is None else inner + arguments
+        target = self._called(func)
+        if any(target is each for each in _HANDING_BACK):
+            return arguments  # one of them, an item of one, or a list of those
+        if target is _UNKNOWN or not self.writes.makes(target):
+            return None
+        if isinstance(target, type):
+            if engine_class(target) or target.__module__ == "builtins":
+                return arguments
+            return [*arguments, _CodeRef(target)]
+        if _user_function(target):
+            return [self._handed(self.writes.returns(target), call)]
+        return arguments  # a fresh generator from a seed
+
+    def _held_by_lambda(self, expr: ast.Lambda) -> list[ast.AST]:
+        """What the function ``expr`` makes holds: its defaults, and the
+        variables of this function and of those around it that its body
+        uses (a module's globals it looks up as it runs, holding none).
+        """
+        arguments = expr.args
+        own = {
+            each.arg
+            for each in (
+                *arguments.posonlyargs,
+                *arguments.args,
+                *arguments.kwonlyargs,
+                *filter(None, (arguments.vararg, arguments.kwarg)),
+            )
+        }
+        own |= {
+            item.id
+            for item in ast.walk(expr.body)
+            if isinstance(item, ast.Name) and isinstance(item.ctx, ast.Store)
+        }
+        outer = set(self.local_from) | self.fresh | self.values | self.owners
+        if self.code is not None:
+            outer |= set(self.code.co_freevars)
+        held: list[ast.AST] = [*arguments.defaults]
+        held += [each for each in arguments.kw_defaults if each is not None]
+        for item in ast.walk(expr.body):
+            if (
+                isinstance(item, ast.Name)
+                and isinstance(item.ctx, ast.Load)
+                and item.id not in own
+                and item.id in outer
+            ):
+                held.append(item)
+        return held
+
+    def _number_array(self, node: ast.AST) -> bool:
+        """Whether ``node`` names an array of numbers, resolved."""
+        if not isinstance(node, (ast.Name, ast.Attribute)):
+            return False
+        if isinstance(node, ast.Name) and (
+            node.id in self.fresh
+            or node.id in self.values
+            or node.id in self.local_from
+        ):
+            return False  # bound as the function runs
+        found = self.resolve(node)
+        return isinstance(found, np.ndarray) and found.dtype != object
+
+    def _generator(self, receiver: ast.AST) -> bool:
+        """Whether ``receiver`` names a random generator the function made."""
+        if not (isinstance(receiver, ast.Name) and receiver.id in self.fresh):
+            return False
+        values = self.made_from.get(receiver.id) or []
+        return bool(values) and all(
+            isinstance(value, ast.Call)
+            and any(self._called(value.func) is maker for maker in _FRESH_RANDOM)
+            for value in values
+        )
 
     def call(self, call: ast.Call) -> _Effect:
         """What ``call`` may change: what its callee does, and the arrays it
@@ -1768,7 +2495,6 @@ class _Site:
         written = [k.value for k in call.keywords if k.arg == "out"]
         written += _numpy_writes(self._called(func), call, method)
         for argument in written:
-            effect |= _ELSEWHERE
             items = (
                 argument.elts
                 if isinstance(argument, (ast.Tuple, ast.List))
@@ -1790,34 +2516,97 @@ class _Site:
                 return getattr(base, func.attr, _UNKNOWN)
         return self.resolve(func)
 
+    def _user_super(self, name: str) -> bool:
+        """Whether ``super().name`` may run code of the scene's other than
+        the function's own: some class of its ``self`` defines ``name`` in
+        such code, or its ``self``'s class is not known.
+        """
+        if self.made_type is not None:
+            cls: type = self.made_type
+        elif self.bound and self.first is not None:
+            cls = type(self.bindings.get(self.first))
+        else:
+            return True
+        for klass in cls.__mro__:
+            member = vars(klass).get(name)
+            member = getattr(member, "__func__", getattr(member, "fget", member))
+            code = _code_of(member)
+            if code is not None and code is not self.code and _user_code(code):
+                return True
+        return False
+
+    def _handed(self, effect: _Effect, call: ast.Call) -> _Effect:
+        """``effect``, the callee's own, with what it changes through its
+        parameters taken for changes into ``call``'s arguments.
+        """
+        if not effect.writes_args:
+            return effect
+        found = effect.without_args()
+        for argument in (*call.args, *(k.value for k in call.keywords)):
+            found |= self.expr_writes(argument)
+        return found
+
     def _callee_effect(self, call: ast.Call) -> _Effect:
+        """What ``call``'s callee may do; what it changes through its own
+        parameters as changes into the arguments, so that ``writes_args``
+        here is about this function's parameters.
+        """
         writes = self.writes
         func = call.func
         if isinstance(func, ast.Name):
             target = self.bindings.get(func.id, _UNKNOWN)
-            return writes.callee(func.id, target, self.depth)
+            if _by_constant_name(target, call):
+                return _NO_EFFECT  # the attribute read it spells
+            if any(target is maker for maker in _FRESH_RANDOM):
+                return _NO_EFFECT
+            return self._handed(writes.callee(func.id, target, self.depth), call)
         if not isinstance(func, ast.Attribute):
             return _UNKNOWN_CALL
         name = func.attr
         receiver = func.value
+        reader = name in _READERS or name.startswith(_READER_PREFIXES)
+        root = _root(receiver)
+        if _super_call(root, self.bindings) and self.first is not None:
+            # ``super().method()``: a method of the function's own ``self``.
+            if self._user_super(name):
+                return _UNKNOWN_CALL  # code of the scene's that it does not read
+            if reader:
+                return _NO_EFFECT
+            itself = ast.Name(id=self.first, ctx=ast.Load())
+            if self.first in self.fresh:
+                return self.fresh_writes(self.first)
+            if self.first in self.owners:
+                return _NO_EFFECT
+            return self.write_to(itself)
         restructures = _Effect(restructures=self.restructures_by(name, receiver))
         restructures |= self._method_code(name, receiver)
         if name in _ARRAY_MUTATORS:
             restructures |= self.into(receiver)
-        reader = name in _READERS or name.startswith(_READER_PREFIXES)
-        root = _root(receiver)
         if self.owned(receiver):
             if isinstance(receiver, ast.Name) and receiver.id in self.fresh:
-                return restructures
-            return restructures | self._own_method(name, receiver)
+                if reader:
+                    return restructures
+                return restructures | self.fresh_writes(receiver.id)
+            return restructures | self._handed(self._own_method(name, receiver), call)
         if isinstance(root, ast.Name) and (
             root.id in self.owners or root.id in self.fresh
         ):
             # What the owner or a made object holds: not its own.
-            return restructures if reader else restructures | _ELSEWHERE
+            return restructures if reader else restructures | self.write_to(receiver)
         if isinstance(root, ast.Name):
             holder = self.bindings.get(root.id, _UNKNOWN)
             if isinstance(holder, types.ModuleType):
+                if receiver is not root:
+                    inner = self._called(receiver)
+                    if isinstance(inner, np.ufunc):
+                        # ``np.add.at``: what it changes is what it is handed.
+                        return _NO_EFFECT
+                    if not isinstance(inner, types.ModuleType):
+                        return restructures | self.write_to(receiver)
+                    holder = inner  # ``np.linalg.norm``
+                target = getattr(holder, name, _UNKNOWN)
+                if any(target is maker for maker in _FRESH_RANDOM):
+                    return _NO_EFFECT
                 module = getattr(holder, "__name__", "")
                 if (
                     module.split(".")[0] == "random"
@@ -1825,16 +2614,10 @@ class _Site:
                     or name == "random"
                 ):
                     return _ELSEWHERE
-                if receiver is not root:
-                    return restructures | _ELSEWHERE
                 if not _internal(getattr(holder, "__file__", "") or ""):
-                    return writes.callee(
-                        name, getattr(holder, name, _UNKNOWN), self.depth
-                    )
+                    return self._handed(writes.callee(name, target, self.depth), call)
                 if name in _MUTATORS:
-                    return _ELSEWHERE | (
-                        self.into(call.args[0]) if call.args else _IN_PLACE
-                    )
+                    return self.into(call.args[0]) if call.args else _IN_PLACE
                 return _NO_EFFECT
             if reader:
                 return restructures
@@ -1844,27 +2627,41 @@ class _Site:
                 return restructures
             if holder is not _UNKNOWN and holder is not _PARAMETER and receiver is root:
                 member = inspect.getattr_static(type(holder), name, None)
-                if isinstance(member, (staticmethod, classmethod)):
-                    member = member.__func__
+                this = holder
+                if isinstance(member, staticmethod):
+                    this = None  # its first parameter is an argument
+                elif isinstance(member, classmethod):
+                    this = type(holder)
+                member = getattr(member, "__func__", member)
                 if isinstance(member, types.FunctionType) and _user_code(
                     member.__code__
                 ):
-                    return restructures | writes.effect(
-                        member, frozenset(), None, self.depth + 1, this=holder
+                    found = writes.effect(
+                        member, frozenset(), None, self.depth + 1, this=this
                     )
-            return restructures | _ELSEWHERE
-        if isinstance(root, ast.Call):
-            # A method of what a call returned: a new object when the call
-            # makes one; else whatever it returned may be shared.
-            if reader or writes._made(root, self.bindings):
-                return _NO_EFFECT
-            return restructures | _ELSEWHERE
-        if isinstance(
-            root,
-            (ast.Constant, ast.JoinedStr, ast.List, ast.Tuple, ast.Dict, ast.ListComp),
-        ):
+                    return restructures | self._handed(found, call)
+            return restructures | self.write_to(receiver)
+        if reader:
             return _NO_EFFECT
-        return restructures | _ELSEWHERE
+        if isinstance(root, ast.Call):
+            # A method of what a call returned: of a new object when the call
+            # makes one, which holds what went into it; else whatever it
+            # returned may be shared.
+            sources = self.call_sources(root)
+            if sources is None:
+                return restructures | _ELSEWHERE
+            effect = _NO_EFFECT
+            for source in sources:
+                effect |= self.source_writes(source)
+            return effect | restructures if effect.elsewhere else effect
+        if isinstance(root, (ast.Constant, ast.JoinedStr)):
+            return _NO_EFFECT
+        if receiver is root and isinstance(
+            root,
+            (ast.List, ast.Tuple, ast.Dict, ast.Set, ast.ListComp, ast.SetComp),
+        ):
+            return _NO_EFFECT  # the new container itself
+        return restructures | self.expr_writes(root)
 
     def _method_code(self, name: str, receiver: ast.AST) -> _Effect:
         """A method whose code the check does not read where it is called:
@@ -1944,6 +2741,85 @@ def _bound_values(node: ast.AST, names: set[str]) -> dict[str, list[ast.AST]]:
         for target, value in pairs:
             if isinstance(target, ast.Name) and target.id in names:
                 found.setdefault(target.id, []).append(value)
+    return found
+
+
+def _bound_nodes(target: ast.AST) -> list[ast.Name]:
+    """The name nodes a store to ``target`` binds (:func:`_names_bound`)."""
+    if isinstance(target, ast.Name):
+        return [target]
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return [name for item in target.elts for name in _bound_nodes(item)]
+    if isinstance(target, ast.Starred):
+        return _bound_nodes(target.value)
+    return []
+
+
+def _nested_parameters(node: ast.AST) -> set[str]:
+    """The parameters of the functions and lambdas ``node`` defines."""
+    found: set[str] = set()
+    for item in _walk(node):
+        if item is not node and isinstance(
+            item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+        ):
+            arguments = item.args
+            found.update(
+                each.arg
+                for each in (
+                    *arguments.posonlyargs,
+                    *arguments.args,
+                    *arguments.kwonlyargs,
+                    *filter(None, (arguments.vararg, arguments.kwarg)),
+                )
+            )
+    return found
+
+
+def _local_values(node: ast.AST) -> dict[str, list[Any]]:
+    """What each name the code of ``node`` binds may hold: the value each
+    store binds it to (an unpacked value for each name it is unpacked into,
+    an operator in place's operand, a loop's iterable for its variable);
+    ``None`` for a binding whose value no expression of the code gives (a
+    ``with``, an ``except``, an import, a definition, a ``global`` or
+    ``nonlocal`` name, a parameter of a function it defines, a pattern).
+    """
+    found: dict[str, list[Any]] = {}
+    covered: set[int] = set()
+    for item in _walk(node):
+        pairs: list[tuple[ast.AST, ast.AST]] = []
+        if isinstance(item, ast.Assign):
+            pairs = [(target, item.value) for target in item.targets]
+        elif isinstance(item, (ast.AnnAssign, ast.NamedExpr, ast.AugAssign)):
+            if item.value is not None:
+                pairs = [(item.target, item.value)]
+        elif isinstance(item, (ast.For, ast.AsyncFor, ast.comprehension)):
+            pairs = [(item.target, item.iter)]
+        for target, value in pairs:
+            for bound in _bound_nodes(target):
+                covered.add(id(bound))
+                found.setdefault(bound.id, []).append(value)
+    unknown = _nested_parameters(node)
+    for item in _walk(node):
+        named: str | None = None
+        if isinstance(item, ast.Name) and isinstance(item.ctx, ast.Store):
+            if id(item) not in covered:
+                named = item.id
+        elif isinstance(item, (ast.Global, ast.Nonlocal)):
+            unknown.update(item.names)
+        elif isinstance(item, (ast.Import, ast.ImportFrom)):
+            unknown.update(
+                (alias.asname or alias.name).split(".")[0] for alias in item.names
+            )
+        elif isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            named = item.name if item is not node else None
+        elif isinstance(item, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)):
+            named = item.name
+        elif isinstance(item, ast.MatchMapping):
+            named = item.rest
+        if named is not None:
+            unknown.add(named)
+    for name in unknown:
+        found.setdefault(name, []).append(None)
     return found
 
 
@@ -2051,10 +2927,10 @@ def _native_effect(target: types.BuiltinFunctionType) -> _Effect:
         if name in _PURE_METHODS.get(cls, ()):
             return _NO_EFFECT
     if isinstance(bound, np.ndarray):
-        return _IN_PLACE
+        return _Effect(arrays=True) | _into(bound)
     # A list may be a mobject's members: whether it changes the structure
     # is the callback's reach's to say.
-    return _Effect(elsewhere=True, arrays=True, unknown=True)
+    return _Effect(arrays=True, unknown=True) | _into(bound)
 
 
 def _numpy_callable(target: Any) -> bool:
@@ -2142,6 +3018,63 @@ def _numpy_writes(target: Any, call: ast.Call, method: str | None) -> list[ast.e
     if numpy:
         written += [k.value for k in call.keywords if k.arg is None]
     return written
+
+
+#: Callables that hand back a new generator of random numbers and change no
+#: other: what the generator draws changes only itself.
+_FRESH_RANDOM = (np.random.default_rng, np.random.Generator, np.random.RandomState)
+
+
+def _by_constant_name(target: Any, call: ast.Call) -> bool:
+    """Whether ``call`` is ``getattr(obj, "name"[, default])`` or
+    ``hasattr(obj, "name")``: the attribute read it spells.
+    """
+    return (
+        (target is getattr or target is hasattr)
+        and 2 <= len(call.args) <= 3
+        and not call.keywords
+        and isinstance(call.args[1], ast.Constant)
+        and isinstance(call.args[1].value, str)
+        and not any(isinstance(a, ast.Starred) for a in call.args)
+    )
+
+
+def _super_call(node: ast.AST, bindings: dict[str, Any]) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and bindings.get(node.func.id) is super
+    )
+
+
+def _module_named(node: ast.AST, bindings: dict[str, Any]) -> types.ModuleType | None:
+    """The module ``node`` names through ``bindings`` (``np``,
+    ``np.random``), if it names one.
+    """
+    if isinstance(node, ast.Name):
+        found = bindings.get(node.id)
+    elif isinstance(node, ast.Attribute):
+        holder = _module_named(node.value, bindings)
+        found = None if holder is None else getattr(holder, node.attr, None)
+    else:
+        return None
+    return found if isinstance(found, types.ModuleType) else None
+
+
+def _own_nodes(node: ast.AST) -> list[ast.AST]:
+    """The nodes of a function's own body, not of the functions, lambdas or
+    classes it defines.
+    """
+    found: list[ast.AST] = []
+    stack = list(ast.iter_child_nodes(node))
+    while stack:
+        item = stack.pop()
+        found.append(item)
+        if not isinstance(
+            item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+        ):
+            stack.extend(ast.iter_child_nodes(item))
+    return found
 
 
 def _user_function(value: Any) -> TypeGuard[types.FunctionType]:
@@ -2235,8 +3168,9 @@ class _Node:
     #: reads matters at no stepping tick, so an unbounded read pulled by
     #: nothing leaves the play stepping.
     reach_of: frozenset[int] | Callable[[], frozenset[int]]
-    #: What it may write: a set, or ``_REACHED`` for anything it reaches.
-    writes: frozenset[int] | None = frozenset()
+    #: What it may write: a set, how to find it, or ``_REACHED`` for
+    #: anything it reaches.
+    writes: frozenset[int] | Callable[[], frozenset[int]] | None = frozenset()
     keys: tuple[tuple[int, int], ...] = ()
     active: bool = False
     #: Whether it may change which updaters run or which mobjects there are;
@@ -2261,13 +3195,60 @@ class _Node:
     def written(self) -> frozenset[int]:
         """What it may write. Anything it reaches is only asked for when the
         play has stepping work; reaching it unboundedly then raises
-        :class:`Unbounded`, since stepping work may read any of it.
+        :class:`Unbounded`, since stepping work may read any of it. A module
+        global's binding is among what it may write only when code it
+        reaches may rebind one.
         """
-        return self.reads if self.writes is _REACHED else self.writes
+        if self.writes is _REACHED:
+            reads = self.reads
+            if getattr(reads, "rebinds", True):
+                return reads
+            return frozenset(reads - getattr(reads, "globals", frozenset()))
+        if callable(self.writes):
+            self.writes = self.writes()
+        return self.writes
 
 
 def _family_ids(mob: Any) -> frozenset[int]:
     return frozenset(id(member) for member in mob.get_family())
+
+
+def _effect_writes(
+    effect: _Effect,
+    mob: Any,
+    reads: Callable[[], frozenset[int]] | None = None,
+) -> frozenset[int] | Callable[[], frozenset[int]] | None:
+    """What a callback with ``effect`` that updates ``mob`` (``None`` for
+    none) may write: ``mob``'s family, and what its changes elsewhere go
+    into; anything it reaches when one of those is not resolved. What it
+    changes it reaches, so what ``reads`` finds bounds the changes that go
+    into its targets (which may hold more than its code can get to).
+    """
+    # (What it changes through its parameters is what it is handed: the
+    # mobject it updates, and a number, dt or alpha.)
+    if effect.anywhere:
+        return _REACHED
+    own = _family_writes(mob) if mob is not None else frozenset()
+    if not effect.targets:
+        return own
+    targets = effect.targets
+
+    def written() -> frozenset[int]:
+        reached = None
+        if reads is not None:
+            with contextlib.suppress(Unbounded):
+                found = reads()
+                # (A change into an object rebinds no module global.)
+                reached = found - getattr(found, "globals", frozenset())
+        try:
+            into = _written_into(targets)
+        except Unbounded:
+            if reached is None:
+                raise
+            return own | reached
+        return own | (into if reached is None else into & reached)
+
+    return written
 
 
 def _family_writes(mob: Any) -> frozenset[int]:
@@ -2330,13 +3311,23 @@ def _animation_node(animation: Animation, check: _Writes) -> _Node:
     """
     from . import trusted
 
-    writes: frozenset[int] | None = frozenset(trusted.writes(animation))
+    known = frozenset(trusted.writes(animation))
+    writes: frozenset[int] | Callable[[], frozenset[int]] | None = known
     effect = _NO_EFFECT
     if isinstance(animation, trusted.CALLBACK_ANIMATIONS):
         function = vars(animation)["update_function"]
         effect = check.effect(function, _owners(function), animation.mobject)
         if effect.elsewhere:
-            writes = _REACHED
+            more = _effect_writes(effect, None)
+            if more is _REACHED:
+                writes = _REACHED
+            else:
+
+                def both() -> frozenset[int]:
+                    extra = more() if callable(more) else more
+                    return known | (extra or frozenset())
+
+                writes = both
     return _Node(
         type(animation).__name__,
         "transparent",
@@ -2392,7 +3383,7 @@ def _updater_node(
             reaches[found] = reach([function], [member, target])
         return reaches[found]
 
-    writes = _REACHED if effect.elsewhere else _family_writes(target)
+    writes = _effect_writes(effect, target, reads)
     role = "step" if loads_dt(updater) else "instant"
     return _Node(
         what,

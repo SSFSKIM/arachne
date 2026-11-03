@@ -692,13 +692,120 @@ def test_numpy_calls_given_only_inputs_still_step_past_their_updater(session_of)
     assert len(play.tick_plan.skipped) == 2
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="known residual (tech-debt-tracker.md): the write check does not read "
-    "a method of an object the callback made itself",
-)
 def test_a_method_of_an_object_the_callback_made_is_read_for_its_writes(session_of):
     """A dt-free updater makes a helper of the scene's own class at each run
-    and calls its method, which moves a tracker a dt updater integrates.
+    and calls its method, which moves a tracker a dt updater integrates:
+    the helper holds the tracker it was handed.
     """
-    _same_as_full_ticks(session_of, "FreshMethod", 4)
+    play = _same_as_full_ticks(session_of, "FreshMethod", 4).record.plays[-1]
+    assert play.tick_plan.pulled == 1
+
+
+# A change goes into an object resolved at plan time, with all it holds; an
+# object the callback made holds what went into it; a global is rebound only
+# where code shows it may be.
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "MadeGroupRead",
+        "InlineGroupRead",
+        "MadeListRead",
+        "MadeClassRead",
+        "MadeSetterRead",
+        "CopiedDictRead",
+        "ArgumentRead",
+        "MemoValueRead",
+        "MemoHelperRead",
+        "OutsideMemberRead",
+        "ByNameMethodRead",
+        "SharedRngRead",
+        "GlobalRebindRead",
+        "ModuleStoreRead",
+    ],
+)
+def test_a_change_through_what_a_callback_holds_or_made_pulls_it(session_of, name):
+    """A group or list made around a shown dot, an object of the scene's
+    class holding it, a copy of a dict holding it, an argument, a memo
+    dict's value, a group it was added to, a method fetched by name, a
+    generator two updaters draw from, a module global rebound by a
+    ``global`` statement, an attribute store or ``setattr``: the dt-free
+    updater changes what a dt updater integrates, and the plan pulls it.
+    """
+    play = _same_as_full_ticks(session_of, name, 4, SOUNDNESS_SCENES).record.plays[-1]
+    assert play.stepping_ticks > 0
+    assert play.tick_plan.pulled == 1
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "GrownGroupRead",
+        "LoopLocalRead",
+        "PickedLocalRead",
+        "MadeAroundArgumentRead",
+        "LoopOwnerRead",
+        "ComprehensionOwnerRead",
+        "LambdaOwnerRead",
+        "StaticMethodRead",
+        "SuperInitRead",
+        "DrawnItemRead",
+        "MethodReturnRead",
+        "AttributeByNameRead",
+        "LargestRead",
+        "ReboundArgumentRead",
+        "MadeHelperMethodRead",
+        "ConstantItemInPlaceRead",
+    ],
+)
+def test_a_change_through_what_a_local_or_a_call_hands_back_pulls_it(session_of, name):
+    """A made group grown by ``add`` and moved; a loop's variable or a local
+    bound to a list's item; a group made around a function's argument; the
+    updater's own parameter's name rebound by a loop, a comprehension or a
+    lambda; a static method handed the dot; a parent's constructor run by
+    ``super()``; a generator's draw from an array holding the dot; what a
+    method, ``getattr`` or ``max`` hands back; a rebound parameter; a
+    method of an object of the scene's class a function made; an engine
+    constant a list holds, added to in place through its item: each
+    reaches the shown dot, and the plan pulls the updater.
+    """
+    play = _same_as_full_ticks(session_of, name, 4, SOUNDNESS_SCENES).record.plays[-1]
+    assert play.stepping_ticks > 0
+    assert play.tick_plan.pulled == 1
+
+
+def test_a_made_group_suspending_what_it_holds_is_never_stepped_past(session_of):
+    """``VGroup(shown).suspend_updating()`` reaches the shown dot's updaters:
+    the play ticks everything.
+    """
+    play = _same_as_full_ticks(
+        session_of, "MadeGroupSuspends", 4, SOUNDNESS_SCENES
+    ).record.plays[-1]
+    assert play.stepping_ticks == 0
+    assert play.tick_plan.unbounded.startswith(STRUCTURAL)
+
+
+def test_a_global_rebound_by_setattr_is_never_stepped_past(session_of):
+    """``setattr(module, "LEVEL", …)`` may change anything (the structure
+    among it): the play ticks everything.
+    """
+    play = _same_as_full_ticks(
+        session_of, "ModuleSetattrRead", 4, SOUNDNESS_SCENES
+    ).record.plays[-1]
+    assert play.stepping_ticks == 0
+    assert play.tick_plan.unbounded.startswith(STRUCTURAL)
+
+
+def test_work_private_to_a_redraw_waits_for_the_frames(session_of):
+    """A redraw built through a function handing back what it made, a memo
+    dict of copies, its own seeded generator, ``getattr`` by a constant name
+    and ``np.linalg.norm``, from a tracker a dt updater advances: it writes
+    nothing stepping work reads, and is skipped.
+    """
+    play = _same_as_full_ticks(
+        session_of, "PrivateWorkRead", 4, SOUNDNESS_SCENES
+    ).record.plays[-1]
+    assert play.stepping_ticks > 0
+    assert play.tick_plan.pulled == 0
+    assert play.tick_plan.skipped
