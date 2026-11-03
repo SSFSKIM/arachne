@@ -55,6 +55,26 @@ Work to do, not debt to wait on: each item leaves a play ticking everything
   Reproducer, both items together:
   `tests/timeline/test_stepping.py::test_a_store_into_a_sum_of_what_a_dict_holds_is_taken_for_a_restructure`
   (scene `DictStateIntegrator`; it asserts today's fallback).
+- **Drop an interpolation's target from its read set where it overwrites
+  what it reads there.** The next lever after typing a dict's values. An
+  interpolation's node reads everything its animation reaches, its target
+  among it, so a skipped callback writing the target's fields (an updater
+  on the mobject a `Create` or a `FadeIn` draws) overlaps it.
+  `arachne/timeline/overwrites.py` declares, per method object, the fields
+  each interpolation sets from its held copies and alpha alone (`Create`'s
+  partial: `_points`; a `Transform`'s, `FadeIn` and `FadeOut` among them:
+  `_points` and `_paint`), each declaration checked by a property test
+  (`tests/timeline/test_overwrites.py`) that scrambles the target's prior
+  values and point counts. The plan does not read them yet. To use them,
+  `_animation_node` reads the target minus the declared fields, under the
+  declaration's own condition: the target's members with points pair with
+  the held copy's as they did when the animation began (a member that lost
+  its points, or gained some, pairs the families otherwise), checked where
+  the plan is made and kept true by the structure guard or checked at each
+  stepping tick. The field-level read is new to the plan, which reads by
+  object today, so the change carries a soundness scene with a skipped
+  writer of an undeclared field (a stroke width a `Create` keeps) that must
+  stay pulled.
 - **A method called on a receiver the check can't resolve is taken for the
   scene's code.** `dot.move_to(…)` with `dot` a loop's variable over
   `zip(group, offsets)` may be any class's `move_to`, so `_Site._method_code`
