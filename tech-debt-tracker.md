@@ -60,41 +60,64 @@ Not debt: the semantics of the stepping tick, each part with how it holds.
 
 ## The stepping tick's known limits (`arachne/timeline/ticking.py`)
 
-- **A callee reading its caller's frame is not seen.** An updater that never
-  loads `dt` but calls a helper reading `sys._getframe(1).f_locals["dt"]`
-  is judged dt-free and runs at the full ticks only, while CE hands it `dt`
-  at every frame and ticking everything at every tick. Only the updater's
-  own code is read; following every callee for frame reads is not
-  attempted. A documented limit, met by no measured scene.
-- **A `partial` or a callable object with a dead `dt` runs at every tick.**
-  Neither has code of its own to read, so both count as loading `dt`:
-  conservative (the frames are those of ticking everything for that
-  callback), never wrong against CE's semantics of a dt reader. Unwrapping
-  a `partial` to its function, and reading a callable object's `__call__`,
-  is precision work.
-- **Fallbacks that turn on mid-play are not all re-checked.** The stepping
-  run re-checks the ungoverned cases only when the structure changes before
-  a stepping tick: a mobject's `update` replaced on an instance mid-play,
-  with no structure change, keeps the play stepping where its updaters no
-  longer run through `Mobject.update`. The brute-force run re-checks at
-  every tick, so the gate's comparison catches that case. A scene's
-  `update_mobjects` or `update_self` replaced on the instance (not its
-  class) is caught by neither: both read the class (`user_overrides`), a
-  known blind spot of the optimisation and of the gate alike.
+Each limit states its direction against the stated semantics: **runs every
+tick** (conservative: the callback runs as when ticking everything, so no
+integration is lost) or **skipped** (work the semantics runs between frames
+is left out: not conservative). Forms that take deliberate construction are
+recorded here rather than chased; where a probe scene exists it is kept as a
+strict xfail in `tests/timeline/test_stepping.py`, passing once the limit is
+lifted.
+
+- **A callee reading its caller's frame is not seen. Direction: skipped, not
+  conservative.** An updater that never loads `dt` but calls a helper reading
+  `sys._getframe(1).f_locals["dt"]` is judged dt-free and runs at the full
+  ticks only, while CE hands it `dt` at every frame and ticking everything at
+  every tick: a real integrator loses its steps between frames. Only the
+  updater's own code is read; following every callee for frame reads is not
+  attempted. Met by no measured scene.
+  (`::test_known_limit_a_callee_reading_its_callers_dt_integrates`, scene
+  `CalleeReadsCallersDt`.)
+- **A callable whose executed code is not certain counts as loading dt.
+  Direction: runs every tick, conservative.** Only a plain function's code,
+  or a bound method's whose function is plain, matched by exact type, is
+  read (`_handed_slot_loaded`, `reference._own_code`). A `partial`, a
+  callable object, a builtin, or a proxy exposing some function's
+  `__code__` while its own `__call__` runs, counts as loading, so one with a
+  dead `dt` runs at every tick, as ticking everything runs it, where the
+  semantics would run it at frames only. Unwrapping a `partial`, or reading
+  a callable object's `__call__`, is precision work.
+  (`::test_known_limit_a_dead_dt_partial_runs_at_frames_only`, scene
+  `DeadDtPartial`.)
+- **Fallbacks that turn on mid-play are not all re-checked. Direction:
+  skipped, not conservative.** The stated semantics ticks everything once a
+  play's updaters may run where a stepping tick could not leave one out;
+  missed, the play keeps stepping, its dt-free updaters running at frames
+  only as in a governed play (whatever the replacement runs itself still
+  runs at every tick). The stepping run re-checks the ungoverned cases only
+  when the structure changes before a stepping tick: a mobject's `update`
+  replaced on an instance mid-play, with no structure change, keeps the play
+  stepping; the brute-force run re-checks at every tick, so the gate's
+  comparison catches that case. A scene's `update_mobjects` or `update_self`
+  replaced on the instance (not its class) is caught by neither: both read
+  the class (`user_overrides`), a known blind spot of the optimisation and
+  of the gate alike.
+  (`::test_known_limit_an_instance_update_mobjects_ticks_everything`, scene
+  `InstanceUpdateMobjects`.)
 - **History-keeping interpolations run per 60 Hz tick where CE runs them
-  per frame** (break 4, approved). The functions of `UpdateFromFunc` and
-  `UpdateFromAlphaFunc` are interpolation and run at every tick: one that
-  keeps history (appends, counts, integrates on its own) is called 60 times
-  a second where CE calls it once a frame, twice CE's count at a 30 fps
-  final, not only at draft rates. To measure: how often production scenes
-  run a history-keeping one.
-- **Per-tick costs left as they are.** Each callback at a stepping tick
-  costs an `inspect.signature` (a mobject updater, again in
-  `Mobject.update` to choose the call form), a cache lookup by code object
-  in `_slot_loaded`, and before every stepping tick a `current_structure`
-  walk of every family. None is cached further: a signature depends on the
-  callable (a wrapper, a `partial`, a `__signature__`), not on its code. To
-  measure on production scenes before any is optimised.
+  per frame. Direction: runs every tick** (break 4, approved). The functions
+  of `UpdateFromFunc` and `UpdateFromAlphaFunc` are interpolation and run at
+  every tick: one that keeps history (appends, counts, integrates on its
+  own) is called 60 times a second where CE calls it once a frame, twice
+  CE's count at a 30 fps final, not only at draft rates. To measure: how
+  often production scenes run a history-keeping one.
+- **Per-tick costs left as they are. Direction: none** (cost, not frames).
+  Each callback at a stepping tick costs an `inspect.signature` (a mobject
+  updater, again in `Mobject.update` to choose the call form), a cache
+  lookup by code object in `_slot_loaded`, and before every stepping tick a
+  `current_structure` walk of every family. None is cached further: a
+  signature depends on the callable (a wrapper, a `partial`, a
+  `__signature__`), not on its code. To measure on production scenes before
+  any is optimised.
 
 ## What the brute-force check does not check (`arachne/timeline/reference.py`)
 
@@ -106,9 +129,10 @@ Not debt: the semantics of the stepping tick, each part with how it holds.
     it only through its own code's positional parameter receiving it. The
     judges themselves are written apart (`ticking._handed_slot_loaded` and
     `reference._reads_argument` share no code or cache) and each follows the
-    argument into the code's own positional parameters, so a
-    `functools.wraps` wrapper, or a dt landing in `*args`, counts as loading
-    in both;
+    argument into the positional parameters of code it is certain the call
+    runs (a plain function, a bound method of one, by exact type), so a
+    `functools.wraps` wrapper, a proxy, or a dt landing in `*args`, counts as
+    loading in both;
   - the list of names through which code reads its own frame
     (`_FRAME_ACCESS` and `_FRAME_READERS`, one list copied);
   - where events and stop conditions come from (`PlayRecord.events`,

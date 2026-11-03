@@ -187,15 +187,24 @@ def test_a_fade_beside_a_dt_updater_that_reads_it_not_stays_stepping():
 
 
 @pytest.mark.parametrize(
-    "name", ["WrapsDt", "WrapsDtMethod", "DtInAnotherSlot", "DtInAnotherSlotMethod"]
+    "name",
+    [
+        "WrapsDt",
+        "WrapsDtMethod",
+        "DtInAnotherSlot",
+        "DtInAnotherSlotMethod",
+        "ProxyDt",
+        "ProxySceneDt",
+    ],
 )
 def test_an_integrator_handed_dt_under_another_name_steps_at_every_tick(
     session_of, name
 ):
     """An integrator whose ``dt`` lands where its code does not call it dt
-    (a ``functools.wraps`` wrapper forwarding ``*args``, or a parameter of
-    another name in the second positional place) counts as reading it, and
-    the dot integrates as when every tick is full.
+    (a ``functools.wraps`` wrapper forwarding ``*args``, a parameter of
+    another name in the second positional place, a proxy whose own
+    ``__call__`` runs while it exposes a dt-free function's code) counts as
+    reading it, and the dot integrates as when every tick is full.
     """
     stepped = session_of(name, STEPPING_SCENES, frame_rate=4)
     full = session_of(name, STEPPING_SCENES, frame_rate=4, stepping=False)
@@ -437,3 +446,51 @@ def test_the_stepping_families_hold_what_stepping_reads_and_writes(session_of):
     families = session.record.plays[-1].tick_plan.stepping_families()
     assert {id(other), id(output)} <= families
     assert id(idle) not in families
+
+
+# Known limits (tech-debt-tracker.md): each pins what the stepping tick does
+# today, and passes once the limit is lifted
+
+
+def _x_at(session, t):
+    box = session.state_at(t).named("output").box
+    return (box[0] + box[2]) / 2
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="known limit, skipped: only an updater's own code is read, not a "
+    "callee reading its caller's frame",
+)
+def test_known_limit_a_callee_reading_its_callers_dt_integrates(session_of):
+    stepped = session_of("CalleeReadsCallersDt", STEPPING_SCENES, frame_rate=4)
+    full = session_of(
+        "CalleeReadsCallersDt", STEPPING_SCENES, frame_rate=4, stepping=False
+    )
+    assert _x_at(stepped, Fraction(3, 4)) == pytest.approx(_x_at(full, Fraction(3, 4)))
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="known limit, runs every tick (conservative): a partial has no code "
+    "of its own to read",
+)
+def test_known_limit_a_dead_dt_partial_runs_at_frames_only(session_of):
+    stepped = session_of("DeadDtPartial", STEPPING_SCENES, frame_rate=4)
+    # Run once a frame, as a plain function with the same dead dt is: the
+    # frames at 0, 0.25 and 0.5 s and the tick at 0.75 s.
+    plain = session_of("DeadDtStorePair", STEPPING_SCENES, frame_rate=4)
+    assert _x_at(stepped, Fraction(3, 4)) == pytest.approx(_x_at(plain, Fraction(3, 4)))
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="known limit, skipped: a scene's update_mobjects replaced on the "
+    "instance is not seen (the class is read)",
+)
+def test_known_limit_an_instance_update_mobjects_ticks_everything(session_of):
+    for mode in (True, BRUTE_FORCE):
+        session = session_of(
+            "InstanceUpdateMobjects", STEPPING_SCENES, frame_rate=4, stepping=mode
+        )
+        assert session.record.plays[-1].stepping_ticks == 0

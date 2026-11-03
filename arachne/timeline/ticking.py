@@ -21,8 +21,10 @@ every other tick only **steps**: between frames it runs
 
 and nothing else. Whatever the parameter receiving that argument is named, a
 callback counts as loading ``dt`` unless its own code has a positional
-parameter there and never reads it: a wrapper forwarding ``*args``, a
-``partial``, a callable object or a builtin counts as loading.
+parameter there and never reads it. Only code the call is certain to run is
+read (a plain function's, a bound method's whose function is plain): a
+wrapper forwarding ``*args``, a ``partial``, a callable object, a proxy or a
+builtin counts as loading.
 One that never loads it is dt-free, frame-rate dependent in CE exactly like
 one without the parameter, and runs at the full ticks only, whoever reads
 what it writes: a dt callback reading a dt-free value between frames sees it
@@ -532,15 +534,22 @@ def scene_updater_loads_dt(updater: Any) -> bool:
 def _handed_slot_loaded(updater: Any, position: int) -> bool:
     """Whether ``updater``'s own code may read the positional argument
     ``position`` of a call to it (a bound method's receiver comes before
-    it). It counts as reading when that cannot be told: no Python code (a
-    builtin, a callable object, a ``partial``), or no positional parameter
-    of its code receives the argument (it lands in ``*args``, or the call
-    has nowhere to put it).
+    it). Only the code a call is known to run is read: a plain function's,
+    or a bound method's whose function is plain, by exact type, so nothing
+    can present another's code as its own. Anything else counts as reading
+    (a builtin, a ``partial``, a callable object, a proxy exposing a
+    function's ``__code__`` while its ``__call__`` runs), and so does an
+    argument no positional parameter of the code receives (it lands in
+    ``*args``, or the call has nowhere to put it).
     """
-    code = _code_of(updater)
-    if code is None:
+    slot = position
+    function = updater
+    if type(updater) is types.MethodType:
+        function = updater.__func__
+        slot += 1
+    if type(function) is not types.FunctionType:
         return True
-    slot = position + 1 if isinstance(updater, types.MethodType) else position
+    code = function.__code__
     if code.co_argcount <= slot:
         return True
     return _slot_loaded(code, slot)
