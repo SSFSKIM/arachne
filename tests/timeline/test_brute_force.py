@@ -117,6 +117,7 @@ def test_brute_force_never_enters_the_plan(session_of, monkeypatch, path, name):
         "plan_ticks",
         "loads_dt",
         "scene_updater_loads_dt",
+        "_handed_slot_loaded",
         "_slot_loaded",
         "skipping",
     )
@@ -144,7 +145,14 @@ def test_stepping_never_enters_the_analysis(session_of, monkeypatch, path, name)
     )
     _forbid(monkeypatch, ticking._Writes, "__init__", "effect", "plan_reads_hold")
     _forbid(monkeypatch, ticking.TickPlan, "stepping_families")
-    _forbid(monkeypatch, reference, "integrates", "scene_updater_integrates")
+    _forbid(
+        monkeypatch,
+        reference,
+        "integrates",
+        "scene_updater_integrates",
+        "_reads_argument",
+        "_reads_parameter",
+    )
     _outcome(session_of, path, name, 4)
 
 
@@ -194,6 +202,43 @@ def _forwarding(function):
     return wrapper
 
 
+def _dt_in_the_third_slot(m, step, dt=0):
+    m.shift(step)
+
+
+def _dt_keyword_only(m, step, *, dt=0):
+    m.shift(step)
+
+
+def _dt_into_star_args(m, *args, dt=0):
+    m.shift(args[0])
+
+
+def _dead_third_slot(m, step, dt=0):
+    return m
+
+
+def _signed_over(function, *names):
+    """``function`` with a ``__signature__`` naming ``names``, whatever its
+    code declares.
+    """
+    function.__signature__ = inspect.Signature(
+        [
+            inspect.Parameter(name, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+            for name in names
+        ]
+    )
+    return function
+
+
+def _overridden_with_a_declared_dt(m, step, dt=0):
+    m.shift(step)
+
+
+def _overridden_with_a_dead_second_slot(m, unused, dt=0):
+    return m
+
+
 class _Updater:
     def __call__(self, m, dt):
         return m
@@ -206,6 +251,9 @@ class _Mover:
 
     def dead(self, m, dt):
         return m
+
+    def third(self, m, step, dt=0):
+        m.shift(step)
 
 
 @pytest.mark.parametrize(
@@ -226,6 +274,13 @@ class _Mover:
         (_forwarding(_dt_free_by_signature), True),
         (_Mover().wrapped, True),
         (_Mover().dead, False),
+        (_dt_in_the_third_slot, True),
+        (_dt_keyword_only, True),
+        (_Mover().third, True),
+        (_dt_into_star_args, True),
+        (_signed_over(_overridden_with_a_declared_dt, "m", "dt"), True),
+        (_dead_third_slot, False),
+        (_signed_over(_overridden_with_a_dead_second_slot, "m", "dt"), False),
     ],
     ids=[
         "unread",
@@ -243,9 +298,19 @@ class _Mover:
         "wraps-dead",
         "wraps-method",
         "method-dead",
+        "third",
+        "keyword",
+        "method-third",
+        "star-args",
+        "signature-override",
+        "third-dead",
+        "signature-override-dead",
     ],
 )
 def test_brute_force_and_stepping_judge_dt_alike(updater, loads):
+    """A mobject updater whose signature names dt is handed it as its second
+    positional argument, whatever its code calls that parameter.
+    """
     assert integrates(updater) is loads
     assert loads_dt(updater) is loads
 
@@ -265,6 +330,13 @@ class _SceneMover:
     def reads(self, dt):
         return dt
 
+    @staticmethod
+    def nothing_handed():
+        return 0
+
+    def receiver_only(self):
+        return 0
+
 
 @pytest.mark.parametrize(
     ("updater", "loads"),
@@ -276,8 +348,20 @@ class _SceneMover:
         (_SceneMover().reads, True),
         (functools.partial(_scene_dead), True),
         (_forwarding(_scene_dead), True),
+        (_SceneMover.nothing_handed, True),
+        (_SceneMover().receiver_only, True),
     ],
-    ids=["dead", "renamed", "star-args", "method-dead", "method", "partial", "wraps"],
+    ids=[
+        "dead",
+        "renamed",
+        "star-args",
+        "method-dead",
+        "method",
+        "partial",
+        "wraps",
+        "no-slot",
+        "method-no-slot",
+    ],
 )
 def test_brute_force_and_stepping_judge_scene_updaters_alike(updater, loads):
     """A scene updater is handed dt as its first positional argument,

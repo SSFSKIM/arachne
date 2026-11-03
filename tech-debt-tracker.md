@@ -16,11 +16,14 @@ Not debt: the semantics of the stepping tick, each part with how it holds.
    `UpdateFromFunc` and `UpdateFromAlphaFunc` among it), the camera's
    inputs (its fixed-orientation centre functions among them), and the
    callbacks whose own code loads the `dt` they are handed; nothing else.
-   A mobject's updater is handed `dt` when its signature names it
-   (`loads_dt`); a scene's updater always is, as its first positional
-   argument (`scene_updater_loads_dt`, as CE's `Scene.update_self` calls
-   it). A callback counts as loading `dt` unless its own code declares that
-   parameter and never reads the slot (`_slot_loaded`: the 3.13
+   A mobject's updater is handed `dt` when its signature names it, as its
+   second positional argument (`loads_dt`, as CE's `Mobject.update` calls
+   it); a scene's updater always is, as its first (`scene_updater_loads_dt`,
+   as CE's `Scene.update_self` calls it). Whatever the parameter receiving
+   that argument is named, a callback counts as loading `dt` unless its own
+   code has a positional parameter there and never reads it
+   (`_handed_slot_loaded`, `_slot_loaded`: past a bound method's receiver;
+   an argument landing in `*args` counts as read; the 3.13
    superinstructions decoded slot by slot; an inner function closing over
    it or a read of its own frame counts as reading). Each is judged as it
    is called (`skipping`, consulted by `Mobject.update` and
@@ -35,12 +38,13 @@ Not debt: the semantics of the stepping tick, each part with how it holds.
    plan, a structure change alone making no tick full. Test:
    `tests/timeline/test_stepping.py::test_a_scene_running_its_own_update_mobjects_ticks_everything`.
 4. **What a dt reader of a dt-free value sees between frames** is that value
-   as of the last full tick, as CE shows it once per frame. One class of it
-   awaits the owner's ruling: a dt updater checking a dt-free updater's
-   output against what interpolation moves fails between frames where
-   ticking everything holds
-   (`tests/timeline/test_stepping.py::test_break_awaiting_the_owner_a_dt_check_sees_a_dt_free_output_a_frame_old`,
-   which flips if the class is ruled a break).
+   as of the last full tick, as CE shows it once per frame: a dt-loading
+   callback sees a dt-free output one frame old between frames (an approved
+   break, 2026-11-03). So a dt updater checking a dt-free updater's output
+   against what interpolation moves fails between frames where ticking
+   everything holds; a check meant to read what the viewer sees reads at
+   frames
+   (`tests/timeline/test_stepping.py::test_approved_break_a_dt_check_sees_a_dt_free_output_a_frame_old`).
 5. **The stepping run is held against the same semantics computed by brute
    force** (`arachne/timeline/reference.py`, `Recorder(stepping="brute_force")`,
    a verification mode): every scene of the stepping fixtures keeps the same
@@ -98,11 +102,13 @@ Not debt: the semantics of the stepping tick, each part with how it holds.
   the same stated semantics; a semantics that departs from CE departs in
   both. What the two runs share, and so cannot disagree on:
   - the assumption that a mobject updater is handed `dt` when its signature
-    names it, and that a callback reads it only through its own code's
-    declared parameter. The judges themselves are now written apart
-    (`ticking._slot_loaded` and `reference._reads_parameter` share no code
-    or cache) and each reads only the code's own declared parameters, so a
-    `functools.wraps` wrapper counts as loading in both;
+    names it, as its second positional argument, and that a callback reads
+    it only through its own code's positional parameter receiving it. The
+    judges themselves are written apart (`ticking._handed_slot_loaded` and
+    `reference._reads_argument` share no code or cache) and each follows the
+    argument into the code's own positional parameters, so a
+    `functools.wraps` wrapper, or a dt landing in `*args`, counts as loading
+    in both;
   - the list of names through which code reads its own frame
     (`_FRAME_ACCESS` and `_FRAME_READERS`, one list copied);
   - where events and stop conditions come from (`PlayRecord.events`,

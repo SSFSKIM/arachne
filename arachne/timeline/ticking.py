@@ -14,13 +14,15 @@ every other tick only **steps**: between frames it runs
 - the camera's inputs, its fixed-orientation centre functions included (as
   every tick evaluates them);
 - the callbacks whose own code loads the ``dt`` they are handed: a mobject's
-  updater whose signature names ``dt`` (:func:`loads_dt`), and a scene's
-  updater, which :meth:`.Scene.update_self` always hands ``dt`` as its first
-  positional argument (:func:`scene_updater_loads_dt`);
+  updater whose signature names ``dt`` (:func:`loads_dt`), which
+  :meth:`.Mobject.update` then hands ``dt`` as its second positional
+  argument, and a scene's updater, which :meth:`.Scene.update_self` always
+  hands ``dt`` as its first (:func:`scene_updater_loads_dt`);
 
-and nothing else. A callback counts as loading ``dt`` unless its own code
-declares that parameter and never reads the slot: a wrapper forwarding
-``*args``, a ``partial``, a callable object or a builtin counts as loading.
+and nothing else. Whatever the parameter receiving that argument is named, a
+callback counts as loading ``dt`` unless its own code has a positional
+parameter there and never reads it: a wrapper forwarding ``*args``, a
+``partial``, a callable object or a builtin counts as loading.
 One that never loads it is dt-free, frame-rate dependent in CE exactly like
 one without the parameter, and runs at the full ticks only, whoever reads
 what it writes: a dt callback reading a dt-free value between frames sees it
@@ -449,15 +451,11 @@ def takes_dt(updater: Any) -> bool:
 
 
 @functools.cache
-def _slot_loaded(code: types.CodeType, name: str) -> bool:
-    """Whether ``code`` may read its own parameter ``name``: always when
-    ``name`` is not one of its declared parameters (a wrapper forwarding
-    ``*args``, a signature that names what the code does not hold), else
-    a load of the slot, an inner function closing over it, or a read of
-    its own frame.
+def _slot_loaded(code: types.CodeType, slot: int) -> bool:
+    """Whether ``code`` may read its positional parameter ``slot``: a load
+    of it, an inner function closing over it, or a read of its own frame.
     """
-    if name not in code.co_varnames[: code.co_argcount + code.co_kwonlyargcount]:
-        return True
+    name = code.co_varnames[slot]
     if name in code.co_cellvars:
         return True  # an inner function reads it
     if _FRAME_ACCESS & set(code.co_names):
@@ -515,32 +513,37 @@ _FRAME_ACCESS = frozenset(
 
 def loads_dt(updater: Any) -> bool:
     """Whether a mobject's ``updater`` integrates: it is handed ``dt`` (its
-    signature names it, as :meth:`.Mobject.update` decides) and its own
-    code may read it (:func:`_slot_loaded`). One without Python code (a
-    builtin, a callable object, a ``partial``) counts as reading it.
+    signature names it, as :meth:`.Mobject.update` decides, which then
+    calls ``updater(mobject, dt)``) and its own code may read the slot the
+    second positional argument lands in, whatever that slot is named
+    (:func:`_handed_slot_loaded`).
     """
-    if not takes_dt(updater):
-        return False
-    code = _code_of(updater)
-    if code is None:
-        return True
-    return _slot_loaded(code, "dt")
+    return takes_dt(updater) and _handed_slot_loaded(updater, 1)
 
 
 def scene_updater_loads_dt(updater: Any) -> bool:
     """Whether a scene's ``updater`` integrates. :meth:`.Scene.update_self`
     hands every one ``dt`` as its first positional argument, whatever it
-    names it: it integrates unless its own code declares that parameter and
-    never reads it. One without Python code, or whose code takes no
-    positional parameter there (``*args``), counts as reading it.
+    names it (:func:`_handed_slot_loaded`).
+    """
+    return _handed_slot_loaded(updater, 0)
+
+
+def _handed_slot_loaded(updater: Any, position: int) -> bool:
+    """Whether ``updater``'s own code may read the positional argument
+    ``position`` of a call to it (a bound method's receiver comes before
+    it). It counts as reading when that cannot be told: no Python code (a
+    builtin, a callable object, a ``partial``), or no positional parameter
+    of its code receives the argument (it lands in ``*args``, or the call
+    has nowhere to put it).
     """
     code = _code_of(updater)
     if code is None:
         return True
-    first = 1 if isinstance(updater, types.MethodType) else 0
-    if code.co_argcount <= first:
+    slot = position + 1 if isinstance(updater, types.MethodType) else position
+    if code.co_argcount <= slot:
         return True
-    return _slot_loaded(code, code.co_varnames[first])
+    return _slot_loaded(code, slot)
 
 
 # Reach: what a callback may read

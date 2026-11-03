@@ -20,6 +20,7 @@ import numpy as np
 import pytest
 
 from arachne.timeline.clock import frames_in
+from arachne.timeline.reference import BRUTE_FORCE
 from arachne.timeline.ticking import UNGOVERNED, loads_dt
 
 from . import soundness_scenes, stepping_scenes
@@ -185,11 +186,16 @@ def test_a_fade_beside_a_dt_updater_that_reads_it_not_stays_stepping():
 # Who is handed dt, and whose code reads it
 
 
-@pytest.mark.parametrize("name", ["WrapsDt", "WrapsDtMethod"])
-def test_a_wrapped_integrator_steps_at_every_tick(session_of, name):
-    """A ``functools.wraps`` wrapper names dt in its signature and forwards
-    it from code that declares no dt: it counts as reading it, and the dot
-    integrates as when every tick is full.
+@pytest.mark.parametrize(
+    "name", ["WrapsDt", "WrapsDtMethod", "DtInAnotherSlot", "DtInAnotherSlotMethod"]
+)
+def test_an_integrator_handed_dt_under_another_name_steps_at_every_tick(
+    session_of, name
+):
+    """An integrator whose ``dt`` lands where its code does not call it dt
+    (a ``functools.wraps`` wrapper forwarding ``*args``, or a parameter of
+    another name in the second positional place) counts as reading it, and
+    the dot integrates as when every tick is full.
     """
     stepped = session_of(name, STEPPING_SCENES, frame_rate=4)
     full = session_of(name, STEPPING_SCENES, frame_rate=4, stepping=False)
@@ -219,20 +225,18 @@ def test_a_scene_updater_runs_between_frames_only_when_it_reads_dt(
     assert counts[False][0] == (calls if loads else calls + stepping)
 
 
-# A break class awaiting the owner's ruling
+# An approved break (2026-11-03)
 
 
-def test_break_awaiting_the_owner_a_dt_check_sees_a_dt_free_output_a_frame_old(
-    session_of,
-):
-    """Between frames, a dt updater checking a dt-free updater's output
-    against a tracker interpolation moves sees that output as of the last
-    full tick, a frame old, and its check fails; ticking everything, it
-    holds. This pins the class as the stepping tick has it until the owner
-    rules: ruled a break, the stepping tick changes and this test flips.
+def test_approved_break_a_dt_check_sees_a_dt_free_output_a_frame_old(session_of):
+    """A dt-loading callback sees a dt-free output one frame old between
+    frames (approved 2026-11-03): a dt updater checking a dt-free updater's
+    output against a tracker interpolation moves fails at a stepping tick,
+    stepping and brute force alike, while ticking everything it holds.
     """
-    with pytest.raises(AssertionError):
-        session_of("GetterGuard", STEPPING_SCENES, frame_rate=4)
+    for mode in (True, BRUTE_FORCE):
+        with pytest.raises(AssertionError):
+            session_of("GetterGuard", STEPPING_SCENES, frame_rate=4, stepping=mode)
     full = session_of("GetterGuard", STEPPING_SCENES, frame_rate=4, stepping=False)
     assert full.record.plays[-1].full_ticks == 60
 
