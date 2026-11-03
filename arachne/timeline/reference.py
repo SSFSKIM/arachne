@@ -89,23 +89,30 @@ def scene_updater_integrates(updater: Any) -> bool:
 
 def _reads_argument(updater: Any, index: int) -> bool:
     """Whether the parameter receiving positional argument ``index`` of a
-    call to ``updater`` is read. Unless its own code has a positional
-    parameter there (past a bound method's receiver), the argument goes
-    where nothing here follows (``*args``, a builtin, a callable object, a
-    ``partial``), and counts as read.
+    call to ``updater`` is read. Unless the call runs code known here (see
+    :func:`_own_code`) with a positional parameter there (past a bound
+    method's receiver), the argument goes where nothing here follows
+    (``*args``, a builtin, a callable object, a ``partial``), and counts as
+    read.
     """
     code = _own_code(updater)
     if code is None:
         return True
     names = code.co_varnames[: code.co_argcount]
-    if isinstance(updater, types.MethodType):
+    if type(updater) is types.MethodType:
         names = names[1:]
     return len(names) <= index or _reads_parameter(code, names[index])
 
 
 def _own_code(updater: Any) -> types.CodeType | None:
-    code = getattr(getattr(updater, "__func__", updater), "__code__", None)
-    return code if isinstance(code, types.CodeType) else None
+    """The code a call to ``updater`` runs, when that is certain: a plain
+    function's, or a bound method's whose function is plain. Types are
+    matched exactly; an object exposing some function's ``__code__`` (a
+    proxy whose ``__call__`` runs instead) gives none.
+    """
+    if type(updater) is types.MethodType:
+        updater = updater.__func__
+    return updater.__code__ if type(updater) is types.FunctionType else None
 
 
 def _reads_parameter(code: types.CodeType, name: str) -> bool:

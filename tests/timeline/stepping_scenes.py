@@ -8,6 +8,7 @@ carries a dt updater, unless the scene says otherwise.
 from __future__ import annotations
 
 import functools
+import sys
 from builtins import getattr as lookup
 
 import numpy as np
@@ -1392,6 +1393,51 @@ class DtInAnotherSlotMethod(Scene):
         self.wait(1)
 
 
+class _Proxy:
+    """Exposes the wrapped function's attributes, its ``__code__`` among
+    them, while its own ``__call__`` integrates.
+    """
+
+    def __init__(self, function, output):
+        self.__wrapped__ = function
+        self.output = output
+
+    def __getattr__(self, name):
+        return getattr(self.__wrapped__, name)
+
+    def __call__(self, *args):
+        self.output.shift(args[-1] * RIGHT)
+        return self.__wrapped__(*args)
+
+
+class ProxyDt(Scene):
+    """A mobject updater behind a proxy exposing a dt-free function's code:
+    the proxy's ``__call__`` integrates, at every tick.
+    """
+
+    def construct(self):
+        def per_frame(m, dt):
+            pass
+
+        output = Dot(color=RED)
+        output.add_updater(_Proxy(per_frame, output))
+        self.add(output, _idle())
+        self.wait(1)
+
+
+class ProxySceneDt(Scene):
+    """The same proxy as a scene updater."""
+
+    def construct(self):
+        def per_frame(dt):
+            pass
+
+        output = Dot(color=RED)
+        self.add(output, _idle())
+        self.add_updater(_Proxy(per_frame, output))
+        self.wait(1)
+
+
 class DeadDtStorePair(Scene):
     """An updater that rebinds dt in a paired store and never reads it: it
     moves once a frame, as in CE.
@@ -1441,4 +1487,60 @@ class DtSceneUpdater(Scene):
 
         self.add(output, _idle())
         self.add_updater(integrate)
+        self.wait(1)
+
+
+# Known limits of the stepping tick (tech-debt-tracker.md), each pinned by
+# an xfail in test_stepping.py
+
+
+def _callers_dt():
+    return sys._getframe(1).f_locals["dt"]
+
+
+class CalleeReadsCallersDt(Scene):
+    """An integrator whose own code never loads dt: a helper reads it from
+    the caller's frame. Judged dt-free, it is left out between frames.
+    """
+
+    def construct(self):
+        def integrate(m, dt):
+            m.shift(_callers_dt() * RIGHT)
+
+        output = Dot(color=RED)
+        output.add_updater(integrate)
+        self.add(output, _idle())
+        self.wait(1)
+
+
+class DeadDtPartial(Scene):
+    """A dt-free updater behind ``functools.partial``: with no code of its
+    own to read, it counts as loading dt and runs at every tick.
+    """
+
+    def construct(self):
+        def per_frame(m, dt, step):
+            m.shift(step * RIGHT)
+
+        output = Dot(color=RED)
+        output.add_updater(functools.partial(per_frame, step=0.01))
+        self.add(output, _idle())
+        self.wait(1)
+
+
+class InstanceUpdateMobjects(Scene):
+    """The scene's ``update_mobjects`` replaced on the instance, not its
+    class: only the class is read, so the play still steps.
+    """
+
+    def construct(self):
+        output = Dot(color=RED)
+        output.add_updater(lambda m, dt: m.shift(0.01 * RIGHT))
+        self.add(output, _idle())
+        original = self.update_mobjects
+
+        def own(dt):
+            original(dt)
+
+        self.update_mobjects = own
         self.wait(1)

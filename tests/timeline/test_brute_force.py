@@ -244,6 +244,21 @@ class _Updater:
         return m
 
 
+class _Proxy:
+    """Exposes the wrapped function's attributes, its ``__code__`` among
+    them, while its own ``__call__`` is what runs.
+    """
+
+    def __init__(self, function):
+        self.__wrapped__ = function
+
+    def __getattr__(self, name):
+        return getattr(self.__wrapped__, name)
+
+    def __call__(self, *args):
+        return args
+
+
 class _Mover:
     @_forwarding
     def wrapped(self, m, dt):
@@ -281,6 +296,7 @@ class _Mover:
         (_signed_over(_overridden_with_a_declared_dt, "m", "dt"), True),
         (_dead_third_slot, False),
         (_signed_over(_overridden_with_a_dead_second_slot, "m", "dt"), False),
+        (_Proxy(_dt_free_by_signature), True),
     ],
     ids=[
         "unread",
@@ -305,6 +321,7 @@ class _Mover:
         "signature-override",
         "third-dead",
         "signature-override-dead",
+        "proxy",
     ],
 )
 def test_brute_force_and_stepping_judge_dt_alike(updater, loads):
@@ -350,6 +367,7 @@ class _SceneMover:
         (_forwarding(_scene_dead), True),
         (_SceneMover.nothing_handed, True),
         (_SceneMover().receiver_only, True),
+        (_Proxy(_scene_dead), True),
     ],
     ids=[
         "dead",
@@ -361,6 +379,7 @@ class _SceneMover:
         "wraps",
         "no-slot",
         "method-no-slot",
+        "proxy",
     ],
 )
 def test_brute_force_and_stepping_judge_scene_updaters_alike(updater, loads):
