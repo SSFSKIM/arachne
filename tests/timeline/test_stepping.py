@@ -19,13 +19,12 @@ import numpy as np
 import pytest
 
 from arachne import Dot, VGroup
-from arachne.timeline.clock import TICK_RATE, frames_in
+from arachne.timeline.clock import frames_in
 from arachne.timeline.ticking import (
     STRUCTURAL,
     UNBOUNDED,
     TickPlan,
     loads_dt,
-    typings_hold,
     unaffected,
 )
 
@@ -217,43 +216,6 @@ def test_a_compiled_pattern_is_a_bounded_read(session_of):
     assert play.tick_plan.skipped
 
 
-def test_a_store_into_the_dicts_a_list_holds_steps(session_of):
-    """A loop's variable over a list of dicts is a dict: a store into it
-    changes no structure. What it changes is the dicts, so the dt-free
-    updater storing the pace the dt updater reads is pulled.
-    """
-    play = _same_as_full_ticks(
-        session_of, "DictItemRead", 4, SOUNDNESS_SCENES
-    ).record.plays[-1]
-    assert not any(
-        r.startswith((UNBOUNDED, STRUCTURAL)) for r in play.admission.reasons
-    )
-    assert play.stepping_ticks > 0
-    assert play.tick_plan.pulled == 1
-    assert play.tick_plan.skipped
-
-
-def test_the_items_a_plan_typed_are_checked_at_every_stepping_tick(session_of):
-    """The plan keeps the list whose items it typed a loop's variable by:
-    another length, or another item or another type of item there, and it
-    no longer holds.
-    """
-    plan = (
-        session_of("DictItemRead", SOUNDNESS_SCENES, frame_rate=4)
-        .record.plays[-1]
-        .tick_plan
-    )
-    assert typings_hold(plan)
-    (parts,) = [typing[0] for typing in plan.typings]
-    first = parts[0]
-    parts[0] = dict(first)
-    assert not typings_hold(plan)
-    parts[0] = first
-    assert typings_hold(plan)
-    parts.append({})
-    assert not typings_hold(plan)
-
-
 @pytest.mark.parametrize(
     "name",
     ["MobjectItemStore", "MembersListStore", "AttributeDictStore", "MobjectJoinsDicts"],
@@ -261,64 +223,31 @@ def test_the_items_a_plan_typed_are_checked_at_every_stepping_tick(session_of):
 def test_a_store_into_an_item_that_is_or_may_become_a_mobject_is_never_stepped_past(
     session_of, name
 ):
-    """A store through a loop's variable replaces a member: of a group a
-    list holds, of the members' list it holds, of the attribute dict
-    (``vars(group)``) it holds, and of a group the updater storing into a
-    list of dicts appends to it as it steps. No play steps.
+    """A store through a loop's variable the check can't resolve replaces a
+    member: of a group a list holds, of the members' list it holds, of the
+    attribute dict (``vars(group)``) it holds, and of a group the updater
+    storing into a list of dicts appends to it as it steps. No play steps.
+    (What would type the variable from the list's items must keep these:
+    ``tech-debt-tracker.md``.)
     """
     play = _same_as_full_ticks(session_of, name, 4, SOUNDNESS_SCENES).record.plays[-1]
     assert play.stepping_ticks == 0
     assert play.tick_plan.unbounded.startswith(STRUCTURAL)
 
 
-def _first_tick_after(tick: Fraction) -> Fraction:
-    return tick + Fraction(1, TICK_RATE)
-
-
-def test_a_list_whose_dict_a_part_swaps_for_a_mobject_plans_again(session_of):
-    """A part beginning at 0.5 s swaps one of the dicts a dt updater stores
-    into for a group: the play steps until then, and the first tick after
-    the swap plans again, finds the group, and ticks everything from there.
+def test_a_store_into_a_sum_of_what_a_dict_holds_is_taken_for_a_restructure(
+    session_of,
+):
+    """The planned precision work ``tech-debt-tracker.md`` keeps: a loop's
+    variable over a list of dicts, and ``pn = p + v * dt`` from what they
+    hold, are not typed, so ``pn[1] = …`` may replace a mobject's member and
+    the play ticks everything.
     """
     play = _same_as_full_ticks(
-        session_of, "DictSwappedForMobject", 4, SOUNDNESS_SCENES
+        session_of, "DictStateIntegrator", 4, SOUNDNESS_SCENES
     ).record.plays[-1]
-    (_, first), (again, last) = play.tick_plans
-    assert first.steps_only
-    assert first.typings
-    assert again == _first_tick_after(Fraction(1, 2))
-    assert last.unbounded.startswith(STRUCTURAL)
-
-
-def test_a_typing_that_no_longer_holds_is_never_stepped_on(session_of):
-    """Code outside the play's work swaps a dict a dt updater stores into
-    for a group already shown, at the frame tick at 0.5 s: no structure
-    changed, and the next tick plans again before it steps, rather than
-    store into the group as it steps by a plan that typed it a dict.
-    """
-    swapped = Fraction(1, 2)
-
-    def swap(scene, tick, full):
-        if tick == swapped:
-            scene.parts[1] = scene.group
-
-    sessions = [
-        session_of(
-            "DictsBesideGroup",
-            SOUNDNESS_SCENES,
-            frame_rate=4,
-            stepping=stepping,
-            on_tick=swap,
-        )
-        for stepping in (True, False)
-    ]
-    ours, theirs = (session.record.plays[-1] for session in sessions)
-    assert ours.sample_keys() == theirs.sample_keys()
-    (_, first), (again, last) = ours.tick_plans
-    assert first.steps_only
-    assert first.typings
-    assert again == _first_tick_after(swapped)
-    assert last.unbounded.startswith(STRUCTURAL)
+    assert play.stepping_ticks == 0
+    assert play.tick_plan.unbounded.startswith(f"{STRUCTURAL}: updater step ")
 
 
 def test_a_method_of_an_unresolved_receiver_is_taken_for_the_scenes_code(session_of):

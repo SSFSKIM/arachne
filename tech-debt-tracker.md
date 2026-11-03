@@ -3,21 +3,70 @@
 Known gaps kept on record rather than fixed, each with the test that
 reproduces it.
 
-## The timeline's stepping tick (`arachne/timeline/ticking.py`)
+## Planned precision work before G4 (`arachne/timeline/ticking.py`)
 
+Work to do, not debt to wait on: each item leaves a play ticking everything
+(as CE does: precision, not soundness) where stepping would be sound.
+
+- **Type a loop's variable over a list of plain dicts from its items.** A
+  store into such an item (`q["p"] = pn`, `for q in parts`) goes through
+  `_Site.into` on a receiver the check can't resolve, which may be a
+  mobject whose `[k] = other` replaces a member, so a dt updater doing it
+  leaves its play structural. Built and then reverted for want of a play
+  it steps in this corpus without the item below: restore it from commit
+  `c24b7d78` (on `c52-m4-precision`, reverted by the commit after it). It
+  types the variable when every item of what it loops over is a plain dict:
+  not a module's, nor the attribute dict of the scene, its renderer or
+  camera, an animation or a mobject of the scene (a store there rebinds
+  `submobjects` or `updaters`); a list item is never typed, since it may be
+  a mobject's members. Through a typed variable, stores and methods change
+  no structure and write into the items, not the list. Its two guards:
+  - per tick: the plan keeps each list it typed by with its items' ids and
+    types (`TickPlan.typings`), and every stepping tick checks them
+    (`typings_hold`, in `recorder.stepping_plan`) before the structure, so
+    another length, item or type has the play plan again even when no
+    structure changed;
+  - at plan time: a plan whose stepping work may itself write such a list
+    (an append, a store into it) is made again without typing
+    (`_changes_typed`), since that change would come after the tick's check.
+
+  Its soundness scenes stay on the branch, each never stepped past without
+  typing and with it: `MobjectItemStore`, `MembersListStore`,
+  `AttributeDictStore`, `MobjectJoinsDicts`
+  (`tests/timeline/test_stepping.py::test_a_store_into_an_item_that_is_or_may_become_a_mobject_is_never_stepped_past`).
+  The commit's other scenes come back with it: `DictItemRead` (it steps,
+  with the dt-free updater writing the dicts pulled), `DictSwappedForMobject`
+  and `DictsBesideGroup` with a tick hook (a dict swapped for a group
+  mid-play, no structure changed: the next tick plans again before it
+  steps).
+- **Type what a dict holds from its values, so that arithmetic on NumPy
+  arrays makes a new array.** With the item above alone, `p, v = q["p"],
+  q["v"]; pn = p + v * h; pn[1] = …` still leaves the play structural:
+  `p` and `v` are not typed, so `_number_array` can't show `pn` is a new
+  array, and `pn[1] = …` goes through `_Site.into` on an unresolved
+  receiver. State arrays held in dicts, `p + v * h`, and a store into the
+  result are ordinary code in a physics scene, and scenes of physical motion
+  will meet the pattern far more often than this corpus does. The trap: an
+  operator may hand back an operand (a class whose `__add__` returns
+  `self`, or an in-place result), so a sum is new only when its operands'
+  types are known to make one, here NumPy arrays of numbers. The guard it
+  needs is the per-tick check above extended to the values a typing read:
+  the ids and types of each typed dict's values at the keys the code reads.
+  Reproducer, both items together:
+  `tests/timeline/test_stepping.py::test_a_store_into_a_sum_of_what_a_dict_holds_is_taken_for_a_restructure`
+  (scene `DictStateIntegrator`; it asserts today's fallback).
 - **A method called on a receiver the check can't resolve is taken for the
   scene's code.** `dot.move_to(…)` with `dot` a loop's variable over
   `zip(group, offsets)` may be any class's `move_to`, so `_Site._method_code`
   marks the call `unknown`; when the callback reaches code of the scene's
   that adds members (a group subclass whose constructor calls `self.add`),
   `_Node.may_restructure` holds, and a play whose dt updater runs it ticks
-  everything though nothing of the scene's defines `move_to`. A precision
-  gap, not a soundness one: the play ticks as CE does. Reproducer:
+  everything though nothing of the scene's defines `move_to`. Reproducer:
   `tests/timeline/test_stepping.py::test_a_method_of_an_unresolved_receiver_is_taken_for_the_scenes_code`
   (scene `UnresolvedMethodRead`; it asserts today's fallback). The fix is
   to take such a call as no code of the scene's when no class outside the
-  engine defines the method's name. The trap: a scene may set a user
-  function onto an engine class (`SomeEngineClass.move_to = user_fn`) or
+  engine defines the method's name. The trap: a scene may set a function of
+  its own onto an engine class (`SomeEngineClass.move_to = user_fn`) or
   patch a base class's methods (a scene base class replacing `Scene`
   methods), so "no user class defines the name" must cover every class's
   current attributes, the engine's included, not only the classes the
