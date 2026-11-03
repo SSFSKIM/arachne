@@ -16,7 +16,7 @@ reproduces it.
   after it, from whatever it left
   (`tests/timeline/test_stepping.py::test_a_hook_that_rebinds_what_a_reader_reads_is_planned_for`).
 
-## Planned precision work before G4 (`arachne/timeline/ticking.py`)
+## Planned precision work (`arachne/timeline/ticking.py`)
 
 Work to do, not debt to wait on: each item leaves a play ticking everything
 (as CE does: precision, not soundness) where stepping would be sound.
@@ -25,8 +25,8 @@ Work to do, not debt to wait on: each item leaves a play ticking everything
   store into such an item (`q["p"] = pn`, `for q in parts`) goes through
   `_Site.into` on a receiver the check can't resolve, which may be a
   mobject whose `[k] = other` replaces a member, so a dt updater doing it
-  leaves its play structural. Built and then reverted for want of a play
-  it steps in this corpus without the item below: restore it from commit
+  leaves its play structural. Built and then reverted for want of a measured
+  play it steps without the item below: restore it from commit
   `d8a068f3` (on `c52-m4-precision`, reverted by the commit after it). It
   types the variable when every item of what it loops over is a plain dict:
   not a module's, nor the attribute dict of the scene, its renderer or
@@ -59,7 +59,7 @@ Work to do, not debt to wait on: each item leaves a play ticking everything
   array, and `pn[1] = …` goes through `_Site.into` on an unresolved
   receiver. State arrays held in dicts, `p + v * h`, and a store into the
   result are ordinary code in a physics scene, and scenes of physical motion
-  will meet the pattern far more often than this corpus does. The trap: an
+  will meet the pattern far more often than the measured scenes do. The trap: an
   operator may hand back an operand (a class whose `__add__` returns
   `self`, or an in-place result), so a sum is new only when its operands'
   types are known to make one, here NumPy arrays of numbers. The guard it
@@ -95,25 +95,28 @@ Work to do, not debt to wait on: each item leaves a play ticking everything
   may be either operand: a store into the sum is taken for one into `v`.
   The sum rule needs both operands known to be numbers or NumPy's own
   arrays, since a subclass's operator, or its reflected form, may hand back
-  an operand (`AliasingSumRead`). One measured scene pulls three callbacks
-  in three plays for it (pulled 0 → 9, its stepping ticks unchanged). The
+  an operand (`AliasingSumRead`). One measured scene pulls callbacks in
+  several plays for it, its stepping ticks unchanged. The
   fix types `dt` (and an alpha a rate-function updater is handed) as a
   float, and an arithmetic expression of numbers and NumPy's own arrays as
   one of them.
 - **Follow engine code precisely enough to tell what it never calls.** A
   call handed an argument the check can't resolve is an unknown one unless
-  its callee is shown never to call it (`arachne/timeline/handed.py`). The
-  engine's own constructors are not shown so: `VGroup(b, label)`,
-  `Line(...)`, `Axes.c2p(*xs)` with any unresolved argument are unknown
-  calls. On the measured corpus 16 plays of 28 cases lost their stepping:
-  one case from 1781 stepping ticks to 501 (its plays 4 to 15), another
-  from 526 to 61 (its plays 17 to 20); pulled callbacks rose (one case
-  33 → 337). `**kwargs` handed on is now called key by key, which wins none
-  of it back. A measurement with four limits lifted at once, unsoundly
-  (the store rule, `**kwargs`, `ManimColor`, the cached
-  `_bezier_parameters`), wins none of it back either: what costs it is how
-  the analysis resolves a callee inside engine code. Each fix below must
-  stay sound:
+  its callee is shown never to call it (`arachne/timeline/handed.py`), and
+  an argument is free of callables only when its kind shows it (a constant,
+  a number, a string, an array of numbers, what a getter of the engine's or
+  a function of the scene's computing from them gives); a container, a dict
+  unpacked as keywords and what an operator makes carry what they hold. The
+  engine's own constructors are not shown never to call what they are
+  handed: `VGroup(b, label)`, `Line(...)`, `Axes.c2p(*xs)` with any argument
+  not shown free are unknown calls. On a measured set of scenes several
+  plays lost their stepping, one scene's stepping ticks fell by about 70%,
+  and pulled callbacks rose in a few more. `**kwargs` handed on is called
+  key by key, which wins none of it back. A measurement with four limits
+  lifted at once, unsoundly (the store rule, `**kwargs`, `ManimColor`, the
+  cached `_bezier_parameters`), wins none of it back either: what costs it
+  is how the analysis resolves a callee inside engine code. Each fix below
+  must stay sound:
   - a method of a local the function made as a list, dict or set display
     (`valid_vmobjects.append(m)` in `VGroup.add`) is a callee it can't
     resolve; such a local's class is the display's, whose methods never
@@ -142,9 +145,20 @@ Work to do, not debt to wait on: each item leaves a play ticking everything
   and `::test_work_private_to_a_redraw_waits_for_the_frames`. What must
   hold meanwhile: the fixtures of
   `::test_a_callable_the_check_cannot_resolve_is_called_where_its_callee_may`
-  stay pulled, and the control
+  and `::test_a_value_holding_a_callable_is_called_where_its_callee_may`
+  stay pulled, and the controls
   `::test_a_value_the_check_cannot_resolve_handed_to_code_that_never_calls_it`
-  steps.
+  step.
+
+  What the proof does not read, each sound by another route the probes
+  found and none with a fixture of its own: a method a callee calls on what
+  it is handed (`graph.function(x)` in engine code, a scene class's own
+  methods) is not taken for calling the argument in `handed.Callers`; a
+  mobject's updaters are not counted among what it holds (the plan
+  schedules them); an object resolved at plan time is read as it is then,
+  not as a later callback may refill it; and a native listed as never
+  calling what it is handed may still iterate it, running a generator's or
+  a `map`'s code.
 - **A method called on a receiver the check can't resolve is taken for the
   scene's code.** `dot.move_to(…)` with `dot` a loop's variable over
   `zip(group, offsets)` may be any class's `move_to`, so `_Site._method_code`
@@ -172,12 +186,12 @@ Work to do, not debt to wait on: each item leaves a play ticking everything
   `-0.9213813374999997` round to 9 decimals differently), while two 9e-10
   apart inside one bin key alike. `PlayRecord.sample_keys`
   (`SAMPLE_DECIMALS` = 9) decides with it whether a stepping run's captures
-  match a run that ticks everything. On one measured scene, a difference of
-  at most 2.22e-16 at three play starts put 64 glyph coordinates on a
-  10th-decimal half-way point, and rounding flipped 6 of them, so 14 nodes
-  key apart. At 6, 7, 8, 10, 11 or 12 decimals none flip. An execution's
+  match a run that ticks everything. On one measured scene, differences of
+  one ulp at a few play starts put glyph coordinates on a 10th-decimal
+  half-way point, and rounding flipped some of them, so their nodes keyed
+  apart. At 6, 7, 8, 10, 11 or 12 decimals none flip. An execution's
   `divergence` compares unrounded keys (`content_key()`), which tell apart
-  any two values that differ at all. Route 2's restore (M5) inherits the
+  any two values that differ at all. The planned restore work inherits the
   limit if it compares state by key. Every flip fails safe:
   - a sample-key comparison reports a difference stepping did not make;
   - a divergence is logged where nothing a frame reads moved;
