@@ -950,6 +950,28 @@ def test_a_callable_the_check_cannot_resolve_is_called_where_its_callee_may(
     assert play.tick_plan.pulled == 1
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "ListedCallableRead",
+        "DisplayedCallableRead",
+        "UnpackedCallableRead",
+        "NamedUnpackedCallableRead",
+        "RepeatedCallableRead",
+    ],
+)
+def test_a_value_holding_a_callable_is_called_where_its_callee_may(session_of, name):
+    """A function held in a list or a dict, resolved or written out at the
+    call (unpacked as keywords too), or in a list an operator makes: a value
+    is free of callables only when its kind shows it, so the function is
+    called where the callee may call what it is handed, and the plan pulls
+    the updater making the call.
+    """
+    play = _same_as_full_ticks(session_of, name, 4, SOUNDNESS_SCENES).record.plays[-1]
+    assert play.stepping_ticks > 0
+    assert play.tick_plan.pulled == 1
+
+
 def test_a_value_the_check_cannot_resolve_handed_to_code_that_never_calls_it(
     session_of,
 ):

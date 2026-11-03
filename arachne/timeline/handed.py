@@ -19,6 +19,13 @@ call it:
   resolve, may.
 
 When it can't be told, the argument is called: never the other way.
+
+What may be called is every callable an argument may be or hold. A value
+is free of callables only when its kind shows it (a constant, a number, a
+string, an array of numbers); a container, a dict unpacked as keywords, what
+an operator or a comprehension makes, and any form not read here carry
+every callable their parts may hold. A resolved object holds what
+:func:`held_callables` reads in it, or anything when that can't be read.
 """
 
 from __future__ import annotations
@@ -26,7 +33,12 @@ from __future__ import annotations
 __all__ = ["CALLED_NATIVE", "NATIVE_UNLISTED", "UNKNOWN_CALLEE", "Callers"]
 
 import ast
+import collections
+import contextlib
+import enum
+import fractions
 import inspect
+import pathlib
 import re
 import types
 from collections.abc import Callable
@@ -134,6 +146,122 @@ _NEVER_CALL_OBJECTS = (
 #: In a set of called parameters: every one (the code can't be followed).
 EVERY = "*"
 
+#: Kinds whose objects hold no callable (a NumPy scalar or array of them
+#: too, unless its dtype holds objects).
+_CALLABLE_FREE = (
+    type(None),
+    bool,
+    int,
+    float,
+    complex,
+    str,
+    bytes,
+    range,
+    slice,
+    type(Ellipsis),
+    fractions.Fraction,
+    pathlib.PurePath,
+    np.dtype,
+    re.Pattern,
+)
+#: How many objects reading what one value holds visits before giving up.
+HELD_LIMIT = 20_000
+
+
+def held_callables(value: Any, limit: int = HELD_LIMIT) -> tuple[Any, ...] | None:
+    """The callables ``value`` (a resolved object) is or holds: in a
+    container's items and keys, an object's own attributes, a mobject's
+    members; ``None`` when what it holds can't be read (an object of a
+    native kind not listed here, a module, more than ``limit`` objects).
+    A mobject's updaters are not counted: the engine runs them as the
+    scene's own callbacks, which the plan schedules itself.
+    """
+    from arachne.mobject.mobject import Mobject
+
+    found: dict[int, Any] = {}
+    seen: set[int] = set()
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if id(item) in seen:
+            continue
+        seen.add(id(item))
+        if len(seen) > limit:
+            return None
+        if isinstance(item, _CALLABLE_FREE) and (
+            type(item) in _CALLABLE_FREE
+            or type(item).__module__.split(".")[0] in ("pathlib", "fractions", "numpy")
+        ):
+            continue  # a subclass of the scene's is read as any object
+        if isinstance(item, (np.ndarray, np.generic)):
+            if item.dtype.hasobject:
+                stack.extend(np.asarray(item, dtype=object).flat)
+            stack.extend(each for _, each in _own_state(item))  # a subclass's
+            continue
+        if callable(item):
+            found[id(item)] = item
+            continue
+        if isinstance(item, enum.Enum):
+            stack.append(item.value)
+            continue
+        if isinstance(item, types.ModuleType) or any(
+            cls not in _NATIVE_HOLDERS for cls in _native_bases(type(item))
+        ):
+            return None  # what a native kind holds is not read
+        if isinstance(item, dict):
+            stack.extend(item.keys())
+            stack.extend(item.values())
+            if isinstance(item, collections.defaultdict):
+                stack.append(item.default_factory)
+        elif isinstance(item, _NATIVE_HOLDERS):
+            stack.extend(item)
+        for name, each in _own_state(item):
+            if name == "updaters" and isinstance(item, Mobject):
+                continue
+            stack.append(each)
+    return tuple(found.values())
+
+
+#: The native kinds whose objects hold only their items (and a
+#: ``defaultdict``'s factory).
+_NATIVE_HOLDERS = (
+    list,
+    tuple,
+    set,
+    frozenset,
+    dict,
+    collections.deque,
+    collections.defaultdict,
+    collections.OrderedDict,
+)
+_HEAP_TYPE = 1 << 9  # ``Py_TPFLAGS_HEAPTYPE``: a class Python code defines
+
+
+def _native_bases(cls: type) -> list[type]:
+    """The classes in ``cls``'s order defined natively, ``object`` aside."""
+    return [
+        each
+        for each in cls.__mro__
+        if each is not object and not each.__flags__ & _HEAP_TYPE
+    ]
+
+
+def _own_state(item: Any) -> list[tuple[str, Any]]:
+    """The attributes ``item`` holds itself: its ``__dict__``, its slots."""
+    state: list[tuple[str, Any]] = []
+    with contextlib.suppress(TypeError):
+        state.extend(vars(item).items())
+    missing = object()
+    for cls in type(item).__mro__:
+        slots = cls.__dict__.get("__slots__", ())
+        for name in (slots,) if isinstance(slots, str) else slots:
+            if name in ("__dict__", "__weakref__"):
+                continue
+            each = getattr(item, name, missing)
+            if each is not missing:
+                state.append((name, each))
+    return state
+
 
 def _keyed(call: ast.Call) -> bool:
     return any(keyword.arg in ("key", None) for keyword in call.keywords)
@@ -211,6 +339,17 @@ class Callers:
         #: id is not reused); ``None`` while it is being read.
         self._called: dict[tuple[int, type | None], tuple[Any, frozenset[str] | None]]
         self._called = {}
+        #: What each resolved object holds (:func:`held_callables`), by its
+        #: id (the object kept so that its id is not reused).
+        self._held: dict[int, tuple[Any, tuple[Any, ...] | None]] = {}
+
+    def held_by(self, value: Any) -> tuple[Any, ...] | None:
+        """The callables ``value`` is or holds (:func:`held_callables`)."""
+        found = self._held.get(id(value))
+        if found is None or found[0] is not value:
+            found = (value, held_callables(value))
+            self._held[id(value)] = found
+        return found[1]
 
     def calls_argument(
         self,
@@ -602,11 +741,12 @@ def _carriers(nodes: tuple[ast.AST, ...], parameters: set[str]) -> dict[str, set
 
 def _carried(expr: ast.AST | None, carried: dict[str, set[str]]) -> set[str]:
     """The parameters whose objects (or anything taken from them) ``expr``
-    may evaluate to. Arithmetic, comparisons and formatting make new values.
+    may evaluate to, or hold. Only a constant and a formatted string are
+    shown to hold no callable; any other form (an operator, which may give
+    back what its operands hold, a ``[f] * n`` among them) carries what its
+    parts do.
     """
-    if expr is None or isinstance(
-        expr, (ast.Constant, ast.JoinedStr, ast.BinOp, ast.UnaryOp, ast.Compare)
-    ):
+    if expr is None or isinstance(expr, (ast.Constant, ast.JoinedStr)):
         return set()
     if isinstance(expr, ast.Name):
         return set(carried.get(expr.id, ()))
