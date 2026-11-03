@@ -54,3 +54,33 @@ gates:
   - name: lint
     setup: false
     run: pipx run pre-commit run --all-files --show-diff-on-failure
+
+  # The core (core/, the arachne-core crate and its Python binding): CPU only, and the same bytes
+  # on every machine. These gates set up their own toolchain (core/rust-toolchain.toml) and run
+  # only when the core or this file changes.
+  - name: core-lint
+    setup: false
+    paths: ["core/**", ".github/ci-kit.yml"]
+    run: bash core/ci/lint.sh
+    timeout: 20
+  - name: core-test
+    setup: false
+    paths: ["core/**", ".github/ci-kit.yml"]
+    run: bash core/ci/test.sh
+    timeout: 20
+  - name: core-binding
+    setup: false
+    paths: ["core/**", ".github/ci-kit.yml"]
+    run: bash core/ci/binding.sh 3.12 3.14
+    timeout: 20
+  - name: core-identity
+    setup: false
+    paths: ["core/**", ".github/ci-kit.yml"]
+    run: bash core/ci/identity.sh
+    timeout: 20
+  - name: core-macos
+    lane: hosted-macos
+    setup: false
+    paths: ["core/**", ".github/ci-kit.yml"]
+    run: bash core/ci/test.sh && bash core/ci/binding.sh 3.14
+    timeout: 30
