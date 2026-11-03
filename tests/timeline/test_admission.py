@@ -17,7 +17,7 @@ from arachne.timeline.clock import frames_in
 from arachne.utils.bezier import interpolate
 
 from . import route_scenes
-from .conftest import expect_stepping, render
+from .conftest import render
 
 ROUTE_SCENES = Path(route_scenes.__file__)
 
@@ -164,7 +164,7 @@ def test_a_late_reader_reads_the_frame_before_as_in_ce(session_of, fps):
     for before, t in itertools.pairwise(instants):
         x0, _, x1, _ = session.state_at(before).named("dot").box
         t0, _, t1, _ = session.state_at(t).named("tag").box
-        expect_stepping((t0 + t1) / 2 == pytest.approx((x0 + x1) / 2))
+        assert (t0 + t1) / 2 == pytest.approx((x0 + x1) / 2)
 
 
 @pytest.mark.parametrize("name", ["AnimationAsUpdater", "IllusionRotation"])

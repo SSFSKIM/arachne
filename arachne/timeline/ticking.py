@@ -4,42 +4,57 @@ A ticked play (route 3) is evaluated on the 60 Hz tick, so that what
 integrates over time does so the same way whatever the frame rate. Only that
 work needs the tick (a dt updater receives exactly 1/60 at each), and
 everything else is evaluated where CE evaluates it, at the instants a frame
-reads. So a ticked
-play runs a **full tick** (every callback, in CE's phase order) at each
-instant a frame of the render's grid reads, at its event instants, at its
-last tick and throughout a play with a stop condition, and every other tick
-only **steps**:
+reads. So a ticked play runs a **full tick** (every callback, in CE's phase
+order) at each instant a frame of the render's grid reads, at its event
+instants, at its last tick and throughout a play with a stop condition, and
+every other tick only **steps**:
 
-- the updaters that integrate: those with a ``dt`` parameter whose code
-  loads it (one that never loads it is dt-free, as it is frame-rate
-  dependent in CE exactly like one without the parameter);
+- the updaters whose own code loads ``dt`` (:func:`loads_dt`): one with a
+  ``dt`` parameter it never loads is dt-free, frame-rate dependent in CE
+  exactly like one without the parameter;
 - the scene's own updaters;
 - every animation's interpolation, the functions of ``UpdateFromFunc`` and
   ``UpdateFromAlphaFunc`` included;
-- the camera's inputs (as every tick evaluates them);
-- and the closure of the dt-free callbacks those may read, in either phase
-  order (a reader that runs before its producer reads the previous tick's
-  value, so the producer must have run there too).
+- the camera's inputs (as every tick evaluates them).
 
-The principle: a callback runs at a stepping tick only if a stepping
-callback (a dt updater that reads ``dt``, a scene updater, a camera input)
-reads, directly or transitively, what it writes; its own reads matter only
-when it runs there. Interpolation always runs, but what it reads joins the
-closure only when stepping work reads what it writes (its mobject's family).
+No dt-free callback runs at a stepping tick, whoever reads what it writes: a
+dt updater reading a dt-free value there sees it as of the last full tick,
+as CE shows it once per frame. Each updater is judged as it is called
+(:func:`skipping`, consulted by :meth:`.Mobject.update`), so one that joins
+as the play runs is judged the same way. A play whose updaters do not run
+through :meth:`.Mobject.update` (the scene's own ``update_mobjects`` or
+``update_self``, a mobject's own ``update``, a camera drawing other cameras)
+ticks everything, under the reason ``tick.unbounded_read``.
+
+:func:`plan_ticks` makes the play's :class:`TickPlan`, which records what it
+found: the updaters a stepping tick leaves out, and the structure
+(:func:`current_structure`) it was made for. Before every stepping tick the
+play compares the structure with its plan's and plans again when they
+differ. Every plan a play stepped by is kept, with the tick it governed from
+(``PlayRecord.tick_plans``).
+
+Diagnostic only
+---------------
+
+The rest of this module (with :mod:`.handed` and :mod:`.coverage`) is an
+analysis of what callbacks may read and write, which nothing that plans or
+runs a play consults: a comparison of two runs asks it, through
+:meth:`TickPlan.stepping_families` (worked out the first time it is asked)
+and :func:`reach`.
 
 Both bounds are default-deny: an access is bounded only along a path the
-analysis resolves at plan time, and anything else counts as reaching
-anything. What a callback may read is what its code can reach
-(:func:`reach`): its closure cells, the globals its code names (one key per
-binding), its defaults, the object a bound method holds, the mobject it
-updates with its family, and what those hold, through the attributes its
-code names, on the instance or on the scene's own class that holds them
-(keyed by that class), into containers it follows whole, and into arrays by
-the memory they share (``TracedPath``'s ``traced_point_func`` included). A
-module the scene imports is read binding by binding, one key per attribute
-whatever alias it is imported under. A name computed at run time
-(``getattr`` with a computed name, ``getattr`` held under another name), or
-an object whose contents it can't follow, is unbounded.
+analysis resolves, and anything else counts as reaching anything. What a
+callback may read is what its code can reach (:func:`reach`): its closure
+cells, the globals its code names (one key per binding), its defaults, the
+object a bound method holds, the mobject it updates with its family, and
+what those hold, through the attributes its code names, on the instance or
+on the scene's own class that holds them (keyed by that class), into
+containers it follows whole, and into arrays by the memory they share
+(``TracedPath``'s ``traced_point_func`` included). A module the scene
+imports is read binding by binding, one key per attribute whatever alias it
+is imported under. A name computed at run time (``getattr`` with a computed
+name, ``getattr`` held under another name), or an object whose contents it
+can't follow, is unbounded.
 
 What a dt-free callback, or the function of an
 ``UpdateFromFunc``/``UpdateFromAlphaFunc``, may write is the mobject it
@@ -47,49 +62,16 @@ updates with its family (``always_redraw``'s target), unless its source
 shows a change anywhere else (``_Writes``): a store or a call that reaches
 something other than that family, or than what the callback made itself,
 along a path it can't resolve to that family (an attribute the mobject
-holds, an element of a list it made). Then it writes everything it reaches,
-which stepping work may read whenever the play has any. The play ticks
-everything, under the reason ``tick.unbounded_read``, when a reach that
-matters can't be bounded: a stepping callback's, one pulled into the
-closure, or one whose writes are everything it reaches in a play with
-stepping work. An unbounded read of a callback nothing pulls, whose writes
-are bounded, leaves the play stepping.
-
+holds, an element of a list it made). Then it writes everything it reaches.
 An array is keyed by the memory it shares with others; the engine's
 constant vectors (``ORIGIN``, ``OUT``), which every mobject made with a
 default holds, carry no key, and a write in place to one of them, or to an
 array the write check can't resolve, is a write to every array.
-
-A callback that may add or remove updaters or mobjects, or suspend them, as
-it plays (``add``, ``remove``, ``add_updater``, ``clear_updaters``, a
-``+=`` on a mobject, a ``become`` that pads its mobject with members
-carrying updaters) would leave a stepping tick meeting work no plan weighed,
-or running work gone. When work a stepping tick runs may (a dt updater, the
-scene's updater, an interpolation's function, a callback pulled with them),
-the play ticks everything under the reason ``tick.structural_mutation``. A
-call whose callee its source can't resolve may, when anything the callback
-reaches names a way to (or holds such a method as a value). A skipped
-callback that may runs at full ticks only.
-
-Whatever the source shows, the structure is checked where it matters:
-before every stepping tick the play compares the scene's updaters, every
-mobject's updaters and every family's members (:func:`current_structure`)
-with those its plan was made for, and plans again first when they differ,
-whatever changed them (the play's first evaluation, a part beginning, a
-skipped callback at a full tick, a list held under another name, the copies
-``become`` pads with); a play that stepped nothing can so gain stepping
-work. A change that leaves the plan true is let pass (:func:`unaffected`).
-Every plan a play stepped by is kept, with the tick it governed from
-(``PlayRecord.tick_plans``).
-
-:class:`TickPlan` is the outcome; :func:`skipping` installs its skipped
-updaters for one stepping tick, which :meth:`.Mobject.update` consults.
 """
 
 from __future__ import annotations
 
 __all__ = [
-    "STRUCTURAL",
     "UNBOUNDED",
     "TickPlan",
     "current_structure",
@@ -97,7 +79,6 @@ __all__ = [
     "plan_ticks",
     "reach",
     "skipping",
-    "unaffected",
 ]
 
 import ast
@@ -140,13 +121,9 @@ if TYPE_CHECKING:
     from arachne.mobject.mobject import Mobject
     from arachne.scene.scene import Scene
 
-#: The reason family of a play that ticks everything because a callback's
-#: reads can't be bounded.
+#: The reason family of a play that ticks everything, its updaters not
+#: running where a stepping tick could leave one out.
 UNBOUNDED = "tick.unbounded_read"
-
-#: The reason family of a play that ticks everything because a callback may
-#: add or remove updaters or mobjects as it plays.
-STRUCTURAL = "tick.structural_mutation"
 
 #: How many objects a reach follows before it gives up.
 REACH_LIMIT = 50_000
@@ -290,80 +267,64 @@ def _reading_runs_code(value: Any, name: str) -> bool:
 
 @dataclass(frozen=True)
 class TickPlan:
-    """What a ticked play skips at its stepping ticks."""
+    """What a ticked play found to leave out at its stepping ticks."""
 
-    #: ``(id(mobject), id(updater))`` of every updater a stepping tick skips.
+    #: ``(id(mobject), id(updater))`` of every updater found whose code does
+    #: not load ``dt``, which a stepping tick leaves out (each is judged as
+    #: it is called: one that joins later is left out alike).
     skipped: frozenset[tuple[int, int]] = frozenset()
-    #: Every updater the plan weighed: one it did not (a mobject a callback
-    #: added, a copy a part made as it began) was not in its closure.
+    #: Every updater the plan found.
     known: frozenset[tuple[int, int]] = frozenset()
     #: Why the play ticks everything, when it does (``tick.unbounded_read: …``).
     unbounded: str | None = None
-    #: How many updaters step, and how many dt-free ones step because
-    #: stepping work may read them.
+    #: How many of the updaters found step (their code loads ``dt``).
     stepping: int = 0
-    pulled: int = 0
-    #: The ids of what the work a stepping tick runs may read or write.
-    stepped_ids: frozenset[int] = frozenset()
-    #: Whether a callback the plan weighed may change the structure (what
-    #: its source shows; every stepping tick checks the structure itself).
-    rechecks: bool = False
+    #: Diagnostic only: what :meth:`stepping_families` reads, worked out
+    #: the first time it is asked, never while the play is planned or run.
+    families: Callable[[], frozenset[int]] | None = field(
+        default=None, compare=False, repr=False
+    )
     #: The structure the plan was made for (:func:`current_structure`): a
-    #: stepping tick that finds another plans again before it steps, unless
-    #: the change leaves the plan true (:func:`unaffected`).
+    #: stepping tick that finds another plans again before it steps.
     structure: tuple[int, ...] = ()
-    #: The scene's updaters, the roots, and every member of their families,
-    #: as the plan found them (by id).
-    scene_updaters: tuple[int, ...] = ()
-    roots: tuple[int, ...] = ()
-    members: frozenset[int] = frozenset()
     #: Whether the play stepped by it. A run that ticks everything
     #: (``Recorder(stepping=False)``) makes and remakes its plans where a
     #: stepping run would, and applies none: every tick stays full.
     applied: bool = True
 
     def stepping_families(self) -> frozenset[int]:
-        """The ids of everything the stepping set (dt updaters, the scene's
-        updaters, every interpolation, and the callbacks pulled with them)
-        may read or write: each mobject among them with its family, and the
-        containers, cells and bindings they hold. A difference outside these
-        and outside :attr:`skipped`'s mobjects is not stepping's.
+        """Diagnostic only, for a comparison of two runs: the ids of
+        everything the stepping set (dt updaters, the scene's updaters, every
+        interpolation, the camera's inputs) may read or write, each mobject
+        among them with its family, and the containers, cells and bindings
+        they hold, by the analysis of their code
+        (:func:`_stepping_families`). Worked out the first time it is asked,
+        from the objects as they are then; nothing that plans or runs a play
+        asks it.
         """
-        return self.stepped_ids
+        return frozenset() if self.families is None else self.families()
 
     @property
     def steps_only(self) -> bool:
         """Whether a stepping tick does less than a full one (when the plan
         is :attr:`applied`).
         """
-        return self.unbounded is None and bool(self.skipped)
+        return self.unbounded is None
 
 
 @contextlib.contextmanager
 def skipping(plan: TickPlan) -> Iterator[None]:
-    """Run a stepping tick: :meth:`.Mobject.update` leaves out ``plan``'s
-    skipped updaters and flags one the plan does not know
-    (:func:`met_unforeseen`).
+    """Run a stepping tick: :meth:`.Mobject.update` runs only the updaters
+    whose code loads ``dt`` (:func:`loads_dt`), decided as each runs, so an
+    updater that joined since the plan was made is judged the same way.
     """
     from arachne.mobject.mobject import Mobject
 
-    Mobject._tick_skips = plan.skipped
-    Mobject._tick_known = plan.known
+    Mobject._tick_steps = loads_dt
     try:
         yield
     finally:
-        Mobject._tick_skips = None
-
-
-def met_unforeseen() -> bool:
-    """Whether a stepping tick ran an updater the plan did not weigh (and
-    forget it).
-    """
-    from arachne.mobject.mobject import Mobject
-
-    met = Mobject._tick_unforeseen
-    Mobject._tick_unforeseen = False
-    return met
+        Mobject._tick_steps = None
 
 
 def current_structure(scene: Scene, animations: Iterable[Animation]) -> tuple[int, ...]:
@@ -390,45 +351,6 @@ def current_structure(scene: Scene, animations: Iterable[Animation]) -> tuple[in
     return tuple(found)
 
 
-def unaffected(plan: TickPlan, scene: Scene, animations: Iterable[Animation]) -> bool:
-    """Whether a structure other than the one ``plan`` was made for leaves
-    it true: the same scene updaters, roots and updaters, and every member
-    that joined or left a family did so where no stepping work reaches
-    (outside :meth:`TickPlan.stepping_families`, its root's too, and none of
-    its arrays' memory there) carrying no updater. A label a skipped redraw
-    swaps inside a group nothing stepping reads is such a change: the plan
-    is then kept, rather than made again at every frame.
-    """
-    roots = (*_copies(animations), *scene.mobjects)
-    if (
-        tuple(map(id, scene.updaters)) != plan.scene_updaters
-        or tuple(map(id, roots)) != plan.roots
-    ):
-        return False
-    stepped = plan.stepped_ids
-    members: dict[int, Any] = {}
-    keys: set[tuple[int, int]] = set()
-    for root in roots:
-        pending = [(root, False)]
-        while pending:
-            mob, under = pending.pop()
-            key = id(mob)
-            # Under a mobject stepping work reaches, a member it did not
-            # reach has joined since.
-            under = under or key in stepped
-            if under and key not in stepped:
-                return False
-            members[key] = mob
-            keys.update((key, id(updater)) for updater in mob.updaters)
-            pending.extend((sub, under) for sub in mob.submobjects)
-    if keys != plan.known or not stepped.isdisjoint(plan.members - members.keys()):
-        return False
-    return all(
-        stepped.isdisjoint(_family_writes(members[key]))
-        for key in members.keys() - plan.members
-    )
-
-
 # Which updaters integrate
 
 
@@ -453,8 +375,8 @@ def takes_dt(updater: Any) -> bool:
 def _code_loads(code: types.CodeType, name: str) -> bool:
     if name in code.co_cellvars:
         return True  # an inner function reads it
-    if "locals" in code.co_names:
-        return True
+    if _FRAME_ACCESS & set(code.co_names):
+        return True  # it may read its own frame's locals by name
     for instruction in dis.get_instructions(code):
         # Any use of the local but a plain store or delete may read it (the
         # superinstructions pair a load with a store: STORE_FAST_LOAD_FAST).
@@ -468,6 +390,24 @@ def _code_loads(code: types.CodeType, name: str) -> bool:
 
 
 _NOT_READS = frozenset({"STORE_FAST", "DELETE_FAST"})
+
+#: Names through which code may read its own frame's locals without loading
+#: them: ``locals()``, ``vars()``, ``eval``/``exec`` (their default
+#: namespace), and frame objects (``sys._getframe``, ``inspect`` helpers,
+#: ``f_locals``).
+_FRAME_ACCESS = frozenset(
+    {
+        "locals",
+        "vars",
+        "eval",
+        "exec",
+        "_getframe",
+        "currentframe",
+        "stack",
+        "getouterframes",
+        "f_locals",
+    }
+)
 
 
 def loads_dt(updater: Any) -> bool:
@@ -505,8 +445,8 @@ class Unbounded(Exception):
 
 class _UnboundedWrites(Unbounded):
     """What a callback may write can't be bounded without what objects hold
-    when the plan is made, which may change as the play runs: the plan does
-    not skip it (:func:`_closure`).
+    when it is asked, which may change as the play runs: it may write any
+    member of the play's families (:func:`_stepping_families`).
     """
 
 
@@ -4415,25 +4355,18 @@ _REACHED = None
 @dataclass
 class _Node:
     what: str
-    #: "step" runs at every tick and reads there; "instant" (a dt-free
-    #: updater or redraw) runs at full ticks only, unless pulled; "transparent"
-    #: (an animation's interpolation) runs at every tick, but what it reads
-    #: there matters only when stepping work reads what it writes.
+    #: "step" runs at every tick (a dt updater, a scene updater, the camera's
+    #: inputs); "instant" (a dt-free updater or redraw) at full ticks only;
+    #: "transparent" (an animation's interpolation) at every tick, what it
+    #: writes counting and what it reads not.
     role: str
-    #: What it may read: a set, or how to find it. A node that is not
-    #: stepping is reached only once something pulls it: until then what it
-    #: reads matters at no stepping tick, so an unbounded read pulled by
-    #: nothing leaves the play stepping.
+    #: What it may read: a set, or how to find it (worked out only for the
+    #: stepping work that asks).
     reach_of: frozenset[int] | Callable[[], frozenset[int]]
     #: What it may write: a set, how to find it, or ``_REACHED`` for
     #: anything it reaches.
     writes: frozenset[int] | Callable[[], frozenset[int]] | None = frozenset()
     keys: tuple[tuple[int, int], ...] = ()
-    active: bool = False
-    #: Whether it may change which updaters run or which mobjects there are;
-    #: ``unknown`` when that turns on code its source does not show.
-    restructures: bool = False
-    unknown: bool = False
 
     @property
     def reads(self) -> frozenset[int]:
@@ -4441,18 +4374,10 @@ class _Node:
             self.reach_of = self.reach_of()
         return self.reach_of
 
-    def may_restructure(self) -> bool:
-        """Whether it may change the structure: its source shows it may, or
-        it calls code its source does not show and code it reaches may.
-        """
-        return self.restructures or (
-            self.unknown and getattr(self.reads, "restructures", True)
-        )
-
     def written(self) -> frozenset[int]:
         """What it may write. Writes bounded only by what it reaches raise
         :class:`_UnboundedWrites`: what it reaches is read from what objects
-        hold when the plan is made, which may change as the play runs.
+        hold when it is asked, which may change as the play runs.
         """
         if self.writes is _REACHED:
             raise _UnboundedWrites(f"{self.what} may write whatever it reaches")
@@ -4582,8 +4507,6 @@ def _animation_node(animation: Animation, check: _Writes) -> _Node:
         "transparent",
         lambda: reach([animation], trusted._mobjects_of(animation)),
         writes,
-        restructures=effect.restructures,
-        unknown=effect.unknown,
     )
 
 
@@ -4617,8 +4540,6 @@ def _updater_node(
         target, function = cells["mob"], cells["func"]
         what = "redraw " + _describe(function, base_dir)
         effect = check.effect(function, frozenset())
-        # ``become`` pads the target with copies of its members.
-        effect |= _Effect(restructures=not _quiet_family(target))
     else:
         target, function = member, updater
         what = "updater " + _describe(function, base_dir)
@@ -4640,41 +4561,7 @@ def _updater_node(
         reads() if role == "step" else reads,
         writes,
         (key,),
-        restructures=effect.restructures,
-        unknown=effect.unknown,
     )
-
-
-def _closure(nodes: list[_Node]) -> int:
-    """Activate every node stepping work reads, directly or through what
-    reads it, and every node whose writes can't be bounded without what
-    objects hold when the plan is made (:class:`_UnboundedWrites`); return
-    how many dt-free updaters that pulls onto the stepping tick. With no
-    stepping work nothing is read at a stepping tick, so nothing is pulled,
-    whatever the others may write.
-    """
-    needed: set[int] = set()
-    for node in nodes:
-        if node.role == "step":
-            node.active = True
-            needed |= node.reads
-    pulled = 0
-    changed = any(node.role == "step" for node in nodes)
-    while changed:
-        changed = False
-        for node in nodes:
-            if node.active:
-                continue
-            try:
-                pulls = bool(node.written() & needed)
-            except _UnboundedWrites:
-                pulls = True
-            if pulls:
-                node.active = True
-                needed |= node.reads
-                changed = True
-                pulled += node.role == "instant"
-    return pulled
 
 
 def plan_ticks(
@@ -4683,10 +4570,13 @@ def plan_ticks(
     """The stepping plan of the ticked play ``scene`` is about to evaluate
     (its animations begun); source paths in its reason are relative to
     ``base_dir``.
-    """
-    from arachne.animation.composition import AnimationGroup
 
-    from . import trusted
+    A stepping tick runs every updater whose code loads ``dt`` and leaves out
+    every other, judged as each is called (:func:`skipping`): the plan only
+    records what it found, for the structure a stepping tick compares and
+    the counts. The play ticks everything when its updaters do not run
+    through :meth:`.Mobject.update`, where nothing could leave one out.
+    """
     from .admission import _update_replaced
     from .dispatch import user_overrides
 
@@ -4699,11 +4589,47 @@ def plan_ticks(
     why = _update_replaced(scene)
     if why is not None:
         return unbounded(why)
-    camera = scene.renderer.camera
-    if vars(camera).get("image_mobjects_from_cameras"):
+    if vars(scene.renderer.camera).get("image_mobjects_from_cameras"):
         return unbounded(
             "the camera draws other cameras, whose inputs it does not weigh"
         )
+    roots = (*_copies(animations), *scene.mobjects)
+    known: set[tuple[int, int]] = set()
+    skipped: set[tuple[int, int]] = set()
+    for member, updater in _updaters(roots):
+        key = (id(member), id(updater))
+        known.add(key)
+        if not loads_dt(updater):
+            skipped.add(key)
+    begun = list(animations)
+    return TickPlan(
+        skipped=frozenset(skipped),
+        known=frozenset(known),
+        stepping=len(known) - len(skipped),
+        families=functools.cache(lambda: _stepping_families(scene, begun, base_dir)),
+        structure=current_structure(scene, animations),
+    )
+
+
+# Diagnostic only: what the stepping set may read or write
+
+
+def _stepping_families(
+    scene: Scene, animations: list[Animation], base_dir: str | None
+) -> frozenset[int]:
+    """:meth:`TickPlan.stepping_families`: what the work every tick runs (dt
+    updaters, the scene's updaters, every interpolation, the camera's
+    inputs) may read, and what it and every interpolation may write; every
+    member of the roots' families when what one writes can't be bounded, or
+    when the analysis can't bound a read or rests on a value that may change
+    as the play runs (:meth:`_Writes.plan_reads_hold`).
+    """
+    from arachne.animation.composition import AnimationGroup
+
+    from . import trusted
+
+    roots = (*_copies(animations), *scene.mobjects)
+    members = frozenset(id(member) for root in roots for member in root.get_family())
     # A scene may redefine its classes' methods between plays.
     _USER_METHODS.clear()
     nodes: list[_Node] = []
@@ -4720,85 +4646,34 @@ def plan_ticks(
             if not isinstance(animation, AnimationGroup)
         )
         reaches: dict[tuple[int, int, int], frozenset[int]] = {}
-        for member, updater in _updaters((*_copies(animations), *scene.mobjects)):
+        for member, updater in _updaters(roots):
             nodes.append(_updater_node(member, updater, check, reaches, base_dir))
         for function in scene.updaters:
-            effect = check.effect(function, frozenset())
+            check.effect(function, frozenset())
             nodes.append(
                 _Node(
                     "scene updater " + _describe(function, base_dir),
                     "step",
                     reach([function]),
                     _REACHED,
-                    restructures=effect.restructures,
-                    unknown=effect.unknown,
                 )
             )
+        camera = scene.renderer.camera
         centres = getattr(camera, "fixed_orientation_mobjects", None) or {}
         if centres:
             nodes.append(
-                _Node(
-                    "camera centres",
-                    "step",
-                    reach(list(centres.values()), centres),
-                )
+                _Node("camera centres", "step", reach(list(centres.values()), centres))
             )
-        # The plan rests on nothing that may change as the play runs.
         check.plan_reads_hold()
-        pulled = _closure(nodes)
-        # Work a stepping tick runs must not change which updaters there are:
-        # the tick would meet work no plan weighed, after skipping what it
-        # reads, or keep running work gone. (Skipped work changes them only
-        # at a full tick, after which the play plans again.) A plan that skips
-        # nothing has no stepping tick to protect.
-        if any(node.role == "instant" and not node.active for node in nodes):
-            for node in nodes:
-                runs = node.role != "instant" or node.active
-                if runs and node.may_restructure():
-                    return _structural(node)
-    except Unbounded as refused:
-        return unbounded(refused.describe(base_dir))
-    roots = (*_copies(animations), *scene.mobjects)
-    members = frozenset(id(member) for root in roots for member in root.get_family())
-    return TickPlan(
-        skipped=frozenset(
-            key
-            for node in nodes
-            if node.role == "instant" and not node.active
-            for key in node.keys
-        ),
-        known=frozenset(key for node in nodes for key in node.keys),
-        stepping=sum(1 for node in nodes if node.role == "step" and node.keys),
-        pulled=pulled,
-        stepped_ids=_stepped_ids(nodes, members),
-        rechecks=any(node.restructures or node.unknown for node in nodes),
-        structure=current_structure(scene, animations),
-        scene_updaters=tuple(map(id, scene.updaters)),
-        roots=tuple(map(id, roots)),
-        members=members,
-    )
-
-
-def _structural(node: _Node) -> TickPlan:
-    return TickPlan(
-        unbounded=f"{STRUCTURAL}: {node.what} may add or remove updaters or mobjects"
-    )
-
-
-def _stepped_ids(nodes: list[_Node], members: frozenset[int]) -> frozenset[int]:
-    """What the work a stepping tick runs may read or write; every one of
-    ``members`` (the roots' families) when what it writes can't be bounded,
-    so that any change to a family is taken to affect the plan.
-    """
-    found: set[int] = set()
-    for node in nodes:
-        if node.active:
-            found |= node.reads
-        if node.active or node.role == "transparent":
-            try:
-                found |= node.written()
-            except _UnboundedWrites:
-                found |= members
-            except Unbounded:
-                pass
+        found: set[int] = set()
+        for node in nodes:
+            if node.role == "step":
+                found |= node.reads
+            if node.role != "instant":
+                try:
+                    found |= node.written()
+                except Unbounded:
+                    found |= members
+    except Unbounded:
+        return members
     return frozenset(found)

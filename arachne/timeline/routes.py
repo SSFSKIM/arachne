@@ -49,6 +49,7 @@ import numpy as np
 
 from .clock import TICK_DT, frames_in, ticks_in
 from .events import EventPlan
+from .reference import BRUTE_FORCE, BruteForce
 from .ticking import skipping
 
 if TYPE_CHECKING:
@@ -113,23 +114,38 @@ class TickedRoute:
         run.sample(start, until=ticks[0] if ticks else end)
         ended = start if stop is not None and stop() else None
         if ended is None:
-            stepping = run.stepping_ticks(ticks)
+            # A verification run decides each tick apart from the plan
+            # (:mod:`.reference`).
+            brute = (
+                BruteForce(run, ticks) if run.recorder.stepping == BRUTE_FORCE else None
+            )
+            stepping = run.stepping_ticks(ticks) if brute is None else frozenset()
             progress = run.progress(ticks)
             try:
                 for index, tick in enumerate(progress):
                     run.set_clock(tick)
                     following = ticks[index + 1] if index + 1 < len(ticks) else end
-                    tick_plan = (
-                        run.stepping_plan(tick)
-                        if tick in stepping and not run.recorder.keeps(tick, following)
-                        else None
-                    )
-                    if tick_plan is not None:
-                        with skipping(tick_plan):
+                    if brute is not None:
+                        full = brute.full(tick, following)
+                        if full:
                             evaluate_instant(scene, plan, start, tick, TICK_DT)
+                        else:
+                            with brute.dt_work_only():
+                                evaluate_instant(scene, plan, start, tick, TICK_DT)
                     else:
-                        evaluate_instant(scene, plan, start, tick, TICK_DT)
-                    run.stepped(tick, full=tick_plan is None)
+                        tick_plan = (
+                            run.stepping_plan(tick)
+                            if tick in stepping
+                            and not run.recorder.keeps(tick, following)
+                            else None
+                        )
+                        full = tick_plan is None
+                        if tick_plan is not None:
+                            with skipping(tick_plan):
+                                evaluate_instant(scene, plan, start, tick, TICK_DT)
+                        else:
+                            evaluate_instant(scene, plan, start, tick, TICK_DT)
+                    run.stepped(tick, full=full)
                     run.sample(tick, until=following)
                     if stop is not None and stop():
                         ended = tick

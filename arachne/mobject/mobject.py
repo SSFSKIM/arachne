@@ -228,12 +228,9 @@ class Mobject:
     _points = _PlacedPoints()
     _places_points = True
 
-    # A record's stepping tick (arachne.timeline.ticking): the updaters
-    # ``update`` leaves out, keyed (id(mobject), id(updater)), the ones its
-    # plan weighed, and whether it ran one the plan did not.
-    _tick_skips: frozenset[tuple[int, int]] | None = None
-    _tick_known: frozenset[tuple[int, int]] = frozenset()
-    _tick_unforeseen = False
+    # A record's stepping tick (arachne.timeline.ticking): which updaters
+    # ``update`` runs (those whose code loads dt), or ``None`` at a full tick.
+    _tick_steps: Callable[[Any], bool] | None = None
 
     @classmethod
     def __init_subclass__(cls, **kwargs: Any) -> None:
@@ -1235,14 +1232,11 @@ class Mobject:
         """
         if self.updating_suspended:
             return self
-        skips = Mobject._tick_skips
+        steps = Mobject._tick_steps
         for updater in self.updaters:
-            if skips is not None:
-                key = (id(self), id(updater))
-                if key in skips:
-                    continue
-                if key not in Mobject._tick_known:
-                    Mobject._tick_unforeseen = True
+            # A stepping tick runs only the updaters whose code loads dt.
+            if steps is not None and not steps(updater):
+                continue
             if "dt" in inspect.signature(updater).parameters:
                 time_based_updater = cast(_TimeBasedUpdater, updater)
                 time_based_updater(self, dt)

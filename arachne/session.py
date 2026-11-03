@@ -66,7 +66,7 @@ class Session:
         *,
         grid: Fraction | float | None | Literal["render"] = "render",
         config: dict[str, Any] | None = None,
-        stepping: bool = True,
+        stepping: bool | Literal["brute_force"] = True,
         on_step: Callable[[Scene, Fraction], object] | None = None,
         on_tick: Callable[[Scene, Fraction, bool], object] | None = None,
         on_start: Callable[[Scene, Fraction], object] | None = None,
@@ -78,8 +78,10 @@ class Session:
         the session's answers equal that render's frames (a ticked play's
         dt-free callbacks run at the instants a frame reads,
         :mod:`.timeline.ticking`); ``None`` keeps and fully evaluates every
-        instant the run reaches. ``stepping=False`` runs every tick of a
-        ticked play in full (``Recorder``'s switch); ``on_step``,
+        instant the run reaches. ``stepping`` is ``Recorder``'s switch:
+        ``False`` runs every tick of a ticked play in full, and
+        ``"brute_force"`` is the verification mode of
+        :mod:`.timeline.reference`; ``on_step``,
         ``on_tick`` and ``on_start`` are ``Recorder``'s diagnostic hooks. ``config`` overrides the
         configuration the scene is executed under; nothing is written either
         way.
