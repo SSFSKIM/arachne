@@ -1,7 +1,128 @@
 # Tech debt
 
 Known gaps kept on record rather than fixed, each with the test that
-reproduces it.
+reproduces it; first, what the stepping check's soundness rests on, which
+the gaps are measured against.
+
+## What a stepping plan rests on (`arachne/timeline/ticking.py`)
+
+Not debt: the assumptions a stepping plan makes, each with how it holds:
+*observed* (read when the plan is made, or at each stepping tick), *closed*
+(by a value's kind or by the operation table, with the test that enforces
+it) or *fallback* (the play ticks everything, or the callback is not
+skipped). A stepping tick runs the stepping work (dt updaters that read
+`dt`, scene updaters, camera inputs), every interpolation, and the dt-free
+callbacks the plan pulls; it skips every other dt-free callback, which runs
+at the full ticks (each frame's, each event's, the last), as CE runs it.
+
+1. **Which ticks step.** Observed: a tick no frame of the grid reads, no
+   event falls on, not the last, in a play without a stop condition
+   (`PlayRun.stepping_ticks`, `recorder.py:119`).
+2. **What a skipped callback writes is read by no work the tick runs.**
+   `_closure` (`ticking.py:4648`) skips a dt-free callback only when what it
+   may write (`_Node.written`, `ticking.py:4452`) meets nothing the
+   stepping work reads, directly or through what it pulls. What it may
+   write is closed to: its own mobject's family, whose members every
+   stepping tick compares (entry 6), and the arrays its changes go into,
+   by the memory each holds (an array's memory is fixed; a write in place
+   to one not resolved writes every array). Anything else is a fallback: a
+   change into any other object, or anything it holds, or writes bounded
+   only by what the callback reaches, raise `_UnboundedWrites`
+   (`_effect_writes`, `ticking.py:4468`), and the callback is pulled.
+   Tests: `tests/timeline/test_plan_reads.py::test_a_receiver_rebound_after_the_plan_is_made_is_written`,
+   `::test_a_callable_stored_after_the_plan_is_made_is_called`.
+3. **The plan rests on no value of a mutable kind.** Fallback: every value
+   a proof reads when the plan is made, beyond a binding (entry 5) and an
+   inert value, is noted (`_Site.resolve`, `ticking.py:2191`: an object's
+   own attribute; `handed.Callers.held_by`: what an object, a list, a dict
+   holds), and `_Writes.plan_reads_hold` (`ticking.py:1592`, called at
+   `ticking.py:4747`) makes the play tick everything when there is any,
+   whatever could change it (a store, an alias, a function of the engine's
+   or `operator`, a lambda, a property). A mobject's member list is
+   exempt: entry 6 observes it. Tests: `test_plan_reads.py` (every scene
+   of `plan_read_scenes.py`), `test_stepping.py::test_state_changed_after_the_plan_is_made_ends_what_it_read`.
+4. **What a callback runs is read from its code, all of it.** Closed by the
+   table (`coverage.OPERATIONS`, `_Site.read_table` at `ticking.py:3041`):
+   every node class has a rule, and one the table does not name is a
+   fallback (`test_coverage.py::test_every_node_class_has_a_rule`,
+   `::test_a_form_without_a_rule_falls_back`). Code Python runs without a
+   call in the source is a call: iterating a value (`_iterating`,
+   `ticking.py:3300`; `test_plan_reads.py::test_iterating_a_generator_runs_its_code`),
+   an operator's, a truth test's, a formatting's, a key's or an attribute
+   read's method of an object whose class the scene defines (`_protocol`,
+   `ticking.py:3096`, `_attribute_read`, `ticking.py:3142`;
+   `test_plan_reads.py::test_what_python_runs_on_an_object_of_the_scenes_class_is_called`),
+   an item of a base not shown to run no code (`_item_code`,
+   `ticking.py:3435`), a callable handed to a call, and a value handed that
+   is not shown free of callables, which makes the call unknown whatever
+   its callee (`_handed_callables`, `ticking.py:2738`;
+   `test_stepping.py::test_a_value_not_shown_free_of_callables_is_an_unknown_call`).
+   A parameter's value is, by that rule, shown free of callables when its
+   caller hands it; the value it falls back to (a default, the object a
+   method is called on) is judged as it is (`_Site.fallback`;
+   `[DefaultedGeneratorRead]`, `[DefaultedOperatorHookRead]`).
+   Entering a `with` and awaiting are unknown calls. Code the check does
+   not read (past `MAX_DEPTH`, or without source) is a fallback
+   (`_Writes.effect`, `ticking.py:1674`, then `plan_reads_hold`). An
+   unknown call writes whatever the callback reaches: by entry 2, the
+   callback is pulled.
+5. **A binding the plan reads stays bound to what it was.** Closed by the
+   table: a closure's cell changes only by `nonlocal` (a fallback unless
+   every value bound is inert; `test_stepping.py::test_state_changed_after_the_plan_is_made_ends_what_it_read[LateNonlocalRead…]`)
+   or through `cell_contents` or `__closure__`; a module's global by
+   `global` (the same rule), a store into an attribute of that name
+   (`_rebinds`, `ticking.py:3264`: on a module named directly, a fallback;
+   on any other object, a fallback when the plan read a global or an
+   attribute through a class of that name) or a namespace builtin
+   (`globals`, `vars`, `setattr`, `exec`; scene `GlobalsItemRead`);
+   a function's default only through `__defaults__` or `__kwdefaults__`
+   (`ReboundDefaultWrite`); a class's attribute, a method among them, by a
+   store into the class named directly (`ReboundMethodWrite`,
+   `ClassAttributeRead`), by the name rule above, or through `__dict__`,
+   `__class__` or `__bases__`. Every namespace attribute and builtin is a
+   fallback (`_Site._namespace`, `ticking.py:3082`;
+   `coverage.NAMESPACE_ATTRIBUTES`, `NAMESPACE_BUILTINS`;
+   `ReboundCellWrite`; the scenes named here are
+   `plan_read_scenes.py`'s, each a case of `test_plan_reads.py`).
+6. **The structure is what the plan was made for.** Observed at each
+   stepping tick: the scene's updaters, the roots, every mobject's updaters
+   and every family's members are compared with the plan's
+   (`current_structure`, `ticking.py:369`, in `PlayRun.stepping_plan`,
+   `recorder.py:136`), and the play plans again first when they differ,
+   unless the change lies where no stepping work reads or writes
+   (`unaffected`, `ticking.py:393`; when what a running callback writes
+   can't be bounded, every family member counts as written,
+   `_stepped_ids`, `ticking.py:4788`). Work the tick runs that may change
+   the structure within the tick is a fallback (`tick.structural_mutation`).
+   Tests: `test_stepping.py::test_a_skipped_callback_that_changes_the_structure_is_never_stepped_past`,
+   `::test_structure_changed_before_a_stepping_tick_plans_the_play_again`.
+7. **What stepping work reads is all it reads** (`reach`). Closed by kind,
+   default-deny: closure cells, globals by binding, defaults, the mobject an
+   updater is handed with its family, containers followed whole, objects
+   through the attributes the code names, arrays by memory; anything it
+   can't follow is unbounded, a fallback for work that runs. Read when the
+   plan is made, and it stays complete as the play runs: a value can come
+   to be read only by a store, the code storing it reaches it, and that code
+   is stepping work (its reads join what is needed) or a callback pulled for
+   writing into an object (entry 2) or a binding (entry 5, a fallback).
+8. **The engine's code is modelled, not read through the table.** Closed by
+   kind, assumptions of the model: the engine's methods change their own
+   mobject's family and arrays (an animation, `trusted.writes`); its code
+   calls what it is handed only where `handed.Callers` reads that it does,
+   reading the engine's source with every unresolved callee taken to call;
+   a native function the check lists as never calling is handed only
+   values shown free of callables (entry 4); the engine's results are of
+   the engine's or native kinds; the engine rebinds no binding of the
+   scene's. A mobject's updaters are the plan's own work, not held
+   callables.
+9. **Hooks only observe** (`on_tick`, `on_step`): not enforced; see Hooks.
+
+The static proofs over a function's code stand for nothing in the plan:
+`coverage.proven_pure` and `coverage.result_kept` have no use in the
+stepping check (their known limits are below), and a function of the
+scene's is never taken to return an inert value (`_Site._inert_call`,
+`ticking.py:2990`): its result is a value the plan may not observe (see the
+runtime-check item under planned precision work).
 
 ## Hooks (`arachne/timeline/recorder.py`)
 
@@ -100,41 +221,11 @@ Work to do, not debt to wait on: each item leaves a play ticking everything
   fix types `dt` (and an alpha a rate-function updater is handed) as a
   float, and an arithmetic expression of numbers and NumPy's own arrays as
   one of them.
-- **Follow engine code precisely enough to tell what it never calls.** The
-  handed-callable analysis reads scene code through one closed table,
-  `OPERATIONS` in `arachne/timeline/coverage.py`. Every node class of the
-  running Python has a `Rule` saying what a node of it holds, whether it is
-  inert, what it carries and, as a statement, what it stores; the value
-  kinds those rules name are listed beside it. `rule_of` gives `FALLBACK`
-  to a class the table does not name, so a form nobody listed makes the
-  play tick everything;
-  `tests/timeline/test_coverage.py::test_every_node_class_has_a_rule` holds
-  the table against the interpreter. `_Site._held`, `_Site._inert`,
-  `handed._carried` and `_Site.read_table` (run on every function of the
-  scene's a play reaches) consult it, and so do the two queries
-  `proven_pure` and `result_kept`. What the table makes fall back: a value
-  sent into or out of a generator or coroutine holds anything; a `global`
-  or `nonlocal` name bound to a value not shown inert ticks everything; an
-  item of a base that is not a builtin item kind, an inert value, a
-  display, a local list or dict, a mobject's members or a parameter is an
-  unknown call; a value not shown free of callables makes its call unknown
-  whatever the callee, so a native listed as never calling still counts as
-  calling a generator or iterator it is handed; modules, other native kinds
-  and instances of classes with methods in scene code may hold anything; a
-  function the check does not read may store anywhere; and a value not
-  shown free of callables stored into what a proof read at plan time (the
-  attribute it read, anything an object it read holds, any object for a
-  receiver it can't resolve, any module) ends that snapshot, so the play
-  ticks everything.
-
-  The engine is modelled, not read through this table: its methods keep
-  what they are handed only in the object they are called on or the object
-  they make, its functions keep nothing, and a mobject's updaters are not
-  counted among what it holds (the plan schedules them). An argument is
-  free of callables only when its kind shows it, and the engine's own
-  constructors are not shown never to call what they are handed:
-  `VGroup(b, label)`, `Line(...)`, `Axes.c2p(*xs)` with any argument not
-  shown free are unknown calls. Precision this leaves, each fix of which
+- **Follow engine code precisely enough to tell what it never calls.** An
+  argument is free of callables only when its kind shows it, and the
+  engine's own constructors are not shown never to call what they are
+  handed: `VGroup(b, label)`, `Line(...)`, `Axes.c2p(*xs)` with any argument
+  not shown free are unknown calls. Precision this leaves, each fix of which
   must stay sound:
   - a method of a local the function made as a list, dict or set display
     (`valid_vmobjects.append(m)` in `VGroup.add`) is a callee it can't
@@ -143,57 +234,45 @@ Work to do, not debt to wait on: each item leaves a play ticking everything
   - a method of what the object it is called on holds
     (`self.x_axis.number_to_point(xs)` in `Axes.coords_to_point`) is a
     callee it can't resolve, since called parameters are read per class,
-    not per object; reading them for the resolved object at the call site
-    resolves `self.x_axis` as `_Site.resolve` does;
+    not per object;
   - at the call site, a method of an object a call makes
     (`Dot().move_to(p)`) is a callee it can't resolve: the class
     `_Site._class_made` tells is not used;
-  - the store rule inside engine code: a parameter stored into an
-    attribute or an item counts as called (`VGroup.add`'s members,
-    `ManimColor`'s value). A store into `self.X` may count only where
-    analysed code calls `self.X`, hands it to something that may call it,
-    or the attribute reaches a callee it can't resolve. That needs every
-    reader of `X`, including getters returning it and code outside the
-    class, so it waits for a whole-program index;
+  - inside engine code, a parameter stored into an attribute or an item
+    counts as called (`VGroup.add`'s members, `ManimColor`'s value); telling
+    which stores are later called needs every reader of the attribute, so it
+    waits for a whole-program index;
   - `functools.cache` (`_bezier_parameters`) is a C wrapper, so it can't be
     read as forwarding without listing it; a Python wrapper is followed
-    through its closure already;
-  - a method a callee calls on what it is handed (`graph.function(x)` in
-    engine code) is not taken for calling the argument in
-    `handed.Callers`: sound by another route the probes found, with no
-    fixture of its own.
+    through its closure already.
 
-  Reproducers of the cost, strict xfails until it is won back:
+  Reproducers, strict expected failures:
   `tests/timeline/test_stepping.py::test_a_member_swapped_where_no_stepping_reaches_keeps_the_plan`
-  and `::test_work_private_to_a_redraw_waits_for_the_frames`. What must
-  hold meanwhile: the fixtures of
-  `::test_a_callable_the_check_cannot_resolve_is_called_where_its_callee_may`
-  and `::test_a_value_holding_a_callable_is_called_where_its_callee_may`
-  stay pulled, and the controls
-  `::test_a_value_the_check_cannot_resolve_handed_to_code_that_never_calls_it`
-  step.
-- **Track a store through engine code by the attribute it lands in.** A
-  value handed to an engine method is taken as kept anywhere in the object
-  it is called on or the object it makes. When a plan-time proof read any
-  attribute of that object, the store ends the snapshot and the play ticks
-  everything, though the engine may keep the value in an attribute no
-  proof read. On a measured set of scenes this is one of the two causes of
-  the plays the closed table stopped stepping, and with the item below it
-  leaves a scene whose callbacks hand values to the engine running more of
-  the scene's callbacks than it did before the handed-callable rule. The fix reads, per engine method, which attributes of its
-  receiver a parameter can reach, and ends only those snapshots; a method
-  that stores through a helper it can't resolve, or through `setattr` with
-  a computed name, still counts as storing into any attribute.
-- **Read what a scene helper's methods change.** An instance of a class
-  with methods in scene code may hold anything, and a store into an object
-  a proof read at plan time ends the snapshot whatever the method changes.
-  So a callback calling a method of a helper object (a state holder or
-  tracker class the scene wrote) leaves its play ticking everything. This
-  is the other cause of the plays the closed table stopped stepping. The
-  fix reads the helper's methods through the same table, as functions of
-  the scene's, and ends only the snapshots of the attributes they store
-  into; a method the check does not read, or one reached through a
-  receiver it can't resolve, still counts as a store anywhere.
+  and `::test_work_private_to_a_redraw_waits_for_the_frames`.
+- **Check at each stepping tick what the plan read, so that a plan may rest
+  on it.** A plan rests on no value of a mutable kind (what a list, a dict,
+  an object or a class holds when the plan is made): reading one makes the
+  play tick everything, whatever could change it, and a callback whose
+  writes are bounded only by such contents is pulled rather than skipped
+  (the inventory above, entries 2 and 3). That is sound by construction and
+  costs most of the stepping a measured set of scenes had: handing a
+  mobject to a call reads what it holds, as does resolving `self.dot` or
+  `holder.target`, and a dt-free callback moving any mobject but its own
+  family is pulled. The fix observes instead of forbidding: the plan records
+  what it read (each object with the attributes read, each container with
+  its items, each value's kind), digests it when made, and compares the
+  digest before each stepping tick, planning again when it differs, as it
+  does for the structure (`current_structure`). Its cost is a digest per
+  stepping tick of what the plan read. Deferred until before the planned
+  precision work above. It also wins back what proofs over code gave and no
+  longer may: a function of the scene's whose every return is a number,
+  once the plan observes the value rather than proving it, and a scene
+  whose callbacks hand values to the engine running more of its callbacks
+  than before the handed-callable rule. Reproducers: every test of
+  `tests/timeline/` reporting the expected failure `precision: the plan
+  rests on no value that may change as the play runs`
+  (`tests/timeline/conftest.py::expect_stepping`), which passes again once
+  a plan may rest on what it read.
 - **A method called on a receiver the check can't resolve is taken for the
   scene's code.** `dot.move_to(…)` with `dot` a loop's variable over
   `zip(group, offsets)` may be any class's `move_to`, so `_Site._method_code`
@@ -210,6 +289,23 @@ Work to do, not debt to wait on: each item leaves a play ticking everything
   methods), so "no user class defines the name" must cover every class's
   current attributes, the engine's included, not only the classes the
   scene's module defines.
+
+## Queries over the table (`arachne/timeline/coverage.py`)
+
+- **`proven_pure` and `result_kept` answer from code, and miss.** Filters
+  for precision only, with no use in the stepping check. `proven_pure`
+  answers `True` for a function reading an attribute of what an argument
+  holds (unpacked, iterated, aliased: `n = m; n.shift(1)`), a closure's name
+  another function rebinds (`nonlocal`), a global another module may
+  rebind, and NumPy's input and output (`np.save`, `np.load`); on a cached
+  function's `__wrapped__` it reads the cache's own decorator.
+  `result_kept` answers `None` for an array a comparison makes
+  (`np.array(t) > 0`) and a list a comprehension takes out of a result,
+  each changed in place. It is conservative elsewhere: a helper returning
+  `np.array(...).reshape(-1, 2)` is reported as letting its result out.
+  Reproducers, strict expected failures:
+  `tests/timeline/test_coverage.py::test_what_a_function_reads_beyond_its_arguments_is_not_pure`,
+  `::test_a_result_changed_through_what_holds_it_is_kept`.
 
 ## Content keys (`arachne/timeline/record.py`)
 
