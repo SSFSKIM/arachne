@@ -267,3 +267,16 @@ fn a_face_group_is_addressed_by_face() {
     }]);
     assert!(matches!(refused(&mut s, &d), StreamError::Invalid(_)));
 }
+
+#[test]
+fn a_slot_a_display_still_draws_cannot_be_removed() {
+    let mut s = Stream::new();
+    s.apply(&common::sample_deltas()[0]).unwrap();
+    // Slot 5 is a display whose sub-frame draws slot 1.
+    let mut d = delta(1);
+    d.remove = vec![1];
+    d.order = Some(Vec::new());
+    assert!(matches!(refused(&mut s, &d), StreamError::Missing(_)));
+    d.remove = vec![1, 5];
+    s.apply(&d).unwrap();
+}
