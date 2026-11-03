@@ -309,20 +309,88 @@ class Callers:
         binding = _arguments_of(call, function, bound, user_only=False)
         if binding is None:
             return FOLLOWING_STOPS
+        varkw = _varkw(function)
+        key = next(
+            (keyword.arg for keyword in call.keywords if keyword.value is argument),
+            None,
+        )
         for name, handed in binding.items():
-            if name in called and any(
+            if not any(
                 each is argument
                 or (isinstance(argument, ast.Starred) and each is argument.value)
                 for each in handed
             ):
+                continue
+            if name in called:
                 return CALLS_IT
+            if name == varkw and (
+                f"{name}:{key}" in called
+                if key is not None
+                else any(each.startswith(f"{name}:") for each in called)
+            ):
+                return CALLS_IT  # what it gathers under that keyword is called
         return None
+
+    def _forwarded_keys(
+        self, target: Any, bound: bool, cls: type | None, depth: int
+    ) -> set[str] | None:
+        """The keywords of a mapping handed on as ``**`` whose values
+        ``target`` may call (:data:`EVERY` for any); ``None`` when ``target``
+        is no function whose code is read.
+        """
+        if isinstance(target, types.MethodType):
+            this = target.__self__
+            cls = this if isinstance(this, type) else type(this)
+            target, bound = target.__func__, True
+        if isinstance(target, type):
+            if (
+                inspect.getattr_static(type(target), "__call__", None)
+                is not type.__call__
+            ):
+                return None
+            keys: set[str] = set()
+            for name in ("__new__", "__init__"):
+                member = inspect.getattr_static(target, name, None)
+                member = getattr(member, "__func__", member)
+                if isinstance(member, types.FunctionType):
+                    found = self._forwarded_keys(member, True, target, depth)
+                    if found is None:
+                        return None
+                    keys |= found
+                elif member is not getattr(object, name):
+                    return None
+            return keys
+        if not isinstance(target, types.FunctionType) or _numpy_function(target):
+            return None
+        called = self.called_parameters(target, cls if bound else None, depth)
+        if EVERY in called:
+            return {EVERY}
+        code = target.__code__
+        named = code.co_varnames[: code.co_argcount + code.co_kwonlyargcount]
+        by_keyword = set(named[code.co_posonlyargcount :]) - (
+            set(named[:1]) if bound else set()
+        )
+        varkw = _varkw(target)
+        keys = set()
+        for each in called:
+            name, _, key = each.partition(":")
+            if key:
+                if name == varkw:
+                    keys.add(key)
+            elif name == varkw:
+                return {EVERY}  # whatever it gathers may be called
+            elif name in by_keyword:
+                keys.add(name)
+        return keys
 
     def called_parameters(
         self, function: types.FunctionType, cls: type | None, depth: int
     ) -> frozenset[str]:
         """The parameters ``function`` may call (:data:`EVERY` for any): its
-        first one bound to an object of class ``cls`` when given.
+        first one bound to an object of class ``cls`` when given. Its ``**``
+        parameter ``kw`` handed on as ``**kw`` is called key by key:
+        ``"kw:key"`` for each keyword whose value may be called, ``"kw"``
+        for every one.
         """
         key = (id(function), cls)
         found = self._called.get(key)
@@ -350,6 +418,7 @@ class Callers:
             return frozenset()
         bindings = self._bindings(function)
         first = function.__code__.co_varnames[0] if cls is not None else None
+        varkw = _varkw(function)
         nodes = _walk(node)
         carried = _carriers(nodes, parameters)
         called: set[str] = set()
@@ -381,13 +450,34 @@ class Callers:
                 if callees is None:
                     called |= names
                     continue
+                forwarded = (
+                    varkw is not None
+                    and isinstance(argument, ast.Name)
+                    and argument.id == varkw
+                    and any(
+                        keyword.arg is None and keyword.value is argument
+                        for keyword in item.keywords
+                    )
+                )
                 for target, target_bound, target_cls in callees:
+                    if forwarded:
+                        # ``**kwargs`` handed on: called key by key.
+                        keys = self._forwarded_keys(
+                            target, target_bound, target_cls, depth + 1
+                        )
+                        if keys is not None and EVERY not in keys:
+                            called |= {f"{varkw}:{key}" for key in keys}
+                            continue
                     if self.calls_argument(
                         target, item, argument, target_bound, target_cls, depth + 1
                     ):
                         called |= names
                         break
-        return frozenset(called & (parameters | {EVERY}))
+        return frozenset(
+            each
+            for each in called
+            if each == EVERY or each.partition(":")[0] in parameters
+        )
 
     def _callees(
         self,
@@ -432,6 +522,16 @@ class Callers:
                 found = getattr(holder, func.attr, _UNKNOWN)
                 return None if found is _UNKNOWN else [(found, False, None)]
         return None
+
+
+def _varkw(function: types.FunctionType) -> str | None:
+    """The name of ``function``'s ``**`` parameter, if it has one."""
+    code = function.__code__
+    if not code.co_flags & inspect.CO_VARKEYWORDS:
+        return None
+    rest = code.co_argcount + code.co_kwonlyargcount
+    rest += bool(code.co_flags & inspect.CO_VARARGS)
+    return code.co_varnames[rest]
 
 
 def _method(member: Any, cls: type | None) -> tuple[Any, bool, type | None]:

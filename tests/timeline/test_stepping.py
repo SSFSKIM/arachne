@@ -931,6 +931,7 @@ def test_an_engine_method_handed_to_a_call_is_never_stepped_past(session_of, nam
         "DictHeldCallableRead",
         "ReturnedCallableRead",
         "EngineAppliedCallableRead",
+        "KeywordForwardedCallableRead",
         "NativeUnlistedCallableRead",
         "UnknownCalleeCallableRead",
     ],

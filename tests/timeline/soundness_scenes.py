@@ -647,6 +647,23 @@ class NativeUnlistedCallableRead(_HandedCallableRead):
         return lambda m: collections.defaultdict(table["f"])["missing"]
 
 
+class KeywordForwardedCallableRead(_HandedCallableRead):
+    """A function read out of a dict, handed by keyword to a function that
+    hands its ``**kwargs`` on to one handing that keyword's parameter to
+    ``sorted`` as its key.
+    """
+
+    def handing(self, move):
+        def inner(scale=1.0, act=None):
+            sorted(["a", "b"], key=act)
+
+        def outer(**kwargs):
+            inner(**kwargs)
+
+        table = {"f": move}
+        return lambda m: outer(act=table["f"])
+
+
 class _Runner:
     def run(self, function):
         function(None)
