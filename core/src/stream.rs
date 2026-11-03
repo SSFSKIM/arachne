@@ -91,20 +91,33 @@ impl std::error::Error for DrawError {}
 /// The stream as a delta would leave it, read without changing anything.
 struct After<'a> {
     stream: &'a Stream,
-    delta: &'a Delta,
+    uploads: HashMap<Key, &'a Shape>,
+    upload_paints: HashMap<Key, &'a Stops>,
+    /// The records the delta sets, by slot (the last one set wins).
+    set: BTreeMap<u32, &'a Record>,
     released: HashSet<Key>,
     removed: HashSet<u32>,
 }
 
 impl<'a> After<'a> {
+    fn new(stream: &'a Stream, delta: &'a Delta) -> After<'a> {
+        After {
+            stream,
+            uploads: delta.upload.iter().map(|s| (s.key, s)).collect(),
+            upload_paints: delta.upload_paints.iter().map(|s| (s.key, s)).collect(),
+            set: delta.set.iter().map(|r| (r.slot, r)).collect(),
+            released: delta.release.iter().copied().collect(),
+            removed: delta.remove.iter().copied().collect(),
+        }
+    }
+
     fn shape(&self, key: &Key) -> Option<&'a ShapeData> {
         if self.released.contains(key) {
             return None;
         }
-        self.delta
-            .upload
-            .iter()
-            .find(|s| s.key == *key)
+        self.uploads
+            .get(key)
+            .copied()
             .or_else(|| self.stream.shapes.get(key))
             .map(|s| &s.data)
     }
@@ -113,10 +126,9 @@ impl<'a> After<'a> {
         if self.released.contains(key) {
             return None;
         }
-        self.delta
-            .upload_paints
-            .iter()
-            .find(|s| s.key == *key)
+        self.upload_paints
+            .get(key)
+            .copied()
             .or_else(|| self.stream.paints.get(key))
     }
 
@@ -124,21 +136,18 @@ impl<'a> After<'a> {
         if self.removed.contains(&slot) {
             return None;
         }
-        self.delta
-            .set
-            .iter()
-            .rev()
-            .find(|r| r.slot == slot)
+        self.set
+            .get(&slot)
+            .copied()
             .or_else(|| self.stream.records.get(&slot))
     }
 
     fn records(&self) -> impl Iterator<Item = &'a Record> + '_ {
-        let set: HashSet<u32> = self.delta.set.iter().map(|r| r.slot).collect();
         self.stream
             .records
             .values()
-            .filter(move |r| !set.contains(&r.slot))
-            .chain(self.delta.set.iter())
+            .filter(|r| !self.set.contains_key(&r.slot))
+            .chain(self.set.values().copied())
             .filter(|r| !self.removed.contains(&r.slot))
     }
 }
@@ -380,17 +389,12 @@ impl Stream {
     }
 
     fn check(&self, delta: &Delta) -> Result<(), StreamError> {
-        let after = After {
-            stream: self,
-            delta,
-            released: delta.release.iter().copied().collect(),
-            removed: delta.remove.iter().copied().collect(),
-        };
+        let after = After::new(self, delta);
         for key in &delta.release {
             let held = self.shapes.contains_key(key)
                 || self.paints.contains_key(key)
-                || delta.upload.iter().any(|s| s.key == *key)
-                || delta.upload_paints.iter().any(|s| s.key == *key);
+                || after.uploads.contains_key(key)
+                || after.upload_paints.contains_key(key);
             if !held {
                 return Err(StreamError::Missing(format!(
                     "a release of {}, which the stream does not hold",
@@ -399,7 +403,7 @@ impl Stream {
             }
         }
         for slot in &delta.remove {
-            if !self.records.contains_key(slot) && !delta.set.iter().any(|r| r.slot == *slot) {
+            if !self.records.contains_key(slot) && !after.set.contains_key(slot) {
                 return Err(StreamError::Missing(format!(
                     "a removal of slot {slot}, which is not set"
                 )));
@@ -430,7 +434,15 @@ impl Stream {
                 in_use(key, "the view".into())?;
             }
         }
-        // Untouched records were checked when set, and only a release (above) can strand them.
+        // Untouched records were checked when set; only a release (above) or a removal of a slot
+        // a display's sub-frame draws can strand them.
+        if !after.removed.is_empty() {
+            for rec in after.records() {
+                if let Body::Image(ImageSource::SubFrame { order, .. }) = &rec.body {
+                    after.check_order(order)?;
+                }
+            }
+        }
         for rec in &delta.set {
             after.check_record(rec)?;
         }
