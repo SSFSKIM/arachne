@@ -612,6 +612,42 @@ def test_on_tick_sees_every_tick_and_whether_it_was_full(session_of, stepping):
     assert play.stepping_ticks == (60 - 4 if stepping else 0)
 
 
+@pytest.mark.parametrize("stepping", [True, False])
+def test_on_start_sees_each_ticked_play_once_after_its_start_and_before_its_ticks(
+    session_of, stepping
+):
+    """``on_start`` is called once for each ticked play, at its start (on a
+    tick or between two), after the start's evaluation ran the dt-free
+    updater there and before any tick; ``on_tick`` never sees the start.
+    """
+    seen: list[tuple[str, Fraction, float | None]] = []
+
+    def on_start(scene, start):
+        last = scene.evaluated[-1] if scene.evaluated else None
+        seen.append(("start", start, last))
+
+    session = session_of(
+        "EvaluationClock",
+        STEPPING_SCENES,
+        frame_rate=4,
+        stepping=stepping,
+        on_tick=lambda scene, tick, full: seen.append(("tick", tick, None)),
+        on_start=on_start,
+    )
+    ticked = [p for p in session.record.plays if p.route == "ticked"]
+    assert [p.start for p in ticked] == [Fraction(0), Fraction(101, 200)]
+    starts = [(t, float(last)) for kind, t, last in seen if kind == "start"]
+    assert starts == [(p.start, float(p.start)) for p in ticked]
+    begins = [k for k, (kind, _, _) in enumerate(seen) if kind == "start"]
+    assert begins[0] == 0
+    for play, begin, after in zip(
+        ticked, begins, [*begins[1:], len(seen)], strict=True
+    ):
+        ticks = [t for _, t, _ in seen[begin + 1 : after]]
+        assert all(play.start < t <= play.end for t in ticks)
+        assert len(ticks) == play.full_ticks + play.stepping_ticks
+
+
 def _same_frames(session_of, name: str, fps: int):
     """Every frame of a stepping session equals that of one that ticks
     everything; the stepping session's last play.

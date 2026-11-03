@@ -217,6 +217,7 @@ class Scene:
             stepping=self.timeline.stepping,
             on_step=self.timeline.on_step,
             on_tick=self.timeline.on_tick,
+            on_start=self.timeline.on_start,
         )
 
         return result

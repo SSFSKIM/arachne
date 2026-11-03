@@ -109,6 +109,7 @@ class TickedRoute:
         ticks = list(ticks_in(start, end))
         run.set_clock(start)
         evaluate_instant(scene, plan, start, start, 0.0)
+        run.started()
         run.sample(start, until=ticks[0] if ticks else end)
         ended = start if stop is not None and stop() else None
         if ended is None:

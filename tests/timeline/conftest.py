@@ -79,6 +79,7 @@ def session_of():
         stepping=True,
         on_step=None,
         on_tick=None,
+        on_start=None,
         **settings,
     ) -> Session:
         session = Session.open(
@@ -89,6 +90,7 @@ def session_of():
             stepping=stepping,
             on_step=on_step,
             on_tick=on_tick,
+            on_start=on_start,
         )
         opened.append(session)
         return session
