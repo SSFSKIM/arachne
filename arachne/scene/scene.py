@@ -85,6 +85,11 @@ class Scene:
     #: (:meth:`.Manager.render`).
     _arguments: tuple[tuple[Any, ...], dict[str, Any]]
 
+    # A record's stepping tick (arachne.timeline.ticking): which of the
+    # scene's updaters ``update_self`` runs (those whose code loads the dt
+    # they are handed), or ``None`` at a full tick.
+    _tick_steps: Callable[[Any], bool] | None = None
+
     def __new__(cls, *args: Any, **kwargs: Any) -> Self:
         scene = super().__new__(cls)
         scene._arguments = (args, kwargs)
@@ -350,7 +355,11 @@ class Scene:
         :meth:`.Scene.add_updater`
         :meth:`.Scene.remove_updater`
         """
+        steps = Scene._tick_steps
         for func in self.updaters:
+            # A stepping tick runs only the updaters whose code loads dt.
+            if steps is not None and not steps(func):
+                continue
             func(dt)
 
     def should_update_mobjects(self) -> bool:

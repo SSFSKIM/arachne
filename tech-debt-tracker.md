@@ -12,19 +12,27 @@ Not debt: the semantics of the stepping tick, each part with how it holds.
    on, not the play's last, in a play without a stop condition
    (`PlayRun.stepping_ticks`, `recorder.py`). The others are full: every
    callback runs, in CE's phase order.
-2. **What a stepping tick runs.** The updaters whose own code loads `dt`
-   (`loads_dt`: any use of the local but a plain store or delete, an inner
-   function closing over it, a read of its own frame; code it can't read
-   counts as loading), judged as each is called (`skipping`, consulted by
-   `Mobject.update`), so one that joins as the play runs is judged alike;
-   the scene's updaters; the camera's inputs; every interpolation. No
-   dt-free callback runs there, whoever reads what it writes.
+2. **What a stepping tick runs:** every interpolation (the functions of
+   `UpdateFromFunc` and `UpdateFromAlphaFunc` among it), the camera's
+   inputs (its fixed-orientation centre functions among them), and the
+   callbacks whose own code loads the `dt` they are handed; nothing else.
+   A mobject's updater is handed `dt` when its signature names it
+   (`loads_dt`); a scene's updater always is, as its first positional
+   argument (`scene_updater_loads_dt`, as CE's `Scene.update_self` calls
+   it). A callback counts as loading `dt` unless its own code declares that
+   parameter and never reads the slot (`_slot_loaded`: the 3.13
+   superinstructions decoded slot by slot; an inner function closing over
+   it or a read of its own frame counts as reading). Each is judged as it
+   is called (`skipping`, consulted by `Mobject.update` and
+   `Scene.update_self`), so one that joins as the play runs is judged alike.
 3. **A play whose updaters a stepping tick could not leave out ticks
-   everything** (`tick.unbounded_read`): the scene's own `update_mobjects`
-   or `update_self`, a mobject's own `update`, a camera drawing other
-   cameras. Checked when the play is planned and again whenever the
-   structure (`current_structure`) differs from its plan's, before a
-   stepping tick (`PlayRun.stepping_plan`). Test:
+   everything** (`tick.ungoverned`): the scene's own `update_mobjects` or
+   `update_self` (defined on its class), a mobject's own `update`, a camera
+   drawing other cameras. Checked when the play is planned and again when
+   the structure (`current_structure`) differs from its plan's, before a
+   stepping tick (`PlayRun.stepping_plan`): a play found ungoverned then
+   ticks everything from that tick on; otherwise the tick steps by the new
+   plan, a structure change alone making no tick full. Test:
    `tests/timeline/test_stepping.py::test_a_scene_running_its_own_update_mobjects_ticks_everything`.
 4. **What a dt reader of a dt-free value sees between frames** is that value
    as of the last full tick, as CE shows it once per frame. One class of it
@@ -38,18 +46,78 @@ Not debt: the semantics of the stepping tick, each part with how it holds.
    a verification mode): every scene of the stepping fixtures keeps the same
    captures and tick counts both ways
    (`tests/timeline/test_brute_force.py::test_stepping_keeps_what_brute_force_keeps`).
-   The brute-force run makes and reads no plan and has its own `dt` judge
-   (`::test_brute_force_never_enters_the_plan` patches planning, the
-   stepping path's judge and the plan to raise); the two judges are held
-   alike on the forms of `::test_brute_force_and_stepping_judge_dt_alike`.
+   The brute-force run makes and reads no plan and has its own judges of
+   `dt` (`::test_brute_force_never_enters_the_plan` patches planning, the
+   stepping path's judges and the plan to raise); the judges are held alike
+   on the forms of `::test_brute_force_and_stepping_judge_dt_alike` and
+   `::test_brute_force_and_stepping_judge_scene_updaters_alike`. Its limits
+   are listed under "What the brute-force check does not check".
 6. **Hooks only observe** (`on_tick`, `on_step`): not enforced; see Hooks.
+
+## The stepping tick's known limits (`arachne/timeline/ticking.py`)
+
+- **A callee reading its caller's frame is not seen.** An updater that never
+  loads `dt` but calls a helper reading `sys._getframe(1).f_locals["dt"]`
+  is judged dt-free and runs at the full ticks only, while CE hands it `dt`
+  at every frame and ticking everything at every tick. Only the updater's
+  own code is read; following every callee for frame reads is not
+  attempted. A documented limit, met by no measured scene.
+- **A `partial` or a callable object with a dead `dt` runs at every tick.**
+  Neither has code of its own to read, so both count as loading `dt`:
+  conservative (the frames are those of ticking everything for that
+  callback), never wrong against CE's semantics of a dt reader. Unwrapping
+  a `partial` to its function, and reading a callable object's `__call__`,
+  is precision work.
+- **Fallbacks that turn on mid-play are not all re-checked.** The stepping
+  run re-checks the ungoverned cases only when the structure changes before
+  a stepping tick: a mobject's `update` replaced on an instance mid-play,
+  with no structure change, keeps the play stepping where its updaters no
+  longer run through `Mobject.update`. The brute-force run re-checks at
+  every tick, so the gate's comparison catches that case. A scene's
+  `update_mobjects` or `update_self` replaced on the instance (not its
+  class) is caught by neither: both read the class (`user_overrides`), a
+  known blind spot of the optimisation and of the gate alike.
+- **History-keeping interpolations run per 60 Hz tick where CE runs them
+  per frame** (break 4, approved). The functions of `UpdateFromFunc` and
+  `UpdateFromAlphaFunc` are interpolation and run at every tick: one that
+  keeps history (appends, counts, integrates on its own) is called 60 times
+  a second where CE calls it once a frame, twice CE's count at a 30 fps
+  final, not only at draft rates. To measure: how often production scenes
+  run a history-keeping one.
+- **Per-tick costs left as they are.** Each callback at a stepping tick
+  costs an `inspect.signature` (a mobject updater, again in
+  `Mobject.update` to choose the call form), a cache lookup by code object
+  in `_slot_loaded`, and before every stepping tick a `current_structure`
+  walk of every family. None is cached further: a signature depends on the
+  callable (a wrapper, a `partial`, a `__signature__`), not on its code. To
+  measure on production scenes before any is optimised.
+
+## What the brute-force check does not check (`arachne/timeline/reference.py`)
+
+- **It checks the optimisation, not conformance with CE.** Both runs follow
+  the same stated semantics; a semantics that departs from CE departs in
+  both. What the two runs share, and so cannot disagree on:
+  - the assumption that a mobject updater is handed `dt` when its signature
+    names it, and that a callback reads it only through its own code's
+    declared parameter. The judges themselves are now written apart
+    (`ticking._slot_loaded` and `reference._reads_parameter` share no code
+    or cache) and each reads only the code's own declared parameters, so a
+    `functools.wraps` wrapper counts as loading in both;
+  - the list of names through which code reads its own frame
+    (`_FRAME_ACCESS` and `_FRAME_READERS`, one list copied);
+  - where events and stop conditions come from (`PlayRecord.events`,
+    `Scene.stop_condition`) and which tick a frame reads (`Recorder.keeps`);
+  - which plays are ungoverned (`admission._update_replaced`,
+    `dispatch.user_overrides`, the camera's displays).
 
 ## The diagnostic analysis (`arachne/timeline/ticking.py`, `handed.py`, `coverage.py`)
 
 - **The analysis of what callbacks reach and write is kept for diagnostics
   only, and carries what only the stepping plan it once fed used.** A
-  comparison of two runs asks it (`TickPlan.stepping_families`, worked out
-  the first time it is asked, and `reach`); nothing that plans or runs a
+  comparison of two runs asks it (`TickPlan.stepping_families` and the
+  plan's `skipped`, `known` and `stepping`, each worked out the first time
+  it is asked from the scene and animations the plan holds weakly, and
+  `reach`); nothing that plans or runs a
   play consults it, which
   `tests/timeline/test_brute_force.py::test_stepping_never_enters_the_analysis`
   holds by patching it to raise. Inside it, the tracking of which code may

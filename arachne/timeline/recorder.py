@@ -133,10 +133,13 @@ class PlayRun:
         in full. Before it steps, the structure is compared with the one the
         plan was made for (:func:`.current_structure`): anything that changed
         it since (an updater added or taken, a member joining or leaving, by
-        whatever code) has the play plan again first, which finds a play
-        whose updaters no longer run through :meth:`.Mobject.update`. A plan
-        not :attr:`~.TickPlan.applied` is remade the same way, and the tick
-        runs in full.
+        whatever code) has the play plan again first. The new plan finds a
+        play whose updaters no longer run where a tick could leave one out,
+        which then runs this tick and every later one in full; otherwise the
+        tick steps by the new plan, as it would have by the old: a structure
+        change alone makes no tick full. A plan not
+        :attr:`~.TickPlan.applied` is remade the same way, and the tick runs
+        in full.
         """
         play = self.play
         plan = play.tick_plan
