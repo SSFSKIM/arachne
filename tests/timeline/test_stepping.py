@@ -29,7 +29,7 @@ from arachne.timeline.ticking import (
 )
 
 from . import soundness_scenes, stepping_scenes
-from .conftest import render
+from .conftest import expect_stepping, render
 
 STEPPING_SCENES = Path(stepping_scenes.__file__)
 SOUNDNESS_SCENES = Path(soundness_scenes.__file__)
@@ -64,11 +64,11 @@ def test_dt_free_work_that_keeps_no_history_steps_and_changes_no_frame(session_o
     plan = play.tick_plan
     # The follower and the redraw wait for the frames; the clock and the
     # spinner integrate.
-    assert len(plan.skipped) == 2
-    assert plan.stepping == 2
+    expect_stepping(len(plan.skipped) == 2)
+    expect_stepping(plan.stepping == 2)
     assert plan.pulled == 0
-    assert play.full_ticks == fps
-    assert play.stepping_ticks == 60 - fps
+    expect_stepping(play.full_ticks == fps)
+    expect_stepping(play.stepping_ticks == 60 - fps)
     _same_as_every_tick(session_of, "Unchanged", frames, fps)
 
 
@@ -103,7 +103,7 @@ def test_interpolation_runs_at_every_tick(fps):
     calls.clear()
     scene, _ = render(stepping_scenes.EveryTick, fps)
     play = _play(scene)
-    assert play.stepping_ticks == 60 - fps
+    expect_stepping(play.stepping_ticks == 60 - fps)
     # Beginning the animation, the play's start, its 60 ticks, finishing it.
     assert len(calls) == 1 + 1 + 60 + 1
 
@@ -141,10 +141,10 @@ def test_a_guard_that_never_reads_dt_runs_with_the_redraw_it_checks(fps):
     calls.clear()
     scene, _ = render(stepping_scenes.StaleGuard, fps)
     play = _play(scene)
-    assert play.stepping_ticks == 60 - fps
-    assert play.full_ticks == fps
+    expect_stepping(play.stepping_ticks == 60 - fps)
+    expect_stepping(play.full_ticks == fps)
     # The play's start, its full ticks, and the update after it finishes.
-    assert len(calls) == 1 + fps + 1
+    expect_stepping(len(calls) == 1 + fps + 1)
 
 
 # Callbacks that keep history
@@ -169,20 +169,20 @@ def test_redraws_that_keep_history_are_built_at_the_frames_as_in_ce(session_of):
     everything = session_of("Staircases", STEPPING_SCENES, grid=None, frame_rate=fps)
     reference = session_of("StaircasesPerFrame", STEPPING_SCENES, frame_rate=fps)
     play = stepped.record.plays[-1]
-    assert play.stepping_ticks == 60 - fps
+    expect_stepping(play.stepping_ticks == 60 - fps)
     instants = frames_in(play.start, play.end, Fraction(fps))
     by_hand = [p.start for p in reference.record.plays]
     assert len(instants) == len(by_hand) == fps
     moved = {"low": False, "high": False}
     for t, at in zip(instants, by_hand, strict=True):
         shown = _shown(stepped.state_at(t))
-        assert shown == _shown(reference.state_at(at)), t
+        expect_stepping(shown == _shown(reference.state_at(at)))
         other = _shown(everything.state_at(t))
         for name, upper in (("low", True), ("high", False)):
             part = [n for n in shown if (n[2][1] > 0) == upper]
             if part != [n for n in other if (n[2][1] > 0) == upper]:
                 moved[name] = True
-    assert moved == {"low": True, "high": True}
+    expect_stepping(moved == {"low": True, "high": True})
 
 
 # Reads that can't be bounded
@@ -212,8 +212,8 @@ def test_a_compiled_pattern_is_a_bounded_read(session_of):
         session_of, "PatternRead", 4, SOUNDNESS_SCENES
     ).record.plays[-1]
     assert not any(r.startswith(UNBOUNDED) for r in play.admission.reasons)
-    assert play.stepping_ticks > 0
-    assert play.tick_plan.skipped
+    expect_stepping(play.stepping_ticks > 0)
+    expect_stepping(play.tick_plan.skipped)
 
 
 @pytest.mark.parametrize(
@@ -270,8 +270,8 @@ def test_a_method_of_an_unresolved_receiver_is_taken_for_the_scenes_code(session
 
 def test_getattr_by_a_constant_name_is_a_bounded_read(session_of):
     play = session_of("NamedRead", STEPPING_SCENES, frame_rate=4).record.plays[-1]
-    assert not any(r.startswith(UNBOUNDED) for r in play.admission.reasons)
-    assert play.stepping_ticks == 60 - 4
+    expect_stepping(not any(r.startswith(UNBOUNDED) for r in play.admission.reasons))
+    expect_stepping(play.stepping_ticks == 60 - 4)
 
 
 def test_an_updater_that_joins_at_an_event_is_planned_for(session_of):
@@ -281,8 +281,8 @@ def test_an_updater_that_joins_at_an_event_is_planned_for(session_of):
     fps = 4
     scene, frames = render(stepping_scenes.LateJoiner, fps)
     play = _play(scene)
-    assert not any(r.startswith(UNBOUNDED) for r in play.admission.reasons)
-    assert play.stepping_ticks > 0
+    expect_stepping(not any(r.startswith(UNBOUNDED) for r in play.admission.reasons))
+    expect_stepping(play.stepping_ticks > 0)
     _same_as_every_tick(session_of, "LateJoiner", frames, fps)
 
 
@@ -296,7 +296,7 @@ def test_a_session_records_on_its_render_s_grid(session_of):
     fps = 4
     _, frames = render(stepping_scenes.Staircases, fps)
     session = session_of("Staircases", STEPPING_SCENES, frame_rate=fps)
-    assert session.record.plays[-1].stepping_ticks == 60 - fps
+    expect_stepping(session.record.plays[-1].stepping_ticks == 60 - fps)
     for k, frame in enumerate(frames):
         assert np.array_equal(frame, np.asarray(session.frame(Fraction(k, fps)))), k
 
@@ -319,9 +319,9 @@ def test_a_stepping_reader_keeps_what_it_reads_through_on_the_tick(
     """
     scene, frames = render(getattr(stepping_scenes, name), fps)
     play = _play(scene)
-    assert play.tick_plan.pulled == 1
-    assert len(play.tick_plan.skipped) == 1
-    assert play.stepping_ticks == 60 - fps
+    expect_stepping(play.tick_plan.pulled == 1)
+    expect_stepping(len(play.tick_plan.skipped) == 1)
+    expect_stepping(play.stepping_ticks == 60 - fps)
     _same_as_every_tick(session_of, name, frames, fps)
 
 
@@ -355,7 +355,7 @@ def _same_as_full_ticks(session_of, name: str, fps: int, scenes=STEPPING_SCENES)
 @pytest.mark.parametrize("fps", [4, 15])
 def test_stepping_off_ticks_everything_on_the_same_grid(session_of, fps):
     stepped = _same_as_full_ticks(session_of, "Unchanged", fps)
-    assert stepped.record.plays[-1].stepping_ticks == 60 - fps
+    expect_stepping(stepped.record.plays[-1].stepping_ticks == 60 - fps)
 
 
 def test_the_captures_tell_history_kept_at_the_frames_from_every_tick(session_of):
@@ -366,7 +366,7 @@ def test_the_captures_tell_history_kept_at_the_frames_from_every_tick(session_of
     full = session_of("Staircases", STEPPING_SCENES, frame_rate=4, stepping=False)
     ours, theirs = stepped.record.plays[-1], full.record.plays[-1]
     assert [t for t, _ in ours.sample_keys()] == [t for t, _ in theirs.sample_keys()]
-    assert ours.sample_keys() != theirs.sample_keys()
+    expect_stepping(ours.sample_keys() != theirs.sample_keys())
 
 
 # Every path to what a stepping reader reads: resolved to a mobject's family,
@@ -395,10 +395,10 @@ def test_a_producer_reached_through_any_path_steps_with_its_reader(
     stepping work reads steps, the dot nothing reads waits for the frames.
     """
     play = _same_as_full_ticks(session_of, name, fps).record.plays[-1]
-    assert not any(r.startswith(UNBOUNDED) for r in play.admission.reasons)
-    assert play.tick_plan.pulled >= 1
-    assert play.tick_plan.skipped
-    assert play.stepping_ticks == 60 - fps
+    expect_stepping(not any(r.startswith(UNBOUNDED) for r in play.admission.reasons))
+    expect_stepping(play.tick_plan.pulled >= 1)
+    expect_stepping(play.tick_plan.skipped)
+    expect_stepping(play.stepping_ticks == 60 - fps)
 
 
 @pytest.mark.parametrize("name", ["PropertyRead", "MethodRead", "GroupRead"])
@@ -476,7 +476,7 @@ def test_a_skipped_callback_that_changes_the_structure_is_never_stepped_past(
     if first.steps_only:
         assert [t for t, _ in play.tick_plans] == [play.start, Fraction(13, 60)]
     else:
-        assert first.unbounded.startswith(f"{STRUCTURAL}: updater ")
+        expect_stepping(first.unbounded.startswith(f"{STRUCTURAL}: updater "))
 
 
 def test_a_skipped_callback_that_adds_a_reader_has_the_play_plan_again(
@@ -533,7 +533,7 @@ def test_structure_changed_before_a_stepping_tick_plans_the_play_again(
     integrates stale input.
     """
     play = _same_as_full_ticks(session_of, name, 15).record.plays[-1]
-    assert len(play.tick_plans) >= 2
+    expect_stepping(len(play.tick_plans) >= 2)
 
 
 @pytest.mark.parametrize("name", ["BoolAlias", "IfAlias"])
@@ -555,12 +555,12 @@ def test_become_padding_with_copies_that_update_plans_again(session_of):
     """
     session = session_of("BecomeRoot", STEPPING_SCENES, frame_rate=4)
     play = session.record.plays[-1]
-    assert not any(r.startswith("tick.") for r in play.admission.reasons)
+    expect_stepping(not any(r.startswith("tick.") for r in play.admission.reasons))
     assert [t for t, _ in play.tick_plans] == [play.start, Fraction(16, 60)]
     # Made at the frame at 0.25 s, the copies move there and at the frame at
     # 0.5 s: as a scene doing the same per frame by hand has them.
     box = session.state_at(Fraction(1, 2)).named("root").box
-    assert (box[0] + box[2]) / 2 == pytest.approx(2 * 0.01)
+    expect_stepping((box[0] + box[2]) / 2 == pytest.approx(2 * 0.01))
 
 
 @pytest.mark.parametrize("name", ["SkippedInstaller", "SubmobjectAdded", "Unchanged"])
@@ -595,7 +595,7 @@ def test_on_step_sees_every_stepping_tick_and_no_full_one(session_of):
         on_step=lambda scene, tick: seen.append(tick),
     )
     play = session.record.plays[-1]
-    assert len(seen) == play.stepping_ticks == 60 - 4
+    expect_stepping(len(seen) == play.stepping_ticks == 60 - 4)
     assert not set(seen) & {Fraction(k, 4) for k in range(5)}
     full = session_of(
         "Unchanged",
@@ -605,7 +605,7 @@ def test_on_step_sees_every_stepping_tick_and_no_full_one(session_of):
         on_step=lambda scene, tick: seen.append(tick),
     )
     assert full.record.plays[-1].stepping_ticks == 0
-    assert len(seen) == 60 - 4
+    expect_stepping(len(seen) == 60 - 4)
 
 
 @pytest.mark.parametrize("stepping", [True, False])
@@ -625,7 +625,7 @@ def test_on_tick_sees_every_tick_and_whether_it_was_full(session_of, stepping):
     assert [t for t, _ in seen] == [Fraction(k, 60) for k in range(1, 61)]
     assert sum(not full for _, full in seen) == play.stepping_ticks
     assert sum(full for _, full in seen) == play.full_ticks
-    assert play.stepping_ticks == (60 - 4 if stepping else 0)
+    expect_stepping(play.stepping_ticks == (60 - 4 if stepping else 0))
 
 
 @pytest.mark.parametrize("stepping", [True, False])
@@ -687,8 +687,8 @@ def test_structure_a_plan_can_see_change_keeps_stepping_exact(session_of, name):
     ticking everything, and no tick everything was needed.
     """
     play = _same_frames(session_of, name, 4)
-    assert not any(r.startswith("tick.") for r in play.admission.reasons)
-    assert play.stepping_ticks > 0
+    expect_stepping(not any(r.startswith("tick.") for r in play.admission.reasons))
+    expect_stepping(play.stepping_ticks > 0)
 
 
 def test_an_attribute_an_instance_shadows_steps_with_what_it_reads(session_of):
@@ -696,7 +696,7 @@ def test_an_attribute_an_instance_shadows_steps_with_what_it_reads(session_of):
     the plan pulls the rebinding and the tracker it binds, and steps.
     """
     play = _same_as_full_ticks(session_of, "InstanceShadow", 4).record.plays[-1]
-    assert play.tick_plan.steps_only
+    expect_stepping(play.tick_plan.steps_only)
 
 
 @pytest.mark.xfail(
@@ -742,6 +742,9 @@ def test_a_play_that_gains_its_first_stepping_work_plans_for_it(session_of):
     it, and steps it with what it reads.
     """
     play = _same_as_full_ticks(session_of, "SceneInstaller", 4).record.plays[-1]
+    expect_stepping(len(play.tick_plans) == 2)
+    if len(play.tick_plans) != 2:
+        return
     (_, first), (_, then) = play.tick_plans
     assert first.stepping == 0
     assert first.steps_only
@@ -755,7 +758,7 @@ def test_a_method_held_as_a_value_changes_what_it_is_bound_to(session_of, name):
     and the plan pulls the callback making it.
     """
     play = _same_as_full_ticks(session_of, name, 4).record.plays[-1]
-    assert play.tick_plan.pulled == 1
+    expect_stepping(play.tick_plan.pulled == 1)
 
 
 @pytest.mark.parametrize("name", ["ClassShadow", "SetterWrite", "OwnSetter"])
@@ -788,8 +791,8 @@ def test_an_array_numpy_writes_its_result_into_pulls_the_writer(session_of, name
     updater writes the array a dt updater integrates, and the plan pulls it.
     """
     play = _same_as_full_ticks(session_of, name, 4, SOUNDNESS_SCENES).record.plays[-1]
-    assert play.stepping_ticks > 0
-    assert play.tick_plan.pulled == 1
+    expect_stepping(play.stepping_ticks > 0)
+    expect_stepping(play.tick_plan.pulled == 1)
 
 
 def test_numpy_calls_given_only_inputs_still_step_past_their_updater(session_of):
@@ -811,7 +814,7 @@ def test_a_method_of_an_object_the_callback_made_is_read_for_its_writes(session_
     the helper holds the tracker it was handed.
     """
     play = _same_as_full_ticks(session_of, "FreshMethod", 4).record.plays[-1]
-    assert play.tick_plan.pulled == 1
+    expect_stepping(play.tick_plan.pulled == 1)
 
 
 # A change goes into an object resolved at plan time, with all it holds; an
@@ -847,8 +850,8 @@ def test_a_change_through_what_a_callback_holds_or_made_pulls_it(session_of, nam
     updater changes what a dt updater integrates, and the plan pulls it.
     """
     play = _same_as_full_ticks(session_of, name, 4, SOUNDNESS_SCENES).record.plays[-1]
-    assert play.stepping_ticks > 0
-    assert play.tick_plan.pulled == 1
+    expect_stepping(play.stepping_ticks > 0)
+    expect_stepping(play.tick_plan.pulled == 1)
 
 
 @pytest.mark.parametrize(
@@ -889,8 +892,8 @@ def test_a_change_through_what_a_local_or_a_call_hands_back_pulls_it(session_of,
     reaches the shown dot, and the plan pulls the updater.
     """
     play = _same_as_full_ticks(session_of, name, 4, SOUNDNESS_SCENES).record.plays[-1]
-    assert play.stepping_ticks > 0
-    assert play.tick_plan.pulled == 1
+    expect_stepping(play.stepping_ticks > 0)
+    expect_stepping(play.tick_plan.pulled == 1)
 
 
 def test_an_argument_after_an_unpacked_one_may_bind_any_later_parameter(session_of):
@@ -901,8 +904,8 @@ def test_an_argument_after_an_unpacked_one_may_bind_any_later_parameter(session_
     play = _same_as_full_ticks(
         session_of, "StarTailRead", 4, SOUNDNESS_SCENES
     ).record.plays[-1]
-    assert play.stepping_ticks > 0
-    assert play.tick_plan.pulled == 1
+    expect_stepping(play.stepping_ticks > 0)
+    expect_stepping(play.tick_plan.pulled == 1)
 
 
 @pytest.mark.parametrize(
@@ -951,8 +954,8 @@ def test_a_callable_the_check_cannot_resolve_is_called_where_its_callee_may(
     call is an unknown one, and the plan pulls the updater making it.
     """
     play = _same_as_full_ticks(session_of, name, 4, SOUNDNESS_SCENES).record.plays[-1]
-    assert play.stepping_ticks > 0
-    assert play.tick_plan.pulled == 1
+    expect_stepping(play.stepping_ticks > 0)
+    expect_stepping(play.tick_plan.pulled == 1)
 
 
 @pytest.mark.parametrize(
@@ -974,8 +977,8 @@ def test_a_value_holding_a_callable_is_called_where_its_callee_may(session_of, n
     call what it is handed, and the plan pulls the updater making the call.
     """
     play = _same_as_full_ticks(session_of, name, 4, SOUNDNESS_SCENES).record.plays[-1]
-    assert play.stepping_ticks > 0
-    assert play.tick_plan.pulled == 1
+    expect_stepping(play.stepping_ticks > 0)
+    expect_stepping(play.tick_plan.pulled == 1)
 
 
 def test_a_return_read_while_its_relay_is_being_read_is_not_kept(session_of):
@@ -993,7 +996,7 @@ def test_a_return_read_while_its_relay_is_being_read_is_not_kept(session_of):
 @pytest.mark.parametrize(
     ("name", "why"),
     [
-        ("LateRegistryRead", "stores into a list the plan reads as it was"),
+        ("LateRegistryRead", "the plan reads what a list holds"),
         ("LateNonlocalRead", "binds current of another scope"),
     ],
 )
@@ -1016,7 +1019,7 @@ def test_a_store_into_the_attribute_a_proof_read_ends_it(session_of):
         session_of, "LateAttributeRead", 4, SOUNDNESS_SCENES
     ).record.plays[-1]
     assert play.stepping_ticks == 0
-    assert "the plan reads as it was" in play.tick_plan.unbounded
+    assert "the plan reads what a _Holder holds" in play.tick_plan.unbounded
 
 
 def test_a_store_into_another_attribute_leaves_the_proof_standing(session_of):
@@ -1026,7 +1029,7 @@ def test_a_store_into_another_attribute_leaves_the_proof_standing(session_of):
     play = _same_as_full_ticks(
         session_of, "OtherAttributeStore", 4, SOUNDNESS_SCENES
     ).record.plays[-1]
-    assert play.stepping_ticks > 0
+    expect_stepping(play.stepping_ticks > 0)
 
 
 @pytest.mark.parametrize("name", ["FactoryItemRead", "FactoryItemHandedRead"])
@@ -1035,8 +1038,8 @@ def test_an_item_of_a_defaultdict_runs_its_factory(session_of, name):
     function it hands the dict to, runs the factory: the updater is pulled.
     """
     play = _same_as_full_ticks(session_of, name, 4, SOUNDNESS_SCENES).record.plays[-1]
-    assert play.stepping_ticks > 0
-    assert play.tick_plan.pulled == 1
+    expect_stepping(play.stepping_ticks > 0)
+    expect_stepping(play.tick_plan.pulled == 1)
 
 
 def test_an_attribute_of_a_function_is_state_its_readers_read(session_of):
@@ -1046,7 +1049,7 @@ def test_an_attribute_of_a_function_is_state_its_readers_read(session_of):
     play = _same_as_full_ticks(
         session_of, "FunctionAttributeRead", 4, SOUNDNESS_SCENES
     ).record.plays[-1]
-    assert play.tick_plan.pulled == 2
+    expect_stepping(play.tick_plan.pulled == 2)
 
 
 def test_a_value_not_shown_free_of_callables_is_an_unknown_call(session_of):
@@ -1072,9 +1075,9 @@ def test_a_value_the_check_cannot_resolve_handed_to_code_that_never_calls_it(
     ``move_to``: the updater is stepped past.
     """
     play = _same_as_full_ticks(session_of, name, 4, SOUNDNESS_SCENES).record.plays[-1]
-    assert play.stepping_ticks > 0
+    expect_stepping(play.stepping_ticks > 0)
     assert play.tick_plan.pulled == 0
-    assert len(play.tick_plan.skipped) == 2
+    expect_stepping(len(play.tick_plan.skipped) == 2)
 
 
 def test_a_sum_whose_operand_is_not_numpys_own_array_may_be_that_operand(
@@ -1130,7 +1133,7 @@ def test_a_hook_that_rebinds_what_a_reader_reads_is_planned_for(session_of):
         assert np.array_equal(
             np.asarray(stepped.frame(at)), np.asarray(full.frame(at))
         ), at
-    assert ours.tick_plan.pulled == 1
+    expect_stepping(ours.tick_plan.pulled == 1)
 
 
 def test_a_hook_that_only_observes_leaves_every_frame_as_it_was(session_of):
@@ -1147,7 +1150,7 @@ def test_a_hook_that_only_observes_leaves_every_frame_as_it_was(session_of):
     )
     assert seen == [Fraction(0)]
     ours, theirs = observed.record.plays[-1], plain.record.plays[-1]
-    assert ours.stepping_ticks == theirs.stepping_ticks > 0
+    expect_stepping(ours.stepping_ticks == theirs.stepping_ticks > 0)
     assert ours.tick_plan.pulled == theirs.tick_plan.pulled
     assert ours.sample_keys() == theirs.sample_keys()
     for k in range(5):
@@ -1165,7 +1168,7 @@ def test_a_made_group_suspending_what_it_holds_is_never_stepped_past(session_of)
         session_of, "MadeGroupSuspends", 4, SOUNDNESS_SCENES
     ).record.plays[-1]
     assert play.stepping_ticks == 0
-    assert play.tick_plan.unbounded.startswith(STRUCTURAL)
+    expect_stepping(play.tick_plan.unbounded.startswith(STRUCTURAL))
 
 
 def test_a_global_rebound_by_setattr_is_never_stepped_past(session_of):

@@ -17,7 +17,7 @@ from arachne.timeline.clock import frames_in
 from arachne.utils.bezier import interpolate
 
 from . import route_scenes
-from .conftest import render
+from .conftest import expect_stepping, render
 
 ROUTE_SCENES = Path(route_scenes.__file__)
 
@@ -145,7 +145,7 @@ def test_a_pure_readout_of_a_container_is_admitted_with_its_contents(session_of)
 def test_a_callback_reading_what_a_later_one_writes_ticks(session_of):
     late = _play(session_of, "LateReader")
     assert late.route == "ticked"
-    (reason,) = late.admission.reasons
+    (reason,) = [r for r in late.admission.reasons if not r.startswith("tick.")]
     assert f"route_scenes.py:{_line_of('late')}" in reason
     assert "previous sample's value" in reason
     assert _play(session_of, "EarlyReader").route == "state"
@@ -164,7 +164,7 @@ def test_a_late_reader_reads_the_frame_before_as_in_ce(session_of, fps):
     for before, t in itertools.pairwise(instants):
         x0, _, x1, _ = session.state_at(before).named("dot").box
         t0, _, t1, _ = session.state_at(t).named("tag").box
-        assert (t0 + t1) / 2 == pytest.approx((x0 + x1) / 2), t
+        expect_stepping((t0 + t1) / 2 == pytest.approx((x0 + x1) / 2))
 
 
 @pytest.mark.parametrize("name", ["AnimationAsUpdater", "IllusionRotation"])

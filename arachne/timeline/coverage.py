@@ -11,10 +11,21 @@ they call), in any order, as if every branch ran.
 
 The value kinds the rules name are listed below the table
 (:data:`FREE_KINDS`, :data:`INERT_KINDS`, :data:`NATIVE_HOLDERS`,
-:data:`ITEM_KINDS`, :data:`STORING_METHODS`).
+:data:`ITEM_KINDS`), with the names reaching a namespace
+(:data:`NAMESPACE_ATTRIBUTES`, :data:`NAMESPACE_BUILTINS`).
 
-:func:`proven_pure` answers, from the same table, whether a function reads
-only its arguments and values no code stores into.
+What the analysis resolves when the play is planned stands for the whole
+play only when no code can change it. A value of a kind not inert (what a
+list, a dict, an object or a class holds) read then makes the play tick
+everything, whatever would change it
+(:meth:`.ticking._Writes.plan_reads_hold`); a binding (a closure's cell, a
+module's global, a function's default) changes only through forms the
+rules close.
+
+:func:`proven_pure` and :func:`result_kept` answer from the same table for
+callers outside the stepping check, as filters for precision only: nothing
+in the stepping check rests on them, and each has known limits (the
+tech-debt tracker lists them).
 """
 
 from __future__ import annotations
@@ -47,79 +58,102 @@ class Rule(enum.Enum):
     CONSTANT = (
         "a literal or a formatted string: holds no callable; inert when its"
         " value is of an INERT_KINDS kind (a formatted string is a str);"
-        " carries nothing"
+        " carries nothing; a formatted value runs its PROTOCOL"
     )
     LAMBDA = (
         "a function made in place: its body is read as code of the function"
-        " holding it (its calls are that function's calls), so it holds no"
-        " callable the analysis does not read; never inert; carries nothing"
+        " holding it (its calls are that function's calls), so, called where"
+        " it is made, it holds no callable the analysis does not read; stored,"
+        " it is found by what reads what holds it, which no plan rests on"
+        " (ATTRIBUTE, SUBSCRIPT); never inert; carries nothing"
     )
     PARTS = (
         "an operator, a display, a comprehension, a slice, a starred or"
         " named value: holds every callable any part holds (anything, if any"
         " part may hold anything): an operator may give back an operand, a"
         " [f] * n among them; inert when every part is; carries what its"
-        " parts carry"
+        " parts carry; an operator runs its operands' PROTOCOL (a boolean"
+        " operator their truth test), a slice its bounds', and a starred"
+        " value or a mapping unpacked into a display is iterated (ITERATION)"
     )
     GENERATOR = (
         "a generator expression: holds what its item holds (its code is read"
         " in place, like a lambda's body); never inert (a generator runs code"
-        " as it is read); carries what its parts carry"
+        " as it is read); carries what its parts carry; its iterables are"
+        " iterated (ITERATION)"
     )
     COMPARE = (
         "a comparison: a truth value unless an operand's own comparison"
         " makes another, so it holds nothing unless an operand may hold"
-        " anything; inert when every operand is"
+        " anything; inert when every operand is; runs its operands' PROTOCOL,"
+        " and the right operand of in and not in is iterated (ITERATION)"
     )
     NAME = (
         "a name: a parameter holds what its call site hands it (judged"
         " there); the owner, what it holds; a local name, every value any of"
         " its stores binds (anything for a binding no expression gives);"
-        " another name, what it is bound to when the play is planned (a"
-        " snapshot, which stands only while no reached code stores a value"
-        " not shown free of callables into it or rebinds the name)"
+        " another name, what its binding (a cell, a global, a default) holds"
+        " when the play is planned, which changes only by OUTER_REBIND, by a"
+        " store into an attribute of that name (STORE), or through a"
+        " namespace (NAMESPACE_ATTRIBUTES, NAMESPACE_BUILTINS); naming a"
+        " NAMESPACE_BUILTINS builtin makes the play tick everything"
     )
     ATTRIBUTE = (
         "an attribute: the object's own attribute when the analysis resolves"
-        " it at plan time (a snapshot of the object), else anything; inert"
-        " only when it resolves to an inert value"
+        " it at plan time; that reads what the object holds, which makes the"
+        " play tick everything unless the object is a module (a global's"
+        " binding, NAME) or the attribute is a mobject's member list (which"
+        " every stepping tick compares); one the object does not hold is read"
+        " through its class, a binding a store of that name may change"
+        " (STORE); else anything; inert only when it resolves to an inert"
+        " value; reading it runs its object's PROTOCOL; a"
+        " NAMESPACE_ATTRIBUTES attribute makes the play tick everything"
     )
     SUBSCRIPT = (
         "an item: read only on a base of an ITEM_KINDS kind, an inert value"
         " or a mobject's members; on any other base, a load, store or"
         " deletion of an item counts as a call of unknown code (its class's"
-        " __getitem__, __missing__, __setitem__); holds what its base holds"
+        " __getitem__, __missing__, __setitem__); holds what its base holds;"
+        " its key runs its PROTOCOL (hash, index)"
     )
     CALL = (
         "a call: the callables its arguments hold are read as called where"
-        " its callee may call them, and an argument that may hold anything"
-        " makes it an unknown call; its value holds nothing when it is inert"
-        " (len, math, the engine's getters, a method of an inert value,"
-        " NumPy's makers and ufuncs of inert values, a function of the"
-        " scene's whose every return is inert), else anything; a storing"
-        " method (STORING_METHODS) or setattr is a store into its receiver"
+        " its callee may call them, and an argument not shown free of"
+        " callables (a generator or an iterator among them, which a native"
+        " consuming it runs; an object of the scene's class, whose PROTOCOL"
+        " it may run) makes it an unknown call, whatever its callee; its"
+        " value holds nothing when it is inert (len, math, the engine's"
+        " getters, a method of an inert value, NumPy's makers and ufuncs of"
+        " inert values), else anything; a function of the scene's never"
+        " gives an inert value, whatever its code (a proof over code, not a"
+        " kind); a starred argument is iterated (ITERATION)"
     )
     SENT = (
         "a value sent into a generator or awaited (await, yield, yield"
-        " from): holds anything; never inert; carries what its parts carry"
+        " from): holds anything; never inert; carries what its parts carry;"
+        " awaiting is an unknown call, and yield from iterates (ITERATION)"
     )
     STORE = (
-        "an assignment or deletion: a name target binds the name (NAME); an"
-        " attribute or item target is a store into the object, which, with a"
-        " value not shown free of callables, ends every snapshot that read"
-        " that attribute of the object (any attribute, for an item store, a"
-        " deleted item aside, a storing call, a store into __class__ or"
-        " __dict__, or a value the engine's or a library's method may keep"
-        " in the object it is called on); the play then ticks everything."
-        " A receiver not resolved and not made by the function may be any"
-        " object; an item target follows SUBSCRIPT"
+        "an assignment or deletion: a name target binds the name (NAME); a"
+        " store into an object's attribute or item changes what the object"
+        " holds, on which no plan rests (ATTRIBUTE); a store of a value not"
+        " inert into an attribute of a module or a class named as such makes"
+        " the play tick everything, and into an attribute of any other"
+        " object (an operator in place's whatever its operand), makes it tick"
+        " everything when the plan read a global, or an attribute through a"
+        " class, of that name; an item target follows SUBSCRIPT; a tuple or"
+        " list target iterates the value (ITERATION); an operator in place"
+        " runs its operands' PROTOCOL"
     )
     BINDING = (
         "a statement or clause binding names (a loop, a with, an import, a"
         " definition, an except clause, a pattern, a type parameter): a name"
         " it binds holds what NAME says (a loop variable, its iterable's"
         " items; anything for a binding no expression gives); an attribute"
-        " or item it binds is a STORE"
+        " or item it binds is a STORE; a loop's or a comprehension clause's"
+        " iterable is iterated, and a tuple or list target iterates each"
+        " item (ITERATION); a comprehension clause's conditions run their"
+        " truth test (PROTOCOL); entering a with is an unknown call"
     )
     OUTER_REBIND = (
         "a global or nonlocal declaration: the play ticks everything unless"
@@ -128,7 +162,8 @@ class Rule(enum.Enum):
     CONTROL = (
         "control flow, a test, a raise, an expression statement, a return"
         " (whose value a function's returns are read from): the analysis is"
-        " flow-insensitive, so it reads every branch and adds nothing"
+        " flow-insensitive, so it reads every branch and adds nothing; a"
+        " test (if, while, assert) runs its truth test (PROTOCOL)"
     )
     PART = (
         "a part of the node holding it (a context, an operator, a"
@@ -140,6 +175,29 @@ class Rule(enum.Enum):
         " type comment, a class kept only for old code"
     )
     FALLBACK = "a form the analysis does not read: the play ticks everything"
+
+
+#: What iterating does wherever a form iterates (a loop, a comprehension,
+#: ``in``, a starred value, an unpacking target, ``yield from``), which the
+#: rules above name: iterating a value runs its kind's code, so it counts as
+#: calling it. Nothing for an inert value, a display, an exact native holder
+#: or range, an object of the engine's class, the result of a builtin making
+#: a container or an iterator (what it consumes is its argument, judged where
+#: it is handed) or of the engine's code, a parameter (its call site hands a
+#: value shown free of callables); an unknown call on anything else (a
+#: generator, an iterator, an object of the scene's class).
+ITERATION = "ITERATION"
+#: What Python runs on an operand by syntax, which the rules above name: an
+#: operator's, a comparison's, a truth test's, a formatting's, a hash's or
+#: an index's method of its class, and an attribute read's
+#: (``__getattribute__``, ``__getattr__``, a property's getter, another
+#: descriptor's ``__get__``). An unknown call when the operand may be an
+#: object whose class defines it in the scene's code, or a container
+#: (beyond a truth test, which only counts its items) or an array of objects
+#: whose items may; nothing for an inert value, a function made in place,
+#: an operation's result (its operands are judged where it is), the
+#: engine's code's result, a parameter.
+PROTOCOL = "PROTOCOL"
 
 
 _R = Rule
@@ -326,11 +384,9 @@ FREE_KINDS: tuple[type, ...] = (
     str,
     bytes,
     range,
-    slice,
     type(Ellipsis),
     fractions.Fraction,
     pathlib.PurePath,
-    np.dtype,
     re.Pattern,
 )
 #: The kinds of an inert value: one holding no callable whose items,
@@ -380,6 +436,47 @@ INERT_RESULT_BUILTINS: tuple[Any, ...] = (
     bin,
     hex,
     oct,
+)
+#: Attributes reaching a namespace: a function's globals, cells, defaults
+#: and code, an object's dict and class, a frame's names. Reading or storing
+#: one makes the play tick everything (a binding the plan read may change).
+NAMESPACE_ATTRIBUTES = frozenset(
+    {
+        "__globals__",
+        "__closure__",
+        "cell_contents",
+        "__defaults__",
+        "__kwdefaults__",
+        "__code__",
+        "__dict__",
+        "__class__",
+        "__bases__",
+        "__builtins__",
+        "f_globals",
+        "f_locals",
+        "f_builtins",
+        "f_back",
+        "gi_frame",
+        "cr_frame",
+        "ag_frame",
+        "tb_frame",
+    }
+)
+#: Builtins reaching a namespace by a name the code does not spell; naming
+#: one makes the play tick everything.
+NAMESPACE_BUILTINS = frozenset(
+    {
+        "globals",
+        "locals",
+        "vars",
+        "setattr",
+        "delattr",
+        "exec",
+        "eval",
+        "compile",
+        "__import__",
+        "breakpoint",
+    }
 )
 #: Methods of the native holders that store what they are handed into
 #: their receiver (``setattr`` and ``object.__setattr__`` store too).

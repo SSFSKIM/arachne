@@ -122,10 +122,11 @@ from typing import TYPE_CHECKING, Any, TypeGuard
 import numpy as np
 
 from .coverage import (
-    FREE_KINDS,
     INERT_KINDS,
     INERT_RESULT_BUILTINS,
-    STORING_METHODS,
+    NAMESPACE_ATTRIBUTES,
+    NAMESPACE_BUILTINS,
+    NATIVE_HOLDERS,
     Rule,
     inert_value,
     item_kind,
@@ -154,25 +155,137 @@ REACH_LIMIT = 50_000
 MAX_DEPTH = 4
 
 #: Names whose use reads or writes by a name the code does not spell.
-_DYNAMIC = frozenset(
+_DYNAMIC = (
+    frozenset(
+        {
+            "getattr",
+            "setattr",
+            "delattr",
+            "vars",
+            "locals",
+            "globals",
+            "eval",
+            "exec",
+            "compile",
+            "__dict__",
+            "__import__",
+            "__getattribute__",
+            "attrgetter",
+            "methodcaller",
+            "getattr_static",
+        }
+    )
+    | NAMESPACE_ATTRIBUTES
+    | NAMESPACE_BUILTINS
+)
+
+#: Builtins making a container or an iterator: iterating what one gives runs
+#: only what the call's arguments are judged for where they are handed.
+_ITERATOR_BUILTINS: tuple[Any, ...] = (
+    range,
+    enumerate,
+    zip,
+    map,
+    filter,
+    reversed,
+    sorted,
+    list,
+    tuple,
+    set,
+    frozenset,
+    dict,
+    iter,
+)
+
+#: Kinds whose iteration runs no code but the interpreter's: an exact native
+#: holder, a string, a range, a dict's view, a NumPy array.
+_QUIET_ITERABLES: tuple[type, ...] = (
+    *NATIVE_HOLDERS,
+    str,
+    bytes,
+    range,
+    type({}.keys()),
+    type({}.values()),
+    type({}.items()),
+    np.ndarray,
+)
+
+
+def _iterates_quietly(value: Any) -> bool:
+    """Whether iterating ``value`` (resolved) runs no code of the scene's:
+    an exact :data:`_QUIET_ITERABLES` kind, or an object of the engine's
+    class (whose iteration is the engine's code).
+    """
+    return type(value) in _QUIET_ITERABLES or engine_class(type(value))
+
+
+#: Methods a class runs as it makes or names its objects, never on one in use.
+_CONSTRUCTION = frozenset(
     {
-        "getattr",
-        "setattr",
-        "delattr",
-        "vars",
-        "locals",
-        "globals",
-        "eval",
-        "exec",
-        "compile",
-        "__dict__",
-        "__import__",
-        "__getattribute__",
-        "attrgetter",
-        "methodcaller",
-        "getattr_static",
+        "__init__",
+        "__new__",
+        "__init_subclass__",
+        "__set_name__",
+        "__class_getitem__",
+        "__subclasshook__",
+        "__post_init__",
+        "__del__",
     }
 )
+
+
+def _protocol_code_of(cls: type) -> bool:
+    """Whether ``cls`` defines, in the scene's code, a method Python runs
+    on its objects by syntax (an operator's, a truth test's, a formatting's,
+    a hash's, an attribute hook's).
+    """
+    return any(
+        name.startswith("__") and name.endswith("__") and name not in _CONSTRUCTION
+        for name in _user_methods(cls)
+    )
+
+
+def _protocol_code(value: Any, truth: bool = False) -> bool:
+    """Whether an operator, a formatting or (with ``truth``) a truth test on
+    ``value`` (resolved) may run the scene's code: its class's own
+    (:func:`_protocol_code_of`), or its items' for a container (a
+    comparison or a formatting reads them; a truth test only counts them)
+    and an array of objects.
+    """
+    if type(value) is np.ndarray or isinstance(value, np.generic):
+        return bool(value.dtype.hasobject)
+    if type(value) in (tuple, frozenset):
+        return not truth and any(_protocol_code(item) for item in value)
+    if type(value) in NATIVE_HOLDERS:
+        return not truth
+    return _protocol_code_of(type(value))
+
+
+def _reading_runs_code(value: Any, name: str) -> bool:
+    """Whether reading attribute ``name`` of ``value`` (resolved) may run the
+    scene's code: its class's ``__getattribute__`` or ``__getattr__``, a
+    property's getter, or a descriptor whose ``__get__`` or the function it
+    wraps is the scene's.
+    """
+    methods = _user_methods(type(value))
+    if "__getattribute__" in methods or "__getattr__" in methods:
+        return True
+    member = inspect.getattr_static(type(value), name, None)
+    if member is None or isinstance(
+        member,
+        (types.FunctionType, staticmethod, classmethod, types.BuiltinFunctionType),
+    ):
+        return False
+    getter = inspect.getattr_static(type(member), "__get__", None)
+    if getter is None:
+        return False
+    held = [
+        getter,
+        *(getattr(member, part, None) for part in ("fget", "func", "__wrapped__")),
+    ]
+    return any(
+        isinstance(each, types.FunctionType) and _user_function(each) for each in held
+    )
 
 
 @dataclass(frozen=True)
@@ -388,6 +501,13 @@ class Unbounded(Exception):
             return str(self)
         where = relative_path(code.co_filename, base_dir)
         return f"{code.co_name} at {where}:{code.co_firstlineno} {self}"
+
+
+class _UnboundedWrites(Unbounded):
+    """What a callback may write can't be bounded without what objects hold
+    when the plan is made, which may change as the play runs: the plan does
+    not skip it (:func:`_closure`).
+    """
 
 
 def _user_code(code: types.CodeType) -> bool:
@@ -1454,65 +1574,43 @@ class _Writes:
         #: What a change into what each of them returns may change, by its
         #: identity and the object it is called on (both kept).
         self._returned: dict[tuple[int, int], tuple[Any, Any, _Effect]] = {}
-        #: Whether each of them returns only inert values, by its identity and
-        #: the parameters inert at its call (the function kept).
-        self._inert_returns: dict[tuple[int, frozenset[str]], tuple[Any, bool]] = {}
-        #: The reads of :meth:`returns_inert` still open, and whether the one
-        #: running has rested on one of them.
-        self._inert_reading: set[tuple[int, frozenset[str]]] = set()
-        self._inert_assumed = False
-        #: The objects code the play reaches may store a value not shown free
-        #: of callables into, by id, each with the attributes stored
-        #: (``None``: anything it holds); and why it may store into any
-        #: object, when it may (:meth:`snapshots_hold`).
-        self.stores: dict[int, tuple[Any, set[str] | None]] = {}
-        self.stores_anywhere: str | None = None
+        #: The module globals the plan read, and the attributes it read
+        #: through a class (absent from the object), by name; and the
+        #: attributes reached code stores a value not inert into, on objects
+        #: not made by the function, each with why (:meth:`plan_reads_hold`).
+        self.global_reads: set[str] = set()
+        self.class_reads: set[str] = set()
+        self.loose_stores: dict[str, str] = {}
+        #: Why code the play reaches is not read, when some is: it may rebind
+        #: what the plan read (:meth:`plan_reads_hold`).
+        self.unread: str | None = None
         from .handed import Callers
 
         #: Which parameters each function may call (:mod:`.handed`).
         self.callers = Callers(self._bindings, MAX_DEPTH)
 
-    def store_into(self, value: Any, why: str, attribute: str | None = None) -> None:
-        """Note that reached code may store a value not shown free of
-        callables into ``value``'s ``attribute`` (anything it holds, when
-        ``None``; :data:`_UNKNOWN`: into any object).
+    def plan_reads_hold(self) -> None:
+        """Raise :class:`Unbounded` unless what the plan read when it was
+        made stands for the whole play: it read no value of a mutable kind
+        (:attr:`.handed.Callers.snapshots`: what a list, a dict, an object
+        or a class held), whatever could change it; it read all the code
+        the play reaches; and no reached store into an attribute may rebind
+        a module's global or a class's attribute it read, or shadow one, by
+        that name.
         """
-        if isinstance(value, _MEMBERS_OF):
-            value = value.mobject
-        if value is _UNKNOWN:
-            if self.stores_anywhere is None:
-                self.stores_anywhere = why
-            return
-        if isinstance(value, types.ModuleType):
-            raise Unbounded(f"{why}: a module's binding, which a global read snapshots")
-        if attribute in ("__class__", "__dict__"):
-            attribute = None  # every attribute it reads
-        _, stored = self.stores.get(id(value), (value, set()))
-        if stored is not None and attribute is not None:
-            stored = stored | {attribute}
-        else:
-            stored = None
-        self.stores[id(value)] = (value, stored)
-
-    def snapshots_hold(self) -> None:
-        """Raise :class:`Unbounded` unless every object a proof of the plan
-        read as it was (:attr:`.handed.Callers.snapshots`) is one no code the
-        play reaches may store a value not shown free of callables into.
-        """
-        read = self.callers.snapshots
-        if not read:
-            return
-        if self.stores_anywhere is not None:
-            raise Unbounded(
-                f"{self.stores_anywhere}, while the plan reads objects as they were"
-            )
-        for key in read.keys() & self.stores.keys():
-            value, attributes = read[key]
-            stored = self.stores[key][1]
-            if attributes is None or stored is None or attributes & stored:
+        for value, _ in self.callers.snapshots.values():
+            if not inert_value(value):
                 raise Unbounded(
-                    f"stores into a {type(value).__name__} the plan reads as it was"
+                    f"the plan reads what a {type(value).__name__} holds, which"
+                    " may change as the play runs"
                 )
+        if self.unread is not None:
+            raise Unbounded(self.unread)
+        read = self.global_reads | self.class_reads
+        for name in sorted(read & self.loose_stores.keys()):
+            raise Unbounded(
+                f"{self.loose_stores[name]}, which may rebind the {name} the plan read"
+            )
 
     def assignment_hooks(
         self, cls: type, name: str, deleting: bool
@@ -1574,8 +1672,8 @@ class _Writes:
         # objects keyed by id are kept, so that no id is reused.
         self._effects[key] = (function, owner, (this, made_type), _NO_EFFECT)
         if depth > MAX_DEPTH:
-            # Code not read may store anything anywhere.
-            self.store_into(_UNKNOWN, f"{function.__qualname__} is not read")
+            # Code not read may store anything anywhere, and rebind anything.
+            self.unread = self.unread or f"{function.__qualname__} is not read"
             effect = _UNKNOWN_CALL
         else:
             effect = self._scan(function, owners, owner, depth, made, this, made_type)
@@ -1595,8 +1693,10 @@ class _Writes:
         found = self._site(function, owners, owner, depth, made, this, made_type)
         if found is None:
             # Its code's names are the reach's to read; its stores, not read,
-            # may go anywhere.
-            self.store_into(_UNKNOWN, f"{function.__qualname__}'s source is not read")
+            # may go anywhere and rebind anything.
+            self.unread = self.unread or (
+                f"{function.__qualname__}'s source is not read"
+            )
             return _UNKNOWN_CALL
         node, site = found
         effect = site.read_table(node)
@@ -1657,54 +1757,6 @@ class _Writes:
             if isinstance(item, ast.Return) and item.value is not None:
                 effect |= site.expr_writes(item.value)
         return effect
-
-    def returns_inert(
-        self, function: types.FunctionType, inert: frozenset[str]
-    ) -> bool:
-        """Whether every value the scene's ``function`` returns is inert
-        (:meth:`_Site._inert`) when its parameters ``inert`` are.
-        """
-        key = (id(function), inert)
-        found = self._inert_returns.get(key)
-        if found is not None and found[0] is function:
-            return found[1]
-        if key in self._inert_reading:
-            # A call back into one still being read returns what its other
-            # returns do: assumed inert, so what rests on it is not kept
-            # until the outermost read settles it.
-            self._inert_assumed = True
-            return True
-        assumed, self._inert_assumed = self._inert_assumed, False
-        self._inert_reading.add(key)
-        try:
-            result = self._scan_inert_returns(function, inert)
-        finally:
-            self._inert_reading.discard(key)
-        if not result or not self._inert_assumed or not self._inert_reading:
-            # Not inert holds whatever was assumed; inert holds when nothing
-            # was, or when no read the assumption was about is still open.
-            self._inert_returns[key] = (function, result)
-        self._inert_assumed = assumed or (self._inert_assumed and result)
-        return result
-
-    def _scan_inert_returns(
-        self, function: types.FunctionType, inert: frozenset[str]
-    ) -> bool:
-        found = self._site(function, frozenset(), None, 0, frozenset(), None, None)
-        if found is None:
-            return False
-        node, site = found
-        site.inert_parameters = inert
-        if isinstance(node, ast.Lambda):
-            return site._inert(node.body, set())
-        own = _own_nodes(node)
-        if any(isinstance(item, (ast.Yield, ast.YieldFrom, ast.Await)) for item in own):
-            return False
-        return all(
-            item.value is None or site._inert(item.value, set())
-            for item in own
-            if isinstance(item, ast.Return)
-        )
 
     def _site(
         self,
@@ -2064,8 +2116,6 @@ class _Site:
     local_from: dict[str, list[Any]] = field(default_factory=dict)
     #: The function's own code.
     code: types.CodeType | None = None
-    #: Its parameters its call site hands inert values (:meth:`_inert`).
-    inert_parameters: frozenset[str] = frozenset()
 
     def classes(self, receiver: ast.AST) -> set[type] | None:
         """The classes of what ``receiver`` names, ``None`` when that can't be
@@ -2155,7 +2205,16 @@ class _Site:
                 finally:
                     self.resolving.discard(node.id)
             found = self.bindings.get(node.id, _UNKNOWN)
-            return found if found is not _PARAMETER else _UNKNOWN
+            if found is _PARAMETER:
+                return _UNKNOWN
+            if (
+                found is not _UNKNOWN
+                and self.code is not None
+                and node.id not in self.code.co_freevars
+                and found is not getattr(builtins, node.id, _UNKNOWN)
+            ):
+                self.writes.global_reads.add(node.id)  # a global's binding
+            return found
         if isinstance(node, ast.Attribute):
             base = self.resolve(node.value)
             if base is _UNKNOWN or isinstance(base, _MEMBERS_OF):
@@ -2163,9 +2222,21 @@ class _Site:
             # On the instance only: a class attribute is shared, and resolving
             # it would take what its class holds for what this one does.
             try:
-                return vars(base).get(node.attr, _UNKNOWN)
+                found = vars(base).get(node.attr, _UNKNOWN)
             except TypeError:
                 return _UNKNOWN
+            if isinstance(base, types.ModuleType):
+                self.writes.global_reads.add(node.attr)  # a global's binding
+            elif found is _UNKNOWN:
+                # Absent from the object, so read through its class: a
+                # class's binding, which a store of that name may change.
+                self.writes.class_reads.add(node.attr)
+            elif not (node.attr in _STRUCTURE_LISTS and isinstance(base, Mobject)):
+                # What the object holds, read as it is now: no plan rests on
+                # it (a mobject's member list is compared at every stepping
+                # tick).
+                self.writes.callers.note_snapshot(base, node.attr)
+            return found
         if isinstance(node, ast.Subscript):
             base = self.resolve(node.value)
             if isinstance(base, Mobject) and engine_code(type(base).__getitem__):
@@ -2383,6 +2454,15 @@ class _Site:
         if default is _PARAMETER or default is _UNKNOWN:
             return handed
         return handed | _into(default)
+
+    def fallback(self, name: str) -> Any:
+        """What the parameter ``name`` holds when its caller hands nothing:
+        its default, or the object a method is called on; ``_PARAMETER``
+        when only a caller fills it (and hands a value shown free of
+        callables).
+        """
+        found = self.bindings.get(name, _PARAMETER)
+        return _PARAMETER if found is _UNKNOWN else found
 
     def fresh_writes(self, name: str, seen: frozenset[str] = frozenset()) -> _Effect:
         """A change into what the object ``name``, which the function made,
@@ -2674,61 +2754,18 @@ class _Site:
             target = self._callable_value(argument)
             if target is not None:
                 effect |= self._called_effect(target, argument)
-                self._note_kept(call, argument)
                 continue
             held = self._held(argument, set())
             if held is None:
                 effect |= _UNKNOWN_CALL  # a value not shown free of callables
-                self._note_kept(call, argument)
                 continue
-            if held == ():
-                continue
-            self._note_kept(call, argument)
-            if not self.unresolved_call_reason(call, argument):
+            if held == () or not self.unresolved_call_reason(call, argument):
                 continue
             for each in held:
                 effect |= self._called_effect(each, None)
+        # Where a callee keeps what it is handed needs no note: whatever
+        # later reads it reads what an object holds, on which no plan rests.
         return effect
-
-    def _note_kept(self, call: ast.Call, argument: ast.expr) -> None:
-        """Note that the engine's or a library's code ``call`` runs may keep
-        ``argument``, a value not shown free of callables, where it may call
-        it (:mod:`.handed`). A callee of the scene's is read for its own
-        stores; a class keeps what it is handed in the object it makes. The
-        engine's method keeps it in the object it is called on, the engine's
-        function in nothing it was handed (the engine's code keeps values
-        only in the objects it is called on or makes); any other method in
-        the object it is called on, any other function in the objects it is
-        handed.
-        """
-        callees = self._callees(call)
-        if callees and all(
-            isinstance(target, type)
-            or _user_function(getattr(target, "__func__", target))
-            for target, _, _ in callees
-        ):
-            return
-        if not self.unresolved_call_reason(call, argument):
-            return
-        why = f"{_describe_code(self.code)} hands a value to code that may keep it"
-        func = call.func
-        if isinstance(func, ast.Attribute) and not isinstance(
-            self._bound(func.value), types.ModuleType
-        ):
-            self._note_receiver(func.value, why)
-            return
-        if callees and all(
-            engine_code(getattr(target, "__func__", target)) for target, _, _ in callees
-        ):
-            return
-        for other in [*call.args, *(k.value for k in call.keywords)]:
-            if isinstance(other, ast.Starred):
-                other = other.value
-            if other is argument:
-                continue
-            found = self.resolve(other)
-            if found is not _UNKNOWN and not isinstance(found, FREE_KINDS):
-                self.writes.store_into(found, why)
 
     def _called_effect(self, target: Any, argument: ast.AST | None) -> _Effect:
         """What calling ``target``, a callable handed (as ``argument``, or
@@ -2769,8 +2806,6 @@ class _Site:
             found = self.resolve(node)
             if found is _UNKNOWN:
                 return None
-            assert isinstance(node, ast.Attribute)
-            self.writes.callers.note_snapshot(self.resolve(node.value), node.attr)
             return self._object_held(found)
         if rule is Rule.SUBSCRIPT:
             assert isinstance(node, ast.Subscript)
@@ -2911,7 +2946,7 @@ class _Site:
             if node.id in self.owners:
                 return False
             if node.id in self.parameters:
-                return node.id in self.inert_parameters
+                return False  # what a call site hands it may be anything
             if values is None:
                 return inert_value(self.resolve(node))
             bound = self._outer(node.id)
@@ -2926,19 +2961,15 @@ class _Site:
             resolving.add(node.id)
             try:
                 return all(
-                    node.id in self.inert_parameters
-                    if value is _PARAMETER
-                    else value is not None and self._inert(value, resolving)
+                    value is not _PARAMETER
+                    and value is not None
+                    and self._inert(value, resolving)
                     for value in values
                 )
             finally:
                 resolving.discard(node.id)
         if rule is Rule.ATTRIBUTE:
-            assert isinstance(node, ast.Attribute)
-            found = self.resolve(node)
-            if found is not _UNKNOWN:
-                self.writes.callers.note_snapshot(self.resolve(node.value), node.attr)
-            return inert_value(found)
+            return inert_value(self.resolve(node))
         if rule is Rule.COMPARE:
             assert isinstance(node, ast.Compare)
             return all(
@@ -2961,8 +2992,8 @@ class _Site:
         count, a function of :mod:`math`, a mobject's getter of a number or
         an array (the engine's own), a method of an inert value, a function
         making a number or an array (:meth:`_Writes.value_call`) of inert
-        values, a function of the scene's whose every return is inert given
-        what it is handed (:meth:`_Writes.returns_inert`).
+        values. A function of the scene's is never taken for one: what it
+        returns would rest on a proof over its code, not on a kind.
         """
         func = node.func
         arguments = [*node.args, *(keyword.value for keyword in node.keywords)]
@@ -2981,9 +3012,6 @@ class _Site:
                 )
             if isinstance(target, np.ufunc):  # held under a name of its own
                 return all(self._inert(argument, resolving) for argument in arguments)
-            if _user_function(target):
-                inert = self._inert_parameters(node, target, resolving)
-                return inert is not None and self.writes.returns_inert(target, inert)
             if (
                 isinstance(target, types.MethodType)
                 and target.__func__.__name__ in _VALUE_GETTERS
@@ -3010,45 +3038,20 @@ class _Site:
             self._inert(argument, resolving) for argument in arguments
         )
 
-    def _inert_parameters(
-        self, call: ast.Call, function: types.FunctionType, resolving: set[str]
-    ) -> frozenset[str] | None:
-        """The parameters of ``function`` that ``call`` binds only to inert
-        values (:meth:`_inert`), a default or nothing (an empty ``*args``
-        or ``**kwargs``) among them; ``None`` when what it binds can't be
-        told.
-        """
-        binding = _arguments_of(call, function)
-        if binding is None:
-            return None
-        code = function.__code__
-        positional = code.co_varnames[: code.co_argcount]
-        named = code.co_varnames[: code.co_argcount + code.co_kwonlyargcount]
-        defaults = dict(
-            zip(positional[::-1], (function.__defaults__ or ())[::-1], strict=False)
-        )
-        defaults.update(function.__kwdefaults__ or {})
-        found = set()
-        for name, handed in binding.items():
-            if handed:
-                if all(self._inert(argument, resolving) for argument in handed):
-                    found.add(name)
-            elif name not in named:
-                found.add(name)  # an empty ``*args`` or ``**kwargs``
-            elif name in defaults and inert_value(defaults[name]):
-                found.add(name)
-        return frozenset(found)
-
     def read_table(self, node: ast.AST) -> _Effect:
         """Read every node of the function's code by its rule in
-        :data:`.coverage.OPERATIONS`: a form with no rule, or a global or
-        nonlocal name bound to a value not shown inert, makes the play tick
-        everything (:class:`Unbounded`); a store into an object, or a
-        storing call, is noted (:meth:`_Writes.store_into`); an item read,
-        stored or deleted on a base that may run code of its own is that
-        code's effect.
+        :data:`.coverage.OPERATIONS`. A form with no rule, a name or an
+        attribute reaching a namespace, a global or nonlocal name bound to a
+        value not shown inert, or a store that may rebind a global or a
+        class's attribute makes the play tick everything (:class:`Unbounded`);
+        an item read, stored or deleted on a base that may run code of its
+        own, iterating a value and entering a ``with`` are that code's
+        effect.
         """
         effect = _NO_EFFECT
+        callees = frozenset(
+            id(item.func) for item in _walk(node) if isinstance(item, ast.Call)
+        )
         for item in _walk(node):
             rule = rule_of(item)
             if rule is Rule.FALLBACK:
@@ -3057,6 +3060,8 @@ class _Site:
                     " check does not read",
                     self.code,
                 )
+            self._namespace(item)
+            effect |= self._protocol(item, callees)
             if rule is Rule.OUTER_REBIND:
                 assert isinstance(item, (ast.Global, ast.Nonlocal))
                 for name in item.names:
@@ -3065,16 +3070,184 @@ class _Site:
                             f"binds {name} of another scope to a value not shown inert",
                             self.code,
                         )
-            elif rule in (Rule.STORE, Rule.BINDING):
+            elif rule is Rule.STORE:
                 for target, value in _stored(item):
-                    self._note_store(target, value)
-            elif rule is Rule.CALL:
-                assert isinstance(item, ast.Call)
-                self._note_storing_call(item)
+                    self._rebinds(item, target, value)
             if rule is Rule.SUBSCRIPT:
                 assert isinstance(item, ast.Subscript)
                 effect |= self._item_code(item)
+            effect |= self._iterating(item)
         return effect
+
+    def _namespace(self, item: ast.AST) -> None:
+        """Raise :class:`Unbounded` for a node reaching a namespace: an
+        attribute of :data:`.coverage.NAMESPACE_ATTRIBUTES`, a builtin of
+        :data:`.coverage.NAMESPACE_BUILTINS`.
+        """
+        if isinstance(item, ast.Attribute) and item.attr in NAMESPACE_ATTRIBUTES:
+            raise Unbounded(f"reaches {item.attr}, a namespace", self.code)
+        if (
+            isinstance(item, ast.Name)
+            and item.id in NAMESPACE_BUILTINS
+            and self.bindings.get(item.id) is getattr(builtins, item.id)
+        ):
+            raise Unbounded(f"names {item.id}, which reaches a namespace", self.code)
+
+    def _protocol(self, item: ast.AST, callees: frozenset[int]) -> _Effect:
+        """What ``item`` may run of its operands' own classes (PROTOCOL in
+        :class:`.coverage.Rule`): an operator's, a comparison's, a truth
+        test's, a formatting's, an item's key's and an attribute read's
+        code. Each is an unknown call when an operand may be an object
+        whose class defines that code in the scene's (:meth:`_runs_protocol`).
+        ``callees`` are the ids of the attributes that are a call's callee,
+        judged as calls.
+        """
+        operands: list[ast.AST] = []
+        truth: list[ast.AST] = []
+        if isinstance(item, ast.BinOp):
+            operands = [item.left, item.right]
+        elif isinstance(item, ast.UnaryOp):
+            if isinstance(item.op, ast.Not):
+                truth = [item.operand]
+            else:
+                operands = [item.operand]
+        elif isinstance(item, ast.AugAssign):
+            operands = [item.target, item.value]
+        elif isinstance(item, ast.Compare):
+            operands = [item.left, *item.comparators]
+        elif isinstance(item, ast.BoolOp):
+            truth = list(item.values)
+        elif isinstance(item, (ast.If, ast.While, ast.IfExp, ast.Assert)):
+            truth = [item.test]
+        elif isinstance(item, ast.comprehension):
+            truth = list(item.ifs)
+        elif isinstance(item, ast.FormattedValue):
+            operands = [item.value]
+        elif isinstance(item, ast.Subscript):
+            operands = [item.slice]
+        elif isinstance(item, ast.Slice):
+            operands = [part for part in (item.lower, item.upper, item.step) if part]
+        elif (
+            isinstance(item, ast.Attribute)
+            and isinstance(item.ctx, ast.Load)
+            and id(item) not in callees
+        ):
+            return self._attribute_read(item)
+        if any(self._runs_protocol(each) for each in operands) or any(
+            self._runs_protocol(each, truth=True) for each in truth
+        ):
+            return _UNKNOWN_CALL
+        return _NO_EFFECT
+
+    def _attribute_read(self, item: ast.Attribute) -> _Effect:
+        """What reading ``item`` may run: its object's class's
+        ``__getattribute__`` or ``__getattr__``, a property's getter or
+        another descriptor's ``__get__``, when the scene's code defines it;
+        an unknown call when the object is not resolved and not inert.
+        """
+        if (
+            isinstance(item.value, ast.Name)
+            and item.value.id in self.parameters
+            and item.value.id not in self.owners
+            and self.fallback(item.value.id) is _PARAMETER
+        ):
+            return _NO_EFFECT  # its call site hands a value shown free
+        base = self.resolve(item.value)
+        if isinstance(base, _MEMBERS_OF):
+            base = base.mobject
+        if base is _UNKNOWN:
+            return _NO_EFFECT if self._inert(item.value, set()) else _UNKNOWN_CALL
+        if isinstance(base, types.ModuleType):
+            return _NO_EFFECT
+        self.writes.class_reads.add(item.attr)  # its class's binding (STORE)
+        return _UNKNOWN_CALL if _reading_runs_code(base, item.attr) else _NO_EFFECT
+
+    def _runs_protocol(
+        self, node: ast.AST, seen: frozenset[str] = frozenset(), truth: bool = False
+    ) -> bool:
+        """Whether the value of ``node`` may be an object whose class
+        defines in the scene's code what an operator, a formatting or (with
+        ``truth``) a truth test runs (:func:`_protocol_code`): not for an
+        inert value, a function made in place, the result of an operation
+        (its operands are judged where it is), a builtin's, NumPy's or the
+        engine's result of a kind not the scene's, a parameter (its call
+        site hands a value shown free of callables).
+        """
+        if self._inert(node, set()) or isinstance(
+            node,
+            (
+                ast.Lambda,
+                ast.Constant,
+                ast.JoinedStr,
+                ast.BinOp,
+                ast.UnaryOp,
+                ast.Compare,
+            ),
+        ):
+            return False
+        if isinstance(node, (*_DISPLAYS, ast.Set, ast.SetComp, ast.GeneratorExp)):
+            return not truth  # a container's comparison or form reads its items
+        if isinstance(node, ast.BoolOp):
+            return any(self._runs_protocol(part, seen, truth) for part in node.values)
+        if isinstance(node, ast.IfExp):
+            return any(
+                self._runs_protocol(part, seen, truth)
+                for part in (node.body, node.orelse)
+            )
+        if isinstance(node, ast.NamedExpr):
+            return self._runs_protocol(node.value, seen, truth)
+        if isinstance(node, ast.Call):
+            return not self._gives_quiet_value(node, truth)
+        if isinstance(node, ast.Name) and node.id not in self.owners:
+            if node.id in self.parameters:
+                return self._handed_runs_protocol(node.id, truth)
+            values = self.local_from.get(node.id)
+            if values is not None:
+                if node.id in seen:
+                    return False  # its other stores say the rest
+                return any(
+                    value is None
+                    or (
+                        self._handed_runs_protocol(node.id, truth)
+                        if value is _PARAMETER
+                        else self._runs_protocol(value, seen | {node.id}, truth)
+                    )
+                    for value in values
+                )
+        found = self.resolve(node)
+        if isinstance(found, _MEMBERS_OF):
+            found = found.mobject
+        return found is _UNKNOWN or _protocol_code(found, truth)
+
+    def _handed_runs_protocol(self, name: str, truth: bool) -> bool:
+        """Whether an operator, a formatting or (with ``truth``) a truth test
+        on the parameter ``name`` may run the scene's code: a caller hands a
+        value shown free of callables, but the value it falls back to
+        (:meth:`fallback`) is judged as it is.
+        """
+        found = self.fallback(name)
+        return found is not _PARAMETER and _protocol_code(found, truth)
+
+    def _gives_quiet_value(self, call: ast.Call, truth: bool) -> bool:
+        """Whether ``call`` gives a value whose class's own code is not the
+        scene's, nor its items' where the protocol reads them: an inert
+        value, an object the engine's code gives or a class with no such
+        code makes; a container or an iterator a builtin makes, for a truth
+        test only (a comparison or a formatting reads its items).
+        """
+        if self._inert(call, set()):
+            return True
+        func = call.func
+        if isinstance(func, ast.Name):
+            target = self.bindings.get(func.id, _UNKNOWN)
+            if any(target is each for each in _ITERATOR_BUILTINS):
+                return truth
+            if isinstance(target, type) and engine_class(target):
+                return True
+        callees = self._callees(call)
+        return callees is not None and all(
+            engine_code(getattr(target, "__func__", target)) for target, _, _ in callees
+        )
 
     def _binds_inert(self, node: ast.AST, name: str) -> bool:
         """Whether every value the function binds ``name`` to is inert, its
@@ -3088,98 +3261,176 @@ class _Site:
                 return False
         return True
 
-    def _free(self, value: ast.AST | None) -> bool:
-        """Whether a value stored is shown free of callables: never a
-        parameter's (what a call site hands it may be anything).
-        """
-        if value is None:
-            return False
-        if any(
-            isinstance(each, ast.Name) and each.id in self.parameters
-            for each in ast.walk(value)
-        ):
-            return False
-        return self._held(value, set()) == ()
-
-    def _note_receiver(
-        self, node: ast.AST, why: str, attribute: str | None = None
-    ) -> None:
-        """Note a store into what ``node`` names (:meth:`_Writes.store_into`):
-        nothing for an object the function makes; each item, for an item of
-        a resolved list, tuple or dict (read as it is: a snapshot); any
-        object, for one not resolved.
-        """
-        if self._made_here(node):
-            return
-        found = self.resolve(node)
-        if found is _UNKNOWN and isinstance(node, ast.Subscript):
-            base = self.resolve(node.value)
-            if type(base) in (list, tuple, dict):
-                self.writes.callers.note_snapshot(base)
-                for item in base.values() if isinstance(base, dict) else base:
-                    if not isinstance(item, FREE_KINDS):
-                        self.writes.store_into(item, why)
-                return
-        self.writes.store_into(found, why, attribute)
-
-    def _made_here(self, node: ast.AST) -> bool:
-        """Whether ``node`` names an object the function makes: a call
-        making one (a class, a copy), a display, or a local name every store
-        binds to one of those.
-        """
-        if isinstance(node, ast.Call):
-            return self._class_made(node) is not None
-        if isinstance(node, (*_DISPLAYS, ast.Set, ast.SetComp)):
-            return True
-        if not isinstance(node, ast.Name):
-            return False
-        if node.id in self.fresh:
-            return True
-        values = self.local_from.get(node.id)
-        return (
-            bool(values)
-            and node.id not in self.parameters
-            and self._outer(node.id) is _UNKNOWN
-            and all(
-                isinstance(value, ast.AST) and self._made_here(value)
-                for value in values or ()
-            )
-        )
-
-    def _note_store(self, target: ast.AST, value: ast.AST | None) -> None:
-        """Note a store of ``value`` into an attribute or an item in
-        ``target``, when it is not shown free of callables.
+    def _rebinds(self, item: ast.AST, target: ast.AST, value: ast.AST | None) -> None:
+        """Raise :class:`Unbounded` when a store into an attribute rebinds
+        what the plan reads as a binding: a module's global, a class's
+        attribute (a method among them). Note any other store into an
+        attribute by its name (:meth:`_Writes.plan_reads_hold`): on an
+        object not resolved it may be either, and on any object it may
+        shadow what the plan read through its class. A value inert by kind
+        brings no code, and an object the function made was read by no
+        plan.
         """
         for part in _store_targets(target):
-            if isinstance(part, ast.Subscript) and isinstance(part.ctx, ast.Del):
-                continue  # removing an item adds no callable
-            if self._free(value):
+            if not isinstance(part, ast.Attribute):
                 continue
-            self._note_receiver(
-                part.value,
-                f"{_describe_code(self.code)} stores into an object",
-                part.attr if isinstance(part, ast.Attribute) else None,
+            if (
+                value is not None
+                and not isinstance(item, ast.AugAssign)
+                and self._inert(value, set())
+            ):
+                continue
+            if isinstance(part.value, ast.Name) and part.value.id in self.fresh:
+                continue
+            # Resolved through a binding only: a store through what an object
+            # holds is noted by name below, whatever the object turns out to be.
+            receiver = (
+                self.resolve(part.value) if isinstance(part.value, ast.Name) else None
+            )
+            if isinstance(receiver, (types.ModuleType, type)):
+                raise Unbounded(
+                    f"stores into {part.attr} of the {type(receiver).__name__}"
+                    f" {getattr(receiver, '__name__', '')}, a binding the plan reads",
+                    self.code,
+                )
+            self.writes.loose_stores.setdefault(
+                part.attr, f"{_describe_code(self.code)} stores into {part.attr}"
             )
 
-    def _note_storing_call(self, call: ast.Call) -> None:
-        """Note a call storing what it is handed into its receiver: a
-        storing method (:data:`.coverage.STORING_METHODS`), ``setattr``.
+    def _iterating(self, item: ast.AST) -> _Effect:
+        """What the iterating ``item`` does may run (ITERATION in
+        :class:`.coverage.Rule`): a loop's or a comprehension clause's
+        iterable, and each item an unpacking target takes apart; the right
+        operand of ``in``; a starred value; a value unpacked into names; a
+        ``yield from``'s. Awaiting and entering a ``with`` run code of the
+        value's kind: unknown calls.
+        """
+        if isinstance(item, (ast.For, ast.AsyncFor, ast.comprehension)):
+            effect = self._iterated(item.iter)
+            if isinstance(item.target, (ast.Tuple, ast.List)):
+                effect |= self._items_iterated(item.iter)
+            return effect
+        if isinstance(item, ast.Compare):
+            effect = _NO_EFFECT
+            for op, right in zip(item.ops, item.comparators, strict=True):
+                if isinstance(op, (ast.In, ast.NotIn)):  # codespell:ignore
+                    effect |= self._iterated(right)
+            return effect
+        if isinstance(item, ast.Starred) and isinstance(item.ctx, ast.Load):
+            return self._iterated(item.value)
+        if isinstance(item, ast.Dict):
+            effect = _NO_EFFECT
+            for key, value in zip(item.keys, item.values, strict=True):
+                if key is None:  # ``**mapping``
+                    effect |= self._iterated(value)
+            return effect
+        if isinstance(item, ast.Assign) and any(
+            isinstance(target, (ast.Tuple, ast.List)) for target in item.targets
+        ):
+            return self._iterated(item.value)
+        if isinstance(item, ast.YieldFrom):
+            return self._iterated(item.value)
+        if isinstance(item, (ast.Await, ast.With, ast.AsyncWith)):
+            return _UNKNOWN_CALL
+        return _NO_EFFECT
+
+    def _iterated(self, node: ast.AST, seen: frozenset[str] = frozenset()) -> _Effect:
+        """What iterating the value of ``node`` may run: nothing for an
+        inert value, a display, a builtin making an iterator (its arguments
+        are its call's to judge), a call of the engine's code, a parameter
+        (its call site hands a value shown free of callables), or a value
+        whose kind iterates without code of the scene's
+        (:func:`_iterates_quietly`); an unknown call for anything else.
+        """
+        if self._inert(node, set()) or isinstance(
+            node, (*_DISPLAYS, ast.Set, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+        ):
+            return _NO_EFFECT
+        if isinstance(node, ast.Call):
+            return _NO_EFFECT if self._makes_quiet_iterable(node) else _UNKNOWN_CALL
+        if isinstance(node, ast.Name) and node.id not in self.owners:
+            if node.id in self.parameters:
+                return self._handed_iterated(node.id)
+            values = self.local_from.get(node.id)
+            if values is not None:
+                if node.id in seen:
+                    return _NO_EFFECT  # its other stores say the rest
+                effect = _NO_EFFECT
+                for value in values:
+                    if value is None:
+                        return _UNKNOWN_CALL
+                    if value is _PARAMETER:
+                        effect |= self._handed_iterated(node.id)
+                    else:
+                        effect |= self._iterated(value, seen | {node.id})
+                return effect
+        found = self.resolve(node)
+        if isinstance(found, _MEMBERS_OF) or (
+            found is not _UNKNOWN and _iterates_quietly(found)
+        ):
+            return _NO_EFFECT
+        return _UNKNOWN_CALL
+
+    def _handed_iterated(self, name: str) -> _Effect:
+        """What iterating the parameter ``name`` may run: nothing for what a
+        caller hands (a value shown free of callables); for the value it
+        falls back to (:meth:`fallback`), nothing only when that iterates
+        without the scene's code.
+        """
+        found = self.fallback(name)
+        if found is _PARAMETER or inert_value(found) or _iterates_quietly(found):
+            return _NO_EFFECT
+        return _UNKNOWN_CALL
+
+    def _items_iterated(self, node: ast.AST) -> _Effect:
+        """What taking apart each item of ``node``'s value may run: nothing
+        for the tuples a builtin pairing values gives (``zip``,
+        ``enumerate``, a dict's ``items``) or the items of a display, each
+        judged as iterated; an unknown call for any other.
+        """
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Name) and any(
+                self.bindings.get(func.id) is each for each in (zip, enumerate)
+            ):
+                return _NO_EFFECT
+            if isinstance(func, ast.Attribute) and func.attr == "items":
+                return _NO_EFFECT if self._makes_quiet_iterable(node) else _UNKNOWN_CALL
+        if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+            effect = _NO_EFFECT
+            for each in node.elts:
+                effect |= self._iterated(each)
+            return effect
+        return _UNKNOWN_CALL
+
+    def _makes_quiet_iterable(self, call: ast.Call) -> bool:
+        """Whether ``call`` gives an iterable whose iteration runs only what
+        the call itself is judged for: a builtin making a container or an
+        iterator (what it consumes is its argument, judged where it is
+        handed), a dict's or a list's own method, NumPy's or the engine's
+        code.
         """
         func = call.func
-        arguments = [*call.args, *(k.value for k in call.keywords)]
-        receivers: list[ast.AST] = []
-        if isinstance(func, ast.Attribute) and func.attr in STORING_METHODS:
-            receivers.append(func.value)
-            if func.attr in ("__setattr__", "__setitem__") and call.args:
-                receivers.append(call.args[0])  # ``object.__setattr__(o, …)``
-        elif isinstance(func, ast.Name) and self.resolve(func) is setattr:
-            receivers.extend(call.args[:1])
-        if not receivers or all(self._free(argument) for argument in arguments):
-            return
-        for node in receivers:
-            self._note_receiver(
-                node, f"{_describe_code(self.code)} stores into an object"
-            )
+        if isinstance(func, ast.Name):
+            target = self.bindings.get(func.id, _UNKNOWN)
+            if any(target is each for each in _ITERATOR_BUILTINS):
+                return True
+        if isinstance(func, ast.Attribute):
+            receiver = self.resolve(func.value)
+            if func.attr in ("items", "keys", "values", "copy") and (
+                type(receiver) in NATIVE_HOLDERS
+                or (
+                    receiver is _UNKNOWN
+                    and (self.classes(func.value) or {object}) <= {dict, list}
+                )
+            ):
+                return True
+        if self.writes.value_call(call, self.bindings):
+            return True
+        callees = self._callees(call)
+        return callees is not None and all(
+            engine_code(getattr(target, "__func__", target)) for target, _, _ in callees
+        )
 
     def _item_code(self, item: ast.Subscript) -> _Effect:
         """What reading, storing or deleting an item of ``item.value`` may
@@ -3263,6 +3514,7 @@ class _Site:
         if classes is None:
             return None
         found_callees: list[tuple[Any, bool, type | None]] = []
+        self.writes.class_reads.add(func.attr)  # a class's binding (STORE)
         for cls in classes:
             member = inspect.getattr_static(cls, func.attr, None)
             if member is None:
@@ -3281,11 +3533,7 @@ class _Site:
         """
         if not isinstance(node, (ast.Name, ast.Attribute)):
             return None
-        found = self.resolve(node)
-        if isinstance(node, ast.Attribute):
-            # Its own attributes as they are now: a snapshot (an attribute
-            # stored later may hold another callable, or shadow a method).
-            self.writes.callers.note_snapshot(self.resolve(node.value), node.attr)
+        found = self.resolve(node)  # what an object holds is read as it is
         if found is _UNKNOWN and isinstance(node, ast.Attribute):
             base = self.resolve(node.value)
             if base is _UNKNOWN or isinstance(base, _MEMBERS_OF):
@@ -4202,17 +4450,12 @@ class _Node:
         )
 
     def written(self) -> frozenset[int]:
-        """What it may write. Anything it reaches is only asked for when the
-        play has stepping work; reaching it unboundedly then raises
-        :class:`Unbounded`, since stepping work may read any of it. A module
-        global's binding is among what it may write only when code it
-        reaches may rebind one.
+        """What it may write. Writes bounded only by what it reaches raise
+        :class:`_UnboundedWrites`: what it reaches is read from what objects
+        hold when the plan is made, which may change as the play runs.
         """
         if self.writes is _REACHED:
-            reads = self.reads
-            if getattr(reads, "rebinds", True):
-                return reads
-            return frozenset(reads - getattr(reads, "globals", frozenset()))
+            raise _UnboundedWrites(f"{self.what} may write whatever it reaches")
         if callable(self.writes):
             self.writes = self.writes()
         return self.writes
@@ -4223,15 +4466,16 @@ def _family_ids(mob: Any) -> frozenset[int]:
 
 
 def _effect_writes(
-    effect: _Effect,
-    mob: Any,
-    reads: Callable[[], frozenset[int]] | None = None,
+    effect: _Effect, mob: Any
 ) -> frozenset[int] | Callable[[], frozenset[int]] | None:
     """What a callback with ``effect`` that updates ``mob`` (``None`` for
-    none) may write: ``mob``'s family, and what its changes elsewhere go
-    into; anything it reaches when one of those is not resolved. What it
-    changes it reaches, so what ``reads`` finds bounds the changes that go
-    into its targets (which may hold more than its code can get to).
+    none) may write: ``mob``'s family (whose members every stepping tick
+    compares), and the arrays its changes elsewhere go into, by the memory
+    each holds. A change into any other object, or anything it holds, would
+    be bounded by what that object holds when the plan is made, which may
+    change as the play runs: asked for it, the play ticks everything
+    (:class:`Unbounded`), as for anything it reaches when a target is not
+    resolved.
     """
     # (What it changes through its parameters is what it is handed: the
     # mobject it updates, and a number, dt or alpha.)
@@ -4243,19 +4487,15 @@ def _effect_writes(
     targets = effect.targets
 
     def written() -> frozenset[int]:
-        reached = None
-        if reads is not None:
-            with contextlib.suppress(Unbounded):
-                found = reads()
-                # (A change into an object rebinds no module global.)
-                reached = found - getattr(found, "globals", frozenset())
-        try:
-            into = _written_into(targets)
-        except Unbounded:
-            if reached is None:
-                raise
-            return own | reached
-        return own | (into if reached is None else into & reached)
+        for target in targets:
+            if isinstance(target, _CodeRef) or (
+                target is not _IN_PLACE_UNRESOLVED
+                and not isinstance(target.value, np.ndarray)
+            ):
+                raise _UnboundedWrites(
+                    f"writes into what a {type(target.value).__name__} holds"
+                )
+        return own | _written_into(targets)
 
     return written
 
@@ -4392,7 +4632,7 @@ def _updater_node(
             reaches[found] = reach([function], [member, target])
         return reaches[found]
 
-    writes = _effect_writes(effect, target, reads)
+    writes = _effect_writes(effect, target)
     role = "step" if loads_dt(updater) else "instant"
     return _Node(
         what,
@@ -4407,9 +4647,11 @@ def _updater_node(
 
 def _closure(nodes: list[_Node]) -> int:
     """Activate every node stepping work reads, directly or through what
-    reads it; return how many dt-free updaters that pulls onto the stepping
-    tick. With no stepping work nothing is read at a stepping tick, so
-    nothing is pulled, whatever the others may write.
+    reads it, and every node whose writes can't be bounded without what
+    objects hold when the plan is made (:class:`_UnboundedWrites`); return
+    how many dt-free updaters that pulls onto the stepping tick. With no
+    stepping work nothing is read at a stepping tick, so nothing is pulled,
+    whatever the others may write.
     """
     needed: set[int] = set()
     for node in nodes:
@@ -4421,7 +4663,13 @@ def _closure(nodes: list[_Node]) -> int:
     while changed:
         changed = False
         for node in nodes:
-            if not node.active and node.written() & needed:
+            if node.active:
+                continue
+            try:
+                pulls = bool(node.written() & needed)
+            except _UnboundedWrites:
+                pulls = True
+            if pulls:
                 node.active = True
                 needed |= node.reads
                 changed = True
@@ -4495,9 +4743,8 @@ def plan_ticks(
                     reach(list(centres.values()), centres),
                 )
             )
-        # What a proof read as it was stands only while nothing the play
-        # runs stores into it.
-        check.snapshots_hold()
+        # The plan rests on nothing that may change as the play runs.
+        check.plan_reads_hold()
         pulled = _closure(nodes)
         # Work a stepping tick runs must not change which updaters there are:
         # the tick would meet work no plan weighed, after skipping what it
@@ -4512,6 +4759,7 @@ def plan_ticks(
     except Unbounded as refused:
         return unbounded(refused.describe(base_dir))
     roots = (*_copies(animations), *scene.mobjects)
+    members = frozenset(id(member) for root in roots for member in root.get_family())
     return TickPlan(
         skipped=frozenset(
             key
@@ -4522,12 +4770,12 @@ def plan_ticks(
         known=frozenset(key for node in nodes for key in node.keys),
         stepping=sum(1 for node in nodes if node.role == "step" and node.keys),
         pulled=pulled,
-        stepped_ids=_stepped_ids(nodes),
+        stepped_ids=_stepped_ids(nodes, members),
         rechecks=any(node.restructures or node.unknown for node in nodes),
         structure=current_structure(scene, animations),
         scene_updaters=tuple(map(id, scene.updaters)),
         roots=tuple(map(id, roots)),
-        members=frozenset(id(member) for root in roots for member in root.get_family()),
+        members=members,
     )
 
 
@@ -4537,13 +4785,20 @@ def _structural(node: _Node) -> TickPlan:
     )
 
 
-def _stepped_ids(nodes: list[_Node]) -> frozenset[int]:
-    """What the work a stepping tick runs may read or write."""
+def _stepped_ids(nodes: list[_Node], members: frozenset[int]) -> frozenset[int]:
+    """What the work a stepping tick runs may read or write; every one of
+    ``members`` (the roots' families) when what it writes can't be bounded,
+    so that any change to a family is taken to affect the plan.
+    """
     found: set[int] = set()
     for node in nodes:
         if node.active:
             found |= node.reads
         if node.active or node.role == "transparent":
-            with contextlib.suppress(Unbounded):
+            try:
                 found |= node.written()
+            except _UnboundedWrites:
+                found |= members
+            except Unbounded:
+                pass
     return frozenset(found)

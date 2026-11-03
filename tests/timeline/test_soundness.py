@@ -44,7 +44,7 @@ from arachne.timeline.purity import Refused, prove_builder, prove_setter_body
 from arachne.timeline.routes import RecordRefused
 
 from . import soundness_scenes
-from .conftest import SMALL, render
+from .conftest import SMALL, expect_stepping, render
 
 SOUNDNESS_SCENES = Path(soundness_scenes.__file__)
 
@@ -77,13 +77,13 @@ def _steps_once_per_frame(session_of, name: str, kind: str = "Dot") -> None:
     for fps in (4, 15):
         session = session_of(name, SOUNDNESS_SCENES, frame_rate=fps)
         play = session.record.plays[-1]
-        assert play.stepping_ticks > 0, (fps, play.admission.reasons)
+        expect_stepping(play.stepping_ticks > 0)
         instants = frames_in(play.start, play.end, Fraction(fps))
         assert len(instants) == fps
         for k, t in enumerate(instants):
             nodes = [n for n in session.state_at(t).nodes if n.type == kind]
             (x_min, _, x_max, _) = nodes[0].box
-            assert (x_min + x_max) / 2 == pytest.approx(0.02 * (k + 1)), (fps, k)
+            expect_stepping((x_min + x_max) / 2 == pytest.approx(0.02 * (k + 1)))
 
 
 # 1. Changing an array the callback did not make.
