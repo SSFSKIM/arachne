@@ -92,6 +92,34 @@ Work to do, not debt to wait on: each item leaves a play ticking everything
   current attributes, the engine's included, not only the classes the
   scene's module defines.
 
+## Content keys (`arachne/timeline/record.py`)
+
+- **A rounded key tells numbers apart by which side of a rounding boundary
+  they fall on, not by how far apart they are.** `_value_key` rounds a
+  value's floats to `decimals` and hashes the result, so two keys are equal
+  exactly when every number rounds alike. Two coordinates one ulp apart
+  (2.2e-16) on either side of a boundary key apart (`-0.9213813375` and
+  `-0.9213813374999997` round to 9 decimals differently), while two 9e-10
+  apart inside one bin key alike. `PlayRecord.sample_keys`
+  (`SAMPLE_DECIMALS` = 9) decides with it whether a stepping run's captures
+  match a run that ticks everything. On one measured scene, a difference of
+  at most 2.22e-16 at three play starts put 64 glyph coordinates on a
+  10th-decimal half-way point, and rounding flipped 6 of them, so 14 nodes
+  key apart. At 6, 7, 8, 10, 11 or 12 decimals none flip. An execution's
+  `divergence` compares unrounded keys (`content_key()`), which tell apart
+  any two values that differ at all. Route 2's restore (M5) inherits the
+  limit if it compares state by key. Every flip fails safe:
+  - a sample-key comparison reports a difference stepping did not make;
+  - a divergence is logged where nothing a frame reads moved;
+  - a restore is refused and the scene runs forward.
+
+  No key agrees where values differ by more than a bin's width. The fix:
+  when two keys differ, compare the raw values the captures still hold,
+  within 1e-9, before reporting a difference, and keep the key as the fast
+  path for equality. Reproducer:
+  `tests/timeline/test_sample_keys.py::test_a_sample_key_rounds_numbers_so_nearness_does_not_decide_equality`
+  (it asserts today's behaviour).
+
 ## The draw route (`arachne/timeline/dispatch.py`)
 
 - **A refused draw costs the scene a second execution.** A class whose
