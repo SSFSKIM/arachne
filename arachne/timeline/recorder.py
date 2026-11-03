@@ -73,6 +73,8 @@ class PlayRun:
         #: The last structure found to leave the plan true, though it is not
         #: the one the plan was made for (:meth:`stepping_plan`).
         self._kept_structure: tuple[int, ...] | None = None
+        #: Whether the play plans its ticks once evaluated at its start.
+        self.plans = False
 
     def set_clock(self, instant: Fraction) -> None:
         """Make the scene clock read ``instant``, drawing first whatever frames
@@ -168,11 +170,27 @@ class PlayRun:
         )
 
     def started(self) -> None:
-        """Show the play's evaluation at its start to the recorder's
-        ``on_start`` hook, before its first tick.
+        """The play has been evaluated at its start: show that state to the
+        recorder's ``on_start`` hook, then plan which of its ticks only step
+        (:func:`.plan_ticks`), from whatever the hook left. A run that ticks
+        everything makes the plan all the same, for a comparison to read,
+        and applies none of it.
         """
-        if self.recorder.on_start is not None:
-            self.recorder.on_start(self.scene, self.start)
+        recorder = self.recorder
+        if recorder.on_start is not None:
+            recorder.on_start(self.scene, self.start)
+        if not self.plans:
+            return
+        play = self.play
+        plan = plan_ticks(
+            self.scene, list(play._animations), _base_dir(recorder.ensure_record())
+        )
+        self._set_plan(plan, self.start)
+        if plan.unbounded is not None and recorder.stepping:
+            assert play.admission is not None
+            play.admission = replace(
+                play.admission, reasons=(*play.admission.reasons, plan.unbounded)
+            )
 
     def stepped(self, tick: Fraction, *, full: bool) -> None:
         """Count a tick, and show it to the recorder's diagnostic hooks
@@ -227,9 +245,11 @@ class Recorder:
     there what each tick changed, the record keeping no tick a frame does
     not read. ``on_start`` is called once for each ticked play, as
     ``on_start(scene, start)``, after the play's evaluation at its start and
-    before its first tick: the state its first tick steps from. Neither
-    ``on_tick`` nor ``on_step`` is called for the start. Unset, they cost
-    nothing; set, they observe and must change nothing.
+    before its first tick and before the play plans its ticks: the state its
+    first tick steps from, and what the plan is made from, whatever the hook
+    changed. Neither ``on_tick`` nor ``on_step`` is called for the start.
+    Unset, they cost nothing; set, ``on_tick`` and ``on_step`` observe and
+    must change nothing.
     """
 
     def __init__(
@@ -487,30 +507,20 @@ class Recorder:
                 base_dir=_base_dir(record),
                 refusal=refusal,
             )
-            if (
-                admission.route == "ticked"
-                and not play.held
-                and self.grid is not None
-                and scene.stop_condition is None
-            ):
-                # Which of its ticks only step: those no frame reads. A run
-                # that ticks everything makes the plan all the same, for a
-                # comparison to read, and applies none of it.
-                tick_plan = plan_ticks(scene, animations, _base_dir(record))
-                if not self.stepping:
-                    tick_plan = replace(tick_plan, applied=False)
-                play.set_tick_plan(tick_plan, start)
-                if tick_plan.unbounded is not None and self.stepping:
-                    admission = replace(
-                        admission,
-                        reasons=(*admission.reasons, tick_plan.unbounded),
-                    )
             play.admission = admission
             play.route = admission.route
             play.events = tuple(plan.instants(start, requested_end + 1))
             route = ROUTE_CLASSES[admission.route]()
             camera = scene.renderer.camera
             run = PlayRun(self, play, route, live)
+            # Which of its ticks only step (those no frame reads) is planned
+            # once the play has been evaluated at its start (``started``).
+            run.plans = (
+                admission.route == "ticked"
+                and not play.held
+                and self.grid is not None
+                and scene.stop_condition is None
+            )
             run._extras = CameraExtras.observe(camera, None)
             play.static_seq = self.capture("static", start, play, run._extras).seq
             if live is not None:

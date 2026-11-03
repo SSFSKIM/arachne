@@ -3,6 +3,27 @@
 Known gaps kept on record rather than fixed, each with the test that
 reproduces it.
 
+## Soundness: what stepping may still skip wrongly (`arachne/timeline/ticking.py`)
+
+- **A callable handed to a call is read only where the check resolves it.**
+  A call may call what it is handed (`sorted`'s key, `map`'s function, a
+  compiled pattern's replacement, `np.apply_along_axis`, an engine method's
+  function argument). `_Site._handed_callables` reads each argument that
+  resolves to a callable (a function, a method of a resolved object, a
+  class, an object with a `__call__` of the scene's) as called with
+  arguments no call site binds. An argument it can't resolve (read out of a
+  container, handed back by a call, a loop's variable) is taken for no
+  callable, so a function of the scene's reached that way and writing what
+  a stepping reader reads is skipped at stepping ticks. Reproducers, strict
+  xfails until fixed:
+  `tests/timeline/test_stepping.py::test_a_callable_the_check_cannot_resolve_handed_to_a_call`
+  (scenes `DictHeldCallableRead`, `ReturnedCallableRead`). Taking every
+  unresolved argument for an unknown callable is sound and costs most
+  plays their stepping (an unresolved point handed to `move_to`); the fix
+  needs a bound on what an unresolved value may be: a callable only if the
+  callback's reach holds a function of the scene's that writes outside its
+  own family, or only for callees that may call what they are handed.
+
 ## Planned precision work before G4 (`arachne/timeline/ticking.py`)
 
 Work to do, not debt to wait on: each item leaves a play ticking everything
@@ -14,7 +35,7 @@ Work to do, not debt to wait on: each item leaves a play ticking everything
   mobject whose `[k] = other` replaces a member, so a dt updater doing it
   leaves its play structural. Built and then reverted for want of a play
   it steps in this corpus without the item below: restore it from commit
-  `c24b7d78` (on `c52-m4-precision`, reverted by the commit after it). It
+  `d8a068f3` (on `c52-m4-precision`, reverted by the commit after it). It
   types the variable when every item of what it loops over is a plain dict:
   not a module's, nor the attribute dict of the scene, its renderer or
   camera, an animation or a mobject of the scene (a store there rebinds

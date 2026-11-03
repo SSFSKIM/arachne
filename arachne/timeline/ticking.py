@@ -2288,11 +2288,13 @@ class _Site:
             return self.expr_writes(expr.value, seen)
         parts: list[ast.AST] = []
         if isinstance(expr, ast.BinOp):
-            # (A mobject's ``+`` groups both; arithmetic on an array of
-            # numbers makes a new one.)
-            parts = [
-                part for part in (expr.left, expr.right) if not self._number_array(part)
-            ] or [ast.Constant(value=0)]
+            # A mobject's ``+`` groups both; arithmetic on NumPy's own arrays
+            # of numbers makes a new one. Any other operand's operator, or
+            # its reflected form, may hand back either operand.
+            operands: list[ast.AST] = [expr.left, expr.right]
+            if all(self._number_array(part) for part in operands):
+                return _NO_EFFECT
+            parts = operands
         elif isinstance(expr, ast.UnaryOp):
             parts = [expr.operand]
         elif isinstance(expr, ast.BoolOp):
@@ -2470,7 +2472,12 @@ class _Site:
         return held
 
     def _number_array(self, node: ast.AST) -> bool:
-        """Whether ``node`` names an array of numbers, resolved."""
+        """Whether ``node`` is a number or names an array of numbers of
+        NumPy's own class (a subclass's operators may hand back an operand),
+        resolved.
+        """
+        if isinstance(node, ast.Constant):
+            return type(node.value) in (int, float, complex)
         if not isinstance(node, (ast.Name, ast.Attribute)):
             return False
         if isinstance(node, ast.Name) and (
@@ -2480,7 +2487,7 @@ class _Site:
         ):
             return False  # bound as the function runs
         found = self.resolve(node)
-        return isinstance(found, np.ndarray) and found.dtype != object
+        return type(found) is np.ndarray and found.dtype != object
 
     def _generator(self, receiver: ast.AST) -> bool:
         """Whether ``receiver`` names a random generator the function made."""
@@ -2497,7 +2504,7 @@ class _Site:
         """What ``call`` may change: what its callee does, and the arrays it
         hands for a result to be written into.
         """
-        effect = self._callee_effect(call)
+        effect = self._callee_effect(call) | self._handed_callables(call)
         func = call.func
         method = None
         if isinstance(func, ast.Attribute) and self._called(func.value) is _UNKNOWN:
@@ -2515,6 +2522,79 @@ class _Site:
                     item.value if isinstance(item, ast.Starred) else item
                 )
         return effect
+
+    def _handed_callables(self, call: ast.Call) -> _Effect:
+        """What the callables ``call`` hands may do: whatever it calls may
+        call them in turn (a key, a pattern's replacement, a mapped
+        function), with arguments of its own, so each is taken as called
+        with arguments no call site binds. An argument the check can't
+        resolve is taken for no callable, a known gap
+        (``tech-debt-tracker.md``); a function of the scene's made in the
+        call (a closure a function of the scene's returns) is read where it
+        is made.
+        """
+        effect = _NO_EFFECT
+        for argument in [*call.args, *(k.value for k in call.keywords)]:
+            if isinstance(argument, ast.Starred):
+                argument = argument.value
+            if (
+                isinstance(argument, ast.Call)
+                and self._called(argument.func) is operator.methodcaller
+            ):
+                # It calls a method by name on whatever it is handed.
+                effect |= _UNKNOWN_CALL
+                continue
+            target = self._callable_value(argument)
+            if target is None:
+                continue
+            if isinstance(target, types.FunctionType) and not _user_function(target):
+                # A library's or the engine's function, called by what it
+                # hands it (``Mobject.shift`` mapped over mobjects): judged
+                # by what its code may reach, not by its name.
+                effect |= self.writes.effect(target, frozenset(), None, self.depth + 1)
+                continue
+            name = argument.attr if isinstance(argument, ast.Attribute) else ""
+            if isinstance(argument, ast.Name):
+                name = argument.id
+            effect |= _no_call_site(self.writes.callee(name, target, self.depth))
+        return effect
+
+    def _callable_value(self, node: ast.AST) -> Any:
+        """The callable ``node`` resolves to, a method of a resolved object
+        bound to it, else ``None``.
+        """
+        if not isinstance(node, (ast.Name, ast.Attribute)):
+            return None
+        found = self.resolve(node)
+        if found is _UNKNOWN and isinstance(node, ast.Attribute):
+            base = self.resolve(node.value)
+            if base is _UNKNOWN or isinstance(base, _MEMBERS_OF):
+                return None
+            member = inspect.getattr_static(type(base), node.attr, None)
+            if isinstance(member, staticmethod):
+                return member.__func__
+            if isinstance(member, classmethod):
+                return types.MethodType(member.__func__, type(base))
+            if isinstance(member, types.FunctionType):
+                return types.MethodType(member, base)
+            return None
+        if found is _UNKNOWN or isinstance(found, _MEMBERS_OF) or not callable(found):
+            return None
+        if isinstance(
+            found,
+            (
+                type,
+                types.FunctionType,
+                types.MethodType,
+                types.BuiltinFunctionType,
+                np.ufunc,
+            ),
+        ):
+            return found
+        call = inspect.getattr_static(type(found), "__call__", None)
+        if isinstance(call, types.FunctionType):
+            return types.MethodType(call, found)
+        return found  # a callable object the check does not read
 
     def _called(self, func: ast.AST) -> Any:
         """The object ``func`` names, as :meth:`resolve` finds it, and a
@@ -2755,7 +2835,8 @@ def _arguments_of(
     """The arguments ``call`` binds to each parameter of ``callee`` (a
     function of the scene's, a method, a class whose constructor is one);
     ``None`` when they can't be told apart. An argument unpacked from a
-    sequence or a mapping may go to any parameter from where it stands.
+    sequence or a mapping may go to any parameter from where it stands, and
+    so may every positional argument after the first unpacked one.
     """
     if isinstance(callee, types.MethodType):
         callee, bound = callee.__func__, True
@@ -2776,12 +2857,17 @@ def _arguments_of(
         positional = positional[1:]
     names = [*positional, *keyword_only, *filter(None, (varargs, varkw))]
     found: dict[str, list[ast.expr]] = {name: [] for name in names}
+    unpacked_at: int | None = None
     for index, argument in enumerate(call.args):
-        if isinstance(argument, ast.Starred):
-            for name in [*positional[index:], *filter(None, (varargs,))]:
-                found[name].append(argument.value)
-            break
-        if index < len(positional):
+        if unpacked_at is None and isinstance(argument, ast.Starred):
+            unpacked_at = index
+        if unpacked_at is not None:
+            # The first unpacking's length is not known: it and every
+            # argument after it may land at any position from its own on.
+            value = argument.value if isinstance(argument, ast.Starred) else argument
+            for name in [*positional[unpacked_at:], *filter(None, (varargs,))]:
+                found[name].append(value)
+        elif index < len(positional):
             found[positional[index]].append(argument)
         elif varargs is not None:
             found[varargs].append(argument)
