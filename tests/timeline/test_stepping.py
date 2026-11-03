@@ -232,7 +232,8 @@ def test_a_store_into_an_item_that_is_or_may_become_a_mobject_is_never_stepped_p
     """
     play = _same_as_full_ticks(session_of, name, 4, SOUNDNESS_SCENES).record.plays[-1]
     assert play.stepping_ticks == 0
-    assert play.tick_plan.unbounded.startswith(STRUCTURAL)
+    # The store through the variable also ends what the plan read as it was.
+    assert play.tick_plan.unbounded.startswith((STRUCTURAL, UNBOUNDED))
 
 
 def test_a_store_into_a_sum_of_what_a_dict_holds_is_taken_for_a_restructure(
@@ -260,7 +261,11 @@ def test_a_method_of_an_unresolved_receiver_is_taken_for_the_scenes_code(session
         session_of, "UnresolvedMethodRead", 4, SOUNDNESS_SCENES
     ).record.plays[-1]
     assert play.stepping_ticks == 0
-    assert play.tick_plan.unbounded.startswith(f"{STRUCTURAL}: updater <lambda> ")
+    # Its helper's store into the pair it holds also ends what the plan read
+    # of the pair as it was.
+    assert play.tick_plan.unbounded.startswith(
+        (f"{STRUCTURAL}: updater <lambda> ", UNBOUNDED)
+    )
 
 
 def test_getattr_by_a_constant_name_is_a_bounded_read(session_of):
@@ -985,6 +990,65 @@ def test_a_return_read_while_its_relay_is_being_read_is_not_kept(session_of):
     assert play.tick_plan.pulled == 2
 
 
+@pytest.mark.parametrize(
+    ("name", "why"),
+    [
+        ("LateRegistryRead", "stores into a list the plan reads as it was"),
+        ("LateNonlocalRead", "binds current of another scope"),
+    ],
+)
+def test_state_changed_after_the_plan_is_made_ends_what_it_read(session_of, name, why):
+    """A list the plan read empty, which an updater appends the function to
+    later, and a closure's name an updater rebinds (``nonlocal``) to it: what
+    the plan read as it was does not stand, and the play ticks everything.
+    """
+    play = _same_as_full_ticks(session_of, name, 4, SOUNDNESS_SCENES).record.plays[-1]
+    assert play.stepping_ticks == 0
+    assert play.tick_plan.unbounded.startswith(UNBOUNDED)
+    assert why in play.tick_plan.unbounded
+
+
+def test_a_store_into_the_attribute_a_proof_read_ends_it(session_of):
+    """An object's function, which an updater rebinds on the object after
+    0.3 s while another hands it to ``sorted``: the play ticks everything.
+    """
+    play = _same_as_full_ticks(
+        session_of, "LateAttributeRead", 4, SOUNDNESS_SCENES
+    ).record.plays[-1]
+    assert play.stepping_ticks == 0
+    assert "the plan reads as it was" in play.tick_plan.unbounded
+
+
+def test_a_store_into_another_attribute_leaves_the_proof_standing(session_of):
+    """The control: a number stored into another attribute of the object
+    leaves what the plan read of its function standing, and the play steps.
+    """
+    play = _same_as_full_ticks(
+        session_of, "OtherAttributeStore", 4, SOUNDNESS_SCENES
+    ).record.plays[-1]
+    assert play.stepping_ticks > 0
+
+
+@pytest.mark.parametrize("name", ["FactoryItemRead", "FactoryItemHandedRead"])
+def test_an_item_of_a_defaultdict_runs_its_factory(session_of, name):
+    """A missing item of a ``defaultdict``, read in the updater or in a
+    function it hands the dict to, runs the factory: the updater is pulled.
+    """
+    play = _same_as_full_ticks(session_of, name, 4, SOUNDNESS_SCENES).record.plays[-1]
+    assert play.stepping_ticks > 0
+    assert play.tick_plan.pulled == 1
+
+
+def test_an_attribute_of_a_function_is_state_its_readers_read(session_of):
+    """An attribute of a function, set by one updater after 0.3 s and read by
+    another: the function is keyed, so the setter and the reader are pulled.
+    """
+    play = _same_as_full_ticks(
+        session_of, "FunctionAttributeRead", 4, SOUNDNESS_SCENES
+    ).record.plays[-1]
+    assert play.tick_plan.pulled == 2
+
+
 def test_a_value_not_shown_free_of_callables_is_an_unknown_call(session_of):
     """A generator handed to ``zip``, which calls nothing it is handed but
     runs the generator's code taking its items: a value of a kind not shown
@@ -1112,7 +1176,8 @@ def test_a_global_rebound_by_setattr_is_never_stepped_past(session_of):
         session_of, "ModuleSetattrRead", 4, SOUNDNESS_SCENES
     ).record.plays[-1]
     assert play.stepping_ticks == 0
-    assert play.tick_plan.unbounded.startswith(STRUCTURAL)
+    # A store into a module's binding is one a global read snapshots.
+    assert play.tick_plan.unbounded.startswith((STRUCTURAL, UNBOUNDED))
 
 
 @pytest.mark.xfail(
