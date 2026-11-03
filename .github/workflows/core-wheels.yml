@@ -1,0 +1,49 @@
+# Builds the core's wheels (arachne-core: one abi3 wheel for CPython 3.12+ per platform) for
+# manylinux_2_28 x86_64 and macOS arm64, with the toolchain core/rust-toolchain.toml pins, and keeps
+# them as workflow artifacts. Runs on every pull request touching core/ and on every push to main.
+# Builds from source at a pinned commit (the gate, the production image) do not depend on these.
+name: core-wheels
+on:
+  pull_request:
+    paths: ['core/**', '.github/workflows/core-wheels.yml']
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  wheel:
+    name: wheel (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: manylinux_2_28-x86_64
+            runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            manylinux: '2_28'
+          - platform: macos-arm64
+            runner: macos-latest
+            target: aarch64-apple-darwin
+            manylinux: ''
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: The pinned toolchain
+        id: toolchain
+        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' core/rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - uses: PyO3/maturin-action@v1
+        with:
+          working-directory: core
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          rust-toolchain: ${{ steps.toolchain.outputs.channel }}
+          args: --release --locked --out dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: arachne-core-${{ matrix.platform }}
+          path: core/dist/*.whl
+          if-no-files-found: error
