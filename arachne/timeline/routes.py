@@ -12,7 +12,7 @@ route a play takes is decided when it begins (:mod:`.admission`).
   instant (answer ``"analytic"``).
 - ``"state"`` (route 2): the play is sampled at the instants its consumer
   reads (a render's frame grid; a session's 60 Hz tick) and at its events;
-  an unsampled instant is :class:`Unavailable` until restore lands (M5).
+  an unsampled instant is :class:`Unavailable` until the planned restore work lands.
 - ``"ticked"`` (route 3): the play steps on the global 60 Hz tick, its events
   taken at the first tick at or after their instants, and an instant reads
   the last tick at or before it. Sound by construction: a sample is the
@@ -63,7 +63,7 @@ if TYPE_CHECKING:
 
 class Unavailable(LookupError):
     """The record can't answer this instant: a state-function play (route 2)
-    was not sampled there, and restoring it is not built yet (M5).
+    was not sampled there, and restoring it is not built yet (planned restore work).
     """
 
 
@@ -335,8 +335,8 @@ def _resolve(
         if sample is None:
             raise Unavailable(
                 f"Play {play.index} is a state-function play (route 2) the record did"
-                f" not sample at {t}; answering it there needs restore, which arrives"
-                " with M5."
+                f" not sample at {t}; answering it there needs restore, which is"
+                " planned work."
             )
         return play, sample, None, "recorded"
     base = play.base_at(t)
