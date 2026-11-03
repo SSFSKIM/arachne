@@ -602,8 +602,8 @@ class HiddenInstaller(Scene):
 
 class GetterGuard(Scene):
     """A dt updater checks two views of one quantity through getters it
-    unpacks from pairs, as the plugin's guards do: calls its source can't
-    resolve, into code that changes no structure.
+    unpacks from pairs, as the plugin's guards do: a dt-free updater's
+    output against the tracker interpolation moves.
     """
 
     def construct(self):
@@ -620,6 +620,24 @@ class GetterGuard(Scene):
         guard = Mobject()
         guard.add_updater(check)
         self.add(t, source, guard, _idle())
+        self.play(t.animate.set_value(1), rate_func=linear)
+
+
+class OwnUpdating(Scene):
+    """The scene runs its mobjects' updaters through its own
+    ``update_mobjects``: a dt reader of a dot a dt-free updater moves.
+    """
+
+    def update_mobjects(self, dt):
+        super().update_mobjects(dt)
+
+    def construct(self):
+        t = ValueTracker(0)
+        source = Dot()
+        source.add_updater(lambda m: m.set_x(t.get_value()))
+        output = ValueTracker(0)
+        output.add_updater(lambda m, dt: m.increment_value(dt * source.get_x()))
+        self.add(t, source, output, _idle())
         self.play(t.animate.set_value(1), rate_func=linear)
 
 

@@ -3,9 +3,14 @@ and with each kind of value it meets: one closed table, which the analysis
 consults (:mod:`.ticking`, :mod:`.handed`) and a test holds against every
 node class of the running Python.
 
+Diagnostic only, as the analysis it serves is (:mod:`.ticking`, "Diagnostic
+only"): nothing that plans or runs a play consults it. Where a rule says the
+play ticks everything, the analysis can't bound the access and counts
+everything as reached.
+
 Each node class has one :class:`Rule`; a class the table does not name gets
-:attr:`Rule.FALLBACK`, so a form no one listed makes the play tick
-everything. The analysis is flow-insensitive: it reads every node of a
+:attr:`Rule.FALLBACK`, so a form no one listed counts everything as
+reached. The analysis is flow-insensitive: it reads every node of a
 function the play reaches (its callbacks and the functions of the scene's
 they call), in any order, as if every branch ran.
 
@@ -14,18 +19,17 @@ The value kinds the rules name are listed below the table
 :data:`ITEM_KINDS`), with the names reaching a namespace
 (:data:`NAMESPACE_ATTRIBUTES`, :data:`NAMESPACE_BUILTINS`).
 
-What the analysis resolves when the play is planned stands for the whole
-play only when no code can change it. A value of a kind not inert (what a
-list, a dict, an object or a class holds) read then makes the play tick
-everything, whatever would change it
-(:meth:`.ticking._Writes.plan_reads_hold`); a binding (a closure's cell, a
-module's global, a function's default) changes only through forms the
-rules close.
+What the analysis resolves when it is asked stands for the whole play
+only when no code can change it. A value of a kind not inert (what a
+list, a dict, an object or a class holds) read then counts everything as
+reached, whatever would change it (:meth:`.ticking._Writes.plan_reads_hold`);
+a binding (a closure's cell, a module's global, a function's default)
+changes only through forms the rules close.
 
 :func:`proven_pure` and :func:`result_kept` answer from the same table for
-callers outside the stepping check, as filters for precision only: nothing
-in the stepping check rests on them, and each has known limits (the
-tech-debt tracker lists them).
+callers outside the analysis, as filters for precision only: nothing in
+the analysis rests on them, and each has known limits (the tech-debt
+tracker lists them).
 """
 
 from __future__ import annotations

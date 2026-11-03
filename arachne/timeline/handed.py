@@ -1,6 +1,9 @@
 """Whether a call may call what it is handed, for an argument the write check
 can't resolve (:meth:`.ticking._Site._handed_callables`).
 
+Diagnostic only, as the analysis it serves is (:mod:`.ticking`, "Diagnostic
+only"): nothing that plans or runs a play consults it.
+
 An argument the check resolves to a callable is read as called wherever it
 goes. One it can't resolve (read out of a container, handed back by a call,
 a loop's variable) may be a function of the scene's that writes anything,

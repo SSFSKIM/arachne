@@ -98,39 +98,3 @@ def session_of():
     yield open_session
     for session in opened:
         session.close()
-
-
-#: Why a precision expectation of a stepping test may not hold: the plan
-#: rests on no value that may change as the play runs, so a play whose plan
-#: would read one ticks everything; checking at each stepping tick what the
-#: plan read wins this back (the tech-debt tracker's runtime-guard item).
-PLAN_READS = (
-    "precision: the plan rests on no value that may change as the play runs,"
-    " so this play ticks everything or runs more at its stepping ticks"
-)
-_unmet: list[str] = []
-
-
-def expect_stepping(condition: bool) -> None:
-    """What stepping wins, which a test expects (a play stepping, a callback
-    skipped or pulled alone, a reason checked after the plan's reads): when
-    it does not hold, the test is an expected failure once the rest of it,
-    its soundness checks among them, has passed.
-    """
-    if not condition:
-        _unmet.append(PLAN_READS)
-
-
-@pytest.fixture(autouse=True)
-def _precision_expectations():
-    _unmet.clear()
-    return
-
-
-@pytest.hookimpl(hookwrapper=True)
-def pytest_runtest_makereport(item, call):
-    outcome = yield
-    report = outcome.get_result()
-    if call.when == "call" and report.passed and _unmet:
-        report.outcome = "skipped"
-        report.wasxfail = _unmet[0]
