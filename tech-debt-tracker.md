@@ -100,22 +100,41 @@ Work to do, not debt to wait on: each item leaves a play ticking everything
   fix types `dt` (and an alpha a rate-function updater is handed) as a
   float, and an arithmetic expression of numbers and NumPy's own arrays as
   one of them.
-- **Follow engine code precisely enough to tell what it never calls.** A
-  call handed an argument the check can't resolve is an unknown one unless
-  its callee is shown never to call it (`arachne/timeline/handed.py`), and
-  an argument is free of callables only when its kind shows it (a constant,
-  a number, a string, an array of numbers, what a getter of the engine's or
-  a function of the scene's computing from them gives); a container, a dict
-  unpacked as keywords and what an operator makes carry what they hold. The
-  engine's own constructors are not shown never to call what they are
-  handed: `VGroup(b, label)`, `Line(...)`, `Axes.c2p(*xs)` with any argument
-  not shown free are unknown calls. On a measured set of scenes several
-  plays lost their stepping, one scene's stepping ticks fell by about 70%,
-  and pulled callbacks rose in a few more. `**kwargs` handed on is called
-  key by key, which wins none of it back. A measurement with four limits
-  lifted at once, unsoundly (the store rule, `**kwargs`, `ManimColor`, the
-  cached `_bezier_parameters`), wins none of it back either: what costs it
-  is how the analysis resolves a callee inside engine code. Each fix below
+- **Follow engine code precisely enough to tell what it never calls.** The
+  handed-callable analysis reads scene code through one closed table,
+  `OPERATIONS` in `arachne/timeline/coverage.py`. Every node class of the
+  running Python has a `Rule` saying what a node of it holds, whether it is
+  inert, what it carries and, as a statement, what it stores; the value
+  kinds those rules name are listed beside it. `rule_of` gives `FALLBACK`
+  to a class the table does not name, so a form nobody listed makes the
+  play tick everything;
+  `tests/timeline/test_coverage.py::test_every_node_class_has_a_rule` holds
+  the table against the interpreter. `_Site._held`, `_Site._inert`,
+  `handed._carried` and `_Site.read_table` (run on every function of the
+  scene's a play reaches) consult it, and so do the two queries
+  `proven_pure` and `result_kept`. What the table makes fall back: a value
+  sent into or out of a generator or coroutine holds anything; a `global`
+  or `nonlocal` name bound to a value not shown inert ticks everything; an
+  item of a base that is not a builtin item kind, an inert value, a
+  display, a local list or dict, a mobject's members or a parameter is an
+  unknown call; a value not shown free of callables makes its call unknown
+  whatever the callee, so a native listed as never calling still counts as
+  calling a generator or iterator it is handed; modules, other native kinds
+  and instances of classes with methods in scene code may hold anything; a
+  function the check does not read may store anywhere; and a value not
+  shown free of callables stored into what a proof read at plan time (the
+  attribute it read, anything an object it read holds, any object for a
+  receiver it can't resolve, any module) ends that snapshot, so the play
+  ticks everything.
+
+  The engine is modelled, not read through this table: its methods keep
+  what they are handed only in the object they are called on or the object
+  they make, its functions keep nothing, and a mobject's updaters are not
+  counted among what it holds (the plan schedules them). An argument is
+  free of callables only when its kind shows it, and the engine's own
+  constructors are not shown never to call what they are handed:
+  `VGroup(b, label)`, `Line(...)`, `Axes.c2p(*xs)` with any argument not
+  shown free are unknown calls. Precision this leaves, each fix of which
   must stay sound:
   - a method of a local the function made as a list, dict or set display
     (`valid_vmobjects.append(m)` in `VGroup.add`) is a callee it can't
@@ -129,16 +148,20 @@ Work to do, not debt to wait on: each item leaves a play ticking everything
   - at the call site, a method of an object a call makes
     (`Dot().move_to(p)`) is a callee it can't resolve: the class
     `_Site._class_made` tells is not used;
-  - the store rule: a parameter stored into an attribute or an item counts
-    as called (`VGroup.add`'s members, `ManimColor`'s value). A store into
-    `self.X` may count only where analysed code calls `self.X`, hands it to
-    something that may call it, or the attribute reaches a callee it can't
-    resolve. That needs every reader of `X`, including getters returning it
-    and code outside the class, so it waits for a whole-program index;
+  - the store rule inside engine code: a parameter stored into an
+    attribute or an item counts as called (`VGroup.add`'s members,
+    `ManimColor`'s value). A store into `self.X` may count only where
+    analysed code calls `self.X`, hands it to something that may call it,
+    or the attribute reaches a callee it can't resolve. That needs every
+    reader of `X`, including getters returning it and code outside the
+    class, so it waits for a whole-program index;
   - `functools.cache` (`_bezier_parameters`) is a C wrapper, so it can't be
-    read as forwarding without listing it, which the bound on these
-    refinements does not allow; a Python wrapper is followed through its
-    closure already.
+    read as forwarding without listing it; a Python wrapper is followed
+    through its closure already;
+  - a method a callee calls on what it is handed (`graph.function(x)` in
+    engine code) is not taken for calling the argument in
+    `handed.Callers`: sound by another route the probes found, with no
+    fixture of its own.
 
   Reproducers of the cost, strict xfails until it is won back:
   `tests/timeline/test_stepping.py::test_a_member_swapped_where_no_stepping_reaches_keeps_the_plan`
@@ -149,16 +172,28 @@ Work to do, not debt to wait on: each item leaves a play ticking everything
   stay pulled, and the controls
   `::test_a_value_the_check_cannot_resolve_handed_to_code_that_never_calls_it`
   step.
-
-  What the proof does not read, each sound by another route the probes
-  found and none with a fixture of its own: a method a callee calls on what
-  it is handed (`graph.function(x)` in engine code, a scene class's own
-  methods) is not taken for calling the argument in `handed.Callers`; a
-  mobject's updaters are not counted among what it holds (the plan
-  schedules them); an object resolved at plan time is read as it is then,
-  not as a later callback may refill it; and a native listed as never
-  calling what it is handed may still iterate it, running a generator's or
-  a `map`'s code.
+- **Track a store through engine code by the attribute it lands in.** A
+  value handed to an engine method is taken as kept anywhere in the object
+  it is called on or the object it makes. When a plan-time proof read any
+  attribute of that object, the store ends the snapshot and the play ticks
+  everything, though the engine may keep the value in an attribute no
+  proof read. On a measured set of scenes this is one of the two causes of
+  the plays the closed table stopped stepping, and with the item below it
+  leaves a scene whose callbacks hand values to the engine running more of
+  the scene's callbacks than it did before the handed-callable rule. The fix reads, per engine method, which attributes of its
+  receiver a parameter can reach, and ends only those snapshots; a method
+  that stores through a helper it can't resolve, or through `setattr` with
+  a computed name, still counts as storing into any attribute.
+- **Read what a scene helper's methods change.** An instance of a class
+  with methods in scene code may hold anything, and a store into an object
+  a proof read at plan time ends the snapshot whatever the method changes.
+  So a callback calling a method of a helper object (a state holder or
+  tracker class the scene wrote) leaves its play ticking everything. This
+  is the other cause of the plays the closed table stopped stepping. The
+  fix reads the helper's methods through the same table, as functions of
+  the scene's, and ends only the snapshots of the attributes they store
+  into; a method the check does not read, or one reached through a
+  receiver it can't resolve, still counts as a store anywhere.
 - **A method called on a receiver the check can't resolve is taken for the
   scene's code.** `dot.move_to(…)` with `dot` a loop's variable over
   `zip(group, offsets)` may be any class's `move_to`, so `_Site._method_code`
