@@ -1,0 +1,36 @@
+# arachne-core
+
+Arachne's CPU core: it draws frames described in XF, the Frame IR (`XF.md`). It is a Rust crate with a
+Python binding (`arachne_core`, built by maturin as one abi3 wheel for CPython 3.12 and later). It
+links no GPU library, and its output may not depend on the machine: no runtime CPU-feature dispatch,
+no fused multiply-add, transcendental functions from the pure-Rust `libm` crate (`clippy.toml` forbids
+the platform's), and every pixel a function of its own fragments only.
+
+```python
+import arachne_core as ac
+
+delta = ac.FrameDelta(t=(0, 1), seq=0)
+delta.set_view(
+    pixel_width=854,
+    pixel_height=480,
+    frame_width=14.222,
+    frame_height=8.0,
+    background=(0.0, 0.0, 0.0, 1.0),
+)
+stream = ac.Stream()  # make it in the process that draws
+stream.apply(delta)
+frame = stream.draw(854, 480)  # uint8 (480, 854, 4), the layout of CE's pixel array
+```
+
+Today the core draws the background and refuses, whole, any frame whose draw order holds a record
+(`arachne_core.Unsupported`, `render.unsupported`); the drawers for each record kind come next.
+
+- `src/xf/`: XF's types, content keys and binary form.
+- `src/stream.rs`: the stream, applying deltas and drawing.
+- `src/project.rs`: CE's camera maths (3D projection, the frame-to-pixel mappings), tested against
+  Arachne's own cameras (`tests/data/gen_projection.py` writes the expected values).
+- `src/composite.rs`: the frame buffer, and the one place colour becomes frame bytes.
+
+Build and test with the toolchain `rust-toolchain.toml` pins: `cargo test --release` in `core/`; the
+binding with `uv build --wheel .` and `pytest` in `core/`. CI runs `ci/*.sh` (`.github/ci-kit.yml`),
+and `.github/workflows/core-wheels.yml` builds the wheels.

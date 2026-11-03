@@ -1,0 +1,24 @@
+[build-system]
+requires = ["maturin>=1.16,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "arachne-core"
+description = "Arachne's CPU core: draws frames described in XF, the Frame IR"
+requires-python = ">=3.12"
+dependencies = ["numpy>=2.1"]
+dynamic = ["version"]
+classifiers = [
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Rust",
+]
+
+[tool.maturin]
+python-source = "python"
+module-name = "arachne_core._core"
+features = ["python"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]
