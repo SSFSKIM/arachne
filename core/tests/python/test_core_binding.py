@@ -5,13 +5,11 @@ from __future__ import annotations
 import hashlib
 import struct
 from fractions import Fraction
-from pathlib import Path
 
 import arachne_core as ac
 import numpy as np
 import pytest
 
-DATA = Path(__file__).resolve().parents[1] / "data"
 FRAME = {"frame_width": 14.222222222222221, "frame_height": 8.0}
 
 
@@ -132,7 +130,8 @@ def test_unknown_record_fields_and_kinds_are_errors():
         delta.set_record("path", 1, 1, shape=bytes(16), joint="sharp")
 
 
-def test_every_kind_can_be_built_and_survives_a_file(tmp_path):
+def canonical_sample() -> list[ac.FrameDelta]:
+    """Two deltas built through the binding, every record kind and most fields set."""
     first = background_delta(16, 9, (0.1, 0.2, 0.3, 1.0))
     first.add_object(11, "Square#1", "scene.py:3")
     path = first.upload_path(square())
@@ -222,29 +221,31 @@ def test_every_kind_can_be_built_and_survives_a_file(tmp_path):
     second.remove(7)
     second.release(mesh)
     second.set_order([])
+    return [first, second]
 
+
+# The sha256 of the canonical sample's file bytes. XF streams are generated, never committed, so
+# any drift in the layout or in the builder fails this pin. Change it only when that is meant.
+SAMPLE_SHA256 = "69460afc44bb4402dfe33933193789894fbef59a393478341155fb4a97c071d3"
+
+
+def test_every_kind_can_be_built_and_survives_a_file(tmp_path):
+    deltas = canonical_sample()
     file = tmp_path / "two.xf"
-    ac.write_xf(file, [first, second])
+    ac.write_xf(file, deltas)
+    assert hashlib.sha256(file.read_bytes()).hexdigest() == SAMPLE_SHA256
     back = ac.read_xf(file)
-    assert [d.to_bytes() for d in back] == [first.to_bytes(), second.to_bytes()]
+    assert [d.to_bytes() for d in back] == [d.to_bytes() for d in deltas]
+    copy = tmp_path / "copy.xf"
+    ac.write_xf(copy, back)
+    assert copy.read_bytes() == file.read_bytes()
+    assert ac.FrameDelta.from_bytes(deltas[0].to_bytes()).to_bytes() == (
+        deltas[0].to_bytes()
+    )
     stream = ac.Stream()
     for delta in back:
         stream.apply(delta)
     assert (stream.draw(16, 9) == np.array([25, 51, 76, 255], dtype=np.uint8)).all()
-
-
-def test_the_pinned_sample_reads_and_writes_back_byte_for_byte(tmp_path):
-    pinned = bytes.fromhex((DATA / "sample-v0.xf.hex").read_text())
-    original = tmp_path / "sample.xf"
-    original.write_bytes(pinned)
-    deltas = ac.read_xf(original)
-    assert len(deltas) == 2
-    copy = tmp_path / "copy.xf"
-    ac.write_xf(copy, deltas)
-    assert copy.read_bytes() == pinned
-    assert ac.FrameDelta.from_bytes(deltas[0].to_bytes()).to_bytes() == (
-        deltas[0].to_bytes()
-    )
 
 
 def test_bytes_that_are_not_xf_are_an_error(tmp_path):
