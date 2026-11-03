@@ -804,6 +804,22 @@ class RelayedReturnRead(Scene):
         self.wait(1)
 
 
+class ZippedGeneratorRead(_PiecewiseCallableRead):
+    """A generator the scene made, whose code moves the shown dot, handed to
+    ``zip``: ``zip`` calls nothing it is handed, but taking its items runs
+    the generator's code. A generator is no kind shown free of callables.
+    """
+
+    def handing(self, move):
+        def ticks():
+            while True:
+                move(0)
+                yield 1
+
+        made = ticks()
+        return lambda m: list(zip(made, [0], strict=False))
+
+
 class ComputedPointMove(_SharedRead):
     """A control: a point a function of the scene's computes from numbers,
     in arithmetic handed to the engine's ``move_to``: every value is shown

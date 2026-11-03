@@ -2590,9 +2590,11 @@ class _Site:
         function), with arguments of its own, so each is taken as called
         with arguments no call site binds. A value holding callables (a
         list of them, a dict unpacked as keywords) hands those where its
-        callee may call what it is handed (:mod:`.handed`); one that may be
-        or hold a callable the check can't resolve makes the call there an
-        unknown one.
+        callee may call what it is handed (:mod:`.handed`). One that may be
+        or hold a callable the check can't resolve (a generator, an
+        iterator, what an unknown call gives) makes the call an unknown one,
+        whatever its callee: a callee shown never to call what it is handed
+        may still run its code (taking a generator's items).
         """
         effect = _NO_EFFECT
         for argument in [*call.args, *(k.value for k in call.keywords)]:
@@ -2603,10 +2605,10 @@ class _Site:
                 effect |= self._called_effect(target, argument)
                 continue
             held = self._held(argument, set())
-            if held == () or not self.unresolved_call_reason(call, argument):
-                continue
             if held is None:
                 effect |= _UNKNOWN_CALL  # a value not shown free of callables
+                continue
+            if held == () or not self.unresolved_call_reason(call, argument):
                 continue
             for each in held:
                 effect |= self._called_effect(each, None)
@@ -3478,9 +3480,14 @@ _INERT_KINDS = (type(None), bool, int, float, complex, str, bytes)
 
 def _inert_value(value: Any) -> bool:
     """Whether ``value``, resolved, is inert (:meth:`_Site._inert`): a
-    number or a string of a builtin kind, a NumPy array or scalar of them.
+    number or a string of a builtin kind, a NumPy array or scalar of them,
+    a compiled pattern or its match (whose methods give strings, lists and
+    matches of them; a replacement function handed to ``sub`` is a handed
+    callable of its own).
     """
-    if type(value) in _INERT_KINDS or isinstance(value, Fraction):
+    if type(value) in (*_INERT_KINDS, re.Pattern, re.Match) or isinstance(
+        value, Fraction
+    ):
         return True
     return (type(value) is np.ndarray or isinstance(value, np.generic)) and not (
         value.dtype.hasobject
