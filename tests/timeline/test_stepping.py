@@ -697,7 +697,7 @@ def test_an_attribute_an_instance_shadows_steps_with_what_it_reads(session_of):
 @pytest.mark.xfail(
     strict=True,
     reason="engine constructors are not shown never to call an unresolved argument "
-    "(tech-debt-tracker.md, precision before G4)",
+    "(tech-debt-tracker.md, planned precision work)",
 )
 def test_a_member_swapped_where_no_stepping_reaches_keeps_the_plan(session_of):
     """A skipped redraw replaces a group's member at every frame, and
@@ -1118,7 +1118,7 @@ def test_a_global_rebound_by_setattr_is_never_stepped_past(session_of):
 @pytest.mark.xfail(
     strict=True,
     reason="engine constructors are not shown never to call an unresolved argument "
-    "(tech-debt-tracker.md, precision before G4)",
+    "(tech-debt-tracker.md, planned precision work)",
 )
 def test_work_private_to_a_redraw_waits_for_the_frames(session_of):
     """A redraw built through a function handing back what it made, a memo

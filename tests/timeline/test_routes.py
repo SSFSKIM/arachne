@@ -73,7 +73,7 @@ def test_state_at_answers_each_route(session_of):
     on_tick = play.start + Fraction(7, 60)
     state = session.state_at(on_tick)
     assert (state.route, state.answer, state.play) == ("state", "recorded", 0)
-    with pytest.raises(Unavailable, match="M5"):
+    with pytest.raises(Unavailable, match="needs restore"):
         session.state_at(play.start + Fraction(1, 7))
     with pytest.raises(Unavailable):
         session.frame(play.start + Fraction(1, 7))

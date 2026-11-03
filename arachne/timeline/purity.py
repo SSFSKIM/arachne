@@ -29,7 +29,7 @@ change to the mobject it writes (``shift``, ``rotate``, a setter whose
 argument reads the receiver), a random draw, I/O or a clock other than the
 scene's, are refusals. The proof records what the callback reads and
 writes, for the dependency order, and the bindings it read its names from,
-which route 2's restore (M5) compares with what they hold then.
+which route 2's planned restore compares with what they hold then.
 """
 
 from __future__ import annotations
