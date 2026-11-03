@@ -10,6 +10,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
+
+from arachne.mobject.values import FrozenPoints, freeze
+from arachne.timeline.record import SAMPLE_DECIMALS, _value_key
+
 from . import stepping_scenes
 
 SCENES = ["BecomeRoot", "GroupBecome", "Staircases", "StaircasesPerFrame"]
@@ -54,3 +59,17 @@ def test_two_processes_key_every_capture_alike():
     assert first.keys() == second.keys()
     for name in first:
         assert first[name] == second[name], name
+
+
+def _point_key(x: float) -> bytes | None:
+    return _value_key(freeze(np.array([[x, 0.0, 0.0]]), FrozenPoints), SAMPLE_DECIMALS)
+
+
+def test_a_sample_key_rounds_numbers_so_nearness_does_not_decide_equality():
+    """A known limit (``tech-debt-tracker.md``): a sample key rounds to
+    :data:`SAMPLE_DECIMALS`, so two coordinates one ulp apart on either side
+    of a rounding boundary key apart, and two 9e-10 apart inside one bin key
+    alike.
+    """
+    assert _point_key(-0.9213813375) != _point_key(-0.9213813374999997)
+    assert _point_key(0.09999999955) == _point_key(0.10000000045)
