@@ -985,6 +985,20 @@ def test_a_return_read_while_its_relay_is_being_read_is_not_kept(session_of):
     assert play.tick_plan.pulled == 2
 
 
+def test_a_value_not_shown_free_of_callables_is_an_unknown_call(session_of):
+    """A generator handed to ``zip``, which calls nothing it is handed but
+    runs the generator's code taking its items: a value of a kind not shown
+    free of callables makes the call an unknown one, whatever its callee,
+    and what that call reaches is a generator the plan can't follow: the
+    play ticks everything.
+    """
+    play = _same_as_full_ticks(
+        session_of, "ZippedGeneratorRead", 4, SOUNDNESS_SCENES
+    ).record.plays[-1]
+    assert play.stepping_ticks == 0
+    assert play.tick_plan.unbounded.startswith(UNBOUNDED)
+
+
 @pytest.mark.parametrize("name", ["UnresolvedPointMove", "ComputedPointMove"])
 def test_a_value_the_check_cannot_resolve_handed_to_code_that_never_calls_it(
     session_of, name
