@@ -68,23 +68,31 @@ _FRAME_READERS = frozenset(
 
 
 def integrates(updater: Any) -> bool:
-    """Whether a mobject's ``updater`` is handed ``dt`` (its signature names
-    it) and may read it: unless its own code declares a ``dt`` parameter and
-    never reads that slot (:func:`_reads_parameter`), it counts as reading.
+    """Whether a mobject's ``updater`` is handed ``dt`` and may read it. Its
+    signature naming ``dt`` decides the hand-off; :meth:`.Mobject.update`
+    then calls ``updater(mobject, dt)``, so what reads ``dt`` is whatever
+    receives the second positional argument (:func:`_reads_argument`).
     """
     try:
         parameters = inspect.signature(updater).parameters
     except (TypeError, ValueError):
         return True
-    if "dt" not in parameters:
-        return False
-    code = _own_code(updater)
-    return code is None or _reads_parameter(code, "dt")
+    return "dt" in parameters and _reads_argument(updater, 1)
 
 
 def scene_updater_integrates(updater: Any) -> bool:
     """Whether a scene's ``updater`` may read the ``dt`` :meth:`.Scene.update_self`
     hands it as its first positional argument, whatever its code calls it.
+    """
+    return _reads_argument(updater, 0)
+
+
+def _reads_argument(updater: Any, index: int) -> bool:
+    """Whether the parameter receiving positional argument ``index`` of a
+    call to ``updater`` is read. Unless its own code has a positional
+    parameter there (past a bound method's receiver), the argument goes
+    where nothing here follows (``*args``, a builtin, a callable object, a
+    ``partial``), and counts as read.
     """
     code = _own_code(updater)
     if code is None:
@@ -92,7 +100,7 @@ def scene_updater_integrates(updater: Any) -> bool:
     names = code.co_varnames[: code.co_argcount]
     if isinstance(updater, types.MethodType):
         names = names[1:]
-    return not names or _reads_parameter(code, names[0])
+    return len(names) <= index or _reads_parameter(code, names[index])
 
 
 def _own_code(updater: Any) -> types.CodeType | None:
@@ -101,9 +109,6 @@ def _own_code(updater: Any) -> types.CodeType | None:
 
 
 def _reads_parameter(code: types.CodeType, name: str) -> bool:
-    declared = code.co_varnames[: code.co_argcount + code.co_kwonlyargcount]
-    if name not in declared:
-        return True  # what the caller hands under that name is not this slot
     if name in code.co_cellvars or _FRAME_READERS & set(code.co_names):
         return True
     for instruction in dis.get_instructions(code):

@@ -1362,6 +1362,36 @@ class WrapsDtMethod(Scene):
         self.wait(1)
 
 
+class DtInAnotherSlot(Scene):
+    """An integrator whose signature names ``dt`` only to be handed it: the
+    elapsed time arrives positionally, in its second parameter, which it
+    reads under another name, and its own ``dt`` stays at its default.
+    """
+
+    def construct(self):
+        def integrate(m, step, dt=0):
+            m.shift(step * RIGHT)
+
+        output = Dot(color=RED)
+        output.add_updater(integrate)
+        self.add(output, _idle())
+        self.wait(1)
+
+
+class DtInAnotherSlotMethod(Scene):
+    """The same integrator as a method, bound to its instance."""
+
+    def construct(self):
+        class Mover:
+            def integrate(self, m, step, dt=0):
+                m.shift(step * RIGHT)
+
+        output = Dot(color=RED)
+        output.add_updater(Mover().integrate)
+        self.add(output, _idle())
+        self.wait(1)
+
+
 class DeadDtStorePair(Scene):
     """An updater that rebinds dt in a paired store and never reads it: it
     moves once a frame, as in CE.
