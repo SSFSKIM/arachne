@@ -680,6 +680,80 @@ class UnknownCalleeCallableRead(_HandedCallableRead):
         return lambda m: runners[0].run(table["f"])
 
 
+class _PiecewiseCallableRead(_SharedRead):
+    """A function of the scene's moving the shown dot and giving a number,
+    held in something handed to ``np.piecewise`` as its functions.
+    """
+
+    def handing(self, move):
+        raise NotImplementedError
+
+    def writer(self, shared):
+        def move(value):
+            shared.shift(0.01 * RIGHT)
+            return 0.0
+
+        return self.handing(move)
+
+
+def _piecewise(functions):
+    return np.piecewise(np.array([1.0]), [np.array([True])], functions)
+
+
+class ListedCallableRead(_PiecewiseCallableRead):
+    """A list the check resolves, holding the function."""
+
+    def handing(self, move):
+        functions = [move]
+        return lambda m: np.piecewise(np.array([1.0]), [np.array([True])], functions)
+
+
+class DisplayedCallableRead(_PiecewiseCallableRead):
+    """A list written out at the call, holding the function."""
+
+    def handing(self, move):
+        return lambda m: np.piecewise(np.array([1.0]), [np.array([True])], [move])
+
+
+class UnpackedCallableRead(_HandedCallableRead):
+    """A pattern's ``sub``, its replacement in a dict written out at the
+    call and unpacked as its keywords.
+    """
+
+    def handing(self, move):
+        pattern = re.compile("x")
+        return lambda m: pattern.sub(**{"repl": move, "string": "x"})
+
+
+class NamedUnpackedCallableRead(_HandedCallableRead):
+    """A pattern's ``sub``, its replacement in a dict the check resolves,
+    unpacked as its keywords.
+    """
+
+    def handing(self, move):
+        pattern = re.compile("x")
+        keywords = {"repl": move, "string": "x"}
+        return lambda m: pattern.sub(**keywords)
+
+
+class RepeatedCallableRead(_PiecewiseCallableRead):
+    """A function read out of a dict, handed by keyword through a
+    ``**kwargs`` to a function repeating it into the list it hands
+    ``np.piecewise``: a sequence an operator makes holds what its operands
+    hold.
+    """
+
+    def handing(self, move):
+        def inner(act=None):
+            _piecewise([act] * 1)
+
+        def outer(**kwargs):
+            inner(**kwargs)
+
+        table = {"f": move}
+        return lambda m: outer(act=table["f"])
+
+
 class UnresolvedPointMove(_SharedRead):
     """The control: a point read out of a dict, handed to the engine's
     ``move_to`` on the updater's own dot, whose code never calls it.
