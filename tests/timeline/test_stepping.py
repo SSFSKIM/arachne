@@ -488,9 +488,9 @@ def test_known_limit_a_dead_dt_partial_runs_at_frames_only(session_of):
     reason="known limit, skipped: a scene's update_mobjects replaced on the "
     "instance is not seen (the class is read)",
 )
-def test_known_limit_an_instance_update_mobjects_ticks_everything(session_of):
-    for mode in (True, BRUTE_FORCE):
-        session = session_of(
-            "InstanceUpdateMobjects", STEPPING_SCENES, frame_rate=4, stepping=mode
-        )
-        assert session.record.plays[-1].stepping_ticks == 0
+@pytest.mark.parametrize("mode", [True, BRUTE_FORCE], ids=["stepping", "brute-force"])
+def test_known_limit_an_instance_update_mobjects_ticks_everything(session_of, mode):
+    session = session_of(
+        "InstanceUpdateMobjects", STEPPING_SCENES, frame_rate=4, stepping=mode
+    )
+    assert session.record.plays[-1].stepping_ticks == 0
