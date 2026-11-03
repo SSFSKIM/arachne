@@ -104,26 +104,40 @@ Work to do, not debt to wait on: each item leaves a play ticking everything
   call handed an argument the check can't resolve is an unknown one unless
   its callee is shown never to call it (`arachne/timeline/handed.py`). The
   engine's own constructors are not shown so: `VGroup(b, label)`,
-  `Line(...)`, `ParametricFunction(...)` with any unresolved argument are
-  unknown calls, and on the measured corpus 16 plays of 28 cases lost their
-  stepping (one case's from 1781 stepping ticks to 501, another's from 526
-  to 61), and pulled callbacks rose (one case 33 → 337). Four limits stack:
+  `Line(...)`, `Axes.c2p(*xs)` with any unresolved argument are unknown
+  calls. On the measured corpus 16 plays of 28 cases lost their stepping:
+  one case from 1781 stepping ticks to 501 (its plays 4 to 15), another
+  from 526 to 61 (its plays 17 to 20); pulled callbacks rose (one case
+  33 → 337). `**kwargs` handed on is now called key by key, which wins none
+  of it back. A measurement with four limits lifted at once, unsoundly
+  (the store rule, `**kwargs`, `ManimColor`, the cached
+  `_bezier_parameters`), wins none of it back either: what costs it is how
+  the analysis resolves a callee inside engine code. Each fix below must
+  stay sound:
+  - a method of a local the function made as a list, dict or set display
+    (`valid_vmobjects.append(m)` in `VGroup.add`) is a callee it can't
+    resolve; such a local's class is the display's, whose methods never
+    call what they are handed (but a list's `sort` with a key);
+  - a method of what the object it is called on holds
+    (`self.x_axis.number_to_point(xs)` in `Axes.coords_to_point`) is a
+    callee it can't resolve, since called parameters are read per class,
+    not per object; reading them for the resolved object at the call site
+    resolves `self.x_axis` as `_Site.resolve` does;
+  - at the call site, a method of an object a call makes
+    (`Dot().move_to(p)`) is a callee it can't resolve: the class
+    `_Site._class_made` tells is not used;
   - the store rule: a parameter stored into an attribute or an item counts
-    as called (`VGroup.add` stores its members into `self.submobjects`);
-    sound refinement: a store into `self.X` counts only if analysed code
-    calls `self.X`, hands it to something that may call it, or the
-    attribute reaches a callee the check can't resolve;
-  - `**kwargs` handed through `super().__init__` binds every parameter of
-    the callee (`Mobject.__init__`); refinement: bind it by keyword;
-  - `ManimColor(...)` is read as calling what it is handed; refinement: a
-    value class never calls only where analysis shows it, never by a list;
-  - `_bezier_parameters` is a wrapped callable the check can't read;
-    refinement: read `__wrapped__` when the wrapper is analysed and only
-    forwards.
+    as called (`VGroup.add`'s members, `ManimColor`'s value). A store into
+    `self.X` may count only where analysed code calls `self.X`, hands it to
+    something that may call it, or the attribute reaches a callee it can't
+    resolve. That needs every reader of `X`, including getters returning it
+    and code outside the class, so it waits for a whole-program index;
+  - `functools.cache` (`_bezier_parameters`) is a C wrapper, so it can't be
+    read as forwarding without listing it, which the bound on these
+    refinements does not allow; a Python wrapper is followed through its
+    closure already.
 
-  At the call site, a method of an object a call makes (`Dot().move_to(p)`)
-  is a callee the check can't resolve: the class `_class_made` tells is not
-  used. Reproducers of the cost, strict xfails until it is won back:
+  Reproducers of the cost, strict xfails until it is won back:
   `tests/timeline/test_stepping.py::test_a_member_swapped_where_no_stepping_reaches_keeps_the_plan`
   and `::test_work_private_to_a_redraw_waits_for_the_frames`. What must
   hold meanwhile: the fixtures of
