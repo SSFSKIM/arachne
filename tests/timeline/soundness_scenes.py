@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import functools
 import random
+import re
 
 import numpy as np
 
@@ -570,6 +571,46 @@ class ConstantItemInPlaceRead(_SharedRead):
         return step
 
 
+class PlacedArgumentRead(_SharedRead):
+    """A function of the scene's places what it is handed into the group it
+    hands back (beside a radius it only reads); the group is moved.
+    """
+
+    def writer(self, shared):
+        def badge(center, radius=0.1):
+            return VGroup(center, Dot(radius=radius))
+
+        return lambda m: badge(radius=0.05, center=shared).shift(0.01 * RIGHT)
+
+
+class StoredArgumentRead(_SharedRead):
+    """A function of the scene's makes an object of the scene's class that
+    stores what it is handed; the stored object is moved.
+    """
+
+    def writer(self, shared):
+        class Holder:
+            def __init__(self, target):
+                self.target = target
+
+        def make(size, target):
+            return Holder(target)
+
+        return lambda m: make(0.1, shared).target.shift(0.01 * RIGHT)
+
+
+class GatheredArgumentsRead(_SharedRead):
+    """A function of the scene's gathers its arguments into a group it
+    hands back, handed the shown dot among them; the group is moved.
+    """
+
+    def writer(self, shared):
+        def gather(*parts):
+            return VGroup(*parts)
+
+        return lambda m: gather(Dot(), shared).shift(0.01 * RIGHT)
+
+
 class ReboundArgumentRead(_SharedRead):
     """A function of the scene's whose parameter, handed the shown dot, is
     rebound and moved under either binding.
@@ -689,6 +730,28 @@ class PrivateWorkRead(Scene):
             return VGroup(badge(0.05).shift(x * RIGHT), cached("a").shift(length * UP))
 
         self.add(phase, always_redraw(picture))
+        self.wait(1)
+
+
+_PAUSE = re.compile(r"\[pause\s+(\d+)\]")
+
+
+class PatternRead(Scene):
+    """A redraw that reads a module's compiled regular expression (as a
+    scene's cue parser does), beside a dt updater: a pattern holds nothing
+    that changes, so the plan is bounded and the redraw waits for the
+    frames.
+    """
+
+    def construct(self):
+        phase = ValueTracker(0)
+        phase.add_updater(lambda m, dt: m.increment_value(dt))
+
+        def marker():
+            gaps = len(_PAUSE.findall("a [pause 1] b [pause 2] c"))
+            return Dot().shift(gaps * phase.get_value() * RIGHT)
+
+        self.add(phase, always_redraw(marker))
         self.wait(1)
 
 
