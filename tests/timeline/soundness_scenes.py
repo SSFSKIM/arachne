@@ -13,10 +13,13 @@ import numpy as np
 
 from arachne import (
     BLUE,
+    DOWN,
+    LEFT,
     RED,
     RIGHT,
     UP,
     AnimationGroup,
+    ApplyFunction,
     Axes,
     Dot,
     Mobject,
@@ -24,10 +27,12 @@ from arachne import (
     Rotate,
     Scene,
     Square,
+    Succession,
     Transform,
     UpdateFromAlphaFunc,
     ValueTracker,
     VGroup,
+    Wait,
     ZoomedScene,
     always_redraw,
     color_to_rgb,
@@ -752,6 +757,184 @@ class PatternRead(Scene):
             return Dot().shift(gaps * phase.get_value() * RIGHT)
 
         self.add(phase, always_redraw(marker))
+        self.wait(1)
+
+
+class DictItemRead(Scene):
+    """A dt updater integrating the state of particles a list of dicts holds
+    (``q["x"] = …``) at the pace a dt-free updater stores into each dict, and
+    a redraw drawing them: a store into a dict changes no structure, so the
+    play steps; the pace is what stepping work reads, so its updater is
+    pulled, and the redraw waits for the frames.
+    """
+
+    def construct(self):
+        parts = [{"x": -1.0, "v": 1.0}, {"x": 0.5, "v": 1.0}]
+        clock = ValueTracker(0)
+
+        def step(m, dt):
+            for q in parts:
+                q["x"] = q["x"] + q["v"] * dt
+
+        level = ValueTracker(0)
+
+        def pace(m):
+            for q in parts:
+                q["v"] = 1 + level.get_value()
+
+        clock.add_updater(step)
+        pacer = Mobject()
+        pacer.add_updater(pace)
+        drawn = always_redraw(
+            lambda: VGroup(*[Dot().shift(q["x"] * RIGHT) for q in parts])
+        )
+        self.add(clock, pacer, drawn)
+        self.play(level.animate.set_value(2), rate_func=linear)
+
+
+class _ItemStores(Scene):
+    """A dt updater storing into each item of ``parts`` (a dot at key or
+    index 0), beside a redraw that reads none of it.
+    """
+
+    def stores(self, parts):
+        clock = ValueTracker(0)
+
+        def step(m, dt):
+            m.increment_value(dt)
+            for q in parts:
+                q[0] = Dot().shift(m.get_value() * UP)
+
+        clock.add_updater(step)
+        self.add(clock, always_redraw(lambda: Square(side_length=0.2)))
+        return clock
+
+
+class MobjectItemStore(_ItemStores):
+    """The list holds a group shown: ``group[0] = other`` replaces one of its
+    members as stepping work runs.
+    """
+
+    def construct(self):
+        group = VGroup(Dot(), Dot().shift(RIGHT))
+        self.add(group)
+        self.stores([group])
+        self.wait(1)
+
+
+class MembersListStore(_ItemStores):
+    """The list holds a shown group's list of members: a store into it
+    replaces one of them.
+    """
+
+    def construct(self):
+        group = VGroup(Dot(), Dot().shift(RIGHT))
+        self.add(group)
+        self.stores([group.submobjects])
+        self.wait(1)
+
+
+class AttributeDictStore(Scene):
+    """The list holds a shown group's attribute dict (``vars(group)``): a
+    store of its ``submobjects`` replaces its members.
+    """
+
+    def construct(self):
+        group = VGroup(Dot(), Dot().shift(RIGHT))
+        parts = [vars(group)]
+        clock = ValueTracker(0)
+
+        def step(m, dt):
+            m.increment_value(dt)
+            for q in parts:
+                q["submobjects"] = [Dot().shift(m.get_value() * UP)]
+
+        clock.add_updater(step)
+        self.add(group, clock, always_redraw(lambda: Square(side_length=0.2)))
+        self.wait(1)
+
+
+class MobjectJoinsDicts(_ItemStores):
+    """The list holds dicts until an updater appends a group shown, half-way:
+    the next store into its items replaces one of the group's members.
+    """
+
+    def construct(self):
+        group = VGroup(Dot(), Dot().shift(RIGHT))
+        parts: list = [{}]
+        self.add(group)
+        clock = self.stores(parts)
+
+        def join(m, dt):
+            if m.get_value() > 0.5 and len(parts) == 1:
+                parts.append(group)
+
+        clock.add_updater(join)
+        self.wait(1)
+
+
+class DictSwappedForMobject(_ItemStores):
+    """The list holds dicts until a part beginning half-way through the play
+    swaps one for a group shown (its function runs as it begins): the next
+    store into its items replaces one of the group's members.
+    """
+
+    def construct(self):
+        group = VGroup(Dot(), Dot().shift(RIGHT))
+        parts: list = [{}, {}]
+        marker = Dot().shift(DOWN)
+        self.add(group, marker)
+        self.stores(parts)
+
+        def swap(mob):
+            parts[1] = group
+            return mob.shift(LEFT)
+
+        self.play(Succession(Wait(0.5), ApplyFunction(swap, marker)), rate_func=linear)
+
+
+class DictsBesideGroup(_ItemStores):
+    """A list of dicts a dt updater stores into, and a group shown, both
+    kept on the scene (``parts``, ``group``), for code outside the play's
+    work to swap one for the other.
+    """
+
+    def construct(self):
+        self.group = VGroup(Dot(), Dot().shift(RIGHT))
+        self.parts = [{}, {}]
+        self.add(self.group)
+        self.stores(self.parts)
+        self.wait(1)
+
+
+def _place(group, centre):
+    for dot, offset in zip(group, (LEFT, RIGHT), strict=True):
+        dot.move_to(centre + offset)
+
+
+class _Pair(VGroup):
+    def __init__(self):
+        super().__init__()
+        self.add(Dot(), Dot())
+        self.x = 0.0
+
+    def drift(self, dt):
+        self.x += dt
+        _place(self, self.x * RIGHT)
+
+
+class UnresolvedMethodRead(Scene):
+    """A dt updater moving the members of a group of the scene's class
+    through a helper's loop (``dot.move_to(…)``, ``dot`` unresolved), beside
+    a redraw that reads none of it: the check can't tell that no code of the
+    scene's runs as ``move_to``, and the class's code adds members, so the
+    play ticks everything (a precision gap, ``tech-debt-tracker.md``).
+    """
+
+    def construct(self):
+        pair = _Pair()
+        pair.add_updater(lambda m, dt: m.drift(dt))
+        self.add(pair, always_redraw(lambda: Square(side_length=0.2)))
         self.wait(1)
 
 

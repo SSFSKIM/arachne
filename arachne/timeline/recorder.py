@@ -41,6 +41,7 @@ from .ticking import (
     current_structure,
     met_unforeseen,
     plan_ticks,
+    typings_hold,
     unaffected,
 )
 
@@ -139,16 +140,19 @@ class PlayRun:
         whatever code: the play's first evaluation, a skipped callback at a
         full tick, a list held under another name, ``become``'s copies) has
         the play plan again first, unless the change leaves the plan true
-        (:func:`.unaffected`). A plan not :attr:`~.TickPlan.applied` is kept
-        the same way, and the tick runs in full.
+        (:func:`.unaffected`). So does a list whose items typed a loop's
+        variable holding other items now (:func:`.typings_hold`), whatever
+        the structure. A plan not :attr:`~.TickPlan.applied` is kept the same
+        way, and the tick runs in full.
         """
         play = self.play
         plan = play.tick_plan
         if plan is None or not plan.steps_only:
             return None
         structure = current_structure(self.scene, play._animations)
-        if structure not in (plan.structure, self._kept_structure):
-            if unaffected(plan, self.scene, play._animations):
+        typed = typings_hold(plan)
+        if not typed or structure not in (plan.structure, self._kept_structure):
+            if typed and unaffected(plan, self.scene, play._animations):
                 self._kept_structure = structure
             else:
                 plan = plan_ticks(
