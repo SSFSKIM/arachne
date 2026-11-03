@@ -15,8 +15,12 @@ import pytest
 
 from arachne.scene.scene import Scene
 from arachne.timeline import recorder, reference, routes, ticking
-from arachne.timeline.reference import BRUTE_FORCE, integrates
-from arachne.timeline.ticking import loads_dt
+from arachne.timeline.reference import (
+    BRUTE_FORCE,
+    integrates,
+    scene_updater_integrates,
+)
+from arachne.timeline.ticking import loads_dt, scene_updater_loads_dt
 
 from . import plan_read_scenes, soundness_scenes, stepping_scenes
 
@@ -107,7 +111,15 @@ def test_brute_force_never_enters_the_plan(session_of, monkeypatch, path, name):
     and the plan itself all raise: a brute-force run of every scene meets
     none of them, and records no plan.
     """
-    _forbid(monkeypatch, ticking, "plan_ticks", "loads_dt", "_code_loads", "skipping")
+    _forbid(
+        monkeypatch,
+        ticking,
+        "plan_ticks",
+        "loads_dt",
+        "scene_updater_loads_dt",
+        "_slot_loaded",
+        "skipping",
+    )
     _forbid(monkeypatch, recorder, "plan_ticks", "current_structure")
     _forbid(monkeypatch, routes, "skipping")
     _forbid(monkeypatch, ticking.TickPlan, "__init__")
@@ -132,7 +144,7 @@ def test_stepping_never_enters_the_analysis(session_of, monkeypatch, path, name)
     )
     _forbid(monkeypatch, ticking._Writes, "__init__", "effect", "plan_reads_hold")
     _forbid(monkeypatch, ticking.TickPlan, "stepping_families")
-    _forbid(monkeypatch, reference, "integrates")
+    _forbid(monkeypatch, reference, "integrates", "scene_updater_integrates")
     _outcome(session_of, path, name, 4)
 
 
@@ -159,8 +171,40 @@ def _reads_an_attribute_named_dt(m, dt):
     return m.dt
 
 
+def _stores_dt_second_of_a_pair(m, dt):
+    unused, dt = 1, 0.0
+    return m
+
+
+def _stores_dt_first_of_a_pair(m, dt):
+    dt, unused = 0.0, 1
+    return m
+
+
+def _loops_dt_in_a_pair(m, dt):
+    for dt, unused in [(0.0, 1)]:  # noqa: B007 (the store is the case)
+        m.shift(0)
+
+
+def _forwarding(function):
+    @functools.wraps(function)
+    def wrapper(*args, **kwargs):
+        return function(*args, **kwargs)
+
+    return wrapper
+
+
 class _Updater:
     def __call__(self, m, dt):
+        return m
+
+
+class _Mover:
+    @_forwarding
+    def wrapped(self, m, dt):
+        m.shift(dt)
+
+    def dead(self, m, dt):
         return m
 
 
@@ -172,9 +216,16 @@ class _Updater:
         (_reads_dt_by_frame, True),
         (_reads_dt_in_an_inner_function, True),
         (_reads_an_attribute_named_dt, False),
+        (_stores_dt_second_of_a_pair, False),
+        (_stores_dt_first_of_a_pair, False),
+        (_loops_dt_in_a_pair, False),
         (lambda m: m, False),
         (functools.partial(_dt_free_by_signature), True),
         (_Updater(), True),
+        (_forwarding(_reads_dt), True),
+        (_forwarding(_dt_free_by_signature), True),
+        (_Mover().wrapped, True),
+        (_Mover().dead, False),
     ],
     ids=[
         "unread",
@@ -182,11 +233,55 @@ class _Updater:
         "frame",
         "inner",
         "attribute",
+        "pair-second",
+        "pair-first",
+        "for-pair",
         "no-dt",
         "partial",
         "object",
+        "wraps",
+        "wraps-dead",
+        "wraps-method",
+        "method-dead",
     ],
 )
 def test_brute_force_and_stepping_judge_dt_alike(updater, loads):
     assert integrates(updater) is loads
     assert loads_dt(updater) is loads
+
+
+def _scene_dead(dt):
+    return 0
+
+
+def _scene_reads(step):
+    return step
+
+
+class _SceneMover:
+    def dead(self, dt):
+        return 0
+
+    def reads(self, dt):
+        return dt
+
+
+@pytest.mark.parametrize(
+    ("updater", "loads"),
+    [
+        (_scene_dead, False),
+        (_scene_reads, True),
+        (lambda *args: args, True),
+        (_SceneMover().dead, False),
+        (_SceneMover().reads, True),
+        (functools.partial(_scene_dead), True),
+        (_forwarding(_scene_dead), True),
+    ],
+    ids=["dead", "renamed", "star-args", "method-dead", "method", "partial", "wraps"],
+)
+def test_brute_force_and_stepping_judge_scene_updaters_alike(updater, loads):
+    """A scene updater is handed dt as its first positional argument,
+    whatever it names it.
+    """
+    assert scene_updater_integrates(updater) is loads
+    assert scene_updater_loads_dt(updater) is loads

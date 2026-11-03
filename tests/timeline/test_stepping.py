@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 
 from arachne.timeline.clock import frames_in
-from arachne.timeline.ticking import UNBOUNDED, loads_dt
+from arachne.timeline.ticking import UNGOVERNED, loads_dt
 
 from . import soundness_scenes, stepping_scenes
 from .conftest import render
@@ -177,9 +177,46 @@ def test_a_session_records_on_its_render_s_grid(session_of):
 def test_a_fade_beside_a_dt_updater_that_reads_it_not_stays_stepping():
     scene, _ = render(stepping_scenes.FadeBeside, 4)
     play = _play(scene)
-    assert not any(r.startswith(UNBOUNDED) for r in play.admission.reasons)
+    assert not any(r.startswith(UNGOVERNED) for r in play.admission.reasons)
     assert play.tick_plan.skipped
     assert play.stepping_ticks == 60 - 4
+
+
+# Who is handed dt, and whose code reads it
+
+
+@pytest.mark.parametrize("name", ["WrapsDt", "WrapsDtMethod"])
+def test_a_wrapped_integrator_steps_at_every_tick(session_of, name):
+    """A ``functools.wraps`` wrapper names dt in its signature and forwards
+    it from code that declares no dt: it counts as reading it, and the dot
+    integrates as when every tick is full.
+    """
+    stepped = session_of(name, STEPPING_SCENES, frame_rate=4)
+    full = session_of(name, STEPPING_SCENES, frame_rate=4, stepping=False)
+    assert stepped.record.plays[-1].stepping_ticks > 0
+    for ours, theirs in zip(stepped.record.plays, full.record.plays, strict=True):
+        assert ours.sample_keys() == theirs.sample_keys(), ours.index
+
+
+@pytest.mark.parametrize(
+    ("name", "loads"), [("DeadDtSceneUpdater", False), ("DtSceneUpdater", True)]
+)
+def test_a_scene_updater_runs_between_frames_only_when_it_reads_dt(
+    session_of, name, loads
+):
+    """Every mode runs the scene updater at every full tick; between frames
+    the stepping run and brute force run it only when its code reads the dt
+    it is handed.
+    """
+    counts = {}
+    for mode in (True, "brute_force", False):
+        session = session_of(name, STEPPING_SCENES, frame_rate=4, stepping=mode)
+        play = session.record.plays[-1]
+        counts[mode] = (len(session.scene.calls), play.stepping_ticks, play.full_ticks)
+    calls, stepping, full = counts[True]
+    assert counts["brute_force"] == counts[True]
+    assert stepping > 0
+    assert counts[False][0] == (calls if loads else calls + stepping)
 
 
 # A break class awaiting the owner's ruling
@@ -206,7 +243,7 @@ def test_break_awaiting_the_owner_a_dt_check_sees_a_dt_free_output_a_frame_old(
 def test_a_scene_running_its_own_update_mobjects_ticks_everything(session_of):
     play = session_of("OwnUpdating", STEPPING_SCENES, frame_rate=4).record.plays[-1]
     assert play.route == "ticked"
-    (reason,) = [r for r in play.admission.reasons if r.startswith(UNBOUNDED)]
+    (reason,) = [r for r in play.admission.reasons if r.startswith(UNGOVERNED)]
     assert "update_mobjects is its own code" in reason
     assert play.tick_plan.unbounded == reason
     assert play.stepping_ticks == 0
@@ -223,7 +260,7 @@ def test_an_updater_that_joins_at_an_event_is_planned_for(session_of):
     fps = 4
     scene, frames = render(stepping_scenes.LateJoiner, fps)
     play = _play(scene)
-    assert not any(r.startswith(UNBOUNDED) for r in play.admission.reasons)
+    assert not any(r.startswith(UNGOVERNED) for r in play.admission.reasons)
     assert play.stepping_ticks > 0
     _same_as_every_tick(session_of, "LateJoiner", frames, fps)
 

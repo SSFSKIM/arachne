@@ -11,22 +11,25 @@ runs a ticked play tick by tick and decides each tick from the play alone:
   (the scene's own ``update_mobjects`` or ``update_self``, a mobject's own
   ``update``, a camera drawing other cameras), checked at the play's start
   and at every other tick, on to the play's end;
-- at every other tick, every updater whose own code does not load ``dt``
-  (:func:`integrates`, judged as it is called) is left out, and everything
-  else runs: the dt updaters, the scene's updaters, the camera's inputs and
-  every interpolation.
+- at every other tick, every mobject updater and every scene updater whose
+  own code does not load the ``dt`` it is handed (:func:`integrates`,
+  :func:`scene_updater_integrates`, judged as each is called) is left out,
+  and everything else runs: the callbacks that load ``dt``, the camera's
+  inputs and every interpolation.
 
 It makes no :class:`~.ticking.TickPlan` and reads none (``PlayRecord.tick_plan``
-stays ``None``), never asks :func:`~.ticking.plan_ticks`, and its ``dt``
-judge shares no code or cache with :func:`~.ticking.loads_dt`. What it shares
-with a stepping run is the run itself and the hook :meth:`.Mobject.update`
-consults to leave an updater out. A comparison runs a scene stepping and
-brute force, and requires the same frames.
+stays ``None``), never asks :func:`~.ticking.plan_ticks`, and its judges of
+``dt`` share no code or cache with :func:`~.ticking.loads_dt` and
+:func:`~.ticking.scene_updater_loads_dt`. What it shares with a stepping run
+is the run itself and the hooks :meth:`.Mobject.update` and
+:meth:`.Scene.update_self` consult to leave an updater out
+(``tech-debt-tracker.md`` lists the rest). A comparison runs a scene
+stepping and brute force, and requires the same frames.
 """
 
 from __future__ import annotations
 
-__all__ = ["BRUTE_FORCE", "BruteForce", "integrates"]
+__all__ = ["BRUTE_FORCE", "BruteForce", "integrates", "scene_updater_integrates"]
 
 import contextlib
 import dis
@@ -63,23 +66,11 @@ _FRAME_READERS = frozenset(
     }
 )
 
-#: Instructions on a function's own locals or cells that read none.
-_NO_READ = frozenset(
-    {
-        "STORE_FAST",
-        "STORE_FAST_STORE_FAST",
-        "STORE_FAST_MAYBE_NULL",
-        "DELETE_FAST",
-        "STORE_DEREF",
-        "DELETE_DEREF",
-    }
-)
-
 
 def integrates(updater: Any) -> bool:
-    """Whether ``updater`` has a ``dt`` parameter its own code may read: a
-    load of the local, an inner function closing over it, a read of its own
-    frame, or no Python code to look at.
+    """Whether a mobject's ``updater`` is handed ``dt`` (its signature names
+    it) and may read it: unless its own code declares a ``dt`` parameter and
+    never reads that slot (:func:`_reads_parameter`), it counts as reading.
     """
     try:
         parameters = inspect.signature(updater).parameters
@@ -87,23 +78,53 @@ def integrates(updater: Any) -> bool:
         return True
     if "dt" not in parameters:
         return False
+    code = _own_code(updater)
+    return code is None or _reads_parameter(code, "dt")
+
+
+def scene_updater_integrates(updater: Any) -> bool:
+    """Whether a scene's ``updater`` may read the ``dt`` :meth:`.Scene.update_self`
+    hands it as its first positional argument, whatever its code calls it.
+    """
+    code = _own_code(updater)
+    if code is None:
+        return True
+    names = code.co_varnames[: code.co_argcount]
+    if isinstance(updater, types.MethodType):
+        names = names[1:]
+    return not names or _reads_parameter(code, names[0])
+
+
+def _own_code(updater: Any) -> types.CodeType | None:
     code = getattr(getattr(updater, "__func__", updater), "__code__", None)
-    if not isinstance(code, types.CodeType):
-        return True
-    if "dt" in code.co_cellvars or _FRAME_READERS & set(code.co_names):
-        return True
-    return any(_reads(instruction, "dt") for instruction in dis.get_instructions(code))
+    return code if isinstance(code, types.CodeType) else None
 
 
-def _reads(instruction: dis.Instruction, name: str) -> bool:
-    opname = instruction.opname
-    if ("FAST" not in opname and "DEREF" not in opname) or opname in _NO_READ:
+def _reads_parameter(code: types.CodeType, name: str) -> bool:
+    declared = code.co_varnames[: code.co_argcount + code.co_kwonlyargcount]
+    if name not in declared:
+        return True  # what the caller hands under that name is not this slot
+    if name in code.co_cellvars or _FRAME_READERS & set(code.co_names):
+        return True
+    for instruction in dis.get_instructions(code):
+        if _reads(instruction.opname, instruction.argval, name):
+            return True
+    return False
+
+
+def _reads(opname: str, value: Any, name: str) -> bool:
+    """Whether one instruction reads local ``name``."""
+    if "FAST" not in opname and "DEREF" not in opname:
         return False
-    value = instruction.argval
+    if opname in ("STORE_FAST", "DELETE_FAST", "STORE_DEREF", "DELETE_DEREF"):
+        return False
+    if opname in ("STORE_FAST_STORE_FAST", "STORE_FAST_MAYBE_NULL"):
+        return False
     if opname == "STORE_FAST_LOAD_FAST":
-        # (stored, loaded): only the second is read.
-        return bool(value[1] == name)
-    return value == name or (isinstance(value, tuple) and name in value)
+        return bool(value[1] == name)  # stores the first, loads the second
+    if isinstance(value, tuple):
+        return name in value  # LOAD_FAST_LOAD_FAST loads both; any other form
+    return bool(value == name)
 
 
 def _ungoverned(scene: Scene) -> bool:
@@ -153,13 +174,17 @@ class BruteForce:
     @staticmethod
     @contextlib.contextmanager
     def dt_work_only() -> Iterator[None]:
-        """Evaluate a tick leaving out every updater :func:`integrates`
-        rejects.
+        """Evaluate a tick leaving out every mobject updater
+        :func:`integrates` rejects and every scene updater
+        :func:`scene_updater_integrates` rejects.
         """
         from arachne.mobject.mobject import Mobject
+        from arachne.scene.scene import Scene
 
         Mobject._tick_steps = integrates
+        Scene._tick_steps = scene_updater_integrates
         try:
             yield
         finally:
             Mobject._tick_steps = None
+            Scene._tick_steps = None

@@ -7,6 +7,7 @@ carries a dt updater, unless the scene says otherwise.
 
 from __future__ import annotations
 
+import functools
 from builtins import getattr as lookup
 
 import numpy as np
@@ -1313,3 +1314,101 @@ class FreshMethod(Scene):
         shown.add_updater(lambda m: m.set_x(output.get_value()))
         self.add(t, producer, source, output, shown, _idle())
         self.play(t.animate.set_value(1), rate_func=linear)
+
+
+# Who is handed dt, and whose code reads it
+
+
+def _forwarding(function):
+    """A ``functools.wraps`` wrapper: its signature is the function's, its own
+    code forwards ``*args``.
+    """
+
+    @functools.wraps(function)
+    def wrapper(*args, **kwargs):
+        return function(*args, **kwargs)
+
+    return wrapper
+
+
+class WrapsDt(Scene):
+    """A dt integrator behind a ``functools.wraps`` wrapper: handed dt, it
+    integrates at every tick.
+    """
+
+    def construct(self):
+        @_forwarding
+        def integrate(m, dt):
+            m.shift(dt * RIGHT)
+
+        output = Dot(color=RED)
+        output.add_updater(integrate)
+        self.add(output, _idle())
+        self.wait(1)
+
+
+class WrapsDtMethod(Scene):
+    """The same integrator as a wrapped method, bound to its instance."""
+
+    def construct(self):
+        class Mover:
+            @_forwarding
+            def integrate(self, m, dt):
+                m.shift(dt * RIGHT)
+
+        output = Dot(color=RED)
+        output.add_updater(Mover().integrate)
+        self.add(output, _idle())
+        self.wait(1)
+
+
+class DeadDtStorePair(Scene):
+    """An updater that rebinds dt in a paired store and never reads it: it
+    moves once a frame, as in CE.
+    """
+
+    def construct(self):
+        def per_frame(m, dt):
+            dt, unused = 0.0, 1
+            m.shift(0.01 * RIGHT)
+
+        output = Dot(color=RED)
+        output.add_updater(per_frame)
+        self.add(output, _idle())
+        self.wait(1)
+
+
+class DeadDtSceneUpdater(Scene):
+    """A scene updater handed dt that never reads it: it runs at the full
+    ticks only.
+    """
+
+    def construct(self):
+        self.calls = []
+        output = Dot(color=RED)
+
+        def per_frame(dt):
+            self.calls.append(0)
+            output.shift(0.01 * RIGHT)
+
+        self.add(output, _idle())
+        self.add_updater(per_frame)
+        self.wait(1)
+
+
+class DtSceneUpdater(Scene):
+    """A scene updater that integrates the dt it is handed, under another
+    name: it runs at every tick.
+    """
+
+    def construct(self):
+        self.calls = []
+        output = Dot(color=RED)
+
+        def integrate(step):
+            self.calls.append(0)
+            output.shift(step * RIGHT)
+
+        self.add(output, _idle())
+        self.add_updater(integrate)
+        self.wait(1)

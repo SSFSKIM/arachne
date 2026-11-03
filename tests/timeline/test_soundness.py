@@ -360,7 +360,7 @@ def test_a_mobject_whose_update_is_replaced_ticks(session_of):
     # What a tick runs is the scene's code, so every tick is full.
     session = _ticked_with(session_of, "InstanceUpdate", "update is the scene's code")
     play = session.record.plays[-1]
-    assert any(r.startswith("tick.unbounded_read: ") for r in play.admission.reasons)
+    assert any(r.startswith("tick.ungoverned: ") for r in play.admission.reasons)
     assert play.stepping_ticks == 0
     _same_at_shared_instants(soundness_scenes.InstanceUpdate)
 
