@@ -249,7 +249,9 @@ class Recorder:
     first tick steps from, and what the plan is made from, whatever the hook
     changed. Neither ``on_tick`` nor ``on_step`` is called for the start.
     Unset, they cost nothing; set, ``on_tick`` and ``on_step`` observe and
-    must change nothing.
+    must change nothing: nothing checks it, and the frames of a play whose
+    ``on_tick`` or ``on_step`` writes are undefined (``tech-debt-tracker.md``,
+    Hooks).
     """
 
     def __init__(

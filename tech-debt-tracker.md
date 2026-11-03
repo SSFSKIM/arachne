@@ -3,6 +3,19 @@
 Known gaps kept on record rather than fixed, each with the test that
 reproduces it.
 
+## Hooks (`arachne/timeline/recorder.py`)
+
+- **`on_tick` and `on_step` must only observe, and nothing enforces it.**
+  They are diagnostics, called after each tick of a ticked play, between
+  two stepping ticks whose plan nothing re-checks for what a hook changed. A
+  hook that writes what a stepping reader reads, or what a skipped callback
+  would have written, leaves the frames undefined: neither those of
+  stepping nor those of ticking everything. Enforcing it would take a
+  digest of the plan's reach at every tick; their one consumer is an
+  instrument that only reads. `on_start` is safe: the play plans its ticks
+  after it, from whatever it left
+  (`tests/timeline/test_stepping.py::test_a_hook_that_rebinds_what_a_reader_reads_is_planned_for`).
+
 ## Soundness: what stepping may still skip wrongly (`arachne/timeline/ticking.py`)
 
 - **A callable handed to a call is read only where the check resolves it.**
@@ -96,6 +109,18 @@ Work to do, not debt to wait on: each item leaves a play ticking everything
   object today, so the change carries a soundness scene with a skipped
   writer of an undeclared field (a stroke width a `Create` keeps) that must
   stay pulled.
+- **Take an updater's `dt` for a number.** The engine hands every dt
+  updater a float, but the check reads `dt` as a parameter it can't
+  resolve, so arithmetic on it (`h = dt * speed / n`) is no number for
+  `_number_array`, and a sum `v + a * h` of a NumPy array and that product
+  may be either operand: a store into the sum is taken for one into `v`.
+  The sum rule needs both operands known to be numbers or NumPy's own
+  arrays, since a subclass's operator, or its reflected form, may hand back
+  an operand (`AliasingSumRead`). One measured scene pulls three callbacks
+  in three plays for it (pulled 0 → 9, its stepping ticks unchanged). The
+  fix types `dt` (and an alpha a rate-function updater is handed) as a
+  float, and an arithmetic expression of numbers and NumPy's own arrays as
+  one of them.
 - **A method called on a receiver the check can't resolve is taken for the
   scene's code.** `dot.move_to(…)` with `dot` a loop's variable over
   `zip(group, offsets)` may be any class's `move_to`, so `_Site._method_code`
