@@ -33,6 +33,7 @@ from arachne import (
     linear,
     random_color,
 )
+from tests.timeline import rebind_shared
 
 
 class _Ramp(Scene):
@@ -202,6 +203,493 @@ class InputsOnlyRead(_OutRead):
             )
 
         return step
+
+
+class _SharedRead(Scene):
+    """A dt-free updater changes a dot the scene shows, through some path
+    a narrowed write check must still see; a dt updater integrates the
+    dot's x, and an idle updater keeps the play stepping.
+    """
+
+    def writer(self, shared: Dot):
+        raise NotImplementedError
+
+    def construct(self):
+        shared = Dot(radius=0.05).move_to(RIGHT)
+        producer = Dot(radius=0.05)
+        producer.add_updater(self.writer(shared))
+        output = Dot(color=RED, radius=0.05)
+        output.add_updater(lambda m, dt: m.shift(dt * shared.get_x() * UP))
+        idle = Dot(radius=0.05)
+        idle.add_updater(lambda m: None)
+        self.add(shared, producer, output, idle)
+        self.wait(1)
+
+
+class MadeGroupRead(_SharedRead):
+    """A function of the scene's makes a group holding the shown dot and
+    hands it back; the callback moves the group.
+    """
+
+    def writer(self, shared):
+        def labelled(size):
+            return VGroup(shared, Dot(radius=size))
+
+        return lambda m: labelled(0.05).shift(0.01 * RIGHT)
+
+
+class InlineGroupRead(_SharedRead):
+    """A group made in the callback around the shown dot, moved at once."""
+
+    def writer(self, shared):
+        return lambda m: VGroup(shared, Dot()).shift(0.01 * RIGHT)
+
+
+class MadeListRead(_SharedRead):
+    """A list made in the callback holding the shown dot; its item moved."""
+
+    def writer(self, shared):
+        def step(m):
+            parts = [shared]
+            parts[0].shift(0.01 * RIGHT)
+
+        return step
+
+
+class MadeClassRead(_SharedRead):
+    """An object of the scene's own class, whose constructor puts the shown
+    dot into it; the callback moves the object.
+    """
+
+    def writer(self, shared):
+        class Holder(VGroup):
+            def __init__(self):
+                super().__init__(shared, Dot())
+
+        return lambda m: Holder().shift(0.01 * RIGHT)
+
+
+class MadeSetterRead(_SharedRead):
+    """A group made around the shown dot, resized through a property: the
+    engine's setter scales what it holds.
+    """
+
+    def writer(self, shared):
+        def step(m):
+            group = VGroup(shared)
+            group.width = group.width * 1.01
+
+        return step
+
+
+class CopiedDictRead(_SharedRead):
+    """A shallow copy of a dict holding the shown dot; the copy's item moved."""
+
+    def writer(self, shared):
+        registry = {"dot": shared}
+
+        def step(m):
+            found = registry.copy()
+            found["dot"].shift(0.01 * RIGHT)
+
+        return step
+
+
+class ArgumentRead(_SharedRead):
+    """A function of the scene's that moves what it is handed, handed the
+    shown dot.
+    """
+
+    def writer(self, shared):
+        def nudge(mob):
+            mob.shift(0.01 * RIGHT)
+
+        return lambda m: nudge(shared)
+
+
+class MemoValueRead(_SharedRead):
+    """A memo dict whose value is the shown dot, moved through the dict."""
+
+    def writer(self, shared):
+        cache = {"dot": shared}
+        return lambda m: cache["dot"].shift(0.01 * RIGHT)
+
+
+class MemoHelperRead(_SharedRead):
+    """A helper handing back the memo dict's value, not a copy of it."""
+
+    def writer(self, shared):
+        cache = {"dot": shared}
+
+        def cached():
+            return cache["dot"]
+
+        return lambda m: cached().shift(0.01 * RIGHT)
+
+
+class OutsideMemberRead(_SharedRead):
+    """A group the shown dot was added to from outside, moved."""
+
+    def writer(self, shared):
+        group = VGroup()
+        group.add(shared)
+        return lambda m: group.shift(0.01 * RIGHT)
+
+
+class ByNameMethodRead(_SharedRead):
+    """The shown dot's method fetched by ``getattr`` and called."""
+
+    def writer(self, shared):
+        return lambda m: shared.shift(0.01 * RIGHT)
+
+
+class GrownGroupRead(_SharedRead):
+    """A group made around the shown dot, grown by ``add`` (its own list),
+    then moved: the move reaches the dot.
+    """
+
+    def writer(self, shared):
+        def step(m):
+            group = VGroup(shared)
+            group.add(Dot())
+            group.shift(0.01 * RIGHT)
+
+        return step
+
+
+class MadeGroupSuspends(_SharedRead):
+    """A group made around the shown dot, whose updating it suspends: that
+    reaches the dot's own updaters, a change of structure.
+    """
+
+    def writer(self, shared):
+        return lambda m: VGroup(shared).suspend_updating()
+
+
+class LoopLocalRead(_SharedRead):
+    """A loop's variable, bound to each item of a list holding the shown
+    dot, moved.
+    """
+
+    def writer(self, shared):
+        held = [shared]
+
+        def step(m):
+            for each in held:
+                each.shift(0.01 * RIGHT)
+
+        return step
+
+
+class PickedLocalRead(_SharedRead):
+    """A local bound to an item of a list holding the shown dot, moved."""
+
+    def writer(self, shared):
+        held = [shared]
+
+        def step(m):
+            pick = held[0]
+            pick.shift(0.01 * RIGHT)
+
+        return step
+
+
+class MadeAroundArgumentRead(_SharedRead):
+    """A function of the scene's makes a group around what it is handed and
+    moves it, handed the shown dot.
+    """
+
+    def writer(self, shared):
+        def nudge(mob):
+            VGroup(mob).shift(0.01 * RIGHT)
+
+        return lambda m: nudge(shared)
+
+
+class LoopOwnerRead(_SharedRead):
+    """The updater's own parameter rebound, by a loop, to the shown dot."""
+
+    def writer(self, shared):
+        held = [shared]
+
+        def step(m):
+            for m in held:  # noqa: B020, PLR1704
+                m.shift(0.01 * RIGHT)
+
+        return step
+
+
+class ComprehensionOwnerRead(_SharedRead):
+    """A comprehension whose variable has the updater's parameter's name,
+    bound to the shown dot.
+    """
+
+    def writer(self, shared):
+        held = [shared]
+        return lambda m: [m.shift(0.01 * RIGHT) for m in held]
+
+
+class LambdaOwnerRead(_SharedRead):
+    """A lambda whose parameter has the updater's parameter's name, run on
+    the shown dot.
+    """
+
+    def writer(self, shared):
+        held = [shared]
+        return lambda m: list(map(lambda m: m.shift(0.01 * RIGHT), held))  # noqa: C417
+
+
+class _Mover:
+    """A helper of the scene's whose static method moves what it is handed."""
+
+    @staticmethod
+    def move(mob):
+        mob.shift(0.01 * RIGHT)
+
+
+class StaticMethodRead(_SharedRead):
+    """A held helper's static method, handed the shown dot."""
+
+    def writer(self, shared):
+        helper = _Mover()
+        return lambda m: helper.move(shared)
+
+
+class SuperInitRead(_SharedRead):
+    """An object of a class of the scene's whose parent's constructor, run
+    through ``super()``, moves the shown dot.
+    """
+
+    def writer(self, shared):
+        class Base(VGroup):
+            def __init__(self):
+                super().__init__()
+                shared.shift(0.01 * RIGHT)
+
+        class Child(Base):
+            def __init__(self):
+                super().__init__()
+
+        return lambda m: Child()
+
+
+class DrawnItemRead(_SharedRead):
+    """A generator the callback seeds draws the shown dot from an array
+    holding it; the draw is moved.
+    """
+
+    def writer(self, shared):
+        pool = np.empty(1, dtype=object)
+        pool[0] = shared
+
+        def step(m):
+            rng = np.random.default_rng(0)
+            rng.choice(pool).shift(0.01 * RIGHT)
+
+        return step
+
+
+class MethodReturnRead(_SharedRead):
+    """A held helper's method hands back the shown dot, which is moved."""
+
+    def writer(self, shared):
+        class Holder:
+            def __init__(self):
+                self.target = shared
+
+            def pick(self):
+                return self.target
+
+        holder = Holder()
+
+        def step(m):
+            found = holder.pick()
+            found.shift(0.01 * RIGHT)
+
+        return step
+
+
+class AttributeByNameRead(_SharedRead):
+    """The shown dot read by ``getattr`` with a constant name, then moved."""
+
+    def writer(self, shared):
+        class Holder:
+            pass
+
+        holder = Holder()
+        holder.target = shared
+
+        def step(m):
+            found = holder.target
+            found.shift(0.01 * RIGHT)
+
+        return step
+
+
+class LargestRead(_SharedRead):
+    """``max`` hands back one of its arguments' items: the shown dot."""
+
+    def writer(self, shared):
+        held = [shared, Dot(radius=0.01)]
+
+        def step(m):
+            found = max(held, key=lambda d: d.width)
+            found.shift(0.01 * RIGHT)
+
+        return step
+
+
+class MadeHelperMethodRead(_SharedRead):
+    """An object of the scene's own class, made with nothing, whose method
+    moves the shown dot: what the class's code reads, its methods' among it.
+    """
+
+    def writer(self, shared):
+        class Pusher:
+            def push(self):
+                shared.shift(0.01 * RIGHT)
+
+        def make():
+            return Pusher()
+
+        return lambda m: make().push()
+
+
+class ConstantItemInPlaceRead(_SharedRead):
+    """An engine constant held in a list, added to in place through its
+    item (by zero: the constant is shared by the whole process): a write
+    into an array no key names, which may be any a dt updater reads.
+    """
+
+    def writer(self, shared):
+        held = [UP]
+
+        def step(m):
+            held[0] += 0
+
+        return step
+
+
+class ReboundArgumentRead(_SharedRead):
+    """A function of the scene's whose parameter, handed the shown dot, is
+    rebound and moved under either binding.
+    """
+
+    def writer(self, shared):
+        def nudge(mob, twice=False):
+            if twice:
+                mob = mob.copy()
+            mob.shift(0.01 * RIGHT)
+
+        return lambda m: nudge(shared)
+
+
+class SharedRngRead(Scene):
+    """A dt-free updater draws from a generator the scene made, which a dt
+    updater draws from too: each draw changes what the other draws next.
+    """
+
+    def construct(self):
+        rng = np.random.default_rng(1)
+        producer = Dot(radius=0.05)
+        producer.add_updater(lambda m: rng.uniform())
+        output = Dot(color=RED, radius=0.05)
+        output.add_updater(lambda m, dt: m.shift(dt * rng.random() * RIGHT))
+        idle = Dot(radius=0.05)
+        idle.add_updater(lambda m: None)
+        self.add(producer, output, idle)
+        self.wait(1)
+
+
+LEVEL = 1.0
+
+
+def _raise_level(m):
+    global LEVEL
+    LEVEL += 0.01
+
+
+class _LevelRead(Scene):
+    """A dt updater integrates a module global a dt-free updater rebinds."""
+
+    def construct(self):
+        global LEVEL
+        LEVEL = 1.0
+        rebind_shared.LEVEL = 1.0
+        producer = Dot(radius=0.05)
+        producer.add_updater(self.writer())
+        output = Dot(color=RED, radius=0.05)
+        output.add_updater(self.reader())
+        idle = Dot(radius=0.05)
+        idle.add_updater(lambda m: None)
+        self.add(producer, output, idle)
+        self.wait(1)
+
+
+class GlobalRebindRead(_LevelRead):
+    """``global LEVEL; LEVEL += …``."""
+
+    def writer(self):
+        return _raise_level
+
+    def reader(self):
+        return lambda m, dt: m.shift(dt * LEVEL * RIGHT)
+
+
+def _raise_shared(m):
+    rebind_shared.LEVEL = rebind_shared.LEVEL + 0.01
+
+
+class ModuleStoreRead(_LevelRead):
+    """``module.LEVEL = …``, read as ``module.LEVEL``."""
+
+    def writer(self):
+        return _raise_shared
+
+    def reader(self):
+        return lambda m, dt: m.shift(dt * rebind_shared.LEVEL * RIGHT)
+
+
+class ModuleSetattrRead(_LevelRead):
+    """``setattr(module, "LEVEL", …)``."""
+
+    def writer(self):
+        return lambda m: setattr(rebind_shared, "LEVEL", rebind_shared.LEVEL + 0.01)
+
+    def reader(self):
+        return lambda m, dt: m.shift(dt * rebind_shared.LEVEL * RIGHT)
+
+
+class PrivateWorkRead(Scene):
+    """The positive control: a redraw that builds its picture through a
+    function of the scene's handing back a group it made, a memo dict of
+    copies, a generator it seeds itself, ``getattr`` by a constant name and
+    ``np.linalg.norm``, from a tracker a dt updater advances. None of it is
+    read by stepping work, so the redraw waits for the frames.
+    """
+
+    def construct(self):
+        phase = ValueTracker(0)
+        phase.add_updater(lambda m, dt: m.increment_value(dt))
+        cache = {}
+
+        def badge(size):
+            return VGroup(Dot(radius=size), Square(side_length=size))
+
+        def cached(key):
+            if key not in cache:
+                cache[key] = badge(0.1)
+            return cache[key].copy()
+
+        def picture():
+            rng = np.random.default_rng(3)
+            jitter = rng.uniform(-0.01, 0.01)
+            x = phase.get_value() + getattr(self, "offset", 0.0) + jitter
+            length = np.linalg.norm(np.array([x, 1.0]))
+            return VGroup(badge(0.05).shift(x * RIGHT), cached("a").shift(length * UP))
+
+        self.add(phase, always_redraw(picture))
+        self.wait(1)
 
 
 class PartialFill(Scene):
