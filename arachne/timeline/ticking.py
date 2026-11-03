@@ -194,13 +194,6 @@ class TickPlan:
     scene_updaters: tuple[int, ...] = ()
     roots: tuple[int, ...] = ()
     members: frozenset[int] = frozenset()
-    #: Each list or tuple whose items typed a loop's variable (its items all
-    #: dicts, :meth:`_Site.loop_items`), with their ids and types
-    #: as the plan found them: every stepping tick checks them
-    #: (:func:`typings_hold`).
-    typings: tuple[tuple[Any, tuple[int, ...], tuple[type, ...]], ...] = field(
-        default=(), compare=False
-    )
     #: Whether the play stepped by it. A run that ticks everything
     #: (``Recorder(stepping=False)``) makes and remakes its plans where a
     #: stepping run would, and applies none: every tick stays full.
@@ -272,22 +265,6 @@ def current_structure(scene: Scene, animations: Iterable[Animation]) -> tuple[in
         found.append(len(members))
         pending.extend(reversed(members))
     return tuple(found)
-
-
-def typings_hold(plan: TickPlan) -> bool:
-    """Whether every list or tuple whose items the plan typed a loop's
-    variable by holds the same items as it did (the same length, the same
-    objects, of the same types): a plan whose typing no longer holds is
-    made again before a tick steps by it.
-    """
-    return all(
-        len(items) == len(ids)
-        and all(
-            id(item) == key and type(item) is cls
-            for item, key, cls in zip(items, ids, classes, strict=True)
-        )
-        for items, ids, classes in plan.typings
-    )
 
 
 def unaffected(plan: TickPlan, scene: Scene, animations: Iterable[Animation]) -> bool:
@@ -1441,16 +1418,7 @@ class _Writes:
     mobject of its family). Anything else changes something elsewhere.
     """
 
-    def __init__(
-        self, typing: bool = True, attribute_dicts: frozenset[int] = frozenset()
-    ) -> None:
-        #: Whether a loop's variable is typed by its iterable's items
-        #: (:meth:`_Site.loop_items`), and each list or tuple that typed one,
-        #: by its id; the ids of the attribute dicts of what holds the
-        #: structure (:func:`_attribute_dicts`), which type nothing.
-        self.typing = typing
-        self.typed: dict[int, Any] = {}
-        self.attribute_dicts = attribute_dicts
+    def __init__(self) -> None:
         #: Each function's effect, by its identity, owners and owner: the
         #: function is kept so that its id is not reused.
         self._effects: dict[
@@ -1661,13 +1629,6 @@ class _Writes:
             name: value for name, value in site.aliases.items() if name not in nested
         }
         site.local_from = _local_values(node)
-        site.loop_over = {
-            name: iterables
-            for name, iterables in _loop_iterables(node).items()
-            if len(iterables) == len(site.local_from.get(name, ()))
-            and name not in parameters
-            and name not in nested
-        }
         for name in parameters:
             # What it was handed, and what any store binds it to.
             site.local_from.setdefault(name, []).append(_PARAMETER)
@@ -1971,9 +1932,6 @@ class _Site:
     #: What each other local name may be bound to: the values its stores
     #: bind (a loop's iterable for its variable), ``None`` for one not known.
     local_from: dict[str, list[Any]] = field(default_factory=dict)
-    #: The local names bound only as a loop's variable, each to the
-    #: iterables it loops over.
-    loop_over: dict[str, list[ast.AST]] = field(default_factory=dict)
     #: The function's own code.
     code: types.CodeType | None = None
 
@@ -2126,12 +2084,6 @@ class _Site:
                 found = found.mobject
             return not _quiet_family(found)
         holder = self._bound(receiver)
-        if (
-            holder is _UNKNOWN
-            and isinstance(receiver, ast.Name)
-            and self.loop_items(receiver.id) is not None
-        ):
-            return False  # a dict's
         return not isinstance(holder, (types.ModuleType, list, set, dict, np.ndarray))
 
     def _bound(self, receiver: ast.AST) -> Any:
@@ -2225,13 +2177,6 @@ class _Site:
                 _NO_EFFECT if owned else self.write_to(receiver)
             )
         found = self._bound(receiver)
-        if (
-            found is _UNKNOWN
-            and isinstance(receiver, ast.Name)
-            and self.loop_items(receiver.id) is not None
-        ):
-            # A dict's item.
-            return self.write_to(receiver)
         if found is _UNKNOWN or isinstance(found, _MEMBERS_OF):
             if owned:
                 return _Effect(restructures=True, arrays=True)
@@ -2281,14 +2226,6 @@ class _Site:
             found = self.resolve(root)  # what it holds is reached through it
         if found is not _UNKNOWN:
             return _into(found)
-        if isinstance(root, ast.Name):
-            items = self.loop_items(root.id)
-            if items is not None:
-                # One of the items it loops over, or what that holds.
-                effect = _NO_EFFECT
-                for item in items:
-                    effect |= _into(item)
-                return effect
         if isinstance(root, ast.Name) and root.id in self.local_from:
             # A local: what any of its stores bound, or what that holds.
             effect = _NO_EFFECT
@@ -2314,44 +2251,6 @@ class _Site:
         if default is _PARAMETER or default is _UNKNOWN:
             return handed
         return handed | _into(default)
-
-    def loop_items(self, name: str) -> list[Any] | None:
-        """The objects the loop variable ``name`` may be bound to as the
-        function runs: the items of the lists or tuples it loops over, as
-        they are now, when every one is a dict (whose stores and methods
-        change no structure) other than an object's attributes, a module's
-        or what holds the structure (:func:`_attribute_dicts`); ``None``
-        otherwise. (A list may be a mobject's members.) The plan keeps
-        the lists it typed by, and checks at every stepping tick that their
-        items are still the same (:func:`typings_hold`); one a stepping
-        tick's work may itself change is not typed by (:func:`plan_ticks`).
-        """
-        iterables = self.loop_over.get(name)
-        if not iterables or not self.writes.typing:
-            return None
-        found: list[Any] = []
-        containers = []
-        for iterable in iterables:
-            container = self.resolve(iterable)
-            if type(container) not in (list, tuple):
-                return None
-            if not all(self._plain_dict(item) for item in container):
-                return None
-            containers.append(container)
-            found.extend(container)
-        for container in containers:
-            self.writes.typed[id(container)] = container
-        return found
-
-    def _plain_dict(self, item: Any) -> bool:
-        """Whether ``item`` is a dict, and neither a module's nor the
-        attributes of what holds the structure.
-        """
-        if type(item) is not dict or id(item) in self.writes.attribute_dicts:
-            return False
-        name = item.get("__name__")
-        module = sys.modules.get(name) if isinstance(name, str) else None
-        return module is None or vars(module) is not item
 
     def fresh_writes(self, name: str, seen: frozenset[str] = frozenset()) -> _Effect:
         """A change into what the object ``name``, which the function made,
@@ -2801,12 +2700,6 @@ class _Site:
         change structurally is then whatever the callback's reach may.
         """
         found = self._bound(receiver)
-        if (
-            found is _UNKNOWN
-            and isinstance(receiver, ast.Name)
-            and self.loop_items(receiver.id) is not None
-        ):
-            return _NO_EFFECT  # a dict's own
         if found is _UNKNOWN:
             return _Effect(unknown=True)
         classes = (
@@ -2957,19 +2850,6 @@ def _nested_parameters(node: ast.AST) -> set[str]:
                     *filter(None, (arguments.vararg, arguments.kwarg)),
                 )
             )
-    return found
-
-
-def _loop_iterables(node: ast.AST) -> dict[str, list[ast.AST]]:
-    """The iterable of each loop (a ``for``, a comprehension) of the code
-    of ``node`` whose variable is one name, by that name.
-    """
-    found: dict[str, list[ast.AST]] = {}
-    for item in _walk(node):
-        if isinstance(item, (ast.For, ast.AsyncFor, ast.comprehension)) and isinstance(
-            item.target, ast.Name
-        ):
-            found.setdefault(item.target.id, []).append(item.iter)
     return found
 
 
@@ -3625,6 +3505,8 @@ def plan_ticks(
     (its animations begun); source paths in its reason are relative to
     ``base_dir``.
     """
+    from arachne.animation.composition import AnimationGroup
+
     from . import trusted
     from .admission import _update_replaced
     from .dispatch import user_overrides
@@ -3652,16 +3534,37 @@ def plan_ticks(
                 raise Unbounded(
                     f"{type(animation).__name__} is the scene's own animation class"
                 )
-        check = _Writes(attribute_dicts=_attribute_dicts(scene, animations))
-        nodes = _weigh(scene, animations, check, base_dir)
+        check = _Writes()
+        nodes.extend(
+            _animation_node(animation, check)
+            for animation in trusted.iter_animations(animations)
+            if not isinstance(animation, AnimationGroup)
+        )
+        reaches: dict[tuple[int, int, int], frozenset[int]] = {}
+        for member, updater in _updaters((*_copies(animations), *scene.mobjects)):
+            nodes.append(_updater_node(member, updater, check, reaches, base_dir))
+        for function in scene.updaters:
+            effect = check.effect(function, frozenset())
+            nodes.append(
+                _Node(
+                    "scene updater " + _describe(function, base_dir),
+                    "step",
+                    reach([function]),
+                    _REACHED,
+                    restructures=effect.restructures,
+                    unknown=effect.unknown,
+                )
+            )
+        centres = getattr(camera, "fixed_orientation_mobjects", None) or {}
+        if centres:
+            nodes.append(
+                _Node(
+                    "camera centres",
+                    "step",
+                    reach(list(centres.values()), centres),
+                )
+            )
         pulled = _closure(nodes)
-        if _changes_typed(nodes, check.typed):
-            # A list whose items typed a loop's variable may change as a
-            # stepping tick runs, after the tick's check of it: the plan is
-            # made without typing.
-            check = _Writes(typing=False)
-            nodes = _weigh(scene, animations, check, base_dir)
-            pulled = _closure(nodes)
         # Work a stepping tick runs must not change which updaters there are:
         # the tick would meet work no plan weighed, after skipping what it
         # reads, or keep running work gone. (Skipped work changes them only
@@ -3691,90 +3594,7 @@ def plan_ticks(
         scene_updaters=tuple(map(id, scene.updaters)),
         roots=tuple(map(id, roots)),
         members=frozenset(id(member) for root in roots for member in root.get_family()),
-        typings=tuple(
-            (items, tuple(map(id, items)), tuple(map(type, items)))
-            for items in check.typed.values()
-        ),
     )
-
-
-def _weigh(
-    scene: Scene, animations: list[Animation], check: _Writes, base_dir: str | None
-) -> list[_Node]:
-    """The work a tick of the play runs, each part with what it may read and
-    write, as ``check`` reads its source.
-    """
-    from arachne.animation.composition import AnimationGroup
-
-    from . import trusted
-
-    nodes = [
-        _animation_node(animation, check)
-        for animation in trusted.iter_animations(animations)
-        if not isinstance(animation, AnimationGroup)
-    ]
-    reaches: dict[tuple[int, int, int], frozenset[int]] = {}
-    for member, updater in _updaters((*_copies(animations), *scene.mobjects)):
-        nodes.append(_updater_node(member, updater, check, reaches, base_dir))
-    for function in scene.updaters:
-        effect = check.effect(function, frozenset())
-        nodes.append(
-            _Node(
-                "scene updater " + _describe(function, base_dir),
-                "step",
-                reach([function]),
-                _REACHED,
-                restructures=effect.restructures,
-                unknown=effect.unknown,
-            )
-        )
-    centres = getattr(scene.renderer.camera, "fixed_orientation_mobjects", None) or {}
-    if centres:
-        nodes.append(
-            _Node(
-                "camera centres",
-                "step",
-                reach(list(centres.values()), centres),
-            )
-        )
-    return nodes
-
-
-def _attribute_dicts(scene: Scene, animations: list[Animation]) -> frozenset[int]:
-    """The ids of the attribute dicts of what holds the structure
-    :func:`current_structure` weighs: the scene, its renderer and camera,
-    the play's animations, and every mobject of the roots' families. A store
-    into one rebinds an attribute (``submobjects``, ``updaters``).
-    """
-    from . import trusted
-
-    holders: list[Any] = [scene, scene.renderer, scene.renderer.camera]
-    holders.extend(trusted.iter_animations(animations))
-    for root in (*_copies(animations), *scene.mobjects):
-        holders.extend(root.get_family())
-    found: set[int] = set()
-    for holder in holders:
-        with contextlib.suppress(TypeError):  # no attribute dict
-            found.add(id(vars(holder)))
-    return frozenset(found)
-
-
-def _changes_typed(nodes: list[_Node], typed: dict[int, Any]) -> bool:
-    """Whether work a stepping tick runs may change one of the lists whose
-    items typed a loop's variable (what it holds, not what its items do).
-    """
-    if not typed:
-        return False
-    for node in nodes:
-        if node.role == "instant" and not node.active:
-            continue
-        try:
-            written = node.written()
-        except Unbounded:
-            return True
-        if not written.isdisjoint(typed):
-            return True
-    return False
 
 
 def _structural(node: _Node) -> TickPlan:
