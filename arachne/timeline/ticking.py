@@ -110,6 +110,7 @@ import inspect
 import operator
 import pathlib
 import random
+import re
 import sys
 import types
 import weakref
@@ -406,6 +407,9 @@ _IMMUTABLE = (
     pathlib.PurePath,
     np.generic,
     np.dtype,
+    # A compiled regular expression: its pattern, flags and group names are
+    # fixed, its group index a read-only view, and it takes no attributes.
+    re.Pattern,
     # The C slots of builtin types: they hold nothing.
     type(int.__add__),
     type((0).__add__),
@@ -1156,9 +1160,10 @@ class _Effect:
     #: The objects its changes elsewhere go into, each with everything it
     #: holds, when every one of them is resolved.
     targets: frozenset[_Ref] = frozenset()
-    #: It changes what its caller hands it: its parameters' objects, which
-    #: a call site resolves to its own arguments.
-    writes_args: bool = False
+    #: It changes what its caller hands it: the parameters (by name;
+    #: :data:`_EVERY_ARGUMENT` for all of them) whose objects it may change,
+    #: which a call site resolves to the arguments it binds to them.
+    writes_args: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if self.elsewhere and not (self.targets or self.writes_args):
@@ -1172,7 +1177,7 @@ class _Effect:
             self.unknown or other.unknown,
             self.anywhere or other.anywhere,
             self.targets | other.targets,
-            self.writes_args or other.writes_args,
+            self.writes_args | other.writes_args,
         )
 
     def without_args(self) -> _Effect:
@@ -1216,6 +1221,9 @@ class _CodeRef(_Ref):
 
     __slots__ = ()
 
+
+#: In ``writes_args``: every parameter, as a call site binds none apart.
+_EVERY_ARGUMENT = "*"
 
 #: A made object's source standing for what its maker was handed (a
 #: constructor's arguments, as its ``self`` is made), which a call site
@@ -2238,7 +2246,7 @@ class _Site:
         """
         if name == self.first and self.bound:
             return _into(self.bindings[name])
-        handed = _Effect(elsewhere=True, writes_args=True)
+        handed = _Effect(elsewhere=True, writes_args=frozenset({name}))
         default = self.bindings.get(name, _PARAMETER)
         if default is _PARAMETER or default is _UNKNOWN:
             return handed
@@ -2260,7 +2268,7 @@ class _Site:
         if source is None:
             return _ELSEWHERE
         if source is _ARGUMENTS:
-            return _Effect(elsewhere=True, writes_args=True)
+            return _Effect(elsewhere=True, writes_args=frozenset({_EVERY_ARGUMENT}))
         if isinstance(source, _Effect):
             return source
         if isinstance(source, _CodeRef):
@@ -2381,7 +2389,9 @@ class _Site:
                 target = getattr(target, "__func__", target)
         if not _user_function(target):
             return _ELSEWHERE
-        return self._handed(self.writes.returns(target, this), call)
+        return self._handed(
+            self.writes.returns(target, this), call, target, this is not None
+        )
 
     def made_sources(self, value: ast.AST) -> list[Any]:
         """What went into the object ``value`` makes (:meth:`_Writes._made`)."""
@@ -2421,7 +2431,7 @@ class _Site:
                 return arguments
             return [*arguments, _CodeRef(target)]
         if _user_function(target):
-            return [self._handed(self.writes.returns(target), call)]
+            return [self._handed(self.writes.returns(target), call, target)]
         return arguments  # a fresh generator from a seed
 
     def _held_by_lambda(self, expr: ast.Lambda) -> list[ast.AST]:
@@ -2535,15 +2545,32 @@ class _Site:
                 return True
         return False
 
-    def _handed(self, effect: _Effect, call: ast.Call) -> _Effect:
+    def _handed(
+        self,
+        effect: _Effect,
+        call: ast.Call,
+        callee: Any = None,
+        bound: bool = False,
+    ) -> _Effect:
         """``effect``, the callee's own, with what it changes through its
-        parameters taken for changes into ``call``'s arguments.
+        parameters taken for changes into the arguments ``call`` binds to
+        them; every argument, when the callee (a function of the scene's,
+        its first parameter ``bound`` to the object it is called on; a
+        method; a class of the scene's, through its constructor) is not
+        known.
         """
         if not effect.writes_args:
             return effect
         found = effect.without_args()
-        for argument in (*call.args, *(k.value for k in call.keywords)):
-            found |= self.expr_writes(argument)
+        binding = _arguments_of(call, callee, bound)
+        everything = [*call.args, *(k.value for k in call.keywords)]
+        for name in effect.writes_args:
+            if binding is None or name == _EVERY_ARGUMENT:
+                handed = everything
+            else:
+                handed = binding.get(name, [])
+            for argument in handed:
+                found |= self.expr_writes(argument)
         return found
 
     def _callee_effect(self, call: ast.Call) -> _Effect:
@@ -2559,7 +2586,8 @@ class _Site:
                 return _NO_EFFECT  # the attribute read it spells
             if any(target is maker for maker in _FRESH_RANDOM):
                 return _NO_EFFECT
-            return self._handed(writes.callee(func.id, target, self.depth), call)
+            effect = writes.callee(func.id, target, self.depth)
+            return self._handed(effect, call, target)
         if not isinstance(func, ast.Attribute):
             return _UNKNOWN_CALL
         name = func.attr
@@ -2615,7 +2643,8 @@ class _Site:
                 ):
                     return _ELSEWHERE
                 if not _internal(getattr(holder, "__file__", "") or ""):
-                    return self._handed(writes.callee(name, target, self.depth), call)
+                    effect = writes.callee(name, target, self.depth)
+                    return self._handed(effect, call, target)
                 if name in _MUTATORS:
                     return self.into(call.args[0]) if call.args else _IN_PLACE
                 return _NO_EFFECT
@@ -2639,7 +2668,9 @@ class _Site:
                     found = writes.effect(
                         member, frozenset(), None, self.depth + 1, this=this
                     )
-                    return restructures | self._handed(found, call)
+                    return restructures | self._handed(
+                        found, call, member, this is not None
+                    )
             return restructures | self.write_to(receiver)
         if reader:
             return _NO_EFFECT
@@ -2716,6 +2747,53 @@ def _parameters(function: types.FunctionType) -> tuple[str, ...]:
     count += bool(code.co_flags & inspect.CO_VARARGS)
     count += bool(code.co_flags & inspect.CO_VARKEYWORDS)
     return code.co_varnames[:count]
+
+
+def _arguments_of(
+    call: ast.Call, callee: Any, bound: bool = False
+) -> dict[str, list[ast.expr]] | None:
+    """The arguments ``call`` binds to each parameter of ``callee`` (a
+    function of the scene's, a method, a class whose constructor is one);
+    ``None`` when they can't be told apart. An argument unpacked from a
+    sequence or a mapping may go to any parameter from where it stands.
+    """
+    if isinstance(callee, types.MethodType):
+        callee, bound = callee.__func__, True
+    elif isinstance(callee, type):
+        callee, bound = inspect.getattr_static(callee, "__init__", None), True
+    if not _user_function(callee):
+        return None
+    code = callee.__code__
+    positional = list(code.co_varnames[: code.co_argcount])
+    keyword_only = list(
+        code.co_varnames[code.co_argcount : code.co_argcount + code.co_kwonlyargcount]
+    )
+    rest = code.co_argcount + code.co_kwonlyargcount
+    varargs = code.co_varnames[rest] if code.co_flags & inspect.CO_VARARGS else None
+    rest += bool(varargs)
+    varkw = code.co_varnames[rest] if code.co_flags & inspect.CO_VARKEYWORDS else None
+    if bound:
+        positional = positional[1:]
+    names = [*positional, *keyword_only, *filter(None, (varargs, varkw))]
+    found: dict[str, list[ast.expr]] = {name: [] for name in names}
+    for index, argument in enumerate(call.args):
+        if isinstance(argument, ast.Starred):
+            for name in [*positional[index:], *filter(None, (varargs,))]:
+                found[name].append(argument.value)
+            break
+        if index < len(positional):
+            found[positional[index]].append(argument)
+        elif varargs is not None:
+            found[varargs].append(argument)
+    for keyword in call.keywords:
+        if keyword.arg is None:
+            for name in names:
+                found[name].append(keyword.value)
+        elif keyword.arg in found and keyword.arg not in (varargs, varkw):
+            found[keyword.arg].append(keyword.value)
+        elif varkw is not None:
+            found[varkw].append(keyword.value)
+    return found
 
 
 def _names_bound(target: ast.AST) -> list[str]:

@@ -207,6 +207,15 @@ def test_a_play_whose_reads_cant_be_bounded_ticks_everything(session_of, name, w
     assert play.full_ticks == 60
 
 
+def test_a_compiled_pattern_is_a_bounded_read(session_of):
+    play = _same_as_full_ticks(
+        session_of, "PatternRead", 4, SOUNDNESS_SCENES
+    ).record.plays[-1]
+    assert not any(r.startswith(UNBOUNDED) for r in play.admission.reasons)
+    assert play.stepping_ticks > 0
+    assert play.tick_plan.skipped
+
+
 def test_getattr_by_a_constant_name_is_a_bounded_read(session_of):
     play = session_of("NamedRead", STEPPING_SCENES, frame_rate=4).record.plays[-1]
     assert not any(r.startswith(UNBOUNDED) for r in play.admission.reasons)
@@ -757,6 +766,9 @@ def test_a_change_through_what_a_callback_holds_or_made_pulls_it(session_of, nam
         "ReboundArgumentRead",
         "MadeHelperMethodRead",
         "ConstantItemInPlaceRead",
+        "PlacedArgumentRead",
+        "StoredArgumentRead",
+        "GatheredArgumentsRead",
     ],
 )
 def test_a_change_through_what_a_local_or_a_call_hands_back_pulls_it(session_of, name):
@@ -767,7 +779,9 @@ def test_a_change_through_what_a_local_or_a_call_hands_back_pulls_it(session_of,
     ``super()``; a generator's draw from an array holding the dot; what a
     method, ``getattr`` or ``max`` hands back; a rebound parameter; a
     method of an object of the scene's class a function made; an engine
-    constant a list holds, added to in place through its item: each
+    constant a list holds, added to in place through its item; an argument
+    a function places into what it hands back, stores in an object it
+    makes, or gathers among others: each
     reaches the shown dot, and the plan pulls the updater.
     """
     play = _same_as_full_ticks(session_of, name, 4, SOUNDNESS_SCENES).record.plays[-1]
