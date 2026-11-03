@@ -6,6 +6,7 @@ runs scene code during an evaluation, so its play must tick.
 from __future__ import annotations
 
 import functools
+import operator
 import random
 import re
 
@@ -342,7 +343,7 @@ class ByNameMethodRead(_SharedRead):
     """The shown dot's method fetched by ``getattr`` and called."""
 
     def writer(self, shared):
-        return lambda m: shared.shift(0.01 * RIGHT)
+        return lambda m: getattr(shared, "shift")(0.01 * RIGHT)  # noqa: B009
 
 
 class GrownGroupRead(_SharedRead):
@@ -522,7 +523,7 @@ class AttributeByNameRead(_SharedRead):
         holder.target = shared
 
         def step(m):
-            found = holder.target
+            found = getattr(holder, "target")  # noqa: B009
             found.shift(0.01 * RIGHT)
 
         return step
@@ -539,6 +540,171 @@ class LargestRead(_SharedRead):
             found.shift(0.01 * RIGHT)
 
         return step
+
+
+class StarTailRead(_SharedRead):
+    """The shown dot handed after an unpacked argument, to the parameter a
+    function of the scene's moves.
+    """
+
+    def writer(self, shared):
+        def nudge(offset, target):
+            target.shift(offset)
+
+        prefix = (0.01 * RIGHT,)
+        return lambda m: nudge(*prefix, shared)
+
+
+class _HandedCallableRead(_SharedRead):
+    """A function of the scene's moving the shown dot, handed to a call that
+    calls it in turn.
+    """
+
+    def handing(self, move):
+        raise NotImplementedError
+
+    def writer(self, shared):
+        def move(value):
+            shared.shift(0.01 * RIGHT)
+            return "x"
+
+        return self.handing(move)
+
+
+class PatternReplacementRead(_HandedCallableRead):
+    """A compiled pattern's ``sub``, given a replacement function."""
+
+    def handing(self, move):
+        pattern = re.compile("x")
+        return lambda m: pattern.sub(move, "x")
+
+
+class SortKeyRead(_HandedCallableRead):
+    """``sorted``'s key."""
+
+    def handing(self, move):
+        return lambda m: sorted(["a", "b"], key=move)
+
+
+class MappedRead(_HandedCallableRead):
+    """``map``'s function, run as the map is read."""
+
+    def handing(self, move):
+        return lambda m: list(map(move, [1]))
+
+
+class AlongAxisRead(_HandedCallableRead):
+    """``np.apply_along_axis``'s function."""
+
+    def handing(self, move):
+        return lambda m: np.apply_along_axis(move, 0, np.zeros(1))
+
+
+class DictHeldCallableRead(_HandedCallableRead):
+    """``sorted``'s key, read out of a dict: the check can't resolve it."""
+
+    def handing(self, move):
+        table = {"key": move}
+        return lambda m: sorted(["a", "b"], key=table["key"])
+
+
+class ReturnedCallableRead(_HandedCallableRead):
+    """``sorted``'s key, handed back by a function of the scene's that reads
+    it out of a dict: the check can't resolve it.
+    """
+
+    def handing(self, move):
+        table = {"key": move}
+
+        def pick():
+            return table["key"]
+
+        return lambda m: sorted(["a", "b"], key=pick())
+
+
+class MappedEngineMethodRead(_SharedRead):
+    """The engine's ``Mobject.shift``, mapped over the shown dot."""
+
+    def writer(self, shared):
+        shift = Mobject.shift
+        return lambda m: list(map(shift, [shared], [0.01 * RIGHT]))
+
+
+class MethodCallerRead(_SharedRead):
+    """``operator.methodcaller("shift", …)``, mapped over the shown dot."""
+
+    def writer(self, shared):
+        return lambda m: list(
+            map(operator.methodcaller("shift", 0.01 * RIGHT), [shared])
+        )
+
+
+class AliasingArray(np.ndarray):
+    """An array whose ``+`` hands back itself."""
+
+    def __add__(self, other):
+        return self
+
+
+class _ArraySum(Scene):
+    """A dt-free updater stores into the sum of two arrays; a dt updater
+    integrates the first array's item, and an idle updater keeps the play
+    stepping.
+    """
+
+    def values(self):
+        raise NotImplementedError
+
+    def construct(self):
+        values = self.values()
+        offset = np.array([0.0])
+
+        def produce(m):
+            result = values + offset
+            result[0] += 0.01
+
+        producer = Dot(radius=0.05)
+        producer.add_updater(produce)
+        output = Dot(color=RED, radius=0.05)
+        output.add_updater(lambda m, dt: m.shift(dt * values[0] * UP))
+        idle = Dot(radius=0.05)
+        idle.add_updater(lambda m: None)
+        self.add(producer, output, idle)
+        self.wait(1)
+
+
+class AliasingSumRead(_ArraySum):
+    """The sum is the first array itself, whose class's ``+`` hands it back."""
+
+    def values(self):
+        return np.array([1.0]).view(AliasingArray)
+
+
+class NumPySum(_ArraySum):
+    """The sum of two of NumPy's own arrays: a new array."""
+
+    def values(self):
+        return np.array([1.0])
+
+
+class HookRebound(Scene):
+    """A dt updater integrates the x of the dot its mobject's ``source``
+    names; a dt-free updater moves another dot, ``other``, which an
+    ``on_start`` hook may make the source.
+    """
+
+    def construct(self):
+        source = Dot(radius=0.05).move_to(RIGHT)
+        self.other = Dot(radius=0.05).move_to(2 * RIGHT)
+        producer = Dot(radius=0.05)
+        producer.add_updater(lambda m: self.other.shift(0.01 * RIGHT))
+        self.output = Dot(color=RED, radius=0.05)
+        self.output.source = source
+        self.output.add_updater(lambda m, dt: m.shift(dt * m.source.get_x() * UP))
+        idle = Dot(radius=0.05)
+        idle.add_updater(lambda m: None)
+        self.add(source, self.other, producer, self.output, idle)
+        self.wait(1)
 
 
 class MadeHelperMethodRead(_SharedRead):

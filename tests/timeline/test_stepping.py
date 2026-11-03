@@ -507,14 +507,25 @@ def test_a_guard_calling_getters_it_holds_steps_with_what_it_checks(session_of):
 # writes through a class or a setter
 
 
-@pytest.mark.parametrize("name", ["StartInstall", "AliasAppend", "AliasAugment"])
+def test_a_play_is_planned_from_the_structure_its_start_left(session_of):
+    """A callback gives a dot a dt reader as the play first evaluates: the
+    play is planned once that evaluation has run, from the structure it
+    left, and no step integrates stale input.
+    """
+    play = _same_as_full_ticks(session_of, "StartInstall", 15).record.plays[-1]
+    [(first, plan)] = play.tick_plans
+    assert first == play.start
+    assert plan.unbounded.startswith(f"{STRUCTURAL}: updater install ")
+
+
+@pytest.mark.parametrize("name", ["AliasAppend", "AliasAugment"])
 def test_structure_changed_before_a_stepping_tick_plans_the_play_again(
     session_of, name
 ):
-    """A skipped callback gives a dot a dt reader as the play first
-    evaluates, or appends one to a group through a local name for its
-    members: the next stepping tick finds the structure changed and plans
-    again before it steps, so no step integrates stale input.
+    """A skipped callback appends a dot carrying a dt reader to a group
+    through a local name for its members: the next stepping tick finds the
+    structure changed and plans again before it steps, so no step
+    integrates stale input.
     """
     play = _same_as_full_ticks(session_of, name, 15).record.plays[-1]
     assert len(play.tick_plans) >= 2
@@ -870,6 +881,133 @@ def test_a_change_through_what_a_local_or_a_call_hands_back_pulls_it(session_of,
     play = _same_as_full_ticks(session_of, name, 4, SOUNDNESS_SCENES).record.plays[-1]
     assert play.stepping_ticks > 0
     assert play.tick_plan.pulled == 1
+
+
+def test_an_argument_after_an_unpacked_one_may_bind_any_later_parameter(session_of):
+    """``nudge(*prefix, shared)``: how many arguments ``prefix`` holds is not
+    known, so ``shared`` may bind ``nudge``'s parameter that it moves; the
+    plan pulls the updater.
+    """
+    play = _same_as_full_ticks(
+        session_of, "StarTailRead", 4, SOUNDNESS_SCENES
+    ).record.plays[-1]
+    assert play.stepping_ticks > 0
+    assert play.tick_plan.pulled == 1
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["PatternReplacementRead", "SortKeyRead", "MappedRead", "AlongAxisRead"],
+)
+def test_a_function_handed_to_a_call_is_read_as_called(session_of, name):
+    """A function of the scene's handed to a call that calls it (a compiled
+    pattern's ``sub``, ``sorted``'s key, ``map``, ``np.apply_along_axis``)
+    moves the shown dot: the plan pulls the updater handing it.
+    """
+    play = _same_as_full_ticks(session_of, name, 4, SOUNDNESS_SCENES).record.plays[-1]
+    assert play.stepping_ticks > 0
+    assert play.tick_plan.pulled == 1
+
+
+@pytest.mark.parametrize("name", ["MappedEngineMethodRead", "MethodCallerRead"])
+def test_an_engine_method_handed_to_a_call_is_never_stepped_past(session_of, name):
+    """``Mobject.shift`` or ``operator.methodcaller("shift", …)`` mapped over
+    the shown dot: what it changes is not told apart, and the play ticks
+    everything.
+    """
+    play = _same_as_full_ticks(session_of, name, 4, SOUNDNESS_SCENES).record.plays[-1]
+    assert play.stepping_ticks == 0
+    assert play.tick_plan.unbounded is not None
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="a callable handed to a call is read only when the check resolves it "
+    "(tech-debt-tracker.md)",
+)
+@pytest.mark.parametrize("name", ["DictHeldCallableRead", "ReturnedCallableRead"])
+def test_a_callable_the_check_cannot_resolve_handed_to_a_call(session_of, name):
+    _same_as_full_ticks(session_of, name, 4, SOUNDNESS_SCENES)
+
+
+def test_a_sum_whose_operand_is_not_numpys_own_array_may_be_that_operand(
+    session_of,
+):
+    """An array subclass whose ``+`` hands back itself: a store into the sum
+    is a store into it, and the plan pulls the updater.
+    """
+    play = _same_as_full_ticks(
+        session_of, "AliasingSumRead", 4, SOUNDNESS_SCENES
+    ).record.plays[-1]
+    assert play.stepping_ticks > 0
+    assert play.tick_plan.pulled == 1
+
+
+def test_a_sum_of_numpys_own_arrays_is_new_and_its_writer_is_stepped_past(
+    session_of,
+):
+    """The control: the same updater on NumPy's own arrays stores into a new
+    array, and the plan steps past it.
+    """
+    play = _same_as_full_ticks(
+        session_of, "NumPySum", 4, SOUNDNESS_SCENES
+    ).record.plays[-1]
+    assert play.stepping_ticks > 0
+    assert play.tick_plan.pulled == 0
+    assert len(play.tick_plan.skipped) == 2
+
+
+def _rebinding_hook(scene, start):
+    scene.output.source = scene.other
+
+
+def test_a_hook_that_rebinds_what_a_reader_reads_is_planned_for(session_of):
+    """An ``on_start`` hook makes the dot a dt updater integrates the one a
+    dt-free updater moves: the play is planned from what the hook left, so
+    its frames are those of ticking everything with the same hook.
+    """
+    stepped = session_of(
+        "HookRebound", SOUNDNESS_SCENES, frame_rate=4, on_start=_rebinding_hook
+    )
+    full = session_of(
+        "HookRebound",
+        SOUNDNESS_SCENES,
+        frame_rate=4,
+        stepping=False,
+        on_start=_rebinding_hook,
+    )
+    ours, theirs = stepped.record.plays[-1], full.record.plays[-1]
+    assert ours.sample_keys() == theirs.sample_keys()
+    for k in range(5):
+        at = Fraction(k, 4)
+        assert np.array_equal(
+            np.asarray(stepped.frame(at)), np.asarray(full.frame(at))
+        ), at
+    assert ours.tick_plan.pulled == 1
+
+
+def test_a_hook_that_only_observes_leaves_every_frame_as_it_was(session_of):
+    """The same scene with an observing ``on_start`` hook and with none:
+    the same plan, the same stepping, the same pixels.
+    """
+    seen: list[Fraction] = []
+    plain = session_of("HookRebound", SOUNDNESS_SCENES, frame_rate=4)
+    observed = session_of(
+        "HookRebound",
+        SOUNDNESS_SCENES,
+        frame_rate=4,
+        on_start=lambda scene, start: seen.append(start),
+    )
+    assert seen == [Fraction(0)]
+    ours, theirs = observed.record.plays[-1], plain.record.plays[-1]
+    assert ours.stepping_ticks == theirs.stepping_ticks > 0
+    assert ours.tick_plan.pulled == theirs.tick_plan.pulled
+    assert ours.sample_keys() == theirs.sample_keys()
+    for k in range(5):
+        at = Fraction(k, 4)
+        assert np.array_equal(
+            np.asarray(observed.frame(at)), np.asarray(plain.frame(at))
+        ), at
 
 
 def test_a_made_group_suspending_what_it_holds_is_never_stepped_past(session_of):
