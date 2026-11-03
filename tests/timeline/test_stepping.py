@@ -973,6 +973,18 @@ def test_a_value_holding_a_callable_is_called_where_its_callee_may(session_of, n
     assert play.tick_plan.pulled == 1
 
 
+def test_a_return_read_while_its_relay_is_being_read_is_not_kept(session_of):
+    """Two functions returning each other's results, one a list holding a
+    function that moves the shown dot: what is assumed of one while the
+    other is read is not kept for it, and both updaters are pulled.
+    """
+    play = _same_as_full_ticks(
+        session_of, "RelayedReturnRead", 4, SOUNDNESS_SCENES
+    ).record.plays[-1]
+    assert play.stepping_ticks > 0
+    assert play.tick_plan.pulled == 2
+
+
 @pytest.mark.parametrize("name", ["UnresolvedPointMove", "ComputedPointMove"])
 def test_a_value_the_check_cannot_resolve_handed_to_code_that_never_calls_it(
     session_of, name

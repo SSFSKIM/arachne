@@ -1438,6 +1438,10 @@ class _Writes:
         #: Whether each of them returns only inert values, by its identity and
         #: the parameters inert at its call (the function kept).
         self._inert_returns: dict[tuple[int, frozenset[str]], tuple[Any, bool]] = {}
+        #: The reads of :meth:`returns_inert` still open, and whether the one
+        #: running has rested on one of them.
+        self._inert_reading: set[tuple[int, frozenset[str]]] = set()
+        self._inert_assumed = False
         from .handed import Callers
 
         #: Which parameters each function may call (:mod:`.handed`).
@@ -1593,10 +1597,23 @@ class _Writes:
         found = self._inert_returns.get(key)
         if found is not None and found[0] is function:
             return found[1]
-        # A call back into itself returns what its other returns do.
-        self._inert_returns[key] = (function, True)
-        result = self._scan_inert_returns(function, inert)
-        self._inert_returns[key] = (function, result)
+        if key in self._inert_reading:
+            # A call back into one still being read returns what its other
+            # returns do: assumed inert, so what rests on it is not kept
+            # until the outermost read settles it.
+            self._inert_assumed = True
+            return True
+        assumed, self._inert_assumed = self._inert_assumed, False
+        self._inert_reading.add(key)
+        try:
+            result = self._scan_inert_returns(function, inert)
+        finally:
+            self._inert_reading.discard(key)
+        if not result or not self._inert_assumed or not self._inert_reading:
+            # Not inert holds whatever was assumed; inert holds when nothing
+            # was, or when no read the assumption was about is still open.
+            self._inert_returns[key] = (function, result)
+        self._inert_assumed = assumed or (self._inert_assumed and result)
         return result
 
     def _scan_inert_returns(

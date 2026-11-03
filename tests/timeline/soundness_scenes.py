@@ -770,6 +770,40 @@ def _direction(angle):
     return np.array([np.cos(angle), np.sin(angle), 0])
 
 
+class RelayedReturnRead(Scene):
+    """Two functions of the scene's returning each other's results, one of
+    them a list holding a function moving the shown dot. Each is handed to
+    ``np.piecewise`` by its own updater: what one returns while the other is
+    still being read may not stand for what it returns.
+    """
+
+    def construct(self):
+        shared = Dot(radius=0.05).move_to(RIGHT)
+
+        def move(value=None):
+            shared.shift(0.01 * RIGHT)
+            return 0.0
+
+        def chosen(flag):
+            if not flag:
+                return [move]
+            return relayed()
+
+        def relayed():
+            return chosen(0)
+
+        first = Dot(radius=0.05)
+        first.add_updater(lambda m: _piecewise(chosen(1)))
+        second = Dot(radius=0.05)
+        second.add_updater(lambda m: _piecewise(relayed()))
+        output = Dot(color=RED, radius=0.05)
+        output.add_updater(lambda m, dt: m.shift(dt * shared.get_x() * UP))
+        idle = Dot(radius=0.05)
+        idle.add_updater(lambda m: None)
+        self.add(shared, first, second, output, idle)
+        self.wait(1)
+
+
 class ComputedPointMove(_SharedRead):
     """A control: a point a function of the scene's computes from numbers,
     in arithmetic handed to the engine's ``move_to``: every value is shown
