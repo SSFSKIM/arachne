@@ -820,6 +820,206 @@ class ZippedGeneratorRead(_PiecewiseCallableRead):
         return lambda m: list(zip(made, [0], strict=False))
 
 
+class LateRegistryRead(Scene):
+    """A list empty when the play is planned, which one updater appends the
+    function moving the shown dot to after 0.3 s; another updater hands the
+    list's item to ``sorted``.
+    """
+
+    def construct(self):
+        shared = Dot(radius=0.05).move_to(RIGHT)
+
+        def move(value=None):
+            shared.shift(0.01 * RIGHT)
+            return 0.0
+
+        registry: list = []
+        clock = ValueTracker(0)
+        clock.add_updater(lambda m, dt: m.increment_value(dt))
+
+        def fill(m):
+            if clock.get_value() > 0.3 and not registry:
+                registry.append(move)
+
+        def read(m):
+            if registry:
+                sorted(["a", "b"], key=registry[0])
+
+        changer = Dot(radius=0.05)
+        changer.add_updater(fill)
+        user = Dot(radius=0.05)
+        user.add_updater(read)
+        output = Dot(color=RED, radius=0.05)
+        output.add_updater(lambda m, dt: m.shift(dt * shared.get_x() * UP))
+        self.add(clock, shared, changer, user, output)
+        self.wait(1)
+
+
+class LateNonlocalRead(Scene):
+    """A closure's name bound to a function doing nothing when the play is
+    planned, rebound (``nonlocal``) by one updater to the function moving
+    the shown dot after 0.3 s; another updater hands it to ``sorted``.
+    """
+
+    def construct(self):
+        shared = Dot(radius=0.05).move_to(RIGHT)
+
+        def move(value=None):
+            shared.shift(0.01 * RIGHT)
+            return 0.0
+
+        def idle(value=None):
+            return 0.0
+
+        current = idle
+        clock = ValueTracker(0)
+        clock.add_updater(lambda m, dt: m.increment_value(dt))
+
+        def switch(m):
+            nonlocal current
+            if clock.get_value() > 0.3:
+                current = move
+
+        def read(m):
+            sorted(["a", "b"], key=current)
+
+        changer = Dot(radius=0.05)
+        changer.add_updater(switch)
+        user = Dot(radius=0.05)
+        user.add_updater(read)
+        output = Dot(color=RED, radius=0.05)
+        output.add_updater(lambda m, dt: m.shift(dt * shared.get_x() * UP))
+        self.add(clock, shared, changer, user, output)
+        self.wait(1)
+
+
+class _Holder:
+    """A plain object of the scene's holding a function and a count."""
+
+    def __init__(self, function):
+        self.function = function
+        self.count = 0.0
+
+
+class _LateAttribute(Scene):
+    """An object holding a function that does nothing when the play is
+    planned; one updater stores into one of its attributes after 0.3 s
+    (``store``), another hands its function to ``sorted``.
+    """
+
+    def store(self, holder, move):
+        raise NotImplementedError
+
+    def construct(self):
+        shared = Dot(radius=0.05).move_to(RIGHT)
+
+        def move(value=None):
+            shared.shift(0.01 * RIGHT)
+            return 0.0
+
+        holder = _Holder(lambda value=None: 0.0)
+        clock = ValueTracker(0)
+        clock.add_updater(lambda m, dt: m.increment_value(dt))
+        changer = Dot(radius=0.05)
+        changer.add_updater(self.store(holder, move, clock))
+        user = Dot(radius=0.05)
+        user.add_updater(lambda m: sorted(["a", "b"], key=holder.function))
+        output = Dot(color=RED, radius=0.05)
+        output.add_updater(lambda m, dt: m.shift(dt * shared.get_x() * UP))
+        self.add(clock, shared, changer, user, output)
+        self.wait(1)
+
+
+class LateAttributeRead(_LateAttribute):
+    """The updater stores the function moving the dot into the attribute
+    the other hands on: what the plan read of it does not stand.
+    """
+
+    def store(self, holder, move, clock):
+        def switch(m):
+            if clock.get_value() > 0.3:
+                holder.function = move
+
+        return switch
+
+
+class OtherAttributeStore(_LateAttribute):
+    """The control: the updater stores into another attribute of the
+    object, and a number: what the plan read of the function stands.
+    """
+
+    def store(self, holder, move, clock):
+        def count(m):
+            holder.count = holder.count + 1.0
+
+        return count
+
+
+class FactoryItemRead(_SharedRead):
+    """A ``defaultdict`` whose factory moves the shown dot: reading a
+    missing item runs it.
+    """
+
+    def writer(self, shared):
+        def move():
+            shared.shift(0.01 * RIGHT)
+            return 0.0
+
+        table = collections.defaultdict(move)
+
+        def step(m):
+            table.pop("x", None)
+            return table["x"]
+
+        return step
+
+
+class FactoryItemHandedRead(_SharedRead):
+    """The same ``defaultdict``, handed to a function of the scene's that
+    reads a missing item of what it is handed.
+    """
+
+    def writer(self, shared):
+        def move():
+            shared.shift(0.01 * RIGHT)
+            return 0.0
+
+        table = collections.defaultdict(move)
+
+        def missing(found):
+            found.pop("x", None)
+            return found["x"]
+
+        return lambda m: missing(table)
+
+
+class FunctionAttributeRead(Scene):
+    """An attribute of a function, which one updater reads and another
+    sets after 0.3 s; a dt updater integrates what the reader writes.
+    """
+
+    def construct(self):
+        def follow():
+            return 0.0
+
+        follow.bias = 0.0
+        clock = ValueTracker(0)
+        clock.add_updater(lambda m, dt: m.increment_value(dt))
+
+        def setter(m):
+            if clock.get_value() > 0.3:
+                follow.bias = 1.0
+
+        level = ValueTracker(0)
+        level.add_updater(lambda m: m.set_value(follow.bias))
+        output = Dot(color=RED, radius=0.05)
+        output.add_updater(lambda m, dt: m.shift(dt * level.get_value() * UP))
+        changer = Dot(radius=0.05)
+        changer.add_updater(setter)
+        self.add(clock, changer, level, output)
+        self.wait(1)
+
+
 class ComputedPointMove(_SharedRead):
     """A control: a point a function of the scene's computes from numbers,
     in arithmetic handed to the engine's ``move_to``: every value is shown

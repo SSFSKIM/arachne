@@ -121,6 +121,16 @@ from typing import TYPE_CHECKING, Any, TypeGuard
 
 import numpy as np
 
+from .coverage import (
+    FREE_KINDS,
+    INERT_KINDS,
+    INERT_RESULT_BUILTINS,
+    STORING_METHODS,
+    Rule,
+    inert_value,
+    item_kind,
+    rule_of,
+)
 from .frozen import engine_class, engine_code
 from .source import _internal, relative_path
 
@@ -566,6 +576,9 @@ class _Reach:
                 self.visit(item)
         elif isinstance(value, dict):
             self.ids.add(key)
+            if isinstance(value, collections.defaultdict):
+                # A missing item runs its factory.
+                self.visit(value.default_factory)
             for k, item in value.items():
                 self.visit(k)
                 self.visit(item)
@@ -705,6 +718,12 @@ class _Reach:
             self.visit(function.__func__)
             return
         code = function.__code__
+        if not engine_code(function):
+            # Its attributes (``follow.bias``) are state a store may change:
+            # the function is keyed, and what they hold followed.
+            self.ids.add(id(function))
+            for item in vars(function).values():
+                self.visit(item)
         for cell in function.__closure__ or ():
             self.visit(cell)
         for item in (
@@ -1442,10 +1461,58 @@ class _Writes:
         #: running has rested on one of them.
         self._inert_reading: set[tuple[int, frozenset[str]]] = set()
         self._inert_assumed = False
+        #: The objects code the play reaches may store a value not shown free
+        #: of callables into, by id, each with the attributes stored
+        #: (``None``: anything it holds); and why it may store into any
+        #: object, when it may (:meth:`snapshots_hold`).
+        self.stores: dict[int, tuple[Any, set[str] | None]] = {}
+        self.stores_anywhere: str | None = None
         from .handed import Callers
 
         #: Which parameters each function may call (:mod:`.handed`).
         self.callers = Callers(self._bindings, MAX_DEPTH)
+
+    def store_into(self, value: Any, why: str, attribute: str | None = None) -> None:
+        """Note that reached code may store a value not shown free of
+        callables into ``value``'s ``attribute`` (anything it holds, when
+        ``None``; :data:`_UNKNOWN`: into any object).
+        """
+        if isinstance(value, _MEMBERS_OF):
+            value = value.mobject
+        if value is _UNKNOWN:
+            if self.stores_anywhere is None:
+                self.stores_anywhere = why
+            return
+        if isinstance(value, types.ModuleType):
+            raise Unbounded(f"{why}: a module's binding, which a global read snapshots")
+        if attribute in ("__class__", "__dict__"):
+            attribute = None  # every attribute it reads
+        _, stored = self.stores.get(id(value), (value, set()))
+        if stored is not None and attribute is not None:
+            stored = stored | {attribute}
+        else:
+            stored = None
+        self.stores[id(value)] = (value, stored)
+
+    def snapshots_hold(self) -> None:
+        """Raise :class:`Unbounded` unless every object a proof of the plan
+        read as it was (:attr:`.handed.Callers.snapshots`) is one no code the
+        play reaches may store a value not shown free of callables into.
+        """
+        read = self.callers.snapshots
+        if not read:
+            return
+        if self.stores_anywhere is not None:
+            raise Unbounded(
+                f"{self.stores_anywhere}, while the plan reads objects as they were"
+            )
+        for key in read.keys() & self.stores.keys():
+            value, attributes = read[key]
+            stored = self.stores[key][1]
+            if attributes is None or stored is None or attributes & stored:
+                raise Unbounded(
+                    f"stores into a {type(value).__name__} the plan reads as it was"
+                )
 
     def assignment_hooks(
         self, cls: type, name: str, deleting: bool
@@ -1506,11 +1573,12 @@ class _Writes:
         # Calls back into itself add nothing to what it is found to do. The
         # objects keyed by id are kept, so that no id is reused.
         self._effects[key] = (function, owner, (this, made_type), _NO_EFFECT)
-        effect = (
-            _UNKNOWN_CALL
-            if depth > MAX_DEPTH
-            else self._scan(function, owners, owner, depth, made, this, made_type)
-        )
+        if depth > MAX_DEPTH:
+            # Code not read may store anything anywhere.
+            self.store_into(_UNKNOWN, f"{function.__qualname__} is not read")
+            effect = _UNKNOWN_CALL
+        else:
+            effect = self._scan(function, owners, owner, depth, made, this, made_type)
         self._effects[key] = (function, owner, (this, made_type), effect)
         return effect
 
@@ -1526,9 +1594,12 @@ class _Writes:
     ) -> _Effect:
         found = self._site(function, owners, owner, depth, made, this, made_type)
         if found is None:
-            return _UNKNOWN_CALL  # its code's names are the reach's to read
+            # Its code's names are the reach's to read; its stores, not read,
+            # may go anywhere.
+            self.store_into(_UNKNOWN, f"{function.__qualname__}'s source is not read")
+            return _UNKNOWN_CALL
         node, site = found
-        effect = _NO_EFFECT
+        effect = site.read_table(node)
         for item in _walk(node):
             if isinstance(item, (ast.Global, ast.Nonlocal)):
                 effect |= _ELSEWHERE
@@ -2603,16 +2674,61 @@ class _Site:
             target = self._callable_value(argument)
             if target is not None:
                 effect |= self._called_effect(target, argument)
+                self._note_kept(call, argument)
                 continue
             held = self._held(argument, set())
             if held is None:
                 effect |= _UNKNOWN_CALL  # a value not shown free of callables
+                self._note_kept(call, argument)
                 continue
-            if held == () or not self.unresolved_call_reason(call, argument):
+            if held == ():
+                continue
+            self._note_kept(call, argument)
+            if not self.unresolved_call_reason(call, argument):
                 continue
             for each in held:
                 effect |= self._called_effect(each, None)
         return effect
+
+    def _note_kept(self, call: ast.Call, argument: ast.expr) -> None:
+        """Note that the engine's or a library's code ``call`` runs may keep
+        ``argument``, a value not shown free of callables, where it may call
+        it (:mod:`.handed`). A callee of the scene's is read for its own
+        stores; a class keeps what it is handed in the object it makes. The
+        engine's method keeps it in the object it is called on, the engine's
+        function in nothing it was handed (the engine's code keeps values
+        only in the objects it is called on or makes); any other method in
+        the object it is called on, any other function in the objects it is
+        handed.
+        """
+        callees = self._callees(call)
+        if callees and all(
+            isinstance(target, type)
+            or _user_function(getattr(target, "__func__", target))
+            for target, _, _ in callees
+        ):
+            return
+        if not self.unresolved_call_reason(call, argument):
+            return
+        why = f"{_describe_code(self.code)} hands a value to code that may keep it"
+        func = call.func
+        if isinstance(func, ast.Attribute) and not isinstance(
+            self._bound(func.value), types.ModuleType
+        ):
+            self._note_receiver(func.value, why)
+            return
+        if callees and all(
+            engine_code(getattr(target, "__func__", target)) for target, _, _ in callees
+        ):
+            return
+        for other in [*call.args, *(k.value for k in call.keywords)]:
+            if isinstance(other, ast.Starred):
+                other = other.value
+            if other is argument:
+                continue
+            found = self.resolve(other)
+            if found is not _UNKNOWN and not isinstance(found, FREE_KINDS):
+                self.writes.store_into(found, why)
 
     def _called_effect(self, target: Any, argument: ast.AST | None) -> _Effect:
         """What calling ``target``, a callable handed (as ``argument``, or
@@ -2636,32 +2752,43 @@ class _Site:
         resolve. Only a value's kind shows it free of them (a constant, a
         string, a number or an array of numbers, what the check resolves
         and reads through); what an operator, a display or a comprehension
-        makes holds what its parts do, a ``[f] * n`` among them.
+        makes holds what its parts do, a ``[f] * n`` among them. Each form
+        follows its rule in :data:`.coverage.OPERATIONS`.
         """
-        if isinstance(node, (ast.Constant, ast.JoinedStr, ast.Lambda)):
+        rule = rule_of(node)
+        if rule in (Rule.CONSTANT, Rule.LAMBDA):
             return ()  # a lambda's body is read where it is
-        if isinstance(node, (ast.Name, ast.Attribute)):
+        if rule in (Rule.NAME, Rule.ATTRIBUTE):
             target = self._callable_value(node)
             if target is not None:
                 return (target,)
-        if isinstance(node, ast.Name):
+        if rule is Rule.NAME:
+            assert isinstance(node, ast.Name)
             return self._name_held(node.id, resolving)
-        if isinstance(node, ast.Attribute):
+        if rule is Rule.ATTRIBUTE:
             found = self.resolve(node)
-            return None if found is _UNKNOWN else self._object_held(found)
-        if isinstance(node, ast.Subscript):
+            if found is _UNKNOWN:
+                return None
+            assert isinstance(node, ast.Attribute)
+            self.writes.callers.note_snapshot(self.resolve(node.value), node.attr)
+            return self._object_held(found)
+        if rule is Rule.SUBSCRIPT:
+            assert isinstance(node, ast.Subscript)
             return self._item_held(node, resolving)
-        if isinstance(node, ast.Call):
+        if rule is Rule.CALL:
+            assert isinstance(node, ast.Call)
             return self._call_held(node, resolving)
-        if isinstance(node, ast.Compare):
+        if rule is Rule.COMPARE:
             # A truth value, unless an operand's own comparison makes
             # something else.
+            assert isinstance(node, ast.Compare)
             compared = [node.left, *node.comparators]
             if any(self._held(part, resolving) is None for part in compared):
                 return None
             return ()
-        parts = _held_parts(node)
-        return None if parts is None else self._all_held(parts, resolving)
+        if rule in (Rule.PARTS, Rule.GENERATOR):
+            return self._all_held(_held_parts(node), resolving)
+        return None  # SENT, FALLBACK, and no other rule is a value's
 
     def _all_held(
         self, parts: Iterable[ast.AST], resolving: set[str]
@@ -2737,10 +2864,10 @@ class _Site:
         base = node.value
         if self._inert(base, set()):
             return ()
-        if _held_parts(base) is not None:
+        if isinstance(base, _DISPLAYS):
             return self._held(base, resolving)
         container = self.resolve(base)
-        if isinstance(container, _ITEM_CONTAINERS):
+        if item_kind(container):
             return self._object_held(container)
         return None
 
@@ -2752,6 +2879,14 @@ class _Site:
         """
         if self._inert_call(node, set()):
             return ()
+        named = _named_attribute(node)
+        if (
+            named is not None
+            and isinstance(node.func, ast.Name)
+            and node.func.id not in self.local_from
+            and self.resolve(node.func) is getattr
+        ):
+            return self._all_held([named, *node.args[2:]], resolving)
         if not self.writes.value_call(node, self.bindings) or (
             isinstance(node.func, ast.Attribute) and node.func.attr in _VALUE_GETTERS
         ):
@@ -2763,25 +2898,27 @@ class _Site:
     def _inert(self, node: ast.AST, resolving: set[str]) -> bool:
         """Whether ``node`` gives an inert value: a number, a string, an
         array of them, whose items, operators and methods give such values
-        again, never a callable.
+        again, never a callable (the rules of :data:`.coverage.OPERATIONS`).
         """
-        if isinstance(node, ast.Constant):
-            return isinstance(node.value, _INERT_KINDS)
-        if isinstance(node, ast.JoinedStr):
-            return True
-        if isinstance(node, ast.Name):
+        rule = rule_of(node)
+        if rule is Rule.CONSTANT:
+            return isinstance(node, ast.JoinedStr) or (
+                isinstance(node, ast.Constant) and type(node.value) in INERT_KINDS
+            )
+        if rule is Rule.NAME:
+            assert isinstance(node, ast.Name)
             values = self.local_from.get(node.id)
             if node.id in self.owners:
                 return False
             if node.id in self.parameters:
                 return node.id in self.inert_parameters
             if values is None:
-                return _inert_value(self.resolve(node))
+                return inert_value(self.resolve(node))
             bound = self._outer(node.id)
             if not (
                 bound is _UNKNOWN
                 or bound is getattr(builtins, node.id, _UNKNOWN)
-                or _inert_value(bound)
+                or inert_value(bound)
             ):
                 return False  # the same name in another scope (:meth:`_name_held`)
             if node.id in resolving:
@@ -2796,38 +2933,28 @@ class _Site:
                 )
             finally:
                 resolving.discard(node.id)
-        if isinstance(node, ast.Attribute):
-            return _inert_value(self.resolve(node))
-        if isinstance(node, ast.Compare):
+        if rule is Rule.ATTRIBUTE:
+            assert isinstance(node, ast.Attribute)
+            found = self.resolve(node)
+            if found is not _UNKNOWN:
+                self.writes.callers.note_snapshot(self.resolve(node.value), node.attr)
+            return inert_value(found)
+        if rule is Rule.COMPARE:
+            assert isinstance(node, ast.Compare)
             return all(
                 self._inert(part, resolving) for part in (node.left, *node.comparators)
             )
-        if isinstance(
-            node,
-            (
-                ast.BinOp,
-                ast.UnaryOp,
-                ast.BoolOp,
-                ast.IfExp,
-                ast.List,
-                ast.Tuple,
-                ast.Set,
-                ast.Dict,
-                ast.Starred,
-                ast.ListComp,
-                ast.SetComp,
-                ast.DictComp,
-            ),
-        ):
-            # A display of inert items gives them back, and its methods
-            # give them or numbers.
-            parts = _held_parts(node) or []
-            return all(self._inert(part, resolving) for part in parts)
-        if isinstance(node, ast.Subscript):
+        if rule is Rule.PARTS:
+            # An operator on inert values gives one; a display of inert
+            # items gives them back, and its methods give them or numbers.
+            return all(self._inert(part, resolving) for part in _held_parts(node))
+        if rule is Rule.SUBSCRIPT:
+            assert isinstance(node, ast.Subscript)
             return self._inert(node.value, resolving)
-        if isinstance(node, ast.Call):
+        if rule is Rule.CALL:
+            assert isinstance(node, ast.Call)
             return self._inert_call(node, resolving)
-        return False
+        return False  # LAMBDA, GENERATOR, SENT, FALLBACK
 
     def _inert_call(self, node: ast.Call, resolving: set[str]) -> bool:
         """Whether a call gives an inert value (:meth:`_inert`): ``len``'s
@@ -2839,15 +2966,34 @@ class _Site:
         """
         func = node.func
         arguments = [*node.args, *(keyword.value for keyword in node.keywords)]
-        if isinstance(func, ast.Name) and func.id not in self.local_from:
+        if isinstance(func, ast.Name) and all(
+            value is _PARAMETER for value in self.local_from.get(func.id, ())
+        ):
+            # Not rebound by the function: a global, a closure's, or a
+            # parameter its default fills (as the engine calls a callback).
             target = self.resolve(func)
-            if target is len:
+            if any(target is each for each in INERT_RESULT_BUILTINS):
                 return True
+            named = _named_attribute(node)
+            if target is getattr and named is not None:
+                return self._inert(named, resolving) and all(
+                    self._inert(default, resolving) for default in node.args[2:]
+                )
             if isinstance(target, np.ufunc):  # held under a name of its own
                 return all(self._inert(argument, resolving) for argument in arguments)
             if _user_function(target):
                 inert = self._inert_parameters(node, target, resolving)
                 return inert is not None and self.writes.returns_inert(target, inert)
+            if (
+                isinstance(target, types.MethodType)
+                and target.__func__.__name__ in _VALUE_GETTERS
+                and engine_code(
+                    inspect.getattr_static(
+                        type(target.__self__), target.__func__.__name__, None
+                    )
+                )
+            ):
+                return True  # an engine getter held bound to its mobject
         if isinstance(func, ast.Attribute):
             if func.attr in _VALUE_GETTERS:
                 classes = self.classes(func.value)
@@ -2889,9 +3035,183 @@ class _Site:
                     found.add(name)
             elif name not in named:
                 found.add(name)  # an empty ``*args`` or ``**kwargs``
-            elif name in defaults and _inert_value(defaults[name]):
+            elif name in defaults and inert_value(defaults[name]):
                 found.add(name)
         return frozenset(found)
+
+    def read_table(self, node: ast.AST) -> _Effect:
+        """Read every node of the function's code by its rule in
+        :data:`.coverage.OPERATIONS`: a form with no rule, or a global or
+        nonlocal name bound to a value not shown inert, makes the play tick
+        everything (:class:`Unbounded`); a store into an object, or a
+        storing call, is noted (:meth:`_Writes.store_into`); an item read,
+        stored or deleted on a base that may run code of its own is that
+        code's effect.
+        """
+        effect = _NO_EFFECT
+        for item in _walk(node):
+            rule = rule_of(item)
+            if rule is Rule.FALLBACK:
+                raise Unbounded(
+                    f"its code holds a {type(item).__name__}, a form the write"
+                    " check does not read",
+                    self.code,
+                )
+            if rule is Rule.OUTER_REBIND:
+                assert isinstance(item, (ast.Global, ast.Nonlocal))
+                for name in item.names:
+                    if not self._binds_inert(node, name):
+                        raise Unbounded(
+                            f"binds {name} of another scope to a value not shown inert",
+                            self.code,
+                        )
+            elif rule in (Rule.STORE, Rule.BINDING):
+                for target, value in _stored(item):
+                    self._note_store(target, value)
+            elif rule is Rule.CALL:
+                assert isinstance(item, ast.Call)
+                self._note_storing_call(item)
+            if rule is Rule.SUBSCRIPT:
+                assert isinstance(item, ast.Subscript)
+                effect |= self._item_code(item)
+        return effect
+
+    def _binds_inert(self, node: ast.AST, name: str) -> bool:
+        """Whether every value the function binds ``name`` to is inert, its
+        value outside the function among them.
+        """
+        outer = self._outer(name)
+        if outer is not _UNKNOWN and not inert_value(outer):
+            return False
+        for value in _bound_to(node, name):
+            if value is None or not self._inert(value, set()):
+                return False
+        return True
+
+    def _free(self, value: ast.AST | None) -> bool:
+        """Whether a value stored is shown free of callables: never a
+        parameter's (what a call site hands it may be anything).
+        """
+        if value is None:
+            return False
+        if any(
+            isinstance(each, ast.Name) and each.id in self.parameters
+            for each in ast.walk(value)
+        ):
+            return False
+        return self._held(value, set()) == ()
+
+    def _note_receiver(
+        self, node: ast.AST, why: str, attribute: str | None = None
+    ) -> None:
+        """Note a store into what ``node`` names (:meth:`_Writes.store_into`):
+        nothing for an object the function makes; each item, for an item of
+        a resolved list, tuple or dict (read as it is: a snapshot); any
+        object, for one not resolved.
+        """
+        if self._made_here(node):
+            return
+        found = self.resolve(node)
+        if found is _UNKNOWN and isinstance(node, ast.Subscript):
+            base = self.resolve(node.value)
+            if type(base) in (list, tuple, dict):
+                self.writes.callers.note_snapshot(base)
+                for item in base.values() if isinstance(base, dict) else base:
+                    if not isinstance(item, FREE_KINDS):
+                        self.writes.store_into(item, why)
+                return
+        self.writes.store_into(found, why, attribute)
+
+    def _made_here(self, node: ast.AST) -> bool:
+        """Whether ``node`` names an object the function makes: a call
+        making one (a class, a copy), a display, or a local name every store
+        binds to one of those.
+        """
+        if isinstance(node, ast.Call):
+            return self._class_made(node) is not None
+        if isinstance(node, (*_DISPLAYS, ast.Set, ast.SetComp)):
+            return True
+        if not isinstance(node, ast.Name):
+            return False
+        if node.id in self.fresh:
+            return True
+        values = self.local_from.get(node.id)
+        return (
+            bool(values)
+            and node.id not in self.parameters
+            and self._outer(node.id) is _UNKNOWN
+            and all(
+                isinstance(value, ast.AST) and self._made_here(value)
+                for value in values or ()
+            )
+        )
+
+    def _note_store(self, target: ast.AST, value: ast.AST | None) -> None:
+        """Note a store of ``value`` into an attribute or an item in
+        ``target``, when it is not shown free of callables.
+        """
+        for part in _store_targets(target):
+            if isinstance(part, ast.Subscript) and isinstance(part.ctx, ast.Del):
+                continue  # removing an item adds no callable
+            if self._free(value):
+                continue
+            self._note_receiver(
+                part.value,
+                f"{_describe_code(self.code)} stores into an object",
+                part.attr if isinstance(part, ast.Attribute) else None,
+            )
+
+    def _note_storing_call(self, call: ast.Call) -> None:
+        """Note a call storing what it is handed into its receiver: a
+        storing method (:data:`.coverage.STORING_METHODS`), ``setattr``.
+        """
+        func = call.func
+        arguments = [*call.args, *(k.value for k in call.keywords)]
+        receivers: list[ast.AST] = []
+        if isinstance(func, ast.Attribute) and func.attr in STORING_METHODS:
+            receivers.append(func.value)
+            if func.attr in ("__setattr__", "__setitem__") and call.args:
+                receivers.append(call.args[0])  # ``object.__setattr__(o, …)``
+        elif isinstance(func, ast.Name) and self.resolve(func) is setattr:
+            receivers.extend(call.args[:1])
+        if not receivers or all(self._free(argument) for argument in arguments):
+            return
+        for node in receivers:
+            self._note_receiver(
+                node, f"{_describe_code(self.code)} stores into an object"
+            )
+
+    def _item_code(self, item: ast.Subscript) -> _Effect:
+        """What reading, storing or deleting an item of ``item.value`` may
+        run (:attr:`.coverage.Rule.SUBSCRIPT`): nothing on an item kind, an
+        inert value, a display, a local made as a list, tuple or dict, or a
+        mobject's members; the callables a resolved base holds, called (a
+        ``defaultdict``'s factory); an unknown call on any other base. A
+        parameter's base is its call site's to judge (:mod:`.handed` counts
+        an item of a parameter as calling it).
+        """
+        base = item.value
+        if self._inert(base, set()) or isinstance(base, _DISPLAYS):
+            return _NO_EFFECT
+        if isinstance(base, ast.Name) and base.id in self.parameters:
+            return _NO_EFFECT
+        if isinstance(self.resolve(item), _MEMBERS_OF):
+            return _NO_EFFECT  # the engine's __getitem__, giving members
+        found = self.resolve(base)
+        if found is _UNKNOWN:
+            classes = self.classes(base) if isinstance(base, ast.Name) else None
+            if classes and all(cls in (list, tuple, dict) for cls in classes):
+                return _NO_EFFECT  # a local made as one
+            return _UNKNOWN_CALL
+        if item_kind(found):
+            return _NO_EFFECT
+        held = self._object_held(found)
+        if held is None:
+            return _UNKNOWN_CALL
+        effect = _NO_EFFECT
+        for each in held:
+            effect |= self._called_effect(each, None)
+        return effect
 
     def unresolved_call_reason(self, call: ast.Call, argument: ast.expr) -> str | None:
         """Why ``call`` may call ``argument``, which may be a callable the
@@ -2962,6 +3282,10 @@ class _Site:
         if not isinstance(node, (ast.Name, ast.Attribute)):
             return None
         found = self.resolve(node)
+        if isinstance(node, ast.Attribute):
+            # Its own attributes as they are now: a snapshot (an attribute
+            # stored later may hold another callable, or shadow a method).
+            self.writes.callers.note_snapshot(self.resolve(node.value), node.attr)
         if found is _UNKNOWN and isinstance(node, ast.Attribute):
             base = self.resolve(node.value)
             if base is _UNKNOWN or isinstance(base, _MEMBERS_OF):
@@ -3460,45 +3784,101 @@ class _MEMBERS_OF:  # noqa: N801 (a marker)
     mobject: Any
 
 
-#: Containers whose items are what they hold (no ``__getitem__`` of their
-#: own to make another).
-_ITEM_CONTAINERS = (
-    list,
-    tuple,
-    dict,
-    str,
-    bytes,
-    np.ndarray,
-    collections.deque,
-    collections.OrderedDict,
-)
+#: Displays whose items an item of them is.
+_DISPLAYS = (ast.List, ast.Tuple, ast.Dict, ast.ListComp, ast.DictComp)
 
 
-#: The kinds of an inert value (:meth:`_Site._inert`) a constant may be.
-_INERT_KINDS = (type(None), bool, int, float, complex, str, bytes)
-
-
-def _inert_value(value: Any) -> bool:
-    """Whether ``value``, resolved, is inert (:meth:`_Site._inert`): a
-    number or a string of a builtin kind, a NumPy array or scalar of them,
-    a compiled pattern or its match (whose methods give strings, lists and
-    matches of them; a replacement function handed to ``sub`` is a handed
-    callable of its own).
+def _named_attribute(call: ast.Call) -> ast.Attribute | None:
+    """``getattr(x, "name"[, default])`` as the attribute ``x.name`` it
+    reads; ``None`` for any other call of it.
     """
-    if type(value) in (*_INERT_KINDS, re.Pattern, re.Match) or isinstance(
-        value, Fraction
+    if (
+        2 <= len(call.args) <= 3
+        and not call.keywords
+        and not any(isinstance(each, ast.Starred) for each in call.args)
+        and isinstance(call.args[1], ast.Constant)
+        and isinstance(call.args[1].value, str)
     ):
-        return True
-    return (type(value) is np.ndarray or isinstance(value, np.generic)) and not (
-        value.dtype.hasobject
-    )
+        found = ast.Attribute(
+            value=call.args[0], attr=call.args[1].value, ctx=ast.Load()
+        )
+        return ast.copy_location(found, call)
+    return None
 
 
-def _held_parts(node: ast.AST) -> list[ast.AST] | None:
-    """The parts whose callables what ``node`` makes may hold: an
-    operator's operands (a ``[f] * n``), what a ``... or ...`` or a
-    ``... if ... else ...`` may give, a display's items, a comprehension's
-    item; ``None`` for a form not read here.
+def _describe_code(code: types.CodeType | None) -> str:
+    return "code of the scene's" if code is None else f"{code.co_name}"
+
+
+def _stored(item: ast.AST) -> list[tuple[ast.AST, ast.AST | None]]:
+    """What a node of the :attr:`.coverage.Rule.STORE` or
+    :attr:`.coverage.Rule.BINDING` rule binds or stores, each target with
+    the value it stores (a loop's iterable for its items; ``None`` for a
+    value no expression gives: a deletion, a ``with``'s entered value).
+    """
+    if isinstance(item, ast.Assign):
+        return [(target, item.value) for target in item.targets]
+    if isinstance(item, (ast.AnnAssign, ast.AugAssign)):
+        return [(item.target, item.value)]
+    if isinstance(item, ast.Delete):
+        return [(target, None) for target in item.targets]
+    if isinstance(item, (ast.For, ast.AsyncFor, ast.comprehension)):
+        return [(item.target, item.iter)]
+    if isinstance(item, ast.withitem) and item.optional_vars is not None:
+        return [(item.optional_vars, None)]
+    return []
+
+
+def _store_targets(target: ast.AST) -> list[ast.Attribute | ast.Subscript]:
+    """The attributes and items a store to ``target`` stores into."""
+    if isinstance(target, (ast.Attribute, ast.Subscript)):
+        return [target]
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return [part for each in target.elts for part in _store_targets(each)]
+    if isinstance(target, ast.Starred):
+        return _store_targets(target.value)
+    return []
+
+
+def _bound_to(node: ast.AST, name: str) -> list[ast.AST | None]:
+    """Every value the code of ``node`` binds ``name`` to: a store's value
+    (a loop's iterable for its variable, the whole value for an unpacked
+    target, an operator in place's operand), ``None`` for a binding no
+    expression gives (a ``with``, an import, a definition, an ``except``,
+    a pattern).
+    """
+    found: list[ast.AST | None] = []
+    for item in _walk(node):
+        if isinstance(item, ast.NamedExpr):
+            pairs: list[tuple[ast.AST, ast.AST | None]] = [(item.target, item.value)]
+        else:
+            pairs = _stored(item)
+        for target, value in pairs:
+            if name in _names_bound(target) and not isinstance(item, ast.Delete):
+                found.append(value)
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if item is not node and item.name == name:
+                found.append(None)
+        elif isinstance(item, (ast.Import, ast.ImportFrom)):
+            if any(
+                (alias.asname or alias.name).split(".")[0] == name
+                for alias in item.names
+            ):
+                found.append(None)
+        elif isinstance(item, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)):
+            if item.name == name:
+                found.append(None)
+        elif isinstance(item, ast.MatchMapping) and item.rest == name:
+            found.append(None)
+    return found
+
+
+def _held_parts(node: ast.AST) -> list[ast.expr]:
+    """The parts whose callables what ``node`` (of the
+    :attr:`.coverage.Rule.PARTS` or :attr:`.coverage.Rule.GENERATOR` rule)
+    makes may hold: an operator's operands (a ``[f] * n``), what a
+    ``... or ...`` or a ``... if ... else ...`` may give, a display's items,
+    a comprehension's item; for any other form, every expression it holds.
     """
     if isinstance(node, ast.BinOp):
         return [node.left, node.right]
@@ -3518,7 +3898,13 @@ def _held_parts(node: ast.AST) -> list[ast.AST] | None:
         return [node.elt]
     if isinstance(node, ast.DictComp):
         return [node.key, node.value]
-    return None
+    found: list[ast.expr] = []
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, ast.expr):
+            found.append(child)
+        else:  # a part holding expressions (an interpolation)
+            found.extend(_held_parts(child))
+    return found
 
 
 def _native_effect(target: types.BuiltinFunctionType) -> _Effect:
@@ -4109,6 +4495,9 @@ def plan_ticks(
                     reach(list(centres.values()), centres),
                 )
             )
+        # What a proof read as it was stands only while nothing the play
+        # runs stores into it.
+        check.snapshots_hold()
         pulled = _closure(nodes)
         # Work a stepping tick runs must not change which updaters there are:
         # the tick would meet work no plan weighed, after skipping what it

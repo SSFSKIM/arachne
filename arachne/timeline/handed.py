@@ -36,16 +36,16 @@ import ast
 import collections
 import contextlib
 import enum
-import fractions
 import functools
 import inspect
-import pathlib
 import re
 import types
 from collections.abc import Callable
 from typing import Any
 
 import numpy as np
+
+from .coverage import FREE_KINDS, NATIVE_HOLDERS, Rule, rule_of
 
 #: Why a callee may call an argument (each a reason
 #: :meth:`Callers.calls_argument` gives).
@@ -147,37 +147,28 @@ _NEVER_CALL_OBJECTS = (
 #: In a set of called parameters: every one (the code can't be followed).
 EVERY = "*"
 
-#: Kinds whose objects hold no callable (a NumPy scalar or array of them
-#: too, unless its dtype holds objects).
-_CALLABLE_FREE = (
-    type(None),
-    bool,
-    int,
-    float,
-    complex,
-    str,
-    bytes,
-    range,
-    slice,
-    type(Ellipsis),
-    fractions.Fraction,
-    pathlib.PurePath,
-    np.dtype,
-    re.Pattern,
-)
 #: How many objects reading what one value holds visits before giving up.
 HELD_LIMIT = 20_000
 
 
-def held_callables(value: Any, limit: int = HELD_LIMIT) -> tuple[Any, ...] | None:
+def held_callables(
+    value: Any, limit: int = HELD_LIMIT, read: dict[int, Any] | None = None
+) -> tuple[Any, ...] | None:
     """The callables ``value`` (a resolved object) is or holds: in a
     container's items and keys, an object's own attributes, a mobject's
     members; ``None`` when what it holds can't be read (an object of a
-    native kind not listed here, a module, more than ``limit`` objects).
-    A mobject's updaters are not counted: the engine runs them as the
-    scene's own callbacks, which the plan schedules itself.
+    native kind not in :data:`.coverage.NATIVE_HOLDERS`, a module, an object
+    of a class with methods of the scene's own, which are callables it
+    holds, more than ``limit`` objects). A mobject's updaters are not
+    counted: the engine runs them as the scene's own callbacks, which the
+    plan schedules itself. Each object read whose contents may change (a
+    list, a dict, a set, an object's attributes) goes into ``read``, by its
+    id: what is read is a snapshot, which stands only while nothing stores
+    into those (:meth:`Callers.note_snapshot`).
     """
     from arachne.mobject.mobject import Mobject
+
+    from .ticking import _user_methods
 
     found: dict[int, Any] = {}
     seen: set[int] = set()
@@ -189,13 +180,15 @@ def held_callables(value: Any, limit: int = HELD_LIMIT) -> tuple[Any, ...] | Non
         seen.add(id(item))
         if len(seen) > limit:
             return None
-        if isinstance(item, _CALLABLE_FREE) and (
-            type(item) in _CALLABLE_FREE
+        if isinstance(item, FREE_KINDS) and (
+            type(item) in FREE_KINDS
             or type(item).__module__.split(".")[0] in ("pathlib", "fractions", "numpy")
         ):
             continue  # a subclass of the scene's is read as any object
         if isinstance(item, (np.ndarray, np.generic)):
             if item.dtype.hasobject:
+                if read is not None and isinstance(item, np.ndarray):
+                    read[id(item)] = item
                 stack.extend(np.asarray(item, dtype=object).flat)
             stack.extend(each for _, each in _own_state(item))  # a subclass's
             continue
@@ -206,16 +199,20 @@ def held_callables(value: Any, limit: int = HELD_LIMIT) -> tuple[Any, ...] | Non
             stack.append(item.value)
             continue
         if isinstance(item, types.ModuleType) or any(
-            cls not in _NATIVE_HOLDERS for cls in _native_bases(type(item))
+            cls not in NATIVE_HOLDERS for cls in _native_bases(type(item))
         ):
             return None  # what a native kind holds is not read
+        if _user_methods(type(item)):
+            return None  # its class's methods are the scene's code
+        if read is not None and not isinstance(item, (tuple, frozenset)):
+            read[id(item)] = item
         if isinstance(item, dict):
             stack.extend(item.keys())
             stack.extend(item.values())
             if isinstance(item, collections.defaultdict):
                 stack.append(item.default_factory)
-        elif isinstance(item, _NATIVE_HOLDERS):
-            stack.extend(item)
+        elif isinstance(item, NATIVE_HOLDERS):
+            stack.extend(item)  # type: ignore[arg-type]
         for name, each in _own_state(item):
             if name == "updaters" and isinstance(item, Mobject):
                 continue
@@ -223,18 +220,6 @@ def held_callables(value: Any, limit: int = HELD_LIMIT) -> tuple[Any, ...] | Non
     return tuple(found.values())
 
 
-#: The native kinds whose objects hold only their items (and a
-#: ``defaultdict``'s factory).
-_NATIVE_HOLDERS = (
-    list,
-    tuple,
-    set,
-    frozenset,
-    dict,
-    collections.deque,
-    collections.defaultdict,
-    collections.OrderedDict,
-)
 _HEAP_TYPE = 1 << 9  # ``Py_TPFLAGS_HEAPTYPE``: a class Python code defines
 
 
@@ -340,17 +325,45 @@ class Callers:
         #: id is not reused); ``None`` while it is being read.
         self._called: dict[tuple[int, type | None], tuple[Any, frozenset[str] | None]]
         self._called = {}
-        #: What each resolved object holds (:func:`held_callables`), by its
-        #: id (the object kept so that its id is not reused).
-        self._held: dict[int, tuple[Any, tuple[Any, ...] | None]] = {}
+        #: What each resolved object holds (:func:`held_callables`), and the
+        #: objects reading it read, by its id (the object kept so that its id
+        #: is not reused).
+        self._held: dict[int, tuple[Any, tuple[Any, ...] | None, dict[int, Any]]] = {}
+        #: The objects whose contents the plan's proofs read as they were
+        #: when it was made, by id, each with the attributes read (``None``:
+        #: all it holds): snapshots, which stand only while no code the play
+        #: reaches stores into what they read (:meth:`.ticking._Writes.stores`).
+        self.snapshots: dict[int, tuple[Any, set[str] | None]] = {}
 
     def held_by(self, value: Any) -> tuple[Any, ...] | None:
-        """The callables ``value`` is or holds (:func:`held_callables`)."""
+        """The callables ``value`` is or holds (:func:`held_callables`),
+        noting what was read as a snapshot.
+        """
         found = self._held.get(id(value))
         if found is None or found[0] is not value:
-            found = (value, held_callables(value))
+            read: dict[int, Any] = {}
+            found = (value, held_callables(value, read=read), read)
             self._held[id(value)] = found
+        for key, each in found[2].items():
+            self.snapshots[key] = (each, None)
         return found[1]
+
+    def note_snapshot(self, value: Any, attribute: str | None = None) -> None:
+        """Note that a proof read ``value``'s own ``attribute`` (all of it,
+        when ``None``) as it is.
+        """
+        from .ticking import _MEMBERS_OF, _UNKNOWN
+
+        if isinstance(value, _MEMBERS_OF):
+            value = value.mobject
+        if value is _UNKNOWN or isinstance(value, FREE_KINDS):
+            return
+        _, read = self.snapshots.get(id(value), (value, set()))
+        if read is not None and attribute is not None:
+            read = read | {attribute}
+        else:
+            read = None
+        self.snapshots[id(value)] = (value, read)
 
     def calls_argument(
         self,
@@ -582,6 +595,10 @@ class Callers:
                     for part in ast.walk(target)
                 ):
                     called |= carries(value)
+            if isinstance(item, ast.Subscript):
+                # An item of it runs its class's code (a ``defaultdict``'s
+                # factory, a ``__getitem__``): judged where it is handed.
+                called |= carries(item.value)
             if not isinstance(item, ast.Call):
                 continue
             func = item.func
@@ -750,17 +767,20 @@ def _carriers(nodes: tuple[ast.AST, ...], parameters: set[str]) -> dict[str, set
 
 def _carried(expr: ast.AST | None, carried: dict[str, set[str]]) -> set[str]:
     """The parameters whose objects (or anything taken from them) ``expr``
-    may evaluate to, or hold. Only a constant and a formatted string are
-    shown to hold no callable; any other form (an operator, which may give
-    back what its operands hold, a ``[f] * n`` among them) carries what its
-    parts do.
+    may evaluate to, or hold, by the rules of :data:`.coverage.OPERATIONS`:
+    a constant and a formatted string carry nothing, nor does a lambda
+    (its body's calls are read where they are); a name, what its stores
+    bound it to; any other form (an operator, which may give back what its
+    operands hold, a ``[f] * n`` among them) carries what its parts do.
     """
-    if expr is None or isinstance(expr, (ast.Constant, ast.JoinedStr)):
+    if expr is None:
         return set()
-    if isinstance(expr, ast.Name):
+    rule = rule_of(expr)
+    if rule in (Rule.CONSTANT, Rule.LAMBDA):
+        return set()
+    if rule is Rule.NAME:
+        assert isinstance(expr, ast.Name)
         return set(carried.get(expr.id, ()))
-    if isinstance(expr, ast.Lambda):
-        return set()  # its body's calls are read where they are
     found: set[str] = set()
     for child in ast.iter_child_nodes(expr):
         if isinstance(child, ast.expr_context):
