@@ -5,6 +5,7 @@ runs scene code during an evaluation, so its play must tick.
 
 from __future__ import annotations
 
+import collections
 import functools
 import operator
 import random
@@ -620,6 +621,56 @@ class ReturnedCallableRead(_HandedCallableRead):
             return table["key"]
 
         return lambda m: sorted(["a", "b"], key=pick())
+
+
+class EngineAppliedCallableRead(_HandedCallableRead):
+    """A function read out of a dict, handed to the engine's
+    ``apply_function``, whose code calls it on the points.
+    """
+
+    def handing(self, move):
+        def keep(points):
+            move(points)
+            return points
+
+        table = {"f": keep}
+        return lambda m: m.apply_function(table["f"])
+
+
+class NativeUnlistedCallableRead(_HandedCallableRead):
+    """A function read out of a dict, made a ``defaultdict``'s factory, which
+    a missing key's lookup calls: a native listed neither way.
+    """
+
+    def handing(self, move):
+        table = {"f": lambda: move(None)}
+        return lambda m: collections.defaultdict(table["f"])["missing"]
+
+
+class _Runner:
+    def run(self, function):
+        function(None)
+
+
+class UnknownCalleeCallableRead(_HandedCallableRead):
+    """A function read out of a dict, handed to a method of an object read
+    out of a list: the check can't tell what the method does with it.
+    """
+
+    def handing(self, move):
+        runners = [_Runner()]
+        table = {"f": move}
+        return lambda m: runners[0].run(table["f"])
+
+
+class UnresolvedPointMove(_SharedRead):
+    """The control: a point read out of a dict, handed to the engine's
+    ``move_to`` on the updater's own dot, whose code never calls it.
+    """
+
+    def writer(self, shared):
+        table = {"p": 0.5 * LEFT}
+        return lambda m: m.move_to(table["p"])
 
 
 class MappedEngineMethodRead(_SharedRead):

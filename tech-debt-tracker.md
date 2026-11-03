@@ -16,27 +16,6 @@ reproduces it.
   after it, from whatever it left
   (`tests/timeline/test_stepping.py::test_a_hook_that_rebinds_what_a_reader_reads_is_planned_for`).
 
-## Soundness: what stepping may still skip wrongly (`arachne/timeline/ticking.py`)
-
-- **A callable handed to a call is read only where the check resolves it.**
-  A call may call what it is handed (`sorted`'s key, `map`'s function, a
-  compiled pattern's replacement, `np.apply_along_axis`, an engine method's
-  function argument). `_Site._handed_callables` reads each argument that
-  resolves to a callable (a function, a method of a resolved object, a
-  class, an object with a `__call__` of the scene's) as called with
-  arguments no call site binds. An argument it can't resolve (read out of a
-  container, handed back by a call, a loop's variable) is taken for no
-  callable, so a function of the scene's reached that way and writing what
-  a stepping reader reads is skipped at stepping ticks. Reproducers, strict
-  xfails until fixed:
-  `tests/timeline/test_stepping.py::test_a_callable_the_check_cannot_resolve_handed_to_a_call`
-  (scenes `DictHeldCallableRead`, `ReturnedCallableRead`). Taking every
-  unresolved argument for an unknown callable is sound and costs most
-  plays their stepping (an unresolved point handed to `move_to`); the fix
-  needs a bound on what an unresolved value may be: a callable only if the
-  callback's reach holds a function of the scene's that writes outside its
-  own family, or only for callees that may call what they are handed.
-
 ## Planned precision work before G4 (`arachne/timeline/ticking.py`)
 
 Work to do, not debt to wait on: each item leaves a play ticking everything
@@ -121,6 +100,37 @@ Work to do, not debt to wait on: each item leaves a play ticking everything
   fix types `dt` (and an alpha a rate-function updater is handed) as a
   float, and an arithmetic expression of numbers and NumPy's own arrays as
   one of them.
+- **Follow engine code precisely enough to tell what it never calls.** A
+  call handed an argument the check can't resolve is an unknown one unless
+  its callee is shown never to call it (`arachne/timeline/handed.py`). The
+  engine's own constructors are not shown so: `VGroup(b, label)`,
+  `Line(...)`, `ParametricFunction(...)` with any unresolved argument are
+  unknown calls, and on the measured corpus 16 plays of 28 cases lost their
+  stepping (one case's from 1781 stepping ticks to 501, another's from 526
+  to 61), and pulled callbacks rose (one case 33 → 337). Four limits stack:
+  - the store rule: a parameter stored into an attribute or an item counts
+    as called (`VGroup.add` stores its members into `self.submobjects`);
+    sound refinement: a store into `self.X` counts only if analysed code
+    calls `self.X`, hands it to something that may call it, or the
+    attribute reaches a callee the check can't resolve;
+  - `**kwargs` handed through `super().__init__` binds every parameter of
+    the callee (`Mobject.__init__`); refinement: bind it by keyword;
+  - `ManimColor(...)` is read as calling what it is handed; refinement: a
+    value class never calls only where analysis shows it, never by a list;
+  - `_bezier_parameters` is a wrapped callable the check can't read;
+    refinement: read `__wrapped__` when the wrapper is analysed and only
+    forwards.
+
+  At the call site, a method of an object a call makes (`Dot().move_to(p)`)
+  is a callee the check can't resolve: the class `_class_made` tells is not
+  used. Reproducers of the cost, strict xfails until it is won back:
+  `tests/timeline/test_stepping.py::test_a_member_swapped_where_no_stepping_reaches_keeps_the_plan`
+  and `::test_work_private_to_a_redraw_waits_for_the_frames`. What must
+  hold meanwhile: the fixtures of
+  `::test_a_callable_the_check_cannot_resolve_is_called_where_its_callee_may`
+  stay pulled, and the control
+  `::test_a_value_the_check_cannot_resolve_handed_to_code_that_never_calls_it`
+  steps.
 - **A method called on a receiver the check can't resolve is taken for the
   scene's code.** `dot.move_to(…)` with `dot` a loop's variable over
   `zip(group, offsets)` may be any class's `move_to`, so `_Site._method_code`

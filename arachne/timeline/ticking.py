@@ -1435,6 +1435,10 @@ class _Writes:
         #: What a change into what each of them returns may change, by its
         #: identity and the object it is called on (both kept).
         self._returned: dict[tuple[int, int], tuple[Any, Any, _Effect]] = {}
+        from .handed import Callers
+
+        #: Which parameters each function may call (:mod:`.handed`).
+        self.callers = Callers(self._bindings, MAX_DEPTH)
 
     def assignment_hooks(
         self, cls: type, name: str, deleting: bool
@@ -2527,25 +2531,20 @@ class _Site:
         """What the callables ``call`` hands may do: whatever it calls may
         call them in turn (a key, a pattern's replacement, a mapped
         function), with arguments of its own, so each is taken as called
-        with arguments no call site binds. An argument the check can't
-        resolve is taken for no callable, a known gap
-        (``tech-debt-tracker.md``); a function of the scene's made in the
-        call (a closure a function of the scene's returns) is read where it
-        is made.
+        with arguments no call site binds. One the check can't resolve may
+        be any callable: the call is an unknown one unless its callee is
+        shown never to call it (:mod:`.handed`).
         """
         effect = _NO_EFFECT
         for argument in [*call.args, *(k.value for k in call.keywords)]:
             if isinstance(argument, ast.Starred):
                 argument = argument.value
-            if (
-                isinstance(argument, ast.Call)
-                and self._called(argument.func) is operator.methodcaller
-            ):
-                # It calls a method by name on whatever it is handed.
-                effect |= _UNKNOWN_CALL
-                continue
             target = self._callable_value(argument)
             if target is None:
+                if self._unresolved_callable(argument) and self.unresolved_call_reason(
+                    call, argument
+                ):
+                    effect |= _UNKNOWN_CALL
                 continue
             if isinstance(target, types.FunctionType) and not _user_function(target):
                 # A library's or the engine's function, called by what it
@@ -2558,6 +2557,109 @@ class _Site:
                 name = argument.id
             effect |= _no_call_site(self.writes.callee(name, target, self.depth))
         return effect
+
+    def _unresolved_callable(self, node: ast.AST) -> bool:
+        """Whether ``node`` may evaluate to a callable the check can't
+        resolve (or hold one): not a value an expression makes, not what
+        the check resolved, not a parameter (its call site's argument, judged
+        there; an updater's own are the engine's mobject and numbers).
+        """
+        if isinstance(
+            node,
+            (
+                ast.Constant,
+                ast.JoinedStr,
+                ast.BinOp,
+                ast.UnaryOp,
+                ast.Compare,
+                ast.Lambda,
+            ),
+        ):
+            return False
+        if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+            return any(self._unresolved_callable(item) for item in node.elts)
+        if isinstance(node, ast.Dict):
+            return any(
+                self._unresolved_callable(item)
+                for item in (*filter(None, node.keys), *node.values)
+            )
+        if isinstance(node, ast.Starred):
+            return self._unresolved_callable(node.value)
+        if isinstance(node, ast.Name) and (
+            node.id in self.values or node.id in self.parameters
+        ):
+            return False
+        if isinstance(node, ast.Call):
+            return not self.writes.value_call(node, self.bindings)
+        if isinstance(node, (ast.Name, ast.Attribute, ast.Subscript)):
+            found = self.resolve(node)
+            if isinstance(found, _MEMBERS_OF):
+                return any(callable(member) for member in found.mobject.get_family())
+            if found is not _UNKNOWN:
+                return False  # what it resolved: a callable is read as one
+        return True
+
+    def unresolved_call_reason(self, call: ast.Call, argument: ast.expr) -> str | None:
+        """Why ``call`` may call ``argument``, which may be a callable the
+        check can't resolve; ``None`` when its callee never does
+        (:meth:`.handed.Callers.calls_argument`).
+        """
+        from .handed import UNKNOWN_CALLEE
+
+        callees = self._callees(call)
+        if callees is None:
+            return UNKNOWN_CALLEE
+        for target, bound, cls in callees:
+            reason = self.writes.callers.calls_argument(
+                target, call, argument, bound, cls, self.depth + 1
+            )
+            if reason is not None:
+                return reason
+        return None
+
+    def _callees(self, call: ast.Call) -> list[tuple[Any, bool, type | None]] | None:
+        """What ``call``'s callee may be: each with whether its first
+        parameter is bound to the object it is called on, and that object's
+        class; ``None`` when that can't be told.
+        """
+        from .handed import _method
+
+        func = call.func
+        if isinstance(func, ast.Name):
+            found = self.resolve(func)
+            return None if found is _UNKNOWN else [(found, False, None)]
+        if not isinstance(func, ast.Attribute) or _super_call(
+            _root(func), self.bindings
+        ):
+            return None
+        called = self._called(func)
+        if called is not _UNKNOWN:
+            return [(called, False, None)]
+        receiver = self._bound(func.value)
+        if isinstance(receiver, types.ModuleType):
+            return None  # a name the module does not hold
+        if isinstance(receiver, _MEMBERS_OF):
+            classes: set[type] | None = {
+                type(member) for member in receiver.mobject.get_family()
+            }
+        elif receiver is _UNKNOWN:
+            classes = self.classes(func.value)
+        else:
+            classes = {type(receiver)}
+        if classes is None:
+            return None
+        found_callees: list[tuple[Any, bool, type | None]] = []
+        for cls in classes:
+            member = inspect.getattr_static(cls, func.attr, None)
+            if member is None:
+                return None
+            if isinstance(member, (types.FunctionType, staticmethod, classmethod)):
+                found_callees.append(_method(member, cls))
+            elif receiver is not _UNKNOWN and not isinstance(receiver, _MEMBERS_OF):
+                found_callees.append((getattr(receiver, func.attr, None), False, None))
+            else:
+                found_callees.append((member, False, None))
+        return found_callees
 
     def _callable_value(self, node: ast.AST) -> Any:
         """The callable ``node`` resolves to, a method of a resolved object
@@ -2830,7 +2932,7 @@ def _parameters(function: types.FunctionType) -> tuple[str, ...]:
 
 
 def _arguments_of(
-    call: ast.Call, callee: Any, bound: bool = False
+    call: ast.Call, callee: Any, bound: bool = False, *, user_only: bool = True
 ) -> dict[str, list[ast.expr]] | None:
     """The arguments ``call`` binds to each parameter of ``callee`` (a
     function of the scene's, a method, a class whose constructor is one);
@@ -2842,7 +2944,9 @@ def _arguments_of(
         callee, bound = callee.__func__, True
     elif isinstance(callee, type):
         callee, bound = inspect.getattr_static(callee, "__init__", None), True
-    if not _user_function(callee):
+    if not isinstance(callee, types.FunctionType) or (
+        user_only and not _user_function(callee)
+    ):
         return None
     code = callee.__code__
     positional = list(code.co_varnames[: code.co_argcount])

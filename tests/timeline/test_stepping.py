@@ -240,14 +240,14 @@ def test_a_store_into_a_sum_of_what_a_dict_holds_is_taken_for_a_restructure(
 ):
     """The planned precision work ``tech-debt-tracker.md`` keeps: a loop's
     variable over a list of dicts, and ``pn = p + v * dt`` from what they
-    hold, are not typed, so ``pn[1] = …`` may replace a mobject's member and
-    the play ticks everything.
+    hold, are not typed, so ``pn[1] = …`` may replace a mobject's member;
+    and a redraw hands ``move_to`` an item it can't resolve (``Dot()``'s
+    class is not told from the call making it). The play ticks everything.
     """
     play = _same_as_full_ticks(
         session_of, "DictStateIntegrator", 4, SOUNDNESS_SCENES
     ).record.plays[-1]
     assert play.stepping_ticks == 0
-    assert play.tick_plan.unbounded.startswith(f"{STRUCTURAL}: updater step ")
 
 
 def test_a_method_of_an_unresolved_receiver_is_taken_for_the_scenes_code(session_of):
@@ -694,6 +694,11 @@ def test_an_attribute_an_instance_shadows_steps_with_what_it_reads(session_of):
     assert play.tick_plan.steps_only
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="engine constructors are not shown never to call an unresolved argument "
+    "(tech-debt-tracker.md, precision before G4)",
+)
 def test_a_member_swapped_where_no_stepping_reaches_keeps_the_plan(session_of):
     """A skipped redraw replaces a group's member at every frame, and
     nothing stepping reads the group: the plan stays true, and is kept.
@@ -920,14 +925,42 @@ def test_an_engine_method_handed_to_a_call_is_never_stepped_past(session_of, nam
     assert play.tick_plan.unbounded is not None
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="a callable handed to a call is read only when the check resolves it "
-    "(tech-debt-tracker.md)",
+@pytest.mark.parametrize(
+    "name",
+    [
+        "DictHeldCallableRead",
+        "ReturnedCallableRead",
+        "EngineAppliedCallableRead",
+        "NativeUnlistedCallableRead",
+        "UnknownCalleeCallableRead",
+    ],
 )
-@pytest.mark.parametrize("name", ["DictHeldCallableRead", "ReturnedCallableRead"])
-def test_a_callable_the_check_cannot_resolve_handed_to_a_call(session_of, name):
-    _same_as_full_ticks(session_of, name, 4, SOUNDNESS_SCENES)
+def test_a_callable_the_check_cannot_resolve_is_called_where_its_callee_may(
+    session_of, name
+):
+    """A function read out of a dict or handed back by a call, handed to a
+    native that calls it (``sorted``'s key), to the engine's code that calls
+    it (``apply_function``), to a native listed neither way (a
+    ``defaultdict``'s factory) or to a method the check can't resolve: the
+    call is an unknown one, and the plan pulls the updater making it.
+    """
+    play = _same_as_full_ticks(session_of, name, 4, SOUNDNESS_SCENES).record.plays[-1]
+    assert play.stepping_ticks > 0
+    assert play.tick_plan.pulled == 1
+
+
+def test_a_value_the_check_cannot_resolve_handed_to_code_that_never_calls_it(
+    session_of,
+):
+    """The control: a point read out of a dict, handed to ``move_to``, whose
+    code never calls it: the updater is stepped past.
+    """
+    play = _same_as_full_ticks(
+        session_of, "UnresolvedPointMove", 4, SOUNDNESS_SCENES
+    ).record.plays[-1]
+    assert play.stepping_ticks > 0
+    assert play.tick_plan.pulled == 0
+    assert len(play.tick_plan.skipped) == 2
 
 
 def test_a_sum_whose_operand_is_not_numpys_own_array_may_be_that_operand(
@@ -1032,6 +1065,11 @@ def test_a_global_rebound_by_setattr_is_never_stepped_past(session_of):
     assert play.tick_plan.unbounded.startswith(STRUCTURAL)
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="engine constructors are not shown never to call an unresolved argument "
+    "(tech-debt-tracker.md, precision before G4)",
+)
 def test_work_private_to_a_redraw_waits_for_the_frames(session_of):
     """A redraw built through a function handing back what it made, a memo
     dict of copies, its own seeded generator, ``getattr`` by a constant name
