@@ -1435,6 +1435,9 @@ class _Writes:
         #: What a change into what each of them returns may change, by its
         #: identity and the object it is called on (both kept).
         self._returned: dict[tuple[int, int], tuple[Any, Any, _Effect]] = {}
+        #: Whether each of them returns only inert values, by its identity and
+        #: the parameters inert at its call (the function kept).
+        self._inert_returns: dict[tuple[int, frozenset[str]], tuple[Any, bool]] = {}
         from .handed import Callers
 
         #: Which parameters each function may call (:mod:`.handed`).
@@ -1579,6 +1582,41 @@ class _Writes:
             if isinstance(item, ast.Return) and item.value is not None:
                 effect |= site.expr_writes(item.value)
         return effect
+
+    def returns_inert(
+        self, function: types.FunctionType, inert: frozenset[str]
+    ) -> bool:
+        """Whether every value the scene's ``function`` returns is inert
+        (:meth:`_Site._inert`) when its parameters ``inert`` are.
+        """
+        key = (id(function), inert)
+        found = self._inert_returns.get(key)
+        if found is not None and found[0] is function:
+            return found[1]
+        # A call back into itself returns what its other returns do.
+        self._inert_returns[key] = (function, True)
+        result = self._scan_inert_returns(function, inert)
+        self._inert_returns[key] = (function, result)
+        return result
+
+    def _scan_inert_returns(
+        self, function: types.FunctionType, inert: frozenset[str]
+    ) -> bool:
+        found = self._site(function, frozenset(), None, 0, frozenset(), None, None)
+        if found is None:
+            return False
+        node, site = found
+        site.inert_parameters = inert
+        if isinstance(node, ast.Lambda):
+            return site._inert(node.body, set())
+        own = _own_nodes(node)
+        if any(isinstance(item, (ast.Yield, ast.YieldFrom, ast.Await)) for item in own):
+            return False
+        return all(
+            item.value is None or site._inert(item.value, set())
+            for item in own
+            if isinstance(item, ast.Return)
+        )
 
     def _site(
         self,
@@ -1938,6 +1976,8 @@ class _Site:
     local_from: dict[str, list[Any]] = field(default_factory=dict)
     #: The function's own code.
     code: types.CodeType | None = None
+    #: Its parameters its call site hands inert values (:meth:`_inert`).
+    inert_parameters: frozenset[str] = frozenset()
 
     def classes(self, receiver: ast.AST) -> set[type] | None:
         """The classes of what ``receiver`` names, ``None`` when that can't be
@@ -2712,8 +2752,10 @@ class _Site:
             return True
         if isinstance(node, ast.Name):
             values = self.local_from.get(node.id)
-            if node.id in self.parameters or node.id in self.owners:
+            if node.id in self.owners:
                 return False
+            if node.id in self.parameters:
+                return node.id in self.inert_parameters
             if values is None:
                 return _inert_value(self.resolve(node))
             bound = self._outer(node.id)
@@ -2728,9 +2770,9 @@ class _Site:
             resolving.add(node.id)
             try:
                 return all(
-                    value is not None
-                    and value is not _PARAMETER
-                    and self._inert(value, resolving)
+                    node.id in self.inert_parameters
+                    if value is _PARAMETER
+                    else value is not None and self._inert(value, resolving)
                     for value in values
                 )
             finally:
@@ -2741,7 +2783,25 @@ class _Site:
             return all(
                 self._inert(part, resolving) for part in (node.left, *node.comparators)
             )
-        if isinstance(node, (ast.BinOp, ast.UnaryOp, ast.BoolOp, ast.IfExp)):
+        if isinstance(
+            node,
+            (
+                ast.BinOp,
+                ast.UnaryOp,
+                ast.BoolOp,
+                ast.IfExp,
+                ast.List,
+                ast.Tuple,
+                ast.Set,
+                ast.Dict,
+                ast.Starred,
+                ast.ListComp,
+                ast.SetComp,
+                ast.DictComp,
+            ),
+        ):
+            # A display of inert items gives them back, and its methods
+            # give them or numbers.
             parts = _held_parts(node) or []
             return all(self._inert(part, resolving) for part in parts)
         if isinstance(node, ast.Subscript):
@@ -2755,7 +2815,8 @@ class _Site:
         count, a function of :mod:`math`, a mobject's getter of a number or
         an array (the engine's own), a method of an inert value, a function
         making a number or an array (:meth:`_Writes.value_call`) of inert
-        values.
+        values, a function of the scene's whose every return is inert given
+        what it is handed (:meth:`_Writes.returns_inert`).
         """
         func = node.func
         arguments = [*node.args, *(keyword.value for keyword in node.keywords)]
@@ -2765,6 +2826,9 @@ class _Site:
                 return True
             if isinstance(target, np.ufunc):  # held under a name of its own
                 return all(self._inert(argument, resolving) for argument in arguments)
+            if _user_function(target):
+                inert = self._inert_parameters(node, target, resolving)
+                return inert is not None and self.writes.returns_inert(target, inert)
         if isinstance(func, ast.Attribute):
             if func.attr in _VALUE_GETTERS:
                 classes = self.classes(func.value)
@@ -2780,6 +2844,35 @@ class _Site:
         return self.writes.value_call(node, self.bindings) and all(
             self._inert(argument, resolving) for argument in arguments
         )
+
+    def _inert_parameters(
+        self, call: ast.Call, function: types.FunctionType, resolving: set[str]
+    ) -> frozenset[str] | None:
+        """The parameters of ``function`` that ``call`` binds only to inert
+        values (:meth:`_inert`), a default or nothing (an empty ``*args``
+        or ``**kwargs``) among them; ``None`` when what it binds can't be
+        told.
+        """
+        binding = _arguments_of(call, function)
+        if binding is None:
+            return None
+        code = function.__code__
+        positional = code.co_varnames[: code.co_argcount]
+        named = code.co_varnames[: code.co_argcount + code.co_kwonlyargcount]
+        defaults = dict(
+            zip(positional[::-1], (function.__defaults__ or ())[::-1], strict=False)
+        )
+        defaults.update(function.__kwdefaults__ or {})
+        found = set()
+        for name, handed in binding.items():
+            if handed:
+                if all(self._inert(argument, resolving) for argument in handed):
+                    found.add(name)
+            elif name not in named:
+                found.add(name)  # an empty ``*args`` or ``**kwargs``
+            elif name in defaults and _inert_value(defaults[name]):
+                found.add(name)
+        return frozenset(found)
 
     def unresolved_call_reason(self, call: ast.Call, argument: ast.expr) -> str | None:
         """Why ``call`` may call ``argument``, which may be a callable the
@@ -3363,7 +3456,7 @@ _ITEM_CONTAINERS = (
 
 
 #: The kinds of an inert value (:meth:`_Site._inert`) a constant may be.
-_INERT_KINDS = (bool, int, float, complex, str, bytes)
+_INERT_KINDS = (type(None), bool, int, float, complex, str, bytes)
 
 
 def _inert_value(value: Any) -> bool:

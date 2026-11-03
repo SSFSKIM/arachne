@@ -754,6 +754,36 @@ class RepeatedCallableRead(_PiecewiseCallableRead):
         return lambda m: outer(act=table["f"])
 
 
+class ReturnedListCallableRead(_PiecewiseCallableRead):
+    """A function of the scene's handing back a list holding the function:
+    what it returns is no number, so the list is what it may hold.
+    """
+
+    def handing(self, move):
+        def picked():
+            return [move]
+
+        return lambda m: _piecewise(picked())
+
+
+def _direction(angle):
+    return np.array([np.cos(angle), np.sin(angle), 0])
+
+
+class ComputedPointMove(_SharedRead):
+    """A control: a point a function of the scene's computes from numbers,
+    in arithmetic handed to the engine's ``move_to``: every value is shown
+    a number or an array of them, and the updater is stepped past.
+    """
+
+    def writer(self, shared):
+        centre = np.array([0.5, 0.0, 0.0])
+        offsets = [0.1, 0.2]
+        return lambda m: m.move_to(
+            centre + offsets[0] * _direction(len(offsets) * 0.3) + 0.2 * LEFT
+        )
+
+
 class UnresolvedPointMove(_SharedRead):
     """The control: a point read out of a dict, handed to the engine's
     ``move_to`` on the updater's own dot, whose code never calls it.

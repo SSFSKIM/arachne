@@ -37,6 +37,7 @@ import collections
 import contextlib
 import enum
 import fractions
+import functools
 import inspect
 import pathlib
 import re
@@ -379,6 +380,14 @@ class Callers:
             if _numpy_function(target):
                 return CALLED_NATIVE if target.__name__ in _NUMPY_CALLERS else None
             return self._function_calls(target, call, argument, bound, cls, depth)
+        if target is functools.reduce:
+            # It calls its function on the items, never an item itself.
+            first = call.args[0] if call.args else None
+            if isinstance(first, ast.Starred) or any(
+                keyword.arg is None for keyword in call.keywords
+            ):
+                return CALLED_NATIVE  # which argument is its function is not told
+            return CALLED_NATIVE if argument is first else None
         if isinstance(
             target,
             (

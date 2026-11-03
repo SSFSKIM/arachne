@@ -958,29 +958,30 @@ def test_a_callable_the_check_cannot_resolve_is_called_where_its_callee_may(
         "UnpackedCallableRead",
         "NamedUnpackedCallableRead",
         "RepeatedCallableRead",
+        "ReturnedListCallableRead",
     ],
 )
 def test_a_value_holding_a_callable_is_called_where_its_callee_may(session_of, name):
     """A function held in a list or a dict, resolved or written out at the
-    call (unpacked as keywords too), or in a list an operator makes: a value
-    is free of callables only when its kind shows it, so the function is
-    called where the callee may call what it is handed, and the plan pulls
-    the updater making the call.
+    call (unpacked as keywords too), in a list an operator makes, or in one
+    a function of the scene's hands back: a value is free of callables only
+    when its kind shows it, so the function is called where the callee may
+    call what it is handed, and the plan pulls the updater making the call.
     """
     play = _same_as_full_ticks(session_of, name, 4, SOUNDNESS_SCENES).record.plays[-1]
     assert play.stepping_ticks > 0
     assert play.tick_plan.pulled == 1
 
 
+@pytest.mark.parametrize("name", ["UnresolvedPointMove", "ComputedPointMove"])
 def test_a_value_the_check_cannot_resolve_handed_to_code_that_never_calls_it(
-    session_of,
+    session_of, name
 ):
-    """The control: a point read out of a dict, handed to ``move_to``, whose
-    code never calls it: the updater is stepped past.
+    """The controls: a point read out of a dict, or computed in arithmetic
+    from numbers (a function of the scene's among them), handed to
+    ``move_to``: the updater is stepped past.
     """
-    play = _same_as_full_ticks(
-        session_of, "UnresolvedPointMove", 4, SOUNDNESS_SCENES
-    ).record.plays[-1]
+    play = _same_as_full_ticks(session_of, name, 4, SOUNDNESS_SCENES).record.plays[-1]
     assert play.stepping_ticks > 0
     assert play.tick_plan.pulled == 0
     assert len(play.tick_plan.skipped) == 2
