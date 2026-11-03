@@ -1,0 +1,6 @@
+# The toolchain every build of the core uses: CI, wheels, and builds from source at a pinned commit.
+# rustup installs it on first use in this directory.
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

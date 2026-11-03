@@ -1,0 +1,27 @@
+[package]
+name = "arachne-core"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+description = "Arachne's CPU core: draws frames described in XF, the Frame IR"
+repository = "https://github.com/SSFSKIM/arachne"
+publish = false
+
+[lib]
+name = "arachne_core"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# The Python extension (built by maturin through pyproject.toml). Off for `cargo test`, which links
+# no Python.
+python = ["dep:pyo3", "dep:numpy", "pyo3/extension-module"]
+
+[dependencies]
+# Transcendental functions in pure Rust, never the platform's libm (determinism across machines).
+libm = "0.2.16"
+pyo3 = { version = "0.30.1", optional = true, features = ["abi3-py312"] }
+numpy = { version = "0.30.0", optional = true }
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
