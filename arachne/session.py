@@ -69,6 +69,7 @@ class Session:
         stepping: bool = True,
         on_step: Callable[[Scene, Fraction], object] | None = None,
         on_tick: Callable[[Scene, Fraction, bool], object] | None = None,
+        on_start: Callable[[Scene, Fraction], object] | None = None,
     ) -> Session:
         """Execute the scene class named ``scene`` from ``file`` and record it.
 
@@ -78,8 +79,8 @@ class Session:
         dt-free callbacks run at the instants a frame reads,
         :mod:`.timeline.ticking`); ``None`` keeps and fully evaluates every
         instant the run reaches. ``stepping=False`` runs every tick of a
-        ticked play in full (``Recorder``'s switch); ``on_step`` and
-        ``on_tick`` are ``Recorder``'s diagnostic hooks. ``config`` overrides the
+        ticked play in full (``Recorder``'s switch); ``on_step``,
+        ``on_tick`` and ``on_start`` are ``Recorder``'s diagnostic hooks. ``config`` overrides the
         configuration the scene is executed under; nothing is written either
         way.
         """
@@ -111,6 +112,7 @@ class Session:
                         stepping=stepping,
                         on_step=on_step,
                         on_tick=on_tick,
+                        on_start=on_start,
                     )
                     instance.render()
                 except BaseException:

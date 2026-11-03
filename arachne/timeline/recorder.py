@@ -167,6 +167,13 @@ class PlayRun:
             plan if self.recorder.stepping else replace(plan, applied=False), first
         )
 
+    def started(self) -> None:
+        """Show the play's evaluation at its start to the recorder's
+        ``on_start`` hook, before its first tick.
+        """
+        if self.recorder.on_start is not None:
+            self.recorder.on_start(self.scene, self.start)
+
     def stepped(self, tick: Fraction, *, full: bool) -> None:
         """Count a tick, and show it to the recorder's diagnostic hooks
         (``on_tick`` every tick, ``on_step`` a stepping one). A stepping tick
@@ -218,7 +225,11 @@ class Recorder:
     stepping tick), and after each stepping tick only (one that ran the
     stepping set alone), as ``on_step(scene, tick)``: a comparison observes
     there what each tick changed, the record keeping no tick a frame does
-    not read. Unset, they cost nothing.
+    not read. ``on_start`` is called once for each ticked play, as
+    ``on_start(scene, start)``, after the play's evaluation at its start and
+    before its first tick: the state its first tick steps from. Neither
+    ``on_tick`` nor ``on_step`` is called for the start. Unset, they cost
+    nothing; set, they observe and must change nothing.
     """
 
     def __init__(
@@ -230,6 +241,7 @@ class Recorder:
         stepping: bool = True,
         on_step: Callable[[Scene, Fraction], object] | None = None,
         on_tick: Callable[[Scene, Fraction, bool], object] | None = None,
+        on_start: Callable[[Scene, Fraction], object] | None = None,
     ) -> None:
         self.scene = scene
         self.grid = exact(grid) if grid is not None else None
@@ -237,6 +249,7 @@ class Recorder:
         self.stepping = stepping
         self.on_step = on_step
         self.on_tick = on_tick
+        self.on_start = on_start
         self.record: Record | None = None
         self._tagging = False
         #: Which execution of the scene this is, with the plays an earlier

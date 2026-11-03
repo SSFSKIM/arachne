@@ -263,6 +263,23 @@ class EveryTick(Scene):
         )
 
 
+class EvaluationClock(Scene):
+    """Two ticked plays, the second starting between two ticks (at
+    0.505 s), and a dt-free updater keeping the clock at each evaluation
+    it runs in (``evaluated``).
+    """
+
+    def construct(self):
+        clock(self)
+        self.evaluated = []
+        noter = Dot()
+        noter.add_updater(lambda m: self.evaluated.append(self.renderer.time))
+        self.add(noter)
+        t = ValueTracker(0)
+        self.play(t.animate.set_value(1), run_time=0.505, rate_func=linear)
+        self.play(t.animate.set_value(0), run_time=0.5, rate_func=linear)
+
+
 class LateJoiner(Scene):
     """A part that begins mid-play fades in a dot carrying a dt-free updater
     that a trace reads: its copy's updater joins the play at the event, and
