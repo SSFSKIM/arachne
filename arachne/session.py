@@ -68,6 +68,8 @@ if TYPE_CHECKING:
 
     from ._config.utils import ManimConfig
     from .lint import LintResult
+    from .lint.keyframes import KeyFrames, Storyboard
+    from .lint.query import Query
     from .scene.scene import Scene
     from .timeline.record import PlayRecord, Record
     from .timeline.state import State
@@ -396,6 +398,30 @@ class Session:
         from .lint import lint
 
         return lint(self, **options)
+
+    def query(self, t: Fraction | float) -> Query:
+        """Numbers about the frame on screen at ``t``, measured as the lint
+        measures it, with nothing drawn (:func:`arachne.lint.query.query`).
+        """
+        from .lint.query import query
+
+        return query(self, t)
+
+    def key_frames(self, out_dir: StrPath, quality: str | None = None) -> KeyFrames:
+        """One PNG per play or wait in ``out_dir``, its last frame
+        (:func:`arachne.lint.keyframes.key_frames`).
+        """
+        from .lint.keyframes import key_frames
+
+        return key_frames(self, out_dir, quality)
+
+    def storyboard(self, out_dir: StrPath, quality: str | None = None) -> Storyboard:
+        """Sheets of six labelled key frames in ``out_dir``
+        (:func:`arachne.lint.keyframes.storyboard`).
+        """
+        from .lint.keyframes import storyboard
+
+        return storyboard(self, out_dir, quality)
 
     @_under_its_settings
     def summary(self) -> ExecutionSummary:

@@ -9,14 +9,14 @@ measured.
 
 from __future__ import annotations
 
-__all__ = ["SMALL_PIXELS", "small_findings", "text_small"]
+__all__ = ["SMALL_PIXELS", "small_findings", "text_heights", "text_small"]
 
 from fractions import Fraction
 
 from ..codes import THRESHOLD_HEIGHT
 from ..exempt import Exemptions
 from ..findings import Finding, FindingObject
-from ..parts import Parts
+from ..parts import Part, Parts
 from ._geometry import meets
 from ._rule import InstantRule, Terms
 
@@ -24,8 +24,11 @@ from ._rule import InstantRule, Terms
 SMALL_PIXELS = 20
 
 
-def small_findings(parts: Parts, terms: Terms) -> list[Finding]:
-    """The texts at ``parts``' instant shorter than :data:`SMALL_PIXELS`."""
+def text_heights(parts: Parts) -> list[tuple[Part, float, float]]:
+    """Each text seen at ``parts``' instant (its ink meets the frame), with
+    its ink's height in home-frame units and in pixels of a picture
+    :data:`~arachne.lint.codes.THRESHOLD_HEIGHT` pixels on its shorter side.
+    """
     width, height = parts.target
     pixels_per_unit = (
         THRESHOLD_HEIGHT * height / min(width, height) / parts.view.home_height
@@ -34,11 +37,19 @@ def small_findings(parts: Parts, terms: Terms) -> list[Finding]:
     for part in parts.texts:
         if not meets(part.ink_box, parts.frame):
             continue
+        units = part.ink_box[3] - part.ink_box[1]
+        found.append((part, units, units * pixels_per_unit))
+    return found
+
+
+def small_findings(parts: Parts, terms: Terms) -> list[Finding]:
+    """The texts at ``parts``' instant shorter than :data:`SMALL_PIXELS`."""
+    found = []
+    for part, _, tall in text_heights(parts):
+        if tall >= SMALL_PIXELS:
+            continue
         obj = part.as_object(parts)
         if _muted(terms.exempt, obj):
-            continue
-        tall = (part.ink_box[3] - part.ink_box[1]) * pixels_per_unit
-        if tall >= SMALL_PIXELS:
             continue
         found.append(
             Finding(
