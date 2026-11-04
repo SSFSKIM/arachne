@@ -219,8 +219,9 @@ class PlayRecord:
     #: The animations' names, in the order they were played.
     animations: tuple[str, ...]
     markers: list[Marker] = field(default_factory=list)
-    # What drawing it needs: CE's draw lists, flattened when it began (a
-    # frame draws its capture's moving list, which can have grown since).
+    # What drawing it needs: the draw lists of CE 0.22.1's split (#4936),
+    # flattened when it began (a frame draws its capture's moving list,
+    # which can have grown since).
     moving: tuple[Mobject, ...] = ()
     static: tuple[Mobject, ...] = ()
     static_seq: int = -1

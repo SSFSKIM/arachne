@@ -4,10 +4,10 @@ A frame is drawn from a capture, never from the live scene: the mobjects it
 reaches are given their recorded states for the draw and their own states
 back afterwards, and the camera's executable inputs (ThreeDCamera's
 fixed-orientation centre functions) were evaluated in the forward run and
-are replaced by their recorded values. The draw is CE's two layers: the
-play's static mobjects, then its moving mobjects over them: the list
-flattened when it began (``Scene.begin_animations``), with what the scene
-added to it since.
+are replaced by their recorded values. The draw is the two layers of CE
+0.22.1's split (#4936): the play's static mobjects, then its moving
+mobjects over them: the list flattened when it began
+(``Scene.begin_animations``), with what the scene added to it since.
 
 Every frame shows each mobject at its state there. CE decides what moves
 when the play begins, and that decision is kept; but CE paints the static
