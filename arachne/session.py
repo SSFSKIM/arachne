@@ -50,6 +50,7 @@ from .timeline.execution import (
 )
 from .timeline.fallback import Answer, ForwardRun, answer_instants
 from .timeline.inputs import Read, file_digests, source_digest, source_files
+from .timeline.mapping import freeze_mapping_centre
 from .timeline.origins import ORIGINS
 from .timeline.probe import Probe
 from .timeline.probe import probe as probe_record
@@ -287,8 +288,11 @@ class Session:
         """The frames of ``answers``, instants ``record`` answers, drawn as
         every frame a session gives is drawn: the session's own record's, and
         a forward run's (:mod:`.timeline.fallback`). ``static(drawing, play)``
-        gives a play's static picture.
+        gives a play's static picture. Paths map around the centre the render
+        froze at its first frame, whatever order frames are asked in
+        (:mod:`.timeline.mapping`).
         """
+        freeze_mapping_centre(record)
         with Drawing(record) as drawing:
             return [
                 _draw(drawing, record, found, lambda play: static(drawing, play))
