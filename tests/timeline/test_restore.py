@@ -370,6 +370,28 @@ def test_a_ticked_play_before_its_first_frame_skips_a_capture_no_frame_drew(
     assert np.array_equal(np.asarray(session.frame(t)), frames[14])
 
 
+def test_a_gridless_ticked_answer_before_its_first_tick_evaluates_the_frame(
+    session_of,
+):
+    """Without a grid every 60 Hz tick is a frame, but a trusted play with
+    no frame hook keeps only its start: before the ticked play's first tick
+    the answer is the trusted play evaluated at the last tick, 29/30 s, as
+    a 60 fps render draws it, not its capture at the start.
+    """
+    session = session_of("TrustedBeforeTicked", RESTORE_SCENES, grid=None)
+    oracle = session_of("TrustedBeforeTicked", RESTORE_SCENES, frame_rate=60)
+    trusted, ticked = session.record.plays
+    assert (trusted.route, ticked.route) == ("trusted", "ticked")
+    assert ticked.start == Fraction(97, 100)
+    frame, t = Fraction(29, 30), Fraction(39, 40)
+    state = session.state_at(t)
+    assert (state.play, state.as_of) == (0, frame)
+    assert _canonical(state) == _canonical(oracle.state_at(frame))
+    (dot,) = [n for n in state.nodes if n.box[1] > -1]
+    assert dot.box[0] + 0.08 == pytest.approx(2 * float(frame) / 0.97)
+    assert np.array_equal(np.asarray(session.frame(t)), np.asarray(oracle.frame(frame)))
+
+
 def test_a_restore_refuses_a_callback_animation_pointed_elsewhere(session_of):
     """The hook points the alpha function at a dot outside the scene: a
     restore refuses, and that dot keeps where the scene left it.
