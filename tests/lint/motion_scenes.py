@@ -17,8 +17,10 @@ from arachne import (
     Dot,
     FadeIn,
     FadeOut,
+    ImageMobjectFromCamera,
     Line,
     MappingCamera,
+    MovingCamera,
     MovingCameraScene,
     Scene,
     Square,
@@ -388,3 +390,33 @@ class LateComer(Scene):
         self.play(comet.animate.shift(RIGHT))
         comet.shift(RIGHT * 3)
         self.wait()
+
+
+class LiveImageJump(Scene):
+    """A display of another camera's picture, transparent until that camera's
+    pixels turn opaque under the same view, travels and returns, then is set
+    down 3 units on.
+    """
+
+    def construct(self):
+        self.timeline.arm_motion()
+        source = MovingCamera(pixel_width=16, pixel_height=16, background_opacity=0)
+        display = ImageMobjectFromCamera(source)
+        self.add(display)
+        self.wait(0.25)
+        source.pixel_array[:, :, 3] = 255
+        home = display.points.copy()
+        start = float(self.time)
+
+        def travel(mob, dt):
+            elapsed = float(self.time) - start
+            if elapsed >= 0.5 - 1e-9:
+                mob.points = home
+            else:
+                mob.move_to(RIGHT * elapsed * 2)
+
+        display.add_updater(travel)
+        self.wait(0.5)
+        display.clear_updaters()
+        display.shift(RIGHT * 3)
+        self.wait(0.5)  # @after-live-jump

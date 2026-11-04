@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import numpy as np
+
 from arachne import (
     DOWN,
     LEFT,
     RIGHT,
     UP,
     Dot,
+    ImageMobject,
+    ImageMobjectFromCamera,
+    MovingCamera,
     MovingCameraScene,
     Scene,
     Square,
@@ -59,3 +64,19 @@ class Unarmed(ArmedLate):
     """The same plays, never armed."""
 
     armed = False
+
+
+class LiveImage(Scene):
+    """A display of another camera's picture, which turns opaque between two
+    waits while the display holds the same view of it; beside it, an image of
+    its own that holds still.
+    """
+
+    def construct(self):
+        self.timeline.arm_motion()
+        source = MovingCamera(pixel_width=16, pixel_height=16, background_opacity=0)
+        still = ImageMobject(np.full((4, 4, 4), 255, dtype=np.uint8)).shift(LEFT * 3)
+        self.add(ImageMobjectFromCamera(source), still)
+        self.wait(0.25)
+        source.pixel_array[:, :, 3] = 255
+        self.wait(0.25)
