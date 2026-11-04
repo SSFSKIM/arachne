@@ -67,7 +67,8 @@ def render(scene_class: type, fps: int, **settings) -> tuple[object, list[np.nda
 @pytest.fixture
 def session_of():
     """Open a scene of ``scenes.py`` (or of ``path``) in a session at the
-    small frame size, on its render's grid unless ``grid`` says otherwise.
+    small frame size, on its render's grid unless ``grid`` says otherwise,
+    evaluating its trusted and state plays at ``instants`` too.
     """
     opened: list[Session] = []
 
@@ -80,6 +81,7 @@ def session_of():
         on_step=None,
         on_tick=None,
         on_start=None,
+        instants=(),
         **settings,
     ) -> Session:
         session = Session.open(
@@ -91,6 +93,7 @@ def session_of():
             on_step=on_step,
             on_tick=on_tick,
             on_start=on_start,
+            instants=instants,
         )
         opened.append(session)
         return session

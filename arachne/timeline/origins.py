@@ -16,6 +16,8 @@ __all__ = ["Origin", "ORIGINS", "origin_of"]
 
 import sys
 import weakref
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -53,6 +55,26 @@ class _Origins:
     def stop(self) -> None:
         """Stop tagging; the origins given so far stay readable."""
         self.active = False
+
+    @contextmanager
+    def resumed(
+        self, base_dir: str | None, ordinals: Mapping[str, int]
+    ) -> Iterator[None]:
+        """Tag what is created inside the block, relative to ``base_dir``,
+        numbering each line on from ``ordinals`` (by ``path:line``, the next
+        ordinal); afterwards tag and number as before: a block run again
+        gives the objects it creates the same ids.
+        """
+        saved = (self.active, self.base_dir, dict(self._ordinals))
+        self.active, self.base_dir = True, base_dir
+        self._ordinals.clear()
+        self._ordinals.update(ordinals)
+        try:
+            yield
+        finally:
+            self.active, self.base_dir, ordinals = saved
+            self._ordinals.clear()
+            self._ordinals.update(ordinals)
 
     def tag(self, obj: object) -> None:
         """Give ``obj`` the origin of the scene code now creating it."""

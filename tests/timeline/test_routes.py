@@ -11,8 +11,6 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from arachne.timeline.routes import Unavailable
-
 from . import route_scenes
 from .conftest import render
 
@@ -73,15 +71,11 @@ def test_state_at_answers_each_route(session_of):
     on_tick = play.start + Fraction(7, 60)
     state = session.state_at(on_tick)
     assert (state.route, state.answer, state.play) == ("state", "recorded", 0)
-    with pytest.raises(Unavailable, match="needs restore"):
-        session.state_at(play.start + Fraction(1, 7))
-    with pytest.raises(Unavailable):
-        session.frame(play.start + Fraction(1, 7))
-    # What restoring it will start from: the start capture and the
-    # animations' state there.
-    start = play.sample_at(play.start)
-    assert start is not None
-    assert list(play._animation_states) == [start.seq]
+    # Between its samples it is restored (test_restore), from a restore
+    # point the record keeps at every one.
+    between = session.state_at(play.start + Fraction(1, 7))
+    assert (between.route, between.answer, between.play) == ("state", "restored", 0)
+    assert sorted(play._animation_states) == [c.seq for c in play.samples]
 
     trusted = session_of("TrustedTransform", ROUTE_SCENES)
     state = trusted.state_at(Fraction(1, 7))
@@ -90,6 +84,7 @@ def test_state_at_answers_each_route(session_of):
     ticked = session_of("Conditional", ROUTE_SCENES)
     between = ticked.state_at(Fraction(1, 7))
     assert (between.route, between.answer) == ("ticked", "recorded")
+    assert between.as_of == Fraction(1, 7)
     assert between.nodes == ticked.state_at(Fraction(8, 60)).nodes
 
 
@@ -99,8 +94,7 @@ def test_a_render_samples_a_state_function_play_at_its_own_frames():
     play = record.plays[0]
     assert play.route == "state"
     assert record.state_at(Fraction(2, 15)).answer == "recorded"
-    with pytest.raises(Unavailable):
-        record.state_at(Fraction(1, 60))
+    assert record.state_at(Fraction(1, 60)).answer == "restored"
 
 
 def test_a_trusted_answer_between_frames_is_the_one_a_render_there_records(session_of):
