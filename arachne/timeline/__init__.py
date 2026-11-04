@@ -10,6 +10,8 @@ from __future__ import annotations
 
 __all__ = [
     "Capture",
+    "Divergence",
+    "ExecutionSummary",
     "Identity",
     "Marker",
     "NodeView",
@@ -26,6 +28,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from .clock import exact
+from .execution import Divergence, ExecutionSummary
 from .record import Capture, Identity, Marker, PlayRecord, Record
 from .source import SourceLine
 from .state import NodeView, State
