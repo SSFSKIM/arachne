@@ -501,3 +501,16 @@ def test_a_restored_frame_draws_no_static_layer(session_of, monkeypatch):
     assert not np.array_equal(pixels, np.asarray(session.frame(Fraction(7, 15))))
     (dot,) = [n for n in session.state_at(t).nodes if n.type == "Dot"]
     assert dot.box[1] > 0
+
+
+def test_a_restored_frame_asked_first_maps_around_the_render_s_centre(session_of):
+    """A restored frame is drawn with the centre the render froze at its
+    first frame, whether it is the first frame the session draws or not.
+    """
+    first = session_of("CentreMovedRestored")
+    (play,) = _state_plays(first)
+    t = _unsampled(play)[1]
+    asked_first = np.asarray(first.frame(t))
+    second = session_of("CentreMovedRestored")
+    second.frame(0)
+    assert np.array_equal(asked_first, np.asarray(second.frame(t)))
