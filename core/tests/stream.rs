@@ -347,3 +347,204 @@ fn a_display_cannot_draw_itself() {
     )];
     assert!(matches!(refused(&mut s, &d), StreamError::Invalid(_)));
 }
+
+#[test]
+fn a_shaded_path_under_a_shading_camera_is_refused_not_drawn_unlit() {
+    // CE lights a `shade_in_3d` path under a 3D camera that shades: each paint becomes two stops,
+    // lit at the path's start and end corners, drawn as a linear gradient. Paths draw no gradient
+    // yet, so such a path, or an instances record of one, refuses the frame instead of drawing
+    // unlit. Without shading, or without `shade_in_3d`, it draws.
+    let shape = square();
+    let colours = Stops::new(vec![[1.0, 0.0, 0.0, 1.0]]);
+    for instanced in [false, true] {
+        for (shade_in_3d, shading) in [(true, true), (false, true), (true, false)] {
+            let mut r = path_record(1, &shape);
+            if instanced {
+                r.kind = RecordKind::Instances;
+                r.body = Body::Instances(Instances {
+                    placements: vec![IDENTITY],
+                    fill: colours.key(),
+                    stroke: colours.key(),
+                    objects: vec![7],
+                });
+            }
+            r.depth.space = Space::World;
+            r.depth.shade_in_3d = shade_in_3d;
+            let mut view = common::three_d_view(16, 9);
+            let Camera::ThreeD(c) = &mut view.camera else {
+                unreachable!()
+            };
+            c.should_apply_shading = shading;
+            let mut d = delta(0);
+            d.view = Some(view);
+            d.upload = vec![shape.clone()];
+            d.upload_paints = vec![colours.clone()];
+            d.set = vec![r];
+            d.order = Some(vec![entry(1)]);
+            let mut s = Stream::new();
+            s.apply(&d).unwrap();
+            let drawn = s.draw(16, 9, 1);
+            let what =
+                format!("instanced {instanced}, shade_in_3d {shade_in_3d}, shading {shading}");
+            if shade_in_3d && shading {
+                let Err(DrawError::Unsupported(u)) = drawn else {
+                    panic!("{what}: not refused")
+                };
+                let kind = if instanced { "instances" } else { "path" };
+                assert_eq!((u.kind.as_str(), u.slot), (kind, Some(1)), "{what}");
+                assert!(u.reason.contains("shad"), "{what}: {}", u.reason);
+            } else {
+                assert!(drawn.is_ok(), "{what}: {drawn:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn an_image_whose_pixels_are_not_its_size_is_refused_by_apply() {
+    for (width, height, bytes) in [(1, 1, 0), (2, 2, 15), (2, 2, 17), (3, 1, 4)] {
+        let picture = Shape::new(ShapeData::Image {
+            width,
+            height,
+            rgba: vec![0; bytes],
+        });
+        let mut d = delta(0);
+        d.view = Some(View {
+            background: Background::Image(picture.key()),
+            ..common::flat_view(1, 1, [0.0; 4])
+        });
+        d.upload = vec![picture];
+        assert!(
+            matches!(Stream::new().apply(&d), Err(StreamError::Invalid(_))),
+            "{width} x {height} in {bytes} bytes"
+        );
+    }
+}
+
+#[test]
+fn only_the_assignments_a_delta_leaves_are_validated() {
+    // As commit applies them: the last record set in a slot wins, then removals. A record set and
+    // then replaced, or set and then removed, in the same delta references nothing afterwards.
+    let a = square();
+    let b = Shape::new(ShapeData::Path {
+        points: common::square_points(2.0),
+    });
+    let start = || {
+        let mut s = Stream::new();
+        let mut d = delta(0);
+        d.view = Some(common::flat_view(4, 4, [0.0, 0.0, 0.0, 1.0]));
+        d.upload = vec![a.clone()];
+        d.set = vec![path_record(1, &a)];
+        d.order = Some(vec![entry(1)]);
+        s.apply(&d).unwrap();
+        s
+    };
+
+    let mut s = start();
+    let mut d = delta(1);
+    d.upload = vec![b.clone()];
+    d.set = vec![path_record(1, &a), path_record(1, &b)];
+    d.release = vec![a.key()];
+    s.apply(&d).unwrap();
+    assert_eq!(s.record(1).unwrap().geometry.shape_a, Some(b.key()));
+    assert!(!s.has_shape(&a.key()));
+
+    let mut s = start();
+    let mut d = delta(1);
+    d.set = vec![path_record(1, &a)];
+    d.remove = vec![1];
+    d.order = Some(Vec::new());
+    d.release = vec![a.key()];
+    s.apply(&d).unwrap();
+    assert!(s.record(1).is_none() && !s.has_shape(&a.key()));
+
+    // What survives is still checked: a last assignment referencing a released key is refused.
+    let mut s = start();
+    let mut d = delta(1);
+    d.upload = vec![b.clone()];
+    d.set = vec![path_record(1, &b), path_record(1, &a)];
+    d.release = vec![a.key()];
+    assert!(matches!(refused(&mut s, &d), StreamError::InUse(_)));
+}
+
+/// `d` with a shape of a kind this build does not know uploaded first, under `key`: another
+/// content's key, which only XF's binary form can state.
+fn unknown_under(key: Key, mut d: Delta) -> Delta {
+    let unknown = Shape::new(ShapeData::Reserved {
+        code: 99,
+        payload: vec![1, 2, 3],
+    });
+    d.upload.insert(0, unknown.clone());
+    let mut bytes = wire::encode_delta(&d);
+    common::restate_key(&mut bytes, unknown.key(), key);
+    let read = wire::decode_delta(&bytes).unwrap();
+    assert!(matches!(
+        read.upload[0].data(),
+        ShapeData::Reserved { code: 99, .. }
+    ));
+    assert_eq!(read.upload[0].key(), key);
+    read
+}
+
+#[test]
+fn one_key_holds_one_content_in_validation_and_in_commit() {
+    let picture = Shape::new(ShapeData::Image {
+        width: 2,
+        height: 2,
+        rgba: vec![255; 16],
+    });
+    let pictured = |seq: u64| {
+        let mut d = delta(seq);
+        d.view = Some(View {
+            background: Background::Image(picture.key()),
+            ..common::flat_view(2, 2, [0.0; 4])
+        });
+        d
+    };
+
+    // A delta uploading one key twice is refused, whether the contents agree or not.
+    let mut d = pictured(0);
+    d.upload = vec![picture.clone(), picture.clone()];
+    assert!(matches!(
+        Stream::new().apply(&d),
+        Err(StreamError::Invalid(_))
+    ));
+    let mut d = delta(0);
+    d.upload_paints = vec![Stops::new(vec![[1.0; 4]]), Stops::new(vec![[1.0; 4]])];
+    assert!(matches!(
+        Stream::new().apply(&d),
+        Err(StreamError::Invalid(_))
+    ));
+    let mut d = pictured(0);
+    d.upload = vec![picture.clone()];
+    let d = unknown_under(picture.key(), d);
+    assert!(matches!(
+        Stream::new().apply(&d),
+        Err(StreamError::Invalid(_))
+    ));
+
+    // A key the stream holds is never uploaded again with other content: with an unknown kind held
+    // under the picture's key, the view cannot be checked against the picture and drawn from the
+    // unknown shape.
+    let mut s = Stream::new();
+    s.apply(&unknown_under(picture.key(), delta(0))).unwrap();
+    let mut d = pictured(1);
+    d.upload = vec![picture.clone()];
+    assert!(matches!(refused(&mut s, &d), StreamError::Invalid(_)));
+
+    // Nor the other way round: the picture held, an unknown kind sent under its key.
+    let mut s = Stream::new();
+    let mut d = pictured(0);
+    d.upload = vec![picture.clone()];
+    s.apply(&d).unwrap();
+    assert!(matches!(
+        refused(&mut s, &unknown_under(picture.key(), delta(1))),
+        StreamError::Invalid(_)
+    ));
+
+    // The same content again changes nothing.
+    let mut d = delta(1);
+    d.upload = vec![picture.clone()];
+    s.apply(&d).unwrap();
+    assert_eq!(s.draw(2, 2, 1).unwrap(), vec![255; 16]);
+}

@@ -23,7 +23,8 @@ XF 0 defines no feature bits. This build draws the background (a colour, or an i
 frame as CE crops it), `mesh` records filled with one colour, `path` records whose fill and strokes
 are each one colour, `points` records, and `instances` records of a path or a mesh. It refuses any of
 those carrying a blend, a reveal, a paint blend or a clip; a path with a gradient paint (two stops or a
-table) or a dash it cannot read; a mesh with a stroke, a gradient fill or a dash; and the
+table) or a dash it cannot read, or a `shade_in_3d` path with paint under a 3D camera that applies
+shading (CE lights it as a two-stop gradient); a mesh with a stroke, a gradient fill or a dash; and the
 `face_group` and `image` kinds and the reserved ones, until their drawers exist. How records are drawn is described under
 "Drawing" below.
 
@@ -82,10 +83,15 @@ shape's and table's key against its content, except for shape kinds it does not 
 - **The order** lists (layer, slot, part) in CE's draw order. The layer is static, moving or overlay;
   the part addresses a face of a face group, else 0.
 - **A delta** applies, in this order: the view, objects, shape and table uploads, records set,
-  records removed, keys released, the order. A delta is checked whole before anything changes: a
-  reference to a missing shape, table or slot, a release of a key something still uses, an order
-  entry naming a part that does not exist, or a mesh whose triangles name a vertex it lacks (or
-  whose normals are not one per vertex) refuses it.
+  records removed, keys released, the order. A slot set more than once takes the last record set
+  in it, and a slot set and removed in one delta is removed. A key holds one content: a key the
+  stream holds keeps it, and uploading it again is no change. A delta is checked whole before
+  anything changes, against what it would leave: a reference to a missing shape, table or slot, a
+  release of a key something still uses, an order entry naming a part that does not exist, a key
+  uploaded twice in the delta, an upload under a key the stream holds with other content (a shape
+  kind this build does not know keeps the key it was read with, unchecked), an image whose bytes are
+  not its width times its height times 4, or a mesh whose triangles name a vertex it lacks (or whose
+  normals are not one per vertex) refuses it.
 - **Frames** (`Stream.draw`) have the layout of CE's `camera.pixel_array`: `height * width * 4` bytes
   in R, G, B, A order, paint premultiplied as Cairo stores it, the background as CE writes it
   (`(rgba * 255).astype(int)`).
@@ -97,13 +103,15 @@ shape's and table's key against its content, except for shape kinds it does not 
   has a fixed orientation) and an `overlay` record is kept in frame; under any other camera, and for
   `screen` records, the points are kept. Then CE's frame-to-pixel mapping.
 - **Depth.** A `world` record under a 3D camera has depth: the projection's factor, negated (smaller is
-  nearer), which is affine across a projected triangle; a fixed-orientation record is a camera-facing
-  plane at its centre's depth. Every other record is in front of all depth, and records tie by draw
-  order, the later on top. Under a flat or moving camera everything ties, so records paint in order.
-  Flat things share planes exactly: a path's plane (Newell's normal over its placed points) and a
-  mesh triangle's are made canonical (unit normal, largest component positive, offset from it, both
-  rounded to multiples of 2^-20; points on a line take the axis plane of a coordinate they share), so
-  text, axes and surfaces on one plane tie by draw order instead of fighting. A path that is not
+  nearer), which is affine across a projected triangle; a fixed-orientation record lies on the
+  camera-facing plane through its centre. Every other record is in front of all depth, and records
+  tie by draw order, the later on top. Under a flat or moving camera everything ties, so records
+  paint in order. Flat things share planes exactly: a path's plane (Newell's normal over its placed
+  points, or where that cancels, as on an outline crossing itself, the normal of the widest
+  triangle on its first point), a mesh triangle's and a fixed orientation's are made canonical (unit
+  normal, largest component positive, offset from it, both rounded to multiples of 2^-20; points on
+  a line take the axis plane of a coordinate they share), so text, axes, labels and surfaces on one
+  plane tie by draw order instead of fighting. A path that is not
   flat, or whose plane is within about 3 degrees of edge-on, takes the depth of its own curve: each
   pixel the front-most part of the curve that reaches it (half the widest stroke and a pixel), else
   the nearest.
@@ -113,7 +121,8 @@ shape's and table's key against its content, except for shape kinds it does not 
   stroke, the fill (nonzero), the stroke. Strokes are expanded in the frame's units, as Cairo strokes
   in user space: CE's width times the view's `cairo_line_width_multiple`, the joint (auto is a miter)
   and cap (auto is butt), Cairo's miter limit of 10, and the dash (a period in the frame's units,
-  `duty` of it drawn, the pattern started `phase` periods in; a duty of 1 is solid). Each layer is
+  `duty` of it drawn, the pattern started `phase` periods in on each subpath, laid along the whole
+  outline even where parts far outside the frame are simplified; a duty of 1 is solid). Each layer is
   flattened on the pixel plane to Cairo's tolerance of 0.1 pixel and covers each pixel by its exact
   area. Glyphs are paths. A pixel-aligned rectangle covers whole pixels exactly; Cairo's own box
   path differs from it by at most one step per byte where an edge falls inside a pixel.
@@ -151,8 +160,13 @@ shape's and table's key against its content, except for shape kinds it does not 
   the pixel in front of everything takes a fast path. One mesh's triangles meeting in a pixel
   without overlapping (a surface's internal edges) count as one fragment, its colour their average
   over the sub-samples each covers, so internal edges take the coverage resolve and never show what
-  lies behind; for meshes alone, and a path over a surface tiling the pixel, that is the sample
-  resolve's result up to rounding. `Stream.draw_resolves` reports each pixel's resolve. A GPU
+  lies behind; for meshes alone, and a path over a surface tiling the pixel in one colour, that is
+  the sample resolve's result up to rounding. Triangles of several colours (a lit surface) count as
+  a partial mask where a partial mask or a path's partial area shares the pixel, since the average
+  would lose which colour that layer covers. The coverage resolve lands within 2 of the sample
+  resolve per byte where at most one partial path layer is in the pixel; two or more blend as
+  independent coverages there (as Cairo blends them) and as their overlap in the sample resolve.
+  `Stream.draw_resolves` reports each pixel's resolve. A GPU
   backend computes masks in a compute stage at this pattern's positions; hardware multisampling's
   positions are out, since WebGPU guarantees only 1 and 4 samples per pixel.
 

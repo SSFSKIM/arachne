@@ -8,6 +8,7 @@
 mod common;
 
 use arachne_core::composite::{SAMPLES, area_coverage, blend, premultiply, sample_point};
+use arachne_core::depth::WorldPlane;
 use arachne_core::project::{FrameMap, Placement, Projection, pre_display, subpixel_coords};
 use arachne_core::scanline;
 use arachne_core::stream::{DrawError, Stream};
@@ -366,6 +367,147 @@ fn a_dashed_stroke_follows_its_period_duty_and_phase() {
     }
 }
 
+/// A dashed stroke that leaves the frame far beyond its guard band, curves there and comes back:
+/// the dashes it shows on its way back are where the whole curve's length puts them, as if nothing
+/// outside the frame had been simplified.
+#[test]
+fn a_dashed_stroke_returning_from_far_beyond_the_frame_keeps_its_dash_phase() {
+    use kurbo::{CubicBez, ParamCurveArclen, Point};
+    let view = flat_view(W, H, [0.0, 0.0, 0.0, 1.0]);
+    let m = map(&view);
+    let (x0, far, period, duty) = (-4.0, 1.0e5, 1.0, 0.5);
+    // A bend whose length differs from its chord's (2) by about half a period, so drawing the
+    // chord instead would swap the returning stroke's dashes and gaps.
+    let bend = |d: f64| {
+        [
+            [far, 1.0],
+            [far + d, 1.0 + d],
+            [far + d, -1.0 - d],
+            [far, -1.0],
+        ]
+    };
+    let arc = |d: f64| {
+        let p = bend(d).map(|[x, y]| Point::new(x, y));
+        CubicBez::new(p[0], p[1], p[2], p[3]).arclen(1e-9)
+    };
+    let d = (1..200)
+        .map(|k| k as f64 * 0.01)
+        .find(|d| ((arc(*d) - 2.0).rem_euclid(period) - 0.5 * period).abs() < 0.1)
+        .expect("a bend about half a period longer than its chord");
+    let mut points = lines(&[[x0, 1.0, 0.0], [far, 1.0, 0.0]]);
+    points.extend(bend(d).map(|[x, y]| [x, y, 0.0]));
+    points.extend(lines(&[[far, -1.0, 0.0], [x0, -1.0, 0.0]]));
+    let shape = path(points);
+    let mut r = stroke(1, &shape, WHITE, 40.0);
+    r.dash = Some(Dash {
+        period,
+        duty,
+        phase: 0.0,
+    });
+    let frame = draw(view.clone(), &[(shape.clone(), r)]);
+    let mut checked = [0, 0];
+    let bend_length = arc(d);
+    // The stroke's length from its start to `fx` on the way out (y = 1) and on the way back.
+    for (k, y_frame) in [(0, 1.0), (1, -1.0)] {
+        for x in 0..W {
+            let [fx, _, _] = frame_of(&view, [x as f64 + 0.5, 0.0]);
+            if fx < x0 + 0.1 {
+                continue;
+            }
+            let travelled = if k == 0 {
+                fx - x0
+            } else {
+                (far - x0) + bend_length + (far - fx)
+            };
+            let s = travelled.rem_euclid(period);
+            let edge = s.min((s - duty * period).abs()).min(period - s);
+            if edge < 0.15 {
+                continue; // Within a pixel and a half of a dash's end.
+            }
+            let [_, y] = m.apply([fx, y_frame, 0.0]);
+            let got = px(&frame, x, y as u32);
+            assert_eq!(
+                got == [255; 4],
+                s < duty * period,
+                "stroke at y {y_frame}: x {x}: {got:?}"
+            );
+            assert!(got == [255; 4] || got == BLACK, "x {x}: {got:?}");
+            checked[k] += 1;
+        }
+    }
+    assert!(
+        checked.iter().all(|c| *c > 25),
+        "{checked:?} pixels checked"
+    );
+}
+
+/// A closed dashed outline that starts at a corner in the frame, runs out, bends and comes back to
+/// close at its start, its dash on at both ends: drawn with the bend inside the guard band (laid by
+/// the stroker on the whole outline) and far beyond it (a whole number of periods farther out and
+/// back, so the same dashes are on screen), the frame is the same, the closing dash joined to the
+/// first at the corner in both.
+#[test]
+fn a_closed_dashed_outline_beyond_the_frame_draws_as_the_whole_outline_does() {
+    use kurbo::{CubicBez, ParamCurveArclen, Point};
+    let view = flat_view(W, H, [0.0, 0.0, 0.0, 1.0]);
+    let (period, duty) = (1.0, 0.8);
+    let bend = |far: f64, d: f64| {
+        [
+            [-far, 0.0],
+            [-far - d, 0.0 - d],
+            [-far - d, -2.0 + d],
+            [-far, -2.0],
+        ]
+    };
+    let arc = |d: f64| {
+        let p = bend(0.0, d).map(|[x, y]| Point::new(x, y));
+        CubicBez::new(p[0], p[1], p[2], p[3]).arclen(1e-9)
+    };
+    // A bend whose length differs from its chord's (2) by about half a period.
+    let d = (1..200)
+        .map(|k| k as f64 * 0.01)
+        .find(|d| ((arc(*d) - 2.0).rem_euclid(period) - 0.5 * period).abs() < 0.1)
+        .expect("a bend about half a period longer than its chord");
+    let (near, far) = (1000.0, 1.0e5);
+    // The whole outline's length, near; far adds whole periods. The phase puts both ends on a dash.
+    let length = 2.0 * near + arc(d) + 2.0;
+    let on = |at: f64| (0.1..=duty - 0.1).contains(&(at.rem_euclid(period) / period));
+    let phase = (1..100)
+        .map(|k| k as f64 * 0.01 * period)
+        .find(|x| on(*x) && on(x + length))
+        .expect("a phase with a dash on at both ends");
+    let outline = |far: f64| {
+        let mut points = lines(&[[0.0, 0.0, 0.0], [-far, 0.0, 0.0]]);
+        points.extend(bend(far, d).map(|[x, y]| [x, y, 0.0]));
+        points.extend(lines(&[
+            [-far, -2.0, 0.0],
+            [0.0, -2.0, 0.0],
+            [0.0, 0.0, 0.0],
+        ]));
+        let shape = path(points);
+        let mut r = stroke(1, &shape, WHITE, 40.0);
+        r.dash = Some(Dash {
+            period,
+            duty,
+            phase: phase / period,
+        });
+        draw(view.clone(), &[(shape, r)])
+    };
+    let (inside, beyond) = (outline(near), outline(far));
+    let lit = inside.chunks(4).filter(|p| p[0] > 128).count();
+    assert!(lit > 100, "{lit} lit pixels");
+    // The far outline's curves are cut into other pieces before they are stroked, and the stroker
+    // fits each piece's sides within its tolerance of 0.1 px: edges may move that far, never a dash.
+    let bound = (arachne_core::path::TOLERANCE * 255.0).ceil() as i32;
+    for (i, (a, b)) in inside.iter().zip(&beyond).enumerate() {
+        let (x, y) = ((i / 4) as u32 % W, (i / 4) as u32 / W);
+        assert!(
+            (*a as i32 - *b as i32).abs() <= bound,
+            "pixel {x},{y}: {a} within the guard band, {b} beyond it"
+        );
+    }
+}
+
 /// A fill and a stroke whose points lie a million frame widths out: drawn where they cross the
 /// frame, quickly.
 #[test]
@@ -402,6 +544,34 @@ fn a_path_far_beyond_the_frame_draws_where_it_crosses_it() {
             );
         }
     }
+}
+
+/// An outline crossing itself on a plane (a bowtie on z = x + y), whose Newell normal cancels to
+/// zero, keeps its plane, the one a triangle of its points gives; open or closed. Points on a line
+/// still have none.
+#[test]
+fn a_planar_outline_crossing_itself_keeps_its_plane() {
+    let bowtie = [
+        [-1.0, -1.0, -2.0],
+        [1.0, 1.0, 2.0],
+        [-1.0, 1.0, 0.0],
+        [1.0, -1.0, 0.0],
+    ];
+    let want = WorldPlane::of_triangle([bowtie[0], bowtie[1], bowtie[2]]).unwrap();
+    let mut closed = bowtie.to_vec();
+    closed.push(bowtie[0]);
+    for points in [bowtie.to_vec(), closed, lines(&bowtie)] {
+        assert_eq!(WorldPlane::of_points(&points), Some(want), "{points:?}");
+    }
+    let skew = [
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [1.0, 1.0, 0.5],
+    ];
+    assert_eq!(WorldPlane::of_points(&skew), None, "not on one plane");
+    let line = [[0.0, 0.0, 0.0], [1.0, 2.0, 3.0], [2.0, 4.0, 6.0]];
+    assert_eq!(WorldPlane::of_points(&line), None, "on a line");
 }
 
 /// A 3D view from 40 degrees off the vertical.

@@ -57,9 +57,32 @@ fn draw_tile(rect: Rect, frame: &Frame, producers: &[&dyn Producer]) -> Rendered
     pass.resolve(&background)
 }
 
+/// The most threads one draw call uses, whatever it asks for: more than any machine the core
+/// draws on has cores, far fewer than a large frame has tiles.
+pub const MAX_WORKERS: usize = 256;
+
+/// How many threads draw a frame of `tiles` tiles when `threads` are asked for: at least one, and
+/// at most one per tile and [`MAX_WORKERS`]. The frame's bytes do not depend on it.
+pub fn workers(threads: usize, tiles: usize) -> usize {
+    threads.clamp(1, tiles.clamp(1, MAX_WORKERS))
+}
+
 /// Draws the producers over a background frame, its tiles spread over `threads` threads (at
-/// least one).
-pub fn render(background: Frame, producers: &[&dyn Producer], threads: usize) -> Rendered {
+/// least one, [`workers`]). A thread the system will not start fails the draw with its error.
+pub fn render(
+    background: Frame,
+    producers: &[&dyn Producer],
+    threads: usize,
+) -> std::io::Result<Rendered> {
+    render_spawning(background, producers, threads, std::thread::Builder::new)
+}
+
+fn render_spawning(
+    background: Frame,
+    producers: &[&dyn Producer],
+    threads: usize,
+    builder: impl Fn() -> std::thread::Builder,
+) -> std::io::Result<Rendered> {
     assert!(producers.len() <= u16::MAX as usize, "too many producers");
     let (width, height) = (background.width(), background.height());
     let rects = tile_rects(width, height);
@@ -75,9 +98,18 @@ pub fn render(background: Frame, producers: &[&dyn Producer], threads: usize) ->
         }
     };
     let tiles = std::thread::scope(|s| {
-        let helpers: Vec<_> = (1..threads.clamp(1, rects.len().max(1)))
-            .map(|_| s.spawn(work))
-            .collect();
+        let mut helpers = Vec::new();
+        for _ in 1..workers(threads, rects.len()) {
+            match builder().spawn_scoped(s, work) {
+                Ok(helper) => helpers.push(helper),
+                Err(err) => {
+                    // No tile is handed out any more; the helpers already started finish the one
+                    // they hold, and the scope waits for them.
+                    next.store(rects.len(), Ordering::Relaxed);
+                    return Err(err);
+                }
+            }
+        }
         let mut tiles = work();
         for h in helpers {
             match h.join() {
@@ -85,8 +117,8 @@ pub fn render(background: Frame, producers: &[&dyn Producer], threads: usize) ->
                 Err(panic) => std::panic::resume_unwind(panic),
             }
         }
-        tiles
-    });
+        Ok(tiles)
+    })?;
     let mut out = Rendered {
         rgba: background.rgba().to_vec(),
         resolves: vec![0; width as usize * height as usize],
@@ -103,5 +135,36 @@ pub fn render(background: Frame, producers: &[&dyn Producer], threads: usize) ->
         }
         out.counts.add(&tile.counts);
     }
-    out
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_draw_never_asks_for_more_threads_than_its_cap_or_its_tiles() {
+        // 2,040 tiles at 3840 x 2160, 65,536 at the largest frame: one thread each at most.
+        for (threads, tiles) in [(usize::MAX, 65_536), (10_000, 2_040), (1 << 20, 1 << 20)] {
+            assert_eq!(
+                workers(threads, tiles),
+                MAX_WORKERS,
+                "{threads} for {tiles}"
+            );
+        }
+        assert_eq!(workers(8, 3), 3);
+        assert_eq!(workers(4, 100), 4);
+        assert_eq!(workers(1, 0), 1);
+    }
+
+    #[test]
+    fn a_thread_that_cannot_start_fails_the_draw_and_does_not_panic() {
+        // A stack larger than any address space: the system refuses the thread.
+        let refused = || std::thread::Builder::new().stack_size(1 << 50);
+        let frame = Frame::filled(4 * TILE, TILE, [0, 0, 0, 255]);
+        assert!(render_spawning(frame.clone(), &[], 4, refused).is_err());
+        // One thread starts none.
+        let drawn = render_spawning(frame.clone(), &[], 1, refused).unwrap();
+        assert_eq!(drawn.rgba, frame.rgba());
+    }
 }
