@@ -438,3 +438,35 @@ def test_the_drawing_lint_codes_are_declared():
     from arachne.frame_ir.lint import CODES
 
     assert set(CODES) == {"render.unsupported", "render.fallback"}
+
+
+def test_a_camera_class_of_the_scene_s_own_draws_on_cairo_with_a_finding(monkeypatch):
+    """XF 1 describes the engine's cameras: a subclass of one, defined by the
+    scene, can change how anything is drawn, so it falls back to Cairo and
+    says so, never silently.
+    """
+    from arachne.frame_ir import lint
+
+    monkeypatch.setattr(lint, "raised", [])
+    before = IrCairoPainter.drawn_total
+    direct, described, _ = frames_both_ways(scenes.UserCamera)
+    assert len(direct) == len(described) > 0
+    for index, (a, b) in enumerate(zip(direct, described, strict=True)):
+        np.testing.assert_array_equal(a, b, err_msg=f"frame {index}")
+    assert IrCairoPainter.drawn_total == before, "nothing drawn from XF"
+    [finding] = lint.raised
+    assert (finding.code, finding.subject) == ("render.fallback", "ShiftedCamera")
+    assert "subclassing ThreeDCamera" in finding.message
+    assert "scenes.py:" in finding.message
+
+
+def test_a_camera_that_is_no_engine_camera_is_unable():
+    from arachne.frame_ir.extract import FrameStream, Unable
+    from arachne.frame_ir.painter import camera_path
+
+    class Duck:
+        """Draws like a camera, and is none of the engine's."""
+
+    assert camera_path(Duck(), "ir_cairo") == "ir_cairo"
+    with pytest.raises(Unable, match="a Duck draws what XF 1 does not describe"):
+        FrameStream().frame(Duck(), [])
