@@ -42,13 +42,14 @@ helper edited since the session opened runs as it was.
 
 from __future__ import annotations
 
-__all__ = ["Answer", "Fallback", "ForwardRun", "answer_instants"]
+__all__ = ["Answer", "Fallback", "ForwardRun", "Visit", "answer_instants"]
 
+import bisect
 import math
 import os
 import random
 import sys
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from fractions import Fraction
@@ -84,8 +85,14 @@ if TYPE_CHECKING:
     from arachne.typing import PixelArray
 
     from .admission import PlayIdentity
-    from .record import PlayRecord, Record
+    from .record import Capture, PlayRecord, Record
     from .state import State
+
+#: What a forward run shows a visitor at each instant it answers: the
+#: instant asked, the run's record, the play holding the frame shown there
+#: (``None`` after the script ended) and the capture of it, while the live
+#: scene holds that capture's state.
+Visit = Callable[[Fraction, "Record", "PlayRecord | None", "Capture"], None]
 
 
 @dataclass(frozen=True)
@@ -156,9 +163,12 @@ def answer_instants(
     quality: str | None,
     *,
     frames: bool,
+    visit: Visit | None = None,
 ) -> list[Answer]:
     """:meth:`.Session.answers`: the record's answers, and one forward run's
-    for every instant the record can't answer.
+    for every instant the record can't answer. ``visit`` is called with the
+    live scene of that run at each instant it answers (:data:`Visit`), so
+    that what a state does not hold can be read there.
     """
     asked = [exact(t) for t in instants]
     found: dict[Fraction, Answer] = {}
@@ -175,7 +185,7 @@ def answer_instants(
         if frames:
             # The size the forward run draws at, as frame() draws at it.
             session._use_quality(quality)
-        answered, stale = _forward(session, sorted(missing), frames=frames)
+        answered, stale = _forward(session, sorted(missing), frames=frames, visit=visit)
         for t, (state, frame) in answered.items():
             found[t] = Answer(t, state, frame, stale or missing[t])
     return [found[t] for t in asked]
@@ -218,6 +228,8 @@ class _ForwardRecorder(Recorder):
         stop_after: Fraction,
         known: Mapping[int, str],
         demoted: Iterable[PlayIdentity],
+        visit: Visit | None = None,
+        shown: Mapping[Fraction, Fraction] | None = None,
     ) -> None:
         super().__init__(
             scene,
@@ -232,6 +244,13 @@ class _ForwardRecorder(Recorder):
         self.stop_after = stop_after
         #: The index of the first play drawn as it ran, once one has.
         self.live_from: int | None = None
+        self.visit = visit
+        #: The instants asked, ordered by the instant whose frame shows each.
+        self._shown = sorted(((at, t) for t, at in (shown or {}).items()))
+        self._shown_at = [at for at, _ in self._shown]
+        #: The first error a visit raised, raised again once the run is out
+        #: of the scene's code, which might have caught it.
+        self.visit_error: Exception | None = None
 
     def refusal(self) -> str | None:
         # The renderer asks this first as each play begins.
@@ -253,6 +272,38 @@ class _ForwardRecorder(Recorder):
             raise _Unforeseen(played.draw_refusal)
         return played
 
+    def capture(
+        self,
+        kind: str,
+        instant: Fraction,
+        play: PlayRecord,
+        extras: Any,
+        until: Fraction | None = None,
+    ) -> Any:
+        captured = super().capture(kind, instant, play, extras, until)
+        if self.visit is not None and kind == "sample":
+            low = bisect.bisect_left(self._shown_at, instant)
+            high = (
+                len(self._shown)
+                if until is None
+                else bisect.bisect_left(self._shown_at, until)
+            )
+            for _, t in self._shown[low:high]:
+                self.visited(t, play, captured)
+        return captured
+
+    def visited(self, t: Fraction, play: PlayRecord | None, capture: Capture) -> None:
+        """Show the visitor the live scene at ``t``; a later capture of the
+        frame shown there (the next play's, where one play ended early)
+        visits it again.
+        """
+        assert self.visit is not None
+        try:
+            self.visit(t, self.ensure_record(), play, capture)
+        except Exception as error:
+            if self.visit_error is None:
+                self.visit_error = error
+
     def stopped(self) -> None:
         """The run stopped before its script ended: its identity is still
         that of what it ran (its source, the files it read so far).
@@ -262,12 +313,17 @@ class _ForwardRecorder(Recorder):
 
 
 def _forward(
-    session: Session, instants: list[Fraction], *, frames: bool
+    session: Session,
+    instants: list[Fraction],
+    *,
+    frames: bool,
+    visit: Visit | None = None,
 ) -> tuple[dict[Fraction, tuple[State, Image.Image | None]], Fallback | None]:
     """Execute the session's scene again for ``instants`` (in time order),
     keep the run in :attr:`.Session.forward_runs` and any divergence in
     :attr:`.Session.divergences`, and answer each instant from it; with the
     fallback every answer takes when the source changed since the record.
+    ``visit`` sees the live scene at each instant answered.
     """
     from arachne.session import _reads, execute
 
@@ -295,9 +351,13 @@ def _forward(
             # it runs draws may be written into the scene.
             asked = _on_screen(fps, instants) if frames else []
             _keep_frames(scene, fps, asked, written)
+            # Each instant is answered by the frame on screen there.
+            shown = dict(zip(instants, _on_screen(fps, instants), strict=True))
         else:
             grid = record.grid
             extra = frozenset(instants) | {_last_frame(record, t) for t in instants}
+            # Each instant is evaluated and kept, and answered by itself.
+            shown = {t: t for t in instants}
         forward = _ForwardRecorder(
             scene,
             grid=grid,
@@ -314,6 +374,8 @@ def _forward(
             # it was is unknown before the run plays them, and a ticked play
             # answers as the render shows it, demoted or not.
             demoted={whole_line(line) for line, _, _ in source.demoted},
+            visit=visit,
+            shown=shown,
         )
         made.append(forward)
         return forward
@@ -336,6 +398,14 @@ def _forward(
             sys.modules.pop(module.__name__, None)
             whole = True
         executed = forward.ensure_record()
+        if visit is not None and whole:
+            # After the script ended, the scene as it left it.
+            for t in instants:
+                if executed.play_at(t) is None and t >= executed.duration:
+                    assert executed.final is not None
+                    forward.visited(t, None, executed.final)
+        if forward.visit_error is not None:
+            raise forward.visit_error
         until = None if whole else instants[-1]
         # What a play drawn as it runs draws may be written into the scene (a
         # zoomed display's picture, a mapped mobject's points), from its
