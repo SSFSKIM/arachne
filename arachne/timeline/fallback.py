@@ -212,7 +212,7 @@ def visit_frames(
     *,
     to_end: bool = False,
     states: bool = False,
-) -> None:
+) -> Record:
     """Execute the session's scene once more on its render's frame grid and
     show ``visit`` the live scene at each of ``instants``, frames of that
     grid (or the end of the scene), whether or not the record answers them:
@@ -221,8 +221,9 @@ def visit_frames(
     kept and compared as :func:`answer_instants`' is. With ``to_end`` it
     runs to the scene's end rather than stopping past the last instant;
     with ``states`` its record keeps the states the lint's temporal rules
-    read (``Record.states``).
+    read (``Record.states``). Returns the run's record.
     """
+    executed: list[Record] = []
     _forward(
         session,
         sorted({exact(t) for t in instants}),
@@ -231,7 +232,9 @@ def visit_frames(
         render_grid=True,
         to_end=to_end,
         states=states,
+        runs=executed,
     )
+    return executed[0]
 
 
 class _Stopped(BaseException):  # noqa: N818 (an instruction, not an error)
@@ -367,6 +370,7 @@ def _forward(
     render_grid: bool = False,
     to_end: bool = False,
     states: bool = False,
+    runs: list[Record] | None = None,
 ) -> tuple[dict[Fraction, tuple[State, Image.Image | None]], Fallback | None]:
     """Execute the session's scene again for ``instants`` (in time order),
     keep the run in :attr:`.Session.forward_runs` and any divergence in
@@ -374,7 +378,8 @@ def _forward(
     fallback every answer takes when the source changed since the record.
     ``visit`` sees the live scene at each instant answered. With
     ``render_grid`` the run is on the render's grid whatever the record's;
-    with ``states`` its record keeps the temporal rules' states.
+    with ``states`` its record keeps the temporal rules' states; the run's
+    record is appended to ``runs`` when given.
     """
     from arachne.session import _reads, execute
 
@@ -451,6 +456,8 @@ def _forward(
             sys.modules.pop(module.__name__, None)
             whole = True
         executed = forward.ensure_record()
+        if runs is not None:
+            runs.append(executed)
         if visit is not None and whole:
             # After the script ended, the scene as it left it.
             for t in instants:
