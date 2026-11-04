@@ -211,5 +211,12 @@ lifted.
 - **An execution abandoned for re-execution is not torn down**, as CE tears
   down no run that raised: what its `setup` opened stays open
   (`tests/timeline/test_draw_refusals.py::test_a_retry_tears_down_only_the_execution_that_completes`).
+- **A play's cache key is computed before `play_internal` runs, as in CE.**
+  A run time the scene chooses inside the hook (its own `get_run_time`
+  answering otherwise the second time, an animation lengthened there) is
+  outside the cache identity, so a warm cache hit reuses the segment an
+  earlier render wrote under that key, whatever its length, an empty one
+  included. Direction: key the segment on the span the play's body takes,
+  which CE would need as well.
 - **A hook with effects outside the scene (a print, a file) runs once per
   execution**, so twice for a scene executed again.
