@@ -1,5 +1,5 @@
-//! The Stream: applying deltas atomically, and drawing what this build draws (the background)
-//! while refusing every record it cannot draw yet, whole.
+//! The Stream: applying deltas atomically, and drawing what this build draws (the background and
+//! meshes, `tests/mesh.rs`) while refusing every record it cannot draw yet, whole.
 
 mod common;
 
@@ -89,6 +89,7 @@ fn drawing_needs_a_view_and_a_size() {
 
 #[test]
 fn every_record_kind_is_refused_whole_until_its_drawer_lands() {
+    // The sample's mesh is refused too: it carries a blend, which this build does not draw.
     let mut s = Stream::new();
     let deltas = common::sample_deltas();
     s.apply(&deltas[0]).unwrap();
@@ -126,6 +127,9 @@ fn every_record_kind_is_refused_whole_until_its_drawer_lands() {
                 assert_eq!(u.kind, kind);
                 assert_eq!(u.slot, Some(slot));
                 assert_eq!(u.object, Some(100 + slot));
+                if kind == "mesh" {
+                    assert!(u.reason.contains("blend"), "{}", u.reason);
+                }
             }
             other => panic!("slot {slot}: {other:?}"),
         }

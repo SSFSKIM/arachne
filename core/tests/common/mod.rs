@@ -1,6 +1,8 @@
 //! Engine-authored XF content shared by the tests and the cross-build identity example.
 #![allow(dead_code)]
 
+pub mod meshes;
+
 use arachne_core::xf::*;
 
 pub fn flat_view(width: u32, height: u32, background: [f64; 4]) -> View {

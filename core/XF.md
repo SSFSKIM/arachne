@@ -20,7 +20,9 @@ field.
   frame partly. A record outside the order is not drawn, so it is not refused.
 
 XF 0 defines no feature bits. This build draws the background (a colour, or an image cropped to the
-frame as CE crops it) and refuses every record kind until its drawer exists.
+frame as CE crops it) and `mesh` records filled with one colour; it refuses a mesh carrying a blend, a
+reveal, a stroke, a gradient fill, a paint blend, a dash or a clip, and every other record kind,
+until their drawers exist. How a mesh is drawn is described under "Drawing" below.
 
 ## Content keys
 
@@ -69,16 +71,47 @@ shape's and table's key against its content, except for shape kinds it does not 
   CE fits the frame's height to the pixels' aspect ratio), the background (RGBA with the background
   opacity as alpha, or an image key), the camera (flat, moving, or 3D with phi, theta, gamma, focal
   distance, zoom, the exponential option, the light source, shading factor and whether shading
-  applies), CE's `cairo_line_width_multiple`, `use_z_index`, and the light model (CE's, code 0).
+  applies), CE's `cairo_line_width_multiple`, `use_z_index`, and the light model: CE's (code 0, no
+  parameters) or soft diffuse (code 1, parameters `[ambient, wrap]`: the share of light a surface
+  facing away from the light keeps, in 0..=1, and how far the light wraps past the terminator, at
+  least 0; a placeholder whose parameters are set with the 3D look). A delta whose view gives soft
+  diffuse light parameters outside those ranges is refused.
 - **The order** lists (layer, slot, part) in CE's draw order. The layer is static, moving or overlay;
   the part addresses a face of a face group, else 0.
 - **A delta** applies, in this order: the view, objects, shape and table uploads, records set,
   records removed, keys released, the order. A delta is checked whole before anything changes: a
-  reference to a missing shape, table or slot, a release of a key something still uses, or an order
-  entry naming a part that does not exist refuses it.
+  reference to a missing shape, table or slot, a release of a key something still uses, an order
+  entry naming a part that does not exist, or a mesh whose triangles name a vertex it lacks (or
+  whose normals are not one per vertex) refuses it.
 - **Frames** (`Stream.draw`) have the layout of CE's `camera.pixel_array`: `height * width * 4` bytes
   in R, G, B, A order, paint premultiplied as Cairo stores it, the background as CE writes it
   (`(rgba * 255).astype(int)`).
+
+## Drawing
+
+- **Placement.** A record's points go through its placement, then as CE places a mobject's points for
+  display: under a 3D camera, a `world` record is projected (moved by its centre's projection when it
+  has a fixed orientation) and an `overlay` record is kept in frame; under any other camera, and for
+  `screen` records, the points are kept. Then CE's frame-to-pixel mapping.
+- **Depth.** A `world` record under a 3D camera has depth: the projection's factor, negated (smaller is
+  nearer), which is affine across a projected triangle; a fixed-orientation record is a camera-facing
+  plane at its centre's depth. Every other record is in front of all depth, and records tie by draw
+  order, the later on top. Under a flat or moving camera everything ties, so records paint in order.
+- **Light.** A `shade_in_3d` record under a 3D camera that applies shading is lit at each triangle
+  corner by the view's light model, at the corner's placed position and normal (the mesh's normals
+  through the placement, else the triangle's own): CE's model adds CE's light to the encoded colour
+  (each corner clamped as Cairo clamps a gradient stop); soft diffuse lights the linear colour, the
+  normal turned toward the eye. Corner colours interpolate across the triangle on screen and are
+  evaluated at the centroid of the sub-samples each pixel's fragment covers; lit linear colour is
+  encoded there. Alpha is the fill's times the group opacity.
+- **Compositing.** Each pixel holds fragments: a depth plane, a premultiplied colour, a coverage (a
+  mask over 16 sub-samples for meshes; an exact area for paths, with the mask on demand) and the
+  draw order. Fragments resolve by depth at the sub-samples, ties by draw order: a pixel with one
+  depth order at every sub-sample and at most one partially covering mask composites back to front
+  with its coverage as Cairo's ARGB32 surface composites paint (the coverage resolve); a crossing
+  inside the pixel, or two or more partial masks (a surface's internal edges), composites each
+  sub-sample and averages them (the sample resolve); an opaque fragment covering the pixel in front
+  of everything takes a fast path. `Stream.draw_resolves` reports each pixel's resolve.
 
 ## Binary form
 
@@ -129,7 +162,7 @@ view      u32 pixel_width  u32 pixel_height  f64 frame_width  f64 frame_height  
           u8 0 flat | u8 1 moving | u8 2  f64 phi theta gamma focal_distance zoom
             bool exponential  f64 x3 light_source  f64 shading_factor  bool should_apply_shading
           f64 cairo_line_width_multiple  bool use_z_index
-          u8 light model (0: CE's)  count f64*          (its parameters)
+          u8 light model (0: CE's, 1: soft diffuse)  count f64*   (its parameters)
 ```
 
 Joint codes: 0 auto, 1 round, 2 bevel, 3 miter. Cap codes: 0 auto, 1 round, 2 butt, 3 square. Space
