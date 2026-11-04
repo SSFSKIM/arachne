@@ -452,6 +452,83 @@ class RunTimeOverride(Logged):
         self.play(square.animate.shift(RIGHT), run_time=1)
 
 
+class RunTimeChangesInPlay(Scene):
+    """``get_run_time`` gives 1 s when the play is compiled and 2 s when
+    ``play_internal`` asks again: CE plays the second, and the event at 1.5 s
+    lies beyond the first. A dt updater makes the play tick.
+    """
+
+    def get_run_time(self, animations):
+        self.run_times.append(1.0 if not self.run_times else 2.0)
+        return self.run_times[-1]
+
+    def update_to_time(self, t):
+        self.frames.append(float(t))
+        super().update_to_time(t)
+
+    def construct(self):
+        self.run_times: list[float] = []
+        self.frames: list[float] = []
+        clock(self)
+        a, b = Square(side_length=0.5).shift(LEFT), Square(side_length=0.5).shift(RIGHT)
+        self.add(a, b)
+        self.play(
+            Succession(
+                a.animate(run_time=1.5, rate_func=linear).shift(UP),
+                b.animate(run_time=0.5, rate_func=linear).shift(DOWN),
+            )
+        )
+
+
+class RunTimeScaledInPlay(Scene):
+    """``play_internal`` doubles what ``get_run_time`` gives before its body
+    asks: CE plays 2 s of a 1 s animation.
+    """
+
+    def get_run_time(self, animations):
+        self.run_times.append(super().get_run_time(animations) * self.factor)
+        return self.run_times[-1]
+
+    def play_internal(self, skip_rendering=False):
+        self.factor = 2
+        super().play_internal(skip_rendering)
+
+    def update_to_time(self, t):
+        self.frames.append(float(t))
+        super().update_to_time(t)
+
+    def construct(self):
+        self.factor = 1
+        self.run_times: list[float] = []
+        self.frames: list[float] = []
+        clock(self)
+        dot = Dot()
+        self.add(dot)
+        self.play(dot.animate.shift(RIGHT), rate_func=linear)
+
+
+class AnimationLengthenedInPlay(Scene):
+    """``play_internal`` lengthens the animation to 2 s before its body asks
+    the (engine's) ``get_run_time``: CE plays 2 s.
+    """
+
+    def play_internal(self, skip_rendering=False):
+        self.animations[0].run_time = 2.0
+        super().play_internal(skip_rendering)
+
+    def update_to_time(self, t):
+        self.frames.append(float(t))
+        super().update_to_time(t)
+
+    def construct(self):
+        self.run_times: list[float] = []
+        self.frames: list[float] = []
+        clock(self)
+        dot = Dot()
+        self.add(dot)
+        self.play(dot.animate.shift(RIGHT), rate_func=linear)
+
+
 # (h) an update_mobjects override beside a dt updater
 
 

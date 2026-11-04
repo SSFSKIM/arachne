@@ -462,17 +462,20 @@ class Recorder:
 
     # Plays
 
-    def requested_end(self) -> Fraction:
-        """Where the play the scene has compiled ends unless a stop condition
-        ends it first: its animations' longest run time, or what the scene's
-        own ``get_run_time`` gave, as CE plays that span.
+    def requested_end(self, start: Fraction | None = None) -> Fraction:
+        """Where the play the scene has compiled, beginning at ``start`` (the
+        scene clock unless given), ends unless a stop condition ends it first:
+        its animations' longest run time, or what the scene's own
+        ``get_run_time`` gave, as CE plays that span.
         """
         scene = self.scene
+        if start is None:
+            start = scene.time
         if scene_hooks(scene, ("get_run_time",)):
-            return play_end(scene.time, scene.duration)
+            return play_end(start, scene.duration)
         animations = scene.animations or []
         return play_end(
-            scene.time,
+            start,
             max(animation._exact_run_time() for animation in animations),
         )
 
@@ -525,57 +528,72 @@ class Recorder:
         play.held = bool(scene.is_current_animation_frozen_frame())
         play.frame_hooks = scene_hooks(scene, FRAME_HOOKS)
         play.play_internal_overridden = bool(scene_hooks(scene, ("play_internal",)))
-        plan = plan_events(animations, start, requested_end)
+        body = _Body(refusal)
         try:
-            admission = admit(
-                scene,
-                plan,
-                held=play.held,
-                base_dir=_base_dir(record),
-                refusal=refusal,
-            )
-            play.admission = admission
-            play.route = admission.route
-            play.events = tuple(plan.instants(start, requested_end + 1))
-            route = ROUTE_CLASSES[admission.route]()
-            camera = scene.renderer.camera
-            run = PlayRun(self, play, route, live)
-            # Which of its ticks only step (those no frame reads) is planned
-            # once the play has been evaluated at its start (``started``); a
-            # brute-force run plans nothing (:mod:`.reference`).
-            run.plans = (
-                admission.route == "ticked"
-                and not play.held
-                and self.grid is not None
-                and scene.stop_condition is None
-                and self.stepping != BRUTE_FORCE
-            )
-            run._extras = CameraExtras.observe(camera, None)
-            play.static_seq = self.capture("static", start, play, run._extras).seq
+            run = self._prepare(body, play, live)
+            extras = CameraExtras.observe(scene.renderer.camera, None)
+            run._extras = extras
+            play.static_seq = self.capture("static", start, play, extras).seq
             if live is not None:
                 live.begin(play)
             if play.held:
                 # A frozen frame: CE calls none of the scene's hooks.
-                self._run_play(run, plan, refusal)
+                self._run_play(body)
             else:
-                self._play_internal(run, plan, refusal)
+                self._play_internal(body)
         finally:
-            plan.release()
+            if body.plan is not None:
+                body.plan.release()
 
-        play.end = run.end
-        record.duration = run.end
-        if run.end < play.requested_end:
+        # The run that evaluated it: planned again if play_internal moved its span.
+        final = body.run
+        assert final is not None
+        play.end = final.end
+        record.duration = final.end
+        if final.end < play.requested_end:
             self.mark(
                 "wait_until",
-                {"requested": play.requested_end - start, "actual": run.end - start},
+                {"requested": play.requested_end - start, "actual": final.end - start},
                 t=start,
                 source_line=play.source_line,
             )
         return play
 
-    def _play_internal(
-        self, run: PlayRun, plan: EventPlan, refusal: str | None
-    ) -> None:
+    def _prepare(
+        self, body: _Body, play: PlayRecord, live: LiveFrames | None
+    ) -> PlayRun:
+        """Plan the play over its span (``play.requested_end``): its events,
+        its admission and route, and the run that evaluates it, kept in
+        ``body`` and returned.
+        """
+        scene = self.scene
+        start, end = play.start, play.requested_end
+        plan = body.plan = plan_events(scene.animations or [], start, end)
+        record = self.ensure_record()
+        admission = admit(
+            scene,
+            plan,
+            held=play.held,
+            base_dir=_base_dir(record),
+            refusal=body.refusal,
+        )
+        play.admission = admission
+        play.route = admission.route
+        play.events = tuple(plan.instants(start, end + 1))
+        run = body.run = PlayRun(self, play, ROUTE_CLASSES[admission.route](), live)
+        # Which of its ticks only step (those no frame reads) is planned
+        # once the play has been evaluated at its start (``started``); a
+        # brute-force run plans nothing (:mod:`.reference`).
+        run.plans = (
+            admission.route == "ticked"
+            and not play.held
+            and self.grid is not None
+            and scene.stop_condition is None
+            and self.stepping != BRUTE_FORCE
+        )
+        return run
+
+    def _play_internal(self, body: _Body) -> None:
         """Call the scene's ``play_internal``, as CE's renderer does for a play
         that is not a frozen frame, and refuse one whose body did not run.
         """
@@ -587,7 +605,7 @@ class Recorder:
                 f"the scene's {', '.join(overridden)} chooses CE's frame instants,"
                 " which the play's exact clock and the frame grid replace",
             )
-        body = self._body = _Body(run, plan, refusal)
+        self._body = body
         try:
             scene.play_internal()
         finally:
@@ -619,16 +637,31 @@ class Recorder:
         body.ran = True
         scene = self.scene
         assert scene.animations is not None
-        # CE's second call: play_internal takes the play's length again.
+        # CE's second call: play_internal takes the play's length again, and
+        # plays that one. The scene's code may have changed it since the play
+        # was compiled (its own get_run_time, or an animation's run time), so
+        # a play whose span moved is planned again for the new one.
         scene.duration = scene.get_run_time(scene.animations)
-        self._run_play(body.run, body.plan, body.refusal)
+        run = body.run
+        assert run is not None
+        assert body.plan is not None
+        end = self.requested_end(run.start)
+        if end != run.requested_end:
+            body.plan.release()
+            body.plan = None
+            play = run.play
+            play.requested_end = play.end = end
+            self._prepare(body, play, run.live)._extras = run._extras
+        self._run_play(body)
 
-    def _run_play(self, run: PlayRun, plan: EventPlan, refusal: str | None) -> None:
+    def _run_play(self, body: _Body) -> None:
         """Evaluate the play through its route, then finish it, its end on the
-        clock, as CE's clock reads it when a play finishes. ``refusal`` is why
-        the record can't draw the play, if it can't.
+        clock, as CE's clock reads it when a play finishes.
         """
         scene = self.scene
+        run, plan, refusal = body.run, body.plan, body.refusal
+        assert run is not None
+        assert plan is not None
         play = run.play
         record = self.ensure_record()
         run.route.run(run, plan)
@@ -727,12 +760,15 @@ class Recorder:
 
 
 class _Body:
-    """A play waiting for ``play_internal``'s body, and whether it ran."""
+    """A play being run: its run and event plan (planned again when
+    ``play_internal`` gives it another span), why the record can't draw it if
+    it can't, and whether ``play_internal``'s body ran.
+    """
 
-    def __init__(self, run: PlayRun, plan: EventPlan, refusal: str | None) -> None:
-        self.run = run
-        self.plan = plan
+    def __init__(self, refusal: str | None) -> None:
         self.refusal = refusal
+        self.run: PlayRun | None = None
+        self.plan: EventPlan | None = None
         self.ran = False
 
 
