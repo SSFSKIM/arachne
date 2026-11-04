@@ -201,6 +201,19 @@ class NoteFadesAtHalf(SettledNoteFades):
     hold = 0.5
 
 
+class SettledNoteFadesInAGroup(Scene):
+    """The settled word faded out inside a group made only for the fade."""
+
+    def construct(self):
+        rail = Line(LEFT * 4, RIGHT * 4)
+        note = Text("note", font_size=36).move_to(rail.get_center())
+        mark = Dot(UP * 2)
+        self.add(rail, note, mark)
+        self.wait(1)
+        self.play(FadeOut(VGroup(note, mark)))  # @group-fade
+        self.wait(0.5)
+
+
 class NoteSweptAcross(Scene):
     """A word carried onto the line and faded the moment it lands."""
 

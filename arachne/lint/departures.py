@@ -83,12 +83,21 @@ def _departures(context: LintContext, rule: ArmedRule) -> list[Finding]:
     touched: dict[str, Fraction] = {}
     found: list[Finding] = []
     plays = record.plays
+    before: dict[str, Mobject] = {}
     for index, play in enumerate(plays):
         if index not in shown or not play.samples:
             continue
         first, last = shown[index]
         start = play.samples[0]
         tops = _tops(record, start)
+        # A top level the play's own group took in as it began (the scene
+        # adds an animation's mobject, taking its members out of the top
+        # level) was a top level when the scene called the play.
+        held = _held(record, start)
+        tops = {
+            **{k: m for k, m in before.items() if k not in tops and k in held},
+            **tops,
+        }
         entered = {key: entered.get(key, play.start) for key in tops}
         leaves = played(play)
         going = [leaf.mobject for leaf in leaves if leaf.departs and leaf.mobject]
@@ -108,10 +117,10 @@ def _departures(context: LintContext, rule: ArmedRule) -> list[Finding]:
             if following is not None and following.samples
             else record.final
         )
+        before = _tops(record, end)
         if after is None:
             continue
-        kept = {record.origin(m).id for m in after.roots}
-        before = _tops(record, end)
+        kept = _held(record, after)
         removed = [
             mob for key, mob in before.items() if key not in kept and key not in moved
         ]
@@ -125,6 +134,15 @@ def _departures(context: LintContext, rule: ArmedRule) -> list[Finding]:
 
 def _tops(record: Record, capture: Capture) -> dict[str, Mobject]:
     return {record.origin(m).id: m for m in capture.roots}
+
+
+def _held(record: Record, capture: Capture) -> set[str]:
+    """The stable ids of everything in the scene at ``capture``."""
+    return {
+        record.origin(m).id
+        for root in capture.roots
+        for m in family_at(record, root, capture)
+    }
 
 
 def _settled(
@@ -160,8 +178,10 @@ def _settled(
                     key, (animated(record, mob, capture), now - since - SETTLED_WAIT)
                 )
                 return
+        # A wrapper no capture holds (a play's own group) passes through to
+        # what it wraps.
         state = record.node_state(mob, capture)
-        for sub in state.submobjects if state is not None else ():
+        for sub in state.submobjects if state is not None else mob.submobjects:
             walk(sub)
 
     for mob in going:
