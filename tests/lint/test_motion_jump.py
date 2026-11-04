@@ -183,6 +183,17 @@ def test_a_set_back_behind_a_tenfold_zoom_jumps(jumps_of):
     assert jump.detail["distance"] == pytest.approx(10 * (0.5 - 1 / 15), abs=1e-3)
 
 
+def test_a_body_s_steps_under_a_pan_are_as_the_viewer_saw_them(jumps_of):
+    """As the other backend finds them: the 0.4 set-back is churn (its steps
+    on screen were 4/15, the pan's 3/15 among them) and the 0.7 one jumps.
+    That backend measures 0.7 from where the slide ended; this rule from the
+    slide's last frame, one step of 1/15 short of it.
+    """
+    assert jumps_of("PanReset") == []
+    (jump,) = jumps_of("PanResetFar")
+    assert jump.detail["distance"] == pytest.approx(0.7 - 1 / 15, abs=1e-3)
+
+
 def test_a_teleport_behind_a_zoom_cut_still_jumps(jumps_of):
     (jump,) = jumps_of("ZoomedTeleport")
     # 2 units set down, and the last frame's step short of the stop, at 2x.
