@@ -70,8 +70,9 @@ class Span:
 @dataclass(frozen=True, eq=False)
 class LintResult:
     """What a lint found, in time order, look-alikes folded; the instants it
-    read; the session's timeline; whether the record is stale; and how long
-    the lint took, in seconds.
+    read; the session's timeline; whether the record is stale; how long the
+    lint took, in seconds; and the resolution, ``(width, height)``, its
+    findings' pixel boxes are at: the session's.
     """
 
     findings: tuple[Finding, ...]
@@ -79,6 +80,7 @@ class LintResult:
     timeline: tuple[Span, ...]
     stale: bool
     duration_s: float
+    target_resolution: tuple[int, int]
 
     @property
     def passed(self) -> bool:
@@ -123,7 +125,16 @@ def lint(
         timeline,
         session.stale,
         time.perf_counter() - started,
+        target_resolution(session),
     )
+
+
+def target_resolution(session: Session) -> tuple[int, int]:
+    """The pixel size, ``(width, height)``, the session's configuration
+    renders at: what a finding's pixel box is given in.
+    """
+    height, width = session._executed_shape
+    return int(width), int(height)
 
 
 def _parts(session: Session, instants: tuple[LintInstant, ...]) -> tuple[Parts, ...]:
@@ -133,6 +144,7 @@ def _parts(session: Session, instants: tuple[LintInstant, ...]) -> tuple[Parts, 
     from arachne.timeline.fallback import answer_instants
 
     record = session.record
+    target = target_resolution(session)
     found: dict[Fraction, Parts] = {}
     missing: list[Fraction] = []
     settings: ManimConfig | dict[str, Any] = (
@@ -151,6 +163,7 @@ def _parts(session: Session, instants: tuple[LintInstant, ...]) -> tuple[Parts, 
                 resolved.play,
                 resolved.capture,
                 answer=resolved.kind,
+                target=target,
                 prepare=resolved.prepare,
             )
         if missing:
@@ -162,7 +175,13 @@ def _parts(session: Session, instants: tuple[LintInstant, ...]) -> tuple[Parts, 
                 capture: Capture,
             ) -> None:
                 found[t] = build_parts(
-                    forward, t, play, capture, answer="forward", live=True
+                    forward,
+                    t,
+                    play,
+                    capture,
+                    answer="forward",
+                    target=target,
+                    live=True,
                 )
 
             answer_instants(session, missing, None, frames=False, visit=visit)

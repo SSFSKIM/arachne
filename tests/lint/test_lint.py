@@ -14,7 +14,7 @@ import pytest
 
 from arachne.lint import Finding, LintResult, lint
 from arachne.lint.instants import lint_instants
-from arachne.lint.serialise import TARGET_HEIGHT, notes, report
+from arachne.lint.serialise import notes, report
 from arachne.timeline.execution import Divergence
 from arachne.timeline.fallback import answer_instants
 
@@ -38,7 +38,7 @@ def _named(name: str):
                         "overlap.text",
                         parts.t,
                         parts.t,
-                        (part.as_object(parts.view),),
+                        (part.as_object(parts),),
                         message=f"{name} planted",
                         line=part.source_line,
                     )
@@ -167,8 +167,39 @@ def test_look_alikes_fold_in_the_result(session_of):
     the first kept and the rest folded into it.
     """
     session = session_of("Pair", frame_rate=15)
-    (found,) = lint(session, rules=(_named("right"),)).findings
-    assert len(found.folded) == len(lint_instants(session.record, 4)) - 1
+    result = lint(session, rules=(_named("right"),))
+    (found,) = result.findings
+    folded = len(lint_instants(session.record, 4)) - 1
+    assert len(found.folded) == folded
+    out = report(result)
+    assert_report(out)
+    (violation,) = out["violations"]
+    assert violation["detail"] == {"folded": folded}
+    assert violation["message"].endswith(f"(and {folded} more like it)")
+
+
+def test_the_report_s_resolution_is_the_session_s(session_of):
+    """Pixel boxes are in the pixels the scene renders at, whatever they are:
+    the same dot is twice as many pixels from the corner at twice the size.
+    """
+    boxes = {}
+    for width, height in ((96, 54), (192, 108)):
+        session = session_of(
+            "Pair", frame_rate=15, pixel_width=width, pixel_height=height
+        )
+        out = report(lint(session, rules=(_named("left"),)))
+        assert_report(out)
+        assert out["target_resolution"] == {"width": width, "height": height}
+        boxes[width] = out["violations"][0]["objects"][0]["screen_bbox"]
+    assert boxes[192] == pytest.approx([2 * v for v in boxes[96]])
+
+
+def test_a_report_without_its_resolution_fails_the_shape(session_of):
+    out = report(lint(session_of("Pair", frame_rate=15)))
+    assert_report(out)
+    del out["target_resolution"]
+    with pytest.raises(AssertionError):
+        assert_report(out)
 
 
 def test_the_session_lints_itself(session_of):
@@ -239,11 +270,12 @@ def test_a_violation_names_its_objects_in_scene_units_and_target_pixels(session_
     # The dot (radius 0.08) begins at (-1, 0), in scene units.
     assert (x0 + x1) / 2 == pytest.approx(-1)
     assert (y0 + y1) / 2 == pytest.approx(0)
-    # In pixels of the declared target, from the top-left corner, y down.
-    width = TARGET_HEIGHT * 16 / 9
+    # In pixels of the session's 96 by 54 picture, from the top-left corner,
+    # y down: x = -1 is 96 / 14.22 pixels left of the middle.
+    assert out["target_resolution"] == {"width": 96, "height": 54}
     px0, py0, px1, py1 = obj["screen_bbox"]
-    assert (px0 + px1) / 2 == pytest.approx(width / 2 - width / 14.222222222222221)
-    assert (py0 + py1) / 2 == pytest.approx(TARGET_HEIGHT / 2)
+    assert (px0 + px1) / 2 == pytest.approx(48 - 96 / (8 * 16 / 9))
+    assert (py0 + py1) / 2 == pytest.approx(27)
     assert py0 < py1
     assert first["t_start"] == 0.0
     assert out["timeline"][0] == {
@@ -274,5 +306,7 @@ def test_the_shape_refuses_what_the_report_never_holds(session_of):
     broken(lambda out: out["violations"][0]["objects"][0].pop("screen_bbox"))
     broken(lambda out: out.update({"pass": True}))
     broken(lambda out: out["violations"][0].pop("severity"))
+    broken(lambda out: out["target_resolution"].update(width=96.0))
+    broken(lambda out: out["violations"][0].setdefault("detail", {}).update(folded=0))
     with pytest.raises(AssertionError):
         assert_notes([good["violations"][0]])

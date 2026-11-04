@@ -3,18 +3,19 @@
 :func:`report` is the report: its violations are the errors and warnings,
 and it passes unless one is an error. :func:`notes` are the notes, in the
 same violation shape, kept apart from the report. A violation's ``bbox``
-is in scene units, its ``screen_bbox`` in pixels of the declared target
-(:data:`.codes.TARGET_HEIGHT` tall, from the top-left corner, y down), and
-its ``line`` the scene line running when it was found.
+is in scene units, its ``screen_bbox`` in pixels of the report's
+``target_resolution`` (the session's pixel size), from the top-left corner,
+y down, and its ``line`` the scene line running when it was found. A
+finding that look-alikes were folded into counts them in
+``detail.folded``.
 """
 
 from __future__ import annotations
 
-__all__ = ["TARGET_HEIGHT", "notes", "report"]
+__all__ = ["notes", "report"]
 
 from typing import Any
 
-from .codes import TARGET_HEIGHT
 from .core import LintResult
 from .findings import Finding, FindingObject
 
@@ -24,6 +25,10 @@ def report(result: LintResult) -> dict[str, Any]:
     return {
         "pass": result.passed,
         "duration_s": result.duration_s,
+        "target_resolution": {
+            "width": result.target_resolution[0],
+            "height": result.target_resolution[1],
+        },
         "violations": [_violation(f) for f in result.findings if f.severity != "note"],
         "timeline": [
             {
@@ -55,10 +60,12 @@ def _violation(finding: Finding) -> dict[str, Any]:
         "fix": finding.fix,
         "line": finding.line.line if finding.line is not None else None,
     }
-    if finding.detail:
-        out["detail"] = dict(finding.detail)
+    detail = dict(finding.detail)
     if finding.folded:
+        detail["folded"] = len(finding.folded)
         out["message"] += f" (and {len(finding.folded)} more like it)"
+    if detail:
+        out["detail"] = detail
     return out
 
 

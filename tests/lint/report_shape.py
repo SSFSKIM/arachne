@@ -79,16 +79,33 @@ def assert_violation(violation: dict[str, Any], severities: tuple[str, ...]) -> 
     for obj in violation["objects"]:
         assert_object(obj)
     if "detail" in violation:
-        assert isinstance(violation["detail"], dict)
+        detail = violation["detail"]
+        assert isinstance(detail, dict)
+        assert set(detail) <= {*code.detail, "folded"}
+        if "folded" in detail:
+            # The look-alikes folded into it, counted, and said in words.
+            assert _integer(detail["folded"])
+            assert detail["folded"] > 0
+            more = f"(and {detail['folded']} more like it)"
+            assert violation["message"].endswith(more)
 
 
 def assert_report(out: dict[str, Any]) -> None:
     """A report: its fields and their types, only errors and warnings in its
     violations, and ``pass`` false exactly when one is an error.
     """
-    assert set(out) == {"pass", "duration_s", "violations", "timeline"}
+    assert set(out) == {
+        "pass",
+        "duration_s",
+        "target_resolution",
+        "violations",
+        "timeline",
+    }
     assert isinstance(out["pass"], bool)
     assert _number(out["duration_s"])
+    resolution = out["target_resolution"]
+    assert set(resolution) == {"width", "height"}
+    assert all(_integer(v) and v > 0 for v in resolution.values())
     assert isinstance(out["violations"], list)
     for violation in out["violations"]:
         assert_violation(violation, REPORTED)
