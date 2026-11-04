@@ -17,6 +17,7 @@ from arachne.lint import Finding, LintResult, lint
 from arachne.lint.instants import lint_instants
 from arachne.lint.serialise import TARGET_HEIGHT, notes, report
 from arachne.timeline.execution import Divergence
+from arachne.timeline.fallback import answer_instants
 
 from ..timeline import camera_scenes
 from .conftest import line_of
@@ -122,6 +123,19 @@ def test_a_refused_record_is_linted_through_one_forward_run(session_of):
     assert all(p.answer == "forward" for p in seen)
     assert all(len(p.parts) == 1 for p in seen)
     assert session.divergences == []
+
+
+def test_a_visitor_s_error_reaches_the_caller(session_of):
+    """The scene's code runs around a visit and might catch what it raises:
+    the error is raised again once the run is out of it.
+    """
+    session = session_of("Mapped", CAMERA_SCENES, frame_rate=6)
+
+    def visit(t, record, play, capture):
+        raise ZeroDivisionError("planted")
+
+    with pytest.raises(ZeroDivisionError, match="planted"):
+        answer_instants(session, [Fraction(1, 6)], None, frames=False, visit=visit)
 
 
 def test_the_range_keeps_findings_that_overlap_it(session_of):
