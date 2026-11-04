@@ -15,7 +15,15 @@ A painter and its stream are made in the process that draws, after any fork:
 
 from __future__ import annotations
 
-__all__ = ["IrCairoPainter", "camera_path", "painter_for"]
+__all__ = [
+    "CARRIED_MEMBERS",
+    "IrCairoPainter",
+    "camera_path",
+    "captured",
+    "changed_members",
+    "painter_for",
+    "uncarried",
+]
 
 import inspect
 import os
@@ -94,29 +102,131 @@ def _own_code(camera: Any) -> tuple[str, str] | None:
     return None
 
 
+#: The camera members a scene's code may change and XF still describe: each
+#: reaches a frame only through what the camera's own capture produces and
+#: the frame records (the points its pre-display code places, the colours it
+#: shades with, which mobjects it draws in which order, the values its
+#: projection reads), or only builds the camera.
+CARRIED_MEMBERS = frozenset(
+    {
+        "__init__",
+        "transform_points_pre_display",
+        "project_points",
+        "project_point",
+        "generate_rotation_matrix",
+        "get_rotation_matrix",
+        "reset_rotation_matrix",
+        "get_phi",
+        "get_theta",
+        "get_gamma",
+        "get_focal_distance",
+        "get_zoom",
+        "modified_rgbas",
+        "get_fill_rgbas",
+        "get_stroke_rgbas",
+        "get_mobjects_to_display",
+    }
+)
+
+#: Names a class body defines that are no member it overrides.
+_CLASS_BOOKKEEPING = frozenset(
+    {
+        "__module__",
+        "__qualname__",
+        "__doc__",
+        "__dict__",
+        "__weakref__",
+        "__annotations__",
+        "__annotate__",
+        "__firstlineno__",
+        "__static_attributes__",
+        "__classcell__",
+        "__orig_bases__",
+        "__parameters__",
+    }
+)
+
+
+def changed_members(camera: Any) -> tuple[str, ...]:
+    """The engine camera members the scene's code changed on ``camera``: the
+    names its own classes define over an engine camera's, and the methods
+    replaced on the instance or on an engine class
+    (:func:`~arachne.timeline.camera_code.replaced_methods`).
+    """
+    from arachne.camera.camera import Camera
+    from arachne.timeline.camera_code import replaced_methods
+    from arachne.timeline.frozen import engine_class
+
+    if not isinstance(camera, Camera):
+        return ()
+    kind = type(camera)
+    base = next(k for k in kind.__mro__ if engine_class(k))
+    names = {
+        name
+        for klass in kind.__mro__
+        if klass is not object and not engine_class(klass)
+        for name in vars(klass)
+        if name not in _CLASS_BOOKKEEPING and hasattr(base, name)
+    }
+    names.update(r.name for r in replaced_methods(camera))
+    return tuple(sorted(names))
+
+
+def uncarried(camera: Any) -> tuple[Any, str] | None:
+    """The first camera ``camera`` draws with (itself, or a display camera,
+    :func:`~arachne.timeline.camera_code.drawn_cameras`) and the first member
+    the scene's code changed there whose effect can reach the frame other
+    than through what XF carries of a capture (:data:`CARRIED_MEMBERS`):
+    Cairo calls of the scene's own, pixels written by hand, a pixel mapping.
+    """
+    from arachne.timeline.camera_code import drawn_cameras
+
+    for each in drawn_cameras(camera):
+        for name in changed_members(each):
+            if name not in CARRIED_MEMBERS:
+                return each, name
+    return None
+
+
+def captured(camera: Any, draw_path: str) -> bool:
+    """Whether frames of ``camera`` on ``draw_path`` are described from the
+    camera's own capture: on a path that describes frames, a camera the
+    scene's code changed (:func:`user_camera`) in ways XF carries. Its code
+    then runs once per capture, as CE runs it, and the records hold what it
+    produced (pre-projected records).
+    """
+    return bool(DRAW_PATHS.get(draw_path)) and user_camera(camera) is not None
+
+
 def camera_path(camera: Any, draw_path: str) -> str:
-    """The draw path ``camera`` draws on when ``draw_path`` is asked for. A
-    camera the scene's code changed (:func:`user_camera`: its own class, or
+    """The draw path ``camera`` draws on when ``draw_path`` is asked for.
+
+    A camera the scene's code changed (:func:`user_camera`: its own class, or
     a method of the engine's replaced on the class or the instance; the
-    camera itself or a display camera it draws through) can
-    change how anything is drawn, which XF 1 does not describe: on a path
-    that describes frames it draws on Cairo, with a ``render.fallback``
-    finding naming what changed. (A record refuses a camera class of the
-    scene's own, ``camera.unsupported``, so that is met as the scene runs; a
-    replaced method can be met on the record too.) A camera that is no
-    engine camera's subclass stays on the path and is ``render.unable``
-    there.
+    camera itself or a display camera it draws through) draws what its code
+    makes. Where every change reaches the frame through what the camera's
+    capture produces (:data:`CARRIED_MEMBERS`), frames are described from
+    that capture (:func:`captured`) and stay on the path. Otherwise, on a
+    path that describes frames, it draws on Cairo, with a ``render.fallback``
+    finding naming what changed and the member XF cannot carry. A camera
+    that is no engine camera's subclass stays on the path and is
+    ``render.unable`` there.
     """
     if draw_path not in DRAW_PATHS:
         raise ValueError(f"draw_path {draw_path!r} is not one of {sorted(DRAW_PATHS)}")
     own = user_camera(camera) if DRAW_PATHS[draw_path] else None
     if own is None:
         return draw_path
+    found = uncarried(camera)
+    if found is None:
+        return draw_path
     subject, why = own
+    _, member = found
     raise_finding(
         "render.fallback",
         subject,
-        f"{why} is drawn on Cairo: XF 1 describes the engine's cameras only",
+        f"{why} is drawn on Cairo: {member} reaches the frame other than through"
+        " the points, colours and order XF carries of the camera's capture",
     )
     return "cairo"
 

@@ -46,7 +46,13 @@ from .extract import (
     _paint,
     _path_shape,
 )
-from .xf import FEATURE_BACKGROUND_IMAGE, PaintTable, Record, Shape
+from .xf import (
+    FEATURE_BACKGROUND_IMAGE,
+    FEATURE_PRE_PROJECTED,
+    PaintTable,
+    Record,
+    Shape,
+)
 
 #: Reads whose value a record states but whose replay answers in its own
 #: terms: a background image is named by its key there.
@@ -92,6 +98,42 @@ class _Recording:
         return other is self._xf_leaf
 
 
+#: The camera's own methods whose results for a drawn mobject a
+#: pre-projected record states: where its pre-display code placed the
+#: points (the mobject's, and its gradient's ends), and the colours it
+#: painted them with (its shading included).
+_PRODUCED = ("transform_points_pre_display", "get_fill_rgbas", "get_stroke_rgbas")
+#: How a produced value is kept in a recording's log, by method.
+_PRE_DISPLAY = "__pre_display__"
+_CAMERA_RGBAS = "__camera_rgbas__"
+
+
+def _producing(name: str, method: Any) -> Any:
+    """``method`` (the camera's ``name``, whatever the scene made it), keeping
+    what it returns for each recorded mobject in that mobject's log.
+    """
+
+    def produced(mobject: Any, *args: Any, **kwargs: Any) -> Any:
+        result = method(mobject, *args, **kwargs)
+        if isinstance(mobject, _Recording):
+            if name == "transform_points_pre_display":
+                points = args[0] if args else kwargs["points"]
+                mobject._xf_log.append((_PRE_DISPLAY, points, None, result))
+            else:
+                background = bool(args[0] if args else kwargs.get("background", False))
+                which = "fill" if name == "get_fill_rgbas" else background
+                mobject._xf_log.append((_CAMERA_RGBAS, which, None, result))
+        return result
+
+    return produced
+
+
+def _own_code(camera: Any) -> Any:
+    from .painter import _own_code
+
+    return _own_code(camera)
+
+
 class _NoContext:
     """A Cairo context that draws nothing."""
 
@@ -120,6 +162,8 @@ def _same(a: Any, b: Any) -> bool:
         return a.shape == b.shape and bool(np.array_equal(a, b, equal_nan=True))
     if isinstance(a, tuple | list) and isinstance(b, tuple | list):
         return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b, strict=True))
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(_same(a[k], b[k]) for k in a)
     try:
         return bool(a == b)
     except (TypeError, ValueError):
@@ -136,6 +180,8 @@ class _Reads:
         self.log = recording._xf_log
         self.values: dict[tuple[str, Any], Any] = {}
         for name, args, kwargs, value in self.log:
+            if name in (_PRE_DISPLAY, _CAMERA_RGBAS):
+                continue  # what the camera produced, not a read
             key = _key(name, args, kwargs)
             if key[1] == "with arguments":
                 continue
@@ -184,8 +230,13 @@ def _view_kind(camera: Any) -> str:
     from arachne.camera.moving_camera import MovingCamera
     from arachne.camera.multi_camera import MultiCamera
     from arachne.camera.three_d_camera import ThreeDCamera
+    from arachne.timeline.frozen import engine_class
 
     kind = type(camera)
+    if isinstance(camera, Camera):
+        # A camera class of the scene's own draws as the engine's it
+        # subclasses, but for what its records state it produced.
+        kind = next(k for k in kind.__mro__ if engine_class(k))
     if kind is ThreeDCamera:
         return "three_d"
     if kind in (MovingCamera, MultiCamera):
@@ -281,11 +332,23 @@ class LivePainter:
 
             own["get_cairo_context"] = engine_own(no_context)
             added.append("get_cairo_context")
+        held: dict[str, Any] = {}
+        if _own_code(camera) is not None:
+            # A camera the scene's code changed: what it produces for each
+            # mobject it draws is kept, and its records are pre-projected.
+            for name in _PRODUCED:
+                if name in own:
+                    held[name] = own[name]
+                own[name] = engine_own(_producing(name, getattr(camera, name)))
+                added.append(name)
+            own["_xf_pre_projected"] = True
+            added.append("_xf_pre_projected")
 
         def restore() -> None:
             camera.display_funcs = funcs
             for name in added:
                 own.pop(name, None)
+            own.update(held)
 
         return restore
 
@@ -403,6 +466,9 @@ class LivePainter:
         else:
             kind, fields = "image", self._image_fields(reads, own)
         fields.update(_depth_fields(self._depth(camera, reads, centres)))
+        if vars(camera).get("_xf_pre_projected"):
+            fields["pre_projected"] = _produced(recording, kind, own)
+            fields["features"] = int(fields.get("features", 0)) | FEATURE_PRE_PROJECTED
         record = Record(kind, fields)
         self._check(record, recording, own)
         uploads.update(own)
@@ -504,6 +570,8 @@ class LivePainter:
         for name, args, kwargs, value in recording._xf_log:
             if name == "__mapped__" or (mapped and name == "points"):
                 continue  # the record holds the mapped points
+            if name in (_PRE_DISPLAY, _CAMERA_RGBAS):
+                continue  # what the camera produced: the record holds it
             try:
                 answer = getattr(replay, name)
                 if args is not None:
@@ -525,6 +593,67 @@ class LivePainter:
 
 #: No value (a read that was not made, or that failed on replay).
 _NONE: Any = np.zeros((0, 4))
+
+
+def _produced(
+    recording: _Recording, kind: str, uploads: dict[bytes, Any]
+) -> dict[str, Any]:
+    """What the camera produced for the mobject ``recording`` drew, as a
+    pre-projected record states it: where its pre-display code placed the
+    mobject's points (``points``) and its gradient's ends (``gradient``),
+    and, for a path, the colours it painted with. A value produced two ways
+    in one capture, or a placement of points the record does not hold, is
+    ``render.unable``.
+    """
+    log = recording._xf_log
+    # The arrays the camera was handed come from the mobject's reads: the
+    # points (corners of an image), and each reading of its gradient's ends.
+    points_read = [v for n, a, _, v in log if n == "points" and a is None]
+    gradient_read = [
+        v for n, a, _, v in log if n == "get_gradient_start_and_end_points"
+    ]
+    found: dict[str, Any] = {}
+
+    def keep(name: str, value: Any) -> None:
+        if name in found and not _same(found[name], value):
+            raise Unable(
+                f"render.unable: a {type(recording._xf_leaf).__name__}'s"
+                f" {name} produced two ways in one capture"
+            )
+        found.setdefault(name, value)
+
+    for name, source, _, value in log:
+        if name == _PRE_DISPLAY:
+            if any(source is p for p in points_read):
+                target = "points"
+            elif any(source is g for g in gradient_read):
+                target = "gradient"
+            else:
+                raise Unable(
+                    "render.unable: a camera placed points its record does not"
+                    f" hold, for a {type(recording._xf_leaf).__name__}"
+                )
+            value = np.array(value, dtype=float)
+            if value.ndim != 2 or value.shape[1] != 3:
+                raise Unable(
+                    "render.unable: a camera's pre-display gave points of shape"
+                    f" {value.shape}"
+                )
+            keep(target, value)
+        elif name == _CAMERA_RGBAS:
+            target = {"fill": "fill", False: "stroke", True: "background_stroke"}[
+                source
+            ]
+            keep(target, np.asarray(value, dtype=float).reshape(-1, 4))
+    points = found.get("points", np.zeros((0, 3)))
+    pre: dict[str, Any] = {"points": _path_shape(points, uploads)}
+    gradient = found.get("gradient")
+    pre["gradient"] = None if gradient is None else _floats(gradient)
+    if kind == "path":
+        for name in ("fill", "stroke", "background_stroke"):
+            rows = found.get(name)
+            pre[name] = None if rows is None else _paint(rows, uploads)
+    return pre
 
 
 def _same_record(a: Record, b: Record) -> bool:
