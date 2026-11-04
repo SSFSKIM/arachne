@@ -88,6 +88,15 @@ def test_folding_keeps_the_first_of_more_than_three_look_alikes():
     assert kept.folded == tuple(alike[1:])
 
 
+def test_a_code_that_never_folds_keeps_every_look_alike():
+    """Each jump is its own event at its own cut: none folds into another."""
+    alike = [
+        _finding(_object("s.py:3#0", kind="Dot"), code="motion.jump", t=Fraction(i))
+        for i in range(5)
+    ]
+    assert fold(alike) == alike
+
+
 def test_three_look_alikes_are_all_kept():
     alike = [_finding(_label(i), _planet(i), t=Fraction(i)) for i in range(3)]
     assert fold(alike) == alike
