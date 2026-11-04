@@ -244,9 +244,15 @@ def _make_test_comparing_frames(
         with frames_tester.testing():
             run(direct if both else frames_tester)
         if both:
+            from arachne.frame_ir.painter import IrCairoPainter
+
             described = _FrameDigests(None)
+            drawn = IrCairoPainter.drawn_total
             with tempconfig({"draw_path": "ir_cairo"}):
                 run(described)
+            assert IrCairoPainter.drawn_total > drawn, (
+                "no frame of this unit was drawn from the Frame IR"
+            )
             assert described.digests == direct.digests, (
                 "the frames drawn from the Frame IR differ from the direct path's:"
                 f" {_first_difference(direct.digests, described.digests)}"
