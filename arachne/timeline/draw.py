@@ -532,18 +532,20 @@ class Drawing:
         error: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        if self._painted_by is not None:
-            self._painted_by.settle()
+        try:
+            if self._painted_by is not None:
+                self._painted_by.settle()
+        finally:
             self._painted_by = None
-        for mob, state in self._saved.values():
-            state.install(mob)
-        self._saved.clear()
-        for camera, saved in self._cameras_saved.values():
-            _restore_inputs(camera, saved)
-        self._cameras_saved.clear()
-        for sub_camera, picture in self._pictures_saved.values():
-            sub_camera.pixel_array = picture
-        self._pictures_saved.clear()
+            for mob, state in self._saved.values():
+                state.install(mob)
+            self._saved.clear()
+            for camera, saved in self._cameras_saved.values():
+                _restore_inputs(camera, saved)
+            self._cameras_saved.clear()
+            for sub_camera, picture in self._pictures_saved.values():
+                sub_camera.pixel_array = picture
+            self._pictures_saved.clear()
 
     def show(self, capture: Capture, roots: Sequence[Mobject]) -> None:
         """Give every mobject reachable from ``roots`` (and the camera's own)
