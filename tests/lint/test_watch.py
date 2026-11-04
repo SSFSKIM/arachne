@@ -276,7 +276,7 @@ def test_a_settled_caption_that_departs_is_swept(run, name):
         # Swept in the scene the play left, before the script removed it.
         ("RailSnapsUnderNote", "remove-note"),
         # Put back at once, it was removed all the same.
-        ("NoteRemovedAndReadded", "readd"),
+        ("NoteRemovedAndReadded", "put-back"),
         ("NoteFadesAtOnce", "at-once"),
         ("WordLeavesItsPanel", "leaves"),
         ("NoteFadesBetweenFrames", "between"),

@@ -329,7 +329,7 @@ def _evaluator(
         drawing.show(
             base, [m for a in play._animations if (m := a.mobject) is not None]
         )
-        states = play._animation_states[base.seq]
+        states = play._animation_states[base.drawn_seq]
         saved = [(animation, dict(vars(animation))) for animation, _ in states]
         try:
             for animation, state in states:

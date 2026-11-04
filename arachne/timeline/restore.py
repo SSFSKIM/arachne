@@ -180,7 +180,7 @@ def _restoring(
         base = play.base_at(t)
     elif base.instant > t:
         raise ValueError(f"A restore at {t} can't start from {base.instant}, after it.")
-    point = play._animation_states.get(base.seq)
+    point = play._animation_states.get(base.drawn_seq)
     if not isinstance(point, RestorePoint) or point.version != REGISTERED_STATE_VERSION:
         raise Unrestorable(
             "restore.missing_state",
