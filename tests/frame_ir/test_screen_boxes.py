@@ -13,7 +13,7 @@ from arachne.camera import projection
 from arachne.frame_ir.painter import IrCairoPainter
 
 from ..timeline.conftest import render
-from . import scenes
+from . import camera_scenes, scenes
 
 pytest.importorskip("arachne_core")
 
@@ -21,6 +21,20 @@ FPS = 15
 MEDIUM = {"pixel_width": 192, "pixel_height": 108}
 #: The parity bound (a pixel).
 BOUND = 1.0
+
+
+def projected(camera, view, mob, kind):
+    """The projection's box of a record's mobject. A record is one drawn leaf
+    (its family's other members are records of their own), but a face group
+    is its Surface's faces together.
+    """
+    if kind == "face_group":
+        return projection.pixel_box(camera, view, mob)
+    if not len(mob.points):
+        return None
+    placed = projection.pixel_points(camera, view, mob, mob.points)
+    low, high = placed.min(axis=0), placed.max(axis=0)
+    return (float(low[0]), float(low[1]), float(high[0]), float(high[1]))
 
 
 def boxes_against_the_projection(monkeypatch, scene_class) -> list[tuple]:
@@ -31,17 +45,6 @@ def boxes_against_the_projection(monkeypatch, scene_class) -> list[tuple]:
     """
     found: list[tuple] = []
     paint = IrCairoPainter.paint
-
-    def projected(camera, view, mob, kind):
-        # A record is one drawn leaf (its family's other members are records of
-        # their own), but a face group is its Surface's faces together.
-        if kind == "face_group":
-            return projection.pixel_box(camera, view, mob)
-        if not len(mob.points):
-            return None
-        placed = projection.pixel_points(camera, view, mob, mob.points)
-        low, high = placed.min(axis=0), placed.max(axis=0)
-        return (float(low[0]), float(low[1]), float(high[0]), float(high[1]))
 
     def watched(self, camera, groups, **kwargs):
         pixels = paint(self, camera, groups, **kwargs)
@@ -87,12 +90,53 @@ def test_the_core_places_each_record_where_the_camera_does(monkeypatch, scene_cl
     found = boxes_against_the_projection(monkeypatch, scene_class)
     assert found, "boxes were compared"
     worst = 0.0
-    for t, slot, kind, core, projected, _ in found:
-        assert projected is not None, (t, slot, kind)
-        error = float(np.max(np.abs(np.subtract(core, projected))))
+    for t, slot, kind, core, placed, _ in found:
+        assert placed is not None, (t, slot, kind)
+        error = float(np.max(np.abs(np.subtract(core, placed))))
         worst = max(worst, error)
-        assert error <= BOUND, (t, slot, kind, core, projected)
+        assert error <= BOUND, (t, slot, kind, core, placed)
     print(f"{scene_class.__name__}: {len(found)} boxes, worst {worst:.3g} px")
+
+
+@pytest.mark.parametrize(
+    ("scene_class", "kinds"),
+    [
+        # Drawn as the scene runs, and from the record: each kind a camera of
+        # the scene's own places, boxed from the points it placed (a Surface's
+        # faces are paths of their own there, captured leaf by leaf).
+        (camera_scenes.ShiftedSolids, {"path"}),
+        (camera_scenes.ShiftedPictures, {"points", "image"}),
+        (camera_scenes.PatchedPictures, {"points", "image"}),
+    ],
+    ids=lambda v: getattr(v, "__name__", None),
+)
+def test_a_changed_camera_s_records_are_boxed_where_it_placed_them(
+    monkeypatch, scene_class, kinds
+):
+    from arachne.frame_ir import live as live_module
+
+    found: list[tuple] = []
+    describe = live_module.LivePainter._describe
+
+    def described(self, camera, drawn, centres, background):
+        pixels = describe(self, camera, drawn, centres, background)
+        painter = self.painter(camera)
+        view = projection.view_of(
+            camera, mapping_centre=painter.stream._view["mapping_centre"]
+        )
+        mobs = {slot: mob for mob, slot in painter.stream._slots.values()}
+        for slot, box in painter.core.screen_boxes().items():
+            kind = painter.stream._held[slot].kind
+            found.append((slot, kind, box, projected(camera, view, mobs[slot], kind)))
+        return pixels
+
+    monkeypatch.setattr(live_module.LivePainter, "_describe", described)
+    render(scene_class, FPS, draw_path="ir_cairo", **MEDIUM)
+    assert kinds <= {kind for _, kind, _, _ in found}, found
+    for slot, kind, core, placed in found:
+        assert placed is not None, (slot, kind)
+        error = float(np.max(np.abs(np.subtract(core, placed))))
+        assert error <= BOUND, (slot, kind, core, placed)
 
 
 def test_a_moved_three_d_centre_maps_paths_around_the_frozen_centre(monkeypatch):
