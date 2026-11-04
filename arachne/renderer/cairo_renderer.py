@@ -173,8 +173,8 @@ class CairoRenderer:
                 static = drawing.static(play)
         # As in CE, a frozen frame's static picture stays the renderer's
         # background after it (what update_frame draws over), and no other
-        # play's does.
-        self.static_image = static if play.held else None
+        # play's does; with the static layer off, none does.
+        self.static_image = static if play.held and config.static_layer else None
         self.num_plays += 1
 
     def _play_live(

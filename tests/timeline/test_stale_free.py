@@ -7,7 +7,8 @@ it turns or relights) stays frozen until the next play. Arachne keeps CE's
 decision of what moves, and rebuilds each frame's static list from the
 frame's capture: the cached picture covers the longest prefix of that list
 that is unchanged since the play began, and the rest is drawn at the
-frame's state. Live frames (a record that refuses) cache nothing.
+frame's state. Live frames (a record that refuses) reuse no static
+picture, but for a frozen frame's, during which nothing runs.
 
 ``static_layer=False`` draws every frame from the background, and is the
 oracle each scene is compared with byte for byte. It shares the rebuilt
@@ -42,7 +43,9 @@ from .stale_scenes import (
     TINT_SWITCH,
     DrivenBody,
     DrivenReadout,
+    EndsFrozen,
     LiveDriven,
+    LiveEndsFrozen,
     LiveHeld,
     MovedLight,
     MovedLightAt,
@@ -261,16 +264,29 @@ def test_a_live_frozen_frame_runs_the_scenes_drawing_code_as_ce_does():
     scene, frames, counts = render_counted(LiveHeld)
     assert scene.timeline.record.refusal is not None, "drawn from the record"
     # Its static picture, then the scene over it, as CE draws a frozen frame.
+    # One read is the constructor's (``init_colors``), one the frozen
+    # frame's static picture; nothing in the frame draws the square again.
     assert scene.held_calls == 2
     assert counts["picture"] == 1
     off, off_frames, off_counts = render_counted(LiveHeld, static_layer=False)
-    assert off.held_calls == 2
+    assert off.held_calls == 2  # the constructor's, then the static list's
     # Without the static layer the frozen frame starts from the background.
     assert off_counts["picture"] == 0
     assert_same_frames(frames, off_frames)
 
 
-# ── frames drawn live cache nothing ──────────────────────────────────────────
+@pytest.mark.parametrize("scene_class", [EndsFrozen, LiveEndsFrozen])
+def test_a_frozen_frame_leaves_its_picture_only_with_the_static_layer(scene_class):
+    # The renderer keeps a frozen frame's static picture as its background
+    # after it, as CE does, drawn from the record or live alike.
+    on, _ = render(scene_class, FPS)
+    off, _ = render(scene_class, FPS, static_layer=False)
+    assert (on.timeline.record.refusal is None) is (scene_class is EndsFrozen)
+    assert on.renderer.static_image is not None
+    assert off.renderer.static_image is None
+
+
+# ── frames drawn live reuse no static picture ──────────────────────────────────────────
 
 
 def test_a_live_drawn_scene_shows_what_its_driver_writes():

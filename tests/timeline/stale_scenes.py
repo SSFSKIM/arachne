@@ -314,3 +314,19 @@ class LiveDriven(Scene):
 
         self.add(driver(drive))
         self.wait(1.5)
+
+
+class EndsFrozen(Scene):
+    """A scene that ends on a frozen wait."""
+
+    def construct(self):
+        self.add(Square(color=BLUE, fill_opacity=1))
+        self.wait(0.5)
+
+
+class LiveEndsFrozen(Scene):
+    """A live-drawn scene that ends on a frozen wait."""
+
+    def construct(self):
+        self.add(Counted(color=BLUE, fill_opacity=1))
+        self.wait(0.5)
