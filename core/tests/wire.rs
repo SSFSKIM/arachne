@@ -92,18 +92,19 @@ fn sha256_matches_its_standard_vectors() {
     );
 }
 
-/// The sha256 of the canonical sample's bytes: every field of XF 0 set, built in code by
-/// `common::sample_deltas`. XF streams are generated, never committed, so any drift in the layout
-/// fails this pin. Change it only when the layout is meant to change.
-const SAMPLE_SHA256: &str = "b6b6ffd57c921cf7fb1f75c9cc9ad17c509055e68213126f5b0c40d8a15f8c2c";
+/// The sha256 of the canonical sample's bytes (`common::sample_deltas`: every enum code, both
+/// branches of every optional field, swappable fields given values of their own). It fails on any
+/// change to what the sample writes; `tests/layout.rs` pins the layout field by field. XF streams
+/// are generated, never committed. Change the pin only when such a change is meant.
+const SAMPLE_SHA256: &str = "64ab758d9e709cd244edf24871db2cf71d4ffb948e20cb500cefea2016b5ddd0";
 
 #[test]
-fn the_layout_is_byte_stable() {
+fn the_canonical_samples_bytes_are_pinned() {
     let bytes = wire::encode_file(&common::sample_deltas());
     assert_eq!(
         sha256_hex(&bytes),
         SAMPLE_SHA256,
-        "the canonical sample's bytes changed: XF's layout drifted"
+        "the canonical sample's bytes changed"
     );
     assert_eq!(wire::decode_file(&bytes).unwrap(), common::sample_deltas());
 }
