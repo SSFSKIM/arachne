@@ -269,6 +269,7 @@ class _ForwardRecorder(Recorder):
             stepping=stepping,
             instants=instants,
             demoted=demoted,
+            exits=True,
         )
         if known:
             self.execution = Execution(known=dict(known))

@@ -34,6 +34,7 @@ from .admission import (
     play_identity,
     whole_line,
 )
+from .bodies import Exit, bodies
 from .clock import TICK_RATE, exact, play_end
 from .dispatch import draw_refusal, scene_hooks
 from .draw import CameraExtras, LiveFrames, camera_nodes
@@ -285,6 +286,11 @@ class Recorder:
     (:data:`.admission.PlayIdentity`, :mod:`.probe`): the play of each, or
     every play of a line demoted whole, ticks where it would be a
     state-function play. A session passes them; a render never does.
+
+    ``exits`` says whether the record keeps where each body stands as each
+    play ends (``Record.exits``, :mod:`.bodies`), which the lint measures
+    cuts from: a session's and a forward run's records do; a render's,
+    which no lint reads, does not.
     """
 
     def __init__(
@@ -299,6 +305,7 @@ class Recorder:
         on_start: Callable[[Scene, Fraction], object] | None = None,
         instants: Iterable[Fraction | float] = (),
         demoted: Iterable[PlayIdentity] = (),
+        exits: bool = False,
     ) -> None:
         if stepping not in (True, False, BRUTE_FORCE):
             raise ValueError(
@@ -313,6 +320,7 @@ class Recorder:
         self.on_start = on_start
         self.instants = tuple(sorted({exact(t) for t in instants}))
         self.demoted = frozenset(demoted)
+        self.exits = exits
         #: The frame the configuration describes, as ``(width, height)``:
         #: the unit of the record's home-frame boxes, whatever the camera
         #: does (:mod:`arachne.camera.projection`).
@@ -361,6 +369,8 @@ class Recorder:
                 identity=Identity(source_digest=None, seed=scene.random_seed),
             )
             self.record.execution = self.execution
+            if self.exits:
+                self.record.exits = {}
             self._camera_refusal = camera_refusal(scene.renderer.camera)
             self.record.refusal = self._camera_refusal
         return self.record
@@ -640,6 +650,8 @@ class Recorder:
         assert final is not None
         play.end = final.end
         record.duration = final.end
+        if record.exits is not None:
+            self._keep_exit(record, play)
         if final.end < play.requested_end:
             self.mark(
                 "wait_until",
@@ -648,6 +660,25 @@ class Recorder:
                 source_line=play.source_line,
             )
         return play
+
+    def _keep_exit(self, record: Record, play: PlayRecord) -> None:
+        """Keep where each body stands as ``play`` ends: its animations
+        finished and cleaned up, the script not yet run on.
+        """
+        scene = self.scene
+        shown = list(scene.mobjects)
+        on = set(map(id, shown))
+        shown += [m for m in scene.foreground_mobjects if id(m) not in on]
+        assert record.exits is not None
+        record.exits[play.index] = Exit(
+            *bodies(
+                shown,
+                scene.renderer.camera,
+                record.origin,
+                home=self.home,
+                configured_pixels=self.configured_pixels,
+            )
+        )
 
     def _prepare(self, body: _Body) -> PlayRun:
         """Plan the play over its span (``play.requested_end``): its events,
