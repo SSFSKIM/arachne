@@ -58,6 +58,7 @@ _NOT_CAMERA_VALUES = frozenset(
         "_background",
         "_built_background",
         "pixel_array_to_cairo_context",
+        "pixel_array_to_mapping_centre",
         "display_funcs",
         "canvas",
         "background_colored_vmobject_displayer",
@@ -477,15 +478,39 @@ class Drawing:
     ``static_layer`` (the option of that name, unless given) says whether a
     play's static picture is reused under its frames while it holds, or
     every frame draws its static mobjects: the same frames either way.
+
+    ``draw_path`` (the option of that name, unless given) says how a shown
+    frame becomes pixels: on ``cairo`` the camera draws the shown mobjects;
+    on ``ir_cairo`` a painter (:mod:`arachne.frame_ir.painter`) describes
+    the frame in XF and draws it from that description alone. Its frames are
+    the frame's static list then its moving list, as with the static layer
+    off, from a stream kept per record and process across drawings.
     """
 
-    def __init__(self, record: Record, *, static_layer: bool | None = None) -> None:
-        if static_layer is None:
-            from arachne import config
+    def __init__(
+        self,
+        record: Record,
+        *,
+        static_layer: bool | None = None,
+        draw_path: str | None = None,
+    ) -> None:
+        from arachne import config
 
+        if static_layer is None:
             static_layer = config.static_layer
+        if draw_path is None:
+            draw_path = config.draw_path
+        from arachne.frame_ir.painter import painter_for
+
         self.record = record
         self.static_layer = static_layer
+        self.draw_path = draw_path
+        #: The painters of the draw path (``None`` on ``cairo``): one for
+        #: frames, one for the plays' static pictures.
+        self.painter = painter_for(record, draw_path)
+        self.static_painter = painter_for(record, draw_path, "static")
+        #: The painter that drew last, which settles the cameras on exit.
+        self._painted_by: Any = None
         self.camera: Camera = record._scene.renderer.camera
         #: Per play (by index): what its static picture painted, and how
         #: long that picture holds.
@@ -507,6 +532,9 @@ class Drawing:
         error: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
+        if self._painted_by is not None:
+            self._painted_by.settle()
+            self._painted_by = None
         for mob, state in self._saved.values():
             state.install(mob)
         self._saved.clear()
@@ -579,6 +607,13 @@ class Drawing:
         capture = self.record._captures[play.static_seq]
         self.show(capture, play.static)
         camera = self.camera
+        if self.static_painter is not None:
+            pixels = self.static_painter.paint(
+                camera, [("static", list(play.static))], t=capture.instant
+            )
+            self._painted_by = self.static_painter
+            camera.set_pixel_array(pixels)
+            return pixels
         camera.reset()
         camera.capture_mobjects(list(play.static))
         self._pictures[play.index] = self._painted(play, capture)
@@ -613,6 +648,8 @@ class Drawing:
         captures).
         """
         targets = list(capture.moving) or capture.draw_list()
+        if self.painter is not None:
+            return self._paint(play, capture, targets, prepare)
         if self.static_layer and self._picture_holds(play, capture):
             self.show(capture, targets)
             if prepare is not None:
@@ -625,6 +662,38 @@ class Drawing:
             self._draw_static(play, capture, static, targets, prepare)
         self.camera.capture_mobjects(targets)
         return self.camera.pixel_array.copy()
+
+    def _paint(
+        self,
+        play: PlayRecord,
+        capture: Capture,
+        targets: list[Mobject],
+        prepare: Callable[[Drawing], None] | None,
+    ) -> PixelArray:
+        """The frame at ``capture`` from the painter: its static list rebuilt
+        at the frame's state, then the moving list, each as one capture of
+        the camera would draw it.
+        """
+        assert self.painter is not None
+        self.show(capture, [*capture.draw_list(), *targets])
+        if prepare is not None:
+            prepare(self)
+        camera = self.camera
+        listed = static_list(camera, capture.draw_list(), capture.moving)
+        terms = None
+        if prepare is None and play.route == "trusted":
+            terms = {
+                id(mob): term for mob, term in play.leaf_terms(capture.instant).items()
+            }
+        pixels = self.painter.paint(
+            camera,
+            [("static", listed), ("moving", targets)],
+            t=capture.instant,
+            terms=terms,
+        )
+        self._painted_by = self.painter
+        camera.set_pixel_array(pixels)
+        return pixels
 
     def _picture_holds(self, play: PlayRecord, capture: Capture) -> bool:
         """Whether the frame at ``capture`` has the static list the play's
@@ -791,6 +860,13 @@ class Drawing:
         assert capture is not None, "the scene has not finished"
         targets = capture.draw_list()
         self.show(capture, targets)
+        if self.painter is not None:
+            pixels = self.painter.paint(
+                self.camera, [("static", targets)], t=capture.instant
+            )
+            self._painted_by = self.painter
+            self.camera.set_pixel_array(pixels)
+            return pixels
         self.camera.reset()
         self.camera.capture_mobjects(targets)
         return self.camera.pixel_array.copy()

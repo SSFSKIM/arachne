@@ -364,6 +364,7 @@ class ManimConfig(MutableMapping):
         "seed",
         "show_in_file_browser",
         "static_layer",
+        "draw_path",
         "tex_dir",
         "tex_template",
         "tex_template_file",
@@ -669,6 +670,7 @@ class ManimConfig(MutableMapping):
         ]:
             setattr(self, key, parser["CLI"].getboolean(key, fallback=False))
         self.static_layer = parser["CLI"].getboolean("static_layer", fallback=True)
+        self.draw_path = parser["CLI"].get("draw_path", fallback="cairo")
 
         # int keys
         for key in [
@@ -1380,6 +1382,19 @@ class ManimConfig(MutableMapping):
     @static_layer.setter
     def static_layer(self, value: bool) -> None:
         self._set_boolean("static_layer", value)
+
+    @property
+    def draw_path(self) -> str:
+        """How a frame becomes pixels: ``cairo`` draws the shown mobjects
+        with the camera (the default); ``ir_cairo`` turns the shown state
+        into XF, the Frame IR, and draws that with Cairo, byte for byte the
+        same frames (the check that the IR is complete).
+        """
+        return self._d["draw_path"]
+
+    @draw_path.setter
+    def draw_path(self, value: str) -> None:
+        self._set_from_list("draw_path", value, ["cairo", "ir_cairo"])
 
     @property
     def renderer(self) -> NoReturn:

@@ -297,6 +297,27 @@ def user_definitions(cls: type) -> tuple[str, ...]:
     return tuple(found)
 
 
+def _extraction_functions() -> list[Any]:
+    """The functions of the Frame IR's extraction, which reads what the
+    camera's capture reads (and must call no scene code either): its
+    module's functions and its classes' methods.
+    """
+    from arachne.frame_ir import extract
+
+    found: list[Any] = []
+    for value in vars(extract).values():
+        if (
+            _engine_function(value)
+            and getattr(value, "__module__", None) == extract.__name__
+        ):
+            found.append(value)
+        elif isinstance(value, type) and value.__module__ == extract.__name__:
+            found.extend(
+                f for f in map(_function_of, vars(value).values()) if f is not None
+            )
+    return found
+
+
 @cache
 def draw_methods(camera_class: type) -> frozenset[str]:
     """The mobject attributes a draw through ``camera_class`` may reach, read
@@ -304,10 +325,13 @@ def draw_methods(camera_class: type) -> frozenset[str]:
     methods (and the engine functions they call by name) read off an object
     other than the camera, closed over what the engine's mobject methods of
     those names read off ``self``. A read off a local that is no mobject (a
-    set's ``add``) is kept: it only refuses more.
+    set's ``add``) is kept: it only refuses more. The Frame IR's extraction
+    reads a frame as the camera would, and what it reads joins the set.
     """
     defined = _mobject_definitions()
     seed: set[str] = set()
+    for function in _extraction_functions():
+        seed |= _reads(function)[0]
     for klass in camera_class.__mro__:
         if not _engine_class(klass):
             continue
@@ -419,6 +443,7 @@ def draw_protocols(camera_class: type) -> frozenset[str]:
                         helper = function.__globals__.get(name)
                         if _engine_function(helper):
                             functions.append(helper)
+    functions.extend(_extraction_functions())
     defined = _mobject_definitions()
     for name in draw_methods(camera_class):
         functions.extend(defined.get(name, ()))

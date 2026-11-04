@@ -42,6 +42,7 @@ from .source import SourceLine
 
 if TYPE_CHECKING:
     from arachne.animation.animation import Animation
+    from arachne.frame_ir.extract import Blend
     from arachne.mobject.mobject import Mobject
     from arachne.scene.scene import Scene
 
@@ -297,6 +298,54 @@ class PlayRecord:
             )
             for capture in self.samples
         )
+
+    def leaf_terms(self, t: Fraction) -> dict[Mobject, Blend]:
+        """The leaves whose state at ``t`` a straight-path blend states: for a
+        trusted play of the transform family on a straight path, each leaf
+        the animation interpolates, with its start and end mobjects and its
+        own alpha at ``t`` (the play's alpha through the animation's rate
+        function and lag). Empty for another play, and at an instant whose
+        animations the record did not keep. The blend is what the forward run
+        computed there only if the leaf holds it; a drawer checks that.
+        """
+        from arachne.animation.transform import Transform
+        from arachne.frame_ir.extract import Blend
+        from arachne.utils.bezier import interpolate
+
+        from .frozen import engine_class
+        from .routes import _alpha
+
+        if self.route != "trusted" or self.held:
+            return {}
+        base = self.base_at(t)
+        states = {
+            id(animation): state
+            for animation, state in self._animation_states.get(base.seq, ())
+        }
+        found: dict[Mobject, Blend] = {}
+        for animation in self._animations:
+            state = states.get(id(animation))
+            if (
+                state is None
+                or not engine_class(type(animation))
+                or not isinstance(animation, Transform)
+                or state.get("_path_func") is not interpolate
+            ):
+                continue
+            saved = dict(vars(animation))
+            try:
+                vars(animation).clear()
+                vars(animation).update(state)
+                alpha = _alpha(t - self.start, animation.run_time)
+                families = list(animation.get_all_families_zipped())
+                for index, (leaf, start, end) in enumerate(families):
+                    found[leaf] = Blend(
+                        start, end, animation.get_sub_alpha(alpha, index, len(families))
+                    )
+            finally:
+                vars(animation).clear()
+                vars(animation).update(saved)
+        return found
 
     def base_at(self, t: Fraction) -> Capture:
         """The capture of the last instant the play was evaluated at, at or
