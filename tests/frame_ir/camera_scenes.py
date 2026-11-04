@@ -47,6 +47,18 @@ class ShiftedCamera(ThreeDCamera):
         return super().project_points(points) + np.array([-1.0, 0.3, 0.0])
 
 
+class NamedCamera(ThreeDCamera):
+    """A camera class of the scene's own whose pre-display code reads what no
+    record states (each mobject's ``name``) to place it.
+    """
+
+    def transform_points_pre_display(self, mobject, points):
+        out = np.array(super().transform_points_pre_display(mobject, points))
+        if mobject.name == "Dot":
+            out[:, 1] += 0.5
+        return out
+
+
 class Solids(ThreeDScene):
     """A lit surface, axes whose tips are shaded with a gradient, a dot, a
     label fixed in the frame and one of fixed orientation, under an orbit:
@@ -87,6 +99,13 @@ class ShiftedSolids(Solids):
 
     def __init__(self, **kwargs):
         super().__init__(camera_class=ShiftedCamera, **kwargs)
+
+
+class NamedSolids(Solids):
+    """:class:`Solids` through :class:`NamedCamera` (drawn as the scene runs)."""
+
+    def __init__(self, **kwargs):
+        super().__init__(camera_class=NamedCamera, **kwargs)
 
 
 class PatchedSolids(Solids):
