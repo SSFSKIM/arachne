@@ -245,6 +245,7 @@ class LivePainter:
         from arachne.camera.camera import Camera
         from arachne.camera.mapping_camera import MappingCamera
         from arachne.mobject.mobject import Mobject
+        from arachne.timeline.camera_code import engine_own
 
         own = vars(camera)
         funcs = camera.display_funcs
@@ -252,7 +253,9 @@ class LivePainter:
             kind: func if kind is Mobject else self._display(camera, kind, func)
             for kind, func in funcs.items()
         }
-        own["capture_mobjects"] = self._capture(camera, camera.capture_mobjects)
+        own["capture_mobjects"] = engine_own(
+            self._capture(camera, camera.capture_mobjects)
+        )
         own["_xf_live"] = []
         added = ["capture_mobjects", "_xf_live"]
         if (
@@ -267,7 +270,7 @@ class LivePainter:
                     mobject._xf_log.append(("__mapped__", None, None, points))
                 return Camera.points_to_pixel_coords(camera, mobject, points)
 
-            own["points_to_pixel_coords"] = mapped
+            own["points_to_pixel_coords"] = engine_own(mapped)
             added.append("points_to_pixel_coords")
         if not self.draw:
             context = camera.get_cairo_context
@@ -276,7 +279,7 @@ class LivePainter:
                 context(pixel_array)  # CE's context still freezes its centre
                 return _NoContext()
 
-            own["get_cairo_context"] = no_context
+            own["get_cairo_context"] = engine_own(no_context)
             added.append("get_cairo_context")
 
         def restore() -> None:

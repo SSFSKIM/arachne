@@ -35,41 +35,27 @@ from .xf import Delta, StreamState
 DRAW_PATHS = {"cairo": False, "ir_cairo": True}
 
 
-#: What :func:`~.live.live` itself puts on a camera instance while it draws.
-_LIVE_OWN = frozenset(
-    {"capture_mobjects", "points_to_pixel_coords", "get_cairo_context"}
-)
-
-
 def user_camera(camera: Any) -> tuple[str, str] | None:
-    """What of ``camera`` is the scene's own code, as ``(subject, why)``: its
-    class, a subclass of one of the engine's cameras defined outside the
-    engine; a method of an engine camera class replaced on the class (against
-    what the class held when the engine was imported); or a method of its
-    class replaced on the instance. ``None`` for an engine camera as the
-    engine made it, or for no camera at all.
+    """What of ``camera`` is the scene's own code, as ``(subject, why)``: a
+    method of an engine camera class replaced on the class
+    (:func:`~arachne.timeline.camera_code.replaced_methods`); its class, a
+    subclass of one of the engine's cameras defined outside the engine; or a
+    method of its class replaced on the instance. ``None`` for an engine
+    camera as the engine made it, or for no camera at all.
     """
     from arachne.camera.camera import Camera
-    from arachne.timeline.frozen import class_members, engine_class
+    from arachne.timeline.camera_code import replaced_methods
+    from arachne.timeline.frozen import engine_class
 
     if not isinstance(camera, Camera):
         return None
     kind = type(camera)
-    patched = sorted(
-        f"{klass.__name__}.{name}"
-        for klass in kind.__mro__
-        if engine_class(klass)
-        for name in set(vars(klass)) | set(class_members(klass))
-        if vars(klass).get(name) is not class_members(klass).get(name)
-        and (
-            callable(vars(klass).get(name)) or callable(class_members(klass).get(name))
-        )
-    )
+    replaced = replaced_methods(camera)
+    patched = ", ".join(r.qualname for r in replaced if r.form == "class")
     if patched:
-        names = ", ".join(patched)
         return (
-            names,
-            f"{names}, replaced on the engine's camera class by the scene's code,",
+            patched,
+            f"{patched}, replaced on the engine's camera class by the scene's code,",
         )
     if not engine_class(kind):
         base = next(k for k in kind.__mro__ if engine_class(k))
@@ -81,17 +67,12 @@ def user_camera(camera: Any) -> tuple[str, str] | None:
             f"{kind.__qualname__} ({where}), a camera class of the scene's own"
             f" subclassing {base.__name__}"
         )
-    engine = _LIVE_OWN if "_xf_live" in vars(camera) else frozenset()
-    replaced = sorted(
-        name
-        for name, value in vars(camera).items()
-        if name not in engine
-        and callable(value)
-        and callable(getattr(kind, name, None))
-    )
-    if replaced:
-        names = ", ".join(f"{kind.__name__}.{name}" for name in replaced)
-        return names, f"{names}, replaced on the camera instance by the scene's code,"
+    shadowed = ", ".join(r.qualname for r in replaced if r.form == "instance")
+    if shadowed:
+        return (
+            shadowed,
+            f"{shadowed}, replaced on the camera instance by the scene's code,",
+        )
     return None
 
 
