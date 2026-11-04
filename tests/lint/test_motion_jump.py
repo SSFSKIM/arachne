@@ -289,3 +289,41 @@ def test_a_forward_run_keeps_every_play_s_exit(session_of):
     assert execution is not session.record
     assert len(execution.plays) == len(session.record.plays) > 2
     assert set(execution.exits) == {play.index for play in execution.plays}
+
+
+@pytest.mark.parametrize("forward", [False, True])
+def test_only_cuts_from_the_arming_on_are_measured(session_of, forward):
+    """As the other backend captures them: a teleport before the scene armed
+    the rule is not seen, from the session's record or a forward run's.
+    """
+    session = session_of("ArmedAtTwo", MOTION, frame_rate=15)
+    assert session.record.armed_at == 2
+    assert set(session.record.exits) == {2, 3}
+    if forward:
+        session.record.exits = None
+    read = []
+
+    def observe(context):
+        read.append(context.frames.execution)
+        return ()
+
+    (jump,) = lint(session, rules=(motion_jump, observe)).findings
+    assert len(session.forward_runs) == int(forward)
+    (execution,) = read
+    assert execution.armed_at == 2
+    assert jump.detail["boundary"] == {"from_play": 2, "to_play": 3}
+    assert jump.line.line == line_of("after-armed-teleport", MOTION)
+    assert jump.detail["distance"] == pytest.approx(4.0, abs=1e-6)
+
+
+def test_a_scene_that_never_armed_has_every_cut_measured(session_of):
+    """Asked for the rule, a scene that never armed it is read whole: both
+    teleports are found.
+    """
+    session = session_of("TwoTeleports", MOTION, frame_rate=15)
+    assert session.record.armed_at is None
+    found = lint(session, rules=(motion_jump,)).findings
+    assert [f.detail["boundary"] for f in found] == [
+        {"from_play": 0, "to_play": 1},
+        {"from_play": 2, "to_play": 3},
+    ]

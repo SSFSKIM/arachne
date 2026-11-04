@@ -52,12 +52,14 @@ and after, the distance and the two plays. A jump object has no box
 (``bbox`` and ``screen_bbox`` are ``None``), as the moment of the jump has
 none.
 
-A session's record keeps the exits of the plays that end once its scene
-has armed the rule (:meth:`.Recorder.arm_motion`). A record that keeps no
-exit of a play it shows (the scene never armed the rule, or armed it late)
-is read through the lint's forward run, which keeps every play's; it is
-never measured another way. The rule is not among the defaults: it runs
-when passed to :func:`.lint`.
+A scene that arms the rule (:meth:`.Recorder.arm_motion`) has the cuts
+measured from the first play to end after the arming on
+(``Record.armed_at``), and its session's record keeps those plays' exits;
+the cuts before are not seen. A scene that never armed it has every cut
+measured. A record that keeps no exit of a play it measures (the scene
+never armed the rule) is read through the lint's forward run, which keeps
+every play's; it is never measured another way. The rule is not among the
+defaults: it runs when passed to :func:`.lint`.
 """
 
 from __future__ import annotations
@@ -200,10 +202,15 @@ motion_jump = MotionJump()
 
 
 def _wanted(record: Record) -> list[tuple[PlayRecord, list[Fraction]]]:
-    """Every play that shows a frame, with the frames it shows."""
+    """Every play that shows a frame, with the frames it shows: from the
+    play the scene armed the rule before on, when it did.
+    """
     grid = render_grid(record)
+    first = record.armed_at or 0
     wanted = []
     for play in record.plays:
+        if play.index < first:
+            continue
         shown = frames_in(play.start, play.end, grid)
         if shown:
             # A frozen play shows one picture all along.

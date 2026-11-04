@@ -381,14 +381,19 @@ class Recorder:
         return self.record
 
     def arm_motion(self) -> None:
-        """Keep where each body stands as each play from now on ends, when
-        the record keeps armed exits (``exits="armed"``); a record keeping
-        every play's or none is as it was.
+        """Arm the motion rule: the record notes the first play to end from
+        now on (``Record.armed_at``; the first arming counts), and, keeping
+        armed exits (``exits="armed"``), keeps where each body stands as
+        each such play ends. A record that keeps none is as it was.
         """
-        if self.exits == "armed":
-            record = self.ensure_record()
-            if record.exits is None:
-                record.exits = {}
+        if self.exits == "none":
+            return
+        record = self.ensure_record()
+        if record.armed_at is None:
+            # A play running now ends after the arming.
+            record.armed_at = len(record.plays) - (1 if self._playing else 0)
+        if self.exits == "armed" and record.exits is None:
+            record.exits = {}
 
     def refusal(self) -> str | None:
         """Why the record can't draw the play about to run, so that it is
