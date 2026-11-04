@@ -630,14 +630,20 @@ def test_pre_projected_sets_its_feature_and_is_cairo_only(kind):
     shape = delta.upload_path(square())
     body = {}
     if kind == "points":
-        body = dict(colors=delta.upload_paint(np.ones((16, 4))), radius=2)
+        body = {"colors": delta.upload_paint(np.ones((16, 4))), "radius": 2}
     elif kind == "image":
         shape = delta.upload_image(np.ones((1, 1, 4), dtype=np.uint8))
-        body = dict(corners=np.zeros((4, 3)))
+        body = {"corners": np.zeros((4, 3))}
     delta.set_record(kind, 3, 33, shape=shape, pre_projected={"points": points}, **body)
     fields = delta.contents()["set"][0][3]
     assert fields["features"] == 2
-    assert fields["pre_projected"] == dict(points=points, gradient=None, fill=None, stroke=None, background_stroke=None)
+    assert fields["pre_projected"] == {
+        "points": points,
+        "gradient": None,
+        "fill": None,
+        "stroke": None,
+        "background_stroke": None,
+    }
     assert delta.to_bytes()[:4] == struct.pack("<HH", 1, 1)
     stream = ac.Stream()
     stream.apply(ac.FrameDelta.from_bytes(delta.to_bytes()))
@@ -664,18 +670,28 @@ def pre_projected_sample():
     delta = ac.FrameDelta(t=(2, 15), seq=3)
     original = delta.upload_path(square())
     points = delta.upload_path([[1.25, -2.5, 0.125], [3.5, 4.75, -0.625]])
-    table = delta.upload_paint([[0.125, 0.25, 0.375, 0.5], [0.625, 0.75, 0.875, 1], [0.9, 0.8, 0.7, 0.6]])
-    delta.set_record("path", 11, 111, shape=original, pre_projected={
-        "points": points,
-        "gradient": ((-1.25, -2.5, -3.75), (4.125, 5.25, 6.5)),
-        "fill": (0.15, 0.25, 0.35, 0.45),
-        "stroke": [(0.55, 0.65, 0.75, 0.85), (0.95, 0.05, 0.125, 0.375)],
-        "background_stroke": table,
-    })
+    table = delta.upload_paint(
+        [[0.125, 0.25, 0.375, 0.5], [0.625, 0.75, 0.875, 1], [0.9, 0.8, 0.7, 0.6]]
+    )
+    delta.set_record(
+        "path",
+        11,
+        111,
+        shape=original,
+        pre_projected={
+            "points": points,
+            "gradient": ((-1.25, -2.5, -3.75), (4.125, 5.25, 6.5)),
+            "fill": (0.15, 0.25, 0.35, 0.45),
+            "stroke": [(0.55, 0.65, 0.75, 0.85), (0.95, 0.05, 0.125, 0.375)],
+            "background_stroke": table,
+        },
+    )
     return delta
 
 
-PRE_PROJECTED_SHA256 = "PENDING_PRE_PROJECTED_PIN"
+PRE_PROJECTED_SHA256 = (
+    "df6b52077f443b5db275ed07837ef7235a089298af0c410c770150ddf796983c"
+)
 
 
 def test_pre_projected_canonical_sample_is_pinned_separately(tmp_path):

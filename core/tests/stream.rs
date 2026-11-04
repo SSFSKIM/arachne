@@ -687,18 +687,25 @@ fn mapping_centre_is_carried_but_does_not_change_this_builds_pixels() {
     assert_eq!(s.draw(16, 9, 1).unwrap(), before);
 }
 
-
 fn pre_projected_path(shape: &Shape, points: Key) -> Record {
     let mut r = path_record(1, shape);
     r.features = FEATURE_PRE_PROJECTED;
-    r.pre_projected = Some(PreProjected { points, gradient: None, fill: Paint::None, stroke: Paint::None, background_stroke: Paint::None });
+    r.pre_projected = Some(PreProjected {
+        points,
+        gradient: None,
+        fill: Paint::None,
+        stroke: Paint::None,
+        background_stroke: Paint::None,
+    });
     r
 }
 
 #[test]
 fn pre_projected_points_must_be_a_path_held_or_uploaded() {
     let shape = square();
-    let points = Shape::new(ShapeData::Path { points: vec![[1.0, 2.0, 3.0]; 2] });
+    let points = Shape::new(ShapeData::Path {
+        points: vec![[1.0, 2.0, 3.0]; 2],
+    });
     let mut s = Stream::new();
     let mut d = delta(0);
     d.upload = vec![shape.clone(), fill_image()];
@@ -729,7 +736,11 @@ fn every_pre_projected_paint_table_must_exist_and_cannot_be_released_in_use() {
     for which in 0..3 {
         let mut r = pre_projected_path(&shape, shape.key());
         let p = r.pre_projected.as_mut().unwrap();
-        match which { 0 => p.fill = Paint::Table(table.key()), 1 => p.stroke = Paint::Table(table.key()), _ => p.background_stroke = Paint::Table(table.key()) }
+        match which {
+            0 => p.fill = Paint::Table(table.key()),
+            1 => p.stroke = Paint::Table(table.key()),
+            _ => p.background_stroke = Paint::Table(table.key()),
+        }
         let mut d = delta(0);
         d.upload = vec![shape.clone()];
         d.set = vec![r];
@@ -759,7 +770,16 @@ fn pre_projected_records_are_cairo_only_and_refused_only_when_drawn() {
     assert!(s.draw(4, 4, 1).is_ok());
     d.order = Some(vec![entry(1)]);
     s.apply(&d).unwrap();
-    let Err(DrawError::Unsupported(u)) = s.draw(4, 4, 1) else { panic!("not refused") };
-    assert_eq!((u.kind.as_str(), u.slot, u.object), ("path", Some(1), Some(101)));
-    assert!(u.reason.contains("pre-projected") && u.reason.contains("Cairo"), "{}", u.reason);
+    let Err(DrawError::Unsupported(u)) = s.draw(4, 4, 1) else {
+        panic!("not refused")
+    };
+    assert_eq!(
+        (u.kind.as_str(), u.slot, u.object),
+        ("path", Some(1), Some(101))
+    );
+    assert!(
+        u.reason.contains("pre-projected") && u.reason.contains("Cairo"),
+        "{}",
+        u.reason
+    );
 }

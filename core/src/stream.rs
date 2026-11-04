@@ -299,6 +299,23 @@ impl After<'_> {
         if let Some(key) = &rec.fill_image {
             self.needs_shape(rec, Some(key), &["image"])?;
         }
+        if (rec.features & FEATURE_PRE_PROJECTED != 0) != rec.pre_projected.is_some() {
+            return Err(StreamError::Invalid(
+                "pre_projected feature bit and tail field disagree".into(),
+            ));
+        }
+        if let Some(p) = &rec.pre_projected {
+            if !matches!(
+                rec.kind,
+                RecordKind::Path | RecordKind::Points | RecordKind::Image
+            ) {
+                return Err(StreamError::Invalid(format!(
+                    "pre_projected is not valid on {} records",
+                    rec.kind.name()
+                )));
+            }
+            self.needs_shape(rec, Some(&p.points), &["path"])?;
+        }
         let g = &rec.geometry;
         let shape_a = g.shape_a.as_ref();
         let a = match (rec.kind, &rec.body) {
@@ -853,6 +870,8 @@ fn refusal(rec: &Record, shapes: &HashMap<Key, Shape>, shading: bool) -> Option<
         )
     } else if rec.features & FEATURE_BACKGROUND_IMAGE != 0 {
         "background_image is drawn by Cairo only".into()
+    } else if rec.features & FEATURE_PRE_PROJECTED != 0 {
+        "pre-projected records are drawn by Cairo only in this build".into()
     } else if let RecordKind::Unknown(code) = rec.kind {
         format!("record kind {code} is not one this build knows")
     } else if rec.kind.is_reserved() {

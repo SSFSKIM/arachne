@@ -1053,11 +1053,13 @@ fn a_reveal_without_a_blend_sets_flag_bit_4_only() {
     );
 }
 
-
 #[test]
 fn pre_projected_is_a_tail_after_the_body_not_a_geometry_flag() {
     let mut r = plain(RecordKind::Points);
-    r.body = Body::Points(Points { colors: KB, radius: 2.25 });
+    r.body = Body::Points(Points {
+        colors: KB,
+        radius: 2.25,
+    });
     r.features = FEATURE_PRE_PROJECTED;
     r.pre_projected = Some(PreProjected {
         points: KC,
@@ -1073,18 +1075,29 @@ fn pre_projected_is_a_tail_after_the_body_not_a_geometry_flag() {
         (225, "radius", f64(2.25)),
         (233, "pre_projected points", key(&KC)),
         (249, "pre_projected has gradient", u8(1)),
-        (250, "pre_projected gradient", f64s(&[-1.0, -2.0, -3.0, 4.0, 5.0, 6.0])),
+        (
+            250,
+            "pre_projected gradient",
+            f64s(&[-1.0, -2.0, -3.0, 4.0, 5.0, 6.0]),
+        ),
         (298, "pre_projected fill (one)", u8(1)),
         (299, "pre_projected fill rgba", f64s(&[0.1, 0.2, 0.3, 0.4])),
         (331, "pre_projected stroke (two)", u8(2)),
-        (332, "pre_projected stroke rgba", f64s(&[0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 0.05, 0.15])),
+        (
+            332,
+            "pre_projected stroke rgba",
+            f64s(&[0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 0.05, 0.15]),
+        ),
         (396, "pre_projected background (table)", u8(3)),
         (397, "pre_projected background key", key(&KD)),
     ]);
     record_both_ways(&r, &fields);
     r.pre_projected = Some(PreProjected {
-        points: KC, gradient: None, fill: Paint::None,
-        stroke: Paint::None, background_stroke: Paint::None,
+        points: KC,
+        gradient: None,
+        fill: Paint::None,
+        stroke: Paint::None,
+        background_stroke: Paint::None,
     });
     fields.retain(|(offset, _, _)| *offset <= 225);
     fields.extend([
@@ -1109,8 +1122,11 @@ fn the_writer_asserts_both_pre_projected_presence_disagreements() {
     assert!(std::panic::catch_unwind(|| wire::encode_record(&r)).is_err());
     r.features = 0;
     r.pre_projected = Some(PreProjected {
-        points: KC, gradient: None, fill: Paint::None,
-        stroke: Paint::None, background_stroke: Paint::None,
+        points: KC,
+        gradient: None,
+        fill: Paint::None,
+        stroke: Paint::None,
+        background_stroke: Paint::None,
     });
     assert!(std::panic::catch_unwind(|| wire::encode_record(&r)).is_err());
 }

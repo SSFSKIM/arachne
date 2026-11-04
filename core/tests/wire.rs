@@ -281,37 +281,71 @@ fn a_pre_projected_tail_round_trips_instead_of_being_skipped() {
 fn pre_projected_is_invalid_on_face_groups() {
     let mut record = Record::new(RecordKind::FaceGroup, 3, 4);
     record.body = Body::FaceGroup(FaceGroup {
-        uv: vec![], grid: [0, 0], fill: Key([0xb2; 16]), stroke: None,
+        uv: vec![],
+        grid: [0, 0],
+        fill: Key([0xb2; 16]),
+        stroke: None,
     });
     let raw = raw_pre_projected(wire::encode_record(&record));
-    assert!(matches!(wire::decode_delta(&delta_with_raw_record(&raw)), Err(XfError::Invalid(_))));
+    assert!(matches!(
+        wire::decode_delta(&delta_with_raw_record(&raw)),
+        Err(XfError::Invalid(_))
+    ));
 }
 
 #[test]
 fn pre_projected_is_invalid_on_meshes() {
     let raw = raw_pre_projected(wire::encode_record(&Record::new(RecordKind::Mesh, 3, 4)));
-    assert!(matches!(wire::decode_delta(&delta_with_raw_record(&raw)), Err(XfError::Invalid(_))));
+    assert!(matches!(
+        wire::decode_delta(&delta_with_raw_record(&raw)),
+        Err(XfError::Invalid(_))
+    ));
 }
 
 #[test]
 fn a_pre_projected_bit_requires_a_complete_tail() {
     let raw = raw_pre_projected(wire::encode_record(&Record::new(RecordKind::Path, 3, 4)));
     for cut in raw.len() - 20..raw.len() {
-        assert!(matches!(wire::decode_delta(&delta_with_raw_record(&raw[..cut])), Err(XfError::Truncated { .. })), "cut {cut}");
+        assert!(
+            matches!(
+                wire::decode_delta(&delta_with_raw_record(&raw[..cut])),
+                Err(XfError::Truncated { .. })
+            ),
+            "cut {cut}"
+        );
     }
 }
-
 
 #[test]
 fn tails_round_trip_on_each_allowed_kind() {
     let bodies = [
         (RecordKind::Path, Body::None),
-        (RecordKind::Points, Body::Points(Points { colors: Key([0xb2; 16]), radius: 2.5 })),
-        (RecordKind::Image, Body::Image(ImageSource::Picture { corners: [[0.0; 3]; 4], resampling: 3, opacity: 0.75 })),
-        (RecordKind::Image, Body::Image(ImageSource::SubFrame {
-            rank: 0, corners: [[0.0; 3]; 4], resampling: 2, opacity: 0.5,
-            view: Box::new(common::flat_view(4, 4, [0.0; 4])), order: vec![],
-        })),
+        (
+            RecordKind::Points,
+            Body::Points(Points {
+                colors: Key([0xb2; 16]),
+                radius: 2.5,
+            }),
+        ),
+        (
+            RecordKind::Image,
+            Body::Image(ImageSource::Picture {
+                corners: [[0.0; 3]; 4],
+                resampling: 3,
+                opacity: 0.75,
+            }),
+        ),
+        (
+            RecordKind::Image,
+            Body::Image(ImageSource::SubFrame {
+                rank: 0,
+                corners: [[0.0; 3]; 4],
+                resampling: 2,
+                opacity: 0.5,
+                view: Box::new(common::flat_view(4, 4, [0.0; 4])),
+                order: vec![],
+            }),
+        ),
     ];
     for (kind, body) in bodies {
         let mut record = Record::new(kind, 3, 4);
@@ -325,7 +359,10 @@ fn tails_round_trip_on_each_allowed_kind() {
 #[test]
 fn bytes_after_a_tail_are_still_skipped_and_do_not_shift_the_next_record() {
     let raw = raw_pre_projected(wire::encode_record(&Record::new(RecordKind::Path, 3, 4)));
-    let expected = wire::decode_delta(&delta_with_raw_record(&raw)).unwrap().set.remove(0);
+    let expected = wire::decode_delta(&delta_with_raw_record(&raw))
+        .unwrap()
+        .set
+        .remove(0);
     let mut extended = raw.clone();
     extended.extend_from_slice(&[0xff, 0xfe, 0xfd]);
     let mut bytes = delta_with_raw_record(&extended);
@@ -336,7 +373,10 @@ fn bytes_after_a_tail_are_still_skipped_and_do_not_shift_the_next_record() {
     extended[1..9].copy_from_slice(&0u64.to_le_bytes());
     let skipped = wire::decode_delta(&delta_with_raw_record(&extended)).unwrap();
     assert!(skipped.set[0].pre_projected.is_none());
-    assert_eq!(wire::encode_record(&skipped.set[0]), wire::encode_record(&Record::new(RecordKind::Path, 3, 4)));
+    assert_eq!(
+        wire::encode_record(&skipped.set[0]),
+        wire::encode_record(&Record::new(RecordKind::Path, 3, 4))
+    );
 
     let mut d = Delta::new(Time { num: 0, den: 1 }, 0);
     d.set = vec![expected, Record::new(RecordKind::Path, 9, 10)];
@@ -357,7 +397,9 @@ fn the_writer_uses_the_lowest_minor_that_carries_the_content() {
     assert_eq!(&wire::encode_delta(&d)[..4], &[1, 0, 0, 0]);
     assert_eq!(&wire::encode_file(&[d.clone()])[4..8], &[1, 0, 0, 0]);
     let raw = raw_pre_projected(wire::encode_record(&Record::new(RecordKind::Path, 3, 4)));
-    d.set = wire::decode_delta(&delta_with_raw_record(&raw)).unwrap().set;
+    d.set = wire::decode_delta(&delta_with_raw_record(&raw))
+        .unwrap()
+        .set;
     d.version = (1, 0);
     assert_eq!(&wire::encode_delta(&d)[..4], &[1, 0, 1, 0]);
     assert_eq!(&wire::encode_file(&[d])[4..8], &[1, 0, 1, 0]);
@@ -367,13 +409,19 @@ fn the_writer_uses_the_lowest_minor_that_carries_the_content() {
 fn geometry_flag_bit_three_is_still_invalid() {
     let mut raw = wire::encode_record(&Record::new(RecordKind::Path, 3, 4));
     raw[17] |= 8;
-    assert!(matches!(wire::decode_delta(&delta_with_raw_record(&raw)), Err(XfError::Invalid(_))));
+    assert!(matches!(
+        wire::decode_delta(&delta_with_raw_record(&raw)),
+        Err(XfError::Invalid(_))
+    ));
 }
 
 #[test]
 fn the_pre_projected_canonical_samples_bytes_are_pinned() {
     let delta = common::pre_projected_sample();
-    let bytes = wire::encode_file(&[delta.clone()]);
-    assert_eq!(sha256_hex(&bytes), "PENDING_PRE_PROJECTED_PIN");
+    let bytes = wire::encode_file(std::slice::from_ref(&delta));
+    assert_eq!(
+        sha256_hex(&bytes),
+        "df6b52077f443b5db275ed07837ef7235a089298af0c410c770150ddf796983c"
+    );
     assert_eq!(wire::decode_file(&bytes).unwrap(), vec![delta]);
 }
