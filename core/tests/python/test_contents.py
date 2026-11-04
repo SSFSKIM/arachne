@@ -288,3 +288,37 @@ def test_soft_diffuse_view_and_empty_instance_arrays_rebuild():
     assert contents["view"]["light_model"] == (1, [0.25, 0.5])
     assert contents["set"][0][3]["placements"].shape == (0, 3, 4)
     assert rebuild(contents).to_bytes() == delta.to_bytes()
+
+
+@pytest.mark.parametrize("gradient_form", ["flat", "pairs", "none"])
+def test_pre_projected_read_back_preserves_all_float_bits_and_paint_forms(gradient_form):
+    bits = np.array([0x8000000000000000, 1, 0x7FF0000000000012, 0x7FF8000000000034, 0x7FEFFFFFFFFFFFFF, 0xFFF0000000000000], dtype=np.uint64)
+    values = bits.view(np.float64)
+    delta = ac.FrameDelta()
+    shape = delta.upload_path(np.zeros((4, 3)))
+    points = delta.upload_path(values.reshape(2, 3))
+    table = delta.upload_paint(np.resize(values, (3, 4)))
+    gradient = None if gradient_form == "none" else tuple(values) if gradient_form == "flat" else tuple(map(tuple, values.reshape(2, 3)))
+    delta.set_record("path", 1, 1, shape=shape, pre_projected={
+        "points": points, "gradient": gradient,
+        "fill": values[:4], "stroke": np.resize(values, (2, 4)), "background_stroke": table,
+    })
+    contents = ac.FrameDelta.from_bytes(delta.to_bytes()).contents()
+    tail = contents["set"][0][3]["pre_projected"]
+    assert set(tail) == {"points", "gradient", "fill", "stroke", "background_stroke"}
+    assert isinstance(tail["points"], bytes) and len(tail["points"]) == 16
+    assert tail["points"] == points
+    if gradient_form == "none":
+        assert tail["gradient"] is None
+    else:
+        assert isinstance(tail["gradient"], tuple) and len(tail["gradient"]) == 6
+        assert np.array(tail["gradient"]).view(np.uint64).tolist() == bits.tolist()
+    assert (tail["fill"].dtype, tail["fill"].shape) == (np.float64, (1, 4))
+    assert (tail["stroke"].dtype, tail["stroke"].shape) == (np.float64, (2, 4))
+    assert tail["fill"].view(np.uint64).ravel().tolist() == bits[:4].tolist()
+    assert tail["stroke"].view(np.uint64).ravel().tolist() == np.resize(bits, 8).tolist()
+    assert tail["background_stroke"] == table
+    assert rebuild(contents).to_bytes() == delta.to_bytes()
+    tail["fill"][:] = 42
+    tail["stroke"][:] = 42
+    assert delta.to_bytes() == rebuild(ac.FrameDelta.from_bytes(delta.to_bytes()).contents()).to_bytes()
