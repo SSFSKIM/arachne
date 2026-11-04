@@ -33,9 +33,9 @@ def test_the_core_passes_every_fixture():
 
 
 def test_every_bound_is_a_placeholder_and_coverage_starts_at_the_cores_constant():
-    # The constant bounds a pixel with one partial mask or path edge; one holding a silhouette and
-    # a path's edge together lands farther from its sample resolve, so the coverage bound is a
-    # placeholder too.
+    # The constant bounds the coverage resolve against the sample resolve for a pixel with one
+    # partial mask or one path edge (a silhouette under a path's edge always takes the sample
+    # resolve); every bound waits for the cross-architecture measurement.
     tolerances = json.loads((KIT / "tolerances.json").read_text())
     bounds = tolerances["bounds"]
     assert set(bounds) == set(arachne_core.RESOLVES)

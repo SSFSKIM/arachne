@@ -89,7 +89,7 @@ fn switches(stroke_alpha: f64, sheet_alpha: f64, at: Scene) -> Switches {
         .map(|f| {
             let s = scene(f, stroke_alpha, sheet_alpha, at);
             let drawn = s.render(W, H, 1).unwrap();
-            let sampled = s.render_with(W, H, 1, &[&EverySample]).unwrap().rgba;
+            let sampled = s.render_with(W, H, 1, &[&EverySample]).unwrap();
             (drawn, sampled)
         })
         .collect();
@@ -109,8 +109,15 @@ fn switches(stroke_alpha: f64, sheet_alpha: f64, at: Scene) -> Switches {
             };
             out.pixels += 1;
             let (drawn, sampled) = &frames[side];
+            assert_eq!(
+                sampled.resolves[i],
+                sample,
+                "the instrument's frame {side} left pixel {},{} off the sample resolve",
+                i as u32 % W,
+                i as u32 / W
+            );
             let jump = (0..4)
-                .map(|k| (drawn.rgba[i * 4 + k] as i32 - sampled[i * 4 + k] as i32).abs())
+                .map(|k| (drawn.rgba[i * 4 + k] as i32 - sampled.rgba[i * 4 + k] as i32).abs())
                 .max()
                 .unwrap();
             if jump > out.worst {
