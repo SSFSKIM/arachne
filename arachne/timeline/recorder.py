@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import numpy as np
 
 from arachne._config import config, logger
+from arachne.camera.projection import configured_home
 
 from .admission import (
     PlayIdentity,
@@ -315,6 +316,13 @@ class Recorder:
         #: Each play's identity, counted as the plays are recorded.
         self._identities: list[PlayIdentity] = []
         self._line_counts: dict[SourceLine | None, int] = {}
+        #: The frame the configuration describes, as ``(width, height)``:
+        #: the unit of the record's home-frame boxes, whatever the camera
+        #: does (:mod:`arachne.camera.projection`).
+        self.home = configured_home(int(config.pixel_width), int(config.pixel_height))
+        #: The configuration's pixel size, which a point cloud's thickness is
+        #: scaled from as the scene draws.
+        self.configured_pixels = (int(config.pixel_width), int(config.pixel_height))
         self.record: Record | None = None
         self._tagging = False
         #: Which execution of the scene this is, with the plays an earlier
