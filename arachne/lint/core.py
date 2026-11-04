@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 from arachne.timeline.clock import exact
 
-from .bridge import Checks
+from .bridge import Checks, terms_at
 from .exempt import Exemptions
 from .findings import Finding, fold, in_range
 from .frames import Frames
@@ -36,6 +36,8 @@ from .parts import Parts, build_parts
 if TYPE_CHECKING:
     from arachne.session import Session
     from arachne.timeline.record import Capture, PlayRecord, Record
+
+    from .rules import Terms
 
 
 @dataclass(frozen=True, eq=False)
@@ -51,6 +53,12 @@ class LintContext:
     instants: tuple[LintInstant, ...]
     parts: tuple[Parts, ...]
     frames: Frames
+
+    def terms_at(self, t: Fraction, base: Terms) -> Terms:
+        """``base`` under the terms the scene declared at or before ``t``
+        (:func:`.bridge.terms_at`), in the execution the frames come from.
+        """
+        return terms_at(self.frames.execution, t, base)
 
 
 #: A rule: the findings it makes of a lint's context. A rule that reads
@@ -121,7 +129,7 @@ def lint(
     frames = Frames(session)
     _request_parts(frames, instants)
     # The scene's own checks (:mod:`.bridge`), whatever the rules.
-    checks = Checks()
+    checks = Checks(rules)
     checks.request_frames(frames)
     for rule in rules:
         request = getattr(rule, "request_frames", None)

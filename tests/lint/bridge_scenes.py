@@ -15,13 +15,18 @@ from arachne import (
     UP,
     Axes,
     Camera,
+    Circle,
     Dot,
+    FadeIn,
+    NumberLine,
     Scene,
+    Square,
     Text,
     ValueTracker,
+    VGroup,
     there_and_back,
 )
-from arachne.lint.bridge import declare, record, watch
+from arachne.lint.bridge import apart, arm, clear, declare, record, sweep, watch
 
 #: Set by a test once its scene has recorded: a probe called after that
 #: fails the test.
@@ -508,3 +513,213 @@ class StoppedWatch(Scene):
         self.add(ax, pen)
         watch("axes.outside", pen, reference=ax)
         self.wait(1, stop_condition=lambda: float(self.time) >= 0.115)
+
+
+def _rows(buff):
+    """Two rows of text ``buff`` apart, one above the other."""
+    upper = Text("top row", font_size=40)
+    lower = Text("bottom row", font_size=40).next_to(upper, DOWN, buff=buff)
+    return upper, lower
+
+
+def _words():
+    """Two phrases drawn over each other."""
+    first = Text("one phrase", font_size=40)
+    second = Text("another phrase", font_size=40).shift(RIGHT * 0.6 + DOWN * 0.1)
+    return first, second
+
+
+class SweptRows(Scene):
+    """Two rows a hair apart, swept at 1.5 s under the terms it gives."""
+
+    buff = 0.08
+    terms = {"text_gap": 0.3}
+
+    def construct(self):
+        upper, lower = _rows(self.buff)
+        self.play(FadeIn(upper), FadeIn(lower))
+        self.wait(0.5)
+        self.found = sweep(**self.terms)  # @sweep-rows
+        self.wait(0.5)
+
+
+class SweptRowsLoose(SweptRows):
+    buff = 1.0
+
+
+class SweptRowsNoGap(SweptRows):
+    terms = {}
+
+
+class DeclaredThenSwept(Scene):
+    """A text gap declared at the start; the rows swept at 1.5 s, once under
+    the declared terms and once giving its own.
+    """
+
+    def construct(self):
+        declare(text_gap=0.3)
+        upper, lower = _rows(0.08)
+        self.play(FadeIn(upper), FadeIn(lower))
+        self.wait(0.5)
+        self.found = sweep()  # @declared-sweep
+        self.overridden = sweep(text_gap=None)
+        self.wait(0.5)
+
+
+class DeclaredLate(Scene):
+    """Two rows a hair apart from 1 s; a text gap declared at 1.5 s."""
+
+    def construct(self):
+        upper, lower = _rows(0.08)
+        self.play(FadeIn(upper), FadeIn(lower))
+        self.wait(0.5)
+        declare(text_gap=0.3)
+        self.wait(0.5)
+
+
+class SweptAtTheCall(Scene):
+    """Two phrases added over each other at 0.5 s, swept, and one removed
+    before any frame shows them.
+    """
+
+    def construct(self):
+        first, second = _words()
+        self.wait(0.5)
+        self.add(first, second)
+        self.found = sweep()  # @swept-at-call
+        self.remove(second)
+        self.wait(0.5)
+
+
+class ExemptedSweeps(Scene):
+    """Two phrases over each other, swept under each form of exemption."""
+
+    def construct(self):
+        first, second = _words()
+        self.add(first, second)
+        self.wait(0.5)
+        self.found = {
+            "none": sweep(),
+            "bare": sweep(exempt=first),
+            "pair": sweep(exempt=(first, second)),
+            "listed": sweep(exempt=[(first, second)]),
+            "held": sweep(exempt=[VGroup(second)]),
+            "other": sweep(exempt=[Dot()]),
+        }
+        self.wait(0.5)
+
+
+class DeclaredExemptions(Scene):
+    """Two phrases over each other, under the exemptions ``exempt`` makes of
+    them, declared at the start: a pair, or a group given the second phrase
+    only after the declaration.
+    """
+
+    exempt = "pair"
+
+    def construct(self):
+        first, second = _words()
+        holder = VGroup()
+        chosen = {"pair": [(first, second)], "late": [holder]}
+        declare(exempt=chosen[self.exempt])
+        holder.add(second)
+        self.add(first, second)
+        self.wait(0.5)
+
+
+class DeclaredLateExemption(DeclaredExemptions):
+    exempt = "late"
+
+
+class ClearedWatch(Scene):
+    """A watched pen driven off the plot and back, the watch cleared, then
+    driven off again.
+    """
+
+    cleared = True
+
+    def construct(self):
+        ax = _plot()
+        pen = Dot(ax.c2p(0.5, 0.5))
+        self.add(ax, pen)
+        self.handle = watch("axes.outside", pen, reference=ax)
+        self.play(pen.animate.set_x(3), run_time=0.5)
+        self.play(pen.animate.set_x(0), run_time=0.5)
+        if self.cleared:
+            self.found = clear(self.handle)  # @clear
+            self.again = clear(self.handle)
+        self.play(pen.animate.set_x(3), run_time=0.5)
+        self.wait(0.25)
+
+
+class UnclearedWatch(ClearedWatch):
+    cleared = False
+
+
+class ClearsAPoint(Scene):
+    """A clear of what is not a watch."""
+
+    def construct(self):
+        clear(Dot())
+
+
+class ArmedJump(Scene):
+    """The motion rule armed at the start; a puck slides, then is set down 4
+    units further on.
+    """
+
+    arming = ({"motion_jump": 0.25},)
+
+    def construct(self):
+        for terms in self.arming:
+            self.found = arm(**terms)  # @arm
+        puck = Dot(LEFT * 3, radius=0.2)
+        self.add(puck)
+        self.play(puck.animate.shift(RIGHT * 2))
+        puck.move_to(RIGHT * 3)
+        self.wait()
+
+
+class ArmedTolerant(ArmedJump):
+    arming = ({"motion_jump": 5.0},)
+
+
+class ReArmedTolerant(ArmedJump):
+    arming = ({"motion_jump": 0.25}, {"motion_jump": 5.0})
+
+
+class ArmedWithTerms(ArmedJump):
+    arming = ({"text_gap": 0.3, "pad": 0.1},)
+
+
+class UnarmedJump(ArmedJump):
+    arming = ()
+
+
+class Apart(Scene):
+    """Pairs asked apart at 0.5 s, none of them ever added: rows a hair
+    apart, a dot and a word on a number line, and two crossing rings.
+    """
+
+    def construct(self):
+        self.wait(0.5)
+        upper, lower = _rows(0.08)
+        far = Text("far below", font_size=40).shift(DOWN * 3)
+        line = NumberLine(x_range=[-3, 3, 1])
+        dot = Dot()
+        word = Text("x", font_size=24)
+        ring = Circle(radius=1)
+        crossing = Circle(radius=1).shift(RIGHT * 1.5)
+        clear_of = Circle(radius=1).shift(RIGHT * 2.5)
+        square = Square(side_length=0.5).shift(UP * 3)
+        self.found = {
+            "rows": apart(upper, lower),  # @apart-rows
+            "rows_min_gap": apart(upper, lower, min_gap=0.05),
+            "far": apart(upper, [lower, far]),
+            "dot_on_line": apart(dot, line),
+            "word_on_line": apart(word, line),
+            "rings": apart(ring, crossing),
+            "rings_apart": apart(ring, [clear_of, square]),
+            "padded": apart(ring, clear_of, pad=0.6),
+        }
+        self.wait(0.5)

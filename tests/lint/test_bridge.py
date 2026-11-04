@@ -1,8 +1,9 @@
 """The assertion bridge: a scene's own ``axes.outside`` checks, recorded as
 it runs, returned to it as findings, and merged into the lint at their
-line and time; declarations stored for the rules; and the record's refusal
-of a scene that replaced a camera method, which then lints through a
-forward run.
+line and time; its sweeps and pairwise checks, measured at the call;
+declarations, which the lint's rules are held to; a watch stopped; the
+motion rule armed; and the record's refusal of a scene that replaced a
+camera method, which then lints through a forward run.
 """
 
 from __future__ import annotations
@@ -15,8 +16,24 @@ import pytest
 
 from arachne import Axes, Camera, Dot
 from arachne.lint import lint
-from arachne.lint.bridge import declare, record, watch
+from arachne.lint.bridge import (
+    Watch,
+    apart,
+    arm,
+    armed,
+    clear,
+    declare,
+    declared,
+    exemptions,
+    record,
+    sweep,
+    watch,
+)
+from arachne.lint.exempt import Exemptions
 from arachne.lint.instants import lint_instants
+from arachne.lint.motion import motion_jump
+from arachne.lint.rules import contact
+from arachne.lint.rules import sweep as sweep_rule
 from arachne.session import Session
 from arachne.timeline import admission
 from arachne.timeline.clock import frames_in
@@ -302,18 +319,25 @@ def test_declared_terms_are_stored_for_the_rules(session_of):
     bridge = session.record.bridge
     first, second = bridge.calls
     assert (first.kind, first.t, first.line.line) == ("declare", 0, _line("declare"))
-    a, b = (session.record.origin(m).id for m in (session.scene.a, session.scene.b))
-    assert dict(first.terms) == {"text_gap": 0.3, "exempt": (a, (a, b))}
+    a, b = session.scene.a, session.scene.b
+    # Each exempted mobject is kept as its family's stable ids at the call.
+    exempt = Exemptions.parse([a, (a, b)])
+    assert {s.by for s in exempt.bare} == {"family"}
+    assert len(next(iter(exempt.bare)).value) == len(a.get_family()) > 1
+    assert dict(first.terms) == {"text_gap": 0.3, "exempt": exempt}
     assert first.play == 0
     assert (second.t, second.play) == (Fraction(1, 2), 1)
     assert dict(second.terms) == {"pad": 0.05}
-    assert bridge.terms_at(Fraction(1, 4)) == {"text_gap": 0.3, "exempt": (a, (a, b))}
-    assert bridge.terms_at(1) == {
+    assert declared(session.record, Fraction(1, 4)) == {
         "text_gap": 0.3,
-        "exempt": (a, (a, b)),
+        "exempt": exempt,
+    }
+    assert declared(session.record, 1) == {
+        "text_gap": 0.3,
+        "exempt": exempt,
         "pad": 0.05,
     }
-    # They apply nothing yet: no finding comes of them.
+    # Nothing runs unasked: no finding comes of them alone.
     assert lint(session).findings == ()
 
 
@@ -331,8 +355,12 @@ def test_an_unknown_term_is_refused(session_of):
         lambda ax: record("axes.outside", [(0, 0, 0)], reference=ax),
         lambda ax: watch("axes.outside", Dot(), reference=ax),
         lambda ax: declare(text_gap=0.3),
+        lambda ax: sweep(),
+        lambda ax: apart(Dot(), ax),
+        lambda ax: arm(),
+        lambda ax: clear(None),
     ],
-    ids=["record", "watch", "declare"],
+    ids=["record", "watch", "declare", "sweep", "apart", "arm", "clear"],
 )
 def test_a_bridge_call_outside_a_recording_is_refused(call):
     with pytest.raises(RuntimeError, match="recording"):
@@ -546,3 +574,203 @@ def test_a_watch_reports_no_frame_after_the_scene_s_end(session_of):
     assert (end * 24).denominator != 1
     (found,) = _outside(lint(session))
     assert found.t_end == end
+
+
+# sweep
+
+CLEARANCE = {
+    "clip.frame_edge",
+    "overlap.text",
+    "gap.text",
+    "contact.held",
+    "occlusion.glyph",
+}
+
+
+def _clearance(result):
+    return [f for f in result.findings if f.code in CLEARANCE]
+
+
+def _codes(violations):
+    return [v["code"] for v in violations]
+
+
+def _swept(session, t, **terms):
+    """The clearance codes a sweep of the frame shown at ``t`` finds."""
+    rules = (sweep_rule.where(at=[t], **terms),)
+    return [f.code for f in _clearance(lint(session, rules=rules))]
+
+
+def test_a_sweep_finds_at_the_call_s_line_and_time(session_of):
+    session = session_of("SweptRows", BRIDGE, frame_rate=15)
+    (returned,) = session.scene.found
+    assert returned["code"] == "gap.text"
+    assert returned["line"] == _line("sweep-rows")
+    assert returned["t_start"] == returned["t_end"] == 1.5
+    assert returned["held"] is False
+    (found,) = _clearance(lint(session))
+    assert (found.code, found.line.line) == ("gap.text", _line("sweep-rows"))
+    assert found.t_start == found.t_end == Fraction(3, 2)
+    assert [o.id for o in found.objects] == [o["id"] for o in returned["objects"]]
+    assert len(found.objects) == 2
+
+
+@pytest.mark.parametrize("scene", ["SweptRowsLoose", "SweptRowsNoGap"])
+def test_a_sweep_s_twins_are_silent(session_of, scene):
+    session = session_of(scene, BRIDGE, frame_rate=15)
+    assert session.scene.found == []
+    assert _clearance(lint(session)) == []
+
+
+def test_a_sweep_measures_the_scene_as_it_stands_at_the_call(session_of):
+    """Two phrases over each other for no frame: the sweep at the call sees
+    them, a sweep of the frame at its time does not.
+    """
+    session = session_of("SweptAtTheCall", BRIDGE, frame_rate=15)
+    assert _codes(session.scene.found) == ["overlap.text"]
+    (found,) = _clearance(lint(session))
+    assert (found.line.line, found.t_start) == (_line("swept-at-call"), Fraction(1, 2))
+    rules = (sweep_rule.where(at=[Fraction(1, 2)]),)
+    assert _clearance(lint(session, rules=rules)) == [found]
+
+
+def test_a_sweep_is_held_to_its_own_terms_then_the_declared_ones(session_of):
+    session = session_of("DeclaredThenSwept", BRIDGE, frame_rate=15)
+    (returned,) = session.scene.found
+    assert (returned["code"], returned["line"]) == ("gap.text", _line("declared-sweep"))
+    assert session.scene.overridden == []
+
+
+def test_a_sweep_s_exemptions_name_mobjects_and_their_families(session_of):
+    session = session_of("ExemptedSweeps", BRIDGE, frame_rate=15)
+    found = {form: _codes(v) for form, v in session.scene.found.items()}
+    assert found["none"] == found["other"] == ["overlap.text"]
+    for form in ("bare", "pair", "listed", "held"):
+        assert found[form] == [], form
+
+
+def test_every_exemption_the_scene_states_is_kept_for_the_hold_watch(session_of):
+    """R's hold watch reads every exemption a sweep or declaration made,
+    each once.
+    """
+    session = session_of("ExemptedSweeps", BRIDGE, frame_rate=15)
+    kept = exemptions(session.record)
+    assert (len(kept.bare), len(kept.pairs)) == (3, 1)
+
+
+# declare
+
+
+def test_a_declared_text_gap_holds_the_rules_from_its_call_on(session_of):
+    session = session_of("DeclaredLate", BRIDGE, frame_rate=15)
+    assert _swept(session, Fraction(5, 4)) == []
+    assert _swept(session, Fraction(2)) == ["gap.text"]
+    # The scene's declaration replaces the rule's own.
+    assert _swept(session, Fraction(2), text_gap=0.01) == ["gap.text"]
+    (found,) = _clearance(lint(session, rules=(contact,)))
+    assert found.code == "gap.text"
+    # From the first frame the declaration holds at.
+    assert Fraction(3, 2) <= found.t_start == Fraction(23, 15)
+
+
+@pytest.mark.parametrize(
+    ("scene", "codes"),
+    [("DeclaredExemptions", []), ("DeclaredLateExemption", ["overlap.text"])],
+)
+def test_declared_exemptions_hold_the_rules_as_their_families_stood(
+    session_of, scene, codes
+):
+    """A group's family is read at the declaration: what it is given later
+    is not exempted.
+    """
+    session = session_of(scene, BRIDGE, frame_rate=15)
+    end = session.record.duration
+    assert _swept(session, end) == codes
+    # The rule's own exemptions hold beside the scene's.
+    assert _swept(session, end, exempt=["name:first"]) == []
+
+
+# clear
+
+
+def test_a_cleared_watch_is_read_at_no_frame_after_it(session_of):
+    uncleared = _outside(lint(session_of("UnclearedWatch", BRIDGE, frame_rate=15)))
+    assert len(uncleared) == 2
+    session = session_of("ClearedWatch", BRIDGE, frame_rate=15)
+    (found,) = _outside(lint(session))
+    assert (found.t_start, found.t_end) == (uncleared[0].t_start, uncleared[0].t_end)
+    assert session.scene.found == session.scene.again == []
+    handle = session.scene.handle
+    assert isinstance(handle, Watch)
+    assert handle.found == []
+    stop, _ = [c for c in session.record.bridge.calls if c.kind == "clear"]
+    assert (stop.t, stop.line.line) == (Fraction(1), _line("clear"))
+    assert all(reading.t <= stop.t for reading in handle.call.readings)
+
+
+def test_clear_takes_a_watch(session_of):
+    with pytest.raises(TypeError, match="watch"):
+        session_of("ClearsAPoint", BRIDGE, frame_rate=15)
+
+
+# arm
+
+
+def _jumps(result):
+    return [f for f in result.findings if f.code == "motion.jump"]
+
+
+def test_an_armed_scene_has_its_motion_measured_unasked(session_of):
+    session = session_of("ArmedJump", BRIDGE, frame_rate=15)
+    assert session.scene.found == []
+    (jump,) = _jumps(lint(session))
+    assert jump.detail["distance"] == pytest.approx(4.0)
+    (call,) = [c for c in session.record.bridge.calls if c.kind == "arm"]
+    assert call.line.line == _line("arm")
+    assert session.record.armed_at == 0
+    # Asked for as well, the rule runs once.
+    assert len(_jumps(lint(session, rules=(motion_jump,)))) == 1
+
+
+@pytest.mark.parametrize("scene", ["UnarmedJump", "ArmedTolerant", "ReArmedTolerant"])
+def test_an_unarmed_or_tolerant_scene_finds_no_jump(session_of, scene):
+    assert _jumps(lint(session_of(scene, BRIDGE, frame_rate=15))) == []
+
+
+def test_the_arming_in_force_is_the_last_one(session_of):
+    record = session_of("ReArmedTolerant", BRIDGE, frame_rate=15).record
+    assert armed(record).terms["motion_jump"] == 5.0
+    assert armed(record, 0) is armed(record)
+    assert armed(session_of("UnarmedJump", BRIDGE, frame_rate=15).record) is None
+
+
+def test_arming_declares_the_terms_it_is_given(session_of):
+    session = session_of("ArmedWithTerms", BRIDGE, frame_rate=15)
+    assert declared(session.record, 0) == {"text_gap": 0.3, "pad": 0.1}
+    assert len(_jumps(lint(session))) == 1
+
+
+# apart
+
+
+def test_apart_measures_a_pair_at_the_call(session_of):
+    session = session_of("Apart", BRIDGE, frame_rate=15)
+    found = {pair: _codes(v) for pair, v in session.scene.found.items()}
+    assert found == {
+        "rows": ["gap.text"],
+        "rows_min_gap": [],
+        "far": ["gap.text"],
+        "dot_on_line": [],
+        "word_on_line": found["word_on_line"],
+        "rings": ["contact.held"],
+        "rings_apart": [],
+        "padded": ["contact.held"],
+    }
+    assert set(found["word_on_line"]) == {"overlap.text"}
+    (rows,) = session.scene.found["rows"]
+    assert rows["line"] == _line("apart-rows")
+    assert rows["t_start"] == rows["t_end"] == 0.5
+    linted = [
+        f for f in _clearance(lint(session)) if f.line.line == _line("apart-rows")
+    ]
+    assert [f.code for f in linted] == ["gap.text"]
