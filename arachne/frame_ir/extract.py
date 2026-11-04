@@ -136,6 +136,26 @@ def _floats(value: Any) -> tuple[float, ...]:
     return tuple(float(x) for x in np.asarray(value, dtype=float).reshape(-1))
 
 
+def _mapping_centre(camera: Any) -> tuple[float, ...]:
+    """The centre ``camera``'s Cairo context maps its array around: the one
+    frozen at its first draw through the context, else the frame's.
+    """
+    centres = camera.pixel_array_to_mapping_centre
+    return _floats(centres.get(id(camera.pixel_array), camera.frame_center))
+
+
+def _through_context(record: Record) -> bool:
+    """Whether CE draws ``record`` into the frame's array through its Cairo
+    context: a path (one filled with a background image draws into an array
+    of its own) or a surface's faces.
+    """
+    if record.kind == "face_group":
+        return True
+    return record.kind == "path" and not (
+        int(record.fields.get("features", 0)) & FEATURE_BACKGROUND_IMAGE
+    )
+
+
 def _paint(rows: Any, uploads: dict[bytes, Any]) -> Any:
     """A paint field from CE's RGBA rows: ``None`` for none, the rows inline
     for one or two stops, a table key for more.
@@ -272,6 +292,7 @@ class FrameStream:
                 terms,
                 sub_frames,
             )
+        self._freeze(camera, view, records, order)
         # Each capture resets every display's camera before drawing into it.
         self.last_sub_frames = [(d, sub_frames[id(d)]) for d in displays if sub_frames]
         return self._delta(view, records, order, uploads, objects, t)
@@ -308,15 +329,12 @@ class FrameStream:
                 to_add = list_difference_update(to_add, display.get_family())
             sub_leaves = self._leaves(sub_camera, to_add)
             sub_order: list[tuple[str, int, int]] = []
-            found[id(display)] = (
-                rank,
-                self._view_of(sub_camera, "moving", uploads),
-                sub_order,
-            )
-            plans.append((sub_camera, to_add, sub_leaves, sub_order))
+            sub_view = self._view_of(sub_camera, "moving", uploads)
+            found[id(display)] = (rank, sub_view, sub_order)
+            plans.append((sub_camera, sub_view, to_add, sub_leaves, sub_order))
         # Every display's sub-frame is known before any is filled: a display
         # can show another (or, if allowed, itself).
-        for sub_camera, to_add, sub_leaves, sub_order in plans:
+        for sub_camera, sub_view, to_add, sub_leaves, sub_order in plans:
             self._place(
                 sub_camera,
                 to_add,
@@ -329,6 +347,7 @@ class FrameStream:
                 terms,
                 found,
             )
+            self._freeze(sub_camera, sub_view, records, sub_order)
         return found
 
     def _place(
@@ -693,24 +712,18 @@ class FrameStream:
         uploads: dict[bytes, Any],
         *,
         background: np.ndarray | None = None,
-        freeze: bool = True,
     ) -> dict[str, Any]:
-        """The view of ``camera``, over its background or ``background``.
-        With ``freeze``, the centre CE's context maps around is frozen now if
-        no draw has frozen it yet; without, an array no draw has frozen maps
-        around the frame's centre (nothing drawn there reads it).
+        """The view of ``camera``, over its background or ``background``,
+        mapping around the centre CE's context froze into the camera's array,
+        or, while no draw has frozen one, the frame's centre (nothing drawn
+        there reads it; :meth:`_freeze` states the frozen one once a frame
+        draws through the context).
         """
         if background is None:
             background = np.asarray(camera.background)
         shape = Shape("image", background)
         uploads[shape.key] = shape
-        array = camera.pixel_array
-        centres = camera.pixel_array_to_mapping_centre
-        if freeze and camera.get_cached_cairo_context(array) is None:
-            # CE freezes the centre into the context at its first draw into
-            # an array (a MovingCamera at every draw): so does this one.
-            camera.get_cairo_context(array)
-        mapping = _floats(centres.get(id(array), camera.frame_center))
+        mapping = _mapping_centre(camera)
         view: dict[str, Any] = {
             "pixel_width": int(camera.pixel_width),
             "pixel_height": int(camera.pixel_height),
@@ -736,6 +749,27 @@ class FrameStream:
                 should_apply_shading=bool(camera.should_apply_shading),
             )
         return view
+
+    def _freeze(
+        self,
+        camera: Any,
+        view: dict[str, Any],
+        records: Mapping[int, Record],
+        order: Sequence[tuple[str, int, int]],
+    ) -> None:
+        """Freeze the centre of ``camera``'s array now if the frame ``order``
+        draws a record through the array's Cairo context, as CE's first such
+        draw does (a MovingCamera's at every draw), and state it in ``view``.
+        A point cloud or an image is drawn without the context, and a path
+        filled with a background image through a context of its own array, so
+        a frame of those alone leaves the centre to a later frame.
+        """
+        array = camera.pixel_array
+        if camera.get_cached_cairo_context(array) is not None:
+            return
+        if any(_through_context(records[slot]) for _, slot, _ in order):
+            camera.get_cairo_context(array)
+            view["mapping_centre"] = _mapping_centre(camera)
 
     # The delta
 

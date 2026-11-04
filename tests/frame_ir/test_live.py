@@ -53,7 +53,8 @@ def test_a_live_scene_drawn_from_xf_is_byte_identical(scene_class, painters):
     assert len(direct) == len(described) > 0
     for index, (a, b) in enumerate(zip(direct, described, strict=True)):
         np.testing.assert_array_equal(a, b, err_msg=f"frame {index}")
-    assert sum(p.captures for p in painters) >= len(described)
+    # Each capture described (a held wait's frames are its one capture).
+    assert sum(p.captures for p in painters) > 0
     assert sum(p.differing for p in painters) == 0
 
 
@@ -81,9 +82,17 @@ def test_a_mapping_camera_records_the_mapped_points(painters, monkeypatch):
     assert any(np.array_equal(shapes[r.fields["shape"]], mapped) for r in clouds)
 
 
-def test_without_drawing_the_capture_describes_the_same_frames(painters, monkeypatch):
+@pytest.mark.parametrize(
+    "scene_class",
+    [scenes.LiveCounted, *scenes.MOVED_CENTRE_LIVE],
+    ids=lambda c: c.__name__,
+)
+def test_without_drawing_the_capture_describes_the_same_frames(
+    scene_class, painters, monkeypatch
+):
     """The core path's capture: Cairo's calls go nowhere, the scene's code
-    still runs as often, and the frames drawn from XF are the same.
+    still runs as often, CE's context still freezes its centre, and the
+    frames drawn from XF are the same.
     """
     original = live_module.LivePainter.__init__
 
@@ -91,8 +100,9 @@ def test_without_drawing_the_capture_describes_the_same_frames(painters, monkeyp
         original(self, draw=False)
 
     monkeypatch.setattr(live_module.LivePainter, "__init__", quiet)
-    (_, direct, direct_calls), (_, described) = _both_ways(scenes.LiveCounted, painters)
+    (_, direct, direct_calls), (_, described) = _both_ways(scene_class, painters)
     assert scenes.CountedFill.calls == direct_calls
+    assert len(direct) == len(described) > 0
     for index, (a, b) in enumerate(zip(direct, described, strict=True)):
         np.testing.assert_array_equal(a, b, err_msg=f"frame {index}")
 
