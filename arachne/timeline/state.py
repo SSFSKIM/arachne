@@ -7,9 +7,11 @@ __all__ = ["NodeView", "State", "build_state"]
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from fractions import Fraction
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+from arachne.camera.projection import home_box, render_mapping_centre, view_of
 
 from .draw import Drawing, camera_nodes
 from .record import NodeState
@@ -26,10 +28,11 @@ class NodeView:
     """One mobject of the scene at an instant.
 
     ``box`` is ``(x_min, y_min, x_max, y_max)`` over the points of the
-    mobject and its family, in scene units on the screen's plane: the points
-    as the camera hands them to its pixel map, so projected under a
-    ThreeDCamera and as they are under 2D cameras. ``None`` when the family
-    has no points.
+    mobject and its family where the picture shows them, in home-frame
+    units: scene units of the frame the configuration describes, centred,
+    y up (:mod:`arachne.camera.projection`). They are scene units under a
+    camera that never moves, follow the view under a MovingCamera, and are
+    projected under a ThreeDCamera. ``None`` when the family has no points.
     """
 
     id: str
@@ -108,13 +111,18 @@ def build_state(
     hidden = {id(mob) for mob in camera_nodes(camera)}
     names = play.names if play is not None else record.final_names
     views: list[NodeView] = []
+    frozen = render_mapping_centre(record)
     with Drawing(record) as drawing:
         drawing.show(capture, capture.draw_list())
         if prepare is not None:
             prepare(drawing)
-        if hasattr(camera, "reset_rotation_matrix"):
-            # A ThreeDCamera projects with the matrix of its recorded trackers.
-            camera.reset_rotation_matrix()
+        # Paths map around the centre the render froze; where it froze none,
+        # a first draw here would freeze the centre the capture holds.
+        view = view_of(
+            camera,
+            mapping_centre=frozen if frozen is not None else camera.frame_center,
+            home=record._scene.timeline.home,
+        )
         if prepare is None:
 
             def state_of(mob: Mobject) -> NodeState | None:
@@ -141,7 +149,7 @@ def build_state(
                     source_line=origin.source_line,
                     name=names.get(id(mob)),
                     type=type(mob).__name__,
-                    box=_box(camera, mob),
+                    box=home_box(camera, view, mob),
                     z=float(getattr(mob, "z_index", 0)),
                     color=_color(mob),
                     text=_text(mob),
@@ -229,18 +237,6 @@ def _transparent(mob: Mobject) -> bool:
             return False
     opacity = getattr(mob, "opacity", None)
     return not (isinstance(opacity, (int, float)) and opacity > 0)
-
-
-def _box(camera: Any, mob: Mobject) -> tuple[float, float, float, float] | None:
-    blocks = []
-    for member in mob.family_members_with_points():
-        points = camera.transform_points_pre_display(member, member.points)
-        blocks.append(np.asarray(points)[:, :2])
-    if not blocks:
-        return None
-    points = np.vstack(blocks)
-    low, high = points.min(axis=0), points.max(axis=0)
-    return (float(low[0]), float(low[1]), float(high[0]), float(high[1]))
 
 
 def _color(mob: Mobject) -> str | None:

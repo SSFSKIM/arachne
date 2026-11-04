@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import numpy as np
 
 from arachne._config import config, logger
+from arachne.camera.projection import configured_home
 
 from .admission import (
     PlayIdentity,
@@ -312,6 +313,10 @@ class Recorder:
         self.on_start = on_start
         self.instants = tuple(sorted({exact(t) for t in instants}))
         self.demoted = frozenset(demoted)
+        #: The frame the configuration describes, as ``(width, height)``:
+        #: the unit of the record's home-frame boxes, whatever the camera
+        #: does (:mod:`arachne.camera.projection`).
+        self.home = configured_home(int(config.pixel_width), int(config.pixel_height))
         #: Each play's identity, counted as the plays are recorded.
         self._identities: list[PlayIdentity] = []
         self._line_counts: dict[SourceLine | None, int] = {}
@@ -448,7 +453,7 @@ class Recorder:
         record = self.ensure_record()
         if not ORIGINS.active:
             base = os.path.dirname(record.scene_file) if record.scene_file else None
-            ORIGINS.start(os.path.realpath(base) if base else None)
+            ORIGINS.start(os.path.realpath(base) if base else None, record.scene_file)
             self._tagging = True
         if record.scene_file is not None:
             self._inputs = Inputs(
