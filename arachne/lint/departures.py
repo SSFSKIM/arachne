@@ -20,9 +20,11 @@ back. A hold made of consecutive plays counts as a wait does. Settledness
 is judged per member: animating one line of a panel leaves its other lines
 settled, and the panel that holds the line in motion is not.
 
-What a play departs is swept at the play's first frame, at the time the
-script called it; what the script removes, in the scene as it stood just
-before the call (``Record.states``), at the call's line. A thing a play
+What a play departs is swept in the scene the script called it on, before
+the play added or began anything, at the play's start and line (a play too
+short to show a frame included); what the script removes, in the scene as
+it stood just before the call, at the call's line. Both are states the
+execution keeps (``Record.states``). A thing a play
 itself took out (a fade-out's cleanup) was swept when that play began, and
 is not swept again. A clear forgets every entry and touch.
 
@@ -41,8 +43,6 @@ from collections.abc import Iterable
 from dataclasses import replace
 from fractions import Fraction
 from typing import TYPE_CHECKING
-
-from arachne.timeline.clock import frames_in
 
 from ._scope import Animated, animated, asked, names
 from .armed import ArmedRule
@@ -66,27 +66,15 @@ if TYPE_CHECKING:
 SETTLED_WAIT = Fraction(1, 2)
 
 
-def _frames(record: Record, rule: ArmedRule) -> list[Fraction]:
-    """Each play's first frame, from the play armed at on."""
-    grid = render_grid(record)
-    times = []
-    for play in record.plays:
-        frames = frames_in(play.start, play.end, grid)
-        if play.start >= rule.since and frames:
-            times.append(frames[0])
-    return times
-
-
 def _departures(context: LintContext, rule: ArmedRule) -> list[Finding]:
-    # Plays, frames and states, from the one execution the frames come from.
+    # Plays and states, from the one execution the lint's frames come from.
     record = context.frames.execution
-    states = record.states
+    states = rule.states(context)
     grid = render_grid(record)
-    shown = rule.frames(context)
     clock = _Clock(record)
     found: list[Finding] = []
     removals: dict[int, list[Removal]] = {}
-    for removal in states.removals if states is not None else ():
+    for removal in states.removals:
         if removal.t >= rule.since:
             removals.setdefault(removal.plays, []).append(removal)
 
@@ -106,25 +94,23 @@ def _departures(context: LintContext, rule: ArmedRule) -> list[Finding]:
     for index, play in enumerate(record.plays):
         for removal in removals.get(index, ()):
             removed(removal)
-        if play.start < rule.since or not play.samples:
+        if play.start < rule.since:
             continue
-        clock.stamp(play.called, play.start)
+        # The scene as the script called the play, before it added or began
+        # anything, and as the play left it, finished and cleaned up.
+        called, left = states.calls[play.index], states.exits[play.index]
+        clock.stamp(called.roots, play.start)
         leaves = played(play)
         going = [leaf.mobject for leaf in leaves if leaf.departs and leaf.mobject]
-        frames = frames_in(play.start, play.end, grid)
-        first = shown.get(frames[0]) if frames else None
-        if going and first is not None:
-            settled = clock.settled(play.samples[0], play.start, going)
-            if settled:
-                found.extend(
-                    _sweep(first, settled, rule.terms, play.source_line, play.start, grid)
-                )
-        # The scene as the play left it, finished and cleaned up.
-        left = states.exits.get(play.index) if states is not None else None
-        end = left if left is not None else play.samples[-1]
+        settled = clock.settled(called, play.start, going) if going else {}
+        if settled:
+            parts = rule.state(context, called)
+            found.extend(
+                _sweep(parts, settled, rule.terms, play.source_line, play.start, grid)
+            )
         touched = [leaf.mobject for leaf in leaves if leaf.mobject is not None]
-        clock.touch(touched, end, play.end)
-        clock.prune(end.roots, end)
+        clock.touch(touched, left, play.end)
+        clock.prune(left.roots, left)
     for removal in removals.get(len(record.plays), ()):
         removed(removal)
     return found
@@ -255,4 +241,4 @@ def _sweep(
 
 
 #: The rule: what settled things leave, swept as they depart.
-departures = ArmedRule(_departures, reads=_frames)
+departures = ArmedRule(_departures)

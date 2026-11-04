@@ -11,8 +11,9 @@ Nothing arms them unasked. A rule that samples frames of its own says
 which (``reads``); they are read with the lint's other frames, from the
 record or the lint's one forward run (:mod:`.frames`). Between frames an
 armed rule reads the states its execution keeps (``Record.states``): the
-scene as each play ended, finished and cleaned up, and as the script
-removed from it; it asks that the execution keep them.
+scene as the script called each play, as each play ended (finished and
+cleaned up) and as the script removed from it; it asks that the execution
+keep every one of them from its arming on.
 
 ``sample_fps`` is the rate a hold watch samples a play's frames at when
 another engine's pass is matched: that pass reads the first frame of the
@@ -36,7 +37,7 @@ from .exempt import Exemptions
 from .rules._rule import DEFAULT_PAD, Terms
 
 if TYPE_CHECKING:
-    from arachne.timeline.record import Capture, PlayRecord, Record
+    from arachne.timeline.record import Capture, PlayRecord, Record, States
 
     from .core import LintContext
     from .findings import Finding
@@ -82,7 +83,7 @@ class ArmedRule:
         """Ask the lint for the frames this rule samples, before any is read,
         and that its execution keep its states, to the scene's end.
         """
-        frames.require_states()
+        frames.require_states(self.since)
         frames.complete(self._owner)
         if self.reads is None:
             return
@@ -113,6 +114,15 @@ class ArmedRule:
         """The parts of each frame :attr:`reads` named, by its time."""
         times = self.reads(context.record, self) if self.reads is not None else ()
         return dict(zip(times, context.frames.result(self._owner), strict=True))
+
+    @staticmethod
+    def states(context: LintContext) -> States:
+        """The states of the execution the frames come from, which keeps
+        every one from the rule's arming on (:meth:`.Frames.require_states`).
+        """
+        states = context.frames.execution.states
+        assert states is not None, "an execution read without its states"
+        return states
 
     def state(self, context: LintContext, capture: Capture) -> Parts:
         """The parts of a state the execution keeps (``Record.states``)."""

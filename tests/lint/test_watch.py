@@ -48,11 +48,25 @@ CE_SPANS = {
     "FixedCaptionAtEdge": ("clip.frame_edge", True, (0.0, 2.0)),
     "ZoomedPastCaption": ("clip.frame_edge", True, (0.8, 3.0)),
     "WordSlipsToEdge": ("clip.frame_edge", True, (2.7, 3.7)),
+    # Inside the frame as the script called the play; past the edge from its
+    # first instant on.
+    "PuckJumpsOutAtOnce": ("clip.frame_edge", True, (0.3, 2.0)),
+    # The engine's record keeps states only from 1.2 s on: read from the
+    # lint's forward run, which keeps them all.
+    "StatesArmedLate": ("clip.frame_edge", True, (0.0, 1.2)),
     "SettledNoteFades": ("overlap.text", False, (1.0, 1.0)),
     "SettledNoteFadesInAGroup": ("overlap.text", False, (1.0, 1.0)),
     "SettledNoteRemoved": ("overlap.text", False, (1.0, 1.0)),
     "RailSnapsUnderNote": ("overlap.text", False, (1.2, 1.2)),
     "NoteRemovedAndReadded": ("overlap.text", False, (0.6, 0.6)),
+    # Swept in the scene the script called the play on: a fade at rate 1
+    # from its first instant, a play whose beginning takes the word out of
+    # its panel, a fade too short to show a frame.
+    "NoteFadesAtOnce": ("overlap.text", False, (0.6, 0.6)),
+    "WordLeavesItsPanel": ("overlap.text", False, (0.6, 0.6)),
+    "NoteFadesBetweenFrames": ("overlap.text", False, (0.6, 0.6)),
+    # bring_to_back removes the word, then adds it again.
+    "NoteReordered": ("overlap.text", False, (0.6, 0.6)),
 }
 #: Scenes the reference checks find nothing in.
 CE_SILENT = [
@@ -70,6 +84,9 @@ CE_SILENT = [
     "PanelPulsesTwo",
     # A removal departs only what it removes.
     "DotTakenFromPanel",
+    # bring_to_front and remove_foreground_mobjects call no remove.
+    "NoteBroughtToFront",
+    "ForegroundNoteDropped",
 ]
 #: The planted span each held defect must lie in.
 PLANTED = {
@@ -82,6 +99,8 @@ PLANTED = {
     "FixedCaptionAtEdge": (0.0, 2.0),
     "ZoomedPastCaption": (0.5, 3.0),
     "WordSlipsToEdge": (2.6, 3.8),
+    "PuckJumpsOutAtOnce": (0.0, 2.0),
+    "StatesArmedLate": (0.0, 1.4),
 }
 HELD = [name for name, (_, held, _) in CE_SPANS.items() if held]
 DEPARTED = [name for name, (_, held, _) in CE_SPANS.items() if not held]
@@ -258,6 +277,10 @@ def test_a_settled_caption_that_departs_is_swept(run, name):
         ("RailSnapsUnderNote", "remove-note"),
         # Put back at once, it was removed all the same.
         ("NoteRemovedAndReadded", "readd"),
+        ("NoteFadesAtOnce", "at-once"),
+        ("WordLeavesItsPanel", "leaves"),
+        ("NoteFadesBetweenFrames", "between"),
+        ("NoteReordered", "reorder"),
     ],
 )
 def test_a_departure_names_the_line_that_made_it(run, name, tag):
@@ -308,15 +331,27 @@ def test_a_departure_s_exemption_excuses_it(run, session_of):
 # The states the rules read --------------------------------------------------
 
 
-def _execution_seen(session):
+def _execution_seen(session, since=0):
     seen = []
 
     def watch(context, rule):
         seen.append(context.frames.execution)
         return []
 
-    lint(session, rules=(ArmedRule(watch),))
+    lint(session, rules=(ArmedRule(watch).where(since=since),))
     return seen[0]
+
+
+def test_a_record_keeping_states_only_from_later_is_not_read_from_earlier(
+    session_of,
+):
+    session = session_of("StatesArmedLate", SCENES, frame_rate=15)
+    assert session.record.states.since == 1
+    early = _execution_seen(session, since=0)
+    assert early is not session.record
+    assert early.states.since == 0
+    # Armed at 1.2 s, the record keeps every state from then on.
+    assert _execution_seen(session, since=1.2) is session.record
 
 
 def test_a_lint_s_forward_run_keeps_every_play_s_state(session_of):
