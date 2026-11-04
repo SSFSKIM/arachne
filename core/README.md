@@ -8,13 +8,17 @@ the platform's), and every pixel a function of its own fragments only.
 
 ```python
 import arachne_core as ac
+from arachne.camera.camera import Camera
 
+# Take the frame's size from the camera: CE fits its height to the pixels' aspect ratio
+# (7.99375... at 854x480, not the configured 8.0).
+camera = Camera(pixel_width=854, pixel_height=480)
 delta = ac.FrameDelta(t=(0, 1), seq=0)
 delta.set_view(
-    pixel_width=854,
-    pixel_height=480,
-    frame_width=14.222,
-    frame_height=8.0,
+    pixel_width=camera.pixel_width,
+    pixel_height=camera.pixel_height,
+    frame_width=camera.frame_width,
+    frame_height=camera.frame_height,
     background=(0.0, 0.0, 0.0, 1.0),
 )
 stream = ac.Stream()  # make it in the process that draws

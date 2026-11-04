@@ -232,8 +232,16 @@ impl After<'_> {
         Ok(())
     }
 
-    fn check_order(&self, order: &[OrderEntry]) -> Result<(), StreamError> {
+    /// Checks an order against the records the delta leaves. `display` is the slot of the display
+    /// whose sub-frame draws the order, which may not draw itself.
+    fn check_order(&self, order: &[OrderEntry], display: Option<u32>) -> Result<(), StreamError> {
         for e in order {
+            if Some(e.slot) == display {
+                return Err(StreamError::Invalid(format!(
+                    "the sub-frame of slot {} draws its own slot",
+                    e.slot
+                )));
+            }
             let rec = self.record(e.slot).ok_or_else(|| {
                 StreamError::Missing(format!("the order draws slot {}, which is not set", e.slot))
             })?;
@@ -279,7 +287,7 @@ impl After<'_> {
                     )));
                 }
                 self.check_view(view, Some(rec.slot))?;
-                self.check_order(order)?;
+                self.check_order(order, Some(rec.slot))?;
                 None
             }
             (RecordKind::Volume | RecordKind::Field | RecordKind::Emission, Body::Opaque(_)) => {
@@ -434,12 +442,12 @@ impl Stream {
                 in_use(key, "the view".into())?;
             }
         }
-        // Untouched records were checked when set; only a release (above) or a removal of a slot
-        // a display's sub-frame draws can strand them.
-        if !after.removed.is_empty() {
+        // Untouched records were checked when set; only a release (above), or a removal or a re-set
+        // of a slot a display's sub-frame draws, can strand them.
+        if !after.removed.is_empty() || !after.set.is_empty() {
             for rec in after.records() {
                 if let Body::Image(ImageSource::SubFrame { order, .. }) = &rec.body {
-                    after.check_order(order)?;
+                    after.check_order(order, Some(rec.slot))?;
                 }
             }
         }
@@ -449,7 +457,7 @@ impl Stream {
         if let Some(view) = &delta.view {
             after.check_view(view, None)?;
         }
-        after.check_order(delta.order.as_deref().unwrap_or(&self.order))
+        after.check_order(delta.order.as_deref().unwrap_or(&self.order), None)
     }
 
     /// Draws the frame at `width x height` pixels, its tiles spread over `threads` threads.

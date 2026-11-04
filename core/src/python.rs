@@ -3,7 +3,6 @@
 use crate::stream::{DrawError, Stream, StreamError, Unsupported};
 use crate::xf::wire::{self, XfError};
 use crate::xf::*;
-use numpy::ndarray::Axis;
 use numpy::{
     AllowTypeChange, PyArray1, PyArrayLike1, PyArrayLike2, PyArrayLike3, PyArrayLikeDyn,
     PyArrayMethods,
@@ -250,7 +249,11 @@ fn view_of(fields: Fields) -> PyResult<View> {
                 LightModel::Ce
             } else {
                 let (code, params): (u8, Vec<f64>) = v.extract()?;
-                LightModel::Other { code, params }
+                // CE's model has no parameters; written as (0, []) it is CE's, as XF reads it back.
+                match (code, params.is_empty()) {
+                    (0, true) => LightModel::Ce,
+                    _ => LightModel::Other { code, params },
+                }
             }
         }
     };
@@ -361,16 +364,28 @@ fn body_of(kind: RecordKind, fields: &Fields) -> PyResult<Body> {
         RecordKind::Instances => {
             let placements: PyArrayLikeDyn<f64, AllowTypeChange> = fields.need("placements")?;
             let placements = placements.as_array();
-            let n = placements.len_of(Axis(0));
-            if placements.len() != n * 12 {
-                return Err(PyValueError::new_err(
-                    "placements must have shape (n, 3, 4) or (n, 12)",
+            let &[n, 3, 4] = placements.shape() else {
+                return Err(PyValueError::new_err(format!(
+                    "placements must have shape (n, 3, 4), not {:?}",
+                    placements.shape()
+                )));
+            };
+            let objects: PyArrayLike1<u32, AllowTypeChange> = fields.need("objects")?;
+            let objects = objects.as_array().to_vec();
+            if objects.len() != n {
+                return Err(xf_error(
+                    fields.dict.py(),
+                    format!(
+                        "an instances record has {n} placements and {} objects",
+                        objects.len()
+                    ),
                 ));
             }
-            let flat: Vec<f64> = placements.iter().copied().collect();
-            let objects: PyArrayLike1<u32, AllowTypeChange> = fields.need("objects")?;
             Body::Instances(Instances {
-                placements: flat
+                placements: placements
+                    .iter()
+                    .copied()
+                    .collect::<Vec<f64>>()
                     .chunks(12)
                     .map(|c| {
                         [
@@ -382,7 +397,7 @@ fn body_of(kind: RecordKind, fields: &Fields) -> PyResult<Body> {
                     .collect(),
                 fill: need_key(fields, "instance_fill")?,
                 stroke: need_key(fields, "instance_stroke")?,
-                objects: objects.as_array().to_vec(),
+                objects,
             })
         }
         RecordKind::Volume | RecordKind::Field | RecordKind::Emission => {
