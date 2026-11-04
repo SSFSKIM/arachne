@@ -543,13 +543,13 @@ def live(
     option of that name, unless given), each capture a frame at the scene's
     instant ``t``. On ``cairo`` nothing changes.
     """
-    from .painter import DRAW_PATHS
+    from .painter import DRAW_PATHS, camera_path
 
     if draw_path is None:
         from arachne import config
 
         draw_path = config.draw_path
-    if not DRAW_PATHS[draw_path]:
+    if not DRAW_PATHS[camera_path(camera, draw_path)]:
         yield None
         return
     found = _LIVE.get(camera)
