@@ -16,6 +16,7 @@ from arachne import LineJointType, config, tempconfig
 from arachne.frame_ir.painter import IrCairoPainter, painter_for
 from arachne.frame_ir.xf import Record
 from arachne.session import Session
+from arachne.timeline.mapping import render_mapping_centre
 from arachne.utils.bezier import interpolate
 
 from ..timeline import camera_scenes
@@ -211,15 +212,12 @@ def test_a_moved_three_d_centre_keeps_the_first_mapping_centre():
     assert stream._view["mapping_centre"] == (0.0, 0.0, 0.0)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="needs render_mapping_centre(record), from PR #14; whichever of this"
-    " branch and that PR lands second wires it",
-)
 def test_a_late_frame_asked_first_keeps_the_render_s_mapping_centre():
     """The render freezes the mapping centre at its own first path draw; a
     session asked for a late frame first must draw it where the render does,
-    not freeze the centre the camera has moved to by then.
+    not freeze the centre the camera has moved to by then. The session
+    freezes the centre the record's render froze (``render_mapping_centre``)
+    before it draws, and the frame's description maps around it.
     """
     _, direct = render(scenes.MovedThreeDCentre, FPS, **MEDIUM)
     late = len(direct) - 1
@@ -230,7 +228,11 @@ def test_a_late_frame_asked_first_keeps_the_render_s_mapping_centre():
     )
     try:
         frame = np.asarray(session.frame(Fraction(late, FPS)))
-        assert _painter(session.scene).frames > 0, "drawn from XF"
+        painter = _painter(session.scene)
+        assert painter.frames > 0, "drawn from XF"
+        centre = render_mapping_centre(session.record)
+        assert centre is not None
+        assert painter.stream._view["mapping_centre"] == centre
     finally:
         session.close()
     np.testing.assert_array_equal(frame, direct[late])
