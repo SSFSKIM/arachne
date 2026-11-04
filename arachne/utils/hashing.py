@@ -34,6 +34,7 @@ KEYS_TO_FILTER_OUT = {
     "pixel_array",
     "_pixel_array",  # where an image mobject keeps its pixel_array value
     "pixel_array_to_cairo_context",
+    "pixel_array_to_mapping_centre",
 }
 
 

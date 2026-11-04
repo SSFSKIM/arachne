@@ -1,0 +1,133 @@
+"""The painter seam: how a shown frame becomes pixels, by draw path.
+
+``Drawing`` hands a frame to the painter its draw path names (the option
+``draw_path``). On ``cairo`` there is none: the camera draws the shown
+mobjects itself, as it always has. On ``ir_cairo`` the frame is turned into an
+XF delta (:class:`~.extract.FrameStream`), the core checks the delta whole
+(``arachne_core``, the ``core`` extra), and Cairo draws the frame from the XF
+stream alone (:class:`~.cairo_painter.CairoDrawer`).
+
+A painter and its stream are made in the process that draws, after any fork:
+:func:`painter_for` keeps one per record and process.
+"""
+
+from __future__ import annotations
+
+__all__ = ["IrCairoPainter", "painter_for"]
+
+import os
+import weakref
+from collections.abc import Mapping, Sequence
+from fractions import Fraction
+from typing import Any
+
+import numpy as np
+
+from .cairo_painter import CairoDrawer
+from .extract import Blend, FrameStream
+from .xf import Delta, StreamState
+
+#: The draw paths, and whether each describes frames in XF.
+DRAW_PATHS = {"cairo": False, "ir_cairo": True}
+
+
+class IrCairoPainter:
+    """Frames through XF, drawn by Cairo from the stream alone.
+
+    With ``validate`` (the default) every delta goes through XF's bytes: the
+    core parses them, applies them to its ``Stream`` (never drawing there),
+    so a delta the core would refuse is an error here, and Cairo draws from
+    the records the core read back. Without it (no core installed) Cairo
+    draws from the extractor's own records.
+    ``keep`` keeps every delta sent (``deltas``), for tests; by default the
+    class's ``keep_all``.
+    """
+
+    keep_all = False
+    validate_default = True
+
+    def __init__(
+        self, *, validate: bool | None = None, keep: bool | None = None
+    ) -> None:
+        if validate is None:
+            validate = self.validate_default
+        self.stream = FrameStream()
+        self.state = StreamState()
+        self.drawer = CairoDrawer()
+        self.core: Any = None
+        if validate:
+            try:
+                import arachne_core
+            except ImportError as error:  # pragma: no cover - environment
+                raise ImportError(
+                    "draw_path ir_cairo needs arachne_core: install the 'core' extra"
+                ) from error
+            self.core = arachne_core.Stream()
+        self.keep = self.keep_all if keep is None else keep
+        self.deltas: list[Delta] = []
+        self.last: Delta | None = None
+
+    def paint(
+        self,
+        camera: Any,
+        groups: Sequence[tuple[str, Sequence[Any]]],
+        *,
+        t: Fraction = Fraction(0),
+        terms: Mapping[int, Blend] | None = None,
+    ) -> np.ndarray:
+        """The frame the camera draws from ``groups`` (each a layer and the
+        list one capture is handed), from its XF description alone.
+        """
+        delta = self.stream.frame(camera, groups, t=t, terms=terms)
+        drawn = delta
+        if self.core is not None:
+            # Through the wire: the bytes, parsed back by the core, are what
+            # the core applies and what Cairo draws from.
+            import arachne_core
+
+            read = arachne_core.FrameDelta.from_bytes(delta.to_core().to_bytes())
+            self.core.apply(read)
+            drawn = Delta.from_contents(read.contents())
+        self.state.apply(drawn)
+        self.last = delta
+        if self.keep:
+            self.deltas.append(delta)
+        return self.drawer.draw(self.state).copy()
+
+    def settle(self) -> None:
+        """Leave each display's camera of the last frame holding the picture
+        CE's last capture leaves in it (what a display shows once its camera
+        has left the MultiCamera, drawn as the scene runs).
+        """
+        for display, (_, view, order) in self.stream.last_sub_frames:
+            camera = display.camera
+            camera.pixel_array = self.drawer.capture(
+                self.state, view, order, camera.background
+            )
+
+
+_PAINTERS: weakref.WeakKeyDictionary[Any, tuple[int, str, Any]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def painter_for(
+    owner: Any, draw_path: str, role: str = "frames"
+) -> IrCairoPainter | None:
+    """The painter of ``draw_path`` for ``owner`` (a record) in this process,
+    made on first use; ``None`` on ``cairo``. ``role`` keeps apart streams
+    that draw different things (a play's static pictures and its frames).
+    """
+    if draw_path not in DRAW_PATHS:
+        raise ValueError(f"draw_path {draw_path!r} is not one of {sorted(DRAW_PATHS)}")
+    if not DRAW_PATHS[draw_path]:
+        return None
+    painters = _PAINTERS.get(owner)
+    pid = os.getpid()
+    if painters is None or painters[0] != pid or painters[1] != draw_path:
+        painters = (pid, draw_path, {})
+        _PAINTERS[owner] = painters
+    found = painters[2].get(role)
+    if found is None:
+        found = painters[2][role] = IrCairoPainter()
+    return found

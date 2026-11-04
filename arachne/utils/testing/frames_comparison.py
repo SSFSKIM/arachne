@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import contextlib
 import functools
+import hashlib
 import inspect
+import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -27,6 +30,10 @@ from ._test_class_makers import (
 )
 
 SCENE_PARAMETER_NAME = "scene"
+#: Set to ``1``, every frames comparison also draws its scene on the
+#: ``ir_cairo`` draw path and requires each frame's bytes to equal the direct
+#: path's (the Frame IR's completeness check).
+BOTH_PATHS_ENV = "ARACHNE_FRAMES_BOTH_PATHS"
 _tests_root_dir_path = Path(__file__).absolute().parents[2]
 PATH_CONTROL_DATA = _tests_root_dir_path / Path("control_data", "graphical_units_data")
 MIN_CAIRO_VERSION = 11800
@@ -204,35 +211,77 @@ def _make_test_comparing_frames(
     else:
         frames_tester = _FramesTester(file_path, show_diff=show_diff)
 
-    file_writer_class = (
-        _make_scene_file_writer_class(frames_tester)
-        if not last_frame
-        else DummySceneFileWriter
-    )
     testRenderer = _make_test_renderer_class(renderer_class)
 
+    def run(tester: Any) -> None:
+        writer_class = (
+            _make_scene_file_writer_class(tester)
+            if not last_frame
+            else DummySceneFileWriter
+        )
+        sceneTested = _make_test_scene_class(
+            base_scene=base_scene,
+            construct_test=construct,
+            # If you pass a custom renderer to the Scene, the Camera class given as an argument in the Scene
+            # is not passed to the renderer. See __init__ of Scene.
+            test_renderer=(
+                testRenderer(file_writer_class=writer_class)
+                if base_scene is not ThreeDScene
+                else testRenderer(
+                    file_writer_class=writer_class,
+                    camera_class=ThreeDCamera,
+                )
+            ),
+        )
+        scene_tested = sceneTested(skip_animations=True)
+        scene_tested.render()
+        if last_frame:
+            tester.check_frame(-1, scene_tested.renderer.get_frame())
+
     def real_test() -> None:
+        both = os.environ.get(BOTH_PATHS_ENV) == "1"
+        direct = _FrameDigests(frames_tester)
         with frames_tester.testing():
-            sceneTested = _make_test_scene_class(
-                base_scene=base_scene,
-                construct_test=construct,
-                # If you pass a custom renderer to the Scene, the Camera class given as an argument in the Scene
-                # is not passed to the renderer. See __init__ of Scene.
-                test_renderer=(
-                    testRenderer(file_writer_class=file_writer_class)
-                    if base_scene is not ThreeDScene
-                    else testRenderer(
-                        file_writer_class=file_writer_class,
-                        camera_class=ThreeDCamera,
-                    )
-                ),  # testRenderer(file_writer_class=file_writer_class),
+            run(direct if both else frames_tester)
+        if both:
+            described = _FrameDigests(None)
+            with tempconfig({"draw_path": "ir_cairo"}):
+                run(described)
+            assert described.digests == direct.digests, (
+                "the frames drawn from the Frame IR differ from the direct path's:"
+                f" {_first_difference(direct.digests, described.digests)}"
             )
-            scene_tested = sceneTested(skip_animations=True)
-            scene_tested.render()
-            if last_frame:
-                frames_tester.check_frame(-1, scene_tested.renderer.get_frame())
 
     return real_test
+
+
+class _FrameDigests:
+    """A tester that keeps each frame's sha256 and passes the frame on to
+    ``inner``, when there is one.
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self.inner = inner
+        self.digests: list[tuple[int, str]] = []
+
+    @contextlib.contextmanager
+    def testing(self) -> Any:
+        yield
+
+    def check_frame(self, frame_number: int, frame: Any) -> None:
+        data = memoryview(frame).tobytes()
+        self.digests.append((frame_number, hashlib.sha256(data).hexdigest()))
+        if self.inner is not None:
+            self.inner.check_frame(frame_number, frame)
+
+
+def _first_difference(a: list[tuple[int, str]], b: list[tuple[int, str]]) -> str:
+    if len(a) != len(b):
+        return f"{len(a)} frames against {len(b)}"
+    for (number, x), (_, y) in zip(a, b, strict=True):
+        if x != y:
+            return f"frame {number}"
+    return "none"
 
 
 def _control_data_path(

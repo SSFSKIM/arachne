@@ -49,8 +49,18 @@ class Session:
     draws its frames.
     """
 
-    def __init__(self, scene: Scene, record: Record, module: ModuleType) -> None:
+    def __init__(
+        self,
+        scene: Scene,
+        record: Record,
+        module: ModuleType,
+        *,
+        draw_path: str | None = None,
+    ) -> None:
         self.scene = scene
+        #: The draw path its frames take: the one it was executed under when
+        #: opened, else the option's value at each frame.
+        self.draw_path = draw_path
         self.record = record
         self.module = module
         self._quality: str | None = None
@@ -83,7 +93,8 @@ class Session:
         ``"brute_force"`` is the verification mode of
         :mod:`.timeline.reference`; ``on_step``,
         ``on_tick`` and ``on_start`` are ``Recorder``'s diagnostic hooks. ``config`` overrides the
-        configuration the scene is executed under; nothing is written either
+        configuration the scene is executed under (its draw path too: the
+        session's frames take the one it was opened with); nothing is written either
         way.
         """
         path = Path(file).resolve()
@@ -94,6 +105,7 @@ class Session:
             "disable_caching": True,
         }
         with tempconfig(settings):
+            draw_path = global_config.draw_path
             ORIGINS.start(base_dir)
             added_path = base_dir not in sys.path
             if added_path:
@@ -126,7 +138,7 @@ class Session:
                     sys.path.remove(base_dir)
         record = instance.record
         assert record is not None
-        return cls(instance, record, module)
+        return cls(instance, record, module, draw_path=draw_path)
 
     def state_at(self, t: Fraction | float) -> State:
         """The scene at ``t``, from the record."""
@@ -144,7 +156,7 @@ class Session:
         """
         self._use_quality(quality)
         record = self.record
-        with Drawing(record) as drawing:
+        with Drawing(record, draw_path=self.draw_path) as drawing:
             pixels = draw(
                 drawing,
                 record,
