@@ -27,6 +27,7 @@ from .constants import QUALITIES
 from .timeline.clock import exact
 from .timeline.draw import Drawing
 from .timeline.execution import Divergence, ExecutionSummary, compare, summarize
+from .timeline.inputs import Inputs, engine_dirs
 from .timeline.origins import ORIGINS
 from .timeline.recorder import Recorder
 from .timeline.routes import draw
@@ -103,6 +104,9 @@ class Session:
         }
         with tempconfig(settings):
             ORIGINS.start(base_dir)
+            # What the scene looks up and reads as its file loads counts too.
+            inputs = Inputs(base_dir, excluded=engine_dirs(global_config))
+            inputs.start()
             added_path = base_dir not in sys.path
             if added_path:
                 sys.path.insert(0, base_dir)
@@ -123,12 +127,14 @@ class Session:
                         on_step=on_step,
                         on_tick=on_tick,
                         on_start=on_start,
+                        inputs=inputs,
                     )
                     instance.render()
                 except BaseException:
                     sys.modules.pop(module.__name__, None)
                     raise
             finally:
+                inputs.stop()
                 ORIGINS.stop()
                 if added_path and base_dir in sys.path:
                     sys.path.remove(base_dir)

@@ -263,6 +263,10 @@ class Recorder:
     must change nothing: nothing checks it, and the frames of a play whose
     ``on_tick`` or ``on_step`` writes are undefined (``tech-debt-tracker.md``,
     Hooks).
+
+    ``inputs`` watches what the script looks up and reads
+    (:class:`.inputs.Inputs`), already watching when its caller began before
+    the scene file loaded; unset, the run watches from when its script begins.
     """
 
     def __init__(
@@ -275,6 +279,7 @@ class Recorder:
         on_step: Callable[[Scene, Fraction], object] | None = None,
         on_tick: Callable[[Scene, Fraction, bool], object] | None = None,
         on_start: Callable[[Scene, Fraction], object] | None = None,
+        inputs: Inputs | None = None,
     ) -> None:
         if stepping not in (True, False, BRUTE_FORCE):
             raise ValueError(
@@ -303,8 +308,9 @@ class Recorder:
         self.frame: FrameInstant | None = None
         #: The play whose ``play_internal`` is running, until its body has run.
         self._body: _Body | None = None
-        #: The files the script opens for reading while it runs.
-        self._inputs: Inputs | None = None
+        #: What the script looks up and reads while it runs: given when the
+        #: watching began before the scene file loaded (:meth:`.Session.open`).
+        self._inputs = inputs
 
     # The run
 
@@ -419,10 +425,11 @@ class Recorder:
             base = os.path.dirname(record.scene_file) if record.scene_file else None
             ORIGINS.start(os.path.realpath(base) if base else None)
             self._tagging = True
-        if record.scene_file is not None:
+        if self._inputs is None and record.scene_file is not None:
             self._inputs = Inputs(
                 os.path.dirname(record.scene_file), excluded=engine_dirs(config)
             )
+        if self._inputs is not None:
             self._inputs.start()
 
     def end_run(self) -> None:
@@ -470,8 +477,9 @@ class Recorder:
             inputs.stop()
         if record.scene_file is None:
             return record.identity
-        module = sys.modules.get(type(self.scene).__module__)
-        sources = source_files(record.scene_file, getattr(module, "__package__", None))
+        sources = source_files(
+            record.scene_file, () if inputs is None else inputs.modules
+        )
         return Identity(
             source_digest=source_digest(sources, os.path.dirname(record.scene_file)),
             input_digests=()

@@ -7,7 +7,9 @@ files it reads, so that editing them between executions is the test's to do.
 
 from __future__ import annotations
 
+import builtins
 import hashlib
+import importlib
 import json
 import os
 import shutil
@@ -225,11 +227,77 @@ def test_the_source_digest_covers_the_helper_modules_the_scene_imported(scene_di
 
 def test_the_same_source_in_another_directory_has_the_same_digest(scene_dir, tmp_path):
     first = _open(_helped(scene_dir), "Helped").record.identity
-    _forget_modules(scene_dir)
+    # The first directory's helpers stay imported under their names, as
+    # they would in a long-lived process: the copy's digest is its own.
     elsewhere = tmp_path / "elsewhere"
     shutil.copytree(scene_dir, elsewhere)
     second = _open(elsewhere / "scene.py", "Helped").record.identity
     assert second.source_digest == first.source_digest
+
+
+COMPUTED = (
+    HEADER
+    + """
+import importlib
+
+TOP = importlib.import_module("top_" + "helper")
+
+
+class Computed(Scene):
+    def construct(self):
+        late = importlib.import_module("late_" + "helper")
+        dunder = __import__("dunder_" + "helper")
+        dot = Dot()
+        self.add(dot)
+        offset = TOP.VALUE + late.VALUE + dunder.VALUE
+        self.play(dot.animate.shift(offset * RIGHT), run_time=0.5)
+"""
+)
+
+
+def test_modules_imported_by_a_computed_name_are_in_the_source_digest(scene_dir):
+    for name in ("top_helper", "late_helper", "dunder_helper"):
+        _write(scene_dir, f"{name}.py", "VALUE = 0.25\n")
+    scene = _write(scene_dir, "scene.py", COMPUTED)
+    first = _open(scene, "Computed").record.identity.source_digest
+    # Imported already, each is looked up from the cache the second time.
+    assert _open(scene, "Computed").record.identity.source_digest == first
+    for name in ("top_helper", "late_helper", "dunder_helper"):
+        path = scene_dir / f"{name}.py"
+        original = path.read_text()
+        path.write_text(original + "# edited\n")
+        try:
+            edited = _open(scene, "Computed").record.identity.source_digest
+        finally:
+            path.write_text(original)
+        assert edited != first, name
+
+
+def test_the_source_digest_does_not_depend_on_what_the_process_imported_before(
+    scene_dir,
+):
+    _write(scene_dir, "unused_helper.py", "VALUE = 1\n")
+    scene = _write(
+        scene_dir,
+        "scene.py",
+        HEADER
+        + """
+if False:
+    import unused_helper
+
+
+class Guarded(Scene):
+    def construct(self):
+        self.wait(0.25)
+""",
+    )
+    before = _open(scene, "Guarded").record.identity.source_digest
+    sys.path.insert(0, str(scene_dir))
+    try:
+        import unused_helper  # noqa: F401
+    finally:
+        sys.path.remove(str(scene_dir))
+    assert _open(scene, "Guarded").record.identity.source_digest == before
 
 
 def test_outside_a_recording_the_hook_records_nothing(scene_dir):
@@ -275,9 +343,12 @@ class Fails(Scene):
         raise RuntimeError("the scene's own error")
 """,
     )
+    unwatched = (builtins.__import__, importlib.import_module)
     with pytest.raises(RuntimeError, match="the scene's own error"):
         _open(scene, "Fails")
     assert not inputs.active()
+    # The import functions are the process's own again.
+    assert (builtins.__import__, importlib.import_module) == unwatched
 
 
 # Comparing executions
@@ -428,6 +499,141 @@ def test_two_sources_are_not_compared(scene_dir):
     second = _open(scene, "Reads").summary()
     with pytest.raises(ValueError, match="source"):
         compare(first, second)
+
+
+def _diverged_after_editing(scene: Path, name: str, data: Path, value: str):
+    """The divergence of ``scene``'s execution with ``data`` holding ``value``
+    from its execution as ``data`` held before, through JSON as another
+    process would hand it over.
+    """
+    before = _open(scene, name)
+    original = data.read_text()
+    data.write_text(value)
+    try:
+        after = _open(scene, name).summary()
+    finally:
+        data.write_text(original)
+    return before.compare(ExecutionSummary.from_json(after.to_json()))
+
+
+@pytest.mark.parametrize(
+    "move",
+    [
+        # The frame moved before the play: only the camera holds it.
+        "self.camera.frame.shift(shift * RIGHT)\n        self.wait(0.5)",
+        # The frame moved by the play, which holds it as its mobject.
+        "self.play(self.camera.frame.animate.shift(shift * RIGHT), run_time=0.5)",
+    ],
+    ids=["moved_before", "animated"],
+)
+def test_a_camera_that_differs_alone_diverges(scene_dir, move):
+    data = _write(scene_dir, "camera.txt", "0.5")
+    scene = _write(
+        scene_dir,
+        "scene.py",
+        HEADER
+        + f"""
+class Framed(MovingCameraScene):
+    def construct(self):
+        self.add(Dot())
+        shift = float((HERE / "camera.txt").read_text())
+        {move}
+""",
+    )
+    divergence = _diverged_after_editing(scene, "Framed", data, "1.5")
+    assert divergence is not None
+    assert divergence.play == 0
+    assert divergence.changed_inputs == ("camera.txt",)
+
+
+def test_a_camera_value_and_the_draw_order_are_compared(scene_dir):
+    data = _write(scene_dir, "drawing.txt", "0")
+    scene = _write(
+        scene_dir,
+        "scene.py",
+        HEADER
+        + """
+class Drawn(Scene):
+    def construct(self):
+        flag = int((HERE / "drawing.txt").read_text())
+        square, dot = Square(), Dot()
+        self.add(dot, square)
+        if flag == 1:
+            self.camera.background_color = BLUE
+        if flag == 2:
+            self.add_foreground_mobject(square)
+        self.wait(0.25)
+""",
+    )
+    background = _diverged_after_editing(scene, "Drawn", data, "1")
+    assert background is not None
+    assert "background_color" in background.reason
+    order = _diverged_after_editing(scene, "Drawn", data, "2")
+    assert order is not None
+    assert "foreground" in order.reason
+
+
+def test_an_array_of_another_layout_but_the_same_bytes_diverges(scene_dir):
+    data = _write(scene_dir, "layout.txt", "2,3 int64")
+    scene = _write(
+        scene_dir,
+        "scene.py",
+        HEADER
+        + """
+import numpy as np
+
+from arachne.mobject.values import FrozenArray, freeze
+
+
+class Laid(Scene):
+    def construct(self):
+        shape, dtype = (HERE / "layout.txt").read_text().split()
+        dot = Dot()
+        dot.table = freeze(
+            np.zeros(tuple(map(int, shape.split(","))), dtype=dtype), FrozenArray
+        )
+        self.add(dot)
+        self.wait(0.25)
+""",
+    )
+    for value in ("3,2 int64", "2,3 float64"):
+        divergence = _diverged_after_editing(scene, "Laid", data, value)
+        assert divergence is not None, value
+        assert "table" in divergence.reason, value
+
+
+def test_what_the_script_does_after_its_last_play_is_compared(scene_dir):
+    data = _write(scene_dir, "tail.txt", "0.5")
+    after_last = _write(
+        scene_dir,
+        "after.py",
+        HEADER
+        + """
+class AfterLast(Scene):
+    def construct(self):
+        dot = Dot()
+        self.add(dot)
+        self.wait(0.25)
+        dot.shift(float((HERE / "tail.txt").read_text()) * UP)
+""",
+    )
+    no_plays = _write(
+        scene_dir,
+        "still.py",
+        HEADER
+        + """
+class NoPlays(Scene):
+    def construct(self):
+        self.add(Dot().shift(float((HERE / "tail.txt").read_text()) * UP))
+""",
+    )
+    for scene, name in ((after_last, "AfterLast"), (no_plays, "NoPlays")):
+        divergence = _diverged_after_editing(scene, name, data, "1.5")
+        assert divergence is not None, name
+        assert divergence.play is None, name
+        assert divergence.source_line is None, name
+        assert divergence.changed_inputs == ("tail.txt",), name
+        assert "after its last play" in divergence.reason, name
 
 
 SUMMARIZE = """\

@@ -20,8 +20,8 @@ execution runs shift from one to the next.
 
 Any two executions of one source, in one process or two, compare through
 their summaries (:func:`summarize`, :class:`ExecutionSummary`): at every
-instant both kept, by content key, and where the keys differ by the raw
-values within :data:`TOLERANCE`. The first play they differ in is a
+instant both kept and where their scripts ended, by key, and where the keys
+differ by the raw values within :data:`TOLERANCE`. The first play they differ in is a
 :class:`Divergence`, naming the input files whose digests differ.
 """
 
@@ -44,8 +44,9 @@ __all__ = [
 ]
 
 import base64
+import hashlib
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any, TypeAlias
@@ -55,6 +56,9 @@ import numpy as np
 from .source import SourceLine
 
 if TYPE_CHECKING:
+    from arachne.mobject.mobject import Mobject
+
+    from .draw import CameraExtras
     from .record import Capture, Identity, NodeState, Record
 
 
@@ -124,12 +128,15 @@ def divergence(
 # Comparing two executions of one source
 
 #: How far apart two numbers of one field may be, in scene units, and still
-#: agree: content keys round numbers to 9 decimals, and two values either
-#: side of a rounding boundary key apart however close they are.
+#: agree: keys round numbers to 9 decimals, and two values either side of a
+#: rounding boundary key apart however close they are.
 TOLERANCE = 1e-9
 
+#: How many decimals a state's key rounds numbers to.
+KEY_DECIMALS = 9
+
 #: The version of an execution summary's serialised form.
-SUMMARY_VERSION = 1
+SUMMARY_VERSION = 2
 
 #: A raw value of a field: an array, or a scalar.
 Leaf: TypeAlias = np.ndarray | bool | int | float | str | None
@@ -144,8 +151,9 @@ class Divergence:
     #: ``"execution"``: two executions of one source differ;
     #: ``"probe"``: a play restored at a recorded instant differs from it.
     kind: str
-    #: The first play they differ in.
-    play: int
+    #: The first play they differ in; ``None`` when they differ only in what
+    #: the script left after its last play (the record's final capture).
+    play: int | None
     #: The line of the scene's code that played it.
     source_line: SourceLine | None
     #: How it differs.
@@ -167,18 +175,26 @@ class NodeValues:
     fields: tuple[tuple[str, Leaf], ...]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class StateValues:
-    """The scene's tree at one instant: its content key
-    (:meth:`.RegisteredState.content_key`, numbers to 9 decimals) and its
-    nodes in walking order, as indices into :attr:`ExecutionSummary.nodes`.
+    """What a frame drawn at one captured instant reads: the mobjects the
+    capture reaches, from the scene's list, its foreground and moving lists,
+    the play's draw lists and the camera's own mobjects, in walking order
+    (as indices into :attr:`ExecutionSummary.nodes`); and ``drawing``, the
+    capture's drawing inputs that are not mobjects: which of those nodes
+    each draw list holds, in order (as positions in ``nodes``, ``-1`` for a
+    mobject the capture does not reach), and the camera's values.
+
+    ``key`` digests all of it, every number rounded to 9 decimals and every
+    array's dtype and shape included: equal keys mean equal states.
     """
 
     key: bytes
     nodes: tuple[int, ...]
+    drawing: tuple[tuple[str, Leaf], ...]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class PlaySummary:
     """One play: its span, its line, the state it began from and the state
     at each instant the record kept, by instant.
@@ -195,13 +211,17 @@ class PlaySummary:
 @dataclass(frozen=True, eq=False)
 class ExecutionSummary:
     """What another process needs to compare an execution with this one: its
-    identity, and each play's states with their raw values (each distinct
-    node version once, in :attr:`nodes`).
+    identity, each play's states and the state the script left at its end
+    (each distinct node version once, in :attr:`nodes`).
     """
 
     identity: Identity
     plays: tuple[PlaySummary, ...] = field(repr=False)
     nodes: tuple[NodeValues, ...] = field(repr=False)
+    #: The scene when its script ended, and when that was; ``None`` for a
+    #: record without a final capture.
+    final: StateValues | None = field(default=None, repr=False)
+    end: Fraction | None = None
 
     def to_json(self) -> str:
         """The summary as JSON text; :meth:`from_json` reads it back."""
@@ -215,11 +235,7 @@ class ExecutionSummary:
                     "seed": identity.seed,
                 },
                 "nodes": [
-                    [
-                        node.type,
-                        node.children,
-                        [[name, _leaf_json(value)] for name, value in node.fields],
-                    ]
+                    [node.type, node.children, _fields_json(node.fields)]
                     for node in self.nodes
                 ],
                 "plays": [
@@ -232,12 +248,14 @@ class ExecutionSummary:
                         else [play.source_line.path, play.source_line.line],
                         "start_state": _state_json(play.start_state),
                         "instants": [
-                            [str(t), *_state_json(state)]
+                            [str(t), _state_json(state)]
                             for t, state in play.instants.items()
                         ],
                     }
                     for play in self.plays
                 ],
+                "final": None if self.final is None else _state_json(self.final),
+                "end": None if self.end is None else str(self.end),
             },
             separators=(",", ":"),
         )
@@ -263,11 +281,7 @@ class ExecutionSummary:
                 seed=identity["seed"],
             ),
             nodes=tuple(
-                NodeValues(
-                    kind,
-                    children,
-                    tuple((name, _leaf_from_json(value)) for name, value in fields),
-                )
+                NodeValues(kind, children, _fields_from_json(fields))
                 for kind, children, fields in data["nodes"]
             ),
             plays=tuple(
@@ -278,62 +292,111 @@ class ExecutionSummary:
                     source_line=None
                     if play["source_line"] is None
                     else SourceLine(*play["source_line"]),
-                    start_state=_state_from_json(*play["start_state"]),
+                    start_state=_state_from_json(play["start_state"]),
                     instants={
-                        Fraction(t): _state_from_json(key, nodes)
-                        for t, key, nodes in play["instants"]
+                        Fraction(t): _state_from_json(state)
+                        for t, state in play["instants"]
                     },
                 )
                 for play in data["plays"]
             ),
+            final=None if data["final"] is None else _state_from_json(data["final"]),
+            end=None if data["end"] is None else Fraction(data["end"]),
         )
 
 
 def summarize(record: Record) -> ExecutionSummary:
-    """The summary of the execution ``record`` is the record of."""
-    from .record import SAMPLE_DECIMALS, RegisteredState
+    """The summary of the execution ``record`` is the record of.
+
+    The camera's own mobjects are those the camera holds when the summary
+    is made, as the record's frames are drawn with it.
+    """
+    from .draw import camera_nodes
 
     nodes: list[NodeValues] = []
+    node_keys: list[bytes] = []
     numbers: dict[tuple[int, int], int] = {}
+    camera = record._scene.renderer.camera
+    owned = tuple(camera_nodes(camera))
 
-    def state_values(capture: Capture) -> StateValues:
-        state = RegisteredState(record, capture)
-        indices = []
-        for mob, node in state.nodes():
+    def state_values(
+        capture: Capture, lists: tuple[tuple[str, Sequence[Mobject]], ...]
+    ) -> StateValues:
+        roots = [
+            *capture.roots,
+            *capture.foreground,
+            *capture.moving,
+            *(mob for _, members in lists for mob in members),
+            *owned,
+        ]
+        indices: list[int] = []
+        positions: dict[int, int] = {}
+        for mob, node in record._walk(capture, roots):
             number = numbers.get((id(mob), id(node)))
             if number is None:
                 number = numbers[id(mob), id(node)] = len(nodes)
-                nodes.append(
-                    NodeValues(
-                        type(mob).__qualname__, len(node.submobjects), _fields(node)
-                    )
+                values = NodeValues(
+                    type(mob).__qualname__, len(node.submobjects), _fields(node)
                 )
+                nodes.append(values)
+                node_keys.append(_node_key(values))
+            positions[id(mob)] = len(indices)
             indices.append(number)
-        return StateValues(state.content_key(SAMPLE_DECIMALS), tuple(indices))
 
-    plays = tuple(
-        PlaySummary(
-            index=play.index,
-            start=play.start,
-            end=play.end,
-            source_line=play.source_line,
-            start_state=state_values(play.start_state.capture),
-            instants={
-                capture.instant: state_values(capture) for capture in play.samples
-            },
+        def at(members: Iterable[Mobject], *, ordered: bool = True) -> np.ndarray:
+            found = [positions.get(id(mob), -1) for mob in members]
+            return np.array(found if ordered else sorted(found), dtype=np.int64)
+
+        drawing: list[tuple[str, Leaf]] = [
+            ("roots", at(capture.roots)),
+            ("foreground", at(capture.foreground)),
+            ("moving", at(capture.moving)),
+            *((name, at(members)) for name, members in lists),
+            ("camera.mobjects", at(owned)),
+        ]
+        if capture.camera is not None:
+            drawing.extend(_camera_leaves("camera", capture.camera, at))
+        digest = hashlib.blake2b(digest_size=16)
+        for number in indices:
+            digest.update(node_keys[number])
+        digest.update(_fields_key(drawing))
+        return StateValues(digest.digest(), tuple(indices), tuple(drawing))
+
+    plays = []
+    for play in record.plays:
+        moving = (("play.moving", play.moving),)
+        plays.append(
+            PlaySummary(
+                index=play.index,
+                start=play.start,
+                end=play.end,
+                source_line=play.source_line,
+                start_state=state_values(
+                    play.start_state.capture, (*moving, ("play.static", play.static))
+                ),
+                instants={
+                    capture.instant: state_values(capture, moving)
+                    for capture in play.samples
+                },
+            )
         )
-        for play in record.plays
+    final = None if record.final is None else state_values(record.final, ())
+    return ExecutionSummary(
+        record.identity,
+        tuple(plays),
+        tuple(nodes),
+        final,
+        None if record.final is None else record.final.instant,
     )
-    return ExecutionSummary(record.identity, plays, tuple(nodes))
 
 
 def compare(mine: ExecutionSummary, theirs: ExecutionSummary) -> Divergence | None:
     """The first play where ``mine`` differs from ``theirs``, an execution
     of the same source, or ``None``. Each play's span, the state it began
-    from and the states at every instant both kept are compared by content
-    key, and where the keys differ, by raw value within :data:`TOLERANCE`
-    (an array's dtype and shape exactly). Raises :class:`ValueError` for two
-    executions of different sources.
+    from and the states at every instant both kept are compared, then the
+    state the script left at its end: by key, and where keys differ, by raw
+    value within :data:`TOLERANCE` (an array's dtype and shape exactly).
+    Raises :class:`ValueError` for two executions of different sources.
     """
     if mine.identity.source_digest != theirs.identity.source_digest:
         raise ValueError(
@@ -358,6 +421,9 @@ def compare(mine: ExecutionSummary, theirs: ExecutionSummary) -> Divergence | No
             f" {len(theirs.plays)}",
             changed,
         )
+    reason = _end_difference(mine, theirs)
+    if reason is not None:
+        return Divergence("execution", None, None, reason, changed)
     return None
 
 
@@ -400,6 +466,23 @@ def _play_difference(
     return None
 
 
+def _end_difference(mine: ExecutionSummary, theirs: ExecutionSummary) -> str | None:
+    """How the states the two scripts left at their ends differ, if they
+    do: what the scripts did after their last plays.
+    """
+    if mine.final is None or theirs.final is None:
+        return None
+    if mine.end != theirs.end:
+        return (
+            f"its script ended at {float(mine.end or 0):g} s, and at"
+            f" {float(theirs.end or 0):g} s in the other execution"
+        )
+    why = _state_difference(mine, mine.final, theirs, theirs.final)
+    if why is None:
+        return None
+    return f"after its last play, when its script ended, {why}"
+
+
 def _state_difference(
     mine: ExecutionSummary,
     state: StateValues,
@@ -409,6 +492,22 @@ def _state_difference(
     """How two states differ beyond :data:`TOLERANCE`, or ``None``."""
     if state.key == other.key:
         return None
+    # A draw list holding more or fewer mobjects is what moves the nodes it
+    # reaches, so it is named first.
+    for (name, value), (other_name, other_value) in zip(
+        state.drawing, other.drawing, strict=False
+    ):
+        if (
+            name == other_name
+            and isinstance(value, np.ndarray)
+            and isinstance(other_value, np.ndarray)
+            and value.dtype.kind == other_value.dtype.kind == "i"
+            and value.shape != other_value.shape
+        ):
+            return (
+                f"its drawing's {name} list holds {len(value)} mobjects, and"
+                f" {len(other_value)} in the other execution"
+            )
     if len(state.nodes) != len(other.nodes):
         return (
             f"it holds {len(state.nodes)} mobjects, and {len(other.nodes)} in the"
@@ -421,19 +520,29 @@ def _state_difference(
                 f"a {node.type} with {node.children} submobjects is a {twin.type}"
                 f" with {twin.children} in the other execution"
             )
-        names = [name for name, _ in node.fields]
-        twin_names = [name for name, _ in twin.fields]
-        if names != twin_names:
-            only = sorted(set(names) ^ set(twin_names))
-            return (
-                f"its {node.type}'s fields {', '.join(only)} are in one execution only"
-            )
-        for (name, value), (_, twin_value) in zip(
-            node.fields, twin.fields, strict=True
-        ):
-            why = _leaf_difference(value, twin_value)
-            if why is not None:
-                return f"its {node.type}'s {name} {why}"
+        why = _fields_difference(node.fields, twin.fields)
+        if why is not None:
+            return f"its {node.type}'s {why}"
+    why = _fields_difference(state.drawing, other.drawing)
+    if why is not None:
+        return f"its drawing's {why}"
+    return None
+
+
+def _fields_difference(
+    fields: tuple[tuple[str, Leaf], ...], others: tuple[tuple[str, Leaf], ...]
+) -> str | None:
+    names = [name for name, _ in fields]
+    other_names = [name for name, _ in others]
+    if names != other_names:
+        only = sorted(set(names) ^ set(other_names))
+        if not only:
+            return "fields come in another order in the other execution"
+        return f"fields {', '.join(only)} are in one execution only"
+    for (name, value), (_, other) in zip(fields, others, strict=True):
+        why = _leaf_difference(value, other)
+        if why is not None:
+            return f"{name} {why}"
     return None
 
 
@@ -468,7 +577,8 @@ def _brief(value: Leaf) -> str:
 def _fields(node: NodeState) -> tuple[tuple[str, Leaf], ...]:
     """The raw values of the fields a content key covers
     (:func:`.content_fields`), a paint's and a placement's spelled out: the
-    paint's fields, the placement's points.
+    paint's fields (its numbers as floats, as its key takes them), the
+    placement's points.
     """
     from arachne.mobject.placement import Placement
     from arachne.mobject.values import Paint
@@ -483,15 +593,53 @@ def _fields(node: NodeState) -> tuple[tuple[str, Leaf], ...]:
         if isinstance(value, Paint):
             own = vars(value)
             found.extend(
-                (f"{name}.{field}", _leaf(own[field]))
-                for field in Paint.FIELDS
-                if field in own
+                (f"{name}.{part}", _paint_leaf(own[part]))
+                for part in Paint.FIELDS
+                if part in own
             )
         elif isinstance(value, Placement):
             found.append((name, _leaf(value.points)))
         else:
             found.append((name, _leaf(value)))
     return tuple(found)
+
+
+def _camera_leaves(
+    prefix: str, extras: CameraExtras, at: Callable[..., np.ndarray]
+) -> Iterator[tuple[str, Leaf]]:
+    """A camera's drawing inputs that are not mobjects, and which mobjects
+    its sets and lists hold (positions, by ``at``).
+    """
+    for name, value in extras.values:
+        yield f"{prefix}.{name}", _leaf(value)
+    if extras.background is not None:
+        # A picture: compared exactly, by its digest.
+        background = np.ascontiguousarray(extras.background)
+        yield (
+            f"{prefix}.background",
+            hashlib.sha256(
+                f"{background.dtype.str}{background.shape}".encode()
+                + background.tobytes()
+            ).hexdigest(),
+        )
+    if extras.fixed_in_frame:
+        yield f"{prefix}.fixed_in_frame", at(extras.fixed_in_frame, ordered=False)
+    if extras.centers:
+        yield f"{prefix}.fixed_orientation", at(mob for mob, _ in extras.centers)
+        yield (
+            f"{prefix}.fixed_orientation_centers",
+            _leaf(np.array([center for _, center in extras.centers], dtype=float)),
+        )
+    if extras.displays is not None:
+        yield f"{prefix}.displays", at(extras.displays)
+    for number, (_, sub) in enumerate(extras.sub_cameras):
+        yield from _camera_leaves(f"{prefix}.sub{number}", sub, at)
+
+
+def _paint_leaf(value: Any) -> Leaf:
+    if isinstance(value, (int, np.integer)) and not isinstance(value, bool):
+        return float(value)
+    return _leaf(value)
 
 
 def _leaf(value: Any) -> Leaf:
@@ -504,6 +652,33 @@ def _leaf(value: Any) -> Leaf:
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
     return repr(value)
+
+
+def _node_key(node: NodeValues) -> bytes:
+    digest = hashlib.blake2b(digest_size=16)
+    digest.update(f"{node.type}\0{node.children}\0".encode())
+    digest.update(_fields_key(node.fields))
+    return digest.digest()
+
+
+def _fields_key(fields: Iterable[tuple[str, Leaf]]) -> bytes:
+    """A digest of named raw values, numbers rounded to
+    :data:`KEY_DECIMALS`, each array's dtype and shape included.
+    """
+    digest = hashlib.blake2b(digest_size=16)
+    for name, value in fields:
+        if isinstance(value, np.ndarray):
+            head = f"{name}\0A{value.dtype.str}{value.shape}\0"
+            if value.dtype.kind in "fc":
+                # Adding zero turns -0.0, which rounding makes, into 0.0.
+                value = np.round(value, KEY_DECIMALS) + 0.0
+            digest.update(head.encode())
+            digest.update(np.ascontiguousarray(value).tobytes())
+        elif type(value) is float:
+            digest.update(f"{name}\0F{round(value, KEY_DECIMALS) + 0.0!r}\0".encode())
+        else:
+            digest.update(f"{name}\0{type(value).__name__}:{value!r}\0".encode())
+    return digest.digest()
 
 
 def _leaf_json(value: Leaf) -> Any:
@@ -524,9 +699,18 @@ def _leaf_from_json(value: Any) -> Leaf:
     return value
 
 
+def _fields_json(fields: tuple[tuple[str, Leaf], ...]) -> list[Any]:
+    return [[name, _leaf_json(value)] for name, value in fields]
+
+
+def _fields_from_json(fields: list[Any]) -> tuple[tuple[str, Leaf], ...]:
+    return tuple((name, _leaf_from_json(value)) for name, value in fields)
+
+
 def _state_json(state: StateValues) -> list[Any]:
-    return [state.key.hex(), list(state.nodes)]
+    return [state.key.hex(), list(state.nodes), _fields_json(state.drawing)]
 
 
-def _state_from_json(key: str, nodes: list[int]) -> StateValues:
-    return StateValues(bytes.fromhex(key), tuple(nodes))
+def _state_from_json(data: list[Any]) -> StateValues:
+    key, nodes, drawing = data
+    return StateValues(bytes.fromhex(key), tuple(nodes), _fields_from_json(drawing))
