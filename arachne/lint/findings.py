@@ -67,15 +67,11 @@ class FindingObject:
     within: tuple[Holder, ...] = ()
 
     @property
-    def group(self) -> tuple[str, str] | None:
-        """What it belongs to, for telling look-alikes: the outermost group
-        holding it, else the scene's name for it, else nothing.
+    def group(self) -> tuple[str | None, str | None]:
+        """What tells it from look-alikes: the outermost group holding it
+        and the scene's name for it, either ``None`` when it has none.
         """
-        if self.within:
-            return ("group", self.within[0].id)
-        if self.name is not None:
-            return ("name", self.name)
-        return None
+        return (self.within[0].id if self.within else None, self.name)
 
 
 @dataclass(frozen=True)
@@ -154,8 +150,8 @@ def fold(findings: Iterable[Finding], similar: int = SIMILAR) -> list[Finding]:
 
 def _alike(a: Finding, b: Finding) -> bool:
     """Findings of one code and severity about objects of the same kinds,
-    each held by the same outermost group, or named alike, or by none and
-    unnamed.
+    each held by the same outermost group (or by none) and named alike (or
+    unnamed).
     """
 
     def shape(found: Finding) -> tuple[Any, ...]:
