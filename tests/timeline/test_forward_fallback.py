@@ -174,8 +174,8 @@ def test_a_forward_run_is_compared_with_the_record(scene_dir, edited):
     """Deterministic, the forward run agrees with the record wherever both
     kept an instant. With the data files edited between the two, it is
     another execution: the divergence is at the first play, at its line,
-    and names the file the forward run read, not one read only after it
-    stopped.
+    and names every file the record's execution read that changed since,
+    one read only after the forward run stopped included.
     """
     session, scene = _open_written(scene_dir)
     try:
@@ -196,7 +196,7 @@ def test_a_forward_run_is_compared_with_the_record(scene_dir, edited):
         assert divergence.kind == "execution"
         assert divergence.play == 0
         assert divergence.source_line.line == _line(scene, "play")
-        assert divergence.changed_inputs == ("data.txt",)
+        assert divergence.changed_inputs == ("data.txt", "late.txt")
         assert session.divergences == [divergence]
         # The answer is the new execution's: the tracker began at 1.5 there.
         dot = answer.state.named("dot")
@@ -252,14 +252,111 @@ def test_a_source_edited_since_the_record_makes_it_stale_not_divergent(scene_dir
         (answer,) = session.answers([Fraction(1, 7)])
         assert answer.state.answer == "forward"
         assert answer.fallback.kind == "source-changed"
-        assert answer.fallback.reason == "source.changed"
-        assert "source differs" in answer.fallback.detail
+        assert answer.fallback.reason == "source.changed: fallback_helper.py"
+        assert "fallback_helper.py" in answer.fallback.detail
         assert session.stale
         (run,) = session.forward_runs
         assert run.source_changed
         assert run.divergence is None
         assert session.divergences == []
     finally:
+        session.close()
+
+
+READS_IF_THERE = (
+    HEADER
+    + """
+class ReadsIfThere(Scene):
+    def construct(self):
+        global SHIFT
+        SHIFT = 0.0
+        data = HERE / "data.txt"
+        start = float(data.read_text()) if data.exists() else 1.5
+        tracker = ValueTracker(start)
+        dot = Dot().add_updater(lambda m: m.set_x(tracker.get_value() + SHIFT))
+        self.add(dot)
+        self.play(tracker.animate.set_value(2), run_time=1)
+        SHIFT = 1.0
+        self.play(tracker.animate.set_value(0), run_time=1)
+"""
+)
+
+
+def _open_in(directory: Path, source: str, name: str) -> Session:
+    scene = directory / "scene.py"
+    scene.write_text(textwrap.dedent(source))
+    return Session.open(
+        scene,
+        name,
+        config={
+            "pixel_width": 96,
+            "pixel_height": 54,
+            "frame_rate": 8,
+            "media_dir": str(directory.parent / "media"),
+        },
+    )
+
+
+def test_an_input_the_forward_run_never_read_is_named_when_it_changed(scene_dir):
+    """The data file is deleted after the session opened: the forward run,
+    stopped after the first play, reads no file at all, yet the file the
+    record's execution read is what changed.
+    """
+    data = scene_dir / "data.txt"
+    data.write_text("0.5")
+    session = _open_in(scene_dir, READS_IF_THERE, "ReadsIfThere")
+    try:
+        data.unlink()
+        session.answers([Fraction(1, 7)])
+        (run,) = session.forward_runs
+        assert run.divergence is not None
+        assert run.divergence.changed_inputs == ("data.txt",)
+    finally:
+        session.close()
+
+
+DEFAULTS = (
+    HEADER
+    + """
+class Defaults(Scene):
+    def __init__(self, **kwargs):
+        super().__init__(camera_class=MappingCamera, **kwargs)
+
+    def construct(self):
+        Dot.set_default(color=RED)
+        if (HERE / "flag.txt").read_text() == "raise":
+            raise RuntimeError("forward error")
+        dot = Dot()
+        self.add(dot)
+        self.play(dot.animate.shift(RIGHT), run_time=1)
+        self.play(dot.animate.shift(LEFT), run_time=1)
+        Dot.set_default()
+"""
+)
+
+
+@pytest.mark.parametrize("raises", [False, True])
+def test_an_engine_default_the_scene_sets_is_put_back(scene_dir, raises):
+    """The scene sets a default of an engine class and resets it at its end,
+    which a forward run that stops, or raises, never reaches.
+    """
+    from arachne import Dot
+
+    flag = scene_dir / "flag.txt"
+    flag.write_text("ok")
+    original = Dot.__init__
+    session = _open_in(scene_dir, DEFAULTS, "Defaults")
+    try:
+        assert Dot.__init__ is original
+        if raises:
+            flag.write_text("raise")
+            with pytest.raises(RuntimeError, match="forward error"):
+                session.answers([Fraction(1, 7)])
+        else:
+            session.answers([Fraction(1, 7)])
+        assert Dot.__init__ is original
+    finally:
+        Dot.__init__ = original
         session.close()
 
 
@@ -302,9 +399,9 @@ def test_a_mapping_camera_scene_answers_its_grid_instants_with_one_execution(
     (run,) = session.forward_runs
     assert run.divergence is None
     # Every play is drawn as it runs, from the first: what its drawing
-    # writes the record's execution never holds, so only what came before
-    # the first is compared.
-    assert run.compared_until == 0
+    # writes the record's execution never holds, so only the plays before
+    # the first are compared, which are none.
+    assert run.compared_plays == 0
 
 
 def test_a_record_refusing_from_a_later_play_answers_as_the_render_draws(
@@ -330,8 +427,76 @@ def test_a_record_refusing_from_a_later_play_answers_as_the_render_draws(
     (run,) = session.forward_runs
     # The display's picture, which the second play draws as it runs, is
     # written into the scene: the executions are compared before it.
-    assert run.compared_until == session.record.plays[1].start
+    assert run.compared_plays == 1
     assert run.divergence is None
+
+
+def test_a_forward_run_executes_under_the_configuration_the_session_opened_in():
+    """The session opened inside a configuration that has since been left:
+    its forward run renders as that configuration did, white background
+    and all, not as the process's configuration is now.
+    """
+    from arachne import WHITE, tempconfig
+
+    settings = {"pixel_width": 96, "pixel_height": 54, "frame_rate": 4}
+    with tempconfig({**settings, "background_color": WHITE}):
+        session = Session.open(CAMERA_SCENES, "Mapped")
+    try:
+        _, frames = render(camera_scenes.Mapped, 4, background_color=WHITE)
+        (answer,) = session.answers([Fraction(1, 4)])
+        assert np.array_equal(_pixels(answer.frame), frames[1])
+    finally:
+        session.close()
+
+
+INTRUDING = (
+    HEADER
+    + """
+class Intruding(Scene):
+    def __init__(self, **kwargs):
+        super().__init__(camera_class=MappingCamera, **kwargs)
+        # Its drawing inserts curves into the very mobjects it draws.
+        self.renderer.camera.allow_object_intrusion = True
+
+    def construct(self):
+        static = Circle(radius=0.5)
+        dot = Dot().add_updater(lambda m, dt: m.set_x(len(static.points) / 100))
+        self.add(static, dot)
+        self.play(dot.animate.shift(UP), run_time=1)
+        self.wait(0.5)
+"""
+)
+
+
+def test_what_a_live_play_draws_into_the_scene_is_compared_with_nothing(
+    scene_dir,
+):
+    """The camera's drawing writes into the static circle, even its static
+    picture drawn as the play begins: the record's execution, which draws
+    nothing, never holds that, so no sample of the play is compared.
+    """
+    session = _open_in(scene_dir, INTRUDING, "Intruding")
+    try:
+        session.answers([Fraction(1, 7)])
+        (run,) = session.forward_runs
+        assert run.compared_plays == 0
+        assert run.divergence is None
+    finally:
+        session.close()
+
+
+def test_states_without_frames_are_those_of_the_render(scene_dir):
+    """A record refusing drawing is answered by a render whether or not
+    frames are asked for: what its drawing writes is part of the execution.
+    """
+    session = _open_in(scene_dir, INTRUDING, "Intruding")
+    try:
+        (bare,) = session.answers([Fraction(1, 7)], frames=False)
+        (drawn,) = session.answers([Fraction(1, 7)])
+        assert bare.frame is None
+        assert bare.state.named("dot").box == drawn.state.named("dot").box
+    finally:
+        session.close()
 
 
 def test_an_instant_after_the_script_ended_is_answered_from_its_end(session_of):

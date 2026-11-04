@@ -32,6 +32,7 @@ from .timeline.clock import exact
 from .timeline.draw import Drawing
 from .timeline.execution import Divergence, ExecutionSummary, compare, summarize
 from .timeline.fallback import Answer, ForwardRun, answer_instants
+from .timeline.inputs import file_digests, source_digest, source_files
 from .timeline.origins import ORIGINS
 from .timeline.recorder import Recorder
 from .timeline.routes import _draw, _resolve, _Resolved
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
 
     from PIL import Image
 
+    from ._config.utils import ManimConfig
     from .scene.scene import Scene
     from .timeline.record import PlayRecord, Record
     from .timeline.state import State
@@ -129,11 +131,17 @@ class Session:
                 instants=instants,
             )
 
-        instance, module = execute(path, scene, settings, recorder)
+        with tempconfig(settings):
+            # The whole configuration the scene runs under, which a forward
+            # run executes it under again, whatever the process's is then.
+            effective = global_config.copy()
+        instance, module = execute(path, scene, effective, recorder)
         record = instance.record
         assert record is not None
         session = cls(instance, record, module)
-        session._source = Source(path, scene, settings, stepping)
+        session._source = Source(
+            path, scene, effective, stepping, _source_files(record)
+        )
         return session
 
     def state_at(self, t: Fraction | float) -> State:
@@ -262,19 +270,41 @@ def resize(camera: Any, height: int, width: int) -> None:
 @dataclass(frozen=True)
 class Source:
     """What a session executed: the scene class ``scene`` of ``path``, under
-    ``settings``, its ticked plays stepping as ``stepping`` says.
+    the configuration ``settings``, its ticked plays stepping as
+    ``stepping`` says; and each file of its source, as ``(path relative to
+    the scene's directory, sha256)``, by path, which the record's source
+    digest digests (``None`` when it can't be shown to be that).
     """
 
     path: Path
     scene: str
-    settings: dict[str, Any]
+    settings: ManimConfig
     stepping: bool | Literal["brute_force"]
+    files: tuple[tuple[str, str], ...] | None
+
+
+def _source_files(record: Record) -> tuple[tuple[str, str], ...] | None:
+    """The record's source, file by file, when it is still the source its
+    digest was taken of.
+    """
+    scene_file = record.scene_file
+    if scene_file is None or record.identity.source_digest is None:
+        return None
+    scene_dir = os.path.dirname(scene_file)
+    files = source_files(scene_file)
+    try:
+        found = file_digests(files, scene_dir)
+    except OSError:
+        return None
+    if source_digest(files, scene_dir) != record.identity.source_digest:
+        return None
+    return found
 
 
 def execute(
     path: Path,
     scene: str,
-    settings: dict[str, Any],
+    settings: ManimConfig | dict[str, Any],
     recorder: Callable[[Scene], Recorder],
 ) -> tuple[Scene, ModuleType]:
     """Import ``path`` under a module of its own and execute its scene class
