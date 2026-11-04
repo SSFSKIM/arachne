@@ -251,6 +251,27 @@ def test_a_frame_with_what_cairo_does_not_draw_is_refused_whole(make):
     assert not drawer._arrays, "nothing is drawn"
 
 
+@pytest.mark.parametrize(
+    "camera_class",
+    ["Camera", "MovingCamera", "MultiCamera", "ThreeDCamera", "MappingCamera"],
+)
+def test_extraction_reads_no_mobject_name_the_camera_does_not(camera_class):
+    """What extraction reads off a mobject that a class can override, the
+    camera's capture reads too: the refused-override names are the camera's
+    own, none added.
+    """
+    import arachne
+    from arachne.frame_ir.extract import MOBJECT_READS
+    from arachne.timeline import dispatch
+
+    cls = getattr(arachne, camera_class)
+    own = dispatch.camera_draw_methods(cls)
+    overridable = set(MOBJECT_READS) & set(dispatch._mobject_definitions())
+    assert overridable
+    assert overridable <= own
+    assert dispatch.draw_methods(cls) == own
+
+
 def test_the_drawing_lint_codes_are_declared():
     from arachne.frame_ir.lint import CODES
 
