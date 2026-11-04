@@ -208,6 +208,8 @@ class LivePainter:
         self._checker = CairoDrawer()
         self.captures = 0
         self.differing = 0
+        #: The scene's instant the captures within :meth:`around` draw.
+        self.instant = Fraction(0)
 
     def painter(self, camera: Any) -> Any:
         """The painter of ``camera``'s captures."""
@@ -221,10 +223,11 @@ class LivePainter:
         return found[1]
 
     @contextlib.contextmanager
-    def around(self, camera: Any) -> Iterator[LivePainter]:
+    def around(self, camera: Any, t: Fraction) -> Iterator[LivePainter]:
         """Within: ``camera``'s captures, and its displays' cameras', are
-        described in XF and drawn back from it.
+        described in XF and drawn back from it, as frames at instant ``t``.
         """
+        self.instant = t
         displays = vars(camera).get("image_mobjects_from_cameras", ())
         cameras = [camera, *(display.camera for display in displays)]
         undo: list[Any] = []
@@ -373,8 +376,7 @@ class LivePainter:
                 )
             records[slot] = record if placed is None else placed
             order.append(("moving", slot, 0))
-        t = Fraction(stream.frames)
-        delta = stream._delta(view, records, order, uploads, objects, t)
+        delta = stream._delta(view, records, order, uploads, objects, self.instant)
         stream.keep_only(set(records))
         return painter.draw(delta)
 
@@ -534,9 +536,12 @@ _LIVE: weakref.WeakKeyDictionary[Any, tuple[int, LivePainter]] = (
 
 
 @contextlib.contextmanager
-def live(camera: Any, draw_path: str | None = None) -> Iterator[LivePainter | None]:
+def live(
+    camera: Any, t: Fraction, draw_path: str | None = None
+) -> Iterator[LivePainter | None]:
     """Within: ``camera`` captures through the draw path ``draw_path`` (the
-    option of that name, unless given). On ``cairo`` nothing changes.
+    option of that name, unless given), each capture a frame at the scene's
+    instant ``t``. On ``cairo`` nothing changes.
     """
     from .painter import DRAW_PATHS
 
@@ -552,7 +557,7 @@ def live(camera: Any, draw_path: str | None = None) -> Iterator[LivePainter | No
     if found is None or found[0] != pid:
         found = (pid, LivePainter())
         _LIVE[camera] = found
-    with found[1].around(camera) as painter:
+    with found[1].around(camera, t) as painter:
         yield painter
 
 
