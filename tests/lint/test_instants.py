@@ -93,3 +93,54 @@ def test_held_and_sampled_names_the_default(session_of):
     assert lint_instants(record, 4, at="held+sampled") == lint_instants(record, 4)
     with pytest.raises(ValueError, match="held\\+sampled"):
         lint_instants(record, 4, at="sometimes")
+
+
+def _linted(session) -> list:
+    from arachne.lint import lint
+
+    seen = []
+
+    def keep(context):
+        seen.extend(context.parts)
+        return ()
+
+    lint(session, rules=(keep,))
+    return seen
+
+
+def test_a_session_without_a_grid_is_linted_at_its_render_s_frames(session_of):
+    """Recorded with every instant it evaluated kept and no grid, a session
+    is linted at the frames its render shows, and sees there what a session
+    on the render's grid sees: an instant the record holds no capture of is
+    read from one forward run on that grid, never evaluated between
+    captures.
+    """
+    session = session_of("Instants", grid=None, frame_rate=15)
+    gridded = session_of("Instants", frame_rate=15)
+    assert session.record.grid is None
+    instants = lint_instants(session.record, 4)
+    assert instants == lint_instants(gridded.record, 4)
+    for instant in instants:
+        if "final" not in instant.why:
+            assert (instant.t * 15).denominator == 1
+    seen, expected = _linted(session), _linted(gridded)
+    assert [p.t for p in seen] == [i.t for i in instants]
+    assert {p.answer for p in seen} == {"recorded", "forward"}
+    assert {p.answer for p in expected} == {"recorded"}
+    assert len(session.forward_runs) == 1
+    for found, wanted in zip(seen, expected, strict=True):
+        assert [p.id for p in found.parts] == [p.id for p in wanted.parts]
+        for part, other in zip(found.parts, wanted.parts, strict=True):
+            assert part.screen_box == pytest.approx(other.screen_box, abs=1e-9)
+
+
+@pytest.mark.parametrize("rate", [15, 30, 60])
+def test_a_refused_record_is_read_at_its_render_s_frames(session_of, rate):
+    session = session_of("RefusedInstants", frame_rate=rate)
+    assert session.record.refusal is not None
+    seen = _linted(session)
+    record = session.record
+    assert len(session.forward_runs) == 1
+    assert {p.t for p in seen} == set(_expected(record, 4))
+    assert all(p.answer == "forward" for p in seen)
+    assert all(p.view.pixel_width == 96 for p in seen)
