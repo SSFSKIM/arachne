@@ -8,6 +8,7 @@ import pytest
 from arachne import tempconfig
 from arachne.manager import Manager
 from arachne.session import Session
+from arachne.timeline import admission
 
 SCENES = Path(__file__).parent / "scenes.py"
 
@@ -68,9 +69,13 @@ def render(scene_class: type, fps: int, **settings) -> tuple[object, list[np.nda
 def session_of():
     """Open a scene of ``scenes.py`` (or of ``path``) in a session at the
     small frame size, on its render's grid unless ``grid`` says otherwise,
-    evaluating its trusted and state plays at ``instants`` too.
+    evaluating its trusted and state plays at ``instants`` too, and
+    probing its state plays unless ``probe`` is false. The plays the probe
+    demotes stay demoted for the process (:data:`.admission.DEMOTED`); each
+    test starts and ends without any.
     """
     opened: list[Session] = []
+    admission.DEMOTED.clear()
 
     def open_session(
         name: str,
@@ -82,6 +87,7 @@ def session_of():
         on_tick=None,
         on_start=None,
         instants=(),
+        probe=True,
         **settings,
     ) -> Session:
         session = Session.open(
@@ -94,6 +100,7 @@ def session_of():
             on_tick=on_tick,
             on_start=on_start,
             instants=instants,
+            probe=probe,
         )
         opened.append(session)
         return session
@@ -101,3 +108,4 @@ def session_of():
     yield open_session
     for session in opened:
         session.close()
+    admission.DEMOTED.clear()
