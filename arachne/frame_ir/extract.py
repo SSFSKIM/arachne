@@ -136,6 +136,37 @@ def _floats(value: Any) -> tuple[float, ...]:
     return tuple(float(x) for x in np.asarray(value, dtype=float).reshape(-1))
 
 
+def view_values(camera: Any, kind: str) -> dict[str, Any]:
+    """The camera's own values a view of ``kind`` states: all of it but the
+    background and the mapping centre (which its array and context hold).
+    """
+    values: dict[str, Any] = {
+        "pixel_width": int(camera.pixel_width),
+        "pixel_height": int(camera.pixel_height),
+        "frame_width": float(camera.frame_width),
+        "frame_height": float(camera.frame_height),
+        "frame_center": _floats(camera.frame_center),
+        "cairo_line_width_multiple": float(camera.cairo_line_width_multiple),
+        "use_z_index": bool(camera.use_z_index),
+    }
+    if kind == "three_d":
+        # The trackers, as the engine's getters read them: a getter the
+        # scene's code overrides is its camera's, run by its own capture
+        # alone (what it placed is in the records), never here.
+        values.update(
+            phi=float(camera.phi_tracker.get_value()),
+            theta=float(camera.theta_tracker.get_value()),
+            gamma=float(camera.gamma_tracker.get_value()),
+            focal_distance=float(camera.focal_distance_tracker.get_value()),
+            zoom=float(camera.zoom_tracker.get_value()),
+            exponential_projection=bool(camera.exponential_projection),
+            light_source=_floats(camera.light_source.points[0]),
+            shading_factor=float(camera.shading_factor),
+            should_apply_shading=bool(camera.should_apply_shading),
+        )
+    return values
+
+
 def _mapping_centre(camera: Any) -> tuple[float, ...]:
     """The centre ``camera``'s Cairo context maps its array around: the one
     frozen at its first draw through the context, else the frame's.
@@ -723,35 +754,12 @@ class FrameStream:
             background = np.asarray(camera.background)
         shape = Shape("image", background)
         uploads[shape.key] = shape
-        mapping = _mapping_centre(camera)
-        view: dict[str, Any] = {
-            "pixel_width": int(camera.pixel_width),
-            "pixel_height": int(camera.pixel_height),
-            "frame_width": float(camera.frame_width),
-            "frame_height": float(camera.frame_height),
-            "frame_center": _floats(camera.frame_center),
-            "mapping_centre": mapping,
+        return {
+            **view_values(camera, kind),
+            "mapping_centre": _mapping_centre(camera),
             "background": shape.key,
             "camera": kind,
-            "cairo_line_width_multiple": float(camera.cairo_line_width_multiple),
-            "use_z_index": bool(camera.use_z_index),
         }
-        if kind == "three_d":
-            # The trackers, as the engine's getters read them: a getter the
-            # scene's code overrides is its camera's, run by its own capture
-            # alone (what it placed is in the records), never here.
-            view.update(
-                phi=float(camera.phi_tracker.get_value()),
-                theta=float(camera.theta_tracker.get_value()),
-                gamma=float(camera.gamma_tracker.get_value()),
-                focal_distance=float(camera.focal_distance_tracker.get_value()),
-                zoom=float(camera.zoom_tracker.get_value()),
-                exponential_projection=bool(camera.exponential_projection),
-                light_source=_floats(camera.light_source.points[0]),
-                shading_factor=float(camera.shading_factor),
-                should_apply_shading=bool(camera.should_apply_shading),
-            )
-        return view
 
     def _freeze(
         self,

@@ -31,6 +31,7 @@ __all__ = ["LivePainter", "live"]
 import contextlib
 import os
 import weakref
+import zlib
 from collections.abc import Iterator
 from fractions import Fraction
 from typing import Any
@@ -45,6 +46,7 @@ from .extract import (
     _floats,
     _paint,
     _path_shape,
+    view_values,
 )
 from .xf import (
     FEATURE_BACKGROUND_IMAGE,
@@ -111,17 +113,108 @@ _PRE_DISPLAY = "__pre_display__"
 _CAMERA_RGBAS = "__camera_rgbas__"
 
 
-def _producing(name: str, method: Any) -> Any:
-    """``method`` (the camera's ``name``, whatever the scene made it), keeping
-    what it returns for each recorded mobject in that mobject's log.
+#: Cameras whose code, producing a record's values, changed what the camera
+#: holds, with what changed: their captures are the camera's own draw from
+#: then on (``render.fallback``).
+_UNSETTLED: weakref.WeakKeyDictionary[Any, tuple[str, str]] = (
+    weakref.WeakKeyDictionary()
+)
+#: An array the camera holds is compared element by element up to this size,
+#: and through a checksum of its bytes above it (its pixel arrays).
+_COPIED_ELEMENTS = 1 << 16
+
+
+def _held(value: Any) -> tuple[Any, ...]:
+    """What of ``value`` (an entry of a camera's instance state) a change is
+    told by: an array's contents, a number's or a string's value, a
+    container's members by identity, any other object's identity.
     """
+    if isinstance(value, np.ndarray):
+        if value.size <= _COPIED_ELEMENTS:
+            return ("array", value, value.copy())
+        return ("array", value, zlib.crc32(np.ascontiguousarray(value).data))
+    if value is None or isinstance(value, bool | int | float | complex | str | bytes):
+        return ("value", value)
+    if isinstance(value, dict):
+        return ("dict", value, tuple(value.items()))
+    if isinstance(value, list | tuple):
+        return ("sequence", value, tuple(value))
+    if isinstance(value, set | frozenset):
+        return ("set", value, frozenset(value))
+    return ("object", value)
+
+
+def _same_held(a: tuple[Any, ...], b: tuple[Any, ...]) -> bool:
+    if a[0] != b[0]:
+        return False
+    if a[0] == "value":
+        return _same(a[1], b[1])
+    if a[1] is not b[1]:
+        return False
+    if a[0] == "array":
+        return _same(a[2], b[2])
+    if a[0] in ("dict", "sequence"):
+        return len(a[2]) == len(b[2]) and all(
+            _identical(x, y) for x, y in zip(a[2], b[2], strict=True)
+        )
+    if a[0] == "set":
+        return a[2] == b[2]
+    return True
+
+
+def _identical(x: Any, y: Any) -> bool:
+    if isinstance(x, tuple) and isinstance(y, tuple):  # a dict's items
+        return len(x) == len(y) and all(p is q for p, q in zip(x, y, strict=True))
+    return x is y
+
+
+def _camera_state(camera: Any, kind: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """What ``camera`` holds now: every entry of its instance state
+    (:func:`_held`), and the values its view states, read through the
+    objects that hold them (its trackers and its frame change in place).
+    """
+    return {k: _held(v) for k, v in vars(camera).items()}, view_values(camera, kind)
+
+
+def _changed(before: tuple[dict, dict], after: tuple[dict, dict]) -> str | None:
+    """The first entry of a camera's state that differs between two
+    :func:`_camera_state` snapshots, or ``None``.
+    """
+    held, view = before
+    now, now_view = after
+    added_or_removed = held.keys() ^ now.keys()
+    if added_or_removed:
+        return min(added_or_removed)
+    for name, value in held.items():
+        if not _same_held(value, now[name]):
+            return name
+    for name, value in view.items():
+        if not _same(value, now_view[name]):
+            return name
+    return None
+
+
+def _producing(name: str, method: Any, camera: Any) -> Any:
+    """``method`` (``camera``'s ``name``, whatever the scene made it), keeping
+    what it returns for each recorded mobject in that mobject's log. A call
+    that changes what the camera holds (:func:`_camera_state`) is kept in
+    :data:`_UNSETTLED`: the frame reads that state beyond the values XF
+    carries of the capture, so the camera's own draw stands.
+    """
+    from arachne.camera.three_d_camera import ThreeDCamera
+
+    kind = "three_d" if isinstance(camera, ThreeDCamera) else "flat"
 
     def produced(mobject: Any, *args: Any, **kwargs: Any) -> Any:
         if not isinstance(mobject, _Recording):
             return method(mobject, *args, **kwargs)
         log = mobject._xf_log
         start = len(log)
+        before = _camera_state(camera, kind)
         result = method(mobject, *args, **kwargs)
+        changed = _changed(before, _camera_state(camera, kind))
+        if changed is not None and camera not in _UNSETTLED:
+            _UNSETTLED[camera] = (name, changed)
         # What the camera's code read off the mobject while it produced is
         # its own: the drawer is handed what it produced and never asks.
         mobject._xf_inside.update(range(start, len(log)))
@@ -273,6 +366,8 @@ class LivePainter:
         self._checker = CairoDrawer()
         self.captures = 0
         self.differing = 0
+        #: Cameras (by id) whose captures stand as they drew them.
+        self._fallen: set[int] = set()
         #: The scene's instant the captures within :meth:`around` draw.
         self.instant = Fraction(0)
 
@@ -353,7 +448,7 @@ class LivePainter:
             for name in _PRODUCED:
                 if name in own:
                     held[name] = own[name]
-                own[name] = engine_own(_producing(name, getattr(camera, name)))
+                own[name] = engine_own(_producing(name, getattr(camera, name), camera))
                 added.append(name)
             own["_xf_pre_projected"] = True
             added.append("_xf_pre_projected")
@@ -394,6 +489,12 @@ class LivePainter:
             finally:
                 restore()
                 frames.pop()
+            if camera in _UNSETTLED:
+                # The camera's code changed what it holds while it produced
+                # what a record states: its draw reads that state beyond what
+                # XF carries, so its own draw stands, from then on.
+                self._fall_back(camera)
+                return
             pixels = self._describe(camera, drawn, centres, background)
             self.captures += 1
             if self.draw and not np.array_equal(camera.pixel_array, pixels):
@@ -401,6 +502,31 @@ class LivePainter:
             np.copyto(camera.pixel_array, pixels)
 
         return described
+
+    def _fall_back(self, camera: Any) -> None:
+        """The capture just drawn stands as the camera drew it, with one
+        ``render.fallback`` per camera naming what its code changed.
+        """
+        member, attribute = _UNSETTLED[camera]
+        if not self.draw:
+            raise Unable(
+                f"render.unable: {type(camera).__name__}.{member} changed the"
+                f" camera's {attribute} while it drew, and nothing drew the frame"
+            )
+        if id(camera) in self._fallen:
+            return
+        self._fallen.add(id(camera))
+        from .lint import raise_finding
+
+        own = _own_code(camera)
+        subject, why = own if own is not None else (type(camera).__name__, "")
+        raise_finding(
+            "render.fallback",
+            subject,
+            f"{why} is drawn on Cairo: {member} changed the camera's {attribute}"
+            " while it drew, which its draw reads beyond the points, colours and"
+            " order XF carries of the camera's capture",
+        )
 
     @staticmethod
     def _record_centres(camera: Any, centres: dict[int, list[Any]]) -> Any:
