@@ -21,6 +21,7 @@ from arachne import (
     Square,
     Succession,
     TracedPath,
+    UpdateFromAlphaFunc,
     ValueTracker,
     always_redraw,
     linear,
@@ -237,6 +238,42 @@ class TickedOffGrid(Scene):
         drift = Dot(DOWN * 2).add_updater(lambda m, dt: m.shift(RIGHT * dt))
         self.add(drift)
         self.wait(0.5)
+
+
+class HookRetargets(Scene):
+    """A frame hook pointing the play's ``UpdateFromAlphaFunc`` at a dot
+    outside the scene, which the scene moves after the play.
+    """
+
+    def construct(self):
+        self.other = Dot(UP)
+        dot = Dot()
+        self.add(dot)
+        self.play(
+            UpdateFromAlphaFunc(
+                dot, lambda m, alpha: m.set_x(alpha), run_time=1, rate_func=linear
+            )
+        )
+        self.other.set_x(9)
+
+    def update_to_time(self, t):
+        super().update_to_time(t)
+        self.animations[0].mobject = self.other
+
+
+class FramelessBeforeTicked(Scene):
+    """A held wait ending between two 15 fps frames, a trusted play too short
+    for any frame, then a ticked play.
+    """
+
+    def construct(self):
+        self.add(Square(side_length=0.5))
+        self.wait(0.97)
+        dot = Dot(RIGHT * 2)
+        self.add(dot)
+        self.play(dot.animate.shift(UP), run_time=0.001)
+        self.add(Dot(DOWN * 2).add_updater(lambda m, dt: m.shift(RIGHT * dt)))
+        self.wait(0.2)
 
 
 class TickedSuccession(Scene):

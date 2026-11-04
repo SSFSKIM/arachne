@@ -512,8 +512,13 @@ def _refuse_unadmitted(scene: Scene, play: PlayRecord, point: RestorePoint) -> N
 
     admission = play.admission
     callbacks = admission.callbacks if admission is not None else ()
+    # What was proven: a function on the mobject it writes; a centre
+    # function, which writes nothing, by itself (one proof serves every
+    # mobject it centres).
     proven = {(id(c.owner), id(c.function)) for c in callbacks if c.proof is not None}
-    functions = {id(c.function) for c in callbacks if c.proof is not None}
+    centres = {
+        id(c.function) for c in callbacks if c.proof is not None and c.kind == "center"
+    }
     redraw = _redraw_code()
 
     def unproven(mob: Mobject) -> str | None:
@@ -550,13 +555,15 @@ def _refuse_unadmitted(scene: Scene, play: PlayRecord, point: RestorePoint) -> N
         if found is not None:
             break
         if _is_callback_animation(animation) and (
-            id(animation.update_function) not in functions  # type: ignore[attr-defined]
+            (id(animation.mobject), id(animation.update_function))  # type: ignore[attr-defined]
+            not in proven
         ):
-            found = f"the function of a {type(animation).__name__}"
+            # Another function, or the proven one pointed at another mobject.
+            found = f"the function of a {type(animation).__name__}, or its target"
         elif _copies_carry_updaters(animation):
             found = f"an updater on a copy of a {type(animation).__name__}"
     for _, orientations in point.centers:
-        if found is None and any(id(f) not in functions for _, f in orientations):
+        if found is None and any(id(f) not in centres for _, f in orientations):
             found = "a centre function"
     if found is not None:
         raise Unrestorable(
