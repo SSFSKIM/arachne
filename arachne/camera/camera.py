@@ -149,6 +149,10 @@ class Camera:
 
         self.rgb_max_val = np.iinfo(self.pixel_array_dtype).max
         self.pixel_array_to_cairo_context: dict[int, cairo.Context] = {}
+        #: The frame centre each cached context froze into its matrix, by
+        #: pixel array (its id): what a frame drawn into that array is
+        #: mapped to pixels around.
+        self.pixel_array_to_mapping_centre: dict[int, np.ndarray] = {}
 
         # Contains the correct method to process a list of Mobjects of the
         # corresponding class.  If a Mobject is not an instance of a class in
@@ -653,6 +657,7 @@ class Camera:
                 (ph / 2) + fc[1] * (ph / fh),
             ),
         )
+        self.pixel_array_to_mapping_centre[id(pixel_array)] = np.array(fc, dtype=float)
         self.cache_cairo_context(pixel_array, ctx)
         return ctx
 
