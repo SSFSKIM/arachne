@@ -52,6 +52,32 @@ def test_each_exit_reads_as_a_fresh_reading_would(session_of, monkeypatch):
                 assert np.array_equal(getattr(body, field), getattr(again, field))
 
 
+def test_a_live_camera_picture_is_read_again_at_every_exit(session_of, monkeypatch):
+    """A display of a camera holds a view of the camera's own pixels, which
+    change under it: the same object is no proof it shows the same picture.
+    """
+    readings = []
+    read = recorder.bodies
+
+    def compared(*args, **kwargs):
+        kept = read(*args, **kwargs)
+        kwargs.pop("kept")
+        readings.append((kept, read(*args, **kwargs)))
+        return kept
+
+    monkeypatch.setattr(recorder, "bodies", compared)
+    exits = session_of("LiveImage", EXITS, probe=False).record.exits
+    display = _key_of(exits[0], "ImageMobjectFromCamera")
+    seen = [
+        (kept[1][display].visible, again[1][display].visible)
+        for kept, again in readings
+    ]
+    assert seen == [(False, False), (True, True)]
+    # An image that owns its pixels is still read once.
+    still = _key_of(exits[0], "ImageMobject")
+    assert exits[1].bodies[still] is exits[0].bodies[still]
+
+
 def test_what_a_play_changed_is_read_again(session_of):
     exits = session_of("Changes", EXITS, probe=False).record.exits
     square = _key_of(exits[0], "Square")
