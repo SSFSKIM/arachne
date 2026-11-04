@@ -42,6 +42,14 @@ class Teleport(Scene):
         self.wait()  # @after-teleport
 
 
+class ArmedTeleport(Teleport):
+    """The same teleport, the motion rule armed before the first play."""
+
+    def construct(self):
+        self.timeline.arm_motion()
+        super().construct()
+
+
 class RefusedTeleport(Teleport):
     """The same teleport, through a camera the record can't draw with."""
 
