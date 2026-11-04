@@ -201,6 +201,8 @@ def test_a_class_patch_of_a_camera_s_constructor_draws_on_cairo(monkeypatch, fin
             "ThreeDCamera.display_vectorized",
             "display_vectorized",
         ),
+        (camera_scenes.Bordered, "BorderedCamera", "display_funcs"),
+        (camera_scenes.Rewired, "ThreeDCamera.display_funcs", "display_funcs"),
     ],
     ids=lambda v: getattr(v, "__name__", v),
 )

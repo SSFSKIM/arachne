@@ -17,7 +17,13 @@ method a draw never calls costs a fallback, never a wrong frame.
 
 from __future__ import annotations
 
-__all__ = ["Replaced", "drawn_cameras", "engine_own", "replaced_methods"]
+__all__ = [
+    "Replaced",
+    "display_funcs_rewired",
+    "drawn_cameras",
+    "engine_own",
+    "replaced_methods",
+]
 
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -107,3 +113,54 @@ def replaced_methods(camera: Any) -> tuple[Replaced, ...]:
         and callable(getattr(kind, name, None))
     )
     return tuple(found)
+
+
+#: The engine's display method for each kind ``Camera.__init__`` puts in
+#: ``display_funcs`` (the ``Mobject`` entry is its do-nothing).
+_DISPLAY_METHODS = {
+    "VMobject": "display_multiple_vectorized_mobjects",
+    "PMobject": "display_multiple_point_cloud_mobjects",
+    "AbstractImageMobject": "display_multiple_image_mobjects",
+}
+
+
+def display_funcs_rewired(camera: Any) -> bool:
+    """Whether ``camera.display_funcs`` holds anything other than what
+    ``Camera.__init__`` puts there: for each kind it draws, the camera's own
+    display method as the engine defined it, and for ``Mobject`` the
+    engine's do-nothing, with no kind added or removed. A wrapper the engine
+    puts there while it draws (:func:`engine_own`, the original under
+    ``__wrapped__``) stands for what it wraps.
+    """
+    from arachne.camera.camera import Camera
+
+    from .frozen import class_members, engine_class, engine_code
+
+    if not isinstance(camera, Camera):
+        return False
+    funcs = vars(camera).get("display_funcs")
+    if not isinstance(funcs, dict):
+        return funcs is not None
+    names = {kind.__name__ for kind in funcs}
+    if len(names) != len(funcs) or names != {*_DISPLAY_METHODS, "Mobject"}:
+        return True
+    for kind, entry in funcs.items():
+        while getattr(entry, _ENGINE_OWN, False) and hasattr(entry, "__wrapped__"):
+            entry = entry.__wrapped__
+        if kind.__name__ == "Mobject":
+            if not engine_code(entry):
+                return True
+            continue
+        name = _DISPLAY_METHODS[kind.__name__]
+        engine = next(
+            (
+                class_members(klass)[name]
+                for klass in type(camera).__mro__
+                if engine_class(klass) and name in class_members(klass)
+            ),
+            None,
+        )
+        bound_to = getattr(entry, "__self__", None)
+        if bound_to is not camera or getattr(entry, "__func__", None) is not engine:
+            return True
+    return False

@@ -31,6 +31,7 @@ from arachne import (
     ThreeDAxes,
     ThreeDCamera,
     ThreeDScene,
+    VMobject,
     ZoomedScene,
 )
 
@@ -179,6 +180,52 @@ class CountedRecord(Solids):
                 return read()
 
             setattr(camera, name, counted_read)
+
+
+class BorderedCamera(ThreeDCamera):
+    """A camera class of the scene's own whose constructor routes paths to a
+    drawing of its own: the engine's, then a red border stroked by hand.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.display_funcs[VMobject] = self.bordered
+
+    def bordered(self, vmobjects, pixel_array):
+        self.display_multiple_vectorized_mobjects(vmobjects, pixel_array)
+        _border(self, pixel_array)
+
+
+def _border(camera, pixel_array) -> None:
+    """A red border stroked by hand, through the camera's Cairo context."""
+    ctx = camera.get_cairo_context(pixel_array)
+    ctx.set_source_rgba(1.0, 0.0, 0.0, 1.0)
+    ctx.set_line_width(0.05)
+    ctx.rectangle(-2.0, -1.0, 4.0, 2.0)
+    ctx.stroke()
+
+
+class Bordered(Solids):
+    """:class:`Solids` through :class:`BorderedCamera`."""
+
+    def __init__(self, **kwargs):
+        super().__init__(camera_class=BorderedCamera, **kwargs)
+
+
+class Rewired(Solids):
+    """:class:`Solids` through the engine's camera, its ``display_funcs``
+    routed by the scene's code to :class:`BorderedCamera`'s drawing: no method
+    of the camera replaced.
+    """
+
+    def patch(self, camera) -> None:
+        paint = camera.display_funcs[VMobject]
+
+        def bordered(vmobjects, pixel_array):
+            paint(vmobjects, pixel_array)
+            _border(camera, pixel_array)
+
+        camera.display_funcs[VMobject] = bordered
 
 
 class Mirrored(MovingCamera):
