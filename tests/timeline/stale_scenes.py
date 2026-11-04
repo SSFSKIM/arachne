@@ -28,6 +28,7 @@ from arachne import (
     Square,
     ThreeDScene,
     Triangle,
+    VGroup,
 )
 from arachne.utils.color import color_to_rgba
 
@@ -118,26 +119,164 @@ class Untouched(Scene):
         self.play(dot.animate.shift(DOWN * 4), run_time=1)
 
 
+#: The frame rate the camera drivers step at: their camera input is a
+#: function of the frame they are at, so a still of that input can match it.
+STEP_RATE = 15
+PHI, THETA = 60 * np.pi / 180, -45 * np.pi / 180
+#: How far a driver turns the azimuth, and moves the light, per frame.
+THETA_STEP = 0.05
+LIGHT_STEP = RIGHT * 3
+
+
+def steps(clock: dict[str, float]) -> int:
+    """The frames of the frame grid a clock has passed."""
+    return round(clock["t"] * STEP_RATE)
+
+
+def turned(at: int) -> float:
+    return THETA + THETA_STEP * at
+
+
+def lit(start: np.ndarray, at: int) -> np.ndarray:
+    return np.array([start + LIGHT_STEP * at])
+
+
 class TurnedCamera(ThreeDScene):
-    """A static cube, and a driver that turns the camera's azimuth tracker."""
+    """A static cube, and a driver that turns the camera's azimuth tracker
+    by a step each frame.
+    """
 
     def construct(self):
-        self.set_camera_orientation(phi=60 * np.pi / 180, theta=-45 * np.pi / 180)
+        self.set_camera_orientation(phi=PHI, theta=THETA)
         self.add(Cube(side_length=3, fill_opacity=1))
         theta = self.camera.theta_tracker
-        self.add(driver(lambda m, dt: theta.increment_value(dt)))
+        clock = {"t": 0.0}
+
+        def turn(m, dt):
+            clock["t"] += dt
+            theta.set_value(turned(steps(clock)))
+
+        self.add(driver(turn))
         self.wait(1)
+
+
+class TurnedCameraAt(ThreeDScene):
+    """The cube with the azimuth the driver reaches at frame ``FRAME``, under
+    a driver that writes nothing: one frame.
+    """
+
+    FRAME = 7
+
+    def construct(self):
+        self.set_camera_orientation(phi=PHI, theta=turned(self.FRAME))
+        self.add(Cube(side_length=3, fill_opacity=1))
+        self.add(driver(lambda m, dt: None))
+        self.wait(1 / STEP_RATE)
 
 
 class MovedLight(ThreeDScene):
-    """A static cube, and a driver that moves the camera's light source."""
+    """A static cube, and a driver that moves the camera's light source by a
+    step each frame.
+    """
 
     def construct(self):
-        self.set_camera_orientation(phi=60 * np.pi / 180, theta=-45 * np.pi / 180)
+        self.set_camera_orientation(phi=PHI, theta=THETA)
         self.add(Cube(side_length=3, fill_opacity=1))
         light = self.camera.light_source
-        self.add(driver(lambda m, dt: light.shift(RIGHT * 40 * dt)))
+        start = light.points[0].copy()
+        clock = {"t": 0.0}
+
+        def move(m, dt):
+            clock["t"] += dt
+            light.set_points(lit(start, steps(clock)))
+
+        self.add(driver(move))
         self.wait(1)
+
+
+class MovedLightAt(ThreeDScene):
+    """The cube lit from where the driver puts the light at frame ``FRAME``,
+    under a driver that writes nothing: one frame.
+    """
+
+    FRAME = 7
+
+    def construct(self):
+        self.set_camera_orientation(phi=PHI, theta=THETA)
+        self.add(Cube(side_length=3, fill_opacity=1))
+        light = self.camera.light_source
+        light.set_points(lit(light.points[0].copy(), self.FRAME))
+        self.add(driver(lambda m, dt: None))
+        self.wait(1 / STEP_RATE)
+
+
+class ZOrderedChild(Scene):
+    """Under z-index order a static square's child sorts after the moving
+    cut, so it moves with the play while its parent stays static; the cutting
+    dot's updater moves that child. CE's static picture paints the child too,
+    where it stood when the play began.
+    """
+
+    def construct(self):
+        square = Square(side_length=3, color=BLUE, fill_opacity=1)
+        child = Dot(radius=0.4, color=RED, fill_opacity=1).shift(LEFT).set_z_index(5)
+        square.add(child)
+        cutting = Dot(radius=0.1, color=YELLOW).shift(DOWN * 3).set_z_index(3)
+        cutting.add_updater(lambda m, dt: child.shift(RIGHT * 2 * dt))
+        self.add(square, cutting)
+        self.wait(1)
+
+
+#: When the holder takes the static square in, and when it lets it go.
+TAKE_IN, LET_GO = 0.3, 0.6
+
+
+class TakenIn(Scene):
+    """A moving holder takes a translucent static square in for a while,
+    then lets it go: while it holds it, the square moves with the holder.
+    """
+
+    def construct(self):
+        square = Square(side_length=1.5, color=BLUE, fill_opacity=0.5).shift(LEFT * 3)
+        self.add(square)
+        holder = VGroup()
+        clock = {"t": 0.0}
+
+        def hold(m, dt):
+            clock["t"] += dt
+            if TAKE_IN < clock["t"] < LET_GO and square not in m.submobjects:
+                m.add(square)
+            elif clock["t"] >= LET_GO and square in m.submobjects:
+                m.remove(square)
+
+        holder.add_updater(hold)
+        self.add(holder, Dot(color=YELLOW).shift(RIGHT * 3))
+        self.wait(1)
+
+
+class Counted(Square):
+    """A square whose drawing counts its fill reads: its drawing runs the
+    scene's code, so its scene is drawn as it runs.
+    """
+
+    calls = 0
+
+    def get_fill_rgbas(self):
+        type(self).calls += 1
+        return super().get_fill_rgbas()
+
+
+class LiveHeld(Scene):
+    """A live-drawn scene's frozen wait, then a play that moves a dot."""
+
+    def construct(self):
+        Counted.calls = 0
+        self.add(Counted(color=BLUE, fill_opacity=1).shift(LEFT * 3))
+        self.wait(1)
+        self.held_calls = Counted.calls
+        dot = Dot(color=RED)
+        self.add(dot)
+        self.play(dot.animate.shift(RIGHT), run_time=1)
 
 
 class Tinted(Square):
