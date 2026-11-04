@@ -68,7 +68,10 @@ pub fn square_points(half: f64) -> Vec<[f64; 3]> {
     points
 }
 
-/// A first delta that sets every field XF 0 has, and a second that changes some and releases.
+/// Three deltas that between them give every field XF 0 has a value distinct from its neighbours',
+/// use every enum code, and take both branches of every optional field and flag: the first sets
+/// everything, the second changes the view and removes and releases, the third re-sets a face group
+/// without strokes and leaves the view and the order as they are.
 pub fn sample_deltas() -> Vec<Delta> {
     let square = Shape::new(ShapeData::Path {
         points: square_points(1.0),
@@ -79,7 +82,7 @@ pub fn sample_deltas() -> Vec<Delta> {
     let tri = Shape::new(ShapeData::Mesh {
         positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.5], [0.0, 1.0, -0.5]],
         triangles: vec![[0, 1, 2]],
-        normals: Some(vec![[0.0, 0.0, 1.0]; 3]),
+        normals: Some(vec![[0.0, 0.0, 1.0], [0.0, 0.6, 0.8], [0.6, 0.0, 0.8]]),
     });
     let bare = Shape::new(ShapeData::Mesh {
         positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
@@ -95,13 +98,23 @@ pub fn sample_deltas() -> Vec<Delta> {
         code: ShapeKind::Volume as u8,
         payload: vec![1, 2, 3],
     });
+    let field = Shape::new(ShapeData::Reserved {
+        code: ShapeKind::Field as u8,
+        payload: vec![4, 5, 6, 7],
+    });
     let gradient = Stops::new(vec![
         [1.0, 0.0, 0.0, 1.0],
         [0.0, 1.0, 0.0, 1.0],
         [0.0, 0.0, 1.0, 0.5],
     ]);
     let per_face = Stops::new(vec![[0.2, 0.4, 0.6, 1.0], [0.6, 0.4, 0.2, 0.75]]);
+    let face_strokes = Stops::new(vec![[0.1, 0.0, 0.3, 1.0], [0.0, 0.9, 0.7, 0.5]]);
     let per_point = Stops::new(vec![[1.0, 1.0, 1.0, 1.0]; 3]);
+    let instance_strokes = Stops::new(vec![
+        [0.9, 0.1, 0.1, 1.0],
+        [0.1, 0.9, 0.1, 1.0],
+        [0.1, 0.1, 0.9, 1.0],
+    ]);
 
     let mut path = Record::new(RecordKind::Path, 1, 101);
     path.features = 0;
@@ -120,7 +133,7 @@ pub fn sample_deltas() -> Vec<Delta> {
         stroke: Paint::Two([[1.0, 1.0, 1.0, 1.0], [0.0, 0.0, 0.0, 1.0]]),
         background_stroke: Paint::Table(gradient.key),
         stroke_width: 4.0,
-        background_stroke_width: 0.0,
+        background_stroke_width: 1.5,
         gradient: Some([[-1.0, -1.0, 0.0], [1.0, 1.0, 0.0]]),
         joint: Joint::Round,
         cap: Cap::Square,
@@ -135,13 +148,13 @@ pub fn sample_deltas() -> Vec<Delta> {
     };
     path.dash = Some(Dash {
         period: 0.5,
-        duty: 0.5,
+        duty: 0.25,
         phase: 0.1,
     });
     path.depth = Depth {
         space: Space::World,
         z_index: -1.5,
-        sort_point: [0.0, 0.0, 1.0],
+        sort_point: [0.25, -0.5, 1.0],
         shade_in_3d: true,
         fixed_orientation_centre: Some([1.0, 2.0, 3.0]),
     };
@@ -152,11 +165,13 @@ pub fn sample_deltas() -> Vec<Delta> {
     let mut faces = Record::new(RecordKind::FaceGroup, 2, 102);
     faces.geometry.shape_a = Some(wide.key);
     faces.paint.stroke_width = 0.5;
+    faces.paint.joint = Joint::Bevel;
+    faces.paint.cap = Cap::Round;
     faces.body = Body::FaceGroup(FaceGroup {
         uv: vec![[0, 0], [1, 0]],
         grid: [2, 1],
         fill: per_face.key,
-        stroke: Some(per_face.key),
+        stroke: Some(face_strokes.key),
     });
 
     let cloud_shape = Shape::new(ShapeData::Path {
@@ -180,7 +195,7 @@ pub fn sample_deltas() -> Vec<Delta> {
 
     let mut display = Record::new(RecordKind::Image, 5, 105);
     display.body = Body::Image(ImageSource::SubFrame {
-        view: Box::new(three_d_view(64, 36)),
+        view: Box::new(flat_view(32, 18, [0.4, 0.3, 0.2, 1.0])),
         order: vec![OrderEntry {
             layer: Layer::Static,
             slot: 1,
@@ -200,7 +215,7 @@ pub fn sample_deltas() -> Vec<Delta> {
             place(2.0, 0.0, 0.0),
         ],
         fill: per_point.key,
-        stroke: per_point.key,
+        stroke: instance_strokes.key,
         objects: vec![201, 202, 203],
     });
 
@@ -210,11 +225,20 @@ pub fn sample_deltas() -> Vec<Delta> {
     mesh.depth.space = Space::World;
 
     let mut vol = Record::new(RecordKind::Volume, 8, 108);
+    vol.features = 0x0102_0304_0506_0708;
     vol.geometry.shape_a = Some(volume.key);
     vol.body = Body::Opaque(vec![9, 8, 7]);
 
+    // The other two reserved kinds, outside the order.
+    let mut fld = Record::new(RecordKind::Field, 9, 109);
+    fld.geometry.shape_a = Some(field.key);
+    fld.body = Body::Opaque(vec![6, 5]);
+    let mut emission = Record::new(RecordKind::Emission, 10, 110);
+    emission.body = Body::Opaque(vec![4]);
+
     let mut first = Delta::new(Time { num: 1, den: 15 }, 0);
     let mut view = three_d_view(64, 36);
+    view.background = Background::Color([0.1, 0.2, 0.3, 0.9]);
     view.light = LightModel::Other {
         code: 7,
         params: vec![0.25, 0.5],
@@ -232,9 +256,17 @@ pub fn sample_deltas() -> Vec<Delta> {
             source: "scene.py:14".into(),
         },
     ];
-    first.upload = vec![square, wide, tri, bare, picture, volume, cloud_shape];
-    first.upload_paints = vec![gradient, per_face, per_point];
-    first.set = vec![path, faces, cloud, image, display, batch, mesh, vol];
+    first.upload = vec![square, wide, tri, bare, picture, volume, cloud_shape, field];
+    first.upload_paints = vec![
+        gradient,
+        per_face.clone(),
+        face_strokes,
+        per_point,
+        instance_strokes,
+    ];
+    first.set = vec![
+        path, faces, cloud, image, display, batch, mesh, vol, fld, emission,
+    ];
     first.order = Some(vec![
         OrderEntry {
             layer: Layer::Static,
@@ -269,5 +301,16 @@ pub fn sample_deltas() -> Vec<Delta> {
     second.release = vec![first.upload[5].key, first.upload[2].key];
     second.order = Some(Vec::new());
 
-    vec![first, second]
+    let mut third = Delta::new(Time { num: 1, den: 3 }, 2);
+    let mut bare_faces = Record::new(RecordKind::FaceGroup, 2, 112);
+    bare_faces.geometry.shape_a = first.set[1].geometry.shape_a;
+    bare_faces.body = Body::FaceGroup(FaceGroup {
+        uv: vec![[1, 0], [0, 0]],
+        grid: [2, 1],
+        fill: per_face.key,
+        stroke: None,
+    });
+    third.set = vec![bare_faces];
+
+    vec![first, second, third]
 }

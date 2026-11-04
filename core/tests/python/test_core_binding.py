@@ -131,19 +131,57 @@ def test_unknown_record_fields_and_kinds_are_errors():
 
 
 def canonical_sample() -> list[ac.FrameDelta]:
-    """Two deltas built through the binding, every record kind and most fields set."""
-    first = background_delta(16, 9, (0.1, 0.2, 0.3, 1.0))
+    """Three deltas built through the binding: every record kind, camera, light model form,
+    background form, layer, space, joint and cap name, every paint form, every optional field
+    both set and absent, the order both set and left as it was, and fields that could be swapped
+    each given a value of its own. Reserved shapes cannot be uploaded from Python; the Rust
+    sample covers them.
+    """
+    first = ac.FrameDelta(t=(0, 1), seq=0)
+    first.set_view(
+        pixel_width=16,
+        pixel_height=9,
+        background=(0.1, 0.2, 0.3, 0.9),
+        camera="three_d",
+        phi=1.25,
+        theta=-0.75,
+        gamma=0.125,
+        focal_distance=19.5,
+        zoom=1.5,
+        exponential_projection=True,
+        light_source=(-7, -9, 10),
+        shading_factor=0.25,
+        should_apply_shading=False,
+        frame_center=(0.5, -0.25, 0.125),
+        cairo_line_width_multiple=0.02,
+        use_z_index=False,
+        light_model=(7, [0.25, 0.5]),
+        **FRAME,
+    )
     first.add_object(11, "Square#1", "scene.py:3")
     path = first.upload_path(square())
     wide = first.upload_path(square(2.0))
     mesh = first.upload_mesh(
         np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=float),
         np.array([[0, 1, 2]], dtype=np.uint32),
-        normals=np.array([[0, 0, 1]] * 3, dtype=float),
+        normals=np.array([[0, 0, 1], [0, 0.6, 0.8], [0.6, 0, 0.8]], dtype=float),
+    )
+    first.upload_mesh(
+        np.array([[0, 0, 0], [0, 1, 0], [1, 0, 0]], dtype=float),
+        np.array([[0, 2, 1]], dtype=np.uint32),
     )
     picture = first.upload_image(np.zeros((2, 3, 4), dtype=np.uint8))
     per_face = first.upload_paint(np.array([[1, 0, 0, 1], [0, 1, 0, 1]], dtype=float))
+    face_strokes = first.upload_paint(
+        np.array([[0.1, 0, 0.3, 1], [0, 0.9, 0.7, 0.5]], dtype=float)
+    )
     per_point = first.upload_paint(np.ones((3, 4)))
+    instance_strokes = first.upload_paint(
+        np.array([[0.9, 0.1, 0.1, 1], [0.1, 0.9, 0.1, 1], [0.1, 0.1, 0.9, 1]])
+    )
+    gradient = first.upload_paint(
+        np.array([[1, 0, 0, 1], [0, 1, 0, 1], [0, 0, 1, 0.5]], dtype=float)
+    )
     cloud = first.upload_path(np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=float))
     first.set_record(
         "path",
@@ -151,21 +189,31 @@ def canonical_sample() -> list[ac.FrameDelta]:
         11,
         shape=path,
         place=np.eye(3, 4),
-        blend=(wide, np.eye(3, 4), 0.5),
-        reveal=(0.0, 0.5),
+        blend=(wide, np.eye(3, 4) * 2, 0.375),
+        reveal=(0.125, 0.875),
         fill=(1, 0, 0, 0.5),
-        background_stroke=per_point,
-        background_stroke_width=2.0,
-        gradient=((-1, 0, 0), (1, 0, 0)),
-        paint_b={"fill": (0, 0, 1, 1), "stroke_width": 1.0},
+        stroke=[(1, 1, 1, 1), (0, 0, 0, 1)],
+        background_stroke=gradient,
+        stroke_width=4.0,
+        background_stroke_width=1.5,
+        gradient=((-1, -1, 0), (1, 1, 0)),
+        joint="round",
+        cap="square",
+        paint_b={
+            "fill": (0, 0, 1, 1),
+            "stroke": per_point,
+            "background_stroke": (0.5, 0.5, 0.5, 1),
+            "stroke_width": 2.0,
+            "background_stroke_width": 1.0,
+        },
         mix=0.25,
-        dash=(0.5, 0.5, 0.0),
+        dash=(0.5, 0.25, 0.0625),
         space="world",
         z_index=2.0,
-        sort_point=(0, 0, 1),
+        sort_point=(0.25, -0.5, 1),
         shade_in_3d=True,
         fixed_orientation_centre=(1, 2, 3),
-        clip=(wide, np.eye(3, 4)),
+        clip=(wide, np.eye(3, 4) * 3),
         opacity=0.5,
         layer=1,
     )
@@ -177,7 +225,10 @@ def canonical_sample() -> list[ac.FrameDelta]:
         uv=[(0, 0), (1, 0)],
         grid=(2, 1),
         face_fill=per_face,
-        face_stroke=per_face,
+        face_stroke=face_strokes,
+        stroke_width=0.5,
+        joint="bevel",
+        cap="round",
     )
     first.set_record("points", 3, 13, shape=cloud, colors=per_point, radius=2.0)
     first.set_record(
@@ -186,8 +237,9 @@ def canonical_sample() -> list[ac.FrameDelta]:
         14,
         shape=picture,
         corners=((-1, 1, 0), (1, 1, 0), (-1, -1, 0)),
-        resampling=3,
+        resampling=2,
         image_opacity=0.75,
+        space="overlay",
     )
     first.set_record(
         "image",
@@ -197,9 +249,9 @@ def canonical_sample() -> list[ac.FrameDelta]:
             {
                 "pixel_width": 8,
                 "pixel_height": 4,
-                "camera": "three_d",
-                "phi": 1.0,
-                "theta": -0.5,
+                "camera": "flat",
+                "background": picture,
+                "light_model": "ce",
                 **FRAME,
             },
             [("static", 1, 0)],
@@ -210,28 +262,55 @@ def canonical_sample() -> list[ac.FrameDelta]:
         6,
         16,
         shape=path,
-        placements=np.stack([np.eye(3, 4)] * 3),
+        placements=np.stack([np.eye(3, 4) * k for k in (1, 2, 3)]),
         instance_fill=per_point,
-        instance_stroke=per_point,
+        instance_stroke=instance_strokes,
         objects=[21, 22, 23],
+        stroke_width=1.0,
+        joint="miter",
+        cap="butt",
     )
     first.set_record("mesh", 7, 17, shape=mesh, fill=(0.5, 0.5, 0.5, 1))
+    first.set_record(
+        "volume", 8, 18, payload=b"\x09\x08\x07", features=0x0102030405060708
+    )
+    first.set_record("field", 9, 19, payload=b"\x06\x05")
+    first.set_record("emission", 10, 20, payload=b"\x04")
     first.set_order([("static", 2, 1), ("moving", 1, 0), ("overlay", 4, 0)])
     second = ac.FrameDelta(t=(2, 15), seq=1)
+    second.set_view(
+        pixel_width=16,
+        pixel_height=9,
+        camera="moving",
+        background=(0.1, 0.2, 0.3, 1.0),
+        light_model="ce",
+        **FRAME,
+    )
     second.remove(7)
     second.release(mesh)
     second.set_order([])
-    return [first, second]
+    third = ac.FrameDelta(t=(1, 3), seq=2)
+    third.set_record(
+        "face_group",
+        2,
+        22,
+        shape=wide,
+        uv=[(1, 0), (0, 0)],
+        grid=(2, 1),
+        face_fill=per_face,
+    )
+    return [first, second, third]
 
 
-# The sha256 of the canonical sample's file bytes. XF streams are generated, never committed, so
-# any drift in the layout or in the builder fails this pin. Change it only when that is meant.
-SAMPLE_SHA256 = "69460afc44bb4402dfe33933193789894fbef59a393478341155fb4a97c071d3"
+# The sha256 of the canonical sample's file bytes. It catches any change to how the binding builds
+# the sample or how XF writes it; the field-by-field layout is pinned by core/tests/layout.rs.
+# XF streams are generated, never committed. Change the pin only when such a change is meant.
+SAMPLE_SHA256 = "ef4ceb2d77308ba215c264334acc803fe2ba0d183bdafd9c55b3c6af5a7edea0"
 
 
 def test_every_kind_can_be_built_and_survives_a_file(tmp_path):
     deltas = canonical_sample()
-    file = tmp_path / "two.xf"
+    file = tmp_path / "three.xf"
     ac.write_xf(file, deltas)
     assert hashlib.sha256(file.read_bytes()).hexdigest() == SAMPLE_SHA256
     back = ac.read_xf(file)
@@ -246,6 +325,36 @@ def test_every_kind_can_be_built_and_survives_a_file(tmp_path):
     for delta in back:
         stream.apply(delta)
     assert (stream.draw(16, 9) == np.array([25, 51, 76, 255], dtype=np.uint8)).all()
+
+
+def test_instances_take_placements_of_shape_n_3_4_and_one_object_each():
+    delta = ac.FrameDelta()
+    key = delta.upload_path(square())
+    table = delta.upload_paint(np.ones((2, 4)))
+    keys = {"shape": key, "instance_fill": table, "instance_stroke": table}
+    two = np.stack([np.eye(3, 4)] * 2)
+    with pytest.raises(ac.XfError):
+        delta.set_record("instances", 1, 1, placements=two, objects=[1, 2, 3], **keys)
+    for bad in (np.zeros((2, 12)), np.zeros((2, 4, 3)), np.zeros((1, 6, 4))):
+        with pytest.raises(ValueError, match=r"\(n, 3, 4\)"):
+            delta.set_record("instances", 1, 1, placements=bad, objects=[1, 2], **keys)
+    delta.set_record("instances", 1, 1, placements=two, objects=[1, 2], **keys)
+    assert ac.FrameDelta.from_bytes(delta.to_bytes()).to_bytes() == delta.to_bytes()
+
+
+def test_ces_light_model_written_as_code_0_is_ces():
+    delta = ac.FrameDelta()
+    delta.set_view(
+        pixel_width=4,
+        pixel_height=4,
+        background=(1, 0, 0, 1),
+        light_model=(0, []),
+        **FRAME,
+    )
+    built, read_back = ac.Stream(), ac.Stream()
+    built.apply(delta)
+    read_back.apply(ac.FrameDelta.from_bytes(delta.to_bytes()))
+    assert (built.draw(4, 4) == read_back.draw(4, 4)).all()
 
 
 def test_bytes_that_are_not_xf_are_an_error(tmp_path):

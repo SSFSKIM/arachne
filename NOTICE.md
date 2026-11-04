@@ -37,6 +37,11 @@ These ideas came from other projects; no code was taken from them.
 The core's content keys use BLAKE2b (RFC 7693, by Jean-Philippe Aumasson, Samuel Neves, Zooko Wilcox-O'Hearn and
 Christian Winnerlein), implemented in `core/src/xf/key.rs` from the RFC.
 
+The core's rotation matrices (`core/src/project.rs`, `rotation_matrix`) reproduce the arithmetic of
+[SciPy](https://scipy.org)'s `Rotation.from_rotvec` and `Rotation.as_matrix`, including the Taylor-series constants
+it uses for small angles, so that they match CE's `space_ops.rotation_matrix`, which calls them. SciPy is
+"Copyright (c) 2001-2002 Enthought, Inc. 2003, SciPy Developers", under the BSD-3-Clause license.
+
 ## Dependencies of the core
 
 The core (`core/`, the crate `arachne-core` and its Python binding) is built with these Rust crates, under their own

@@ -111,6 +111,8 @@ fn every_record_kind_is_refused_whole_until_its_drawer_lands() {
         (6, "instances"),
         (7, "mesh"),
         (8, "volume"),
+        (9, "field"),
+        (10, "emission"),
     ] {
         let mut d = delta(2);
         d.order = Some(vec![OrderEntry {
@@ -163,7 +165,7 @@ fn a_record_outside_the_order_is_not_drawn_so_not_refused() {
 fn apply_reports_what_it_changed_and_a_held_delta_changes_nothing() {
     let mut s = Stream::new();
     let stats = s.apply(&common::sample_deltas()[0]).unwrap();
-    assert_eq!((stats.uploaded_shapes, stats.changed_records), (7, 8));
+    assert_eq!((stats.uploaded_shapes, stats.changed_records), (8, 10));
     let before = s.clone();
     let held = delta(1);
     assert!(held.is_empty());
@@ -173,6 +175,10 @@ fn apply_reports_what_it_changed_and_a_held_delta_changes_nothing() {
     let stats = s.apply(&common::sample_deltas()[1]).unwrap();
     assert_eq!((stats.uploaded_shapes, stats.changed_records), (0, 2));
     assert!(s.record(7).is_none() && s.record(8).is_none());
+    let stats = s.apply(&common::sample_deltas()[2]).unwrap();
+    assert_eq!((stats.uploaded_shapes, stats.changed_records), (0, 1));
+    assert!(matches!(&s.record(2).unwrap().body, Body::FaceGroup(f) if f.stroke.is_none()));
+    assert!(s.order().is_empty());
 }
 
 /// A delta that fails validation leaves the stream as it was.
@@ -279,4 +285,54 @@ fn a_slot_a_display_still_draws_cannot_be_removed() {
     assert!(matches!(refused(&mut s, &d), StreamError::Missing(_)));
     d.remove = vec![1, 5];
     s.apply(&d).unwrap();
+}
+
+/// A display at `slot` whose sub-frame draws `order`.
+fn display(slot: u32, order: Vec<OrderEntry>) -> Record {
+    let mut r = Record::new(RecordKind::Image, slot, 100 + slot);
+    r.body = Body::Image(ImageSource::SubFrame {
+        view: Box::new(common::flat_view(8, 4, [0.0, 0.0, 0.0, 1.0])),
+        order,
+    });
+    r
+}
+
+#[test]
+fn re_setting_a_slot_cannot_strand_a_sub_frame() {
+    let mut s = Stream::new();
+    s.apply(&common::sample_deltas()[0]).unwrap();
+    // A display drawing the face group's second face (slot 2, part 1), which only it draws.
+    let mut d = delta(1);
+    d.order = Some(Vec::new());
+    d.set = vec![display(
+        12,
+        vec![OrderEntry {
+            layer: Layer::Static,
+            slot: 2,
+            part: 1,
+        }],
+    )];
+    s.apply(&d).unwrap();
+    // Slot 2 re-set as a path, which has one part: the display would draw a part that is gone.
+    let shape = square();
+    let mut d = delta(2);
+    d.upload = vec![shape.clone()];
+    d.set = vec![path_record(2, &shape)];
+    assert!(matches!(refused(&mut s, &d), StreamError::Invalid(_)));
+}
+
+#[test]
+fn a_display_cannot_draw_itself() {
+    let mut s = Stream::new();
+    s.apply(&common::sample_deltas()[0]).unwrap();
+    let mut d = delta(1);
+    d.set = vec![display(
+        12,
+        vec![OrderEntry {
+            layer: Layer::Static,
+            slot: 12,
+            part: 0,
+        }],
+    )];
+    assert!(matches!(refused(&mut s, &d), StreamError::Invalid(_)));
 }
