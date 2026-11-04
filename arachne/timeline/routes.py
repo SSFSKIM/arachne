@@ -21,6 +21,11 @@ route a play takes is decided when it begins (:mod:`.admission`).
   callbacks run at the frames, as CE runs them, unless stepping work may
   read them (:mod:`.ticking`).
 
+At an instant a frame of the record's grid reads (:meth:`.Recorder.reads`),
+a route evaluates the play through the scene's ``update_to_time``, as CE
+does once per frame (:mod:`.hooks`); at every other instant it runs the
+engine's bodies directly (:func:`evaluate_instant`), and no scene code.
+
 A frozen frame (a held wait) is one sample on any route, and that sample
 answers its whole span.
 """
@@ -49,6 +54,7 @@ import numpy as np
 
 from .clock import TICK_DT, frames_in, ticks_in
 from .events import EventPlan
+from .hooks import _alpha, animate, update_mobjects, update_self
 from .reference import BRUTE_FORCE, BruteForce
 from .ticking import skipping
 
@@ -109,7 +115,7 @@ class TickedRoute:
         stop = scene.stop_condition
         ticks = list(ticks_in(start, end))
         run.set_clock(start)
-        evaluate_instant(scene, plan, start, start, 0.0)
+        _evaluate(run, plan, start, 0.0, ticks[0] if ticks else end)
         run.started()
         run.sample(start, until=ticks[0] if ticks else end)
         ended = start if stop is not None and stop() else None
@@ -128,7 +134,7 @@ class TickedRoute:
                     if brute is not None:
                         full = brute.full(tick, following)
                         if full:
-                            evaluate_instant(scene, plan, start, tick, TICK_DT)
+                            _evaluate(run, plan, tick, TICK_DT, following)
                         else:
                             with brute.dt_work_only():
                                 evaluate_instant(scene, plan, start, tick, TICK_DT)
@@ -144,7 +150,7 @@ class TickedRoute:
                             with skipping(tick_plan):
                                 evaluate_instant(scene, plan, start, tick, TICK_DT)
                         else:
-                            evaluate_instant(scene, plan, start, tick, TICK_DT)
+                            _evaluate(run, plan, tick, TICK_DT, following)
                     run.stepped(tick, full=full)
                     run.sample(tick, until=following)
                     if stop is not None and stop():
@@ -185,13 +191,16 @@ class _SampledRoute:
     def consumer_instants(self, run: PlayRun) -> list[Fraction]:
         grid = run.recorder.grid
         if grid is None:
+            # Without a grid a frame reads every tick: a play evaluates them
+            # only for the scene's frame hooks.
+            if run.play.frame_hooks:
+                return list(ticks_in(run.start, run.requested_end))
             return []
         return frames_in(run.start, run.requested_end, grid)
 
     def run(self, run: PlayRun, plan: EventPlan) -> None:
         if _held(run):
             return
-        scene = run.scene
         start, end = run.start, run.requested_end
         instants = sorted(
             {start, *plan.instants(start, end)}
@@ -202,8 +211,8 @@ class _SampledRoute:
         try:
             for index, instant in enumerate(progress):
                 run.set_clock(instant)
-                evaluate_instant(scene, plan, start, instant, float(instant - previous))
                 following = instants[index + 1] if index + 1 < len(instants) else end
+                _evaluate(run, plan, instant, float(instant - previous), following)
                 run.sample(instant, until=following, keep=True)
                 previous = instant
         finally:
@@ -237,11 +246,17 @@ ROUTE_CLASSES: dict[str, type[Route]] = {
 }
 
 
-def _alpha(local: Fraction, run_time: float) -> float:
-    """CE's ``t / run_time`` for one animation; 1 when it has no length."""
-    if run_time == 0:
-        return 1.0
-    return float(local) / run_time
+def _evaluate(
+    run: PlayRun, plan: EventPlan, instant: Fraction, dt: float, following: Fraction
+) -> None:
+    """Evaluate the play at ``instant``, whose state holds until
+    ``following``: through the scene's frame hooks where a frame reads it,
+    else by the engine's bodies alone.
+    """
+    if run.recorder.reads(instant, following):
+        run.frame(plan, instant, dt)
+    else:
+        evaluate_instant(run.scene, plan, run.start, instant, dt)
 
 
 def evaluate_instant(
@@ -250,16 +265,12 @@ def evaluate_instant(
     """Evaluate a play that began at ``start`` at ``instant``, in the phase
     order: the animations (each after its own copies' updaters, as in CE),
     then the composition events, then the scene's mobject updaters and its
-    own updaters, which receive ``dt``.
+    own updaters, which receive ``dt``. The engine's bodies of those
+    methods run, never the scene's code under their names (:mod:`.hooks`).
     """
-    plan.begin_instant(instant)
-    local = instant - start
-    for animation in scene.animations or []:
-        animation.update_mobjects(dt)
-        animation.interpolate(_alpha(local, animation.run_time))
-    plan.run_events()
-    scene.update_mobjects(dt)
-    scene.update_self(dt)
+    animate(scene, plan, start, instant, dt)
+    update_mobjects(scene, dt)
+    update_self(scene, dt)
 
 
 # The trusted algebra, evaluated at an instant

@@ -8,9 +8,10 @@ runs a ticked play tick by tick and decides each tick from the play alone:
   reads it, an event falls on it (the first tick at or after the event), it
   is the play's last, or the play has a stop condition; and from the first
   instant the play's updaters do not run through :meth:`.Mobject.update`
-  (the scene's own ``update_mobjects`` or ``update_self``, a mobject's own
-  ``update``, a camera drawing other cameras), checked at the play's start
-  and at every other tick, on to the play's end;
+  (a mobject's own ``update``, a camera drawing other cameras), checked at
+  the play's start and at every other tick, on to the play's end (the
+  scene's own ``update_mobjects`` or ``update_self`` runs at the frames
+  only, as a frame hook, and makes no tick full);
 - at every other tick, every mobject updater and every scene updater whose
   own code does not load the ``dt`` it is handed (:func:`integrates`,
   :func:`scene_updater_integrates`, judged as each is called) is left out,
@@ -144,12 +145,9 @@ def _ungoverned(scene: Scene) -> bool:
     :meth:`.Mobject.update`, where nothing could leave one out.
     """
     from .admission import _update_replaced
-    from .dispatch import user_overrides
 
-    return (
-        bool({"update_mobjects", "update_self"} & set(user_overrides(type(scene))))
-        or _update_replaced(scene) is not None
-        or bool(vars(scene.renderer.camera).get("image_mobjects_from_cameras"))
+    return _update_replaced(scene) is not None or bool(
+        vars(scene.renderer.camera).get("image_mobjects_from_cameras")
     )
 
 

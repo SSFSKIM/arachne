@@ -271,15 +271,18 @@ def test_an_execution_that_begins_a_play_from_another_state_says_so():
     assert execution.divergence == "play 0 began from another state than in execution 1"
 
 
-def test_a_retry_tears_down_what_the_interrupted_execution_set_up():
+def test_a_retry_tears_down_only_the_execution_that_completes():
+    """CE tears down no run that raised: the interrupted execution is set up
+    and never torn down, and the one that completes is torn down once.
+    """
     cls = soundness_scenes.SetUpTransientFill
     cls.steps.clear()
     cls.open.clear()
     scene, frames = render(cls, 6)
     assert scene.record.execution.number == 2
     assert scene.record.execution.known[0].startswith("draw.user_override:")
-    assert cls.steps == ["setup", "tear_down", "setup", "tear_down"]
-    assert cls.open == []
+    assert cls.steps == ["setup", "setup", "tear_down"]
+    assert cls.open == [1]
     _same_frames(frames, _drawn_serially(6, [("fill", RED)]))
 
 

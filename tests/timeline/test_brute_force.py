@@ -1,8 +1,8 @@
 """The stepping tick held against itself computed by brute force
-(:mod:`arachne.timeline.reference`): every scene the stepping, soundness and
-plan-read fixtures hold, run stepping, keeps the captures a brute-force run
-keeps, and the brute-force run never touches the plan; nor does a stepping
-run touch the brute-force run's judges of dt.
+(:mod:`arachne.timeline.reference`): every scene the stepping, soundness,
+plan-read and scene-hook fixtures hold, run stepping, keeps the captures a
+brute-force run keeps, and the brute-force run never touches the plan; nor
+does a stepping run touch the brute-force run's judges of dt.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from arachne.timeline.reference import (
 )
 from arachne.timeline.ticking import loads_dt, scene_updater_loads_dt
 
-from . import plan_read_scenes, soundness_scenes, stepping_scenes
+from . import hook_scenes, plan_read_scenes, soundness_scenes, stepping_scenes
 
 
 def _scenes(module) -> list[tuple[Path, str]]:
@@ -40,6 +40,7 @@ CASES = [
     *_scenes(stepping_scenes),
     *_scenes(soundness_scenes),
     *_scenes(plan_read_scenes),
+    *_scenes(hook_scenes),
 ]
 IDS = [name for _, name in CASES]
 

@@ -254,6 +254,12 @@ class PlayRecord:
     #: The instants of its composition events (a Succession part ending and
     #: the next beginning), exact or found by bisection, in order.
     events: tuple[Fraction, ...] = ()
+    #: The frame hooks the scene's code held when it began (``update_to_time``,
+    #: ``update_mobjects``, ``update_meshes``, ``update_self``: an override, a
+    #: patch of the engine's ``Scene`` or a wrapper on the scene object), which
+    #: run at its frames only (:mod:`.hooks`), and whether ``play_internal`` was.
+    frame_hooks: tuple[str, ...] = ()
+    play_internal_overridden: bool = False
     _record: Record | None = field(default=None, repr=False)
     #: The animations it played, as objects.
     _animations: tuple[Animation, ...] = field(default=(), repr=False)
