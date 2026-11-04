@@ -247,3 +247,14 @@ lifted.
   drawing. Reproducer: a live scene with a frozen wait over static
   mobjects, its deltas kept with `IrCairoPainter.keep_all` (the static
   records set again in each frame's delta).
+
+## Replaced camera methods (`arachne/timeline/camera_code.py`)
+
+- **The replaced-camera detector covers every engine camera member.**
+  `replaced_methods` counts any member of an engine camera class the
+  scene's code replaced (on the class or the instance), not only the
+  methods a draw calls, so a replaced member that never affects drawing
+  still sends the camera to Cairo (`render.fallback`) or, where a record
+  reads the detector, refuses it. Narrow it to the display path's methods
+  only if a case is ever refused over a member that does not affect
+  drawing (the refusal names the member).
