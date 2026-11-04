@@ -23,17 +23,25 @@ inside the rectangle the axes' ranges span, shrunk by ``margin`` on every
 side, in scene units. A mobject operand of :func:`record` is checked along
 its outline, sampled about every :data:`SPACING` units, or at its centre
 when it has no points; a watched mobject is checked at its centre. A
-watch's finding is a run of lint instants outside, at the scene line
+watch's finding is a run of frames outside, at the scene line
 running when the run began.
 """
 
 from __future__ import annotations
 
-__all__ = ["CHECKED", "SPACING", "TERMS", "declare", "findings", "record", "watch"]
+__all__ = [
+    "CHECKED",
+    "SPACING",
+    "TERMS",
+    "Checks",
+    "declare",
+    "findings",
+    "record",
+    "watch",
+]
 
 import sys
-from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import replace
+from collections.abc import Iterable, Mapping
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any
 
@@ -49,7 +57,9 @@ if TYPE_CHECKING:
     from arachne.timeline.record import Record
     from arachne.timeline.source import SourceLine
 
-    from .instants import LintInstant
+    from .core import LintContext
+    from .frames import Frames
+
 
 #: The codes :func:`record` and :func:`watch` check.
 CHECKED = ("axes.outside",)
@@ -162,18 +172,60 @@ def declare(**terms: Any) -> list[dict[str, Any]]:
     return []
 
 
-def findings(record: Record, instants: Sequence[LintInstant]) -> list[Finding]:
-    """The findings of ``record``'s bridge calls: each record at its call,
-    and each watch at every lint instant from its call on, a run of
-    instants outside one finding from the first to the last.
+class Checks:
+    """The lint's reader of the bridge (:mod:`.frames`' client): the findings
+    of the bridge's calls, where the render's frames see them. Each record is
+    found at its call, and each watch at every frame of the render from its
+    call on, a run of frames outside one finding from the first to the last,
+    as a check made on every frame finds it.
+
+    A record kept on the render's grid evaluated every frame as the render
+    does, and its calls and readings are read from it. One kept on another
+    grid ran the scene's frame hooks and dt updaters at other instants: its
+    calls and readings are read from the lint's one forward run on the
+    render's grid, asked for to the scene's end whatever frames the lint
+    reads otherwise, so it holds every call the execution makes.
     """
+
+    def request_frames(self, frames: Frames) -> None:
+        """Ask for the whole forward execution when the record's own values
+        are not the render's and the scene used the bridge.
+        """
+        record = frames.session.record
+        if record.bridge.calls and not _on_render_grid(record):
+            frames.request(self, [record.duration], _nothing)
+
+    def __call__(self, context: LintContext) -> list[Finding]:
+        source = context.record
+        if source.bridge.calls and not _on_render_grid(source):
+            source = context.frames.execution
+        return findings(source)
+
+
+def findings(source: Record) -> list[Finding]:
+    """The findings of the bridge's calls in ``source``, an execution on the
+    render's grid.
+    """
+    from .instants import render_grid
+
+    fps = render_grid(source)
     found: list[Finding] = []
-    for call in record.bridge.calls:
+    for call in source.bridge.calls:
         if call.kind == "record":
             found.extend(_record_findings(call))
         elif call.kind == "watch":
-            found.extend(_watch_findings(call, instants))
+            found.extend(_watch_findings(call, fps, source.duration))
     return found
+
+
+def _on_render_grid(record: Record) -> bool:
+    from .instants import render_grid
+
+    return record.grid == render_grid(record)
+
+
+def _nothing(*_: Any) -> None:
+    """A frame reader that reads nothing: the bridge needs the execution."""
 
 
 # Calls
@@ -393,27 +445,30 @@ def _record_findings(call: BridgeCall) -> list[Finding]:
     return [found] if found is not None else []
 
 
-def _watch_findings(call: BridgeCall, instants: Iterable[LintInstant]) -> list[Finding]:
-    """A watch read at each lint instant from its call on: each run of
-    instants outside is one finding, at the line running when it began.
+def _watch_findings(call: BridgeCall, fps: Fraction, end: Fraction) -> list[Finding]:
+    """A watch read at each frame of the render's grid (``fps``) from its
+    call on, and at the scene's ``end``: each run of frames outside is one
+    finding, at the line running when it began.
     """
+    frames: dict[Fraction, Reading] = {}
+    for reading in call.readings:
+        # A frame's last reading is what it shows.
+        if (reading.t * fps).denominator == 1 or reading.t == end:
+            frames[reading.t] = reading
     found: list[Finding] = []
-    run: list[tuple[Fraction, Reading]] = []
+    run: list[Reading] = []
 
     def close() -> None:
         if run:
-            first_t, first = run[0]
-            finding = _finding(call, first, run[-1][0], first.line or call.line)
+            first = run[0]
+            finding = _finding(call, first, run[-1].t, first.line or call.line)
             assert finding is not None
-            found.append(replace(finding, t_start=first_t))
+            found.append(finding)
             run.clear()
 
-    for instant in instants:
-        if instant.t < call.t:
-            continue
-        reading = call.reading_at(instant.t)
-        if reading is not None and _past(reading):
-            run.append((instant.t, reading))
+    for t in sorted(frames):
+        if _past(frames[t]):
+            run.append(frames[t])
         else:
             close()
     close()

@@ -130,15 +130,29 @@ def test_a_mobject_operand_is_stored_by_its_stable_id(session_of):
 
 
 def _first_outside(session, x_max: float) -> Fraction:
-    """The first lint instant at which the session's one dot is past
+    """The first render frame at which the session's one dot is past
     ``x_max``, by the record's own state.
     """
-    for instant in lint_instants(session.record, 4):
-        (dot,) = [n for n in _nodes(session.state_at(instant.t)) if n.type == "Dot"]
+    fps = session.record.grid
+    for k in range(int(session.record.duration * fps) + 1):
+        t = Fraction(k) / fps
+        (dot,) = [n for n in _nodes(session.state_at(t)) if n.type == "Dot"]
         x_min, _, x_hi, _ = dot.box
         if (x_min + x_hi) / 2 > x_max:
-            return instant.t
+            return t
     raise AssertionError("the dot never left")
+
+
+def test_a_watch_fires_on_frames_between_lint_instants(session_of):
+    """CE's guard checks every frame: an excursion of two frames, neither a
+    lint instant, is found.
+    """
+    session = session_of("Blip", BRIDGE, frame_rate=15)
+    (found,) = _outside(lint(session))
+    assert (found.t_start, found.t_end) == (Fraction(5, 15), Fraction(6, 15))
+    assert found.line.line == _line("blip")
+    instants = {i.t for i in lint_instants(session.record, 4)}
+    assert not {found.t_start, found.t_end} & instants
 
 
 def test_a_watched_pen_off_the_plot_is_found_where_it_left(session_of):
@@ -184,6 +198,51 @@ def test_a_watched_callable_is_evaluated_while_recording_never_when_linting(
     # A reading at every kept capture from the declaration on.
     kept = [c.instant for play in session.record.plays for c in play.samples]
     assert [r.t for r in call.readings][1:] == [*kept, session.record.duration]
+
+
+def _past_readings(session) -> list[bool]:
+    return [
+        r.values is not None and r.values["past"] > 0
+        for call in session.record.bridge.calls
+        for r in call.readings
+    ]
+
+
+def test_a_record_on_another_grid_is_checked_as_the_render_s_frames_show_it(
+    session_of,
+):
+    """A record kept on a finer grid ran the scene's frame hook more often
+    than the render does, and its own readings take the point off the plot;
+    the lint reads the watch and the record where the render's frames do,
+    from a forward run on the render's grid.
+    """
+    render = session_of("HookedIn", BRIDGE, frame_rate=15)
+    finer = session_of("HookedIn", BRIDGE, grid=None, frame_rate=15)
+    assert not any(_past_readings(render))
+    assert any(_past_readings(finer))
+    assert _outside(lint(render)) == []
+    assert _outside(lint(finer)) == []
+    assert len(finer.forward_runs) == 1
+
+
+def test_a_watch_on_another_grid_is_found_where_the_render_s_frames_find_it(
+    session_of,
+):
+    render = session_of("HookedOut", BRIDGE, frame_rate=15)
+    finer = session_of("HookedOut", BRIDGE, grid=None, frame_rate=15)
+    on_render = _outside(lint(render))
+    on_finer = _outside(lint(finer))
+    assert [f.line.line for f in on_render] == [
+        _line("hooked-play"),
+        _line("hooked-record"),
+    ]
+    assert [(f.t_start, f.t_end, f.line, f.message) for f in on_finer] == [
+        (f.t_start, f.t_end, f.line, f.message) for f in on_render
+    ]
+    # The finer record's own readings would have found it earlier.
+    (watched,) = finer.record.bridge.watches
+    first = next(r.t for r in watched.readings if r.values["past"] > 0)
+    assert first < on_render[0].t_start
 
 
 # Re-recording

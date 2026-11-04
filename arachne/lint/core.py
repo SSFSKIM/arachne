@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 from arachne.timeline.clock import exact
 
-from .bridge import findings as bridge_findings
+from .bridge import Checks
 from .exempt import Exemptions
 from .findings import Finding, fold, in_range
 from .frames import Frames
@@ -120,6 +120,9 @@ def lint(
     rules = tuple(rules)
     frames = Frames(session)
     _request_parts(frames, instants)
+    # The scene's own checks (:mod:`.bridge`), whatever the rules.
+    checks = Checks()
+    checks.request_frames(frames)
     for rule in rules:
         request = getattr(rule, "request_frames", None)
         if request is not None:
@@ -128,8 +131,7 @@ def lint(
     parts = tuple(frames.result(_PARTS))
     context = LintContext(session, record, exact(fps), instants, parts, frames)
     found = [finding for rule in rules for finding in rule(context)]
-    # The scene's own checks, at their lines and times (:mod:`.bridge`).
-    found.extend(bridge_findings(record, instants))
+    found.extend(checks(context))
     # After the parts: a forward run that read them may have found one.
     found.extend(_diverged(session))
     if session.stale:
