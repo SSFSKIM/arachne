@@ -159,7 +159,9 @@ class Divergence:
     #: ``"probe"``: a play restored at a recorded instant differs from it.
     kind: str
     #: The first play they differ in; ``None`` when they differ only in what
-    #: the script left after its last play (the record's final capture).
+    #: the script left after its last play (the record's final capture). For
+    #: a probe's, the play it demoted, by its index in the execution the
+    #: session holds; ``None`` when that execution does not play it.
     play: int | None
     #: The line of the scene's code that played it.
     source_line: SourceLine | None
