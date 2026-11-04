@@ -21,11 +21,30 @@ state-function play, the proof of every callback.
 
 A play whose camera draws through inputs the record can't hold
 (:func:`camera_refusal`) ticks too, and its frames are drawn while it runs.
+So does a play the probe demoted (:mod:`.probe`): restored at an instant
+its record kept, it differed from what was kept there, so its callbacks keep
+history their proofs did not see. A demotion is for good: every later
+recording a session makes of that scene of the same source ticks the play
+(:data:`DEMOTED`); a render reads none.
 """
 
 from __future__ import annotations
 
-__all__ = ["Admission", "Callback", "admit", "camera_refusal"]
+__all__ = [
+    "DEMOTED",
+    "PROBE_DEMOTED",
+    "Admission",
+    "Callback",
+    "PlayIdentity",
+    "admit",
+    "camera_refusal",
+    "demote",
+    "demoted",
+    "line_plays",
+    "play_identities",
+    "play_identity",
+    "whole_line",
+]
 
 import inspect
 from collections.abc import Callable, Iterator, Sequence
@@ -83,6 +102,87 @@ class Admission:
     callbacks: tuple[Callback, ...] = field(default=())
 
 
+#: The code of a demoted play's reason for ticking.
+PROBE_DEMOTED = "probe.demoted"
+
+#: A play as executions of one scene know it: its source line, its kind
+#: (``"play"`` or ``"wait"``) and how many plays of that line came before
+#: it. Its index is not: an execution that plays one play more before it
+#: shifts every index after. ``(line, None, None)`` stands for every play of
+#: the line (:func:`whole_line`).
+PlayIdentity = tuple[SourceLine | None, str | None, int | None]
+
+
+def play_identity(play: Any, counts: dict[SourceLine | None, int]) -> PlayIdentity:
+    """The :data:`PlayIdentity` of ``play``, given how many plays of each
+    line came before it (``counts``, which it counts on).
+    """
+    count = counts.get(play.source_line, 0)
+    counts[play.source_line] = count + 1
+    return (play.source_line, play.kind, count)
+
+
+def play_identities(plays: Sequence[Any]) -> list[PlayIdentity]:
+    """The :data:`PlayIdentity` of each of ``plays`` (a record's, in order)."""
+    counts: dict[SourceLine | None, int] = {}
+    return [play_identity(play, counts) for play in plays]
+
+
+def line_plays(plays: Sequence[Any]) -> dict[SourceLine | None, tuple[str, ...]]:
+    """The kinds of the plays of each line, in order: what tells whether the
+    plays of a line in two executions correspond one to one.
+    """
+    found: dict[SourceLine | None, tuple[str, ...]] = {}
+    for play in plays:
+        found[play.source_line] = (*found.get(play.source_line, ()), play.kind)
+    return found
+
+
+def whole_line(line: SourceLine | None) -> PlayIdentity:
+    """The identity that stands for every play of ``line``."""
+    return (line, None, None)
+
+
+#: The plays the probe demoted, as (source digest, scene class, play
+#: identity, the kinds of that line's plays in the execution it was found
+#: in): those a session's recording of that scene ticks, for the rest of the
+#: process. A source holds many scenes, so the scene's name is part of the
+#: key. A play is known by its identity, so a demotion ticks the play it was
+#: found in wherever it falls in another execution; while that execution's
+#: plays of the line are not the same kinds in the same order, which play it
+#: was is unknown, and the session demotes the whole line (``None`` kinds).
+DEMOTED: set[tuple[str, str, PlayIdentity, tuple[str, ...] | None]] = set()
+
+
+def demote(
+    source_digest: str,
+    scene_class: str,
+    identity: PlayIdentity,
+    line: tuple[str, ...] | None,
+) -> None:
+    """Tick the play ``identity`` of the scene ``scene_class`` of the source
+    ``source_digest``, found where its line played ``line``, in every
+    recording a session makes of it from now on.
+    """
+    DEMOTED.add((source_digest, scene_class, identity, line))
+
+
+def demoted(
+    source_digest: str | None, scene_class: str
+) -> dict[PlayIdentity, tuple[str, ...] | None]:
+    """The plays of the scene ``scene_class`` of the source
+    ``source_digest`` the probe demoted, each with its line's plays where it
+    was found; none for an unknown source.
+    """
+    if source_digest is None:
+        return {}
+    return {
+        identity: line
+        for digest, name, identity, line in DEMOTED
+        if digest == source_digest and name == scene_class
+    }
+
+
 def camera_refusal(camera: Any) -> str | None:
     """Why frames of a scene drawn by ``camera`` can't come from its record:
     the camera draws through an input the record does not hold. ``None`` for
@@ -124,10 +224,12 @@ def admit(
     held: bool,
     base_dir: str | None = None,
     refusal: str | None = None,
+    demoted: bool = False,
 ) -> Admission:
     """The route of the play ``scene`` is about to evaluate; callbacks' source
     lines are relative to ``base_dir``, as the record's are. A record that
-    draws no frame (``refusal``) ticks.
+    draws no frame (``refusal``) ticks, and so does a play the probe
+    ``demoted`` that would otherwise be a state-function play.
     """
     from . import trusted
 
@@ -186,6 +288,16 @@ def admit(
             state_reasons.append(order)
     if state_reasons:
         return Admission(TICKED, tuple(state_reasons), tuple(callbacks))
+    if demoted:
+        return Admission(
+            TICKED,
+            (
+                f"{PROBE_DEMOTED}: restored at an instant its record kept, it differed"
+                " from what was kept there, so its callbacks keep history their"
+                " proofs did not see",
+            ),
+            tuple(callbacks),
+        )
     return Admission(
         STATE,
         ("callbacks run while it plays",),

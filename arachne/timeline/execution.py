@@ -159,7 +159,10 @@ class Divergence:
     #: ``"probe"``: a play restored at a recorded instant differs from it.
     kind: str
     #: The first play they differ in; ``None`` when they differ only in what
-    #: the script left after its last play (the record's final capture).
+    #: the script left after its last play (the record's final capture). For
+    #: a probe's, the play it demoted, by its index in the execution the
+    #: session holds; ``None`` when that execution does not play it, or
+    #: plays its line otherwise, so which play it is there is unknown.
     play: int | None
     #: The line of the scene's code that played it.
     source_line: SourceLine | None
@@ -169,6 +172,15 @@ class Divergence:
     #: relative to the scene's directory.
     changed_inputs: tuple[str, ...] = ()
     code: str = "replay.diverged"
+
+    @property
+    def cause(self) -> tuple[Any, ...]:
+        """What the divergence is a finding of, alike however many
+        comparisons found it: its kind, the play and line, and the inputs
+        that changed. Not its reason, whose amounts vary from one execution
+        to the next.
+        """
+        return (self.kind, self.play, self.source_line, self.changed_inputs)
 
 
 @dataclass(frozen=True, eq=False)
