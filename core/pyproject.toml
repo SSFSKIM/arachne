@@ -1,5 +1,6 @@
 [build-system]
-requires = ["maturin>=1.16,<2.0"]
+# Pinned, as the toolchain is (rust-toolchain.toml): how the core is compiled and packaged is fixed.
+requires = ["maturin==1.16.0"]
 build-backend = "maturin"
 
 [project]
@@ -19,6 +20,9 @@ classifiers = [
 python-source = "python"
 module-name = "arachne_core._core"
 features = ["python"]
+# Build from Cargo.lock as committed: a lock that does not match Cargo.toml fails the build rather
+# than being rewritten from the registry (a PEP 517 build passes no --locked of its own).
+locked = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests/python"]
