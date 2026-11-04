@@ -290,7 +290,10 @@ class CairoRenderer:
             self.camera.reset()
 
         kwargs["include_submobjects"] = include_submobjects
-        self.camera.capture_mobjects(mobjects, **kwargs)
+        from ..frame_ir.live import live
+
+        with live(self.camera):
+            self.camera.capture_mobjects(mobjects, **kwargs)
 
     def render(
         self,
