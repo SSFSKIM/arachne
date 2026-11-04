@@ -152,6 +152,42 @@ class ReadsMedia(Scene):
     assert _open(scene, "ReadsMedia").record.identity.input_digests == ()
 
 
+def test_a_media_directory_given_as_a_path_object_is_excluded_too(scene_dir):
+    """The configuration keeps a directory as it was given when it is not a
+    ``pathlib.Path`` (a ``py.path.local``, say), which ``get_dir`` refuses:
+    the scene still records, and the directory's files are no inputs.
+    """
+    py_path = pytest.importorskip("py.path")
+    media = scene_dir.parent / "media"
+    media.mkdir()
+    (media / "made_by_the_engine.txt").write_text("1")
+    data = _write(scene_dir, "data.txt", "1")
+    scene = _write(
+        scene_dir,
+        "scene.py",
+        HEADER
+        + """
+class ReadsBoth(Scene):
+    def construct(self):
+        (HERE.parent / "media" / "made_by_the_engine.txt").read_text()
+        (HERE / "data.txt").read_text()
+        self.wait(0.25)
+""",
+    )
+    session = Session.open(
+        scene, "ReadsBoth", config={**SMALL, "media_dir": py_path.local(media)}
+    )
+    assert session.record.identity.input_digests == (("data.txt", _sha256(data)),)
+
+
+def test_a_directory_that_does_not_resolve_is_left_out_of_the_exclusions():
+    class Unresolvable:
+        def __getattr__(self, name):
+            raise ValueError(f"{name} does not resolve")
+
+    assert inputs.engine_dirs(Unresolvable()) == []
+
+
 HELPED = (
     HEADER
     + """
