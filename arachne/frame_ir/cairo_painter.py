@@ -134,8 +134,6 @@ class _Painter3DCamera(ThreeDCamera):
 
 def _context(camera: Any, pixel_array: np.ndarray) -> Any:
     """CE's ``get_cairo_context``, its matrix built from the centre CE froze."""
-    import cairo
-
     contexts: dict[int, Any] = camera.__dict__.setdefault("_xf_contexts", {})
     centre = camera._xf_centre
     key = id(pixel_array)
@@ -153,27 +151,18 @@ def _context(camera: Any, pixel_array: np.ndarray) -> Any:
         )
     ):
         return found[2]
-    pw = camera.pixel_width
-    ph = camera.pixel_height
-    fw = camera.frame_width
-    fh = camera.frame_height
-    fc = np.array(centre)
-    surface = cairo.ImageSurface.create_for_data(
-        pixel_array.data, cairo.FORMAT_ARGB32, pw, ph
-    )
-    ctx = cairo.Context(surface)
-    ctx.scale(pw, ph)
-    ctx.set_matrix(
-        cairo.Matrix(
-            (pw / fw),
-            0,
-            0,
-            -(ph / fh),
-            (pw / 2) - fc[0] * (pw / fw),
-            (ph / 2) + fc[1] * (ph / fh),
+    ctx = camera.make_cairo_context(pixel_array, np.array(centre))
+    contexts[key] = (
+        pixel_array,
+        (
+            centre,
+            camera.pixel_width,
+            camera.pixel_height,
+            camera.frame_width,
+            camera.frame_height,
         ),
+        ctx,
     )
-    contexts[key] = (pixel_array, (centre, pw, ph, fw, fh), ctx)
     return ctx
 
 
