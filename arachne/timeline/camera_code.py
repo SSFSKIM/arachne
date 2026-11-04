@@ -17,7 +17,7 @@ method a draw never calls costs a fallback, never a wrong frame.
 
 from __future__ import annotations
 
-__all__ = ["Replaced", "engine_own", "replaced_methods"]
+__all__ = ["Replaced", "drawn_cameras", "engine_own", "replaced_methods"]
 
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -56,6 +56,24 @@ class Replaced:
     def qualname(self) -> str:
         """``Owner.name``."""
         return f"{self.owner.__name__}.{self.name}"
+
+
+def drawn_cameras(camera: Any) -> tuple[Any, ...]:
+    """``camera`` and every camera a frame it draws is drawn with: a
+    MultiCamera's display cameras (``image_mobjects_from_cameras``), and
+    theirs in turn, each once. A display camera the scene's code changed
+    changes the frame as much as the scene's camera would.
+    """
+    found: list[Any] = []
+    stack = [camera]
+    while stack:
+        each = stack.pop(0)
+        if each is None or any(each is seen for seen in found):
+            continue
+        found.append(each)
+        displays = getattr(each, "__dict__", {}).get("image_mobjects_from_cameras", ())
+        stack.extend(getattr(display, "camera", None) for display in displays)
+    return tuple(found)
 
 
 def replaced_methods(camera: Any) -> tuple[Replaced, ...]:

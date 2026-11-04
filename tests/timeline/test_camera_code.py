@@ -5,8 +5,29 @@ from __future__ import annotations
 import subprocess
 import sys
 
-from arachne import Camera, ThreeDCamera
-from arachne.timeline.camera_code import Replaced, replaced_methods
+from arachne import (
+    Camera,
+    ImageMobjectFromCamera,
+    MovingCamera,
+    MultiCamera,
+    ThreeDCamera,
+)
+from arachne.timeline.camera_code import Replaced, drawn_cameras, replaced_methods
+
+
+def test_a_frame_is_drawn_with_its_camera_and_every_display_s_camera():
+    inner = MovingCamera()
+    outer = MovingCamera()
+    nested = MultiCamera()
+    nested.add_image_mobject_from_camera(ImageMobjectFromCamera(inner))
+    main = MultiCamera()
+    main.add_image_mobject_from_camera(ImageMobjectFromCamera(outer))
+    main.add_image_mobject_from_camera(ImageMobjectFromCamera(nested))
+    # Shown twice: one camera.
+    main.add_image_mobject_from_camera(ImageMobjectFromCamera(outer))
+    assert drawn_cameras(main) == (main, outer, nested, inner)
+    camera = Camera()
+    assert drawn_cameras(camera) == (camera,)
 
 
 def _reversed(method):
