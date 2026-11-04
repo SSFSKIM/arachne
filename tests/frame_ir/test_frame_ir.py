@@ -211,6 +211,31 @@ def test_a_moved_three_d_centre_keeps_the_first_mapping_centre():
     assert stream._view["mapping_centre"] == (0.0, 0.0, 0.0)
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="needs C5.2 M5's render_mapping_centre(record); whichever of M3 and M5"
+    " lands second wires it",
+)
+def test_a_late_frame_asked_first_keeps_the_render_s_mapping_centre():
+    """The render freezes the mapping centre at its own first path draw; a
+    session asked for a late frame first must draw it where the render does,
+    not freeze the centre the camera has moved to by then.
+    """
+    _, direct = render(scenes.MovedThreeDCentre, FPS, **MEDIUM)
+    late = len(direct) - 1
+    session = Session.open(
+        SCENES,
+        "MovedThreeDCentre",
+        config={**MEDIUM, "frame_rate": FPS, "draw_path": "ir_cairo"},
+    )
+    try:
+        frame = np.asarray(session.frame(Fraction(late, FPS)))
+        assert _painter(session.scene).frames > 0, "drawn from XF"
+    finally:
+        session.close()
+    np.testing.assert_array_equal(frame, direct[late])
+
+
 def test_a_surface_is_one_face_group_record(kept):
     scene, _ = render(scenes.Lit3D, FPS, draw_path="ir_cairo", **MEDIUM)
     painter = _painter(scene)
