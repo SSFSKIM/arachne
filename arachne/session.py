@@ -567,6 +567,7 @@ def _execute(
             },
             draws=False,
             demoted=demotions,
+            exits=True,
         )
 
     instance, module = execute(path, scene, settings, recorder)
