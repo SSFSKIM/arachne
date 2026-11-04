@@ -20,7 +20,7 @@ fn rows<'py, T: Element + Copy, const N: usize>(
     PyArray1::from_vec(py, values.iter().flatten().copied().collect()).reshape([values.len(), N])
 }
 
-fn order(entries: &[OrderEntry]) -> Vec<(&'static str, u32, u32)> {
+pub(super) fn order(entries: &[OrderEntry]) -> Vec<(&'static str, u32, u32)> {
     entries
         .iter()
         .map(|e| {
