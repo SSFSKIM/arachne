@@ -58,6 +58,7 @@ __all__ = [
     "apart",
     "arm",
     "armed",
+    "armed_entries",
     "armed_terms",
     "clear",
     "declare",
@@ -364,6 +365,35 @@ def exemptions(source: Record, t: Fraction | float | None = None) -> Exemptions:
     return kept
 
 
+def armed_entries(
+    source: Record, t: Fraction | float, *, play: int | None = None
+) -> Exemptions:
+    """The entries the value the arming in force at ``t`` was handed held
+    there (within ``play``, as :func:`declared` reads it), each read as it
+    stands at the scene's end: what a check made there adds to the
+    declaration a check of the whole scene is held to, as the reference
+    checks' departure guard adds its arming's to the hold watch's. None
+    before any arming.
+    """
+    at = exact(t)
+    arming = armed(source, at, play=play)
+    if arming is None or "exempt" not in arming.terms:
+        return Exemptions()
+    named: tuple[Any, ...] = ()
+    seen: Mapping[Any, Exemptions] = {}
+    for reading in arming.readings:
+        values = reading.values
+        if values is None or "seen" not in values:
+            continue
+        if reading.t <= at:
+            named = values["named"]
+        seen = values["seen"]
+    kept = Exemptions()
+    for key in named:
+        kept = _joined(kept, seen[key])
+    return kept
+
+
 def armed(
     source: Record, t: Fraction | float | None = None, *, play: int | None = None
 ) -> BridgeCall | None:
@@ -619,9 +649,11 @@ def _declaring(
     two ways: ``exempt``, what the value the scene handed over holds as it
     stands (a list it changes later names what it holds then), and
     ``hold``, the entries it held at the call, whose mobjects' families are
-    read as they stand: what a check of the whole scene accumulates. Both
-    are read at the call and again whenever a kept capture finds them
-    changed, and can be read while the scene runs
+    read as they stand: what a check of the whole scene accumulates. Beside
+    them, ``named`` keys the entries the value holds as it stands, and
+    ``seen`` holds, by key, every entry it has held, read as it stands
+    (:func:`armed_entries`). All are read at the call and again whenever a
+    kept capture finds them changed, and can be read while the scene runs
     (:meth:`.Bridge.read_now`).
     """
     kept = {**_terms(terms), **extra}
@@ -629,19 +661,39 @@ def _declaring(
     if "exempt" in terms:
         named = terms["exempt"]
         entries = _entries(named)
+        seen: dict[Any, Any] = {}
 
         def reader() -> Mapping[str, Any]:
-            return {"exempt": _exemptions(named), "hold": Exemptions.parse(entries)}
+            now = _entries(named)
+            keys = tuple(_entry_key(entry) for entry in now)
+            for key, entry in zip(keys, now, strict=True):
+                seen.setdefault(key, entry)
+            return {
+                "exempt": Exemptions.parse(now),
+                "hold": Exemptions.parse(entries),
+                "named": keys,
+                "seen": {k: Exemptions.parse([e]) for k, e in seen.items()},
+            }
 
     call = recorder.bridge_call(
         kind, caller, terms=kept, reader=reader, changes_only=True
     )
     if reader is not None:
-        exempt = kept["exempt"]
-        call.readings.append(
-            Reading(call.t, call.line, {"exempt": exempt, "hold": exempt})
-        )
+        call.readings.append(Reading(call.t, call.line, reader()))
     return call
+
+
+def _entry_key(entry: Any) -> Any:
+    """What identifies an exemption's entry while the scene runs: a mobject
+    by its identity, a selector by its text, a pair by its two.
+    """
+    from arachne.mobject.mobject import Mobject
+
+    if isinstance(entry, Mobject):
+        return ("mobject", id(entry))
+    if isinstance(entry, (tuple, list)):
+        return tuple(_entry_key(item) for item in entry)
+    return ("selector", entry)
 
 
 def _exempt_now(bridge: Bridge, call: BridgeCall) -> Exemptions:

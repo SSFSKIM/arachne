@@ -40,10 +40,10 @@ other way.
 
 from __future__ import annotations
 
-__all__ = ["SETTLED_WAIT", "departures"]
+__all__ = ["SETTLED_WAIT", "Departure", "departed", "departures"]
 
 from collections.abc import Iterable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from fractions import Fraction
 from typing import TYPE_CHECKING
 
@@ -58,7 +58,7 @@ from .rules.frame_edge import edge_findings
 
 if TYPE_CHECKING:
     from arachne.mobject.mobject import Mobject
-    from arachne.timeline.record import Capture, Record, Removal
+    from arachne.timeline.record import Capture, Record, Removal, States
     from arachne.timeline.source import SourceLine
 
     from .core import LintContext
@@ -69,31 +69,45 @@ if TYPE_CHECKING:
 SETTLED_WAIT = Fraction(1, 2)
 
 
-def _departures(context: LintContext, rule: ArmedRule) -> list[Finding]:
-    # Plays and states, from the one execution the lint's frames come from.
-    record = context.frames.execution
-    states = rule.states(context)
-    grid = render_grid(record)
+@dataclass(frozen=True)
+class Departure:
+    """A departure of what had settled: at ``t``, in the scene ``capture``
+    keeps (as the script called the play, or just before it removed), within
+    ``play`` (:meth:`.ArmedRule.terms_at`'s bound), at ``line``, of the
+    topmost settled members ``settled`` (by stable id, each with how long
+    past settling it was).
+    """
+
+    t: Fraction
+    play: int
+    capture: Capture
+    line: SourceLine | None
+    settled: dict[str, tuple[Animated, Fraction]]
+
+
+def departed(record: Record, states: States, since: Fraction) -> list[Departure]:
+    """Every departure of what had settled in ``record``'s execution from
+    ``since`` on, in the order the script made them: its removals before
+    each play, then the play.
+    """
     clock = _Clock(record)
-    found: list[Finding] = []
+    found: list[Departure] = []
     removals: dict[int, list[Removal]] = {}
     for removal in states.removals:
-        if removal.t >= rule.since:
+        if removal.t >= since:
             removals.setdefault(removal.plays, []).append(removal)
 
     def removed(removal: Removal) -> None:
         clock.stamp(removal.capture.roots, removal.t)
         settled = clock.settled(removal.capture, removal.t, removal.operands)
         if settled:
-            parts = rule.state(context, removal.capture)
-            found.extend(
-                _sweep(
-                    parts,
-                    settled,
-                    rule.terms_at(record, removal.t, removal.plays),
-                    removal.source_line,
+            found.append(
+                Departure(
                     removal.t,
-                    grid,
+                    removal.plays,
+                    removal.capture,
+                    removal.source_line,
+                    settled,
                 )
             )
         if removal.kind == "clear":
@@ -104,7 +118,7 @@ def _departures(context: LintContext, rule: ArmedRule) -> list[Finding]:
     for index, play in enumerate(record.plays):
         for removal in removals.get(index, ()):
             removed(removal)
-        if play.start < rule.since:
+        if play.start < since:
             continue
         # The scene as the script called the play, before it added or began
         # anything, and as the play left it, finished and cleaned up.
@@ -114,22 +128,33 @@ def _departures(context: LintContext, rule: ArmedRule) -> list[Finding]:
         going = [leaf.mobject for leaf in leaves if leaf.departs and leaf.mobject]
         settled = clock.settled(called, play.start, going) if going else {}
         if settled:
-            parts = rule.state(context, called)
-            found.extend(
-                _sweep(
-                    parts,
-                    settled,
-                    rule.terms_at(record, play.start, play.index),
-                    play.source_line,
-                    play.start,
-                    grid,
-                )
+            found.append(
+                Departure(play.start, play.index, called, play.source_line, settled)
             )
         touched = [leaf.mobject for leaf in leaves if leaf.mobject is not None]
         clock.touch(touched, left, play.end)
         clock.prune(left.roots, left)
     for removal in removals.get(len(record.plays), ()):
         removed(removal)
+    return found
+
+
+def _departures(context: LintContext, rule: ArmedRule) -> list[Finding]:
+    # Plays and states, from the one execution the lint's frames come from.
+    record = context.frames.execution
+    grid = render_grid(record)
+    found: list[Finding] = []
+    for departure in departed(record, rule.states(context), rule.since):
+        found.extend(
+            _sweep(
+                rule.state(context, departure.capture),
+                departure.settled,
+                rule.terms_at(record, departure.t, departure.play),
+                departure.line,
+                departure.t,
+                grid,
+            )
+        )
     return found
 
 
