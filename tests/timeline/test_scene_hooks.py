@@ -169,6 +169,36 @@ def test_a_get_run_time_override_sets_the_span(session_of):
     assert _play_calls(session) == [ce_play(2 * FPS, FPS)]
 
 
+@pytest.mark.parametrize("stepping", [True, BRUTE_FORCE])
+@pytest.mark.parametrize(
+    ("name", "run_times"),
+    [
+        ("RunTimeChangesInPlay", [1.0, 2.0]),
+        ("RunTimeScaledInPlay", [1.0, 2.0]),
+        ("AnimationLengthenedInPlay", []),
+    ],
+)
+def test_the_run_time_play_internal_asks_for_sets_the_span(
+    session_of, name, run_times, stepping
+):
+    """CE plays the length ``play_internal``'s body takes, which may differ
+    from the one compiling the play took: the play is planned again for it.
+    """
+    fps = 4
+    session = session_of(name, HOOK_SCENES, frame_rate=fps, stepping=stepping)
+    (play,) = session.record.plays
+    scene = session.scene
+    assert scene.run_times == run_times
+    assert play.route == "ticked"
+    assert (play.requested_end, play.end) == (2, 2)
+    assert scene.frames == [j / fps for j in range(2 * fps)]
+    # Its frames' ticks and its last are full; the event at 1.5 s falls on a
+    # frame.
+    assert (play.full_ticks, play.stepping_ticks) == (2 * fps, 120 - 2 * fps)
+    if name == "RunTimeChangesInPlay":
+        assert play.events == (Fraction(3, 2), 2)
+
+
 # (h) the dt an override sees, the dt an updater integrates
 
 
