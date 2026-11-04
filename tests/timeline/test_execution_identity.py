@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import warnings
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,7 @@ from arachne.session import Session
 from arachne.timeline import inputs
 from arachne.timeline.execution import ExecutionSummary, compare, summarize
 from arachne.timeline.source import SourceLine
+from arachne.utils.module_ops import get_module
 
 #: A small frame at 4 fps, so a session costs little.
 SMALL = {"pixel_width": 96, "pixel_height": 54, "frame_rate": 4}
@@ -255,12 +257,20 @@ class Computed(Scene):
 )
 
 
-def test_modules_imported_by_a_computed_name_are_in_the_source_digest(scene_dir):
+def test_a_module_reached_only_by_a_computed_name_is_outside_the_source_digest(
+    scene_dir,
+):
+    """The digest decides which executions are compared, so it is a function
+    of the files alone: a module the import statements do not name is not in
+    it, whether or not the process has imported it, and a change to it shows
+    as a divergence that names no input.
+    """
     for name in ("top_helper", "late_helper", "dunder_helper"):
         _write(scene_dir, f"{name}.py", "VALUE = 0.25\n")
     scene = _write(scene_dir, "scene.py", COMPUTED)
+    _forget_modules(scene_dir)
     first = _open(scene, "Computed").record.identity.source_digest
-    # Imported already, each is looked up from the cache the second time.
+    # Imported now, each is found in the cache the second time.
     assert _open(scene, "Computed").record.identity.source_digest == first
     for name in ("top_helper", "late_helper", "dunder_helper"):
         path = scene_dir / f"{name}.py"
@@ -270,7 +280,55 @@ def test_modules_imported_by_a_computed_name_are_in_the_source_digest(scene_dir)
             edited = _open(scene, "Computed").record.identity.source_digest
         finally:
             path.write_text(original)
-        assert edited != first, name
+        assert edited == first, name
+
+
+MODULE_LEVEL = (
+    HEADER
+    + """
+from produced_helper import UNIT
+
+SIZE = float((HERE / "loaded.txt").read_text())
+
+
+class Produced(Scene):
+    def construct(self):
+        offset = float((HERE / "data.txt").read_text())
+        dot = Dot(radius=SIZE)
+        self.add(dot)
+        self.play(dot.animate.shift(offset * UNIT), run_time=0.5)
+"""
+)
+
+
+def test_a_session_and_a_render_of_one_scene_have_one_identity(scene_dir):
+    """Whichever producer recorded it, an execution's identity is the same,
+    so a render compares with a session's record: the files read while the
+    scene file loads are no one's inputs.
+    """
+    from arachne import tempconfig
+
+    _write(scene_dir, "produced_helper.py", "from arachne import RIGHT as UNIT\n")
+    _write(scene_dir, "loaded.txt", "0.1")
+    data = _write(scene_dir, "data.txt", "0.5")
+    scene = _write(scene_dir, "scene.py", MODULE_LEVEL)
+    session = _open(scene, "Produced").record.identity
+
+    # Loaded as the command line loads a scene file.
+    path = list(sys.path)
+    try:
+        with warnings.catch_warnings():
+            module = get_module(scene)
+    finally:
+        sys.path[:] = path
+    media = scene_dir.parent / "media"
+    with tempconfig(
+        {**SMALL, "dry_run": True, "disable_caching": True, "media_dir": str(media)}
+    ):
+        rendered = module.Produced()
+        rendered.render()
+    assert rendered.record.identity == session
+    assert session.input_digests == (("data.txt", _sha256(data)),)
 
 
 def test_the_source_digest_does_not_depend_on_what_the_process_imported_before(
@@ -347,7 +405,7 @@ class Fails(Scene):
     with pytest.raises(RuntimeError, match="the scene's own error"):
         _open(scene, "Fails")
     assert not inputs.active()
-    # The import functions are the process's own again.
+    # The process's import functions are untouched.
     assert (builtins.__import__, importlib.import_module) == unwatched
 
 
@@ -600,6 +658,101 @@ class Laid(Scene):
         divergence = _diverged_after_editing(scene, "Laid", data, value)
         assert divergence is not None, value
         assert "table" in divergence.reason, value
+
+
+def test_a_zero_dimensional_array_is_not_a_one_element_one(scene_dir):
+    data = _write(scene_dir, "dims.txt", "0")
+    scene = _write(
+        scene_dir,
+        "scene.py",
+        HEADER
+        + """
+import numpy as np
+
+from arachne.mobject.values import FrozenArray, freeze
+
+
+class Scalar(Scene):
+    def construct(self):
+        dims = int((HERE / "dims.txt").read_text())
+        dot = Dot()
+        dot.weight = freeze(np.zeros((1,) * dims), FrozenArray)
+        self.add(dot)
+        self.wait(0.25)
+""",
+    )
+    session = _open(scene, "Scalar")
+    weights = [
+        value
+        for node in ExecutionSummary.from_json(session.summary().to_json()).nodes
+        for name, value in node.fields
+        if name == "weight"
+    ]
+    assert weights
+    assert all(weight.shape == () for weight in weights)
+    divergence = _diverged_after_editing(scene, "Scalar", data, "1")
+    assert divergence is not None
+    assert "weight" in divergence.reason
+
+
+def _background(scene_dir: Path, red: float) -> tuple[Path, Path]:
+    data = _write(scene_dir, "red.txt", repr(red))
+    scene = _write(
+        scene_dir,
+        "scene.py",
+        HEADER
+        + """
+class Tinted(Scene):
+    def construct(self):
+        red = float((HERE / "red.txt").read_text())
+        self.camera.background_color = ManimColor((red, 0.0, 0.0))
+        self.add(Dot())
+        self.wait(0.25)
+""",
+    )
+    return scene, data
+
+
+def test_a_camera_colour_is_compared_by_its_numbers_not_its_hex(scene_dir):
+    from arachne import ManimColor
+
+    # Either side of a hex boundary, 2e-13 apart: one colour.
+    edge = 128 / 255
+    below, above = edge - 1e-13, edge + 1e-13
+    assert (
+        ManimColor((below, 0.0, 0.0)).to_hex() != ManimColor((above, 0.0, 0.0)).to_hex()
+    )
+    scene, data = _background(scene_dir, below)
+    assert _diverged_after_editing(scene, "Tinted", data, repr(above)) is None
+    # Inside one hex bucket, 1e-4 apart: two colours.
+    assert (
+        ManimColor((0.3, 0.0, 0.0)).to_hex() == ManimColor((0.3001, 0.0, 0.0)).to_hex()
+    )
+    data.write_text(repr(0.3))
+    divergence = _diverged_after_editing(scene, "Tinted", data, repr(0.3001))
+    assert divergence is not None
+    assert "background_color" in divergence.reason
+
+
+def test_the_fixed_orientation_mobjects_are_compared_as_a_set(scene_dir):
+    data = _write(scene_dir, "order.txt", "0")
+    scene = _write(
+        scene_dir,
+        "scene.py",
+        HEADER
+        + """
+class Oriented(ThreeDScene):
+    def construct(self):
+        dot, square = Dot(), Square().shift(RIGHT)
+        self.add(dot, square)
+        pair = (dot, square)
+        if int((HERE / "order.txt").read_text()):
+            pair = pair[::-1]
+        self.renderer.camera.add_fixed_orientation_mobjects(*pair)
+        self.wait(0.25)
+""",
+    )
+    assert _diverged_after_editing(scene, "Oriented", data, "1") is None
 
 
 def test_what_the_script_does_after_its_last_play_is_compared(scene_dir):
