@@ -668,23 +668,49 @@ fn display_ranks_are_unique_per_layer_in_each_views_order() {
 }
 
 #[test]
-fn mapping_centre_is_carried_but_does_not_change_this_builds_pixels() {
+fn a_path_maps_around_the_mapping_centre_and_a_point_cloud_around_the_frame_s() {
+    // 16 x 9 pixels over a 14.2 x 8 frame: a unit is 1.125 px.
     let shape = square();
+    let cloud = Shape::new(ShapeData::Path {
+        points: vec![[0.0, 0.0, 0.0]],
+    });
+    let colours = Stops::new(vec![[0.0, 1.0, 0.0, 1.0]]);
+    let mut points = Record::new(RecordKind::Points, 2, 102);
+    points.geometry.shape_a = Some(cloud.key());
+    points.body = Body::Points(Points {
+        colors: colours.key(),
+        radius: 1.0,
+    });
     let mut d = delta(0);
     d.view = Some(common::flat_view(16, 9, [0.0, 0.0, 0.0, 1.0]));
-    d.upload = vec![shape.clone()];
-    d.set = vec![path_record(1, &shape)];
-    d.order = Some(vec![entry(1)]);
+    d.upload = vec![shape.clone(), cloud.clone()];
+    d.upload_paints = vec![colours];
+    d.set = vec![path_record(1, &shape), points];
+    d.order = Some(vec![entry(1), entry(2)]);
     let mut s = Stream::new();
     s.apply(&d).unwrap();
     let before = s.draw(16, 9, 1).unwrap();
+    let boxes = s.screen_boxes().unwrap();
     let mut d = delta(1);
     let mut view = s.view().unwrap().clone();
-    view.mapping_centre = [2.0, -3.0, 4.0];
+    // Four frame units right: the path moves 4.5 px left, the cloud stays.
+    view.mapping_centre = [4.0, 0.0, 0.0];
     d.view = Some(view);
     s.apply(&d).unwrap();
-    assert_eq!(s.view().unwrap().mapping_centre, [2.0, -3.0, 4.0]);
-    assert_eq!(s.draw(16, 9, 1).unwrap(), before);
+    let after = s.draw(16, 9, 1).unwrap();
+    assert_ne!(after, before);
+    let moved = s.screen_boxes().unwrap();
+    assert!(
+        (boxes[&1][0] - moved[&1][0] - 4.5).abs() < 1e-9,
+        "{boxes:?} {moved:?}"
+    );
+    assert_eq!(boxes[&2], moved[&2]);
+    let green = |frame: &[u8]| -> Vec<usize> {
+        (0..16 * 9)
+            .filter(|i| frame[4 * i + 1] == 255 && frame[4 * i] == 0)
+            .collect()
+    };
+    assert_eq!(green(&after), green(&before));
 }
 
 fn pre_projected_path(shape: &Shape, points: Key) -> Record {

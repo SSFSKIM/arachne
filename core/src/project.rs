@@ -8,9 +8,10 @@
 //!   any non-finite point is drawn as one point at the origin; fixed-in-frame points are kept;
 //!   fixed-orientation points move by their centre's projection offset; the rest are projected.
 //! - The frame mappings: the Cairo context's matrix that paths are drawn through
-//!   (`Camera.get_cairo_context`), and `points_to_subpixel_coords` for point clouds. Both subtract
-//!   the frame centre, so a 3D camera's centre is subtracted twice, once before projecting and once
-//!   here, as CE does.
+//!   (`Camera.get_cairo_context`), around the centre CE froze into it at the array's first path draw
+//!   (the view's `mapping_centre`), and `points_to_subpixel_coords` for point clouds and images,
+//!   around the frame's centre as it is. Both subtract a centre, so a 3D camera's centre is
+//!   subtracted twice, once before projecting and once here, as CE does.
 //!
 //! The arithmetic is written in CE's order with plain IEEE operations and the pure-Rust libm, so
 //! it is the same on every machine. NumPy multiplies through BLAS and takes sin, cos and exp from
@@ -18,7 +19,7 @@
 
 use crate::composite::Plane;
 use crate::depth::{Direction, WorldPlane};
-use crate::xf::{Space, ThreeDCamera};
+use crate::xf::{RecordKind, Space, ThreeDCamera, View};
 
 /// `arachne.constants.DEGREES`.
 const DEGREES: f64 = std::f64::consts::TAU / 360.0;
@@ -380,12 +381,35 @@ impl FrameMap {
         }
     }
 
+    /// The mapping a record of `kind` is drawn through in a frame of `width x height` pixels of
+    /// `view`, as CE maps it: a path (a `path` record, a face group's faces, a path or mesh
+    /// instance, a mesh) through the frame array's Cairo context, whose matrix holds the
+    /// `mapping_centre` CE froze into it; a point cloud or an image by `points_to_subpixel_coords`,
+    /// around the frame's centre as it is. Both are this matrix; only the centre differs.
+    pub fn of_kind(view: &View, kind: RecordKind, width: u32, height: u32) -> FrameMap {
+        FrameMap::cairo(
+            width,
+            height,
+            view.frame_width,
+            view.frame_height,
+            mapping_centre_of(view, kind),
+        )
+    }
+
     /// A point through the matrix as Cairo transforms it (`cairo_matrix_transform_point`).
     pub fn apply(&self, p: [f64; 3]) -> [f64; 2] {
         [
             (self.xx * p[0] + 0.0 * p[1]) + self.x0,
             (0.0 * p[0] + self.yy * p[1]) + self.y0,
         ]
+    }
+}
+
+/// The centre a record of `kind` maps to pixels around ([`FrameMap::of_kind`]).
+pub fn mapping_centre_of(view: &View, kind: RecordKind) -> [f64; 3] {
+    match kind {
+        RecordKind::Points | RecordKind::Image => view.frame_center,
+        _ => view.mapping_centre,
     }
 }
 

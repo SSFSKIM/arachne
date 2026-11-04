@@ -119,8 +119,11 @@ shape's and table's key against its content, except for shape kinds it does not 
   into. `Camera.get_cairo_context` bakes `frame_center` into that matrix the first time it sees a
   pixel array and caches the context, while a 3D camera's projection subtracts the live
   `frame_center`: paths are mapped to pixels around `mapping_centre`, projected around
-  `frame_center`. This applies to sub-frame views too. **Drawers of this build map by frame_centre;
-  the field is carried for Cairo** (`frame_centre` here is the `frame_center` field).
+  `frame_center`. This applies to sub-frame views too. A drawer maps as CE does: a
+  record drawn as a path (`path`, a face group's faces, `mesh`, `instances`) around
+  `mapping_centre`, a `points` or `image` record around `frame_center`. `Stream.screen_boxes`
+  reports, per slot in the order, the pixel box of a record's points placed and mapped this way,
+  without drawing.
 - **Sub-frame capture.** A display's `rank` is its place in its camera's capture sequence, CE's
   `image_mobjects_from_cameras` order, starting at 0. CE captures displays one after another at the
   start of each capture call. The sub-frame order lists the slots that display's camera draws in
@@ -151,7 +154,9 @@ shape's and table's key against its content, except for shape kinds it does not 
 - **Placement.** A record's points go through its placement, then as CE places a mobject's points for
   display: under a 3D camera, a `world` record is projected (moved by its centre's projection when it
   has a fixed orientation) and an `overlay` record is kept in frame; under any other camera, and for
-  `screen` records, the points are kept. Then CE's frame-to-pixel mapping.
+  `screen` records, the points are kept. Then CE's frame-to-pixel mapping, around the view's
+  `mapping_centre` for what CE draws through its Cairo context and its `frame_center` for point
+  clouds and images.
 - **Depth.** A `world` record under a 3D camera has depth: the projection's factor, negated (smaller is
   nearer), which is affine across a projected triangle; a fixed-orientation record lies on the
   camera-facing plane through its centre. Every other record is in front of all depth, and records
