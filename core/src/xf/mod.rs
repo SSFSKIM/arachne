@@ -671,7 +671,8 @@ pub struct View {
     pub frame_height: f64,
     pub frame_center: [f64; 3],
     /// Centre frozen into CE's cached Cairo frame-to-pixel matrix for this view's pixel array.
-    /// Carried for Cairo; drawers of this build still map by `frame_center`.
+    /// Paths (and faces, meshes and path instances) map to pixels around it; point clouds and
+    /// images around `frame_center` (`project::FrameMap::of_kind`).
     pub mapping_centre: [f64; 3],
     pub background: Background,
     pub camera: Camera,

@@ -11,7 +11,7 @@ use pyo3::call::PyCallArgs;
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 
 mod contents;
@@ -824,6 +824,19 @@ impl PyStream {
         Ok(PyArray1::from_vec(py, rgba)
             .reshape([height as usize, width as usize, 4])?
             .into_any())
+    }
+
+    /// Per slot the order draws, the pixel box ``(x_min, y_min, x_max, y_max)`` (x right, y down)
+    /// of its record's points as the camera places them and maps them to pixels: paths, faces
+    /// and meshes around the view's mapping centre, point clouds and images around its frame
+    /// centre. A record placing no point has no entry. Nothing is drawn, so records the drawer
+    /// refuses have boxes too.
+    fn screen_boxes(&self, py: Python<'_>) -> PyResult<BTreeMap<u32, (f64, f64, f64, f64)>> {
+        let boxes = self.stream.screen_boxes().map_err(|e| draw_error(py, e))?;
+        Ok(boxes
+            .into_iter()
+            .map(|(slot, b)| (slot, (b[0], b[1], b[2], b[3])))
+            .collect())
     }
 
     /// Draws the frame as ``draw`` does, and returns it with each pixel's resolve: a uint8 array

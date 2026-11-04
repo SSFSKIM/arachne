@@ -13,6 +13,7 @@
 //! - [`depth`]: canonical planes, so coplanar things tie exactly, and depth along curves.
 //! - [`instance`]: `instances` and `points` records drawn as their members; [`points`], point
 //!   clouds as CE's square blocks.
+//! - [`boxes`]: where each record lands on the frame, found without drawing (`screen_boxes`).
 //! - [`tiles`]: a frame cut into tiles, drawn on threads scoped to the draw call.
 //! - [`probes`]: the class probes, the parity kit's fixtures (`parity/probes.rs`).
 //!
@@ -20,6 +21,7 @@
 //! multiply-add, transcendental functions from the pure-Rust `libm` crate (`clippy.toml` enforces
 //! the last two), and every pixel's result a function of its own fragments only.
 
+pub mod boxes;
 pub mod composite;
 pub mod depth;
 pub mod instance;

@@ -681,6 +681,28 @@ impl Stream {
         tiles::render(frame, &producers, threads).map_err(|e| DrawError::Threads(e.to_string()))
     }
 
+    /// Per slot the order draws, the pixel box of its record's points as the camera places them
+    /// for display and maps them to pixels by the mapping its kind is drawn through
+    /// ([`crate::boxes::record_box`]); a record placing no point has no entry. Nothing is drawn,
+    /// so this answers for records the drawer would refuse too.
+    pub fn screen_boxes(&self) -> Result<BTreeMap<u32, crate::boxes::PixelBox>, DrawError> {
+        let view = self.view.as_ref().ok_or(DrawError::NoView)?;
+        let mut boxes = BTreeMap::new();
+        for entry in &self.order {
+            if boxes.contains_key(&entry.slot) {
+                continue;
+            }
+            let record = &self.records[&entry.slot];
+            let found = crate::boxes::record_box(view, record, |key| {
+                self.shapes.get(key).map(|s| s.data())
+            });
+            if let Some(b) = found {
+                boxes.insert(entry.slot, b);
+            }
+        }
+        Ok(boxes)
+    }
+
     pub fn view(&self) -> Option<&View> {
         self.view.as_ref()
     }
