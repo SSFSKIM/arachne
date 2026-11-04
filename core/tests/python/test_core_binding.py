@@ -32,7 +32,7 @@ def background_delta(width: int, height: int, rgba) -> ac.FrameDelta:
 
 
 def test_the_version_is_xf_1():
-    assert ac.XF_VERSION == (1, 0)
+    assert ac.XF_VERSION == (1, 1)
 
 
 def test_mapping_centre_defaults_to_the_live_frame_center():
@@ -57,7 +57,7 @@ def test_background_image_fill_sets_its_feature_and_is_cairo_only():
     shape = delta.upload_path(square())
     image = delta.upload_image(np.ones((4, 4, 4), dtype=np.uint8))
     delta.set_record("path", 3, 33, shape=shape, fill=(1, 0, 0, 1), fill_image=image)
-    assert ac.FEATURES == {"background_image": 1}
+    assert ac.FEATURES == {"background_image": 1, "pre_projected": 2}
     stream = ac.Stream()
     stream.apply(ac.FrameDelta.from_bytes(delta.to_bytes()))
     assert stream.draw(4, 4).shape == (4, 4, 4)  # Not in the order yet.
@@ -621,3 +621,67 @@ def test_sub_frame_placement_rank_and_self_capture():
     )
     with pytest.raises(ac.XfError, match="no shape"):
         stream.apply(bad)
+
+
+@pytest.mark.parametrize("kind", ["path", "points", "image"])
+def test_pre_projected_sets_its_feature_and_is_cairo_only(kind):
+    delta = background_delta(4, 4, (0, 0, 0, 1))
+    points = delta.upload_path([[1, 2, 3], [4, 5, 6]])
+    shape = delta.upload_path(square())
+    body = {}
+    if kind == "points":
+        body = dict(colors=delta.upload_paint(np.ones((16, 4))), radius=2)
+    elif kind == "image":
+        shape = delta.upload_image(np.ones((1, 1, 4), dtype=np.uint8))
+        body = dict(corners=np.zeros((4, 3)))
+    delta.set_record(kind, 3, 33, shape=shape, pre_projected={"points": points}, **body)
+    fields = delta.contents()["set"][0][3]
+    assert fields["features"] == 2
+    assert fields["pre_projected"] == dict(points=points, gradient=None, fill=None, stroke=None, background_stroke=None)
+    assert delta.to_bytes()[:4] == struct.pack("<HH", 1, 1)
+    stream = ac.Stream()
+    stream.apply(ac.FrameDelta.from_bytes(delta.to_bytes()))
+    stream.draw(4, 4)  # Not drawn yet.
+    order = ac.FrameDelta()
+    order.set_order([("moving", 3, 0)])
+    stream.apply(order)
+    with pytest.raises(ac.Unsupported) as refused:
+        stream.draw(4, 4)
+    assert "pre-projected" in refused.value.reason
+    assert "Cairo" in refused.value.reason
+
+
+def test_pre_projected_bit_needs_its_field_and_preserves_other_bits():
+    delta = ac.FrameDelta()
+    with pytest.raises(ac.XfError, match="pre_projected"):
+        delta.set_record("path", 1, 1, features=2)
+    delta.set_record("path", 1, 1, features=16, pre_projected={"points": bytes(16)})
+    assert delta.contents()["set"][0][3]["features"] == 18
+    assert ac.FrameDelta().to_bytes()[:4] == struct.pack("<HH", 1, 0)
+
+
+def pre_projected_sample():
+    delta = ac.FrameDelta(t=(2, 15), seq=3)
+    original = delta.upload_path(square())
+    points = delta.upload_path([[1.25, -2.5, 0.125], [3.5, 4.75, -0.625]])
+    table = delta.upload_paint([[0.125, 0.25, 0.375, 0.5], [0.625, 0.75, 0.875, 1], [0.9, 0.8, 0.7, 0.6]])
+    delta.set_record("path", 11, 111, shape=original, pre_projected={
+        "points": points,
+        "gradient": ((-1.25, -2.5, -3.75), (4.125, 5.25, 6.5)),
+        "fill": (0.15, 0.25, 0.35, 0.45),
+        "stroke": [(0.55, 0.65, 0.75, 0.85), (0.95, 0.05, 0.125, 0.375)],
+        "background_stroke": table,
+    })
+    return delta
+
+
+PRE_PROJECTED_SHA256 = "PENDING_PRE_PROJECTED_PIN"
+
+
+def test_pre_projected_canonical_sample_is_pinned_separately(tmp_path):
+    delta = pre_projected_sample()
+    assert delta.version == (1, 1)
+    file = tmp_path / "pre-projected.xf"
+    ac.write_xf(file, [delta])
+    assert hashlib.sha256(file.read_bytes()).hexdigest() == PRE_PROJECTED_SHA256
+    assert ac.read_xf(file)[0].to_bytes() == delta.to_bytes()
