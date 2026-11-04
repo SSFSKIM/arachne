@@ -35,9 +35,11 @@ THRESHOLD_HEIGHT = 1080
 
 @dataclass(frozen=True)
 class Code:
-    """One lint code: its string, severity, class, meaning and fix, and the
+    """One lint code: its string, severity, class, meaning and fix, the
     names of the ``detail`` fields its findings may carry (besides
-    ``folded``, which a report adds to any finding look-alikes fold into).
+    ``folded``, which a report adds to any finding look-alikes fold into),
+    and whether look-alikes of it fold: a code whose every finding is an
+    event of its own, at a time of its own, never does.
     """
 
     code: str
@@ -46,6 +48,7 @@ class Code:
     meaning: str
     fix: str
     detail: tuple[str, ...] = ()
+    folds: bool = True
 
 
 _CLEARANCE = "Clearance"
@@ -140,6 +143,7 @@ _TABLE = (
         " either side",
         "Animate the move, or fade the body out and in again if the cut is meant.",
         ("side", "distance", "from", "to", "boundary"),
+        folds=False,
     ),
     Code(
         "render.unsupported",
