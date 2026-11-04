@@ -23,7 +23,9 @@ centre too, and are not travel).
 the play's last frame and the next play's first, which moves during either
 play, jumps when its centre stands more than the tolerance apart across the
 cut. The distance is measured in the scene and scaled to the home frame by
-the later frame's zoom, so a camera cut moves the picture and no body. A body
+the later frame's zoom, so a camera cut moves the picture and no body; under
+a three-dimensional camera it is the scene's x and y, z left out, and only
+the centres a finding reports are projected. A body
 that moved during the play before the cut has ``detail.side`` ``"before"``;
 one that moved only after it (set down elsewhere, then thrown) ``"after"``.
 
@@ -33,7 +35,9 @@ one that moved only after it (set down elsewhere, then thrown) ``"after"``.
   whose number of drawn members changed: another shape, not the same one
   elsewhere;
 * *churn*: a step no longer than :data:`CHURN` times the body's largest
-  step between two frames of the play that moved it: within its own motion;
+  step between two frames of the play that moved it, both seen through the
+  later frame's zoom: within its own motion (a play's last frame is up to
+  one of its steps short of where the play leaves the body);
 * *relabelled*: a look-alike sibling (same group, same size) stood where it
   lands just before the cut, or stands where it left just after: the
   picture shows a body in each place, not one crossing the gap;
@@ -82,7 +86,6 @@ from arachne.timeline.clock import frames_in
 from arachne.timeline.draw import Drawing
 
 from .findings import Finding, FindingObject, Holder
-from .frames import read_frames
 from .instants import render_grid
 from .parts import _paint, _text_types, _viewing_nodes
 
@@ -91,6 +94,7 @@ if TYPE_CHECKING:
     from arachne.timeline.record import Capture, PlayRecord, Record
 
     from .core import LintContext
+    from .frames import Frames
 
 #: Home-frame units a body may stand from where it was across a cut.
 JUMP_TOL = 0.25
@@ -147,8 +151,8 @@ class _Frame:
 @dataclass(eq=False)
 class _Play:
     """What one play's frames show of its bodies: how far each travelled,
-    its largest step between two frames (as viewed) and where it was last
-    seen.
+    its largest step between two frames (as viewed, in scene units of the
+    view's zoom) and where it was last seen.
     """
 
     record: PlayRecord
@@ -175,9 +179,29 @@ class MotionJump:
 
     jump_tol: float = JUMP_TOL
 
+    def request_frames(self, frames: Frames) -> None:
+        """Ask the lint for every frame the render shows of each play."""
+        wanted = _wanted(frames.session.record)
+        edges = {t for _, shown in wanted for t in (shown[0], shown[-1])}
+
+        def read(
+            source: Record,
+            t: Fraction,
+            play: PlayRecord | None,
+            capture: Capture,
+            live: bool,
+        ) -> tuple[float, dict[str, _Body]]:
+            return _read(source, play, capture, live=live, edge=t in edges)
+
+        frames.request(self, [t for _, shown in wanted for t in shown], read)
+
     def __call__(self, context: LintContext) -> list[Finding]:
         record = context.record
-        plays = _plays(context)
+        read = iter(context.frames.result(self))
+        plays = [
+            _measure(_Play(play, [_Frame(t, play.index, *next(read)) for t in shown]))
+            for play, shown in _wanted(record)
+        ]
         names = _Names(record)
         found: list[Finding] = []
         for before, after in zip(plays, plays[1:], strict=False):
@@ -192,35 +216,16 @@ motion_jump = MotionJump()
 # Reading the frames
 
 
-def _plays(context: LintContext) -> list[_Play]:
-    """Every play that shows a frame, with its frames read."""
-    record = context.record
+def _wanted(record: Record) -> list[tuple[PlayRecord, list[Fraction]]]:
+    """Every play that shows a frame, with the frames it shows."""
     grid = render_grid(record)
-    wanted: list[tuple[PlayRecord, list[Fraction]]] = []
+    wanted = []
     for play in record.plays:
-        frames = frames_in(play.start, play.end, grid)
-        if not frames:
-            continue
-        # A frozen play shows one picture all along.
-        wanted.append((play, frames[:1] if play.held else frames))
-    edges = {t for _, frames in wanted for t in (frames[0], frames[-1])}
-    times = [t for _, frames in wanted for t in frames]
-
-    def read(
-        source: Record,
-        t: Fraction,
-        play: PlayRecord | None,
-        capture: Capture,
-        live: bool,
-    ) -> tuple[float, dict[str, _Body]]:
-        return _read(source, play, capture, live=live, edge=t in edges)
-
-    shown = dict(zip(times, read_frames(context.session, times, read), strict=True))
-    plays = []
-    for play, frames in wanted:
-        seen = [_Frame(t, play.index, *shown[t]) for t in frames]
-        plays.append(_measure(_Play(play, seen)))
-    return plays
+        shown = frames_in(play.start, play.end, grid)
+        if shown:
+            # A frozen play shows one picture all along.
+            wanted.append((play, shown[:1] if play.held else shown))
+    return wanted
 
 
 def _read(
@@ -393,7 +398,9 @@ def _measure(play: _Play) -> _Play:
             if previous is None or key not in previous.bodies:
                 continue
             was = previous.bodies[key]
-            step = float(np.hypot(*(body.view - was.view)))
+            # As the viewer saw it, in scene units of that frame's zoom, so
+            # a cut seen through another zoom scales it as it does the cut.
+            step = float(np.hypot(*(body.view - was.view))) / frame.zoom
             play.largest[key] = max(play.largest.get(key, 0.0), step)
             if _kept_size(was.size, body.size, RIGID):
                 play.travel[key] = play.travel.get(key, 0.0) + float(
@@ -540,7 +547,9 @@ class _Cut:
             now.members == 1 and not _same_size(was.size, now.size)
         ):
             return "reshaped"
-        if distance <= CHURN * mover.largest.get(key, 0.0):
+        # Both in the later frame's view: the step from the last frame to
+        # where the play left the body is one of the play's own, seen there.
+        if distance <= CHURN * mover.largest.get(key, 0.0) * self.zoom:
             return "churn"
         if self.relabelled(key):
             return "relabelled"

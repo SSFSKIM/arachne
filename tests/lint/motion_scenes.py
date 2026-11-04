@@ -25,6 +25,7 @@ from arachne import (
     VGroup,
     linear,
 )
+from tests.lint import run_counter
 
 
 class Teleport(Scene):
@@ -228,3 +229,58 @@ class NamedLate(Scene):
         self.wait()
         puck = self.mobjects[0]
         self.play(puck.animate.shift(UP))
+
+
+class ZoomCut(MovingCameraScene):
+    """A puck slides steadily; between plays only the camera zooms in tenfold.
+    Its last frame is one step short of where it stops, which the zoom
+    makes long on screen: still no move of the puck.
+    """
+
+    def construct(self):
+        puck = Dot(LEFT * 0.5)
+        self.add(puck)
+        self.play(puck.animate.shift(RIGHT), rate_func=linear)
+        self.camera.frame.scale(0.1)
+        self.wait()
+
+
+class ZoomedTeleport(MovingCameraScene):
+    """A puck slides, is set down 2 units on, and the camera zooms in."""
+
+    def construct(self):
+        puck = Dot(LEFT * 1.5)
+        self.add(puck)
+        self.play(puck.animate.shift(RIGHT), rate_func=linear)
+        puck.shift(RIGHT * 2)
+        self.camera.frame.scale(0.5)
+        self.wait()
+
+
+class Repeated(Scene):
+    """A puck slides and is put back five times over."""
+
+    def construct(self):
+        puck = Dot(LEFT * 3)
+        self.add(puck)
+        for _ in range(5):
+            self.play(puck.animate.shift(RIGHT), rate_func=linear)
+            puck.move_to(LEFT * 3)
+            self.wait(0.5)
+
+
+class CountedRuns(Scene):
+    """A teleport whose length is how many times the scene has run, through
+    a camera the record can't draw with: every forward run of it differs.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(camera_class=MappingCamera, **kwargs)
+
+    def construct(self):
+        run_counter.executions += 1
+        puck = Dot(LEFT * 3)
+        self.add(puck)
+        self.play(puck.animate.shift(RIGHT), rate_func=linear)
+        puck.shift(RIGHT * run_counter.executions)
+        self.wait()
