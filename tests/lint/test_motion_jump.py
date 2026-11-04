@@ -45,8 +45,9 @@ def test_a_teleport_is_a_warning_at_the_next_play_s_first_frame(jumps_of):
     detail = jump.detail
     assert detail["side"] == "before"
     assert detail["boundary"] == {"from_play": 0, "to_play": 1}
-    assert detail["distance"] == pytest.approx(4.0, abs=0.05)
-    assert detail["from"] == pytest.approx([-1.0, 0.0], abs=0.05)
+    # From where the slide left it, as the play ended, to where it is seen.
+    assert detail["distance"] == pytest.approx(4.0, abs=1e-6)
+    assert detail["from"] == pytest.approx([-1.0, 0.0], abs=1e-6)
     assert detail["to"] == pytest.approx([3.0, 0.0], abs=1e-6)
     assert "puck" in jump.message
 
@@ -61,10 +62,13 @@ def test_a_record_that_can_t_draw_finds_the_same_teleport(jumps_of, session_of):
 
 
 def test_a_teleport_under_a_three_d_camera_is_measured_in_the_scene(jumps_of):
+    """Under a three-dimensional camera, distances and centres are the
+    scene's x and y, z left out, as the other backend reads them.
+    """
     (jump,) = jumps_of("TiltedTeleport")
-    assert jump.detail["distance"] == pytest.approx(4.0, abs=0.05)
-    # Its centres on screen are projected: the tilt foreshortens them.
-    assert jump.detail["to"] != pytest.approx([3.0, 0.0], abs=0.05)
+    assert jump.detail["distance"] == pytest.approx(4.0, abs=1e-6)
+    assert jump.detail["from"] == pytest.approx([-1.0, 0.0], abs=1e-6)
+    assert jump.detail["to"] == pytest.approx([3.0, 0.0], abs=1e-6)
 
 
 def test_a_step_within_the_tolerance_is_no_jump(jumps_of):
@@ -106,7 +110,7 @@ def test_a_shape_redrawn_at_another_size_is_silent(jumps_of):
 def test_a_set_back_within_the_body_s_own_steps_is_churn(jumps_of):
     assert jumps_of("FastReset") == []
     (jump,) = jumps_of("SlowReset")
-    assert jump.detail["distance"] == pytest.approx(1.17, abs=0.02)
+    assert jump.detail["distance"] == pytest.approx(1.2, abs=1e-6)
 
 
 def test_look_alikes_trading_places_are_silent(jumps_of):
@@ -179,25 +183,24 @@ def test_a_zoom_cut_after_the_camera_followed_the_body_moves_nothing(jumps_of):
 
 def test_a_set_back_behind_a_tenfold_zoom_jumps(jumps_of):
     (jump,) = jumps_of("ZoomedReset")
-    # From the last frame (x = -0.5 + 14/15) to 0, at 10x.
-    assert jump.detail["distance"] == pytest.approx(10 * (0.5 - 1 / 15), abs=1e-3)
+    # From where the slide ended (x = 0.5) to 0, at 10x.
+    assert jump.detail["distance"] == pytest.approx(5.0, abs=1e-6)
 
 
 def test_a_body_s_steps_under_a_pan_are_as_the_viewer_saw_them(jumps_of):
     """As the other backend finds them: the 0.4 set-back is churn (its steps
-    on screen were 4/15, the pan's 3/15 among them) and the 0.7 one jumps.
-    That backend measures 0.7 from where the slide ended; this rule from the
-    slide's last frame, one step of 1/15 short of it.
+    on screen were 4/15, the pan's 3/15 among them) and the 0.7 one jumps,
+    0.7 from where the slide ended.
     """
     assert jumps_of("PanReset") == []
     (jump,) = jumps_of("PanResetFar")
-    assert jump.detail["distance"] == pytest.approx(0.7 - 1 / 15, abs=1e-3)
+    assert jump.detail["distance"] == pytest.approx(0.7, abs=1e-6)
 
 
 def test_a_teleport_behind_a_zoom_cut_still_jumps(jumps_of):
     (jump,) = jumps_of("ZoomedTeleport")
-    # 2 units set down, and the last frame's step short of the stop, at 2x.
-    assert jump.detail["distance"] == pytest.approx(2 * (2 + 1 / 15), abs=1e-3)
+    # 2 units set down from where the slide ended, at 2x.
+    assert jump.detail["distance"] == pytest.approx(4.0, abs=1e-6)
 
 
 def test_every_repeated_jump_is_reported_on_its_own(session_of):
@@ -233,3 +236,28 @@ def test_one_lint_reads_one_forward_run_for_every_rule(session_of):
     (jump,) = [f for f in result.findings if f.code == "motion.jump"]
     (x,) = seen
     assert jump.detail["to"][0] == pytest.approx(x, abs=1e-6)
+
+
+def test_a_body_that_joins_late_and_jumps_is_found(jumps_of):
+    (jump,) = jumps_of("LateComer")
+    assert jump.objects[0].source_line == line_of("late-comer", MOTION)
+    assert jump.detail["boundary"] == {"from_play": 3, "to_play": 4}
+    assert jump.detail["distance"] == pytest.approx(3.0, abs=1e-6)
+
+
+@pytest.mark.parametrize("strip", ["all", "one"])
+def test_a_record_without_its_exits_is_read_from_a_forward_run(session_of, strip):
+    """A record that keeps no state of a play's end, or not of every play's,
+    is never measured another way: the lint's forward run keeps them.
+    """
+    drawn = session_of("Teleport", MOTION, frame_rate=15)
+    (expected,) = lint(drawn, rules=(motion_jump,)).findings
+    assert drawn.forward_runs == []
+    session = session_of("Teleport", MOTION, frame_rate=15)
+    if strip == "all":
+        session.record.exits = None
+    else:
+        del session.record.exits[0]
+    (found,) = lint(session, rules=(motion_jump,)).findings
+    assert len(session.forward_runs) == 1
+    assert dict(found.detail) == dict(expected.detail)
