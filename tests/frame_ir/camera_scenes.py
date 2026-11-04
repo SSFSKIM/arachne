@@ -121,11 +121,12 @@ class TintedSolids(Solids):
 
 
 class Counted(ThreeDCamera):
-    """A camera class of the scene's own counting its projections and
-    shadings: an override that could change state each time it runs.
+    """A camera class of the scene's own counting its projections, its
+    shadings and the view values its rotation reads: overrides that could
+    change state each time they run.
     """
 
-    calls = {"project_points": 0, "modified_rgbas": 0}
+    calls = {"project_points": 0, "modified_rgbas": 0, "get_phi": 0, "get_zoom": 0}
 
     def project_points(self, points):
         Counted.calls["project_points"] += 1
@@ -134,6 +135,14 @@ class Counted(ThreeDCamera):
     def modified_rgbas(self, vmobject, rgbas):
         Counted.calls["modified_rgbas"] += 1
         return super().modified_rgbas(vmobject, rgbas)
+
+    def get_phi(self):
+        Counted.calls["get_phi"] += 1
+        return super().get_phi()
+
+    def get_zoom(self):
+        Counted.calls["get_zoom"] += 1
+        return super().get_zoom()
 
 
 class CountedLive(Solids):
@@ -162,6 +171,14 @@ class CountedRecord(Solids):
 
         camera.project_points = counted_projection
         camera.modified_rgbas = counted_shading
+        for name in ("get_phi", "get_zoom"):
+            read = getattr(camera, name)
+
+            def counted_read(read=read, name=name):
+                Counted.calls[name] += 1
+                return read()
+
+            setattr(camera, name, counted_read)
 
 
 class Mirrored(MovingCamera):

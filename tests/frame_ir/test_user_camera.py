@@ -127,19 +127,68 @@ def test_the_camera_s_code_runs_as_often_as_on_cairo(scene_class):
     projection or shading that counts its calls, or changes state, runs as
     often as when Cairo draws, on the record path and as the scene runs.
     """
+    calls = camera_scenes.Counted.calls
     counts = []
     frames = []
     for draw_path in ("cairo", "ir_cairo"):
-        camera_scenes.Counted.calls.update(project_points=0, modified_rgbas=0)
+        calls.update(dict.fromkeys(calls, 0))
         before = IrCairoPainter.drawn_total
         _, drawn = render(scene_class, FPS, draw_path=draw_path, **MEDIUM)
-        counts.append(dict(camera_scenes.Counted.calls))
+        counts.append(dict(calls))
         frames.append(drawn)
         assert (IrCairoPainter.drawn_total > before) == (draw_path == "ir_cairo")
-    assert counts[0]["project_points"] > 0
-    assert counts[0]["modified_rgbas"] > 0
+    assert all(counts[0][name] > 0 for name in calls), counts[0]
     assert counts[0] == counts[1]
     _same(*frames)
+
+
+def test_a_class_patch_of_the_rotation_runs_as_often_as_on_cairo(monkeypatch):
+    """The drawer's own cameras turn their views with the engine's rotation,
+    never a patch of it: the scene's runs in the scene's capture alone.
+    """
+    from arachne.camera.three_d_camera import ThreeDCamera
+
+    calls = [0]
+    rotation = ThreeDCamera.generate_rotation_matrix
+
+    def counted(self):
+        calls[0] += 1
+        return rotation(self)
+
+    monkeypatch.setattr(ThreeDCamera, "generate_rotation_matrix", counted)
+    counts = []
+    frames = []
+    for draw_path in ("cairo", "ir_cairo"):
+        calls[0] = 0
+        before = IrCairoPainter.drawn_total
+        _, drawn = render(camera_scenes.Solids, FPS, draw_path=draw_path, **MEDIUM)
+        counts.append(calls[0])
+        frames.append(drawn)
+        assert (IrCairoPainter.drawn_total > before) == (draw_path == "ir_cairo")
+    assert counts[0] > 0
+    assert counts[0] == counts[1]
+    _same(*frames)
+
+
+def test_a_class_patch_of_a_camera_s_constructor_draws_on_cairo(monkeypatch, findings):
+    """The drawer builds engine cameras of its own, so a patched constructor
+    would run there: the scene draws on Cairo, the constructor named.
+    """
+    from arachne.camera.three_d_camera import ThreeDCamera
+
+    built = ThreeDCamera.__init__
+
+    def patched(self, *args, **kwargs):
+        built(self, *args, **kwargs)
+
+    monkeypatch.setattr(ThreeDCamera, "__init__", patched)
+    before = IrCairoPainter.drawn_total
+    direct, described, _ = _both(camera_scenes.Solids)
+    _same(direct, described)
+    assert IrCairoPainter.drawn_total == before, "nothing drawn from XF"
+    assert findings
+    assert {f.code for f in findings} == {"render.fallback"}
+    assert "__init__ reaches the frame other than through" in findings[0].message
 
 
 @pytest.mark.parametrize(
