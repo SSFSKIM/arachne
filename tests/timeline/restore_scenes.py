@@ -9,10 +9,10 @@ from __future__ import annotations
 from arachne import (
     BLUE,
     DOWN,
-    Circle,
     LEFT,
     RIGHT,
     UP,
+    Circle,
     DecimalNumber,
     Dot,
     FadeIn,
@@ -151,5 +151,106 @@ class SuccessionReadout(Scene):
             Succession(
                 tracker.animate(run_time=0.65, rate_func=linear).set_value(1),
                 square.animate(run_time=0.65).shift(RIGHT * 2),
+            )
+        )
+
+
+class HookAddsUpdater(Scene):
+    """A frame hook attaching an updater, one admission never saw, that
+    counts its calls.
+    """
+
+    def construct(self):
+        self.calls = 0
+        self.attached = False
+        self.dot = Dot()
+        tracker = ValueTracker(0)
+        mark = Dot().add_updater(lambda m: m.set_x(tracker.get_value()))
+        self.add(self.dot, mark)
+        self.play(tracker.animate.set_value(2), run_time=1)
+
+    def count(self, mob, dt):
+        self.calls += 1
+
+    def update_to_time(self, t):
+        super().update_to_time(t)
+        if not self.attached:
+            self.dot.add_updater(self.count)
+            self.attached = True
+
+
+class HookMutates(Scene):
+    """A frame hook changing in place the list an updater reads, and the
+    scene putting it back after the play.
+    """
+
+    def construct(self):
+        self.offsets = [0.0]
+        tracker = ValueTracker(0)
+        dot = Dot().add_updater(
+            lambda m: m.set_x(tracker.get_value() + self.offsets[0])
+        )
+        self.add(dot)
+        self.play(tracker.animate.set_value(2), run_time=1, rate_func=linear)
+        self.offsets[0] = 0.0
+
+    def update_to_time(self, t):
+        super().update_to_time(t)
+        self.offsets[0] = float(t)
+
+
+class FailingUpdater(Scene):
+    """An updater that sets its dot's x, then divides by zero at 1/7 s."""
+
+    def construct(self):
+        offset = 0.0
+        tracker = ValueTracker(0.5)
+        self.dot = Dot().add_updater(
+            lambda m: m.set_x(tracker.get_value() + offset).set_y(
+                1 / (float(self.time) - 1 / 7)
+            )
+        )
+        self.add(self.dot)
+        self.play(ValueTracker(0).animate.set_value(2), run_time=1)
+        tracker.set_value(3)
+        offset = 1.5
+
+
+class FramePeriodic(Scene):
+    """A dot that stands at the same place at every 15 fps frame and moves
+    between them, beside a square no frame redraws.
+    """
+
+    def construct(self):
+        self.add(Square(side_length=0.5).shift(LEFT * 3))
+        dot = Dot(color=BLUE).add_updater(lambda m: m.set_y(2 * (self.time * 15 % 1)))
+        self.add(dot)
+        self.play(FadeIn(Circle(radius=0.3).shift(RIGHT * 3)), run_time=1)
+
+
+class TickedOffGrid(Scene):
+    """A held wait ending between two 15 fps frames, then a ticked play."""
+
+    def construct(self):
+        self.add(Square(side_length=0.5))
+        self.wait(0.97)
+        drift = Dot(DOWN * 2).add_updater(lambda m, dt: m.shift(RIGHT * dt))
+        self.add(drift)
+        self.wait(0.5)
+
+
+class TickedSuccession(Scene):
+    """A ticked play (a dt updater) whose Succession event, at 0.65 s, falls
+    on a tick between two 15 fps frames.
+    """
+
+    def construct(self):
+        square = Square(side_length=0.5)
+        drift = Dot(DOWN * 2).add_updater(lambda m, dt: m.shift(RIGHT * dt * 0.1))
+        self.add(square, drift)
+        self.play(
+            Succession(
+                square.animate(run_time=0.65, rate_func=linear).shift(RIGHT),
+                square.animate(run_time=0.65, rate_func=linear).shift(UP),
             )
         )
