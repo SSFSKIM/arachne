@@ -24,18 +24,15 @@ from dataclasses import dataclass
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any
 
-from arachne._config import tempconfig
 from arachne.timeline.clock import exact
-from arachne.timeline.restore import Unrestorable
-from arachne.timeline.routes import RecordRefused, _resolve
 
 from .exempt import Exemptions
 from .findings import Finding, fold, in_range
-from .instants import LintInstant, lint_instants, render_grid
+from .frames import read_frames
+from .instants import LintInstant, lint_instants
 from .parts import Parts, build_parts
 
 if TYPE_CHECKING:
-    from arachne._config.utils import ManimConfig
     from arachne.session import Session
     from arachne.timeline.record import Capture, PlayRecord, Record
 
@@ -144,66 +141,26 @@ def _parts(session: Session, instants: tuple[LintInstant, ...]) -> tuple[Parts, 
     """The parts drawn at each instant: from the record, and what it can't
     answer from one forward run, read from its live scene.
     """
-    from arachne.timeline.fallback import visit_frames
-
-    record = session.record
     target = target_resolution(session)
-    found: dict[Fraction, Parts] = {}
-    missing: list[Fraction] = []
-    settings: ManimConfig | dict[str, Any] = (
-        session._source.settings if session._source is not None else {}
-    )
-    # A record on the render's grid evaluated each frame of it as the render
-    # does; one on another grid holds states no frame of the render shows.
-    on_render_grid = record.grid == render_grid(record)
-    with tempconfig(settings):
-        for instant in instants:
-            if not on_render_grid:
-                missing.append(instant.t)
-                continue
-            try:
-                resolved = _resolve(record, instant.t)
-            except (RecordRefused, Unrestorable):
-                missing.append(instant.t)
-                continue
-            if resolved.kind != "recorded":
-                # The render evaluates a frame the record did not keep through
-                # the scene's own code, which an evaluation here would not run.
-                missing.append(instant.t)
-                continue
-            found[instant.t] = build_parts(
-                record,
-                instant.t,
-                resolved.play,
-                resolved.capture,
-                answer=resolved.kind,
-                target=target,
-            )
-        if missing:
 
-            def visit(
-                t: Fraction,
-                forward: Record,
-                play: PlayRecord | None,
-                capture: Capture,
-            ) -> None:
-                found[t] = build_parts(
-                    forward,
-                    t,
-                    play,
-                    capture,
-                    answer="forward",
-                    target=target,
-                    live=True,
-                )
-
-            visit_frames(session, missing, visit)
-    unread = [t for t in missing if t not in found]
-    if unread:
-        raise RuntimeError(
-            f"The forward run showed no scene at {', '.join(map(str, unread))}."
+    def read(
+        record: Record,
+        t: Fraction,
+        play: PlayRecord | None,
+        capture: Capture,
+        live: bool,
+    ) -> Parts:
+        return build_parts(
+            record,
+            t,
+            play,
+            capture,
+            answer="forward" if live else "recorded",
+            target=target,
+            live=live,
         )
-    return tuple(found[instant.t] for instant in instants)
+
+    return tuple(read_frames(session, [instant.t for instant in instants], read))
 
 
 def _diverged(session: Session) -> list[Finding]:
