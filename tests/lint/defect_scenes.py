@@ -18,6 +18,7 @@ from arachne import (
     WHITE,
     Arrow,
     ArrowVectorField,
+    BackgroundRectangle,
     Circle,
     Create,
     FadeIn,
@@ -29,6 +30,7 @@ from arachne import (
     Square,
     Text,
     ThreeDScene,
+    VGroup,
 )
 
 # A caption pushed past the frame's right edge -----------------------------
@@ -282,6 +284,10 @@ class LineUnderAFaintCard(LineUnderACard):
     opacity = 0.3
 
 
+class LineUnderANearlyOpaqueCard(LineUnderACard):
+    opacity = 0.95
+
+
 class LineUnderAPlatedWord(Scene):
     """A line drawn first, and a word on an opaque plate of its own over it,
     wider than the word.
@@ -292,6 +298,83 @@ class LineUnderAPlatedWord(Scene):
         word = Text("crossed", font_size=40)
         word.add_background_rectangle(opacity=1, buff=0.2)
         self.add(line, word)
+        self.wait(0.5)
+
+
+class OwnKindOfPlate(BackgroundRectangle):
+    """A plate class of the scene's own."""
+
+
+class CustomPlatedCaptionAtTheTop(Scene):
+    """A caption on a wide plate of a class of the scene's own, set as its
+    background rectangle: the plate runs past the top edge, the glyphs stay
+    inside.
+    """
+
+    def construct(self):
+        caption = Text("plated", font_size=36)
+        caption.background_rectangle = OwnKindOfPlate(caption, buff=0.4, fill_opacity=1)
+        caption.add_to_back(caption.background_rectangle)
+        caption.move_to(UP * 3.7)
+        self.add(caption)
+        self.wait(0.5)
+
+
+# Exempting what lies inside a unit, or around its furniture -------------------
+
+
+class SquareInNestedGroups(Scene):
+    """A word, then an opaque square held in a vector group held in a group,
+    drawn over the word.
+    """
+
+    def construct(self):
+        words = Text("covered", font_size=40)
+        inner = VGroup(Square(side_length=1, fill_opacity=1))
+        outer = Group(inner)
+        self.add(words, outer)
+        self.wait(0.5)
+
+
+class WordOnANumberLine(Scene):
+    """A word laid across a number line with a tip."""
+
+    def construct(self):
+        axis = NumberLine(x_range=[-2, 2, 1], length=6, include_tip=True)
+        tip = axis.tip  # named, for an exemption to select  # noqa: F841
+        word = Text("crossed", font_size=40)
+        self.add(axis, word)
+        self.wait(0.5)
+
+
+# A text drawn twice, a shape between the copies ---------------------------------
+
+
+class CopyOverACover(Scene):
+    """A word, an opaque square over it, then an identical copy of the word
+    on top: the frame shows the word.
+    """
+
+    def construct(self):
+        word = Text("visible", font_size=48)
+        cover = Square(side_length=1, fill_opacity=1)
+        again = word.copy()
+        self.add(word, cover, again)
+        self.wait(0.5)
+
+
+# A fill that starts transparent ------------------------------------------------
+
+
+class WordOnAGradient(Scene):
+    """A wide square whose fill runs from transparent to opaque, and a word in
+    its middle: its first fill is transparent, so it is held as an outline.
+    """
+
+    def construct(self):
+        plate = Square(side_length=3, fill_opacity=[0, 1], stroke_width=2)
+        word = Text("gradient", font_size=40)
+        self.add(plate, word)
         self.wait(0.5)
 
 

@@ -29,13 +29,13 @@ bare exemption does. Any other contact is ``overlap.text`` when a text is
 in it (``gap.text`` when two texts merely sit closer than the declared gap)
 and ``contact.held`` when none is.
 
-Where the frame shows the text clean, a contact under it is let pass, as
-ManimGX's diagnostics do (credited in ``NOTICE.md``): a text over a grid's
-member drawn under it, and a text over a stroke an opaque filled shape
-hides wherever the two meet (a card under the text, or the text's own
-plate). In a frame the scene moves on from (``Terms.mid_scene``) a text
-laid on a filled shape, or over a stroke inside a halo of its own wide and
-opaque enough to mask it, reads clean too.
+A sweep at the frame a scene closes on asks every contact. In a frame the
+scene moves on from (``Terms.mid_scene``) three contacts a viewer reads
+clean are let pass: a text laid on a filled shape; a text over a stroke
+inside a halo of its own wide and opaque enough to mask it; and a text over
+a stroke that a wholly opaque filled shape, drawn between the two, hides
+wherever the stroke meets the glyphs (a card the text sits on; never the
+text's own background rectangle, which is part of the text).
 """
 
 from __future__ import annotations
@@ -79,8 +79,9 @@ _ALONG_POINTS = 400
 #: opaque on every glyph masks a stroke under the text.
 HALO_WIDTH = 3.0
 HALO_OPACITY = 0.9
-#: A filled shape this opaque hides a stroke drawn under it.
-HIDING_OPACITY = 0.9
+#: A filled shape this opaque (by its fill's first row) in every leaf
+#: hides a stroke drawn under it.
+HIDING_OPACITY = 1.0
 
 
 def pair_findings(parts: Parts, terms: Terms) -> list[Finding]:
@@ -330,19 +331,13 @@ def _reads_clean(
     b: Measured,
     required: float,
 ) -> bool:
-    if a.text == b.text:
+    if not terms.mid_scene or a.text == b.text:
         return False
     text, other = (a, b) if a.text else (b, a)
-    under = other.top < text.glyph_top
-    if other.grid and under:
-        return True
-    if not other.region and under and _hidden(units, text, other, required):
-        return True
-    if not terms.mid_scene:
-        return False
     if other.region:
         return True
-    return under and _haloed(parts, text)
+    under = other.top < text.glyph_top
+    return under and (_haloed(parts, text) or _hidden(units, text, other, required))
 
 
 def _haloed(parts: Parts, text: Measured) -> bool:
@@ -361,29 +356,21 @@ def _haloed(parts: Parts, text: Measured) -> bool:
 def _hidden(
     units: list[Measured], text: Measured, path: Measured, required: float
 ) -> bool:
-    """Whether an opaque filled shape drawn between ``path`` and the text's
-    glyphs hides every point where the path meets them.
+    """Whether a wholly opaque filled shape, drawn after ``path`` and before
+    the text's glyphs, hides every point where the path meets the text.
     """
-    glyphs = [leaf.screen_box for leaf in text.glyphs or text.leaves]
-    near = np.min([signed_to_box(path.points, box) for box in glyphs], axis=0)
+    near = np.min([signed_to_box(path.points, box) for box in text.boxes], axis=0)
     hits = path.points[near < required]
     if not len(hits):
         return False
-    plates: list[tuple[Leaf, ...]] = []
-    own = tuple(
-        leaf
-        for leaf in text.plate
-        if path.top < leaf.order < text.glyph_top
-        and leaf.fill_opacity >= HIDING_OPACITY
+    return any(
+        _covers(unit.leaves, hits)
+        for unit in units
+        if unit.region
+        and not unit.text
+        and path.top < unit.top < text.glyph_top
+        and all(leaf.first_fill_opacity >= HIDING_OPACITY for leaf in unit.leaves)
     )
-    if own:
-        plates.append(own)
-    for unit in units:
-        if not unit.region or unit.text or not path.top < unit.top < text.glyph_top:
-            continue
-        if all(leaf.fill_opacity >= HIDING_OPACITY for leaf in unit.leaves):
-            plates.append(unit.leaves)
-    return any(_covers(plate, hits) for plate in plates)
 
 
 def _covers(plate: tuple[Leaf, ...], hits: np.ndarray) -> bool:
