@@ -380,6 +380,71 @@ class UserCamera(ThreeDScene):
         self.wait(0.2)
 
 
+class PatchedCamera(ThreeDScene):
+    """The engine's ThreeDCamera, its projection replaced on the instance by
+    the scene (as a chapter slides its axes beside a text column).
+    """
+
+    def construct(self):
+        self.set_camera_orientation(phi=60 * np.pi / 180, theta=-45 * np.pi / 180)
+        camera = self.renderer.camera
+        project = camera.project_points
+
+        def shifted(points):
+            return project(points) + np.array([-1.0, 0.0, 0.0])
+
+        camera.project_points = shifted
+        self.add(*self.drawn())
+        square = Square(fill_opacity=0.6, color=BLUE)
+        self.add(square)
+        self.play(Rotate(square, np.pi / 4), run_time=0.4)
+        self.wait(0.2)
+
+    def drawn(self) -> list:
+        return [Dot(RIGHT * 2)]
+
+
+class LivePatchedCamera(PatchedCamera):
+    """As :class:`PatchedCamera`, with a user's path: drawn as it runs."""
+
+    def drawn(self) -> list:
+        return [WideStroke(color=GREEN).shift(LEFT * 2)]
+
+
+def _reversed(get_mobjects_to_display):
+    """A camera's display order, back to front: what a scene's patch of
+    ``get_mobjects_to_display`` might make it.
+    """
+
+    def reversed_order(*args, **kwargs):
+        return list(reversed(get_mobjects_to_display(*args, **kwargs)))
+
+    return reversed_order
+
+
+class Overlapping(Scene):
+    """Two filled squares overlapping, one moving: their order shows."""
+
+    def construct(self):
+        self.patch(self.renderer.camera)
+        back = Square(fill_opacity=1, color=BLUE)
+        front = Square(fill_opacity=1, color=RED).shift(RIGHT * 0.5)
+        self.add(back, front)
+        self.play(front.animate.shift(UP * 0.5), run_time=0.4)
+
+    def patch(self, camera) -> None:
+        """Nothing: a test patches the engine's camera class."""
+
+
+class PatchedOrder(Overlapping):
+    """As :class:`Overlapping`, the camera's display order replaced on the
+    instance by the scene.
+    """
+
+    def patch(self, camera) -> None:
+        camera.get_mobjects_to_display = _reversed(camera.get_mobjects_to_display)
+
+
 def _cloud() -> PMobject:
     cloud = PMobject(stroke_width=6)
     cloud.add_points(np.array([[1.0, 1.0, 0.0], [-1.0, 0.5, 0.0]]), color=RED)
