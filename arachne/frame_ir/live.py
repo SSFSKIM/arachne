@@ -251,10 +251,13 @@ class LivePainter:
 
     ``captures`` counts the captures described; with ``draw``, ``differing``
     counts those whose real draw differs from the picture drawn from XF.
+    ``path`` is the draw path the pictures are drawn on (``ir_cairo`` or
+    ``core``).
     """
 
-    def __init__(self, *, draw: bool = True) -> None:
+    def __init__(self, *, draw: bool = True, path: str = "ir_cairo") -> None:
         self.draw = draw
+        self.path = path
         self._painters: dict[int, tuple[Any, Any]] = {}
         self._checker = CairoDrawer()
         self.captures = 0
@@ -266,9 +269,9 @@ class LivePainter:
         """The painter of ``camera``'s captures."""
         found = self._painters.get(id(camera))
         if found is None or found[0] is not camera:
-            from .painter import IrCairoPainter
+            from .painter import painter_class
 
-            painter = IrCairoPainter(stream=_LiveStream())
+            painter = painter_class(self.path)(stream=_LiveStream())
             found = (camera, painter)
             self._painters[id(camera)] = found
         return found[1]
@@ -681,13 +684,16 @@ def live(
         from arachne import config
 
         draw_path = config.draw_path
-    if not DRAW_PATHS[camera_path(camera, draw_path)]:
+    path = camera_path(camera, draw_path)
+    if not DRAW_PATHS[path]:
         yield None
         return
     found = _LIVE.get(camera)
     pid = os.getpid()
-    if found is None or found[0] != pid:
-        found = (pid, LivePainter())
+    if found is None or found[0] != pid or found[1].path != path:
+        # On the core, CE's own draw of the capture is not wanted: the core
+        # draws the picture (its real draw would only be thrown away).
+        found = (pid, LivePainter(draw=path != "core", path=path))
         _LIVE[camera] = found
     with found[1].around(camera, t) as painter:
         yield painter

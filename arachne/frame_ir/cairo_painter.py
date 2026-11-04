@@ -461,31 +461,55 @@ class CairoDrawer:
         """The frame ``state`` describes, as the camera's pixel array (the
         drawer's own: copy it to keep it).
         """
-        self._refuse_unknown(state)
+        self._refuse_unknown(state, state.order)
         self._state = state
+        assert state.view is not None
+        return self._draw_order(state, state.order, self._array(state.view, "main"))
+
+    def draw_over(
+        self,
+        state: StreamState,
+        frame: np.ndarray,
+        entries: Sequence[tuple[str, int, int]],
+    ) -> np.ndarray:
+        """``frame`` (written in place, and returned) with ``entries`` of
+        ``state`` drawn over it in their order, by a camera of the view, as
+        CE's capture draws them: a 3D scene's overlay over the core's frame.
+        """
+        self._refuse_unknown(state, entries)
+        self._state = state
+        return self._draw_order(state, entries, frame)
+
+    def _draw_order(
+        self,
+        state: StreamState,
+        order: Sequence[tuple[str, int, int]],
+        array: np.ndarray,
+    ) -> np.ndarray:
         view = state.view
         assert view is not None
         live = set(state.records)
         for slot in [s for s in self._proxies if s not in live]:
             del self._proxies[slot]
         camera = self._camera(view, "main")
-        array = self._array(view, "main")
         camera.pixel_array = array
         self._seed_images(camera, state)
         self._orient(camera, state)
-        for _, run in it.groupby(state.order, key=lambda entry: entry[0]):
+        for _, run in it.groupby(order, key=lambda entry: entry[0]):
             entries = list(run)
             self._draw_displays(entries)
             self._draw_entries(camera, entries, array)
         return array
 
     @staticmethod
-    def _refuse_unknown(state: StreamState) -> None:
-        """Refuse the frame if a record it draws (in the order, or in a
-        display's sub-frame) has a kind, a feature bit or a field value Cairo
+    def _refuse_unknown(
+        state: StreamState, order: Sequence[tuple[str, int, int]]
+    ) -> None:
+        """Refuse the frame if a record of ``order`` (or of a display's
+        sub-frame it reaches) has a kind, a feature bit or a field value Cairo
         does not draw.
         """
-        todo = [slot for _, slot, _ in state.order]
+        todo = [slot for _, slot, _ in order]
         seen: set[int] = set()
         while todo:
             slot = todo.pop()
