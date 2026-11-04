@@ -107,18 +107,17 @@ class Side:
 
 
 def clear_of(
-    subject: Any,
-    against: Any,
+    given: Sequence[tuple[Any, str | None]],
     *,
     min_gap: float | None,
     pad: float,
     names: dict[int, str],
 ) -> list[Finding]:
-    """The findings of ``subject`` not clear of each side of ``against``
-    (:func:`arguments`), in their order, timed at zero: the caller gives
-    them their instant.
+    """The findings of the subject not clear of each side of the others,
+    ``given`` as :func:`arguments` reads them, in their order, timed at
+    zero: the caller gives them their instant.
     """
-    (mob, label), *items = arguments(subject, against)
+    (mob, label), *items = given
     first = _side(mob, label)
     found: list[Finding] = []
     for item in items:

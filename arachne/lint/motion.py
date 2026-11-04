@@ -55,7 +55,9 @@ none.
 A scene that arms the rule (:meth:`.Recorder.arm_motion`) has the cuts
 measured from the first play to end after the arming on
 (``Record.armed_at``), and its session's record keeps those plays' exits;
-the cuts before are not seen. A scene that never armed it has every cut
+the cuts before are not seen. The arming is the execution's the lint reads:
+a forward run that armed later than the session's record measures only
+the cuts after its own arming. A scene that never armed it has every cut
 measured. A record that keeps no exit of a play it measures (the scene
 never armed the rule) is read through the lint's forward run, which keeps
 every play's; it is never measured another way. The rule is not among the
@@ -170,22 +172,23 @@ class MotionJump:
 
     def __call__(self, context: LintContext) -> list[Finding]:
         record = context.record
-        wanted = _wanted(record)
         execution = context.frames.execution
+        read = iter(context.frames.result(self))
+        # The frames asked for, by the session's record's arming; of them,
+        # the plays from the arming of the execution read on.
+        first = execution.armed_at or 0
+        wanted = []
+        for play, shown in _wanted(record):
+            frames = [_Frame(t, *next(read)) for t in shown]
+            if play.index >= first:
+                wanted.append((play, frames))
         # The session's record when it keeps them all, else the forward run,
         # which keeps every play's.
-        assert _has_exits(execution, wanted), "an execution read without its exits"
-        assert execution.exits is not None
-        read = iter(context.frames.result(self))
+        exits = execution.exits
+        assert exits is not None, "an execution read without its exits"
+        assert all(play.index in exits for play, _ in wanted), "an exit missing"
         plays = [
-            _measure(
-                _Play(
-                    play,
-                    [_Frame(t, *next(read)) for t in shown],
-                    execution.exits[play.index],
-                )
-            )
-            for play, shown in wanted
+            _measure(_Play(play, frames, exits[play.index])) for play, frames in wanted
         ]
         names = _Names(record)
         found: list[Finding] = []

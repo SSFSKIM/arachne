@@ -148,18 +148,25 @@ class Bridge:
         self._readers: list[
             tuple[BridgeCall, Callable[[], Mapping[str, Any] | None]]
         ] = []
+        #: The calls (by id) whose unchanged readings are not kept.
+        self._changes_only: set[int] = set()
 
     def add(
         self,
         call: BridgeCall,
         reader: Callable[[], Mapping[str, Any] | None] | None = None,
+        *,
+        changes_only: bool = False,
     ) -> BridgeCall:
         """Keep ``call``; with ``reader``, a call read at every kept capture
-        from now on: a watch, or what a declaration's exemptions name.
+        from now on: a watch, or what a declaration's exemptions name. With
+        ``changes_only``, a reading equal to the call's last is not kept.
         """
         self.calls.append(call)
         if reader is not None:
             self._readers.append((call, reader))
+            if changes_only:
+                self._changes_only.add(id(call))
         return call
 
     def of(self, play: int) -> tuple[BridgeCall, ...]:
@@ -197,7 +204,14 @@ class Bridge:
         """
         for call, reader in self._readers:
             if call.t <= t:
-                call.readings.append(Reading(t, line, reader(), until))
+                values = reader()
+                if (
+                    id(call) in self._changes_only
+                    and call.readings
+                    and call.readings[-1].values == values
+                ):
+                    continue
+                call.readings.append(Reading(t, line, values, until))
 
 
 class PlayRun:
@@ -1043,11 +1057,13 @@ class Recorder:
         caller: FrameType,
         *,
         reader: Callable[[], Mapping[str, Any] | None] | None = None,
+        changes_only: bool = False,
         **fields: Any,
     ) -> BridgeCall:
         """Keep a call of the assertion bridge made now, from the frame
         ``caller``: its time, its play and its call site with ``fields``;
-        with ``reader``, a watch read at every kept capture from now on.
+        with ``reader``, a call read at every kept capture from now on
+        (with ``changes_only``, kept only where its reading changed).
         """
         record = self.ensure_record()
         call = BridgeCall(
@@ -1057,7 +1073,7 @@ class Recorder:
             self.scene_line(caller),
             **fields,
         )
-        return record.bridge.add(call, reader)
+        return record.bridge.add(call, reader, changes_only=changes_only)
 
     def scene_line(self, frame: FrameType | None) -> SourceLine | None:
         """The line of the innermost frame from ``frame`` outwards that is

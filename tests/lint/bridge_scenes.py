@@ -860,3 +860,88 @@ class ArmsWhenFew(Scene):
 
 class ArmsWhenMany(ArmsWhenFew):
     on_few = False
+
+
+class ArmsLateWhenFew(Scene):
+    """A puck slid, set down 3 units on, slid back; the motion rule armed
+    after that, before a wait, only when the scene has evaluated fewer than
+    40 frames by then: the jump comes before any arming.
+    """
+
+    def construct(self):
+        self.count = 0
+        puck = Dot(LEFT * 3)
+        self.add(puck)
+        self.play(puck.animate.shift(RIGHT), run_time=1)
+        puck.move_to(RIGHT * 3)
+        self.play(puck.animate.shift(LEFT), run_time=1)
+        if self.count < 40:
+            arm()
+        self.wait(1)
+
+    def update_to_time(self, t):
+        super().update_to_time(t)
+        self.count += 1
+
+
+class ApartFromAGenerator(Scene):
+    """Two phrases over each other, the second handed to apart by a
+    generator.
+    """
+
+    def construct(self):
+        first, second = _words()
+        self.found = apart(first, (other for other in [second]))
+        self.wait(0.2)
+
+
+class ExemptListChangedWhileHeld(Scene):
+    """Two phrases over each other for 1.6 s under an arming that exempts
+    the entries of a list; the list then gains the second phrase (or is
+    emptied), which moves away.
+    """
+
+    gains = True
+
+    def construct(self):
+        first, second = _words()
+        entries = [] if self.gains else [second]
+        arm(exempt=entries)
+        self.add(first, second)
+        self.wait(1.6)
+        if self.gains:
+            entries.append(second)
+        else:
+            entries.clear()
+        second.shift(RIGHT * 4)
+        self.wait(0.2)
+
+
+class ExemptListEmptiedWhileHeld(ExemptListChangedWhileHeld):
+    gains = False
+
+
+class ExemptGainedThenLost(Scene):
+    """Two phrases over each other; the group declared exempt holds the
+    second phrase from 0.4 s to 0.8 s only.
+    """
+
+    def construct(self):
+        first, second = _words()
+        self.holder = VGroup()
+        declare(exempt=self.holder)
+        self.add(first, second)
+        self.wait(0.4)
+        self.holder.add(second)
+        self.wait(0.4)
+        self.holder.remove(second)
+        self.wait(0.4)
+
+
+class ExemptHeldThroughAWait(Scene):
+    """A group of 200 dots declared exempt, unchanged through a 2 s wait."""
+
+    def construct(self):
+        holder = VGroup(*[Dot(LEFT * 3) for _ in range(200)])
+        declare(exempt=holder)
+        self.wait(2)
