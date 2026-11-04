@@ -206,6 +206,63 @@ def test_a_forward_run_is_compared_with_the_record(scene_dir, edited):
         session.close()
 
 
+HELPED = (
+    HEADER
+    + """
+from fallback_helper import START
+
+
+class Helped(Scene):
+    def construct(self):
+        global SHIFT
+        SHIFT = 0.0
+        tracker = ValueTracker(START)
+        dot = Dot().add_updater(lambda m: m.set_x(tracker.get_value() + SHIFT))
+        self.add(dot)
+        self.play(tracker.animate.set_value(2), run_time=1)
+        SHIFT = 1.0
+        self.play(tracker.animate.set_value(0), run_time=1)
+"""
+)
+
+
+def test_a_source_edited_since_the_record_makes_it_stale_not_divergent(scene_dir):
+    """A helper the scene imports, edited after the session opened: the
+    forward run executes another program than the record's. It still
+    answers, saying so; the record is stale, and nothing is compared, so no
+    divergence is reported (an edit is no replay that diverged).
+    """
+    scene = scene_dir / "scene.py"
+    scene.write_text(textwrap.dedent(HELPED))
+    helper = scene_dir / "fallback_helper.py"
+    helper.write_text("START = 0.5\n")
+    session = Session.open(
+        scene,
+        "Helped",
+        config={
+            "pixel_width": 96,
+            "pixel_height": 54,
+            "frame_rate": 4,
+            "media_dir": str(scene_dir.parent / "media"),
+        },
+    )
+    try:
+        assert not session.stale
+        helper.write_text("START = 1.5\n")
+        (answer,) = session.answers([Fraction(1, 7)])
+        assert answer.state.answer == "forward"
+        assert answer.fallback.kind == "source-changed"
+        assert answer.fallback.reason == "source.changed"
+        assert "source differs" in answer.fallback.detail
+        assert session.stale
+        (run,) = session.forward_runs
+        assert run.source_changed
+        assert run.divergence is None
+        assert session.divergences == []
+    finally:
+        session.close()
+
+
 def _smooth(t: Fraction) -> float:
     from arachne import smooth
 
