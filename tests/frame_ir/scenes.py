@@ -40,6 +40,7 @@ from arachne import (
     Surface,
     Text,
     ThreeDAxes,
+    ThreeDCamera,
     ThreeDScene,
     Transform,
     ValueTracker,
@@ -353,6 +354,29 @@ class LiveUnstated(Scene):
 
     def construct(self):
         self.add(SplitAlone(color=GREEN))
+        self.wait(0.2)
+
+
+class ShiftedCamera(ThreeDCamera):
+    """A camera class of the scene's own: its projection slides the picture
+    left (as a chapter's camera makes room for a text column).
+    """
+
+    def project_points(self, points):
+        return super().project_points(points) + np.array([-1.0, 0.0, 0.0])
+
+
+class UserCamera(ThreeDScene):
+    """A 3D scene drawn through :class:`ShiftedCamera`."""
+
+    def __init__(self, **kwargs):
+        super().__init__(camera_class=ShiftedCamera, **kwargs)
+
+    def construct(self):
+        self.set_camera_orientation(phi=60 * np.pi / 180, theta=-45 * np.pi / 180)
+        square = Square(fill_opacity=0.6, color=BLUE)
+        self.add(square, Dot(RIGHT * 2))
+        self.play(Rotate(square, np.pi / 4), run_time=0.4)
         self.wait(0.2)
 
 

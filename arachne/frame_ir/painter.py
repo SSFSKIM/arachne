@@ -15,8 +15,9 @@ A painter and its stream are made in the process that draws, after any fork:
 
 from __future__ import annotations
 
-__all__ = ["IrCairoPainter", "painter_for"]
+__all__ = ["IrCairoPainter", "camera_path", "painter_for"]
 
+import inspect
 import os
 import weakref
 from collections.abc import Mapping, Sequence
@@ -27,10 +28,52 @@ import numpy as np
 
 from .cairo_painter import CairoDrawer
 from .extract import FrameStream, Term
+from .lint import raise_finding
 from .xf import Delta, StreamState
 
 #: The draw paths, and whether each describes frames in XF.
 DRAW_PATHS = {"cairo": False, "ir_cairo": True}
+
+
+def user_camera(camera: Any) -> type | None:
+    """The camera's class when it is the scene's own: a subclass of one of
+    the engine's cameras, defined outside the engine; else ``None``.
+    """
+    from arachne.camera.camera import Camera
+
+    kind = type(camera)
+    if isinstance(camera, Camera) and not kind.__module__.startswith("arachne."):
+        return kind
+    return None
+
+
+def camera_path(camera: Any, draw_path: str) -> str:
+    """The draw path ``camera`` draws on when ``draw_path`` is asked for. A
+    camera class of the scene's own can change how anything is drawn, which
+    XF 1 does not describe: on a path that describes frames it draws on
+    Cairo, with a ``render.fallback`` finding naming the class (its record
+    refuses it, ``camera.unsupported``, so it is met as the scene runs). A
+    camera that is no engine camera's subclass stays on the path and is
+    ``render.unable`` there.
+    """
+    if draw_path not in DRAW_PATHS:
+        raise ValueError(f"draw_path {draw_path!r} is not one of {sorted(DRAW_PATHS)}")
+    kind = user_camera(camera) if DRAW_PATHS[draw_path] else None
+    if kind is None:
+        return draw_path
+    base = next(k for k in kind.__mro__ if k.__module__.startswith("arachne."))
+    try:
+        where = f"{inspect.getsourcefile(kind)}:{inspect.getsourcelines(kind)[1]}"
+    except (OSError, TypeError):
+        where = kind.__module__
+    raise_finding(
+        "render.fallback",
+        kind.__qualname__,
+        f"{kind.__qualname__} ({where}), a camera class of the scene's own"
+        f" subclassing {base.__name__}, is drawn on Cairo: XF 1 describes the"
+        " engine's cameras only",
+    )
+    return "cairo"
 
 
 class IrCairoPainter:
