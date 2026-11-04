@@ -77,3 +77,9 @@ def test_image_codes_are_reserved():
 def test_an_unknown_code_is_refused_by_name():
     with pytest.raises(KeyError, match="no.such"):
         code("no.such")
+
+
+def test_only_motion_jump_never_folds():
+    assert {entry.code for entry in CODES.values() if not entry.folds} == {
+        "motion.jump"
+    }
