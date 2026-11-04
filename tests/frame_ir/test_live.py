@@ -84,6 +84,19 @@ def test_a_mapping_camera_records_the_mapped_points(painters, monkeypatch):
     assert any(np.array_equal(shapes[r.fields["shape"]], mapped) for r in clouds)
 
 
+@pytest.mark.parametrize("draw", [True, False])
+def test_what_live_drawing_puts_on_the_camera_is_no_replaced_method(draw):
+    from arachne.camera.mapping_camera import MappingCamera
+    from arachne.timeline.camera_code import replaced_methods
+
+    camera = MappingCamera()
+    with live_module.LivePainter(draw=draw).around(camera, Fraction(0)):
+        assert {"capture_mobjects", "points_to_pixel_coords"} <= set(vars(camera))
+        assert draw or "get_cairo_context" in vars(camera)
+        assert replaced_methods(camera) == ()
+    assert "capture_mobjects" not in vars(camera)
+
+
 def test_a_live_frame_carries_the_scene_instant_it_draws(painters, monkeypatch):
     from arachne.frame_ir.painter import IrCairoPainter
 
