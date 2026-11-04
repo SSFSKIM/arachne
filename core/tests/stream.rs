@@ -686,3 +686,80 @@ fn mapping_centre_is_carried_but_does_not_change_this_builds_pixels() {
     assert_eq!(s.view().unwrap().mapping_centre, [2.0, -3.0, 4.0]);
     assert_eq!(s.draw(16, 9, 1).unwrap(), before);
 }
+
+
+fn pre_projected_path(shape: &Shape, points: Key) -> Record {
+    let mut r = path_record(1, shape);
+    r.features = FEATURE_PRE_PROJECTED;
+    r.pre_projected = Some(PreProjected { points, gradient: None, fill: Paint::None, stroke: Paint::None, background_stroke: Paint::None });
+    r
+}
+
+#[test]
+fn pre_projected_points_must_be_a_path_held_or_uploaded() {
+    let shape = square();
+    let points = Shape::new(ShapeData::Path { points: vec![[1.0, 2.0, 3.0]; 2] });
+    let mut s = Stream::new();
+    let mut d = delta(0);
+    d.upload = vec![shape.clone(), fill_image()];
+    s.apply(&d).unwrap();
+    let mut d = delta(1);
+    d.set = vec![pre_projected_path(&shape, points.key())];
+    let err = refused(&mut s, &d);
+    assert!(matches!(err, StreamError::Missing(_)));
+    assert!(err.to_string().contains("slot 1 references shape"));
+    d.set[0].pre_projected.as_mut().unwrap().points = fill_image().key();
+    assert!(matches!(refused(&mut s, &d), StreamError::Invalid(_)));
+    d.set[0].pre_projected.as_mut().unwrap().points = points.key();
+    d.upload = vec![points.clone()];
+    s.apply(&d).unwrap(); // Different counts are allowed; upload in this delta.
+    d.upload.clear();
+    s.apply(&d).unwrap(); // Already held.
+    let mut release = delta(2);
+    release.release = vec![points.key()];
+    assert!(matches!(refused(&mut s, &release), StreamError::InUse(_)));
+    release.remove = vec![1];
+    s.apply(&release).unwrap();
+}
+
+#[test]
+fn every_pre_projected_paint_table_must_exist_and_cannot_be_released_in_use() {
+    let shape = square();
+    let table = Stops::new(vec![[0.2, 0.4, 0.6, 0.8]; 3]);
+    for which in 0..3 {
+        let mut r = pre_projected_path(&shape, shape.key());
+        let p = r.pre_projected.as_mut().unwrap();
+        match which { 0 => p.fill = Paint::Table(table.key()), 1 => p.stroke = Paint::Table(table.key()), _ => p.background_stroke = Paint::Table(table.key()) }
+        let mut d = delta(0);
+        d.upload = vec![shape.clone()];
+        d.set = vec![r];
+        let mut s = Stream::new();
+        let err = refused(&mut s, &d);
+        assert!(matches!(err, StreamError::Missing(_)));
+        assert!(err.to_string().contains("paint table"));
+        d.upload_paints = vec![table.clone()];
+        s.apply(&d).unwrap();
+        let mut release = delta(1);
+        release.release = vec![table.key()];
+        assert!(matches!(refused(&mut s, &release), StreamError::InUse(_)));
+        release.remove = vec![1];
+        s.apply(&release).unwrap();
+    }
+}
+
+#[test]
+fn pre_projected_records_are_cairo_only_and_refused_only_when_drawn() {
+    let shape = square();
+    let mut d = delta(0);
+    d.view = Some(common::flat_view(4, 4, [0.0, 0.0, 0.0, 1.0]));
+    d.upload = vec![shape.clone()];
+    d.set = vec![pre_projected_path(&shape, shape.key())];
+    let mut s = Stream::new();
+    s.apply(&d).unwrap();
+    assert!(s.draw(4, 4, 1).is_ok());
+    d.order = Some(vec![entry(1)]);
+    s.apply(&d).unwrap();
+    let Err(DrawError::Unsupported(u)) = s.draw(4, 4, 1) else { panic!("not refused") };
+    assert_eq!((u.kind.as_str(), u.slot, u.object), ("path", Some(1), Some(101)));
+    assert!(u.reason.contains("pre-projected") && u.reason.contains("Cairo"), "{}", u.reason);
+}
