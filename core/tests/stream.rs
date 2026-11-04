@@ -632,6 +632,37 @@ fn background_image_fill_is_refused_only_when_drawn() {
 }
 
 #[test]
+fn the_frame_under_the_overlay_leaves_its_entries_to_cairo_in_order() {
+    // Slot 1 is drawn by the core; 2 is fixed in frame, 3 a display, 4 filled through a
+    // background image: the overlay, in that order, neither drawn nor refused under it.
+    let shape = square();
+    let picture = fill_image();
+    let drawn = path_record(1, &shape);
+    let mut fixed = path_record(2, &shape);
+    fixed.paint.fill = Paint::One([0.0, 1.0, 0.0, 1.0]);
+    fixed.depth.space = Space::Overlay;
+    let mut filled = path_record(4, &shape);
+    filled.features = FEATURE_BACKGROUND_IMAGE;
+    filled.fill_image = Some(picture.key());
+    let mut d = delta(0);
+    d.view = Some(common::flat_view(4, 4, [0.0, 0.0, 0.0, 1.0]));
+    d.upload = vec![shape, picture];
+    d.set = vec![drawn, fixed, display(3, vec![]), filled];
+    d.order = Some(vec![entry(2), entry(1), entry(3), entry(4)]);
+    let mut s = Stream::new();
+    s.apply(&d).unwrap();
+    let slots: Vec<u32> = s.overlay_entries().iter().map(|e| e.slot).collect();
+    assert_eq!(slots, [2, 3, 4]);
+    assert!(matches!(s.draw(4, 4, 1), Err(DrawError::Unsupported(_))));
+    let under = s.render_under_overlay(4, 4, 1).unwrap().rgba;
+    let mut alone = delta(1);
+    alone.order = Some(vec![entry(1)]);
+    s.apply(&alone).unwrap();
+    assert_eq!(under, s.draw(4, 4, 1).unwrap());
+    assert!(s.overlay_entries().is_empty());
+}
+
+#[test]
 fn display_ranks_are_unique_per_layer_in_each_views_order() {
     let mut a = display(1, vec![entry(1)]); // Self capture is allowed.
     let mut b = display(2, vec![]);

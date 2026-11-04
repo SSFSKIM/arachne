@@ -562,6 +562,28 @@ impl Stream {
         self.render_with(width, height, threads, &[])
     }
 
+    /// Draws the frame as [`Stream::render`] does, without the overlay's entries
+    /// ([`is_overlay`]): a 3D scene's frame before Cairo draws its overlay over it, in CE's order.
+    /// Those entries are neither drawn nor refused here; the others keep their places in the
+    /// order, so ties break as in the whole order.
+    pub fn render_under_overlay(
+        &self,
+        width: u32,
+        height: u32,
+        threads: usize,
+    ) -> Result<Rendered, DrawError> {
+        self.render_entries(width, height, threads, &[], true)
+    }
+
+    /// The order's entries in the overlay ([`is_overlay`]), in order.
+    pub fn overlay_entries(&self) -> Vec<OrderEntry> {
+        self.order
+            .iter()
+            .filter(|e| is_overlay(&self.records[&e.slot]))
+            .copied()
+            .collect()
+    }
+
     /// Draws the frame as [`Stream::render`] does, with `extra` producers drawing into the same
     /// passes after the stream's own: a probe's instrument (a producer that sends every pixel to
     /// the sample resolve, say), never part of what a stream draws.
@@ -572,6 +594,18 @@ impl Stream {
         threads: usize,
         extra: &[&dyn Producer],
     ) -> Result<Rendered, DrawError> {
+        self.render_entries(width, height, threads, extra, false)
+    }
+
+    fn render_entries(
+        &self,
+        width: u32,
+        height: u32,
+        threads: usize,
+        extra: &[&dyn Producer],
+        without_overlay: bool,
+    ) -> Result<Rendered, DrawError> {
+        let drawn = |e: &OrderEntry| !(without_overlay && is_overlay(&self.records[&e.slot]));
         if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
             return Err(DrawError::Invalid(format!(
                 "a frame of {width} x {height} pixels (each side 1 to {MAX_SIDE})"
@@ -595,6 +629,7 @@ impl Stream {
         if let Some(refused) = self
             .order
             .iter()
+            .filter(|e| drawn(e))
             .find_map(|e| refusal(&self.records[&e.slot], &self.shapes, shading))
         {
             return Err(DrawError::Unsupported(refused));
@@ -620,6 +655,9 @@ impl Stream {
         };
         let (mut meshes, mut paths, mut clouds) = (Vec::new(), Vec::new(), Vec::new());
         for (order, e) in self.order.iter().enumerate() {
+            if !drawn(e) {
+                continue;
+            }
             let record = &self.records[&e.slot];
             let order = order as u32;
             let shape = record
@@ -879,6 +917,15 @@ fn field_refusal(rec: &Record, mesh: bool, shading: bool) -> Option<String> {
 /// Why this build refuses to draw a record, if it does, under a camera that shades or not
 /// (`shading`). It draws `mesh`, `path`, `points` and `instances` records; `face_group` and
 /// `image` records wait for their drawers.
+/// Whether a 3D scene's frame leaves `rec` to Cairo's overlay, drawn over the core's frame in CE's
+/// order: a record fixed in frame, an image (a display's included), or a path filled through a
+/// background image.
+pub fn is_overlay(rec: &Record) -> bool {
+    rec.depth.space == Space::Overlay
+        || rec.kind == RecordKind::Image
+        || rec.features & FEATURE_BACKGROUND_IMAGE != 0
+}
+
 fn refusal(rec: &Record, shapes: &HashMap<Key, Shape>, shading: bool) -> Option<Unsupported> {
     let prototype = rec
         .geometry

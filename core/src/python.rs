@@ -850,21 +850,39 @@ impl PyStream {
 
     /// Draws the frame: a uint8 array (height, width, 4), the layout of CE's pixel array. Raises
     /// Unsupported (render.unsupported) when a drawn record carries what this build cannot draw.
-    #[pyo3(signature = (width, height, *, threads=1))]
+    /// With ``overlay=False``, the overlay's entries (``overlay_entries``) are left out, neither
+    /// drawn nor refused: the frame Cairo draws a 3D scene's overlay over.
+    #[pyo3(signature = (width, height, *, threads=1, overlay=true))]
     fn draw<'py>(
         &self,
         py: Python<'py>,
         width: u32,
         height: u32,
         threads: usize,
+        overlay: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let stream = &self.stream;
         let rgba = py
-            .detach(|| stream.draw(width, height, threads))
+            .detach(|| {
+                if overlay {
+                    stream.draw(width, height, threads)
+                } else {
+                    stream
+                        .render_under_overlay(width, height, threads)
+                        .map(|r| r.rgba)
+                }
+            })
             .map_err(|e| draw_error(py, e))?;
         Ok(PyArray1::from_vec(py, rgba)
             .reshape([height as usize, width as usize, 4])?
             .into_any())
+    }
+
+    /// The order's entries a 3D scene's frame leaves to Cairo's overlay, in order, as
+    /// ``(layer, slot, part)``: records fixed in frame, images (displays included), and paths
+    /// filled through a background image.
+    fn overlay_entries(&self) -> Vec<(&'static str, u32, u32)> {
+        contents::order(&self.stream.overlay_entries())
     }
 
     /// Per slot the order draws, the pixel box ``(x_min, y_min, x_max, y_max)`` (x right, y down)
