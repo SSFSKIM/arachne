@@ -221,3 +221,31 @@ def test_a_change_xf_does_not_carry_draws_on_cairo_with_its_reason(
     [finding] = findings
     assert (finding.code, finding.subject) == ("render.fallback", subject)
     assert f"{member} reaches the frame other than through" in finding.message
+
+
+@pytest.mark.parametrize(
+    ("scene_class", "subject", "attribute"),
+    [
+        # State the view states, but once per frame, read mobject by mobject.
+        (camera_scenes.DepthStrokedSolids, "DepthStroked", "cairo_line_width_multiple"),
+        # State the engine's display code reads that no view states.
+        (camera_scenes.DimmedPictures, "DimmedCamera", "rgb_max_val"),
+    ],
+    ids=lambda v: getattr(v, "__name__", v),
+)
+def test_a_camera_whose_code_changes_what_it_holds_as_it_draws_draws_on_cairo(
+    scene_class, subject, attribute, findings
+):
+    """The camera's draw reads what its code changed beyond what XF carries
+    of the capture, so its own draw stands, the attribute named.
+    """
+    before = IrCairoPainter.drawn_total
+    direct, described, _ = _both(scene_class)
+    _same(direct, described)
+    assert IrCairoPainter.drawn_total == before, "nothing drawn from XF"
+    [finding] = findings
+    assert (finding.code, finding.subject) == ("render.fallback", subject)
+    assert (
+        f"transform_points_pre_display changed the camera's {attribute} while it drew"
+        in finding.message
+    )

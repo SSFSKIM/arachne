@@ -59,6 +59,31 @@ class NamedCamera(ThreeDCamera):
         return out
 
 
+class DepthStroked(ThreeDCamera):
+    """A camera class of the scene's own whose pre-display code sets the
+    stroke width each mobject's strokes are drawn with from its depth: state
+    the engine's display code reads mobject by mobject, which the view states
+    once per frame.
+    """
+
+    def transform_points_pre_display(self, mobject, points):
+        out = np.array(super().transform_points_pre_display(mobject, points))
+        self.cairo_line_width_multiple = 0.01 * (1 + float(np.mean(out[:, 2])))
+        return out
+
+
+class DimmedCamera(ThreeDCamera):
+    """A camera class of the scene's own whose pre-display code changes the
+    scale a point cloud's colours are written with (``rgb_max_val``): state
+    the engine's display code reads that no view states.
+    """
+
+    def transform_points_pre_display(self, mobject, points):
+        out = np.array(super().transform_points_pre_display(mobject, points))
+        self.rgb_max_val = 160
+        return out
+
+
 class Solids(ThreeDScene):
     """A lit surface, axes whose tips are shaded with a gradient, a dot, a
     label fixed in the frame and one of fixed orientation, under an orbit:
@@ -162,6 +187,20 @@ class PatchedPictures(Pictures):
     """
 
     patch = PatchedSolids.patch
+
+
+class DepthStrokedSolids(Solids):
+    """:class:`Solids` through :class:`DepthStroked`."""
+
+    def __init__(self, **kwargs):
+        super().__init__(camera_class=DepthStroked, **kwargs)
+
+
+class DimmedPictures(Pictures):
+    """:class:`Pictures` through :class:`DimmedCamera`."""
+
+    def __init__(self, **kwargs):
+        super().__init__(camera_class=DimmedCamera, **kwargs)
 
 
 class TintedSolids(Solids):
