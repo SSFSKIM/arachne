@@ -192,3 +192,13 @@ def test_an_objectless_finding_is_never_exempted_by_a_selector():
 def test_a_malformed_selector_is_refused(bad):
     with pytest.raises(ValueError):
         Exemptions.parse([bad])
+
+
+def test_named_parts_of_one_group_do_not_fold():
+    """Four labels of one group, each with a name of its own, are four."""
+    group = (Holder("s.py:1#0", "labels", 1),)
+    named = [
+        _finding(_object(f"s.py:{i}#0", kind="Text", name=f"label{i}", within=group))
+        for i in range(4)
+    ]
+    assert fold(named) == named
