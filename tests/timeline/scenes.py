@@ -281,3 +281,29 @@ class Captured(Scene):
         self.play(self.group.animate.shift(RIGHT), run_time=0.5)
         self.late = Circle(radius=0.5)
         self.play(FadeIn(self.late), run_time=0.5)
+
+
+class Pointed(Scene):
+    """``Group(Group(a, b), Group(a))`` through one wait."""
+
+    def construct(self):
+        a, b = Square(), Dot(RIGHT)
+        second = VGroup(a)
+        self.add(VGroup(VGroup(a, b), second))
+        self.repoint(second, a, b)
+        self.wait(0.2)
+
+    def repoint(self, group, a, b):
+        group.remove(a)
+        group.add(a)
+
+
+class Repointed(Pointed):
+    """As :class:`Pointed`, its second group pointed at ``b`` instead: the
+    nodes, their kinds, child counts and values are the same, and only which
+    node the second group holds differs.
+    """
+
+    def repoint(self, group, a, b):
+        group.remove(a)
+        group.add(b)

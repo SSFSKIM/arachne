@@ -406,11 +406,26 @@ class RegisteredState:
         """A digest of the tree's shape and its nodes' values, equal across
         two executions when what they hold is the same; with ``decimals``,
         when their numbers agree to that many decimals.
+
+        The walk visits a node held twice once, so the shape is keyed as
+        which node each root and each parent's child is, by its place in
+        the walk: two trees of the same nodes in which a parent holds
+        another of them key apart.
         """
+        nodes = list(self.nodes())
+        place = {id(mob): index for index, (mob, _) in enumerate(nodes)}
         digest = hashlib.blake2b(digest_size=16)
-        for mob, state in self.nodes():
+
+        def held(mobs: Sequence[Mobject]) -> None:
+            digest.update(len(mobs).to_bytes(4, "big"))
+            for mob in mobs:
+                # A mobject with no state at this capture is no node: 0.
+                digest.update((place.get(id(mob), -1) + 1).to_bytes(4, "big"))
+
+        held(self.capture.roots)
+        for mob, state in nodes:
             digest.update(type(mob).__qualname__.encode())
-            digest.update(len(state.submobjects).to_bytes(4, "big"))
+            held(state.submobjects)
             for key, part in content_fields(state, decimals):
                 digest.update(key.encode())
                 digest.update(part)
