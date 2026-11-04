@@ -18,7 +18,9 @@ play):
 - :func:`declare` states terms the lint's rules are held to from the call
   on (``pad``, ``text_gap``, ``exempt``);
 - :func:`arm` asks for the checks made over time from the call on: the
-  motion rule, which the lint then runs unasked.
+  motion rule, which the lint then runs unasked, and the states the
+  temporal rules read (:mod:`.watch`, :mod:`.departures`), which hold
+  the scene to the arming in force.
 
 A call returns what it found as violations in the report's shape
 (:mod:`.serialise`) and never raises for a finding; :func:`~arachne.lint.lint`
@@ -292,7 +294,10 @@ def arm(*, motion_jump: float | None = None, **terms: Any) -> list[dict[str, Any
     """Arm the checks a scene asks for over time from now on: the motion
     rule (``motion.jump`` beyond ``motion_jump``, by default the rule's own
     tolerance), which the lint then runs unasked, its record keeping each
-    play's exit from the next to end. ``terms`` are declared as by
+    play's exit from the next to end; and for the temporal rules
+    (:mod:`.watch`, :mod:`.departures`), held to the arming's terms, the
+    record keeps the scene's states from here on (``Record.states``), so
+    that they read it rather than a forward run. ``terms`` are declared as by
     :func:`declare`, ``pad`` and ``text_gap`` at their defaults when not
     given: each arming states both afresh, its exemptions adding to those
     before. Arming again sets the tolerance the whole scene is measured at.
@@ -306,31 +311,39 @@ def arm(*, motion_jump: float | None = None, **terms: Any) -> list[dict[str, Any
         motion_jump=JUMP_TOL if motion_jump is None else float(motion_jump),
     )
     recorder.arm_motion()
+    recorder.arm_states()
     return []
 
 
 # The terms declared
 
 
-def declared(source: Record, t: Fraction | float) -> dict[str, Any]:
+def declared(
+    source: Record, t: Fraction | float, *, play: int | None = None
+) -> dict[str, Any]:
     """The terms ``source``'s scene declared at or before ``t`` (by
     :func:`declare` and :func:`arm`): a later ``pad`` or ``text_gap``
     replacing an earlier, exemptions adding up, each read as it stood at
-    ``t``.
+    ``t``. With ``play``, at an instant of that play (as the script called
+    it, while it ran, or as it ended): no call made after it, between it and
+    the next at its end, holds there.
     """
     at = exact(t)
     return _held(
-        (call for call in source.bridge.calls if call.t <= at),
+        (call for call in source.bridge.calls if _by(call, at, play)),
         lambda call: _exempt_at(call, at),
     )
 
 
-def terms_at(source: Record, t: Fraction | float, base: Terms) -> Terms:
-    """``base`` under the terms declared at or before ``t``: the declared
-    ``pad`` and ``text_gap`` replace its own, and the declared exemptions,
-    as they stood at ``t``, hold beside its own.
+def terms_at(
+    source: Record, t: Fraction | float, base: Terms, *, play: int | None = None
+) -> Terms:
+    """``base`` under the terms declared at or before ``t`` (within
+    ``play``, as :func:`declared` reads it): the declared ``pad`` and
+    ``text_gap`` replace its own, and the declared exemptions, as they stood
+    at ``t``, hold beside its own.
     """
-    return _apply(base, declared(source, t), join=True)
+    return _apply(base, declared(source, t, play=play), join=True)
 
 
 def exemptions(source: Record, t: Fraction | float | None = None) -> Exemptions:
@@ -351,28 +364,33 @@ def exemptions(source: Record, t: Fraction | float | None = None) -> Exemptions:
     return kept
 
 
-def armed(source: Record, t: Fraction | float | None = None) -> BridgeCall | None:
-    """The arming in force at ``t`` (by default, at the scene's end): the
-    last :func:`arm` call at or before it, whose terms hold its
-    ``motion_jump`` and the terms it declared; ``None`` before any.
+def armed(
+    source: Record, t: Fraction | float | None = None, *, play: int | None = None
+) -> BridgeCall | None:
+    """The arming in force at ``t`` (by default, at the scene's end; within
+    ``play``, as :func:`declared` reads it): the last :func:`arm` call at
+    or before it, whose terms hold its ``motion_jump`` and the terms it
+    declared; ``None`` before any.
     """
     at = None if t is None else exact(t)
     found = None
     for call in source.bridge.calls:
-        if call.kind == "arm" and (at is None or call.t <= at):
+        if call.kind == "arm" and (at is None or _by(call, at, play)):
             found = call
     return found
 
 
-def armed_terms(source: Record, t: Fraction | float | None = None) -> Terms | None:
-    """What the arming in force at ``t`` (by default, the scene's end)
-    holds a check at ``t`` to: its own ``pad`` and ``text_gap``, and its
-    exemptions as the value it was handed stood at ``t`` (not those of
-    earlier armings, which :func:`exemptions` accumulates); ``None`` before
-    any arming.
+def armed_terms(
+    source: Record, t: Fraction | float | None = None, *, play: int | None = None
+) -> Terms | None:
+    """What the arming in force at ``t`` (by default, the scene's end;
+    within ``play``, as :func:`declared` reads it) holds a check at ``t``
+    to: its own ``pad`` and ``text_gap``, and its exemptions as the value it
+    was handed stood at ``t`` (not those of earlier armings, which
+    :func:`exemptions` accumulates); ``None`` before any arming.
     """
     at = source.duration if t is None else exact(t)
-    arming = armed(source, at)
+    arming = armed(source, at, play=play)
     if arming is None:
         return None
     exempt = _exempt_at(arming, at) if "exempt" in arming.terms else Exemptions()
@@ -510,6 +528,13 @@ def _check_code(code: str, reference: Any) -> None:
             f"{code} is checked against a reference: the axes whose ranges"
             " the points must lie in"
         )
+
+
+def _by(call: BridgeCall, t: Fraction, play: int | None) -> bool:
+    """Whether ``call`` was made by ``t``, and with ``play``, by that play's
+    end: a call between plays belongs to the next (``BridgeCall.play``).
+    """
+    return call.t <= t and (play is None or call.play <= play)
 
 
 def _terms(terms: Mapping[str, Any]) -> dict[str, Any]:

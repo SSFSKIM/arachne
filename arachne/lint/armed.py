@@ -15,6 +15,12 @@ scene as the script called each play, as each play ended (finished and
 cleaned up) and as the script removed from it; it asks that the execution
 keep every one of them from its arming on.
 
+The terms a rule is held to at an instant are those of the scene's arming
+in force there (:func:`.bridge.arm`, as the scene armed it last by then):
+its ``pad`` and ``text_gap``, and its exemptions as the value it was
+handed stands there, beside the rule's own; before any arming, the rule's
+own terms under what the scene declared by then (:func:`.bridge.terms_at`).
+
 ``sample_fps`` is the rate a hold watch samples a play's frames at when
 another engine's pass is matched: that pass reads the first frame of the
 render's grid at or after each ``1/sample_fps`` of a play, and its last; by
@@ -33,6 +39,7 @@ from typing import TYPE_CHECKING, Any
 
 from arachne.timeline.clock import exact
 
+from .bridge import armed_terms, exemptions, terms_at
 from .exempt import Exemptions
 from .rules._rule import DEFAULT_PAD, Terms
 
@@ -78,6 +85,30 @@ class ArmedRule:
             terms=terms,
             sample_fps=exact(sample_fps) if sample_fps is not None else None,
         )
+
+    def terms_at(self, record: Record, t: Fraction, play: int | None = None) -> Terms:
+        """The terms ``record``'s scene is held to at ``t``, an instant of
+        ``play`` when given (as the script called it, while it ran, or as it
+        ended; a call the script makes after it holds from the next): its
+        arming in force there, its exemptions beside the rule's own; else
+        the rule's own under what the scene declared by then.
+        """
+        arming = armed_terms(record, t, play=play)
+        if arming is None:
+            return terms_at(record, t, self.terms, play=play)
+        return replace(
+            self.terms,
+            pad=arming.pad,
+            text_gap=arming.text_gap,
+            exempt=_joined(self.terms.exempt, arming.exempt),
+        )
+
+    def exemptions(self, record: Record) -> Exemptions:
+        """What a check of ``record``'s whole scene is held to: the rule's
+        own exemptions, and every one the scene stated (declared, armed or
+        swept with), each read at the scene's end (:func:`.bridge.exemptions`).
+        """
+        return _joined(self.terms.exempt, exemptions(record))
 
     def request_frames(self, frames: Frames) -> None:
         """Ask the lint for the frames this rule samples, before any is read,
@@ -145,6 +176,14 @@ class ArmedRule:
 
     def __call__(self, context: LintContext) -> list[Finding]:
         return list(self.watch(context, self))
+
+
+def _joined(first: Exemptions, second: Exemptions) -> Exemptions:
+    """The exemptions of both, each once."""
+    return Exemptions(
+        tuple(dict.fromkeys((*first.bare, *second.bare))),
+        tuple(dict.fromkeys((*first.pairs, *second.pairs))),
+    )
 
 
 def _target(frames: Frames) -> tuple[int, int]:
