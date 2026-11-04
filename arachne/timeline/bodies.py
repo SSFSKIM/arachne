@@ -233,8 +233,10 @@ _KINDS: dict[type, str | None] = {}
 
 def _look(mob: Mobject) -> tuple[object, ...]:
     """What, beside its points, decides whether a member paints and is seen
-    (:func:`_lays`, :func:`_visible`): its style, compared by identity (each
-    is an immutable value), and a point cloud's stroke width.
+    (:func:`_lays`, :func:`_visible`): its style, compared by identity, and
+    a point cloud's stroke width. A style value is immutable but for a view
+    of memory something else writes (a camera display's pixels, its
+    camera's own picture), which equals nothing: it is read again each time.
     """
     kind = _KINDS.get(type(mob), "")
     if kind == "":
@@ -250,18 +252,37 @@ def _look(mob: Mobject) -> tuple[object, ...]:
 
 
 class _Same:
-    """A value that equals only itself: the same object."""
+    """A value that equals only itself, the same object, and only while
+    nothing can write it: an array whose memory is writable (its owner's,
+    seen through a read-only view) equals nothing.
+    """
 
-    __slots__ = ("value",)
+    __slots__ = ("settled", "value")
 
     def __init__(self, value: object) -> None:
         self.value = value
+        self.settled = not isinstance(value, np.ndarray) or _read_only(value)
 
     def __eq__(self, other: object) -> bool:
-        return isinstance(other, _Same) and other.value is self.value
+        return (
+            isinstance(other, _Same)
+            and self.settled
+            and other.settled
+            and other.value is self.value
+        )
 
     def __hash__(self) -> int:
         return id(self.value)
+
+
+def _read_only(array: np.ndarray) -> bool:
+    """Whether nothing can write ``array``'s memory: the array owning it is
+    read-only too.
+    """
+    owner = array
+    while isinstance(owner.base, np.ndarray):
+        owner = owner.base
+    return not owner.flags.writeable
 
 
 class _LeafFacts:

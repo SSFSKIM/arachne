@@ -327,3 +327,16 @@ def test_a_scene_that_never_armed_has_every_cut_measured(session_of):
         {"from_play": 0, "to_play": 1},
         {"from_play": 2, "to_play": 3},
     ]
+
+
+def test_a_live_camera_picture_that_turned_visible_jumps(session_of):
+    """As the other backend finds it: 3 units, from play 1 to play 2, the
+    display having turned visible while it held the same view of its camera.
+    """
+    session = session_of("LiveImageJump", MOTION, frame_rate=15)
+    (jump,) = lint(session, rules=(motion_jump,)).findings
+    assert session.forward_runs == []
+    assert jump.detail["boundary"] == {"from_play": 1, "to_play": 2}
+    assert jump.detail["distance"] == pytest.approx(3.0, abs=1e-6)
+    assert jump.detail["from"] == pytest.approx([0.0, 0.0], abs=1e-6)
+    assert jump.detail["to"] == pytest.approx([3.0, 0.0], abs=1e-6)
