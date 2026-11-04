@@ -424,12 +424,20 @@ class RegisteredState:
 
         held(self.capture.roots)
         for mob, state in nodes:
-            digest.update(type(mob).__qualname__.encode())
+            digest.update(_framed(type(mob).__qualname__.encode()))
             held(state.submobjects)
             for key, part in content_fields(state, decimals):
-                digest.update(key.encode())
-                digest.update(part)
+                digest.update(_framed(key.encode()))
+                digest.update(_framed(part))
         return digest.digest()
+
+
+def _framed(data: bytes) -> bytes:
+    """``data`` with its length before it, so that two runs of parts key
+    apart wherever they split (``"AB"`` then ``"C"`` against ``"A"`` then
+    ``"BC"``).
+    """
+    return len(data).to_bytes(4, "big") + data
 
 
 #: The fields of a mobject that name an object of this process, not content:
