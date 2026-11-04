@@ -163,6 +163,18 @@ fn record<'py>(py: Python<'py>, r: &Record) -> PyResult<Bound<'py, PyDict>> {
     if let Some(k) = r.fill_image {
         out.set_item("fill_image", key(py, k))?;
     }
+    if let Some(p) = &r.pre_projected {
+        let projected = PyDict::new(py);
+        projected.set_item("points", key(py, p.points))?;
+        match p.gradient {
+            Some([a, b]) => projected.set_item("gradient", (a[0], a[1], a[2], b[0], b[1], b[2]))?,
+            None => projected.set_item("gradient", py.None())?,
+        }
+        projected.set_item("fill", paint(py, &p.fill)?)?;
+        projected.set_item("stroke", paint(py, &p.stroke)?)?;
+        projected.set_item("background_stroke", paint(py, &p.background_stroke)?)?;
+        out.set_item("pre_projected", projected)?;
+    }
     match &r.body {
         Body::None => {}
         Body::FaceGroup(f) => {

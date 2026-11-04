@@ -14,14 +14,18 @@ pub use key::Key;
 ///
 /// From XF 1 the layout is append-only: a new field or kind bumps the minor, and nothing removes
 /// or retypes a field.
-pub const XF_VERSION: (u16, u16) = (1, 0);
+pub const XF_VERSION: (u16, u16) = (1, 1);
 
 /// CE's background-image fill: paint the path into a separate array and multiply by an image.
 /// Carried by XF, drawn by Cairo only in this build.
 pub const FEATURE_BACKGROUND_IMAGE: u64 = 1;
 
+/// A scene camera's pre-display geometry and paints, carried without projecting or shading again.
+/// Carried by XF 1.1, drawn by Cairo only in this build.
+pub const FEATURE_PRE_PROJECTED: u64 = 2;
+
 /// Feature bits this build understands. A drawer can still refuse a known feature it cannot draw.
-pub const KNOWN_FEATURES: u64 = FEATURE_BACKGROUND_IMAGE;
+pub const KNOWN_FEATURES: u64 = FEATURE_BACKGROUND_IMAGE | FEATURE_PRE_PROJECTED;
 
 /// An exact time: numerator over a positive denominator.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -502,6 +506,16 @@ pub enum Body {
     Opaque(Vec<u8>),
 }
 
+/// A scene camera's pre-display output, carried in a record's XF 1.1 tail.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PreProjected {
+    pub points: Key,
+    pub gradient: Option<[[f64; 3]; 2]>,
+    pub fill: Paint,
+    pub stroke: Paint,
+    pub background_stroke: Paint,
+}
+
 /// One drawn object.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Record {
@@ -521,6 +535,8 @@ pub struct Record {
     /// The image multiplied into the record's paint; present exactly when bit 0 is set.
     pub fill_image: Option<Key>,
     pub body: Body,
+    /// Present exactly when bit 1 is set; follows the body on the wire.
+    pub pre_projected: Option<PreProjected>,
 }
 
 impl Record {
@@ -540,6 +556,7 @@ impl Record {
             layer: 0,
             fill_image: None,
             body: Body::None,
+            pre_projected: None,
         }
     }
 
@@ -548,6 +565,9 @@ impl Record {
         let mut keys = Vec::new();
         keys.extend(self.geometry.shape_a);
         keys.extend(self.fill_image);
+        if let Some(p) = &self.pre_projected {
+            keys.push(p.points);
+        }
         if let Some(blend) = &self.geometry.blend {
             keys.push(blend.shape_b);
         }
@@ -577,6 +597,11 @@ impl Record {
             paint(&b.fill);
             paint(&b.stroke);
             paint(&b.background_stroke);
+        }
+        if let Some(p) = &self.pre_projected {
+            paint(&p.fill);
+            paint(&p.stroke);
+            paint(&p.background_stroke);
         }
         match &self.body {
             Body::FaceGroup(f) => {
@@ -718,7 +743,7 @@ impl Delta {
     /// An empty delta at time `t`, sequence number `seq`.
     pub fn new(t: Time, seq: u64) -> Delta {
         Delta {
-            version: XF_VERSION,
+            version: (1, 0),
             t,
             seq,
             view: None,

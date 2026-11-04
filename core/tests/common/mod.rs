@@ -355,14 +355,21 @@ pub fn sample_deltas() -> Vec<Delta> {
     vec![first, second, third]
 }
 
-
 /// XF 1.1's canonical sample, separate so XF 1.0's samples retain their exact bytes.
 pub fn pre_projected_sample() -> Delta {
     let mut d = Delta::new(Time { num: 2, den: 15 }, 3);
     d.version = (1, 1);
-    let original = Shape::new(ShapeData::Path { points: square_points(1.0) });
-    let projected = Shape::new(ShapeData::Path { points: vec![[1.25, -2.5, 0.125], [3.5, 4.75, -0.625]] });
-    let stops = Stops::new(vec![[0.125, 0.25, 0.375, 0.5], [0.625, 0.75, 0.875, 1.0], [0.9, 0.8, 0.7, 0.6]]);
+    let original = Shape::new(ShapeData::Path {
+        points: square_points(1.0),
+    });
+    let projected = Shape::new(ShapeData::Path {
+        points: vec![[1.25, -2.5, 0.125], [3.5, 4.75, -0.625]],
+    });
+    let stops = Stops::new(vec![
+        [0.125, 0.25, 0.375, 0.5],
+        [0.625, 0.75, 0.875, 1.0],
+        [0.9, 0.8, 0.7, 0.6],
+    ]);
     let mut r = Record::new(RecordKind::Path, 11, 111);
     r.geometry.shape_a = Some(original.key());
     r.features = FEATURE_PRE_PROJECTED;

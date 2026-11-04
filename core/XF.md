@@ -8,8 +8,12 @@ meaning and the binary form (`src/xf/wire.rs`), which fixtures and dumped stream
 
 ## Versions and refusal
 
-The version is (major, minor). This build is **XF 1.0**. From here the layout is append-only:
-a new field or kind bumps the minor, and nothing removes or retypes a field.
+The version is (major, minor). This build is **XF 1.1**. From here the layout is append-only:
+a new field or kind bumps the minor, and nothing removes or retypes a field. A writer emits the
+lowest supported version that carries a delta's content: **1.0 without a pre-projected tail, 1.1
+with one**. A file's version is the highest version its deltas need (1.0 for an empty file).
+Explicit foreign or newer version declarations are retained, since this writer cannot determine
+what their content requires. `XF_VERSION` names the build's supported version, not every delta's.
 
 - A reader refuses a major it does not know, and reads a newer minor of its own major, skipping what
   that minor appended (every record, shape, paint table, object and view is length-prefixed).
@@ -25,6 +29,19 @@ present exactly when bit 0 is set; for a known record kind a decoder refuses a d
 invalid XF (`XfError`). The image must be an image shape held by the stream or uploaded in the delta,
 and a key still used by `fill_image` cannot be released. This build refuses drawn records with bit 0
 (`render.unsupported`): **drawn by Cairo only**.
+
+XF 1.1 defines feature bit 1 (value 2), `pre_projected`: a scene's own camera class, whose
+projection or shading differs from the engine's, carries what it produced. A tail after the kind
+body is present exactly when the bit is set. It is valid only on `path`, `points` and `image`
+records; every other known kind, including `face_group` and `mesh`, is invalid XF (`XfError`).
+The decoder reads the tail if and only if the bit is set; the encoder asserts agreement between
+the bit and its optional field. The points key must name a path shape held or uploaded, the
+three paints' table keys must exist, and no key still used by the tail can be released.
+This build refuses drawn bit-1 records (`render.unsupported`): **pre-projected records are drawn
+by Cairo only in this build**. An XF 1.0 reader skips the tail under its newer-minor rule, but
+still reads the feature bit in the fixed header; its drawer refuses the unknown bit rather than
+projecting or shading those points again. Bytes after the tail remain newer-minor fields and
+are skipped. Geometry flags are unchanged: bits outside `0b111` remain invalid.
 
 This build draws the background (a colour, or an image cropped to the frame as CE crops it), `mesh` records filled with one colour, `path` records whose fill and strokes
 are each one colour, `points` records, and `instances` records of a path or a mesh. It refuses any of
@@ -82,6 +99,13 @@ shape's and table's key against its content, except for shape kinds it does not 
     if one is set. Neither image form is drawn by this build yet. For `instances`, per-instance
     placements, fill and stroke tables and object refs, the record's shape and paint block being the
     prototype every instance shares; for reserved kinds, opaque bytes.
+- **Pre-projected output.** The tail's path shape is the camera's
+  `transform_points_pre_display` of the record's points (an image's four corners); its point count
+  need not equal the original shape's. Its optional gradient holds the camera's pre-display of
+  the gradient ends, and its fill, stroke and background stroke are the colours the camera drew
+  with. A drawer places this output without projecting or shading it again. The third column of
+  `points` is the camera's own z: under a 3D camera's projection, the rotated depth **before the
+  focal factor**. Drawers with depth key from it as they key a projected world point.
 - **The view** holds the pixel size, the frame's width, height and centre (the camera's own values:
   CE fits the frame's height to the pixels' aspect ratio), the background (RGBA with the background
   opacity as alpha, or an image key), the camera (flat, moving, or 3D with phi, theta, gamma, focal
@@ -241,7 +265,11 @@ record    u8 kind  u64 features  u32 slot  u32 object
                      item(view)  count (u8 layer  u32 slot  u32 part)*
             instances 5: count affine*  key fill  key stroke  u32 object per instance
             volume 64, field 65, emission 66 (reserved): item(payload)
-          (anything after the body belongs to a newer minor and is skipped)
+          tail (bit 1 set; XF 1.1), after the body:
+            key points
+            [f64 x6 gradient]?
+            paint fill  paint stroke  paint background
+          (anything after the known body and tail belongs to a newer minor and is skipped)
 paint     u8 0 (none) | u8 1  f64 x4 | u8 2  f64 x8 | u8 3  key
 view      u32 pixel_width  u32 pixel_height  f64 frame_width  f64 frame_height
           f64 x3 centre  f64 x3 mapping_centre
@@ -271,7 +299,13 @@ to 1 for both forms.
 
 `set_record(..., fill_image=key)` sets the optional field and bit 0 together, preserving other
 `features` bits. Passing bit 0 in `features` without `fill_image` raises `XfError`; Python cannot
-construct a disagreement. The package exports `FEATURES = {"background_image": 1}`.
+construct a disagreement. Likewise, `set_record(..., pre_projected={"points": key_bytes,
+"gradient": None, "fill": paint, "stroke": paint, "background_stroke": paint})` sets bit 1,
+preserving the other feature bits. `gradient` accepts `None`, six floats or two 3-tuples; omitted
+paint names mean none, and each paint takes the fixed paints' forms (RGBA, one or two inline
+stops, or a table key). `points` is required. Passing bit 1 without `pre_projected` raises
+`XfError`, as does using the field on a disallowed kind. The package exports
+`FEATURES = {"background_image": 1, "pre_projected": 2}`.
 
 ## Python read-back
 
@@ -299,6 +333,11 @@ or `None`), `objects` (a list of `(ref, stable_id, source)` tuples), `upload`, `
   the two 3-tuples accepted by construction. A sub-frame is `(rank, view_dict, order)`, with its
   corners, resampling and image opacity alongside it in `fields`. An unknown record kind exposes
   only `features` and the unread `payload` after its slot/object header, not invented fixed fields.
+- A record with `pre_projected` reads it back as a dictionary with `points` (16-byte bytes),
+  `gradient` (a flat 6-tuple or `None`), and `fill`, `stroke`, `background_stroke` (each `None`,
+  a float64 `(1, 4)` or `(2, 4)` array, or table key bytes). All five names are present in the
+  dictionary, including absent gradient and paints as `None`. Rebuilding this dictionary
+  preserves every f64 bit, just as the fixed fields do.
 - An order entry is `(layer_name, slot, part)`, with `static`, `moving` or `overlay` as the name.
 
 All arrays are independent NumPy copies, including empty arrays with their full dimensions.
