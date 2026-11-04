@@ -40,11 +40,12 @@ group (``Scene.add`` takes the members of a group made for the play out of
 the groups holding them) is still that group: its parts are never paired
 with each other.
 
-A play's first frame is read as the scene when it called the play
-(nothing in it is in motion yet). As it ends, the watch reads the scene the
-play left (its animations finished and cleaned up, before the script runs
-on: ``Record.states``), at the play's end; what it carried off is judged
-there.
+As the script calls a play, the watch reads the scene it calls it on,
+before the play adds or begins anything, at the play's start; as it ends,
+the scene the play left (its animations finished and cleaned up, before
+the script runs on), at the play's end, where what it carried off is
+judged. Both are states the execution keeps (``Record.states``), a play
+too short to show a frame included; the frames between are the render's.
 
 The armed rule's ``sample_fps`` (:mod:`.armed`) has the watch read a
 play's frames at another engine's sampling rate.
@@ -154,25 +155,25 @@ class _Step:
 def _schedule(
     record: Record, since: Fraction, sample_fps: Fraction | None
 ) -> list[_Step]:
-    """When the watch samples, from ``since`` on: as each play begins (its
-    first frame), then at the first frame it reads (:func:`_read_frames`) at
-    least :data:`HOLD_SAMPLE` after the sample before while it plays (a
-    frozen frame has none), and as it ends; and the scene as it closes.
+    """When the watch samples, from ``since`` on: as the script calls each
+    play (the state it calls it on), then at the first frame it reads
+    (:func:`_read_frames`) at least :data:`HOLD_SAMPLE` after the sample
+    before while it plays (a frozen frame has none), and as it ends (the
+    state it leaves); and the scene as it closes.
     """
     grid = render_grid(record)
     steps = []
     for play in record.plays:
         if play.start < since:
             continue
+        steps.append(_Step("entry", play.index, None, play.start))
         frames = frames_in(play.start, play.end, grid)
-        if frames:
-            steps.append(_Step("entry", play.index, frames[0], frames[0]))
-            if not play.held:
-                last = play.start
-                for frame in _read_frames(play, frames, sample_fps):
-                    if frame - last >= HOLD_SAMPLE:
-                        steps.append(_Step("inside", play.index, frame, frame))
-                        last = frame
+        if frames and not play.held:
+            last = play.start
+            for frame in _read_frames(play, frames, sample_fps):
+                if frame - last >= HOLD_SAMPLE:
+                    steps.append(_Step("inside", play.index, frame, frame))
+                    last = frame
         steps.append(_Step("exit", play.index, None, play.end))
     steps.append(_Step("final", None, record.duration, record.duration))
     return steps
@@ -206,22 +207,28 @@ def _frames(record: Record, rule: ArmedRule) -> list[Fraction]:
 def _watch(context: LintContext, rule: ArmedRule) -> list[Finding]:
     # Plays, frames and states, from the one execution the frames come from.
     record = context.frames.execution
-    states = record.states
+    states = rule.states(context)
     watch = _Watch(record, rule.terms)
     shown = rule.frames(context)
     for step in _schedule(record, rule.since, rule.sample_fps):
         play = record.plays[step.play] if step.play is not None else None
+        if play is not None and step.kind == "entry":
+            # The scene as the script called the play, before it began.
+            called = states.calls[play.index]
+            watch.sample(rule.state(context, called), step.at, (), ())
+            continue
         if play is not None and step.kind == "exit":
-            left = states.exits.get(play.index) if states is not None else None
-            if left is None:
-                continue
             # The scene as the play left it: its animations finished and
             # cleaned up, before the script runs on.
+            left = states.exits[play.index]
             parts = rule.state(context, left)
-            watch.regroup(play, left)
+            watch.regroup(play, states.calls[play.index], left)
             watch.after_play(play, parts, left)
             watch.sample(parts, step.at, (), ())
             continue
+        # A frame the session's record schedules and its execution does not
+        # (two executions of the scene that differ, which the lint reports)
+        # is not read.
         parts = shown.get(step.frame) if step.frame is not None else None
         if parts is None:
             continue
@@ -273,21 +280,21 @@ class _Watch:
             self._animated[key] = found
         return found
 
-    def regroup(self, play: PlayRecord, left: Capture) -> None:
-        """After ``play``, as it left the scene (``left``): a top level it
-        made out of members of one authored group is still that group, whose
-        parts are never paired with each other; one gathered from several
-        keeps its own. (``Scene.add`` takes the members of a group made for
-        the play out of the groups holding them.)
+    def regroup(self, play: PlayRecord, called: Capture, left: Capture) -> None:
+        """After ``play``, called on the scene ``called`` and leaving it as
+        ``left``: a top level it made out of members of one authored group
+        is still that group, whose parts are never paired with each other;
+        one gathered from several keeps its own. (``Scene.add`` takes the
+        members of a group made for the play out of the groups holding them.)
         """
         record = self.record
         was: dict[str, str] = {}
-        for top in play.called:
+        for top in called.roots:
             key = record.origin(top).id
             owner = self.owner.get(key, key)
             for member in family_at(record, top, left):
                 was.setdefault(record.origin(member).id, owner)
-        before = {record.origin(top).id for top in play.called}
+        before = {record.origin(top).id for top in called.roots}
         for top in left.roots:
             key = record.origin(top).id
             if key in before:

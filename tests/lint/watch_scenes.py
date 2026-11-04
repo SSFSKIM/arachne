@@ -15,6 +15,7 @@ from arachne import (
     ORIGIN,
     RIGHT,
     UP,
+    Animation,
     Circle,
     Dot,
     FadeIn,
@@ -436,3 +437,131 @@ class CaptionHeldLonger(CaptionHeldAtEdge):
     """The same, held a frame and a half longer."""
 
     hold = 1.1
+
+
+# The scene as the script calls a play ----------------------------------------
+
+
+class NoteFadesAtOnce(Scene):
+    """A settled word on a line, faded by a play whose rate is already 1 at
+    its first instant: no frame shows it, but the script called the fade on
+    the settled frame.
+    """
+
+    def construct(self):
+        rail = Line(LEFT * 4, RIGHT * 4)
+        note = Text("note", font_size=36)
+        self.add(rail, note)
+        self.wait(0.6)
+        self.play(FadeOut(note, rate_func=lambda a: 1), run_time=0.4)  # @at-once
+        self.wait(0.2)
+
+
+class TakenOutAsItBegins(Animation):
+    """Takes its word out of the panel holding it as the play begins, then
+    removes it as it ends.
+    """
+
+    def __init__(self, word, panel, scene):
+        self.panel, self.scene = panel, scene
+        super().__init__(word, remover=True)
+
+    def begin(self):
+        self.panel.remove(self.mobject)
+        self.scene.add(self.mobject)
+        super().begin()
+
+    def interpolate_mobject(self, alpha):
+        pass
+
+
+class WordLeavesItsPanel(Scene):
+    """A settled word, member of a panel when the script calls the play
+    that departs it; the play's beginning takes it out of the panel.
+    """
+
+    def construct(self):
+        rail = Line(LEFT * 4, RIGHT * 4)
+        note = Text("note", font_size=36)
+        panel = VGroup(note, Dot(UP * 2))
+        self.add(rail, panel)
+        self.wait(0.6)
+        self.play(TakenOutAsItBegins(note, panel, self), run_time=0.4)  # @leaves
+        self.wait(0.2)
+
+
+class NoteFadesBetweenFrames(Scene):
+    """A settled word faded by a play too short to show a frame."""
+
+    def construct(self):
+        rail = Line(LEFT * 4, RIGHT * 4)
+        note = Text("note", font_size=36)
+        self.add(rail, note)
+        self.wait(0.61)
+        self.play(FadeOut(note), run_time=0.01)  # @between
+        self.wait(0.2)
+
+
+class PuckJumpsOutAtOnce(Scene):
+    """A filled puck inside the frame when the script calls the play that
+    puts it past the right edge from its first instant on.
+    """
+
+    def construct(self):
+        puck = Circle(radius=0.4, fill_opacity=1)
+        self.add(puck)
+        self.play(
+            puck.animate.move_to(RIGHT * 7.1), run_time=0.6, rate_func=lambda a: 1
+        )
+        self.wait(1.4)
+
+
+class StatesArmedLate(Scene):
+    """A word across the right edge for 1.2 s, then set in the middle; the
+    engine's record begins keeping states only then.
+    """
+
+    def construct(self):
+        word = Text("edge", font_size=32).move_to(RIGHT * 6.95)
+        self.add(word)
+        self.wait(1.2)
+        word.move_to(ORIGIN)
+        timeline = getattr(self, "timeline", None)
+        if timeline is not None:
+            timeline.arm_states()
+        self.wait(0.2)
+
+
+class NoteReordered(Scene):
+    """A settled word on a line, sent to the back (``bring_to_back`` removes
+    it and adds it again) or, as a twin, to the front (which only adds it).
+    """
+
+    method = "bring_to_back"
+
+    def construct(self):
+        rail = Line(LEFT * 4, RIGHT * 4)
+        note = Text("note", font_size=36)
+        self.add(rail, note)
+        self.wait(0.6)
+        getattr(self, self.method)(note)  # @reorder
+        self.wait(0.2)
+
+
+class NoteBroughtToFront(NoteReordered):
+    method = "bring_to_front"
+
+
+class ForegroundNoteDropped(Scene):
+    """A settled foreground word on a line, dropped from the foreground
+    (which takes it out of no list ``remove`` reaches).
+    """
+
+    def construct(self):
+        rail = Line(LEFT * 4, RIGHT * 4)
+        note = Text("note", font_size=36)
+        self.add(rail)
+        self.add_foreground_mobjects(note)
+        self.wait(0.6)
+        self.remove_foreground_mobjects(note)
+        self.wait(0.2)
