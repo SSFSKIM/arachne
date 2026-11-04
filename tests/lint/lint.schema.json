@@ -1,12 +1,20 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Scene lint report, v1",
-  "description": "One scene's lint report. A finding is data and never ends the process. The report's violations are its errors and warnings; notes are kept apart, in the same violation shape. The report passes unless a violation is an error.",
+  "description": "One scene's lint report. A finding is data and never ends the process. The report's violations are its errors and warnings; notes are kept apart, in the same violation shape. The report passes unless a violation is an error. Pixel boxes are in pixels of target_resolution, the scene's configured pixel size.",
   "type": "object",
-  "required": ["pass", "duration_s", "violations"],
+  "required": ["pass", "duration_s", "target_resolution", "violations"],
   "properties": {
     "pass": {"type": "boolean"},
     "duration_s": {"type": "number"},
+    "target_resolution": {
+      "type": "object",
+      "required": ["width", "height"],
+      "properties": {
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1}
+      }
+    },
     "violations": {
       "type": "array",
       "items": {
@@ -63,7 +71,10 @@
         "message": {"type": "string"},
         "fix": {"type": "string"},
         "line": {"type": ["integer", "null"]},
-        "detail": {"type": "object"}
+        "detail": {
+          "type": "object",
+          "properties": {"folded": {"type": "integer", "minimum": 1}}
+        }
       }
     }
   }
