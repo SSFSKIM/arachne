@@ -202,6 +202,39 @@ class _Painter3DCamera(_Produced, ThreeDCamera):
         return _context(self, pixel_array)
 
 
+#: What a 3D painter camera calls to turn its view into a rotation matrix.
+_ROTATION = (
+    "reset_rotation_matrix",
+    "generate_rotation_matrix",
+    "get_rotation_matrix",
+    "get_phi",
+    "get_theta",
+    "get_gamma",
+    "get_focal_distance",
+    "get_zoom",
+)
+
+
+def _pin_engine_methods(cls: type, base: type, names: Sequence[str]) -> None:
+    """Give ``cls`` ``base``'s definitions of ``names`` as the engine made
+    them, taken when ``arachne`` was imported, so that a patch the scene's
+    code made to an engine camera class never runs inside the drawer: the
+    scene's camera code runs in its own capture alone, as often as on Cairo.
+    """
+    from arachne.timeline.frozen import class_members, engine_class
+
+    for name in names:
+        for klass in base.__mro__:
+            if engine_class(klass) and name in class_members(klass):
+                setattr(cls, name, class_members(klass)[name])
+                break
+        else:  # pragma: no cover - the engine's camera defines each
+            raise LookupError(f"{base.__name__} has no {name}")
+
+
+_pin_engine_methods(_Painter3DCamera, ThreeDCamera, _ROTATION)
+
+
 def _context(camera: Any, pixel_array: np.ndarray) -> Any:
     """CE's ``get_cairo_context``, its matrix built from the centre CE froze."""
     contexts: dict[int, Any] = camera.__dict__.setdefault("_xf_contexts", {})
