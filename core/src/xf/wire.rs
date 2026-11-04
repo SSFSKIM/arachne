@@ -247,6 +247,12 @@ pub fn encode_record(r: &Record) -> Vec<u8> {
             return;
         }
 
+        assert_eq!(
+            r.features & FEATURE_PRE_PROJECTED != 0,
+            r.pre_projected.is_some(),
+            "pre_projected feature bit and tail field disagree"
+        );
+
         let g = &r.geometry;
         w.u8(g.shape_a.is_some() as u8
             | (g.blend.is_some() as u8) << 1
@@ -381,14 +387,40 @@ pub fn encode_record(r: &Record) -> Vec<u8> {
             }
             (kind, body) => panic!("a {} record cannot carry {body:?}", kind.name()),
         }
+        if let Some(p) = &r.pre_projected {
+            w.key(&p.points);
+            w.bool(p.gradient.is_some());
+            if let Some([a, b]) = &p.gradient {
+                w.f64s(a);
+                w.f64s(b);
+            }
+            write_paint(w, &p.fill);
+            write_paint(w, &p.stroke);
+            write_paint(w, &p.background_stroke);
+        }
     })
 }
 
-/// A delta's bytes.
+/// The lowest supported version that carries this delta's content. Foreign and future version
+/// declarations are retained: this writer cannot decide what their content requires.
+pub fn encoded_version(d: &Delta) -> (u16, u16) {
+    if d.version.0 != XF_VERSION.0 || d.version.1 > XF_VERSION.1 {
+        return d.version;
+    }
+    let minor = u16::from(
+        d.set
+            .iter()
+            .any(|r| r.features & FEATURE_PRE_PROJECTED != 0),
+    );
+    (1, minor)
+}
+
+/// A delta's bytes, at the lowest version that carries its content.
 pub fn encode_delta(d: &Delta) -> Vec<u8> {
     encoded(|w| {
-        w.u16(d.version.0);
-        w.u16(d.version.1);
+        let version = encoded_version(d);
+        w.u16(version.0);
+        w.u16(version.1);
         w.i64(d.t.num);
         w.i64(d.t.den);
         w.u64(d.seq);
@@ -423,12 +455,13 @@ pub fn encode_delta(d: &Delta) -> Vec<u8> {
     })
 }
 
-/// A file of deltas: the magic, this build's version, then each delta preceded by its length.
+/// A file of deltas: the magic, the version its deltas require, then each length-prefixed delta.
 pub fn encode_file(deltas: &[Delta]) -> Vec<u8> {
     encoded(|w| {
         w.0.extend_from_slice(&MAGIC);
-        w.u16(XF_VERSION.0);
-        w.u16(XF_VERSION.1);
+        let version = deltas.iter().map(encoded_version).max().unwrap_or((1, 0));
+        w.u16(version.0);
+        w.u16(version.1);
         w.count(deltas.len());
         deltas.iter().for_each(|d| w.item(&encode_delta(d)));
     })
@@ -833,6 +866,28 @@ fn decode_record(r: &mut R) -> Result<Record> {
         }
         RecordKind::Unknown(_) => unreachable!("returned above"),
     };
+    if rec.features & FEATURE_PRE_PROJECTED != 0 {
+        if !matches!(
+            kind,
+            RecordKind::Path | RecordKind::Points | RecordKind::Image
+        ) {
+            return Err(XfError::Invalid(format!(
+                "pre_projected is not valid on {} records",
+                kind.name()
+            )));
+        }
+        rec.pre_projected = Some(PreProjected {
+            points: r.key()?,
+            gradient: if r.bool()? {
+                Some([r.f64s()?, r.f64s()?])
+            } else {
+                None
+            },
+            fill: read_paint(r)?,
+            stroke: read_paint(r)?,
+            background_stroke: read_paint(r)?,
+        });
+    }
     // Whatever follows belongs to a newer minor version: skipped.
     Ok(rec)
 }

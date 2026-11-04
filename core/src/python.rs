@@ -275,6 +275,38 @@ fn view_of(fields: Fields) -> PyResult<View> {
     Ok(view)
 }
 
+fn gradient_of(fields: &Fields) -> PyResult<Option<[[f64; 3]; 2]>> {
+    fields
+        .take("gradient")?
+        .map(|v| {
+            if let Ok([ax, ay, az, bx, by, bz]) = v.extract::<[f64; 6]>() {
+                Ok([[ax, ay, az], [bx, by, bz]])
+            } else {
+                v.extract::<[[f64; 3]; 2]>()
+                    .map_err(|e| fields.bad("gradient", e))
+            }
+        })
+        .transpose()
+}
+
+fn pre_projected_of(fields: &Fields) -> PyResult<Option<PreProjected>> {
+    fields
+        .take("pre_projected")?
+        .map(|v| {
+            let p = Fields::new("pre_projected".into(), Some(v.cast::<PyDict>()?), v.py())?;
+            let projected = PreProjected {
+                points: need_key(&p, "points")?,
+                gradient: gradient_of(&p)?,
+                fill: paint_of(p.take("fill")?)?,
+                stroke: paint_of(p.take("stroke")?)?,
+                background_stroke: paint_of(p.take("background_stroke")?)?,
+            };
+            p.finish()?;
+            Ok(projected)
+        })
+        .transpose()
+}
+
 fn paint_block(fields: &Fields) -> PyResult<PaintBlock> {
     let joint: String = fields.or("joint", "auto".to_string())?;
     let cap: String = fields.or("cap", "auto".to_string())?;
@@ -299,17 +331,7 @@ fn paint_block(fields: &Fields) -> PyResult<PaintBlock> {
         background_stroke: paint_of(fields.take("background_stroke")?)?,
         stroke_width: fields.or("stroke_width", 0.0)?,
         background_stroke_width: fields.or("background_stroke_width", 0.0)?,
-        gradient: fields
-            .take("gradient")?
-            .map(|v| {
-                if let Ok([ax, ay, az, bx, by, bz]) = v.extract::<[f64; 6]>() {
-                    Ok([[ax, ay, az], [bx, by, bz]])
-                } else {
-                    v.extract::<[[f64; 3]; 2]>()
-                        .map_err(|e| fields.bad("gradient", e))
-                }
-            })
-            .transpose()?,
+        gradient: gradient_of(fields)?,
         joint: named(
             "joint",
             &joint,
@@ -666,6 +688,24 @@ impl PyFrameDelta {
                 "background_image feature needs fill_image".into(),
             ));
         }
+        record.pre_projected = pre_projected_of(&fields)?;
+        if record.pre_projected.is_some() {
+            if !matches!(
+                kind,
+                RecordKind::Path | RecordKind::Points | RecordKind::Image
+            ) {
+                return Err(xf_error(
+                    py,
+                    format!("pre_projected is not valid on {} records", kind.name()),
+                ));
+            }
+            record.features |= FEATURE_PRE_PROJECTED;
+        } else if record.features & FEATURE_PRE_PROJECTED != 0 {
+            return Err(xf_error(
+                py,
+                "pre_projected feature needs pre_projected".into(),
+            ));
+        }
         record.geometry = Geometry {
             shape_a: key_field(&fields, "shape")?,
             place_a: fields.or("place", IDENTITY)?,
@@ -718,6 +758,7 @@ impl PyFrameDelta {
         record.body = body_of(kind, &fields)?;
         fields.finish()?;
         self.delta.set.push(record);
+        self.delta.version = wire::encoded_version(&self.delta);
         Ok(())
     }
 
@@ -891,6 +932,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("XF_VERSION", XF_VERSION)?;
     let features = PyDict::new(m.py());
     features.set_item("background_image", FEATURE_BACKGROUND_IMAGE)?;
+    features.set_item("pre_projected", FEATURE_PRE_PROJECTED)?;
     m.add("FEATURES", features)?;
     m.add("RESOLVES", ("background", "fast", "coverage", "sample"))?;
     m.add(
