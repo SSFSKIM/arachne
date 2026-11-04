@@ -44,6 +44,7 @@ __all__ = ["pair_findings"]
 
 import itertools
 import math
+from collections.abc import Container, Iterable
 from fractions import Fraction
 
 import numpy as np
@@ -84,13 +85,28 @@ HALO_OPACITY = 0.9
 HIDING_OPACITY = 1.0
 
 
-def pair_findings(parts: Parts, terms: Terms) -> list[Finding]:
+def pair_findings(
+    parts: Parts,
+    terms: Terms,
+    *,
+    among: Iterable[Measured] | None = None,
+    focus: Container[str] | None = None,
+    text_only: bool = False,
+) -> list[Finding]:
     """The contacts and covered texts among the units on screen at
-    ``parts``' instant.
+    ``parts``' instant: of those ``among`` names when given (a hold
+    watch's, less what is leaving), only the pairs with a unit ``focus``
+    names (by id) when given, and only those with a text in them with
+    ``text_only``.
     """
-    units = [u for u in measured_units(parts) if u.on(parts.frame)]
+    pool = measured_units(parts) if among is None else among
+    units = [u for u in pool if u.on(parts.frame)]
     found: list[Finding] = []
     for a, b in itertools.combinations(units, 2):
+        if focus is not None and a.id not in focus and b.id not in focus:
+            continue
+        if text_only and not (a.text or b.text):
+            continue
         finding = _pair(parts, units, terms, a, b)
         if finding is not None:
             found.append(finding)

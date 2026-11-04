@@ -79,7 +79,8 @@ class Unit:
     ``family`` is what the unit is made from, each mobject in it once: the
     unit's own family, or for furniture its axes' (or lone number line's)
     whole family. An exemption naming any of these, or a group holding the
-    unit, names the unit.
+    unit, names the unit. ``tip`` says whether it carries a tip of its own
+    (an arrow), which makes an open stroke a thing on screen.
     """
 
     id: str
@@ -91,6 +92,7 @@ class Unit:
     furniture: str | None
     within: tuple[Holder, ...]
     family: tuple[Holder, ...] = ()
+    tip: bool = False
 
 
 @dataclass(frozen=True, eq=False)
@@ -205,6 +207,8 @@ class Parts:
     (``"recorded"``, the record; ``"forward"``, a forward run). ``frame``
     is the picture's box in home-frame units; ``target`` the resolution
     pixel boxes are given at, ``(width, height)``: the session's.
+    ``fixed`` holds the stable ids of what a ThreeDCamera keeps fixed in
+    the frame there (empty under any other camera).
     """
 
     t: Fraction
@@ -213,6 +217,7 @@ class Parts:
     view: View
     parts: tuple[Part, ...]
     target: tuple[int, int]
+    fixed: frozenset[str] = frozenset()
 
     @property
     def frame(self) -> Box:
@@ -347,7 +352,11 @@ def _read(
             )
     parts.sort(key=lambda part: part.order)
     index = play.index if play is not None else None
-    return Parts(t, index, answer, view, tuple(parts), target)
+    extras = capture.camera
+    fixed = frozenset(
+        record.origin(m).id for m in (extras.fixed_in_frame if extras else ())
+    )
+    return Parts(t, index, answer, view, tuple(parts), target, fixed)
 
 
 def _viewing_nodes(camera: Any) -> set[int]:
@@ -584,6 +593,7 @@ class _Reader:
                 furniture=furniture,
                 within=tuple(self._holder(m) for m in above),
                 family=self._family(source),
+                tip=_has_tip(mob),
             )
             self._units[id(mob)] = found
             plate = getattr(mob, "background_rectangle", None)
@@ -684,6 +694,12 @@ def _first_fill(mob: Mobject) -> float:
     """
     opacities = np.asarray(mob.get_fill_opacities(), dtype=float).ravel()
     return float(opacities[0]) if opacities.size else 0.0
+
+
+def _has_tip(mob: Mobject) -> bool:
+    """Whether ``mob`` carries a tip of its own, as an arrow does."""
+    has_tip = getattr(mob, "has_tip", None)
+    return bool(callable(has_tip) and has_tip())
 
 
 def _text_like(mob: Mobject) -> bool:
