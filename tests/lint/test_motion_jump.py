@@ -170,6 +170,19 @@ def test_a_zoom_cut_after_a_steady_slide_moves_nothing(jumps_of):
     assert jumps_of("ZoomCut") == []
 
 
+def test_a_zoom_cut_after_the_camera_followed_the_body_moves_nothing(jumps_of):
+    """The body's own steps count, in the scene, however the camera moved
+    with it: the last frame's ordinary step is still its own motion.
+    """
+    assert jumps_of("FollowedZoomCut") == []
+
+
+def test_a_set_back_behind_a_tenfold_zoom_jumps(jumps_of):
+    (jump,) = jumps_of("ZoomedReset")
+    # From the last frame (x = -0.5 + 14/15) to 0, at 10x.
+    assert jump.detail["distance"] == pytest.approx(10 * (0.5 - 1 / 15), abs=1e-3)
+
+
 def test_a_teleport_behind_a_zoom_cut_still_jumps(jumps_of):
     (jump,) = jumps_of("ZoomedTeleport")
     # 2 units set down, and the last frame's step short of the stop, at 2x.
