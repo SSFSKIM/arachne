@@ -2,10 +2,10 @@
 //! one frame's pixels, or refuses the whole frame when any drawn record carries what this build
 //! cannot draw (`render.unsupported`).
 
-use crate::composite::{self, Frame, Rendered};
+use crate::composite::{self, Frame, Producer, Rendered};
 use crate::mesh::{self, MeshDraw};
 use crate::xf::*;
-use crate::{instance, path, tiles};
+use crate::{instance, path, points, tiles};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
@@ -486,6 +486,19 @@ impl Stream {
     /// record carrying a field it does not draw yet, reserved or unknown kinds, unknown feature
     /// bits, and unknown light models.
     pub fn render(&self, width: u32, height: u32, threads: usize) -> Result<Rendered, DrawError> {
+        self.render_with(width, height, threads, &[])
+    }
+
+    /// Draws the frame as [`Stream::render`] does, with `extra` producers drawing into the same
+    /// passes after the stream's own: a probe's instrument (a producer that sends every pixel to
+    /// the sample resolve, say), never part of what a stream draws.
+    pub fn render_with(
+        &self,
+        width: u32,
+        height: u32,
+        threads: usize,
+        extra: &[&dyn Producer],
+    ) -> Result<Rendered, DrawError> {
         if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
             return Err(DrawError::Invalid(format!(
                 "a frame of {width} x {height} pixels (each side 1 to {MAX_SIDE})"
@@ -531,7 +544,7 @@ impl Stream {
                 })?
             }
         };
-        let (mut meshes, mut paths, mut discs) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut meshes, mut paths, mut clouds) = (Vec::new(), Vec::new(), Vec::new());
         for (order, e) in self.order.iter().enumerate() {
             let record = &self.records[&e.slot];
             let order = order as u32;
@@ -568,7 +581,7 @@ impl Stream {
                     paths.push(instance::path_record(record, points, order));
                 }
                 (RecordKind::Points, Some(ShapeData::Path { points }), Body::Points(p)) => {
-                    instance::discs(record, points, table(&p.colors), order, &mut discs);
+                    clouds.push(instance::points(record, points, table(&p.colors), order));
                 }
                 (RecordKind::Instances, Some(shape), Body::Instances(body)) => match shape {
                     ShapeData::Path { points } => instance::path_members(
@@ -604,11 +617,11 @@ impl Stream {
         for draw in &paths {
             lowering.path(draw);
         }
-        for draw in &discs {
-            lowering.disc(draw);
-        }
         let paths = lowering.finish();
-        Ok(tiles::render(frame, &[&meshes, &paths], threads))
+        let blocks = points::lower(view, width, height, &clouds);
+        let mut producers: Vec<&dyn Producer> = vec![&meshes, &paths, &blocks];
+        producers.extend_from_slice(extra);
+        Ok(tiles::render(frame, &producers, threads))
     }
 
     pub fn view(&self) -> Option<&View> {
@@ -756,6 +769,19 @@ fn refusal(rec: &Record, shapes: &HashMap<Key, Shape>) -> Option<Unsupported> {
                 return None;
             }
             "an instances record of more parts than 2^32".into()
+        } else if let (Body::Points(body), Some(ShapeData::Path { points: positions })) =
+            (&rec.body, prototype)
+        {
+            // Each block pixel's write takes a sub-order of its own (its offset, then its point),
+            // in 32 bits.
+            let side = points::side(body.radius) as u128;
+            let writes = side
+                .checked_mul(side)
+                .and_then(|s| s.checked_mul(positions.len() as u128));
+            if writes.is_some_and(|w| w <= u32::MAX as u128 + 1) {
+                return None;
+            }
+            "a points record of more block pixels than 2^32".into()
         } else {
             return None;
         }

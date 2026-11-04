@@ -1,5 +1,6 @@
-//! Exact coverage of polygons filled by the nonzero rule, on the pixel grid, and point-sampled
-//! masks of the same polygons at the compositor's sub-samples.
+//! Exact coverage of polygons filled by the nonzero rule, on the pixel grid and on the 4 x 4 grid
+//! of cells inside one pixel, and point-sampled masks of the same polygons at the compositor's
+//! sub-samples.
 //!
 //! Coverage is the exact area of each pixel inside the filled region. Each pixel row is cut into
 //! bands at every vertex inside it and every crossing of two edges inside it; within a band no two
@@ -365,4 +366,44 @@ pub fn mask(edges: &[Edge], candidates: &[u32], x: u32, y: u32) -> u16 {
         }
     }
     (0..SAMPLES).fold(0u16, |m, s| if winding[s] != 0 { m | 1 << s } else { m })
+}
+
+/// The exact nonzero coverage of the polygons inside each cell of pixel `(x, y)`'s 4 x 4 grid, as
+/// fractions of the cell, by row then column: [`cover`] over the pixel magnified four times about
+/// its corner (exact in f64), so the cells' mean is the pixel's area up to rounding. For pixels
+/// the compositor resolves sample by sample; `candidates` as for [`mask`].
+pub fn cell_areas(edges: &[Edge], candidates: &[u32], x: u32, y: u32) -> [[f64; 4]; 4] {
+    let (ox, oy) = (x as f64, y as f64);
+    let local: Vec<Edge> = candidates
+        .iter()
+        .map(|&i| &edges[i as usize])
+        .filter(|e| e.y0 < oy + 1.0 && e.y1 > oy && e.x_min() < ox + 1.0)
+        .map(|e| Edge {
+            x0: (e.x0 - ox) * 4.0,
+            y0: (e.y0 - oy) * 4.0,
+            x1: (e.x1 - ox) * 4.0,
+            y1: (e.y1 - oy) * 4.0,
+            dir: e.dir,
+        })
+        .collect();
+    let all: Vec<u32> = (0..local.len() as u32).collect();
+    let mut cells = [[0.0; 4]; 4];
+    let grid = Rect {
+        x0: 0,
+        y0: 0,
+        x1: 4,
+        y1: 4,
+    };
+    cover(
+        &local,
+        &all,
+        grid,
+        &mut Scratch::default(),
+        |row, x0, x1, area| {
+            for column in x0..x1 {
+                cells[row as usize][column as usize] = area;
+            }
+        },
+    );
+    cells
 }

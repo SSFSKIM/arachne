@@ -8,10 +8,11 @@
 //! - [`composite`]: the one place blending lives: fragments, the opaque and transparent passes,
 //!   the two resolves, emission, and the frame buffer.
 //! - [`mesh`]: the triangle rasterizer, a producer of mask fragments with depth.
-//! - [`path`]: the path rasterizer (fills, strokes, dashes, glyphs, discs), a producer of
+//! - [`path`]: the path rasterizer (fills, strokes, dashes, glyphs), a producer of
 //!   exact-area fragments with depth, on [`scanline`]'s exact nonzero coverage.
 //! - [`depth`]: canonical planes, so coplanar things tie exactly, and depth along curves.
-//! - [`instance`]: `instances` and `points` records drawn as their members.
+//! - [`instance`]: `instances` and `points` records drawn as their members; [`points`], point
+//!   clouds as CE's square blocks.
 //! - [`tiles`]: a frame cut into tiles, drawn on threads scoped to the draw call.
 //! - [`probes`]: the class probes, the parity kit's fixtures (`parity/probes.rs`).
 //!
@@ -24,6 +25,7 @@ pub mod depth;
 pub mod instance;
 pub mod mesh;
 pub mod path;
+pub mod points;
 #[path = "../parity/probes.rs"]
 pub mod probes;
 pub mod project;

@@ -24,7 +24,7 @@ def run(kit: Path, **kwargs) -> tuple[bool, list[str]]:
 
 def test_the_core_passes_every_fixture():
     names = [f[0] for f in arachne_core.probe_fixtures()]
-    assert len(names) == 9
+    assert len(names) == 10
     ok, lines = run(KIT)
     assert ok, lines
     assert lines == [f"PASS {n}" for n in names] + [
@@ -32,9 +32,14 @@ def test_the_core_passes_every_fixture():
     ]
 
 
-def test_the_coverage_bound_is_the_cores_constant():
-    bounds = json.loads((KIT / "tolerances.json").read_text())["bounds"]
+def test_every_bound_is_a_placeholder_and_coverage_starts_at_the_cores_constant():
+    # The constant bounds a pixel with one partial mask or path edge; one holding a silhouette and
+    # a path's edge together lands farther from its sample resolve, so the coverage bound is a
+    # placeholder too.
+    tolerances = json.loads((KIT / "tolerances.json").read_text())
+    bounds = tolerances["bounds"]
     assert set(bounds) == set(arachne_core.RESOLVES)
+    assert set(tolerances["placeholder"]) == set(arachne_core.RESOLVES)
     assert bounds["coverage"] == arachne_core.COVERAGE_TO_SAMPLE_LSB
 
 
@@ -53,11 +58,36 @@ def test_a_pixel_beyond_its_class_bound_fails_its_fixture(tmp_path):
         ok, lines = run(kit)
         assert ok == passes, lines
         if not passes:
-            assert (
-                f"FAIL seam: frame 1: 1 pixels beyond their class's bound, the first at {x},{y}"
-                in (lines[-2])
-            )
-            assert lines[-1] == "parity: 8/9 pass"
+            assert any(
+                line.startswith(
+                    f"FAIL seam: frame 1: 1 pixels beyond their class's bound, the first at {x},{y}"
+                )
+                for line in lines
+            ), lines
+            assert lines[-1] == "parity: 9/10 pass"
+
+
+def test_a_pixel_resolved_in_another_class_fails_the_cpu_backend(tmp_path):
+    kit = tmp_path / "kit"
+    shutil.copytree(KIT, kit)
+    path = kit / "references" / "seam.resolves.npz"
+    with np.load(path) as ref:
+        classes = ref["frame_data"].copy()
+    coverage = arachne_core.RESOLVES.index("coverage")
+    sample = arachne_core.RESOLVES.index("sample")
+    y, x = np.argwhere(classes[1, :, :, 0] == coverage)[0]
+    classes[1, y, x] = sample
+    np.savez_compressed(path, frame_data=classes)
+    ok, lines = run(kit)
+    assert not ok
+    assert any(
+        line.startswith(
+            f"FAIL seam: frame 1: 1 pixels resolved in another class, the first at {x},{y} "
+            "(coverage where the reference has sample)"
+        )
+        for line in lines
+    ), lines
+    assert lines[-1] == "parity: 9/10 pass"
 
 
 def test_a_reference_from_another_stream_fails_until_regenerated(tmp_path):
@@ -83,7 +113,7 @@ def test_references_are_one_uint8_frame_array_per_file():
     # The only .npz the repository's leak check admits (scripts/leak_check.py): one uint8
     # `frame_data` of frames x height x width x 3 or 4.
     refs = sorted((KIT / "references").glob("*.npz"))
-    assert len(refs) == 18
+    assert len(refs) == 20
     for path in refs:
         with np.load(path) as ref:
             assert list(ref.keys()) == ["frame_data"]

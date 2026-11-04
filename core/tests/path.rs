@@ -1,13 +1,14 @@
 //! Paths and points drawn through a Stream: fills by the nonzero rule at their exact area, glyph
 //! holes, pixel-aligned rectangles whole, strokes at CE's width with Cairo's miter limit, CE's
 //! subpath split and close rule, dashes, paths far beyond the frame, coplanar paths and meshes
-//! tying exactly, discs of CE's thickness, instances drawing what their members drawn as records
-//! draw, what paths do not draw yet refused, and the scanline's masks against point winding.
+//! tying exactly, points as CE's square blocks, instances drawing what their members drawn as
+//! records draw, what paths do not draw yet refused, and the scanline's masks against point
+//! winding.
 
 mod common;
 
 use arachne_core::composite::{SAMPLES, area_coverage, blend, premultiply, sample_point};
-use arachne_core::project::{FrameMap, subpixel_coords};
+use arachne_core::project::{FrameMap, Placement, Projection, pre_display, subpixel_coords};
 use arachne_core::scanline;
 use arachne_core::stream::{DrawError, Stream};
 use arachne_core::xf::*;
@@ -490,58 +491,151 @@ fn points_record(slot: u32, shape: &Shape, colours: &Stops, radius: f64) -> Reco
     r
 }
 
-/// CE draws a point as a block `int(thickness)` pixels across at its subpixel place; the core
-/// draws a disc that wide there, in its own colour.
-#[test]
-fn a_point_is_a_disc_of_ces_thickness_at_its_place() {
+/// The frame point whose subpixel coordinates (flat view, CE's `points_to_subpixel_coords`) are
+/// `(sx, sy)`.
+fn at_subpixel(view: &View, sx: f64, sy: f64) -> [f64; 3] {
+    let (pw, ph) = (W as f64, H as f64);
+    [
+        (sx - pw / 2.0) / (pw / view.frame_width) + view.frame_center[0],
+        (sy - ph / 2.0) / -(ph / view.frame_height) + view.frame_center[1],
+        0.0,
+    ]
+}
+
+/// Draws a points record over black (flat view), its points placed at subpixel coordinates.
+fn draw_points(subpixel: &[[f64; 2]], colours: &[[f64; 4]], radius: f64) -> Vec<u8> {
     let view = flat_view(W, H, [0.0, 0.0, 0.0, 1.0]);
-    let places = vec![[-2.03, 0.71, 0.0], [2.44, -1.18, 0.0]];
-    let colours = Stops::new(vec![[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]]);
-    let shape = path(places.clone());
-    let centres = subpixel_coords(
-        &places,
-        W,
-        H,
-        view.frame_width,
-        view.frame_height,
-        view.frame_center,
+    let places: Vec<[f64; 3]> = subpixel
+        .iter()
+        .map(|p| at_subpixel(&view, p[0], p[1]))
+        .collect();
+    let table = Stops::new(colours.to_vec());
+    let shape = path(places);
+    stream(
+        view,
+        &[(shape.clone(), points_record(1, &shape, &table, radius))],
+        vec![table.clone()],
+    )
+    .draw(W, H, 1)
+    .unwrap()
+}
+
+/// The pixels CE's block covers: about the truncated pixel, `range(-t//2 + 1, t//2 + 1)` on each
+/// axis, on the frame.
+fn block(at: [i64; 2], t: i64) -> Vec<(u32, u32)> {
+    let lo = (-t).div_euclid(2) + 1;
+    let mut out = Vec::new();
+    for x in at[0] + lo..at[0] + lo + t {
+        for y in at[1] + lo..at[1] + lo + t {
+            if (0..W as i64).contains(&x) && (0..H as i64).contains(&y) {
+                out.push((x as u32, y as u32));
+            }
+        }
+    }
+    out
+}
+
+/// Every pixel: the colour inside `pixels`, black elsewhere.
+fn assert_exactly(frame: &[u8], pixels: &[(u32, u32)], colour: [u8; 4], what: &str) {
+    for y in 0..H {
+        for x in 0..W {
+            let want = if pixels.contains(&(x, y)) {
+                colour
+            } else {
+                BLACK
+            };
+            assert_eq!(px(frame, x, y), want, "{what}: pixel {x},{y}");
+        }
+    }
+}
+
+/// CE draws a point as a square block of `int(stroke width)` pixels a side about the pixel its
+/// subpixel place truncates to, `trunc(255 c)` in every channel.
+#[test]
+fn a_point_is_ces_square_block_of_whole_pixels() {
+    let colour = [0.7, 0.35, 0.123, 1.0];
+    let bytes = [178, 89, 31, 255];
+    for t in 1..=4 {
+        // A stroke width with a fraction: CE's `int` truncates it.
+        let frame = draw_points(&[[37.6, 20.3]], &[colour], t as f64 + 0.7);
+        let pixels = block([37, 20], t);
+        assert_eq!(pixels.len() as i64, t * t);
+        assert_exactly(&frame, &pixels, bytes, &format!("t {t}"));
+    }
+    // Offsets for an even side reach one further on the high side: t = 4 is -1..=2.
+    assert_eq!(block([10, 10], 4)[0], (9, 9));
+    assert_eq!(*block([10, 10], 4).last().unwrap(), (12, 12));
+    for radius in [0.0, 0.9, -3.0] {
+        let frame = draw_points(&[[37.6, 20.3]], &[colour], radius);
+        assert_exactly(&frame, &[], bytes, &format!("radius {radius}"));
+    }
+}
+
+/// `astype(int64)` truncates toward zero: a point at x = -0.6 lands on pixel 0, not -1; a block
+/// partly off the frame keeps its pixels on it.
+#[test]
+fn a_points_pixel_truncates_toward_zero_and_its_block_is_clipped() {
+    let colour = [1.0, 1.0, 1.0, 1.0];
+    let frame = draw_points(&[[-0.6, 10.2]], &[colour], 3.0);
+    assert_exactly(&frame, &block([0, 10], 3), [255; 4], "x = -0.6");
+    assert_eq!(
+        block([0, 10], 3).len(),
+        6,
+        "a column of three is off the frame"
     );
-    for (radius, diameter) in [(6.7, 6.0), (11.0, 11.0), (0.9, 0.0)] {
+    let corner = [W as f64 - 0.7, H as f64 - 0.6];
+    let frame = draw_points(&[corner], &[colour], 4.0);
+    let pixels = block([W as i64 - 1, H as i64 - 1], 4);
+    assert_eq!(pixels.len(), 4);
+    assert_exactly(&frame, &pixels, [255; 4], "the corner");
+}
+
+/// Where blocks overlap, CE's later write wins, and CE writes every point at its first offset,
+/// then every point at its next: so point 0's block, offset (1, 0) from its pixel, wins over point
+/// 1's offset (0, 0), though point 1 comes later.
+#[test]
+fn overlapping_blocks_keep_ces_offset_major_write_order() {
+    let (red, green) = ([1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]);
+    let frame = draw_points(&[[50.5, 30.5], [51.5, 30.5]], &[red, green], 2.0);
+    let r = [255, 0, 0, 255];
+    let g = [0, 255, 0, 255];
+    for (x, y, want) in [
+        (50, 30, r),
+        (51, 30, r),
+        (52, 30, g),
+        (50, 31, r),
+        (51, 31, r),
+        (52, 31, g),
+    ] {
+        assert_eq!(px(&frame, x, y), want, "pixel {x},{y}");
+    }
+}
+
+#[test]
+fn a_points_record_of_more_block_writes_than_sub_orders_is_refused() {
+    let view = flat_view(W, H, [0.0, 0.0, 0.0, 1.0]);
+    let table = Stops::new(vec![WHITE]);
+    let shape = path(vec![[0.0, 0.0, 0.0]]);
+    // 65537^2 > 2^32 writes for one point; 65536^2 = 2^32 is the most there are sub-orders for.
+    for (radius, refused) in [(65536.0, false), (65537.0, true)] {
         let s = stream(
             view.clone(),
-            &[(shape.clone(), points_record(1, &shape, &colours, radius))],
-            vec![colours.clone()],
+            &[(shape.clone(), points_record(1, &shape, &table, radius))],
+            vec![table.clone()],
         );
-        let frame = s.draw(W, H, 1).unwrap();
-        for (i, c) in centres.iter().enumerate() {
-            let channel = i; // red, then green
-            let (mut area, mut mx, mut my) = (0.0, 0.0, 0.0);
-            for y in 0..H {
-                for x in 0..W {
-                    let (dx, dy) = (x as f64 + 0.5 - c[0], y as f64 + 0.5 - c[1]);
-                    if dx * dx + dy * dy > 16.0 * 16.0 {
-                        continue;
-                    }
-                    let a = px(&frame, x, y)[channel] as f64 / 255.0;
-                    area += a;
-                    mx += a * (x as f64 + 0.5);
-                    my += a * (y as f64 + 0.5);
-                }
+        match s.draw(W, H, 1) {
+            Err(DrawError::Unsupported(u)) => {
+                assert!(refused, "radius {radius}: {}", u.reason);
+                assert!(u.reason.contains("block pixels"), "{}", u.reason);
             }
-            let want = std::f64::consts::PI * diameter * diameter / 4.0;
-            assert!(
-                (area - want).abs() < 0.02 * want + 0.5,
-                "r {radius}: area {area} of {want}"
-            );
-            if diameter > 0.0 {
-                let (cx, cy) = (mx / area, my / area);
+            Ok(frame) => {
+                assert!(!refused, "radius {radius} drew");
                 assert!(
-                    (cx - c[0]).abs() < 0.05 && (cy - c[1]).abs() < 0.05,
-                    "centre {cx},{cy}"
+                    frame.chunks(4).all(|p| p == [255; 4]),
+                    "the block covers the frame"
                 );
-                let full = px(&frame, c[0] as u32, c[1] as u32);
-                assert_eq!(full[channel], 255, "r {radius}: the disc's middle");
             }
+            Err(e) => panic!("{e:?}"),
         }
     }
 }
@@ -566,9 +660,14 @@ fn a_point_is_drawn_at_its_depth() {
     floor.paint.fill = Paint::One([0.1, 0.2, 0.7, 1.0]);
     floor.depth.space = Space::World;
     let colours = Stops::new(vec![[1.0, 1.0, 0.0, 1.0]]);
+    let Camera::ThreeD(c) = &view.camera else {
+        unreachable!()
+    };
+    let projection = Projection::new(c, view.frame_center);
     for (z, shown) in [(-1.0, false), (1.0, true)] {
-        let cloud = path(vec![[0.5, 0.3, z]]);
-        let mut dot = points_record(2, &cloud, &colours, 9.0);
+        let p = [0.5, 0.3, z];
+        let cloud = path(vec![p]);
+        let mut dot = points_record(2, &cloud, &colours, 3.0);
         dot.depth.space = Space::World;
         let s = stream(
             view.clone(),
@@ -576,10 +675,18 @@ fn a_point_is_drawn_at_its_depth() {
             vec![colours.clone()],
         );
         let frame = s.draw(W, H, 1).unwrap();
-        let [x, y] = arachne_core::probes::screen_of(&view, W, H, [0.5, 0.3, z]);
-        let got = px(&frame, x as u32, y as u32);
+        let placed = pre_display(&[p], Some(&projection), Placement::Projected);
+        let [sx, sy] = subpixel_coords(
+            &placed,
+            W,
+            H,
+            view.frame_width,
+            view.frame_height,
+            view.frame_center,
+        )[0];
+        let got = px(&frame, sx as u32, sy as u32);
         let want = if shown {
-            premultiply([1.0, 1.0, 0.0, 1.0])
+            [255, 255, 0, 255]
         } else {
             premultiply([0.1, 0.2, 0.7, 1.0])
         };
