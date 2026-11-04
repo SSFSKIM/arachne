@@ -649,6 +649,7 @@ def _execute(
                 },
                 draws=False,
                 demoted=demotions,
+                exits=True,
             )
         )
         return made[-1]
