@@ -1,0 +1,88 @@
+"""Scenes the lint core tests execute.
+
+A comment ``# @name`` tags a line the tests look up by name with
+:func:`tests.lint.conftest.line_of`.
+"""
+
+from __future__ import annotations
+
+from arachne import (
+    DOWN,
+    LEFT,
+    RIGHT,
+    UP,
+    Axes,
+    Circle,
+    Dot,
+    Scene,
+    Square,
+    Text,
+    Transform,
+    VGroup,
+    linear,
+)
+
+
+class Instants(Scene):
+    """A trusted play, a frozen wait, a play and a frozen wait each shorter
+    than a frame at every rate tested, and a ticked play and wait (a dt
+    updater) after them.
+    """
+
+    def construct(self):
+        dot = Dot(LEFT)
+        self.add(dot)
+        self.play(dot.animate.shift(RIGHT), run_time=0.5, rate_func=linear)
+        self.wait(0.4)
+        self.play(dot.animate.shift(UP), run_time=0.01)
+        self.wait(0.005)
+        dot.add_updater(lambda m, dt: m.shift(RIGHT * dt))
+        self.play(dot.animate.set_color("#ff0000"), run_time=0.6)
+        self.wait(0.3)
+        dot.clear_updaters()
+
+
+class Furnished(Scene):
+    """A group of a thick-stroked square and a filled circle, a pair of axes,
+    a text drawn twice in one place, and a group grown by a transform from
+    one dot to three, which pads it.
+    """
+
+    def construct(self):
+        shapes = VGroup(  # @shapes
+            Square(side_length=1, stroke_width=8).shift(LEFT * 4),
+            Circle(radius=0.5, fill_opacity=1, stroke_width=0).shift(LEFT * 2),
+        )
+        axes = Axes(x_range=[0, 2, 1], y_range=[0, 2, 1], x_length=2, y_length=2)
+        label = Text("hi").shift(UP * 3)  # @label
+        twin = label.copy()
+        grown = VGroup(Dot(DOWN * 3))
+        self.add(shapes, axes, label, twin, grown)
+        self.play(
+            Transform(grown, VGroup(*(Dot(DOWN * 3 + RIGHT * i) for i in range(3)))),
+            run_time=0.25,
+        )
+        self.wait(0.25)
+
+
+class Shrunk(Scene):
+    """A group of three dots transformed into one: two of them end fully
+    transparent, as the target's padding is, and draw nothing.
+    """
+
+    def construct(self):
+        many = VGroup(*(Dot(RIGHT * i) for i in range(3)))
+        self.add(many)
+        self.play(Transform(many, VGroup(Dot(UP))), run_time=0.25)
+        self.wait(0.25)
+
+
+class Pair(Scene):
+    """Two named dots, one made in a group, for the exemption tests."""
+
+    def construct(self):
+        left = Dot(LEFT)  # @left
+        right = Dot(RIGHT)  # @right
+        held = VGroup(Dot(DOWN))  # @held
+        self.add(left, right, held)
+        self.play(left.animate.shift(UP), run_time=0.5)

@@ -67,6 +67,7 @@ if TYPE_CHECKING:
     from PIL import Image
 
     from ._config.utils import ManimConfig
+    from .lint import LintResult
     from .scene.scene import Scene
     from .timeline.record import PlayRecord, Record
     from .timeline.state import State
@@ -389,6 +390,12 @@ class Session:
         nothing: its answers say ``source-changed``, and :attr:`stale` is set.
         """
         return answer_instants(self, instants, quality, frames=frames)
+
+    def lint(self, **options: Any) -> LintResult:
+        """Lint the session (:func:`arachne.lint.lint`, given ``options``)."""
+        from .lint import lint
+
+        return lint(self, **options)
 
     @_under_its_settings
     def summary(self) -> ExecutionSummary:
