@@ -2,17 +2,23 @@
 (:class:`.Identity`).
 
 Its **source** is the scene file and every module under the scene's
-directory that the scene's code imports, followed from the scene file's
-import statements through the modules they name, as each was imported
-(:func:`source_files`). Its **inputs** are the files opened for reading
-while the scene's code is on the stack (:class:`Inputs`). Both are named by
-their path relative to the scene's directory, so that one source staged in
-two places digests alike.
+directory that the execution imported or could have imported
+(:func:`source_files`): each module the scene's code looked up while it
+loaded and ran, whether imported then or found already imported, under any
+name, computed ones included; and each module an import statement of those
+files names, resolved by path in the scene's directory, whether or not the
+statement ran. Neither depends on what the process imported before. Its
+**inputs** are the files opened for reading while the scene's code is on
+the stack. Both are named by their path relative to the scene's directory,
+so that one source staged in two places digests alike.
 
-The files opened are seen by one :func:`sys.addaudithook` hook per process.
-An audit hook can't be removed, so it is installed once, when a recording
-first watches, and does nothing unless one watches: a recording watches from
-the moment its script begins to the moment it ends.
+:class:`Inputs` watches while a recording runs, and from before the scene
+file loads when the session that records it loads it (:meth:`.Session.open`).
+The files opened are seen by one :func:`sys.addaudithook` hook per process,
+which can't be removed, so it is installed once and does nothing while
+nothing watches. The modules looked up are seen by wrapping
+``builtins.__import__`` and ``importlib.import_module`` while something
+watches.
 """
 
 from __future__ import annotations
@@ -20,14 +26,17 @@ from __future__ import annotations
 __all__ = ["Inputs", "active", "engine_dirs", "source_digest", "source_files"]
 
 import ast
+import builtins
 import hashlib
+import importlib
+import importlib.machinery
 import importlib.util
 import os
 import sys
 import threading
-from collections.abc import Collection, Iterable, Iterator
+from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
-from types import FrameType
+from types import FrameType, ModuleType
 from typing import Any
 
 from .source import _INTERNAL
@@ -37,11 +46,17 @@ _WATCHING: list[Inputs] = []
 _HOOKED = False
 #: Set while the hook reads a file to digest it, which it must not see.
 _LOCAL = threading.local()
+#: ``builtins.__import__`` and ``importlib.import_module`` as they were
+#: before something watched, while something does.
+_UNWRAPPED: tuple[Any, Any] | None = None
 
 
 def active() -> bool:
     """Whether a recording watches the files opened now."""
     return bool(_WATCHING)
+
+
+# Files opened
 
 
 def _audit(event: str, args: tuple[Any, ...]) -> None:
@@ -66,9 +81,64 @@ def _reads(mode: str | None, flags: int) -> bool:
     return (flags & os.O_ACCMODE) != os.O_WRONLY and not flags & os.O_TRUNC
 
 
+# Modules looked up
+
+
+def _watched_import(
+    name: str,
+    globals: Mapping[str, Any] | None = None,  # noqa: A002 (``__import__``'s)
+    locals: Mapping[str, Any] | None = None,  # noqa: A002
+    fromlist: Sequence[str] | None = (),
+    level: int = 0,
+) -> ModuleType:
+    assert _UNWRAPPED is not None
+    module = _UNWRAPPED[0](name, globals, locals, fromlist, level)
+    if _WATCHING:
+        for watcher in tuple(_WATCHING):
+            watcher.imported(name, globals, fromlist or (), level)
+    return module  # type: ignore[no-any-return]
+
+
+def _watched_import_module(name: str, package: str | None = None) -> ModuleType:
+    assert _UNWRAPPED is not None
+    module = _UNWRAPPED[1](name, package)
+    if _WATCHING:
+        for watcher in tuple(_WATCHING):
+            watcher.looked_up(_with_packages(module.__name__))
+    return module  # type: ignore[no-any-return]
+
+
+def _wrap_imports() -> None:
+    global _UNWRAPPED
+    if _UNWRAPPED is None:
+        _UNWRAPPED = (builtins.__import__, importlib.import_module)
+        builtins.__import__ = _watched_import
+        importlib.import_module = _watched_import_module
+
+
+def _unwrap_imports() -> None:
+    """Put the import functions back, unless something wrapped them since
+    (the wrappers then stay, doing nothing more while nothing watches).
+    """
+    global _UNWRAPPED
+    if _UNWRAPPED is None:
+        return
+    if (
+        builtins.__import__ is _watched_import
+        and importlib.import_module is _watched_import_module
+    ):
+        builtins.__import__, importlib.import_module = _UNWRAPPED
+        _UNWRAPPED = None
+
+
 class Inputs:
-    """The files a recording's scene opened for reading, with the digest of
-    what each held when first opened.
+    """What a scene's execution looked up and read while watched: the modules
+    under the scene's directory its code looked up, and the files it opened
+    for reading, with the digest of what each held when first opened.
+
+    A module counts when the code that looked it up is the scene's (a file
+    under the scene's directory), or the lookup came from no module's code
+    (``importlib.import_module``, ``__import__`` called without globals).
 
     A file counts when the code that opened it was called from the scene's
     code, from a module under the scene's directory, and not by an import
@@ -96,21 +166,28 @@ class Inputs:
         )
         #: Each file read, by real path, and the digest of what it held.
         self._read: dict[str, str] = {}
+        #: The files of the modules under the scene's directory looked up.
+        self.modules: set[str] = set()
         #: Whether code from a file (by code object file name) is the scene's.
         self._scene_code: dict[str, bool] = {}
 
     def start(self) -> None:
-        """Watch the files opened from now on."""
+        """Watch from now on."""
         global _HOOKED
+        if self in _WATCHING:
+            return
         if not _HOOKED:
             sys.addaudithook(_audit)
             _HOOKED = True
+        _wrap_imports()
         _WATCHING.append(self)
 
     def stop(self) -> None:
-        """Stop watching; reading :meth:`input_digests` still works."""
+        """Stop watching; what was seen stays readable."""
         if self in _WATCHING:
             _WATCHING.remove(self)
+        if not _WATCHING:
+            _unwrap_imports()
 
     def opened(self, path: Any, frame: FrameType | None) -> None:
         """``path`` is being opened for reading, by the code of ``frame``."""
@@ -126,20 +203,65 @@ class Inputs:
             # Not a path the scene can read; its own open says why.
             return
 
+    def imported(
+        self,
+        name: str,
+        globals: Mapping[str, Any] | None,  # noqa: A002 (``__import__``'s)
+        fromlist: Sequence[str],
+        level: int,
+    ) -> None:
+        """An import statement (or ``__import__`` call) of ``name`` has run,
+        from the module whose globals are ``globals``.
+        """
+        if globals is not None:
+            file = globals.get("__file__")
+            if not isinstance(file, str) or not self._is_scene_code(file):
+                return
+        base = name
+        if level:
+            package = globals.get("__package__") if globals is not None else None
+            if package is None and globals is not None:
+                own = str(globals.get("__name__", ""))
+                package = own if "__path__" in globals else own.rpartition(".")[0]
+            try:
+                base = importlib.util.resolve_name("." * level + name, package)
+            except (ImportError, ValueError):
+                return
+        names = list(_with_packages(base)) if base else []
+        names.extend(f"{base}.{item}" for item in fromlist if item != "*")
+        self.looked_up(names)
+
+    def looked_up(self, names: Iterable[str]) -> None:
+        """The modules named ``names`` were looked up: note those whose file
+        lies under the scene's directory.
+        """
+        for name in names:
+            file = getattr(sys.modules.get(name), "__file__", None)
+            if not isinstance(file, str):
+                continue
+            try:
+                real = os.path.realpath(file)
+            except (OSError, ValueError):
+                continue
+            if real.startswith(self._scene_prefix):
+                self.modules.add(real)
+
+    def _is_scene_code(self, name: str) -> bool:
+        known = self._scene_code.get(name)
+        if known is None:
+            known = self._scene_code[name] = not name.startswith(
+                "<"
+            ) and os.path.realpath(name).startswith(self._scene_prefix)
+        return known
+
     def _by_scene(self, frame: FrameType | None) -> bool:
         """Whether the scene's code opens the file through ``frame``: walking
         out from the opener, a frame of the scene's code comes before any
         frame of the import system.
         """
-        known = self._scene_code
         while frame is not None:
             name = frame.f_code.co_filename
-            scene = known.get(name)
-            if scene is None:
-                scene = known[name] = not name.startswith("<") and os.path.realpath(
-                    name
-                ).startswith(self._scene_prefix)
-            if scene:
+            if self._is_scene_code(name):
                 return True
             if name.startswith("<frozen importlib"):
                 return False
@@ -188,30 +310,27 @@ def engine_dirs(config: Any) -> list[str]:
     return found
 
 
-def source_files(scene_file: str, package: str | None) -> list[str]:
-    """The scene file and the modules under its directory that its code
-    imports, as real paths: each module an ``import`` statement anywhere in
-    the file names (or an ``importlib.import_module`` or ``__import__`` call
-    with a literal name), as ``sys.modules`` holds it, then the same for
-    that module's own file. A module never imported is not there; a module
-    imported only under a computed name is not found.
+# The source
+
+
+def source_files(scene_file: str, imported: Iterable[str] = ()) -> list[str]:
+    """The source of an execution of ``scene_file``, as real paths: the scene
+    file, the ``imported`` files (the modules under its directory its code
+    looked up, :attr:`Inputs.modules`), and every module under its
+    directory that an import statement of any of them names, resolved by
+    path in that directory (:func:`_named_files`) and followed the same way.
     """
     scene_file = os.path.realpath(scene_file)
-    prefix = os.path.dirname(scene_file).rstrip(os.sep) + os.sep
+    scene_dir = os.path.dirname(scene_file)
+    prefix = scene_dir.rstrip(os.sep) + os.sep
     found = {scene_file}
-    todo = [(scene_file, package)]
+    found.update(path for path in imported if path.startswith(prefix))
+    todo = list(found)
     while todo:
-        path, package = todo.pop()
-        for name in _imported_names(path, package):
-            module = sys.modules.get(name)
-            file = getattr(module, "__file__", None)
-            if not file:
-                continue
-            real = os.path.realpath(file)
-            if real in found or not real.startswith(prefix):
-                continue
-            found.add(real)
-            todo.append((real, getattr(module, "__package__", None)))
+        for path in _named_files(todo.pop(), scene_dir):
+            if path not in found and path.startswith(prefix):
+                found.add(path)
+                todo.append(path)
     return sorted(found)
 
 
@@ -234,9 +353,13 @@ def source_digest(files: Iterable[str], scene_dir: str) -> str:
     return digest.hexdigest()
 
 
-def _imported_names(path: str, package: str | None) -> Iterator[str]:
-    """The absolute names of the modules the source at ``path`` imports, a
-    dotted name's packages included.
+def _named_files(path: str, scene_dir: str) -> Iterator[str]:
+    """The files of the modules the import statements of the source at
+    ``path`` name (anywhere in it, whether or not they ran), each dotted
+    name's packages included: an absolute name resolved in ``scene_dir``, a
+    relative one from ``path``'s own package directory. A call of
+    ``importlib.import_module`` or ``__import__`` with a literal absolute
+    name counts as an import statement.
     """
     try:
         tree = ast.parse(Path(path).read_bytes(), path)
@@ -246,22 +369,59 @@ def _imported_names(path: str, package: str | None) -> Iterator[str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                yield from _with_packages(alias.name)
+                yield from _resolve(scene_dir, alias.name.split("."))
         elif isinstance(node, ast.ImportFrom):
-            base = node.module or ""
             if node.level:
-                try:
-                    base = importlib.util.resolve_name(
-                        "." * node.level + base, package or None
-                    )
-                except (ImportError, ValueError):
-                    continue
-            yield from _with_packages(base)
+                start = os.path.dirname(path)
+                for _ in range(node.level - 1):
+                    start = os.path.dirname(start)
+            else:
+                start = scene_dir
+            parts = node.module.split(".") if node.module else []
+            yield from _resolve(start, parts)
             for alias in node.names:
                 if alias.name != "*":
-                    yield f"{base}.{alias.name}"
+                    yield from _resolve(start, [*parts, alias.name])
         elif isinstance(node, ast.Call) and _literal_import(node):
-            yield from _with_packages(node.args[0].value)  # type: ignore[attr-defined]
+            name: str = node.args[0].value  # type: ignore[attr-defined]
+            yield from _resolve(scene_dir, name.split("."))
+
+
+def _resolve(directory: str, parts: list[str]) -> Iterator[str]:
+    """The files of the module ``parts`` names from ``directory`` and of the
+    packages along the way, as the path finder finds them there: a package
+    with an ``__init__``, then an extension, source or bytecode module, then
+    a namespace package (a directory, no file); the first part not found
+    ends the walk.
+    """
+    suffixes = (
+        *importlib.machinery.EXTENSION_SUFFIXES,
+        *importlib.machinery.SOURCE_SUFFIXES,
+        *importlib.machinery.BYTECODE_SUFFIXES,
+    )
+    for part in parts:
+        if not part:
+            return
+        package = os.path.join(directory, part)
+        init = os.path.join(package, "__init__.py")
+        if os.path.isfile(init):
+            yield os.path.realpath(init)
+            directory = package
+            continue
+        module = next(
+            (
+                package + suffix
+                for suffix in suffixes
+                if os.path.isfile(package + suffix)
+            ),
+            None,
+        )
+        if module is not None:
+            yield os.path.realpath(module)
+            return
+        if not os.path.isdir(package):
+            return
+        directory = package
 
 
 def _literal_import(call: ast.Call) -> bool:
