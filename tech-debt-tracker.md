@@ -202,6 +202,19 @@ lifted.
   once shares one array across every capture. Cache the digest by the
   array's identity before summaries are measured at corpus scale.
 
+## The forward fallback (`arachne/timeline/fallback.py`)
+
+- **A record refusing drawing from its first play is compared with its
+  forward run only at that play's start.** A play drawn as it runs may
+  write what it draws into the scene (a zoomed display's picture), which
+  the record's execution, drawing nothing, never holds; so the two are
+  compared only before the first such play, and a changed input read after
+  it goes unreported there (`ForwardRun.compared_until`; a `MappingCamera`
+  scene compares at 0, `test_a_mapping_camera_scene_answers_its_grid_instants_with_one_execution`).
+  Direction: compare in full, per refusal reason, for cameras whose drawing
+  writes nothing into the scene (a `MappingCamera` that copies what it
+  maps).
+
 ## Scene hooks (`arachne/timeline/hooks.py`)
 
 - **A frame hook's effects are recorded where a frame reads them, not
