@@ -56,6 +56,7 @@ __all__ = [
     "apart",
     "arm",
     "armed",
+    "armed_terms",
     "clear",
     "declare",
     "declared",
@@ -269,10 +270,10 @@ def apart(
     """
     recorder = _recorder("apart")
     caller = sys._getframe(1)
+    # Read once: a generator of targets gives them up once.
     given = arguments(subject, against)
     found = clear_of(
-        subject,
-        against,
+        given,
         min_gap=min_gap,
         pad=float(pad),
         names=_names(recorder, caller),
@@ -346,7 +347,7 @@ def exemptions(source: Record, t: Fraction | float | None = None) -> Exemptions:
             and call.kind in (*_DECLARING, "sweep")
             and "exempt" in call.terms
         ):
-            kept = _joined(kept, _exempt_at(call, at))
+            kept = _joined(kept, _exempt_at(call, at, "hold"))
     return kept
 
 
@@ -361,6 +362,21 @@ def armed(source: Record, t: Fraction | float | None = None) -> BridgeCall | Non
         if call.kind == "arm" and (at is None or call.t <= at):
             found = call
     return found
+
+
+def armed_terms(source: Record, t: Fraction | float | None = None) -> Terms | None:
+    """What the arming in force at ``t`` (by default, the scene's end)
+    holds a check at ``t`` to: its own ``pad`` and ``text_gap``, and its
+    exemptions as the value it was handed stood at ``t`` (not those of
+    earlier armings, which :func:`exemptions` accumulates); ``None`` before
+    any arming.
+    """
+    at = source.duration if t is None else exact(t)
+    arming = armed(source, at)
+    if arming is None:
+        return None
+    exempt = _exempt_at(arming, at) if "exempt" in arming.terms else Exemptions()
+    return Terms(arming.terms["pad"], arming.terms["text_gap"], exempt)
 
 
 class _ArmedMotion(MotionJump):
@@ -517,7 +533,14 @@ def _terms(terms: Mapping[str, Any]) -> dict[str, Any]:
 def _exemptions(exempt: Any) -> Exemptions:
     """``exempt`` (mobjects, selectors, and pairs of them; a lone mobject or
     a lone pair of mobjects is one) parsed now: each mobject stands for its
-    family's stable ids as it is at the call.
+    family's stable ids as it is now.
+    """
+    return Exemptions.parse(_entries(exempt))
+
+
+def _entries(exempt: Any) -> list[Any]:
+    """The entries of ``exempt`` as they are now: a lone mobject or a lone
+    pair of mobjects is one.
     """
     from arachne.mobject.mobject import Mobject
 
@@ -526,8 +549,8 @@ def _exemptions(exempt: Any) -> Exemptions:
         and len(exempt) == 2
         and all(isinstance(item, Mobject) for item in exempt)
     ):
-        exempt = [exempt]
-    return Exemptions.parse(exempt or ())
+        return [exempt]
+    return list(exempt or ())
 
 
 def _joined(first: Exemptions, second: Exemptions) -> Exemptions:
@@ -567,21 +590,32 @@ def _declaring(
     **extra: Any,
 ) -> BridgeCall:
     """Keep a call stating ``terms`` (and ``extra`` beside them). Its
-    exemptions name what the scene's mobjects hold as each reader asks:
-    they are read at the call and at every kept capture after it, and can
-    be read again while the scene runs (:meth:`.Bridge.read_now`).
+    exemptions name what the scene's mobjects hold as each reader asks, read
+    two ways: ``exempt``, what the value the scene handed over holds as it
+    stands (a list it changes later names what it holds then), and
+    ``hold``, the entries it held at the call, whose mobjects' families are
+    read as they stand: what a check of the whole scene accumulates. Both
+    are read at the call and again whenever a kept capture finds them
+    changed, and can be read while the scene runs
+    (:meth:`.Bridge.read_now`).
     """
     kept = {**_terms(terms), **extra}
     reader = None
     if "exempt" in terms:
         named = terms["exempt"]
+        entries = _entries(named)
 
         def reader() -> Mapping[str, Any]:
-            return {"exempt": _exemptions(named)}
+            return {"exempt": _exemptions(named), "hold": Exemptions.parse(entries)}
 
-    call = recorder.bridge_call(kind, caller, terms=kept, reader=reader)
+    call = recorder.bridge_call(
+        kind, caller, terms=kept, reader=reader, changes_only=True
+    )
     if reader is not None:
-        call.readings.append(Reading(call.t, call.line, {"exempt": kept["exempt"]}))
+        exempt = kept["exempt"]
+        call.readings.append(
+            Reading(call.t, call.line, {"exempt": exempt, "hold": exempt})
+        )
     return call
 
 
@@ -593,16 +627,16 @@ def _exempt_now(bridge: Bridge, call: BridgeCall) -> Exemptions:
     return now
 
 
-def _exempt_at(call: BridgeCall, t: Fraction) -> Exemptions:
-    """``call``'s exemptions as they stood at ``t``: their last reading at or
-    before it.
+def _exempt_at(call: BridgeCall, t: Fraction, way: str = "exempt") -> Exemptions:
+    """``call``'s exemptions as they stood at ``t``, read ``way``
+    (:func:`_declaring`): their last reading at or before it.
     """
     found: Exemptions = call.terms["exempt"]
     for reading in call.readings:
         if reading.t > t:
             break
-        if reading.values is not None and "exempt" in reading.values:
-            found = reading.values["exempt"]
+        if reading.values is not None and way in reading.values:
+            found = reading.values[way]
     return found
 
 
