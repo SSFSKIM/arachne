@@ -500,10 +500,12 @@ class Drawing:
             static_layer = config.static_layer
         if draw_path is None:
             draw_path = config.draw_path
-        from arachne.frame_ir.painter import painter_for
+        from arachne.frame_ir.painter import camera_path, painter_for
 
         self.record = record
         self.static_layer = static_layer
+        # A camera the scene's code changed draws on Cairo (render.fallback).
+        draw_path = camera_path(record._scene.renderer.camera, draw_path)
         self.draw_path = draw_path
         #: The painters of the draw path (``None`` on ``cairo``): one for
         #: frames, one for the plays' static pictures.

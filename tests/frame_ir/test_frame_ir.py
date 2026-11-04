@@ -460,6 +460,59 @@ def test_a_camera_class_of_the_scene_s_own_draws_on_cairo_with_a_finding(monkeyp
     assert "scenes.py:" in finding.message
 
 
+@pytest.mark.parametrize(
+    ("scene_class", "replaced", "live"),
+    [
+        (scenes.PatchedCamera, "ThreeDCamera.project_points", False),
+        (scenes.LivePatchedCamera, "ThreeDCamera.project_points", True),
+        (scenes.PatchedOrder, "Camera.get_mobjects_to_display", False),
+    ],
+    ids=lambda v: getattr(v, "__name__", None),
+)
+def test_a_camera_method_the_scene_replaces_on_the_instance_draws_on_cairo(
+    scene_class, replaced, live, monkeypatch
+):
+    from arachne.frame_ir import lint
+
+    monkeypatch.setattr(lint, "raised", [])
+    before = IrCairoPainter.drawn_total
+    direct, described, scene = frames_both_ways(scene_class)
+    assert (scene.timeline.record.refusal is not None) == live
+    assert len(direct) == len(described) > 0
+    for index, (a, b) in enumerate(zip(direct, described, strict=True)):
+        np.testing.assert_array_equal(a, b, err_msg=f"frame {index}")
+    assert IrCairoPainter.drawn_total == before, "nothing drawn from XF"
+    [finding] = lint.raised
+    assert (finding.code, finding.subject) == ("render.fallback", replaced)
+    assert "replaced on the camera instance" in finding.message
+
+
+def test_a_camera_method_the_scene_replaces_on_the_engine_class_draws_on_cairo(
+    monkeypatch,
+):
+    """A patch of the engine's class is told from what the class held when
+    the engine was imported, whichever process draws.
+    """
+    from arachne.camera.camera import Camera
+    from arachne.frame_ir import lint
+
+    monkeypatch.setattr(lint, "raised", [])
+    monkeypatch.setattr(
+        Camera,
+        "get_mobjects_to_display",
+        scenes._reversed(Camera.get_mobjects_to_display),
+    )
+    before = IrCairoPainter.drawn_total
+    direct, described, _ = frames_both_ways(scenes.Overlapping)
+    assert len(direct) == len(described) > 0
+    for index, (a, b) in enumerate(zip(direct, described, strict=True)):
+        np.testing.assert_array_equal(a, b, err_msg=f"frame {index}")
+    assert IrCairoPainter.drawn_total == before, "nothing drawn from XF"
+    [finding] = lint.raised
+    assert finding.subject == "Camera.get_mobjects_to_display"
+    assert "replaced on the engine's camera class" in finding.message
+
+
 def test_a_camera_that_is_no_engine_camera_is_unable():
     from arachne.frame_ir.extract import FrameStream, Unable
     from arachne.frame_ir.painter import camera_path
