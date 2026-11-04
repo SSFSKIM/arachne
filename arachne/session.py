@@ -147,7 +147,8 @@ class Session:
         latest = found = probe_record(session.record)
         first: ExecutionSummary | None = None
         while True:
-            session.divergences.extend(latest.divergences)
+            for divergence in latest.divergences:
+                session._keep(divergence)
             new = set(latest.demoted) - demoted
             if not new:
                 break
@@ -206,13 +207,21 @@ class Session:
     def compare(self, summary: ExecutionSummary) -> Divergence | None:
         """Compare the session's execution with ``summary``'s, an execution of
         the same source (:func:`.execution.compare`): the first play where they
-        differ, also kept in :attr:`divergences`, or ``None``. Raises
+        differ, also kept in :attr:`divergences` unless a divergence of that
+        cause is there already, or ``None``. Raises
         :class:`.execution.Incomparable` for another source, or an unknown one.
         """
         found = compare(self.summary(), summary)
         if found is not None:
-            self.divergences.append(found)
+            self._keep(found)
         return found
+
+    def _keep(self, divergence: Divergence) -> None:
+        """Keep ``divergence`` in :attr:`divergences`, unless one of the same
+        cause is there already (:attr:`.Divergence.cause`).
+        """
+        if all(kept.cause != divergence.cause for kept in self.divergences):
+            self.divergences.append(divergence)
 
     def _executed_again(self, scene: Scene, record: Record, module: ModuleType) -> None:
         """Hold the scene executed again, ``record`` its record, in place of
