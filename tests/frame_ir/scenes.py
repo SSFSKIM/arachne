@@ -29,6 +29,7 @@ from arachne import (
     ImageMobject,
     LineJointType,
     MappingCamera,
+    MovingCamera,
     MovingCameraScene,
     PMobject,
     Polygon,
@@ -443,6 +444,50 @@ class PatchedOrder(Overlapping):
 
     def patch(self, camera) -> None:
         camera.get_mobjects_to_display = _reversed(camera.get_mobjects_to_display)
+
+
+class ZoomPatched(ZoomedScene):
+    """A zoomed display whose camera's capture is replaced on the instance:
+    the picture it shows changed by the scene's code.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(
+            zoom_factor=0.3, zoomed_display_height=2, zoomed_display_width=3, **kwargs
+        )
+
+    def construct(self):
+        square = Square(0.5, fill_opacity=1, color=RED)
+        self.add(square)
+        self.activate_zooming(animate=False)
+        self.patch(self.zoomed_camera)
+        self.play(square.animate.shift(RIGHT * 0.3), run_time=0.4)
+
+    def patch(self, camera) -> None:
+        capture = camera.capture_mobjects
+
+        def capture_mobjects(mobjects, **kwargs):
+            capture(mobjects, **kwargs)
+            camera.pixel_array[:, :4] = 255
+
+        camera.capture_mobjects = capture_mobjects
+
+
+class BandedCamera(MovingCamera):
+    """A camera class of the scene's own: a band over what it captures."""
+
+    def capture_mobjects(self, mobjects, **kwargs):
+        super().capture_mobjects(mobjects, **kwargs)
+        self.pixel_array[:, :4] = 255
+
+
+class ZoomOwnClass(ZoomPatched):
+    """As :class:`ZoomPatched`, the display's camera of a class of the
+    scene's own.
+    """
+
+    def patch(self, camera) -> None:
+        camera.__class__ = BandedCamera
 
 
 def _cloud() -> PMobject:
