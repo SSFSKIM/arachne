@@ -132,7 +132,8 @@ fn every_record_this_build_cannot_draw_is_refused_whole() {
                 assert_eq!(u.slot, Some(slot));
                 assert_eq!(u.object, Some(100 + slot));
                 let carried = match kind {
-                    "path" | "mesh" => "blend",
+                    "path" => "Cairo",
+                    "mesh" => "blend",
                     "points" => "reveal",
                     _ => "",
                 };
@@ -302,6 +303,15 @@ fn a_slot_a_display_still_draws_cannot_be_removed() {
 fn display(slot: u32, order: Vec<OrderEntry>) -> Record {
     let mut r = Record::new(RecordKind::Image, slot, 100 + slot);
     r.body = Body::Image(ImageSource::SubFrame {
+        rank: 0,
+        corners: [
+            [-1.0, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [-1.0, -1.0, 0.0],
+            [1.0, -1.0, 0.0],
+        ],
+        resampling: 3,
+        opacity: 1.0,
         view: Box::new(common::flat_view(8, 4, [0.0, 0.0, 0.0, 1.0])),
         order,
     });
@@ -333,7 +343,7 @@ fn re_setting_a_slot_cannot_strand_a_sub_frame() {
 }
 
 #[test]
-fn a_display_cannot_draw_itself() {
+fn a_display_can_capture_itself() {
     let mut s = Stream::new();
     s.apply(&common::sample_deltas()[0]).unwrap();
     let mut d = delta(1);
@@ -345,7 +355,7 @@ fn a_display_cannot_draw_itself() {
             part: 0,
         }],
     )];
-    assert!(matches!(refused(&mut s, &d), StreamError::Invalid(_)));
+    s.apply(&d).unwrap();
 }
 
 #[test]
@@ -547,4 +557,132 @@ fn one_key_holds_one_content_in_validation_and_in_commit() {
     d.upload = vec![picture.clone()];
     s.apply(&d).unwrap();
     assert_eq!(s.draw(2, 2, 1).unwrap(), vec![255; 16]);
+}
+
+fn fill_image() -> Shape {
+    Shape::new(ShapeData::Image {
+        width: 4,
+        height: 4,
+        rgba: vec![255; 64],
+    })
+}
+
+#[test]
+fn a_fill_image_must_name_an_image_held_or_uploaded() {
+    let shape = square();
+    let picture = fill_image();
+    let table = Stops::new(vec![[1.0; 4]]);
+    let mut s = Stream::new();
+    let mut d = delta(0);
+    d.upload = vec![shape.clone()];
+    d.upload_paints = vec![table.clone()];
+    s.apply(&d).unwrap();
+    let mut r = path_record(1, &shape);
+    r.features = FEATURE_BACKGROUND_IMAGE;
+    r.fill_image = Some(picture.key());
+    let mut d = delta(1);
+    d.set = vec![r.clone()];
+    assert!(matches!(refused(&mut s, &d), StreamError::Missing(_)));
+    for key in [shape.key(), table.key()] {
+        d.set[0].fill_image = Some(key);
+        assert!(s.apply(&d).is_err());
+    }
+    d.set[0] = r.clone();
+    d.upload = vec![picture.clone()];
+    s.apply(&d).unwrap(); // Uploaded in the same delta.
+    let mut d = delta(2);
+    r.slot = 2;
+    d.set = vec![r];
+    s.apply(&d).unwrap(); // Already held.
+    let mut d = delta(3);
+    d.release = vec![picture.key()];
+    assert!(matches!(refused(&mut s, &d), StreamError::InUse(_)));
+    d.remove = vec![1];
+    assert!(matches!(refused(&mut s, &d), StreamError::InUse(_)));
+    d.remove = vec![1, 2];
+    s.apply(&d).unwrap();
+    assert!(!s.has_shape(&picture.key()));
+}
+
+#[test]
+fn background_image_fill_is_refused_only_when_drawn() {
+    let shape = square();
+    let picture = fill_image();
+    let mut r = path_record(1, &shape);
+    r.features = FEATURE_BACKGROUND_IMAGE;
+    r.fill_image = Some(picture.key());
+    let mut d = delta(0);
+    d.view = Some(common::flat_view(4, 4, [0.0, 0.0, 0.0, 1.0]));
+    d.upload = vec![shape, picture];
+    d.set = vec![r];
+    let mut s = Stream::new();
+    s.apply(&d).unwrap();
+    assert!(s.draw(4, 4, 1).is_ok());
+    let mut d = delta(1);
+    d.order = Some(vec![entry(1)]);
+    s.apply(&d).unwrap();
+    let Err(DrawError::Unsupported(u)) = s.draw(4, 4, 1) else {
+        panic!("not refused")
+    };
+    assert_eq!(
+        (u.kind.as_str(), u.slot, u.object),
+        ("path", Some(1), Some(101))
+    );
+    assert!(u.reason.contains("Cairo"), "{}", u.reason);
+}
+
+#[test]
+fn display_ranks_are_unique_per_layer_in_each_views_order() {
+    let mut a = display(1, vec![entry(1)]); // Self capture is allowed.
+    let mut b = display(2, vec![]);
+    let mut d = delta(0);
+    d.set = vec![a.clone(), b.clone()];
+    let mut s = Stream::new();
+    s.apply(&d).unwrap(); // Outside the order, ranks may coincide.
+    let mut d = delta(1);
+    d.order = Some(vec![entry(1), entry(2)]);
+    assert!(matches!(refused(&mut s, &d), StreamError::Invalid(_)));
+    d.order.as_mut().unwrap()[1].layer = Layer::Overlay;
+    s.apply(&d).unwrap(); // Same rank, different layer.
+    let Body::Image(ImageSource::SubFrame { rank, .. }) = &mut b.body else {
+        unreachable!()
+    };
+    *rank = 1;
+    d.set = vec![b.clone()];
+    d.order = Some(vec![entry(2), entry(1)]); // Rank order need not be draw order.
+    s.apply(&d).unwrap();
+    // A re-set can strand an unchanged sub-frame's order, even off the main order.
+    let Body::Image(ImageSource::SubFrame { order, .. }) = &mut a.body else {
+        unreachable!()
+    };
+    *order = vec![entry(1), entry(2)];
+    d.set = vec![a];
+    d.order = Some(vec![]);
+    s.apply(&d).unwrap();
+    let Body::Image(ImageSource::SubFrame { rank, .. }) = &mut b.body else {
+        unreachable!()
+    };
+    *rank = 0;
+    d.set = vec![b];
+    assert!(matches!(refused(&mut s, &d), StreamError::Invalid(_)));
+}
+
+#[test]
+fn mapping_centre_is_carried_but_does_not_change_this_builds_pixels() {
+    let shape = square();
+    let mut d = delta(0);
+    d.view = Some(common::flat_view(16, 9, [0.0, 0.0, 0.0, 1.0]));
+    d.upload = vec![shape.clone()];
+    d.set = vec![path_record(1, &shape)];
+    d.order = Some(vec![entry(1)]);
+    let mut s = Stream::new();
+    s.apply(&d).unwrap();
+    let before = s.draw(16, 9, 1).unwrap();
+    let mut d = delta(1);
+    let mut view = s.view().unwrap().clone();
+    view.mapping_centre = [2.0, -3.0, 4.0];
+    d.view = Some(view);
+    s.apply(&d).unwrap();
+    assert_eq!(s.view().unwrap().mapping_centre, [2.0, -3.0, 4.0]);
+    assert_eq!(s.draw(16, 9, 1).unwrap(), before);
 }

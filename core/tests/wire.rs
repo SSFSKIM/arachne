@@ -96,7 +96,7 @@ fn sha256_matches_its_standard_vectors() {
 /// branches of every optional field, swappable fields given values of their own). It fails on any
 /// change to what the sample writes; `tests/layout.rs` pins the layout field by field. XF streams
 /// are generated, never committed. Change the pin only when such a change is meant.
-const SAMPLE_SHA256: &str = "7e1d595fef01fd0a6be9ca9c19be99418de8dbc0bedae52da1a2f455f1955791";
+const SAMPLE_SHA256: &str = "87821af1401a64a279e12046d9e31c05c8f7232d1fb2a4a29ae4254ba4c27dc0";
 
 #[test]
 fn the_canonical_samples_bytes_are_pinned() {
@@ -139,7 +139,7 @@ fn delta_with_raw_record(record: &[u8]) -> Vec<u8> {
 
 #[test]
 fn a_kind_this_reader_does_not_know_is_kept_not_parsed() {
-    // Header: kind 200, features, slot 42, object 7; then bytes no reader of XF 0 can parse.
+    // Header: kind 200, features, slot 42, object 7; then bytes no reader of XF 1 can parse.
     let mut raw = vec![200u8];
     raw.extend_from_slice(&5u64.to_le_bytes());
     raw.extend_from_slice(&42u32.to_le_bytes());
@@ -220,4 +220,42 @@ fn truncated_and_foreign_bytes_are_errors_not_panics() {
 fn a_zero_denominator_is_refused() {
     let delta = Delta::new(Time { num: 1, den: 0 }, 0);
     assert!(wire::decode_delta(&wire::encode_delta(&delta)).is_err());
+}
+
+#[test]
+fn a_background_image_bit_without_its_field_is_invalid() {
+    let mut record = Record::new(RecordKind::Path, 3, 4);
+    record.features = 1;
+    let bytes = delta_with_raw_record(&wire::encode_record(&record));
+    assert!(matches!(
+        wire::decode_delta(&bytes),
+        Err(XfError::Invalid(_))
+    ));
+}
+
+#[test]
+fn a_fill_image_field_without_its_bit_is_invalid() {
+    let mut record = Record::new(RecordKind::Path, 3, 4);
+    record.fill_image = Some(Key([0xa1; 16]));
+    let bytes = delta_with_raw_record(&wire::encode_record(&record));
+    assert!(matches!(
+        wire::decode_delta(&bytes),
+        Err(XfError::Invalid(_))
+    ));
+}
+
+#[test]
+fn the_previous_major_is_refused() {
+    let mut delta = Delta::new(Time { num: 0, den: 1 }, 0);
+    delta.version = (0, 0);
+    assert!(matches!(
+        wire::decode_delta(&wire::encode_delta(&delta)),
+        Err(XfError::Version { found: (0, 0) })
+    ));
+    let mut file = wire::encode_file(&[]);
+    file[4..6].copy_from_slice(&0u16.to_le_bytes());
+    assert!(matches!(
+        wire::decode_file(&file),
+        Err(XfError::Version { found: (0, 0) })
+    ));
 }

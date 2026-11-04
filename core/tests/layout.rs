@@ -77,7 +77,7 @@ fn hand_delta(view: Option<&[u8]>, shapes: &[&[u8]], records: &[&[u8]]) -> Vec<u
             out.extend_from_slice(item);
         }
     };
-    let mut out = [u16(0), u16(0), i64(0), i64(1), u64(0)].concat();
+    let mut out = [u16(1), u16(0), i64(0), i64(1), u64(0)].concat();
     match view {
         None => out.extend(u8(0)),
         Some(v) => {
@@ -105,6 +105,7 @@ const KB: Key = Key([0xb2; 16]);
 const KC: Key = Key([0xc3; 16]);
 const KD: Key = Key([0xd4; 16]);
 const KE: Key = Key([0xe5; 16]);
+const KF: Key = Key([0xf6; 16]);
 
 const A1: Affine = [
     [1.0, 2.0, 3.0, 4.0],
@@ -129,7 +130,7 @@ const IDENTITY_BYTES: [f64; 12] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 
 /// An empty delta at `t_num / t_den`, sequence `seq`: every section absent or empty.
 fn empty_delta_fields(t_num: i64, t_den: i64, seq: u64) -> Vec<Field> {
     vec![
-        (0, "major", u16(0)),
+        (0, "major", u16(1)),
         (2, "minor", u16(0)),
         (4, "t_num", i64(t_num)),
         (12, "t_den", i64(t_den)),
@@ -153,7 +154,7 @@ fn a_file_is_its_magic_version_and_length_prefixed_deltas() {
     ];
     let fields = vec![
         (0, "magic", b"ARXF".to_vec()),
-        (4, "major", u16(0)),
+        (4, "major", u16(1)),
         (6, "minor", u16(0)),
         (8, "delta count", u32(2)),
         (12, "delta[0] length", u32(54)),
@@ -179,7 +180,7 @@ fn a_delta_lays_out_its_sections_in_order() {
         },
         0x0102_0304_0506_0708,
     );
-    d.version = (0, 3);
+    d.version = (1, 3);
     d.view = Some(view);
     d.objects = vec![ObjectInfo {
         object: 0x0a0b_0c0d,
@@ -227,42 +228,42 @@ fn a_delta_lays_out_its_sections_in_order() {
         (20, "rows", f64s(&[0.1, 0.2, 0.3, 0.4])),
     ];
     let fields = vec![
-        (0, "major", u16(0)),
+        (0, "major", u16(1)),
         (2, "minor", u16(3)),
         (4, "t_num", i64(-7)),
         (12, "t_den", i64(9_000_000_000)),
         (20, "seq", u64(0x0102_0304_0506_0708)),
         (28, "has view", u8(1)),
-        (29, "view length", u32(96)),
+        (29, "view length", u32(120)),
         (33, "view", laid_out(&flat_view_fields())),
-        (129, "object count", u32(1)),
-        (133, "object length", u32(23)),
-        (137, "object", laid_out(&object)),
-        (160, "shape count", u32(1)),
-        (164, "shape length", u32(45)),
-        (168, "shape", laid_out(&shape)),
-        (213, "paint table count", u32(1)),
-        (217, "paint table length", u32(52)),
-        (221, "paint table", laid_out(&paint_table)),
-        (273, "released count", u32(1)),
-        (277, "released key", key(&KB)),
-        (293, "record count", u32(1)),
-        (297, "record length", u32(208)),
-        (301, "record", laid_out(&plain_fields(6, 0, 0, 0))),
-        (509, "removed count", u32(2)),
-        (513, "removed[0]", u32(5)),
-        (517, "removed[1]", u32(8)),
-        (521, "has order", u8(1)),
-        (522, "order count", u32(3)),
-        (526, "order[0] layer (static)", u8(0)),
-        (527, "order[0] slot", u32(1)),
-        (531, "order[0] part", u32(0)),
-        (535, "order[1] layer (moving)", u8(1)),
-        (536, "order[1] slot", u32(2)),
-        (540, "order[1] part", u32(3)),
-        (544, "order[2] layer (overlay)", u8(2)),
-        (545, "order[2] slot", u32(4)),
-        (549, "order[2] part", u32(5)),
+        (153, "object count", u32(1)),
+        (157, "object length", u32(23)),
+        (161, "object", laid_out(&object)),
+        (184, "shape count", u32(1)),
+        (188, "shape length", u32(45)),
+        (192, "shape", laid_out(&shape)),
+        (237, "paint table count", u32(1)),
+        (241, "paint table length", u32(52)),
+        (245, "paint table", laid_out(&paint_table)),
+        (297, "released count", u32(1)),
+        (301, "released key", key(&KB)),
+        (317, "record count", u32(1)),
+        (321, "record length", u32(209)),
+        (325, "record", laid_out(&plain_fields(6, 0, 0, 0))),
+        (534, "removed count", u32(2)),
+        (538, "removed[0]", u32(5)),
+        (542, "removed[1]", u32(8)),
+        (546, "has order", u8(1)),
+        (547, "order count", u32(3)),
+        (551, "order[0] layer (static)", u8(0)),
+        (552, "order[0] slot", u32(1)),
+        (556, "order[0] part", u32(0)),
+        (560, "order[1] layer (moving)", u8(1)),
+        (561, "order[1] slot", u32(2)),
+        (565, "order[1] part", u32(3)),
+        (569, "order[2] layer (overlay)", u8(2)),
+        (570, "order[2] slot", u32(4)),
+        (574, "order[2] part", u32(5)),
     ];
     assert_layout(&wire::encode_delta(&d), &fields);
     assert_eq!(wire::decode_delta(&laid_out(&fields)).unwrap(), d);
@@ -291,6 +292,7 @@ fn flat_view() -> View {
         frame_width: 14.0,
         frame_height: 7.875,
         frame_center: [0.5, -0.25, 0.125],
+        mapping_centre: [-0.75, 0.625, -0.125],
         background: Background::Color([0.1, 0.2, 0.3, 0.4]),
         camera: Camera::Flat,
         cairo_line_width_multiple: 0.01,
@@ -306,13 +308,14 @@ fn flat_view_fields() -> Vec<Field> {
         (8, "frame_width", f64(14.0)),
         (16, "frame_height", f64(7.875)),
         (24, "frame centre", f64s(&[0.5, -0.25, 0.125])),
-        (48, "background (colour)", u8(0)),
-        (49, "background rgba", f64s(&[0.1, 0.2, 0.3, 0.4])),
-        (81, "camera (flat)", u8(0)),
-        (82, "cairo_line_width_multiple", f64(0.01)),
-        (90, "use_z_index", u8(1)),
-        (91, "light model (CE's)", u8(0)),
-        (92, "light parameter count", u32(0)),
+        (48, "mapping_centre", f64s(&[-0.75, 0.625, -0.125])),
+        (72, "background (colour)", u8(0)),
+        (73, "background rgba", f64s(&[0.1, 0.2, 0.3, 0.4])),
+        (105, "camera (flat)", u8(0)),
+        (106, "cairo_line_width_multiple", f64(0.01)),
+        (114, "use_z_index", u8(1)),
+        (115, "light model (CE's)", u8(0)),
+        (116, "light parameter count", u32(0)),
     ]
 }
 
@@ -345,16 +348,16 @@ fn a_moving_view_with_an_image_and_another_light_model() {
         },
         ..flat_view()
     };
-    let mut fields = flat_view_fields()[..5].to_vec();
+    let mut fields = flat_view_fields()[..6].to_vec();
     fields.extend([
-        (48, "background (image)", u8(1)),
-        (49, "background image key", key(&KA)),
-        (65, "camera (moving)", u8(1)),
-        (66, "cairo_line_width_multiple", f64(0.01)),
-        (74, "use_z_index", u8(0)),
-        (75, "light model code", u8(7)),
-        (76, "light parameter count", u32(2)),
-        (80, "light parameters", f64s(&[0.25, 0.5])),
+        (72, "background (image)", u8(1)),
+        (73, "background image key", key(&KA)),
+        (89, "camera (moving)", u8(1)),
+        (90, "cairo_line_width_multiple", f64(0.01)),
+        (98, "use_z_index", u8(0)),
+        (99, "light model code", u8(7)),
+        (100, "light parameter count", u32(2)),
+        (104, "light parameters", f64s(&[0.25, 0.5])),
     ]);
     view_both_ways(&view, &fields);
 }
@@ -368,11 +371,11 @@ fn a_view_in_soft_diffuse_light_is_light_model_1_with_its_two_parameters() {
         },
         ..flat_view()
     };
-    let mut fields = flat_view_fields()[..10].to_vec();
+    let mut fields = flat_view_fields()[..11].to_vec();
     fields.extend([
-        (91, "light model (soft diffuse)", u8(1)),
-        (92, "light parameter count", u32(2)),
-        (96, "light parameters: ambient, wrap", f64s(&[0.25, 0.5])),
+        (115, "light model (soft diffuse)", u8(1)),
+        (116, "light parameter count", u32(2)),
+        (120, "light parameters: ambient, wrap", f64s(&[0.25, 0.5])),
     ]);
     view_both_ways(&view, &fields);
 }
@@ -393,22 +396,22 @@ fn a_three_d_view_lays_out_every_camera_value() {
         }),
         ..flat_view()
     };
-    let mut fields = flat_view_fields()[..7].to_vec();
+    let mut fields = flat_view_fields()[..8].to_vec();
     fields.extend([
-        (81, "camera (3D)", u8(2)),
-        (82, "phi", f64(1.25)),
-        (90, "theta", f64(-0.75)),
-        (98, "gamma", f64(0.125)),
-        (106, "focal_distance", f64(20.0)),
-        (114, "zoom", f64(1.5)),
-        (122, "exponential_projection", u8(1)),
-        (123, "light_source", f64s(&[-7.0, -9.0, 10.0])),
-        (147, "shading_factor", f64(0.2)),
-        (155, "should_apply_shading", u8(0)),
-        (156, "cairo_line_width_multiple", f64(0.01)),
-        (164, "use_z_index", u8(1)),
-        (165, "light model (CE's)", u8(0)),
-        (166, "light parameter count", u32(0)),
+        (105, "camera (3D)", u8(2)),
+        (106, "phi", f64(1.25)),
+        (114, "theta", f64(-0.75)),
+        (122, "gamma", f64(0.125)),
+        (130, "focal_distance", f64(20.0)),
+        (138, "zoom", f64(1.5)),
+        (146, "exponential_projection", u8(1)),
+        (147, "light_source", f64s(&[-7.0, -9.0, 10.0])),
+        (171, "shading_factor", f64(0.2)),
+        (179, "should_apply_shading", u8(0)),
+        (180, "cairo_line_width_multiple", f64(0.01)),
+        (188, "use_z_index", u8(1)),
+        (189, "light model (CE's)", u8(0)),
+        (190, "light parameter count", u32(0)),
     ]);
     view_both_ways(&view, &fields);
 }
@@ -553,7 +556,7 @@ fn record_both_ways(record: &Record, fields: &[Field]) {
 #[test]
 fn a_path_record_lays_out_every_fixed_field() {
     let mut r = Record::new(RecordKind::Path, 0x0a0b_0c0d, 0x0102_0304);
-    r.features = 0x1122_3344_5566_7788;
+    r.features = 0x1122_3344_5566_7789;
     r.geometry = Geometry {
         shape_a: Some(KA),
         place_a: A1,
@@ -597,11 +600,12 @@ fn a_path_record_lays_out_every_fixed_field() {
     r.clip = Some((KE, A3));
     r.opacity = 0.75;
     r.layer = 0x0102;
+    r.fill_image = Some(KF);
     record_both_ways(
         &r,
         &[
             (0, "record kind (path)", u8(1)),
-            (1, "features", u64(0x1122_3344_5566_7788)),
+            (1, "features", u64(0x1122_3344_5566_7789)),
             (9, "slot", u32(0x0a0b_0c0d)),
             (13, "object", u32(0x0102_0304)),
             (17, "geometry flags (shape_a, blend, reveal)", u8(7)),
@@ -652,6 +656,8 @@ fn a_path_record_lays_out_every_fixed_field() {
             (625, "clip placement", affine(&A3)),
             (721, "opacity", f64(0.75)),
             (729, "layer", u16(0x0102)),
+            (731, "has fill_image", u8(1)),
+            (732, "fill_image", key(&KF)),
         ],
     );
 }
@@ -672,7 +678,7 @@ fn plain(kind: RecordKind) -> Record {
 }
 
 /// `plain`'s fixed fields, with the kind, joint, cap and space codes given; the body starts at
-/// byte 208.
+/// byte 209.
 fn plain_fields(kind: u8, joint: u8, cap: u8, space: u8) -> Vec<Field> {
     vec![
         (0, "record kind", u8(kind)),
@@ -701,6 +707,7 @@ fn plain_fields(kind: u8, joint: u8, cap: u8, space: u8) -> Vec<Field> {
         (197, "has clip", u8(0)),
         (198, "opacity", f64(0.875)),
         (206, "layer", u16(9)),
+        (208, "has fill_image", u8(0)),
     ]
 }
 
@@ -711,7 +718,7 @@ fn shapeless(kind: RecordKind) -> Record {
     r
 }
 
-/// `shapeless`'s fixed fields; the body starts at byte 192.
+/// `shapeless`'s fixed fields; the body starts at byte 193.
 fn shapeless_fields(kind: u8) -> Vec<Field> {
     vec![
         (0, "record kind", u8(kind)),
@@ -739,6 +746,7 @@ fn shapeless_fields(kind: u8) -> Vec<Field> {
         (181, "has clip", u8(0)),
         (182, "opacity", f64(0.875)),
         (190, "layer", u16(9)),
+        (192, "has fill_image", u8(0)),
     ]
 }
 
@@ -780,6 +788,21 @@ fn a_mesh_record_has_no_body() {
 }
 
 #[test]
+fn background_image_is_feature_bit_zero_with_an_optional_key() {
+    let mut r = plain(RecordKind::Path);
+    r.features = FEATURE_BACKGROUND_IMAGE;
+    r.fill_image = Some(KF);
+    let mut fields = plain_fields(1, 0, 0, 0);
+    fields[1] = (1, "features (background_image)", u64(1));
+    fields.pop();
+    fields.extend([
+        (208, "has fill_image", u8(1)),
+        (209, "fill_image", key(&KF)),
+    ]);
+    record_both_ways(&r, &fields);
+}
+
+#[test]
 fn a_face_group_with_and_without_strokes() {
     let mut r = plain(RecordKind::FaceGroup);
     r.body = Body::FaceGroup(FaceGroup {
@@ -790,13 +813,13 @@ fn a_face_group_with_and_without_strokes() {
     });
     let mut fields = plain_fields(2, 0, 0, 0);
     fields.extend([
-        (208, "face count", u32(2)),
-        (212, "uv", u32s(&[0, 1, 2, 3])),
-        (228, "grid_u", u32(4)),
-        (232, "grid_v", u32(5)),
-        (236, "fill key", key(&KB)),
-        (252, "has stroke", u8(1)),
-        (253, "stroke key", key(&KC)),
+        (209, "face count", u32(2)),
+        (213, "uv", u32s(&[0, 1, 2, 3])),
+        (229, "grid_u", u32(4)),
+        (233, "grid_v", u32(5)),
+        (237, "fill key", key(&KB)),
+        (253, "has stroke", u8(1)),
+        (254, "stroke key", key(&KC)),
     ]);
     record_both_ways(&r, &fields);
 
@@ -805,7 +828,7 @@ fn a_face_group_with_and_without_strokes() {
     };
     f.stroke = None;
     fields.truncate(fields.len() - 2);
-    fields.push((252, "has stroke", u8(0)));
+    fields.push((253, "has stroke", u8(0)));
     record_both_ways(&r, &fields);
 }
 
@@ -817,7 +840,7 @@ fn a_points_record() {
         radius: 2.25,
     });
     let mut fields = plain_fields(3, 0, 0, 0);
-    fields.extend([(208, "colors key", key(&KB)), (224, "radius", f64(2.25))]);
+    fields.extend([(209, "colors key", key(&KB)), (225, "radius", f64(2.25))]);
     record_both_ways(&r, &fields);
 }
 
@@ -825,20 +848,27 @@ fn a_points_record() {
 fn an_image_record_showing_a_picture() {
     let mut r = plain(RecordKind::Image);
     r.body = Body::Image(ImageSource::Picture {
-        corners: [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]],
+        corners: [
+            [1.0, 2.0, 3.0],
+            [4.0, 5.0, 6.0],
+            [7.0, 8.0, 9.0],
+            [10.0, 11.0, 13.0],
+        ],
         resampling: 3,
         opacity: 0.75,
     });
     let mut fields = plain_fields(4, 0, 0, 0);
     fields.extend([
-        (208, "image source (picture)", u8(0)),
+        (209, "image source (picture)", u8(0)),
         (
-            209,
+            210,
             "corners",
-            f64s(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]),
+            f64s(&[
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 13.0,
+            ]),
         ),
-        (281, "resampling", u8(3)),
-        (282, "image opacity", f64(0.75)),
+        (306, "resampling", u8(3)),
+        (307, "image opacity", f64(0.75)),
     ]);
     record_both_ways(&r, &fields);
 }
@@ -847,6 +877,15 @@ fn an_image_record_showing_a_picture() {
 fn an_image_record_showing_a_sub_frame() {
     let mut r = shapeless(RecordKind::Image);
     r.body = Body::Image(ImageSource::SubFrame {
+        rank: 0x0102_0304,
+        corners: [
+            [-1.0, 2.0, 3.0],
+            [4.0, 5.0, 6.0],
+            [7.0, 8.0, 9.0],
+            [10.0, 11.0, 13.0],
+        ],
+        resampling: 2,
+        opacity: 0.625,
         view: Box::new(flat_view()),
         order: vec![
             OrderEntry {
@@ -863,16 +902,26 @@ fn an_image_record_showing_a_sub_frame() {
     });
     let mut fields = shapeless_fields(4);
     fields.extend([
-        (192, "image source (sub-frame)", u8(1)),
-        (193, "sub-frame view length", u32(96)),
-        (197, "sub-frame view", laid_out(&flat_view_fields())),
-        (293, "sub-frame order count", u32(2)),
-        (297, "order[0] layer (overlay)", u8(2)),
-        (298, "order[0] slot", u32(3)),
-        (302, "order[0] part", u32(1)),
-        (306, "order[1] layer (static)", u8(0)),
-        (307, "order[1] slot", u32(4)),
-        (311, "order[1] part", u32(0)),
+        (193, "image source (sub-frame)", u8(1)),
+        (194, "capture rank", u32(0x0102_0304)),
+        (
+            198,
+            "corners",
+            f64s(&[
+                -1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 13.0,
+            ]),
+        ),
+        (294, "resampling", u8(2)),
+        (295, "image opacity", f64(0.625)),
+        (303, "sub-frame view length", u32(120)),
+        (307, "sub-frame view", laid_out(&flat_view_fields())),
+        (427, "sub-frame order count", u32(2)),
+        (431, "order[0] layer (overlay)", u8(2)),
+        (432, "order[0] slot", u32(3)),
+        (436, "order[0] part", u32(1)),
+        (440, "order[1] layer (static)", u8(0)),
+        (441, "order[1] slot", u32(4)),
+        (445, "order[1] part", u32(0)),
     ]);
     record_both_ways(&r, &fields);
 }
@@ -888,11 +937,11 @@ fn an_instances_record() {
     });
     let mut fields = plain_fields(5, 0, 0, 0);
     fields.extend([
-        (208, "instance count", u32(2)),
-        (212, "placements", [affine(&A1), affine(&A2)].concat()),
-        (404, "fill key", key(&KB)),
-        (420, "stroke key", key(&KC)),
-        (436, "objects", u32s(&[301, 302])),
+        (209, "instance count", u32(2)),
+        (213, "placements", [affine(&A1), affine(&A2)].concat()),
+        (405, "fill key", key(&KB)),
+        (421, "stroke key", key(&KC)),
+        (437, "objects", u32s(&[301, 302])),
     ]);
     record_both_ways(&r, &fields);
 }
@@ -904,8 +953,8 @@ fn the_reserved_record_kinds_carry_their_payload_as_an_item() {
         r.body = Body::Opaque(vec![9, 8, 7]);
         let mut fields = plain_fields(code, 0, 0, 0);
         fields.extend([
-            (208, "payload length", u32(3)),
-            (212, "payload", vec![9, 8, 7]),
+            (209, "payload length", u32(3)),
+            (213, "payload", vec![9, 8, 7]),
         ]);
         record_both_ways(&r, &fields);
     }
@@ -913,8 +962,8 @@ fn the_reserved_record_kinds_carry_their_payload_as_an_item() {
     r.body = Body::Opaque(vec![6, 5]);
     let mut fields = shapeless_fields(66);
     fields.extend([
-        (192, "payload length", u32(2)),
-        (196, "payload", vec![6, 5]),
+        (193, "payload length", u32(2)),
+        (197, "payload", vec![6, 5]),
     ]);
     record_both_ways(&r, &fields);
 }
@@ -959,6 +1008,7 @@ fn a_blend_without_a_reveal_sets_flag_bit_2_only() {
             (317, "has clip", u8(0)),
             (318, "opacity", f64(0.875)),
             (326, "layer", u16(9)),
+            (328, "has fill_image", u8(0)),
         ],
     );
 }
@@ -998,6 +1048,7 @@ fn a_reveal_without_a_blend_sets_flag_bit_4_only() {
             (213, "has clip", u8(0)),
             (214, "opacity", f64(0.875)),
             (222, "layer", u16(9)),
+            (224, "has fill_image", u8(0)),
         ],
     );
 }

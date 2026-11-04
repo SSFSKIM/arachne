@@ -31,8 +31,61 @@ def background_delta(width: int, height: int, rgba) -> ac.FrameDelta:
     return delta
 
 
-def test_the_version_is_xf_0():
-    assert ac.XF_VERSION == (0, 0)
+def test_the_version_is_xf_1():
+    assert ac.XF_VERSION == (1, 0)
+
+
+def test_mapping_centre_defaults_to_the_live_frame_center():
+    centre = (0.5, -0.25, 0.125)
+    delta = ac.FrameDelta()
+    delta.set_view(pixel_width=4, pixel_height=4, frame_center=centre, **FRAME)
+    # The view item starts at 33: centre is at 24, mapping_centre at 48.
+    assert struct.unpack_from("<3d", delta.to_bytes(), 81) == centre
+    explicit = ac.FrameDelta()
+    explicit.set_view(
+        pixel_width=4, pixel_height=4, frame_center=centre,
+        mapping_centre=centre, **FRAME,
+    )
+    assert explicit.to_bytes() == delta.to_bytes()
+
+
+def test_background_image_fill_sets_its_feature_and_is_cairo_only():
+    delta = background_delta(4, 4, (0, 0, 0, 1))
+    shape = delta.upload_path(square())
+    image = delta.upload_image(np.ones((4, 4, 4), dtype=np.uint8))
+    delta.set_record("path", 3, 33, shape=shape, fill=(1, 0, 0, 1), fill_image=image)
+    assert ac.FEATURES == {"background_image": 1}
+    stream = ac.Stream()
+    stream.apply(ac.FrameDelta.from_bytes(delta.to_bytes()))
+    assert stream.draw(4, 4).shape == (4, 4, 4)  # Not in the order yet.
+    order = ac.FrameDelta(seq=1)
+    order.set_order([("moving", 3, 0)])
+    stream.apply(order)
+    with pytest.raises(ac.Unsupported) as refused:
+        stream.draw(4, 4)
+    err = refused.value
+    assert (err.code, err.kind, err.slot, err.object) == ("render.unsupported", "path", 3, 33)
+    assert "Cairo" in err.reason
+
+
+def test_background_image_feature_cannot_be_set_without_its_field():
+    delta = ac.FrameDelta()
+    with pytest.raises(ac.XfError, match="fill_image"):
+        delta.set_record("path", 1, 1, shape=bytes(16), features=1)
+
+
+@pytest.mark.parametrize("array_like", [list, np.array])
+def test_image_corners_are_four_independently_stored_points(array_like):
+    delta = ac.FrameDelta()
+    image = delta.upload_image(np.ones((1, 1, 4), dtype=np.uint8))
+    corners = array_like([[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 13]])
+    delta.set_record("image", 1, 1, shape=image, corners=corners)
+    assert ac.FrameDelta.from_bytes(delta.to_bytes()).to_bytes() == delta.to_bytes()
+    stream = ac.Stream()
+    stream.apply(delta)
+    for invalid in (np.zeros((3, 3)), np.zeros((4, 2)), np.zeros((2, 6))):
+        with pytest.raises((TypeError, ValueError)):
+            delta.set_record("image", 1, 1, shape=image, corners=invalid)
 
 
 def test_a_background_frame_is_ces_bytes_as_a_numpy_array():
@@ -201,6 +254,7 @@ def canonical_sample() -> list[ac.FrameDelta]:
         shading_factor=0.25,
         should_apply_shading=False,
         frame_center=(0.5, -0.25, 0.125),
+        mapping_centre=(-0.75, 0.625, -0.125),
         cairo_line_width_multiple=0.02,
         use_z_index=False,
         light_model=(7, [0.25, 0.5]),
@@ -240,6 +294,7 @@ def canonical_sample() -> list[ac.FrameDelta]:
         blend=(wide, np.eye(3, 4) * 2, 0.375),
         reveal=(0.125, 0.875),
         fill=(1, 0, 0, 0.5),
+        fill_image=picture,
         stroke=[(1, 1, 1, 1), (0, 0, 0, 1)],
         background_stroke=gradient,
         stroke_width=4.0,
@@ -286,7 +341,7 @@ def canonical_sample() -> list[ac.FrameDelta]:
         4,
         14,
         shape=picture,
-        corners=((-1, 1, 0), (1, 1, 0), (-1, -1, 0)),
+        corners=((-1, 1, 0), (1, 1, 0), (-1, -1, 0), (1.125, -1.25, 0.125)),
         resampling=2,
         image_opacity=0.75,
         space="overlay",
@@ -295,13 +350,19 @@ def canonical_sample() -> list[ac.FrameDelta]:
         "image",
         5,
         15,
+        corners=((-2, 1, 0.25), (2, 1, 0.5), (-2, -1, 0.75), (2.25, -1.125, 1)),
+        resampling=2,
+        image_opacity=0.625,
         sub_frame=(
+            2,
             {
                 "pixel_width": 8,
                 "pixel_height": 4,
                 "camera": "flat",
                 "background": picture,
                 "light_model": "ce",
+                "frame_center": (0.25, -0.5, 0.75),
+                "mapping_centre": (-0.125, 0.375, 0.875),
                 **FRAME,
             },
             [("static", 1, 0)],
@@ -362,7 +423,7 @@ def canonical_sample() -> list[ac.FrameDelta]:
 # The sha256 of the canonical sample's file bytes. It catches any change to how the binding builds
 # the sample or how XF writes it; the field-by-field layout is pinned by core/tests/layout.rs.
 # XF streams are generated, never committed. Change the pin only when such a change is meant.
-SAMPLE_SHA256 = "121c71621e339faf132af50176e2ed4ad4acadac2950b4fe7716ed7d4dda42fb"
+SAMPLE_SHA256 = "c8eb87be5dd0ac30938cbc821802494d19462c1ad7f2045c55659993898ec1fc"
 
 
 def test_every_kind_can_be_built_and_survives_a_file(tmp_path):
@@ -486,3 +547,62 @@ def test_soft_diffuse_light_is_light_model_1_with_ambient_and_wrap():
     bad.set_view(pixel_width=4, pixel_height=4, light_model=(1, [1.5, 0.5]), **FRAME)
     with pytest.raises(ac.XfError):
         ac.Stream().apply(bad)
+
+
+def test_decode_refuses_both_background_image_bit_field_disagreements():
+    for image in (None, bytes(range(16))):
+        delta = ac.FrameDelta()
+        delta.set_record("path", 1, 1, shape=bytes(16), fill_image=image)
+        raw = bytearray(delta.to_bytes())
+        # A lone record starts at 53; its feature bits start at 54.
+        raw[54] ^= 1
+        with pytest.raises(ac.XfError, match="fill_image"):
+            ac.FrameDelta.from_bytes(bytes(raw))
+
+
+def test_fill_image_preserves_other_feature_bits_and_cannot_be_released_in_use():
+    delta = ac.FrameDelta()
+    shape = delta.upload_path(square())
+    image = delta.upload_image(np.ones((1, 1, 4), dtype=np.uint8))
+    delta.set_record("path", 1, 1, shape=shape, fill_image=image, features=16)
+    header = bytes([1]) + struct.pack("<QII", 17, 1, 1)
+    assert header in delta.to_bytes()
+    stream = ac.Stream()
+    stream.apply(delta)
+    for bad_key in (bytes(16), shape):
+        bad = ac.FrameDelta()
+        bad.set_record("path", 2, 2, shape=shape, fill_image=bad_key)
+        with pytest.raises(ac.XfError):
+            stream.apply(bad)
+    release = ac.FrameDelta()
+    release.release(image)
+    with pytest.raises(ac.XfError, match="still uses"):
+        stream.apply(release)
+    release.remove(1)
+    stream.apply(release)
+
+
+def test_sub_frame_placement_rank_and_self_capture():
+    corners = [[-1, 1, 0], [1, 1, 0], [-1, -1, 0], [1.125, -1.25, 0.125]]
+    view = dict(pixel_width=4, pixel_height=4, frame_center=(1, 2, 3), **FRAME)
+    delta = background_delta(4, 4, (0, 0, 0, 1))
+    delta.set_record(
+        "image", 1, 11, corners=corners, resampling=2, image_opacity=0.625,
+        sub_frame=(0, view, [("moving", 1, 0)]),
+    )
+    delta.set_record("image", 2, 12, corners=corners, sub_frame=(0, view, []))
+    stream = ac.Stream()
+    stream.apply(ac.FrameDelta.from_bytes(delta.to_bytes()))
+    delta.set_order([("moving", 1, 0), ("moving", 2, 0)])
+    with pytest.raises(ac.XfError, match="rank"):
+        stream.apply(delta)
+    delta.set_order([("moving", 1, 0), ("overlay", 2, 0)])
+    stream.apply(delta)
+    with pytest.raises(ac.Unsupported):
+        stream.draw(4, 4)
+    # Even a valid image shape is forbidden on a sub-frame.
+    bad = ac.FrameDelta()
+    image = bad.upload_image(np.ones((1, 1, 4), dtype=np.uint8))
+    bad.set_record("image", 3, 13, shape=image, corners=corners, sub_frame=(1, view, []))
+    with pytest.raises(ac.XfError, match="no shape"):
+        stream.apply(bad)
