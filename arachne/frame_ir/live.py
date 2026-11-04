@@ -388,6 +388,9 @@ class LivePainter:
         self.differing = 0
         #: Cameras (by id) whose captures stand as they drew them.
         self._fallen: set[int] = set()
+        #: What of each camera (by id) is the scene's code, as
+        #: ``painter.user_camera`` names it, read before live drawing wrapped it.
+        self._own_codes: dict[int, tuple[str, str]] = {}
         #: The scene's instant the captures within :meth:`around` draw.
         self.instant = Fraction(0)
 
@@ -462,7 +465,11 @@ class LivePainter:
             own["get_cairo_context"] = engine_own(no_context)
             added.append("get_cairo_context")
         held: dict[str, Any] = {}
-        if _own_code(camera) is not None:
+        own_code = _own_code(camera)
+        if own_code is not None:
+            # Named now: once wrapped, the scene's callables on the instance
+            # read as the engine's.
+            self._own_codes[id(camera)] = own_code
             # A camera the scene's code changed: what it produces for each
             # mobject it draws is kept, and its records are pre-projected.
             # Where the capture is the real draw, its comparison with the
@@ -555,7 +562,7 @@ class LivePainter:
         self._fallen.add(id(camera))
         from .lint import raise_finding
 
-        own = _own_code(camera)
+        own = self._own_codes.get(id(camera))
         subject, why = own if own is not None else (type(camera).__name__, "")
         raise_finding(
             "render.fallback",
