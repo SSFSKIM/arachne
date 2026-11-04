@@ -67,11 +67,14 @@ class _Recording:
     the mobject's own, and is kept (:attr:`_xf_log`) with what it returned.
     """
 
-    __slots__ = ("_xf_leaf", "_xf_log")
+    __slots__ = ("_xf_inside", "_xf_leaf", "_xf_log")
 
     def __init__(self, leaf: Any) -> None:
         self._xf_leaf = leaf
         self._xf_log: list[tuple[str, Any, Any, Any]] = []
+        #: The log's entries read inside a method whose result the record
+        #: carries (:func:`_producing`): never asked of the record.
+        self._xf_inside: set[int] = set()
 
     def __getattr__(self, name: str) -> Any:
         value = getattr(self._xf_leaf, name)
@@ -114,15 +117,23 @@ def _producing(name: str, method: Any) -> Any:
     """
 
     def produced(mobject: Any, *args: Any, **kwargs: Any) -> Any:
+        if not isinstance(mobject, _Recording):
+            return method(mobject, *args, **kwargs)
+        log = mobject._xf_log
+        start = len(log)
         result = method(mobject, *args, **kwargs)
-        if isinstance(mobject, _Recording):
-            if name == "transform_points_pre_display":
-                points = args[0] if args else kwargs["points"]
-                mobject._xf_log.append((_PRE_DISPLAY, points, None, result))
-            else:
-                background = bool(args[0] if args else kwargs.get("background", False))
-                which = "fill" if name == "get_fill_rgbas" else background
-                mobject._xf_log.append((_CAMERA_RGBAS, which, None, result))
+        # What the camera's code read off the mobject while it produced is
+        # its own: the drawer is handed what it produced and never asks.
+        mobject._xf_inside.update(range(start, len(log)))
+        # Kept as it is now: the camera may reuse the array it returned.
+        kept = np.array(result, dtype=float)
+        if name == "transform_points_pre_display":
+            points = args[0] if args else kwargs["points"]
+            log.append((_PRE_DISPLAY, points, None, kept))
+        else:
+            background = bool(args[0] if args else kwargs.get("background", False))
+            which = "fill" if name == "get_fill_rgbas" else background
+            log.append((_CAMERA_RGBAS, which, None, kept))
         return result
 
     return produced
@@ -575,11 +586,12 @@ class LivePainter:
         paints = {k: v for k, v in uploads.items() if isinstance(v, PaintTable)}
         replay = self._checker.proxy_of(record, shapes, paints)
         mapped = any(entry[0] == "__mapped__" for entry in recording._xf_log)
-        for name, args, kwargs, value in recording._xf_log:
+        inside = recording._xf_inside
+        for index, (name, args, kwargs, value) in enumerate(recording._xf_log):
             if name == "__mapped__" or (mapped and name == "points"):
                 continue  # the record holds the mapped points
-            if name in (_PRE_DISPLAY, _CAMERA_RGBAS):
-                continue  # what the camera produced: the record holds it
+            if name in (_PRE_DISPLAY, _CAMERA_RGBAS) or index in inside:
+                continue  # what the camera produced, or read to produce it
             try:
                 answer = getattr(replay, name)
                 if args is not None:
