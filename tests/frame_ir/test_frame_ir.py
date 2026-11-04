@@ -393,11 +393,12 @@ def test_drawing_restores_the_shown_states_when_settling_fails():
             def settle(self) -> None:
                 raise RuntimeError("settling failed")
 
+        drawing = Drawing(record)
+        drawing.show(capture, capture.draw_list())
+        assert not np.array_equal(square.points, before)
+        drawing._painted_by = Failing()
         with pytest.raises(RuntimeError, match="settling failed"):
-            with Drawing(record) as drawing:
-                drawing.show(capture, capture.draw_list())
-                assert not np.array_equal(square.points, before)
-                drawing._painted_by = Failing()
+            drawing.__exit__(None, None, None)
         np.testing.assert_array_equal(square.points, before)
     finally:
         session.close()
