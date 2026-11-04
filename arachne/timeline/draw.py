@@ -29,6 +29,7 @@ from __future__ import annotations
 
 __all__ = ["CameraExtras", "Drawing", "LiveFrames", "camera_nodes", "static_list"]
 
+import contextlib
 import operator
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
@@ -500,17 +501,26 @@ class Drawing:
             static_layer = config.static_layer
         if draw_path is None:
             draw_path = config.draw_path
-        from arachne.frame_ir.painter import camera_path, painter_for
+        from arachne.frame_ir.painter import camera_path, captured, painter_for
 
         self.record = record
         self.static_layer = static_layer
-        # A camera the scene's code changed draws on Cairo (render.fallback).
-        draw_path = camera_path(record._scene.renderer.camera, draw_path)
+        camera = record._scene.renderer.camera
+        # A camera the scene's code changed in a way XF cannot carry draws on
+        # Cairo (render.fallback).
+        draw_path = camera_path(camera, draw_path)
         self.draw_path = draw_path
-        #: The painters of the draw path (``None`` on ``cairo``): one for
-        #: frames, one for the plays' static pictures.
-        self.painter = painter_for(record, draw_path)
-        self.static_painter = painter_for(record, draw_path, "static")
+        #: Whether frames are described from the camera's own captures: a
+        #: camera the scene's code changed draws as on Cairo, each capture
+        #: described by what it produced (``arachne.frame_ir.live``), so its
+        #: code runs as often as CE runs it.
+        self.captured = captured(camera, draw_path)
+        #: The painters of the draw path (``None`` on ``cairo``, and where
+        #: frames are described from the camera's captures): one for frames,
+        #: one for the plays' static pictures.
+        painted = "cairo" if self.captured else draw_path
+        self.painter = painter_for(record, painted)
+        self.static_painter = painter_for(record, painted, "static")
         #: The painter that drew last, which settles the cameras on exit.
         self._painted_by: Any = None
         self.camera: Camera = record._scene.renderer.camera
@@ -619,9 +629,21 @@ class Drawing:
             camera.set_pixel_array(pixels)
             return pixels
         camera.reset()
-        camera.capture_mobjects(list(play.static))
+        with self._captures(capture.instant):
+            camera.capture_mobjects(list(play.static))
         self._pictures[play.index] = self._painted(play, capture)
         return camera.pixel_array.copy()
+
+    def _captures(self, t: Fraction) -> contextlib.AbstractContextManager[Any]:
+        """Within: the camera's captures are frames at the scene's instant
+        ``t`` described from what the camera produced, where this drawing's
+        frames are (:attr:`captured`); else nothing changes.
+        """
+        if not self.captured:
+            return contextlib.nullcontext()
+        from arachne.frame_ir.live import live
+
+        return live(self.camera, t, self.draw_path)
 
     def _painted(self, play: PlayRecord, capture: Capture) -> _Picture:
         """What the play's static picture paints, its static mobjects shown at
@@ -656,17 +678,18 @@ class Drawing:
         targets = list(capture.moving) or capture.draw_list()
         if self.painter is not None:
             return self._paint(play, capture, targets, prepare, instant)
-        if self.static_layer and self._picture_holds(play, capture):
-            self.show(capture, targets)
-            if prepare is not None:
-                prepare(self)
-            if static is not None:
-                self.camera.set_frame_to_background(static)
+        with self._captures(capture.instant if instant is None else instant):
+            if self.static_layer and self._picture_holds(play, capture):
+                self.show(capture, targets)
+                if prepare is not None:
+                    prepare(self)
+                if static is not None:
+                    self.camera.set_frame_to_background(static)
+                else:
+                    self.camera.reset()
             else:
-                self.camera.reset()
-        else:
-            self._draw_static(play, capture, static, targets, prepare)
-        self.camera.capture_mobjects(targets)
+                self._draw_static(play, capture, static, targets, prepare)
+            self.camera.capture_mobjects(targets)
         return self.camera.pixel_array.copy()
 
     def restored(
@@ -902,7 +925,8 @@ class Drawing:
             self.camera.set_pixel_array(pixels)
             return pixels
         self.camera.reset()
-        self.camera.capture_mobjects(targets)
+        with self._captures(capture.instant):
+            self.camera.capture_mobjects(targets)
         return self.camera.pixel_array.copy()
 
 

@@ -31,11 +31,11 @@ from arachne.mobject.types.point_cloud_mobject import PMobject
 from arachne.mobject.types.vectorized_mobject import VMobject
 
 from .geometry import blended, revealed
-from .xf import FEATURE_BACKGROUND_IMAGE, Record, StreamState
+from .xf import FEATURE_BACKGROUND_IMAGE, FEATURE_PRE_PROJECTED, Record, StreamState
 
 #: The record kinds and feature bits Cairo draws.
 _DRAWN_KINDS = frozenset({"path", "face_group", "points", "image"})
-_DRAWN_FEATURES = FEATURE_BACKGROUND_IMAGE
+_DRAWN_FEATURES = FEATURE_BACKGROUND_IMAGE | FEATURE_PRE_PROJECTED
 
 
 class Unsupported(Exception):
@@ -148,7 +148,43 @@ def _bare(cls: type, **attributes: Any) -> Any:
     return proxy
 
 
-class _PainterCamera(Camera):
+def _pre_of(mobject: Any) -> dict[str, Any] | None:
+    """What a pre-projected proxy's record says its camera produced."""
+    return getattr(mobject, "__dict__", {}).get("_xf_pre")
+
+
+class _Produced:
+    """A painter camera's part for pre-projected records: their points are
+    placed where the record says the camera that drew them placed them, and
+    painted in the colours it says that camera painted with; everything else
+    as the engine's camera does.
+    """
+
+    def transform_points_pre_display(self, mobject: Any, points: Any) -> Any:
+        pre = _pre_of(mobject)
+        if pre is None:
+            return super().transform_points_pre_display(mobject, points)  # type: ignore[misc]
+        own = mobject.__dict__
+        if points is own.get("_points"):
+            return pre["points"]
+        if pre["gradient"] is not None and points is own.get("_xf_gradient"):
+            return pre["gradient"]
+        raise AssertionError("a pre-projected record holds no such points")
+
+    def get_fill_rgbas(self, vmobject: Any) -> Any:
+        pre = _pre_of(vmobject)
+        if pre is None:
+            return super().get_fill_rgbas(vmobject)  # type: ignore[misc]
+        return pre["fill"]
+
+    def get_stroke_rgbas(self, vmobject: Any, background: bool = False) -> Any:
+        pre = _pre_of(vmobject)
+        if pre is None:
+            return super().get_stroke_rgbas(vmobject, background=background)  # type: ignore[misc]
+        return pre["background_stroke" if background else "stroke"]
+
+
+class _PainterCamera(_Produced, Camera):
     """A flat camera mapping frame to pixels around the view's mapping centre."""
 
     _xf_centre: tuple[float, ...] = (0.0, 0.0, 0.0)
@@ -157,7 +193,7 @@ class _PainterCamera(Camera):
         return _context(self, pixel_array)
 
 
-class _Painter3DCamera(ThreeDCamera):
+class _Painter3DCamera(_Produced, ThreeDCamera):
     """A ThreeDCamera mapping frame to pixels around the view's mapping centre."""
 
     _xf_centre: tuple[float, ...] = (0.0, 0.0, 0.0)
@@ -282,6 +318,7 @@ class CairoDrawer:
                 _rgbas=state.paints[f["colors"]].rows,
                 stroke_width=f["radius"],
                 submobjects=[],
+                _xf_pre=_pre(f, state),
             )
         if kind == "image":
             if "sub_frame" in f:
@@ -299,6 +336,7 @@ class CairoDrawer:
                 resampling_algorithm=f["resampling"],
                 _xf_pixels=source,
                 submobjects=[],
+                _xf_pre=_pre(f, state),
             )
         raise NotImplementedError(f"the Cairo drawer has no {kind} records")
 
@@ -347,6 +385,7 @@ class CairoDrawer:
             _xf_gradient=None
             if gradient is None
             else (np.array(gradient[:3]), np.array(gradient[3:])),
+            _xf_pre=_pre(f, state),
         )
 
     def _faces(self, state: StreamState, f: dict[str, Any]) -> list[Any]:
@@ -546,6 +585,27 @@ class CairoDrawer:
             sub_camera = self._camera(sub_view, ("display", slot))
             sub_camera.pixel_array = sub_array
             self._draw_entries(sub_camera, sub_order, sub_array)
+
+
+def _pre(f: dict[str, Any], state: StreamState) -> dict[str, Any] | None:
+    """A pre-projected record's produced values, as the painter camera hands
+    them to CE's display code: the placed points, the gradient's placed ends
+    as CE's camera receives them back, and the paints' RGBA rows.
+    """
+    pre = f.get("pre_projected")
+    if pre is None:
+        return None
+    gradient = pre.get("gradient")
+    return {
+        "points": state.shapes[pre["points"]].data,
+        "gradient": None
+        if gradient is None
+        else np.array([gradient[:3], gradient[3:]], dtype=float),
+        **{
+            name: _rows(pre.get(name), state)
+            for name in ("fill", "stroke", "background_stroke")
+        },
+    }
 
 
 def _mixed(a: Any, b: Any, mix: float) -> Any:

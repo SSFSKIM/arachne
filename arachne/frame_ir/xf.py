@@ -14,6 +14,7 @@ from __future__ import annotations
 
 __all__ = [
     "FEATURE_BACKGROUND_IMAGE",
+    "FEATURE_PRE_PROJECTED",
     "LAYERS",
     "XF_VERSION",
     "Delta",
@@ -34,10 +35,15 @@ from typing import Any
 
 import numpy as np
 
-#: The XF version this module writes.
-XF_VERSION = (1, 0)
+#: The newest XF version this module knows. A delta is written at the lowest
+#: version its content needs: 1.1 only when it carries a pre-projected record.
+XF_VERSION = (1, 1)
 #: The record's paint is CE's background-image fill (Cairo only).
 FEATURE_BACKGROUND_IMAGE = 1
+#: The record carries what a camera of the scene's own made of it
+#: (``pre_projected``: its pre-display points, gradient ends and colours), so
+#: a drawer places it with the frame mapping alone (XF 1.1).
+FEATURE_PRE_PROJECTED = 2
 #: The layers an order entry names, in XF's codes' order.
 LAYERS = ("static", "moving", "overlay")
 
@@ -154,6 +160,16 @@ def _references(fields: Mapping[str, Any]) -> Iterable[bytes]:
     sub_frame = fields.get("sub_frame")
     if sub_frame is not None and isinstance(sub_frame[1].get("background"), bytes):
         yield sub_frame[1]["background"]
+    pre = fields.get("pre_projected")
+    if pre is not None:
+        yield pre["points"]
+        for name in _PAINTS:
+            if isinstance(pre.get(name), bytes):
+                yield pre[name]
+
+
+#: The paints a record states, by their field names.
+_PAINTS = ("fill", "stroke", "background_stroke")
 
 
 @dataclass
@@ -267,11 +283,22 @@ def _core_fields(fields: Mapping[str, Any]) -> dict[str, Any]:
     found = dict(fields)
     if "corners" in found:
         found["corners"] = np.reshape(found["corners"], (4, 3)).tolist()
+    # The fields that carry a feature set its bit themselves.
+    features = int(found.pop("features", 0))
     if found.get("fill_image") is not None:
-        found.pop("features", None)  # the key sets its bit
-    for name in ("fill", "stroke", "background_stroke"):
+        features &= ~FEATURE_BACKGROUND_IMAGE
+    if found.get("pre_projected") is not None:
+        features &= ~FEATURE_PRE_PROJECTED
+    if features:
+        found["features"] = features
+    for name in _PAINTS:
         if isinstance(found.get(name), np.ndarray):
             found[name] = found[name].tolist()
+    pre = found.get("pre_projected")
+    if pre is not None:
+        found["pre_projected"] = {
+            k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in pre.items()
+        }
     paint_b = found.get("paint_b")
     if paint_b is not None:
         found["paint_b"] = {
