@@ -5,7 +5,10 @@
 mobjects itself, as it always has. On ``ir_cairo`` the frame is turned into an
 XF delta (:class:`~.extract.FrameStream`), the core checks the delta whole
 (``arachne_core``, the ``core`` extra), and Cairo draws the frame from the XF
-stream alone (:class:`~.cairo_painter.CairoDrawer`). Frames drawn as the scene
+stream alone (:class:`~.cairo_painter.CairoDrawer`). On ``core`` the core
+draws the frame, and Cairo draws its overlay over it
+(:class:`~.core_painter.CorePainter`); ``auto`` is ``core`` for 3D scenes and
+``cairo`` for 2D ones (:func:`scene_path`). Frames drawn as the scene
 runs (``LiveFrames``, ``update_frame``) take the same path through
 :func:`~.live.live`, described from what the camera's own capture consumed.
 
@@ -22,6 +25,7 @@ __all__ = [
     "captured",
     "changed_members",
     "painter_for",
+    "scene_path",
     "uncarried",
 ]
 
@@ -39,8 +43,9 @@ from .extract import FrameStream, Term
 from .lint import raise_finding
 from .xf import Delta, StreamState
 
-#: The draw paths, and whether each describes frames in XF.
-DRAW_PATHS = {"cairo": False, "ir_cairo": True}
+#: The draw paths, and whether each describes frames in XF (``auto`` names
+#: one of them per scene: :func:`scene_path`).
+DRAW_PATHS = {"cairo": False, "ir_cairo": True, "core": True}
 
 
 def user_camera(camera: Any) -> tuple[str, str] | None:
@@ -212,15 +217,22 @@ def camera_path(camera: Any, draw_path: str) -> str:
     that is no engine camera's subclass stays on the path and is
     ``render.unable`` there.
     """
-    if draw_path not in DRAW_PATHS:
-        raise ValueError(f"draw_path {draw_path!r} is not one of {sorted(DRAW_PATHS)}")
+    draw_path = scene_path(camera, draw_path)
     own = user_camera(camera) if DRAW_PATHS[draw_path] else None
     if own is None:
         return draw_path
     found = uncarried(camera)
+    subject, why = own
+    if found is None and draw_path == "core":
+        raise_finding(
+            "render.fallback",
+            subject,
+            f"{why} is drawn on Cairo: the core does not draw what a camera's"
+            " own capture placed yet",
+        )
+        return "cairo"
     if found is None:
         return draw_path
-    subject, why = own
     _, member = found
     raise_finding(
         "render.fallback",
@@ -229,6 +241,22 @@ def camera_path(camera: Any, draw_path: str) -> str:
         " the points, colours and order XF carries of the camera's capture",
     )
     return "cairo"
+
+
+def scene_path(camera: Any, draw_path: str) -> str:
+    """The draw path ``draw_path`` names for a scene drawn by ``camera``:
+    ``auto`` is ``core`` for a 3D scene (its camera a ``ThreeDCamera``) and
+    ``cairo`` for every other; any other path is itself.
+    """
+    if draw_path == "auto":
+        from arachne.camera.three_d_camera import ThreeDCamera
+
+        return "core" if isinstance(camera, ThreeDCamera) else "cairo"
+    if draw_path not in DRAW_PATHS:
+        raise ValueError(
+            f"draw_path {draw_path!r} is not one of {sorted([*DRAW_PATHS, 'auto'])}"
+        )
+    return draw_path
 
 
 class IrCairoPainter:
@@ -310,9 +338,7 @@ _PAINTERS: weakref.WeakKeyDictionary[Any, tuple[int, str, Any]] = (
 )
 
 
-def painter_for(
-    owner: Any, draw_path: str, role: str = "frames"
-) -> IrCairoPainter | None:
+def painter_for(owner: Any, draw_path: str, role: str = "frames") -> Any:
     """The painter of ``draw_path`` for ``owner`` (a record) in this process,
     made on first use; ``None`` on ``cairo``. ``role`` keeps apart streams
     that draw different things (a play's static pictures and its frames).
@@ -328,5 +354,14 @@ def painter_for(
         _PAINTERS[owner] = painters
     found = painters[2].get(role)
     if found is None:
-        found = painters[2][role] = IrCairoPainter()
+        found = painters[2][role] = painter_class(draw_path)()
     return found
+
+
+def painter_class(draw_path: str) -> type:
+    """The painter class of a draw path that describes frames in XF."""
+    if draw_path == "core":
+        from .core_painter import CorePainter
+
+        return CorePainter
+    return IrCairoPainter

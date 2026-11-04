@@ -1388,13 +1388,16 @@ class ManimConfig(MutableMapping):
         """How a frame becomes pixels: ``cairo`` draws the shown mobjects
         with the camera (the default); ``ir_cairo`` turns the shown state
         into XF, the Frame IR, and draws that with Cairo, byte for byte the
-        same frames (the check that the IR is complete).
+        same frames (the check that the IR is complete); ``core`` draws the
+        XF with ``arachne_core`` (the ``core`` extra), depth-correct, its
+        overlay (mobjects fixed in frame, images) drawn by Cairo over it;
+        ``auto`` is ``core`` for 3D scenes and ``cairo`` for every other.
         """
         return self._d["draw_path"]
 
     @draw_path.setter
     def draw_path(self, value: str) -> None:
-        self._set_from_list("draw_path", value, ["cairo", "ir_cairo"])
+        self._set_from_list("draw_path", value, ["cairo", "ir_cairo", "core", "auto"])
 
     @property
     def renderer(self) -> NoReturn:
