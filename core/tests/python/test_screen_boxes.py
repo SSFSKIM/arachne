@@ -9,7 +9,12 @@ import numpy as np
 import pytest
 
 # 16 x 9 frame units on 160 x 90 pixels: 10 px a unit, the origin at (80, 45).
-FRAME = {"frame_width": 16.0, "frame_height": 9.0, "pixel_width": 160, "pixel_height": 90}
+FRAME = {
+    "frame_width": 16.0,
+    "frame_height": 9.0,
+    "pixel_width": 160,
+    "pixel_height": 90,
+}
 
 
 def segment(a, b) -> np.ndarray:
@@ -25,9 +30,7 @@ def square(centre=(0.0, 0.0), half=1.0) -> np.ndarray:
         (cx + half, cy + half, 0),
         (cx - half, cy + half, 0),
     ]
-    return np.concatenate(
-        [segment(corners[i], corners[(i + 1) % 4]) for i in range(4)]
-    )
+    return np.concatenate([segment(corners[i], corners[(i + 1) % 4]) for i in range(4)])
 
 
 def view_delta(**view) -> ac.FrameDelta:
@@ -77,7 +80,13 @@ def test_a_face_group_has_a_box_though_the_drawer_refuses_it():
     faces = delta.upload_path(np.concatenate([square((-2, 0)), square((3, 1))]))
     fills = delta.upload_paint(np.ones((2, 4)))
     delta.set_record(
-        "face_group", 1, 1, shape=faces, uv=[(0, 0), (1, 0)], grid=(2, 1), face_fill=fills
+        "face_group",
+        1,
+        1,
+        shape=faces,
+        uv=[(0, 0), (1, 0)],
+        grid=(2, 1),
+        face_fill=fills,
     )
     delta.set_order([("moving", 1, 0), ("moving", 1, 1)])
     stream = ac.Stream()
