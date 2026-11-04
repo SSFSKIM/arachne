@@ -12,6 +12,12 @@ pixels tall (:data:`THRESHOLD_HEIGHT`).
 here with the strings, severities and meanings the drawing gave them; the
 Frame IR's own table re-exports them from here once both live in one tree.
 The ``image.`` codes are reserved for the image checks.
+
+A clearance finding of the temporal rules (:mod:`.watch`, :mod:`.departures`)
+may carry ``clock_margin``: seconds past the duration that decided it (held
+long enough, settled long enough), when that is less than a frame of the
+render's grid, where an engine whose plays last whole frames can decide
+otherwise.
 """
 
 from __future__ import annotations
@@ -61,7 +67,7 @@ _TABLE = (
         "a text's glyphs, or a shape that was wholly inside, run past the frame's edge",
         "Move or shrink it so it sits inside the frame with a margin, or give the"
         " layout room before it is placed.",
-        ("edge", "past"),
+        ("edge", "past", "clock_margin"),
     ),
     Code(
         "overlap.text",
@@ -69,7 +75,7 @@ _TABLE = (
         _CLEARANCE,
         "a text overlaps another text or a shape",
         "Move one of the two apart, or place one against the other with a gap.",
-        ("overlap",),
+        ("overlap", "clock_margin"),
     ),
     Code(
         "gap.text",
@@ -77,7 +83,7 @@ _TABLE = (
         _CLEARANCE,
         "two texts sit closer than the gap the scene declared for texts",
         "Widen the space between the two texts to the declared gap.",
-        ("gap", "required"),
+        ("gap", "required", "clock_margin"),
     ),
     Code(
         "contact.held",
@@ -85,7 +91,7 @@ _TABLE = (
         _CLEARANCE,
         "two things that are not text touch or overlap",
         "Move them apart, or declare the contact meant by exempting the pair.",
-        ("gap", "required"),
+        ("gap", "required", "clock_margin"),
     ),
     Code(
         "occlusion.glyph",
@@ -94,7 +100,7 @@ _TABLE = (
         "something drawn after a text paints over its glyphs",
         "Draw the text after what covers it, raise it in the paint order, or move"
         " the covering shape off it.",
-        ("covered",),
+        ("covered", "clock_margin"),
     ),
     Code(
         "label.left_behind",
@@ -103,7 +109,7 @@ _TABLE = (
         "a label stays where its referent was after the referent moved away",
         "Move the label with its referent: carry it in the same animation, or"
         " place it from the referent's position each frame.",
-        ("referent", "distance"),
+        ("referent", "distance", "clock_margin"),
     ),
     Code(
         "axes.outside",

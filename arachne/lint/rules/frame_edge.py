@@ -13,13 +13,14 @@ from __future__ import annotations
 
 __all__ = ["EDGE_SLACK", "edge_findings", "frame_edge"]
 
+from collections.abc import Iterable
 from fractions import Fraction
 
 from ..findings import Finding
 from ..parts import Parts
 from ._excuse import muted
 from ._rule import InstantRule, Terms
-from ._units import measured_units
+from ._units import Measured, measured_units
 
 #: How far a text's glyphs may run past an edge before they are cut.
 EDGE_SLACK = 0.05
@@ -28,16 +29,21 @@ NOISE = 0.005
 
 
 def edge_findings(
-    parts: Parts, terms: Terms, *, margin: float = -EDGE_SLACK
+    parts: Parts,
+    terms: Terms,
+    *,
+    margin: float = -EDGE_SLACK,
+    among: Iterable[Measured] | None = None,
 ) -> list[Finding]:
-    """The texts at ``parts``' instant whose glyphs come within ``margin``
-    of the picture's edge (with a negative margin, run past it by more than
-    that), each one finding naming the edge it is furthest past.
+    """The texts at ``parts``' instant (of those ``among`` names, when
+    given) whose glyphs come within ``margin`` of the picture's edge (with
+    a negative margin, run past it by more than that), each one finding
+    naming the edge it is furthest past.
     """
     left, bottom, right, top = parts.frame
     units_per_pixel = parts.view.home_height / parts.target[1]
     found = []
-    for unit in measured_units(parts):
+    for unit in measured_units(parts) if among is None else among:
         if not unit.text or unit.furniture or muted(terms.exempt, unit):
             continue
         x0, y0, x1, y1 = unit.glyph_box
