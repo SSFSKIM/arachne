@@ -240,6 +240,19 @@ def test_draw_path_is_an_option():
         config.draw_path = "gpu"
 
 
+#: A placement one unit to the right.
+_SHIFTED = np.array([[1.0, 0, 0, 1], [0, 1, 0, 0], [0, 0, 1, 0]])
+
+
+def _blank():
+    from arachne.frame_ir.xf import Shape
+
+    return Shape("image", np.zeros((9, 16, 4), dtype=np.uint8))
+
+
+_BLANK = _blank()
+
+
 def _square_and(record: object) -> object:
     """A described frame: a square path, then ``record`` in the order."""
     from arachne.frame_ir.xf import Delta, Shape
@@ -275,8 +288,30 @@ def _square_and(record: object) -> object:
     [
         lambda key: Record("volume", {"payload": b"\x01\x02"}),
         lambda key: Record("path", {"shape": key, "features": 2}),
+        lambda key: Record("path", {"shape": key, "place": _SHIFTED}),
+        lambda key: Record("path", {"shape": key, "blend": (key, _SHIFTED, 0.5)}),
+        lambda key: Record("path", {"shape": key, "dash": (1.0, 0.5, 0.0)}),
+        lambda key: Record("path", {"shape": key, "clip": (key, np.eye(3, 4))}),
+        lambda key: Record("path", {"shape": key, "opacity": 0.5}),
+        lambda key: Record(
+            "image",
+            {
+                "shape": _BLANK.key,
+                "corners": tuple(range(12)),
+                "image_opacity": 0.5,
+            },
+        ),
     ],
-    ids=["reserved kind", "unknown feature bit"],
+    ids=[
+        "reserved kind",
+        "unknown feature bit",
+        "placement",
+        "blend placement",
+        "dash",
+        "clip",
+        "opacity",
+        "image opacity",
+    ],
 )
 def test_a_frame_with_what_cairo_does_not_draw_is_refused_whole(make):
     import arachne_core

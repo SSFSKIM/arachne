@@ -39,21 +39,55 @@ _DRAWN_FEATURES = FEATURE_BACKGROUND_IMAGE
 
 
 class Unsupported(Exception):
-    """``render.unsupported``: a frame's description holds a record kind or
-    a feature bit the drawer does not draw. The frame is refused whole.
+    """``render.unsupported``: a frame's description holds a record kind, a
+    feature bit or a field value the drawer does not draw. The frame is
+    refused whole.
     """
 
     code = "render.unsupported"
 
-    def __init__(self, kind: str, slot: int, features: int = 0) -> None:
+    def __init__(
+        self, kind: str, slot: int, features: int = 0, field: str | None = None
+    ) -> None:
+        what = f" with feature bits {features:#x}" if features else ""
+        if field is not None:
+            what += f" with {field}"
         super().__init__(
-            f"{self.code}: slot {slot} is a {kind} record"
-            + (f" with feature bits {features:#x}" if features else "")
-            + " this drawer does not draw; the frame is not drawn"
+            f"{self.code}: slot {slot} is a {kind} record{what}"
+            " this drawer does not draw; the frame is not drawn"
         )
         self.kind = kind
         self.slot = slot
         self.features = features
+        self.field = field
+
+
+#: A placement that leaves a shape where it is.
+_IDENTITY = np.eye(3, 4)
+
+
+def _unsupported_field(fields: dict[str, Any]) -> str | None:
+    """The first field of a record whose value this drawer does not draw:
+    a placement other than the identity, a dash, a clip, an opacity other
+    than 1 (CE sets none of them).
+    """
+    place = fields.get("place")
+    if place is not None and not np.array_equal(
+        np.reshape(np.asarray(place, dtype=float), (3, 4)), _IDENTITY
+    ):
+        return "a placement"
+    blend = fields.get("blend")
+    if blend is not None and not np.array_equal(
+        np.reshape(np.asarray(blend[1], dtype=float), (3, 4)), _IDENTITY
+    ):
+        return "a blend placement"
+    for name in ("dash", "clip"):
+        if fields.get(name) is not None:
+            return f"a {name}"
+    for name in ("opacity", "image_opacity"):
+        if float(fields.get(name, 1.0)) != 1.0:
+            return f"an {name.replace('_', ' ')} other than 1"
+    return None
 
 
 _EMPTY = np.zeros((0, 4))
@@ -408,14 +442,27 @@ class CairoDrawer:
 
     @staticmethod
     def _refuse_unknown(state: StreamState) -> None:
-        """Refuse the frame if a record it draws has a kind or a feature bit
-        Cairo does not draw (a record outside the order is not drawn).
+        """Refuse the frame if a record it draws (in the order, or in a
+        display's sub-frame) has a kind, a feature bit or a field value Cairo
+        does not draw.
         """
-        for slot in {slot for _, slot, _ in state.order}:
+        todo = [slot for _, slot, _ in state.order]
+        seen: set[int] = set()
+        while todo:
+            slot = todo.pop()
+            if slot in seen:
+                continue
+            seen.add(slot)
             record = state.records[slot]
             features = int(record.fields.get("features", 0))
             if record.kind not in _DRAWN_KINDS or features & ~_DRAWN_FEATURES:
                 raise Unsupported(record.kind, slot, features & ~_DRAWN_FEATURES)
+            field = _unsupported_field(record.fields)
+            if field is not None:
+                raise Unsupported(record.kind, slot, field=field)
+            sub_frame = record.fields.get("sub_frame")
+            if sub_frame is not None:
+                todo.extend(entry[1] for entry in sub_frame[2])
 
     def _seed_images(self, camera: Any, state: StreamState) -> None:
         """Give the camera's background-image displayer the images the
