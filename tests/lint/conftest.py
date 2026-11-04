@@ -29,8 +29,10 @@ def session_of():
     opened: list[Session] = []
     admission.DEMOTED.clear()
 
-    def open_session(name: str, path: Path = SCENES, **settings) -> Session:
-        session = Session.open(path, name, config={**SMALL, **settings})
+    def open_session(
+        name: str, path: Path = SCENES, *, grid="render", **settings
+    ) -> Session:
+        session = Session.open(path, name, grid=grid, config={**SMALL, **settings})
         opened.append(session)
         return session
 

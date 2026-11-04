@@ -14,6 +14,7 @@ from arachne import (
     Axes,
     Circle,
     Dot,
+    MappingCamera,
     Scene,
     Square,
     Text,
@@ -86,3 +87,11 @@ class Pair(Scene):
         held = VGroup(Dot(DOWN))  # @held
         self.add(left, right, held)
         self.play(left.animate.shift(UP), run_time=0.5)
+
+
+class RefusedInstants(Instants):
+    """:class:`Instants` under a mapping camera, whose record draws nothing."""
+
+    def __init__(self, **kwargs):
+        super().__init__(camera_class=MappingCamera, **kwargs)
+
