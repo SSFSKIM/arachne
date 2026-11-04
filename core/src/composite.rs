@@ -84,7 +84,26 @@ pub fn sample_fixed(s: usize) -> [i64; 2] {
     ]
 }
 
-/// A depth over the pixel plane: `a + b * x + c * y` in pixel coordinates. Smaller is nearer.
+/// The centroid of the sub-samples `mask` covers in pixel `(x, y)`: where a fragment's colour is
+/// read.
+pub fn mask_centroid(x: u32, y: u32, mask: u16) -> [f64; 2] {
+    if mask == FULL {
+        return [x as f64 + 0.5, y as f64 + 0.5];
+    }
+    let (mut sx, mut sy, mut n) = (0.0, 0.0, 0.0);
+    for s in 0..SAMPLES {
+        if mask & (1 << s) != 0 {
+            let [px, py] = sample_point(x, y, s);
+            sx += px;
+            sy += py;
+            n += 1.0;
+        }
+    }
+    [sx / n, sy / n]
+}
+
+/// A value over the pixel plane, `a + b * x + c * y` in pixel coordinates: a depth (smaller is
+/// nearer) or a channel of a colour.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Plane {
     pub a: f64,
@@ -243,6 +262,13 @@ pub fn area_coverage(area: f32) -> u8 {
     ((area as f64).clamp(0.0, 1.0) * 255.0 + 0.5) as u8
 }
 
+/// How far, per byte, the coverage resolve of a pixel with one partial mask may land from what
+/// the sample resolve would give it (blend at each sub-sample, then average): the mask's count is
+/// rounded to an 8-bit coverage and the blend rounds again, where the sample resolve rounds once
+/// per sub-sample and once in the average. The parity kit's bound for the coverage class starts
+/// here; `tests/composite.rs` sweeps it.
+pub const COVERAGE_TO_SAMPLE_LSB: u8 = 2;
+
 /// A mask's count as an 8-bit coverage.
 pub fn mask_coverage(mask: u16) -> u8 {
     ((mask.count_ones() * 255 + 8) / 16) as u8
@@ -267,8 +293,9 @@ pub fn srgb_decode(encoded: f64) -> f64 {
 }
 
 /// A pixel with the light emitted into it, tone-mapped once: in linear light each channel moves
-/// toward white by `1 - exp(-E)`, so no emission leaves the pixel's bytes as they are and no
-/// amount of it passes white. Alpha rises to keep the colour premultiplied.
+/// toward white by `1 - exp(-E)`, so no amount of it passes white. A channel with no emission
+/// keeps its byte, and alpha rises only to the channels that emission raised, so a pixel without
+/// emission keeps its bytes whatever they are (a translucent background's are not premultiplied).
 pub fn add_emission(pixel: [u8; 4], emission: [f64; 3]) -> [u8; 4] {
     let mut out = pixel;
     for k in 0..3 {
@@ -276,13 +303,20 @@ pub fn add_emission(pixel: [u8; 4], emission: [f64; 3]) -> [u8; 4] {
             let l = srgb_decode(pixel[k] as f64 / 255.0);
             let lit = l + (1.0 - l) * (1.0 - libm::exp(-emission[k]));
             out[k] = (srgb_encode(lit.clamp(0.0, 1.0)) * 255.0 + 0.5) as u8;
+            if out[k] != pixel[k] {
+                out[3] = out[3].max(out[k]);
+            }
         }
     }
-    out[3] = out[3].max(out[0]).max(out[1]).max(out[2]);
     out
 }
 
 /// Something that draws into the passes: a rasterizer of meshes, of paths, or anything else.
+///
+/// Each method must be a pure function of what the producer was built from (the stream's state)
+/// and the pass's rectangle: no state shared across calls, no dependence on which rectangles were
+/// drawn before. Tiles are drawn in any order on any thread, and a frame's bytes are the same on
+/// any number of threads only because of this.
 pub trait Producer: Sync {
     /// Adds the producer's opaque fragments in the pass's rectangle.
     fn opaque(&self, _pass: &mut OpaquePass<'_>) {}
@@ -451,8 +485,10 @@ pub struct TransparentPass<'a> {
     emission: Vec<[f64; 3]>,
 }
 
-/// One rectangle resolved: its bytes and each pixel's [`Resolve`], row by row.
-pub struct Resolved {
+/// Drawn pixels, a tile's or a frame's: their bytes, each pixel's [`Resolve`] code, row by row,
+/// and the count of pixels per resolve.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Rendered {
     pub rgba: Vec<u8>,
     pub resolves: Vec<u8>,
     pub counts: ResolveCounts,
@@ -523,11 +559,11 @@ impl TransparentPass<'_> {
 
     /// Resolves every pixel of the rectangle over its background (the rectangle's bytes, row by
     /// row), then tone-maps the emitted light onto it.
-    pub(crate) fn resolve(mut self, background: &[u8]) -> Resolved {
+    pub(crate) fn resolve(mut self, background: &[u8]) -> Rendered {
         let pixels = self.rect.pixels();
         assert_eq!(background.len(), pixels * 4);
         let transparent = ByPixel::new(std::mem::take(&mut self.fragments), pixels);
-        let mut out = Resolved {
+        let mut out = Rendered {
             rgba: background.to_vec(),
             resolves: vec![Resolve::Background as u8; pixels],
             counts: ResolveCounts::default(),
@@ -545,8 +581,9 @@ impl TransparentPass<'_> {
             } else {
                 resolve_pixel(&mut scratch, bg, x, y, |f| self.mask_of(f, x, y))
             };
-            if let Some(e) = self.emission.get(i) {
-                pixel = add_emission(pixel, *e);
+            match self.emission.get(i) {
+                Some(e) if *e != [0.0; 3] => pixel = add_emission(pixel, *e),
+                _ => {}
             }
             out.rgba[i * 4..i * 4 + 4].copy_from_slice(&pixel);
             out.resolves[i] = class as u8;

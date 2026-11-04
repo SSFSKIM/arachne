@@ -2,9 +2,9 @@
 //! one frame's pixels, or refuses the whole frame when any drawn record carries what this build
 //! cannot draw (`render.unsupported`).
 
-use crate::composite::{self, Frame};
+use crate::composite::{self, Frame, Rendered};
 use crate::mesh::{self, MeshDraw};
-use crate::tiles::{self, Rendered};
+use crate::tiles;
 use crate::xf::*;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;

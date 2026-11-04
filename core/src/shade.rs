@@ -6,9 +6,15 @@
 //!   clamps each stop), and ignores the camera's `shading_factor`, as CE does.
 //! - Soft diffuse light, in linear light: diffuse light that wraps past the terminator, over an
 //!   ambient floor, lit on the side the eye sees. Its parameters are the view's.
+//! - A lit mesh triangle ([`Light::triangle`]): each corner lit by the view's model, then the
+//!   corners' colours interpolated in screen space (Gouraud), read at the centroid of the
+//!   sub-samples a fragment covers ([`TriangleColour`]). A GPU path mirrors this module.
 //!
 //! The arithmetic is plain IEEE operations in CE's order; NumPy takes its norms and dot products
 //! through BLAS and `** 3` from the platform, so results may differ from CE's in the last bits.
+
+use crate::composite::{Plane, mask_centroid, premultiply, srgb_decode, srgb_encode};
+use crate::xf::{LightModel, ThreeDCamera};
 
 type V3 = [f64; 3];
 
@@ -157,4 +163,133 @@ impl SoftDiffuse {
         let share = self.ambient + (1.0 - self.ambient) * diffuse;
         scale(linear, share)
     }
+}
+
+/// A view's light model resolved against its 3D camera: what lights a shaded mesh's corners.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Light {
+    /// CE's model, lit from the camera's light source.
+    Ce { source: V3 },
+    /// Soft diffuse light from the camera's light source, seen from the camera's eye.
+    Soft {
+        model: SoftDiffuse,
+        source: V3,
+        eye: V3,
+    },
+}
+
+impl Light {
+    /// The light for a view's `model` under `camera`, whose projection rotates by `rotation`
+    /// about `frame_center`. The eye is where CE's projection puts it: `focal_distance` along the
+    /// rotation's third row from the frame's centre. An unknown model is refused before drawing.
+    pub fn new(
+        model: &LightModel,
+        camera: &ThreeDCamera,
+        frame_center: V3,
+        rotation: [[f64; 3]; 3],
+    ) -> Light {
+        let source = camera.light_source;
+        match model {
+            LightModel::Ce => Light::Ce { source },
+            LightModel::SoftDiffuse { ambient, wrap } => Light::Soft {
+                model: SoftDiffuse {
+                    ambient: *ambient,
+                    wrap: *wrap,
+                },
+                source,
+                eye: std::array::from_fn(|k| {
+                    frame_center[k] + camera.focal_distance * rotation[2][k]
+                }),
+            },
+            LightModel::Other { .. } => unreachable!("an unknown light model is refused"),
+        }
+    }
+
+    /// A triangle's colour from its fill (encoded straight colour `rgb`, `alpha`), lit at its
+    /// world-space corners `points` facing `normals` (each corner's own, or CE's normal of the
+    /// face when the mesh has none), placed at `px` on the pixel plane. CE's model lights encoded
+    /// colour, each corner clamped to `0..=1` as Cairo clamps a gradient's stops; soft diffuse
+    /// lights the decoded colour in linear light.
+    pub fn triangle(
+        &self,
+        rgb: V3,
+        alpha: f64,
+        points: [V3; 3],
+        normals: Option<[V3; 3]>,
+        px: [[f64; 2]; 3],
+    ) -> TriangleColour {
+        let n = normals.unwrap_or_else(|| {
+            [ce_unit_normal(sub(points[1], points[0]), sub(points[2], points[0])); 3]
+        });
+        match self {
+            Light::Ce { source } => {
+                let values = [0, 1, 2].map(|k| {
+                    ce_shaded_rgb(rgb, points[k], n[k], *source).map(|v| v.clamp(0.0, 1.0))
+                });
+                TriangleColour::gouraud(px, values, alpha, false)
+            }
+            Light::Soft { model, source, eye } => {
+                let base = rgb.map(|v| srgb_decode(v.clamp(0.0, 1.0)));
+                let values = [0, 1, 2].map(|k| model.lit(base, points[k], n[k], *source, *eye));
+                TriangleColour::gouraud(px, values, alpha, true)
+            }
+        }
+    }
+}
+
+/// A triangle's colour across the pixel plane.
+///
+/// Lit colour is interpolated in screen space (Gouraud shading, not perspective-corrected): each
+/// channel is the plane through the corners' values on the pixel plane, as Cairo interpolates the
+/// two stops of a face CE shades. A fragment reads it at the centroid of the sub-samples it
+/// covers, clamps it to `0..=1`, encodes it when it is linear, and premultiplies it with the
+/// triangle's alpha.
+#[derive(Clone, Copy, Debug)]
+pub enum TriangleColour {
+    /// One premultiplied colour.
+    Flat([u8; 4]),
+    /// Encoded straight colour per channel, and the alpha.
+    Encoded([Plane; 3], f64),
+    /// Linear colour per channel, and the alpha.
+    Linear([Plane; 3], f64),
+}
+
+impl TriangleColour {
+    /// An unlit triangle: its fill, encoded straight colour `rgb` with `alpha`.
+    pub fn flat(rgb: V3, alpha: f64) -> TriangleColour {
+        TriangleColour::Flat(premultiply([rgb[0], rgb[1], rgb[2], alpha]))
+    }
+
+    /// The corners' colours `values` (linear or encoded) at `px`, interpolated.
+    fn gouraud(px: [[f64; 2]; 3], values: [V3; 3], alpha: f64, linear: bool) -> TriangleColour {
+        if values[0] == values[1] && values[1] == values[2] {
+            let c = values[0].map(|v| encoded(v, linear));
+            return TriangleColour::flat(c, alpha);
+        }
+        let planes = [0, 1, 2]
+            .map(|k| Plane::through([0, 1, 2].map(|i| [px[i][0], px[i][1], values[i][k]])));
+        if linear {
+            TriangleColour::Linear(planes, alpha)
+        } else {
+            TriangleColour::Encoded(planes, alpha)
+        }
+    }
+
+    /// The premultiplied colour of a fragment covering `mask` in pixel `(x, y)`.
+    pub fn at(&self, x: u32, y: u32, mask: u16) -> [u8; 4] {
+        let (planes, alpha, linear) = match self {
+            TriangleColour::Flat(c) => return *c,
+            TriangleColour::Encoded(p, a) => (p, *a, false),
+            TriangleColour::Linear(p, a) => (p, *a, true),
+        };
+        let [cx, cy] = mask_centroid(x, y, mask);
+        let rgb = planes.map(|p| encoded(p.at(cx, cy), linear));
+        premultiply([rgb[0], rgb[1], rgb[2], alpha])
+    }
+}
+
+/// A channel clamped to `0..=1`, encoded when it is linear.
+fn encoded(v: f64, linear: bool) -> f64 {
+    let v = v.clamp(0.0, 1.0);
+    if linear { srgb_encode(v) } else { v }
 }

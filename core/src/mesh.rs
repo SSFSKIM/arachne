@@ -12,9 +12,7 @@
 //!   at its centre's depth. Anything else is in front of the scene, and ties go by draw order, as
 //!   under a flat camera, where everything ties.
 //! - Colour: the fill, by the record's group opacity; lit when the record is `shade_in_3d` and the
-//!   3D camera applies shading, by the view's light model at each corner (CE's model on encoded
-//!   colour, soft diffuse in linear light), interpolated across the triangle and evaluated at the
-//!   centroid of the sub-samples a fragment covers.
+//!   3D camera applies shading, as `shade` lights a triangle's corners and interpolates them.
 //! - Coverage: corners snapped to [`SUBPIXEL`] units, sub-samples tested against exact integer edge
 //!   functions with a tie rule that gives a sample on an edge shared by two triangles to exactly
 //!   one of them, so a surface's internal edges neither gap nor overlap. Triangles reaching past a
@@ -23,10 +21,10 @@
 
 use crate::composite::{
     Coverage, FULL, Fragment, OpaquePass, Plane, Producer, Rect, SAMPLES, SUBPIXEL,
-    TransparentPass, premultiply, sample_fixed, sample_point, srgb_decode, srgb_encode,
+    TransparentPass, premultiply, sample_fixed,
 };
 use crate::project::{FrameMap, Placement, Projection, pre_display};
-use crate::shade::{self, SoftDiffuse};
+use crate::shade::{Light, TriangleColour};
 use crate::tiles::{TILE, tile_index, tiles_across};
 use crate::xf::*;
 
@@ -42,50 +40,6 @@ pub struct MeshDraw<'a> {
     pub order: u32,
 }
 
-/// A triangle's colour.
-#[derive(Clone, Copy, Debug)]
-enum Colour {
-    /// One premultiplied colour.
-    Flat([u8; 4]),
-    /// Encoded straight colour, interpolated, then premultiplied with `alpha`.
-    Encoded([Plane; 3], f64),
-    /// Linear colour, interpolated, encoded, then premultiplied with `alpha`.
-    Linear([Plane; 3], f64),
-}
-
-impl Colour {
-    fn at(&self, x: u32, y: u32, mask: u16) -> [u8; 4] {
-        let (planes, alpha, linear) = match self {
-            Colour::Flat(c) => return *c,
-            Colour::Encoded(p, a) => (p, *a, false),
-            Colour::Linear(p, a) => (p, *a, true),
-        };
-        let [cx, cy] = centroid(x, y, mask);
-        let rgb = planes.map(|p| {
-            let v = p.at(cx, cy).clamp(0.0, 1.0);
-            if linear { srgb_encode(v) } else { v }
-        });
-        premultiply([rgb[0], rgb[1], rgb[2], alpha])
-    }
-}
-
-/// The centroid of the sub-samples a mask covers.
-fn centroid(x: u32, y: u32, mask: u16) -> [f64; 2] {
-    if mask == FULL {
-        return [x as f64 + 0.5, y as f64 + 0.5];
-    }
-    let (mut sx, mut sy, mut n) = (0.0, 0.0, 0.0);
-    for s in 0..SAMPLES {
-        if mask & (1 << s) != 0 {
-            let [px, py] = sample_point(x, y, s);
-            sx += px;
-            sy += py;
-            n += 1.0;
-        }
-    }
-    [sx / n, sy / n]
-}
-
 /// A triangle on the pixel plane, ready to rasterize.
 #[derive(Clone, Debug)]
 struct Tri {
@@ -95,7 +49,7 @@ struct Tri {
     /// Pixels `x0..x1` by `y0..y1`, inside the frame.
     bbox: [u32; 4],
     depth: Plane,
-    colour: Colour,
+    colour: TriangleColour,
     opaque: bool,
     order: u32,
     sub: u32,
@@ -126,29 +80,6 @@ fn transform_normal(m: &Affine, n: [f64; 3]) -> [f64; 3] {
     } else {
         out
     }
-}
-
-/// The projection's factor at a projected depth, as `ThreeDCamera.project_points` takes it.
-fn factor(camera: &ThreeDCamera, z: f64) -> f64 {
-    let d = camera.focal_distance;
-    if camera.exponential_projection {
-        if z < 0.0 {
-            d / (d - z)
-        } else {
-            libm::exp(z / d)
-        }
-    } else if d - z < 0.0 {
-        1e6
-    } else {
-        d / (d - z)
-    }
-}
-
-/// How a record's corners are lit.
-enum Light {
-    None,
-    Ce([f64; 3]),
-    Soft(SoftDiffuse, [f64; 3], [f64; 3]),
 }
 
 /// Lowers mesh records to triangles for a frame of `width x height` pixels.
@@ -184,10 +115,13 @@ pub fn lower(view: &View, width: u32, height: u32, draws: &[MeshDraw<'_>]) -> Me
             continue; // CE draws such a mobject as one point: nothing.
         }
         let (placement, keyed) = match (camera, rec.depth.space) {
-            (Some(c), Space::World) => match rec.depth.fixed_orientation_centre {
+            (Some(_), Space::World) => match rec.depth.fixed_orientation_centre {
                 Some(centre) => {
-                    let z = projection.as_ref().unwrap().project(centre)[2];
-                    (Placement::FixedOrientation(centre), Some(-factor(c, z)))
+                    let p = projection.as_ref().unwrap();
+                    (
+                        Placement::FixedOrientation(centre),
+                        Some(-p.factor(p.project(centre)[2])),
+                    )
                 }
                 None => (Placement::Projected, None),
             },
@@ -198,28 +132,20 @@ pub fn lower(view: &View, width: u32, height: u32, draws: &[MeshDraw<'_>]) -> Me
         let corners: Vec<([f64; 2], f64)> = shown
             .iter()
             .map(|p| {
-                let key = keyed.unwrap_or_else(|| -factor(camera.unwrap(), p[2]));
+                let key = keyed.unwrap_or_else(|| -projection.as_ref().unwrap().factor(p[2]));
                 (map.apply(*p), key)
             })
             .collect();
         let alpha = fill[3] * rec.opacity;
         let rgb = [fill[0], fill[1], fill[2]];
         let light = match camera {
-            Some(c) if rec.depth.shade_in_3d && c.should_apply_shading => match &view.light {
-                LightModel::Ce => Light::Ce(c.light_source),
-                LightModel::SoftDiffuse { ambient, wrap } => {
-                    let r = projection.as_ref().unwrap().rotation();
-                    let eye =
-                        std::array::from_fn(|k| view.frame_center[k] + c.focal_distance * r[2][k]);
-                    let soft = SoftDiffuse {
-                        ambient: *ambient,
-                        wrap: *wrap,
-                    };
-                    Light::Soft(soft, c.light_source, eye)
-                }
-                LightModel::Other { .. } => unreachable!("an unknown light model is refused"),
-            },
-            _ => Light::None,
+            Some(c) if rec.depth.shade_in_3d && c.should_apply_shading => Some(Light::new(
+                &view.light,
+                c,
+                view.frame_center,
+                projection.as_ref().unwrap().rotation(),
+            )),
+            _ => None,
         };
         let normals: Option<Vec<[f64; 3]>> = draw.normals.map(|ns| {
             ns.iter()
@@ -233,60 +159,19 @@ pub fn lower(view: &View, width: u32, height: u32, draws: &[MeshDraw<'_>]) -> Me
             let depth =
                 Plane::through(idx.map(|i| [corners[i].0[0], corners[i].0[1], corners[i].1]));
             let colour = match &light {
-                Light::None => Colour::Flat(premultiply([rgb[0], rgb[1], rgb[2], alpha])),
-                lit => {
-                    let face = || {
-                        let w = idx.map(|i| world[i]);
-                        let e = |a: [f64; 3], b: [f64; 3]| [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-                        shade::ce_unit_normal(e(w[0], w[1]), e(w[0], w[2]))
-                    };
-                    let n = match &normals {
-                        Some(ns) => idx.map(|i| ns[i]),
-                        None => [face(); 3],
-                    };
-                    let (values, linear) = match lit {
-                        Light::Ce(source) => (
-                            [0, 1, 2].map(|k| {
-                                shade::ce_shaded_rgb(rgb, world[idx[k]], n[k], *source)
-                                    .map(|v| v.clamp(0.0, 1.0))
-                            }),
-                            false,
-                        ),
-                        Light::Soft(soft, source, eye) => {
-                            let base = rgb.map(|v| srgb_decode(v.clamp(0.0, 1.0)));
-                            (
-                                [0, 1, 2]
-                                    .map(|k| soft.lit(base, world[idx[k]], n[k], *source, *eye)),
-                                true,
-                            )
-                        }
-                        Light::None => unreachable!(),
-                    };
-                    corner_colours(px, values, alpha, linear)
-                }
+                None => TriangleColour::flat(rgb, alpha),
+                Some(light) => light.triangle(
+                    rgb,
+                    alpha,
+                    idx.map(|i| world[i]),
+                    normals.as_ref().map(|ns| idx.map(|i| ns[i])),
+                    px,
+                ),
             };
             meshes.push(px, depth, colour, opaque, draw.order, sub as u32, height);
         }
     }
     meshes
-}
-
-/// A triangle's colour from its corners' colours.
-fn corner_colours(px: [[f64; 2]; 3], values: [[f64; 3]; 3], alpha: f64, linear: bool) -> Colour {
-    if values[0] == values[1] && values[1] == values[2] {
-        let c = values[0].map(|v| {
-            let v = v.clamp(0.0, 1.0);
-            if linear { srgb_encode(v) } else { v }
-        });
-        return Colour::Flat(premultiply([c[0], c[1], c[2], alpha]));
-    }
-    let planes =
-        [0, 1, 2].map(|k| Plane::through([0, 1, 2].map(|i| [px[i][0], px[i][1], values[i][k]])));
-    if linear {
-        Colour::Linear(planes, alpha)
-    } else {
-        Colour::Encoded(planes, alpha)
-    }
 }
 
 /// The intersection of segment `p`-`q` with the line where coordinate `axis` is `at`, computed
@@ -347,7 +232,7 @@ impl Meshes {
         &mut self,
         px: [[f64; 2]; 3],
         depth: Plane,
-        colour: Colour,
+        colour: TriangleColour,
         opaque: bool,
         order: u32,
         sub: u32,
