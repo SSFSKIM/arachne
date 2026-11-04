@@ -195,17 +195,71 @@ def test_text_heights_in_units_and_in_pixels_at_1080(defect):
 # markers ---------------------------------------------------------------------
 
 
-def test_markers_are_the_dots_on_screen_where_they_are(session_of):
-    session = session_of("DotsOnALine", QUERIES, frame_rate=15)
-    start = session.query(0).markers()
-    assert sorted(m.thing.line for m in start) == sorted(
-        [line_of("first", QUERIES), line_of("second", QUERIES)]
-    )
-    where = {m.thing.line: m.centre for m in start}
-    assert where[line_of("first", QUERIES)] == pytest.approx((-2.0, 0.0), abs=1e-6)
-    assert where[line_of("second", QUERIES)] == pytest.approx((1.5, 0.0), abs=1e-6)
-    end = {m.thing.line: m.centre for m in session.query(10).markers()}
-    assert end[line_of("second", QUERIES)] == pytest.approx((2.0, 0.0), abs=1e-6)
+def _named(markers) -> list[tuple[str, str]]:
+    names = {"section": "name", "subcaption": "content", "mark": "label"}
+    return [
+        (
+            m.kind,
+            m.data[names[m.kind]] if m.kind in names else Path(m.data["file"]).name,
+        )
+        for m in markers
+    ]
+
+
+@pytest.mark.parametrize(
+    ("t", "expected"),
+    [
+        # The first play: its section, nothing else placed in it.
+        (Fraction(1, 3), [("section", "intro")]),
+        # The wait: its section, the subcaption showing, its tag and sound.
+        (
+            Fraction(2, 3),
+            [
+                ("section", "intro"),
+                ("mark", "beat"),
+                ("sound", "arachne-query-click.wav"),
+                ("subcaption", "hello"),
+            ],
+        ),
+        # Still the wait: the subcaption has ended (0.5 + 0.4 s).
+        (
+            Fraction(14, 15),
+            [
+                ("section", "intro"),
+                ("mark", "beat"),
+                ("sound", "arachne-query-click.wav"),
+            ],
+        ),
+        # The last play: the second section only.
+        (Fraction(16, 15), [("section", "second")]),
+    ],
+)
+def test_markers_are_the_named_markers_in_force(session_of, t, expected):
+    session = session_of("Narrated", QUERIES, frame_rate=15)
+    record = session.record
+    found = session.query(t).markers()
+    assert _named(found) == expected
+    # The record's own markers, with the times and lines open reports.
+    for marker in found:
+        assert any(marker is kept for kept in record.markers)
+    by_kind = {m.kind: m for m in found}
+    if "mark" in by_kind:
+        assert by_kind["mark"].t == Fraction(1, 2)
+        assert by_kind["mark"].source_line.line == line_of("beat", QUERIES)
+        assert by_kind["mark"].data == {"label": "beat", "n": 1}
+
+
+def test_the_scene_s_markers_are_all_recorded(session_of):
+    """Every kind the query answers is one the record keeps."""
+    session = session_of("Narrated", QUERIES, frame_rate=15)
+    kinds = [(m.kind, m.t) for m in session.record.markers]
+    assert kinds == [
+        ("section", Fraction(0)),
+        ("mark", Fraction(1, 2)),
+        ("sound", Fraction(1, 2)),
+        ("subcaption", Fraction(1, 2)),
+        ("section", Fraction(1)),
+    ]
 
 
 # no drawing ------------------------------------------------------------------
@@ -230,4 +284,4 @@ def test_a_refused_record_is_queried_through_one_forward_run(session_of):
     query = session.query(Fraction(1, 3))
     assert query.answer == "forward"
     assert len(session.forward_runs) == 1
-    assert query.markers()
+    assert [part.type for part in query.parts.parts] == ["Dot"]
