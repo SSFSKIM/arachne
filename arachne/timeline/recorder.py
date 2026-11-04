@@ -317,6 +317,9 @@ class Recorder:
         self._body: _Body | None = None
         #: The files the script opens for reading while it runs.
         self._inputs: Inputs | None = None
+        #: Whether a play is running: from when it is recorded until it has
+        #: been evaluated.
+        self._playing = False
 
     # The run
 
@@ -433,9 +436,18 @@ class Recorder:
             self._tagging = True
         if record.scene_file is not None:
             self._inputs = Inputs(
-                os.path.dirname(record.scene_file), excluded=engine_dirs(config)
+                os.path.dirname(record.scene_file),
+                excluded=engine_dirs(config),
+                play=self._play_reading,
             )
             self._inputs.start()
+
+    def _play_reading(self) -> int:
+        """The index of the first play what the script reads now can change:
+        the one running, or else the next to begin.
+        """
+        plays = len(self.ensure_record().plays)
+        return plays - 1 if self._playing else plays
 
     def end_run(self) -> None:
         """The script has ended: capture what it left."""
@@ -569,6 +581,7 @@ class Recorder:
             _animations=tuple(animations),
         )
         record.plays.append(play)
+        self._playing = True
 
         scene.begin_animations()
         play.moving = tuple(scene.moving_mobjects)
@@ -589,6 +602,7 @@ class Recorder:
             else:
                 self._play_internal(body)
         finally:
+            self._playing = False
             if body.plan is not None:
                 body.plan.release()
 

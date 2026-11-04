@@ -30,7 +30,9 @@ answer (:class:`Fallback`). It is never an answer about the record: the new
 execution is compared with the record's over what it ran
 (:func:`.execution.compare`), and a difference is kept on the session as a
 ``replay.diverged`` divergence of kind ``execution`` naming the input files
-whose digests differ.
+the two executions read differently for the plays compared: each file is
+kept with the digest of what each execution read and the first play it was
+read for (:class:`.inputs.Read`), never with what the file holds now.
 
 A forward run leaves the session as it found it: its record and answers,
 its scene's module and the process's origin table and random generators.
@@ -60,11 +62,13 @@ from .draw import Drawing, LiveFrames
 from .execution import (
     Divergence,
     Execution,
+    ExecutionSummary,
     Incomparable,
+    _begun,
     compare,
     summarize,
 )
-from .inputs import digest_of, file_digests, source_files
+from .inputs import Read, file_digests, source_files
 from .origins import ORIGINS
 from .recorder import Recorder
 from .restore import Unrestorable
@@ -256,7 +260,7 @@ def _forward(
     :attr:`.Session.divergences`, and answer each instant from it; with the
     fallback every answer takes when the source changed since the record.
     """
-    from arachne.session import execute
+    from arachne.session import _reads, execute
 
     source = session._source
     if source is None:
@@ -337,10 +341,14 @@ def _forward(
             stale = _source_changed(source, record)
             session.stale = True
         if divergence is not None:
-            # What changed since the record's execution read it, whether or
-            # not the forward run read it before it stopped.
+            # What the two executions read differently for the plays compared.
             divergence = replace(
-                divergence, changed_inputs=_changed_inputs(record, executed)
+                divergence,
+                changed_inputs=_changed_inputs(
+                    source.reads,
+                    _reads(forward, executed),
+                    _bound(mine, theirs, until, before_play),
+                ),
             )
         session.forward_runs.append(
             ForwardRun(
@@ -389,39 +397,62 @@ def _source_changed(source: Source, record: Record) -> Fallback:
             )
     if changed:
         names = ", ".join(changed)
-        return Fallback(
-            "source-changed",
-            f"source.changed: {names}",
+        detail = (
             f"the scene's source changed since the record was made ({names}): the"
-            " record is stale, and these are the answers of the source as it is now",
+            " record is stale, and these are the answers of the source as it is now"
         )
-    return Fallback(
-        "source-changed",
-        "source.changed",
-        "the scene's source differs from the record's, or is unknown for one of"
-        " them: the record is stale, and these are the answers of the source as"
-        " it is now",
-    )
+    else:
+        detail = (
+            "the scene's source differs from the record's, or is unknown for one"
+            " of them: the record is stale, and these are the answers of the"
+            " source as it is now"
+        )
+    return Fallback("source-changed", "source.changed", detail)
 
 
-def _changed_inputs(record: Record, forward: Record) -> tuple[str, ...]:
-    """The input files the record's execution read whose content differs
-    now (a file gone included), and those the forward run read that the
-    record's execution did not, by path relative to the scene's directory.
+def _bound(
+    mine: ExecutionSummary,
+    theirs: ExecutionSummary,
+    until: Fraction | None,
+    before_play: int | None,
+) -> int | None:
+    """How many plays :func:`.execution.compare` compared, at most, of
+    ``mine`` and ``theirs`` (``None``: all of both, and where their scripts
+    ended).
     """
-    if record.scene_file is None:
-        return ()
-    scene_dir = os.path.dirname(record.scene_file)
-    recorded = dict(record.identity.input_digests)
-    changed = {
-        path
-        for path, digest in recorded.items()
-        if digest_of(os.path.join(scene_dir, path)) != digest
-    }
-    changed.update(
-        path for path, _ in forward.identity.input_digests if path not in recorded
+    if until is None and before_play is None:
+        return None
+    return max(
+        len(_begun(summary.plays, until)[:before_play]) for summary in (mine, theirs)
     )
-    return tuple(sorted(changed))
+
+
+def _changed_inputs(
+    mine: tuple[Read, ...], theirs: tuple[Read, ...], bound: int | None
+) -> tuple[str, ...]:
+    """The input files two executions read differently for their plays
+    before ``bound`` (every play, and their scripts' ends, when ``None``), by
+    path: a file either first read for one of those plays that the two read
+    with different contents, or that only one of them read for one of them
+    (a file gone, a conditional read). A file both first read only for a
+    later play changed nothing compared.
+    """
+
+    def compared(reads: tuple[Read, ...]) -> dict[str, str]:
+        return {
+            read.path: read.digest
+            for read in reads
+            if bound is None or read.play < bound
+        }
+
+    early_mine, early_theirs = compared(mine), compared(theirs)
+    return tuple(
+        sorted(
+            path
+            for path in early_mine.keys() | early_theirs.keys()
+            if early_mine.get(path) != early_theirs.get(path)
+        )
+    )
 
 
 def _recorded(

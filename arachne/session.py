@@ -32,7 +32,7 @@ from .timeline.clock import exact
 from .timeline.draw import Drawing
 from .timeline.execution import Divergence, ExecutionSummary, compare, summarize
 from .timeline.fallback import Answer, ForwardRun, answer_instants
-from .timeline.inputs import file_digests, source_digest, source_files
+from .timeline.inputs import Read, file_digests, source_digest, source_files
 from .timeline.origins import ORIGINS
 from .timeline.recorder import Recorder
 from .timeline.routes import _draw, _resolve, _Resolved
@@ -140,7 +140,12 @@ class Session:
         assert record is not None
         session = cls(instance, record, module)
         session._source = Source(
-            path, scene, effective, stepping, _source_files(record)
+            path,
+            scene,
+            effective,
+            stepping,
+            _source_files(record),
+            _reads(instance.timeline, record),
         )
         return session
 
@@ -273,7 +278,8 @@ class Source:
     the configuration ``settings``, its ticked plays stepping as
     ``stepping`` says; and each file of its source, as ``(path relative to
     the scene's directory, sha256)``, by path, which the record's source
-    digest digests (``None`` when it can't be shown to be that).
+    digest digests (``None`` when it can't be shown to be that); and the
+    files its execution read, each with the play it was first read for.
     """
 
     path: Path
@@ -281,6 +287,7 @@ class Source:
     settings: ManimConfig
     stepping: bool | Literal["brute_force"]
     files: tuple[tuple[str, str], ...] | None
+    reads: tuple[Read, ...] = ()
 
 
 def _source_files(record: Record) -> tuple[tuple[str, str], ...] | None:
@@ -299,6 +306,14 @@ def _source_files(record: Record) -> tuple[tuple[str, str], ...] | None:
     if source_digest(files, scene_dir) != record.identity.source_digest:
         return None
     return found
+
+
+def _reads(recorder: Recorder, record: Record) -> tuple[Read, ...]:
+    """The files ``recorder``'s execution read, its source's but."""
+    inputs = recorder._inputs
+    if inputs is None or record.scene_file is None:
+        return ()
+    return inputs.reads(frozenset(source_files(record.scene_file)))
 
 
 def execute(
