@@ -80,6 +80,9 @@ def _pre_projected(scene: object) -> int:
         (camera_scenes.ShiftedSolids, False),
         (camera_scenes.PatchedSolids, True),
         (camera_scenes.ShiftedPictures, False),
+        # Its pre-display code reads what no record states: those reads are
+        # its own, never asked of the record.
+        (camera_scenes.NamedSolids, False),
         (camera_scenes.PatchedPictures, True),
         (camera_scenes.TintedSolids, True),
         (camera_scenes.ZoomMirrored, False),
