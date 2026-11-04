@@ -23,7 +23,9 @@ from arachne import (
     UP,
     YELLOW,
     Dot,
+    ImageMobject,
     MovingCamera,
+    PMobject,
     Rotate,
     Square,
     Surface,
@@ -102,6 +104,45 @@ class PatchedSolids(Solids):
             return out
 
         camera.project_points = shifted
+
+
+class Pictures(ThreeDScene):
+    """A point cloud and an image placed in space, under an orbit: the kinds a
+    camera places through its pre-display code other than paths. ``patch``
+    changes the camera.
+    """
+
+    def construct(self):
+        self.set_camera_orientation(phi=60 * DEGREES, theta=-45 * DEGREES)
+        self.patch(self.renderer.camera)
+        cloud = PMobject(stroke_width=4)
+        rng = np.random.default_rng(0)
+        cloud.add_points(rng.uniform(-2, 2, size=(80, 3)) * [1, 1, 0.3], color=YELLOW)
+        pixels = np.zeros((8, 12, 4), dtype=np.uint8)
+        pixels[..., 0] = np.arange(12) * 20
+        pixels[..., 1] = np.arange(8)[:, None] * 30
+        pixels[..., 3] = 255
+        image = ImageMobject(pixels).scale(1.5).shift([0.0, 1.0, 0.5])
+        self.add(cloud, image)
+        self.move_camera(theta=-20 * DEGREES, run_time=0.4)
+
+    def patch(self, camera) -> None:
+        """Nothing: the engine's camera as it made it."""
+
+
+class ShiftedPictures(Pictures):
+    """:class:`Pictures` through :class:`ShiftedCamera` (drawn as the scene runs)."""
+
+    def __init__(self, **kwargs):
+        super().__init__(camera_class=ShiftedCamera, **kwargs)
+
+
+class PatchedPictures(Pictures):
+    """:class:`Pictures` with :class:`PatchedSolids`' projection on the
+    instance (drawn from the record).
+    """
+
+    patch = PatchedSolids.patch
 
 
 class TintedSolids(Solids):

@@ -30,6 +30,7 @@ from arachne.mobject.types.image_mobject import AbstractImageMobject
 from arachne.mobject.types.point_cloud_mobject import PMobject
 from arachne.mobject.types.vectorized_mobject import VMobject
 
+from .extract import Unable
 from .geometry import blended, revealed
 from .xf import FEATURE_BACKGROUND_IMAGE, FEATURE_PRE_PROJECTED, Record, StreamState
 
@@ -169,7 +170,10 @@ class _Produced:
             return pre["points"]
         if pre["gradient"] is not None and points is own.get("_xf_gradient"):
             return pre["gradient"]
-        raise AssertionError("a pre-projected record holds no such points")
+        raise Unable(
+            f"render.unable: a pre-projected {type(mobject).__name__} was asked to"
+            " place points its record does not hold"
+        )
 
     def get_fill_rgbas(self, vmobject: Any) -> Any:
         pre = _pre_of(vmobject)
