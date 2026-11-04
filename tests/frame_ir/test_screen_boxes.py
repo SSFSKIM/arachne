@@ -101,7 +101,5 @@ def test_a_moved_three_d_centre_maps_paths_around_the_frozen_centre(monkeypatch)
     """
     found = boxes_against_the_projection(monkeypatch, scenes.MovedThreeDCentre)
     squares = [e for e in found if e[2] == "path Square"]
-    apart = [
-        e for e in squares if np.max(np.abs(np.subtract(e[3], e[5]))) > 5 * BOUND
-    ]
+    apart = [e for e in squares if np.max(np.abs(np.subtract(e[3], e[5]))) > 5 * BOUND]
     assert apart, "the centre moved, so some frame maps paths around another centre"
