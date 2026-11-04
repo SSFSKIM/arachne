@@ -276,6 +276,19 @@ class FramelessBeforeTicked(Scene):
         self.wait(0.2)
 
 
+class TrustedBeforeTicked(Scene):
+    """A linear trusted move ending between two 60 Hz ticks, then a ticked
+    play.
+    """
+
+    def construct(self):
+        dot = Dot()
+        self.add(dot)
+        self.play(dot.animate.shift(RIGHT * 2), run_time=0.97, rate_func=linear)
+        self.add(Dot(DOWN * 2).add_updater(lambda m, dt: m.shift(RIGHT * dt)))
+        self.wait(0.2)
+
+
 class TickedSuccession(Scene):
     """A ticked play (a dt updater) whose Succession event, at 0.65 s, falls
     on a tick between two 15 fps frames.
