@@ -124,6 +124,51 @@ def test_a_refused_record_is_linted_through_one_forward_run(session_of):
     assert session.divergences == []
 
 
+class _Asks:
+    """A rule that asks the lint for frames of its own."""
+
+    def __init__(self, times):
+        self.times = times
+        self.seen = None
+        self.execution = None
+
+    def request_frames(self, frames):
+        def read(record, t, play, capture, live):
+            return (t, live, record)
+
+        frames.request(self, self.times, read)
+
+    def __call__(self, context):
+        self.seen = context.frames.result(self)
+        self.execution = context.frames.execution
+        return ()
+
+
+def test_every_rule_s_frames_come_from_the_lint_s_one_forward_run(session_of):
+    session = session_of("Mapped", CAMERA_SCENES, frame_rate=6)
+    first = _Asks([Fraction(1, 6), Fraction(1, 3)])
+    second = _Asks([Fraction(1, 3), Fraction(0)])
+    lint(session, rules=(first, second))
+    assert len(session.forward_runs) == 1
+    assert [(t, live) for t, live, _ in first.seen] == [
+        (Fraction(1, 6), True),
+        (Fraction(1, 3), True),
+    ]
+    assert [t for t, _, _ in second.seen] == [Fraction(1, 3), Fraction(0)]
+    (forward,) = {id(record) for *_, record in (*first.seen, *second.seen)}
+    assert id(first.execution) == forward
+    assert first.execution is not session.record
+
+
+def test_a_record_that_draws_gives_its_frames_and_itself(session_of):
+    session = session_of("Pair", frame_rate=15)
+    asks = _Asks([Fraction(0), Fraction(1, 15)])
+    lint(session, rules=(asks,))
+    assert session.forward_runs == []
+    assert all(record is session.record and not live for _, live, record in asks.seen)
+    assert asks.execution is session.record
+
+
 def test_a_visitor_s_error_reaches_the_caller(session_of):
     """The scene's code runs around a visit and might catch what it raises:
     the error is raised again once the run is out of it.

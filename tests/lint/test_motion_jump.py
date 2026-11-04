@@ -11,6 +11,7 @@ from arachne.lint import RULES, lint
 from arachne.lint.motion import JUMP_TOL, MotionJump, motion_jump
 from arachne.lint.serialise import report
 
+from . import run_counter
 from .conftest import line_of
 from .report_shape import assert_report
 
@@ -163,3 +164,48 @@ def test_nothing_looks_for_jumps_unasked(session_of):
     assert motion_jump not in RULES
     session = session_of("Teleport", MOTION, frame_rate=15)
     assert lint(session).findings == ()
+
+
+def test_a_zoom_cut_after_a_steady_slide_moves_nothing(jumps_of):
+    assert jumps_of("ZoomCut") == []
+
+
+def test_a_teleport_behind_a_zoom_cut_still_jumps(jumps_of):
+    (jump,) = jumps_of("ZoomedTeleport")
+    # 2 units set down, and the last frame's step short of the stop, at 2x.
+    assert jump.detail["distance"] == pytest.approx(2 * (2 + 1 / 15), abs=1e-3)
+
+
+def test_every_repeated_jump_is_reported_on_its_own(session_of):
+    session = session_of("Repeated", MOTION, frame_rate=15)
+    out = report(lint(session, rules=(motion_jump,)))
+    jumps = [v for v in out["violations"] if v["code"] == "motion.jump"]
+    # Each at the first frame of the wait after a set-back: of 15 fps frames,
+    # the first at or after 1, 2.5, 4, 5.5 and 7.
+    assert [v["t_start"] for v in jumps] == pytest.approx([1, 38 / 15, 4, 83 / 15, 7])
+    assert all("folded" not in v["detail"] for v in jumps)
+
+
+def test_one_lint_reads_one_forward_run_for_every_rule(session_of):
+    """Parts and the motion rule see the same execution of a scene whose
+    every execution differs.
+    """
+    run_counter.executions = 0
+    session = session_of("CountedRuns", MOTION, frame_rate=15)
+    seen = []
+
+    def observe(context):
+        seen.extend(
+            (p.scene_box[0] + p.scene_box[2]) / 2
+            for parts in context.parts
+            if parts.t == 1
+            for p in parts.parts
+            if p.type == "Dot"
+        )
+        return ()
+
+    result = lint(session, rules=(motion_jump, observe))
+    assert len(session.forward_runs) == 1
+    (jump,) = [f for f in result.findings if f.code == "motion.jump"]
+    (x,) = seen
+    assert jump.detail["to"][0] == pytest.approx(x, abs=1e-6)
