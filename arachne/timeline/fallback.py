@@ -89,9 +89,12 @@ if TYPE_CHECKING:
     from .state import State
 
 #: What a forward run shows a visitor at each instant it answers: the
-#: instant asked, the run's record, the play holding the frame shown there
-#: (``None`` after the script ended) and the capture of it, while the live
-#: scene holds that capture's state.
+#: instant asked, the run's record (unfinished while it runs), the play
+#: holding the frame shown there (``None`` after the script ended) and the
+#: capture of it, while the live scene holds that capture's state. For a
+#: record that refuses drawing, the frame shown is the render's frame on
+#: screen at the instant; otherwise the instant itself, which the run keeps
+#: (a frame of the grid in a ticked play, or any instant of another play).
 Visit = Callable[[Fraction, "Record", "PlayRecord | None", "Capture"], None]
 
 

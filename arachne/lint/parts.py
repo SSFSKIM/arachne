@@ -42,6 +42,7 @@ from ._screen import (
     pixel_points,
     record_view,
     scene_line,
+    view_of,
 )
 from .codes import TARGET_HEIGHT
 from .findings import FindingObject, Holder
@@ -204,13 +205,16 @@ def build_parts(
     the scene as it is now, a forward run holding that capture.
     """
     if live:
-        return _read(record, t, play, capture, answer)
+        # The run is drawing as it goes: its camera holds the map its frames
+        # are drawn with, and its record is not finished.
+        view = view_of(record._scene.renderer.camera)
+        return _read(record, t, play, capture, answer, view)
     static, moving = _lists(play, capture)
     with Drawing(record) as drawing:
         drawing.show(capture, [*capture.draw_list(), *static, *moving])
         if prepare is not None:
             prepare(drawing)
-        return _read(record, t, play, capture, answer)
+        return _read(record, t, play, capture, answer, record_view(record))
 
 
 def _lists(
@@ -230,9 +234,9 @@ def _read(
     play: PlayRecord | None,
     capture: Capture,
     answer: str,
+    view: View,
 ) -> Parts:
     camera = record._scene.renderer.camera
-    view = record_view(record)
     names = play.names if play is not None else record.final_names
     hidden = {id(mob) for mob in camera_nodes(camera)}
     static, moving = _lists(play, capture)
