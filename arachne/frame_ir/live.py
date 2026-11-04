@@ -158,7 +158,7 @@ def _same_held(a: tuple[Any, ...], b: tuple[Any, ...]) -> bool:
             _identical(x, y) for x, y in zip(a[2], b[2], strict=True)
         )
     if a[0] == "set":
-        return a[2] == b[2]
+        return bool(a[2] == b[2])
     return True
 
 
@@ -168,7 +168,11 @@ def _identical(x: Any, y: Any) -> bool:
     return x is y
 
 
-def _camera_state(camera: Any, kind: str) -> tuple[dict[str, Any], dict[str, Any]]:
+#: A camera's state: its instance entries (:func:`_held`) and its view's values.
+_State = tuple[dict[str, Any], dict[str, Any]]
+
+
+def _camera_state(camera: Any, kind: str) -> _State:
     """What ``camera`` holds now: every entry of its instance state
     (:func:`_held`), and the values its view states, read through the
     objects that hold them (its trackers and its frame change in place).
@@ -176,7 +180,7 @@ def _camera_state(camera: Any, kind: str) -> tuple[dict[str, Any], dict[str, Any
     return {k: _held(v) for k, v in vars(camera).items()}, view_values(camera, kind)
 
 
-def _changed(before: tuple[dict, dict], after: tuple[dict, dict]) -> str | None:
+def _changed(before: _State, after: _State) -> str | None:
     """The first entry of a camera's state that differs between two
     :func:`_camera_state` snapshots, or ``None``.
     """
@@ -184,7 +188,7 @@ def _changed(before: tuple[dict, dict], after: tuple[dict, dict]) -> str | None:
     now, now_view = after
     added_or_removed = held.keys() ^ now.keys()
     if added_or_removed:
-        return min(added_or_removed)
+        return str(min(added_or_removed))
     for name, value in held.items():
         if not _same_held(value, now[name]):
             return name
