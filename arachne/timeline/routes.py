@@ -377,6 +377,14 @@ def _resolve(record: Record, t: Fraction) -> _Resolved:
     """How the record answers ``t``, by the route of the play holding it."""
     if record.refusal is not None:
         raise RecordRefused(record.refusal)
+    return _route(record, t)
+
+
+def _route(record: Record, t: Fraction) -> _Resolved:
+    """How the route of the play holding ``t`` answers it from the record's
+    captures, whether or not the record can draw them: a forward run draws
+    what its record can't while the scene runs (:mod:`.fallback`).
+    """
     play = record.play_at(t)
     if play is None:
         _, capture = record.capture_at(t)
@@ -398,7 +406,7 @@ def _resolve(record: Record, t: Fraction) -> _Resolved:
         # that play's route answers it: a trusted or state play without a
         # frame hook evaluates the frames of a record without a grid only
         # when asked, so its capture there may be an earlier instant's.
-        return _resolve(record, frame)
+        return _route(record, frame)
     if play.route == "state":
         sample = play.sample_at(t)
         if sample is not None:
@@ -441,7 +449,16 @@ def draw(
     holding it; ``static(play)`` gives the play's static picture. A restored
     frame takes no static picture (:func:`_restored_frame`).
     """
-    resolved = _resolve(record, t)
+    return _draw(drawing, record, _resolve(record, t), static)
+
+
+def _draw(
+    drawing: Drawing,
+    record: Record,
+    resolved: _Resolved,
+    static: Callable[[PlayRecord], PixelArray | None],
+) -> PixelArray:
+    """The frame of an instant the record answers as ``resolved`` says."""
     play = resolved.play
     if play is None:
         return drawing.final()
