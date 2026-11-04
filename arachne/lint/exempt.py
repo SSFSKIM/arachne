@@ -3,7 +3,9 @@
 A selector names objects by their stable id (``path:line#n``), by the line
 of the scene file that made them (``line:N``) or by the scene's name for
 them (``name:<variable>``). It selects an object when the object, or a
-group holding it, answers to it. A bare selector exempts every finding
+group holding it, answers to it. A mobject is a selector too: it stands
+for the stable ids of its family as it is when the exemption is read, so
+it names what it holds whether the scene draws it or not. A bare selector exempts every finding
 about an object it selects; a pair (two selectors) exempts a finding about
 exactly two objects, one selected by each. A finding about no object is
 never exempted by a selector.
@@ -22,14 +24,22 @@ from .findings import Finding, FindingObject
 
 @dataclass(frozen=True)
 class _Selector:
-    by: str  # "id", "line" or "name"
+    by: str  # "id", "line", "name", or "family": a mobject's family's ids
     value: Any
 
     @classmethod
     def parse(cls, text: Any) -> _Selector:
+        from arachne.mobject.mobject import Mobject
+        from arachne.timeline.origins import origin_of
+
+        if isinstance(text, Mobject):
+            # What the mobject holds when the exemption is read, drawn or not.
+            family = frozenset(origin_of(m).id for m in text.get_family())
+            return cls("family", family)
         if not isinstance(text, str) or not text:
             raise ValueError(
-                f"An exemption selector is a non-empty string, not {text!r}."
+                "An exemption selector is a non-empty string or a mobject,"
+                f" not {text!r}."
             )
         if text.startswith("line:"):
             number = text[len("line:") :]
@@ -44,6 +54,8 @@ class _Selector:
         return cls("id", text)
 
     def selects(self, obj: FindingObject) -> bool:
+        if self.by == "family":
+            return obj.id in self.value or any(h.id in self.value for h in obj.within)
         holders = [(obj.id, obj.name, obj.source_line)] + [
             (holder.id, holder.name, holder.line) for holder in obj.within
         ]
