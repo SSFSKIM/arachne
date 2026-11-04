@@ -323,6 +323,20 @@ class CustomPlatedCaptionAtTheTop(Scene):
 # Exempting what lies inside a unit, or around its furniture -------------------
 
 
+class SquareHeldOffScene(Scene):
+    """An opaque square, and a word laid on it; a vector group holding the
+    square that the scene never adds, kept for an exemption to name.
+    """
+
+    def construct(self):
+        square = Square(side_length=2, fill_opacity=1)
+        word = Text("covered", font_size=40)
+        self.holder = VGroup(square)
+        self.word = word
+        self.add(square, word)
+        self.wait(0.5)
+
+
 class SquareInNestedGroups(Scene):
     """A word, then an opaque square held in a vector group held in a group,
     drawn over the word.

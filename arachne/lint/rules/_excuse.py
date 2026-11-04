@@ -2,7 +2,9 @@
 
 A selector names a unit when it answers to a mobject the unit is made from
 (anything in its family; for axis furniture, its axes' whole family) or to
-a group holding it. A bare selector mutes the units it names against
+a group holding it; an exempted mobject names every unit its own family
+shares a member with, so a group the scene never draws names what it
+holds. A bare selector mutes the units it names against
 everything, the frame edge and paint order included. A pair says one
 contact between the two units it names is decided: it excuses their
 geometry and nothing else, so a shape a pair names that paints over the
@@ -20,6 +22,9 @@ from ._units import Measured
 
 
 def _answers(selector: Any, holder: Holder) -> bool:
+    if selector.by == "family":
+        # An exempted mobject: its family as it was when it was declared.
+        return holder.id in selector.value
     value = {"id": holder.id, "name": holder.name, "line": holder.line}[selector.by]
     return bool(value == selector.value)
 

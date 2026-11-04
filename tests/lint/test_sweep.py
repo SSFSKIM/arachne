@@ -253,6 +253,25 @@ def test_exempting_an_axis_s_tip_mutes_all_of_its_furniture(run):
     assert _codes(run("WordOnANumberLine", exempt=["name:tip"])) == []
 
 
+def test_an_exempted_mobject_names_what_its_family_holds_drawn_or_not(session_of):
+    """A group the scene never adds, holding a drawn square: exempting the
+    group, alone or in a pair, names the square through the group's family.
+    """
+    session = session_of("SquareHeldOffScene", SCENES, frame_rate=15)
+    scene = session.record._scene
+    end = [session.record.duration]
+
+    def codes(exempt):
+        result = lint(session, rules=(sweep.where(at=end, exempt=exempt),))
+        return _codes(result)
+
+    assert codes([]) == ["overlap.text"]
+    assert codes([(scene.holder, scene.word)]) == []
+    assert codes([scene.holder]) == []
+    # A pair names its two sides only: the word against itself is no pair.
+    assert codes([(scene.word, scene.word)]) == ["overlap.text"]
+
+
 # A text drawn twice ------------------------------------------------------------
 
 
