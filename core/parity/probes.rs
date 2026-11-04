@@ -1,5 +1,6 @@
-//! The class probes: engine-authored scenes, as XF streams, in which CE's painter order draws
-//! pixels wrong, each with the pixels where it does, what CE draws there and what the core must.
+//! The class probes: engine-authored scenes, as XF streams, in which a painter's order draws
+//! pixels wrong, each with the pixels where it does, what painter order gives there and what the
+//! core must.
 //! They are the parity kit's fixtures (`python -m arachne_core.parity` draws them against the
 //! kit's reference frames); `tests/probes.rs` asserts them.
 //!
@@ -7,9 +8,12 @@
 //! order, then draws every ordinary object (curves, axes, text) on top of all of them. A probe's
 //! order is its scene's draw order (the order of `add`), which is not always CE's: where it puts an
 //! ordinary object before a surface (`fixed_label_over_surface`, `depth_rule_both_ways`), CE still
-//! draws the object after the surface's faces. Each check names a pixel CE draws wrong (or, where the
-//! probe also shows the core keeping what CE draws right, that pixel too) with CE's bytes there: for
-//! sheets, the sheets covering the pixel composited in the probe's order; an ordinary object, on top.
+//! draws the object after the surface's faces. Each check names a pixel painter order draws wrong
+//! (or, where the probe also shows the core keeping what painter order draws right, that pixel too)
+//! with painter order's bytes there (`Check::ce`): for sheets, the sheets covering the pixel
+//! composited in the probe's order; an ordinary object, on top. These are the painter's model, not
+//! a CE render: CE sorts each face by its centre's depth, which can order two crossing sheets'
+//! faces differently pixel by pixel. Checking them against real CE renders is a later milestone's.
 //!
 //! The expected pixels come from an oracle of their own: each flat sheet's depth at a pixel by
 //! casting the pixel's sight line onto the sheet's plane, the sheets composited in depth order. A
@@ -40,7 +44,8 @@ pub struct Check {
     pub x: u32,
     pub y: u32,
     pub core: Expect,
-    /// The bytes CE draws there.
+    /// The bytes painter order gives there (the probe's order, ordinary objects on top): the
+    /// painter's model, not a CE render.
     pub ce: [u8; 4],
     pub what: &'static str,
 }
@@ -390,8 +395,9 @@ pub fn composite(
     Some(px)
 }
 
-/// The bytes CE's painter order gives a clean pixel (see [`composite`]): the sheets covering it
-/// composited in their order in `flats`, the later on top, whatever their depth.
+/// The bytes the probe's painter order gives a clean pixel (see [`composite`]): the sheets
+/// covering it composited in their order in `flats`, the later on top, whatever their depth. Not
+/// CE's order, which sorts each face by its centre's depth.
 pub fn painted(
     view: &View,
     width: u32,
@@ -448,8 +454,8 @@ fn check(x: u32, y: u32, core: [u8; 4], ce: [u8; 4], what: &'static str) -> Chec
     }
 }
 
-/// Two opaque sheets crossing: a level one, and one tilted through it. CE draws the later of the
-/// two over the whole of the other.
+/// Two opaque sheets crossing: a level one, and one tilted through it. Painter order draws the
+/// later of the two over the whole of the other.
 pub fn intersecting_surfaces() -> Probe {
     let view = view(WIDTH, HEIGHT, 62.0 * DEG, -50.0 * DEG);
     let lev = level(0.0, 3.0, 2.0);
@@ -545,7 +551,7 @@ pub fn curve_behind_surface() -> Probe {
 }
 
 /// Translucent sheets over an opaque one at several depths: one crosses the opaque sheet, one hangs
-/// above both. CE draws the crossing sheet over the opaque one everywhere.
+/// above both. Painter order draws the crossing sheet over the opaque one everywhere.
 pub fn translucent_over_opaque() -> Probe {
     let view = view(WIDTH, HEIGHT, 58.0 * DEG, -40.0 * DEG);
     let ground = level(0.0, 3.5, 2.5);

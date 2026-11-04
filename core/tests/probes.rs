@@ -78,7 +78,7 @@ fn run(probe: Probe) {
     let drawn = frames(&probe, 1);
     assert!(
         probe.checks.iter().any(|c| !c.what.ends_with("(CE right)")),
-        "{}: a probe asserts a pixel CE draws wrong",
+        "{}: a probe asserts a pixel painter order draws wrong",
         probe.name
     );
     for c in &probe.checks {
