@@ -342,3 +342,22 @@ def test_a_forward_run_leaves_the_session_as_it_was(session_of):
     for earlier, again in zip(before, after, strict=True):
         assert again.state == earlier.state
         assert np.array_equal(_pixels(again.frame), _pixels(earlier.frame))
+
+
+@pytest.mark.parametrize(
+    ("name", "path"),
+    [("ReboundGlobal", RESTORE_SCENES), ("Mapped", CAMERA_SCENES)],
+)
+def test_forward_answers_without_frames_and_at_a_quality(session_of, name, path):
+    """Asked for states alone, a forward run answers the same states; asked
+    at a quality, its frames have that quality's size.
+    """
+    session = session_of(name, path, frame_rate=15)
+    asked = _unsampled(session.record.plays[0])
+    states = session.answers(asked, frames=False)
+    assert all(answer.frame is None for answer in states)
+    drawn = session.answers(asked, "low_quality")
+    assert [answer.state for answer in states] == [answer.state for answer in drawn]
+    assert {answer.state.answer for answer in drawn} == {"forward"}
+    assert {answer.frame.size for answer in drawn} == {(854, 480)}
+    assert len(session.forward_runs) == 2
