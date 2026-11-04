@@ -44,7 +44,6 @@ from ._screen import (
     scene_line,
     view_of,
 )
-from .codes import TARGET_HEIGHT
 from .findings import FindingObject, Holder
 
 if TYPE_CHECKING:
@@ -131,9 +130,9 @@ class Part:
     grid: bool
     copies: int = 1
 
-    def as_object(self, view: View) -> FindingObject:
-        """The part as a finding names it: its box in scene units and in
-        pixels of the declared target.
+    def as_object(self, parts: Parts) -> FindingObject:
+        """The part as a finding names it, among ``parts``: its box in scene
+        units and in pixels of the target resolution.
         """
         return FindingObject(
             id=self.id,
@@ -141,7 +140,7 @@ class Part:
             kind=self.type,
             label_or_text=self.text if self.text is not None else self.name,
             bbox=self.scene_box,
-            screen_bbox=target_pixels(view, self.screen_box),
+            screen_bbox=target_pixels(parts, self.screen_box),
             name=self.name,
             within=self.within,
         )
@@ -152,7 +151,8 @@ class Parts:
     """The parts drawn at ``t``, in paint order: ``play`` holds ``t``
     (``None`` after the last play), and ``answer`` says what answered it
     (``"recorded"``, the record; ``"forward"``, a forward run). ``frame``
-    is the picture's box in home-frame units.
+    is the picture's box in home-frame units; ``target`` the resolution
+    pixel boxes are given at, ``(width, height)``: the session's.
     """
 
     t: Fraction
@@ -160,6 +160,7 @@ class Parts:
     answer: str
     view: View
     parts: tuple[Part, ...]
+    target: tuple[int, int]
 
     @property
     def frame(self) -> Box:
@@ -178,15 +179,16 @@ class Parts:
         raise KeyError(part_id)
 
 
-def target_pixels(view: View, box: Box) -> Box:
-    """A box in home-frame units, in pixels of the declared target (1080
-    pixels tall, as wide as the home frame's shape makes it), from the
-    top-left corner with y down.
+def target_pixels(parts: Parts, box: Box) -> Box:
+    """A box in home-frame units, in pixels of ``parts``' target resolution,
+    from the top-left corner with y down.
     """
-    scale = TARGET_HEIGHT / view.home_height
+    view = parts.view
+    width, height = parts.target
+    sx, sy = width / view.home_width, height / view.home_height
     w, h = view.home_width / 2, view.home_height / 2
     x0, y0, x1, y1 = box
-    return ((x0 + w) * scale, (h - y1) * scale, (x1 + w) * scale, (h - y0) * scale)
+    return ((x0 + w) * sx, (h - y1) * sy, (x1 + w) * sx, (h - y0) * sy)
 
 
 def build_parts(
@@ -196,25 +198,27 @@ def build_parts(
     capture: Capture,
     *,
     answer: str,
+    target: tuple[int, int],
     prepare: Callable[[Drawing], None] | None = None,
     live: bool = False,
 ) -> Parts:
     """The parts ``capture`` draws, the frame at ``t`` of ``play`` (``None``
     for the final capture): read from the record, every mobject given its
     captured state (and ``prepare`` run once it is), or with ``live`` from
-    the scene as it is now, a forward run holding that capture.
+    the scene as it is now, a forward run holding that capture. Pixel boxes
+    are at ``target``, ``(width, height)``.
     """
     if live:
         # The run is drawing as it goes: its camera holds the map its frames
         # are drawn with, and its record is not finished.
         view = view_of(record._scene.renderer.camera)
-        return _read(record, t, play, capture, answer, view)
+        return _read(record, t, play, capture, answer, view, target)
     static, moving = _lists(play, capture)
     with Drawing(record) as drawing:
         drawing.show(capture, [*capture.draw_list(), *static, *moving])
         if prepare is not None:
             prepare(drawing)
-        return _read(record, t, play, capture, answer, record_view(record))
+        return _read(record, t, play, capture, answer, record_view(record), target)
 
 
 def _lists(
@@ -235,6 +239,7 @@ def _read(
     capture: Capture,
     answer: str,
     view: View,
+    target: tuple[int, int],
 ) -> Parts:
     camera = record._scene.renderer.camera
     names = play.names if play is not None else record.final_names
@@ -287,9 +292,8 @@ def _read(
                 kept, copies=kept.copies + 1, top=max(kept.top, part.top)
             )
     parts.sort(key=lambda part: part.order)
-    return Parts(
-        t, play.index if play is not None else None, answer, view, tuple(parts)
-    )
+    index = play.index if play is not None else None
+    return Parts(t, index, answer, view, tuple(parts), target)
 
 
 def _chains(
