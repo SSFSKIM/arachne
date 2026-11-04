@@ -93,6 +93,18 @@ def test_a_copy_has_an_id_of_its_own(session_of):
     assert state.named("square").id != twin.id
 
 
+def test_a_content_key_tells_which_node_a_parent_holds(session_of):
+    """Two trees with the same nodes, kinds, child counts and values key
+    apart when a parent holds another of the nodes; two executions of one
+    tree key alike.
+    """
+    from arachne.timeline.execution import play_keys
+
+    pointed = play_keys(session_of("Pointed").record)
+    assert pointed == play_keys(session_of("Pointed").record)
+    assert pointed != play_keys(session_of("Repointed").record)
+
+
 def test_names_reach_into_groups(session_of):
     state = session_of("Timeline").state_at(Fraction(1) + Fraction(1, 14))
     group = state.named("group")
