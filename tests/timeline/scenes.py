@@ -307,3 +307,23 @@ class Repointed(Pointed):
     def repoint(self, group, a, b):
         group.remove(a)
         group.add(b)
+
+
+class RootsOnce(Scene):
+    """A square inside a group, the group the one root."""
+
+    def construct(self):
+        a = Square()
+        self.add(VGroup(a))
+        self.wait(0.1)
+
+
+class RootsTwice(Scene):
+    """As :class:`RootsOnce`, the square a root of its own too: the walk
+    visits it once either way.
+    """
+
+    def construct(self):
+        a = Square()
+        self.add(VGroup(a), a)
+        self.wait(0.1)

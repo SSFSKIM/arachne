@@ -105,6 +105,26 @@ def test_a_content_key_tells_which_node_a_parent_holds(session_of):
     assert pointed != play_keys(session_of("Repointed").record)
 
 
+def test_a_content_key_tells_a_node_held_as_a_root_too(session_of):
+    """A node that is a root of its own as well as a group's child is keyed
+    apart from the same tree without that root, though the walk visits it once.
+    """
+    from arachne.timeline.execution import play_keys
+
+    assert play_keys(session_of("RootsTwice").record) != play_keys(
+        session_of("RootsOnce").record
+    )
+
+
+def test_a_content_key_keeps_names_apart_where_they_meet():
+    """Kinds, field names and values are keyed with their lengths: ``"AB"``
+    then ``"C"`` is not ``"A"`` then ``"BC"``.
+    """
+    from arachne.timeline.record import _framed
+
+    assert _framed(b"AB") + _framed(b"C") != _framed(b"A") + _framed(b"BC")
+
+
 def test_names_reach_into_groups(session_of):
     state = session_of("Timeline").state_at(Fraction(1) + Fraction(1, 14))
     group = state.named("group")
