@@ -4,7 +4,8 @@
 (:mod:`.instants`): the parts drawn at each (:mod:`.parts`), which its rules
 measure. A record that refuses drawing, or an instant it can't answer, is
 read through one forward run of the scene, whose live scene is read at each
-instant it answers. The session's divergences become ``replay.diverged``
+instant it answers: so is every instant the record kept no capture of,
+rather than evaluated there by the lint. The session's divergences become ``replay.diverged``
 findings (a probe's a note, an execution's an error), and a stale session a
 ``source.changed`` note. The caller's time range and exemptions then leave
 findings out, look-alikes fold, and the result is data: nothing the lint
@@ -141,7 +142,7 @@ def _parts(session: Session, instants: tuple[LintInstant, ...]) -> tuple[Parts, 
     """The parts drawn at each instant: from the record, and what it can't
     answer from one forward run, read from its live scene.
     """
-    from arachne.timeline.fallback import answer_instants
+    from arachne.timeline.fallback import visit_frames
 
     record = session.record
     target = target_resolution(session)
@@ -157,6 +158,11 @@ def _parts(session: Session, instants: tuple[LintInstant, ...]) -> tuple[Parts, 
             except (RecordRefused, Unrestorable):
                 missing.append(instant.t)
                 continue
+            if resolved.kind != "recorded":
+                # The render evaluates a frame the record did not keep through
+                # the scene's own code, which an evaluation here would not run.
+                missing.append(instant.t)
+                continue
             found[instant.t] = build_parts(
                 record,
                 instant.t,
@@ -164,7 +170,6 @@ def _parts(session: Session, instants: tuple[LintInstant, ...]) -> tuple[Parts, 
                 resolved.capture,
                 answer=resolved.kind,
                 target=target,
-                prepare=resolved.prepare,
             )
         if missing:
 
@@ -184,7 +189,7 @@ def _parts(session: Session, instants: tuple[LintInstant, ...]) -> tuple[Parts, 
                     live=True,
                 )
 
-            answer_instants(session, missing, None, frames=False, visit=visit)
+            visit_frames(session, missing, visit)
     unread = [t for t in missing if t not in found]
     if unread:
         raise RuntimeError(
