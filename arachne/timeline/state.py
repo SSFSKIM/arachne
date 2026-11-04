@@ -4,7 +4,7 @@ from __future__ import annotations
 
 __all__ = ["NodeView", "State", "build_state"]
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any
@@ -12,11 +12,12 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from .draw import Drawing, camera_nodes
+from .record import NodeState
 
 if TYPE_CHECKING:
     from arachne.mobject.mobject import Mobject
 
-    from .record import Capture, NodeState, PlayRecord, Record
+    from .record import Capture, PlayRecord, Record
     from .source import SourceLine
 
 
@@ -51,7 +52,13 @@ class State:
 
     ``answer`` says how: ``"recorded"`` is a capture of the forward run,
     ``"analytic"`` a trusted play evaluated at ``t`` from its last capture
-    before it.
+    before it, ``"restored"`` a state-function play evaluated at ``t`` from
+    its last kept capture before it (:mod:`.restore`), and ``"forward"`` a
+    new execution of the scene evaluated at ``t``.
+
+    ``as_of`` is the instant whose state it is: ``t``, but for a ticked
+    play's answer at an instant the record kept no tick of, which is the
+    state of the last kept tick before it (the frame a render shows).
     """
 
     t: Fraction
@@ -60,6 +67,7 @@ class State:
     answer: str
     roots: tuple[str, ...]
     nodes: tuple[NodeView, ...]
+    as_of: Fraction
 
     def node(self, node_id: str) -> NodeView:
         """The node with stable id ``node_id``."""
@@ -84,11 +92,14 @@ def build_state(
     *,
     route: str | None,
     answer: str,
+    as_of: Fraction,
     prepare: Callable[[Drawing], None] | None = None,
 ) -> State:
     """The :class:`State` a capture holds, read with every reachable mobject
     given its captured values; ``prepare`` runs once they are (a trusted
-    play's evaluation at an instant between its captures).
+    play's evaluation at an instant between its captures, or a state play's
+    restore), and the tree is then read as the evaluation left it: a
+    callback may rebuild a mobject's submobjects.
     """
     camera = record._scene.renderer.camera
     hidden = {id(mob) for mob in camera_nodes(camera)}
@@ -101,8 +112,18 @@ def build_state(
         if hasattr(camera, "reset_rotation_matrix"):
             # A ThreeDCamera projects with the matrix of its recorded trackers.
             camera.reset_rotation_matrix()
-        visible = _visible_ids(record, capture, hidden)
-        for mob, state in record._walk(capture, capture.draw_list()):
+        if prepare is None:
+
+            def state_of(mob: Mobject) -> NodeState | None:
+                return record.node_state(mob, capture)
+
+        else:
+
+            def state_of(mob: Mobject) -> NodeState | None:
+                return NodeState.of(mob)
+
+        visible = _visible_ids(capture, state_of, hidden)
+        for mob, state in _walk(capture.draw_list(), state_of):
             if id(mob) not in visible:
                 continue
             origin = record.origin(mob)
@@ -127,10 +148,36 @@ def build_state(
         roots = tuple(
             record.origin(mob).id for mob in capture.draw_list() if id(mob) in visible
         )
-    return State(t, play.index if play else None, route, answer, roots, tuple(views))
+    return State(
+        t, play.index if play else None, route, answer, roots, tuple(views), as_of
+    )
 
 
-def _visible_ids(record: Record, capture: Capture, hidden: set[int]) -> set[int]:
+def _walk(
+    roots: list[Mobject], state_of: Callable[[Mobject], NodeState | None]
+) -> Iterator[tuple[Mobject, NodeState]]:
+    """The mobjects reachable from ``roots``, depth first, each once, with
+    their states by ``state_of`` (as :meth:`.Record._walk` reads a capture).
+    """
+    seen: set[int] = set()
+    stack = list(reversed(roots))
+    while stack:
+        mob = stack.pop()
+        if id(mob) in seen:
+            continue
+        seen.add(id(mob))
+        state = state_of(mob)
+        if state is None:
+            continue
+        yield mob, state
+        stack.extend(reversed(state.submobjects))
+
+
+def _visible_ids(
+    capture: Capture,
+    state_of: Callable[[Mobject], NodeState | None],
+    hidden: set[int],
+) -> set[int]:
     """The mobjects ``state_at`` reports: every reachable one but trackers,
     the camera's own, and padding that is fully transparent with all it holds.
     """
@@ -145,7 +192,7 @@ def _visible_ids(record: Record, capture: Capture, hidden: set[int]) -> set[int]
         seen.add(id(mob))
         shown = False
         for child in state.submobjects:
-            child_state = record.node_state(child, capture)
+            child_state = state_of(child)
             if child_state is not None and keep(child, child_state, seen):
                 shown = True
         if isinstance(mob, ValueTracker) or id(mob) in hidden:
@@ -157,7 +204,7 @@ def _visible_ids(record: Record, capture: Capture, hidden: set[int]) -> set[int]
 
     seen: set[int] = set()
     for mob in capture.draw_list():
-        state = record.node_state(mob, capture)
+        state = state_of(mob)
         if state is not None:
             keep(mob, state, seen)
     return visible

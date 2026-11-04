@@ -18,7 +18,7 @@ import math
 import os
 import random
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any, Literal
@@ -37,6 +37,7 @@ from .hooks import FRAME_HOOKS, TIME_PROGRESSION, FrameInstant, SceneHookRefused
 from .origins import ORIGINS
 from .record import Identity, Marker, PlayRecord, Record
 from .reference import BRUTE_FORCE
+from .restore import RestorePoint, restore_point
 from .routes import ROUTE_CLASSES, Route, snapshot_animations
 from .source import SourceLine, names_from_frames, scene_frames, scene_location
 from .ticking import (
@@ -75,6 +76,9 @@ class PlayRun:
         self.plans = False
         #: The play's last frame-read instant, once it has one.
         self._last_frame: Fraction | None = None
+        #: A state-function play's last restore point, which the next shares
+        #: what is unchanged with.
+        self._point: RestorePoint | None = None
 
     def set_clock(self, instant: Fraction) -> None:
         """Make the scene clock read ``instant``, drawing first whatever frames
@@ -127,13 +131,14 @@ class PlayRun:
         play._instants.append(instant)
         if play.held:
             return
-        # The animations' state where a play is evaluated from: every kept
-        # instant of a trusted play; a state-function play's start and events,
-        # which the planned restore evaluates from.
-        if play.route == "trusted" or (
-            play.route == "state" and (instant == play.start or instant in play.events)
-        ):
+        # What a play is evaluated from between its kept instants: a trusted
+        # play's animations' state; a state-function play's restore point
+        # (:mod:`.restore`), its animations' state included.
+        if play.route == "trusted":
             play._animation_states[capture.seq] = snapshot_animations(play._animations)
+        elif play.route == "state":
+            self._point = restore_point(self.scene, play, self._point)
+            play._animation_states[capture.seq] = self._point
 
     def progress(self, instants: list[Fraction]) -> Any:
         """A progress bar over ``instants``."""
@@ -263,6 +268,11 @@ class Recorder:
     must change nothing: nothing checks it, and the frames of a play whose
     ``on_tick`` or ``on_step`` writes are undefined (``tech-debt-tracker.md``,
     Hooks).
+
+    ``instants`` are scene instants a trusted or state-function play holding
+    one evaluates and keeps besides its own, as a non-frame evaluation (the
+    engine's bodies, never the scene's frame hooks): what a restore or an
+    analytic answer there is compared with. A ticked play evaluates none.
     """
 
     def __init__(
@@ -275,6 +285,7 @@ class Recorder:
         on_step: Callable[[Scene, Fraction], object] | None = None,
         on_tick: Callable[[Scene, Fraction, bool], object] | None = None,
         on_start: Callable[[Scene, Fraction], object] | None = None,
+        instants: Iterable[Fraction | float] = (),
     ) -> None:
         if stepping not in (True, False, BRUTE_FORCE):
             raise ValueError(
@@ -287,6 +298,7 @@ class Recorder:
         self.on_step = on_step
         self.on_tick = on_tick
         self.on_start = on_start
+        self.instants = tuple(sorted({exact(t) for t in instants}))
         self.record: Record | None = None
         self._tagging = False
         #: Which execution of the scene this is, with the plays an earlier
