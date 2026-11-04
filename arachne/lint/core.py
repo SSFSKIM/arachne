@@ -3,9 +3,11 @@
 :func:`lint` reads the session's record at its lint instants
 (:mod:`.instants`): the parts drawn at each (:mod:`.parts`), which its rules
 measure. A record that refuses drawing, or an instant it can't answer, is
-read through one forward run of the scene, whose live scene is read at each
-instant it answers: so is every instant the record kept no capture of,
-rather than evaluated there by the lint. The session's divergences become ``replay.diverged``
+read through one forward run of the scene on the render's grid, whose live
+scene is read at each instant it answers: so is every instant the record
+kept no capture of, rather than evaluated there by the lint, and every
+instant of a record kept on another grid than the render's, whose frame
+hooks and dt updaters ran at other instants than the render's. The session's divergences become ``replay.diverged``
 findings (a probe's a note, an execution's an error), and a stale session a
 ``source.changed`` note. The caller's time range and exemptions then leave
 findings out, look-alikes fold, and the result is data: nothing the lint
@@ -29,7 +31,7 @@ from arachne.timeline.routes import RecordRefused, _resolve
 
 from .exempt import Exemptions
 from .findings import Finding, fold, in_range
-from .instants import LintInstant, lint_instants
+from .instants import LintInstant, lint_instants, render_grid
 from .parts import Parts, build_parts
 
 if TYPE_CHECKING:
@@ -151,8 +153,14 @@ def _parts(session: Session, instants: tuple[LintInstant, ...]) -> tuple[Parts, 
     settings: ManimConfig | dict[str, Any] = (
         session._source.settings if session._source is not None else {}
     )
+    # A record on the render's grid evaluated each frame of it as the render
+    # does; one on another grid holds states no frame of the render shows.
+    on_render_grid = record.grid == render_grid(record)
     with tempconfig(settings):
         for instant in instants:
+            if not on_render_grid:
+                missing.append(instant.t)
+                continue
             try:
                 resolved = _resolve(record, instant.t)
             except (RecordRefused, Unrestorable):
