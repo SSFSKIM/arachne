@@ -391,24 +391,29 @@ def test_an_input_is_kept_with_the_play_it_was_first_read_for(scene_dir):
 
 
 @pytest.mark.parametrize(
-    ("mine", "theirs", "bound", "changed"),
+    ("mine", "theirs", "bounds", "changed"),
     [
         # Both read it before the bound: named when they read different content.
-        ([("a", "x", 0)], [("a", "x", 0)], 1, ()),
-        ([("a", "x", 0)], [("a", "y", 0)], 1, ("a",)),
+        ([("a", "x", 0)], [("a", "x", 0)], (1, 1), ()),
+        ([("a", "x", 0)], [("a", "y", 0)], (1, 1), ("a",)),
         # Only one read it before the bound (a file gone, a conditional read).
-        ([("a", "x", 0)], [], 1, ("a",)),
-        ([], [("a", "x", 0)], 1, ("a",)),
-        ([("a", "x", 0)], [("a", "x", 1)], 1, ("a",)),
+        ([("a", "x", 0)], [], (1, 1), ("a",)),
+        ([], [("a", "x", 0)], (1, 1), ("a",)),
+        ([("a", "x", 0)], [("a", "x", 1)], (1, 1), ("a",)),
         # First read at or after the bound in both: never named.
-        ([("a", "x", 1)], [("a", "y", 1)], 1, ()),
-        ([("a", "x", 2)], [], 1, ()),
+        ([("a", "x", 1)], [("a", "y", 1)], (1, 1), ()),
+        ([("a", "x", 2)], [], (1, 1), ()),
+        # Each execution's reads against its own bound: a read for a play
+        # only the other compared is not one.
+        ([], [("a", "x", 1)], (2, 1), ()),
+        ([("a", "x", 1)], [], (2, 1), ("a",)),
+        ([("a", "x", 1)], [("a", "x", 1)], (2, 1), ("a",)),
         # No bound (both compared to their end): every read counts.
-        ([("a", "x", 5)], [("a", "y", 5)], None, ("a",)),
-        ([("b", "x", 0), ("a", "x", 0)], [("a", "y", 0)], None, ("a", "b")),
+        ([("a", "x", 5)], [("a", "y", 5)], (None, None), ("a",)),
+        ([("b", "x", 0), ("a", "x", 0)], [("a", "y", 0)], (None, None), ("a", "b")),
     ],
 )
-def test_changed_inputs_are_those_of_the_compared_plays(mine, theirs, bound, changed):
+def test_changed_inputs_are_those_of_the_compared_plays(mine, theirs, bounds, changed):
     from arachne.timeline.fallback import _changed_inputs
     from arachne.timeline.inputs import Read
 
@@ -416,10 +421,95 @@ def test_changed_inputs_are_those_of_the_compared_plays(mine, theirs, bound, cha
         _changed_inputs(
             tuple(Read(*read) for read in mine),
             tuple(Read(*read) for read in theirs),
-            bound,
+            bounds,
         )
         == changed
     )
+
+
+LONGER_FIRST_PLAY = (
+    HEADER
+    + """
+class LongerFirstPlay(Scene):
+    def construct(self):
+        global SHIFT
+        SHIFT = 0.0
+        span = float((HERE / "span.txt").read_text())
+        tracker = ValueTracker(0)
+        dot = Dot().add_updater(lambda m: m.set_x(tracker.get_value() + SHIFT))
+        self.add(dot)
+        self.play(tracker.animate.set_value(2), run_time=span)
+        SHIFT = 1.0
+        if span > 0.75:
+            (HERE / "late.txt").read_text()
+        self.play(tracker.animate.set_value(0), run_time=1)
+        # Rebound after the second play, which the record then can't restore.
+        SHIFT = 2.0
+"""
+)
+
+
+def test_a_read_for_a_play_only_the_other_execution_compared_is_not_named(
+    scene_dir,
+):
+    """The record's first play is shorter, so both its plays began by the
+    instant asked; the forward run's first play is longer, and the file it
+    reads after it is for its second play, which it never compared: only the
+    file that made the plays differ is named.
+    """
+    span = scene_dir / "span.txt"
+    span.write_text("0.5")
+    (scene_dir / "late.txt").write_text("late")
+    session = _open_in(scene_dir, LONGER_FIRST_PLAY, "LongerFirstPlay")
+    try:
+        span.write_text("1.0")
+        session.answers([Fraction(3, 5)], frames=False)
+        (run,) = session.forward_runs
+        assert run.plays == 1
+        assert run.divergence is not None
+        assert run.divergence.changed_inputs == ("span.txt",)
+    finally:
+        session.close()
+
+
+BEGIN_FAILS_ONCE = (
+    HEADER
+    + """
+class BeginFailsOnce(Scene):
+    def begin_animations(self):
+        failing = getattr(self, "failing", False)
+        self.failing = False
+        if failing:
+            raise RuntimeError("caught by the scene")
+        return super().begin_animations()
+
+    def construct(self):
+        dot = Dot()
+        self.add(dot)
+        self.play(dot.animate.shift(RIGHT), run_time=0.5)
+        self.failing = True
+        try:
+            self.play(dot.animate.shift(UP), run_time=0.5)
+        except RuntimeError:
+            pass
+        (HERE / "after_failure.txt").read_text()
+        self.play(dot.animate.shift(LEFT), run_time=0.5)
+"""
+)
+
+
+def test_a_read_after_a_play_that_failed_to_begin_is_for_the_next(scene_dir):
+    """A play whose animations failed to begin, the failure caught by the
+    scene: a file read after it is for the next play, not for it.
+    """
+    (scene_dir / "after_failure.txt").write_text("x")
+    session = _open_in(scene_dir, BEGIN_FAILS_ONCE, "BeginFailsOnce")
+    try:
+        plays = len(session.record.plays)
+        reads = {read.path: read.play for read in session._source.reads}
+        assert reads == {"after_failure.txt": plays - 1}
+    finally:
+        session.close()
 
 
 DEFAULTS = (
