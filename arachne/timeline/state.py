@@ -47,8 +47,8 @@ class NodeView:
 class State:
     """The scene at ``t``: its mobjects depth first from the top-level ones
     (trackers, the camera's own mobjects and the fully transparent padding
-    that family alignment adds are left out), the play holding ``t`` and the
-    route that answered.
+    that family alignment adds are left out), the play whose state it is and
+    the route that answered.
 
     ``answer`` says how: ``"recorded"`` is a capture of the forward run,
     ``"analytic"`` a trusted play evaluated at ``t`` from its last capture
@@ -56,9 +56,11 @@ class State:
     its last kept capture before it (:mod:`.restore`), and ``"forward"`` a
     new execution of the scene evaluated at ``t``.
 
-    ``as_of`` is the instant whose state it is: ``t``, but for a ticked
-    play's answer at an instant the record kept no tick of, which is the
-    state of the last kept tick before it (the frame a render shows).
+    ``as_of`` is the instant whose state it is: the instant of the capture a
+    recorded answer reads (before ``t`` for a frozen frame, for a ticked play
+    between the ticks its record kept, and for a ticked play before its
+    first frame, whose answer is the earlier play's last capture), and ``t``
+    for an evaluated one.
     """
 
     t: Fraction
