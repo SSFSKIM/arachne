@@ -41,6 +41,7 @@ jobs:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux }}
           rust-toolchain: ${{ steps.toolchain.outputs.channel }}
+          maturin-version: v1.16.0  # core/pyproject.toml's build-system pin
           args: --release --locked --out dist
       - uses: actions/upload-artifact@v7
         with:
