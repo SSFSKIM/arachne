@@ -90,6 +90,18 @@ def test_a_lagged_morph_blends_each_leaf_at_its_own_alpha(kept):
     assert all(not d.upload for d in deltas[2:])
 
 
+def test_a_create_play_uploads_no_shape_after_its_first_frame(kept):
+    scene, _ = render(scenes.Reveals, FPS, draw_path="ir_cairo", **MEDIUM)
+    record = scene.timeline.record
+    for play in record.plays:
+        assert play.route == "trusted"
+        deltas = [d for d in _painter(scene).deltas if play.start <= d.t < play.end]
+        assert len(deltas) >= 5
+        revealed = [r for d in deltas for _, r in d.set if "reveal" in r.fields]
+        assert len(revealed) >= len(deltas) - 2, "the frames are reveal windows"
+        assert all(not d.upload for d in deltas[2:]), [len(d.upload) for d in deltas]
+
+
 def test_a_held_frame_sends_an_empty_delta():
     session = Session.open(SCENES, "Morph", config={**MEDIUM, "draw_path": "ir_cairo"})
     try:

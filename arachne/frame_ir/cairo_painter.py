@@ -8,8 +8,9 @@ image, ``shade_in_3d``; an image's pixels and corners; a point cloud's points,
 colours and width), gives a camera of the view's kind the view's values, and
 hands the proxies, in the order's sequence, to the camera's display functions
 as its capture would. The bytes are then the direct path's by construction: no
-Cairo call is written again here. Blends are materialized with Arachne's own
-``interpolate`` on the stored shapes, as the forward run computed them.
+Cairo call is written again here. Blends and reveal windows are materialized
+with Arachne's own ``interpolate`` and ``pointwise_become_partial`` on the
+stored shapes (:mod:`.geometry`), as the forward run computed them.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ from arachne.mobject.types.image_mobject import AbstractImageMobject
 from arachne.mobject.types.point_cloud_mobject import PMobject
 from arachne.mobject.types.vectorized_mobject import VMobject
 
+from .geometry import blended, revealed
 from .xf import FEATURE_BACKGROUND_IMAGE, Record, StreamState
 
 #: The record kinds and feature bits Cairo draws.
@@ -278,9 +280,10 @@ class CairoDrawer:
         raise NotImplementedError(f"the Cairo drawer has no {kind} records")
 
     def _path(self, state: StreamState, f: dict[str, Any]) -> Any:
-        from arachne.utils.bezier import interpolate
-
         points = state.shapes[f["shape"]].data
+        reveal = f.get("reveal")
+        if reveal is not None:
+            points = _frozen(revealed(points, *reveal))
         fill = _rows(f.get("fill"), state)
         stroke = _rows(f.get("stroke"), state)
         back = _rows(f.get("background_stroke"), state)
@@ -288,7 +291,7 @@ class CairoDrawer:
         back_width = f["background_stroke_width"]
         blend = f.get("blend")
         if blend is not None:
-            points = _frozen(interpolate(points, state.shapes[blend[0]].data, blend[2]))
+            points = _frozen(blended(points, state.shapes[blend[0]].data, blend[2]))
             b = f["paint_b"]
             mix = f["mix"]
             fill, stroke, back, width, back_width = (
