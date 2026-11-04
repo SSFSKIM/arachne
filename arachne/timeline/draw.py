@@ -20,8 +20,9 @@ covers the longest prefix of that list equal leaf for leaf, at unchanged
 versions, to what it painted, while the camera's inputs are those it was
 painted with; the rest is drawn at the frame's state. ``static_layer=False``
 draws the whole list in every frame. Frames drawn live (:class:`LiveFrames`)
-cache nothing, since drawing them runs the scene's code, which can read
-what no recorded state holds.
+reuse no static picture, since drawing them runs the scene's code, which can
+read what no recorded state holds; only a frozen frame, during which nothing
+runs, keeps CE's picture under it.
 """
 
 from __future__ import annotations
