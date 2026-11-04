@@ -181,27 +181,23 @@ class Checks:
     call on, a run of frames outside one finding from the first to the last,
     as a check made on every frame finds it.
 
-    A record kept on the render's grid evaluated every frame as the render
-    does, and its calls and readings are read from it. One kept on another
-    grid ran the scene's frame hooks and dt updaters at other instants: its
-    calls and readings are read from the lint's one forward run on the
-    render's grid, asked for to the scene's end whatever frames the lint
-    reads otherwise, so it holds every call the execution makes.
+    The calls and readings are read from the execution the lint's frames
+    come from (:attr:`.Frames.execution`). A record its frames are read from
+    as kept (one on the render's grid that draws) evaluated every frame as
+    the render does, and is read itself. Any other (one kept on another
+    grid, whose frame hooks and dt updaters ran at other instants, or one
+    that refuses drawing) is read from the lint's one forward run, which is
+    asked to run to the scene's end whatever frames the lint reads, so it
+    holds every call that execution makes, those its record never made
+    included.
     """
 
     def request_frames(self, frames: Frames) -> None:
-        """Ask for the whole forward execution when the record's own values
-        are not the render's and the scene used the bridge.
-        """
-        record = frames.session.record
-        if record.bridge.calls and not _on_render_grid(record):
-            frames.request(self, [record.duration], _nothing)
+        """Ask that a forward run, if the lint needs one, run to the end."""
+        frames.complete(self)
 
     def __call__(self, context: LintContext) -> list[Finding]:
-        source = context.record
-        if source.bridge.calls and not _on_render_grid(source):
-            source = context.frames.execution
-        return findings(source)
+        return findings(context.frames.execution)
 
 
 def findings(source: Record) -> list[Finding]:
@@ -218,16 +214,6 @@ def findings(source: Record) -> list[Finding]:
         elif call.kind == "watch":
             found.extend(_watch_findings(call, fps, source.duration))
     return found
-
-
-def _on_render_grid(record: Record) -> bool:
-    from .instants import render_grid
-
-    return record.grid == render_grid(record)
-
-
-def _nothing(*_: Any) -> None:
-    """A frame reader that reads nothing: the bridge needs the execution."""
 
 
 # Calls
@@ -458,7 +444,8 @@ def _watch_findings(call: BridgeCall, fps: Fraction, end: Fraction) -> list[Find
     frames: dict[Fraction, Reading] = {}
     for reading in call.readings:
         if reading.until is not None:
-            shown = frames_in(reading.t, reading.until, fps)
+            # No frame past the scene's end, whatever tick the state held to.
+            shown = frames_in(reading.t, min(reading.until, end), fps)
         elif (reading.t * fps).denominator == 1 or reading.t == end:
             shown = [reading.t]
         else:

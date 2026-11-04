@@ -496,3 +496,53 @@ def test_each_point_is_checked_against_its_own_reference_and_margin(session_of):
     watched = found[-1]
     assert (watched.t_start, watched.t_end) == (0, session.record.duration)
     assert all(n.type != "Axes" for n in session.state_at(0).nodes)
+
+
+@pytest.mark.parametrize("width", [96, 98], ids=["render-longer", "render-shorter"])
+def test_a_forward_run_that_ends_elsewhere_diverges_and_keeps_its_checks(
+    session_of, width
+):
+    """The render's execution ends at another time than a finer grid's: the
+    lint reports the divergence and the bridge's findings it read, and
+    raises nothing.
+    """
+    finer = session_of(
+        "DivergentDuration", BRIDGE, grid=None, frame_rate=15, pixel_width=width
+    )
+    result = lint(finer, at=[0])
+    (run,) = finer.forward_runs
+    assert run.divergence is not None
+    assert any(f.code == "replay.diverged" for f in result.findings)
+    watched, recorded = _outside(result)
+    assert watched.t_start == 0
+    assert recorded.t_start == recorded.t_end
+    assert recorded.t_start != finer.record.duration
+
+
+def test_checks_only_the_forward_run_makes_are_read(session_of):
+    """A finer grid's record holds no bridge call; the render's execution,
+    which the lint's forward run is, makes two.
+    """
+    render = session_of("ForwardOnlyBridge", BRIDGE, frame_rate=15)
+    finer = session_of("ForwardOnlyBridge", BRIDGE, grid=None, frame_rate=15)
+    assert finer.record.bridge.calls == []
+
+    def spans(session):
+        found = _outside(lint(session))
+        return [(f.t_start, f.t_end, f.line.line) for f in found]
+
+    expected = spans(render)
+    assert len(expected) == 2
+    assert spans(finer) == expected
+    assert len(finer.forward_runs) == 1
+
+
+def test_a_watch_reports_no_frame_after_the_scene_s_end(session_of):
+    """The tick a stop condition ends the scene on holds until a tick that
+    never comes: a finding ends at the scene's end.
+    """
+    session = session_of("StoppedWatch", BRIDGE, frame_rate=24)
+    end = session.record.duration
+    assert (end * 24).denominator != 1
+    (found,) = _outside(lint(session))
+    assert found.t_end == end
