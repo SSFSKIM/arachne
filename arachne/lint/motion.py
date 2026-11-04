@@ -52,10 +52,12 @@ and after, the distance and the two plays. A jump object has no box
 (``bbox`` and ``screen_bbox`` are ``None``), as the moment of the jump has
 none.
 
-A record that keeps no exit of a play it shows (one made without them) is
-read through the lint's forward run, which keeps them; it is never measured
-another way. Nothing arms the rule by default: it runs when passed to
-:func:`.lint`.
+A session's record keeps the exits of the plays that end once its scene
+has armed the rule (:meth:`.Recorder.arm_motion`). A record that keeps no
+exit of a play it shows (the scene never armed the rule, or armed it late)
+is read through the lint's forward run, which keeps every play's; it is
+never measured another way. The rule is not among the defaults: it runs
+when passed to :func:`.lint`.
 """
 
 from __future__ import annotations
@@ -168,11 +170,9 @@ class MotionJump:
         record = context.record
         wanted = _wanted(record)
         execution = context.frames.execution
-        if not _has_exits(execution, wanted):
-            raise RuntimeError(
-                "The execution the lint read keeps no exit of a play it shows:"
-                " the motion rule can't measure its cuts."
-            )
+        # The session's record when it keeps them all, else the forward run,
+        # which keeps every play's.
+        assert _has_exits(execution, wanted), "an execution read without its exits"
         assert execution.exits is not None
         read = iter(context.frames.result(self))
         plays = [
