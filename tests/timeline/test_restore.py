@@ -13,6 +13,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from arachne.timeline.draw import Drawing
+from arachne.timeline.origins import ORIGINS
+from arachne.timeline.record import NodeState
 from arachne.timeline.restore import RestorePoint, Unrestorable, restored
 from arachne.timeline.routes import Unavailable, snapshot_animations
 
@@ -163,8 +166,7 @@ def test_a_tracker_outside_the_scene_is_restored_as_the_play_held_it(session_of)
         if type(read).__name__ == "ValueTracker"
     }.values()
     assert all(
-        session.record.node_state(tracker, capture) is None
-        for capture in play.samples
+        session.record.node_state(tracker, capture) is None for capture in play.samples
     )
     for t in _unsampled(play):
         assert session.state_at(t).named("number").text == "0.50"
@@ -302,3 +304,137 @@ def test_a_ticked_play_between_kept_ticks_answers_the_frame_on_screen(session_of
             assert (state.answer, state.as_of) == ("recorded", frame_instant), t
             assert state.nodes == session.state_at(frame_instant).nodes
             assert np.array_equal(np.asarray(session.frame(t)), frames[k]), t
+
+
+def test_a_ticked_answer_names_the_capture_it_reads(session_of):
+    session = session_of("Conditional", ROUTE_SCENES, frame_rate=15)
+    (play,) = session.record.plays
+    t = Fraction(1, 120)
+    assert play.sample_at(t) is None
+    assert session.state_at(t).as_of == play.base_at(t).instant == 0
+
+
+def test_a_ticked_record_keeps_no_event_tick_so_an_answer_reads_the_frame(
+    session_of,
+):
+    """The event tick at 0.65 s lies between the frames at 0.6 and 2/3 s. It
+    is a full tick, but no frame reads it and the record keeps none: after
+    it, the answer is the frame at 0.6 s.
+    """
+    session = session_of("TickedSuccession", RESTORE_SCENES, frame_rate=15)
+    _, frames = render(restore_scenes.TickedSuccession, 15)
+    (play,) = session.record.plays
+    assert play.route == "ticked"
+    event = Fraction(13, 20)
+    assert event in play.events
+    assert play.sample_at(event) is None
+    t = event + Fraction(1, 200)
+    state = session.state_at(t)
+    assert state.as_of == Fraction(9, 15)
+    assert state.nodes == session.state_at(Fraction(9, 15)).nodes
+    assert np.array_equal(np.asarray(session.frame(t)), frames[9])
+
+
+def test_a_ticked_play_before_its_first_frame_answers_the_frame_before(session_of):
+    """The ticked play begins at 0.97 s, after the frame at 14/15 s and
+    before the next: until that one, the frame on screen is the wait's.
+    """
+    session = session_of("TickedOffGrid", RESTORE_SCENES, frame_rate=15)
+    _, frames = render(restore_scenes.TickedOffGrid, 15)
+    wait, ticked = session.record.plays
+    assert ticked.route == "ticked"
+    assert ticked.start == Fraction(97, 100)
+    t = Fraction(98, 100)
+    state = session.state_at(t)
+    assert (state.answer, state.play, state.as_of) == ("recorded", 0, wait.start)
+    assert np.array_equal(np.asarray(session.frame(t)), frames[14])
+
+
+def test_a_restore_never_runs_a_callback_admission_did_not_prove(session_of):
+    """The hook attaches its counter at the first frame: a restore refuses,
+    and the counter never runs.
+    """
+    session = session_of("HookAddsUpdater", RESTORE_SCENES, frame_rate=15)
+    (play,) = session.record.plays
+    assert play.route == "state"
+    before = session.scene.calls
+    with pytest.raises(Unrestorable) as raised:
+        session.state_at(Fraction(3, 7))
+    assert raised.value.reason == "restore.unadmitted_callback"
+    with pytest.raises(Unrestorable):
+        session.frame(Fraction(3, 7))
+    assert session.scene.calls == before
+
+
+def test_a_binding_changed_in_place_during_the_play_is_unrestorable(session_of):
+    """The hook changes the list at frames and the scene puts it back after
+    the play: what the list holds now is no evidence of what it held there.
+    """
+    session = session_of("HookMutates", RESTORE_SCENES, frame_rate=15)
+    (play,) = session.record.plays
+    assert play.route == "state"
+    with pytest.raises(Unrestorable) as raised:
+        session.state_at(Fraction(31, 60))
+    assert raised.value.reason == "restore.rebound_in_play"
+
+
+def test_a_failing_restore_puts_everything_back(session_of):
+    session = session_of("FailingUpdater", RESTORE_SCENES, frame_rate=15)
+    scene = session.scene
+    (play,) = session.record.plays
+    assert play.route == "state"
+    point = play._animation_states[play.samples[0].seq]
+    mobjects = {id(m): m for m in session.record.mobjects()}
+    mobjects.update((id(m), m) for m, _ in point.nodes)
+    states = {key: NodeState.of(m) for key, m in mobjects.items()}
+    names = ("mobjects", "foreground_mobjects", "moving_mobjects", "animations")
+    lists = [getattr(scene, name) for name in names]
+    clock = scene.time
+    tagging = (ORIGINS.active, ORIGINS.base_dir, dict(ORIGINS._ordinals))
+    updater = scene.dot.updaters[0]
+    cells = [cell.cell_contents for cell in updater.__closure__]
+    with pytest.raises(ZeroDivisionError):
+        session.state_at(Fraction(1, 7))
+    assert scene.time == clock
+    assert [cell.cell_contents for cell in updater.__closure__] == cells
+    assert all(getattr(scene, n) is v for n, v in zip(names, lists, strict=True))
+    assert all(states[key].matches(m.__dict__) for key, m in mobjects.items())
+    assert (ORIGINS.active, ORIGINS.base_dir, dict(ORIGINS._ordinals)) == tagging
+    assert session.state_at(Fraction(3, 7)).answer == "restored"
+
+
+def test_the_restored_scene_holds_the_instant_through_the_block(session_of):
+    session = session_of("FailingUpdater", RESTORE_SCENES, frame_rate=15)
+    updater = session.scene.dot.updaters[0]
+    cell = updater.__closure__[updater.__code__.co_freevars.index("offset")]
+    with restored(session.record, Fraction(3, 7)) as scene:
+        assert scene.time == Fraction(3, 7)
+        assert cell.cell_contents == 0.0
+        assert scene.dot.get_x() == pytest.approx(0.5)
+    assert scene.time == session.record.duration
+    assert cell.cell_contents == 1.5
+
+
+def test_a_restored_frame_draws_no_static_layer(session_of, monkeypatch):
+    """The dot stands still at every frame, as anything a static layer kept
+    from the captures would; restored between frames it has moved, and the
+    frame shows it there, over the square a render draws under it.
+    """
+    session = session_of("FramePeriodic", RESTORE_SCENES, frame_rate=15)
+    (play,) = session.record.plays
+    assert play.route == "state"
+    assert play.static
+    t = Fraction(1, 2) + Fraction(1, 60)
+    oracle = session_of("FramePeriodic", RESTORE_SCENES, frame_rate=15, instants=[t])
+    expected = np.asarray(oracle.frame(t))
+
+    def refused(self, play):
+        raise AssertionError("a restored frame drew a static picture")
+
+    monkeypatch.setattr(Drawing, "static", refused)
+    pixels = np.asarray(session.frame(t))
+    monkeypatch.undo()
+    assert np.array_equal(pixels, expected)
+    assert not np.array_equal(pixels, np.asarray(session.frame(Fraction(7, 15))))
+    (dot,) = [n for n in session.state_at(t).nodes if n.type == "Dot"]
+    assert dot.box[1] > 0
