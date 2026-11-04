@@ -150,6 +150,7 @@ fn encode_view(v: &View) -> Vec<u8> {
         w.f64(v.frame_width);
         w.f64(v.frame_height);
         w.f64s(&v.frame_center);
+        w.f64s(&v.mapping_centre);
         match &v.background {
             Background::Color(c) => {
                 w.u8(0);
@@ -309,6 +310,10 @@ pub fn encode_record(r: &Record) -> Vec<u8> {
         }
         w.f64(r.opacity);
         w.u16(r.layer);
+        w.bool(r.fill_image.is_some());
+        if let Some(key) = &r.fill_image {
+            w.key(key);
+        }
 
         match (r.kind, &r.body) {
             (RecordKind::Path | RecordKind::Mesh, Body::None) => {}
@@ -340,8 +345,22 @@ pub fn encode_record(r: &Record) -> Vec<u8> {
                 w.u8(*resampling);
                 w.f64(*opacity);
             }
-            (RecordKind::Image, Body::Image(ImageSource::SubFrame { view, order })) => {
+            (
+                RecordKind::Image,
+                Body::Image(ImageSource::SubFrame {
+                    rank,
+                    corners,
+                    resampling,
+                    opacity,
+                    view,
+                    order,
+                }),
+            ) => {
                 w.u8(1);
+                w.u32(*rank);
+                corners.iter().for_each(|c| w.f64s(c));
+                w.u8(*resampling);
+                w.f64(*opacity);
                 w.item(&encode_view(view));
                 write_order(w, order);
             }
@@ -544,6 +563,7 @@ fn decode_view(r: &mut R) -> Result<View> {
     let frame_width = r.f64()?;
     let frame_height = r.f64()?;
     let frame_center = r.f64s()?;
+    let mapping_centre = r.f64s()?;
     let background = match r.u8()? {
         0 => Background::Color(r.f64s()?),
         1 => Background::Image(r.key()?),
@@ -580,6 +600,7 @@ fn decode_view(r: &mut R) -> Result<View> {
         frame_width,
         frame_height,
         frame_center,
+        mapping_centre,
         background,
         camera,
         cairo_line_width_multiple,
@@ -750,6 +771,12 @@ fn decode_record(r: &mut R) -> Result<Record> {
     }
     rec.opacity = r.f64()?;
     rec.layer = r.u16()?;
+    rec.fill_image = if r.bool()? { Some(r.key()?) } else { None };
+    if (rec.features & FEATURE_BACKGROUND_IMAGE != 0) != rec.fill_image.is_some() {
+        return Err(XfError::Invalid(
+            "background_image feature bit and fill_image field disagree".into(),
+        ));
+    }
 
     rec.body = match kind {
         RecordKind::Path | RecordKind::Mesh => Body::None,
@@ -774,11 +801,15 @@ fn decode_record(r: &mut R) -> Result<Record> {
         }),
         RecordKind::Image => Body::Image(match r.u8()? {
             0 => ImageSource::Picture {
-                corners: [r.f64s()?, r.f64s()?, r.f64s()?],
+                corners: [r.f64s()?, r.f64s()?, r.f64s()?, r.f64s()?],
                 resampling: r.u8()?,
                 opacity: r.f64()?,
             },
             1 => ImageSource::SubFrame {
+                rank: r.u32()?,
+                corners: [r.f64s()?, r.f64s()?, r.f64s()?, r.f64s()?],
+                resampling: r.u8()?,
+                opacity: r.f64()?,
                 view: Box::new(decode_view(&mut r.item("a sub-frame's view")?)?),
                 order: read_order(r)?,
             },

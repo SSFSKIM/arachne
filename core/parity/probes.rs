@@ -90,6 +90,7 @@ pub fn view(width: u32, height: u32, phi: f64, theta: f64) -> View {
         frame_width,
         frame_height: frame_width / (width as f64 / height as f64),
         frame_center: [0.0; 3],
+        mapping_centre: [0.0; 3],
         background: Background::Color([0.0, 0.0, 0.0, 1.0]),
         camera: Camera::ThreeD(ThreeDCamera {
             phi,

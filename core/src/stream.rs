@@ -255,19 +255,23 @@ impl After<'_> {
         Ok(())
     }
 
-    /// Checks an order against the records the delta leaves. `display` is the slot of the display
-    /// whose sub-frame draws the order, which may not draw itself.
-    fn check_order(&self, order: &[OrderEntry], display: Option<u32>) -> Result<(), StreamError> {
+    /// Checks an order against the records the delta leaves. Displays in each layer capture in
+    /// rank order before its entries draw; self capture reads the picture as it then stands.
+    fn check_order(&self, order: &[OrderEntry]) -> Result<(), StreamError> {
+        let mut ranks = HashMap::new();
         for e in order {
-            if Some(e.slot) == display {
-                return Err(StreamError::Invalid(format!(
-                    "the sub-frame of slot {} draws its own slot",
-                    e.slot
-                )));
-            }
             let rec = self.record(e.slot).ok_or_else(|| {
                 StreamError::Missing(format!("the order draws slot {}, which is not set", e.slot))
             })?;
+            if let Body::Image(ImageSource::SubFrame { rank, .. }) = &rec.body
+                && let Some(other) = ranks.insert((e.layer as u8, *rank), e.slot)
+                && other != e.slot
+            {
+                return Err(StreamError::Invalid(format!(
+                    "display slots {other} and {} share capture rank {rank} in layer {}",
+                    e.slot, e.layer as u8
+                )));
+            }
             let parts = match (&rec.kind, &rec.body) {
                 (RecordKind::Unknown(_), _) => continue,
                 (_, Body::FaceGroup(f)) => f.uv.len(),
@@ -287,6 +291,14 @@ impl After<'_> {
         if let RecordKind::Unknown(_) = rec.kind {
             return Ok(()); // Nothing in it can be read; drawing refuses it.
         }
+        if (rec.features & FEATURE_BACKGROUND_IMAGE != 0) != rec.fill_image.is_some() {
+            return Err(StreamError::Invalid(
+                "background_image feature bit and fill_image field disagree".into(),
+            ));
+        }
+        if let Some(key) = &rec.fill_image {
+            self.needs_shape(rec, Some(key), &["image"])?;
+        }
         let g = &rec.geometry;
         let shape_a = g.shape_a.as_ref();
         let a = match (rec.kind, &rec.body) {
@@ -302,7 +314,7 @@ impl After<'_> {
             (RecordKind::Image, Body::Image(ImageSource::Picture { .. })) => {
                 self.needs_shape(rec, shape_a, &["image"])?
             }
-            (RecordKind::Image, Body::Image(ImageSource::SubFrame { view, order })) => {
+            (RecordKind::Image, Body::Image(ImageSource::SubFrame { view, order, .. })) => {
                 if shape_a.is_some() {
                     return Err(StreamError::Invalid(format!(
                         "slot {}: a sub-frame display has no shape",
@@ -310,7 +322,7 @@ impl After<'_> {
                     )));
                 }
                 self.check_view(view, Some(rec.slot))?;
-                self.check_order(order, Some(rec.slot))?;
+                self.check_order(order)?;
                 None
             }
             (RecordKind::Volume | RecordKind::Field | RecordKind::Emission, Body::Opaque(_)) => {
@@ -504,7 +516,7 @@ impl Stream {
         if !after.removed.is_empty() || !after.set.is_empty() {
             for rec in after.records() {
                 if let Body::Image(ImageSource::SubFrame { order, .. }) = &rec.body {
-                    after.check_order(order, Some(rec.slot))?;
+                    after.check_order(order)?;
                 }
             }
         }
@@ -514,7 +526,7 @@ impl Stream {
         if let Some(view) = &delta.view {
             after.check_view(view, None)?;
         }
-        after.check_order(delta.order.as_deref().unwrap_or(&self.order), None)
+        after.check_order(delta.order.as_deref().unwrap_or(&self.order))
     }
 
     /// Draws the frame at `width x height` pixels, its tiles spread over `threads` threads.
@@ -839,6 +851,8 @@ fn refusal(rec: &Record, shapes: &HashMap<Key, Shape>, shading: bool) -> Option<
             "feature bits {:#x} are not ones this build knows",
             rec.features & !KNOWN_FEATURES
         )
+    } else if rec.features & FEATURE_BACKGROUND_IMAGE != 0 {
+        "background_image is drawn by Cairo only".into()
     } else if let RecordKind::Unknown(code) = rec.kind {
         format!("record kind {code} is not one this build knows")
     } else if rec.kind.is_reserved() {

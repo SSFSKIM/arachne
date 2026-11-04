@@ -255,12 +255,14 @@ fn view_of(fields: Fields) -> PyResult<View> {
             }
         }
     };
+    let frame_center = fields.or("frame_center", [0.0; 3])?;
     let view = View {
         pixel_width: fields.need("pixel_width")?,
         pixel_height: fields.need("pixel_height")?,
         frame_width: fields.need("frame_width")?,
         frame_height: fields.need("frame_height")?,
-        frame_center: fields.or("frame_center", [0.0; 3])?,
+        frame_center,
+        mapping_centre: fields.or("mapping_centre", frame_center)?,
         background,
         camera,
         cairo_line_width_multiple: fields.or("cairo_line_width_multiple", 0.01)?,
@@ -341,24 +343,36 @@ fn body_of(kind: RecordKind, fields: &Fields) -> PyResult<Body> {
             colors: need_key(fields, "colors")?,
             radius: fields.need("radius")?,
         }),
-        RecordKind::Image => match fields.take("sub_frame")? {
-            Some(v) => {
-                let (view, order): (Bound<PyDict>, Bound<PyAny>) = v.extract()?;
-                Body::Image(ImageSource::SubFrame {
-                    view: Box::new(view_of(Fields::new(
-                        "a sub-frame's view".into(),
-                        Some(&view),
-                        v.py(),
-                    )?)?),
-                    order: order_of(&order)?,
-                })
-            }
-            None => Body::Image(ImageSource::Picture {
-                corners: fields.need("corners")?,
-                resampling: fields.or("resampling", 3)?,
-                opacity: fields.or("image_opacity", 1.0)?,
-            }),
-        },
+        RecordKind::Image => {
+            let corners = rows3(&fields.need::<Bound<PyAny>>("corners")?, "corners")?;
+            let corners: [[f64; 3]; 4] = corners
+                .try_into()
+                .map_err(|_| PyValueError::new_err("corners must have shape (4, 3)"))?;
+            let resampling = fields.or("resampling", 3)?;
+            let opacity = fields.or("image_opacity", 1.0)?;
+            Body::Image(match fields.take("sub_frame")? {
+                Some(v) => {
+                    let (rank, view, order): (u32, Bound<PyDict>, Bound<PyAny>) = v.extract()?;
+                    ImageSource::SubFrame {
+                        rank,
+                        corners,
+                        resampling,
+                        opacity,
+                        view: Box::new(view_of(Fields::new(
+                            "a sub-frame's view".into(),
+                            Some(&view),
+                            v.py(),
+                        )?)?),
+                        order: order_of(&order)?,
+                    }
+                }
+                None => ImageSource::Picture {
+                    corners,
+                    resampling,
+                    opacity,
+                },
+            })
+        }
         RecordKind::Instances => {
             let placements: PyArrayLikeDyn<f64, AllowTypeChange> = fields.need("placements")?;
             let placements = placements.as_array();
@@ -490,7 +504,8 @@ impl PyFrameDelta {
     /// Sets the view: pixel_width, pixel_height, frame_width and frame_height are required; the
     /// rest default to CE's (camera "flat", "moving" or "three_d" with phi, theta, gamma,
     /// focal_distance, zoom, exponential_projection, light_source, shading_factor,
-    /// should_apply_shading; frame_center; background as RGBA or an image key;
+    /// should_apply_shading; frame_center; mapping_centre (defaults to frame_center);
+    /// background as RGBA or an image key;
     /// cairo_line_width_multiple; use_z_index; light_model).
     #[pyo3(signature = (**fields))]
     fn set_view(&mut self, py: Python<'_>, fields: Option<&Bound<'_, PyDict>>) -> PyResult<()> {
@@ -624,6 +639,15 @@ impl PyFrameDelta {
         )?;
         let mut record = Record::new(kind, slot, object);
         record.features = fields.or("features", 0u64)?;
+        record.fill_image = key_field(&fields, "fill_image")?;
+        if record.fill_image.is_some() {
+            record.features |= FEATURE_BACKGROUND_IMAGE;
+        } else if record.features & FEATURE_BACKGROUND_IMAGE != 0 {
+            return Err(xf_error(
+                py,
+                "background_image feature needs fill_image".into(),
+            ));
+        }
         record.geometry = Geometry {
             shape_a: key_field(&fields, "shape")?,
             place_a: fields.or("place", IDENTITY)?,
@@ -847,6 +871,9 @@ fn probe_fixtures() -> Vec<(&'static str, u32, u32, Vec<PyFrameDelta>)> {
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("XF_VERSION", XF_VERSION)?;
+    let features = PyDict::new(m.py());
+    features.set_item("background_image", FEATURE_BACKGROUND_IMAGE)?;
+    m.add("FEATURES", features)?;
     m.add("RESOLVES", ("background", "fast", "coverage", "sample"))?;
     m.add(
         "COVERAGE_TO_SAMPLE_LSB",
