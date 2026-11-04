@@ -5,6 +5,8 @@ code runs exactly as often as on the direct path.
 
 from __future__ import annotations
 
+from fractions import Fraction
+
 import numpy as np
 import pytest
 
@@ -80,6 +82,21 @@ def test_a_mapping_camera_records_the_mapped_points(painters, monkeypatch):
     mapped = np.apply_along_axis(camera.mapping_func, 1, cloud)
     assert not np.array_equal(mapped, cloud)
     assert any(np.array_equal(shapes[r.fields["shape"]], mapped) for r in clouds)
+
+
+def test_a_live_frame_carries_the_scene_instant_it_draws(painters, monkeypatch):
+    from arachne.frame_ir.painter import IrCairoPainter
+
+    monkeypatch.setattr(IrCairoPainter, "keep_all", True)
+    render(scenes.LiveOverride, FPS, draw_path="ir_cairo", **MEDIUM)
+    instants = [
+        d.t for p in painters for _, ir in p._painters.values() for d in ir.deltas
+    ]
+    # On the frame grid, in order, through the 0.4 s play: never a count.
+    assert len(set(instants)) > 2, instants
+    assert instants == sorted(instants), instants
+    assert all((t * FPS).denominator == 1 for t in instants)
+    assert 0 < instants[-1] <= Fraction(2, 5)
 
 
 @pytest.mark.parametrize(
