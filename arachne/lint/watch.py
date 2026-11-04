@@ -237,13 +237,13 @@ def _watch(context: LintContext, rule: ArmedRule) -> list[Finding]:
         # A frame the session's record schedules and its execution does not
         # (two executions of the scene that differ, which the lint reports)
         # is not read.
-        parts = shown.get(step.frame) if step.frame is not None else None
-        if parts is None:
+        drawn = shown.get(step.frame) if step.frame is not None else None
+        if drawn is None:
             continue
         if play is not None and step.kind == "inside":
-            watch.sample(parts, step, watch.moved(play), watch.going(play))
+            watch.sample(drawn, step, watch.moved(play), watch.going(play))
         else:
-            watch.sample(parts, step, (), ())
+            watch.sample(drawn, step, (), ())
     return watch.report(1 / render_grid(record))
 
 
