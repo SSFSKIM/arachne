@@ -34,7 +34,7 @@ from .timeline.execution import Divergence, ExecutionSummary, compare, summarize
 from .timeline.fallback import Answer, ForwardRun, answer_instants
 from .timeline.origins import ORIGINS
 from .timeline.recorder import Recorder
-from .timeline.routes import draw
+from .timeline.routes import _draw, _resolve, _Resolved
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -43,7 +43,7 @@ if TYPE_CHECKING:
     from PIL import Image
 
     from .scene.scene import Scene
-    from .timeline.record import Record
+    from .timeline.record import PlayRecord, Record
     from .timeline.state import State
     from .typing import PixelArray, StrPath
 
@@ -74,6 +74,9 @@ class Session:
         self._source: Source | None = None
         #: The forward runs that answered what the record could not, in order.
         self.forward_runs: list[ForwardRun] = []
+        #: Whether a forward run found the scene's source changed since the
+        #: record was made: the record is of a program the file no longer is.
+        self.stale = False
 
     @classmethod
     def open(
@@ -151,14 +154,27 @@ class Session:
         """
         self._use_quality(quality)
         record = self.record
-        with Drawing(record) as drawing:
-            pixels = draw(
-                drawing,
-                record,
-                exact(t),
-                lambda play: self._static_picture(drawing, play),
-            )
+        (pixels,) = self._drawn(
+            record, [_resolve(record, exact(t))], self._static_picture
+        )
         return self.scene.renderer.camera.get_image(pixels)
+
+    def _drawn(
+        self,
+        record: Record,
+        answers: Iterable[_Resolved],
+        static: Callable[[Drawing, PlayRecord], PixelArray | None],
+    ) -> list[PixelArray]:
+        """The frames of ``answers``, instants ``record`` answers, drawn as
+        every frame a session gives is drawn: the session's own record's, and
+        a forward run's (:mod:`.timeline.fallback`). ``static(drawing, play)``
+        gives a play's static picture.
+        """
+        with Drawing(record) as drawing:
+            return [
+                _draw(drawing, record, found, lambda play: static(drawing, play))
+                for found in answers
+            ]
 
     def answers(
         self,
@@ -176,6 +192,8 @@ class Session:
         a new execution of the scene, whose answers say ``"forward"`` and
         name why the record could not answer, and which is compared with
         the record's execution (:attr:`forward_runs`, :attr:`divergences`).
+        A forward run of a source changed since the record is compared with
+        nothing: its answers say ``source-changed``, and :attr:`stale` is set.
         """
         return answer_instants(self, instants, quality, frames=frames)
 

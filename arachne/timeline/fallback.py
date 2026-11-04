@@ -55,11 +55,17 @@ import numpy as np
 
 from .clock import exact
 from .draw import Drawing, LiveFrames
-from .execution import Divergence, Execution, compare, summarize
+from .execution import (
+    Divergence,
+    Execution,
+    Incomparable,
+    compare,
+    summarize,
+)
 from .origins import ORIGINS
 from .recorder import Recorder
 from .restore import Unrestorable
-from .routes import RecordRefused, _draw, _last_frame, _Resolved, _route
+from .routes import RecordRefused, _last_frame, _Resolved, _route
 from .state import build_state
 
 if TYPE_CHECKING:
@@ -69,7 +75,7 @@ if TYPE_CHECKING:
     from arachne.session import Session
     from arachne.typing import PixelArray
 
-    from .record import PlayRecord, Record
+    from .record import Identity, PlayRecord, Record
     from .state import State
 
 
@@ -77,10 +83,12 @@ if TYPE_CHECKING:
 class Fallback:
     """Why the record could not answer an instant, so that a forward run did:
     ``kind`` is ``"refused"`` (the record draws no frame,
-    :class:`.RecordRefused`) or ``"unrestorable"``
-    (:class:`.restore.Unrestorable`); ``reason`` is the stable code
-    (``camera.mapping_func``, ``restore.global_rebound``, …) and ``detail``
-    the message.
+    :class:`.RecordRefused`), ``"unrestorable"``
+    (:class:`.restore.Unrestorable`) or ``"source-changed"`` (the scene's
+    source changed since the record was made, which is stale:
+    :attr:`.Session.stale`); ``reason`` is the stable code
+    (``camera.mapping_func``, ``restore.global_rebound``,
+    ``source.changed``, …) and ``detail`` the message.
     """
 
     kind: str
@@ -116,12 +124,16 @@ class ForwardRun:
     plays it ran before it stopped (every play, when it ran the script to
     its end), where it differs from the record's execution if it does, and
     up to which instant the two were compared (``None``: all of both).
+    ``source_changed``: the scene's source is not the record's (or one of
+    the two is unknown), so the record is stale and the two were not
+    compared at all.
     """
 
     instants: tuple[Fraction, ...]
     plays: int
     divergence: Divergence | None
     compared_until: Fraction | None
+    source_changed: bool = False
 
 
 def answer_instants(
@@ -149,9 +161,9 @@ def answer_instants(
         if frames:
             # The size the forward run draws at, as frame() draws at it.
             session._use_quality(quality)
-        answered = _forward(session, sorted(missing), frames=frames)
+        answered, stale = _forward(session, sorted(missing), frames=frames)
         for t, (state, frame) in answered.items():
-            found[t] = Answer(t, state, frame, missing[t])
+            found[t] = Answer(t, state, frame, stale or missing[t])
     return [found[t] for t in asked]
 
 
@@ -230,10 +242,11 @@ class _ForwardRecorder(Recorder):
 
 def _forward(
     session: Session, instants: list[Fraction], *, frames: bool
-) -> dict[Fraction, tuple[State, Image.Image | None]]:
+) -> tuple[dict[Fraction, tuple[State, Image.Image | None]], Fallback | None]:
     """Execute the session's scene again for ``instants`` (in time order),
     keep the run in :attr:`.Session.forward_runs` and any divergence in
-    :attr:`.Session.divergences`, and answer each instant from it.
+    :attr:`.Session.divergences`, and answer each instant from it; with the
+    fallback every answer takes when the source changed since the record.
     """
     from arachne.session import execute
 
@@ -306,7 +319,17 @@ def _forward(
             if end is not None
         ]
         until = min(ends) if ends else None
-        divergence = compare(session.summary(), summarize(executed), until=until)
+        mine, theirs = session.summary(), summarize(executed)
+        stale: Fallback | None = None
+        try:
+            divergence = compare(mine, theirs, until=until)
+        except Incomparable:
+            # Another program than the record's: nothing to compare, and no
+            # divergence (two executions of one source differing), but the
+            # record is stale.
+            divergence = None
+            stale = _source_changed(mine.identity, theirs.identity)
+            session.stale = True
         if divergence is not None and not whole:
             # A file only the record's execution read, the forward run having
             # stopped before it, is no difference between them.
@@ -318,45 +341,75 @@ def _forward(
                 ),
             )
         session.forward_runs.append(
-            ForwardRun(tuple(instants), len(executed.plays), divergence, until)
+            ForwardRun(
+                tuple(instants),
+                len(executed.plays),
+                divergence,
+                until,
+                source_changed=stale is not None,
+            )
         )
         if divergence is not None:
             session.divergences.append(divergence)
         if refused:
-            return _rendered(forward, executed, instants, written, frames=frames)
-        if executed.refusal is not None:
+            answered = _rendered(forward, executed, instants, written, frames=frames)
+        elif executed.refusal is not None:
             raise RecordRefused(
                 f"{executed.refusal}; the forward run's record refuses drawing where"
                 " the record's execution did not"
             )
-        return _recorded(executed, instants, frames=frames)
+        else:
+            answered = _recorded(session, executed, instants, frames=frames)
+        return answered, stale
+
+
+def _source_changed(mine: Identity, theirs: Identity) -> Fallback:
+    """Why a forward run of another source than the record's answered: the
+    scene's source changed since the record was made, which is not a
+    divergence. The identity digests the source as a whole, so no file is
+    named.
+    """
+    before, now = mine.source_digest, theirs.source_digest
+    if before is not None and now is not None:
+        detail = (
+            "the scene's source differs from the record's (source digest"
+            f" {before[:12]}, now {now[:12]}): the record is stale, and these are"
+            " the answers of the source as it is now"
+        )
+    else:
+        detail = (
+            "the scene's source is unknown for the record or the forward run, so"
+            " the record can't be shown to be of the source executed now"
+        )
+    return Fallback("source-changed", "source.changed", detail)
 
 
 def _recorded(
-    record: Record, instants: list[Fraction], *, frames: bool
+    session: Session, record: Record, instants: list[Fraction], *, frames: bool
 ) -> dict[Fraction, tuple[State, Image.Image | None]]:
     """Each instant answered from a forward run's record, which evaluated
-    and kept every one of them, drawn from it as a session draws.
+    and kept every one of them, drawn from it through the session's own
+    drawing (:meth:`.Session._drawn`).
     """
     resolved = {t: _route(record, t) for t in instants}
     answered = {t: _state(record, t, resolved[t]) for t in instants}
     if not frames:
         return {t: (answered[t], None) for t in instants}
-    camera = record._scene.renderer.camera
-    pictures: dict[Fraction, Image.Image] = {}
     kept_static: dict[int, PixelArray | None] = {}
-    with Drawing(record) as drawing:
 
-        def static(play: PlayRecord) -> PixelArray | None:
-            # Kept for the play's next frame, as a session keeps it.
-            if play.index not in kept_static:
-                kept_static[play.index] = drawing.static(play)
-            return kept_static[play.index]
+    def static(drawing: Drawing, play: PlayRecord) -> PixelArray | None:
+        # Kept for the play's next frame, as a session keeps its own; apart
+        # from the session's, which belongs to its record.
+        if play.index not in kept_static:
+            kept_static[play.index] = drawing.static(play)
+        return kept_static[play.index]
 
-        for t in instants:
-            pixels = _draw(drawing, record, resolved[t], static)
-            pictures[t] = camera.get_image(pixels)
-    return {t: (answered[t], pictures[t]) for t in instants}
+    drawn = session._drawn(record, [resolved[t] for t in instants], static)
+    camera = record._scene.renderer.camera
+    return {
+        t: (answered[t], camera.get_image(pixels))
+        for t, pixels in zip(instants, drawn, strict=True)
+    }
 
 
 def _rendered(
