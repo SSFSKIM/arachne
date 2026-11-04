@@ -36,13 +36,31 @@ DRAW_PATHS = {"cairo": False, "ir_cairo": True}
 
 
 def user_camera(camera: Any) -> tuple[str, str] | None:
-    """What of ``camera`` is the scene's own code, as ``(subject, why)``: a
-    method of an engine camera class replaced on the class
-    (:func:`~arachne.timeline.camera_code.replaced_methods`); its class, a
-    subclass of one of the engine's cameras defined outside the engine; or a
-    method of its class replaced on the instance. ``None`` for an engine
-    camera as the engine made it, or for no camera at all.
+    """What of ``camera``, or of a display camera it draws through
+    (:func:`~arachne.timeline.camera_code.drawn_cameras`), is the scene's own
+    code, as ``(subject, why)``: a method of an engine camera class replaced
+    on the class (:func:`~arachne.timeline.camera_code.replaced_methods`); a
+    camera's class, a subclass of one of the engine's cameras defined
+    outside the engine; or a method of its class replaced on the instance.
+    ``None`` for engine cameras as the engine made them, or for no camera at
+    all.
     """
+    from arachne.timeline.camera_code import drawn_cameras
+
+    for each in drawn_cameras(camera):
+        own = _own_code(each)
+        if own is not None:
+            if each is camera:
+                return own
+            subject, why = own
+            return subject, (
+                f"{why.rstrip(',')}, a display camera of the {type(camera).__name__},"
+            )
+    return None
+
+
+def _own_code(camera: Any) -> tuple[str, str] | None:
+    """:func:`user_camera` for ``camera`` alone."""
     from arachne.camera.camera import Camera
     from arachne.timeline.camera_code import replaced_methods
     from arachne.timeline.frozen import engine_class
@@ -79,7 +97,8 @@ def user_camera(camera: Any) -> tuple[str, str] | None:
 def camera_path(camera: Any, draw_path: str) -> str:
     """The draw path ``camera`` draws on when ``draw_path`` is asked for. A
     camera the scene's code changed (:func:`user_camera`: its own class, or
-    a method of the engine's replaced on the class or the instance) can
+    a method of the engine's replaced on the class or the instance; the
+    camera itself or a display camera it draws through) can
     change how anything is drawn, which XF 1 does not describe: on a path
     that describes frames it draws on Cairo, with a ``render.fallback``
     finding naming what changed. (A record refuses a camera class of the
