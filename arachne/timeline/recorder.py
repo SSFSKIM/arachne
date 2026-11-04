@@ -455,8 +455,9 @@ class Recorder:
 
     ``states`` says, alike, from when the record keeps the states the lint's
     temporal rules read (``Record.states``, :class:`.record.States`): the
-    scene as each play ended, and as the script removed from it between
-    plays, each a capture no frame draws. ``"all"`` from the start (a lint's
+    scene as the script called each play and as each play ended, and as the
+    script removed from it between plays, each a capture no frame draws,
+    outside the record's history of drawn captures. ``"all"`` from the start (a lint's
     forward run that a temporal rule asked for); ``"armed"`` from
     :meth:`arm_states` on; ``"none"`` never.
     """
@@ -495,8 +496,6 @@ class Recorder:
         self.demoted = frozenset(demoted)
         self.exits = exits
         self.states = states
-        #: The scene's top level as the script last called ``play``.
-        self._called: tuple[Mobject, ...] | None = None
         self._kept_bodies = Kept()
         #: The frame the configuration describes, as ``(width, height)``:
         #: the unit of the record's home-frame boxes, whatever the camera
@@ -549,7 +548,7 @@ class Recorder:
             if self.exits == "all":
                 self.record.exits = {}
             if self.states == "all":
-                self.record.states = States(since=0)
+                self.record.states = States(since=0, armed=Fraction(0))
             self.record.bridge = Bridge()
             self._camera_refusal = camera_refusal(scene.renderer.camera)
             self.record.refusal = self._camera_refusal
@@ -571,24 +570,29 @@ class Recorder:
             record.exits = {}
 
     def arm_states(self) -> None:
-        """Keep, keeping armed states (``states="armed"``), the scene as each
-        play to end from now on ends, and as the script removes from it from
-        now on (``Record.states``; the first arming counts). A record that
-        keeps none is as it was.
+        """Keep, keeping armed states (``states="armed"``), the scene as the
+        script calls each play from now on and as each such play ends, and
+        as the script removes from it from now on (``Record.states``; the
+        first arming counts). A record that keeps none is as it was.
         """
         if self.states != "armed":
             return
         record = self.ensure_record()
         if record.states is None:
-            # A play running now ends after the arming.
-            since = len(record.plays) - (1 if self._playing else 0)
-            record.states = States(since=since)
+            # A play running now was called before the arming: the first
+            # play kept is the next one called.
+            record.states = States(since=len(record.plays), armed=self.scene.time)
 
     def calling(self) -> None:
-        """Note the scene's top level as the script calls ``play``, before
-        the play adds what its animations animate.
+        """As the script calls a play, before the play adds or begins
+        anything: keeping states, keep the scene as it stands.
         """
-        self._called = tuple(self.scene.mobjects)
+        if self.states == "all":
+            self.ensure_record()
+        states = self.record.states if self.record is not None else None
+        if states is not None:
+            assert self.record is not None
+            states.calls[len(self.record.plays)] = self._state("call")
 
     @contextmanager
     def removing(self, kind: str, operands: tuple[Mobject, ...]) -> Iterator[None]:
@@ -873,9 +877,7 @@ class Recorder:
             cache_key=cache_key,
             _record=record,
             _animations=tuple(animations),
-            called=self._called if self._called is not None else tuple(scene.mobjects),
         )
-        self._called = None
         record.plays.append(play)
         if play.index == 0:
             self._identities.clear()

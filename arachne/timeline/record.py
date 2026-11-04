@@ -134,10 +134,10 @@ class _Node:
     def __init__(self, mob: Mobject) -> None:
         self.mob = mob
         self.origin: Origin = origin_of(mob)
-        self.seqs: list[int] = []
+        self.seqs: list[int | Fraction] = []
         self.states: list[NodeState] = []
 
-    def at(self, seq: int) -> NodeState | None:
+    def at(self, seq: int | Fraction) -> NodeState | None:
         index = bisect.bisect_right(self.seqs, seq) - 1
         return self.states[index] if index >= 0 else None
 
@@ -148,12 +148,17 @@ class Capture:
 
     ``kind`` is ``"static"`` (a play's state when its static picture is
     drawn, right after its animations began), ``"sample"`` (an evaluated
-    instant of a play) or ``"final"`` (the scene after its script ended);
-    or, never drawn and in no play's samples, ``"exit"`` (the scene as a
-    play ended) and ``"removal"`` (the scene as the script removed from it),
-    the states a record keeps for the lint (``Record.states``).
+    instant of a play) or ``"final"`` (the scene after its script ended).
     ``until`` is the next instant the play evaluated, so the capture
-    answers every time in ``[instant, until)``.
+    answers every time in ``[instant, until)``. Those are drawn, and make
+    the record's history of captures, by ``seq``.
+
+    The states a record keeps for the lint (``Record.states``) are captures
+    too, never drawn and outside that history: ``"call"`` (the scene as the
+    script called a play), ``"exit"`` (as a play ended) and ``"removal"``
+    (as the script removed from it). Each has a ``seq`` between those of
+    the drawn captures either side, so that a mobject's state at it is read
+    as at any capture, and no drawn capture reads anything of it.
 
     ``moving`` is the scene's list of moving mobjects there, which a frame
     of the play draws over its static picture: flattened when the play
@@ -161,7 +166,7 @@ class Capture:
     appends to it during a play).
     """
 
-    seq: int
+    seq: int | Fraction
     instant: Fraction
     kind: str
     roots: tuple[Mobject, ...]
@@ -217,15 +222,30 @@ class Removal:
 @dataclass
 class States:
     """The states a record keeps for the lint's temporal rules (``Record.states``):
-    the scene as each play ended, its animations finished and cleaned up and
-    the script not yet run on (``exits``, by play index), and each removal
-    the script made (:class:`Removal`), from ``since`` on, the play index
-    the record began keeping them before.
+    the scene as the script called each play, before the play added or began
+    anything (``calls``, by play index), as each play ended, its animations
+    finished and cleaned up and the script not yet run on (``exits``), and
+    as the script removed from it (:class:`Removal`); from the scene time
+    ``armed`` on, the first play kept being ``since``. None is drawn, and
+    none is in the record's history of drawn captures.
     """
 
     since: int
+    armed: Fraction
+    calls: dict[int, Capture] = field(default_factory=dict)
     exits: dict[int, Capture] = field(default_factory=dict)
     removals: list[Removal] = field(default_factory=list)
+
+    def covers(self, plays: Sequence[PlayRecord], since: Fraction) -> bool:
+        """Whether every state of the scene from the time ``since`` on is
+        kept: it was armed by then, and every play starting then or later
+        has its call and its exit.
+        """
+        return self.armed <= since and all(
+            play.index in self.calls and play.index in self.exits
+            for play in plays
+            if play.start >= since
+        )
 
 
 @dataclass(frozen=True)
@@ -299,10 +319,6 @@ class PlayRecord:
     #: run at its frames only (:mod:`.hooks`), and whether ``play_internal`` was.
     frame_hooks: tuple[str, ...] = ()
     play_internal_overridden: bool = False
-    #: The scene's top level as the script called it, before the play added
-    #: what its animations animate (``Scene.add`` takes the members of a
-    #: group made for the play out of the groups holding them).
-    called: tuple[Mobject, ...] = field(default=(), repr=False)
     _record: Record | None = field(default=None, repr=False)
     #: The animations it played, as objects.
     _animations: tuple[Animation, ...] = field(default=(), repr=False)
@@ -515,6 +531,8 @@ class Record:
         self.final_names: dict[int, str] = {}
         self._nodes: dict[int, _Node] = {}
         self._captures: list[Capture] = []
+        #: Undrawn captures since the last drawn one (:meth:`_capture`).
+        self._undrawn = 0
         #: Per MultiCamera display (by id): the first capture its camera was
         #: drawn into at, and that camera's picture before it, which the
         #: display shows wherever it is on screen before then.
@@ -534,11 +552,21 @@ class Record:
     ) -> Capture:
         """Capture the scene at ``instant``: a new version of every reachable
         mobject that changed since its last capture. A capture no frame
-        draws (``drawn`` false) neither checks what drawing a mobject runs
-        nor joins a display: what a drawn capture finds is as without it.
+        draws (``drawn`` false) stays out of the record's history of drawn
+        captures, which no reader of it then meets, checks nothing drawing a
+        mobject runs and joins no display: what a drawn capture finds is as
+        without it.
         """
         scene = self._scene
-        seq = len(self._captures)
+        seq: int | Fraction
+        if drawn:
+            seq = len(self._captures)
+            self._undrawn = 0
+        else:
+            # Between the last drawn capture and the next, after any other
+            # undrawn one since.
+            self._undrawn += 1
+            seq = len(self._captures) - Fraction(1, self._undrawn + 1)
         previous = self._captures[-1] if self._captures else None
         roots = _reuse(tuple(scene.mobjects), previous.roots if previous else None)
         foreground = _reuse(
@@ -592,8 +620,10 @@ class Record:
         capture = Capture(
             seq, instant, kind, roots, foreground, moving, updaters, camera, until
         )
+        if not drawn:
+            return capture
         self._captures.append(capture)
-        if drawn and camera is not None and camera.displays:
+        if camera is not None and camera.displays:
             for display in camera.displays:
                 if id(display) not in self._display_joins:
                     picture = display.camera.pixel_array.copy()  # type: ignore[attr-defined]
