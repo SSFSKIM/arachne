@@ -582,29 +582,30 @@ class Recorder:
         )
         record.plays.append(play)
         self._playing = True
-
-        scene.begin_animations()
-        play.moving = tuple(scene.moving_mobjects)
-        play.static = tuple(scene.static_mobjects)
-        play.held = bool(scene.is_current_animation_frozen_frame())
-        play.frame_hooks = scene_hooks(scene, FRAME_HOOKS)
-        play.play_internal_overridden = bool(scene_hooks(scene, ("play_internal",)))
-        extras = CameraExtras.observe(scene.renderer.camera, None)
-        body = _Body(play, refusal, live, extras)
         try:
-            play.static_seq = self.capture("static", start, play, extras).seq
-            if live is not None:
-                live.begin(play)
-            if play.held:
-                # A frozen frame: CE calls none of the scene's hooks.
-                self._prepare(body)
-                self._run_play(body)
-            else:
-                self._play_internal(body)
+            scene.begin_animations()
+            play.moving = tuple(scene.moving_mobjects)
+            play.static = tuple(scene.static_mobjects)
+            play.held = bool(scene.is_current_animation_frozen_frame())
+            play.frame_hooks = scene_hooks(scene, FRAME_HOOKS)
+            play.play_internal_overridden = bool(scene_hooks(scene, ("play_internal",)))
+            extras = CameraExtras.observe(scene.renderer.camera, None)
+            body = _Body(play, refusal, live, extras)
+            try:
+                play.static_seq = self.capture("static", start, play, extras).seq
+                if live is not None:
+                    live.begin(play)
+                if play.held:
+                    # A frozen frame: CE calls none of the scene's hooks.
+                    self._prepare(body)
+                    self._run_play(body)
+                else:
+                    self._play_internal(body)
+            finally:
+                if body.plan is not None:
+                    body.plan.release()
         finally:
             self._playing = False
-            if body.plan is not None:
-                body.plan.release()
 
         # The run that evaluated it, planned once play_internal's body began.
         final = body.run
