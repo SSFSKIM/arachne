@@ -14,6 +14,8 @@ use pyo3::types::{PyBytes, PyDict, PyList};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+mod contents;
+
 // ---------------------------------------------------------------------------------------------
 // Errors: the classes live in `arachne_core/_errors.py`.
 
@@ -297,7 +299,17 @@ fn paint_block(fields: &Fields) -> PyResult<PaintBlock> {
         background_stroke: paint_of(fields.take("background_stroke")?)?,
         stroke_width: fields.or("stroke_width", 0.0)?,
         background_stroke_width: fields.or("background_stroke_width", 0.0)?,
-        gradient: fields.get("gradient")?,
+        gradient: fields
+            .take("gradient")?
+            .map(|v| {
+                if let Ok([ax, ay, az, bx, by, bz]) = v.extract::<[f64; 6]>() {
+                    Ok([[ax, ay, az], [bx, by, bz]])
+                } else {
+                    v.extract::<[[f64; 3]; 2]>()
+                        .map_err(|e| fields.bad("gradient", e))
+                }
+            })
+            .transpose()?,
         joint: named(
             "joint",
             &joint,
@@ -499,6 +511,12 @@ impl PyFrameDelta {
     #[getter]
     fn is_empty(&self) -> bool {
         self.delta.is_empty()
+    }
+
+    /// The held XF values as a dictionary. Arrays are independent copies; views and records use
+    /// the construction methods' keyword names. No floating-point arithmetic is performed.
+    fn contents<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        contents::delta(py, &self.delta)
     }
 
     /// Sets the view: pixel_width, pixel_height, frame_width and frame_height are required; the
