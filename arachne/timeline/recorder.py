@@ -12,7 +12,6 @@ from __future__ import annotations
 
 __all__ = ["PlayRun", "Recorder"]
 
-import hashlib
 import inspect
 import math
 import os
@@ -25,7 +24,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 
-from arachne._config import logger
+from arachne._config import config, logger
 
 from .admission import admit, camera_refusal
 from .clock import TICK_RATE, exact, play_end
@@ -34,6 +33,7 @@ from .draw import CameraExtras, LiveFrames, camera_nodes
 from .events import EventPlan, plan_events
 from .execution import Execution, divergence
 from .hooks import FRAME_HOOKS, TIME_PROGRESSION, FrameInstant, SceneHookRefused
+from .inputs import Inputs, engine_dirs, source_digest, source_files
 from .origins import ORIGINS
 from .record import Identity, Marker, PlayRecord, Record
 from .reference import BRUTE_FORCE
@@ -303,6 +303,8 @@ class Recorder:
         self.frame: FrameInstant | None = None
         #: The play whose ``play_internal`` is running, until its body has run.
         self._body: _Body | None = None
+        #: The files the script opens for reading while it runs.
+        self._inputs: Inputs | None = None
 
     # The run
 
@@ -315,10 +317,9 @@ class Recorder:
                 scene,
                 grid=self.grid,
                 scene_file=scene_file,
-                identity=Identity(
-                    source_digest=_digest(scene_file),
-                    seed=scene.random_seed,
-                ),
+                # The source and inputs are known once the script has run
+                # (:meth:`end_run`).
+                identity=Identity(source_digest=None, seed=scene.random_seed),
             )
             self.record.execution = self.execution
             self._camera_refusal = camera_refusal(scene.renderer.camera)
@@ -410,17 +411,25 @@ class Recorder:
         self._earlier = list(earlier)
 
     def begin_run(self) -> None:
-        """The scene's script is about to run: tag the mobjects it makes."""
+        """The scene's script is about to run: tag the mobjects it makes, and
+        watch the files it reads.
+        """
         record = self.ensure_record()
         if not ORIGINS.active:
             base = os.path.dirname(record.scene_file) if record.scene_file else None
             ORIGINS.start(os.path.realpath(base) if base else None)
             self._tagging = True
+        if record.scene_file is not None:
+            self._inputs = Inputs(
+                os.path.dirname(record.scene_file), excluded=engine_dirs(config)
+            )
+            self._inputs.start()
 
     def end_run(self) -> None:
         """The script has ended: capture what it left."""
         record = self.ensure_record()
         try:
+            record.identity = self._identity(record)
             if record.refusal is None:
                 # What the script added after its last play: the final frame,
                 # drawn from the live scene.
@@ -452,10 +461,31 @@ class Recorder:
         finally:
             self.abandon_run()
 
-    def abandon_run(self) -> None:
-        """The script stopped on an error: stop tagging, and leave the record
-        as it stands, without a final capture.
+    def _identity(self, record: Record) -> Identity:
+        """The execution's identity, now that its script has run: the source
+        it ran (:func:`.source_files`), the files it read and its seed.
         """
+        inputs = self._inputs
+        if inputs is not None:
+            inputs.stop()
+        if record.scene_file is None:
+            return record.identity
+        module = sys.modules.get(type(self.scene).__module__)
+        sources = source_files(record.scene_file, getattr(module, "__package__", None))
+        return Identity(
+            source_digest=source_digest(sources, os.path.dirname(record.scene_file)),
+            input_digests=()
+            if inputs is None
+            else inputs.input_digests(frozenset(sources)),
+            seed=record.identity.seed,
+        )
+
+    def abandon_run(self) -> None:
+        """The script stopped on an error: stop tagging and watching, and
+        leave the record as it stands, without a final capture.
+        """
+        if self._inputs is not None:
+            self._inputs.stop()
         if self._tagging:
             ORIGINS.stop()
             self._tagging = False
@@ -787,10 +817,3 @@ def _scene_file(scene: Scene) -> str | None:
 
 def _base_dir(record: Record) -> str | None:
     return os.path.dirname(record.scene_file) if record.scene_file else None
-
-
-def _digest(path: str | None) -> str | None:
-    if path is None:
-        return None
-    with open(path, "rb") as source:
-        return hashlib.sha256(source.read()).hexdigest()

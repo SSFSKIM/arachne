@@ -1,0 +1,481 @@
+"""An execution's identity (its source, the files it read, its seed), and
+the comparison of two executions of one source at the instants they share.
+
+Every scene here is written into the test's own directory, with the data
+files it reads, so that editing them between executions is the test's to do.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
+
+import pytest
+
+import arachne
+from arachne.session import Session
+from arachne.timeline import inputs
+from arachne.timeline.execution import ExecutionSummary, compare, summarize
+from arachne.timeline.source import SourceLine
+
+#: A small frame at 4 fps, so a session costs little.
+SMALL = {"pixel_width": 96, "pixel_height": 54, "frame_rate": 4}
+
+HEADER = """\
+from pathlib import Path
+
+from arachne import *
+
+HERE = Path(__file__).parent
+"""
+
+READS = (
+    HEADER
+    + """
+class Reads(Scene):
+    def construct(self):
+        dot = Dot()
+        self.add(dot)
+        self.play(dot.animate.shift(RIGHT), run_time=0.5)
+        offset = float((HERE / "data.txt").read_text())
+        self.play(dot.animate.shift(offset * UP), run_time=0.5)  # @offset
+        self.wait(0.25)
+"""
+)
+
+
+@pytest.fixture
+def scene_dir(tmp_path):
+    """A directory for scenes, whose modules are forgotten afterwards: a
+    helper module stays in ``sys.modules`` under its plain name, where the
+    next test's helper of that name would find it.
+    """
+    directory = tmp_path / "scenes"
+    directory.mkdir()
+    yield directory
+    _forget_modules(tmp_path)
+
+
+def _forget_modules(directory: Path) -> None:
+    root = os.path.realpath(directory) + os.sep
+    for name, module in list(sys.modules.items()):
+        file = getattr(module, "__file__", None)
+        if file and os.path.realpath(file).startswith(root):
+            del sys.modules[name]
+
+
+def _write(directory: Path, name: str, text: str) -> Path:
+    path = directory / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(textwrap.dedent(text))
+    return path
+
+
+def _open(path: Path, scene: str) -> Session:
+    media = path.parent.parent / "media"
+    session = Session.open(path, scene, config={**SMALL, "media_dir": str(media)})
+    return session
+
+
+def _line(path: Path, tag: str) -> int:
+    for number, line in enumerate(path.read_text().splitlines(), start=1):
+        if line.rstrip().endswith(f"# @{tag}"):
+            return number
+    raise LookupError(tag)
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+# The identity
+
+
+def test_the_files_a_scene_reads_are_its_inputs_and_the_engines_caches_are_not(
+    scene_dir,
+):
+    _write(scene_dir, "data.txt", "0.5")
+    scene = _write(
+        scene_dir,
+        "scene.py",
+        HEADER
+        + """
+class ReadsAndWrites(Scene):
+    def construct(self):
+        offset = float((HERE / "data.txt").read_text())
+        (HERE / "written.txt").write_text("for nobody")
+        # The engine writes these into its media directory and reads them
+        # back: its own caches, not the scene's inputs.
+        label = Text("label")
+        formula = MathTex("x^2")
+        dot = Dot()
+        self.add(dot, label, formula)
+        self.play(dot.animate.shift(offset * RIGHT), run_time=0.5)
+""",
+    )
+    session = _open(scene, "ReadsAndWrites")
+    identity = session.record.identity
+    assert identity.input_digests == (("data.txt", _sha256(scene_dir / "data.txt")),)
+    assert identity.seed == session.scene.random_seed
+    # The caches were read: the scene's text and formula are drawn from them.
+    media = scene_dir.parent / "media"
+    assert any(media.rglob("*.svg"))
+
+
+def test_a_file_the_scene_reads_inside_the_media_directory_is_not_an_input(
+    scene_dir,
+):
+    media = scene_dir.parent / "media"
+    media.mkdir()
+    (media / "made_by_the_engine.txt").write_text("1")
+    scene = _write(
+        scene_dir,
+        "scene.py",
+        HEADER
+        + """
+class ReadsMedia(Scene):
+    def construct(self):
+        (HERE.parent / "media" / "made_by_the_engine.txt").read_text()
+        self.wait(0.25)
+""",
+    )
+    assert _open(scene, "ReadsMedia").record.identity.input_digests == ()
+
+
+HELPED = (
+    HEADER
+    + """
+from shapes_helper import make_dot
+from helpers_pkg import sub
+
+
+class Helped(Scene):
+    def construct(self):
+        import offsets_helper
+
+        dot = make_dot()
+        self.add(dot)
+        self.play(dot.animate.shift(offsets_helper.OFFSET * sub.UNIT), run_time=0.5)
+"""
+)
+
+
+def _helped(directory: Path) -> Path:
+    _write(
+        directory,
+        "shapes_helper.py",
+        """\
+        from arachne import Dot
+
+
+        def make_dot():
+            return Dot()
+        """,
+    )
+    _write(directory, "offsets_helper.py", "OFFSET = 0.5\n")
+    _write(directory, "helpers_pkg/__init__.py", "")
+    _write(
+        directory,
+        "helpers_pkg/sub.py",
+        """\
+        from arachne import RIGHT
+
+        UNIT = RIGHT
+        """,
+    )
+    _write(directory, "unrelated.py", "VALUE = 1\n")
+    return _write(directory, "scene.py", HELPED)
+
+
+def test_the_source_digest_covers_the_helper_modules_the_scene_imported(scene_dir):
+    scene = _helped(scene_dir)
+    first = _open(scene, "Helped").record.identity
+    assert first.source_digest is not None
+    # Their source is not among the files read.
+    assert first.input_digests == ()
+
+    def digest_after_editing(name: str) -> str | None:
+        path = scene_dir / name
+        original = path.read_text()
+        path.write_text(original + "# edited\n")
+        try:
+            return _open(scene, "Helped").record.identity.source_digest
+        finally:
+            path.write_text(original)
+
+    # A module the scene imported at its top, one it imported in construct,
+    # a package and its submodule: editing any of them changes the digest.
+    for name in (
+        "scene.py",
+        "shapes_helper.py",
+        "offsets_helper.py",
+        "helpers_pkg/__init__.py",
+        "helpers_pkg/sub.py",
+    ):
+        assert digest_after_editing(name) != first.source_digest, name
+    # A module beside it that it never imported does not.
+    assert digest_after_editing("unrelated.py") == first.source_digest
+
+
+def test_the_same_source_in_another_directory_has_the_same_digest(scene_dir, tmp_path):
+    first = _open(_helped(scene_dir), "Helped").record.identity
+    _forget_modules(scene_dir)
+    elsewhere = tmp_path / "elsewhere"
+    shutil.copytree(scene_dir, elsewhere)
+    second = _open(elsewhere / "scene.py", "Helped").record.identity
+    assert second.source_digest == first.source_digest
+
+
+def test_outside_a_recording_the_hook_records_nothing(scene_dir):
+    opener = _write(
+        scene_dir,
+        "opener.py",
+        """\
+        def read(path):
+            with open(path) as file:
+                return file.read()
+        """,
+    )
+    first = _write(scene_dir, "first.txt", "1")
+    second = _write(scene_dir, "second.txt", "2")
+    sys.path.insert(0, str(scene_dir))
+    try:
+        import opener as module
+    finally:
+        sys.path.remove(str(scene_dir))
+    assert module.__file__ == str(opener)
+    watcher = inputs.Inputs(str(scene_dir), excluded=())
+    watcher.start()
+    try:
+        assert inputs.active()
+        module.read(first)
+    finally:
+        watcher.stop()
+    assert not inputs.active()
+    module.read(second)
+    assert watcher.input_digests(sources=()) == (("first.txt", _sha256(first)),)
+
+
+def test_a_scene_that_fails_leaves_the_hook_inactive(scene_dir):
+    _write(scene_dir, "data.txt", "1")
+    scene = _write(
+        scene_dir,
+        "scene.py",
+        HEADER
+        + """
+class Fails(Scene):
+    def construct(self):
+        (HERE / "data.txt").read_text()
+        raise RuntimeError("the scene's own error")
+""",
+    )
+    with pytest.raises(RuntimeError, match="the scene's own error"):
+        _open(scene, "Fails")
+    assert not inputs.active()
+
+
+# Comparing executions
+
+
+def test_the_same_script_executed_twice_does_not_diverge(scene_dir):
+    _write(scene_dir, "data.txt", "0.5")
+    scene = _write(scene_dir, "scene.py", READS)
+    first = _open(scene, "Reads")
+    second = _open(scene, "Reads")
+    assert first.compare(second.summary()) is None
+    assert first.divergences == []
+
+
+def test_an_edited_data_file_diverges_at_the_first_play_it_changed_and_is_named(
+    scene_dir,
+):
+    data = _write(scene_dir, "data.txt", "0.5")
+    scene = _write(scene_dir, "scene.py", READS)
+    before = _open(scene, "Reads")
+    data.write_text("1.5")
+    after = _open(scene, "Reads")
+    divergence = before.compare(after.summary())
+    assert divergence is not None
+    assert divergence.code == "replay.diverged"
+    assert divergence.kind == "execution"
+    assert divergence.play == 1
+    assert divergence.source_line == SourceLine("scene.py", _line(scene, "offset"))
+    assert divergence.changed_inputs == ("data.txt",)
+    assert "Dot" in divergence.reason
+    assert before.divergences == [divergence]
+
+
+def test_an_unseeded_random_generator_diverges_at_the_first_play_it_moves(
+    scene_dir,
+):
+    scene = _write(
+        scene_dir,
+        "scene.py",
+        HEADER
+        + """
+import random
+
+
+class Unseeded(Scene):
+    def construct(self):
+        dot = Dot()
+        self.add(dot)
+        self.play(dot.animate.shift(RIGHT), run_time=0.5)
+        offset = random.Random().random()
+        self.play(dot.animate.shift(offset * UP), run_time=0.5)  # @random
+""",
+    )
+    first = _open(scene, "Unseeded")
+    divergence = first.compare(_open(scene, "Unseeded").summary())
+    assert divergence is not None
+    assert divergence.play == 1
+    assert divergence.source_line == SourceLine("scene.py", _line(scene, "random"))
+    assert divergence.changed_inputs == ()
+
+
+def test_a_handoff_file_is_the_reading_scenes_input_and_names_its_divergence(
+    scene_dir,
+):
+    seed = _write(scene_dir, "seed.txt", "1")
+    writer = _write(
+        scene_dir,
+        "writer.py",
+        HEADER
+        + """
+class Writer(Scene):
+    def construct(self):
+        value = float((HERE / "seed.txt").read_text())
+        (HERE / "handoff.txt").write_text(str(2 * value))
+        dot = Dot()
+        self.add(dot)
+        self.play(dot.animate.shift(value * RIGHT), run_time=0.5)
+""",
+    )
+    reader = _write(
+        scene_dir,
+        "reader.py",
+        HEADER
+        + """
+class Reader(Scene):
+    def construct(self):
+        value = float((HERE / "handoff.txt").read_text())
+        dot = Dot()
+        self.add(dot)
+        self.play(dot.animate.shift(value * UP), run_time=0.5)  # @handoff
+""",
+    )
+    wrote = _open(writer, "Writer")
+    read = _open(reader, "Reader")
+    # What a scene writes is not its input; what the next one reads is.
+    assert [path for path, _ in wrote.record.identity.input_digests] == ["seed.txt"]
+    assert [path for path, _ in read.record.identity.input_digests] == ["handoff.txt"]
+    # The reader's source is its own file, not the writer's beside it.
+    assert read.record.identity.source_digest != wrote.record.identity.source_digest
+
+    seed.write_text("3")
+    wrote_again = _open(writer, "Writer")
+    read_again = _open(reader, "Reader")
+    assert wrote.compare(wrote_again.summary()).changed_inputs == ("seed.txt",)
+    divergence = read.compare(read_again.summary())
+    assert divergence is not None
+    assert divergence.play == 0
+    assert divergence.source_line == SourceLine("reader.py", _line(reader, "handoff"))
+    assert divergence.changed_inputs == ("handoff.txt",)
+
+
+def test_a_value_either_side_of_a_rounding_boundary_is_no_divergence(scene_dir):
+    """Content keys round to 9 decimals, so two values 2e-13 apart that
+    round apart give different keys; the raw values agree within 1e-9.
+    """
+    weight = _write(scene_dir, "weight.txt", "1.0000000004999")
+    scene = _write(
+        scene_dir,
+        "scene.py",
+        HEADER
+        + """
+class Boundary(Scene):
+    def construct(self):
+        dot = Dot()
+        dot.weight = float((HERE / "weight.txt").read_text())
+        self.add(dot)
+        self.play(dot.animate.shift(RIGHT), run_time=0.5)
+""",
+    )
+    below = _open(scene, "Boundary")
+    weight.write_text("1.0000000005001")
+    above = _open(scene, "Boundary")
+    mine, theirs = below.summary(), above.summary()
+    assert [state.key for state in mine.plays[0].instants.values()] != [
+        state.key for state in theirs.plays[0].instants.values()
+    ]
+    assert below.compare(theirs) is None
+    # Beyond the tolerance, the same scene diverges.
+    weight.write_text("1.000001")
+    assert below.compare(_open(scene, "Boundary").summary()) is not None
+
+
+def test_two_sources_are_not_compared(scene_dir):
+    _write(scene_dir, "data.txt", "0.5")
+    scene = _write(scene_dir, "scene.py", READS)
+    first = _open(scene, "Reads").summary()
+    scene.write_text(scene.read_text() + "# edited\n")
+    second = _open(scene, "Reads").summary()
+    with pytest.raises(ValueError, match="source"):
+        compare(first, second)
+
+
+SUMMARIZE = """\
+import json
+import sys
+
+from arachne.session import Session
+
+session = Session.open(
+    sys.argv[1], "Reads", config={**json.loads(sys.argv[2]), "media_dir": sys.argv[3]}
+)
+with open(sys.argv[4], "w") as out:
+    out.write(session.summary().to_json())
+"""
+
+
+def test_a_summary_from_another_process_compares_with_a_session(scene_dir, tmp_path):
+    data = _write(scene_dir, "data.txt", "0.5")
+    scene = _write(scene_dir, "scene.py", READS)
+    out = tmp_path / "summary.json"
+    root = Path(arachne.__file__).resolve().parent.parent
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            SUMMARIZE,
+            str(scene),
+            json.dumps(SMALL),
+            str(tmp_path / "media"),
+            str(out),
+        ],
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": str(root)},
+        check=True,
+        capture_output=True,
+    )
+    text = out.read_text()
+    theirs = ExecutionSummary.from_json(text)
+    assert theirs.to_json() == text
+
+    same = _open(scene, "Reads")
+    assert summarize(same.record).to_json() == text
+    assert same.compare(theirs) is None
+
+    data.write_text("1.5")
+    edited = _open(scene, "Reads")
+    divergence = edited.compare(theirs)
+    assert divergence is not None
+    assert divergence.play == 1
+    assert divergence.changed_inputs == ("data.txt",)
+    assert edited.divergences == [divergence]
