@@ -42,12 +42,14 @@ __all__ = [
 
 import sys
 from collections.abc import Iterable, Mapping
+from dataclasses import replace
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from arachne._config import config
+from arachne.timeline.clock import frames_in
 from arachne.timeline.origins import origin_of
 from arachne.timeline.recorder import BridgeCall, Reading, Recorder, running
 
@@ -448,27 +450,35 @@ def _record_findings(call: BridgeCall) -> list[Finding]:
 def _watch_findings(call: BridgeCall, fps: Fraction, end: Fraction) -> list[Finding]:
     """A watch read at each frame of the render's grid (``fps``) from its
     call on, and at the scene's ``end``: each run of frames outside is one
-    finding, at the line running when it began.
+    finding from its first frame to its last, at the line running when it
+    began. A reading shows on the frames in the span its state holds for
+    (a ticked play's capture is of a tick, which the frames after it show);
+    a frame shows the last reading that covers it.
     """
     frames: dict[Fraction, Reading] = {}
     for reading in call.readings:
-        # A frame's last reading is what it shows.
-        if (reading.t * fps).denominator == 1 or reading.t == end:
-            frames[reading.t] = reading
+        if reading.until is not None:
+            shown = frames_in(reading.t, reading.until, fps)
+        elif (reading.t * fps).denominator == 1 or reading.t == end:
+            shown = [reading.t]
+        else:
+            shown = []
+        for t in shown:
+            frames[t] = reading
     found: list[Finding] = []
-    run: list[Reading] = []
+    run: list[tuple[Fraction, Reading]] = []
 
     def close() -> None:
         if run:
-            first = run[0]
-            finding = _finding(call, first, run[-1].t, first.line or call.line)
+            first_t, first = run[0]
+            finding = _finding(call, first, run[-1][0], first.line or call.line)
             assert finding is not None
-            found.append(finding)
+            found.append(replace(finding, t_start=first_t))
             run.clear()
 
     for t in sorted(frames):
         if _past(frames[t]):
-            run.append(frames[t])
+            run.append((t, frames[t]))
         else:
             close()
     close()

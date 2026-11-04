@@ -36,7 +36,7 @@ from .admission import (
     whole_line,
 )
 from .bodies import Exit, Kept, bodies
-from .clock import TICK_RATE, exact, play_end
+from .clock import TICK_RATE, exact, frames_in, play_end
 from .dispatch import draw_refusal, scene_hooks
 from .draw import CameraExtras, LiveFrames, camera_nodes
 from .events import EventPlan, plan_events
@@ -79,14 +79,18 @@ def running() -> Recorder | None:
 @dataclass(frozen=True)
 class Reading:
     """One evaluation of a bridge call: its instant, the scene file's line
-    running then (``None`` where none of its frames was on the stack), and
-    the values the call's code measures, ``None`` when there was nothing to
-    measure (a probe that gave no point).
+    running then (``None`` where none of its frames was on the stack), the
+    values the call's code measures (``None`` when there was nothing to
+    measure: a probe that gave no point), and ``until``, the instant the
+    state it read holds until: the frames in ``[t, until)`` show it.
+    ``None`` for a reading at one instant only (a call's own, the scene's
+    end).
     """
 
     t: Fraction
     line: SourceLine | None
     values: Mapping[str, Any] | None
+    until: Fraction | None = None
 
 
 @dataclass(frozen=True, eq=False)
@@ -178,11 +182,15 @@ class Bridge:
                 terms.update(call.terms)
         return terms
 
-    def read(self, t: Fraction, line: SourceLine | None) -> None:
-        """Read every watch declared at or before ``t`` there."""
+    def read(
+        self, t: Fraction, line: SourceLine | None, until: Fraction | None = None
+    ) -> None:
+        """Read every watch declared at or before ``t`` there, in a state
+        that holds until ``until``.
+        """
         for call, reader in self._readers:
             if call.t <= t:
-                call.readings.append(Reading(t, line, reader()))
+                call.readings.append(Reading(t, line, reader(), until))
 
 
 class PlayRun:
@@ -275,7 +283,7 @@ class PlayRun:
                 self._point = restore_point(self.scene, play, self._point)
                 play._animation_states[capture.seq] = self._point
         # Last, so what the scene's watches read changes nothing kept.
-        recorder.read_watches(instant)
+        recorder.read_watches(instant, until)
 
     def progress(self, instants: list[Fraction]) -> Any:
         """A progress bar over ``instants``."""
@@ -640,9 +648,10 @@ class Recorder:
         try:
             record.identity = self._identity(record)
             if record.refusal is None:
-                # What the script added after its last play: the final frame,
-                # drawn from the live scene.
-                record.refusal = self._draw_refusal()
+                # What the script added after its last play, or a camera
+                # method it replaced since: the final frame, drawn from the
+                # live scene.
+                record.refusal = self._draw_refusal() or self._camera()
             if self.execution.number > 1:
                 self.execution = record.execution = replace(
                     self.execution,
@@ -946,13 +955,16 @@ class Recorder:
         play = run.play
         record = self.ensure_record()
         run.route.run(run, plan)
+        if play.held:
+            self._read_frozen(play, run.end)
         if run.live is not None:
             run.live.end(run.end)
         joined = record.entry_refusal()
         if refusal is None:
             # A mobject a callback added while the play ran, found as it
-            # entered a capture or still there at the end.
-            joined = joined or self._draw_refusal()
+            # entered a capture or still there at the end; or a camera method
+            # the scene's code replaced while it ran.
+            joined = joined or self._draw_refusal() or self._camera()
             play.draw_refusal = joined
             if record.refusal is None:
                 record.refusal = joined
@@ -1053,11 +1065,32 @@ class Recorder:
                 return SourceLine(relative_path(record.scene_file, base), line)
         return scene_location(frame, base)
 
-    def read_watches(self, instant: Fraction) -> None:
-        """Read the scene's watches at ``instant``, a kept capture."""
+    def read_watches(self, instant: Fraction, until: Fraction | None = None) -> None:
+        """Read the scene's watches at ``instant``, a kept capture whose state
+        holds until ``until``.
+        """
         record = self.ensure_record()
         if record.bridge.watching:
-            record.bridge.read(instant, self.scene_line(sys._getframe(1)))
+            record.bridge.read(instant, self.scene_line(sys._getframe(1)), until)
+
+    def _read_frozen(self, play: PlayRecord, end: Fraction) -> None:
+        """Read the scene's watches at each frame of the frozen play
+        ``play`` up to ``end``, with the clock at that frame's time, as a
+        check run on every frame of a wait reads them: the play keeps one
+        capture, and draws it on every frame.
+        """
+        record = self.ensure_record()
+        if not record.bridge.watching or self.grid is None:
+            return
+        renderer = self.scene.renderer
+        now = renderer.clock
+        step = 1 / self.grid
+        try:
+            for t in frames_in(play.start, end, self.grid):
+                renderer.time = t
+                self.read_watches(t, t + step)
+        finally:
+            renderer.time = now
 
     # Markers
 

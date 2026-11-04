@@ -327,3 +327,124 @@ class HookedOut(HookedIn):
     """
 
     STEP = 0.3
+
+
+class LateUnchanged(Scene):
+    """A dot's play whose frame hook counts its calls: :class:`LateCamera`
+    without the replacement.
+    """
+
+    def construct(self):
+        dot = Dot()
+        self.add(dot)
+        self.play(dot.animate.shift(RIGHT), run_time=0.5)
+
+    def update_to_time(self, t):
+        super().update_to_time(t)
+        self.late(t)
+
+    def late(self, t):
+        pass
+
+
+class LateCamera(LateUnchanged):
+    """The scene's frame hook replaces a camera method on the instance part
+    way through the last play; the replacement fails once the scene has
+    recorded.
+    """
+
+    def late(self, t):
+        if t > 0.2 and not getattr(self, "_replaced", False):
+            self._replaced = True
+            camera = self.renderer.camera
+            original = camera.transform_points_pre_display
+
+            def transform_points_pre_display(*args, **kwargs):
+                if RECORDED[0]:
+                    raise AssertionError(
+                        "the scene's camera code ran after it recorded"
+                    )
+                return original(*args, **kwargs)
+
+            camera.transform_points_pre_display = transform_points_pre_display
+
+
+class ClockWatch(Scene):
+    """A watched function of the scene clock, off the plot for 0.3 < t <
+    0.45 only, all of it inside a frozen wait.
+    """
+
+    def construct(self):
+        ax = _plot()
+        self.add(ax)
+        watch(
+            "axes.outside",
+            lambda: ax.c2p(1.5 if 0.3 < self.time < 0.45 else 0.5, 0.5),
+            reference=ax,
+        )
+        self.wait(1)  # @clock-wait
+
+
+class TickWatch(Scene):
+    """A pen a dt updater puts off the plot for 0.03 < t < 0.05 only: a tick
+    of the 60 Hz clock that the frame at 1/24 shows at 24 fps.
+    """
+
+    def construct(self):
+        ax = _plot()
+        pen = Dot()
+        pen.add_updater(
+            lambda m, dt: m.set_x(3 if 0.03 < float(self.time) < 0.05 else 0)
+        )
+        self.add(ax, pen)
+        watch("axes.outside", pen, reference=ax)
+        self.wait(0.25)  # @tick-wait
+
+
+class ConditionalWatches(Scene):
+    """Bridge calls that depend on how often the scene's frame hook ran: an
+    execution on a finer grid than the render's makes other calls.
+    """
+
+    def construct(self):
+        ax = _plot()
+        dot = Dot()
+        self.count = 0
+        self.add(dot)
+        self.play(dot.animate.shift(RIGHT), run_time=1)
+        if self.count < 20:
+            watch("axes.outside", lambda: ax.c2p(1.5, 0.5), reference=ax)
+        watch("axes.outside", lambda: ax.c2p(0.5, 0.5), reference=ax)
+        self.play(dot.animate.shift(RIGHT), run_time=1)  # @conditional-play
+        off = 1.5 if self.count < 40 else 0.5
+        record("axes.outside", [ax.c2p(off, 0.5)], reference=ax)  # @conditional-record
+
+    def update_to_time(self, t):
+        super().update_to_time(t)
+        self.count += 1
+
+
+class ReferenceRanges(Scene):
+    """Points checked against two axes of other ranges, with margins."""
+
+    def construct(self):
+        narrow = Axes(
+            x_range=[-2, 4, 1], y_range=[10, 12, 1], x_length=6, y_length=2
+        ).shift(LEFT)
+        broad = Axes(
+            x_range=[-100, 100, 100], y_range=[-100, 100, 100], x_length=20, y_length=10
+        )
+        point = narrow.c2p(4.2, 11)
+        self.out = record("axes.outside", point, reference=narrow)
+        self.inside_broad = record("axes.outside", point, reference=broad)
+        pen = Dot(narrow.c2p(3.9, 11))
+        self.near = record(
+            "axes.outside", pen.get_center(), reference=narrow, margin=0.05
+        )
+        self.margin = record(
+            "axes.outside", pen.get_center(), reference=narrow, margin=0.2
+        )
+        self.add(pen)
+        watch("axes.outside", pen, reference=narrow, margin=0.2)
+        watch("axes.outside", pen, reference=broad, margin=0.2)
+        self.wait(0.2)
