@@ -12,10 +12,13 @@ an event), each from the play's start or its last event before it, never
 from the instant itself, and compares the restored scene with the capture
 kept there:
 
-- the draw lists, the tree and every node's type, exactly;
-- every field a content key covers (:func:`.record.content_fields`): a
-  paint by its exact key, geometry (points, placements, numbers) within
-  :data:`.execution.TOLERANCE`, anything else exactly;
+- the draw lists, the tree (every node's type and its children, in order)
+  exactly;
+- every field a content key covers (:func:`.record.content_fields`):
+  paint exactly (a paint value by its key, an array of a paint kind such as
+  a point cloud's colours, a number in a field that holds paint), geometry
+  (points, placements, other numbers) within :data:`.execution.TOLERANCE`,
+  anything else exactly;
 - the camera's fixed-orientation centres, within the tolerance.
 
 A play that differs is found ``demoted`` and reported as a
@@ -79,6 +82,11 @@ class Probe:
 
     plays: tuple[PlayProbe, ...] = ()
     divergences: tuple[Divergence, ...] = ()
+    #: Whether the session holds the record the probe last checked, every
+    #: play it demoted ticked there; false when the session stopped
+    #: recording again first, because an execution played other plays than
+    #: the one before it or its passes reached their cap.
+    settled: bool = True
 
     @property
     def demoted(self) -> tuple[int, ...]:
@@ -259,6 +267,13 @@ def _tree_difference(
                 f"a {type(mob).__name__} with {len(state.submobjects)} submobjects is"
                 f" a {type(twin).__name__} with {len(kept.submobjects)} in the record"
             )
+        # Its edges, not only how many: a child two parents share is walked
+        # once, so pointing one of them at another child keeps every count.
+        if _positions(mine, state.submobjects) != _positions(theirs, kept.submobjects):
+            return (
+                f"a {type(mob).__name__}'s submobjects are other mobjects than"
+                " in the record"
+            )
         why = _fields_difference(state, kept)
         if why is not None:
             return f"its {type(mob).__name__}'s {why}"
@@ -270,7 +285,7 @@ def _fields_difference(state: NodeState, kept: NodeState) -> str | None:
     if mine.keys() != theirs.keys():
         return f"fields {', '.join(sorted(mine.keys() ^ theirs.keys()))} differ"
     for name in sorted(mine):
-        why = _value_difference(mine[name], theirs[name])
+        why = _value_difference(mine[name], theirs[name], paint=name in _PAINT_NAMES)
         if why is not None:
             return f"{name} {why}"
     return None
@@ -286,13 +301,53 @@ def _keyed(state: NodeState) -> dict[str, Any]:
     }
 
 
-def _value_difference(a: Any, b: Any) -> str | None:
-    """How a restored value differs from the kept one: a paint by its exact
-    key, geometry within :data:`.execution.TOLERANCE`, the rest exactly.
+#: The fields that hold a mobject's paint as plain numbers, outside any
+#: :class:`~arachne.mobject.values.Paint`: a point cloud's stroke width, an
+#: image's opacities, the opacities a VMobject keeps beside its paint.
+_PAINT_NAMES = frozenset(
+    {
+        "fill_opacity",
+        "stroke_opacity",
+        "background_stroke_opacity",
+        "stroke_width",
+        "background_stroke_width",
+        "sheen_factor",
+    }
+)
+
+
+def _paint_arrays() -> tuple[type, ...]:
+    """The array kinds that hold paint, inside a :class:`Paint` or outside
+    it (a point cloud's colours, an image's pixels, a camera's background).
+    """
+    from arachne.mobject.values import (
+        FrozenBackground,
+        FrozenColors,
+        FrozenPixels,
+        FrozenPointColors,
+        FrozenVector,
+    )
+
+    return (
+        FrozenColors,
+        FrozenPointColors,
+        FrozenPixels,
+        FrozenVector,
+        FrozenBackground,
+    )
+
+
+def _value_difference(a: Any, b: Any, *, paint: bool = False) -> str | None:
+    """How a restored value differs from the kept one: paint exactly (a
+    :class:`Paint` by its key, an array of a paint kind, a number of a field
+    that holds paint, ``paint``), geometry within
+    :data:`.execution.TOLERANCE`, the rest exactly.
     """
     from arachne.mobject.placement import Placement
     from arachne.mobject.values import Paint
 
+    if isinstance(a, _paint_arrays()) or isinstance(b, _paint_arrays()):
+        paint = True
     if isinstance(a, Paint) or isinstance(b, Paint):
         if isinstance(a, Paint) and isinstance(b, Paint):
             if a.key == b.key:
@@ -308,12 +363,14 @@ def _value_difference(a: Any, b: Any) -> str | None:
     if isinstance(a, np.ndarray) and isinstance(b, np.ndarray):
         if a.dtype != b.dtype or a.shape != b.shape:
             return f"is {a.dtype}{list(a.shape)}, kept {b.dtype}{list(b.shape)}"
-        if a.dtype.kind not in "fc":
-            return None if np.array_equal(a, b) else "differs from the kept"
+        if paint or a.dtype.kind not in "fc":
+            if np.array_equal(a, b, equal_nan=a.dtype.kind in "fc"):
+                return None
+            return "differs from the kept, where it is paint, compared exactly"
         if np.allclose(a, b, rtol=0, atol=TOLERANCE, equal_nan=True):
             return None
         return f"differs from the kept by up to {np.nanmax(np.abs(a - b)):.3g}"
-    if isinstance(a, float) and isinstance(b, float):
+    if isinstance(a, float) and isinstance(b, float) and not paint:
         if abs(a - b) <= TOLERANCE or (a != a and b != b):
             return None
         return f"differs from the kept by {abs(a - b):.3g}"

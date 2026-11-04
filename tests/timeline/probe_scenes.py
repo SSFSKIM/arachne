@@ -9,11 +9,14 @@ from __future__ import annotations
 import random
 
 from arachne import (
+    BLACK,
     DOWN,
     LEFT,
     RIGHT,
     UP,
     Dot,
+    Group,
+    PMobject,
     Scene,
     Square,
     Succession,
@@ -141,3 +144,43 @@ class TwoPassDrift(Scene):
         )
         self.add(second)
         self.play(tracker.animate.set_value(2), rate_func=there_and_back)  # @second
+
+
+class PointPaintHook(Scene):
+    """A frame hook fading a point cloud to black by 1e-12 at every frame, in a
+    state play: its colours are paint, kept in its own rgbas array.
+    """
+
+    def construct(self):
+        self.cloud = PMobject().add_points([[0, 0, 0]])
+        tracker = ValueTracker(0)
+        mover = Dot().add_updater(lambda m: m.set_x(tracker.get_value()))
+        self.add(self.cloud, mover)
+        self.play(tracker.animate.set_value(2), run_time=0.4)
+
+    def update_to_time(self, t):
+        super().update_to_time(t)
+        if hasattr(self, "cloud"):
+            self.cloud.fade_to(BLACK, 1e-12)
+
+
+class SharedChildHook(Scene):
+    """Two groups sharing a dot, and a frame hook pointing the second group
+    at the other dot after the first frame: the tree's shape and every
+    node's values stay, its edges change.
+    """
+
+    def construct(self):
+        self.left, self.right = Dot(LEFT), Dot(RIGHT)
+        self.second = Group(self.left)
+        self.add(Group(Group(self.left, self.right), self.second))
+        tracker = ValueTracker(0)
+        mover = Dot(DOWN).add_updater(lambda m: m.set_x(tracker.get_value()))
+        self.add(mover)
+        self.play(tracker.animate.set_value(2), run_time=0.4)
+
+    def update_to_time(self, t):
+        super().update_to_time(t)
+        if hasattr(self, "second"):
+            self.second.remove(self.left, self.right)
+            self.second.add(self.left if t == 0 else self.right)

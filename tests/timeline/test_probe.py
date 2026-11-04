@@ -9,15 +9,20 @@ from __future__ import annotations
 
 from fractions import Fraction
 from pathlib import Path
+from textwrap import dedent
 
 import pytest
 
+from arachne import LEFT, RIGHT, Dot, Group
+from arachne.session import Session
 from arachne.timeline import admission
 from arachne.timeline.execution import Divergence
+from arachne.timeline.probe import _tree_difference, _walk
 from arachne.timeline.purity import Proof, Refused
+from arachne.timeline.record import NodeState
 
 from . import camera_scenes, probe_scenes, restore_scenes, route_scenes
-from .conftest import render
+from .conftest import SMALL, render
 
 PROBE_SCENES = Path(probe_scenes.__file__)
 RESTORE_SCENES = Path(restore_scenes.__file__)
@@ -224,3 +229,104 @@ def test_a_cause_seen_in_several_passes_is_reported_once(session_of, planted):
     ]
     (second,) = [d for d in session.divergences if d.play == 1]
     assert second.source_line.line == _line("second")
+
+
+def test_a_point_cloud_s_colours_are_paint_compared_exactly(session_of):
+    """A point cloud keeps its colours in an array of its own, outside any
+    paint value: a hook fading it by 1e-12 a frame is still a paint change.
+    """
+    session = session_of("PointPaintHook", PROBE_SCENES, frame_rate=15)
+    assert session.probe.demoted == (0,)
+    (found,) = [d for d in session.divergences if d.kind == "probe"]
+    assert "_rgbas" in found.reason
+
+
+def test_a_re_pointed_shared_child_is_a_tree_difference():
+    a, b = Dot(LEFT), Dot(RIGHT)
+    second = Group(a)
+    root = Group(Group(a, b), second)
+    kept = {id(mob): state for mob, state in _walk([root], NodeState.of)}
+    theirs = list(_walk([root], lambda mob: kept[id(mob)]))
+    second.submobjects[:] = [b]
+    mine = list(_walk([root], NodeState.of))
+    lists = ([root], [], [])
+    assert len(mine) == len(theirs)
+    assert _tree_difference(mine, lists, theirs, lists) is not None
+
+
+def test_a_hook_re_pointing_a_shared_child_is_demoted(session_of):
+    session = session_of("SharedChildHook", PROBE_SCENES, frame_rate=15)
+    assert session.probe.demoted == (0,)
+
+
+#: A scene whose every execution plays one play more than the one before,
+#: counting its executions in a file beside it, with a frame hook that
+#: writes what its frames show, so the probe demotes a play every pass.
+GROWING = """
+from pathlib import Path
+
+from arachne import Dot, Scene, ValueTracker
+
+
+class GrowingPlays(Scene):
+    def construct(self):
+        counter = Path(__file__).with_name("counter.txt")
+        count = int(counter.read_text()) if counter.exists() else 0
+        counter.write_text(str(count + 1))
+        if count == 6:
+            raise RuntimeError("executed seven times")
+        for _ in range(count + 1):
+            tracker = ValueTracker(0)
+            self.mark = Dot().add_updater(lambda m: m.set_x(tracker.get_value()))
+            self.add(self.mark)
+            self.play(tracker.animate.set_value(2), run_time=0.4)  # @grow
+            self.mark.clear_updaters()
+
+    def update_to_time(self, t):
+        super().update_to_time(t)
+        if hasattr(self, "mark"):
+            self.mark.set_y(t)
+"""
+
+
+def _open_growing(tmp_path):
+    scene = tmp_path / "growing.py"
+    scene.write_text(dedent(GROWING))
+    return Session.open(
+        scene, "GrowingPlays", config={**SMALL, "frame_rate": 15}
+    ), tmp_path / "counter.txt"
+
+
+def test_executions_that_change_their_plays_stop_the_recording_again(tmp_path):
+    """The second execution plays two plays where the first played one: the
+    session keeps it, with the demotion found applied, reports where the
+    executions differ, and records nothing more.
+    """
+    admission.DEMOTED.clear()
+    session, counter = _open_growing(tmp_path)
+    try:
+        assert counter.read_text() == "2"
+        assert [p.route for p in session.record.plays] == ["ticked", "state"]
+        assert not session.probe.settled
+        kinds = sorted((d.kind, d.play) for d in session.divergences)
+        assert kinds == [("execution", 1), ("probe", 0)]
+    finally:
+        session.close()
+        admission.DEMOTED.clear()
+
+
+def test_recording_again_stops_at_its_cap(tmp_path, monkeypatch):
+    """Were a changed schedule not to stop it, the passes stop at one more
+    than the first execution's plays.
+    """
+    from arachne import session as session_module
+
+    monkeypatch.setattr(session_module, "_schedule_change", lambda a, b: None)
+    admission.DEMOTED.clear()
+    session, counter = _open_growing(tmp_path)
+    try:
+        assert counter.read_text() == "2"
+        assert not session.probe.settled
+    finally:
+        session.close()
+        admission.DEMOTED.clear()
