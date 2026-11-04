@@ -402,7 +402,9 @@ pub fn encode_record(r: &Record) -> Vec<u8> {
 }
 
 /// The lowest supported version that carries this delta's content. Foreign and future version
-/// declarations are retained: this writer cannot decide what their content requires.
+/// declarations are retained: this writer cannot decide what their content requires. Re-encoding
+/// a delta decoded from a newer minor keeps its version but not what this reader skipped of it
+/// (a record's tail past what it knows): those bytes were dropped on read.
 pub fn encoded_version(d: &Delta) -> (u16, u16) {
     if d.version.0 != XF_VERSION.0 || d.version.1 > XF_VERSION.1 {
         return d.version;
