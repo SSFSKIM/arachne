@@ -32,7 +32,7 @@ from arachne.lint.bridge import (
 from arachne.lint.exempt import Exemptions
 from arachne.lint.instants import lint_instants
 from arachne.lint.motion import motion_jump
-from arachne.lint.rules import contact
+from arachne.lint.rules import Terms, contact, sweep_findings
 from arachne.lint.rules import sweep as sweep_rule
 from arachne.session import Session
 from arachne.timeline import admission
@@ -650,8 +650,8 @@ def test_a_sweep_s_exemptions_name_mobjects_and_their_families(session_of):
 
 
 def test_every_exemption_the_scene_states_is_kept_for_the_hold_watch(session_of):
-    """R's hold watch reads every exemption a sweep or declaration made,
-    each once.
+    """A check of the whole scene reads every exemption a sweep or
+    declaration made, each once.
     """
     session = session_of("ExemptedSweeps", BRIDGE, frame_rate=15)
     kept = exemptions(session.record)
@@ -673,21 +673,65 @@ def test_a_declared_text_gap_holds_the_rules_from_its_call_on(session_of):
     assert Fraction(3, 2) <= found.t_start == Fraction(23, 15)
 
 
-@pytest.mark.parametrize(
-    ("scene", "codes"),
-    [("DeclaredExemptions", []), ("DeclaredLateExemption", ["overlap.text"])],
-)
-def test_declared_exemptions_hold_the_rules_as_their_families_stood(
-    session_of, scene, codes
-):
-    """A group's family is read at the declaration: what it is given later
-    is not exempted.
+@pytest.mark.parametrize("scene", ["DeclaredExemptions", "DeclaredLateExemption"])
+def test_declared_exemptions_hold_the_rules_as_their_families_stand(session_of, scene):
+    """A group's family is read where the rule reads it: what the group
+    is given after the declaration is exempted (the reference checks' closing
+    sweep under the declared terms: silent in both).
     """
     session = session_of(scene, BRIDGE, frame_rate=15)
     end = session.record.duration
-    assert _swept(session, end) == codes
+    assert _swept(session, end) == []
     # The rule's own exemptions hold beside the scene's.
     assert _swept(session, end, exempt=["name:first"]) == []
+
+
+def test_a_rule_reads_an_exempted_family_as_it_stood_at_its_instant(session_of):
+    """The group is given the second phrase at 1 s: a sweep of the frame
+    before then is held to the empty group, one after to the phrase.
+    """
+    session = session_of("ExemptGainedLater", BRIDGE, frame_rate=15)
+    assert _swept(session, Fraction(1, 2)) == ["overlap.text"]
+    assert _swept(session, session.record.duration) == []
+
+
+@pytest.mark.parametrize(
+    ("scene", "codes"),
+    # The reference checks: nothing when the group gained the phrase;
+    # overlap.text, -0.3996 against 0.05, when it lost it.
+    [("ExemptChangedThenSwept", []), ("ExemptLostThenSwept", ["overlap.text"])],
+)
+def test_a_sweep_reads_a_declared_family_as_it_stands_at_the_sweep(
+    session_of, scene, codes
+):
+    found = session_of(scene, BRIDGE, frame_rate=15).scene.found
+    assert _codes(found) == codes
+    if found:
+        assert found[0]["detail"]["overlap"] == pytest.approx(0.3996, abs=1e-3)
+
+
+@pytest.mark.parametrize(
+    ("scene", "held"),
+    # The reference hold watch: the 0-1.6 s overlap excused when the group
+    # gained the phrase by the end, and failing the render when it lost it.
+    [("ExemptChangedWhileHeld", []), ("ExemptLostWhileHeld", ["overlap.text"])],
+)
+def test_the_scene_s_exemptions_are_read_at_its_end_for_the_hold_watch(
+    session_of, scene, held
+):
+    session = session_of(scene, BRIDGE, frame_rate=15)
+    record = session.record
+    kept = exemptions(record, record.duration)
+    assert kept == exemptions(record)
+
+    def undeclared(context):
+        # The sweep at 1 s under no declared terms: what the hold watch holds.
+        (parts,) = [p for p in context.parts if p.t == 1]
+        return sweep_findings(parts, Terms(mid_scene=True))
+
+    found = _clearance(lint(session, at=[Fraction(1)], rules=(undeclared,)))
+    assert [f.code for f in found] == ["overlap.text"]
+    assert [f.code for f in found if not kept.exempts(f)] == held
 
 
 # clear
@@ -750,6 +794,36 @@ def test_arming_declares_the_terms_it_is_given(session_of):
     assert len(_jumps(lint(session))) == 1
 
 
+def test_arming_again_resets_the_terms_it_is_not_given(session_of):
+    """As the reference checks' re-arming does: the second arming's pad
+    and text gap are the defaults, and the rows a hair apart sweep clean
+    (reference: nothing found).
+    """
+    session = session_of("Rearmed", BRIDGE, frame_rate=15)
+    assert session.scene.found == []
+    assert declared(session.record, 0) == {"pad": 0.05, "text_gap": None}
+
+
+@pytest.mark.parametrize(("scene", "jumps"), [("ArmsWhenFew", 1), ("ArmsWhenMany", 0)])
+def test_the_arming_is_read_from_the_execution_the_lint_reads(session_of, scene, jumps):
+    """The record is kept on a finer grid than the render's, so the lint
+    reads a forward run, whose arming differs from the record's.
+    """
+    session = session_of(scene, BRIDGE, grid=Fraction(30), frame_rate=15)
+    seen = {}
+
+    def execution(context):
+        seen["execution"] = context.frames.execution
+        return ()
+
+    found = _jumps(lint(session, rules=(execution,)))
+    forward = seen["execution"]
+    assert forward is not session.record
+    assert (armed(session.record) is None) == bool(jumps)
+    assert (armed(forward) is not None) == bool(jumps)
+    assert len(found) == jumps
+
+
 # apart
 
 
@@ -774,3 +848,34 @@ def test_apart_measures_a_pair_at_the_call(session_of):
         f for f in _clearance(lint(session)) if f.line.line == _line("apart-rows")
     ]
     assert [f.code for f in linted] == ["gap.text"]
+    assert rows["detail"]["required"] == pytest.approx(
+        0.3871, abs=1e-3
+    )  # the reference checks'
+
+
+def test_apart_measures_each_argument_whole_as_r_does(session_of):
+    found = session_of("ApartWholes", BRIDGE, frame_rate=15).scene.found
+    assert {pair: _codes(v) for pair, v in found.items()} == {
+        # A group of a text and a dot is a region, not a text: held to the
+        # pad by its pieces' boxes (reference: nothing, either way round).
+        "mixed_subject": [],
+        "mixed_target": [],
+        # A group of two texts is one text, held by its whole box (reference: -0.4435
+        # against 0.3873).
+        "pair_around": ["overlap.text"],
+        # The code follows the clearance asked: under the text floor, an
+        # overlap (reference: 0.08 against 0.2); at or over it, a gap (reference: 0.2
+        # against 0.6).
+        "small_min_gap": ["overlap.text"],
+        "large_pad": ["gap.text"],
+        # Nothing excuses a mobject from itself (reference: -0.4424 against 0.4424).
+        "itself": ["overlap.text"],
+    }
+    (pair,) = found["pair_around"]
+    assert pair["detail"]["overlap"] == pytest.approx(0.4435, abs=1e-3)
+    (small,) = found["small_min_gap"]
+    assert small["detail"]["overlap"] == pytest.approx(-0.08, abs=1e-3)
+    (large,) = found["large_pad"]
+    assert large["detail"] == pytest.approx({"gap": 0.2, "required": 0.6}, abs=1e-3)
+    (itself,) = found["itself"]
+    assert itself["detail"]["overlap"] == pytest.approx(0.4424, abs=1e-3)
