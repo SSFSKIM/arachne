@@ -130,9 +130,11 @@ shape's and table's key against its content, except for shape kinds it does not 
   of `t = int(1 + (radius − 1))` pixels a side (none when t < 1) about the pixel its subpixel place
   truncates to (toward zero), offsets `range(−t//2 + 1, t//2 + 1)` on each axis, clipped to the
   frame pixel by pixel; its colour is colour row `i`, alpha times the group opacity, each channel
-  `trunc(255·c)`; each block pixel covers its pixel exactly, at the point's depth, and where blocks
-  overlap at one depth the later write in CE's order wins (offset-major: every point at the first
-  offset, then every point at the next). A translucent point composites where CE overwrites. An
+  `trunc(255·c)`; each block pixel covers its pixel exactly, at the depth of the plane facing the
+  camera through the point (so a point ties with a camera-facing surface or a fixed-orientation
+  record through it), and where blocks overlap at one depth the later write in CE's order wins
+  (offset-major: every point at the first offset, then every point at the next). A translucent
+  point composites where CE overwrites. An
   `instances` record's member `i` is its prototype placed by
   `placements[i]` after the record's own placement, its fill and stroke row `i` of the record's
   tables where the prototype fills or strokes; members tie in order, each above the one before, and

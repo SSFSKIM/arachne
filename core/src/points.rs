@@ -12,6 +12,9 @@
 //!   write wins; a block pixel's sub-order is its offset's index times the points, plus the point's.
 //!   Depth decides between points at different depths; CE's raw overwrite of translucent points is
 //!   not reproduced.
+//! - Depth: a projected point's key is the camera-facing plane through it
+//!   ([`Projection::facing_plane`]), the plane a fixed orientation centred on it takes, so points
+//!   and camera-facing surfaces at one depth tie by draw order.
 
 use crate::composite::{
     Coverage, FULL, Fragment, OpaquePass, Plane, Producer, Rect, TransparentPass,
@@ -92,6 +95,7 @@ pub fn lower(view: &View, width: u32, height: u32, draws: &[PointsDraw<'_>]) -> 
         view.frame_height,
         view.frame_center,
     );
+    let facing = projection.as_ref().map(|p| p.facing_planes(&map));
     let mut out = Blocks {
         blocks: Vec::new(),
         bins: vec![Vec::new(); (tiles_across(width) * height.div_ceil(TILE)) as usize],
@@ -119,8 +123,9 @@ pub fn lower(view: &View, width: u32, height: u32, draws: &[PointsDraw<'_>]) -> 
                 continue; // CE draws a non-finite point nowhere on the frame.
             }
             let shown = pre_display(&[world], projection.as_ref(), place_kind)[0];
-            let depth = keyed
-                .unwrap_or_else(|| Plane::constant(-projection.as_ref().unwrap().factor(shown[2])));
+            // A projected point takes the key of the camera-facing plane through it, as a fixed
+            // orientation centred on it does, so points and surfaces at one depth tie exactly.
+            let depth = keyed.unwrap_or_else(|| facing.as_ref().unwrap().at(world));
             let [sx, sy] = subpixel_coords(
                 &[shown],
                 width,
