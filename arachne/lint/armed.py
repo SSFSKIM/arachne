@@ -39,7 +39,7 @@ from typing import TYPE_CHECKING, Any
 
 from arachne.timeline.clock import exact
 
-from .bridge import armed_terms, exemptions, terms_at
+from .bridge import armed_entries, armed_terms, exemptions, terms_at
 from .exempt import Exemptions
 from .rules._rule import DEFAULT_PAD, Terms
 
@@ -103,12 +103,20 @@ class ArmedRule:
             exempt=_joined(self.terms.exempt, arming.exempt),
         )
 
-    def exemptions(self, record: Record) -> Exemptions:
+    def exemptions(
+        self, record: Record, checked: Iterable[tuple[Fraction, int]] = ()
+    ) -> Exemptions:
         """What a check of ``record``'s whole scene is held to: the rule's
         own exemptions, and every one the scene stated (declared, armed or
-        swept with), each read at the scene's end (:func:`.bridge.exemptions`).
+        swept with), each read at the scene's end (:func:`.bridge.exemptions`);
+        and for each instant ``checked`` (a time, within a play) where a
+        check of the frame was held to the scene's arming, the entries the
+        arming's value held there, read at the end (:func:`.bridge.armed_entries`).
         """
-        return _joined(self.terms.exempt, exemptions(record))
+        kept = _joined(self.terms.exempt, exemptions(record))
+        for t, play in checked:
+            kept = _joined(kept, armed_entries(record, t, play=play))
+        return kept
 
     def request_frames(self, frames: Frames) -> None:
         """Ask the lint for the frames this rule samples, before any is read,

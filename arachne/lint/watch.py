@@ -89,6 +89,7 @@ from arachne.timeline.clock import frames_in
 
 from ._scope import Animated, animated, animated_by, asked, named_by
 from .armed import ArmedRule
+from .departures import departed
 from .exempt import Exemptions
 from .findings import Finding
 from .instants import render_grid
@@ -244,7 +245,12 @@ def _watch(context: LintContext, rule: ArmedRule) -> list[Finding]:
             watch.sample(drawn, step, watch.moved(play), watch.going(play))
         else:
             watch.sample(drawn, step, (), ())
-    return watch.report(1 / render_grid(record))
+    # Each departure of what had settled was checked against the scene's
+    # arming as it stood there, which adds the entries its value held then
+    # to what the scene excuses, outside a ThreeDCamera (whose departures
+    # are checked on the layer it keeps fixed).
+    checked = [] if watch.three_d else departed(record, states, rule.since)
+    return watch.report(1 / render_grid(record), [(d.t, d.play) for d in checked])
 
 
 class _Watch:
@@ -266,6 +272,8 @@ class _Watch:
         #: by stable id, and that group's (:meth:`regroup`).
         self.owner: dict[str, str] = {}
         self._animated: dict[tuple[int, str], list[Animated]] = {}
+        #: Whether the frames are a ThreeDCamera's.
+        self.three_d = False
 
     # What a play animates
 
@@ -348,6 +356,7 @@ class _Watch:
             u for u in staying if not named_by(u, going) and u.id not in self.carried
         ]
         home = _at_home(parts.view)
+        self.three_d = self.three_d or parts.view.camera == "three_d"
         by_id = {u.id: u for u in live}
         found: dict[tuple[Any, ...], Finding] = {}
         edged = live if home else [u for u in live if _meets(u.glyph_box, frame)]
@@ -528,13 +537,15 @@ class _Watch:
         if held.last - held.first >= HOLD_PERSIST:
             self.held.append(held)
 
-    def report(self, frame: Fraction) -> list[Finding]:
+    def report(
+        self, frame: Fraction, checked: list[tuple[Fraction, int]]
+    ) -> list[Finding]:
         """What was held on screen, less what the scene's exemptions, read
         at its end, excuse.
         """
         for key in list(self.open):
             self._close(key)
-        exempt = self.rule.exemptions(self.record)
+        exempt = self.rule.exemptions(self.record, checked)
         found = []
         for held in sorted(self.held, key=lambda h: h.first):
             if _excused(exempt, held):

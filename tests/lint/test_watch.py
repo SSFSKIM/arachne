@@ -360,6 +360,16 @@ ARMED_CE = {
     # it was held at the edge.
     "CaptionExcusedThroughGroup": [],
     "CaptionLeavesTheGroup": [("clip.frame_edge", True, {"Text"}, (0.0, 2.3))],
+    # A departure the guard checks adds the arming's list as it stands there
+    # to what the end excuses: grown before a departure, the caption is
+    # excused; grown with none after it, it is not.
+    "ExemptionGrowsBeforeADeparture": [],
+    "ExemptionGrowsWithNoDeparture": [
+        ("clip.frame_edge", True, {"Text"}, (0.0, 2.3)),
+    ],
+    "ExemptionGrowsAfterTheDeparture": [
+        ("clip.frame_edge", True, {"Text"}, (0.0, 2.3)),
+    ],
 }
 
 

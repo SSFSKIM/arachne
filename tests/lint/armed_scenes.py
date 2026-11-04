@@ -10,7 +10,7 @@ every exemption the scene stated, read at its end.
 
 from __future__ import annotations
 
-from arachne import LEFT, RIGHT, UP, FadeOut, Line, Scene, Text, VGroup
+from arachne import DOWN, LEFT, RIGHT, UP, FadeOut, Line, Scene, Text, VGroup
 from arachne.lint.bridge import arm, declare, sweep
 from tests.lint import run_counter
 
@@ -124,6 +124,46 @@ class CaptionLeavesTheGroup(CaptionExcusedThroughGroup):
     """...and leaves it before the end: nothing excuses it there."""
 
     keep = False
+
+
+class ExemptionGrowsBeforeADeparture(Scene):
+    """A caption across the right edge for two seconds, then moved in; the
+    list the arming was handed names it only after that, and then the
+    script removes a settled word, which the departure guard checks.
+    """
+
+    #: Whether the word is removed (``"after"``: once the list has grown
+    #: and half a second has passed; ``"before"``: before the list grows).
+    removal: str | None = "after"
+
+    def construct(self):
+        excused = []
+        arm(exempt=excused)
+        caption = Text("Edge of reason", font_size=44).move_to(RIGHT * 6.4)
+        aside = Text("aside", font_size=30).move_to(DOWN * 2 + LEFT * 3)
+        self.add(caption, aside)
+        self.wait(2)
+        self.play(caption.animate.move_to(UP * 2))
+        if self.removal == "before":
+            self.remove(aside)
+            self.wait(0.5)
+        excused.append(caption)
+        self.wait(0.5)
+        if self.removal == "after":
+            self.remove(aside)
+        self.wait(0.5)
+
+
+class ExemptionGrowsWithNoDeparture(ExemptionGrowsBeforeADeparture):
+    """...and nothing departs after the list grows."""
+
+    removal = None
+
+
+class ExemptionGrowsAfterTheDeparture(ExemptionGrowsBeforeADeparture):
+    """...and the word departs before the list grows."""
+
+    removal = "before"
 
 
 class DeclaredNoteFades(Scene):
