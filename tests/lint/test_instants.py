@@ -111,9 +111,8 @@ def _linted(session) -> list:
 def test_a_session_without_a_grid_is_linted_at_its_render_s_frames(session_of):
     """Recorded with every instant it evaluated kept and no grid, a session
     is linted at the frames its render shows, and sees there what a session
-    on the render's grid sees: an instant the record holds no capture of is
-    read from one forward run on that grid, never evaluated between
-    captures.
+    on the render's grid sees: every instant is read from one forward run on
+    that grid, never from states its own frame hooks made at other instants.
     """
     session = session_of("Instants", grid=None, frame_rate=15)
     gridded = session_of("Instants", frame_rate=15)
@@ -125,7 +124,7 @@ def test_a_session_without_a_grid_is_linted_at_its_render_s_frames(session_of):
             assert (instant.t * 15).denominator == 1
     seen, expected = _linted(session), _linted(gridded)
     assert [p.t for p in seen] == [i.t for i in instants]
-    assert {p.answer for p in seen} == {"recorded", "forward"}
+    assert {p.answer for p in seen} == {"forward"}
     assert {p.answer for p in expected} == {"recorded"}
     assert len(session.forward_runs) == 1
     for found, wanted in zip(seen, expected, strict=True):
@@ -144,3 +143,62 @@ def test_a_refused_record_is_read_at_its_render_s_frames(session_of, rate):
     assert {p.t for p in seen} == set(_expected(record, 4))
     assert all(p.answer == "forward" for p in seen)
     assert all(p.view.pixel_width == 96 for p in seen)
+
+
+def _first_box(session, t: Fraction):
+    from arachne.lint import lint
+
+    seen = []
+
+    def keep(context):
+        seen.extend(context.parts)
+        return ()
+
+    lint(session, rules=(keep,), at=[t])
+    (parts,) = seen
+    return parts
+
+
+@pytest.mark.parametrize(
+    ("scene", "grid"), [("Drifting", 5), ("Drifting", None), ("Hooked", None)]
+)
+def test_a_record_on_another_grid_is_read_at_the_render_s_frame(
+    session_of, scene, grid
+):
+    """A record whose frame hooks and dt updaters ran on another grid than
+    the render's holds states no render frame shows: the lint reads the
+    render's frame from a forward run on its grid instead.
+    """
+    t = Fraction(4, 15)
+    other = _first_box(session_of(scene, grid=grid, frame_rate=15), t)
+    render = _first_box(session_of(scene, frame_rate=15), t)
+    assert other.parts[0].screen_box == pytest.approx(
+        render.parts[0].screen_box, abs=1e-9
+    )
+    assert render.answer == "recorded"
+    assert other.answer == "forward"
+
+
+def test_a_frame_visit_runs_the_scene_as_its_render_does(session_of):
+    """The forward run reads its frames under the session's configuration,
+    whatever is active, with the scene's frame hook run once a frame, and
+    leaves the configuration and the classes' defaults as it found them.
+    """
+    from arachne import Dot, config, tempconfig
+    from arachne.timeline.fallback import visit_frames
+
+    session = session_of("Hooked", frame_rate=15)
+    init = Dot.__init__
+    seen = []
+
+    def visit(t, record, play, capture):
+        scene = record._scene
+        seen.append((t, scene.calls, scene.marker.get_x(), config.frame_rate))
+
+    with tempconfig({"frame_rate": 30, "pixel_width": 384, "pixel_height": 216}):
+        visit_frames(session, [Fraction(4, 15)], visit)
+        assert (config.frame_rate, config.pixel_width) == (30, 384)
+    ((t, calls, x, rate),) = seen
+    assert (t, calls, rate) == (Fraction(4, 15), 5, 15)
+    assert x == pytest.approx(0.05)
+    assert Dot.__init__ is init
