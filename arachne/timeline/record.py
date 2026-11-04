@@ -507,6 +507,9 @@ class Record:
     #: play index), given by the recorder that makes the record; ``None`` on
     #: a record made without them.
     exits: dict[int, Exit] | None = None
+    #: The first play to end once the scene armed the motion rule
+    #: (:meth:`.Recorder.arm_motion`), by index; ``None`` if it never did.
+    armed_at: int | None = None
 
     def __init__(
         self,

@@ -50,6 +50,30 @@ class ArmedTeleport(Teleport):
         super().construct()
 
 
+class ArmedAtTwo(Scene):
+    """Two teleports, the motion rule armed between them, before play 2."""
+
+    armed = True
+
+    def construct(self):
+        puck = Dot(LEFT * 3, radius=0.2)
+        self.add(puck)
+        self.play(puck.animate.shift(RIGHT * 2))
+        puck.move_to(RIGHT * 3)
+        self.wait()
+        if self.armed:
+            self.timeline.arm_motion()
+        self.play(puck.animate.shift(LEFT * 2))
+        puck.move_to(LEFT * 3)
+        self.wait()  # @after-armed-teleport
+
+
+class TwoTeleports(ArmedAtTwo):
+    """The same two teleports, the rule never armed."""
+
+    armed = False
+
+
 class RefusedTeleport(Teleport):
     """The same teleport, through a camera the record can't draw with."""
 
