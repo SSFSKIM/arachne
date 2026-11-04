@@ -24,6 +24,7 @@ from arachne import (
     FadeIn,
     LaggedStart,
     Mobject,
+    MovingCameraScene,
     Scene,
     Square,
     Succession,
@@ -281,3 +282,67 @@ class Captured(Scene):
         self.play(self.group.animate.shift(RIGHT), run_time=0.5)
         self.late = Circle(radius=0.5)
         self.play(FadeIn(self.late), run_time=0.5)
+
+
+class CentreMovedThreeD(ThreeDScene):
+    """A ThreeDCamera centred off the origin for its first frame, its centre
+    moved between two waits: a render keeps mapping paths around the first
+    centre, which the frame array's Cairo context froze.
+    """
+
+    def construct(self):
+        self.set_camera_orientation(
+            phi=60 * np.pi / 180, theta=-45 * np.pi / 180, frame_center=(1, 0.5, 0)
+        )
+        circle = Circle(radius=0.6).move_to((1, 0.5, 0))
+        self.add(circle)
+        self.wait(0.5)
+        self.set_camera_orientation(frame_center=(-1, -0.5, 0.5))
+        circle.move_to((-1, -0.5, 0.5))
+        self.wait(0.5)
+
+
+class CentreMovedRestored(ThreeDScene):
+    """The centre-moved ThreeDCamera of :class:`CentreMovedThreeD`, then a
+    state-function play: a dot an updater places from a tracker.
+    """
+
+    def construct(self):
+        self.set_camera_orientation(
+            phi=60 * np.pi / 180, theta=-45 * np.pi / 180, frame_center=(1, 0.5, 0)
+        )
+        circle = Circle(radius=0.6).move_to((1, 0.5, 0))
+        self.add(circle)
+        self.wait(0.5)
+        self.set_camera_orientation(frame_center=(-1, -0.5, 0.5))
+        tracker = ValueTracker(0)
+        dot = Dot().add_updater(
+            lambda m: m.move_to((tracker.get_value() - 1, -0.5, 0.5))
+        )
+        self.add(dot)
+        self.play(tracker.animate.set_value(1), run_time=1, rate_func=linear)
+
+
+class CentreMovedFlat(Scene):
+    """A flat camera whose frame centre the script sets between two waits:
+    its context, made at the first frame, keeps the first centre.
+    """
+
+    def construct(self):
+        circle = Circle(radius=0.6).shift(RIGHT)
+        self.add(circle)
+        self.wait(0.5)
+        self.camera.frame_center = np.array([1.0, 0.5, 0.0])
+        self.wait(0.5)
+
+
+class Panned(MovingCameraScene):
+    """A MovingCamera panning over a still circle: every frame maps around
+    the frame as it is then.
+    """
+
+    def construct(self):
+        circle = Circle(radius=0.6)
+        self.add(circle)
+        self.play(self.camera.frame.animate.shift(RIGHT), run_time=0.5)
+        self.wait(0.5)
