@@ -34,7 +34,7 @@ from .admission import (
     play_identity,
     whole_line,
 )
-from .bodies import Exit, bodies
+from .bodies import Exit, Kept, bodies
 from .clock import TICK_RATE, exact, play_end
 from .dispatch import draw_refusal, scene_hooks
 from .draw import CameraExtras, LiveFrames, camera_nodes
@@ -287,10 +287,12 @@ class Recorder:
     every play of a line demoted whole, ticks where it would be a
     state-function play. A session passes them; a render never does.
 
-    ``exits`` says whether the record keeps where each body stands as each
-    play ends (``Record.exits``, :mod:`.bodies`), which the lint measures
-    cuts from: a session's and a forward run's records do; a render's,
-    which no lint reads, does not.
+    ``exits`` says which plays' ends the record keeps where each body stands
+    at (``Record.exits``, :mod:`.bodies`), which the lint's motion rule
+    measures cuts from: ``"all"`` every play's (a forward run's record);
+    ``"armed"`` each play ending after the scene arms the rule
+    (:meth:`arm_motion`; a session's record); ``"none"`` none, armed or not
+    (a render's, which no lint reads).
     """
 
     def __init__(
@@ -305,12 +307,14 @@ class Recorder:
         on_start: Callable[[Scene, Fraction], object] | None = None,
         instants: Iterable[Fraction | float] = (),
         demoted: Iterable[PlayIdentity] = (),
-        exits: bool = False,
+        exits: Literal["none", "armed", "all"] = "none",
     ) -> None:
         if stepping not in (True, False, BRUTE_FORCE):
             raise ValueError(
                 f"stepping is True, False or {BRUTE_FORCE!r}, not {stepping!r}"
             )
+        if exits not in ("none", "armed", "all"):
+            raise ValueError(f"exits is 'none', 'armed' or 'all', not {exits!r}")
         self.scene = scene
         self.grid = exact(grid) if grid is not None else None
         self.draws = draws
@@ -321,6 +325,7 @@ class Recorder:
         self.instants = tuple(sorted({exact(t) for t in instants}))
         self.demoted = frozenset(demoted)
         self.exits = exits
+        self._kept_bodies = Kept()
         #: The frame the configuration describes, as ``(width, height)``:
         #: the unit of the record's home-frame boxes, whatever the camera
         #: does (:mod:`arachne.camera.projection`).
@@ -369,11 +374,21 @@ class Recorder:
                 identity=Identity(source_digest=None, seed=scene.random_seed),
             )
             self.record.execution = self.execution
-            if self.exits:
+            if self.exits == "all":
                 self.record.exits = {}
             self._camera_refusal = camera_refusal(scene.renderer.camera)
             self.record.refusal = self._camera_refusal
         return self.record
+
+    def arm_motion(self) -> None:
+        """Keep where each body stands as each play from now on ends, when
+        the record keeps armed exits (``exits="armed"``); a record keeping
+        every play's or none is as it was.
+        """
+        if self.exits == "armed":
+            record = self.ensure_record()
+            if record.exits is None:
+                record.exits = {}
 
     def refusal(self) -> str | None:
         """Why the record can't draw the play about to run, so that it is
@@ -677,6 +692,7 @@ class Recorder:
                 record.origin,
                 home=self.home,
                 configured_pixels=self.configured_pixels,
+                kept=self._kept_bodies,
             )
         )
 
