@@ -183,10 +183,16 @@ def uncarried(camera: Any) -> tuple[Any, str] | None:
     the scene's code changed there whose effect can reach the frame other
     than through what XF carries of a capture (:data:`CARRIED_MEMBERS`):
     Cairo calls of the scene's own, pixels written by hand, a pixel mapping.
+    An engine camera class's ``__init__`` patched counts too: the drawer
+    builds engine cameras of its own, and would run it there.
     """
-    from arachne.timeline.camera_code import drawn_cameras
+    from arachne.timeline.camera_code import drawn_cameras, replaced_methods
 
     for each in drawn_cameras(camera):
+        if any(
+            r.form == "class" and r.name == "__init__" for r in replaced_methods(each)
+        ):
+            return each, "__init__"
         for name in changed_members(each):
             if name not in CARRIED_MEMBERS:
                 return each, name

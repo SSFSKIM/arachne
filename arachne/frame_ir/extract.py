@@ -737,12 +737,15 @@ class FrameStream:
             "use_z_index": bool(camera.use_z_index),
         }
         if kind == "three_d":
+            # The trackers, as the engine's getters read them: a getter the
+            # scene's code overrides is its camera's, run by its own capture
+            # alone (what it placed is in the records), never here.
             view.update(
-                phi=float(camera.get_phi()),
-                theta=float(camera.get_theta()),
-                gamma=float(camera.get_gamma()),
-                focal_distance=float(camera.get_focal_distance()),
-                zoom=float(camera.get_zoom()),
+                phi=float(camera.phi_tracker.get_value()),
+                theta=float(camera.theta_tracker.get_value()),
+                gamma=float(camera.gamma_tracker.get_value()),
+                focal_distance=float(camera.focal_distance_tracker.get_value()),
+                zoom=float(camera.zoom_tracker.get_value()),
                 exponential_projection=bool(camera.exponential_projection),
                 light_source=_floats(camera.light_source.points[0]),
                 shading_factor=float(camera.shading_factor),
