@@ -26,11 +26,14 @@ reports each at its line and time. Outside a recording, which every
 execution of a scene is, a call raises :class:`RuntimeError`.
 
 An exemption names mobjects, selectors (:mod:`.exempt`) and pairs of them;
-each mobject stands for its family's stable ids as it is at the call. A
-sweep is held to the terms it is given, then to those declared, then to the
-rules' defaults; a rule the lint runs is held to its own terms with the
-declared ``pad`` and ``text_gap`` in their place and the declared
-exemptions beside its own.
+each mobject stands for its family's stable ids as they are where the
+exemption is read: at a sweep, the sweep; for a rule the lint runs, the
+instant it checks (as the record read the scene there); for a check of the
+whole scene, its end (:func:`exemptions`). A sweep is held to the terms it
+is given, then to those declared, then to the rules' defaults; a rule the
+lint runs is held to its own terms with the declared ``pad`` and
+``text_gap`` in their place and the declared exemptions beside its own.
+Each arming states ``pad`` and ``text_gap`` afresh.
 
 The one code :func:`record` and :func:`watch` check today is
 ``axes.outside``: every point of the operands inside the rectangle the
@@ -53,7 +56,6 @@ __all__ = [
     "apart",
     "arm",
     "armed",
-    "armed_rules",
     "clear",
     "declare",
     "declared",
@@ -66,7 +68,7 @@ __all__ = [
 ]
 
 import sys
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from fractions import Fraction
 from types import FrameType
@@ -77,16 +79,15 @@ import numpy as np
 from arachne._config import config
 from arachne.timeline.clock import exact, frames_in
 from arachne.timeline.origins import origin_of
-from arachne.timeline.recorder import BridgeCall, Reading, Recorder, running
+from arachne.timeline.recorder import Bridge, BridgeCall, Reading, Recorder, running
 from arachne.timeline.source import names_from_frames, scene_frames
 
+from .clearance import TEXT_FLOOR, arguments, clear_of
 from .exempt import Exemptions
 from .findings import Finding
+from .motion import JUMP_TOL, MotionJump
 from .parts import Parts, build_parts
 from .rules import DEFAULT_PAD, Terms, sweep_findings
-from .rules._pairs import NOISE, _annotates, _called
-from .rules._pairs import _measure as _clearance
-from .rules._units import Measured, measured_units
 
 if TYPE_CHECKING:
     from arachne.timeline.record import Record
@@ -104,9 +105,6 @@ TERMS = ("exempt", "pad", "text_gap")
 
 #: The calls that declare terms.
 _DECLARING = ("declare", "arm")
-
-#: The least clearance :func:`apart` holds two texts to, in scene units.
-TEXT_FLOOR = 0.3
 
 #: Scene units between the samples along a mobject's outline.
 SPACING = 0.02
@@ -213,8 +211,7 @@ def declare(**terms: Any) -> list[dict[str, Any]]:
     ``text_gap`` (``None`` for none) and ``exempt``, as :func:`sweep` takes
     them. They are kept on the record; nothing is found by declaring.
     """
-    recorder = _recorder("declare")
-    recorder.bridge_call("declare", sys._getframe(1), terms=_terms(terms))
+    _declaring(_recorder("declare"), "declare", sys._getframe(1), terms)
     return []
 
 
@@ -242,13 +239,15 @@ def sweep(**terms: Any) -> list[dict[str, Any]]:
     """Sweep the scene as it stands now: the instant rules' sweep (texts at
     the frame's edge, every pair on it) under the terms given (``pad``,
     ``text_gap``, ``exempt``), each term not given as declared, else as
-    :class:`~.rules.Terms` defaults it. Returns what it finds.
+    :class:`~.rules.Terms` defaults it; every exemption is read as it
+    stands now. Returns what it finds.
     """
     recorder = _recorder("sweep")
-    given = _terms(terms)
-    held = _apply(_apply(Terms(), _held(recorder.ensure_record().bridge.calls)), given)
+    bridge = recorder.ensure_record().bridge
+    now = _held(bridge.calls, lambda call: _exempt_now(bridge, call))
     caller = sys._getframe(1)
-    call = recorder.bridge_call("sweep", caller, terms=given)
+    call = _declaring(recorder, "sweep", caller, terms)
+    held = _apply(_apply(Terms(), now), call.terms)
     parts = _parts_now(recorder, call, _names(recorder, caller))
     return _found(call, sweep_findings(parts, held))
 
@@ -260,37 +259,31 @@ def apart(
     min_gap: float | None = None,
     pad: float = DEFAULT_PAD,
 ) -> list[dict[str, Any]]:
-    """Check that ``subject`` clears each mobject of ``against`` (one, or a
-    sequence) now, added to the scene or not: by ``min_gap`` when given,
-    else two texts by a line of the shorter (at least :data:`TEXT_FLOOR`),
-    a ring around some of a text's glyphs by touching only, anything else by
-    ``pad``. An axis's line and ticks are held clear of a text subject only.
-    Returns what it finds.
+    """Check now that ``subject`` stands clear of ``against`` (a mobject, a
+    ``(label, mobject)`` pair, or a list of them), each measured whole,
+    added to the scene or not (:mod:`.clearance`): by ``min_gap`` when
+    given, else two texts by a line of the shorter (at least
+    :data:`TEXT_FLOOR`), a ring around some of a text's glyphs by touching
+    only, anything else by ``pad``. An axes or number line stands for its
+    furniture. Returns what it finds.
     """
-    from arachne.mobject.mobject import Mobject
-
     recorder = _recorder("apart")
-    others = [against] if isinstance(against, Mobject) else list(against)
-    for mob in (subject, *others):
-        if not isinstance(mob, Mobject):
-            raise TypeError(f"apart checks mobjects, not {type(mob).__name__}")
     caller = sys._getframe(1)
+    given = arguments(subject, against)
+    found = clear_of(
+        subject,
+        against,
+        min_gap=min_gap,
+        pad=float(pad),
+        names=_names(recorder, caller),
+    )
     call = recorder.bridge_call(
         "apart",
         caller,
-        operands=tuple(origin_of(mob).id for mob in (subject, *others)),
+        operands=tuple(origin_of(mob).id for mob, _ in given),
         terms={"min_gap": min_gap, "pad": float(pad)},
-        subject=_subject(subject),
+        subject=_subject(given[0][0]),
     )
-    names = _names(recorder, caller)
-    subjects = _units_now(recorder, call, names, subject)
-    found = [
-        finding
-        for other in others
-        for o in _units_now(recorder, call, names, other)
-        for s in subjects
-        if (finding := _apart(s, o, min_gap, float(pad))) is not None
-    ]
     return _found(call, found)
 
 
@@ -299,15 +292,18 @@ def arm(*, motion_jump: float | None = None, **terms: Any) -> list[dict[str, Any
     rule (``motion.jump`` beyond ``motion_jump``, by default the rule's own
     tolerance), which the lint then runs unasked, its record keeping each
     play's exit from the next to end. ``terms`` are declared as by
-    :func:`declare`. Arming again declares again and sets the tolerance the
-    whole scene is measured at.
+    :func:`declare`, ``pad`` and ``text_gap`` at their defaults when not
+    given: each arming states both afresh, its exemptions adding to those
+    before. Arming again sets the tolerance the whole scene is measured at.
     """
-    from .motion import JUMP_TOL
-
     recorder = _recorder("arm")
-    kept = _terms(terms)
-    kept["motion_jump"] = JUMP_TOL if motion_jump is None else float(motion_jump)
-    recorder.bridge_call("arm", sys._getframe(1), terms=kept)
+    _declaring(
+        recorder,
+        "arm",
+        sys._getframe(1),
+        {"pad": DEFAULT_PAD, "text_gap": None, **terms},
+        motion_jump=JUMP_TOL if motion_jump is None else float(motion_jump),
+    )
     recorder.arm_motion()
     return []
 
@@ -318,29 +314,39 @@ def arm(*, motion_jump: float | None = None, **terms: Any) -> list[dict[str, Any
 def declared(source: Record, t: Fraction | float) -> dict[str, Any]:
     """The terms ``source``'s scene declared at or before ``t`` (by
     :func:`declare` and :func:`arm`): a later ``pad`` or ``text_gap``
-    replacing an earlier, exemptions adding up.
+    replacing an earlier, exemptions adding up, each read as it stood at
+    ``t``.
     """
     at = exact(t)
-    return _held(call for call in source.bridge.calls if call.t <= at)
+    return _held(
+        (call for call in source.bridge.calls if call.t <= at),
+        lambda call: _exempt_at(call, at),
+    )
 
 
 def terms_at(source: Record, t: Fraction | float, base: Terms) -> Terms:
     """``base`` under the terms declared at or before ``t``: the declared
-    ``pad`` and ``text_gap`` replace its own, and the declared exemptions
-    hold beside its own.
+    ``pad`` and ``text_gap`` replace its own, and the declared exemptions,
+    as they stood at ``t``, hold beside its own.
     """
     return _apply(base, declared(source, t), join=True)
 
 
-def exemptions(source: Record) -> Exemptions:
-    """Every exemption ``source``'s scene stated, declared, armed or swept
-    with, each once: what a check of the whole scene, read at its end, is
-    held to.
+def exemptions(source: Record, t: Fraction | float | None = None) -> Exemptions:
+    """Every exemption ``source``'s scene stated by ``t`` (by default, its
+    end), declared, armed or swept with, each read as it stood at ``t`` and
+    kept once: what a check of the scene up to then, read at ``t``, is held
+    to.
     """
+    at = source.duration if t is None else exact(t)
     kept = Exemptions()
     for call in source.bridge.calls:
-        if call.kind in _DECLARING + ("sweep",) and "exempt" in call.terms:
-            kept = _joined(kept, call.terms["exempt"])
+        if (
+            call.t <= at
+            and call.kind in (*_DECLARING, "sweep")
+            and "exempt" in call.terms
+        ):
+            kept = _joined(kept, _exempt_at(call, at))
     return kept
 
 
@@ -357,28 +363,44 @@ def armed(source: Record, t: Fraction | float | None = None) -> BridgeCall | Non
     return found
 
 
-def armed_rules(source: Record, asked: Iterable[Any]) -> list[Any]:
-    """The rules ``source``'s scene armed (:func:`arm`), which the lint runs
-    unasked, less those the lint was asked for already: each check made over
-    time that arming asks for. Today that is the motion rule, at the
-    tolerance of the last arming.
+class _ArmedMotion(MotionJump):
+    """The motion rule a scene armed: one per lint, its frames asked for
+    under its own identity, its tolerance set from the arming of the
+    execution the lint reads once that is known.
     """
-    from .motion import MotionJump
 
-    arming = armed(source)
-    if arming is None or any(isinstance(rule, MotionJump) for rule in asked):
-        return []
-    return [MotionJump(arming.terms["motion_jump"])]
+    __hash__ = object.__hash__
+
+    def __eq__(self, other: object) -> bool:
+        return self is other
+
+
+class _IfForward:
+    """A lint's frames, as a reader asks for them that needs them only from
+    a forward run, if the lint makes one: such a run keeps every play's
+    exit, so it asks for none.
+    """
+
+    def __init__(self, frames: Frames) -> None:
+        self._frames = frames
+        self.session = frames.session
+
+    def request(self, owner: Any, times: Any, read: Any) -> None:
+        self._frames.request(owner, times, read, forward_only=True)
+
+    def require_forward(self) -> None:
+        pass
 
 
 class Checks:
     """The lint's reader of the bridge (:mod:`.frames`' client): the findings
     of the bridge's calls, where the render's frames see them, and of the
-    rules the scene armed (:func:`armed_rules`, given the lint's own
-    ``rules``). Each record, sweep and apart is found at its call, and each
-    watch at every frame of the render from its call to its clear, a run of
-    frames outside one finding from the first to the last, as a check made
-    on every frame finds it.
+    checks over time the scene armed (:func:`arm`), which run unasked unless
+    the lint was given them as ``rules``: today the motion rule, at the
+    tolerance of the execution's last arming. Each record, sweep and apart
+    is found at its call, and each watch at every frame of the render from
+    its call to its clear, a run of frames outside one finding from the
+    first to the last, as a check made on every frame finds it.
 
     The calls and readings are read from the execution the lint's frames
     come from (:attr:`.Frames.execution`). A record its frames are read from
@@ -392,22 +414,35 @@ class Checks:
     """
 
     def __init__(self, rules: Iterable[Any] = ()) -> None:
-        self._asked = tuple(rules)
-        self._armed: list[Any] = []
+        asked = any(isinstance(rule, MotionJump) for rule in rules)
+        self._motion = None if asked else _ArmedMotion()
 
     def request_frames(self, frames: Frames) -> None:
         """Ask that a forward run, if the lint needs one, run to the end; and
-        for the frames the armed rules read.
+        for the frames the armed motion rule reads: as any rule asks, when
+        the session's record armed it, else only from a forward run, whose
+        own arming is known only once it has run.
         """
         frames.complete(self)
-        self._armed = armed_rules(frames.session.record, self._asked)
-        for rule in self._armed:
-            rule.request_frames(frames)
+        if self._motion is None:
+            return
+        if armed(frames.session.record) is not None:
+            self._motion.request_frames(frames)
+        else:
+            self._motion.request_frames(_IfForward(frames))  # type: ignore[arg-type]
 
     def __call__(self, context: LintContext) -> list[Finding]:
-        found = findings(context.frames.execution)
-        for rule in self._armed:
-            found.extend(rule(context))
+        execution = context.frames.execution
+        found = findings(execution)
+        arming = armed(execution)
+        motion = self._motion
+        if (
+            motion is not None
+            and arming is not None
+            and context.frames.answered(motion)
+        ):
+            object.__setattr__(motion, "jump_tol", arming.terms["motion_jump"])
+            found.extend(motion(context))
         return found
 
 
@@ -431,9 +466,7 @@ def findings(source: Record) -> list[Finding]:
             end = min(source.duration, stops.get(index, source.duration))
             found.extend(_watch_findings(call, fps, end))
         elif call.kind in ("sweep", "apart"):
-            (reading,) = call.readings
-            assert reading.values is not None
-            found.extend(reading.values["findings"])
+            found.extend(_call_findings(call))
     return found
 
 
@@ -505,9 +538,12 @@ def _joined(first: Exemptions, second: Exemptions) -> Exemptions:
     )
 
 
-def _held(calls: Iterable[BridgeCall]) -> dict[str, Any]:
+def _held(
+    calls: Iterable[BridgeCall], exempt_of: Callable[[BridgeCall], Exemptions]
+) -> dict[str, Any]:
     """The terms ``calls`` declare, in order: a later ``pad`` or
-    ``text_gap`` replacing an earlier, exemptions adding up.
+    ``text_gap`` replacing an earlier, exemptions (each call's as
+    ``exempt_of`` reads it) adding up.
     """
     held: dict[str, Any] = {}
     for call in calls:
@@ -516,11 +552,58 @@ def _held(calls: Iterable[BridgeCall]) -> dict[str, Any]:
         for name in TERMS:
             if name not in call.terms:
                 continue
-            value = call.terms[name]
+            value = exempt_of(call) if name == "exempt" else call.terms[name]
             if name == "exempt" and name in held:
                 value = _joined(held[name], value)
             held[name] = value
     return held
+
+
+def _declaring(
+    recorder: Recorder,
+    kind: str,
+    caller: FrameType,
+    terms: Mapping[str, Any],
+    **extra: Any,
+) -> BridgeCall:
+    """Keep a call stating ``terms`` (and ``extra`` beside them). Its
+    exemptions name what the scene's mobjects hold as each reader asks:
+    they are read at the call and at every kept capture after it, and can
+    be read again while the scene runs (:meth:`.Bridge.read_now`).
+    """
+    kept = {**_terms(terms), **extra}
+    reader = None
+    if "exempt" in terms:
+        named = terms["exempt"]
+
+        def reader() -> Mapping[str, Any]:
+            return {"exempt": _exemptions(named)}
+
+    call = recorder.bridge_call(kind, caller, terms=kept, reader=reader)
+    if reader is not None:
+        call.readings.append(Reading(call.t, call.line, {"exempt": kept["exempt"]}))
+    return call
+
+
+def _exempt_now(bridge: Bridge, call: BridgeCall) -> Exemptions:
+    """``call``'s exemptions as they stand now."""
+    read = bridge.read_now(call)
+    assert read is not None
+    now: Exemptions = read["exempt"]
+    return now
+
+
+def _exempt_at(call: BridgeCall, t: Fraction) -> Exemptions:
+    """``call``'s exemptions as they stood at ``t``: their last reading at or
+    before it.
+    """
+    found: Exemptions = call.terms["exempt"]
+    for reading in call.readings:
+        if reading.t > t:
+            break
+        if reading.values is not None and "exempt" in reading.values:
+            found = reading.values["exempt"]
+    return found
 
 
 def _apply(base: Terms, held: Mapping[str, Any], *, join: bool = False) -> Terms:
@@ -558,24 +641,23 @@ def _names(recorder: Recorder, caller: FrameType) -> dict[int, str]:
     return names_from_frames(list(scene_frames(caller)), recorder.scene)
 
 
-def _parts_now(
-    recorder: Recorder,
-    call: BridgeCall,
-    names: dict[int, str],
-    roots: tuple[Any, ...] | None = None,
-) -> Parts:
-    """The parts the scene draws now, as its camera views them: the
-    scene's mobjects, or ``roots``, drawn or not. Nothing is captured on the
-    record.
+def _parts_now(recorder: Recorder, call: BridgeCall, names: dict[int, str]) -> Parts:
+    """The parts the scene draws now, as its camera views them. Nothing is
+    captured on the record.
     """
     from arachne.timeline.record import Capture
 
     scene = recorder.scene
-    if roots is None:
-        roots, foreground = tuple(scene.mobjects), tuple(scene.foreground_mobjects)
-    else:
-        foreground = ()
-    capture = Capture(-1, call.t, "bridge", roots, foreground, (), (), None)
+    capture = Capture(
+        -1,
+        call.t,
+        "bridge",
+        tuple(scene.mobjects),
+        tuple(scene.foreground_mobjects),
+        (),
+        (),
+        None,
+    )
     camera = scene.renderer.camera
     return build_parts(
         recorder.ensure_record(),
@@ -588,58 +670,6 @@ def _parts_now(
     )
 
 
-def _units_now(
-    recorder: Recorder, call: BridgeCall, names: dict[int, str], mob: Any
-) -> list[Measured]:
-    """The units ``mob`` draws now, drawn or not."""
-    return measured_units(_parts_now(recorder, call, names, (mob,)))
-
-
-def _apart(
-    subject: Measured, other: Measured, min_gap: float | None, pad: float
-) -> Finding | None:
-    """The finding of ``subject`` not clear of ``other``, if it is not."""
-    if subject.id == other.id or (other.structural and not subject.text):
-        return None
-    if min_gap is not None:
-        required = float(min_gap)
-    elif subject.text and other.text:
-        required = max(TEXT_FLOOR, min(_height(subject), _height(other)))
-    elif _annotates(subject, other) or _annotates(other, subject):
-        required = NOISE
-    else:
-        required = pad
-    measured = _clearance(subject, other)
-    if measured >= required:
-        return None
-    if not (subject.text or other.text):
-        code = "contact.held"
-    elif subject.text and other.text and measured > 0:
-        code = "gap.text"
-    else:
-        code = "overlap.text"
-    return Finding(
-        code,
-        Fraction(0),
-        Fraction(0),
-        (subject.object, other.object),
-        message=(
-            f"{_called(subject)} is not clear of {_called(other)}: {measured:.3f} units"
-            f" apart, against {required:.3f}."
-        ),
-        detail=(
-            {"overlap": round(-measured, 4)}
-            if code == "overlap.text"
-            else {"gap": round(measured, 4), "required": round(required, 4)}
-        ),
-    )
-
-
-def _height(unit: Measured) -> float:
-    x0, y0, x1, y1 = unit.outer
-    return y1 - y0
-
-
 def _found(call: BridgeCall, found: Iterable[Finding]) -> list[dict[str, Any]]:
     """``found`` at ``call``'s time and line, kept as its reading; returned
     as report violations.
@@ -650,6 +680,14 @@ def _found(call: BridgeCall, found: Iterable[Finding]) -> list[dict[str, Any]]:
     )
     call.readings.append(Reading(call.t, call.line, {"findings": kept}))
     return _violations(kept)
+
+
+def _call_findings(call: BridgeCall) -> tuple[Finding, ...]:
+    """What a sweep or an apart found at its call."""
+    (reading,) = (r for r in call.readings if r.values and "findings" in r.values)
+    assert reading.values is not None
+    found: tuple[Finding, ...] = reading.values["findings"]
+    return found
 
 
 def _items(operands: Any) -> list[Any]:
