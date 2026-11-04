@@ -57,11 +57,11 @@ class State:
     new execution of the scene evaluated at ``t``.
 
     ``as_of`` is the instant whose state it is: the instant of the capture a
-    recorded answer reads (before ``t`` for a frozen frame, for a ticked play
-    between the ticks its record kept, and for a ticked play before its
-    first frame, whose answer is the previous kept capture, an earlier
-    play's), and ``t``
-    for an evaluated one.
+    recorded answer reads, and ``t`` for an evaluated one. A recorded answer
+    reflects an instant before ``t`` in a frozen frame, and in a ticked play
+    whose record kept no tick at ``t``: there the answer is the last capture
+    a frame read at or before ``t``, the frame a render shows, an earlier
+    play's before the play's first frame. ``play`` is then that play.
     """
 
     t: Fraction

@@ -350,22 +350,24 @@ def test_a_ticked_play_before_its_first_frame_answers_the_frame_before(session_o
     assert np.array_equal(np.asarray(session.frame(t)), frames[14])
 
 
-def test_a_ticked_play_before_its_first_frame_reads_the_previous_kept_capture(
+def test_a_ticked_play_before_its_first_frame_skips_a_capture_no_frame_drew(
     session_of,
 ):
-    """Before the ticked play's first frame the answer is the last capture
-    the record kept, which here is a trusted play's too short for any frame:
-    a capture no render frame shows.
+    """Between the frame at 14/15 s and the ticked play's first frame lies a
+    trusted play too short for any frame: its capture is the latest kept,
+    but no frame drew it, so the answer is the wait's, the frame a render
+    shows there.
     """
     session = session_of("FramelessBeforeTicked", RESTORE_SCENES, frame_rate=15)
-    _, trusted, ticked = session.record.plays
+    _, frames = render(restore_scenes.FramelessBeforeTicked, 15)
+    wait, trusted, ticked = session.record.plays
     assert [p.route for p in session.record.plays] == ["trusted", "trusted", "ticked"]
     assert trusted.start == Fraction(97, 100)
     assert ticked.start < Fraction(1)
     t = Fraction(98, 100)
     state = session.state_at(t)
-    last = trusted.samples[-1]
-    assert (state.answer, state.play, state.as_of) == ("recorded", 1, last.instant)
+    assert (state.answer, state.play, state.as_of) == ("recorded", 0, wait.start)
+    assert np.array_equal(np.asarray(session.frame(t)), frames[14])
 
 
 def test_a_restore_refuses_a_callback_animation_pointed_elsewhere(session_of):
