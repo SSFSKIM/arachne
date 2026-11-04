@@ -333,6 +333,9 @@ class Recorder:
         self._body: _Body | None = None
         #: The files the script opens for reading while it runs.
         self._inputs: Inputs | None = None
+        #: Whether a play is running: from when it is recorded until it has
+        #: been evaluated.
+        self._playing = False
 
     # The run
 
@@ -449,9 +452,18 @@ class Recorder:
             self._tagging = True
         if record.scene_file is not None:
             self._inputs = Inputs(
-                os.path.dirname(record.scene_file), excluded=engine_dirs(config)
+                os.path.dirname(record.scene_file),
+                excluded=engine_dirs(config),
+                play=self._play_reading,
             )
             self._inputs.start()
+
+    def _play_reading(self) -> int:
+        """The index of the first play what the script reads now can change:
+        the one running, or else the next to begin.
+        """
+        plays = len(self.ensure_record().plays)
+        return plays - 1 if self._playing else plays
 
     def end_run(self) -> None:
         """The script has ended: capture what it left."""
@@ -589,28 +601,31 @@ class Recorder:
             self._identities.clear()
             self._line_counts.clear()
         self._identities.append(play_identity(play, self._line_counts))
-
-        scene.begin_animations()
-        play.moving = tuple(scene.moving_mobjects)
-        play.static = tuple(scene.static_mobjects)
-        play.held = bool(scene.is_current_animation_frozen_frame())
-        play.frame_hooks = scene_hooks(scene, FRAME_HOOKS)
-        play.play_internal_overridden = bool(scene_hooks(scene, ("play_internal",)))
-        extras = CameraExtras.observe(scene.renderer.camera, None)
-        body = _Body(play, refusal, live, extras)
+        self._playing = True
         try:
-            play.static_seq = self.capture("static", start, play, extras).seq
-            if live is not None:
-                live.begin(play)
-            if play.held:
-                # A frozen frame: CE calls none of the scene's hooks.
-                self._prepare(body)
-                self._run_play(body)
-            else:
-                self._play_internal(body)
+            scene.begin_animations()
+            play.moving = tuple(scene.moving_mobjects)
+            play.static = tuple(scene.static_mobjects)
+            play.held = bool(scene.is_current_animation_frozen_frame())
+            play.frame_hooks = scene_hooks(scene, FRAME_HOOKS)
+            play.play_internal_overridden = bool(scene_hooks(scene, ("play_internal",)))
+            extras = CameraExtras.observe(scene.renderer.camera, None)
+            body = _Body(play, refusal, live, extras)
+            try:
+                play.static_seq = self.capture("static", start, play, extras).seq
+                if live is not None:
+                    live.begin(play)
+                if play.held:
+                    # A frozen frame: CE calls none of the scene's hooks.
+                    self._prepare(body)
+                    self._run_play(body)
+                else:
+                    self._play_internal(body)
+            finally:
+                if body.plan is not None:
+                    body.plan.release()
         finally:
-            if body.plan is not None:
-                body.plan.release()
+            self._playing = False
 
         # The run that evaluated it, planned once play_internal's body began.
         final = body.run
