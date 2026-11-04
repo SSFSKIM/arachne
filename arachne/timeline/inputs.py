@@ -198,7 +198,9 @@ def engine_dirs(config: Any) -> list[str]:
     it was given, which ``get_dir`` refuses). A directory whose path holds a
     module or scene name as a whole component is taken up to it; one that
     does not resolve, or holds a name inside a component, is left out: it
-    excludes nothing, and watching what a scene reads never stops a render.
+    excludes nothing. Whatever goes wrong resolving one directory leaves
+    that one out, since watching what a scene reads must never stop a
+    render.
     """
     try:
         view = type(config)()
@@ -206,29 +208,36 @@ def engine_dirs(config: Any) -> list[str]:
             key: os.fspath(value) if isinstance(value, os.PathLike) else value
             for key, value in config._d.items()
         }
-    except (AttributeError, TypeError, ValueError):
+    except Exception:  # noqa: BLE001 (any configuration: see the docstring)
         return []
     found = []
     for key in ENGINE_DIR_KEYS:
-        if not isinstance(view._d.get(key), str):
-            continue
         try:
-            directory = view.get_dir(key, module_name=_HOLE, scene_name=_HOLE)
-        except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+            directory = _engine_dir(view, key)
+        except Exception:  # noqa: BLE001, S112 (see the docstring)
             continue
-        if directory is None:
-            continue
-        parts = Path(directory).parts
-        cut = next((k for k, part in enumerate(parts) if _HOLE in part), None)
-        if cut is not None:
-            if parts[cut] != _HOLE or cut == 0:
-                continue
-            parts = parts[:cut]
-        try:
-            found.append(os.path.realpath(os.path.join(*parts)))
-        except (OSError, ValueError):
-            continue
+        if directory is not None:
+            found.append(directory)
     return found
+
+
+def _engine_dir(view: Any, key: str) -> str | None:
+    """The real path of the directory ``key`` of ``view`` names, up to a
+    module or scene name, or ``None`` when it excludes nothing.
+    """
+    if not isinstance(view._d.get(key), str):
+        return None
+    directory = view.get_dir(key, module_name=_HOLE, scene_name=_HOLE)
+    if directory is None:
+        return None
+    parts = Path(directory).parts
+    cut = next((k for k, part in enumerate(parts) if _HOLE in part), None)
+    if cut is not None:
+        if parts[cut] != _HOLE or cut == 0:
+            return None
+        parts = parts[:cut]
+    # ``Path(".").parts`` is empty, and ``Path()`` is the working directory.
+    return os.path.realpath(Path(*parts))
 
 
 # The source
