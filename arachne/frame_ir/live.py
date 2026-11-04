@@ -355,9 +355,8 @@ class LivePainter:
         objects: list[tuple[int, str, str]] = []
         records: dict[int, Record] = {}
         order: list[tuple[str, int, int]] = []
-        view = stream._view_of(
-            camera, kind, uploads, background=background, freeze=False
-        )
+        # The capture itself froze the centre if it drew through the context.
+        view = stream._view_of(camera, kind, uploads, background=background)
         held = stream._held
         for leaf_kind, recording in drawn:
             leaf = recording._xf_leaf
