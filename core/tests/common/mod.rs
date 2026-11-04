@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 
 pub mod meshes;
+pub mod resolve;
 
 use arachne_core::xf::*;
 

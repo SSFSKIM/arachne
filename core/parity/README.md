@@ -5,9 +5,10 @@ frames, within a bound per resolve class.
 
 - `probes.rs`: the fixtures. The class probes (two surfaces crossing, a curve behind a surface,
   transparency over an opaque surface, a label fixed in frame over a surface, the depth rule both
-  ways, a stroke crossing a surface, a surface edge-on, an orbiting camera) and the seam probe,
-  built in code as XF streams, with the pixels each one asserts where CE's painter order is wrong
-  (`tests/probes.rs`). Compiled into the core as `arachne_core::probes`; the binding's
+  ways, a stroke crossing a surface, a surface edge-on, an orbiting camera), the seam probe, and
+  `paint_kinds` (dashes, round and square caps, round and bevel joins, instances, point blocks),
+  built in code as XF streams, with the pixels each class probe asserts where CE's painter order is
+  wrong (`tests/probes.rs`). Compiled into the core as `arachne_core::probes`; the binding's
   `probe_fixtures()` hands them to Python.
 - `references/<fixture>.npz`: the core's frames of each fixture (`frame_data`, uint8, frames x
   height x width x 4); `references/<fixture>.resolves.npz`, each reference pixel's resolve class
@@ -16,7 +17,8 @@ frames, within a bound per resolve class.
   fixture's references were drawn from. One uint8 `frame_data` per file is the only `.npz` the
   repository's leak check admits.
 - `tolerances.json`: per resolve class, the largest channel difference a backend's pixel may show
-  against the reference pixel of that class.
+  against the reference pixel of that class (all placeholders for now). The core's own backend
+  (`cpu`) must also resolve every pixel in the reference's class.
 
 Streams are never stored, in any encoding: a backend regenerates them at the pinned revision.
 

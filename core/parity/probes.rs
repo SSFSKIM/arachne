@@ -4,12 +4,15 @@
 //! kit's reference frames); `tests/probes.rs` asserts them.
 //!
 //! CE's 3D camera sorts the faces of 3D objects by the depth of their centres, draws them in that
-//! order, then draws every ordinary object (curves, axes, text) on top of all of them. Each probe's
-//! order is the order CE draws it in, and each check names the pixel CE draws wrong there (or, where
-//! the probe also shows the core keeping what CE draws right, that pixel too).
+//! order, then draws every ordinary object (curves, axes, text) on top of all of them. A probe's
+//! order is its scene's draw order (the order of `add`), which is not always CE's: where it puts an
+//! ordinary object before a surface (`fixed_label_over_surface`, `depth_rule_both_ways`), CE still
+//! draws the object after the surface's faces. Each check names a pixel CE draws wrong (or, where the
+//! probe also shows the core keeping what CE draws right, that pixel too) with CE's bytes there: for
+//! sheets, the sheets covering the pixel composited in the probe's order; an ordinary object, on top.
 //!
 //! The expected pixels come from an oracle of their own: each flat sheet's depth at a pixel by
-//! casting the pixel's sight line onto the sheet's plane, the sheets composited in that order. A
+//! casting the pixel's sight line onto the sheet's plane, the sheets composited in depth order. A
 //! check sits where nothing crosses its pixel, so one order holds across it.
 
 use crate::composite::{blend, premultiply};
@@ -52,7 +55,8 @@ pub struct Probe {
     pub checks: Vec<Check>,
 }
 
-/// Every probe, in a fixed order: the eight class probes, then the seam probe.
+/// Every probe, in a fixed order: the eight class probes, the seam probe, then the fixture of the
+/// paint kinds the probes do not draw.
 pub fn all() -> Vec<Probe> {
     vec![
         intersecting_surfaces(),
@@ -64,6 +68,7 @@ pub fn all() -> Vec<Probe> {
         edge_on_surface(),
         orbit(8, WIDTH, HEIGHT),
         seam(),
+        paint_kinds(),
     ]
 }
 
@@ -385,17 +390,36 @@ pub fn composite(
     Some(px)
 }
 
-/// The pixel a world point lands on, which must be clean for the sheets, and their bytes there
-/// over black.
-fn clean(view: &View, flats: &[Flat], p: [f64; 3]) -> (u32, u32, [u8; 4]) {
-    let (x, y) = pixel_of(view, WIDTH, HEIGHT, p).expect("a probe's point is on the frame");
-    let bytes = composite(view, WIDTH, HEIGHT, flats, x, y, [0, 0, 0, 255])
-        .unwrap_or_else(|| panic!("the pixel of {p:?} ({x}, {y}) is not clean"));
-    (x, y, bytes)
+/// The bytes CE's painter order gives a clean pixel (see [`composite`]): the sheets covering it
+/// composited in their order in `flats`, the later on top, whatever their depth.
+pub fn painted(
+    view: &View,
+    width: u32,
+    height: u32,
+    flats: &[Flat],
+    x: u32,
+    y: u32,
+    bg: [u8; 4],
+) -> Option<[u8; 4]> {
+    composite(view, width, height, flats, x, y, bg)?;
+    let mut px = bg;
+    for f in flats {
+        if sight_key(view, width, height, f, x as f64 + 0.5, y as f64 + 0.5).is_some() {
+            px = blend(premultiply(f.rgba), 255, px);
+        }
+    }
+    Some(px)
 }
 
-fn over(top: [f64; 4], under: [u8; 4]) -> [u8; 4] {
-    blend(premultiply(top), 255, under)
+/// The pixel a world point lands on, which must be clean for the sheets, the sheets' bytes there
+/// over black in depth order, and in CE's painter order.
+fn clean(view: &View, flats: &[Flat], p: [f64; 3]) -> (u32, u32, [u8; 4], [u8; 4]) {
+    let (x, y) = pixel_of(view, WIDTH, HEIGHT, p).expect("a probe's point is on the frame");
+    let bg = [0, 0, 0, 255];
+    let bytes = composite(view, WIDTH, HEIGHT, flats, x, y, bg)
+        .unwrap_or_else(|| panic!("the pixel of {p:?} ({x}, {y}) is not clean"));
+    let ce = painted(view, WIDTH, HEIGHT, flats, x, y, bg).expect("a clean pixel");
+    (x, y, bytes, ce)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -450,8 +474,9 @@ pub fn intersecting_surfaces() -> Probe {
             rgba: BLUE,
         },
     ];
-    let (x, y, low) = clean(&view, &flats, [-2.0, 0.5, 0.0]);
-    let (hx, hy, high) = clean(&view, &flats, [2.0, 0.5, 1.0]);
+    // A point of the tilted sheet below the level one: both cover its pixel.
+    let (x, y, low, low_ce) = clean(&view, &flats, [-0.5, 0.0, -0.25]);
+    let (hx, hy, high, high_ce) = clean(&view, &flats, [2.0, 0.5, 1.0]);
     Probe {
         name: "intersecting_surfaces",
         width: WIDTH,
@@ -462,14 +487,14 @@ pub fn intersecting_surfaces() -> Probe {
                 x,
                 y,
                 low,
-                premultiply(BLUE),
+                low_ce,
                 "the level sheet in front where the tilted one dips below it",
             ),
             check(
                 hx,
                 hy,
                 high,
-                premultiply(BLUE),
+                high_ce,
                 "the tilted sheet in front where it rises above (CE right)",
             ),
         ],
@@ -493,8 +518,8 @@ pub fn curve_behind_surface() -> Probe {
         corners: lev,
         rgba: GREEN,
     }];
-    let (x, y, below) = clean(&view, &flats, ring(0.75));
-    let (ux, uy, _) = clean(&view, &flats, ring(0.25));
+    let (x, y, below, _) = clean(&view, &flats, ring(0.75));
+    let (ux, uy, _, _) = clean(&view, &flats, ring(0.25));
     Probe {
         name: "curve_behind_surface",
         width: WIDTH,
@@ -553,10 +578,10 @@ pub fn translucent_over_opaque() -> Probe {
             rgba: blue,
         },
     ];
-    let grey = premultiply(GREY);
-    let (x, y, dipped) = clean(&view, &flats, [-2.5, -1.5, 0.0]);
-    let (rx, ry, risen) = clean(&view, &flats, [2.5, -1.5, 1.0]);
-    let (hx, hy, stacked) = clean(&view, &flats, [0.3, 0.2, 1.6]);
+    // A point of the translucent sheet below the opaque one: both cover its pixel.
+    let (x, y, dipped, dipped_ce) = clean(&view, &flats, [-1.8, -1.0, -0.72]);
+    let (rx, ry, risen, risen_ce) = clean(&view, &flats, [2.5, -1.5, 1.0]);
+    let (hx, hy, stacked, stacked_ce) = clean(&view, &flats, [0.3, 0.2, 1.6]);
     Probe {
         name: "translucent_over_opaque",
         width: WIDTH,
@@ -567,21 +592,21 @@ pub fn translucent_over_opaque() -> Probe {
                 x,
                 y,
                 dipped,
-                over(red, grey),
+                dipped_ce,
                 "the opaque sheet where the translucent one dips below it",
             ),
             check(
                 rx,
                 ry,
                 risen,
-                over(red, grey),
+                risen_ce,
                 "the translucent sheet over the opaque one where it rises (CE right)",
             ),
             check(
                 hx,
                 hy,
                 stacked,
-                stacked,
+                stacked_ce,
                 "the high sheet over both, in depth order (CE right)",
             ),
         ],
@@ -625,7 +650,7 @@ pub fn fixed_label_over_surface() -> Probe {
         rgba: GREEN,
     }];
     let [lx, ly] = map_of(&view, WIDTH, HEIGHT).apply([0.0, -0.5, 0.0]);
-    let (tx, ty, under) = clean(&view, &flats, centre);
+    let (tx, ty, under, _) = clean(&view, &flats, centre);
     Probe {
         name: "fixed_label_over_surface",
         width: WIDTH,
@@ -678,8 +703,8 @@ pub fn depth_rule_both_ways() -> Probe {
         corners: wall,
         rgba: purple,
     }];
-    let (bx, by, hidden) = clean(&view, &flats, [0.0, 1.5, 0.3]);
-    let (fx, fy, _) = clean(&view, &flats, [0.0, -1.5, 0.9]);
+    let (bx, by, hidden, _) = clean(&view, &flats, [0.0, 1.5, 0.3]);
+    let (fx, fy, _, _) = clean(&view, &flats, [0.0, -1.5, 0.9]);
     Probe {
         name: "depth_rule_both_ways",
         width: WIDTH,
@@ -720,8 +745,8 @@ pub fn stroke_crossing_surface() -> Probe {
         corners: lev,
         rgba: navy,
     }];
-    let (x, y, hidden) = clean(&view, &flats, [-2.0, 0.5, -2.0 / 3.0]);
-    let (ux, uy, _) = clean(&view, &flats, [2.0, 0.5, 2.0 / 3.0]);
+    let (x, y, hidden, _) = clean(&view, &flats, [-2.0, 0.5, -2.0 / 3.0]);
+    let (ux, uy, _, _) = clean(&view, &flats, [2.0, 0.5, 2.0 / 3.0]);
     Probe {
         name: "stroke_crossing_surface",
         width: WIDTH,
@@ -785,9 +810,9 @@ pub fn edge_on_surface() -> Probe {
     // At x = 2.4 the ring's near arc (y about -0.7) is behind the wall at y = -1; at x = 0 it
     // (y = -2.5) is in front of it, and the far arc (y = 2.5) behind it: on the pixel row the far
     // arc's centreline crosses, nearer the far arc than the near one, the near arc still shows.
-    let (hx, hy, hidden) = clean(&view, &flats, [2.4, -1.0, 0.0]);
+    let (hx, hy, hidden, _) = clean(&view, &flats, [2.4, -1.0, 0.0]);
     let (vx, vy) = pixel_of(&view, WIDTH, HEIGHT, ring(0.25)).expect("the far arc is on the frame");
-    let (ax, ay, above) = clean(&view, &flats, [-1.0, -1.0, 0.8]);
+    let (ax, ay, above, _) = clean(&view, &flats, [-1.0, -1.0, 0.8]);
     Probe {
         name: "edge_on_surface",
         width: WIDTH,
@@ -938,6 +963,115 @@ pub fn seam() -> Probe {
         width: WIDTH,
         height: HEIGHT,
         deltas: vec![first, second],
+        checks: Vec::new(),
+    }
+}
+
+/// The fixture's point colours, its instances' fill rows and its two strokes' colours.
+pub const PAINT_KINDS_POINTS: [[f64; 4]; 3] = [
+    [1.0, 0.85, 0.2, 1.0],
+    [0.2, 0.9, 0.9, 1.0],
+    [0.95, 0.3, 0.6, 1.0],
+];
+pub const PAINT_KINDS_FILLS: [[f64; 4]; 3] = [
+    [0.9, 0.2, 0.15, 1.0],
+    [0.2, 0.7, 0.3, 1.0],
+    [0.25, 0.35, 0.95, 1.0],
+];
+pub const PAINT_KINDS_STROKES: [[f64; 4]; 2] = [[1.0, 1.0, 1.0, 1.0], [0.95, 0.6, 0.1, 1.0]];
+
+/// Not a class probe: the paint kinds the probes do not draw, over a level sheet under the 3D
+/// camera, so the identity gate, the thread matrix and the parity kit cover them. A dashed zigzag
+/// with round caps and joins; a zigzag with square caps and bevel joins; an `instances` record of a
+/// filled, stroked square, its members overlapping; a `points` record of blocks four pixels a side,
+/// some overlapping, some below the sheet.
+pub fn paint_kinds() -> Probe {
+    let view = view(WIDTH, HEIGHT, 55.0 * DEG, -60.0 * DEG);
+    let lev = level(0.0, 4.0, 3.0);
+    let floor = sheet(lev, 4, 3);
+    let zig = |y: f64| {
+        polyline(&[
+            [-3.0, y, 0.3],
+            [-1.5, y + 0.6, 0.3],
+            [0.0, y, 0.3],
+            [1.5, y + 0.6, 0.3],
+            [3.0, y, 0.3],
+        ])
+    };
+    let (dashed, beveled) = (zig(-2.2), zig(1.6));
+    let mut a = stroke_record(2, &dashed, PAINT_KINDS_STROKES[0], 20.0);
+    a.paint.cap = Cap::Round;
+    a.paint.joint = Joint::Round;
+    a.dash = Some(Dash {
+        period: 0.6,
+        duty: 0.6,
+        phase: 0.25,
+    });
+    let mut b = stroke_record(3, &beveled, PAINT_KINDS_STROKES[1], 24.0);
+    b.paint.cap = Cap::Square;
+    b.paint.joint = Joint::Bevel;
+    let unit = polyline(&[
+        [-0.4, -0.4, 0.0],
+        [0.4, -0.4, 0.0],
+        [0.4, 0.4, 0.0],
+        [-0.4, 0.4, 0.0],
+        [-0.4, -0.4, 0.0],
+    ]);
+    let fills = Stops::new(PAINT_KINDS_FILLS.to_vec());
+    let strokes = Stops::new(vec![PAINT_KINDS_STROKES[0]; 3]);
+    let mut c = fill_record(4, &unit, WHITE, Space::World);
+    c.kind = RecordKind::Instances;
+    c.paint.stroke = Paint::One(WHITE);
+    c.paint.stroke_width = 6.0;
+    let shift = |dx: f64, dy: f64, dz: f64| -> Affine {
+        [
+            [1.0, 0.0, 0.0, dx],
+            [0.0, 1.0, 0.0, dy],
+            [0.0, 0.0, 1.0, dz],
+        ]
+    };
+    c.body = Body::Instances(Instances {
+        placements: vec![
+            shift(-1.6, -0.3, 0.5),
+            shift(-1.1, 0.0, 0.7),
+            shift(-0.6, 0.3, 0.9),
+        ],
+        fill: fills.key,
+        stroke: strokes.key,
+        objects: vec![401, 402, 403],
+    });
+    // Twelve points along a line, every fourth below the sheet, neighbours' blocks overlapping.
+    let cloud_points: Vec<[f64; 3]> = (0..12)
+        .map(|i| {
+            let z = if i % 4 == 0 { -0.4 } else { 0.6 };
+            [1.0 + 0.12 * i as f64, -0.5 + 0.03 * (i % 3) as f64, z]
+        })
+        .collect();
+    let colours = Stops::new((0..12).map(|i| PAINT_KINDS_POINTS[i % 3]).collect());
+    let cloud = Shape::new(ShapeData::Path {
+        points: cloud_points,
+    });
+    let mut d = Record::new(RecordKind::Points, 5, 105);
+    d.geometry.shape_a = Some(cloud.key);
+    d.depth.space = Space::World;
+    d.body = Body::Points(Points {
+        colors: colours.key,
+        radius: 4.0,
+    });
+    let items = [
+        (floor.clone(), mesh_record(1, &floor, GREY, false)),
+        (dashed.clone(), a),
+        (beveled.clone(), b),
+        (unit.clone(), c),
+        (cloud.clone(), d),
+    ];
+    let mut delta = first_delta(view, &items, &[1, 2, 3, 4, 5]);
+    delta.upload_paints = vec![fills, strokes, colours];
+    Probe {
+        name: "paint_kinds",
+        width: WIDTH,
+        height: HEIGHT,
+        deltas: vec![delta],
         checks: Vec::new(),
     }
 }

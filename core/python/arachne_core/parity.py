@@ -1,6 +1,7 @@
 """The parity kit's runner: a backend draws the kit's fixtures and each frame is held to the core's
 reference frames, pixel by pixel, within the bound ``tolerances.json`` sets for the resolve class
-the reference pixel took.
+the reference pixel took. The core's own backend (``cpu``) must also resolve every pixel in the
+reference pixel's class.
 
 The kit (``core/parity/``) holds, per fixture, its reference frames (``references/<fixture>.npz``,
 ``frame_data``: uint8, frames x height x width x 4) and their resolve classes
@@ -43,6 +44,9 @@ def _cpu(deltas: list, width: int, height: int) -> list[tuple[np.ndarray, np.nda
 
 
 BACKENDS: dict[str, Backend] = {"cpu": _cpu}
+
+# Backends that resolve as the references were drawn: every pixel must take the reference's class.
+SAME_CLASSES = {"cpu"}
 
 
 def stream_sha256(deltas: list) -> str:
@@ -89,14 +93,25 @@ def compare(
     frames: Sequence[tuple[np.ndarray, np.ndarray]],
     reference: tuple[np.ndarray, np.ndarray],
     bounds: np.ndarray,
+    same_classes: bool = False,
 ) -> str | None:
-    """What fails in a fixture's frames against its reference, or None when they pass."""
+    """What fails in a fixture's frames against its reference, or None when they pass; with
+    ``same_classes``, a pixel resolved in another class than the reference's fails too.
+    """
     rgba, resolves = reference
     if len(frames) != len(rgba):
         return f"{len(frames)} frames drawn where the reference has {len(rgba)}"
-    for i, (drawn, _) in enumerate(frames):
+    for i, (drawn, classes) in enumerate(frames):
         if drawn.shape != rgba[i].shape:
             return f"frame {i}: shape {drawn.shape} against {rgba[i].shape}"
+        moved = classes != resolves[i]
+        if same_classes and moved.any():
+            y, x = np.argwhere(moved)[0]
+            return (
+                f"frame {i}: {int(moved.sum())} pixels resolved in another class, the "
+                f"first at {x},{y} ({RESOLVES[classes[y, x]]} where the reference has "
+                f"{RESOLVES[resolves[i][y, x]]})"
+            )
         diff = np.abs(drawn.astype(np.int16) - rgba[i].astype(np.int16)).max(axis=2)
         over = diff > bounds[resolves[i]]
         if over.any():
@@ -156,7 +171,7 @@ def run(
         elif shas.get(name) != sha:
             failure = "the reference was drawn from another stream (regenerate it)"
         else:
-            failure = compare(frames, reference, bounds)
+            failure = compare(frames, reference, bounds, backend in SAME_CLASSES)
         if failure is None:
             passed += 1
             print(f"PASS {name}", file=out)

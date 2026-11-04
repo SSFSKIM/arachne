@@ -117,9 +117,14 @@ shape's and table's key against its content, except for shape kinds it does not 
   flattened on the pixel plane to Cairo's tolerance of 0.1 pixel and covers each pixel by its exact
   area. Glyphs are paths. A pixel-aligned rectangle covers whole pixels exactly; Cairo's own box
   path differs from it by at most one step per byte where an edge falls inside a pixel.
-- **Points and instances.** A `points` record's point `i` is a disc `int(radius)` pixels across (CE
-  draws a point as a block that wide; under 1 nothing), centred where CE places it, in colour row
-  `i`, at the point's depth. An `instances` record's member `i` is its prototype placed by
+- **Points and instances.** A `points` record draws as CE's point cloud: point `i` is a square block
+  of `t = int(1 + (radius − 1))` pixels a side (none when t < 1) about the pixel its subpixel place
+  truncates to (toward zero), offsets `range(−t//2 + 1, t//2 + 1)` on each axis, clipped to the
+  frame pixel by pixel; its colour is colour row `i`, alpha times the group opacity, each channel
+  `trunc(255·c)`; each block pixel covers its pixel exactly, at the point's depth, and where blocks
+  overlap at one depth the later write in CE's order wins (offset-major: every point at the first
+  offset, then every point at the next). A translucent point composites where CE overwrites. An
+  `instances` record's member `i` is its prototype placed by
   `placements[i]` after the record's own placement, its fill and stroke row `i` of the record's
   tables where the prototype fills or strokes; members tie in order, each above the one before, and
   draw the bytes the same members drawn as consecutive records draw.
@@ -131,16 +136,22 @@ shape's and table's key against its content, except for shape kinds it does not 
   evaluated at the centroid of the sub-samples each pixel's fragment covers; lit linear colour is
   encoded there. Alpha is the fill's times the group opacity.
 - **Compositing.** Each pixel holds fragments: a depth plane, a premultiplied colour, a coverage (a
-  mask over 16 sub-samples for meshes; an exact area for paths, with the mask on demand) and the
-  draw order. Fragments resolve by depth at the sub-samples, ties by draw order: a pixel with one
-  depth order at every sub-sample and at most one partially covering mask composites back to front
-  with its coverage as Cairo's ARGB32 surface composites paint (the coverage resolve); a crossing
-  inside the pixel, or two or more partial masks, composites each sub-sample and averages them (the
-  sample resolve); an opaque fragment covering the pixel in front of everything takes a fast path.
-  One mesh's triangles meeting in a pixel without overlapping (a surface's internal edges) count as
-  one fragment, its colour their average over the sub-samples each covers, so internal edges take
-  the coverage resolve and never show what lies behind. `Stream.draw_resolves` reports each pixel's
-  resolve.
+  mask over 16 sub-samples for meshes; an exact area for paths) and the draw order. The 16
+  sub-samples are a fixed stratified pattern (`SAMPLE_OFFSETS`): one in each cell of the pixel's
+  4 x 4 grid and one in each of its 16 rows and columns. Fragments resolve by depth at the
+  sub-samples, ties by draw order: a pixel with one depth order at every sub-sample and at most one
+  partially covering mask composites back to front with its coverage as Cairo's ARGB32 surface
+  composites paint (the coverage resolve); a crossing inside the pixel, or two or more partial
+  masks, composites each sub-sample and averages them (the sample resolve), a mask covering a
+  sub-sample or not and a path compositing with its exact area inside the sub-sample's cell, so a
+  path's edge lands where the coverage resolve puts it, up to rounding; an opaque fragment covering
+  the pixel in front of everything takes a fast path. One mesh's triangles meeting in a pixel
+  without overlapping (a surface's internal edges) count as one fragment, its colour their average
+  over the sub-samples each covers, so internal edges take the coverage resolve and never show what
+  lies behind; for meshes alone, and a path over a surface tiling the pixel, that is the sample
+  resolve's result up to rounding. `Stream.draw_resolves` reports each pixel's resolve. A GPU
+  backend computes masks in a compute stage at this pattern's positions; hardware multisampling's
+  positions are out, since WebGPU guarantees only 1 and 4 samples per pixel.
 
 ## Binary form
 

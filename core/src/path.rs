@@ -1,4 +1,4 @@
-//! The path rasterizer: paths (CE's cubic Bézier outlines, glyphs included) and discs lowered to
+//! The path rasterizer: paths (CE's cubic Bézier outlines, glyphs included) lowered to
 //! coverage layers, and those rasterized into fragments carrying their exact area, with their masks
 //! at the sub-samples on demand.
 //!
@@ -22,12 +22,10 @@
 //!   plane at its centre's depth; anything else is in front of the scene, tying by draw order.
 //! - Coverage: each pixel's exact nonzero area (`scanline::cover`); a pixel the compositor resolves
 //!   sample by sample asks for the layer's winding at the sub-samples (`scanline::mask`).
-//!
-//! Discs are the points of a `points` record: one filled circle per point, at the point's place on
-//! the pixel plane, its diameter the thickness CE draws a point with.
 
 use crate::composite::{
-    Coverage, Fragment, OpaquePass, Plane, Producer, Rect, TransparentPass, premultiply,
+    Coverage, Fragment, OpaquePass, Plane, Producer, Rect, SAMPLES, TransparentPass, premultiply,
+    sample_cell,
 };
 use crate::depth::{Centreline, WorldPlane};
 use crate::project::{FrameMap, Projection, placement, pre_display};
@@ -68,15 +66,6 @@ pub struct PathDraw<'a> {
     pub sub: u32,
 }
 
-/// One disc to draw: a point of a `points` record.
-pub struct DiscDraw<'a> {
-    pub record: &'a Record,
-    pub point: [f64; 3],
-    pub colour: [f64; 4],
-    pub order: u32,
-    pub sub: u32,
-}
-
 /// Where a layer's fragments sit in depth.
 #[derive(Clone, Copy, Debug)]
 enum LayerDepth {
@@ -85,7 +74,7 @@ enum LayerDepth {
     Curve(u32),
 }
 
-/// One coverage layer: a fill, a stroke's outline or a disc, with its colour and place.
+/// One coverage layer: a fill or a stroke's outline, with its colour and place.
 struct Layer {
     edges: Vec<Edge>,
     /// The first tile row the layer touches, and per tile row from it, the range of its edges
@@ -122,7 +111,7 @@ struct CurveDepth {
     reach: f64,
 }
 
-/// Paths and discs lowered to coverage layers, binned by tile: a producer of area fragments.
+/// Paths lowered to coverage layers, binned by tile: a producer of area fragments.
 pub struct Paths {
     layers: Vec<Layer>,
     centrelines: Vec<CurveDepth>,
@@ -356,7 +345,7 @@ fn curve_depth(shown: &[[f64; 3]], map: &FrameMap, projection: &Projection) -> C
     Centreline::new(&points, &breaks)
 }
 
-/// Lowering state shared by every path and disc of a frame.
+/// Lowering state shared by every path of a frame.
 pub struct Lowering<'v> {
     view: &'v View,
     map: FrameMap,
@@ -551,56 +540,6 @@ impl<'v> Lowering<'v> {
         LayerDepth::Curve(self.paths.centrelines.len() as u32 - 1)
     }
 
-    /// Lowers one disc.
-    pub fn disc(&mut self, draw: &DiscDraw<'_>) {
-        let rec = draw.record;
-        let Body::Points(points) = &rec.body else {
-            unreachable!("a disc is a point of a points record")
-        };
-        // CE draws a point as a square block of `int(thickness)` pixels a side.
-        let diameter = points.radius.trunc();
-        if diameter.is_nan() || diameter < 1.0 {
-            return;
-        }
-        let world = place(&rec.geometry.place_a, draw.point);
-        if world.iter().any(|v| !v.is_finite()) {
-            return;
-        }
-        let (placement, key) = placement(
-            self.projection.as_ref(),
-            rec.depth.space,
-            rec.depth.fixed_orientation_centre,
-        );
-        let shown = pre_display(&[world], self.projection.as_ref(), placement)[0];
-        let v = self.view;
-        let [cx, cy] = crate::project::subpixel_coords(
-            &[shown],
-            self.width,
-            self.height,
-            v.frame_width,
-            v.frame_height,
-            v.frame_center,
-        )[0];
-        let key = key.unwrap_or_else(|| -self.projection.as_ref().unwrap().factor(shown[2]));
-        let colour = premultiply([
-            draw.colour[0],
-            draw.colour[1],
-            draw.colour[2],
-            draw.colour[3] * rec.opacity,
-        ]);
-        if colour[3] == 0 || !(cx.is_finite() && cy.is_finite()) {
-            return;
-        }
-        let circle = kurbo::Circle::new((cx, cy), diameter / 2.0).to_path(TOLERANCE);
-        self.push(
-            scanline::edges_of(&rings(&circle)),
-            colour,
-            LayerDepth::Plane(Plane::constant(key)),
-            draw.order,
-            draw.sub,
-        );
-    }
-
     fn push(&mut self, edges: Vec<Edge>, colour: [u8; 4], depth: LayerDepth, order: u32, sub: u32) {
         if edges.is_empty() {
             return;
@@ -658,7 +597,7 @@ impl<'v> Lowering<'v> {
         });
     }
 
-    /// The lowered paths and discs, ready to draw.
+    /// The lowered paths, ready to draw.
     pub fn finish(self) -> Paths {
         self.paths
     }
@@ -750,5 +689,14 @@ impl Producer for Paths {
     fn mask(&self, id: u32, x: u32, y: u32) -> u16 {
         let layer = &self.layers[id as usize];
         scanline::mask(&layer.edges, layer.candidates(y), x, y)
+    }
+
+    fn cell_areas(&self, id: u32, x: u32, y: u32) -> [f32; SAMPLES] {
+        let layer = &self.layers[id as usize];
+        let cells = scanline::cell_areas(&layer.edges, layer.candidates(y), x, y);
+        std::array::from_fn(|s| {
+            let [column, row] = sample_cell(s);
+            cells[row][column] as f32
+        })
     }
 }
