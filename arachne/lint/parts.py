@@ -43,6 +43,7 @@ from arachne.camera.projection import (
     draw_kind,
     member_box,
     pixel_points,
+    point_thickness,
     record_view,
     view_of,
 )
@@ -71,7 +72,8 @@ class Leaf:
     ``ink_box`` is the box of what its draw paints, ``screen_box`` of its
     points. ``stroke_width`` is its widest visible stroke (its background
     stroke included) as drawn, in home-frame units, 0 when it has none; a
-    point cloud's is the thickness its ink adds to its points.
+    point cloud's is the side of the square it draws each point as, though
+    the frame cuts its ink.
     """
 
     id: str
@@ -428,12 +430,7 @@ class _Reader:
         screen = _screen(self.view, pixel_points(self.camera, self.view, mob, points))
         box = _box(screen)
         if kind == "points":
-            # A cloud's points are drawn as squares as thick as its stroke.
-            drawn = max(
-                ink[2] - ink[0] - box[2] + box[0],
-                ink[3] - ink[1] - box[3] + box[1],
-                0.0,
-            )
+            drawn = point_thickness(self.view, mob)
         else:
             drawn = (
                 width

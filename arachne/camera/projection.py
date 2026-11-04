@@ -41,6 +41,7 @@ __all__ = [
     "member_box",
     "pixel_box",
     "pixel_points",
+    "point_thickness",
     "record_view",
     "render_mapping_centre",
     "screen_box",
@@ -272,6 +273,34 @@ def member_box(
     return _points_box(camera, view, member, home=home)
 
 
+def point_thickness(view: View, member: Mobject) -> float:
+    """The side of the square a point cloud's draw paints for each of its
+    points, in home-frame units: as thick as the camera thickens it at the
+    configured pixel size, wherever the point is and however much of the
+    square the frame keeps.
+    """
+    side = len(_nudges(_cloud_thickness(view, member)))
+    return side * view.home_width / view.pixel_width
+
+
+def _cloud_thickness(view: View, member: Mobject) -> float:
+    """The thickness a camera thickens a cloud's pixels by
+    (``Camera.adjusted_thickness``), scaled from the configured pixel size
+    rather than from whatever configuration is active now.
+    """
+    configured = view.configured_pixels[0] + view.configured_pixels[1]
+    factor = configured / (view.pixel_width + view.pixel_height)
+    return 1 + (float(member.get_stroke_width()) - 1) * factor
+
+
+def _nudges(thickness: float) -> range:
+    """The offsets, along each axis, a camera thickens a pixel by
+    (``Camera.get_thickening_nudges``).
+    """
+    whole = int(thickness)
+    return range(-whole // 2 + 1, whole // 2 + 1)
+
+
 def screen_box(view: View, box: Box) -> Box:
     """A pixel box in home-frame units: scene units of the configuration's
     frame, centred, y up.
@@ -468,12 +497,7 @@ def _cloud_ink(camera: Camera, view: View, member: Mobject) -> Box | None:
     """
     shown = _pre_display(camera, member, member.points)
     coords = _placed(view, shown, view.frame_center, home=False).astype(np.int64)
-    # Camera.adjusted_thickness, scaled from the configured pixel size rather
-    # than from whatever configuration is active now.
-    configured = view.configured_pixels[0] + view.configured_pixels[1]
-    factor = configured / (view.pixel_width + view.pixel_height)
-    thickness = 1 + (member.get_stroke_width() - 1) * factor
-    thick = camera.thickened_coordinates(coords, thickness)
+    thick = camera.thickened_coordinates(coords, _cloud_thickness(view, member))
     thick = thick[camera.on_screen_pixels(thick)]
     if not len(thick):
         return None

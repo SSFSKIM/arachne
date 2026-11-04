@@ -22,6 +22,7 @@ from arachne.camera.projection import (
     home_box,
     member_box,
     pixel_box,
+    point_thickness,
     record_view,
     render_mapping_centre,
     screen_box,
@@ -405,3 +406,55 @@ def _tagged(tag: str) -> int:
         if line.rstrip().endswith(f"# @{tag}"):
             return number
     raise LookupError(tag)
+
+
+@pytest.mark.parametrize("name", ["arrow", "number_line", "fraction"])
+def test_every_member_s_ink_is_its_own_draw(name):
+    """Each member of a family, drawn alone, paints the box its ink says."""
+    from arachne import Camera, MathTex, tempconfig
+
+    with tempconfig(SIZE):
+        cases = dict(_members())
+        mob = MathTex(r"\frac{1}{2}") if name == "fraction" else cases[name]
+        camera = Camera()
+        view = view_of(camera)
+        for member in mob.family_members_with_points():
+            predicted = member_box(camera, view, member, ink=True)
+            alone = member.copy()
+            alone.submobjects = []
+            camera.reset()
+            camera.capture_mobjects([alone])
+            drawn = _frame_box(camera.pixel_array)
+            if drawn is None:
+                assert predicted is None
+                continue
+            assert predicted is not None
+            assert max(abs(a - b) for a, b in zip(drawn, predicted, strict=True)) <= 1
+
+
+@pytest.mark.parametrize(
+    ("width", "pixels"),
+    [(1, (96, 54)), (5, (480, 270)), (40, (192, 108)), (40, (96, 54))],
+)
+def test_a_point_s_thickness_is_the_square_its_draw_paints(width, pixels):
+    """A cloud's point is drawn as a square as thick as the camera thickens
+    it at the configured size: that side, in home-frame units, wherever the
+    point is.
+    """
+    from arachne import Camera, PMobject, config, tempconfig
+
+    size = {"pixel_width": pixels[0], "pixel_height": pixels[1]}
+    with tempconfig(size):
+        camera = Camera()
+        view = view_of(camera)
+        cloud = PMobject(stroke_width=width).add_points(np.array([[0.3, 0.2, 0.0]]))
+        camera.capture_mobjects([cloud])
+        drawn = _frame_box(camera.pixel_array)
+        edge = config.frame_width / 2
+        corner = PMobject(stroke_width=width).add_points(np.array([[edge, 0.0, 0.0]]))
+        thickness = point_thickness(view, cloud)
+        assert point_thickness(view, corner) == thickness
+    assert drawn is not None
+    assert thickness == pytest.approx(
+        (drawn[2] - drawn[0]) * view.home_width / pixels[0]
+    )

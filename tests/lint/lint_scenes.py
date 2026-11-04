@@ -11,6 +11,7 @@ import numpy as np
 from arachne import (
     DOWN,
     LEFT,
+    RED,
     RIGHT,
     UP,
     Axes,
@@ -24,6 +25,7 @@ from arachne import (
     Text,
     Transform,
     VGroup,
+    config,
     linear,
 )
 
@@ -133,5 +135,57 @@ class WideCloud(Scene):
 
     def construct(self):
         cloud = PMobject(stroke_width=40).add_points(np.array([[0.0, 0.0, 0.0]]))
+        self.add(cloud)
+        self.wait(0.25)
+
+
+class Drifting(Scene):
+    """A dot moved by a dt updater through a wait."""
+
+    def construct(self):
+        dot = Dot()
+        dot.add_updater(lambda m, dt: m.shift(RIGHT * dt))
+        self.add(dot)
+        self.wait(1)
+
+
+class Hooked(Scene):
+    """A dot the scene's own frame hook moves on each call, and a default
+    the script sets while it runs and puts back at its end.
+    """
+
+    def construct(self):
+        Dot.set_default(radius=0.25)
+        self.calls = 0
+        self.marker = Dot()
+        self.add(self.marker)
+        self.play(self.marker.animate.shift(UP), run_time=1)
+        self.wait(1)
+        Dot.set_default()
+
+    def update_to_time(self, t):
+        super().update_to_time(t)
+        self.calls += 1
+        self.marker.set_x(self.calls / 100)
+
+
+class Recoloured(Scene):
+    """A text with a recoloured copy and a faded copy, in one place."""
+
+    def construct(self):
+        label = Text("hi")
+        red = label.copy().set_color(RED)
+        faint = label.copy().set_opacity(0.3)
+        self.add(label, red, faint)
+        self.wait(0.25)
+
+
+class CornerCloud(Scene):
+    """A cloud drawn 40 wide, one point on each corner of the frame."""
+
+    def construct(self):
+        w, h = config.frame_width / 2, config.frame_height / 2
+        corners = [[x, y, 0.0] for x in (-w, w) for y in (-h, h)]
+        cloud = PMobject(stroke_width=40).add_points(np.array(corners))
         self.add(cloud)
         self.wait(0.25)
