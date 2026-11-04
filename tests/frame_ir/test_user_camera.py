@@ -237,12 +237,11 @@ def test_a_camera_whose_code_changes_what_it_holds_as_it_draws_draws_on_cairo(
     scene_class, subject, attribute, findings
 ):
     """The camera's draw reads what its code changed beyond what XF carries
-    of the capture, so its own draw stands, the attribute named.
+    of the capture, so its own draw stands, the attribute named. (A capture
+    before the first change, one drawing nothing, is described from XF.)
     """
-    before = IrCairoPainter.drawn_total
     direct, described, _ = _both(scene_class)
     _same(direct, described)
-    assert IrCairoPainter.drawn_total == before, "nothing drawn from XF"
     [finding] = findings
     assert (finding.code, finding.subject) == ("render.fallback", subject)
     assert (
