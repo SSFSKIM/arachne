@@ -599,16 +599,30 @@ class FrameStream:
         return ("world", z_index, sort_point, shaded, centre)
 
     def _view_of(
-        self, camera: Any, kind: str, uploads: dict[bytes, Any]
+        self,
+        camera: Any,
+        kind: str,
+        uploads: dict[bytes, Any],
+        *,
+        background: np.ndarray | None = None,
+        freeze: bool = True,
     ) -> dict[str, Any]:
-        background = Shape("image", np.asarray(camera.background))
-        uploads[background.key] = background
+        """The view of ``camera``, over its background or ``background``.
+        With ``freeze``, the centre CE's context maps around is frozen now if
+        no draw has frozen it yet; without, an array no draw has frozen maps
+        around the frame's centre (nothing drawn there reads it).
+        """
+        if background is None:
+            background = np.asarray(camera.background)
+        shape = Shape("image", background)
+        uploads[shape.key] = shape
         array = camera.pixel_array
-        if camera.get_cached_cairo_context(array) is None:
+        centres = camera.pixel_array_to_mapping_centre
+        if freeze and camera.get_cached_cairo_context(array) is None:
             # CE freezes the centre into the context at its first draw into
             # an array (a MovingCamera at every draw): so does this one.
             camera.get_cairo_context(array)
-        mapping = _floats(camera.pixel_array_to_mapping_centre[id(array)])
+        mapping = _floats(centres.get(id(array), camera.frame_center))
         view: dict[str, Any] = {
             "pixel_width": int(camera.pixel_width),
             "pixel_height": int(camera.pixel_height),
@@ -616,7 +630,7 @@ class FrameStream:
             "frame_height": float(camera.frame_height),
             "frame_center": _floats(camera.frame_center),
             "mapping_centre": mapping,
-            "background": background.key,
+            "background": shape.key,
             "camera": kind,
             "cairo_line_width_multiple": float(camera.cairo_line_width_multiple),
             "use_z_index": bool(camera.use_z_index),

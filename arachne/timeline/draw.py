@@ -916,8 +916,11 @@ class LiveFrames:
         self._pending = None
         self._static = None
         if play.held and play.static and self.static_layer:
+            from arachne.frame_ir.live import live
+
             self.camera.reset()
-            self.camera.capture_mobjects(list(play.static))
+            with live(self.camera):
+                self.camera.capture_mobjects(list(play.static))
             self._static = self.camera.pixel_array.copy()
 
     def pending(self, instant: Fraction, until: Fraction) -> None:
@@ -943,14 +946,20 @@ class LiveFrames:
         ]
         targets = list(scene.moving_mobjects) or roots
         camera = self.camera
-        if self._static is not None:
-            camera.set_frame_to_background(self._static)
-        else:
-            # No static picture: drawing runs the scene's code, which can read
-            # what no state holds (a class attribute, a global, a call count).
-            camera.reset()
-            camera.capture_mobjects(static_list(camera, roots, scene.moving_mobjects))
-        camera.capture_mobjects(targets)
+        from arachne.frame_ir.live import live
+
+        with live(camera):
+            if self._static is not None:
+                camera.set_frame_to_background(self._static)
+            else:
+                # No static picture: drawing runs the scene's code, which can
+                # read what no state holds (a class attribute, a global, a
+                # call count).
+                camera.reset()
+                camera.capture_mobjects(
+                    static_list(camera, roots, scene.moving_mobjects)
+                )
+            camera.capture_mobjects(targets)
         self.write(camera.pixel_array.copy(), len(frames))
 
     def end(self, end: Fraction) -> PixelArray | None:

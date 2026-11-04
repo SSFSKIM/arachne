@@ -5,7 +5,9 @@
 mobjects itself, as it always has. On ``ir_cairo`` the frame is turned into an
 XF delta (:class:`~.extract.FrameStream`), the core checks the delta whole
 (``arachne_core``, the ``core`` extra), and Cairo draws the frame from the XF
-stream alone (:class:`~.cairo_painter.CairoDrawer`).
+stream alone (:class:`~.cairo_painter.CairoDrawer`). Frames drawn as the scene
+runs (``LiveFrames``, ``update_frame``) take the same path through
+:func:`~.live.live`, described from what the camera's own capture consumed.
 
 A painter and its stream are made in the process that draws, after any fork:
 :func:`painter_for` keeps one per record and process.
@@ -47,11 +49,15 @@ class IrCairoPainter:
     validate_default = True
 
     def __init__(
-        self, *, validate: bool | None = None, keep: bool | None = None
+        self,
+        *,
+        validate: bool | None = None,
+        keep: bool | None = None,
+        stream: FrameStream | None = None,
     ) -> None:
         if validate is None:
             validate = self.validate_default
-        self.stream = FrameStream()
+        self.stream = FrameStream() if stream is None else stream
         self.state = StreamState()
         self.drawer = CairoDrawer()
         self.core: Any = None
@@ -78,7 +84,10 @@ class IrCairoPainter:
         """The frame the camera draws from ``groups`` (each a layer and the
         list one capture is handed), from its XF description alone.
         """
-        delta = self.stream.frame(camera, groups, t=t, terms=terms)
+        return self.draw(self.stream.frame(camera, groups, t=t, terms=terms))
+
+    def draw(self, delta: Delta) -> np.ndarray:
+        """The frame ``delta`` brings the stream to, drawn from XF alone."""
         drawn = delta
         if self.core is not None:
             # Through the wire: the bytes, parsed back by the core, are what
