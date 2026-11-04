@@ -263,14 +263,20 @@ def test_approved_break_a_dt_check_sees_a_dt_free_output_a_frame_old(session_of)
 # Plays whose updaters a stepping tick could not leave out
 
 
-def test_a_scene_running_its_own_update_mobjects_ticks_everything(session_of):
-    play = session_of("OwnUpdating", STEPPING_SCENES, frame_rate=4).record.plays[-1]
+def test_a_scene_running_its_own_update_mobjects_steps_and_runs_it_at_frames(
+    session_of,
+):
+    """The scene's own ``update_mobjects`` is a frame hook: it runs at the
+    frames, shown CE's frame ``dt``, and once after the play with 0; a
+    stepping tick runs the engine's body instead, so the play steps.
+    """
+    session = session_of("OwnUpdating", STEPPING_SCENES, frame_rate=4)
+    play = session.record.plays[-1]
     assert play.route == "ticked"
-    (reason,) = [r for r in play.admission.reasons if r.startswith(UNGOVERNED)]
-    assert "update_mobjects is its own code" in reason
-    assert play.tick_plan.unbounded == reason
-    assert play.stepping_ticks == 0
-    assert play.full_ticks == 60
+    assert not [r for r in play.admission.reasons if r.startswith(UNGOVERNED)]
+    assert play.tick_plan.unbounded is None
+    assert (play.full_ticks, play.stepping_ticks) == (4, 56)
+    assert session.scene.seen == [0.0, 0.25, 0.25, 0.25, 0.0]
 
 
 # Plans: made from the structure, again when it changes
@@ -482,14 +488,18 @@ def test_known_limit_a_dead_dt_partial_runs_at_frames_only(session_of):
     assert _x_at(stepped, Fraction(3, 4)) == pytest.approx(_x_at(plain, Fraction(3, 4)))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="known limit, skipped: a scene's update_mobjects replaced on the "
-    "instance is not seen (the class is read)",
-)
 @pytest.mark.parametrize("mode", [True, BRUTE_FORCE], ids=["stepping", "brute-force"])
-def test_known_limit_an_instance_update_mobjects_ticks_everything(session_of, mode):
+def test_an_instance_update_mobjects_runs_at_the_frames_and_the_play_steps(
+    session_of, mode
+):
+    """A scene's ``update_mobjects`` replaced on the instance is a frame hook,
+    as one its class defines: a stepping tick runs the engine's body.
+    """
     session = session_of(
         "InstanceUpdateMobjects", STEPPING_SCENES, frame_rate=4, stepping=mode
     )
-    assert session.record.plays[-1].stepping_ticks == 0
+    play = session.record.plays[-1]
+    assert play.frame_hooks == ("update_mobjects",)
+    assert (play.full_ticks, play.stepping_ticks) == (4, 56)
+    # The frames at 0, 0.25, 0.5 and 0.75 s, then the wait's end.
+    assert session.scene.seen == [0.0, 0.0, 0.25, 0.25, 0.25, 0.0]

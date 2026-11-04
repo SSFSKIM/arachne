@@ -30,11 +30,13 @@ one without the parameter, and runs at the full ticks only, whoever reads
 what it writes: a dt callback reading a dt-free value between frames sees it
 as of the last full tick, as CE shows it once per frame. Each callback is
 judged as it is called (:func:`skipping`, consulted by
-:meth:`.Mobject.update` and :meth:`.Scene.update_self`), so one that joins
-as the play runs is judged the same way. A play whose updaters do not run
-there (the scene's own ``update_mobjects`` or ``update_self``, a mobject's
-own ``update``, a camera drawing other cameras) ticks everything, under the
-reason ``tick.ungoverned``.
+:meth:`.Mobject.update` and the body of :meth:`.Scene.update_self`), so one
+that joins as the play runs is judged the same way. A play whose updaters do
+not run there (a mobject's own ``update``, a camera drawing other cameras)
+ticks everything, under the reason ``tick.ungoverned``. The scene's own
+``update_to_time``, ``update_mobjects`` and ``update_self`` are frame hooks
+(:mod:`.hooks`): they run at the full ticks a frame reads, as CE runs them
+once per frame, and a stepping tick runs the engine's bodies.
 
 :func:`plan_ticks` makes the play's :class:`TickPlan`: whether its stepping
 ticks may leave anything out, and the structure (:func:`current_structure`)
@@ -286,17 +288,15 @@ def plan_ticks(scene: Scene, animations: list[Animation]) -> TickPlan:
     decides only whether the play's stepping ticks may leave anything out,
     and records the structure a stepping tick compares. The play ticks
     everything when its updaters do not run through :meth:`.Mobject.update`
-    and :meth:`.Scene.update_self`, where nothing could leave one out.
+    and the body of :meth:`.Scene.update_self`, where nothing could leave one
+    out. The scene's own frame hooks never run at a stepping tick
+    (:mod:`.hooks`), so they leave the plan as it is.
     """
     from .admission import _update_replaced
-    from .dispatch import user_overrides
 
     def unbounded(why: str) -> TickPlan:
         return TickPlan(unbounded=f"{UNGOVERNED}: {why}")
 
-    replaced = {"update_mobjects", "update_self"} & set(user_overrides(type(scene)))
-    if replaced:
-        return unbounded(f"the scene's {', '.join(sorted(replaced))} is its own code")
     why = _update_replaced(scene)
     if why is not None:
         return unbounded(why)

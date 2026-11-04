@@ -39,6 +39,7 @@ from ..constants import *
 from ..manager import Manager
 from ..renderer.cairo_renderer import CairoRenderer
 from ..scene.scene_file_writer import _SceneFileWriterSettings
+from ..timeline import hooks
 from ..timeline.recorder import Recorder
 from ..utils.family import extract_mobject_family_members
 from ..utils.iterables import list_difference_update, list_update
@@ -335,9 +336,22 @@ class Scene:
         ----------
         dt
             Change in time between updates. Defaults (mostly) to 1/frames_per_second
+
+        A play calls it once per frame, from :meth:`update_to_time`, with the
+        time since the play's last frame, and once after its last frame with
+        0. At a frame the updaters run with the play's own ``dt`` there (a
+        tick's, when the play ticks), whatever ``dt`` this is given, so a
+        ``dt`` updater integrates the same whether or not the scene overrides
+        or wraps this (:mod:`arachne.timeline.hooks`). Between frames the play
+        runs the updaters without calling this.
         """
-        for mobj in self.mobjects:
-            mobj.update(dt)
+        hooks.update_mobjects(self, self.timeline.base_dt("update_mobjects", dt))
+
+    def update_meshes(self, dt: float) -> None:
+        """CE's per-frame mesh update, called from :meth:`update_to_time`
+        after :meth:`update_mobjects`: Cairo draws no meshes, so it does
+        nothing unless the scene overrides it.
+        """
 
     def update_self(self, dt: float) -> None:
         """Run all scene updater functions.
@@ -354,13 +368,11 @@ class Scene:
         --------
         :meth:`.Scene.add_updater`
         :meth:`.Scene.remove_updater`
+
+        Called as :meth:`update_mobjects` is: at a frame the updaters run with
+        the play's own ``dt``, and between frames without this being called.
         """
-        steps = Scene._tick_steps
-        for func in self.updaters:
-            # A stepping tick runs only the updaters whose code loads dt.
-            if steps is not None and not steps(func):
-                continue
-            func(dt)
+        hooks.update_self(self, self.timeline.base_dt("update_self", dt))
 
     def should_update_mobjects(self) -> bool:
         """
@@ -1240,12 +1252,40 @@ class Scene:
             and self.animations[0].is_static_wait
         )
 
-    def update_to_time(self, t: float) -> None:
-        """Bring the current animations to the play's local time ``t``, with
-        ``dt`` the time since the last call, CE's way: one animation after
-        the other. A play itself evaluates its instants through its route
-        (:mod:`arachne.timeline.routes`).
+    def play_internal(self, skip_rendering: bool = False) -> None:
+        """Evaluate the current play from its begun state to its end, then
+        finish its animations, as CE's renderer has a play do once it has
+        begun. A play calls it unless it is a frozen frame.
+
+        A scene may override or wrap it, calling this once: the play's
+        evaluation is this body, so an override that skips it, calls it twice
+        or passes ``skip_rendering=True`` (a play's frames are drawn after it
+        is evaluated, whatever is skipped) raises
+        :class:`~arachne.timeline.hooks.SceneHookRefused`.
         """
+        self.timeline.play_body(skip_rendering)
+
+    def update_to_time(self, t: float) -> None:
+        """Bring the current play to its local time ``t``. A play calls it at
+        each instant a frame reads, with the scene clock at that instant, as
+        CE calls it once per frame; it evaluates the instant (the animations,
+        the composition events) and calls :meth:`update_mobjects`,
+        :meth:`update_meshes` and :meth:`update_self` with the time since the
+        play's last frame (:mod:`arachne.timeline.hooks`). An override must
+        call it once, with the ``t`` it was given.
+
+        Called outside a play's evaluation, it does CE's work with ``dt`` the
+        time since the last call: one animation after the other.
+        """
+        frame = self.timeline.frame
+        if frame is not None:
+            frame.reach_time(t)
+            self.last_t = t
+            hooks.animate(self, frame.plan, frame.start, frame.instant, frame.dt)
+            self.update_mobjects(frame.frame_dt)
+            self.update_meshes(frame.frame_dt)
+            self.update_self(frame.frame_dt)
+            return
         dt = t - self.last_t
         self.last_t = t
         assert self.animations is not None
@@ -1254,6 +1294,7 @@ class Scene:
             alpha = t / animation.run_time
             animation.interpolate(alpha)
         self.update_mobjects(dt)
+        self.update_meshes(dt)
         self.update_self(dt)
 
     def mark(self, label: str, **data: Any) -> None:

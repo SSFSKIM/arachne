@@ -1,9 +1,11 @@
 """The forward run of a scene, recorded as it goes.
 
 A scene owns one :class:`Recorder`. Each ``play`` (and ``wait``) runs
-through :meth:`Recorder.play`: it begins the animations as CE does, lets the
-play's route evaluate it, finishes it, and leaves a :class:`PlayRecord` in
-the scene's :class:`Record` with every capture the record keeps.
+through :meth:`Recorder.play`: it begins the animations as CE does, then
+calls the scene's ``play_internal``, whose body (:meth:`Recorder.play_body`)
+lets the play's route evaluate it and finishes it (:mod:`.hooks`), and
+leaves a :class:`PlayRecord` in the scene's :class:`Record` with every
+capture the record keeps.
 """
 
 from __future__ import annotations
@@ -27,10 +29,11 @@ from arachne._config import logger
 
 from .admission import admit, camera_refusal
 from .clock import TICK_RATE, exact, play_end
-from .dispatch import draw_refusal
+from .dispatch import draw_refusal, scene_hooks
 from .draw import CameraExtras, LiveFrames, camera_nodes
-from .events import plan_events
+from .events import EventPlan, plan_events
 from .execution import Execution, divergence
+from .hooks import FRAME_HOOKS, TIME_PROGRESSION, FrameInstant, SceneHookRefused
 from .origins import ORIGINS
 from .record import Identity, Marker, PlayRecord, Record
 from .reference import BRUTE_FORCE
@@ -70,6 +73,8 @@ class PlayRun:
         self._extras: CameraExtras | None = None
         #: Whether the play plans its ticks once evaluated at its start.
         self.plans = False
+        #: The play's last frame-read instant, once it has one.
+        self._last_frame: Fraction | None = None
 
     def set_clock(self, instant: Fraction) -> None:
         """Make the scene clock read ``instant``, drawing first whatever frames
@@ -78,6 +83,29 @@ class PlayRun:
         if self.live is not None:
             self.live.flush(instant)
         self.scene.renderer.time = instant
+
+    def frame(self, plan: EventPlan, instant: Fraction, dt: float) -> None:
+        """Evaluate the play at ``instant``, which a frame reads, as CE
+        evaluates a frame: through the scene's ``update_to_time``, shown the
+        play-local time and the time since the play's last frame, its body
+        evaluating the instant with the play's own ``dt`` (:mod:`.hooks`).
+        """
+        last = self._last_frame
+        self._last_frame = instant
+        frame = FrameInstant(
+            plan,
+            self.start,
+            instant,
+            dt,
+            0.0 if last is None else float(instant - last),
+        )
+        recorder = self.recorder
+        recorder.frame = frame
+        try:
+            self.scene.update_to_time(frame.t)
+        finally:
+            recorder.frame = None
+        frame.check()
 
     def sample(self, instant: Fraction, *, until: Fraction, keep: bool = False) -> None:
         """The play has been evaluated at ``instant``, and holds until its next
@@ -271,6 +299,10 @@ class Recorder:
         self._refusal_for: tuple[int, str | None] | None = None
         #: The earlier executions, as (number, play_keys), to compare with.
         self._earlier: list[tuple[int, tuple[bytes, ...]]] = []
+        #: The frame-read instant whose hooks are running, if any (:mod:`.hooks`).
+        self.frame: FrameInstant | None = None
+        #: The play whose ``play_internal`` is running, until its body has run.
+        self._body: _Body | None = None
 
     # The run
 
@@ -432,11 +464,15 @@ class Recorder:
 
     def requested_end(self) -> Fraction:
         """Where the play the scene has compiled ends unless a stop condition
-        ends it first.
+        ends it first: its animations' longest run time, or what the scene's
+        own ``get_run_time`` gave, as CE plays that span.
         """
-        animations = self.scene.animations or []
+        scene = self.scene
+        if scene_hooks(scene, ("get_run_time",)):
+            return play_end(scene.time, scene.duration)
+        animations = scene.animations or []
         return play_end(
-            self.scene.time,
+            scene.time,
             max(animation._exact_run_time() for animation in animations),
         )
 
@@ -487,6 +523,8 @@ class Recorder:
         play.moving = tuple(scene.moving_mobjects)
         play.static = tuple(scene.static_mobjects)
         play.held = bool(scene.is_current_animation_frozen_frame())
+        play.frame_hooks = scene_hooks(scene, FRAME_HOOKS)
+        play.play_internal_overridden = bool(scene_hooks(scene, ("play_internal",)))
         plan = plan_events(animations, start, requested_end)
         try:
             admission = admit(
@@ -516,30 +554,15 @@ class Recorder:
             play.static_seq = self.capture("static", start, play, run._extras).seq
             if live is not None:
                 live.begin(play)
-            route.run(run, plan)
-            if live is not None:
-                live.end(run.end)
-            joined = record.entry_refusal()
-            if refusal is None:
-                # A mobject a callback added while the play ran, found as it
-                # entered a capture or still there at the end.
-                joined = joined or self._draw_refusal()
-                play.draw_refusal = joined
-                if record.refusal is None:
-                    record.refusal = joined
+            if play.held:
+                # A frozen frame: CE calls none of the scene's hooks.
+                self._run_play(run, plan, refusal)
+            else:
+                self._play_internal(run, plan, refusal)
         finally:
             plan.release()
 
-        if not play.held:
-            for animation in animations:
-                animation.finish()
-                animation.clean_up_from_scene(scene)
-            scene.update_mobjects(0)
         play.end = run.end
-        scene.renderer.time = run.end
-        # The play's local time last evaluated: its end. A later
-        # update_to_time(t) passes dt = t - last_t, as in CE.
-        scene.last_t = float(run.end - start)
         record.duration = run.end
         if run.end < play.requested_end:
             self.mark(
@@ -549,6 +572,107 @@ class Recorder:
                 source_line=play.source_line,
             )
         return play
+
+    def _play_internal(
+        self, run: PlayRun, plan: EventPlan, refusal: str | None
+    ) -> None:
+        """Call the scene's ``play_internal``, as CE's renderer does for a play
+        that is not a frozen frame, and refuse one whose body did not run.
+        """
+        scene = self.scene
+        overridden = scene_hooks(scene, TIME_PROGRESSION)
+        if overridden:
+            raise SceneHookRefused(
+                "hook.time_progression",
+                f"the scene's {', '.join(overridden)} chooses CE's frame instants,"
+                " which the play's exact clock and the frame grid replace",
+            )
+        body = self._body = _Body(run, plan, refusal)
+        try:
+            scene.play_internal()
+        finally:
+            self._body = None
+        if not body.ran:
+            raise SceneHookRefused(
+                "hook.play_internal.skipped",
+                "the scene's play_internal returned without calling"
+                " Scene.play_internal, whose body evaluates the play",
+            )
+
+    def play_body(self, skip_rendering: bool) -> None:
+        """The body of ``Scene.play_internal``: evaluate the play, once."""
+        body = self._body
+        if body is None:
+            raise RuntimeError("Scene.play_internal runs only inside a play")
+        if body.ran:
+            raise SceneHookRefused(
+                "hook.play_internal.twice",
+                "the scene's play_internal called Scene.play_internal twice, where"
+                " a play is evaluated once",
+            )
+        if skip_rendering:
+            raise SceneHookRefused(
+                "hook.play_internal.skip_rendering",
+                "the scene's play_internal asked to skip rendering: a play is"
+                " evaluated whatever is drawn, and its frames are drawn after",
+            )
+        body.ran = True
+        scene = self.scene
+        assert scene.animations is not None
+        # CE's second call: play_internal takes the play's length again.
+        scene.duration = scene.get_run_time(scene.animations)
+        self._run_play(body.run, body.plan, body.refusal)
+
+    def _run_play(self, run: PlayRun, plan: EventPlan, refusal: str | None) -> None:
+        """Evaluate the play through its route, then finish it, its end on the
+        clock, as CE's clock reads it when a play finishes. ``refusal`` is why
+        the record can't draw the play, if it can't.
+        """
+        scene = self.scene
+        play = run.play
+        record = self.ensure_record()
+        run.route.run(run, plan)
+        if run.live is not None:
+            run.live.end(run.end)
+        joined = record.entry_refusal()
+        if refusal is None:
+            # A mobject a callback added while the play ran, found as it
+            # entered a capture or still there at the end.
+            joined = joined or self._draw_refusal()
+            play.draw_refusal = joined
+            if record.refusal is None:
+                record.refusal = joined
+        # The animations finish with CE's own event handling.
+        plan.release()
+        scene.renderer.time = run.end
+        if not play.held:
+            for animation in scene.animations or []:
+                animation.finish()
+                animation.clean_up_from_scene(scene)
+            scene.update_mobjects(0)
+        # The play's local time last evaluated: its end. A later
+        # update_to_time(t) passes dt = t - last_t, as in CE.
+        scene.last_t = float(run.end - play.start)
+
+    def base_dt(self, name: str, dt: float) -> float:
+        """The ``dt`` the body of the frame hook ``name`` runs with: the
+        play's own at a frame-read instant (CE's frame ``dt`` is shown to the
+        hooks only), else the one it is given.
+        """
+        frame = self.frame
+        if frame is None:
+            return dt
+        frame.reach(name)
+        return frame.dt
+
+    def reads(self, instant: Fraction, until: Fraction) -> bool:
+        """Whether a frame reads the state evaluated at ``instant`` that holds
+        until ``until``, where the scene's frame hooks run: a frame of the
+        grid, or without a grid every 60 Hz tick (a session's frames).
+        """
+        if self.grid is None:
+            return instant < until and (instant * TICK_RATE).denominator == 1
+        return self.keeps(instant, until)
 
     def keeps(self, instant: Fraction, until: Fraction) -> bool:
         """Whether the record keeps the state evaluated at ``instant`` that holds
@@ -600,6 +724,16 @@ class Recorder:
         )
         record.markers.append(marker)
         return marker
+
+
+class _Body:
+    """A play waiting for ``play_internal``'s body, and whether it ran."""
+
+    def __init__(self, run: PlayRun, plan: EventPlan, refusal: str | None) -> None:
+        self.run = run
+        self.plan = plan
+        self.refusal = refusal
+        self.ran = False
 
 
 def _scene_file(scene: Scene) -> str | None:

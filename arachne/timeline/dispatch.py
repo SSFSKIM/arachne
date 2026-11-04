@@ -29,6 +29,7 @@ __all__ = [
     "engine_patches",
     "family_refusal",
     "instance_shadows",
+    "scene_hooks",
     "user_overrides",
 ]
 
@@ -118,6 +119,29 @@ def instance_shadows(obj: Any) -> tuple[str, ...]:
     )
 
 
+def scene_hooks(scene: Any, names: Iterable[str]) -> tuple[str, ...]:
+    """Which of the ``Scene`` methods ``names`` run the scene's code rather
+    than the engine's on ``scene``: a class defined outside the engine
+    overrides it, the engine's class has been patched, or the scene object
+    holds a callable of its own under the name (a wrapper).
+    """
+    found: list[str] = []
+    for name in names:
+        if callable(vars(scene).get(name)):
+            found.append(name)
+            continue
+        for klass in type(scene).__mro__:
+            if name in vars(klass):
+                value = vars(klass)[name]
+                if not (
+                    _engine_class(klass)
+                    and class_members(klass).get(name, _MISSING) is value
+                ):
+                    found.append(name)
+                break
+    return tuple(found)
+
+
 def dispatch_refusal(obj: Any) -> str | None:
     """Why calling the engine's methods on ``obj`` may run other code, or
     ``None``.
@@ -164,12 +188,21 @@ def engine_patches() -> tuple[str, ...]:
     Every mobject of that class then runs it where the engine's would run,
     so no play is proven while one stands. Compared by identity: no
     ``functools.wraps`` makes a replacement the engine's.
+
+    A scene's hooks (:data:`.hooks.SCENE_HOOKS`) patched on the engine's
+    ``Scene`` are left out: a play calls them where CE does, as it calls an
+    override of them, and refuses what it can't honour.
     """
+    from arachne.scene.scene import Scene
+
+    from .hooks import SCENE_HOOKS
+
     found: list[str] = []
     for cls in _all_engine_classes():
         taken = class_members(cls)
+        hooks = issubclass(cls, Scene)
         for key, value in vars(cls).items():
-            if not _code(value):
+            if not _code(value) or (hooks and key in SCENE_HOOKS):
                 continue
             before = taken.get(key, _MISSING)
             if before is value:

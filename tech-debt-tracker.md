@@ -29,14 +29,18 @@ Not debt: the semantics of the stepping tick, each part with how it holds.
    is called (`skipping`, consulted by `Mobject.update` and
    `Scene.update_self`), so one that joins as the play runs is judged alike.
 3. **A play whose updaters a stepping tick could not leave out ticks
-   everything** (`tick.ungoverned`): the scene's own `update_mobjects` or
-   `update_self` (defined on its class), a mobject's own `update`, a camera
+   everything** (`tick.ungoverned`): a mobject's own `update`, a camera
    drawing other cameras. Checked when the play is planned and again when
    the structure (`current_structure`) differs from its plan's, before a
    stepping tick (`PlayRun.stepping_plan`): a play found ungoverned then
    ticks everything from that tick on; otherwise the tick steps by the new
-   plan, a structure change alone making no tick full. Test:
-   `tests/timeline/test_stepping.py::test_a_scene_running_its_own_update_mobjects_ticks_everything`.
+   plan, a structure change alone making no tick full. The scene's own
+   `update_to_time`, `update_mobjects` and `update_self` (on its class or
+   its object) are frame hooks (`arachne/timeline/hooks.py`): they run at
+   the full ticks a frame reads and a stepping tick runs the engine's
+   bodies, so they make no tick full. Tests:
+   `tests/timeline/test_soundness.py::test_a_mobject_whose_update_is_replaced_ticks`,
+   `tests/timeline/test_stepping.py::test_a_scene_running_its_own_update_mobjects_steps_and_runs_it_at_frames`.
 4. **What a dt reader of a dt-free value sees between frames** is that value
    as of the last full tick, as CE shows it once per frame: a dt-loading
    callback sees a dt-free output one frame old between frames (an approved
@@ -97,12 +101,7 @@ lifted.
   when the structure changes before a stepping tick: a mobject's `update`
   replaced on an instance mid-play, with no structure change, keeps the play
   stepping; the brute-force run re-checks at every tick, so the gate's
-  comparison catches that case. A scene's `update_mobjects` or `update_self`
-  replaced on the instance (not its class) is caught by neither: both read
-  the class (`user_overrides`), a known blind spot of the optimisation and
-  of the gate alike.
-  (`::test_known_limit_an_instance_update_mobjects_ticks_everything`, scene
-  `InstanceUpdateMobjects`.)
+  comparison catches that case.
 - **History-keeping interpolations run per 60 Hz tick where CE runs them
   per frame. Direction: runs every tick** (break 4, approved). The functions
   of `UpdateFromFunc` and `UpdateFromAlphaFunc` are interpolation and run at
@@ -138,7 +137,10 @@ lifted.
   - where events and stop conditions come from (`PlayRecord.events`,
     `Scene.stop_condition`) and which tick a frame reads (`Recorder.keeps`);
   - which plays are ungoverned (`admission._update_replaced`,
-    `dispatch.user_overrides`, the camera's displays).
+    `dispatch.user_overrides`, the camera's displays);
+  - where the scene's frame hooks run (`Recorder.reads`, `PlayRun.frame`):
+    both runs dispatch them at the same instants, which are full ticks in
+    both.
 
 ## Hooks (`arachne/timeline/recorder.py`)
 
@@ -191,3 +193,23 @@ lifted.
   (`execution.number == 2`). The fix is to keep the first execution's
   plays up to the refusal, or to know the refusal before the first run
   (the class's definitions are readable once the scene module is loaded).
+
+## Scene hooks (`arachne/timeline/hooks.py`)
+
+- **A frame hook's effects are recorded where a frame reads them, not
+  between.** A trusted play's analytic answer between its samples
+  interpolates its animations from the last sample and runs no hook, so
+  what a hook writes shows there as of that sample. Direction: none; a
+  render's frames are all samples.
+- **At a rate that does not divide 60 a ticked play's hook sees the tick a
+  frame reads,** up to 1/60 s before the frame (`t` and the clock are the
+  tick's), and above 60 fps one hook serves several frames.
+- **A stop condition that first holds at a tick a frame reads ends the play
+  there, after that tick's hooks ran**: the hook's `t` is the play's own
+  length, where CE's frame lies a frame inside its longer play. CE also
+  calls the hooks at the frame its condition first holds.
+- **An execution abandoned for re-execution is not torn down**, as CE tears
+  down no run that raised: what its `setup` opened stays open
+  (`tests/timeline/test_draw_refusals.py::test_a_retry_tears_down_only_the_execution_that_completes`).
+- **A hook with effects outside the scene (a print, a file) runs once per
+  execution**, so twice for a scene executed again.

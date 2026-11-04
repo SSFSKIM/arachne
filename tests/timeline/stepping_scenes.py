@@ -627,13 +627,16 @@ class GetterGuard(Scene):
 
 class OwnUpdating(Scene):
     """The scene runs its mobjects' updaters through its own
-    ``update_mobjects``: a dt reader of a dot a dt-free updater moves.
+    ``update_mobjects``, noting each ``dt`` it is shown: a dt reader of a dot
+    a dt-free updater moves.
     """
 
     def update_mobjects(self, dt):
+        self.seen.append(dt)
         super().update_mobjects(dt)
 
     def construct(self):
+        self.seen = []
         t = ValueTracker(0)
         source = Dot()
         source.add_updater(lambda m: m.set_x(t.get_value()))
@@ -1530,7 +1533,7 @@ class DeadDtPartial(Scene):
 
 class InstanceUpdateMobjects(Scene):
     """The scene's ``update_mobjects`` replaced on the instance, not its
-    class: only the class is read, so the play still steps.
+    class, noting each ``dt`` it is shown.
     """
 
     def construct(self):
@@ -1538,8 +1541,10 @@ class InstanceUpdateMobjects(Scene):
         output.add_updater(lambda m, dt: m.shift(0.01 * RIGHT))
         self.add(output, _idle())
         original = self.update_mobjects
+        self.seen = []
 
         def own(dt):
+            self.seen.append(dt)
             original(dt)
 
         self.update_mobjects = own
