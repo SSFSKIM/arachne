@@ -12,8 +12,11 @@ from arachne import BLUE, RED, Camera
 from .conftest import render
 from .scenes import (
     Background,
+    CentreMovedFlat,
+    CentreMovedThreeD,
     Drawn,
     FixedOrientation,
+    Panned,
     SuppliedBackground,
     WrittenBackground,
 )
@@ -32,6 +35,44 @@ def test_a_render_draws_what_the_session_draws_at_each_instant(session_of, scene
     assert len(frames) == len(session.record.samples(6))
     for k, frame in enumerate(frames):
         assert np.array_equal(frame, _pixels(session.frame(Fraction(k, 6)))), k
+
+
+#: Scenes whose camera's frame centre moves after the first frame. A Camera
+#: or ThreeDCamera maps paths around the centre its first path draw froze; a
+#: MovingCamera around its frame as it is.
+CENTRE_MOVES = [CentreMovedThreeD, CentreMovedFlat, Panned]
+
+
+@pytest.mark.parametrize("scene_class", CENTRE_MOVES)
+def test_a_late_frame_asked_first_is_the_render_s(session_of, scene_class):
+    """The session's first frame is drawn with the centre the render froze
+    at its first frame, not the centre at the instant asked.
+    """
+    _, frames = render(scene_class, 6)
+    session = session_of(scene_class.__name__)
+    last = len(frames) - 1
+    assert np.array_equal(frames[last], _pixels(session.frame(Fraction(last, 6))))
+
+
+@pytest.mark.parametrize("scene_class", CENTRE_MOVES)
+def test_frames_asked_in_reverse_are_the_render_s(session_of, scene_class):
+    _, frames = render(scene_class, 6)
+    session = session_of(scene_class.__name__)
+    # A frame at another quality first: the pixel array is replaced, and the
+    # frames after it are drawn at the executed size again.
+    session.frame(Fraction(len(frames) - 1, 6), "low_quality")
+    for k in reversed(range(len(frames))):
+        assert np.array_equal(frames[k], _pixels(session.frame(Fraction(k, 6)))), k
+
+
+def test_answers_draw_the_render_s_frames(session_of):
+    """``answers`` draws through the same seam, from a late instant first."""
+    _, frames = render(CentreMovedThreeD, 6)
+    session = session_of("CentreMovedThreeD")
+    instants = [Fraction(k, 6) for k in reversed(range(len(frames)))]
+    for answer in session.answers(instants):
+        k = int(answer.t * 6)
+        assert np.array_equal(frames[k], _pixels(answer.frame)), k
 
 
 def test_frames_agree_at_the_instants_two_rates_share():
