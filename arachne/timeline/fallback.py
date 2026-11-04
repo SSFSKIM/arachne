@@ -347,7 +347,10 @@ def _forward(
                 changed_inputs=_changed_inputs(
                     source.reads,
                     _reads(forward, executed),
-                    _bound(mine, theirs, until, before_play),
+                    (
+                        _bound(mine, until, before_play),
+                        _bound(theirs, until, before_play),
+                    ),
                 ),
             )
         session.forward_runs.append(
@@ -411,41 +414,38 @@ def _source_changed(source: Source, record: Record) -> Fallback:
 
 
 def _bound(
-    mine: ExecutionSummary,
-    theirs: ExecutionSummary,
-    until: Fraction | None,
-    before_play: int | None,
+    summary: ExecutionSummary, until: Fraction | None, before_play: int | None
 ) -> int | None:
-    """How many plays :func:`.execution.compare` compared, at most, of
-    ``mine`` and ``theirs`` (``None``: all of both, and where their scripts
-    ended).
+    """How many of the plays of ``summary`` :func:`.execution.compare`
+    compared (``None``: all of them, and where its script ended).
     """
     if until is None and before_play is None:
         return None
-    return max(
-        len(_begun(summary.plays, until)[:before_play]) for summary in (mine, theirs)
-    )
+    return len(_begun(summary.plays, until)[:before_play])
 
 
 def _changed_inputs(
-    mine: tuple[Read, ...], theirs: tuple[Read, ...], bound: int | None
+    mine: tuple[Read, ...],
+    theirs: tuple[Read, ...],
+    bounds: tuple[int | None, int | None],
 ) -> tuple[str, ...]:
-    """The input files two executions read differently for their plays
-    before ``bound`` (every play, and their scripts' ends, when ``None``), by
-    path: a file either first read for one of those plays that the two read
-    with different contents, or that only one of them read for one of them
-    (a file gone, a conditional read). A file both first read only for a
-    later play changed nothing compared.
+    """The input files two executions read differently for the plays each
+    compared, the first ``bounds[0]`` of ``mine`` and ``bounds[1]`` of
+    ``theirs`` (every play, and the script's end, for ``None``), by path: a
+    file that each first read for one of its compared plays, with different
+    contents, or that only one of them did (a file gone, a conditional read,
+    a read for a play only one of them compared). A file neither first read
+    for a compared play changed nothing compared.
     """
 
-    def compared(reads: tuple[Read, ...]) -> dict[str, str]:
+    def compared(reads: tuple[Read, ...], bound: int | None) -> dict[str, str]:
         return {
             read.path: read.digest
             for read in reads
             if bound is None or read.play < bound
         }
 
-    early_mine, early_theirs = compared(mine), compared(theirs)
+    early_mine, early_theirs = compared(mine, bounds[0]), compared(theirs, bounds[1])
     return tuple(
         sorted(
             path
