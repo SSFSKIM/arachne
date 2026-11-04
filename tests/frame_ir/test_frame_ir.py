@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from arachne import config, tempconfig
+from arachne import LineJointType, config, tempconfig
 from arachne.frame_ir.painter import IrCairoPainter, painter_for
 from arachne.frame_ir.xf import Record
 from arachne.session import Session
@@ -100,6 +100,37 @@ def test_a_create_play_uploads_no_shape_after_its_first_frame(kept):
         revealed = [r for d in deltas for _, r in d.set if "reveal" in r.fields]
         assert len(revealed) >= len(deltas) - 2, "the frames are reveal windows"
         assert all(not d.upload for d in deltas[2:]), [len(d.upload) for d in deltas]
+
+
+def _halfway():
+    from arachne import RIGHT, Square
+    from arachne.utils.bezier import interpolate
+
+    start, end = Square(), Square().shift(RIGHT)
+    leaf = start.copy()
+    leaf.points = interpolate(start.points, end.points, 0.5)
+    return leaf, start, end
+
+
+@pytest.mark.parametrize(
+    "spoil",
+    [
+        None,
+        lambda leaf, start, end: setattr(leaf, "tolerance_for_point_equality", 1e-3),
+        lambda leaf, start, end: setattr(leaf, "joint_type", LineJointType.ROUND),
+        lambda leaf, start, end: setattr(start, "stroke_width", -1.0),
+    ],
+    ids=["plain", "tolerance", "own joint", "negative width"],
+)
+def test_a_blend_is_stated_only_where_it_reads_as_the_plain_path(spoil):
+    from arachne.camera.camera import Camera
+    from arachne.frame_ir.extract import Blend, FrameStream
+
+    leaf, start, end = _halfway()
+    if spoil is not None:
+        spoil(leaf, start, end)
+    record = FrameStream()._blend_record(Camera(), leaf, Blend(start, end, 0.5), {})
+    assert (record is not None) == (spoil is None)
 
 
 def test_a_held_frame_sends_an_empty_delta():

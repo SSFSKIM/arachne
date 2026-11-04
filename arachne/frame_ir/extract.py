@@ -519,8 +519,14 @@ class FrameStream:
         from arachne.utils.bezier import interpolate
 
         start, end, alpha = blend.start, blend.end, blend.alpha
-        if vmob.get_background_image() or bool(getattr(vmob, "shade_in_3d", False)):
+        if not all(_plain_path(m) for m in (vmob, start, end)):
             return None
+        for m in (start, end):
+            for width in ("stroke_width", "background_stroke_width"):
+                # CE clamps a negative width where it reads it, after the
+                # interpolation: the blend would mix the unclamped values.
+                if not _non_negative(getattr(m, width)):
+                    return None
         a, b = np.asarray(start.points), np.asarray(end.points)
         if a.shape != b.shape or not np.array_equal(
             interpolate(a, b, alpha), np.asarray(vmob.points)
@@ -549,6 +555,8 @@ class FrameStream:
         if (
             paint_b.pop("joint") != fields["joint"]
             or paint_b.pop("cap") != fields["cap"]
+            or fields["joint"] != _joint(vmob)
+            or fields["cap"] != _cap(vmob)
         ):
             return None
         uploads.update(own)
@@ -812,6 +820,14 @@ def _plain_path(vmob: Any) -> bool:
         and not vmob.get_background_image()
         and not bool(getattr(vmob, "shade_in_3d", False))
     )
+
+
+def _non_negative(width: Any) -> bool:
+    """Whether a stroke width is a number of at least 0."""
+    try:
+        return float(width) >= 0
+    except (TypeError, ValueError):
+        return False
 
 
 def _depth_fields(extras: tuple[Any, ...]) -> dict[str, Any]:
