@@ -10,6 +10,10 @@ each reader asking for that frame is shown as the run reaches it. A record
 kept on another grid than the render's is read wholly from the forward run:
 its frame hooks and dt updaters ran at instants no frame of the render shows.
 
+A reader that needs of the execution what the session's record lacks asks
+for every frame from the forward run (:meth:`Frames.require_forward`), and
+every reader is then served from it.
+
 One run matters beyond its cost: two executions of a scene need not agree (a
 helper module's state is not restored between them), so what two readers of
 one lint see must come from the same one. A reader that needs more of that
@@ -63,6 +67,7 @@ class Frames:
         self.session = session
         self._requests: dict[Hashable, _Request] = {}
         self._read = False
+        self._forward_only = False
         #: The forward run's record, once one has given frames.
         self.forward: Record | None = None
 
@@ -78,6 +83,15 @@ class Frames:
         if owner in self._requests:
             raise ValueError(f"{owner!r} asked for frames already.")
         self._requests[owner] = _Request(tuple(times), read, {})
+
+    def require_forward(self) -> None:
+        """Read every frame of every request from the forward run: for a
+        reader that needs of the execution what the session's record lacks.
+        Raises :class:`RuntimeError` once the frames are read.
+        """
+        if self._read:
+            raise RuntimeError("The lint's frames are read: ask before they are.")
+        self._forward_only = True
 
     def read(self) -> None:
         """Read every request: from the record what it kept, the rest from
@@ -98,11 +112,11 @@ class Frames:
         )
         # A record on the render's grid evaluated each frame of it as the
         # render does; one on another grid holds states no frame shows.
-        on_render_grid = record.grid == render_grid(record)
+        from_record = not self._forward_only and record.grid == render_grid(record)
         missing: list[Fraction] = []
         with tempconfig(settings):
             for t in sorted(asking):
-                if not on_render_grid:
+                if not from_record:
                     missing.append(t)
                     continue
                 try:

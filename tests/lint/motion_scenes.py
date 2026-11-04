@@ -13,6 +13,7 @@ from arachne import (
     RIGHT,
     UP,
     Circle,
+    Create,
     Dot,
     FadeIn,
     FadeOut,
@@ -339,4 +340,19 @@ class CountedRuns(Scene):
         self.add(puck)
         self.play(puck.animate.shift(RIGHT), rate_func=linear)
         puck.shift(RIGHT * run_counter.executions)
+        self.wait()
+
+
+class LateComer(Scene):
+    """A comet joins only after two plays, slides, and is set down 3 units
+    on before a wait.
+    """
+
+    def construct(self):
+        self.wait(0.5)
+        self.play(Create(Circle(radius=0.3).shift(UP * 2)))
+        comet = Dot(LEFT * 3, radius=0.15)  # @late-comer
+        self.play(FadeIn(comet))
+        self.play(comet.animate.shift(RIGHT))
+        comet.shift(RIGHT * 3)
         self.wait()
