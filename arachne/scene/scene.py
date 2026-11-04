@@ -510,8 +510,9 @@ class Scene:
         *mobjects
             The mobjects to remove.
         """
-        for list_name in "mobjects", "foreground_mobjects":
-            self.restructure_mobjects(mobjects, list_name, False)
+        with self.timeline.removing("remove", mobjects):
+            for list_name in "mobjects", "foreground_mobjects":
+                self.restructure_mobjects(mobjects, list_name, False)
         return self
 
     def replace(self, old_mobject: Mobject, new_mobject: Mobject) -> None:
@@ -824,8 +825,9 @@ class Scene:
             self.mobjects and self.foreground_mobjects
             removed.
         """
-        self.mobjects = []
-        self.foreground_mobjects = []
+        with self.timeline.removing("clear", tuple(self.mobjects)):
+            self.mobjects = []
+            self.foreground_mobjects = []
         return self
 
     def get_moving_mobjects(self, *animations: Animation) -> list[Mobject]:

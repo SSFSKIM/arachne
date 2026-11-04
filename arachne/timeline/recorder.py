@@ -17,7 +17,8 @@ import math
 import os
 import random
 import sys
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
 from types import FrameType
@@ -44,7 +45,7 @@ from .execution import Execution, divergence
 from .hooks import FRAME_HOOKS, TIME_PROGRESSION, FrameInstant, SceneHookRefused
 from .inputs import Inputs, engine_dirs, source_digest, source_files
 from .origins import ORIGINS
-from .record import Identity, Marker, PlayRecord, Record
+from .record import Capture, Identity, Marker, PlayRecord, Record, Removal, States
 from .reference import BRUTE_FORCE
 from .restore import RestorePoint, restore_point
 from .routes import ROUTE_CLASSES, Route, snapshot_animations
@@ -451,6 +452,13 @@ class Recorder:
     ``"armed"`` each play ending after the scene arms the rule
     (:meth:`arm_motion`; a session's record); ``"none"`` none, armed or not
     (a render's, which no lint reads).
+
+    ``states`` says, alike, from when the record keeps the states the lint's
+    temporal rules read (``Record.states``, :class:`.record.States`): the
+    scene as each play ended, and as the script removed from it between
+    plays, each a capture no frame draws. ``"all"`` from the start (a lint's
+    forward run that a temporal rule asked for); ``"armed"`` from
+    :meth:`arm_states` on; ``"none"`` never.
     """
 
     def __init__(
@@ -466,6 +474,7 @@ class Recorder:
         instants: Iterable[Fraction | float] = (),
         demoted: Iterable[PlayIdentity] = (),
         exits: Literal["none", "armed", "all"] = "none",
+        states: Literal["none", "armed", "all"] = "none",
     ) -> None:
         if stepping not in (True, False, BRUTE_FORCE):
             raise ValueError(
@@ -473,6 +482,8 @@ class Recorder:
             )
         if exits not in ("none", "armed", "all"):
             raise ValueError(f"exits is 'none', 'armed' or 'all', not {exits!r}")
+        if states not in ("none", "armed", "all"):
+            raise ValueError(f"states is 'none', 'armed' or 'all', not {states!r}")
         self.scene = scene
         self.grid = exact(grid) if grid is not None else None
         self.draws = draws
@@ -483,6 +494,9 @@ class Recorder:
         self.instants = tuple(sorted({exact(t) for t in instants}))
         self.demoted = frozenset(demoted)
         self.exits = exits
+        self.states = states
+        #: The scene's top level as the script last called ``play``.
+        self._called: tuple[Mobject, ...] | None = None
         self._kept_bodies = Kept()
         #: The frame the configuration describes, as ``(width, height)``:
         #: the unit of the record's home-frame boxes, whatever the camera
@@ -534,6 +548,8 @@ class Recorder:
             self.record.execution = self.execution
             if self.exits == "all":
                 self.record.exits = {}
+            if self.states == "all":
+                self.record.states = States(since=0)
             self.record.bridge = Bridge()
             self._camera_refusal = camera_refusal(scene.renderer.camera)
             self.record.refusal = self._camera_refusal
@@ -553,6 +569,66 @@ class Recorder:
             record.armed_at = len(record.plays) - (1 if self._playing else 0)
         if self.exits == "armed" and record.exits is None:
             record.exits = {}
+
+    def arm_states(self) -> None:
+        """Keep, keeping armed states (``states="armed"``), the scene as each
+        play to end from now on ends, and as the script removes from it from
+        now on (``Record.states``; the first arming counts). A record that
+        keeps none is as it was.
+        """
+        if self.states != "armed":
+            return
+        record = self.ensure_record()
+        if record.states is None:
+            # A play running now ends after the arming.
+            since = len(record.plays) - (1 if self._playing else 0)
+            record.states = States(since=since)
+
+    def calling(self) -> None:
+        """Note the scene's top level as the script calls ``play``, before
+        the play adds what its animations animate.
+        """
+        self._called = tuple(self.scene.mobjects)
+
+    @contextmanager
+    def removing(self, kind: str, operands: tuple[Mobject, ...]) -> Iterator[None]:
+        """Around a ``remove`` (or ``clear``) of the scene: keeping states,
+        and the script calling it between plays, keep the scene as it was
+        before it and its top level after (:class:`.record.Removal`).
+        """
+        if self.states == "all":
+            self.ensure_record()
+        record = self.record
+        states = record.states if record is not None else None
+        if states is None or self._playing:
+            yield
+            return
+        assert record is not None
+        before = self._state("removal")
+        line = self.scene_line(sys._getframe(1))
+        yield
+        states.removals.append(
+            Removal(
+                before.instant,
+                kind,
+                operands,
+                before,
+                tuple(self.scene.mobjects),
+                line,
+                len(record.plays),
+            )
+        )
+
+    def _state(self, kind: str) -> Capture:
+        """The scene now, as a capture no frame draws."""
+        camera = self.scene.renderer.camera
+        return self.ensure_record()._capture(
+            kind,
+            self.scene.time,
+            camera_nodes(camera),
+            CameraExtras.observe(camera, None),
+            drawn=False,
+        )
 
     def refusal(self) -> str | None:
         """Why the record can't draw the play about to run, so that it is
@@ -797,7 +873,9 @@ class Recorder:
             cache_key=cache_key,
             _record=record,
             _animations=tuple(animations),
+            called=self._called if self._called is not None else tuple(scene.mobjects),
         )
+        self._called = None
         record.plays.append(play)
         if play.index == 0:
             self._identities.clear()
@@ -836,6 +914,10 @@ class Recorder:
         record.duration = final.end
         if record.exits is not None:
             self._keep_exit(record, play)
+        states = record.states
+        if states is not None and play.index >= states.since:
+            # Its animations finished and cleaned up, the script not yet run on.
+            states.exits[play.index] = self._state("exit")
         if final.end < play.requested_end:
             self.mark(
                 "wait_until",
