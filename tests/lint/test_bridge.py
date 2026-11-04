@@ -596,6 +596,21 @@ def _codes(violations):
     return [v["code"] for v in violations]
 
 
+def _box(mob):
+    low = mob.get_corner(np.array([-1.0, -1.0, 0.0]))
+    high = mob.get_corner(np.array([1.0, 1.0, 0.0]))
+    return low[0], low[1], high[0], high[1]
+
+
+def _overlap(a, b):
+    """How far two mobjects' whole boxes overlap, as this platform's fonts
+    draw them: the least overlap along either axis.
+    """
+    a0, a1, a2, a3 = _box(a)
+    b0, b1, b2, b3 = _box(b)
+    return -max(a0 - b2, b0 - a2, a1 - b3, b1 - a3)
+
+
 def _swept(session, t, **terms):
     """The clearance codes a sweep of the frame shown at ``t`` finds."""
     rules = (sweep_rule.where(at=[t], **terms),)
@@ -700,6 +715,8 @@ def test_a_rule_reads_an_exempted_family_as_it_stood_at_its_instant(session_of):
     ("scene", "codes"),
     # The reference checks: nothing when the group gained the phrase;
     # overlap.text, -0.3996 against 0.05, when it lost it.
+    # (Those numbers, here and below, are one platform's fonts; the tests
+    # measure the same texts on the platform they run on.)
     [("ExemptChangedThenSwept", []), ("ExemptLostThenSwept", ["overlap.text"])],
 )
 def test_a_sweep_reads_a_declared_family_as_it_stands_at_the_sweep(
@@ -708,7 +725,9 @@ def test_a_sweep_reads_a_declared_family_as_it_stands_at_the_sweep(
     found = session_of(scene, BRIDGE, frame_rate=15).scene.found
     assert _codes(found) == codes
     if found:
-        assert found[0]["detail"]["overlap"] == pytest.approx(0.3996, abs=1e-3)
+        overlap = _overlap(*bridge_scenes._words())
+        assert overlap > 0
+        assert found[0]["detail"]["overlap"] == pytest.approx(overlap, abs=1e-3)
 
 
 @pytest.mark.parametrize(
@@ -849,9 +868,12 @@ def test_apart_measures_a_pair_at_the_call(session_of):
         f for f in _clearance(lint(session)) if f.line.line == _line("apart-rows")
     ]
     assert [f.code for f in linted] == ["gap.text"]
-    assert rows["detail"]["required"] == pytest.approx(
-        0.3871, abs=1e-3
-    )  # the reference checks'
+    # The reference checks hold two texts to the shorter one's height, and
+    # never to less than the text floor.
+    upper, lower = bridge_scenes._rows(0.08)
+    shorter = min(upper.height, lower.height)
+    assert shorter > 0.3
+    assert rows["detail"]["required"] == pytest.approx(shorter, abs=1e-3)
 
 
 def test_apart_measures_each_argument_whole(session_of):
@@ -873,13 +895,18 @@ def test_apart_measures_each_argument_whole(session_of):
         "itself": ["overlap.text"],
     }
     (pair,) = found["pair_around"]
-    assert pair["detail"]["overlap"] == pytest.approx(0.4435, abs=1e-3)
+    overlap = _overlap(*bridge_scenes._pair_around())
+    assert overlap > 0
+    assert pair["detail"]["overlap"] == pytest.approx(overlap, abs=1e-3)
     (small,) = found["small_min_gap"]
     assert small["detail"]["overlap"] == pytest.approx(-0.08, abs=1e-3)
     (large,) = found["large_pad"]
     assert large["detail"] == pytest.approx({"gap": 0.2, "required": 0.6}, abs=1e-3)
     (itself,) = found["itself"]
-    assert itself["detail"]["overlap"] == pytest.approx(0.4424, abs=1e-3)
+    upper, _ = bridge_scenes._rows(0.08)
+    assert itself["detail"]["overlap"] == pytest.approx(
+        min(upper.height, upper.width), abs=1e-3
+    )
 
 
 def test_apart_reads_its_arguments_once(session_of):
@@ -889,7 +916,9 @@ def test_apart_reads_its_arguments_once(session_of):
     session = session_of("ApartFromAGenerator", BRIDGE, frame_rate=15)
     (found,) = session.scene.found
     assert found["code"] == "overlap.text"
-    assert found["detail"]["overlap"] == pytest.approx(0.3996, abs=1e-3)
+    overlap = _overlap(*bridge_scenes._words())
+    assert overlap > 0
+    assert found["detail"]["overlap"] == pytest.approx(overlap, abs=1e-3)
     (call,) = [c for c in session.record.bridge.calls if c.kind == "apart"]
     assert len(call.operands) == 2
 
