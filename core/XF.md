@@ -140,11 +140,14 @@ shape's and table's key against its content, except for shape kinds it does not 
   sub-samples are a fixed stratified pattern (`SAMPLE_OFFSETS`): one in each cell of the pixel's
   4 x 4 grid and one in each of its 16 rows and columns. Fragments resolve by depth at the
   sub-samples, ties by draw order: a pixel with one depth order at every sub-sample and at most one
-  partially covering mask composites back to front with its coverage as Cairo's ARGB32 surface
-  composites paint (the coverage resolve); a crossing inside the pixel, or two or more partial
-  masks, composites each sub-sample and averages them (the sample resolve), a mask covering a
-  sub-sample or not and a path compositing with its exact area inside the sub-sample's cell, so a
-  path's edge lands where the coverage resolve puts it, up to rounding; an opaque fragment covering
+  partially covering mask, and no partial mask beside a path's partial area, composites back to
+  front with its coverage as Cairo's ARGB32 surface composites paint (the coverage resolve); a
+  crossing inside the pixel, two or more partial masks, or a partial mask (a surface's silhouette)
+  with a path's partial area composites each sub-sample and averages them (the sample resolve), a
+  mask covering a sub-sample or not and a path compositing with its exact area inside the
+  sub-sample's cell, so a path's edge lands where the coverage resolve puts it, up to rounding.
+  The silhouette rule keeps a pixel's resolve from flipping as crossings come and go, and needs a
+  mesh in the pixel, so 2D drawing never takes the sample resolve. An opaque fragment covering
   the pixel in front of everything takes a fast path. One mesh's triangles meeting in a pixel
   without overlapping (a surface's internal edges) count as one fragment, its colour their average
   over the sub-samples each covers, so internal edges take the coverage resolve and never show what
