@@ -34,10 +34,14 @@ These ideas came from other projects; no code was taken from them.
   map, blended between two placed shapes, with a reveal window and a paint mix, so that a morph frame or a camera
   move ships no geometry (the core's XF): ManimGX, as above.
 
+## Algorithms the core reimplements
+
+These are written in Rust in the core, from a specification or from another project's implementation.
+
 The core's content keys use BLAKE2b (RFC 7693, by Jean-Philippe Aumasson, Samuel Neves, Zooko Wilcox-O'Hearn and
 Christian Winnerlein), implemented in `core/src/xf/key.rs` from the RFC.
 
-The core's rotation matrices (`core/src/project.rs`, `rotation_matrix`) reproduce the arithmetic of
+The core's rotation matrices (`core/src/project.rs`, `rotation_matrix`) are a Rust port of the arithmetic of
 [SciPy](https://scipy.org)'s `Rotation.from_rotvec` and `Rotation.as_matrix`, including the Taylor-series constants
 it uses for small angles, so that they match CE's `space_ops.rotation_matrix`, which calls them. SciPy is
 "Copyright (c) 2001-2002 Enthought, Inc. 2003, SciPy Developers", under the BSD-3-Clause license.

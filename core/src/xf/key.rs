@@ -248,6 +248,33 @@ mod tests {
             paint_key(&[[1.0, 0.5, 0.25, 1.0]]).hex(),
             "0933b2b6afe2fda4d64218b75ca2a80a"
         );
+        // Expected keys hash canonical bytes packed by hand with `struct` (u32 triangles as dtype
+        // 2; an image's dims as height, width, 4; a reserved payload as one u8 array).
+        let positions = vec![[0.0, 1.5, -2.0], [3.25, 0.0, 1.0], [0.5, 0.25, 0.125]];
+        let triangles = vec![[0, 1, 2], [2, 1, 0]];
+        let lit = ShapeData::Mesh {
+            positions: positions.clone(),
+            triangles: triangles.clone(),
+            normals: Some(vec![[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]]),
+        };
+        assert_eq!(shape_key(&lit).hex(), "e2e21ce66a44b4b1289be8cea464bf4e");
+        let bare = ShapeData::Mesh {
+            positions,
+            triangles,
+            normals: None,
+        };
+        assert_eq!(shape_key(&bare).hex(), "be67bcb19ea746d6a0797b28f15dca43");
+        let image = ShapeData::Image {
+            width: 2,
+            height: 1,
+            rgba: vec![255, 0, 0, 255, 0, 0, 255, 128],
+        };
+        assert_eq!(shape_key(&image).hex(), "2ec540a2c37a9bb23c7b1a2d711e1777");
+        let field = ShapeData::Reserved {
+            code: ShapeKind::Field as u8,
+            payload: vec![4, 5, 6, 7],
+        };
+        assert_eq!(shape_key(&field).hex(), "35c0b7fbe128c5ff659d885e0a1f2895");
     }
 
     #[test]
