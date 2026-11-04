@@ -42,10 +42,11 @@ pixel was resolved.
   coverage and sample resolves, emitted light, and the frame buffer. 2D paint blends with the
   arithmetic of Cairo's ARGB32 surface (`tests/data/gen_blend.py` records Cairo's bytes).
 - `src/mesh.rs`: the triangle rasterizer, a producer of mask fragments with depth.
-- `src/path.rs`: the path rasterizer (fills, strokes and dashes through kurbo, glyphs, discs), a
+- `src/path.rs`: the path rasterizer (fills, strokes and dashes through kurbo, glyphs), a
   producer of exact-area fragments with depth; `src/scanline.rs`, its exact nonzero coverage and
   the masks at the sub-samples; `src/depth.rs`, canonical planes and depth along curves.
-- `src/instance.rs`: `instances` and `points` records drawn as their members.
+- `src/instance.rs`: `instances` and `points` records drawn as their members; `src/points.rs`, point
+  clouds as CE's square blocks of whole pixels.
 - `src/tiles.rs`: the frame cut into tiles, drawn on threads scoped to the draw call; the bytes are
   the same on any number of threads.
 - `parity/`: the parity kit, the class probes (`probes.rs`, asserted by `tests/probes.rs`) as

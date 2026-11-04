@@ -22,11 +22,16 @@
 //! sub-sample and hold at most one partially covering mask takes the **coverage resolve**: its
 //! fragments composite back to front with their coverage (a path's exact area, a mask's count), as
 //! Cairo composites paint. A depth crossing inside the pixel, or two or more partially covering
-//! masks, takes the **sample resolve**: each sub-sample composites the fragments covering it, and
-//! the pixel averages its sub-samples. A pixel whose front fragment is opaque and covers it, with
-//! nothing in front, takes the **fast** path. Fragments hidden at every sub-sample behind an opaque
-//! covering fragment are dropped first. A mask is never made from an alpha: a fragment with exact
-//! area gives its mask only when its pixel takes the sample resolve ([`Producer::mask`]).
+//! masks, takes the **sample resolve**: each sub-sample composites, in its own depth order, the
+//! fragments covering it, and the pixel averages its sub-samples. There a mask fragment covers a
+//! sub-sample or does not, and a fragment with exact area composites with its exact area inside
+//! the sub-sample's cell ([`Producer::cell_areas`], [`sample_cell`]), so a path's edge lands where
+//! the coverage resolve puts it, up to rounding, whichever resolve its pixel takes. A pixel whose
+//! front fragment is opaque and covers it, with nothing in front, takes the **fast** path.
+//! Fragments hidden at every sub-sample behind an opaque covering fragment are dropped first. A
+//! mask is never made from an alpha: a fragment with exact area gives its cells' areas only when
+//! its pixel takes the sample resolve, and its point-sampled mask ([`Producer::mask`]) only when a
+//! producer reads the opaque depth.
 //!
 //! The resolves count **units**, not fragments: a run, in depth order, of one surface's mask
 //! fragments whose masks do not overlap (a mesh's triangles meeting at an internal edge) is one
@@ -45,29 +50,42 @@ pub const FULL: u16 = 0xFFFF;
 /// Sub-pixel units per pixel in the fixed-point positions rasterizers snap to.
 pub const SUBPIXEL: i64 = 256;
 
-/// The sub-sample pattern: Direct3D's standard 16-sample pattern, offsets in sixteenths of a pixel
-/// on a grid of 16 x 16 cells (every row and every column holds one sample). Sample `s` sits at the
-/// centre of cell `SAMPLE_OFFSETS[s]` from the pixel's centre, `(offset + 1/2) / 16`, so the
-/// samples' centroid is the pixel's centre (Direct3D's own positions sit 1/32 px up and left of
-/// it, which biases coverage).
+/// The sub-sample pattern, offsets in sixteenths of a pixel on a grid of 16 x 16 cells. It is
+/// stratified: each cell of the pixel's 4 x 4 grid holds one sample ([`sample_cell`]), and each of
+/// the 16 rows and 16 columns holds one (n-rooks), so an axis-aligned edge gets 17 coverage levels.
+/// Within that, the samples are shuffled to the arrangement a search found with the least worst
+/// error of a half-plane's coverage over every edge angle and offset (0.115 of the pixel, where
+/// Direct3D's standard pattern has 0.148), among those giving at least 13 levels to edges at 45
+/// and 135 degrees (it gives 14 and 15); the unshuffled stratified pattern gives those edges 8.
+/// Sample `s` sits at the centre of cell `SAMPLE_OFFSETS[s]` from the pixel's centre,
+/// `(offset + 1/2) / 16`, so the samples' centroid is the pixel's centre.
+///
+/// A GPU backend computes masks in a compute stage at these positions, not with hardware
+/// multisampling: WebGPU guarantees only 1 and 4 samples per pixel.
 pub const SAMPLE_OFFSETS: [[i8; 2]; SAMPLES] = [
-    [1, 1],
-    [-1, -3],
-    [-3, 2],
-    [4, -1],
-    [-5, -2],
-    [2, 5],
-    [5, 3],
-    [3, -5],
-    [-2, 6],
-    [0, -7],
-    [-4, -6],
-    [-6, 4],
-    [-8, 0],
-    [7, -4],
-    [6, 7],
-    [-7, -8],
+    [-8, -7],
+    [-1, -8],
+    [3, -6],
+    [5, -5],
+    [-6, -1],
+    [-4, -4],
+    [0, -3],
+    [6, -2],
+    [-7, 2],
+    [-2, 0],
+    [2, 3],
+    [4, 1],
+    [-5, 5],
+    [-3, 4],
+    [1, 7],
+    [7, 6],
 ];
+
+/// The cell of the pixel's 4 x 4 grid that holds sub-sample `s`, as its column and row (`0..4`
+/// each, left to right and top to bottom). Each cell holds one sub-sample.
+pub fn sample_cell(s: usize) -> [usize; 2] {
+    SAMPLE_OFFSETS[s].map(|o| (o as i16 + 8) as usize / 4)
+}
 
 /// Sub-sample `s` of pixel `(x, y)` in pixel coordinates (pixel `(x, y)` spans `[x, x + 1)` by
 /// `[y, y + 1)`).
@@ -200,7 +218,9 @@ impl Fragment {
     /// The fragment as part of surface `surface` of its producer. Mask fragments of one surface
     /// whose masks do not overlap, and that keep one place in the pixel's depth order against every
     /// other fragment, are merged into one fragment (their masks' union, their colours averaged by
-    /// sub-sample count), so the internal edges of a surface take the coverage resolve, exactly.
+    /// sub-sample count), so the internal edges of a surface take the coverage resolve. For meshes
+    /// alone, and for a path over a surface that tiles the pixel, that is what the sample resolve
+    /// gives, up to rounding.
     pub fn on_surface(mut self, surface: u32) -> Self {
         self.surface = surface;
         self
@@ -284,8 +304,15 @@ pub fn area_coverage(area: f32) -> u8 {
 /// How far, per byte, the coverage resolve of a pixel with one partial mask may land from what
 /// the sample resolve would give it (blend at each sub-sample, then average): the mask's count is
 /// rounded to an 8-bit coverage and the blend rounds again, where the sample resolve rounds once
-/// per sub-sample and once in the average. The parity kit's bound for the coverage class starts
-/// here; `tests/composite.rs` sweeps it.
+/// per sub-sample and once in the average. It bounds a path's exact area the same way, since the
+/// sample resolve composites the path with its exact area in each sub-sample's cell.
+/// `tests/composite.rs` sweeps both (one partial mask or path alone, over a full layer, under
+/// one); `tests/resolve_switch.rs` measures it where pixels switch resolves as a path crosses a
+/// moving surface (worst 1, three cases). It does not bound a pixel that holds a partial mask and
+/// a path's edge together: the coverage resolve composites them as independent, where the sample
+/// resolve sees where they overlap. Where a surface's silhouette, a path's edge and a crossing
+/// meet, switching pixels jumped by up to 2 with the edges across each other and up to 48 with
+/// the stroke along the silhouette (`tests/resolve_switch.rs` records both).
 pub const COVERAGE_TO_SAMPLE_LSB: u8 = 2;
 
 /// A mask's count as an 8-bit coverage.
@@ -345,9 +372,16 @@ pub trait Producer: Sync {
     fn transparent(&self, _pass: &mut TransparentPass<'_>) {}
 
     /// The mask, at the sub-samples, of the fragment this producer added to pixel `(x, y)` with
-    /// exact area and this `id`: point-sampled at [`sample_point`]s.
+    /// exact area and this `id`: point-sampled at [`sample_point`]s. Read for the opaque depth.
     fn mask(&self, id: u32, x: u32, y: u32) -> u16 {
         unreachable!("a producer that adds exact areas gives their masks ({id} at {x}, {y})")
+    }
+
+    /// The exact area, in `0..=1` of the cell, of the fragment this producer added to pixel
+    /// `(x, y)` with exact area and this `id`, inside each sub-sample's cell ([`sample_cell`]):
+    /// what it composites with at each sub-sample of the sample resolve. Their mean is its area.
+    fn cell_areas(&self, id: u32, x: u32, y: u32) -> [f32; SAMPLES] {
+        unreachable!("a producer that adds exact areas gives their cells' areas ({id} at {x}, {y})")
     }
 }
 
@@ -526,6 +560,18 @@ impl TransparentPass<'_> {
         }
     }
 
+    /// A fragment's 8-bit coverage at each sub-sample of the sample resolve: all or nothing for a
+    /// mask, the exact area inside each sub-sample's cell for an area.
+    fn sample_coverage(&self, f: &Fragment, x: u32, y: u32) -> [u8; SAMPLES] {
+        match f.coverage {
+            Coverage::Mask(m) => std::array::from_fn(|s| if m & (1 << s) != 0 { 255 } else { 0 }),
+            Coverage::Area { area, .. } if area >= 1.0 => [255; SAMPLES],
+            Coverage::Area { id, .. } => self.producers[f.source as usize]
+                .cell_areas(id, x, y)
+                .map(area_coverage),
+        }
+    }
+
     /// The opaque pass's depth at pixel `(x, y)`'s sub-samples: the nearest opaque fragment
     /// covering each, `+inf` where none does.
     pub fn opaque_depth(&self, x: u32, y: u32) -> [f64; SAMPLES] {
@@ -598,7 +644,7 @@ impl TransparentPass<'_> {
             let (class, mut pixel) = if scratch.fragments.is_empty() {
                 (Resolve::Background, bg)
             } else {
-                resolve_pixel(&mut scratch, bg, x, y, |f| self.mask_of(f, x, y))
+                resolve_pixel(&mut scratch, bg, x, y, |f| self.sample_coverage(f, x, y))
             };
             match self.emission.get(i) {
                 Some(e) if *e != [0.0; 3] => pixel = add_emission(pixel, *e),
@@ -620,7 +666,8 @@ struct Scratch {
     order: Vec<usize>,
     /// Runs `start..end` of `order` that composite as one fragment.
     units: Vec<(usize, usize)>,
-    masks: Vec<u16>,
+    /// Each fragment's coverage at each sub-sample, for the sample resolve.
+    coverage: Vec<[u8; SAMPLES]>,
     covering: Vec<usize>,
 }
 
@@ -637,7 +684,7 @@ fn resolve_pixel(
     bg: [u8; 4],
     x: u32,
     y: u32,
-    mask_of: impl Fn(&Fragment) -> u16,
+    sample_coverage: impl Fn(&Fragment) -> [u8; SAMPLES],
 ) -> (Resolve, [u8; 4]) {
     let frags = &s.fragments;
     if let [f] = frags.as_slice() {
@@ -781,24 +828,20 @@ fn resolve_pixel(
         return (Resolve::Coverage, px);
     }
 
-    s.masks.clear();
-    s.masks.resize(frags.len(), 0);
+    s.coverage.clear();
+    s.coverage.resize(frags.len(), [0; SAMPLES]);
     for i in &s.order {
-        s.masks[*i] = mask_of(&frags[*i]);
+        s.coverage[*i] = sample_coverage(&frags[*i]);
     }
     let mut sum = [0u32; 4];
     for k in 0..SAMPLES {
         s.covering.clear();
-        s.covering.extend(
-            s.order
-                .iter()
-                .copied()
-                .filter(|i| s.masks[*i] & (1 << k) != 0),
-        );
+        s.covering
+            .extend(s.order.iter().copied().filter(|i| s.coverage[*i][k] != 0));
         s.covering.sort_by(|i, j| cmp_at(*i, *j, k));
         let mut px = bg;
         for i in s.covering.iter().rev() {
-            px = blend(frags[*i].colour, 255, px);
+            px = blend(frags[*i].colour, s.coverage[*i][k], px);
         }
         for c in 0..4 {
             sum[c] += px[c] as u32;

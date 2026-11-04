@@ -311,3 +311,34 @@ fn every_probe_draws_the_same_bytes_on_every_run_and_any_number_of_threads() {
         }
     }
 }
+
+/// The fixture of the paint kinds the probes lack draws each of them: its points' blocks in CE's
+/// bytes (`trunc(255 c)`), its instances' fill rows, its two strokes.
+#[test]
+fn the_paint_kinds_fixture_draws_every_kind() {
+    let probe = probes::paint_kinds();
+    let frame = &frames(&probe, 1)[0];
+    let count = |bytes: [u8; 4]| frame.rgba.chunks(4).filter(|p| *p == bytes).count();
+    let trunc = |c: [f64; 4]| c.map(|v| (v * 255.0) as u8);
+    for c in probes::PAINT_KINDS_POINTS {
+        assert!(
+            count(trunc(c)) >= 8,
+            "point colour {c:?}: {}",
+            count(trunc(c))
+        );
+    }
+    for c in probes::PAINT_KINDS_FILLS {
+        assert!(
+            count(premultiply(c)) >= 20,
+            "fill {c:?}: {}",
+            count(premultiply(c))
+        );
+    }
+    for c in probes::PAINT_KINDS_STROKES {
+        assert!(
+            count(premultiply(c)) >= 20,
+            "stroke {c:?}: {}",
+            count(premultiply(c))
+        );
+    }
+}

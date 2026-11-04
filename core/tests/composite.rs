@@ -11,6 +11,7 @@ use arachne_core::mesh;
 use arachne_core::tiles;
 use arachne_core::xf::*;
 use common::meshes::*;
+use common::resolve::EverySample;
 use common::three_d_view;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -51,13 +52,14 @@ impl Producer for Wall {
 }
 
 /// A path-like producer: the half-plane `a * x + b * y <= c` in pixel coordinates, with its exact
-/// area per pixel and, on demand, its mask point-sampled at the sub-samples.
+/// area per pixel and, on demand, its mask point-sampled at the sub-samples and its exact area in
+/// each sub-sample's cell (`asks` counts the demands).
 struct HalfPlane {
     line: [f64; 3],
     colour: [u8; 4],
     depth: Plane,
     order: u32,
-    masks: AtomicUsize,
+    asks: AtomicUsize,
 }
 
 impl HalfPlane {
@@ -67,19 +69,23 @@ impl HalfPlane {
             colour,
             depth,
             order: 1,
-            masks: AtomicUsize::new(0),
+            asks: AtomicUsize::new(0),
         }
     }
 
     fn area(&self, x: u32, y: u32) -> f64 {
-        let (xf, yf) = (x as f64, y as f64);
-        let pixel = [
-            [xf, yf],
-            [xf + 1.0, yf],
-            [xf + 1.0, yf + 1.0],
-            [xf, yf + 1.0],
+        self.area_in(x as f64, y as f64, 1.0)
+    }
+
+    /// The fraction of the square at `(x0, y0)` of side `side` inside the half-plane.
+    fn area_in(&self, x0: f64, y0: f64, side: f64) -> f64 {
+        let square = [
+            [x0, y0],
+            [x0 + side, y0],
+            [x0 + side, y0 + side],
+            [x0, y0 + side],
         ];
-        area(&clip(&pixel, self.line[0], self.line[1], self.line[2]))
+        area(&clip(&square, self.line[0], self.line[1], self.line[2])) / (side * side)
     }
 
     fn inside(&self, p: [f64; 2]) -> bool {
@@ -108,13 +114,23 @@ impl Producer for HalfPlane {
 
     fn mask(&self, id: u32, x: u32, y: u32) -> u16 {
         assert_eq!(id, 7);
-        self.masks.fetch_add(1, Ordering::Relaxed);
+        self.asks.fetch_add(1, Ordering::Relaxed);
         (0..SAMPLES).fold(0, |m, s| {
             if self.inside(sample_point(x, y, s)) {
                 m | 1 << s
             } else {
                 m
             }
+        })
+    }
+
+    fn cell_areas(&self, id: u32, x: u32, y: u32) -> [f32; SAMPLES] {
+        assert_eq!(id, 7);
+        self.asks.fetch_add(1, Ordering::Relaxed);
+        std::array::from_fn(|s| {
+            let [column, row] = sample_cell(s);
+            let (cx, cy) = (x as f64 + column as f64 / 4.0, y as f64 + row as f64 / 4.0);
+            self.area_in(cx, cy, 0.25) as f32
         })
     }
 }
@@ -253,7 +269,27 @@ fn two_d_paint_blends_with_cairos_argb32_arithmetic() {
 }
 
 #[test]
-fn the_sample_pattern_holds_one_sample_per_row_and_column_centred_on_the_pixel() {
+fn the_sample_pattern_is_stratified_and_centred_on_the_pixel() {
+    // One sample per cell of the 4 x 4 grid, each in the cell sample_cell names.
+    let mut cells: Vec<[usize; 2]> = (0..SAMPLES).map(sample_cell).collect();
+    for s in 0..SAMPLES {
+        let [fx, fy] = sample_fixed(s);
+        assert_eq!(sample_cell(s), [fx as usize / 64, fy as usize / 64]);
+    }
+    cells.sort();
+    cells.dedup();
+    assert_eq!(cells.len(), SAMPLES);
+    // Edges at 45 and 135 degrees get at least 13 coverage levels: 12 distinct sums and
+    // differences of the offsets.
+    let distinct = |f: fn([i8; 2]) -> i8| {
+        let mut v: Vec<i8> = SAMPLE_OFFSETS.iter().map(|o| f(*o)).collect();
+        v.sort();
+        v.dedup();
+        v.len()
+    };
+    assert!(distinct(|[x, y]| x + y) >= 12);
+    assert!(distinct(|[x, y]| x - y) >= 12);
+    // One sample per row and per column of sixteenths, centred on the pixel.
     let (mut xs, mut ys) = (Vec::new(), Vec::new());
     let (mut cx, mut cy) = (0.0, 0.0);
     for s in 0..SAMPLES {
@@ -304,11 +340,11 @@ fn a_paths_exact_area_composites_on_the_coverage_resolve_and_asks_for_no_mask() 
             assert_eq!(class_at(&drawn, w, x, y), class as u8, "pixel {x},{y}");
         }
     }
-    assert_eq!(path.masks.load(Ordering::Relaxed), 0);
+    assert_eq!(path.asks.load(Ordering::Relaxed), 0);
 }
 
 #[test]
-fn a_path_crossing_a_surface_in_depth_takes_the_sample_resolve_with_its_mask() {
+fn a_path_crossing_a_surface_in_depth_takes_the_sample_resolve_with_its_cells_areas() {
     let (w, h) = (48, 32);
     let blue = premultiply([0.1, 0.2, 0.9, 1.0]);
     let red = premultiply([0.9, 0.1, 0.1, 0.9]);
@@ -345,35 +381,39 @@ fn a_path_crossing_a_surface_in_depth_takes_the_sample_resolve_with_its_mask() {
                 );
                 assert_eq!(class, Resolve::Coverage as u8, "pixel {x},{y}");
             } else {
-                // The crossing column: each sub-sample takes what is in front of it there.
+                // The crossing column: each sub-sample takes what is in front of it there, the
+                // path with its exact area inside the sub-sample's cell.
                 assert_eq!(class, Resolve::Sample as u8, "pixel {x},{y}");
                 samples += 1;
                 if area < 1.0 {
                     partial += 1;
                 }
-                let (xf, yf) = (x as f64, y as f64);
-                let mut want = [0.0; 4];
-                let points = grid_points(xf, yf, xf + 1.0, yf + 1.0, 64);
-                for p in &points {
-                    let front = path.inside(*p) && depth.at(p[0], p[1]) < 0.0;
-                    let c = if front { blend(red, 255, blue) } else { blue };
+                let mut sum = [0u32; 4];
+                for s in 0..SAMPLES {
+                    let [px, py] = sample_point(x, y, s);
+                    let [column, row] = sample_cell(s);
+                    let cell = path.area_in(
+                        x as f64 + column as f64 / 4.0,
+                        y as f64 + row as f64 / 4.0,
+                        0.25,
+                    );
+                    let c = if depth.at(px, py) < 0.0 {
+                        blend(red, area_coverage(cell as f32), blue)
+                    } else {
+                        blue
+                    };
                     for k in 0..4 {
-                        want[k] += c[k] as f64 / points.len() as f64;
+                        sum[k] += c[k] as u32;
                     }
                 }
-                for k in 0..4 {
-                    assert!(
-                        (got[k] as f64 - want[k]).abs() <= 0.14 * 255.0,
-                        "pixel {x},{y}: got {got:?}, want {want:?}"
-                    );
-                }
+                assert_eq!(got, sum.map(|v| ((v + 8) / 16) as u8), "pixel {x},{y}");
             }
         }
     }
     assert!(samples > 10 && partial > 0, "{samples} {partial}");
-    // A mask was made once per sample-resolve pixel the path covers in part, and nowhere else
-    // (where it covers the whole pixel, every sub-sample is inside).
-    assert_eq!(path.masks.load(Ordering::Relaxed), partial);
+    // Cells' areas were asked for once per sample-resolve pixel the path covers in part, and
+    // nowhere else (where it covers the whole pixel, every cell is full).
+    assert_eq!(path.asks.load(Ordering::Relaxed), partial);
 }
 
 #[test]
@@ -815,5 +855,81 @@ fn the_coverage_resolve_is_within_its_stated_bound_of_the_sample_resolve() {
     assert!(cases > 10_000, "{cases} cases");
     if std::env::var_os("CORE_STATS").is_some() {
         eprintln!("coverage vs sample resolve: widest gap {widest} over {cases} cases");
+    }
+}
+
+#[test]
+fn a_paths_exact_area_lands_within_the_bound_on_either_resolve() {
+    // A path's edge in a pixel: the coverage resolve blends its exact area once; the sample
+    // resolve blends, at each sub-sample, its exact area inside that sub-sample's cell, and
+    // averages. Alone, over an opaque wall and under a translucent layer, every edge angle and
+    // offset lands within COVERAGE_TO_SAMPLE_LSB of the other resolve.
+    let (w, h) = (24, 24);
+    let mut rng = Lcg(11);
+    let (mut pixels, mut widest) = (0, 0);
+    for round in 0..120 {
+        let turn = rng.unit() * std::f64::consts::PI;
+        let (a, b) = (libm::cos(turn), libm::sin(turn));
+        let c = a * 12.0 + b * 12.0 + rng.unit() - 0.5;
+        let alpha = if round % 2 == 0 { 1.0 } else { rng.unit() };
+        let colour = premultiply([rng.unit(), rng.unit(), rng.unit(), alpha]);
+        let path = HalfPlane::new([a, b, c], colour, Plane::constant(1.0));
+        let wall = Wall {
+            rect: [0, 0, w, h],
+            depth: 2.0,
+            colour: premultiply([rng.unit(), rng.unit(), rng.unit(), 1.0]),
+            mask: FULL,
+            order: 0,
+        };
+        let front = premultiply([rng.unit(), rng.unit(), rng.unit(), 0.5]);
+        let over = Veil(front);
+        let stacks: [Vec<&dyn Producer>; 3] = [vec![&path], vec![&wall, &path], vec![&path, &over]];
+        for stack in stacks {
+            let drawn = tiles::render(Frame::filled(w, h, GREY), &stack, 1);
+            let mut with = stack.clone();
+            with.push(&EverySample);
+            let sampled = tiles::render(Frame::filled(w, h, GREY), &with, 1);
+            for y in 0..h {
+                for x in 0..w {
+                    let area = path.area(x, y);
+                    if area <= 0.0 || area >= 1.0 {
+                        continue;
+                    }
+                    let i = (y * w + x) as usize * 4;
+                    assert_eq!(drawn.resolves[i / 4], Resolve::Coverage as u8);
+                    pixels += 1;
+                    for k in 0..4 {
+                        let gap = (drawn.rgba[i + k] as i64 - sampled.rgba[i + k] as i64).abs();
+                        widest = widest.max(gap);
+                        assert!(
+                            gap <= COVERAGE_TO_SAMPLE_LSB as i64,
+                            "pixel {x},{y}, line {:?}: coverage {:?}, sample {:?}",
+                            path.line,
+                            &drawn.rgba[i..i + 4],
+                            &sampled.rgba[i..i + 4]
+                        );
+                    }
+                }
+            }
+        }
+    }
+    assert!(pixels > 5_000, "{pixels} pixels");
+    if std::env::var_os("CORE_STATS").is_some() {
+        eprintln!(
+            "a path's area, coverage vs sample resolve: widest gap {widest} over {pixels} pixels"
+        );
+    }
+}
+
+/// A translucent layer over every pixel, in front of everything.
+struct Veil([u8; 4]);
+
+impl Producer for Veil {
+    fn transparent(&self, pass: &mut TransparentPass<'_>) {
+        let r = pass.rect();
+        for (x, y) in rect_pixels(r, r.x0, r.y0, r.x1, r.y1) {
+            let f = Fragment::new(Plane::constant(0.0), self.0, Coverage::Mask(FULL), 9, 0);
+            pass.add(x, y, f);
+        }
     }
 }

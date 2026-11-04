@@ -5,14 +5,30 @@
 //!   placed by `placements[i]` after the record's own placement, its fill and stroke colours row
 //!   `i` of the record's tables where the prototype fills or strokes, at the record's place in the
 //!   draw order, tying above instance `i - 1` as the run's `i`-th leaf did.
-//! - A `points` record's point `i` is a disc of its colour row `i`, at the point's place, tying
-//!   above point `i - 1`.
+//! - A `points` record draws its points as CE's blocks (`points.rs`), in the same instance path:
+//!   point `i` takes colour row `i`.
 //!
 //! Members are drawn one by one: correct, not yet fast.
 
 use crate::mesh::MeshDraw;
-use crate::path::{DiscDraw, PathDraw};
+use crate::path::PathDraw;
+use crate::points::PointsDraw;
 use crate::xf::*;
+
+/// A `points` record's points, drawn as CE's blocks.
+pub fn points<'a>(
+    record: &'a Record,
+    positions: &'a [[f64; 3]],
+    colours: &'a Stops,
+    order: u32,
+) -> PointsDraw<'a> {
+    PointsDraw {
+        record,
+        positions,
+        colours: &colours.rows,
+        order,
+    }
+}
 
 /// The colour a paint resolves to, when it is one colour (other paints are refused before
 /// drawing).
@@ -88,25 +104,6 @@ pub fn mesh_members<'a>(
             fill: fill.rows[i],
             order,
             sub: per * i as u32,
-        });
-    }
-}
-
-/// A `points` record's discs.
-pub fn discs<'a>(
-    record: &'a Record,
-    positions: &'a [[f64; 3]],
-    colours: &'a Stops,
-    order: u32,
-    out: &mut Vec<DiscDraw<'a>>,
-) {
-    for (i, point) in positions.iter().enumerate() {
-        out.push(DiscDraw {
-            record,
-            point: *point,
-            colour: colours.rows[i],
-            order,
-            sub: i as u32,
         });
     }
 }
