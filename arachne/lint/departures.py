@@ -26,7 +26,10 @@ short to show a frame included); what the script removes, in the scene as
 it stood just before the call, at the call's line. Both are states the
 execution keeps (``Record.states``). A thing a play
 itself took out (a fade-out's cleanup) was swept when that play began, and
-is not swept again. A clear forgets every entry and touch.
+is not swept again. A clear forgets every entry and touch. A departure is
+held to the terms in force at its instant (:meth:`.ArmedRule.terms_at`):
+the scene's arming as it stands there, exemptions as the value it handed
+over holds them then.
 
 The scene's time is the engine's exact clock. A decision made within one
 frame of the render's grid of :data:`SETTLED_WAIT` (that frame included)
@@ -84,7 +87,14 @@ def _departures(context: LintContext, rule: ArmedRule) -> list[Finding]:
         if settled:
             parts = rule.state(context, removal.capture)
             found.extend(
-                _sweep(parts, settled, rule.terms, removal.source_line, removal.t, grid)
+                _sweep(
+                    parts,
+                    settled,
+                    rule.terms_at(record, removal.t, removal.plays),
+                    removal.source_line,
+                    removal.t,
+                    grid,
+                )
             )
         if removal.kind == "clear":
             clock.clear()
@@ -106,7 +116,14 @@ def _departures(context: LintContext, rule: ArmedRule) -> list[Finding]:
         if settled:
             parts = rule.state(context, called)
             found.extend(
-                _sweep(parts, settled, rule.terms, play.source_line, play.start, grid)
+                _sweep(
+                    parts,
+                    settled,
+                    rule.terms_at(record, play.start, play.index),
+                    play.source_line,
+                    play.start,
+                    grid,
+                )
             )
         touched = [leaf.mobject for leaf in leaves if leaf.mobject is not None]
         clock.touch(touched, left, play.end)

@@ -205,14 +205,33 @@ class Bridge:
         """
         for call, reader in self._readers:
             if call.t <= t:
-                values = reader()
-                if (
-                    id(call) in self._changes_only
-                    and call.readings
-                    and call.readings[-1].values == values
-                ):
-                    continue
-                call.readings.append(Reading(t, line, values, until))
+                self._read(call, reader, t, line, until)
+
+    def read_changes(self, t: Fraction) -> None:
+        """Read, at ``t``, every call read only where its reading changes
+        (what a declaration's exemptions name): at a state the record keeps
+        between frames, where a watch is never read.
+        """
+        for call, reader in self._readers:
+            if call.t <= t and id(call) in self._changes_only:
+                self._read(call, reader, t, None, None)
+
+    def _read(
+        self,
+        call: BridgeCall,
+        reader: Callable[[], Mapping[str, Any] | None],
+        t: Fraction,
+        line: SourceLine | None,
+        until: Fraction | None,
+    ) -> None:
+        values = reader()
+        if (
+            id(call) in self._changes_only
+            and call.readings
+            and call.readings[-1].values == values
+        ):
+            return
+        call.readings.append(Reading(t, line, values, until))
 
 
 class PlayRun:
@@ -624,9 +643,13 @@ class Recorder:
         )
 
     def _state(self, kind: str) -> Capture:
-        """The scene now, as a capture no frame draws."""
+        """The scene now, as a capture no frame draws, and what the scene's
+        declarations name now (:meth:`Bridge.read_changes`).
+        """
         camera = self.scene.renderer.camera
-        return self.ensure_record()._capture(
+        record = self.ensure_record()
+        record.bridge.read_changes(self.scene.time)
+        return record._capture(
             kind,
             self.scene.time,
             camera_nodes(camera),
