@@ -121,6 +121,29 @@ def test_a_text_s_own_plate_is_in_its_unit(parts):
     assert unit.type == "Text"
     assert unit.text
     assert unit.name == "plated"
+    # The plate is known by its role, the text's background rectangle.
+    assert {leaf.type for _, leaf in found if leaf.plate} == {"BackgroundRectangle"}
+    assert all(
+        not leaf.plate for _, leaf in found if leaf.type != "BackgroundRectangle"
+    )
+
+
+def test_a_unit_s_family_is_what_it_is_made_from(parts):
+    (unit,) = {leaf.unit for _, leaf in _leaves(parts, "pile")}
+    assert {m.type for m in unit.family} == {"Group", "Square"}
+    furniture = {leaf.unit for _, leaf in _leaves(parts, "axes") if leaf.unit}
+    # Every piece of furniture is made from its axes, whole.
+    (family,) = {unit.family for unit in furniture}
+    assert family[0].type == "Axes"
+    assert {"NumberLine", "Dot"} <= {m.type for m in family}
+
+
+def test_a_fill_is_read_by_its_first_row(parts):
+    ((_, faded),) = _leaves(parts, "faded")
+    assert faded.first_fill_opacity == 0
+    assert faded.fill_opacity == 1
+    ((_, ring),) = _leaves(parts, "ringed")
+    assert ring.first_fill_opacity == 0
 
 
 def test_strokes_are_kept_apart_foreground_and_background(parts):

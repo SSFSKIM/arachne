@@ -70,5 +70,7 @@ class Units(Scene):
         haloed = Text("halo", font_size=24).shift(DOWN * 0.5 + RIGHT * 1)  # @haloed
         haloed.set_stroke(BLACK, width=6, background=True)
         ringed = Square(0.6, stroke_width=8).shift(DOWN * 3 + RIGHT)  # @ringed
+        faded = Square(0.6, fill_opacity=[0, 1]).shift(DOWN * 3 + RIGHT * 2)  # @faded
         self.add(arrow, row, pile, card, lines, dashes, axes, plated, haloed, ringed)
+        self.add(faded)
         self.wait(0.2)
