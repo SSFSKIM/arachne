@@ -12,7 +12,10 @@ its frame hooks and dt updaters ran at instants no frame of the render shows.
 
 A reader that needs of the execution what the session's record lacks asks
 for every frame from the forward run (:meth:`Frames.require_forward`), and
-every reader is then served from it.
+every reader is then served from it. A reader whose frames matter only if
+the forward run is the execution read asks for them from that run alone
+(``forward_only``): they are read when the other requests need one, and
+not otherwise (:meth:`Frames.answered`).
 
 One run matters beyond its cost: two executions of a scene need not agree (a
 helper module's state is not restored between them), so what two readers of
@@ -58,6 +61,9 @@ class _Request:
     times: tuple[Fraction, ...]
     read: FrameReader[Any]
     found: dict[Fraction, Any]
+    #: Read only from a forward run the other requests need.
+    forward_only: bool = False
+    answered: bool = False
 
 
 class Frames:
@@ -74,17 +80,24 @@ class Frames:
         self.forward: Record | None = None
 
     def request(
-        self, owner: Hashable, times: Sequence[Fraction], read: FrameReader[Any]
+        self,
+        owner: Hashable,
+        times: Sequence[Fraction],
+        read: FrameReader[Any],
+        *,
+        forward_only: bool = False,
     ) -> None:
         """Ask for ``read``'s reading of the frame at each of ``times``, for
-        ``owner``; raises :class:`RuntimeError` once the frames are read, and
-        :class:`ValueError` for an owner that asked already.
+        ``owner``; with ``forward_only``, only from a forward run the other
+        requests need, and not at all when they need none
+        (:meth:`answered`). Raises :class:`RuntimeError` once the frames are
+        read, and :class:`ValueError` for an owner that asked already.
         """
         if self._read:
             raise RuntimeError("The lint's frames are read: ask before they are.")
         if owner in self._requests:
             raise ValueError(f"{owner!r} asked for frames already.")
-        self._requests[owner] = _Request(tuple(times), read, {})
+        self._requests[owner] = _Request(tuple(times), read, {}, forward_only)
 
     def require_forward(self) -> None:
         """Read every frame of every request from the forward run: for a
@@ -116,9 +129,13 @@ class Frames:
         session = self.session
         record = session.record
         asking: dict[Fraction, list[_Request]] = {}
+        # What only a forward run answers, if the others need one.
+        later: dict[Fraction, list[_Request]] = {}
         for request in self._requests.values():
             for t in dict.fromkeys(request.times):
-                asking.setdefault(t, []).append(request)
+                (later if request.forward_only else asking).setdefault(t, []).append(
+                    request
+                )
         settings: ManimConfig | dict[str, Any] = (
             session._source.settings if session._source is not None else {}
         )
@@ -149,6 +166,11 @@ class Frames:
             if missing:
                 from arachne.timeline.fallback import visit_frames
 
+                needed = set(missing)
+                for requests in later.values():
+                    for request in requests:
+                        request.answered = True
+
                 def visit(
                     t: Fraction,
                     forward: Record,
@@ -156,11 +178,25 @@ class Frames:
                     capture: Capture,
                 ) -> None:
                     self.forward = forward
-                    for request in asking.get(t, ()):
+                    shown = [
+                        *(asking.get(t, ()) if t in needed else ()),
+                        *later.get(t, ()),
+                    ]
+                    for request in shown:
                         request.found[t] = request.read(forward, t, play, capture, True)
 
-                visit_frames(session, missing, visit, to_end=bool(self._complete))
-        unread = [t for t in missing if any(t not in r.found for r in asking[t])]
+                visits = sorted(needed | set(later))
+                visit_frames(session, visits, visit, to_end=bool(self._complete))
+                missing = visits
+        unread = [
+            t
+            for t in missing
+            if any(
+                t not in r.found
+                for r in [*asking.get(t, ()), *later.get(t, ())]
+                if not r.forward_only or r.answered
+            )
+        ]
         if unread:
             raise RuntimeError(
                 f"The forward run showed no scene at {', '.join(map(str, unread))}."
@@ -172,6 +208,18 @@ class Frames:
         one ran, else the session's.
         """
         return self.forward if self.forward is not None else self.session.record
+
+    def answered(self, owner: Hashable) -> bool:
+        """Whether ``owner``'s frames were read: always, once :meth:`read`
+        has run, but for a forward-only request when no forward run was
+        needed.
+        """
+        request = self._requests.get(owner)
+        return (
+            self._read
+            and request is not None
+            and (not request.forward_only or request.answered)
+        )
 
     def result(self, owner: Hashable) -> list[Any]:
         """What ``owner``'s reader made of each frame it asked for, in the

@@ -111,7 +111,8 @@ class BridgeCall:
     its readings); ``reference`` the reference mobject's stable id.
     ``readings`` are the call's evaluations in time order: one for a
     record, a sweep or an apart (its findings), one at the call and then one
-    per kept capture for a watch.
+    per kept capture for a watch, and for a call stating exemptions what
+    they name, at the call and then at each kept capture.
     """
 
     kind: str
@@ -139,7 +140,7 @@ class BridgeCall:
 
 class Bridge:
     """The assertion bridge's calls of one recording, in call order, and
-    the watches it reads at each kept capture.
+    those it reads at each kept capture.
     """
 
     def __init__(self) -> None:
@@ -153,8 +154,8 @@ class Bridge:
         call: BridgeCall,
         reader: Callable[[], Mapping[str, Any] | None] | None = None,
     ) -> BridgeCall:
-        """Keep ``call``; with ``reader``, a watch read at every kept capture
-        from now on.
+        """Keep ``call``; with ``reader``, a call read at every kept capture
+        from now on: a watch, or what a declaration's exemptions name.
         """
         self.calls.append(call)
         if reader is not None:
@@ -172,8 +173,17 @@ class Bridge:
 
     @property
     def watching(self) -> bool:
-        """Whether a watch is read at the kept captures."""
+        """Whether a call is read at the kept captures."""
         return bool(self._readers)
+
+    def read_now(self, call: BridgeCall) -> Mapping[str, Any] | None:
+        """What ``call``'s reader reads now (``None`` for a call with none):
+        for a call that read the scene, as it stands at another call.
+        """
+        for kept, reader in self._readers:
+            if kept is call:
+                return reader()
+        return None
 
     def stop(self, call: BridgeCall) -> None:
         """Read the watch ``call`` at no capture from now on."""
@@ -182,8 +192,8 @@ class Bridge:
     def read(
         self, t: Fraction, line: SourceLine | None, until: Fraction | None = None
     ) -> None:
-        """Read every watch declared at or before ``t`` there, in a state
-        that holds until ``until``.
+        """Read every call with a reader made at or before ``t`` there, in a
+        state that holds until ``until``.
         """
         for call, reader in self._readers:
             if call.t <= t:

@@ -723,3 +723,140 @@ class Apart(Scene):
             "padded": apart(ring, clear_of, pad=0.6),
         }
         self.wait(0.5)
+
+
+class ApartWholes(Scene):
+    """Pairs asked apart at 0.5 s where each argument is measured whole: a
+    group of a text and a dot either side of a row, a group of two texts a
+    word sits between, a row against itself, and terms that move the gap.
+    """
+
+    def construct(self):
+        self.wait(0.5)
+        upper, lower = _rows(0.08)
+        mixed = VGroup(upper, Dot(LEFT * 4))
+        pair = VGroup(
+            Text("left", font_size=40).shift(LEFT * 3),
+            Text("right", font_size=40).shift(RIGHT * 3),
+        )
+        middle = Text("middle", font_size=40)
+        marker = Dot().next_to(upper, DOWN, buff=0.2)
+        self.found = {
+            "mixed_subject": apart(mixed, lower),
+            "mixed_target": apart(lower, mixed),
+            "pair_around": apart(pair, middle),
+            "small_min_gap": apart(upper, lower, min_gap=0.2),
+            "large_pad": apart(upper, marker, pad=0.6),
+            "itself": apart(upper, upper),
+        }
+        self.wait(0.2)
+
+
+class ExemptChangedThenSwept(Scene):
+    """Two phrases over each other; a group declared exempt, then given the
+    second phrase (or made to give it up) before a sweep at 0.5 s.
+    """
+
+    gains = True
+
+    def construct(self):
+        first, second = _words()
+        holder = VGroup() if self.gains else VGroup(second)
+        declare(exempt=holder)
+        if self.gains:
+            holder.add(second)
+        else:
+            holder.remove(second)
+        self.add(first, second)
+        self.wait(0.5)
+        self.found = sweep()
+        self.wait(0.2)
+
+
+class ExemptLostThenSwept(ExemptChangedThenSwept):
+    gains = False
+
+
+class ExemptChangedWhileHeld(Scene):
+    """Two phrases over each other for 1.6 s under an arming that exempts a
+    group; the group then gains the second phrase (or loses it), which moves
+    away.
+    """
+
+    gains = True
+
+    def construct(self):
+        first, second = _words()
+        holder = VGroup() if self.gains else VGroup(second)
+        arm(exempt=holder)
+        self.add(first, second)
+        self.wait(1.6)
+        if self.gains:
+            holder.add(second)
+        else:
+            holder.remove(second)
+        second.shift(RIGHT * 4)
+        self.wait(0.2)
+
+
+class ExemptLostWhileHeld(ExemptChangedWhileHeld):
+    gains = False
+
+
+class ExemptGainedLater(Scene):
+    """Two phrases over each other from the start; the group declared exempt
+    is given the second phrase at 1 s.
+    """
+
+    def construct(self):
+        first, second = _words()
+        holder = VGroup()
+        declare(exempt=holder)
+        self.add(first, second)
+        self.wait(1)
+        holder.add(second)
+        self.wait(1)
+
+
+class Rearmed(Scene):
+    """Armed with a text gap and a pad, then armed again with neither; two
+    rows a hair apart swept at 1.6 s.
+    """
+
+    def construct(self):
+        arm(text_gap=0.3, pad=0.2)
+        arm()
+        upper, lower = _rows(0.08)
+        self.add(upper, lower)
+        self.wait(1.6)
+        self.found = sweep()
+        self.remove(lower)
+        self.wait(0.2)
+
+
+class ArmsWhenFew(Scene):
+    """A puck slid twice, then set down further on; the motion rule armed
+    after the first slide only when the scene has evaluated fewer than 20
+    frames by then (``on_few``), or only when it has evaluated more.
+    """
+
+    on_few = True
+
+    def construct(self):
+        self.count = 0
+        puck = Dot(LEFT * 3)
+        self.add(puck)
+        self.play(puck.animate.shift(RIGHT), run_time=1)
+        if (self.count < 20) == self.on_few:
+            arm()
+        self.play(puck.animate.shift(RIGHT), run_time=1)
+        puck.move_to(RIGHT * 3)
+        self.wait(1)
+
+    def update_to_time(self, t):
+        super().update_to_time(t)
+        self.count += 1
+
+
+class ArmsWhenMany(ArmsWhenFew):
+    on_few = False
