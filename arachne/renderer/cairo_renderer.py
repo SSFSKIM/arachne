@@ -185,8 +185,6 @@ class CairoRenderer:
         the play runs.
         """
         timeline = scene.timeline
-        if not frames_in(scene.time, timeline.requested_end(), fps):
-            cache_key = None
         draw = cache_key is not None and timeline.draws
         if draw and self.file_writer.is_already_cached(cache_key):
             draw = False
@@ -196,6 +194,8 @@ class CairoRenderer:
             # The play's segment opens at its first frame: a stop condition
             # can end the play before the frame grid reaches it, and then it
             # has no segment, like a frameless play drawn from the record.
+            # Whether it has frames is known only once it has run: its
+            # play_internal decides its span.
 
             def write(pixels: PixelArray, repeat: int) -> None:
                 nonlocal opened

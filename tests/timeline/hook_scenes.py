@@ -33,6 +33,7 @@ from arachne import (
     Succession,
     ValueTracker,
     VGroup,
+    Wait,
     always_redraw,
     config,
     linear,
@@ -524,6 +525,55 @@ class AnimationLengthenedInPlay(Scene):
         self.run_times: list[float] = []
         self.frames: list[float] = []
         clock(self)
+        dot = Dot()
+        self.add(dot)
+        self.play(dot.animate.shift(RIGHT), rate_func=linear)
+
+
+class SameSpanRetimed(Scene):
+    """``play_internal`` stretches a two-part ``Succession`` from 2 s to 3 s
+    before its body runs, beside a 3 s wait that keeps the span: the parts
+    change at 1.5 s, not 1 s.
+    """
+
+    def play_internal(self, skip_rendering=False):
+        self.animations[0].run_time = 3
+        super().play_internal(skip_rendering)
+
+    def construct(self):
+        clock(self)
+        first = Square(side_length=0.5).shift(LEFT)
+        second = Square(side_length=0.5).shift(RIGHT)
+        self.add(first, second)
+        self.play(
+            Succession(
+                first.animate(run_time=1, rate_func=linear).shift(UP),
+                second.animate(run_time=1, rate_func=linear).shift(DOWN),
+                run_time=2,
+                rate_func=linear,
+            ),
+            Wait(3),
+        )
+
+
+class LiveSpanGrows(Scene):
+    """A record that can't draw (``OwnFill`` draws through the scene's code),
+    and a play from 0.1 s whose ``get_run_time`` gives 0.01 s when it is
+    compiled, between two frames of 4 fps, and 1 s when ``play_internal``
+    asks: CE draws its frames.
+    """
+
+    def get_run_time(self, animations):
+        if self.asked is None:
+            return super().get_run_time(animations)
+        self.asked += 1
+        return 0.01 if self.asked == 1 else 1.0
+
+    def construct(self):
+        self.asked = None
+        self.add(OwnFill(radius=0.2).shift(LEFT))
+        self.wait(0.1)
+        self.asked = 0
         dot = Dot()
         self.add(dot)
         self.play(dot.animate.shift(RIGHT), rate_func=linear)
