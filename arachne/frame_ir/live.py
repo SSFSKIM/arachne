@@ -356,6 +356,8 @@ class LivePainter:
         return restore
 
     def _display(self, camera: Any, kind: type, func: Any) -> Any:
+        from arachne.timeline.camera_code import engine_own
+
         def display(mobjects: list[Any], pixel_array: Any) -> Any:
             drawn = [_Recording(mob) for mob in mobjects]
             frames = vars(camera)["_xf_live"]
@@ -363,7 +365,10 @@ class LivePainter:
                 frames[-1].extend((kind, recording) for recording in drawn)
             return func(drawn, pixel_array)
 
-        return display
+        # The engine's while it draws, standing for what it wraps
+        # (``display_funcs_rewired``).
+        display.__wrapped__ = func  # type: ignore[attr-defined]
+        return engine_own(display)
 
     def _capture(self, camera: Any, capture: Any) -> Any:
         def described(mobjects: Any, **kwargs: Any) -> None:
