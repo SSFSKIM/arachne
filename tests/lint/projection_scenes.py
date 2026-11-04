@@ -170,8 +170,8 @@ class HelperMade(Scene):
 def _ink_cases() -> list[tuple[str, object]]:
     """Objects whose ink is not their points' box: stroke caps and joins,
     curves whose control points lie off them, paths that paint nothing, a
-    thick point cloud, a cloud partly off the frame and an image too thin to
-    draw.
+    thick point cloud, a cloud partly off the frame, an image too thin to
+    draw and an image wholly transparent.
     """
     bezier = ([-2, 0, 0], [-2, 3, 0], [2, 3, 0], [2, 0, 0])
     return [
@@ -199,6 +199,10 @@ def _ink_cases() -> list[tuple[str, object]]:
         (
             "thin_image",
             ImageMobject(np.full((2, 2, 4), 255, dtype=np.uint8)).stretch(0, 0),
+        ),
+        (
+            "transparent_image",
+            ImageMobject(np.full((4, 4, 4), 255, dtype=np.uint8)).set_opacity(0),
         ),
     ]
 
