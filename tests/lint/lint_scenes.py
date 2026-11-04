@@ -6,6 +6,8 @@ A comment ``# @name`` tags a line the tests look up by name with
 
 from __future__ import annotations
 
+import numpy as np
+
 from arachne import (
     DOWN,
     LEFT,
@@ -14,7 +16,9 @@ from arachne import (
     Axes,
     Circle,
     Dot,
+    ImageMobject,
     MappingCamera,
+    PMobject,
     Scene,
     Square,
     Text,
@@ -95,3 +99,39 @@ class RefusedInstants(Instants):
     def __init__(self, **kwargs):
         super().__init__(camera_class=MappingCamera, **kwargs)
 
+
+class Backdropped(Scene):
+    """A text on a wide background rectangle of its own."""
+
+    def construct(self):
+        label = Text("hi").add_background_rectangle(buff=1)
+        self.add(label)
+        self.wait(0.25)
+
+
+class StyledCopy(Scene):
+    """A text and, in the same place, a copy of it with a thick stroke."""
+
+    def construct(self):
+        label = Text("hi")
+        thick = label.copy().set_stroke(width=20, opacity=1)
+        self.add(label, thick)
+        self.wait(0.25)
+
+
+class InvisibleImage(Scene):
+    """An image made fully transparent."""
+
+    def construct(self):
+        image = ImageMobject(np.full((4, 4, 4), 255, dtype=np.uint8)).set_opacity(0)
+        self.add(image)
+        self.wait(0.25)
+
+
+class WideCloud(Scene):
+    """One point of a cloud drawn 40 wide."""
+
+    def construct(self):
+        cloud = PMobject(stroke_width=40).add_points(np.array([[0.0, 0.0, 0.0]]))
+        self.add(cloud)
+        self.wait(0.25)
