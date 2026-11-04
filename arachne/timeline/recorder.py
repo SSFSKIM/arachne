@@ -273,6 +273,10 @@ class Recorder:
     one evaluates and keeps besides its own, as a non-frame evaluation (the
     engine's bodies, never the scene's frame hooks): what a restore or an
     analytic answer there is compared with. A ticked play evaluates none.
+
+    ``demoted`` are the indices of plays the probe demoted (:mod:`.probe`):
+    each ticks where it would be a state-function play. A session passes
+    them; a render never does.
     """
 
     def __init__(
@@ -286,6 +290,7 @@ class Recorder:
         on_tick: Callable[[Scene, Fraction, bool], object] | None = None,
         on_start: Callable[[Scene, Fraction], object] | None = None,
         instants: Iterable[Fraction | float] = (),
+        demoted: Iterable[int] = (),
     ) -> None:
         if stepping not in (True, False, BRUTE_FORCE):
             raise ValueError(
@@ -299,6 +304,7 @@ class Recorder:
         self.on_tick = on_tick
         self.on_start = on_start
         self.instants = tuple(sorted({exact(t) for t in instants}))
+        self.demoted = frozenset(demoted)
         self.record: Record | None = None
         self._tagging = False
         #: Which execution of the scene this is, with the plays an earlier
@@ -624,6 +630,7 @@ class Recorder:
             held=play.held,
             base_dir=_base_dir(record),
             refusal=body.refusal,
+            demoted=play.index in self.demoted,
         )
         play.admission = admission
         play.route = admission.route
