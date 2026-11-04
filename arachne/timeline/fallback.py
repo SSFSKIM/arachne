@@ -56,6 +56,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 
+from .admission import whole_line
 from .clock import exact
 from .dispatch import _all_engine_classes
 from .draw import Drawing, LiveFrames
@@ -202,8 +203,8 @@ class _ForwardRecorder(Recorder):
     the first play that begins after ``stop_after``; when it ``draws``, it
     draws as a render's recorder does, with the plays ``known`` to refuse
     mid-play drawn as they run from the earliest on, as the render's last
-    execution draws them. It ticks the plays the session's probe ``demoted``,
-    as the session's record does.
+    execution draws them. It ticks the plays ``demoted`` (identities, or
+    whole lines, as :class:`.Recorder` takes them).
     """
 
     def __init__(
@@ -309,7 +310,10 @@ def _forward(
                 for play in record.plays
                 if play.draw_refusal is not None
             },
-            demoted=source.demoted,
+            # Every play of a line the probe demoted a play of: which of them
+            # it was is unknown before the run plays them, and a ticked play
+            # answers as the render shows it, demoted or not.
+            demoted={whole_line(line) for line, _, _ in source.demoted},
         )
         made.append(forward)
         return forward
