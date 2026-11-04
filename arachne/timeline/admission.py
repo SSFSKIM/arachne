@@ -21,11 +21,25 @@ state-function play, the proof of every callback.
 
 A play whose camera draws through inputs the record can't hold
 (:func:`camera_refusal`) ticks too, and its frames are drawn while it runs.
+So does a play the probe demoted (:mod:`.probe`): restored at an instant
+its record kept, it differed from what was kept there, so its callbacks keep
+history their proofs did not see. A demotion is for good: every later
+recording a session makes of that scene of the same source ticks the play
+(:data:`DEMOTED`); a render reads none.
 """
 
 from __future__ import annotations
 
-__all__ = ["Admission", "Callback", "admit", "camera_refusal"]
+__all__ = [
+    "DEMOTED",
+    "PROBE_DEMOTED",
+    "Admission",
+    "Callback",
+    "admit",
+    "camera_refusal",
+    "demote",
+    "demoted",
+]
 
 import inspect
 from collections.abc import Callable, Iterator, Sequence
@@ -83,6 +97,36 @@ class Admission:
     callbacks: tuple[Callback, ...] = field(default=())
 
 
+#: The code of a demoted play's reason for ticking.
+PROBE_DEMOTED = "probe.demoted"
+
+#: The plays the probe demoted, as (source digest, scene class, play
+#: index): those a session's recording of that scene ticks, for the rest of
+#: the process. A source holds many scenes, so the scene's name is part of
+#: the key.
+DEMOTED: set[tuple[str, str, int]] = set()
+
+
+def demote(source_digest: str, scene_class: str, index: int) -> None:
+    """Tick play ``index`` of the scene ``scene_class`` of the source
+    ``source_digest`` in every recording a session makes of it from now on.
+    """
+    DEMOTED.add((source_digest, scene_class, index))
+
+
+def demoted(source_digest: str | None, scene_class: str) -> frozenset[int]:
+    """The plays of the scene ``scene_class`` of the source
+    ``source_digest`` the probe demoted; none for an unknown source.
+    """
+    if source_digest is None:
+        return frozenset()
+    return frozenset(
+        index
+        for digest, name, index in DEMOTED
+        if digest == source_digest and name == scene_class
+    )
+
+
 def camera_refusal(camera: Any) -> str | None:
     """Why frames of a scene drawn by ``camera`` can't come from its record:
     the camera draws through an input the record does not hold. ``None`` for
@@ -124,10 +168,12 @@ def admit(
     held: bool,
     base_dir: str | None = None,
     refusal: str | None = None,
+    demoted: bool = False,
 ) -> Admission:
     """The route of the play ``scene`` is about to evaluate; callbacks' source
     lines are relative to ``base_dir``, as the record's are. A record that
-    draws no frame (``refusal``) ticks.
+    draws no frame (``refusal``) ticks, and so does a play the probe
+    ``demoted`` that would otherwise be a state-function play.
     """
     from . import trusted
 
@@ -186,6 +232,16 @@ def admit(
             state_reasons.append(order)
     if state_reasons:
         return Admission(TICKED, tuple(state_reasons), tuple(callbacks))
+    if demoted:
+        return Admission(
+            TICKED,
+            (
+                f"{PROBE_DEMOTED}: restored at an instant its record kept, it differed"
+                " from what was kept there, so its callbacks keep history their"
+                " proofs did not see",
+            ),
+            tuple(callbacks),
+        )
     return Admission(
         STATE,
         ("callbacks run while it plays",),

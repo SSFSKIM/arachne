@@ -4,15 +4,19 @@
 forward with nothing written, and keeps the scene's :class:`Record` with
 every instant the run evaluated. :meth:`Session.state_at` answers from the
 record, and :meth:`Session.frame` draws one frame from it; neither runs the
-scene's code again. :meth:`Session.compare` compares the session's execution
-with another of the same source, perhaps from another process, and keeps
-where they differ in :attr:`Session.divergences`.
+scene's code again. Before either, the probe checks every state-function
+play against what its record kept (:mod:`.timeline.probe`), and the scene is
+recorded again with any play it demotes ticked. :meth:`Session.compare`
+compares the session's execution with another of the same source, perhaps
+from another process, and keeps where they differ in
+:attr:`Session.divergences`.
 """
 
 from __future__ import annotations
 
 __all__ = ["Session"]
 
+import contextlib
 import importlib.util
 import itertools
 import os
@@ -24,11 +28,21 @@ from typing import TYPE_CHECKING, Any, Literal
 from ._config import config as global_config
 from ._config import tempconfig
 from .constants import QUALITIES
+from .timeline import admission
 from .timeline.clock import exact
 from .timeline.draw import Drawing
-from .timeline.execution import Divergence, ExecutionSummary, compare, summarize
+from .timeline.execution import (
+    Divergence,
+    ExecutionSummary,
+    Incomparable,
+    compare,
+    summarize,
+)
+from .timeline.inputs import source_digest, source_files
 from .timeline.origins import ORIGINS
-from .timeline.recorder import Recorder
+from .timeline.probe import Probe
+from .timeline.probe import probe as probe_record
+from .timeline.recorder import Recorder, _scene_file
 from .timeline.routes import draw
 
 if TYPE_CHECKING:
@@ -65,6 +79,9 @@ class Session:
         self.divergences: list[Divergence] = []
         #: The record last summarised, and its summary.
         self._summary: tuple[Record, ExecutionSummary] | None = None
+        #: What the probe found for the state-function plays, when the
+        #: session was opened with it (:mod:`.timeline.probe`).
+        self.probe: Probe | None = None
 
     @classmethod
     def open(
@@ -79,6 +96,7 @@ class Session:
         on_tick: Callable[[Scene, Fraction, bool], object] | None = None,
         on_start: Callable[[Scene, Fraction], object] | None = None,
         instants: Iterable[Fraction | float] = (),
+        probe: bool = True,
     ) -> Session:
         """Execute the scene class named ``scene`` from ``file`` and record it.
 
@@ -97,49 +115,57 @@ class Session:
         forward evaluation a restore there is compared with. ``config``
         overrides the configuration the scene is executed under; nothing is
         written either way.
+
+        ``probe`` probes every state-function play once the scene has run
+        (:mod:`.timeline.probe`, :attr:`probe`). A play it demotes ticks in
+        every session of the source from then on: the scene is recorded
+        again with it on route 3, as a new execution compared with the
+        first, and the probe's ``replay.diverged`` is kept in
+        :attr:`divergences`, with any the comparison finds.
         """
         path = Path(file).resolve()
-        base_dir = str(path.parent)
         settings = {
             **(config or {}),
             "dry_run": True,
             "disable_caching": True,
         }
-        with tempconfig(settings):
-            ORIGINS.start(base_dir)
-            added_path = base_dir not in sys.path
-            if added_path:
-                sys.path.insert(0, base_dir)
-            try:
-                module = _import(path)
-                try:
-                    scene_class = getattr(module, scene, None)
-                    if not isinstance(scene_class, type):
-                        raise LookupError(
-                            f"{path.name} defines no scene named {scene!r}."
-                        )
-                    instance: Scene = scene_class()
-                    instance.timeline = Recorder(
-                        instance,
-                        grid=global_config.frame_rate if grid == "render" else grid,
-                        draws=False,
-                        stepping=stepping,
-                        on_step=on_step,
-                        on_tick=on_tick,
-                        on_start=on_start,
-                        instants=instants,
-                    )
-                    instance.render()
-                except BaseException:
-                    sys.modules.pop(module.__name__, None)
-                    raise
-            finally:
-                ORIGINS.stop()
-                if added_path and base_dir in sys.path:
-                    sys.path.remove(base_dir)
-        record = instance.record
-        assert record is not None
-        return cls(instance, record, module)
+        options = {
+            "grid": grid,
+            "stepping": stepping,
+            "on_step": on_step,
+            "on_tick": on_tick,
+            "on_start": on_start,
+            "instants": tuple(instants),
+        }
+        demoted: set[int] = set()
+        session = cls(*_execute(path, scene, settings, options, demoted))
+        if not probe:
+            return session
+        # Probe the record. On a demotion, record the scene again with the
+        # play ticked, a new execution compared with the first, and probe
+        # that: each pass ticks at least one play more.
+        latest = found = probe_record(session.record)
+        first: ExecutionSummary | None = None
+        while True:
+            session.divergences.extend(latest.divergences)
+            new = set(latest.demoted) - demoted
+            if not new:
+                break
+            record = session.record
+            digest = record.identity.source_digest
+            for index in new:
+                demoted.add(index)
+                if digest is not None:
+                    admission.demote(digest, record.scene_class, index)
+            if first is None:
+                first = session.summary()
+            session._executed_again(*_execute(path, scene, settings, options, demoted))
+            with contextlib.suppress(Incomparable):
+                session.compare(first)
+            latest = probe_record(session.record)
+            found = found.then(latest)
+        session.probe = found
+        return session
 
     def state_at(self, t: Fraction | float) -> State:
         """The scene at ``t``, from the record: restored there when a
@@ -188,6 +214,17 @@ class Session:
             self.divergences.append(found)
         return found
 
+    def _executed_again(self, scene: Scene, record: Record, module: ModuleType) -> None:
+        """Hold the scene executed again, ``record`` its record, in place of
+        the one held.
+        """
+        sys.modules.pop(self.module.__name__, None)
+        self.scene, self.record, self.module = scene, record, module
+        camera = scene.renderer.camera
+        self._executed_shape = (camera.pixel_height, camera.pixel_width)
+        self._quality = None
+        self._static = None
+
     def _static_picture(self, drawing: Drawing, play: Any) -> PixelArray | None:
         """The play's static picture, kept for the next frame of the same play."""
         key = (play.index, self._quality)
@@ -222,6 +259,71 @@ class Session:
     def close(self) -> None:
         """Let go of the scene and its record."""
         sys.modules.pop(self.module.__name__, None)
+
+
+def _execute(
+    path: Path,
+    scene: str,
+    settings: dict[str, Any],
+    options: dict[str, Any],
+    demoted: set[int],
+) -> tuple[Scene, Record, ModuleType]:
+    """Import ``path`` afresh and execute its scene ``scene`` under
+    ``settings``, recorded by a ``Recorder`` given ``options`` that ticks the
+    ``demoted`` plays and those the probe demoted in an earlier session of
+    the source (:func:`.admission.demoted`), which join ``demoted``.
+    """
+    base_dir = str(path.parent)
+    with tempconfig(settings):
+        ORIGINS.start(base_dir)
+        added_path = base_dir not in sys.path
+        if added_path:
+            sys.path.insert(0, base_dir)
+        try:
+            module = _import(path)
+            try:
+                scene_class = getattr(module, scene, None)
+                if not isinstance(scene_class, type):
+                    raise LookupError(f"{path.name} defines no scene named {scene!r}.")
+                instance: Scene = scene_class()
+                demoted |= admission.demoted(
+                    _source_digest(instance), type(instance).__name__
+                )
+                grid = options["grid"]
+                instance.timeline = Recorder(
+                    instance,
+                    **{
+                        **options,
+                        "grid": global_config.frame_rate if grid == "render" else grid,
+                    },
+                    draws=False,
+                    demoted=demoted,
+                )
+                instance.render()
+            except BaseException:
+                sys.modules.pop(module.__name__, None)
+                raise
+        finally:
+            ORIGINS.stop()
+            if added_path and base_dir in sys.path:
+                sys.path.remove(base_dir)
+    record = instance.record
+    assert record is not None
+    return instance, record, module
+
+
+def _source_digest(scene: Scene) -> str | None:
+    """The digest of the source ``scene``'s class heads, as its record's
+    identity will have it (:meth:`.Recorder.end_run`); ``None`` when it
+    can't be read.
+    """
+    scene_file = _scene_file(scene)
+    if scene_file is None:
+        return None
+    try:
+        return source_digest(source_files(scene_file), os.path.dirname(scene_file))
+    except OSError:
+        return None
 
 
 def _import(path: Path) -> ModuleType:
