@@ -56,7 +56,8 @@ def played(play: PlayRecord) -> tuple[Played, ...]:
 
 def family_at(record: Record, mob: Mobject, capture: Capture) -> list[Mobject]:
     """``mob`` and everything it held at ``capture``, depth first, each once.
-    A mobject the record kept no state of there counts as holding nothing.
+    A mobject the record kept no state of there (a play's own wrapper, never
+    in the scene) holds what it holds now.
     """
     found: list[Mobject] = []
     seen: set[int] = set()
@@ -68,8 +69,8 @@ def family_at(record: Record, mob: Mobject, capture: Capture) -> list[Mobject]:
         seen.add(id(current))
         found.append(current)
         state = record.node_state(current, capture)
-        if state is not None:
-            stack.extend(reversed(state.submobjects))
+        held = state.submobjects if state is not None else current.submobjects
+        stack.extend(reversed(held))
     return found
 
 

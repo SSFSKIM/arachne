@@ -47,6 +47,7 @@ CE_SPANS = {
     "FixedCaptionAtEdge": ("clip.frame_edge", True, (0.0, 2.0)),
     "ZoomedPastCaption": ("clip.frame_edge", True, (0.8, 3.0)),
     "SettledNoteFades": ("overlap.text", False, (1.0, 1.0)),
+    "SettledNoteFadesInAGroup": ("overlap.text", False, (1.0, 1.0)),
     "SettledNoteRemoved": ("overlap.text", False, (1.0, 1.0)),
 }
 #: Scenes the reference checks find nothing in.
@@ -205,11 +206,17 @@ def test_a_settled_caption_that_departs_is_swept(run, name):
     assert "clock_margin" not in finding.detail
 
 
-def test_a_fade_names_its_play_s_line(run):
-    _, result = run("SettledNoteFades", (departures.where(),))
+@pytest.mark.parametrize(
+    ("name", "tag"),
+    [("SettledNoteFades", "fade"), ("SettledNoteFadesInAGroup", "group-fade")],
+)
+def test_a_fade_names_its_play_s_line(run, name, tag):
+    # A group made for the fade takes the word out of the scene's top level
+    # as the play begins; the word was settled when the scene called it.
+    _, result = run(name, (departures.where(),))
     [finding] = _found(result)
     assert finding.line is not None
-    assert finding.line.line == line_of("fade", SCENES)
+    assert finding.line.line == line_of(tag, SCENES)
 
 
 def test_a_caption_swept_across_a_curve_in_transit_is_not(run):
