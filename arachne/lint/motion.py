@@ -35,10 +35,15 @@ one that moved only after it (set down elsewhere, then thrown) ``"after"``.
   whose number of drawn members changed: another shape, not the same one
   elsewhere;
 * *churn*: a step no longer than :data:`CHURN` times the body's largest
-  step between two frames of the play that moved it, both measured in the
-  scene and scaled by the later frame's zoom, so a camera moving with the
-  body cancels none of its steps: within its own motion (a play's last
-  frame is up to one of its steps short of where the play leaves the body);
+  step between two frames of the play that moved it: within its own motion.
+  That step is the larger of two readings: as the viewer saw it (a camera's
+  pan included), and its step in the scene at the later frame's zoom (so a
+  camera that followed the body, then zoomed in, cancels none of it). The
+  second covers what the first can't: the cut is read from the play's last
+  frame, up to one of its own steps short of where the play leaves the body,
+  and so a distance includes up to one frame of the play's own motion,
+  which a reading at the play's end would not. A jump within about one step
+  of the allowance is the band where the two readings can disagree;
 * *relabelled*: a look-alike sibling (same group, same size) stood where it
   lands just before the cut, or stands where it left just after: the
   picture shows a body in each place, not one crossing the gap;
@@ -152,14 +157,16 @@ class _Frame:
 @dataclass(eq=False)
 class _Play:
     """What one play's frames show of its bodies: how far each travelled,
-    its largest step between two frames (in the scene, whatever the camera
-    did) and where it was last seen.
+    its largest step between two frames as viewed (``largest``, a camera's
+    pan included) and in the scene (``largest_scene``), and where it was last
+    seen.
     """
 
     record: PlayRecord
     frames: list[_Frame]
     travel: dict[str, float] = field(default_factory=dict)
     largest: dict[str, float] = field(default_factory=dict)
+    largest_scene: dict[str, float] = field(default_factory=dict)
     last: dict[str, _Body] = field(default_factory=dict)
 
     @property
@@ -399,10 +406,10 @@ def _measure(play: _Play) -> _Play:
             if previous is None or key not in previous.bodies:
                 continue
             was = previous.bodies[key]
-            # The body's own step, in the scene: a camera moving with it
-            # cancels none of it, and a cut scales it as it does the cut.
+            viewed = float(np.hypot(*(body.view - was.view)))
+            play.largest[key] = max(play.largest.get(key, 0.0), viewed)
             step = float(np.hypot(*(body.centre - was.centre)))
-            play.largest[key] = max(play.largest.get(key, 0.0), step)
+            play.largest_scene[key] = max(play.largest_scene.get(key, 0.0), step)
             if _kept_size(was.size, body.size, RIGID):
                 play.travel[key] = play.travel.get(key, 0.0) + step
         previous = frame
@@ -546,9 +553,14 @@ class _Cut:
             now.members == 1 and not _same_size(was.size, now.size)
         ):
             return "reshaped"
-        # Both the scene's, at the later frame's zoom: the step from the last
-        # frame to where the play left the body is one of the play's own.
-        if distance <= CHURN * mover.largest.get(key, 0.0) * self.zoom:
+        # The step as viewed, pan included; or the body's own step in the
+        # scene at the later zoom, which the stretch from the last frame to
+        # where the play left the body is one of.
+        own = max(
+            mover.largest.get(key, 0.0),
+            mover.largest_scene.get(key, 0.0) * self.zoom,
+        )
+        if distance <= CHURN * own:
             return "churn"
         if self.relabelled(key):
             return "relabelled"

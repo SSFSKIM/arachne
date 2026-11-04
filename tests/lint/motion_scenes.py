@@ -276,6 +276,31 @@ class ZoomedReset(MovingCameraScene):
         self.wait()
 
 
+class PanReset(MovingCameraScene):
+    """A puck slides one unit right while the camera pans three left; set
+    back 0.4 between plays: within twice its steps as the viewer saw them.
+    """
+
+    set_back = 0.4
+
+    def construct(self):
+        puck = Dot()
+        self.add(puck)
+        self.play(
+            puck.animate.shift(RIGHT),
+            self.camera.frame.animate.shift(LEFT * 3),
+            rate_func=linear,
+        )
+        puck.shift(LEFT * self.set_back)
+        self.wait()
+
+
+class PanResetFar(PanReset):
+    """The same pan, set back 0.7: past twice its steps on screen."""
+
+    set_back = 0.7
+
+
 class ZoomedTeleport(MovingCameraScene):
     """A puck slides, is set down 2 units on, and the camera zooms in."""
 
