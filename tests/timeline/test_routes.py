@@ -84,7 +84,7 @@ def test_state_at_answers_each_route(session_of):
     ticked = session_of("Conditional", ROUTE_SCENES)
     between = ticked.state_at(Fraction(1, 7))
     assert (between.route, between.answer) == ("ticked", "recorded")
-    assert between.as_of == Fraction(1, 7)
+    assert between.as_of == Fraction(8, 60)
     assert between.nodes == ticked.state_at(Fraction(8, 60)).nodes
 
 

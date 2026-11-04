@@ -33,11 +33,18 @@ node's values (its scalar and cursor fields included: a tracker's value,
 ``DecimalNumber.number``, ``TracedPath``'s time, suspension flags), the
 camera's inputs, and at each kept sample a :class:`RestorePoint`.
 
-A restore is sound only for what it can put back. A global or a default
-argument a callback read that holds another value now, or a container it
-read whose items changed, makes the play :class:`Unrestorable` at that
-instant: those are not the scene's state, and assigning them would reach
-code outside the play.
+A restore is sound only for what it can put back, and runs only what the
+play's admission proved. The play is :class:`Unrestorable` at the instant
+when:
+
+- a global or a default argument a callback read holds another value now,
+  or a container it read has other items: those are not the scene's state,
+  and assigning them would reach code outside the play;
+- a name a callback read held another value, or the same container other
+  items, at the capture the restore starts from than when the play began
+  (a frame hook changed it), whatever it holds now;
+- the restored scene holds code the evaluation would run that the
+  admission never saw (an updater a frame hook attached).
 """
 
 from __future__ import annotations
@@ -54,7 +61,7 @@ __all__ = [
 import os
 import weakref
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any
@@ -86,7 +93,8 @@ class Unrestorable(Unavailable):
     """A state play can't be restored at the instant asked. ``reason`` is
     the stable code: ``restore.global_rebound``,
     ``restore.default_rebound``, ``restore.binding_mutated``,
-    ``restore.rebound_in_play`` or ``restore.missing_state``.
+    ``restore.rebound_in_play``, ``restore.unadmitted_callback`` or
+    ``restore.missing_state``.
     """
 
     def __init__(self, reason: str, detail: str) -> None:
@@ -105,7 +113,8 @@ class RestorePoint:
     ``centers`` are, per camera, its fixed-orientation mobjects with their
     centre functions, which the capture holds only as values. ``rebound``
     names the bindings that held another value there than when the play
-    began (a frame hook assigned them), from which no restore is sound.
+    began, or the same container with other items (a frame hook changed
+    them), from which no restore is sound.
     """
 
     animations: tuple[tuple[Any, dict[str, Any]], ...]
@@ -122,28 +131,26 @@ def restore_point(
     with ``previous``.
     """
     earlier = {id(mob): state for mob, state in previous.nodes} if previous else {}
-    nodes = []
-    for mob in _registered_mobjects(play):
-        nodes.append((mob, NodeState.of(mob, earlier.get(id(mob)))))
-    found = tuple(nodes)
-    if previous is not None and len(found) == len(previous.nodes):
-        if all(
+    found = tuple(
+        (mob, NodeState.of(mob, earlier.get(id(mob))))
+        for mob in _registered_mobjects(play)
+    )
+    if (
+        previous is not None
+        and len(found) == len(previous.nodes)
+        and all(
             a is c and b is d
             for (a, b), (c, d) in zip(found, previous.nodes, strict=True)
-        ):
-            found = previous.nodes
+        )
+    ):
+        found = previous.nodes
     centers = _centre_functions(scene.renderer.camera)
     if previous is not None and _same_centers(centers, previous.centers):
         centers = previous.centers
     rebound = tuple(
-        binding.name
-        for binding in _bindings(play)
-        if binding.where in ("cell", "attribute")
-        and _current(scene, binding) is not binding.value
+        binding.name for binding in _bindings(play) if _changed(scene, binding)
     )
-    return RestorePoint(
-        snapshot_animations(play._animations), found, centers, rebound
-    )
+    return RestorePoint(snapshot_animations(play._animations), found, centers, rebound)
 
 
 def restorer(
@@ -153,24 +160,43 @@ def restorer(
     brings it to ``t`` once a drawing shows it (a ``prepare`` of
     :meth:`.Drawing.sample`). Raises :class:`Unrestorable` when it can't be.
     """
+    base, restoring = _restoring(record, play, t)
+
+    def prepare(drawing: Drawing) -> None:
+        with restoring(drawing):
+            pass
+
+    return base, prepare
+
+
+def _restoring(
+    record: Record, play: PlayRecord, t: Fraction
+) -> tuple[Capture, Callable[[Drawing], AbstractContextManager[None]]]:
+    """The capture a restore of ``play`` at ``t`` starts from, and the
+    context that holds the scene restored at ``t`` in a drawing showing it.
+    """
     base = play.base_at(t)
     point = play._animation_states.get(base.seq)
     if not isinstance(point, RestorePoint) or point.version != REGISTERED_STATE_VERSION:
         raise Unrestorable(
             "restore.missing_state",
-            f"the record kept no restore point for play {play.index} at"
-            f" {base.instant}",
+            f"the record kept no restore point for play {play.index} at {base.instant}",
         )
     if point.rebound:
         raise Unrestorable(
             "restore.rebound_in_play",
-            f"{', '.join(point.rebound)} held another value at {base.instant} than"
-            f" when play {play.index} began",
+            f"{', '.join(point.rebound)} held another value, or other items, at"
+            f" {base.instant} than when play {play.index} began",
         )
     scene = record._scene
     assignments = _assignments(scene, play)
 
-    def prepare(drawing: Drawing) -> None:
+    @contextmanager
+    def restoring(drawing: Drawing) -> Iterator[None]:
+        """The scene at ``t`` inside the block, its names, animations, lists,
+        clock and tagging put back after it (its mobjects and camera when
+        ``drawing`` ends).
+        """
         drawing.show(base, [*base.roots, *base.foreground, *base.moving])
         saved = drawing._saved
         for mob, state in point.nodes:
@@ -183,22 +209,25 @@ def restorer(
             _scene_at(scene, play, base, t),
             ORIGINS.resumed(_base_dir(record), _numbering(record)),
         ):
+            _refuse_unadmitted(scene, play, point)
             plan = _event_plan(point, t)
             camera = scene.renderer.camera
             _install_centre_functions(point.centers)
             evaluate_instant(scene, plan, play.start, t, float(t - base.instant))
             extras = CameraExtras.observe(camera, base.camera)
-        if extras is not None:
-            # The centres as values, as a capture holds them.
-            extras.install(camera)
+            if extras is not None:
+                # The centres as values, as a capture holds them.
+                extras.install(camera)
+            yield
 
-    return base, prepare
+    return base, restoring
 
 
 @contextmanager
 def restored(record: Record, t: Fraction | float) -> Iterator[Scene]:
     """The scene inside the block holding the state of the state play that
-    holds ``t``, restored there; everything is put back after it.
+    holds ``t``, restored there: its clock at ``t`` and the names its
+    callbacks read as the play began. Everything is put back after it.
     """
     from .clock import exact
 
@@ -206,9 +235,8 @@ def restored(record: Record, t: Fraction | float) -> Iterator[Scene]:
     play = record.play_at(t)
     if play is None or play.route != "state" or play.held:
         raise LookupError(f"No state-function play holds {t}.")
-    _, prepare = restorer(record, play, t)
-    with Drawing(record) as drawing:
-        prepare(drawing)
+    _, restoring = _restoring(record, play, t)
+    with Drawing(record) as drawing, restoring(drawing):
         yield record._scene
 
 
@@ -386,6 +414,20 @@ def _assignments(scene: Scene, play: PlayRecord) -> list[tuple[Binding, Any]]:
     return found
 
 
+#: The value types a binding's contents compare by value.
+_PLAIN = (bool, int, float, complex, str, bytes)
+
+
+def _changed(scene: Scene, binding: Binding) -> bool:
+    """Whether the name ``binding`` read holds another value now than when
+    the play began, or the same one with other items.
+    """
+    now = _current(scene, binding)
+    if now is not binding.value:
+        return True
+    return not _same_contents(_contents_of(now), binding.contents)
+
+
 def _contents_of(value: Any) -> Any:
     from .purity import _contents
 
@@ -393,9 +435,15 @@ def _contents_of(value: Any) -> Any:
 
 
 def _same_contents(a: Any, b: Any) -> bool:
-    """Whether two snapshots of a binding's contents hold the same items."""
+    """Whether two snapshots of a binding's contents hold the same items:
+    plain values alike, arrays of one type and shape with equal numbers,
+    anything else the same object.
+    """
     if a is b:
         return True
+    if type(a) is type(b) and type(a) in _PLAIN:
+        # repr tells -0.0 from 0.0, and a NaN equals itself.
+        return bool(repr(a) == repr(b))
     if isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
         return (
             isinstance(a, np.ndarray)
@@ -445,6 +493,77 @@ def _assign(scene: Scene, binding: Binding, value: Any) -> None:
 
 
 # The play's state
+
+
+def _refuse_unadmitted(scene: Scene, play: PlayRecord, point: RestorePoint) -> None:
+    """Raise :class:`Unrestorable` when the restored scene holds code the
+    evaluation would run that the play's admission did not prove: an
+    updater, a callback animation's function or a centre function a frame
+    hook put there after the play began, a scene updater, or an updater on
+    an animation's own copies. Called with the scene, its animations and
+    its mobjects restored, before anything runs.
+    """
+    from .admission import (
+        _copies_carry_updaters,
+        _is_callback_animation,
+        _redraw_code,
+    )
+    from .trusted import iter_animations
+
+    admission = play.admission
+    callbacks = admission.callbacks if admission is not None else ()
+    proven = {(id(c.owner), id(c.function)) for c in callbacks if c.proof is not None}
+    functions = {id(c.function) for c in callbacks if c.proof is not None}
+    redraw = _redraw_code()
+
+    def unproven(mob: Mobject) -> str | None:
+        # As Mobject.update runs them: none in a suspended family.
+        if mob.updating_suspended:
+            return None
+        for updater in mob.updaters:
+            # ``always_redraw``'s updater is proven as the function it
+            # rebuilds from, on the mobject it rebuilds.
+            owner, function = mob, updater
+            if getattr(updater, "__code__", None) is redraw:
+                cells = dict(
+                    zip(
+                        updater.__code__.co_freevars,
+                        (c.cell_contents for c in updater.__closure__ or ()),
+                        strict=True,
+                    )
+                )
+                owner, function = cells["mob"], cells["func"]
+            if (id(owner), id(function)) not in proven:
+                return f"an updater of a {type(mob).__name__}"
+        for child in mob.submobjects:
+            found = unproven(child)
+            if found is not None:
+                return found
+        return None
+
+    found = None
+    for mob in scene.mobjects:
+        found = found or unproven(mob)
+    if found is None and scene.updaters:
+        found = "a scene updater"
+    for animation in iter_animations(scene.animations or []):
+        if found is not None:
+            break
+        if _is_callback_animation(animation) and (
+            id(animation.update_function) not in functions  # type: ignore[attr-defined]
+        ):
+            found = f"the function of a {type(animation).__name__}"
+        elif _copies_carry_updaters(animation):
+            found = f"an updater on a copy of a {type(animation).__name__}"
+    for _, orientations in point.centers:
+        if found is None and any(id(f) not in functions for _, f in orientations):
+            found = "a centre function"
+    if found is not None:
+        raise Unrestorable(
+            "restore.unadmitted_callback",
+            f"{found} that play {play.index}'s admission did not prove would run"
+            " at the restored instant",
+        )
 
 
 @contextmanager

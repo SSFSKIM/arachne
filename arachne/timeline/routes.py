@@ -49,6 +49,7 @@ __all__ = [
     "snapshot_animations",
 ]
 
+import bisect
 from collections.abc import Callable
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
@@ -363,6 +364,21 @@ class _Resolved(NamedTuple):
     as_of: Fraction
 
 
+def _last_kept(
+    record: Record, play: PlayRecord, t: Fraction
+) -> tuple[PlayRecord, Capture]:
+    """The last capture the record kept at or before ``t``, inside ``play``
+    or, before its first, at the end of an earlier play; with its play.
+    """
+    index = bisect.bisect_right(play._instants, t) - 1
+    if index >= 0:
+        return play, play.samples[index]
+    for earlier in reversed(record.plays[: play.index]):
+        if earlier.samples:
+            return earlier, earlier.samples[-1]
+    raise LookupError(f"The record kept nothing at or before {t}.")
+
+
 def _resolve(record: Record, t: Fraction) -> _Resolved:
     """How the record answers ``t``, by the route of the play holding it."""
     if record.refusal is not None:
@@ -370,18 +386,17 @@ def _resolve(record: Record, t: Fraction) -> _Resolved:
     play = record.play_at(t)
     if play is None:
         _, capture = record.capture_at(t)
-        return _Resolved(None, capture, None, "recorded", t)
+        return _Resolved(None, capture, None, "recorded", capture.instant)
     if play.held:
-        return _Resolved(play, play.capture_at(t), None, "recorded", t)
+        capture = play.capture_at(t)
+        return _Resolved(play, capture, None, "recorded", capture.instant)
     if play.route == "ticked":
-        # The last capture kept at or before t: the frame a render shows at
-        # t. A stepping tick after it is no state a frame reads, and the
-        # record keeps none.
-        capture = play.base_at(t)
-        holds = capture.until is None or t < capture.until
-        return _Resolved(
-            play, capture, None, "recorded", t if holds else capture.instant
-        )
+        # A ticked play's record keeps only the ticks a frame of its grid
+        # reads (not its events, nor its last tick unless a frame reads
+        # them): the last kept at or before t is the frame a render shows
+        # there, the previous play's before the play's first frame.
+        kept, capture = _last_kept(record, play, t)
+        return _Resolved(kept, capture, None, "recorded", capture.instant)
     if play.route == "state":
         sample = play.sample_at(t)
         if sample is not None:
@@ -422,14 +437,41 @@ def draw(
 ) -> PixelArray:
     """The frame at ``t``, drawn from the record through the route of the play
     holding it; ``static(play)`` gives the play's static picture. A restored
-    frame reads no static picture kept for its play: it draws the play's
-    static mobjects afresh (:meth:`.Drawing.static`), into the same pixels,
-    so that no picture kept from the record's captures stands in for a state
-    the record never captured.
+    frame takes no static picture (:func:`_restored_frame`).
     """
     resolved = _resolve(record, t)
     play = resolved.play
     if play is None:
         return drawing.final()
-    picture = drawing.static(play) if resolved.kind == "restored" else static(play)
-    return drawing.sample(play, resolved.capture, picture, prepare=resolved.prepare)
+    if resolved.kind == "restored":
+        return _restored_frame(drawing, record, play, resolved)
+    return drawing.sample(
+        play, resolved.capture, static(play), prepare=resolved.prepare
+    )
+
+
+def _restored_frame(
+    drawing: Drawing, record: Record, play: PlayRecord, resolved: _Resolved
+) -> PixelArray:
+    """A restored instant's frame, with no static picture: a picture kept
+    from the record's captures, or a layer of whatever they show unchanged,
+    knows nothing of the values a restore gives. The frame is drawn whole,
+    in a render's painter order: the play's static mobjects first, as every
+    frame of the play shows them (CE draws them once, when the play's
+    animations begin), then its moving mobjects at the restored instant.
+    """
+    capture, prepare = resolved.capture, resolved.prepare
+    assert prepare is not None
+    camera = drawing.camera
+    targets = list(capture.moving) or capture.draw_list()
+    if play.static:
+        # The static mobjects, and the camera, as the play began.
+        drawing.show(record._captures[play.static_seq], play.static)
+        camera.reset()
+        camera.capture_mobjects(list(play.static))
+    drawing.show(capture, targets)
+    prepare(drawing)
+    if not play.static:
+        camera.reset()
+    camera.capture_mobjects(targets)
+    return camera.pixel_array.copy()
