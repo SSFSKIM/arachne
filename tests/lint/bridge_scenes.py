@@ -9,6 +9,7 @@ from __future__ import annotations
 import numpy as np
 
 from arachne import (
+    DOWN,
     LEFT,
     RIGHT,
     UP,
@@ -129,6 +130,27 @@ class PenBack(Scene):
         self.play(pen.animate.move_to(ax.c2p(0.5, 0.5)), run_time=0.5)
         self.wait(0.5)
         self.play(pen.animate.move_to(ax.c2p(0.5, -0.5)), run_time=0.5)  # @back-down
+        self.wait(0.25)
+
+
+def _blip(alpha):
+    """All the way for alpha in (0.3, 0.45), nothing elsewhere: at 15 fps
+    over one second, the frames at 5/15 and 6/15 only.
+    """
+    return 1.0 if 0.3 < alpha < 0.45 else 0.0
+
+
+class Blip(Scene):
+    """A watched probe off the plot for two frames at 15 fps, both between
+    two lint instants at 4 fps.
+    """
+
+    def construct(self):
+        ax = _plot()
+        tracker = ValueTracker(0.5)
+        self.add(ax)
+        watch("axes.outside", lambda: ax.c2p(tracker.get_value(), 0.5), reference=ax)
+        self.play(tracker.animate(rate_func=_blip).set_value(2.0), run_time=1)  # @blip
         self.wait(0.25)
 
 
@@ -270,3 +292,38 @@ class MemberReplaced(Scene):
         camera = self.renderer.camera
         camera.get_coords_of_all_pixels = lambda: None
         _plays(self)
+
+
+class HookedIn(Scene):
+    """A watched function and a recorded point, both read from a count the
+    scene's own frame hook keeps: the render's frames keep the point on the
+    plot, while a record on a finer grid than the render's runs the hook
+    more often and would take it off.
+    """
+
+    #: How far right the point moves for each call of the frame hook.
+    STEP = 0.1
+
+    def construct(self):
+        ax = _plot()
+        dot = Dot(DOWN * 3)
+        self.calls = 0
+        self.add(ax, dot)
+        watch("axes.outside", self._tip, reference=ax)
+        self.play(dot.animate.shift(RIGHT), run_time=1)  # @hooked-play
+        record("axes.outside", [self._tip()], reference=ax)  # @hooked-record
+
+    def _tip(self):
+        return (-2 + self.STEP * self.calls, 0)
+
+    def update_to_time(self, t):
+        super().update_to_time(t)
+        self.calls += 1
+
+
+class HookedOut(HookedIn):
+    """:class:`HookedIn` with a step that takes the point off the plot on the
+    render's frames too.
+    """
+
+    STEP = 0.3
