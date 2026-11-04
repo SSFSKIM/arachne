@@ -19,10 +19,13 @@
 //!
 //! Each pixel resolves its fragments by depth, ties by draw order (later on top), on a fixed
 //! pattern of [`SAMPLES`] sub-samples. A pixel whose fragments keep one depth order at every
-//! sub-sample and hold at most one partially covering mask takes the **coverage resolve**: its
-//! fragments composite back to front with their coverage (a path's exact area, a mask's count), as
-//! Cairo composites paint. A depth crossing inside the pixel, or two or more partially covering
-//! masks, takes the **sample resolve**: each sub-sample composites, in its own depth order, the
+//! sub-sample and hold at most one partially covering mask, and no partial mask beside a path's
+//! partial area, takes the **coverage resolve**: its fragments composite back to front with their
+//! coverage (a path's exact area, a mask's count), as Cairo composites paint. A depth crossing
+//! inside the pixel, two or more partially covering masks, or a partial mask with a path's partial
+//! area (a surface's silhouette under a path's edge, which the coverage resolve would composite as
+//! independent shapes, and whose resolve would otherwise flip as crossings come and go) takes the
+//! **sample resolve**: each sub-sample composites, in its own depth order, the
 //! fragments covering it, and the pixel averages its sub-samples. There a mask fragment covers a
 //! sub-sample or does not, and a fragment with exact area composites with its exact area inside
 //! the sub-sample's cell ([`Producer::cell_areas`], [`sample_cell`]), so a path's edge lands where
@@ -307,12 +310,11 @@ pub fn area_coverage(area: f32) -> u8 {
 /// per sub-sample and once in the average. It bounds a path's exact area the same way, since the
 /// sample resolve composites the path with its exact area in each sub-sample's cell.
 /// `tests/composite.rs` sweeps both (one partial mask or path alone, over a full layer, under
-/// one); `tests/resolve_switch.rs` measures it where pixels switch resolves as a path crosses a
-/// moving surface (worst 1, three cases). It does not bound a pixel that holds a partial mask and
-/// a path's edge together: the coverage resolve composites them as independent, where the sample
-/// resolve sees where they overlap. Where a surface's silhouette, a path's edge and a crossing
-/// meet, switching pixels jumped by up to 2 with the edges across each other and up to 48 with
-/// the stroke along the silhouette (`tests/resolve_switch.rs` records both).
+/// one); `tests/resolve_switch.rs` holds pixels that switch resolves to it, as a path crosses a
+/// moving surface (worst 1 in three cases) and where a surface's silhouette, a path's edge and a
+/// crossing meet, the edges across each other or along. A partial mask and a path's partial area
+/// never share a coverage-resolve pixel (that pixel takes the sample resolve), so the coverage
+/// resolve never composites a silhouette and a path's edge as independent shapes.
 pub const COVERAGE_TO_SAMPLE_LSB: u8 = 2;
 
 /// A mask's count as an 8-bit coverage.
@@ -794,8 +796,14 @@ fn resolve_pixel(
         .iter()
         .filter(|u| unit_mask(**u).is_some_and(|m| m != FULL))
         .count();
-    let one_order =
-        partial_masks < 2 && (0..SAMPLES).all(|k| units.windows(2).all(|w| before(w[0], w[1], k)));
+    // Masks come from surfaces, so paths alone never reach the sample resolve this way.
+    let partial_area = || {
+        units.iter().any(
+            |u| matches!(frags[order[u.0]].coverage, Coverage::Area { area, .. } if area < 1.0),
+        )
+    };
+    let one_order = (partial_masks == 0 || partial_masks == 1 && !partial_area())
+        && (0..SAMPLES).all(|k| units.windows(2).all(|w| before(w[0], w[1], k)));
     if one_order {
         let mut px = bg;
         for u in units.iter().rev() {
