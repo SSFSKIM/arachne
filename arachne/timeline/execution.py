@@ -614,7 +614,7 @@ def _camera_leaves(
         yield f"{prefix}.{name}", _leaf(value)
     if extras.background is not None:
         # A picture: compared exactly, by its digest.
-        background = np.ascontiguousarray(extras.background)
+        background = _contiguous(extras.background)
         yield (
             f"{prefix}.background",
             hashlib.sha256(
@@ -625,11 +625,16 @@ def _camera_leaves(
     if extras.fixed_in_frame:
         yield f"{prefix}.fixed_in_frame", at(extras.fixed_in_frame, ordered=False)
     if extras.centers:
-        yield f"{prefix}.fixed_orientation", at(mob for mob, _ in extras.centers)
-        yield (
-            f"{prefix}.fixed_orientation_centers",
-            _leaf(np.array([center for _, center in extras.centers], dtype=float)),
+        # A lookup from each mobject to its centre, not a draw order: the
+        # pairs are taken by the mobjects' places in the walk.
+        positions = at(mob for mob, _ in extras.centers)
+        centers = np.array([center for _, center in extras.centers], dtype=float)
+        order = sorted(
+            range(len(positions)),
+            key=lambda k: (int(positions[k]), tuple(centers[k].ravel().tolist())),
         )
+        yield f"{prefix}.fixed_orientation", positions[order]
+        yield f"{prefix}.fixed_orientation_centers", centers[order]
     if extras.displays is not None:
         yield f"{prefix}.displays", at(extras.displays)
     for number, (_, sub) in enumerate(extras.sub_cameras):
@@ -643,15 +648,28 @@ def _paint_leaf(value: Any) -> Leaf:
 
 
 def _leaf(value: Any) -> Leaf:
+    from arachne.utils.color import ManimColor
+
     if isinstance(value, np.ndarray):
-        array = np.ascontiguousarray(value).view(np.ndarray)
+        array = _contiguous(value)
         # An object array's bytes are addresses; its text is its content.
         return repr(array.tolist()) if array.dtype.hasobject else array
+    if isinstance(value, ManimColor):
+        # Its numbers, not its text: the hex string keeps 8 bits a channel.
+        return _contiguous(value.to_rgba()).astype(float)
     if isinstance(value, np.generic):
         return value.item()
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
     return repr(value)
+
+
+def _contiguous(value: np.ndarray) -> np.ndarray:
+    """``value`` as a plain C-ordered array of its own shape, a
+    zero-dimensional one included (``np.ascontiguousarray`` makes it 1-d).
+    """
+    array = np.asarray(value).view(np.ndarray)
+    return array if array.flags.c_contiguous else array.copy(order="C")
 
 
 def _node_key(node: NodeValues) -> bytes:
@@ -671,9 +689,9 @@ def _fields_key(fields: Iterable[tuple[str, Leaf]]) -> bytes:
             head = f"{name}\0A{value.dtype.str}{value.shape}\0"
             if value.dtype.kind in "fc":
                 # Adding zero turns -0.0, which rounding makes, into 0.0.
-                value = np.round(value, KEY_DECIMALS) + 0.0
+                value = np.asarray(np.round(value, KEY_DECIMALS) + 0.0)
             digest.update(head.encode())
-            digest.update(np.ascontiguousarray(value).tobytes())
+            digest.update(_contiguous(value).tobytes())
         elif type(value) is float:
             digest.update(f"{name}\0F{round(value, KEY_DECIMALS) + 0.0!r}\0".encode())
         else:
