@@ -471,8 +471,14 @@ class Recorder:
         if record.scene_file is None:
             return record.identity
         sources = source_files(record.scene_file)
+        try:
+            digest = source_digest(sources, os.path.dirname(record.scene_file))
+        except OSError:
+            # A source file gone since the run: an identity no execution
+            # shares, never a failed render.
+            digest = None
         return Identity(
-            source_digest=source_digest(sources, os.path.dirname(record.scene_file)),
+            source_digest=digest,
             input_digests=()
             if inputs is None
             else inputs.input_digests(frozenset(sources)),

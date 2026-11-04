@@ -169,31 +169,62 @@ class Inputs:
         )
 
 
+#: The configuration's directories the engine writes media and caches into.
+ENGINE_DIR_KEYS = (
+    "media_dir",
+    "video_dir",
+    "sections_dir",
+    "images_dir",
+    "text_dir",
+    "tex_dir",
+    "partial_movie_dir",
+    "log_dir",
+)
+
+#: Stands for a template field no directory supplies (a module or scene
+#: name, the quality): a directory is taken up to the first one.
+_HOLE = "\0"
+
+
+class _Fields(dict[str, str]):
+    def __missing__(self, key: str) -> str:
+        return _HOLE
+
+
 def engine_dirs(config: Any) -> list[str]:
     """The directories the engine writes its media and caches into, under
     ``config``, as far as they resolve without a module or scene name.
+
+    Each is read as the configuration holds it, a ``str`` or any path
+    object, and its template fields are filled from the others as
+    ``ManimConfig.get_dir`` fills them. A directory that does not resolve is
+    left out: watching what a scene reads never stops it from rendering.
     """
-    hole = "\0"
-    found = []
-    for key in (
-        "media_dir",
-        "video_dir",
-        "sections_dir",
-        "images_dir",
-        "text_dir",
-        "tex_dir",
-        "partial_movie_dir",
-        "log_dir",
-    ):
+    raw: dict[str, str] = {}
+    for key in ENGINE_DIR_KEYS:
         try:
-            directory = config.get_dir(key, module_name=hole, scene_name=hole)
-        except KeyError:
+            value = getattr(config, key)
+            if value is not None:
+                raw[key] = os.fsdecode(os.fspath(value))
+        except (AttributeError, KeyError, TypeError, ValueError):
             continue
-        if directory is None:
-            continue
-        text = os.fspath(directory).split(hole)[0]
+    found = []
+    for text in raw.values():
+        # Each pass fills a level of nesting (``{media_dir}/Tex``); a field
+        # that does not format ends the directory where it begins.
+        for _ in range(len(raw) + 1):
+            if "{" not in text:
+                break
+            try:
+                text = text.format_map(_Fields(raw))
+            except (AttributeError, IndexError, KeyError, ValueError):
+                break
+        text = text.split(_HOLE)[0].split("{")[0]
         if text:
-            found.append(os.path.realpath(text))
+            try:
+                found.append(os.path.realpath(text))
+            except (OSError, ValueError):
+                continue
     return found
 
 
