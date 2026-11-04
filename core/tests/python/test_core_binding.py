@@ -43,8 +43,11 @@ def test_mapping_centre_defaults_to_the_live_frame_center():
     assert struct.unpack_from("<3d", delta.to_bytes(), 81) == centre
     explicit = ac.FrameDelta()
     explicit.set_view(
-        pixel_width=4, pixel_height=4, frame_center=centre,
-        mapping_centre=centre, **FRAME,
+        pixel_width=4,
+        pixel_height=4,
+        frame_center=centre,
+        mapping_centre=centre,
+        **FRAME,
     )
     assert explicit.to_bytes() == delta.to_bytes()
 
@@ -64,7 +67,12 @@ def test_background_image_fill_sets_its_feature_and_is_cairo_only():
     with pytest.raises(ac.Unsupported) as refused:
         stream.draw(4, 4)
     err = refused.value
-    assert (err.code, err.kind, err.slot, err.object) == ("render.unsupported", "path", 3, 33)
+    assert (err.code, err.kind, err.slot, err.object) == (
+        "render.unsupported",
+        "path",
+        3,
+        33,
+    )
     assert "Cairo" in err.reason
 
 
@@ -587,7 +595,12 @@ def test_sub_frame_placement_rank_and_self_capture():
     view = dict(pixel_width=4, pixel_height=4, frame_center=(1, 2, 3), **FRAME)
     delta = background_delta(4, 4, (0, 0, 0, 1))
     delta.set_record(
-        "image", 1, 11, corners=corners, resampling=2, image_opacity=0.625,
+        "image",
+        1,
+        11,
+        corners=corners,
+        resampling=2,
+        image_opacity=0.625,
         sub_frame=(0, view, [("moving", 1, 0)]),
     )
     delta.set_record("image", 2, 12, corners=corners, sub_frame=(0, view, []))
@@ -603,6 +616,8 @@ def test_sub_frame_placement_rank_and_self_capture():
     # Even a valid image shape is forbidden on a sub-frame.
     bad = ac.FrameDelta()
     image = bad.upload_image(np.ones((1, 1, 4), dtype=np.uint8))
-    bad.set_record("image", 3, 13, shape=image, corners=corners, sub_frame=(1, view, []))
+    bad.set_record(
+        "image", 3, 13, shape=image, corners=corners, sub_frame=(1, view, [])
+    )
     with pytest.raises(ac.XfError, match="no shape"):
         stream.apply(bad)
