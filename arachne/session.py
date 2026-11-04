@@ -4,7 +4,9 @@
 forward with nothing written, and keeps the scene's :class:`Record` with
 every instant the run evaluated. :meth:`Session.state_at` answers from the
 record, and :meth:`Session.frame` draws one frame from it; neither runs the
-scene's code again.
+scene's code again. :meth:`Session.compare` compares the session's execution
+with another of the same source, perhaps from another process, and keeps
+where they differ in :attr:`Session.divergences`.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from ._config import tempconfig
 from .constants import QUALITIES
 from .timeline.clock import exact
 from .timeline.draw import Drawing
+from .timeline.execution import Divergence, ExecutionSummary, compare, summarize
 from .timeline.origins import ORIGINS
 from .timeline.recorder import Recorder
 from .timeline.routes import draw
@@ -57,6 +60,11 @@ class Session:
         self._static: tuple[int, str | None, PixelArray | None] | None = None
         camera = scene.renderer.camera
         self._executed_shape = (camera.pixel_height, camera.pixel_width)
+        #: Where the session's execution was found to differ from another of
+        #: its source, in the order found (``replay.diverged``).
+        self.divergences: list[Divergence] = []
+        #: The record last summarised, and its summary.
+        self._summary: tuple[Record, ExecutionSummary] | None = None
 
     @classmethod
     def open(
@@ -152,6 +160,25 @@ class Session:
                 lambda play: self._static_picture(drawing, play),
             )
         return self.scene.renderer.camera.get_image(pixels)
+
+    def summary(self) -> ExecutionSummary:
+        """The summary of the session's execution, which another execution
+        of its source, in this process or another, is compared with
+        (:meth:`compare`, :meth:`.ExecutionSummary.to_json`).
+        """
+        if self._summary is None or self._summary[0] is not self.record:
+            self._summary = (self.record, summarize(self.record))
+        return self._summary[1]
+
+    def compare(self, summary: ExecutionSummary) -> Divergence | None:
+        """Compare the session's execution with ``summary``'s, an execution of
+        the same source (:func:`.execution.compare`): the first play where they
+        differ, also kept in :attr:`divergences`, or ``None``.
+        """
+        found = compare(self.summary(), summary)
+        if found is not None:
+            self.divergences.append(found)
+        return found
 
     def _static_picture(self, drawing: Drawing, play: Any) -> PixelArray | None:
         """The play's static picture, kept for the next frame of the same play."""
