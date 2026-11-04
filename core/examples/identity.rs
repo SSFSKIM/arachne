@@ -1,6 +1,7 @@
 //! Writes what the core computes on a fixed set of inputs, as raw bytes, into a directory, so two
 //! builds (a baseline x86-64 and an x86-64-v3 build) can be compared byte for byte
-//! (`core/ci/identity.sh`): backgrounds, mesh scenes (lit, translucent, intersecting, flat) with
+//! (`core/ci/identity.sh`): backgrounds, mesh scenes (lit, translucent, intersecting, flat) and
+//! every frame of the class probes (`parity/probes.rs`: paths, strokes and meshes by depth), with
 //! each pixel's resolve, drawn on one thread and on four, CE's projection over a grid of cameras
 //! and points, and an XF file with its content keys.
 //!
@@ -43,6 +44,22 @@ fn frames() -> Vec<(String, Vec<u8>)> {
         assert!(one == four, "{name}: one thread and four differ");
         out.push((format!("mesh-{name}"), one.rgba));
         out.push((format!("mesh-{name}-resolves"), one.resolves));
+    }
+    for probe in arachne_core::probes::all() {
+        let mut stream = Stream::new();
+        for (i, delta) in probe.deltas.iter().enumerate() {
+            stream.apply(delta).expect("a probe's delta applies");
+            let (w, h) = (probe.width, probe.height);
+            let one = stream.render(w, h, 1).expect("the core draws the probes");
+            let four = stream.render(w, h, 4).expect("the core draws the probes");
+            assert!(
+                one == four,
+                "{} frame {i}: one thread and four differ",
+                probe.name
+            );
+            out.push((format!("probe-{}-{i}", probe.name), one.rgba));
+            out.push((format!("probe-{}-{i}-resolves", probe.name), one.resolves));
+        }
     }
     out
 }

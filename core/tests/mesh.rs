@@ -1,8 +1,8 @@
-//! Meshes drawn through a Stream: coverage against exact area, no seams along internal edges,
-//! depth resolved at every sub-sample, transparency in depth order whatever the draw order, ties by
-//! draw order, fixed orientation at its centre's depth, CE's light and soft light, the resolve
-//! classes, and identical bytes on any number of threads. Set `CORE_STATS=1` to print the coverage error and each scene's share of pixels per
-//! resolve.
+//! Meshes drawn through a Stream: coverage against exact area, depth resolved at every sub-sample,
+//! transparency in depth order whatever the draw order, ties by draw order, fixed orientation at
+//! its centre's depth, CE's light and soft light, the resolve classes, and identical bytes on any
+//! number of threads. (No seams along internal edges: `tests/probes.rs`, the seam probe.) Set
+//! `CORE_STATS=1` to print the coverage error and each scene's share of pixels per resolve.
 
 mod common;
 
@@ -93,71 +93,6 @@ fn a_meshs_coverage_is_its_exact_area_within_the_sample_patterns_bound() {
     assert!(edges > 200, "{edges} edge pixels");
     assert!(worst <= 0.14, "worst edge pixel off by {worst}");
     assert!(mean <= 0.03, "edge pixels off by {mean} on average");
-}
-
-const SHEET: (usize, usize) = (17, 11);
-
-fn rippled_sheet() -> (Shape, Vec<[f64; 3]>) {
-    let place = |u: f64, v: f64| {
-        // Interior vertices jittered so internal edges run at many angles.
-        let interior = u > 0.0 && u < 1.0 && v > 0.0 && v < 1.0;
-        let jitter = if interior {
-            0.015 * libm::sin(91.0 * u + 37.0 * v)
-        } else {
-            0.0
-        };
-        [
-            -4.0 + 8.0 * (u + jitter),
-            -2.5 + 5.0 * (v - jitter),
-            0.4 * libm::sin(3.0 * u) * libm::cos(2.0 * v),
-        ]
-    };
-    let shape = grid_mesh(SHEET.0, SHEET.1, place);
-    // The boundary, walked around.
-    let (nu, nv) = SHEET;
-    let mut ring = Vec::new();
-    ring.extend((0..=nu).map(|i| place(i as f64 / nu as f64, 0.0)));
-    ring.extend((1..=nv).map(|j| place(1.0, j as f64 / nv as f64)));
-    ring.extend((0..nu).rev().map(|i| place(i as f64 / nu as f64, 1.0)));
-    ring.extend((1..nv).rev().map(|j| place(0.0, j as f64 / nv as f64)));
-    (shape, ring)
-}
-
-#[test]
-fn no_background_shows_through_a_surfaces_internal_edges_opaque_or_transparent() {
-    let (sheet, ring) = rippled_sheet();
-    let mut view = close_view();
-    view.background = Background::Color([1.0, 1.0, 1.0, 1.0]);
-    let inside = pixels_inside(&outline(&view, W, H, &ring), 1.5, W, H);
-    assert!(inside.len() > 2000, "{} interior pixels", inside.len());
-    for alpha in [1.0, 0.5] {
-        let colour = [0.2, 0.6, 0.9, alpha];
-        let s = stream_of(
-            view.clone(),
-            &[(sheet.clone(), mesh_record(1, &sheet, colour, Space::World))],
-            &[1],
-        );
-        let drawn = s.render(W, H, 1).unwrap();
-        let want = blend(premultiply(colour), 255, [255, 255, 255, 255]);
-        let mut along_edges = 0;
-        for (x, y) in &inside {
-            assert_eq!(
-                px(&drawn.rgba, *x, *y),
-                want,
-                "alpha {alpha}: pixel {x},{y}"
-            );
-            let c = class(&drawn.resolves, *x, *y);
-            if c == Resolve::Sample as u8 {
-                along_edges += 1;
-            } else if alpha == 1.0 {
-                assert_eq!(c, Resolve::Fast as u8, "pixel {x},{y}");
-            } else {
-                assert_eq!(c, Resolve::Coverage as u8, "pixel {x},{y}");
-            }
-        }
-        // Internal edges cross many pixels: they take the sample resolve, and still match.
-        assert!(along_edges > 300, "{along_edges} edge pixels");
-    }
 }
 
 #[test]
@@ -845,7 +780,7 @@ fn a_fixed_orientation_mesh_is_a_camera_facing_plane_at_its_centres_depth() {
         (label_projected, premultiply(white)),
         (project_mesh(&view, W, H, &level), premultiply(green)),
     ];
-    let mut fronts = [0, 0];
+    let (mut fronts, mut label_behind) = ([0, 0], 0);
     for y in 0..H {
         for x in 0..W {
             let (xf, yf) = (x as f64, y as f64);
@@ -857,15 +792,17 @@ fn a_fixed_orientation_mesh_is_a_camera_facing_plane_at_its_centres_depth() {
                     assert_eq!(px(&drawn.rgba, x, y), meshes[m].1, "pixel {x},{y}");
                 }
             }
+            let on_label = points.iter().all(|p| front_at(&meshes[..1], *p).is_some());
+            if on_label && at.iter().all(|f| *f == Some(1)) {
+                label_behind += 1;
+            }
         }
     }
-    // The label is in front somewhere and behind the surface somewhere.
-    let label_area = area(&shown) as usize;
-    let label_front = fronts[0];
-    assert!(label_front > 100, "label in front at {label_front} pixels");
+    // The label is in front somewhere, and somewhere inside its footprint the surface is.
+    assert!(fronts[0] > 100, "label in front at {} pixels", fronts[0]);
     assert!(
-        label_front + 100 < label_area,
-        "label in front at {label_front} of its {label_area} pixels"
+        label_behind > 100,
+        "surface in front of the label at {label_behind} pixels"
     );
     assert!(fronts[1] > 1000, "surface in front at {} pixels", fronts[1]);
 }

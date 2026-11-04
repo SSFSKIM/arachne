@@ -1,0 +1,10 @@
+{
+  "about": "Per resolve class, the largest difference in any channel (0-255) a backend's pixel may show against the reference pixel of that class. Placeholders until the cross-architecture measurement sets them, except coverage, which is the core's COVERAGE_TO_SAMPLE_LSB: a backend that resolves a coverage pixel sample by sample lands that close.",
+  "bounds": {
+    "background": 0,
+    "fast": 0,
+    "coverage": 2,
+    "sample": 1
+  },
+  "placeholder": ["background", "fast", "sample"]
+}

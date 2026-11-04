@@ -20,9 +20,12 @@ field.
   frame partly. A record outside the order is not drawn, so it is not refused.
 
 XF 0 defines no feature bits. This build draws the background (a colour, or an image cropped to the
-frame as CE crops it) and `mesh` records filled with one colour; it refuses a mesh carrying a blend, a
-reveal, a stroke, a gradient fill, a paint blend, a dash or a clip, and every other record kind,
-until their drawers exist. How a mesh is drawn is described under "Drawing" below.
+frame as CE crops it), `mesh` records filled with one colour, `path` records whose fill and strokes
+are each one colour, `points` records, and `instances` records of a path or a mesh. It refuses any of
+those carrying a blend, a reveal, a paint blend or a clip; a path with a gradient paint (two stops or a
+table) or a dash it cannot read; a mesh with a stroke, a gradient fill or a dash; and the
+`face_group` and `image` kinds and the reserved ones, until their drawers exist. How records are drawn is described under
+"Drawing" below.
 
 ## Content keys
 
@@ -97,6 +100,29 @@ shape's and table's key against its content, except for shape kinds it does not 
   nearer), which is affine across a projected triangle; a fixed-orientation record is a camera-facing
   plane at its centre's depth. Every other record is in front of all depth, and records tie by draw
   order, the later on top. Under a flat or moving camera everything ties, so records paint in order.
+  Flat things share planes exactly: a path's plane (Newell's normal over its placed points) and a
+  mesh triangle's are made canonical (unit normal, largest component positive, offset from it, both
+  rounded to multiples of 2^-20; points on a line take the axis plane of a coordinate they share), so
+  text, axes and surfaces on one plane tie by draw order instead of fighting. A path that is not
+  flat, or whose plane is within about 3 degrees of edge-on, takes the depth of its own curve: each
+  pixel the front-most part of the curve that reaches it (half the widest stroke and a pixel), else
+  the nearest.
+- **Paths.** CE's subpaths (split where a cubic's end and the next one's start differ in x or y by
+  more than CE's tolerance; closed when the first and last points are equal within it, the last then
+  taken as the first), painted in CE's order as three layers tying in that order: the background
+  stroke, the fill (nonzero), the stroke. Strokes are expanded in the frame's units, as Cairo strokes
+  in user space: CE's width times the view's `cairo_line_width_multiple`, the joint (auto is a miter)
+  and cap (auto is butt), Cairo's miter limit of 10, and the dash (a period in the frame's units,
+  `duty` of it drawn, the pattern started `phase` periods in; a duty of 1 is solid). Each layer is
+  flattened on the pixel plane to Cairo's tolerance of 0.1 pixel and covers each pixel by its exact
+  area. Glyphs are paths. A pixel-aligned rectangle covers whole pixels exactly; Cairo's own box
+  path differs from it by at most one step per byte where an edge falls inside a pixel.
+- **Points and instances.** A `points` record's point `i` is a disc `int(radius)` pixels across (CE
+  draws a point as a block that wide; under 1 nothing), centred where CE places it, in colour row
+  `i`, at the point's depth. An `instances` record's member `i` is its prototype placed by
+  `placements[i]` after the record's own placement, its fill and stroke row `i` of the record's
+  tables where the prototype fills or strokes; members tie in order, each above the one before, and
+  draw the bytes the same members drawn as consecutive records draw.
 - **Light.** A `shade_in_3d` record under a 3D camera that applies shading is lit at each triangle
   corner by the view's light model, at the corner's placed position and normal (the mesh's normals
   through the placement, else the triangle's own): CE's model adds CE's light to the encoded colour
@@ -109,9 +135,12 @@ shape's and table's key against its content, except for shape kinds it does not 
   draw order. Fragments resolve by depth at the sub-samples, ties by draw order: a pixel with one
   depth order at every sub-sample and at most one partially covering mask composites back to front
   with its coverage as Cairo's ARGB32 surface composites paint (the coverage resolve); a crossing
-  inside the pixel, or two or more partial masks (a surface's internal edges), composites each
-  sub-sample and averages them (the sample resolve); an opaque fragment covering the pixel in front
-  of everything takes a fast path. `Stream.draw_resolves` reports each pixel's resolve.
+  inside the pixel, or two or more partial masks, composites each sub-sample and averages them (the
+  sample resolve); an opaque fragment covering the pixel in front of everything takes a fast path.
+  One mesh's triangles meeting in a pixel without overlapping (a surface's internal edges) count as
+  one fragment, its colour their average over the sub-samples each covers, so internal edges take
+  the coverage resolve and never show what lies behind. `Stream.draw_resolves` reports each pixel's
+  resolve.
 
 ## Binary form
 

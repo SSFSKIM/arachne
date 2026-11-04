@@ -26,10 +26,11 @@ stream.apply(delta)
 frame = stream.draw(854, 480)  # uint8 (480, 854, 4), the layout of CE's pixel array
 ```
 
-Today the core draws the background and `mesh` records, depth-tested, antialiased and composited in
-depth order (`XF.md`, "Drawing"), and refuses, whole, any frame whose draw order holds a record it
-cannot draw yet (`arachne_core.Unsupported`, `render.unsupported`). `stream.draw_resolves(...)` also
-returns how each pixel was resolved.
+Today the core draws the background and `mesh`, `path`, `points` and `instances` records in one
+colour per paint, depth-tested, antialiased and composited in depth order (`XF.md`, "Drawing"), and
+refuses, whole, any frame whose draw order holds a record it cannot draw yet
+(`arachne_core.Unsupported`, `render.unsupported`). `stream.draw_resolves(...)` also returns how each
+pixel was resolved.
 
 - `src/xf/`: XF's types, content keys and binary form.
 - `src/stream.rs`: the stream, applying deltas and drawing.
@@ -41,8 +42,15 @@ returns how each pixel was resolved.
   coverage and sample resolves, emitted light, and the frame buffer. 2D paint blends with the
   arithmetic of Cairo's ARGB32 surface (`tests/data/gen_blend.py` records Cairo's bytes).
 - `src/mesh.rs`: the triangle rasterizer, a producer of mask fragments with depth.
+- `src/path.rs`: the path rasterizer (fills, strokes and dashes through kurbo, glyphs, discs), a
+  producer of exact-area fragments with depth; `src/scanline.rs`, its exact nonzero coverage and
+  the masks at the sub-samples; `src/depth.rs`, canonical planes and depth along curves.
+- `src/instance.rs`: `instances` and `points` records drawn as their members.
 - `src/tiles.rs`: the frame cut into tiles, drawn on threads scoped to the draw call; the bytes are
   the same on any number of threads.
+- `parity/`: the parity kit, the class probes (`probes.rs`, asserted by `tests/probes.rs`) as
+  fixtures, the core's reference frames and `tolerances.json`; `python -m arachne_core.parity
+  --backend cpu` runs it (`parity/README.md`).
 
 Build and test with the toolchain `rust-toolchain.toml` pins: `cargo test --release` in `core/`; the
 binding with `uv build --wheel .` and `pytest` in `core/`. CI runs `ci/*.sh` (`.github/ci-kit.yml`),

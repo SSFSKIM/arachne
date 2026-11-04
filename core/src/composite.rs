@@ -27,6 +27,12 @@
 //! nothing in front, takes the **fast** path. Fragments hidden at every sub-sample behind an opaque
 //! covering fragment are dropped first. A mask is never made from an alpha: a fragment with exact
 //! area gives its mask only when its pixel takes the sample resolve ([`Producer::mask`]).
+//!
+//! The resolves count **units**, not fragments: a run, in depth order, of one surface's mask
+//! fragments whose masks do not overlap (a mesh's triangles meeting at an internal edge) is one
+//! unit, with their union for its mask and their colour averaged over the sub-samples each covers;
+//! every other fragment is a unit of its own. So a surface's internal edges take the coverage
+//! resolve, and an opaque surface tiling the pixel hides what is behind it at every sub-sample.
 
 use std::cmp::Ordering;
 
@@ -171,6 +177,9 @@ pub struct Fragment {
     pub order: u32,
     /// The part within one drawn object (a triangle of a mesh), breaking ties the same way.
     pub sub: u32,
+    /// The surface it belongs to, when not 0: one mesh drawn, whose triangles share edges exactly
+    /// and never cover one sub-sample twice where they tile the pixel (see [`Fragment::on_surface`]).
+    pub surface: u32,
     /// The producer that added it (set by the pass).
     source: u16,
 }
@@ -183,8 +192,18 @@ impl Fragment {
             coverage,
             order,
             sub,
+            surface: 0,
             source: 0,
         }
+    }
+
+    /// The fragment as part of surface `surface` of its producer. Mask fragments of one surface
+    /// whose masks do not overlap, and that keep one place in the pixel's depth order against every
+    /// other fragment, are merged into one fragment (their masks' union, their colours averaged by
+    /// sub-sample count), so the internal edges of a surface take the coverage resolve, exactly.
+    pub fn on_surface(mut self, surface: u32) -> Self {
+        self.surface = surface;
+        self
     }
 
     fn is_opaque(&self) -> bool {
@@ -599,6 +618,8 @@ struct Scratch {
     fragments: Vec<Fragment>,
     depths: Vec<[f64; SAMPLES]>,
     order: Vec<usize>,
+    /// Runs `start..end` of `order` that composite as one fragment.
+    units: Vec<(usize, usize)>,
     masks: Vec<u16>,
     covering: Vec<usize>,
 }
@@ -663,20 +684,99 @@ fn resolve_pixel(
         }
     }
 
-    let partial_masks = s
-        .order
+    // Units: runs of the order that composite as one fragment. A run of one surface's mask
+    // fragments whose masks do not overlap is one unit (a surface tiling the pixel), the others
+    // one each.
+    s.units.clear();
+    let mut union = 0u16;
+    for q in 0..s.order.len() {
+        let f = &frags[s.order[q]];
+        let joins = match (s.units.last(), f.coverage) {
+            (Some(&(start, _)), Coverage::Mask(m)) => {
+                let first = &frags[s.order[start]];
+                f.surface != 0
+                    && f.surface == first.surface
+                    && f.source == first.source
+                    && matches!(first.coverage, Coverage::Mask(_))
+                    && union & m == 0
+            }
+            _ => false,
+        };
+        let m = match f.coverage {
+            Coverage::Mask(m) => m,
+            Coverage::Area { .. } => 0,
+        };
+        if joins {
+            s.units.last_mut().unwrap().1 = q + 1;
+            union |= m;
+        } else {
+            s.units.push((q, q + 1));
+            union = m;
+        }
+    }
+    let order = &s.order;
+    // Whether every fragment of unit `u` is in front of every fragment of unit `v` at sub-sample k.
+    let before = |u: (usize, usize), v: (usize, usize), k: usize| {
+        order[u.0..u.1].iter().all(|a| {
+            order[v.0..v.1]
+                .iter()
+                .all(|b| cmp_at(*a, *b, k) != Ordering::Greater)
+        })
+    };
+    let unit_mask = |u: (usize, usize)| {
+        order[u.0..u.1]
+            .iter()
+            .try_fold(0u16, |m, i| match frags[*i].coverage {
+                Coverage::Mask(f) => Some(m | f),
+                Coverage::Area { .. } => None,
+            })
+    };
+    let opaque_full = |u: (usize, usize)| {
+        order[u.0..u.1].iter().all(|i| frags[*i].is_opaque()) && unit_mask(u) == Some(FULL)
+    };
+    // A merged opaque unit covering the pixel hides what lies behind it at every sub-sample.
+    let mut units: &[(usize, usize)] = &s.units;
+    if let Some(p) = units.iter().position(|u| u.1 - u.0 > 1 && opaque_full(*u))
+        && units[p + 1..]
+            .iter()
+            .all(|w| (0..SAMPLES).all(|k| before(units[p], *w, k)))
+    {
+        units = &units[..=p];
+    }
+    let partial_masks = units
         .iter()
-        .filter(|i| matches!(frags[**i].coverage, Coverage::Mask(m) if m != FULL))
+        .filter(|u| unit_mask(**u).is_some_and(|m| m != FULL))
         .count();
-    let one_order = (1..SAMPLES).all(|k| {
-        s.order
-            .windows(2)
-            .all(|w| cmp_at(w[0], w[1], k) != Ordering::Greater)
-    });
-    if partial_masks < 2 && one_order {
+    let one_order =
+        partial_masks < 2 && (0..SAMPLES).all(|k| units.windows(2).all(|w| before(w[0], w[1], k)));
+    if one_order {
         let mut px = bg;
-        for i in s.order.iter().rev() {
-            px = blend(frags[*i].colour, frags[*i].coverage8(), px);
+        for u in units.iter().rev() {
+            let (colour, coverage) = if u.1 - u.0 == 1 {
+                let f = &frags[order[u.0]];
+                (f.colour, f.coverage8())
+            } else {
+                // The members' colours averaged over the sub-samples each covers.
+                let mut sum = [0u32; 4];
+                let mut count = 0u32;
+                for i in &order[u.0..u.1] {
+                    let f = &frags[*i];
+                    let n = match f.coverage {
+                        Coverage::Mask(m) => m.count_ones(),
+                        Coverage::Area { .. } => unreachable!("units merge masks"),
+                    };
+                    count += n;
+                    for (s, c) in sum.iter_mut().zip(f.colour) {
+                        *s += c as u32 * n;
+                    }
+                }
+                let union = unit_mask(*u).expect("units merge masks");
+                (
+                    sum.map(|v| ((v + count / 2) / count) as u8),
+                    mask_coverage(union),
+                )
+            };
+            px = blend(colour, coverage, px);
         }
         return (Resolve::Coverage, px);
     }
