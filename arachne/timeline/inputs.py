@@ -22,7 +22,14 @@ while no recording watches.
 
 from __future__ import annotations
 
-__all__ = ["Inputs", "active", "engine_dirs", "source_digest", "source_files"]
+__all__ = [
+    "Inputs",
+    "Read",
+    "active",
+    "engine_dirs",
+    "source_digest",
+    "source_files",
+]
 
 import ast
 import hashlib
@@ -30,10 +37,10 @@ import importlib.machinery
 import os
 import sys
 import threading
-from collections.abc import Collection, Iterable, Iterator
+from collections.abc import Callable, Collection, Iterable, Iterator
 from pathlib import Path
 from types import FrameType
-from typing import Any
+from typing import Any, NamedTuple
 
 from .source import _INTERNAL
 
@@ -71,9 +78,23 @@ def _reads(mode: str | None, flags: int) -> bool:
     return (flags & os.O_ACCMODE) != os.O_WRONLY and not flags & os.O_TRUNC
 
 
+class Read(NamedTuple):
+    """A file an execution read: its ``path`` relative to the scene's
+    directory, the sha256 of what it held when first opened, and the index
+    of the first ``play`` that content could change (the one running as it
+    was opened, or else the next to begin).
+    """
+
+    path: str
+    digest: str
+    play: int
+
+
 class Inputs:
     """The files a recording's scene opened for reading, with the digest of
-    what each held when first opened.
+    what each held when first opened, and the play it was first opened for
+    (``play()``, the play running or else the next to begin; ``0`` without
+    it).
 
     A file counts when the code that opened it was called from the scene's
     code, from a module under the scene's directory, and not by an import
@@ -85,7 +106,12 @@ class Inputs:
     holds the scene's own is not excluded, since it would hold every input.
     """
 
-    def __init__(self, scene_dir: str, excluded: Iterable[str]) -> None:
+    def __init__(
+        self,
+        scene_dir: str,
+        excluded: Iterable[str],
+        play: Callable[[], int] | None = None,
+    ) -> None:
         self.scene_dir = os.path.realpath(scene_dir)
         self._scene_prefix = self.scene_dir.rstrip(os.sep) + os.sep
         prefixes = (
@@ -101,6 +127,9 @@ class Inputs:
         )
         #: Each file read, by real path, and the digest of what it held.
         self._read: dict[str, str] = {}
+        #: Each file read, by real path, and the play it was first read for.
+        self._first_play: dict[str, int] = {}
+        self._play = play
         #: Whether code from a file (by code object file name) is the scene's.
         self._scene_code: dict[str, bool] = {}
 
@@ -129,6 +158,7 @@ class Inputs:
                 return
             with open(real, "rb") as file:
                 self._read[real] = hashlib.file_digest(file, "sha256").hexdigest()
+            self._first_play[real] = 0 if self._play is None else self._play()
         except (OSError, TypeError, ValueError):
             # Not a path the scene can read; its own open says why.
             return
@@ -163,6 +193,18 @@ class Inputs:
         return tuple(
             sorted(
                 (_relative(path, self.scene_dir), digest)
+                for path, digest in self._read.items()
+                if path not in sources
+            )
+        )
+
+    def reads(self, sources: Collection[str]) -> tuple[Read, ...]:
+        """Each file read but the ``sources``, as :meth:`input_digests` gives
+        it, with the play it was first read for, by path.
+        """
+        return tuple(
+            sorted(
+                Read(_relative(path, self.scene_dir), digest, self._first_play[path])
                 for path, digest in self._read.items()
                 if path not in sources
             )
@@ -266,7 +308,18 @@ def source_files(scene_file: str) -> list[str]:
 
 def source_digest(files: Iterable[str], scene_dir: str) -> str:
     """One sha256 over ``files``: each one's path relative to
-    ``scene_dir`` and the sha256 of what it holds, by path.
+    ``scene_dir`` and the sha256 of what it holds, by path
+    (:func:`file_digests`).
+    """
+    digest = hashlib.sha256()
+    for relative, content in file_digests(files, scene_dir):
+        digest.update(f"{relative}\0{content}\n".encode())
+    return digest.hexdigest()
+
+
+def file_digests(files: Iterable[str], scene_dir: str) -> tuple[tuple[str, str], ...]:
+    """Each of ``files`` as ``(path relative to scene_dir, sha256 of what it
+    holds)``, by path. Raises ``OSError`` for a file that can't be read.
     """
     entries = []
     for path in files:
@@ -277,10 +330,7 @@ def source_digest(files: Iterable[str], scene_dir: str) -> str:
                     hashlib.file_digest(file, "sha256").hexdigest(),
                 )
             )
-    digest = hashlib.sha256()
-    for relative, content in sorted(entries):
-        digest.update(f"{relative}\0{content}\n".encode())
-    return digest.hexdigest()
+    return tuple(sorted(entries))
 
 
 def _named_files(path: str, scene_dir: str) -> Iterator[str]:

@@ -6,10 +6,12 @@ every instant the run evaluated. :meth:`Session.state_at` answers from the
 record, and :meth:`Session.frame` draws one frame from it; neither runs the
 scene's code again. Before either, the probe checks every state-function
 play against what its record kept (:mod:`.timeline.probe`), and the scene is
-recorded again with any play it demotes ticked. :meth:`Session.compare`
-compares the session's execution with another of the same source, perhaps
-from another process, and keeps where they differ in
-:attr:`Session.divergences`.
+recorded again with any play it demotes ticked. :meth:`Session.answers`
+answers a batch of instants, and what the record can't answer there a
+forward run does: the scene executed once more, for the whole batch
+(:mod:`.timeline.fallback`). :meth:`Session.compare` compares the session's
+execution with another of the same source, perhaps from another process,
+and keeps where they differ in :attr:`Session.divergences`.
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ import importlib.util
 import itertools
 import os
 import sys
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from fractions import Fraction
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -46,12 +48,13 @@ from .timeline.execution import (
     compare,
     summarize,
 )
-from .timeline.inputs import source_digest, source_files
+from .timeline.fallback import Answer, ForwardRun, answer_instants
+from .timeline.inputs import Read, file_digests, source_digest, source_files
 from .timeline.origins import ORIGINS
 from .timeline.probe import Probe
 from .timeline.probe import probe as probe_record
 from .timeline.recorder import Recorder, _scene_file
-from .timeline.routes import draw
+from .timeline.routes import _draw, _resolve, _Resolved
 from .timeline.source import SourceLine
 
 if TYPE_CHECKING:
@@ -60,8 +63,9 @@ if TYPE_CHECKING:
 
     from PIL import Image
 
+    from ._config.utils import ManimConfig
     from .scene.scene import Scene
-    from .timeline.record import Record
+    from .timeline.record import PlayRecord, Record
     from .timeline.state import State
     from .typing import PixelArray, StrPath
 
@@ -91,6 +95,15 @@ class Session:
         #: What the probe found for the state-function plays, when the
         #: session was opened with it (:mod:`.timeline.probe`).
         self.probe: Probe | None = None
+        #: What :meth:`open` executed last, the execution the session holds,
+        #: which a forward run executes again.
+        self._source: Source | None = None
+        #: The forward runs that answered what the record could not, in order.
+        self.forward_runs: list[ForwardRun] = []
+        #: Whether the scene's source was found changed since the record was
+        #: made (by a forward run, or by the probe recording it again): the
+        #: record is of a program the file no longer is.
+        self.stale = False
 
     @classmethod
     def open(
@@ -137,6 +150,9 @@ class Session:
         of kind ``execution``, the session holds that execution, with every
         demotion found applied, and :attr:`.Probe.settled` is false. Past
         one more execution than the first had plays, it stops the same way.
+        An execution of another source than the one before it (the file
+        edited meanwhile) stops it too, with no divergence: the session is
+        :attr:`stale`.
         """
         path = Path(file).resolve()
         settings = {
@@ -144,6 +160,11 @@ class Session:
             "dry_run": True,
             "disable_caching": True,
         }
+        with tempconfig(settings):
+            # The whole configuration the scene runs under, which every
+            # execution of the session, a forward run's too, executes under,
+            # whatever the process's is then.
+            effective = global_config.copy()
         options = {
             "grid": grid,
             "stepping": stepping,
@@ -155,8 +176,9 @@ class Session:
         # Each demoted play's identity, with its line's plays where it was
         # found (``None`` for a line demoted whole).
         demotions: dict[PlayIdentity, tuple[str, ...] | None] = {}
-        session = cls(*_execute(path, scene, settings, options, demotions))
+        session = cls(*_execute(path, scene, effective, options, demotions))
         if not probe:
+            session._source = _source(session, path, scene, effective, stepping)
             return session
         # Probe the record. On a demotion, record the scene again with the
         # play ticked, a new execution compared with the first, and probe
@@ -204,7 +226,7 @@ class Session:
             if first is None:
                 first = session.summary()
             session._executed_again(
-                *_execute(path, scene, settings, options, demotions)
+                *_execute(path, scene, effective, options, demotions)
             )
             executions += 1
             with contextlib.suppress(Incomparable):
@@ -215,6 +237,8 @@ class Session:
             ):
                 # Another source is stale, never a divergence; the same one
                 # playing other plays is where its executions differ.
+                if not _same_source(record, session.record):
+                    session.stale = True
                 changed = _schedule_change(record, session.record)
                 if changed is not None:
                     session._keep(changed)
@@ -227,6 +251,7 @@ class Session:
         whole = {line for line, kind, _ in demotions if kind is None}
         found = session._found_in(found, described, whole)
         session.probe = replace(found, settled=settled)
+        session._source = _source(session, path, scene, effective, stepping)
         return session
 
     def state_at(self, t: Fraction | float) -> State:
@@ -247,14 +272,48 @@ class Session:
         """
         self._use_quality(quality)
         record = self.record
-        with Drawing(record) as drawing:
-            pixels = draw(
-                drawing,
-                record,
-                exact(t),
-                lambda play: self._static_picture(drawing, play),
-            )
+        (pixels,) = self._drawn(
+            record, [_resolve(record, exact(t))], self._static_picture
+        )
         return self.scene.renderer.camera.get_image(pixels)
+
+    def _drawn(
+        self,
+        record: Record,
+        answers: Iterable[_Resolved],
+        static: Callable[[Drawing, PlayRecord], PixelArray | None],
+    ) -> list[PixelArray]:
+        """The frames of ``answers``, instants ``record`` answers, drawn as
+        every frame a session gives is drawn: the session's own record's, and
+        a forward run's (:mod:`.timeline.fallback`). ``static(drawing, play)``
+        gives a play's static picture.
+        """
+        with Drawing(record) as drawing:
+            return [
+                _draw(drawing, record, found, lambda play: static(drawing, play))
+                for found in answers
+            ]
+
+    def answers(
+        self,
+        instants: Iterable[Fraction | float],
+        quality: str | None = None,
+        *,
+        frames: bool = True,
+    ) -> list[Answer]:
+        """The state at each of ``instants``, and its frame unless ``frames``
+        is false (at ``quality`` as :meth:`frame` draws it), in order.
+
+        The record answers what it can. The instants it can't (a state play
+        that can't be restored there, a record that refuses drawing) are
+        answered by one forward run for them all (:mod:`.timeline.fallback`):
+        a new execution of the scene, whose answers say ``"forward"`` and
+        name why the record could not answer, and which is compared with
+        the record's execution (:attr:`forward_runs`, :attr:`divergences`).
+        A forward run of a source changed since the record is compared with
+        nothing: its answers say ``source-changed``, and :attr:`stale` is set.
+        """
+        return answer_instants(self, instants, quality, frames=frames)
 
     def summary(self) -> ExecutionSummary:
         """The summary of the session's execution, which another execution
@@ -343,12 +402,7 @@ class Session:
                 )
             height = QUALITIES[quality]["pixel_height"]
             width = QUALITIES[quality]["pixel_width"]
-        # The frame keeps its size in scene units, as a render at that
-        # quality has it; only the pixels change.
-        camera.pixel_height, camera.pixel_width = height, width
-        camera.init_background()
-        camera.pixel_array_to_cairo_context.clear()
-        camera.reset()
+        resize(camera, height, width)
         self._quality = quality
         self._static = None
 
@@ -357,17 +411,73 @@ class Session:
         sys.modules.pop(self.module.__name__, None)
 
 
-def _execute(
+def resize(camera: Any, height: int, width: int) -> None:
+    """Give ``camera`` ``height`` by ``width`` pixels. The frame keeps its
+    size in scene units, as a render at another quality has it; only the
+    pixels change.
+    """
+    camera.pixel_height, camera.pixel_width = height, width
+    camera.init_background()
+    camera.pixel_array_to_cairo_context.clear()
+    camera.reset()
+
+
+@dataclass(frozen=True)
+class Source:
+    """What a session executed: the scene class ``scene`` of ``path``, under
+    the configuration ``settings``, its ticked plays stepping as
+    ``stepping`` says; and each file of its source, as ``(path relative to
+    the scene's directory, sha256)``, by path, which the record's source
+    digest digests (``None`` when it can't be shown to be that); the files
+    its execution read, each with the play it was first read for; and the
+    identities of the plays it ticked as the probe demoted them, which a
+    forward run ticks too, so that its routes are the record's.
+    """
+
+    path: Path
+    scene: str
+    settings: ManimConfig
+    stepping: bool | Literal["brute_force"]
+    files: tuple[tuple[str, str], ...] | None
+    reads: tuple[Read, ...] = ()
+    demoted: frozenset[PlayIdentity] = frozenset()
+
+
+def _source_files(record: Record) -> tuple[tuple[str, str], ...] | None:
+    """The record's source, file by file, when it is still the source its
+    digest was taken of.
+    """
+    scene_file = record.scene_file
+    if scene_file is None or record.identity.source_digest is None:
+        return None
+    scene_dir = os.path.dirname(scene_file)
+    files = source_files(scene_file)
+    try:
+        found = file_digests(files, scene_dir)
+    except OSError:
+        return None
+    if source_digest(files, scene_dir) != record.identity.source_digest:
+        return None
+    return found
+
+
+def _reads(recorder: Recorder, record: Record) -> tuple[Read, ...]:
+    """The files ``recorder``'s execution read, its source's but."""
+    inputs = recorder._inputs
+    if inputs is None or record.scene_file is None:
+        return ()
+    return inputs.reads(frozenset(source_files(record.scene_file)))
+
+
+def execute(
     path: Path,
     scene: str,
-    settings: dict[str, Any],
-    options: dict[str, Any],
-    demotions: dict[PlayIdentity, tuple[str, ...] | None],
-) -> tuple[Scene, Record, ModuleType]:
-    """Import ``path`` afresh and execute its scene ``scene`` under
-    ``settings``, recorded by a ``Recorder`` given ``options`` that ticks the
-    plays of ``demotions`` and those the probe demoted in an earlier session
-    of the source (:func:`.admission.demoted`), which join ``demotions``.
+    settings: ManimConfig | dict[str, Any],
+    recorder: Callable[[Scene], Recorder],
+) -> tuple[Scene, ModuleType]:
+    """Import ``path`` under a module of its own and execute its scene class
+    ``scene`` under ``settings``, recorded by ``recorder(scene)``: the scene
+    and its module. An execution that raises leaves its module unimported.
     """
     base_dir = str(path.parent)
     with tempconfig(settings):
@@ -382,20 +492,7 @@ def _execute(
                 if not isinstance(scene_class, type):
                     raise LookupError(f"{path.name} defines no scene named {scene!r}.")
                 instance: Scene = scene_class()
-                for identity, line in admission.demoted(
-                    _source_digest(instance), type(instance).__name__
-                ).items():
-                    demotions.setdefault(identity, line)
-                grid = options["grid"]
-                instance.timeline = Recorder(
-                    instance,
-                    **{
-                        **options,
-                        "grid": global_config.frame_rate if grid == "render" else grid,
-                    },
-                    draws=False,
-                    demoted=demotions,
-                )
+                instance.timeline = recorder(instance)
                 instance.render()
             except BaseException:
                 sys.modules.pop(module.__name__, None)
@@ -404,6 +501,63 @@ def _execute(
             ORIGINS.stop()
             if added_path and base_dir in sys.path:
                 sys.path.remove(base_dir)
+    return instance, module
+
+
+def _source(
+    session: Session,
+    path: Path,
+    scene: str,
+    settings: ManimConfig,
+    stepping: bool | Literal["brute_force"],
+) -> Source:
+    """What ``session`` executed last, the execution it holds, with the
+    demotions that execution ticked (not those found after it, which a
+    capped session registered but did not apply).
+    """
+    record = session.record
+    recorder = session.scene.timeline
+    return Source(
+        path,
+        scene,
+        settings,
+        stepping,
+        _source_files(record),
+        _reads(recorder, record),
+        recorder.demoted,
+    )
+
+
+def _execute(
+    path: Path,
+    scene: str,
+    settings: ManimConfig,
+    options: dict[str, Any],
+    demotions: dict[PlayIdentity, tuple[str, ...] | None],
+) -> tuple[Scene, Record, ModuleType]:
+    """Execute ``path``'s scene ``scene`` under ``settings`` (:func:`execute`),
+    recorded by a ``Recorder`` given ``options`` that ticks the plays of
+    ``demotions`` and those the probe demoted in an earlier session of the
+    source (:func:`.admission.demoted`), which join ``demotions``.
+    """
+
+    def recorder(instance: Scene) -> Recorder:
+        for identity, line in admission.demoted(
+            _source_digest(instance), type(instance).__name__
+        ).items():
+            demotions.setdefault(identity, line)
+        grid = options["grid"]
+        return Recorder(
+            instance,
+            **{
+                **options,
+                "grid": global_config.frame_rate if grid == "render" else grid,
+            },
+            draws=False,
+            demoted=demotions,
+        )
+
+    instance, module = execute(path, scene, settings, recorder)
     record = instance.record
     assert record is not None
     return instance, record, module
