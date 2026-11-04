@@ -213,8 +213,8 @@ def test_a_moved_three_d_centre_keeps_the_first_mapping_centre():
 
 @pytest.mark.xfail(
     strict=True,
-    reason="needs C5.2 M5's render_mapping_centre(record); whichever of M3 and M5"
-    " lands second wires it",
+    reason="needs render_mapping_centre(record), from PR #14; whichever of this"
+    " branch and that PR lands second wires it",
 )
 def test_a_late_frame_asked_first_keeps_the_render_s_mapping_centre():
     """The render freezes the mapping centre at its own first path draw; a
