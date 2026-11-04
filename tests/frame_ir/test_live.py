@@ -131,8 +131,8 @@ def test_without_drawing_the_capture_describes_the_same_frames(
     """
     original = live_module.LivePainter.__init__
 
-    def quiet(self, *, draw=True):
-        original(self, draw=False)
+    def quiet(self, *, draw=True, **kwargs):
+        original(self, draw=False, **kwargs)
 
     monkeypatch.setattr(live_module.LivePainter, "__init__", quiet)
     (_, direct, direct_calls), (_, described) = _both_ways(scene_class, painters)
