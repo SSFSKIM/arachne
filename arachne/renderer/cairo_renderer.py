@@ -292,7 +292,7 @@ class CairoRenderer:
         kwargs["include_submobjects"] = include_submobjects
         from ..frame_ir.live import live
 
-        with live(self.camera):
+        with live(self.camera, self.clock):
             self.camera.capture_mobjects(mobjects, **kwargs)
 
     def render(

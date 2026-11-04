@@ -921,7 +921,7 @@ class LiveFrames:
             from arachne.frame_ir.live import live
 
             self.camera.reset()
-            with live(self.camera):
+            with live(self.camera, play.start):
                 self.camera.capture_mobjects(list(play.static))
             self._static = self.camera.pixel_array.copy()
 
@@ -950,7 +950,7 @@ class LiveFrames:
         camera = self.camera
         from arachne.frame_ir.live import live
 
-        with live(camera):
+        with live(camera, instant):
             if self._static is not None:
                 camera.set_frame_to_background(self._static)
             else:
