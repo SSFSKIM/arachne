@@ -12,7 +12,7 @@ finding that look-alikes were folded into counts them in
 
 from __future__ import annotations
 
-__all__ = ["notes", "report"]
+__all__ = ["notes", "report", "violation"]
 
 from typing import Any
 
@@ -29,7 +29,7 @@ def report(result: LintResult) -> dict[str, Any]:
             "width": result.target_resolution[0],
             "height": result.target_resolution[1],
         },
-        "violations": [_violation(f) for f in result.findings if f.severity != "note"],
+        "violations": [violation(f) for f in result.findings if f.severity != "note"],
         "timeline": [
             {
                 "index": span.index,
@@ -44,10 +44,11 @@ def report(result: LintResult) -> dict[str, Any]:
 
 def notes(result: LintResult) -> list[dict[str, Any]]:
     """The notes of ``result``, as violations."""
-    return [_violation(f) for f in result.findings if f.severity == "note"]
+    return [violation(f) for f in result.findings if f.severity == "note"]
 
 
-def _violation(finding: Finding) -> dict[str, Any]:
+def violation(finding: Finding) -> dict[str, Any]:
+    """``finding`` as a violation of the report."""
     out: dict[str, Any] = {
         "code": finding.code,
         "class": finding.cls,

@@ -185,8 +185,10 @@ def demoted(
 
 def camera_refusal(camera: Any) -> str | None:
     """Why frames of a scene drawn by ``camera`` can't come from its record:
-    the camera draws through an input the record does not hold. ``None`` for
-    the cameras whose every drawing input is a recorded value.
+    the camera draws through an input the record does not hold, or runs the
+    scene's code in place of one of its methods (any method, replaced on the
+    instance or on an engine camera class: :func:`.camera_code.replaced_methods`).
+    ``None`` for the cameras whose every drawing input is a recorded value.
     """
     from arachne.camera.camera import Camera
     from arachne.camera.mapping_camera import MappingCamera
@@ -194,6 +196,16 @@ def camera_refusal(camera: Any) -> str | None:
     from arachne.camera.multi_camera import MultiCamera
     from arachne.camera.three_d_camera import ThreeDCamera
 
+    from .camera_code import replaced_methods
+
+    replaced = replaced_methods(camera)
+    if replaced:
+        return (
+            "camera.replaced: the scene replaced "
+            + ", ".join(f"{found.qualname} (on the {found.form})" for found in replaced)
+            + ", so its frames are drawn while the scene runs and its record answers"
+            " no instant"
+        )
     kind = type(camera)
     if kind is MultiCamera:
         # It draws each display through that display's own camera.
