@@ -16,11 +16,11 @@ route a play takes is decided when it begins (:mod:`.admission`).
   the instant and evaluated there (answer ``"restored"``, :mod:`.restore`).
 - ``"ticked"`` (route 3): the play steps on the global 60 Hz tick, its events
   taken at the first tick at or after their instants, and an instant reads
-  the last capture the record kept at or before it: from the play's first
-  frame on, the frame a render shows there; before it, the previous kept
-  capture of an earlier play (answer ``"recorded"``, the state naming the
-  instant it reflects). Sound by construction: a sample is the forward run's own
-  state. A tick that no frame of the record's grid reads, no event falls on
+  the last capture a frame of the record's grid read at or before it: the
+  frame a render shows there, an earlier play's before the play's first
+  frame, never a capture no frame drew (answer ``"recorded"``, the state
+  naming the instant it reflects). Sound by construction: a sample is the
+  forward run's own state. A tick that no frame of the record's grid reads, no event falls on
   and that does not end the play only steps: its dt-free callbacks run at
   the frames, as CE runs them, unless stepping work may read them
   (:mod:`.ticking`), and the record keeps none of them.
@@ -50,14 +50,14 @@ __all__ = [
     "snapshot_animations",
 ]
 
-import bisect
+import math
 from collections.abc import Callable
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
 import numpy as np
 
-from .clock import TICK_DT, frames_in, ticks_in
+from .clock import TICK_DT, TICK_RATE, frames_in, ticks_in
 from .events import EventPlan
 from .hooks import _alpha, animate, update_mobjects, update_self
 from .reference import BRUTE_FORCE, BruteForce
@@ -365,19 +365,17 @@ class _Resolved(NamedTuple):
     as_of: Fraction
 
 
-def _last_kept(
-    record: Record, play: PlayRecord, t: Fraction
-) -> tuple[PlayRecord, Capture]:
-    """The last capture the record kept at or before ``t``, inside ``play``
-    or, before its first, at the end of an earlier play; with its play.
+def _last_frame_read(record: Record, t: Fraction) -> tuple[PlayRecord, Capture]:
+    """The capture the last frame of the record's grid at or before ``t``
+    reads (every 60 Hz tick is a frame without a grid), with its play: the
+    frame a render shows at ``t``. It may be an earlier play's; a capture no
+    frame read (a play too short for any frame) is never it.
     """
-    index = bisect.bisect_right(play._instants, t) - 1
-    if index >= 0:
-        return play, play.samples[index]
-    for earlier in reversed(record.plays[: play.index]):
-        if earlier.samples:
-            return earlier, earlier.samples[-1]
-    raise LookupError(f"The record kept nothing at or before {t}.")
+    grid = record.grid if record.grid is not None else Fraction(TICK_RATE)
+    frame = Fraction(math.floor(t * grid)) / grid
+    play, capture = record.capture_at(frame)
+    assert play is not None, "a frame inside a play is read inside a play"
+    return play, capture
 
 
 def _resolve(record: Record, t: Fraction) -> _Resolved:
@@ -394,12 +392,11 @@ def _resolve(record: Record, t: Fraction) -> _Resolved:
     if play.route == "ticked":
         # A ticked play's record keeps only the ticks a frame of its grid
         # reads (not its events, nor its last tick unless a frame reads
-        # them): from its first frame on, the last kept at or before t is
-        # the frame a render shows there. Before it, the answer is the
-        # previous kept capture, an earlier play's, which may be one no
-        # frame shows (a trusted play too short for any frame).
-        kept, capture = _last_kept(record, play, t)
-        return _Resolved(kept, capture, None, "recorded", capture.instant)
+        # them). The answer is the last capture a frame read at or before
+        # t, the frame a render shows there: before the play's first frame,
+        # an earlier play's.
+        shown, capture = _last_frame_read(record, t)
+        return _Resolved(shown, capture, None, "recorded", capture.instant)
     if play.route == "state":
         sample = play.sample_at(t)
         if sample is not None:
