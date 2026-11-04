@@ -211,7 +211,7 @@ def _restoring(
             _assigned(scene, assignments),
             _animations_at(point),
             _scene_at(scene, play, base, t),
-            ORIGINS.resumed(_base_dir(record), _numbering(record)),
+            ORIGINS.resumed(_base_dir(record), _numbering(record), record.scene_file),
         ):
             _refuse_unadmitted(scene, play, point)
             plan = _event_plan(point, t)

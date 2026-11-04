@@ -18,6 +18,7 @@ __all__ = [
     "SourceLine",
     "names_from_frames",
     "relative_path",
+    "scene_file_line",
     "scene_frames",
     "scene_location",
 ]
@@ -95,6 +96,26 @@ def scene_location(frame: FrameType | None, base_dir: str | None) -> SourceLine 
             return None
         return SourceLine(relative_path(filename, base_dir), scene_frame.f_lineno)
     return None
+
+
+def scene_file_line(frame: FrameType | None, scene_file: str) -> int | None:
+    """The line of the innermost frame from ``frame`` outwards whose code is
+    the scene file's own, ``scene_file`` (a real path); ``None`` when none
+    is. A mobject made in a helper module has the line of the scene file's
+    call that led there.
+    """
+    while frame is not None:
+        if _is_file(frame.f_code.co_filename, scene_file):
+            return frame.f_lineno
+        frame = frame.f_back
+    return None
+
+
+@functools.lru_cache(maxsize=4096)
+def _is_file(filename: str, real_path: str) -> bool:
+    if filename.startswith("<"):
+        return False
+    return os.path.realpath(filename) == real_path
 
 
 def relative_path(filename: str, base_dir: str | None) -> str:
