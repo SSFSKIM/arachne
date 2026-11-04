@@ -350,6 +350,38 @@ def test_a_ticked_play_before_its_first_frame_answers_the_frame_before(session_o
     assert np.array_equal(np.asarray(session.frame(t)), frames[14])
 
 
+def test_a_ticked_play_before_its_first_frame_reads_the_previous_kept_capture(
+    session_of,
+):
+    """Before the ticked play's first frame the answer is the last capture
+    the record kept, which here is a trusted play's too short for any frame:
+    a capture no render frame shows.
+    """
+    session = session_of("FramelessBeforeTicked", RESTORE_SCENES, frame_rate=15)
+    _, trusted, ticked = session.record.plays
+    assert [p.route for p in session.record.plays] == ["trusted", "trusted", "ticked"]
+    assert trusted.start == Fraction(97, 100)
+    assert ticked.start < Fraction(1)
+    t = Fraction(98, 100)
+    state = session.state_at(t)
+    last = trusted.samples[-1]
+    assert (state.answer, state.play, state.as_of) == ("recorded", 1, last.instant)
+
+
+def test_a_restore_refuses_a_callback_animation_pointed_elsewhere(session_of):
+    """The hook points the alpha function at a dot outside the scene: a
+    restore refuses, and that dot keeps where the scene left it.
+    """
+    session = session_of("HookRetargets", RESTORE_SCENES, frame_rate=15)
+    (play,) = session.record.plays
+    assert play.route == "state"
+    before = session.scene.other.get_x()
+    with pytest.raises(Unrestorable) as raised:
+        session.state_at(Fraction(3, 7))
+    assert raised.value.reason == "restore.unadmitted_callback"
+    assert session.scene.other.get_x() == before
+
+
 def test_a_restore_never_runs_a_callback_admission_did_not_prove(session_of):
     """The hook attaches its counter at the first frame: a restore refuses,
     and the counter never runs.

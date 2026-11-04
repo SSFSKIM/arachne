@@ -59,7 +59,8 @@ class State:
     ``as_of`` is the instant whose state it is: the instant of the capture a
     recorded answer reads (before ``t`` for a frozen frame, for a ticked play
     between the ticks its record kept, and for a ticked play before its
-    first frame, whose answer is the earlier play's last capture), and ``t``
+    first frame, whose answer is the previous kept capture, an earlier
+    play's), and ``t``
     for an evaluated one.
     """
 

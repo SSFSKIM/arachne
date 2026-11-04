@@ -16,9 +16,10 @@ route a play takes is decided when it begins (:mod:`.admission`).
   the instant and evaluated there (answer ``"restored"``, :mod:`.restore`).
 - ``"ticked"`` (route 3): the play steps on the global 60 Hz tick, its events
   taken at the first tick at or after their instants, and an instant reads
-  the last capture the record kept at or before it: the frame a render
-  shows there (answer ``"recorded"``, the state naming the instant it
-  reflects). Sound by construction: a sample is the forward run's own
+  the last capture the record kept at or before it: from the play's first
+  frame on, the frame a render shows there; before it, the previous kept
+  capture of an earlier play (answer ``"recorded"``, the state naming the
+  instant it reflects). Sound by construction: a sample is the forward run's own
   state. A tick that no frame of the record's grid reads, no event falls on
   and that does not end the play only steps: its dt-free callbacks run at
   the frames, as CE runs them, unless stepping work may read them
@@ -393,8 +394,10 @@ def _resolve(record: Record, t: Fraction) -> _Resolved:
     if play.route == "ticked":
         # A ticked play's record keeps only the ticks a frame of its grid
         # reads (not its events, nor its last tick unless a frame reads
-        # them): the last kept at or before t is the frame a render shows
-        # there, the previous play's before the play's first frame.
+        # them): from its first frame on, the last kept at or before t is
+        # the frame a render shows there. Before it, the answer is the
+        # previous kept capture, an earlier play's, which may be one no
+        # frame shows (a trusted play too short for any frame).
         kept, capture = _last_kept(record, play, t)
         return _Resolved(kept, capture, None, "recorded", capture.instant)
     if play.route == "state":
