@@ -2,7 +2,7 @@
 (:mod:`arachne.timeline.reference`): every scene the stepping, soundness and
 plan-read fixtures hold, run stepping, keeps the captures a brute-force run
 keeps, and the brute-force run never touches the plan; nor does a stepping
-run touch the analysis kept for diagnostics.
+run touch the brute-force run's judges of dt.
 """
 
 from __future__ import annotations
@@ -131,20 +131,12 @@ def test_brute_force_never_enters_the_plan(session_of, monkeypatch, path, name):
 
 
 @pytest.mark.parametrize(("path", "name"), CASES, ids=IDS)
-def test_stepping_never_enters_the_analysis(session_of, monkeypatch, path, name):
-    """What the analysis computes for diagnostics raises: a stepping run of
-    every scene meets none of it.
+def test_stepping_never_enters_the_brute_force_judges(
+    session_of, monkeypatch, path, name
+):
+    """The brute-force run's judges of dt raise: a stepping run of every
+    scene meets none of them.
     """
-    _forbid(
-        monkeypatch,
-        ticking,
-        "_stepping_families",
-        "reach",
-        "_animation_node",
-        "_updater_node",
-    )
-    _forbid(monkeypatch, ticking._Writes, "__init__", "effect", "plan_reads_hold")
-    _forbid(monkeypatch, ticking.TickPlan, "stepping_families")
     _forbid(
         monkeypatch,
         reference,

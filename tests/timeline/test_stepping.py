@@ -46,6 +46,16 @@ def _same_as_every_tick(session_of, name: str, frames, fps: int) -> None:
         assert np.array_equal(frame, pixels), (name, fps, k)
 
 
+def _updaters(scene):
+    """Every updater of the scene's mobjects and their families, once each."""
+    seen = {}
+    for root in scene.mobjects:
+        for member in root.get_family():
+            for updater in member.updaters:
+                seen[(id(member), id(updater))] = updater
+    return list(seen.values())
+
+
 # What a stepping tick runs
 
 
@@ -54,11 +64,11 @@ def test_dt_free_work_that_keeps_no_history_steps_and_changes_no_frame(session_o
     scene, frames = render(stepping_scenes.Unchanged, fps)
     play = _play(scene)
     assert play.route == "ticked"
-    plan = play.tick_plan
+    judged = [loads_dt(u) for u in _updaters(scene)]
     # The follower and the redraw wait for the frames; the clock and the
     # spinner integrate.
-    assert len(plan.skipped) == 2
-    assert plan.stepping == 2
+    assert judged.count(False) == 2
+    assert judged.count(True) == 2
     assert play.full_ticks == fps
     assert play.stepping_ticks == 60 - fps
     _same_as_every_tick(session_of, "Unchanged", frames, fps)
@@ -179,7 +189,7 @@ def test_a_fade_beside_a_dt_updater_that_reads_it_not_stays_stepping():
     scene, _ = render(stepping_scenes.FadeBeside, 4)
     play = _play(scene)
     assert not any(r.startswith(UNGOVERNED) for r in play.admission.reasons)
-    assert play.tick_plan.skipped
+    assert not all(loads_dt(u) for u in _updaters(scene))
     assert play.stepping_ticks == 60 - 4
 
 
@@ -324,7 +334,7 @@ def test_a_run_that_ticks_everything_plans_where_stepping_would(session_of, name
     for (_, ours), (_, theirs) in zip(stepped.tick_plans, full.tick_plans, strict=True):
         assert ours.applied
         assert not theirs.applied
-        assert len(theirs.skipped) == len(ours.skipped)
+        assert len(theirs.structure) == len(ours.structure)
         assert theirs.unbounded == ours.unbounded
     assert full.stepping_ticks == 0
     assert not any(r.startswith("tick.") for r in full.admission.reasons)
@@ -435,17 +445,6 @@ def test_a_hook_that_only_observes_leaves_every_frame_as_it_was(session_of):
         assert np.array_equal(
             np.asarray(observed.frame(at)), np.asarray(plain.frame(at))
         ), at
-
-
-# Diagnostic only: what the stepping set reaches, worked out when asked
-
-
-def test_the_stepping_families_hold_what_stepping_reads_and_writes(session_of):
-    session = session_of("MethodRead", STEPPING_SCENES, frame_rate=4)
-    _, other, output, idle = session.scene.mobjects
-    families = session.record.plays[-1].tick_plan.stepping_families()
-    assert {id(other), id(output)} <= families
-    assert id(idle) not in families
 
 
 # Known limits (tech-debt-tracker.md): each pins what the stepping tick does
