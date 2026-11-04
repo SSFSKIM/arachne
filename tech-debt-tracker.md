@@ -220,3 +220,15 @@ lifted.
   which CE would need as well.
 - **A hook with effects outside the scene (a print, a file) runs once per
   execution**, so twice for a scene executed again.
+
+## The core's depth keys (`core/src/points.rs`, `core/src/project.rs`)
+
+- **A point within about 1e-6 of an off-grid eye can key behind it.** A
+  projected point takes the key of the camera-facing plane through it
+  (`FacingPlanes::at`, called from `core/src/points.rs` where a projected
+  point's depth is chosen). The plane's offset is rounded to the shared grid,
+  so for a point that close to an eye off that grid the rounded plane can
+  cross the eye, and the point keys as if behind the camera. No known scene puts
+  a point there, and no test reproduces it yet. Direction: when
+  the rounded plane crosses the eye, fall back to the point's own key, as
+  `at` already does when no shared plane applies.
