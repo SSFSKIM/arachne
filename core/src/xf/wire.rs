@@ -183,14 +183,14 @@ fn encode_view(v: &View) -> Vec<u8> {
 
 fn encode_shape(s: &Shape) -> Vec<u8> {
     encoded(|w| {
-        match &s.data {
+        match s.data() {
             ShapeData::Path { .. } => w.u8(ShapeKind::Path as u8),
             ShapeData::Mesh { .. } => w.u8(ShapeKind::Mesh as u8),
             ShapeData::Image { .. } => w.u8(ShapeKind::Image as u8),
             ShapeData::Reserved { code, .. } => w.u8(*code),
         }
-        w.key(&s.key);
-        match &s.data {
+        w.key(&s.key());
+        match s.data() {
             ShapeData::Path { points } => {
                 w.count(points.len());
                 points.iter().for_each(|p| w.f64s(p));
@@ -225,9 +225,9 @@ fn encode_shape(s: &Shape) -> Vec<u8> {
 
 fn encode_stops(s: &Stops) -> Vec<u8> {
     encoded(|w| {
-        w.key(&s.key);
-        w.count(s.rows.len());
-        s.rows.iter().for_each(|r| w.f64s(r));
+        w.key(&s.key());
+        w.count(s.rows().len());
+        s.rows().iter().for_each(|r| w.f64s(r));
     })
 }
 
@@ -645,7 +645,7 @@ fn decode_shape(r: &mut R) -> Result<Shape> {
             return Err(XfError::KeyMismatch { stated, computed });
         }
     }
-    Ok(Shape { key: stated, data })
+    Ok(Shape::read(stated, data))
 }
 
 fn decode_stops(r: &mut R) -> Result<Stops> {
@@ -656,7 +656,7 @@ fn decode_stops(r: &mut R) -> Result<Stops> {
     if computed != stated {
         return Err(XfError::KeyMismatch { stated, computed });
     }
-    Ok(Stops { key: stated, rows })
+    Ok(Stops::read(stated, rows))
 }
 
 fn decode_record(r: &mut R) -> Result<Record> {

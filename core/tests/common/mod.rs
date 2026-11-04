@@ -47,6 +47,16 @@ fn place(dx: f64, dy: f64, dz: f64) -> Affine {
     ]
 }
 
+/// Encoded XF with the first occurrence of key `from` replaced by `to`: a stated key that is not
+/// its content's, which only the binary form can carry.
+pub fn restate_key(bytes: &mut [u8], from: Key, to: Key) {
+    let at = bytes
+        .windows(16)
+        .position(|w| w == from.0)
+        .expect("the key is in the bytes");
+    bytes[at..at + 16].copy_from_slice(&to.0);
+}
+
 /// A square in CE's cubic layout.
 pub fn square_points(half: f64) -> Vec<[f64; 3]> {
     let c = [
@@ -122,10 +132,10 @@ pub fn sample_deltas() -> Vec<Delta> {
     let mut path = Record::new(RecordKind::Path, 1, 101);
     path.features = 0;
     path.geometry = Geometry {
-        shape_a: Some(square.key),
+        shape_a: Some(square.key()),
         place_a: place(0.5, 0.0, 0.0),
         blend: Some(Blend {
-            shape_b: wide.key,
+            shape_b: wide.key(),
             place_b: place(-0.5, 0.25, 0.0),
             t: 0.375,
         }),
@@ -134,7 +144,7 @@ pub fn sample_deltas() -> Vec<Delta> {
     path.paint = PaintBlock {
         fill: Paint::One([0.98, 0.5, 0.25, 0.5]),
         stroke: Paint::Two([[1.0, 1.0, 1.0, 1.0], [0.0, 0.0, 0.0, 1.0]]),
-        background_stroke: Paint::Table(gradient.key),
+        background_stroke: Paint::Table(gradient.key()),
         stroke_width: 4.0,
         background_stroke_width: 1.5,
         gradient: Some([[-1.0, -1.0, 0.0], [1.0, 1.0, 0.0]]),
@@ -143,7 +153,7 @@ pub fn sample_deltas() -> Vec<Delta> {
         paint_b: Some(PaintB {
             fill: Paint::One([0.0, 0.0, 1.0, 1.0]),
             stroke: Paint::None,
-            background_stroke: Paint::Table(gradient.key),
+            background_stroke: Paint::Table(gradient.key()),
             stroke_width: 2.0,
             background_stroke_width: 1.0,
         }),
@@ -161,35 +171,35 @@ pub fn sample_deltas() -> Vec<Delta> {
         shade_in_3d: true,
         fixed_orientation_centre: Some([1.0, 2.0, 3.0]),
     };
-    path.clip = Some((wide.key, place(0.0, 0.0, 0.0)));
+    path.clip = Some((wide.key(), place(0.0, 0.0, 0.0)));
     path.opacity = 0.5;
     path.layer = 3;
 
     let mut faces = Record::new(RecordKind::FaceGroup, 2, 102);
-    faces.geometry.shape_a = Some(wide.key);
+    faces.geometry.shape_a = Some(wide.key());
     faces.paint.stroke_width = 0.5;
     faces.paint.joint = Joint::Bevel;
     faces.paint.cap = Cap::Round;
     faces.body = Body::FaceGroup(FaceGroup {
         uv: vec![[0, 0], [1, 0]],
         grid: [2, 1],
-        fill: per_face.key,
-        stroke: Some(face_strokes.key),
+        fill: per_face.key(),
+        stroke: Some(face_strokes.key()),
     });
 
     let cloud_shape = Shape::new(ShapeData::Path {
         points: vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
     });
     let mut cloud = Record::new(RecordKind::Points, 3, 103);
-    cloud.geometry.shape_a = Some(cloud_shape.key);
+    cloud.geometry.shape_a = Some(cloud_shape.key());
     cloud.geometry.reveal = Some((0.25, 0.75));
     cloud.body = Body::Points(Points {
-        colors: per_point.key,
+        colors: per_point.key(),
         radius: 2.0,
     });
 
     let mut image = Record::new(RecordKind::Image, 4, 104);
-    image.geometry.shape_a = Some(picture.key);
+    image.geometry.shape_a = Some(picture.key());
     image.depth.space = Space::Overlay;
     image.body = Body::Image(ImageSource::Picture {
         corners: [[-1.0, 1.0, 0.0], [1.0, 1.0, 0.0], [-1.0, -1.0, 0.0]],
@@ -208,7 +218,7 @@ pub fn sample_deltas() -> Vec<Delta> {
     });
 
     let mut batch = Record::new(RecordKind::Instances, 6, 106);
-    batch.geometry.shape_a = Some(square.key);
+    batch.geometry.shape_a = Some(square.key());
     batch.paint.stroke_width = 1.0;
     batch.paint.joint = Joint::Miter;
     batch.paint.cap = Cap::Butt;
@@ -218,15 +228,15 @@ pub fn sample_deltas() -> Vec<Delta> {
             place(1.0, 0.0, 0.0),
             place(2.0, 0.0, 0.0),
         ],
-        fill: per_point.key,
-        stroke: instance_strokes.key,
+        fill: per_point.key(),
+        stroke: instance_strokes.key(),
         objects: vec![201, 202, 203],
     });
 
     let mut mesh = Record::new(RecordKind::Mesh, 7, 107);
-    mesh.geometry.shape_a = Some(tri.key);
+    mesh.geometry.shape_a = Some(tri.key());
     mesh.geometry.blend = Some(Blend {
-        shape_b: bare.key,
+        shape_b: bare.key(),
         place_b: place(0.0, 0.0, 1.0),
         t: 0.5,
     });
@@ -235,12 +245,12 @@ pub fn sample_deltas() -> Vec<Delta> {
 
     let mut vol = Record::new(RecordKind::Volume, 8, 108);
     vol.features = 0x0102_0304_0506_0708;
-    vol.geometry.shape_a = Some(volume.key);
+    vol.geometry.shape_a = Some(volume.key());
     vol.body = Body::Opaque(vec![9, 8, 7]);
 
     // The other two reserved kinds, outside the order.
     let mut fld = Record::new(RecordKind::Field, 9, 109);
-    fld.geometry.shape_a = Some(field.key);
+    fld.geometry.shape_a = Some(field.key());
     fld.body = Body::Opaque(vec![6, 5]);
     let mut emission = Record::new(RecordKind::Emission, 10, 110);
     emission.body = Body::Opaque(vec![4]);
@@ -302,12 +312,12 @@ pub fn sample_deltas() -> Vec<Delta> {
         1,
     );
     second.view = Some(View {
-        background: Background::Image(first.upload[4].key),
+        background: Background::Image(first.upload[4].key()),
         camera: Camera::Moving,
         ..flat_view(64, 36, [0.0; 4])
     });
     second.remove = vec![8, 7];
-    second.release = vec![first.upload[5].key, first.upload[2].key];
+    second.release = vec![first.upload[5].key(), first.upload[2].key()];
     second.order = Some(Vec::new());
 
     let mut third = Delta::new(Time { num: 1, den: 3 }, 2);
@@ -316,7 +326,7 @@ pub fn sample_deltas() -> Vec<Delta> {
     bare_faces.body = Body::FaceGroup(FaceGroup {
         uv: vec![[1, 0], [0, 0]],
         grid: [2, 1],
-        fill: per_face.key,
+        fill: per_face.key(),
         stroke: None,
     });
     third.set = vec![bare_faces];

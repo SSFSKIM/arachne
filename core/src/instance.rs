@@ -25,7 +25,7 @@ pub fn points<'a>(
     PointsDraw {
         record,
         positions,
-        colours: &colours.rows,
+        colours: colours.rows(),
         order,
     }
 }
@@ -69,8 +69,8 @@ pub fn path_members<'a>(
             record,
             points,
             place: compose(placement, &record.geometry.place_a),
-            fill: one(&p.fill).map(|_| fill.rows[i]),
-            stroke: one(&p.stroke).map(|_| stroke.rows[i]),
+            fill: one(&p.fill).map(|_| fill.rows()[i]),
+            stroke: one(&p.stroke).map(|_| stroke.rows()[i]),
             background_stroke: one(&p.background_stroke),
             order,
             sub: 3 * i as u32,
@@ -101,7 +101,7 @@ pub fn mesh_members<'a>(
             triangles,
             normals,
             place: compose(placement, &record.geometry.place_a),
-            fill: fill.rows[i],
+            fill: fill.rows()[i],
             order,
             sub: per * i as u32,
         });

@@ -607,7 +607,7 @@ fn a_mesh_carrying_what_this_build_does_not_draw_is_refused_whole() {
     let line = Shape::new(ShapeData::Path {
         points: common::square_points(1.0),
     });
-    let (other_key, line_key) = (other.key, line.key);
+    let (other_key, line_key) = (other.key(), line.key());
     type Change = Box<dyn Fn(&mut Record)>;
     let cases: Vec<(&str, Change)> = vec![
         (
