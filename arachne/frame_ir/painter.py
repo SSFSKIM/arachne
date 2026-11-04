@@ -36,42 +36,35 @@ DRAW_PATHS = {"cairo": False, "ir_cairo": True}
 class IrCairoPainter:
     """Frames through XF, drawn by Cairo from the stream alone.
 
-    With ``validate`` (the default) every delta goes through XF's bytes: the
-    core parses them, applies them to its ``Stream`` (never drawing there),
-    so a delta the core would refuse is an error here, and Cairo draws from
-    the records the core read back. Without it (no core installed) Cairo
-    draws from the extractor's own records.
-    ``keep`` keeps every delta sent (``deltas``), for tests; by default the
-    class's ``keep_all``.
+    Every delta goes through XF's bytes: the core parses them and applies
+    them to its ``Stream`` (never drawing there), so a delta the core would
+    refuse is an error here, and Cairo draws from the records the core read
+    back. ``keep`` keeps every delta sent (``deltas``), for tests; by default
+    the class's ``keep_all``.
     """
 
     keep_all = False
-    validate_default = True
+    #: Frames drawn from XF by every painter in this process.
+    drawn_total = 0
 
     def __init__(
-        self,
-        *,
-        validate: bool | None = None,
-        keep: bool | None = None,
-        stream: FrameStream | None = None,
+        self, *, keep: bool | None = None, stream: FrameStream | None = None
     ) -> None:
-        if validate is None:
-            validate = self.validate_default
+        try:
+            import arachne_core
+        except ImportError as error:  # pragma: no cover - environment
+            raise ImportError(
+                "draw_path ir_cairo needs arachne_core: install the 'core' extra"
+            ) from error
+        self.core: Any = arachne_core.Stream()
         self.stream = FrameStream() if stream is None else stream
         self.state = StreamState()
         self.drawer = CairoDrawer()
-        self.core: Any = None
-        if validate:
-            try:
-                import arachne_core
-            except ImportError as error:  # pragma: no cover - environment
-                raise ImportError(
-                    "draw_path ir_cairo needs arachne_core: install the 'core' extra"
-                ) from error
-            self.core = arachne_core.Stream()
         self.keep = self.keep_all if keep is None else keep
         self.deltas: list[Delta] = []
         self.last: Delta | None = None
+        #: Frames this painter drew.
+        self.frames = 0
 
     def paint(
         self,
@@ -88,17 +81,16 @@ class IrCairoPainter:
 
     def draw(self, delta: Delta) -> np.ndarray:
         """The frame ``delta`` brings the stream to, drawn from XF alone."""
-        drawn = delta
-        if self.core is not None:
-            # Through the wire: the bytes, parsed back by the core, are what
-            # the core applies and what Cairo draws from.
-            import arachne_core
+        import arachne_core
 
-            read = arachne_core.FrameDelta.from_bytes(delta.to_core().to_bytes())
-            self.core.apply(read)
-            drawn = Delta.from_contents(read.contents())
-        self.state.apply(drawn)
+        # Through the wire: the bytes, parsed back by the core, are what the
+        # core applies and what Cairo draws from.
+        read = arachne_core.FrameDelta.from_bytes(delta.to_core().to_bytes())
+        self.core.apply(read)
+        self.state.apply(Delta.from_contents(read.contents()))
         self.last = delta
+        self.frames += 1
+        IrCairoPainter.drawn_total += 1
         if self.keep:
             self.deltas.append(delta)
         return self.drawer.draw(self.state).copy()

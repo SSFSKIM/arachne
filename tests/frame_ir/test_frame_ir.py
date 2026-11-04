@@ -43,7 +43,8 @@ def frames_both_ways(scene_class: type) -> tuple[list, list, object]:
 
 @pytest.mark.parametrize("scene_class", scenes.SCENES, ids=lambda c: c.__name__)
 def test_drawn_from_xf_alone_is_byte_identical(scene_class):
-    direct, described, _ = frames_both_ways(scene_class)
+    direct, described, scene = frames_both_ways(scene_class)
+    assert _painter(scene).frames > 0, "drawn from the record through XF"
     assert len(direct) == len(described) > 0
     for index, (a, b) in enumerate(zip(direct, described, strict=True)):
         np.testing.assert_array_equal(a, b, err_msg=f"frame {index}")
@@ -53,7 +54,8 @@ def test_a_display_left_by_its_camera_shows_what_the_described_frames_left():
     """The record draws the display's frames from XF; once its camera leaves,
     the frames drawn as the scene runs show the picture those left in it.
     """
-    direct, described, _ = frames_both_ways(camera_scenes.DisplayLeaves)
+    direct, described, scene = frames_both_ways(camera_scenes.DisplayLeaves)
+    assert _painter(scene).frames > 0
     assert len(direct) == len(described) > 0
     for index, (a, b) in enumerate(zip(direct, described, strict=True)):
         np.testing.assert_array_equal(a, b, err_msg=f"frame {index}")
