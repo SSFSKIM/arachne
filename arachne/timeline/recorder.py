@@ -10,7 +10,7 @@ capture the record keeps.
 
 from __future__ import annotations
 
-__all__ = ["PlayRun", "Recorder"]
+__all__ = ["Bridge", "BridgeCall", "PlayRun", "Reading", "Recorder", "running"]
 
 import inspect
 import math
@@ -18,8 +18,9 @@ import os
 import random
 import sys
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from fractions import Fraction
+from types import FrameType
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
@@ -47,7 +48,14 @@ from .record import Identity, Marker, PlayRecord, Record
 from .reference import BRUTE_FORCE
 from .restore import RestorePoint, restore_point
 from .routes import ROUTE_CLASSES, Route, snapshot_animations
-from .source import SourceLine, names_from_frames, scene_frames, scene_location
+from .source import (
+    SourceLine,
+    names_from_frames,
+    relative_path,
+    scene_file_line,
+    scene_frames,
+    scene_location,
+)
 from .ticking import (
     TickPlan,
     current_structure,
@@ -57,6 +65,124 @@ from .ticking import (
 if TYPE_CHECKING:
     from arachne.mobject.mobject import Mobject
     from arachne.scene.scene import Scene
+
+
+#: The recorders whose scene's script is running, the innermost last.
+_RUNNING: list[Recorder] = []
+
+
+def running() -> Recorder | None:
+    """The recorder of the scene whose script is running now, if any."""
+    return _RUNNING[-1] if _RUNNING else None
+
+
+@dataclass(frozen=True)
+class Reading:
+    """One evaluation of a bridge call: its instant, the scene file's line
+    running then (``None`` where none of its frames was on the stack), and
+    the values the call's code measures, ``None`` when there was nothing to
+    measure (a probe that gave no point).
+    """
+
+    t: Fraction
+    line: SourceLine | None
+    values: Mapping[str, Any] | None
+
+
+@dataclass(frozen=True, eq=False)
+class BridgeCall:
+    """One call of the assertion bridge (:mod:`arachne.lint.bridge`), as the
+    record keeps it.
+
+    ``kind`` is ``"record"`` (a check at one instant), ``"watch"`` (a check
+    at every kept capture from the call on) or ``"declare"`` (terms for the
+    lint's rules). ``t`` is the scene time of the call and ``play`` the play
+    it belongs to: the one running, or between plays the next to begin (one
+    past the last after it). ``line`` is the call site, the scene file's
+    line. ``operands`` are the points as values and the mobjects by stable
+    id (a watched function has none: its values are its readings);
+    ``reference`` the reference mobject's stable id. ``readings`` are the
+    call's evaluations in time order: one for a record, one at the call and
+    then one per kept capture for a watch.
+    """
+
+    kind: str
+    t: Fraction
+    play: int
+    line: SourceLine | None
+    code: str | None = None
+    operands: tuple[Any, ...] = ()
+    reference: str | None = None
+    margin: float = 0.0
+    terms: Mapping[str, Any] = field(default_factory=dict)
+    #: How a finding names what was checked.
+    subject: str = ""
+    readings: list[Reading] = field(default_factory=list)
+
+    def reading_at(self, t: Fraction) -> Reading | None:
+        """The last reading at or before ``t``: what was on screen then."""
+        found = None
+        for reading in self.readings:
+            if reading.t > t:
+                break
+            found = reading
+        return found
+
+
+class Bridge:
+    """The assertion bridge's calls of one recording, in call order, and
+    the watches it reads at each kept capture.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[BridgeCall] = []
+        self._readers: list[
+            tuple[BridgeCall, Callable[[], Mapping[str, Any] | None]]
+        ] = []
+
+    def add(
+        self,
+        call: BridgeCall,
+        reader: Callable[[], Mapping[str, Any] | None] | None = None,
+    ) -> BridgeCall:
+        """Keep ``call``; with ``reader``, a watch read at every kept capture
+        from now on.
+        """
+        self.calls.append(call)
+        if reader is not None:
+            self._readers.append((call, reader))
+        return call
+
+    def of(self, play: int) -> tuple[BridgeCall, ...]:
+        """The calls that belong to the play of index ``play``."""
+        return tuple(call for call in self.calls if call.play == play)
+
+    @property
+    def watches(self) -> tuple[BridgeCall, ...]:
+        """The watches, in the order they were declared."""
+        return tuple(call for call in self.calls if call.kind == "watch")
+
+    @property
+    def watching(self) -> bool:
+        """Whether a watch is read at the kept captures."""
+        return bool(self._readers)
+
+    def terms_at(self, t: Fraction | float) -> dict[str, Any]:
+        """The terms declared at or before ``t``, a later declaration of a
+        term replacing an earlier one.
+        """
+        at = exact(t)
+        terms: dict[str, Any] = {}
+        for call in self.calls:
+            if call.kind == "declare" and call.t <= at:
+                terms.update(call.terms)
+        return terms
+
+    def read(self, t: Fraction, line: SourceLine | None) -> None:
+        """Read every watch declared at or before ``t`` there."""
+        for call, reader in self._readers:
+            if call.t <= t:
+                call.readings.append(Reading(t, line, reader()))
 
 
 class PlayRun:
@@ -137,16 +263,19 @@ class PlayRun:
         capture = recorder.capture("sample", instant, play, self._extras, until)
         play.samples.append(capture)
         play._instants.append(instant)
-        if play.held:
-            return
-        # What a play is evaluated from between its kept instants: a trusted
-        # play's animations' state; a state-function play's restore point
-        # (:mod:`.restore`), its animations' state included.
-        if play.route == "trusted":
-            play._animation_states[capture.seq] = snapshot_animations(play._animations)
-        elif play.route == "state":
-            self._point = restore_point(self.scene, play, self._point)
-            play._animation_states[capture.seq] = self._point
+        if not play.held:
+            # What a play is evaluated from between its kept instants: a
+            # trusted play's animations' state; a state-function play's
+            # restore point (:mod:`.restore`), its animations' state included.
+            if play.route == "trusted":
+                play._animation_states[capture.seq] = snapshot_animations(
+                    play._animations
+                )
+            elif play.route == "state":
+                self._point = restore_point(self.scene, play, self._point)
+                play._animation_states[capture.seq] = self._point
+        # Last, so what the scene's watches read changes nothing kept.
+        recorder.read_watches(instant)
 
     def progress(self, instants: list[Fraction]) -> Any:
         """A progress bar over ``instants``."""
@@ -376,6 +505,7 @@ class Recorder:
             self.record.execution = self.execution
             if self.exits == "all":
                 self.record.exits = {}
+            self.record.bridge = Bridge()
             self._camera_refusal = camera_refusal(scene.renderer.camera)
             self.record.refusal = self._camera_refusal
         return self.record
@@ -484,6 +614,7 @@ class Recorder:
         watch the files it reads.
         """
         record = self.ensure_record()
+        _RUNNING.append(self)
         if not ORIGINS.active:
             base = os.path.dirname(record.scene_file) if record.scene_file else None
             ORIGINS.start(os.path.realpath(base) if base else None, record.scene_file)
@@ -531,6 +662,7 @@ class Recorder:
             extras = CameraExtras.observe(camera, None)
             now = self.scene.time
             record.final = record._capture("final", now, camera_nodes(camera), extras)
+            self.read_watches(now)
             record.duration = max(record.duration, now)
             if record.plays:
                 record.final_names = record.plays[-1].names
@@ -568,6 +700,8 @@ class Recorder:
         """The script stopped on an error: stop tagging and watching, and
         leave the record as it stands, without a final capture.
         """
+        if self in _RUNNING:
+            _RUNNING.remove(self)
         if self._inputs is not None:
             self._inputs.stop()
         if self._tagging:
@@ -881,6 +1015,49 @@ class Recorder:
     def location(self) -> SourceLine | None:
         """The line of the scene's code that called into the engine now."""
         return scene_location(sys._getframe(1), _base_dir(self.ensure_record()))
+
+    # The assertion bridge
+
+    def bridge_call(
+        self,
+        kind: str,
+        caller: FrameType,
+        *,
+        reader: Callable[[], Mapping[str, Any] | None] | None = None,
+        **fields: Any,
+    ) -> BridgeCall:
+        """Keep a call of the assertion bridge made now, from the frame
+        ``caller``: its time, its play and its call site with ``fields``;
+        with ``reader``, a watch read at every kept capture from now on.
+        """
+        record = self.ensure_record()
+        call = BridgeCall(
+            kind,
+            self.scene.time,
+            self._play_reading(),
+            self.scene_line(caller),
+            **fields,
+        )
+        return record.bridge.add(call, reader)
+
+    def scene_line(self, frame: FrameType | None) -> SourceLine | None:
+        """The line of the innermost frame from ``frame`` outwards that is
+        the scene file's own (the line the X5 report gives a finding), else
+        the innermost of the scene's code.
+        """
+        record = self.ensure_record()
+        base = _base_dir(record)
+        if record.scene_file is not None:
+            line = scene_file_line(frame, record.scene_file)
+            if line is not None:
+                return SourceLine(relative_path(record.scene_file, base), line)
+        return scene_location(frame, base)
+
+    def read_watches(self, instant: Fraction) -> None:
+        """Read the scene's watches at ``instant``, a kept capture."""
+        record = self.ensure_record()
+        if record.bridge.watching:
+            record.bridge.read(instant, self.scene_line(sys._getframe(1)))
 
     # Markers
 

@@ -49,6 +49,7 @@ if TYPE_CHECKING:
     from .admission import Admission
     from .bodies import Exit
     from .draw import CameraExtras
+    from .recorder import Bridge
     from .state import State
     from .ticking import TickPlan
 
@@ -510,6 +511,9 @@ class Record:
     #: The first play to end once the scene armed the motion rule
     #: (:meth:`.Recorder.arm_motion`), by index; ``None`` if it never did.
     armed_at: int | None = None
+    #: The assertion bridge's calls, per play (:class:`.recorder.Bridge`),
+    #: given by the recorder that makes the record.
+    bridge: Bridge
 
     def __init__(
         self,
