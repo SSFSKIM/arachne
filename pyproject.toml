@@ -60,6 +60,11 @@ jupyterlab = [
 typst = [
     "typst>=0.14",
 ]
+# The CPU core (core/): needed only by the draw paths that describe frames in
+# XF (ir_cairo); the default path never imports it.
+core = [
+    "arachne-core",
+]
 
 [dependency-groups]
 dev = [
@@ -90,6 +95,9 @@ build-backend = "uv_build"
 
 [tool.uv]
 required-version = ">=0.10.0"
+
+[tool.uv.sources]
+arachne-core = { path = "core" }
 
 [tool.uv.build-backend]
 module-root = ""

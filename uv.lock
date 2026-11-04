@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.14'",
@@ -51,6 +51,16 @@ wheels = [
 ]
 
 [[package]]
+name = "arachne-core"
+source = { directory = "core" }
+dependencies = [
+    { name = "numpy" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "numpy", specifier = ">=2.1" }]
+
+[[package]]
 name = "arachne-engine"
 version = "0.1.0.dev0"
 source = { editable = "." }
@@ -80,6 +90,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+core = [
+    { name = "arachne-core" },
+]
 jupyterlab = [
     { name = "jupyterlab" },
     { name = "notebook" },
@@ -113,6 +126,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "arachne-core", marker = "extra == 'core'", directory = "core" },
     { name = "audioop-lts", marker = "python_full_version >= '3.13'", specifier = ">=0.2.1" },
     { name = "av", specifier = ">=15.0" },
     { name = "beautifulsoup4", specifier = ">=4.12" },
@@ -140,7 +154,7 @@ requires-dist = [
     { name = "typing-extensions", specifier = ">=4.12.0" },
     { name = "typst", marker = "extra == 'typst'", specifier = ">=0.14" },
 ]
-provides-extras = ["jupyterlab", "typst"]
+provides-extras = ["jupyterlab", "typst", "core"]
 
 [package.metadata.requires-dev]
 dev = [
