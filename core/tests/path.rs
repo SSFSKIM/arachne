@@ -59,14 +59,14 @@ fn path(points: Vec<[f64; 3]>) -> Shape {
 
 fn fill(slot: u32, shape: &Shape, rgba: [f64; 4]) -> Record {
     let mut r = Record::new(RecordKind::Path, slot, 100 + slot);
-    r.geometry.shape_a = Some(shape.key);
+    r.geometry.shape_a = Some(shape.key());
     r.paint.fill = Paint::One(rgba);
     r
 }
 
 fn stroke(slot: u32, shape: &Shape, rgba: [f64; 4], width: f64) -> Record {
     let mut r = Record::new(RecordKind::Path, slot, 100 + slot);
-    r.geometry.shape_a = Some(shape.key);
+    r.geometry.shape_a = Some(shape.key());
     r.paint.stroke = Paint::One(rgba);
     r.paint.stroke_width = width;
     r
@@ -448,7 +448,7 @@ fn a_path_on_a_meshs_plane_ties_with_it_by_draw_order() {
     let mut frames = Vec::new();
     for shape in &meshes {
         let mut mesh_record = Record::new(RecordKind::Mesh, 1, 101);
-        mesh_record.geometry.shape_a = Some(shape.key);
+        mesh_record.geometry.shape_a = Some(shape.key());
         mesh_record.paint.fill = Paint::One(green);
         mesh_record.depth.space = Space::World;
         for path_on_top in [true, false] {
@@ -483,9 +483,9 @@ fn a_path_on_a_meshs_plane_ties_with_it_by_draw_order() {
 
 fn points_record(slot: u32, shape: &Shape, colours: &Stops, radius: f64) -> Record {
     let mut r = Record::new(RecordKind::Points, slot, 100 + slot);
-    r.geometry.shape_a = Some(shape.key);
+    r.geometry.shape_a = Some(shape.key());
     r.body = Body::Points(Points {
-        colors: colours.key,
+        colors: colours.key(),
         radius,
     });
     r
@@ -656,7 +656,7 @@ fn a_point_is_drawn_at_its_depth() {
         normals: None,
     });
     let mut floor = Record::new(RecordKind::Mesh, 1, 101);
-    floor.geometry.shape_a = Some(sheet.key);
+    floor.geometry.shape_a = Some(sheet.key());
     floor.paint.fill = Paint::One([0.1, 0.2, 0.7, 1.0]);
     floor.depth.space = Space::World;
     let colours = Stops::new(vec![[1.0, 1.0, 0.0, 1.0]]);
@@ -743,7 +743,7 @@ fn an_instances_record_draws_what_its_members_draw_as_records() {
         (looking_down(), &square),
         (looking_down(), &quad),
     ] {
-        let is_path = matches!(prototype.data, ShapeData::Path { .. });
+        let is_path = matches!(prototype.data(), ShapeData::Path { .. });
         let mut member = Record::new(
             if is_path {
                 RecordKind::Path
@@ -753,7 +753,7 @@ fn an_instances_record_draws_what_its_members_draw_as_records() {
             1,
             101,
         );
-        member.geometry.shape_a = Some(prototype.key);
+        member.geometry.shape_a = Some(prototype.key());
         member.geometry.place_a = squash;
         member.paint.fill = Paint::One(WHITE);
         if is_path {
@@ -768,8 +768,8 @@ fn an_instances_record_draws_what_its_members_draw_as_records() {
         batch.kind = RecordKind::Instances;
         batch.body = Body::Instances(Instances {
             placements: placements.clone(),
-            fill: fills.key,
-            stroke: strokes.key,
+            fill: fills.key(),
+            stroke: strokes.key(),
             objects: vec![201, 202, 203],
         });
         let batched = stream(
@@ -786,15 +786,15 @@ fn an_instances_record_draws_what_its_members_draw_as_records() {
                 r.slot = 1 + i as u32;
                 r.object = 201 + i as u32;
                 r.geometry.place_a = compose(&placements[i], &squash);
-                r.paint.fill = Paint::One(fills.rows[i]);
+                r.paint.fill = Paint::One(fills.rows()[i]);
                 if is_path {
-                    r.paint.stroke = Paint::One(strokes.rows[i]);
+                    r.paint.stroke = Paint::One(strokes.rows()[i]);
                 }
                 (prototype.clone(), r)
             })
             .collect();
         let one_by_one = draw(view.clone(), &members);
-        assert!(batched == one_by_one, "{:?} prototype", prototype.data);
+        assert!(batched == one_by_one, "{:?} prototype", prototype.data());
         let background = px(&one_by_one, 0, 0);
         let drawn = one_by_one.chunks(4).filter(|p| *p != background).count();
         assert!(drawn > 150, "{drawn} pixels drawn");
@@ -838,7 +838,7 @@ fn what_paths_and_points_do_not_draw_yet_is_refused_whole() {
             r.paint.stroke = Paint::Two([WHITE, [0.0, 0.0, 0.0, 1.0]])
         }),
         ("gradient", |r, _| {
-            r.paint.fill = Paint::Table(Stops::new(vec![WHITE; 12]).key)
+            r.paint.fill = Paint::Table(Stops::new(vec![WHITE; 12]).key())
         }),
         ("dash", |r, _| {
             r.dash = Some(Dash {
@@ -871,7 +871,7 @@ fn what_paths_and_points_do_not_draw_yet_is_refused_whole() {
     ];
     for (what, change) in cases {
         let mut r = base.clone();
-        change(&mut r, other.key);
+        change(&mut r, other.key());
         let mut d = arachne_core::probes::first_delta(
             view.clone(),
             &[(shape.clone(), r), (other.clone(), fill(2, &other, WHITE))],

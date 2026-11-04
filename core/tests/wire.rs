@@ -183,12 +183,15 @@ fn a_newer_minor_is_read() {
 #[test]
 fn a_key_that_does_not_match_its_shape_is_refused() {
     let mut delta = Delta::new(Time { num: 0, den: 1 }, 0);
-    let mut shape = Shape::new(ShapeData::Path {
+    let shape = Shape::new(ShapeData::Path {
         points: common::square_points(1.0),
     });
-    shape.key.0[0] ^= 1;
-    delta.upload = vec![shape];
-    let err = wire::decode_delta(&wire::encode_delta(&delta)).unwrap_err();
+    let mut other = shape.key();
+    other.0[0] ^= 1;
+    delta.upload = vec![shape.clone()];
+    let mut bytes = wire::encode_delta(&delta);
+    common::restate_key(&mut bytes, shape.key(), other);
+    let err = wire::decode_delta(&bytes).unwrap_err();
     assert!(matches!(err, XfError::KeyMismatch { .. }), "{err:?}");
 }
 

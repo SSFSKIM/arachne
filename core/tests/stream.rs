@@ -25,7 +25,7 @@ fn square() -> Shape {
 
 fn path_record(slot: u32, shape: &Shape) -> Record {
     let mut r = Record::new(RecordKind::Path, slot, 100 + slot);
-    r.geometry.shape_a = Some(shape.key);
+    r.geometry.shape_a = Some(shape.key());
     r.paint.fill = Paint::One([1.0, 0.0, 0.0, 1.0]);
     r
 }
@@ -66,7 +66,7 @@ fn a_background_image_is_cropped_as_ce_crops_it() {
     });
     let mut d = delta(0);
     d.view = Some(View {
-        background: Background::Image(picture.key),
+        background: Background::Image(picture.key()),
         ..common::flat_view(2, 1, [0.0; 4])
     });
     d.upload = vec![picture];
@@ -222,14 +222,14 @@ fn deltas_are_validated_before_anything_changes() {
     // A paint table that was never uploaded.
     let mut d = delta(1);
     let mut r = path_record(2, &shape);
-    r.paint.stroke = Paint::Table(Stops::new(vec![[0.0; 4]; 3]).key);
+    r.paint.stroke = Paint::Table(Stops::new(vec![[0.0; 4]; 3]).key());
     d.set = vec![r];
     assert!(matches!(refused(&mut s, &d), StreamError::Missing(_)));
 
     // Releasing a shape a record still uses, even with an unrelated upload beside it.
     let mut d = delta(1);
     d.upload = vec![other.clone()];
-    d.release = vec![shape.key];
+    d.release = vec![shape.key()];
     assert!(matches!(refused(&mut s, &d), StreamError::InUse(_)));
 
     // An order entry naming a slot nobody set, or a part a path does not have.
@@ -252,7 +252,7 @@ fn deltas_are_validated_before_anything_changes() {
     // A shape of the wrong kind for its record.
     let mut d = delta(1);
     let mut r = Record::new(RecordKind::Mesh, 3, 103);
-    r.geometry.shape_a = Some(shape.key);
+    r.geometry.shape_a = Some(shape.key());
     d.set = vec![r];
     assert!(matches!(refused(&mut s, &d), StreamError::Invalid(_)));
 
@@ -265,7 +265,7 @@ fn deltas_are_validated_before_anything_changes() {
     let mut d = delta(2);
     d.remove = vec![1];
     d.order = Some(Vec::new());
-    d.release = vec![shape.key];
+    d.release = vec![shape.key()];
     let stats = s.apply(&d).unwrap();
     assert_eq!(stats.changed_records, 1);
     assert!(s.record(1).is_none());

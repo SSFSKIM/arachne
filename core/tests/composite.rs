@@ -521,7 +521,7 @@ fn a_meshs_opaque_depth_is_its_plane_at_each_sub_sample() {
         positions,
         triangles,
         ..
-    } = &tri.data
+    } = &tri.data()
     else {
         unreachable!()
     };

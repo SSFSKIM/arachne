@@ -217,12 +217,12 @@ fn a_delta_lays_out_its_sections_in_order() {
     ];
     let shape = vec![
         (0, "shape kind", u8(1)),
-        (1, "shape key", key(&point.key)),
+        (1, "shape key", key(&point.key())),
         (17, "point count", u32(1)),
         (21, "points", f64s(&[1.0, 2.0, 3.0])),
     ];
     let paint_table = vec![
-        (0, "paint table key", key(&table.key)),
+        (0, "paint table key", key(&table.key())),
         (16, "row count", u32(1)),
         (20, "rows", f64s(&[0.1, 0.2, 0.3, 0.4])),
     ];
@@ -440,7 +440,7 @@ fn a_path_shape() {
         &shape,
         &[
             (0, "shape kind (path)", u8(1)),
-            (1, "key", key(&shape.key)),
+            (1, "key", key(&shape.key())),
             (17, "point count", u32(2)),
             (21, "points", f64s(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0])),
         ],
@@ -460,7 +460,7 @@ fn a_mesh_shape_with_and_without_normals() {
         &lit,
         &[
             (0, "shape kind (mesh)", u8(2)),
-            (1, "key", key(&lit.key)),
+            (1, "key", key(&lit.key())),
             (17, "vertex count", u32(3)),
             (21, "positions", position_bytes.clone()),
             (93, "triangle count", u32(1)),
@@ -482,7 +482,7 @@ fn a_mesh_shape_with_and_without_normals() {
         &bare,
         &[
             (0, "shape kind (mesh)", u8(2)),
-            (1, "key", key(&bare.key)),
+            (1, "key", key(&bare.key())),
             (17, "vertex count", u32(3)),
             (21, "positions", position_bytes),
             (93, "triangle count", u32(1)),
@@ -503,7 +503,7 @@ fn an_image_shape() {
         &shape,
         &[
             (0, "shape kind (image)", u8(3)),
-            (1, "key", key(&shape.key)),
+            (1, "key", key(&shape.key())),
             (17, "width", u32(2)),
             (21, "height", u32(1)),
             (25, "rgba", vec![255, 0, 0, 255, 0, 0, 255, 128]),
@@ -521,7 +521,7 @@ fn the_reserved_shape_kinds() {
         &volume,
         &[
             (0, "shape kind (volume)", u8(4)),
-            (1, "key", key(&volume.key)),
+            (1, "key", key(&volume.key())),
             (17, "payload", vec![1, 2, 3]),
         ],
     );
@@ -533,7 +533,7 @@ fn the_reserved_shape_kinds() {
         &field,
         &[
             (0, "shape kind (field)", u8(5)),
-            (1, "key", key(&field.key)),
+            (1, "key", key(&field.key())),
             (17, "payload", vec![4, 5, 6, 7]),
         ],
     );

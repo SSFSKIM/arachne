@@ -77,7 +77,7 @@ pub fn sphere(centre: [f64; 3], radius: f64, rings: usize, segments: usize) -> S
 /// A mesh record filled with one colour, placed in `space`.
 pub fn mesh_record(slot: u32, shape: &Shape, rgba: [f64; 4], space: Space) -> Record {
     let mut r = Record::new(RecordKind::Mesh, slot, 100 + slot);
-    r.geometry.shape_a = Some(shape.key);
+    r.geometry.shape_a = Some(shape.key());
     r.paint.fill = Paint::One(rgba);
     r.depth.space = space;
     r
@@ -88,7 +88,7 @@ pub fn stream_of(view: View, items: &[(Shape, Record)], order: &[u32]) -> Stream
     let mut d = Delta::new(Time { num: 0, den: 1 }, 0);
     d.view = Some(view);
     for (shape, record) in items {
-        if !d.upload.iter().any(|s| s.key == shape.key) {
+        if !d.upload.iter().any(|s| s.key() == shape.key()) {
             d.upload.push(shape.clone());
         }
         d.set.push(record.clone());
@@ -322,7 +322,7 @@ pub fn project_mesh(view: &View, width: u32, height: u32, shape: &Shape) -> Proj
         positions,
         triangles,
         ..
-    } = &shape.data
+    } = &shape.data()
     else {
         panic!("a mesh shape")
     };
