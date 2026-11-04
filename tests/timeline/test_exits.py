@@ -74,6 +74,7 @@ def test_what_a_play_changed_is_read_again(session_of):
 def test_a_session_keeps_exits_from_the_arming_on(session_of):
     record = session_of("ArmedLate", EXITS, probe=False).record
     assert len(record.plays) == 4
+    assert record.armed_at == 2
     assert set(record.exits) == {2, 3}
 
 
@@ -82,12 +83,14 @@ def test_a_scene_that_never_arms_reads_no_exit(session_of, monkeypatch):
     monkeypatch.setattr(recorder, "bodies", lambda *a, **k: read.append(a))
     record = session_of("Unarmed", EXITS, probe=False).record
     assert record.exits is None
+    assert record.armed_at is None
     assert read == []
 
 
 def test_a_render_keeps_no_exit_even_armed():
     scene, _ = render(ArmedLate, 6)
     assert scene.timeline.record.exits is None
+    assert scene.timeline.record.armed_at is None
 
 
 def test_a_body_no_play_changed_is_read_once(session_of):
