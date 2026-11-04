@@ -149,6 +149,8 @@ _CLASS_BOOKKEEPING = frozenset(
         "__weakref__",
         "__annotations__",
         "__annotate__",
+        "__annotate_func__",
+        "__annotations_cache__",
         "__firstlineno__",
         "__static_attributes__",
         "__classcell__",
