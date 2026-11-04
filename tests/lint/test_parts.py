@@ -189,3 +189,21 @@ def test_a_zoomed_display_and_its_frames_are_parts(session_of):
     assert border.order > display.order
     # The zoomed camera's frame, drawn over the scene.
     assert ("ScreenRectangle", "path") in kinds
+
+
+def test_copies_in_another_colour_or_opacity_are_one_text(session_of):
+    session = session_of("Recoloured", frame_rate=15)
+    (text,) = _final(session).texts
+    assert text.copies == 3
+
+
+def test_a_cloud_s_stroke_is_as_drawn_where_its_ink_is_cut_to_the_frame(session_of):
+    """A cloud's points on the frame's corners paint only the quarter of
+    each square inside it, but are drawn as wide as one in the middle.
+    """
+    inside = _final(session_of("WideCloud", frame_rate=15)).parts[0].leaves[0]
+    corners = _final(session_of("CornerCloud", frame_rate=15)).parts[0].leaves[0]
+    assert inside.stroke_width > 0
+    assert corners.stroke_width == pytest.approx(inside.stroke_width, abs=1e-9)
+    width = corners.ink_box[2] - corners.ink_box[0]
+    assert width == pytest.approx(corners.screen_box[2] - corners.screen_box[0])
