@@ -5,8 +5,8 @@ Each code has its severity (``error``, ``warning`` or ``note``), its
 checks the clearance family comes from), what it means, how to fix it, and
 the fields its findings' ``detail`` may carry. A code is never renamed,
 removed or given another meaning; new ones are appended. Thresholds are in
-scene units of the home frame, with pixel forms at a declared target
-resolution 1080 pixels tall.
+scene units of the home frame, with pixel forms stated at a picture 1080
+pixels tall (:data:`THRESHOLD_HEIGHT`).
 
 ``render.unsupported`` and ``render.fallback`` are the drawing's codes,
 here with the strings, severities and meanings the drawing gave them; the
@@ -16,7 +16,7 @@ The ``image.`` codes are reserved for the image checks.
 
 from __future__ import annotations
 
-__all__ = ["CODES", "RESERVED", "SEVERITIES", "TARGET_HEIGHT", "Code", "code"]
+__all__ = ["CODES", "RESERVED", "SEVERITIES", "THRESHOLD_HEIGHT", "Code", "code"]
 
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -28,15 +28,16 @@ SEVERITIES = ("error", "warning", "note")
 #: Code prefixes kept for checks to come.
 RESERVED = ("image.",)
 
-#: The declared target resolution's height in pixels: pixel thresholds and
-#: pixel boxes are at this size, as wide as the home frame's shape makes it.
-TARGET_HEIGHT = 1080
+#: The picture height, in pixels, the table's pixel thresholds are stated
+#: at; a rule scales them to the home frame.
+THRESHOLD_HEIGHT = 1080
 
 
 @dataclass(frozen=True)
 class Code:
     """One lint code: its string, severity, class, meaning and fix, and the
-    names of the ``detail`` fields its findings may carry.
+    names of the ``detail`` fields its findings may carry (besides
+    ``folded``, which a report adds to any finding look-alikes fold into).
     """
 
     code: str
