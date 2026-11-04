@@ -205,13 +205,20 @@ def answer_instants(
     return [found[t] for t in asked]
 
 
-def visit_frames(session: Session, instants: Iterable[Fraction], visit: Visit) -> None:
+def visit_frames(
+    session: Session,
+    instants: Iterable[Fraction],
+    visit: Visit,
+    *,
+    to_end: bool = False,
+) -> None:
     """Execute the session's scene once more on its render's frame grid and
     show ``visit`` the live scene at each of ``instants``, frames of that
     grid (or the end of the scene), whether or not the record answers them:
     each evaluated as the render evaluates that frame, through the scene's
     own frame hooks, where the record may hold no capture of it. The run is
-    kept and compared as :func:`answer_instants`' is.
+    kept and compared as :func:`answer_instants`' is. With ``to_end`` it
+    runs to the scene's end rather than stopping past the last instant.
     """
     _forward(
         session,
@@ -219,6 +226,7 @@ def visit_frames(session: Session, instants: Iterable[Fraction], visit: Visit) -
         frames=False,
         visit=visit,
         render_grid=True,
+        to_end=to_end,
     )
 
 
@@ -256,7 +264,7 @@ class _ForwardRecorder(Recorder):
         draws: bool,
         stepping: bool | Literal["brute_force"],
         instants: Iterable[Fraction],
-        stop_after: Fraction,
+        stop_after: Fraction | None,
         known: Mapping[int, str],
         demoted: Iterable[PlayIdentity],
         visit: Visit | None = None,
@@ -286,7 +294,7 @@ class _ForwardRecorder(Recorder):
 
     def refusal(self) -> str | None:
         # The renderer asks this first as each play begins.
-        if self.scene.time > self.stop_after:
+        if self.stop_after is not None and self.scene.time > self.stop_after:
             raise _Stopped
         return super().refusal()
 
@@ -351,6 +359,7 @@ def _forward(
     frames: bool,
     visit: Visit | None = None,
     render_grid: bool = False,
+    to_end: bool = False,
 ) -> tuple[dict[Fraction, tuple[State, Image.Image | None]], Fallback | None]:
     """Execute the session's scene again for ``instants`` (in time order),
     keep the run in :attr:`.Session.forward_runs` and any divergence in
@@ -399,7 +408,7 @@ def _forward(
             draws=refused,
             stepping=source.stepping,
             instants=extra,
-            stop_after=instants[-1],
+            stop_after=None if to_end else instants[-1],
             known={
                 play.index: play.draw_refusal
                 for play in record.plays

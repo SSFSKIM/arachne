@@ -448,3 +448,63 @@ class ReferenceRanges(Scene):
         watch("axes.outside", pen, reference=narrow, margin=0.2)
         watch("axes.outside", pen, reference=broad, margin=0.2)
         self.wait(0.2)
+
+
+class _Counted(Scene):
+    """A scene whose frame hook counts its calls: a finer grid's execution
+    counts more of them by the end of a play than the render's does.
+    """
+
+    def update_to_time(self, t):
+        super().update_to_time(t)
+        self.count += 1
+
+
+class DivergentDuration(_Counted):
+    """A second play whose length depends on the count, so the render's
+    execution and a finer grid's end at different times; at 96 pixels wide
+    the render's is the longer one, at any other width the shorter.
+    """
+
+    def construct(self):
+        ax = _plot()
+        self.count = 0
+        dot = Dot()
+        self.add(dot)
+        watch("axes.outside", lambda: ax.c2p(1.5, 0.5), reference=ax)
+        self.play(dot.animate.shift(RIGHT), run_time=1)
+        longer_on_render = self.renderer.camera.pixel_width == 96
+        run_time = 0.5 if (self.count < 20) == longer_on_render else 0.25
+        self.play(dot.animate.shift(RIGHT), run_time=run_time)
+        record("axes.outside", [ax.c2p(1.5, 0.5)], reference=ax)
+
+
+class ForwardOnlyBridge(_Counted):
+    """A watch and a record made only where the count stays low: by the
+    render's execution, never by a finer grid's.
+    """
+
+    def construct(self):
+        ax = _plot()
+        self.count = 0
+        dot = Dot()
+        self.add(dot)
+        self.play(dot.animate.shift(RIGHT), run_time=1)
+        if self.count < 20:
+            watch("axes.outside", lambda: ax.c2p(1.5, 0.5), reference=ax)
+            record("axes.outside", [ax.c2p(1.5, 0.5)], reference=ax)
+        self.play(dot.animate.shift(RIGHT), run_time=0.2)
+
+
+class StoppedWatch(Scene):
+    """A watched pen pushed off the plot at the tick a wait's stop condition
+    ends the scene on, between two frames at 24 fps.
+    """
+
+    def construct(self):
+        ax = _plot()
+        pen = Dot()
+        pen.add_updater(lambda m, dt: m.set_x(3 if float(self.time) >= 0.115 else 0))
+        self.add(ax, pen)
+        watch("axes.outside", pen, reference=ax)
+        self.wait(1, stop_condition=lambda: float(self.time) >= 0.115)

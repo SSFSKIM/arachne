@@ -66,6 +66,8 @@ class Frames:
     def __init__(self, session: Session) -> None:
         self.session = session
         self._requests: dict[Hashable, _Request] = {}
+        #: The owners that need a forward run, when one runs, to the end.
+        self._complete: set[Hashable] = set()
         self._read = False
         self._forward_only = False
         #: The forward run's record, once one has given frames.
@@ -92,6 +94,16 @@ class Frames:
         if self._read:
             raise RuntimeError("The lint's frames are read: ask before they are.")
         self._forward_only = True
+
+    def complete(self, owner: Hashable) -> None:
+        """Ask, for ``owner``, that a forward run, when one runs, run to the
+        scene's end, so that :attr:`execution` holds the whole of it: no
+        frame more is read for it. Raises :class:`RuntimeError` once the
+        frames are read.
+        """
+        if self._read:
+            raise RuntimeError("The lint's frames are read: ask before they are.")
+        self._complete.add(owner)
 
     def read(self) -> None:
         """Read every request: from the record what it kept, the rest from
@@ -147,7 +159,7 @@ class Frames:
                     for request in asking.get(t, ()):
                         request.found[t] = request.read(forward, t, play, capture, True)
 
-                visit_frames(session, missing, visit)
+                visit_frames(session, missing, visit, to_end=bool(self._complete))
         unread = [t for t in missing if any(t not in r.found for r in asking[t])]
         if unread:
             raise RuntimeError(
