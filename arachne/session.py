@@ -21,6 +21,7 @@ import importlib.util
 import itertools
 import os
 import sys
+from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -35,6 +36,7 @@ from .timeline.execution import (
     Divergence,
     ExecutionSummary,
     Incomparable,
+    changed_inputs,
     compare,
     summarize,
 )
@@ -121,7 +123,13 @@ class Session:
         every session of the source from then on: the scene is recorded
         again with it on route 3, as a new execution compared with the
         first, and the probe's ``replay.diverged`` is kept in
-        :attr:`divergences`, with any the comparison finds.
+        :attr:`divergences`, with any the comparison finds. The scene is
+        recorded again until the probe demotes nothing more, unless an
+        execution plays other plays than the one before it (another count,
+        or another kind or line at an index): that is kept as a divergence
+        of kind ``execution``, the session holds that execution, with every
+        demotion found applied, and :attr:`.Probe.settled` is false. Past
+        one more execution than the first had plays, it stops the same way.
         """
         path = Path(file).resolve()
         settings = {
@@ -143,9 +151,16 @@ class Session:
             return session
         # Probe the record. On a demotion, record the scene again with the
         # play ticked, a new execution compared with the first, and probe
-        # that: each pass ticks at least one play more.
+        # that: each pass ticks at least one play more, while the executions
+        # play the same plays. When they don't, that is where they differ,
+        # and the plays the probe found no longer stand for one another.
         latest = found = probe_record(session.record)
         first: ExecutionSummary | None = None
+        # A backstop: with the same plays in every execution, each pass ticks
+        # one more of them, so this many executions always suffice.
+        cap = len(session.record.plays) + 1
+        executions = 1
+        settled = True
         while True:
             for divergence in latest.divergences:
                 session._keep(divergence)
@@ -158,14 +173,23 @@ class Session:
                 demoted.add(index)
                 if digest is not None:
                     admission.demote(digest, record.scene_class, index)
+            if executions >= cap:
+                settled = False
+                break
             if first is None:
                 first = session.summary()
             session._executed_again(*_execute(path, scene, settings, options, demoted))
+            executions += 1
             with contextlib.suppress(Incomparable):
                 session.compare(first)
+            changed = _schedule_change(record, session.record)
+            if changed is not None:
+                session._keep(changed)
+                settled = False
+                break
             latest = probe_record(session.record)
             found = found.then(latest)
-        session.probe = found
+        session.probe = replace(found, settled=settled)
         return session
 
     def state_at(self, t: Fraction | float) -> State:
@@ -319,6 +343,35 @@ def _execute(
     record = instance.record
     assert record is not None
     return instance, record, module
+
+
+def _schedule_change(before: Record, after: Record) -> Divergence | None:
+    """Where ``after``, the execution recorded after ``before``, plays other
+    plays: another kind or line at an index, or another count.
+    """
+    changed = changed_inputs(before.identity, after.identity)
+    for index, (a, b) in enumerate(zip(before.plays, after.plays, strict=False)):
+        if (a.kind, a.source_line) != (b.kind, b.source_line):
+            return Divergence(
+                "execution",
+                index,
+                b.source_line,
+                f"its play {index} is a {b.kind} at {b.source_line}, where the"
+                f" execution before played a {a.kind} at {a.source_line}",
+                changed,
+            )
+    if len(before.plays) != len(after.plays):
+        index = min(len(before.plays), len(after.plays))
+        longer = after if len(after.plays) > index else before
+        return Divergence(
+            "execution",
+            index,
+            longer.plays[index].source_line,
+            f"this execution ran {len(after.plays)} plays, and the one before"
+            f" {len(before.plays)}",
+            changed,
+        )
+    return None
 
 
 def _source_digest(scene: Scene) -> str | None:
