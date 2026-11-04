@@ -24,9 +24,12 @@ import numpy as np
 import pytest
 
 from arachne import config, tempconfig
+from arachne.camera.camera import Camera
+from arachne.camera.three_d_camera import ThreeDCamera
 from arachne.manager import Manager
+from arachne.mobject.geometry.polygram import Square
 from arachne.timeline.clock import frames_in
-from arachne.timeline.draw import Drawing
+from arachne.timeline.draw import Drawing, _depths_ordered
 from arachne.timeline.routes import draw
 
 from . import stale_scenes
@@ -34,16 +37,23 @@ from .conftest import SMALL, render
 from .stale_scenes import (
     BODY_SPEED,
     BODY_START,
+    LET_GO,
+    TAKE_IN,
     TINT_SWITCH,
     DrivenBody,
     DrivenReadout,
     LiveDriven,
+    LiveHeld,
     MovedLight,
+    MovedLightAt,
     PartlyWritten,
     ReadoutAt,
     ReadoutAtTwo,
+    TakenIn,
     TurnedCamera,
+    TurnedCameraAt,
     Untouched,
+    ZOrderedChild,
 )
 
 STALE_SCENES = Path(stale_scenes.__file__)
@@ -77,11 +87,12 @@ def without_static_layer(scene_class: type, **settings) -> list[np.ndarray]:
 
 def render_counted(
     scene_class: type, **settings
-) -> tuple[object, list[np.ndarray], Counter[int]]:
+) -> tuple[object, list[np.ndarray], Counter[object]]:
     """Render ``scene_class`` as :func:`.conftest.render` does, counting how
-    many times each vectorized mobject is drawn (by id).
+    many times each vectorized mobject is drawn (by id), and how many frames
+    start from a picture rather than from the background (``"picture"``).
     """
-    counts: Counter[int] = Counter()
+    counts: Counter[object] = Counter()
     frames: list[np.ndarray] = []
     with tempconfig(
         {
@@ -104,6 +115,13 @@ def render_counted(
             return display(vmobject, ctx)
 
         camera.display_vectorized = counting
+        to_background = camera.set_frame_to_background
+
+        def from_picture(picture):
+            counts["picture"] += 1
+            return to_background(picture)
+
+        camera.set_frame_to_background = from_picture
 
         def write_frame(pixels, *, repeat=1):
             frames.extend([pixels] * repeat)
@@ -180,14 +198,76 @@ def test_the_picture_covers_the_static_mobjects_before_the_written_one():
 # ── the camera is a drawing input too ────────────────────────────────────────
 
 
-@pytest.mark.parametrize("scene_class", [TurnedCamera, MovedLight])
-def test_a_driver_that_changes_the_camera_redraws_the_static_mobjects(scene_class):
+@pytest.mark.parametrize(
+    ("scene_class", "still"),
+    [(TurnedCamera, TurnedCameraAt), (MovedLight, MovedLightAt)],
+)
+def test_a_driver_that_changes_the_camera_redraws_the_static_mobjects(
+    scene_class, still
+):
     _, frames = render(scene_class, FPS)
     assert len(frames) == 15
-    # The static cube is the whole picture: it changes as the camera does.
-    assert not np.array_equal(frames[0], frames[7])
-    assert not np.array_equal(frames[7], frames[14])
+    # The cube as a still of the camera input the driver set at that frame.
+    np.testing.assert_array_equal(frames[still.FRAME], render(still, FPS)[1][0])
+    assert not np.array_equal(frames[0], frames[still.FRAME])
     assert_same_frames(frames, without_static_layer(scene_class))
+
+
+# ── what the static picture painted and the frame no longer has ─────────────
+
+
+def test_a_static_mobjects_moving_child_leaves_no_trace_where_it_began():
+    scene, frames = render(ZOrderedChild, FPS)
+    assert len(frames) == 15
+    # Half a second in, the child has moved a unit right of where it began:
+    # the square shows where it was.
+    assert pixel(scene, frames[8], -1, 0) == BLUE
+    assert pixel(scene, frames[8], -1 + 2 * 8 / FPS, 0) == RED
+    assert_same_frames(frames, without_static_layer(ZOrderedChild))
+
+
+def test_a_static_mobject_a_moving_family_takes_in_is_drawn_once():
+    scene, frames = render(TakenIn, FPS)
+    assert len(frames) == 15
+    square = (-3, 0)
+    before = pixel(scene, frames[2], *square)
+    held = [i for i in range(15) if TAKE_IN + 0.05 < i / FPS < LET_GO - 0.05]
+    assert held
+    for index in held:
+        # Translucent: drawn twice (in the static picture and with the
+        # holder), it would show more opaque.
+        assert pixel(scene, frames[index], *square) == before, index
+    assert pixel(scene, frames[12], *square) == before
+    assert_same_frames(frames, without_static_layer(TakenIn))
+
+
+def test_a_depth_that_is_no_number_keeps_the_list_whole():
+    # ThreeDCamera sorts by depth; with a NaN key, a list sorted in two parts
+    # may not keep the order the whole list sorted to, so it is never cut.
+    camera = ThreeDCamera()
+    camera.reset_rotation_matrix()
+    flat = Square().set_shade_in_3d(True)
+    assert _depths_ordered(camera, [flat, Square()])
+    undepthed = Square().set_shade_in_3d(True)
+    undepthed.points = np.full_like(undepthed.points, np.nan)
+    assert not _depths_ordered(camera, [flat, undepthed])
+    assert _depths_ordered(Camera(), [flat, undepthed])
+
+
+# ── frozen frames drawn live ─────────────────────────────────────────────────
+
+
+def test_a_live_frozen_frame_runs_the_scenes_drawing_code_as_ce_does():
+    scene, frames, counts = render_counted(LiveHeld)
+    assert scene.timeline.record.refusal is not None, "drawn from the record"
+    # Its static picture, then the scene over it, as CE draws a frozen frame.
+    assert scene.held_calls == 2
+    assert counts["picture"] == 1
+    off, off_frames, off_counts = render_counted(LiveHeld, static_layer=False)
+    assert off.held_calls == 2
+    # Without the static layer the frozen frame starts from the background.
+    assert off_counts["picture"] == 0
+    assert_same_frames(frames, off_frames)
 
 
 # ── frames drawn live cache nothing ──────────────────────────────────────────
@@ -230,7 +310,16 @@ def drawn_both_ways(scene) -> tuple[list[np.ndarray], list[np.ndarray]]:
 
 
 @pytest.mark.parametrize(
-    "scene_class", [DrivenBody, DrivenReadout, PartlyWritten, Untouched, TurnedCamera]
+    "scene_class",
+    [
+        DrivenBody,
+        DrivenReadout,
+        PartlyWritten,
+        Untouched,
+        TurnedCamera,
+        ZOrderedChild,
+        TakenIn,
+    ],
 )
 def test_one_record_draws_alike_with_and_without_the_static_layer(scene_class):
     scene, rendered = render(scene_class, FPS)

@@ -383,12 +383,12 @@ def static_list(
 @dataclass
 class _Picture:
     """What a play's static picture painted: each leaf in the camera's draw
-    order, with its version at the play's static capture; and the pictures
-    of its prefixes drawn since, by length.
+    order, with its version at the play's static capture; and the last
+    picture of a prefix of them drawn since, with its length.
     """
 
     painted: tuple[tuple[Mobject, NodeState | None], ...]
-    prefixes: dict[int, PixelArray]
+    prefix: tuple[int, PixelArray] | None = None
 
 
 @dataclass(frozen=True)
@@ -421,6 +421,33 @@ def _paints_its_list(camera: Camera) -> bool:
     from arachne.camera.three_d_camera import ThreeDCamera
 
     return type(camera) in (Camera, MovingCamera, ThreeDCamera)
+
+
+def _reset_rotation(camera: Camera) -> None:
+    """Make a ThreeDCamera's depth order read its rotation now: its
+    ``get_mobjects_to_display`` reads the rotation its last capture set.
+    """
+    from arachne.camera.three_d_camera import ThreeDCamera
+
+    if isinstance(camera, ThreeDCamera):
+        camera.reset_rotation_matrix()
+
+
+def _depths_ordered(camera: Camera, painted: Sequence[Mobject]) -> bool:
+    """Whether every depth a ThreeDCamera sorts ``painted`` by is a number
+    (``ThreeDCamera.get_mobjects_to_display``'s key); always for another
+    camera.
+    """
+    from arachne.camera.three_d_camera import ThreeDCamera
+
+    if not isinstance(camera, ThreeDCamera):
+        return True
+    rotation = camera.get_rotation_matrix()
+    return not any(
+        getattr(mob, "shade_in_3d", False)
+        and np.isnan(np.dot(mob.get_z_index_reference_point(), rotation.T)[2])
+        for mob in painted
+    )
 
 
 def _one_batch(camera: Camera, a: Mobject, b: Mobject) -> bool:
@@ -553,14 +580,20 @@ class Drawing:
         camera = self.camera
         camera.reset()
         camera.capture_mobjects(list(play.static))
-        # What it just painted, in that order (ThreeDCamera's depth order is
-        # the one its capture just set).
-        painted = camera.get_mobjects_to_display(list(play.static))
-        self._pictures[play.index] = _Picture(
-            tuple((mob, self.record.node_state(mob, capture)) for mob in painted),
-            {},
-        )
+        self._pictures[play.index] = self._painted(play, capture)
         return camera.pixel_array.copy()
+
+    def _painted(self, play: PlayRecord, capture: Capture) -> _Picture:
+        """What the play's static picture paints, its static mobjects shown at
+        its static ``capture``: the leaves the camera's capture of them paints,
+        in that order, with their versions there.
+        """
+        camera = self.camera
+        _reset_rotation(camera)
+        painted = camera.get_mobjects_to_display(list(play.static))
+        return _Picture(
+            tuple((mob, self.record.node_state(mob, capture)) for mob in painted)
+        )
 
     def sample(
         self,
@@ -619,6 +652,10 @@ class Drawing:
         if validity is None:
             record = self.record
             start = record._captures[play.static_seq]
+            if start.camera is not None:
+                # The camera's own mobjects as the play began (a MultiCamera's
+                # displays then), not as the drawing found the camera.
+                self._install_camera(self.camera, start.camera)
             moving = {id(mob) for mob in start.moving}
             depends = list(self._depends(start, moving))
             camera = [mob for mob, _ in record._walk(start, camera_nodes(self.camera))]
@@ -675,11 +712,7 @@ class Drawing:
         camera = self.camera
         listed = static_list(camera, capture.draw_list(), capture.moving)
         if static is not None and picture is not None:
-            from arachne.camera.three_d_camera import ThreeDCamera
-
-            if isinstance(camera, ThreeDCamera):
-                # Its depth order reads the rotation its last capture set.
-                camera.reset_rotation_matrix()
+            _reset_rotation(camera)
             # The leaves its capture of the list paints, in that order.
             painted = camera.get_mobjects_to_display(listed)
             kept = self._kept(picture, painted, capture)
@@ -694,12 +727,15 @@ class Drawing:
         camera.capture_mobjects(listed)
 
     def _picture_of(self, play: PlayRecord) -> _Picture:
-        """What the play's static picture painted, painting it again when it
-        was painted by another drawing (a session keeps its pictures).
+        """What the play's static picture painted, found without painting it
+        when another drawing painted it (a session keeps its pictures).
         """
-        if play.index not in self._pictures:
-            self.static(play)
-        return self._pictures[play.index]
+        picture = self._pictures.get(play.index)
+        if picture is None:
+            capture = self.record._captures[play.static_seq]
+            self.show(capture, play.static)
+            picture = self._pictures[play.index] = self._painted(play, capture)
+        return picture
 
     def _kept(self, picture: _Picture, painted: list[Mobject], capture: Capture) -> int:
         """How many of the leaves the frame paints for its static list
@@ -718,6 +754,14 @@ class Drawing:
         if not _paints_its_list(self.camera):
             # The picture stands for all of the list or for none of it.
             return whole if kept == whole == len(painted) else 0
+        if (
+            kept
+            and not kept == whole == len(painted)
+            and not _depths_ordered(self.camera, painted)
+        ):
+            # A depth that is no number sorts no list stably: the parts of a
+            # list sorted apart may come out in another order than the whole.
+            return 0
         while 0 < kept < len(painted) and _one_batch(
             self.camera, painted[kept - 1], painted[kept]
         ):
@@ -727,15 +771,17 @@ class Drawing:
     def _prefix_picture(
         self, picture: _Picture, painted: list[Mobject], kept: int
     ) -> PixelArray:
-        """A picture of the frame's first ``kept`` static leaves, painted once
-        per play: they are as the static picture painted them.
+        """A picture of the frame's first ``kept`` static leaves, painted
+        again only when the cut moves: they are as the static picture painted
+        them.
         """
-        found = picture.prefixes.get(kept)
-        if found is None:
-            camera = self.camera
-            camera.reset()
-            camera.capture_mobjects(painted[:kept], include_submobjects=False)
-            found = picture.prefixes[kept] = camera.pixel_array.copy()
+        if picture.prefix is not None and picture.prefix[0] == kept:
+            return picture.prefix[1]
+        camera = self.camera
+        camera.reset()
+        camera.capture_mobjects(painted[:kept], include_submobjects=False)
+        found = camera.pixel_array.copy()
+        picture.prefix = (kept, found)
         return found
 
     def final(self) -> PixelArray:
@@ -753,7 +799,8 @@ class LiveFrames:
     """Draws a play's frames from the live scene while it runs, as CE draws
     them but for its static picture: for a record that can't draw them
     afterwards (``Record.refusal``). Each frame draws its static list, rebuilt
-    from the live scene, then the moving list.
+    from the live scene, then the moving list; only a frozen frame keeps
+    CE's static picture (``static_layer``).
 
     The route hands it every evaluated instant (:meth:`pending`); the frames
     an instant answers are drawn just before the next instant is evaluated
@@ -766,23 +813,32 @@ class LiveFrames:
         scene: Any,
         fps: Fraction,
         write: Callable[[PixelArray, int], None],
+        *,
+        static_layer: bool | None = None,
     ) -> None:
+        if static_layer is None:
+            from arachne import config
+
+            static_layer = config.static_layer
         self.scene = scene
         self.camera: Camera = scene.renderer.camera
         self.fps = fps
         self.write = write
+        self.static_layer = static_layer
         self._static: PixelArray | None = None
         self._pending: tuple[Fraction, Fraction] | None = None
         self._open = False
 
     def begin(self, play: PlayRecord) -> None:
         """The play's animations have begun. A frozen frame's static picture
-        is drawn now: the renderer keeps it as its background after the play.
+        is drawn now, as CE draws it: nothing runs while the frame is held, so
+        it is drawn under the frame, and the renderer keeps it as its
+        background after the play. With ``static_layer`` off, none is.
         """
         self._open = True
         self._pending = None
         self._static = None
-        if play.held and play.static:
+        if play.held and play.static and self.static_layer:
             self.camera.reset()
             self.camera.capture_mobjects(list(play.static))
             self._static = self.camera.pixel_array.copy()
@@ -809,11 +865,14 @@ class LiveFrames:
             *scene.foreground_mobjects,
         ]
         targets = list(scene.moving_mobjects) or roots
-        # No static picture: drawing runs the scene's code, which can read
-        # what no state holds (a class attribute, a global, a call count).
         camera = self.camera
-        camera.reset()
-        camera.capture_mobjects(static_list(camera, roots, scene.moving_mobjects))
+        if self._static is not None:
+            camera.set_frame_to_background(self._static)
+        else:
+            # No static picture: drawing runs the scene's code, which can read
+            # what no state holds (a class attribute, a global, a call count).
+            camera.reset()
+            camera.capture_mobjects(static_list(camera, roots, scene.moving_mobjects))
         camera.capture_mobjects(targets)
         self.write(camera.pixel_array.copy(), len(frames))
 
