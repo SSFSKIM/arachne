@@ -245,14 +245,15 @@ class Session:
             executions += 1
             with contextlib.suppress(Incomparable):
                 session.compare(first)
-            if probing and (
-                not _same_source(record, session.record)
-                or _schedule_shift(record, session.record)
-            ):
-                # Another source is stale, never a divergence; the same one
-                # playing other plays is where its executions differ.
-                if not _same_source(record, session.record):
-                    session.stale = True
+            if not _same_source(record, session.record):
+                # Another source is stale, never a divergence, whether or not
+                # the probe still runs.
+                session.stale = True
+                probing = False
+                settled = False
+            elif probing and _schedule_shift(record, session.record):
+                # The same source playing other plays is where its
+                # executions differ.
                 changed = _schedule_change(record, session.record)
                 if changed is not None:
                     session._keep(changed)

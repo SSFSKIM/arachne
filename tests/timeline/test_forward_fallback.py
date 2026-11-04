@@ -283,7 +283,9 @@ class ReadsIfThere(Scene):
 )
 
 
-def _open_in(directory: Path, source: str, name: str) -> Session:
+def _open_in(
+    directory: Path, source: str, name: str, *, frame_rate: int = 8
+) -> Session:
     scene = directory / "scene.py"
     scene.write_text(textwrap.dedent(source))
     return Session.open(
@@ -292,7 +294,7 @@ def _open_in(directory: Path, source: str, name: str) -> Session:
         config={
             "pixel_width": 96,
             "pixel_height": 54,
-            "frame_rate": 8,
+            "frame_rate": frame_rate,
             "media_dir": str(directory.parent / "media"),
         },
     )
@@ -902,3 +904,158 @@ def test_a_source_changed_while_recording_again_makes_the_record_stale(scene_dir
         session.close()
         admission.DEMOTED.clear()
         sys.modules.pop("probe_edited_helper", None)
+
+
+EDITED_AFTER_THE_SHIFT = (
+    HEADER
+    + """
+import shift_edited_helper
+
+
+class EditedAfterTheShift(Scene):
+    def construct(self):
+        counter = HERE / "counter.txt"
+        count = int(counter.read_text()) if counter.exists() else 0
+        counter.write_text(str(count + 1))
+        if count == 2:
+            # The third execution, which only ticks a line whole, is of
+            # another source.
+            (HERE / "shift_edited_helper.py").write_text("VALUE = 2\\n")
+        for _ in range(count + 1):
+            tracker = ValueTracker(0)
+            self.mark = Dot().add_updater(lambda m: m.set_x(tracker.get_value()))
+            self.add(self.mark)
+            self.play(tracker.animate.set_value(2), run_time=0.4)
+            self.mark.clear_updaters()
+
+    def update_to_time(self, t):
+        super().update_to_time(t)
+        if hasattr(self, "mark"):
+            self.mark.set_y(t)
+"""
+)
+
+
+def test_a_source_changed_after_probing_stopped_makes_the_record_stale(scene_dir):
+    """The plays shift, so the probe stops, and the scene is recorded once
+    more to tick the shifted line whole: that execution is of an edited
+    source, so the record is stale, though the probe no longer runs.
+    """
+    from arachne.timeline import admission
+
+    admission.DEMOTED.clear()
+    (scene_dir / "shift_edited_helper.py").write_text("VALUE = 1\n")
+    session = _open_in(
+        scene_dir, EDITED_AFTER_THE_SHIFT, "EditedAfterTheShift", frame_rate=15
+    )
+    try:
+        assert (scene_dir / "counter.txt").read_text() == "3"
+        assert [play.route for play in session.record.plays] == ["ticked"] * 3
+        assert not session.probe.settled
+        assert session.stale
+    finally:
+        session.close()
+        admission.DEMOTED.clear()
+        sys.modules.pop("shift_edited_helper", None)
+
+
+ROLES_THEN_REBOUND = (
+    HEADER
+    + """
+class RolesThenRebound(Scene):
+    def construct(self):
+        global SHIFT
+        SHIFT = 0.0
+        self.role = None
+        for role in (HERE / "roles.txt").read_text().split(","):
+            self.role = role
+            tracker = ValueTracker(0)
+            self.dot = Dot().add_updater(lambda m: m.set_x(tracker.get_value()))
+            self.add(self.dot)
+            self.play(tracker.animate.set_value(2), run_time=0.4)
+            self.dot.clear_updaters()
+        self.role = None
+        tracker = ValueTracker(0)
+        later = Dot().add_updater(lambda m: m.set_y(tracker.get_value() + SHIFT))
+        self.add(later)
+        self.play(tracker.animate.set_value(1), run_time=0.4)
+        SHIFT = 1.0
+
+    def update_to_time(self, t):
+        super().update_to_time(t)
+        if self.role == "bad":
+            self.dot.set_y(t)
+"""
+)
+
+
+@pytest.fixture
+def forward_recorders(monkeypatch):
+    """The recorders of the forward runs from here on, as they are made."""
+    from arachne.timeline import fallback
+
+    made = []
+
+    class Kept(fallback._ForwardRecorder):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            made.append(self)
+
+    monkeypatch.setattr(fallback, "_ForwardRecorder", Kept)
+    return made
+
+
+@pytest.mark.parametrize(
+    ("roles", "routes"),
+    [
+        # Another occurrence before the demoted one: which play was demoted is
+        # unknown, so every play of its line ticks.
+        ("new,clean,bad", ["ticked", "ticked", "ticked"]),
+        # The same plays: ticking the line whole changes no state compared.
+        ("clean,bad", ["ticked", "ticked", "state"]),
+    ],
+)
+def test_a_forward_run_ticks_every_play_of_a_demoted_line(
+    scene_dir, forward_recorders, roles, routes
+):
+    """The probe demotes the second play of a line. A forward run ticks every
+    play of that line, wherever the line's plays fall in it: it answers as
+    a session opened on the scene as it is now does, and, where the scene
+    plays the same plays, finds no divergence.
+    """
+    from arachne.timeline import admission
+
+    admission.DEMOTED.clear()
+    path = scene_dir / "roles.txt"
+    path.write_text("clean,bad")
+    session = _open_in(scene_dir, ROLES_THEN_REBOUND, "RolesThenRebound", frame_rate=15)
+    try:
+        assert [play.route for play in session.record.plays] == [
+            "state",
+            "ticked",
+            "state",
+        ]
+        assert session.probe.settled
+        path.write_text(roles)
+        # In the record's last play, which can't be restored there.
+        t = Fraction(20, 21)
+        (answer,) = session.answers([t], frames=False)
+        assert answer.state.answer == "forward"
+        (forward,) = forward_recorders
+        assert [play.route for play in forward.record.plays] == routes
+        (run,) = session.forward_runs
+        if roles == "clean,bad":
+            assert run.divergence is None
+            assert [d.kind for d in session.divergences] == ["probe"]
+            return
+        oracle = _open_in(
+            scene_dir, ROLES_THEN_REBOUND, "RolesThenRebound", frame_rate=15
+        )
+        try:
+            expected = oracle.state_at(t)
+            assert answer.state.named("self.dot").box == expected.named("self.dot").box
+        finally:
+            oracle.close()
+    finally:
+        session.close()
+        admission.DEMOTED.clear()
