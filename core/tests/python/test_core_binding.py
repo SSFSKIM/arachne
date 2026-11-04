@@ -394,3 +394,70 @@ def test_bytes_that_are_not_xf_are_an_error(tmp_path):
     bad.write_bytes(b"not xf at all")
     with pytest.raises(ac.XfError):
         ac.read_xf(bad)
+
+
+def quad_mesh(delta: ac.FrameDelta, z: float, half: float) -> bytes:
+    positions = np.array(
+        [[-half, -half, z], [half, -half, z], [half, half, z], [-half, half, z]],
+        dtype=float,
+    )
+    triangles = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.uint32)
+    return delta.upload_mesh(positions, triangles)
+
+
+def test_meshes_draw_by_depth_and_report_how_each_pixel_resolved():
+    width, height = 96, 54
+    delta = ac.FrameDelta(t=(0, 1), seq=0)
+    delta.set_view(
+        pixel_width=width,
+        pixel_height=height,
+        camera="three_d",
+        phi=1.2,
+        theta=-0.8,
+        zoom=1.5,
+        background=(0, 0, 0, 1),
+        **FRAME,
+    )
+    near = quad_mesh(delta, z=0.5, half=1.5)
+    far = quad_mesh(delta, z=-0.5, half=2.5)
+    delta.set_record("mesh", 1, 11, shape=near, fill=(1, 0, 0, 1), space="world")
+    delta.set_record("mesh", 2, 12, shape=far, fill=(0, 0, 1, 1), space="world")
+    # The far quad is drawn last: painter's order would cover the near one.
+    delta.set_order([("moving", 1, 0), ("moving", 2, 0)])
+    stream = ac.Stream()
+    stream.apply(delta)
+    rgba, resolves = stream.draw_resolves(width, height)
+    assert rgba.shape == (height, width, 4)
+    assert (resolves.shape, resolves.dtype) == ((height, width), np.uint8)
+    assert (stream.draw(width, height) == rgba).all()
+    red = (rgba == [255, 0, 0, 255]).all(axis=2)
+    blue = (rgba == [0, 0, 255, 255]).all(axis=2)
+    assert red.sum() > 100
+    assert blue.sum() > 100
+    assert ac.RESOLVES == ("background", "fast", "coverage", "sample")
+    counts = np.bincount(resolves.ravel(), minlength=4)
+    assert counts.sum() == width * height
+    assert counts[ac.RESOLVES.index("fast")] <= (red | blue).sum()
+    assert counts[ac.RESOLVES.index("sample")] > 0
+    for threads in (2, 3, 4):
+        again, again_resolves = stream.draw_resolves(width, height, threads=threads)
+        assert (again == rgba).all()
+        assert (again_resolves == resolves).all()
+
+
+def test_soft_diffuse_light_is_light_model_1_with_ambient_and_wrap():
+    delta = ac.FrameDelta()
+    delta.set_view(
+        pixel_width=4,
+        pixel_height=4,
+        camera="three_d",
+        light_model=(1, [0.25, 0.5]),
+        **FRAME,
+    )
+    stream = ac.Stream()
+    stream.apply(ac.FrameDelta.from_bytes(delta.to_bytes()))
+    assert stream.draw(4, 4).shape == (4, 4, 4)
+    bad = ac.FrameDelta()
+    bad.set_view(pixel_width=4, pixel_height=4, light_model=(1, [1.5, 0.5]), **FRAME)
+    with pytest.raises(ac.XfError):
+        ac.Stream().apply(bad)

@@ -249,11 +249,8 @@ fn view_of(fields: Fields) -> PyResult<View> {
                 LightModel::Ce
             } else {
                 let (code, params): (u8, Vec<f64>) = v.extract()?;
-                // CE's model has no parameters; written as (0, []) it is CE's, as XF reads it back.
-                match (code, params.is_empty()) {
-                    (0, true) => LightModel::Ce,
-                    _ => LightModel::Other { code, params },
-                }
+                // Read as XF reads it back: (0, []) is CE's, (1, [ambient, wrap]) soft diffuse.
+                LightModel::from_code(code, params)
             }
         }
     };
@@ -785,6 +782,31 @@ impl PyStream {
             .reshape([height as usize, width as usize, 4])?
             .into_any())
     }
+
+    /// Draws the frame as ``draw`` does, and returns it with each pixel's resolve: a uint8 array
+    /// (height, width) indexing ``RESOLVES`` (background, fast, coverage, sample).
+    #[pyo3(signature = (width, height, *, threads=1))]
+    fn draw_resolves<'py>(
+        &self,
+        py: Python<'py>,
+        width: u32,
+        height: u32,
+        threads: usize,
+    ) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
+        let stream = &self.stream;
+        let drawn = py
+            .detach(|| stream.render(width, height, threads))
+            .map_err(|e| draw_error(py, e))?;
+        let (h, w) = (height as usize, width as usize);
+        Ok((
+            PyArray1::from_vec(py, drawn.rgba)
+                .reshape([h, w, 4])?
+                .into_any(),
+            PyArray1::from_vec(py, drawn.resolves)
+                .reshape([h, w])?
+                .into_any(),
+        ))
+    }
 }
 
 /// Reads an XF file into its deltas.
@@ -811,6 +833,7 @@ fn write_xf(path: PathBuf, deltas: &Bound<'_, PyList>) -> PyResult<()> {
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("XF_VERSION", XF_VERSION)?;
+    m.add("RESOLVES", ("background", "fast", "coverage", "sample"))?;
     m.add_class::<PyFrameDelta>()?;
     m.add_class::<PyStream>()?;
     m.add_class::<PyApplyStats>()?;

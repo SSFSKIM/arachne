@@ -13,9 +13,10 @@ whose copyright and permission notices are kept in full:
 - `LICENSES/manim-community-MIT.txt`: Copyright (c) 2024, the Manim Community Developers
 
 Those notices apply to the code that came from those projects, including the history of this repository up to and
-including the Manim Community Edition v0.22.1 release commit, and the core's Rust ports of CE's camera and frame
-arithmetic (`core/src/project.rs`: projection and the frame-to-pixel mappings; `core/src/composite.rs`: the
-background's bytes and the background image's crop).
+including the Manim Community Edition v0.22.1 release commit, and the core's Rust ports of CE's camera, frame and
+shading arithmetic (`core/src/project.rs`: projection and the frame-to-pixel mappings; `core/src/composite.rs`: the
+background's bytes and the background image's crop; `core/src/shade.rs`: `get_shaded_rgb`, `get_unit_normal` and
+the per-face stops of `ThreeDCamera.modified_rgbas`).
 
 ## Ideas credited
 
@@ -35,6 +36,9 @@ These ideas came from other projects; no code was taken from them.
 - A frame description made of records that reference content-keyed shapes uploaded once, each placed by an affine
   map, blended between two placed shapes, with a reveal window and a paint mix, so that a morph frame or a camera
   move ships no geometry (the core's XF): ManimGX, as above.
+- Resolving each pixel's fragments, each with a coverage mask over sub-samples, by depth, so antialiasing, hidden
+  surfaces and transparency resolve together (the core's compositor): the A-buffer, Loren Carpenter, "The A-buffer,
+  an antialiased hidden surface method", SIGGRAPH 1984.
 
 ## Algorithms the core reimplements
 
@@ -51,6 +55,15 @@ it uses for small angles, so that they match CE's `space_ops.rotation_matrix`, w
 remains under SciPy's BSD-3-Clause license, whose copyright notice, conditions and disclaimer are kept in full:
 
 - `LICENSES/scipy-BSD-3-Clause.txt`: Copyright (c) 2001-2002 Enthought, Inc. 2003, SciPy Developers
+
+The core blends 2D paint (`core/src/composite.rs`, `premultiply` and `blend`) with the 8-bit arithmetic of
+[Cairo](https://cairographics.org)'s ARGB32 image surface: a colour premultiplied to 16 bits and truncated to 8, as
+Cairo stores a solid source; a translucent source multiplied by the coverage and laid over the pixel with
+[pixman](https://pixman.org)'s rounded `x * y / 255`; an opaque source interpolated toward the pixel with the rounding
+of Cairo's span compositor. The formulas were written from that arithmetic, not copied, and are checked against bytes
+Cairo 1.18 wrote (`core/tests/data/gen_blend.py`). Also from specifications: the sRGB transfer functions (IEC
+61966-2-1), and Direct3D's standard 16-sample pattern, moved half a cell so its centroid is the pixel's centre
+(`core/src/composite.rs`).
 
 ## Dependencies of the core
 

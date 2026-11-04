@@ -3,6 +3,8 @@
 //! cannot draw (`render.unsupported`).
 
 use crate::composite::{self, Frame};
+use crate::mesh::{self, MeshDraw};
+use crate::tiles::{self, Rendered};
 use crate::xf::*;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
@@ -218,6 +220,14 @@ impl After<'_> {
     }
 
     fn check_view(&self, view: &View, slot: Option<u32>) -> Result<(), StreamError> {
+        if let LightModel::SoftDiffuse { ambient, wrap } = view.light
+            && !((0.0..=1.0).contains(&ambient) && wrap.is_finite() && wrap >= 0.0)
+        {
+            return Err(StreamError::Invalid(format!(
+                "soft diffuse light needs an ambient share in 0..=1 and a wrap of at least 0, \
+                 not {ambient} and {wrap}"
+            )));
+        }
         if let Background::Image(key) = &view.background {
             match self.shape(key) {
                 Some(ShapeData::Image { .. }) => {}
@@ -397,6 +407,9 @@ impl Stream {
     }
 
     fn check(&self, delta: &Delta) -> Result<(), StreamError> {
+        for shape in &delta.upload {
+            check_shape(shape)?;
+        }
         let after = After::new(self, delta);
         for key in &delta.release {
             let held = self.shapes.contains_key(key)
@@ -461,15 +474,20 @@ impl Stream {
     }
 
     /// Draws the frame at `width x height` pixels, its tiles spread over `threads` threads.
-    ///
-    /// Today this build draws the background (the view's colour, or its image cropped as CE crops
-    /// it) and refuses, whole, any frame whose order draws a record: every record kind waits for
-    /// its drawer (meshes and the compositor, then paths, points and instances), and reserved or
-    /// unknown kinds and unknown feature bits are refused always.
     pub fn draw(&self, width: u32, height: u32, threads: usize) -> Result<Vec<u8>, DrawError> {
-        if width == 0 || height == 0 {
+        Ok(self.render(width, height, threads)?.rgba)
+    }
+
+    /// Draws the frame, and reports how each pixel was resolved.
+    ///
+    /// This build draws the background (the view's colour, or its image cropped as CE crops it)
+    /// and `mesh` records. It refuses, whole, any frame whose order draws what it cannot: the
+    /// other record kinds until their drawers land, a mesh carrying a field it does not draw yet,
+    /// reserved or unknown kinds, unknown feature bits, and unknown light models.
+    pub fn render(&self, width: u32, height: u32, threads: usize) -> Result<Rendered, DrawError> {
+        if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
             return Err(DrawError::Invalid(format!(
-                "a frame of {width} x {height} pixels"
+                "a frame of {width} x {height} pixels (each side 1 to {MAX_SIDE})"
             )));
         }
         if threads == 0 {
@@ -512,7 +530,34 @@ impl Stream {
                 })?
             }
         };
-        Ok(frame.into_rgba())
+        let mut draws = Vec::new();
+        for (order, e) in self.order.iter().enumerate() {
+            let record = &self.records[&e.slot];
+            if record.kind != RecordKind::Mesh {
+                continue;
+            }
+            let Some(ShapeData::Mesh {
+                positions,
+                triangles,
+                normals,
+            }) = record
+                .geometry
+                .shape_a
+                .and_then(|k| self.shapes.get(&k))
+                .map(|s| &s.data)
+            else {
+                unreachable!("apply checked the mesh record's shape");
+            };
+            draws.push(MeshDraw {
+                record,
+                positions,
+                triangles,
+                normals: normals.as_deref(),
+                order: order as u32,
+            });
+        }
+        let meshes = mesh::lower(view, width, height, &draws);
+        Ok(tiles::render(frame, &[&meshes], threads))
     }
 
     pub fn view(&self) -> Option<&View> {
@@ -536,7 +581,66 @@ impl Stream {
     }
 }
 
-/// Why this build refuses to draw a record, if it does. Today it draws no record kind.
+/// The longest side of a frame this build draws, in pixels.
+pub const MAX_SIDE: u32 = 16384;
+
+/// A shape that contradicts itself: a triangle naming a vertex the mesh lacks, or normals that
+/// are not one per vertex.
+fn check_shape(shape: &Shape) -> Result<(), StreamError> {
+    if let ShapeData::Mesh {
+        positions,
+        triangles,
+        normals,
+    } = &shape.data
+    {
+        if triangles
+            .iter()
+            .flatten()
+            .any(|i| *i as usize >= positions.len())
+        {
+            return Err(StreamError::Invalid(format!(
+                "mesh {}: a triangle names a vertex past its {}",
+                shape.key.hex(),
+                positions.len()
+            )));
+        }
+        if normals.as_ref().is_some_and(|n| n.len() != positions.len()) {
+            return Err(StreamError::Invalid(format!(
+                "mesh {}: one normal per vertex",
+                shape.key.hex()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// What of a mesh record this build does not draw yet, if anything.
+fn mesh_refusal(rec: &Record) -> Option<&'static str> {
+    let p = &rec.paint;
+    let strokes = |paint: &Paint, width: f64| !matches!(paint, Paint::None) && width > 0.0;
+    if rec.geometry.blend.is_some() {
+        Some("a mesh's blend is not drawn yet")
+    } else if rec.geometry.reveal.is_some() {
+        Some("a mesh's reveal is not drawn yet")
+    } else if strokes(&p.stroke, p.stroke_width)
+        || strokes(&p.background_stroke, p.background_stroke_width)
+    {
+        Some("a mesh's stroke is not drawn yet")
+    } else if matches!(p.fill, Paint::Two(_) | Paint::Table(_)) {
+        Some("a mesh's gradient fill is not drawn yet")
+    } else if p.paint_b.is_some() {
+        Some("a mesh's paint blend is not drawn yet")
+    } else if rec.dash.is_some() {
+        Some("a mesh's dash is not drawn yet")
+    } else if rec.clip.is_some() {
+        Some("a mesh's clip is not drawn yet")
+    } else {
+        None
+    }
+}
+
+/// Why this build refuses to draw a record, if it does. It draws `mesh` records; the other drawn
+/// kinds wait for their drawers.
 fn refusal(rec: &Record) -> Option<Unsupported> {
     let reason = if rec.features & !KNOWN_FEATURES != 0 {
         format!(
@@ -547,6 +651,8 @@ fn refusal(rec: &Record) -> Option<Unsupported> {
         format!("record kind {code} is not one this build knows")
     } else if rec.kind.is_reserved() {
         format!("{} is a reserved kind", rec.kind.name())
+    } else if rec.kind == RecordKind::Mesh {
+        mesh_refusal(rec)?.to_string()
     } else {
         format!("this build does not draw {} records yet", rec.kind.name())
     };
