@@ -317,6 +317,9 @@ class Recorder:
         #: the unit of the record's home-frame boxes, whatever the camera
         #: does (:mod:`arachne.camera.projection`).
         self.home = configured_home(int(config.pixel_width), int(config.pixel_height))
+        #: The configuration's pixel size, which a point cloud's thickness is
+        #: scaled from as the scene draws.
+        self.configured_pixels = (int(config.pixel_width), int(config.pixel_height))
         #: Each play's identity, counted as the plays are recorded.
         self._identities: list[PlayIdentity] = []
         self._line_counts: dict[SourceLine | None, int] = {}
