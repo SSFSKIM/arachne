@@ -46,6 +46,7 @@ if TYPE_CHECKING:
     from arachne.scene.scene import Scene
 
     from .admission import Admission
+    from .bodies import Exit
     from .draw import CameraExtras
     from .state import State
     from .ticking import TickPlan
@@ -421,6 +422,11 @@ class Sample:
 
 class Record:
     """What one forward execution of a scene produced."""
+
+    #: Where each body stood as each play ended (:class:`.bodies.Exit`, by
+    #: play index), given by the recorder that makes the record; ``None`` on
+    #: a record made without them.
+    exits: dict[int, Exit] | None = None
 
     def __init__(
         self,
