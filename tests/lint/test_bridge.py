@@ -19,6 +19,7 @@ from arachne.lint.bridge import declare, record, watch
 from arachne.lint.instants import lint_instants
 from arachne.session import Session
 from arachne.timeline import admission
+from arachne.timeline.clock import frames_in
 from arachne.timeline.purity import Proof
 
 from ..timeline.conftest import render
@@ -195,9 +196,12 @@ def test_a_watched_callable_is_evaluated_while_recording_never_when_linting(
     (call,) = session.record.bridge.calls
     assert call.kind == "watch"
     assert call.operands == ()
-    # A reading at every kept capture from the declaration on.
-    kept = [c.instant for play in session.record.plays for c in play.samples]
-    assert [r.t for r in call.readings][1:] == [*kept, session.record.duration]
+    # A reading at every frame from the declaration on, the frozen wait's
+    # included, and at the end.
+    duration = session.record.duration
+    read = {r.t for r in call.readings}
+    assert read >= set(frames_in(Fraction(0), duration, Fraction(15)))
+    assert call.readings[-1].t == duration
 
 
 def _past_readings(session) -> list[bool]:
@@ -395,3 +399,100 @@ def test_a_refused_scene_renders_the_frames_it_renders_unrefused():
     _, engine = render(bridge_scenes.NothingReplaced, 15)
     assert len(replaced) == len(engine)
     assert all(np.array_equal(a, b) for a, b in zip(replaced, engine, strict=True))
+
+
+def test_a_camera_method_replaced_during_the_last_play_refuses_the_record(
+    session_of,
+):
+    """Replaced mid-play, after the play began and before the script ended:
+    the record refuses, and the lint calls no scene camera code.
+    """
+    session = session_of("LateCamera", BRIDGE, frame_rate=15)
+    refusal = session.record.refusal
+    assert refusal is not None
+    assert "Camera.transform_points_pre_display (on the instance)" in refusal
+    session.module.RECORDED[0] = True
+    seen = []
+
+    def keep(context):
+        seen.extend(context.parts)
+        return ()
+
+    lint(session, rules=(keep,))
+    assert seen
+    assert all(p.answer == "forward" for p in seen)
+
+
+def test_a_camera_method_replaced_mid_play_renders_the_same_frames():
+    _, replaced = render(bridge_scenes.LateCamera, 15)
+    _, engine = render(bridge_scenes.LateUnchanged, 15)
+    assert len(replaced) == len(engine)
+    assert all(np.array_equal(a, b) for a, b in zip(replaced, engine, strict=True))
+
+
+def test_a_watch_is_read_at_every_frame_of_a_frozen_wait(session_of):
+    """CE's guard runs on every frame of a wait: a frozen wait's frames are
+    each read, with the clock at the frame's time.
+    """
+    session = session_of("ClockWatch", BRIDGE, frame_rate=15)
+    assert [play.held for play in session.record.plays] == [True]
+    (found,) = _outside(lint(session))
+    assert (found.t_start, found.t_end) == (Fraction(5, 15), Fraction(6, 15))
+    assert found.line.line == _line("clock-wait")
+
+
+def test_a_watch_reports_the_frames_its_readings_show(session_of):
+    """At 24 fps a ticked play's capture is of a tick, not of the frame that
+    shows it: the finding is at the frame.
+    """
+    session = session_of("TickWatch", BRIDGE, frame_rate=24)
+    (dot,) = [n for n in session.state_at(Fraction(1, 24)).nodes if n.type == "Dot"]
+    assert dot.box[0] > 2
+    (found,) = _outside(lint(session))
+    assert (found.t_start, found.t_end) == (Fraction(1, 24), Fraction(1, 24))
+    assert found.line.line == _line("tick-wait")
+
+
+def test_an_execution_s_own_calls_are_read_from_its_forward_run(session_of):
+    """A finer grid's record holds other calls than the render's execution
+    makes: the bridge reads the forward run's.
+    """
+    finer = session_of("ConditionalWatches", BRIDGE, grid=None, frame_rate=15)
+    assert len(finer.record.bridge.watches) == 1
+    found = _outside(lint(finer))
+    assert len(finer.forward_runs) == 1
+    assert [(f.t_start, f.t_end, f.line.line) for f in found] == [
+        (1, 2, _line("conditional-play")),
+        (2, 2, _line("conditional-record")),
+    ]
+
+
+def test_a_lint_at_chosen_times_reads_every_bridge_call(session_of):
+    """The geometry read at one instant still reads the bridge's calls over
+    the whole execution.
+    """
+    render = session_of("ConditionalWatches", BRIDGE, frame_rate=15)
+    finer = session_of("ConditionalWatches", BRIDGE, grid=None, frame_rate=15)
+
+    def spans(session):
+        found = _outside(lint(session, at=[0]))
+        return [(f.t_start, f.t_end, f.line.line) for f in found]
+
+    assert spans(render) == [
+        (1, 2, _line("conditional-play")),
+        (2, 2, _line("conditional-record")),
+    ]
+    assert spans(finer) == spans(render)
+
+
+def test_each_point_is_checked_against_its_own_reference_and_margin(session_of):
+    session = session_of("ReferenceRanges", BRIDGE, frame_rate=15)
+    scene = session.scene
+    assert len(scene.out) == len(scene.margin) == 1
+    assert scene.inside_broad == scene.near == []
+    found = _outside(lint(session))
+    assert len(found) == 3
+    assert len({f.detail["axes"] for f in found}) == 1
+    watched = found[-1]
+    assert (watched.t_start, watched.t_end) == (0, session.record.duration)
+    assert all(n.type != "Axes" for n in session.state_at(0).nodes)
