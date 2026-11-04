@@ -27,7 +27,7 @@ diagnostics, credited in ``NOTICE.md``.
 
 from __future__ import annotations
 
-__all__ = ["Leaf", "Part", "Parts", "build_parts"]
+__all__ = ["Leaf", "Part", "Parts", "Unit", "build_parts"]
 
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
@@ -62,6 +62,37 @@ _SAME_POINT = 1e-6
 _INK_DECIMALS = 3
 
 
+@dataclass(frozen=True)
+class Unit:
+    """The thing a clearance sweep measures a leaf as part of, whole.
+
+    Walking down from the scene's top level, a vector group that draws
+    nothing of its own opens into its members, and the first mobject that
+    does not open is the unit: a shape with its tip, a dashed line with its
+    dashes, a group that is no vector group, a container of the scene's own,
+    a text with its own plate. Axes (and a lone number line) are their
+    furniture instead: each axis's line, its tip, its ticks together, and
+    each of its numbers, ``furniture`` naming which (``"line"``, ``"tip"``,
+    ``"ticks"``, ``"number"``; ``None`` for content). ``text`` says whether
+    the unit is a text (a text type, or a vector group of nothing but
+    texts). ``within`` are the groups holding it, outermost first.
+    ``family`` is what the unit is made from, each mobject in it once: the
+    unit's own family, or for furniture its axes' (or lone number line's)
+    whole family. An exemption naming any of these, or a group holding the
+    unit, names the unit.
+    """
+
+    id: str
+    type: str
+    name: str | None
+    source_line: SourceLine | None
+    scene_line: int | None
+    text: bool
+    furniture: str | None
+    within: tuple[Holder, ...]
+    family: tuple[Holder, ...] = ()
+
+
 @dataclass(frozen=True, eq=False)
 class Leaf:
     """One drawn member of a family, as the camera draws it.
@@ -73,7 +104,14 @@ class Leaf:
     points. ``stroke_width`` is its widest visible stroke (its background
     stroke included) as drawn, in home-frame units, 0 when it has none; a
     point cloud's is the side of the square it draws each point as, though
-    the frame cuts its ink.
+    the frame cuts its ink. ``line_width`` is its foreground stroke alone,
+    and ``halo_width`` and ``halo_opacity`` its background stroke, widths as
+    drawn, each 0 when that stroke is not seen. ``first_fill_opacity`` is
+    the opacity of its fill's first row, which says whether it is filled.
+    ``unit`` is what a sweep measures it as part of (:class:`Unit`),
+    ``None`` for a leaf no sweep measures: a point cloud, an image, or what
+    is mounted on axes beside their furniture. ``plate`` says whether it is
+    in its unit's background rectangle: under a text, not one of its glyphs.
     """
 
     id: str
@@ -89,6 +127,12 @@ class Leaf:
     closed: bool
     order: int
     curve_size: int = 4
+    line_width: float = 0.0
+    halo_width: float = 0.0
+    halo_opacity: float = 0.0
+    unit: Unit | None = None
+    first_fill_opacity: float = 0.0
+    plate: bool = False
 
     def outline(self, samples: int = 17) -> np.ndarray | None:
         """A path's curves as polylines, ``(curves, samples, 2)``; ``None``
@@ -277,7 +321,7 @@ def _read(
         if reached is None or draw_kind(mob) is None:
             continue
         chain = reached[1]
-        leaf = reader.leaf(mob, order[id(mob)])
+        leaf = reader.leaf(mob, order[id(mob)], chain)
         if leaf is None:
             continue
         text = next((m for m in (*chain, mob) if _is_text(m)), None)
@@ -404,6 +448,10 @@ class _Reader:
         self.camera = camera
         self.view = view
         self.names = names
+        self._units: dict[int, Unit] = {}
+        #: Each source's family, and each unit's background rectangle (ids).
+        self._families: dict[int, tuple[Holder, ...]] = {}
+        self._plates: dict[str, set[int]] = {}
         #: The ids of axis furniture, and of what a grid holds or is.
         self.furniture: set[int] = set()
         self.grids: set[int] = set()
@@ -414,8 +462,12 @@ class _Reader:
             if isinstance(mob, NumberLine):
                 self.furniture.update(id(m) for m in _furniture(mob))
 
-    def leaf(self, mob: Mobject, order: int) -> Leaf | None:
-        """``mob`` as drawn, or ``None`` when it draws nothing."""
+    def leaf(
+        self, mob: Mobject, order: int, chain: tuple[Mobject, ...] = ()
+    ) -> Leaf | None:
+        """``mob`` as drawn, held by ``chain`` (outermost first), or
+        ``None`` when it draws nothing.
+        """
         kind = draw_kind(mob)
         assert kind is not None
         points = np.asarray(mob.points, dtype=float)
@@ -429,15 +481,15 @@ class _Reader:
             return None
         screen = _screen(self.view, pixel_points(self.camera, self.view, mob, points))
         box = _box(screen)
-        if kind == "points":
-            drawn = point_thickness(self.view, mob)
-        else:
-            drawn = (
-                width
-                * self.view.cairo_line_width_multiple
-                * self.view.home_width
-                / self.view.frame_width
-            )
+        # Stroke widths as drawn: Cairo's units per width, on the home frame.
+        scale = (
+            self.view.cairo_line_width_multiple
+            * self.view.home_width
+            / self.view.frame_width
+        )
+        line, halo, halo_opacity = _strokes(mob, kind)
+        drawn = point_thickness(self.view, mob) if kind == "points" else width * scale
+        unit = self.unit(mob, chain) if kind == "path" else None
         return Leaf(
             id=self.record.origin(mob).id,
             type=type(mob).__name__,
@@ -452,7 +504,103 @@ class _Reader:
             closed=kind == "path" and _closed(mob, points),
             order=order,
             curve_size=int(getattr(mob, "n_points_per_cubic_curve", 4)),
+            line_width=line * scale,
+            halo_width=halo * scale,
+            halo_opacity=halo_opacity,
+            unit=unit,
+            first_fill_opacity=_first_fill(mob) if kind == "path" else fill,
+            plate=unit is not None and id(mob) in self._plates.get(unit.id, ()),
         )
+
+    def unit(self, mob: Mobject, chain: tuple[Mobject, ...]) -> Unit | None:
+        """What a sweep measures ``mob`` (held by ``chain``) as part of:
+        :class:`Unit`. ``None`` when no sweep measures it.
+        """
+        from arachne.mobject.graphing.coordinate_systems import Axes
+        from arachne.mobject.graphing.number_line import NumberLine
+        from arachne.mobject.types.vectorized_mobject import VGroup
+        from arachne.mobject.value_tracker import ValueTracker
+
+        path = (*chain, mob)
+        for depth, held in enumerate(path):
+            if isinstance(held, ValueTracker):
+                return None
+            if isinstance(held, (Axes, NumberLine)):
+                return self._furniture_unit(held, path)
+            if isinstance(held, VGroup) and held.submobjects and not len(held.points):
+                continue
+            return self._unit_of(held, path[:depth], furniture=None, source=held)
+        return None
+
+    def _furniture_unit(self, axes: Mobject, path: tuple[Mobject, ...]) -> Unit | None:
+        """The furniture of ``axes`` the leaf at the end of ``path`` is in:
+        an axis's line, its tip, its ticks or one of its numbers; ``None``
+        for anything else mounted on it.
+        """
+        from arachne.mobject.graphing.coordinate_systems import Axes
+
+        on = {id(m): index for index, m in enumerate(path)}
+        lines = [axes.x_axis, axes.y_axis] if isinstance(axes, Axes) else [axes]
+        for line in lines:
+            if id(line) not in on:
+                continue
+            if path[-1] is line:
+                return self._unit_of(
+                    line, path[: on[id(line)]], furniture="line", source=axes
+                )
+            pieces = [
+                ("tip", getattr(line, "tip", None)),
+                ("ticks", getattr(line, "ticks", None)),
+                *(("number", n) for n in getattr(line, "numbers", None) or ()),
+            ]
+            for role, piece in pieces:
+                if piece is not None and id(piece) in on:
+                    return self._unit_of(
+                        piece, path[: on[id(piece)]], furniture=role, source=axes
+                    )
+        return None
+
+    def _unit_of(
+        self,
+        mob: Mobject,
+        above: tuple[Mobject, ...],
+        *,
+        furniture: str | None,
+        source: Mobject,
+    ) -> Unit:
+        """The unit ``mob`` (held by ``above``), made from ``source``: itself,
+        or the axes its furniture belongs to.
+        """
+        found = self._units.get(id(mob))
+        if found is None:
+            origin = self.record.origin(mob)
+            found = Unit(
+                id=origin.id,
+                type=type(mob).__name__,
+                name=self.names.get(id(mob)),
+                source_line=origin.source_line,
+                scene_line=origin.scene_line,
+                text=_text_like(mob),
+                furniture=furniture,
+                within=tuple(self._holder(m) for m in above),
+                family=self._family(source),
+            )
+            self._units[id(mob)] = found
+            plate = getattr(mob, "background_rectangle", None)
+            if furniture is None and plate is not None and hasattr(plate, "get_family"):
+                self._plates[found.id] = {id(m) for m in plate.get_family()}
+        return found
+
+    def _family(self, source: Mobject) -> tuple[Holder, ...]:
+        found = self._families.get(id(source))
+        if found is None:
+            seen: dict[int, Holder] = {}
+            for member in source.get_family():
+                if id(member) not in seen:
+                    seen[id(member)] = self._holder(member)
+            found = tuple(seen.values())
+            self._families[id(source)] = found
+        return found
 
     def part(
         self,
@@ -512,6 +660,49 @@ def _paint(mob: Mobject, kind: str) -> tuple[float, float, float]:
         if size > 0 and opacity > 0:
             stroke, width = max(stroke, opacity), max(width, size)
     return fill, stroke, width
+
+
+def _strokes(mob: Mobject, kind: str) -> tuple[float, float, float]:
+    """``mob``'s foreground stroke width, and its background stroke's width
+    and opacity, each 0 where that stroke is not seen; widths as set, before
+    the camera scales them.
+    """
+    if kind != "path":
+        return 0.0, 0.0, 0.0
+    seen = []
+    for background in (False, True):
+        size = float(np.max(mob.get_stroke_width(background), initial=0.0))
+        opacity = float(np.max(mob.get_stroke_opacities(background), initial=0.0))
+        seen.append((size, opacity) if size > 0 and opacity > 0 else (0.0, 0.0))
+    (line, _), (halo, halo_opacity) = seen
+    return line, halo, halo_opacity
+
+
+def _first_fill(mob: Mobject) -> float:
+    """The opacity of the first row of ``mob``'s fill (0 when it has none),
+    which a vector mobject reports as its fill opacity.
+    """
+    opacities = np.asarray(mob.get_fill_opacities(), dtype=float).ravel()
+    return float(opacities[0]) if opacities.size else 0.0
+
+
+def _text_like(mob: Mobject) -> bool:
+    """Whether a sweep holds ``mob`` as a text: a text type, or a vector
+    group of nothing but texts.
+    """
+    from arachne.mobject.text.numbers import DecimalNumber
+    from arachne.mobject.text.tex_mobject import MathTex
+    from arachne.mobject.text.text_mobject import MarkupText, Text
+    from arachne.mobject.text.typst_mobject import Typst
+    from arachne.mobject.types.vectorized_mobject import VGroup
+
+    if isinstance(mob, (Text, MarkupText, MathTex, DecimalNumber, Typst)):
+        return True
+    return (
+        isinstance(mob, VGroup)
+        and bool(mob.submobjects)
+        and all(_text_like(sub) for sub in mob.submobjects)
+    )
 
 
 def _screen(view: View, pixels: np.ndarray) -> np.ndarray:
