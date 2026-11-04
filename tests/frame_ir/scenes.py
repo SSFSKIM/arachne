@@ -360,7 +360,7 @@ class LiveUnstated(Scene):
 
 class ShiftedCamera(ThreeDCamera):
     """A camera class of the scene's own: its projection slides the picture
-    left (as a chapter's camera makes room for a text column).
+    left.
     """
 
     def project_points(self, points):
@@ -383,7 +383,7 @@ class UserCamera(ThreeDScene):
 
 class PatchedCamera(ThreeDScene):
     """The engine's ThreeDCamera, its projection replaced on the instance by
-    the scene (as a chapter slides its axes beside a text column).
+    the scene: the picture slid sideways.
     """
 
     def construct(self):
