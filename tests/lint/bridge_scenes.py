@@ -1,0 +1,272 @@
+"""Scenes the assertion bridge's tests execute.
+
+A comment ``# @name`` tags a line the tests look up by name with
+:func:`tests.lint.conftest.line_of`.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+
+from arachne import (
+    LEFT,
+    RIGHT,
+    UP,
+    Axes,
+    Camera,
+    Dot,
+    Scene,
+    Text,
+    ValueTracker,
+    there_and_back,
+)
+from arachne.lint.bridge import declare, record, watch
+
+#: Set by a test once its scene has recorded: a probe called after that
+#: fails the test.
+RECORDED = [False]
+
+
+def _plot():
+    """Axes over [0, 1] by [0, 1], 4 units a side, centred: the plotted
+    region is x and y in [-2, 2].
+    """
+    return Axes(x_range=[0, 1, 0.5], y_range=[0, 1, 0.5], x_length=4, y_length=4)
+
+
+def planted(function):
+    """Mark ``function`` as one the tests' patched prover admits unproven."""
+    function.planted = True
+    return function
+
+
+class PointOff(Scene):
+    """A point computed past the axes' x range, asserted on the plot at 1 s."""
+
+    def construct(self):
+        ax = _plot()
+        self.add(ax)
+        self.wait(1)
+        off = np.array([ax.c2p(1.5, 0.5)])
+        self.found = record("axes.outside", off, reference=ax)  # @point-off
+        self.wait(0.5)
+
+
+class PointOn(Scene):
+    """:class:`PointOff`'s twin: the point is inside the range."""
+
+    def construct(self):
+        ax = _plot()
+        self.add(ax)
+        self.wait(1)
+        self.found = record("axes.outside", np.array([ax.c2p(0.5, 0.5)]), reference=ax)
+        self.wait(0.5)
+
+
+class Unadded(Scene):
+    """A dot and a raw point asserted on axes, none of the three ever added
+    to the scene.
+    """
+
+    def construct(self):
+        ax = _plot()
+        self.wait(0.5)
+        record("axes.outside", Dot(ax.c2p(0.5, 1.4)), reference=ax)  # @unadded-dot
+        record("axes.outside", [ax.c2p(-0.2, 0.5)], reference=ax)  # @unadded-point
+        self.wait(0.5)
+
+
+class Margined(Scene):
+    """A point just inside the plot, but within the margin of its edge."""
+
+    def construct(self):
+        ax = _plot()
+        self.add(ax)
+        self.wait(0.25)
+        near = [ax.c2p(0.98, 0.5)]
+        record("axes.outside", near, reference=ax, margin=0.2)  # @margined
+        record("axes.outside", near, reference=ax)
+        self.wait(0.25)
+
+
+class PenOff(Scene):
+    """A watched pen driven past the axes' x range during the play at 1-2 s,
+    and left there.
+    """
+
+    def construct(self):
+        ax = _plot()
+        pen = Dot(ax.c2p(0.5, 0.5))
+        self.add(ax, pen)
+        watch("axes.outside", pen, reference=ax)  # @pen-watch
+        self.wait(1)
+        self.play(pen.animate.move_to(ax.c2p(2.0, 0.5)))  # @pen-play
+        self.wait(0.5)
+
+
+class PenOn(Scene):
+    """:class:`PenOff`'s twin: the pen stays inside."""
+
+    def construct(self):
+        ax = _plot()
+        pen = Dot(ax.c2p(0.5, 0.5))
+        self.add(ax, pen)
+        watch("axes.outside", pen, reference=ax)
+        self.wait(1)
+        self.play(pen.animate.move_to(ax.c2p(0.9, 0.5)))
+        self.wait(0.5)
+
+
+class PenBack(Scene):
+    """A watched pen that leaves the plot and comes back: two excursions."""
+
+    def construct(self):
+        ax = _plot()
+        pen = Dot(ax.c2p(0.5, 0.5))
+        self.add(ax, pen)
+        watch("axes.outside", pen, reference=ax)
+        self.play(pen.animate.move_to(ax.c2p(1.5, 0.5)), run_time=0.5)  # @back-out
+        self.play(pen.animate.move_to(ax.c2p(0.5, 0.5)), run_time=0.5)
+        self.wait(0.5)
+        self.play(pen.animate.move_to(ax.c2p(0.5, -0.5)), run_time=0.5)  # @back-down
+        self.wait(0.25)
+
+
+class ProbeOff(Scene):
+    """A watched probe, a function of a tracker, driven off the plot; the
+    probe fails if it is called once the scene has recorded.
+    """
+
+    def construct(self):
+        ax = _plot()
+        tracker = ValueTracker(0.5)
+        self.add(ax)
+
+        def tip():
+            if RECORDED[0]:
+                raise AssertionError("the probe was called after the scene recorded")
+            return ax.c2p(tracker.get_value(), 0.5)
+
+        watch("axes.outside", tip, reference=ax)  # @probe-watch
+        self.play(tracker.animate.set_value(2.0))  # @probe-play
+        self.wait(0.5)
+
+
+class DriftChecked(Scene):
+    """The probe demotes its first play (a planted history-dependent
+    updater), so the session records it again: a recorded point off the
+    plot, and a watched dot pushed off the top in the second play.
+    """
+
+    def construct(self):
+        ax = _plot()
+        self.add(ax)
+        record("axes.outside", [ax.c2p(1.5, 0.5)], reference=ax)  # @drift-record
+        tracker = ValueTracker(0)
+        drifter = Dot(LEFT * 2).add_updater(
+            planted(lambda m: m.set_x(max(m.get_x(), tracker.get_value())))
+        )
+        self.add(drifter)
+        watch("axes.outside", drifter, reference=ax)  # @drift-watch
+        self.play(tracker.animate.set_value(1.5), rate_func=there_and_back)
+        drifter.clear_updaters()
+        self.play(drifter.animate.shift(UP * 3), run_time=0.5)  # @drift-up
+
+
+class Declared(Scene):
+    """Terms declared before the first play and changed after it."""
+
+    def construct(self):
+        self.a = a = Text("a")
+        self.b = b = Text("b").next_to(a, RIGHT)
+        self.add(a, b)
+        self.found = declare(text_gap=0.3, exempt=[a, (a, b)])  # @declare
+        self.wait(0.5)
+        declare(pad=0.05)  # @declare-pad
+        self.wait(0.5)
+
+
+class BadTerm(Scene):
+    """A declaration of a term the bridge does not know."""
+
+    def construct(self):
+        declare(text_spacing=0.3)
+        self.wait(0.25)
+
+
+class UnknownCode(Scene):
+    """A record of a code the bridge does not check."""
+
+    def construct(self):
+        record("overlap.text", [(0, 0, 0)], reference=_plot())
+        self.wait(0.25)
+
+
+class NoReference(Scene):
+    """An ``axes.outside`` record with no axes to be outside of."""
+
+    def construct(self):
+        record("axes.outside", [(0, 0, 0)])
+        self.wait(0.25)
+
+
+def _through(method, name):
+    """A function that calls ``method`` and returns what it returns, named
+    ``name``: a camera method replaced by one that changes nothing drawn.
+    """
+
+    def replaced(self, *args, **kwargs):
+        return method(self, *args, **kwargs)
+
+    replaced.__name__ = name
+    return replaced
+
+
+def _plays(scene):
+    dot = Dot(LEFT)
+    scene.add(dot)
+    scene.play(dot.animate.shift(RIGHT * 2))
+    scene.wait(0.25)
+
+
+class NothingReplaced(Scene):
+    """The plays the replaced-method scenes play, on the engine's camera."""
+
+    def construct(self):
+        _plays(self)
+
+
+class InstanceReplaced(Scene):
+    """The camera instance holds a function of the scene's in place of the
+    method that lists what it draws.
+    """
+
+    def construct(self):
+        camera = self.renderer.camera
+        camera.get_mobjects_to_display = _through(
+            Camera.get_mobjects_to_display, "get_mobjects_to_display"
+        ).__get__(camera)
+        _plays(self)
+
+
+class ClassReplaced(Scene):
+    """The engine's camera class has its method that lists what it draws
+    replaced for the scene's run, and put back after.
+    """
+
+    def construct(self):
+        original = vars(Camera)["get_mobjects_to_display"]
+        Camera.get_mobjects_to_display = _through(original, "get_mobjects_to_display")
+        try:
+            _plays(self)
+        finally:
+            Camera.get_mobjects_to_display = original
+
+
+class MemberReplaced(Scene):
+    """A camera member no frame is drawn through, replaced on the instance."""
+
+    def construct(self):
+        camera = self.renderer.camera
+        camera.get_coords_of_all_pixels = lambda: None
+        _plays(self)
