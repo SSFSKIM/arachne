@@ -181,50 +181,53 @@ ENGINE_DIR_KEYS = (
     "log_dir",
 )
 
-#: Stands for a template field no directory supplies (a module or scene
-#: name, the quality): a directory is taken up to the first one.
+#: Stands for the module and scene names, which a run's configuration does
+#: not hold: a directory whose path has one as a whole component is excluded
+#: up to it (``{media_dir}/videos/{module_name}/...``).
 _HOLE = "\0"
-
-
-class _Fields(dict[str, str]):
-    def __missing__(self, key: str) -> str:
-        return _HOLE
 
 
 def engine_dirs(config: Any) -> list[str]:
     """The directories the engine writes its media and caches into, under
-    ``config``, as far as they resolve without a module or scene name.
+    ``config``, resolved by ``config.get_dir`` itself, so that every field
+    it fills (the other directories, ``assets_dir``, the input and output
+    files, the quality) fills them here too.
 
-    Each is read as the configuration holds it, a ``str`` or any path
-    object, and its template fields are filled from the others as
-    ``ManimConfig.get_dir`` fills them. A directory that does not resolve is
-    left out: watching what a scene reads never stops it from rendering.
+    It resolves them on a view of the configuration whose path objects are
+    strings (the configuration keeps one that is not a ``pathlib.Path`` as
+    it was given, which ``get_dir`` refuses). A directory whose path holds a
+    module or scene name as a whole component is taken up to it; one that
+    does not resolve, or holds a name inside a component, is left out: it
+    excludes nothing, and watching what a scene reads never stops a render.
     """
-    raw: dict[str, str] = {}
-    for key in ENGINE_DIR_KEYS:
-        try:
-            value = getattr(config, key)
-            if value is not None:
-                raw[key] = os.fsdecode(os.fspath(value))
-        except (AttributeError, KeyError, TypeError, ValueError):
-            continue
+    try:
+        view = type(config)()
+        view._d = {
+            key: os.fspath(value) if isinstance(value, os.PathLike) else value
+            for key, value in config._d.items()
+        }
+    except (AttributeError, TypeError, ValueError):
+        return []
     found = []
-    for text in raw.values():
-        # Each pass fills a level of nesting (``{media_dir}/Tex``); a field
-        # that does not format ends the directory where it begins.
-        for _ in range(len(raw) + 1):
-            if "{" not in text:
-                break
-            try:
-                text = text.format_map(_Fields(raw))
-            except (AttributeError, IndexError, KeyError, ValueError):
-                break
-        text = text.split(_HOLE)[0].split("{")[0]
-        if text:
-            try:
-                found.append(os.path.realpath(text))
-            except (OSError, ValueError):
+    for key in ENGINE_DIR_KEYS:
+        if not isinstance(view._d.get(key), str):
+            continue
+        try:
+            directory = view.get_dir(key, module_name=_HOLE, scene_name=_HOLE)
+        except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+            continue
+        if directory is None:
+            continue
+        parts = Path(directory).parts
+        cut = next((k for k, part in enumerate(parts) if _HOLE in part), None)
+        if cut is not None:
+            if parts[cut] != _HOLE or cut == 0:
                 continue
+            parts = parts[:cut]
+        try:
+            found.append(os.path.realpath(os.path.join(*parts)))
+        except (OSError, ValueError):
+            continue
     return found
 
 

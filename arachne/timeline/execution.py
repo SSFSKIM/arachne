@@ -32,6 +32,7 @@ __all__ = [
     "Divergence",
     "Execution",
     "ExecutionSummary",
+    "Incomparable",
     "NodeValues",
     "PlaySummary",
     "Reexecute",
@@ -140,6 +141,12 @@ SUMMARY_VERSION = 2
 
 #: A raw value of a field: an array, or a scalar.
 Leaf: TypeAlias = np.ndarray | bool | int | float | str | None
+
+
+class Incomparable(ValueError):  # noqa: N818 (a refusal, named as one)
+    """Two executions :func:`compare` refuses: of different sources, or of a
+    source not known for one of them.
+    """
 
 
 @dataclass(frozen=True)
@@ -396,12 +403,21 @@ def compare(mine: ExecutionSummary, theirs: ExecutionSummary) -> Divergence | No
     from and the states at every instant both kept are compared, then the
     state the script left at its end: by key, and where keys differ, by raw
     value within :data:`TOLERANCE` (an array's dtype and shape exactly).
-    Raises :class:`ValueError` for two executions of different sources.
+    Raises :class:`Incomparable` for two executions of different sources,
+    and for one whose source is unknown (a ``None`` digest: a source file
+    gone before its run ended, a scene defined in no file), which is the
+    same source as none.
     """
-    if mine.identity.source_digest != theirs.identity.source_digest:
-        raise ValueError(
+    digests = (mine.identity.source_digest, theirs.identity.source_digest)
+    if None in digests:
+        raise Incomparable(
+            "An execution whose source is unknown is not compared: source digest"
+            f" {digests[0]} and {digests[1]}."
+        )
+    if digests[0] != digests[1]:
+        raise Incomparable(
             "Two executions of different sources are not compared: source digest"
-            f" {mine.identity.source_digest} and {theirs.identity.source_digest}."
+            f" {digests[0]} and {digests[1]}."
         )
     changed = changed_inputs(mine.identity, theirs.identity)
     for play, other in zip(mine.plays, theirs.plays, strict=False):

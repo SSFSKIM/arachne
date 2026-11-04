@@ -474,8 +474,9 @@ class Recorder:
         try:
             digest = source_digest(sources, os.path.dirname(record.scene_file))
         except OSError:
-            # A source file gone since the run: an identity no execution
-            # shares, never a failed render.
+            # A source file gone before the run ended: the source is unknown
+            # (``None``, which compares with no execution), never a failed
+            # render.
             digest = None
         return Identity(
             source_digest=digest,
