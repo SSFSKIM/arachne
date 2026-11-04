@@ -46,19 +46,19 @@ __all__ = [
     "view_of",
 ]
 
-import weakref
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 
 from .. import config
+from ..timeline.mapping import render_mapping_centre
 
 if TYPE_CHECKING:
     from arachne.camera.camera import Camera
     from arachne.mobject.mobject import Mobject
-    from arachne.timeline.record import Capture, Record
+    from arachne.timeline.record import Record
 
 #: ``(x_min, y_min, x_max, y_max)``: in pixels, y down, or in home-frame
 #: units, y up.
@@ -256,97 +256,6 @@ def screen_box(view: View, box: Box) -> Box:
         (box[2] - half_width) * x_scale,
         (half_height - box[1]) * y_scale,
     )
-
-
-def render_mapping_centre(record: Record) -> Centre | None:
-    """The centre the render of ``record`` froze into its frame array's
-    Cairo context: the frame's centre at the first draw that paints a path
-    through it, in the order a render draws (each drawn play's static
-    picture, then its frames; the final frame when the scene played
-    nothing). ``None`` for a camera that maps every draw around its frame as
-    it is then (a MovingCamera), and when no drawn frame paints a path.
-    Found from the record's captures, without drawing.
-    """
-    from arachne.camera.moving_camera import MovingCamera
-
-    if record in _FROZEN:
-        return _FROZEN[record]
-    camera = record._scene.renderer.camera
-    found = None if isinstance(camera, MovingCamera) else _first_path_centre(record)
-    if record.final is not None:
-        # A finished record draws no more frames.
-        _FROZEN[record] = found
-    return found
-
-
-_FROZEN: weakref.WeakKeyDictionary[Record, Centre | None] = weakref.WeakKeyDictionary()
-
-
-def _first_path_centre(record: Record) -> Centre | None:
-    from arachne.timeline.clock import exact, frames_in
-    from arachne.timeline.draw import Drawing
-
-    camera = record._scene.renderer.camera
-    fps = exact(camera.frame_rate)
-    with Drawing(record) as drawing:
-
-        def centre_if_path(
-            capture: Capture, targets: Sequence[Mobject]
-        ) -> Centre | None:
-            drawing.show(capture, targets)
-            if _paints_path(camera, targets):
-                return _centre(camera.frame_center)
-            return None
-
-        for play in record.plays:
-            frames = frames_in(play.start, play.end, fps)
-            drawn = not play.skipped and bool(frames)
-            # A frozen frame's static picture is drawn whatever is skipped.
-            if play.static and (drawn or play.held):
-                found = centre_if_path(
-                    record._captures[play.static_seq], list(play.static)
-                )
-                if found is not None:
-                    return found
-            if not drawn:
-                continue
-            captures = [play.samples[0]] if play.held else _frame_captures(play, frames)
-            for capture in captures:
-                found = centre_if_path(
-                    capture, list(capture.moving) or capture.draw_list()
-                )
-                if found is not None:
-                    return found
-        if not record.plays and record.final is not None:
-            return centre_if_path(record.final, record.final.draw_list())
-    return None
-
-
-def _frame_captures(play: Any, frames: Sequence[Any]) -> list[Capture]:
-    """The captures the play's frames draw, each once, in order."""
-    found: list[Capture] = []
-    for t in frames:
-        try:
-            capture = play.capture_at(t)
-        except LookupError:
-            # A record off the render's grid: the last capture before.
-            capture = play.base_at(t)
-        if not found or found[-1] is not capture:
-            found.append(capture)
-    return found
-
-
-def _paints_path(camera: Camera, targets: Sequence[Mobject]) -> bool:
-    """Whether drawing ``targets`` paints a path through the frame array's
-    context: a VMobject with points, unless a background image fills it (it
-    draws into an array of its own).
-    """
-    from arachne.mobject.types.vectorized_mobject import VMobject
-
-    for mob in camera.get_mobjects_to_display(targets):
-        if camera.type_or_raise(mob) is VMobject and not mob.get_background_image():
-            return True
-    return False
 
 
 def _cached_mapping_centre(camera: Camera) -> Centre | None:
