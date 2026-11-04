@@ -25,6 +25,10 @@ play that begins after the last instant asked.
   before it, and the state that frame shows; after the script ended, by the
   scene as it left it.
 
+:func:`visit_frames` runs the second kind of forward run for a record that
+draws as well, without drawing: on the render's grid, its frames
+evaluated as the render evaluates them, a visitor shown each one asked.
+
 The answer is labelled ``"forward"`` and names why the record could not
 answer (:class:`Fallback`). It is never an answer about the record: the new
 execution is compared with the record's over what it ran
@@ -42,7 +46,14 @@ helper edited since the session opened runs as it was.
 
 from __future__ import annotations
 
-__all__ = ["Answer", "Fallback", "ForwardRun", "Visit", "answer_instants"]
+__all__ = [
+    "Answer",
+    "Fallback",
+    "ForwardRun",
+    "Visit",
+    "answer_instants",
+    "visit_frames",
+]
 
 import bisect
 import math
@@ -194,6 +205,23 @@ def answer_instants(
     return [found[t] for t in asked]
 
 
+def visit_frames(session: Session, instants: Iterable[Fraction], visit: Visit) -> None:
+    """Execute the session's scene once more on its render's frame grid and
+    show ``visit`` the live scene at each of ``instants``, frames of that
+    grid (or the end of the scene), whether or not the record answers them:
+    each evaluated as the render evaluates that frame, through the scene's
+    own frame hooks, where the record may hold no capture of it. The run is
+    kept and compared as :func:`answer_instants`' is.
+    """
+    _forward(
+        session,
+        sorted({exact(t) for t in instants}),
+        frames=False,
+        visit=visit,
+        render_grid=True,
+    )
+
+
 class _Stopped(BaseException):  # noqa: N818 (an instruction, not an error)
     """The forward run is past the last instant asked. Not an ``Exception``,
     so that a scene catching its own errors lets it through.
@@ -321,12 +349,14 @@ def _forward(
     *,
     frames: bool,
     visit: Visit | None = None,
+    render_grid: bool = False,
 ) -> tuple[dict[Fraction, tuple[State, Image.Image | None]], Fallback | None]:
     """Execute the session's scene again for ``instants`` (in time order),
     keep the run in :attr:`.Session.forward_runs` and any divergence in
     :attr:`.Session.divergences`, and answer each instant from it; with the
     fallback every answer takes when the source changed since the record.
-    ``visit`` sees the live scene at each instant answered.
+    ``visit`` sees the live scene at each instant answered. With
+    ``render_grid`` the run is on the render's grid whatever the record's.
     """
     from arachne.session import _reads, execute
 
@@ -346,14 +376,15 @@ def _forward(
     def recorder(scene: Scene) -> Recorder:
         forward_camera = scene.renderer.camera
         _resize(forward_camera, shape)
-        if refused:
+        if refused or render_grid:
             fps = exact(forward_camera.frame_rate)
             grid: Fraction | None = fps
             extra: frozenset[Fraction] = frozenset()
-            # Drawn whether or not frames are asked for: what a play drawn as
-            # it runs draws may be written into the scene.
-            asked = _on_screen(fps, instants) if frames else []
-            _keep_frames(scene, fps, asked, written)
+            if refused:
+                # Drawn whether or not frames are asked for: what a play drawn
+                # as it runs draws may be written into the scene.
+                asked = _on_screen(fps, instants) if frames else []
+                _keep_frames(scene, fps, asked, written)
             # Each instant is answered by the frame on screen there.
             shown = dict(zip(instants, _on_screen(fps, instants), strict=True))
         else:

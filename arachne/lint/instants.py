@@ -1,18 +1,18 @@
-"""The instants the lint reads: frames of the record's grid.
+"""The instants the lint reads: frames of the render's grid.
 
 By default (``"held+sampled"``) they are the first frame of the grid at or
 after each ``k/fps`` of the scene, each play's first and last frame (a
 frozen play's frame among them) and the final capture, the scene as its
-script left it. Asked for at times, the lint reads the frame on screen at
+script left it. The grid is the render's frame rate, whatever grid the
+record keeps instants at (none, for a record that keeps every instant). Asked for at times, the lint reads the frame on screen at
 each: the last frame at or before it, or the final capture after the last
-play. Every one is a capture the record kept and a frame the render shows,
-so a finding's time names a frame a viewer sees; a play no frame falls in
-is read at none.
+play. Every one is a frame the render shows, so a finding's time names a
+frame a viewer sees; a play no frame falls in is read at none.
 """
 
 from __future__ import annotations
 
-__all__ = ["DEFAULT", "LintInstant", "lint_instants"]
+__all__ = ["DEFAULT", "LintInstant", "lint_instants", "render_grid"]
 
 import math
 from collections.abc import Iterable
@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from fractions import Fraction
 from typing import TYPE_CHECKING
 
-from arachne.timeline.clock import TICK_RATE, exact, frames_in
+from arachne.timeline.clock import exact, frames_in
 
 if TYPE_CHECKING:
     from arachne.timeline.record import Record
@@ -41,6 +41,11 @@ class LintInstant:
     why: frozenset[str]
 
 
+def render_grid(record: Record) -> Fraction:
+    """The frame rate of the render ``record``'s execution describes."""
+    return exact(record._scene.renderer.camera.frame_rate)
+
+
 def lint_instants(
     record: Record,
     fps: Fraction | float = 4,
@@ -50,7 +55,7 @@ def lint_instants(
     """The instants of ``record`` the lint reads, in time order: at ``fps``
     by default, or the frames on screen at the times ``at`` lists.
     """
-    grid = record.grid if record.grid is not None else Fraction(TICK_RATE)
+    grid = render_grid(record)
     duration = record.duration
     found: dict[Fraction, set[str]] = {}
 
