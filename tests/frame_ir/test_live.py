@@ -48,9 +48,7 @@ def _both_ways(scene_class, painters):
 
 @pytest.mark.parametrize("scene_class", scenes.LIVE_SCENES, ids=lambda c: c.__name__)
 def test_a_live_scene_drawn_from_xf_is_byte_identical(scene_class, painters):
-    (scene, direct, _), (described_scene, described) = _both_ways(
-        scene_class, painters
-    )
+    (scene, direct, _), (described_scene, described) = _both_ways(scene_class, painters)
     assert described_scene.timeline.record.refusal is not None, "drawn live"
     assert len(direct) == len(described) > 0
     for index, (a, b) in enumerate(zip(direct, described, strict=True)):
@@ -93,9 +91,7 @@ def test_without_drawing_the_capture_describes_the_same_frames(painters, monkeyp
         original(self, draw=False)
 
     monkeypatch.setattr(live_module.LivePainter, "__init__", quiet)
-    (_, direct, direct_calls), (_, described) = _both_ways(
-        scenes.LiveCounted, painters
-    )
+    (_, direct, direct_calls), (_, described) = _both_ways(scenes.LiveCounted, painters)
     assert scenes.CountedFill.calls == direct_calls
     for index, (a, b) in enumerate(zip(direct, described, strict=True)):
         np.testing.assert_array_equal(a, b, err_msg=f"frame {index}")

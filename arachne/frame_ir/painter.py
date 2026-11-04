@@ -26,7 +26,7 @@ from typing import Any
 import numpy as np
 
 from .cairo_painter import CairoDrawer
-from .extract import Blend, FrameStream
+from .extract import FrameStream, Term
 from .xf import Delta, StreamState
 
 #: The draw paths, and whether each describes frames in XF.
@@ -72,7 +72,7 @@ class IrCairoPainter:
         groups: Sequence[tuple[str, Sequence[Any]]],
         *,
         t: Fraction = Fraction(0),
-        terms: Mapping[int, Blend] | None = None,
+        terms: Mapping[int, Term] | None = None,
     ) -> np.ndarray:
         """The frame the camera draws from ``groups`` (each a layer and the
         list one capture is handed), from its XF description alone.
