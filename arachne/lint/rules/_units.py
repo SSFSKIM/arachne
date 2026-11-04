@@ -23,23 +23,23 @@ from ._geometry import anchor_box, meets, stroke_samples, union
 MARKER_SIZE = 0.36
 #: A stroke whose ends lie this close together is a ring.
 RING_GAP = 1e-4
-#: The type a text's own plate is drawn as.
-PLATE_TYPE = "BackgroundRectangle"
 
 
 @dataclass(eq=False)
 class Measured:
     """A unit at an instant: its leaves in paint order, the top-level
-    mobject holding it (``root``), whether it is part of a grid, what it
-    says when it is a text, and its object as a finding names it.
+    mobject holding it (``root``), what it says when it is a text, and its
+    object as a finding names it.
     """
 
     unit: Unit
     leaves: tuple[Leaf, ...]
     root: str
-    grid: bool
     said: str | None
     object: FindingObject
+    #: Where the last copy of a text drawn more than once lays its glyphs:
+    #: the frame shows that copy (0 when none is drawn after the first).
+    copy_top: int = 0
 
     @property
     def id(self) -> str:
@@ -60,8 +60,10 @@ class Measured:
 
     @cached_property
     def region(self) -> bool:
-        """Held to boxes: a text, or a shape filled in every leaf."""
-        return self.text or all(leaf.fill_opacity > 0 for leaf in self.leaves)
+        """Held to boxes: a text, or a shape filled in every leaf (by its
+        fill's first row).
+        """
+        return self.text or all(leaf.first_fill_opacity > 0 for leaf in self.leaves)
 
     @cached_property
     def outer(self) -> Box:
@@ -72,13 +74,8 @@ class Measured:
 
     @cached_property
     def glyphs(self) -> tuple[Leaf, ...]:
-        """A text's leaves less its own plate."""
-        return tuple(leaf for leaf in self.leaves if leaf.type != PLATE_TYPE)
-
-    @cached_property
-    def plate(self) -> tuple[Leaf, ...]:
-        """A text's own plate, drawn under its glyphs."""
-        return tuple(leaf for leaf in self.leaves if leaf.type == PLATE_TYPE)
+        """A text's leaves less its own background rectangle."""
+        return tuple(leaf for leaf in self.leaves if not leaf.plate)
 
     @cached_property
     def glyph_box(self) -> Box:
@@ -129,16 +126,12 @@ class Measured:
     @cached_property
     def top(self) -> int:
         """Where its last ink is drawn."""
-        return max(leaf.order for leaf in self.leaves)
+        return max(self.copy_top, *(leaf.order for leaf in self.leaves))
 
     @cached_property
     def glyph_top(self) -> int:
         """Where a text's last glyph is drawn, its plate aside."""
-        return max(leaf.order for leaf in self.glyphs or self.leaves)
-
-    @cached_property
-    def leaf_ids(self) -> frozenset[str]:
-        return frozenset(leaf.id for leaf in self.leaves)
+        return max(self.copy_top, *(leaf.order for leaf in self.glyphs or self.leaves))
 
     def on(self, frame: Box) -> bool:
         return meets(self.outer, frame)
@@ -167,10 +160,12 @@ def _gather(parts: Parts) -> list[Measured]:
                 continue
             entry = grouped.setdefault(
                 leaf.unit.id,
-                {"unit": leaf.unit, "leaves": [], "root": part.root, "grid": False},
+                {"unit": leaf.unit, "leaves": [], "root": part.root, "copy_top": 0},
             )
             entry["leaves"].append(leaf)
-            entry["grid"] = entry["grid"] or part.grid
+            if part.copies > 1:
+                # A text drawn again in place: its part's top is its last copy's.
+                entry["copy_top"] = max(entry["copy_top"], part.top)
     said = {part.id: part.text for part in parts.parts if part.kind == "text"}
     units = []
     for entry in grouped.values():
@@ -183,9 +178,9 @@ def _gather(parts: Parts) -> list[Measured]:
                 unit,
                 leaves,
                 entry["root"],
-                entry["grid"],
                 said.get(unit.id) if unit.text else None,
                 _object(parts, unit, leaves, said.get(unit.id)),
+                entry["copy_top"],
             )
         )
     units.sort(key=lambda u: u.leaves[0].order)

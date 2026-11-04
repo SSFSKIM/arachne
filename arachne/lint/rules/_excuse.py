@@ -1,12 +1,13 @@
 """The scene's exemptions, as a sweep reads them.
 
-A selector names a unit when it selects the unit's object (the unit, or a
-group holding it, answers to it) or, by id, one of the unit's own leaves. A
-bare selector mutes the units it names against everything, the frame edge
-and paint order included. A pair says one contact between the two units it
-names is decided: it excuses their geometry and nothing else, so a shape a
-pair names that paints over the text it names is still reported, and no
-pair speaks for the frame edge, which is no unit.
+A selector names a unit when it answers to a mobject the unit is made from
+(anything in its family; for axis furniture, its axes' whole family) or to
+a group holding it. A bare selector mutes the units it names against
+everything, the frame edge and paint order included. A pair says one
+contact between the two units it names is decided: it excuses their
+geometry and nothing else, so a shape a pair names that paints over the
+text it names is still reported, and no pair speaks for the frame edge,
+which is no unit.
 """
 
 from __future__ import annotations
@@ -14,13 +15,19 @@ from __future__ import annotations
 from typing import Any
 
 from ..exempt import Exemptions
+from ..findings import Holder
 from ._units import Measured
 
 
+def _answers(selector: Any, holder: Holder) -> bool:
+    value = {"id": holder.id, "name": holder.name, "line": holder.line}[selector.by]
+    return bool(value == selector.value)
+
+
 def _names(selector: Any, unit: Measured) -> bool:
-    if selector.selects(unit.object):
-        return True
-    return bool(selector.by == "id" and selector.value in unit.leaf_ids)
+    return selector.selects(unit.object) or any(
+        _answers(selector, member) for member in unit.unit.family
+    )
 
 
 def muted(exempt: Exemptions, unit: Measured) -> bool:

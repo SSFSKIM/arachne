@@ -213,20 +213,60 @@ def _between(result) -> set[tuple[str, frozenset[str]]]:
     return {(f.code, frozenset(o.kind for o in f.objects)) for f in result.findings}
 
 
-def test_a_stroke_hidden_under_the_card_a_text_sits_on_is_clear(run):
-    crossed = ("overlap.text", frozenset({"Line", "Text"}))
-    assert _between(run("LineUnderAWord")) == {crossed}
-    # The card still touches both, as at any closing sweep; the line meets
-    # the word only where the card hides it.
-    assert _between(run("LineUnderACard")) == {
+CROSSED = ("overlap.text", frozenset({"Line", "Text"}))
+
+
+def test_a_stroke_under_a_card_is_asked_at_the_end_and_hidden_mid_scene(run):
+    assert _between(run("LineUnderAWord")) == {CROSSED}
+    card_contacts = {
         ("contact.held", frozenset({"Line", "Rectangle"})),
         ("overlap.text", frozenset({"Text", "Rectangle"})),
     }
-    assert crossed in _between(run("LineUnderAFaintCard"))
+    # A closing sweep asks every contact, the hidden one included.
+    assert _between(run("LineUnderACard")) == {CROSSED, *card_contacts}
+    # Mid-scene, only a wholly opaque card hides the line under the word.
+    assert CROSSED not in _between(run("LineUnderACard", mid_scene=True))
+    assert CROSSED in _between(run("LineUnderANearlyOpaqueCard", mid_scene=True))
+    assert CROSSED in _between(run("LineUnderAFaintCard", mid_scene=True))
 
 
-def test_a_stroke_hidden_under_a_text_s_own_plate_is_clear(run):
-    assert _codes(run("LineUnderAPlatedWord")) == []
+def test_a_text_s_own_plate_hides_nothing_under_it(run):
+    # The plate is the text's own: a stroke under it touches the text.
+    assert _between(run("LineUnderAPlatedWord")) == {CROSSED}
+    assert _between(run("LineUnderAPlatedWord", mid_scene=True)) == {CROSSED}
+
+
+def test_a_plate_of_the_scene_s_own_class_is_still_the_text_s_plate(run):
+    assert _codes(run("CustomPlatedCaptionAtTheTop")) == []
+
+
+# Exemptions inside and around a unit -----------------------------------------
+
+
+def test_exempting_a_group_inside_a_unit_mutes_the_unit(run):
+    assert _codes(run("SquareInNestedGroups")) == ["occlusion.glyph"]
+    assert _codes(run("SquareInNestedGroups", exempt=["name:inner"])) == []
+
+
+def test_exempting_an_axis_s_tip_mutes_all_of_its_furniture(run):
+    assert set(_codes(run("WordOnANumberLine"))) == {"overlap.text"}
+    assert _codes(run("WordOnANumberLine", exempt=["name:tip"])) == []
+
+
+# A text drawn twice ------------------------------------------------------------
+
+
+def test_a_copy_drawn_over_a_cover_is_seen(run):
+    codes = _codes(run("CopyOverACover"))
+    assert "occlusion.glyph" not in codes
+    assert codes == ["overlap.text"]
+
+
+# A fill read as its first row ---------------------------------------------------
+
+
+def test_a_fill_that_starts_transparent_is_held_as_an_outline(run):
+    assert _codes(run("WordOnAGradient")) == []
 
 
 def test_a_text_over_its_own_halo_reads_clean_mid_scene_only(run):
@@ -238,13 +278,9 @@ def test_a_text_over_its_own_halo_reads_clean_mid_scene_only(run):
 # Grids --------------------------------------------------------------------
 
 
-def test_a_text_over_a_field_drawn_under_it_is_clear(run, session_of):
-    assert _codes(run("WordOverAField")) == []
+def test_a_text_over_a_field_s_arrow_touches_it_as_over_any_arrow(run):
+    assert _codes(run("WordOverAField")) == ["overlap.text"]
     assert _codes(run("WordOverAnArrow")) == ["overlap.text"]
-    # The word does lie over one of the field's arrows.
-    units = _units_at_end(session_of, "WordOverAField")
-    (word,) = (u for u in units if u.text)
-    assert any(u.grid and box_gap(u.outer, word.outer) < 0 for u in units)
 
 
 # Under a ThreeDCamera ---------------------------------------------------------
