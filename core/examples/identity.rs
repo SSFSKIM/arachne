@@ -1,7 +1,8 @@
 //! Writes what the core computes on a fixed set of inputs, as raw bytes, into a directory, so two
 //! builds (a baseline x86-64 and an x86-64-v3 build) can be compared byte for byte
-//! (`core/ci/identity.sh`): every frame the core draws today, CE's projection over a grid of
-//! cameras and points, and an XF file with its content keys.
+//! (`core/ci/identity.sh`): backgrounds, mesh scenes (lit, translucent, intersecting, flat) with
+//! each pixel's resolve, drawn on one thread and on four, CE's projection over a grid of cameras
+//! and points, and an XF file with its content keys.
 //!
 //! Usage: `cargo run --release --example identity -- <out-dir>`
 
@@ -34,6 +35,14 @@ fn frames() -> Vec<(String, Vec<u8>)> {
             .draw(view.pixel_width, view.pixel_height, 1)
             .expect("the core draws backgrounds");
         out.push((name.to_string(), frame));
+    }
+    let (w, h) = (480, 270);
+    for (name, stream) in common::meshes::scenes(w, h) {
+        let one = stream.render(w, h, 1).expect("the core draws meshes");
+        let four = stream.render(w, h, 4).expect("the core draws meshes");
+        assert!(one == four, "{name}: one thread and four differ");
+        out.push((format!("mesh-{name}"), one.rgba));
+        out.push((format!("mesh-{name}-resolves"), one.resolves));
     }
     out
 }

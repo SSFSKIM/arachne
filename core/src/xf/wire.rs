@@ -174,13 +174,10 @@ fn encode_view(v: &View) -> Vec<u8> {
         }
         w.f64(v.cairo_line_width_multiple);
         w.bool(v.use_z_index);
-        let (code, params): (u8, &[f64]) = match &v.light {
-            LightModel::Ce => (0, &[]),
-            LightModel::Other { code, params } => (*code, params),
-        };
+        let (code, params) = v.light.code_and_params();
         w.u8(code);
         w.count(params.len());
-        w.f64s(params);
+        w.f64s(&params);
     })
 }
 
@@ -576,10 +573,7 @@ fn decode_view(r: &mut R) -> Result<View> {
     let code = r.u8()?;
     let n = r.count(8)?;
     let params = (0..n).map(|_| r.f64()).collect::<Result<Vec<_>>>()?;
-    let light = match (code, params.is_empty()) {
-        (0, true) => LightModel::Ce,
-        _ => LightModel::Other { code, params },
-    };
+    let light = LightModel::from_code(code, params);
     Ok(View {
         pixel_width,
         pixel_height,

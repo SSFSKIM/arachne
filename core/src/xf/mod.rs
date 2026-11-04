@@ -536,10 +536,38 @@ pub enum Camera {
 /// How 3D records are lit.
 #[derive(Clone, Debug, PartialEq)]
 pub enum LightModel {
-    /// CE's per-face shading.
+    /// CE's per-face shading (code 0, no parameters).
     Ce,
+    /// Soft diffuse light in linear light (code 1, parameters `[ambient, wrap]`): the share of
+    /// light a surface facing away from the light keeps, and how far the light wraps past the
+    /// terminator. A placeholder whose parameters, and possibly their list, are settled with the
+    /// 3D look.
+    SoftDiffuse { ambient: f64, wrap: f64 },
     /// A model this build does not know: its code and parameters, refused when drawn.
     Other { code: u8, params: Vec<f64> },
+}
+
+impl LightModel {
+    /// The model a code and its parameters name, as XF writes it.
+    pub fn from_code(code: u8, params: Vec<f64>) -> LightModel {
+        match (code, params.as_slice()) {
+            (0, []) => LightModel::Ce,
+            (1, [ambient, wrap]) => LightModel::SoftDiffuse {
+                ambient: *ambient,
+                wrap: *wrap,
+            },
+            _ => LightModel::Other { code, params },
+        }
+    }
+
+    /// The model's code and parameters, as XF writes them.
+    pub fn code_and_params(&self) -> (u8, Vec<f64>) {
+        match self {
+            LightModel::Ce => (0, Vec::new()),
+            LightModel::SoftDiffuse { ambient, wrap } => (1, vec![*ambient, *wrap]),
+            LightModel::Other { code, params } => (*code, params.clone()),
+        }
+    }
 }
 
 /// The view a frame is drawn from.
