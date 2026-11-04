@@ -84,6 +84,20 @@ class DimmedCamera(ThreeDCamera):
         return out
 
 
+class DashedCamera(ThreeDCamera):
+    """A camera class of the scene's own whose pre-display code dashes the
+    Cairo context its array already has: state held outside the camera's
+    instance, which every stroke drawn after it reads.
+    """
+
+    def transform_points_pre_display(self, mobject, points):
+        out = super().transform_points_pre_display(mobject, points)
+        ctx = self.get_cached_cairo_context(self.pixel_array)
+        if ctx is not None:
+            ctx.set_dash([0.05])
+        return out
+
+
 class Solids(ThreeDScene):
     """A lit surface, axes whose tips are shaded with a gradient, a dot, a
     label fixed in the frame and one of fixed orientation, under an orbit:
@@ -201,6 +215,30 @@ class DimmedPictures(Pictures):
 
     def __init__(self, **kwargs):
         super().__init__(camera_class=DimmedCamera, **kwargs)
+
+
+class DashedSolids(Solids):
+    """:class:`Solids` through :class:`DashedCamera`."""
+
+    def __init__(self, **kwargs):
+        super().__init__(camera_class=DashedCamera, **kwargs)
+
+
+class PatchedStateSolids(Solids):
+    """:class:`Solids` through the engine's camera, its pre-display code
+    replaced on the instance by one that sets the stroke width from each
+    mobject's depth, as :class:`DepthStroked` does (drawn from the record).
+    """
+
+    def patch(self, camera) -> None:
+        place = camera.transform_points_pre_display
+
+        def placed(mobject, points):
+            out = np.array(place(mobject, points))
+            camera.cairo_line_width_multiple = 0.01 * (1 + float(np.mean(out[:, 2])))
+            return out
+
+        camera.transform_points_pre_display = placed
 
 
 class TintedSolids(Solids):

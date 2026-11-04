@@ -230,6 +230,12 @@ def test_a_change_xf_does_not_carry_draws_on_cairo_with_its_reason(
         (camera_scenes.DepthStrokedSolids, "DepthStroked", "cairo_line_width_multiple"),
         # State the engine's display code reads that no view states.
         (camera_scenes.DimmedPictures, "DimmedCamera", "rgb_max_val"),
+        # The same on the record, from code put on the engine camera's instance.
+        (
+            camera_scenes.PatchedStateSolids,
+            "ThreeDCamera.transform_points_pre_display",
+            "cairo_line_width_multiple",
+        ),
     ],
     ids=lambda v: getattr(v, "__name__", v),
 )
@@ -248,3 +254,19 @@ def test_a_camera_whose_code_changes_what_it_holds_as_it_draws_draws_on_cairo(
         f"transform_points_pre_display changed the camera's {attribute} while it drew"
         in finding.message
     )
+
+
+def test_a_camera_whose_draw_differs_from_its_description_draws_on_cairo(findings):
+    """State no snapshot of the camera holds (here its Cairo context's dash,
+    set by its pre-display code) shows where its real draw and the picture
+    drawn from XF differ: from that capture on its own draw stands, named.
+    """
+    direct, described, scene = _both(camera_scenes.DashedSolids)
+    _same(direct, described)
+    [finding] = findings
+    assert (finding.code, finding.subject) == ("render.fallback", "DashedCamera")
+    assert "drew other than XF describes it" in finding.message
+    painter = live_painter(scene.renderer.camera)
+    assert painter is not None
+    # No frame drawn from a description its real draw differed from.
+    assert painter.differing == 0
