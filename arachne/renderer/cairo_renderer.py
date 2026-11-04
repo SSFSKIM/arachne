@@ -113,6 +113,9 @@ class CairoRenderer:
         self.skip_animations = self._original_skipping_status
         self.update_skipping_status()
 
+        # The scene as the script called the play, before it adds what the
+        # animations animate.
+        scene.timeline.calling()
         scene.compile_animation_data(*args, **kwargs)
         skipped = self.skip_animations
         cache_key: str | None = None
