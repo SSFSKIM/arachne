@@ -14,13 +14,17 @@ from arachne import (
     DEGREES,
     UP,
     Circle,
+    CubicBezier,
     ImageMobject,
+    Line,
     MovingCameraScene,
     PMobject,
+    Polygon,
     Scene,
     Square,
     Text,
     ThreeDScene,
+    VMobject,
 )
 from tests.lint.shapes import framed_square
 
@@ -161,3 +165,54 @@ class HelperMade(Scene):
         square = framed_square()  # @helper-call
         self.add(square)
         self.wait(SHOW)
+
+
+def _ink_cases() -> list[tuple[str, object]]:
+    """Objects whose ink is not their points' box: stroke caps and joins,
+    curves whose control points lie off them, paths that paint nothing, a
+    thick point cloud, a cloud partly off the frame and an image too thin to
+    draw.
+    """
+    bezier = ([-2, 0, 0], [-2, 3, 0], [2, 3, 0], [2, 0, 0])
+    return [
+        ("butt_line", Line([0, -1, 0], [0, 1, 0], stroke_width=30)),
+        ("thick_diagonal", Line([-1, -1, 0], [1, 1, 0], stroke_width=80)),
+        (
+            "butt_point",
+            VMobject(stroke_width=30).set_points_as_corners([[0, 0, 0], [0, 0, 0]]),
+        ),
+        (
+            "flat_fill",
+            Polygon([0, -1, 0], [0, 1, 0], [0, -1, 0], stroke_width=0, fill_opacity=1),
+        ),
+        ("acute", Polygon([-1, -1, 0], [0, 1, 0], [0.2, -1, 0], stroke_width=60)),
+        ("stroked_curve", CubicBezier(*bezier, stroke_width=4)),
+        ("filled_curve", CubicBezier(*bezier, stroke_width=0, fill_opacity=1)),
+        ("filled_circle", Circle(radius=1, stroke_width=0, fill_opacity=1)),
+        ("thick_cloud", PMobject(stroke_width=5).add_points(np.array([[0, 0, 0]]))),
+        (
+            "edge_cloud",
+            PMobject(stroke_width=4).add_points(
+                np.array([[-7.12, 0, 0], [-7.1, 0.1, 0]])
+            ),
+        ),
+        (
+            "thin_image",
+            ImageMobject(np.full((2, 2, 4), 255, dtype=np.uint8)).stretch(0, 0),
+        ),
+    ]
+
+
+#: The names of :class:`InkEdges`'s objects, in the order it shows them.
+INK_CASES = [name for name, _ in _ink_cases()]
+
+
+class InkEdges(Scene):
+    """Each object of :func:`_ink_cases` alone, one wait each."""
+
+    def construct(self):
+        for name, mob in _ink_cases():
+            setattr(self, name, mob)
+            self.add(mob)
+            self.wait(SHOW)
+            self.remove(mob)

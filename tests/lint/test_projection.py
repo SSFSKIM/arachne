@@ -19,6 +19,7 @@ from arachne import Circle
 from arachne.camera.projection import (
     View,
     draw_kind,
+    home_box,
     pixel_box,
     record_view,
     render_mapping_centre,
@@ -141,6 +142,28 @@ def _projected(
     return box, view
 
 
+def _ink_box(session: Session, t: Fraction, attribute: str):
+    """The ink box the projection gives the scene's ``self.<attribute>`` at
+    ``t``, or ``None`` when its draw paints nothing.
+    """
+    record = session.record
+    play, capture = record.capture_at(t)
+    assert play is not None
+    with Drawing(record) as drawing:
+        drawing.show(capture, capture.draw_list())
+        view = record_view(record)
+        camera = record._scene.renderer.camera
+        mob = getattr(record._scene, attribute)
+        pixels = pixel_box(camera, view, mob, ink=True)
+        units = home_box(camera, view, mob, ink=True)
+    # The same ink in home-frame units.
+    if pixels is None:
+        assert units is None
+    else:
+        assert units == pytest.approx(screen_box(view, pixels), abs=1e-9)
+    return pixels
+
+
 @pytest.mark.parametrize(("scene", "frame", "name"), PROBES)
 def test_an_object_is_drawn_where_its_projected_box_says(probes, scene, frame, name):
     drawn = _drawn_box(probes.frames(scene)[frame])
@@ -156,6 +179,46 @@ def test_an_object_is_drawn_where_its_projected_box_says(probes, scene, frame, n
     assert session.state_at(t).named(name).box == pytest.approx(
         screen_box(view, points_box), abs=1e-9
     )
+
+
+def _frame_box(frame: np.ndarray) -> tuple[int, int, int, int] | None:
+    rows = np.nonzero(frame[..., :3].max(axis=-1) > 0)[0]
+    return _drawn_box(frame) if rows.size else None
+
+
+@pytest.mark.parametrize("name", projection_scenes.INK_CASES)
+def test_the_ink_box_is_what_the_draw_paints(probes, name):
+    """The ink box follows the draw: Cairo's caps and joins, the curve rather
+    than its control points, nothing for a path or an image that paints
+    nothing, a point cloud thickened at the render's size (asked after the
+    execution's configuration is gone) and kept to the frame as its draw is.
+    """
+    index = projection_scenes.INK_CASES.index(name)
+    frame = 2 * index + 1
+    drawn = _frame_box(probes.frames("InkEdges")[frame])
+    predicted = _ink_box(probes.session("InkEdges"), Fraction(frame, FPS), name)
+    if drawn is None:
+        assert predicted is None
+    else:
+        assert predicted is not None
+        assert max(abs(a - b) for a, b in zip(drawn, predicted, strict=True)) <= 1, (
+            drawn,
+            predicted,
+        )
+
+
+def test_a_path_s_ink_box_is_not_cut_to_the_frame():
+    """A path past the frame's edge keeps its whole box: what is past the
+    edge is not painted, but the box says where the path is.
+    """
+    from arachne import Camera, Square, tempconfig
+
+    with tempconfig(SIZE):
+        camera = Camera()
+        square = Square(side_length=2, stroke_width=4).shift((7, 0, 0))
+        box = pixel_box(camera, view_of(camera), square, ink=True)
+    assert box is not None
+    assert box[0] < 480 < box[2]
 
 
 def test_the_mapping_centre_is_the_frame_centre_at_the_first_path_drawn(probes):

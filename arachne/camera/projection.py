@@ -48,7 +48,7 @@ __all__ = [
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 
@@ -90,7 +90,9 @@ class View:
     array's first draw through it, live for a camera that makes a new
     context for each draw (a MovingCamera). ``home_width`` and
     ``home_height`` are the frame the configuration describes, the unit of
-    home-frame boxes.
+    home-frame boxes. ``configured_pixels`` is the configuration's
+    ``(pixel_width, pixel_height)``, which a point cloud's thickness is
+    scaled from (``Camera.adjusted_thickness``).
     """
 
     camera: Literal["flat", "moving", "three_d"]
@@ -104,6 +106,7 @@ class View:
     home_height: float
     cairo_line_width_multiple: float
     three_d: ThreeDView | None
+    configured_pixels: tuple[int, int]
 
 
 def view_of(
@@ -111,6 +114,7 @@ def view_of(
     *,
     mapping_centre: Sequence[float] | None = None,
     home: tuple[float, float] | None = None,
+    configured_pixels: tuple[int, int] | None = None,
 ) -> View:
     """The view of ``camera`` as it holds its values now.
 
@@ -120,7 +124,8 @@ def view_of(
     centre now. A camera that makes a context for each draw maps around its
     frame as it is, whatever is given. ``home`` is the configuration's frame
     as ``(width, height)``; when ``None``, the active configuration's, as
-    the camera sizes its frame to its pixels.
+    the camera sizes its frame to its pixels. ``configured_pixels`` is the
+    configuration's pixel size; when ``None``, the active configuration's.
     """
     from arachne.camera.moving_camera import MovingCamera
     from arachne.camera.three_d_camera import ThreeDCamera
@@ -148,8 +153,10 @@ def view_of(
         mapping = _centre(mapping_centre)
     else:
         mapping = _cached_mapping_centre(camera) or centre
+    if configured_pixels is None:
+        configured_pixels = (int(config.pixel_width), int(config.pixel_height))
     if home is None:
-        home = configured_home(int(config.pixel_width), int(config.pixel_height))
+        home = configured_home(*configured_pixels)
     return View(
         camera=kind,
         pixel_width=int(camera.pixel_width),
@@ -162,6 +169,7 @@ def view_of(
         home_height=float(home[1]),
         cairo_line_width_multiple=float(camera.cairo_line_width_multiple),
         three_d=three_d,
+        configured_pixels=(int(configured_pixels[0]), int(configured_pixels[1])),
     )
 
 
@@ -176,8 +184,8 @@ def configured_home(pixel_width: int, pixel_height: int) -> tuple[float, float]:
 
 def record_view(record: Record) -> View:
     """The view of ``record``'s camera as it holds its values now (a
-    capture shown), mapping paths around the centre the render froze, and
-    with the frame the scene was executed under as home.
+    capture shown), mapping paths around the centre the render froze, with
+    the frame and pixel size the scene was executed under as configured.
     """
     camera = record._scene.renderer.camera
     frozen = render_mapping_centre(record)
@@ -185,6 +193,7 @@ def record_view(record: Record) -> View:
         camera,
         mapping_centre=frozen if frozen is not None else camera.frame_center,
         home=record._scene.timeline.home,
+        configured_pixels=record._scene.timeline.configured_pixels,
     )
 
 
@@ -211,24 +220,23 @@ def pixel_points(
     """``points`` of ``mob`` where the camera draws them, as ``(n, 2)``
     pixel coordinates (x right, y down; pixel ``i`` spans ``[i, i + 1)``).
     """
-    shifted = _shifted(camera, view, mob, points)
-    result = np.empty_like(shifted)
-    result[:, 0] = (
-        shifted[:, 0] * (view.pixel_width / view.frame_width) + view.pixel_width / 2
-    )
-    result[:, 1] = (
-        shifted[:, 1] * -(view.pixel_height / view.frame_height) + view.pixel_height / 2
-    )
-    return result
+    shown = _pre_display(camera, mob, points)
+    return _placed(view, shown, _mapped_around(view, mob), home=False)
 
 
 def pixel_box(
     camera: Camera, view: View, mob: Mobject, *, ink: bool = False
 ) -> Box | None:
     """The pixel box of ``mob`` and its family's points, as the camera
-    places them; ``None`` when the family has no points. With ``ink``, a
-    path's box is widened by half the stroke Cairo draws, and a point
-    cloud's by the pixels each point is thickened to.
+    places them; ``None`` when the family has no points.
+
+    With ``ink``, the box of what the family's draws paint instead, ``None``
+    when they paint nothing: a path's fill and strokes as Cairo extends them
+    (the curve, not its control points; caps, joins and miters with the
+    camera's settings), not cut to the frame; a point cloud's pixels,
+    thickened as the camera thickens them at the configured size and kept
+    to the frame as its draw keeps them; an image's corners, unless its draw
+    skips it as too thin.
     """
     return _box(camera, view, mob, ink=ink, home=False)
 
@@ -278,18 +286,36 @@ def _centre(value: Sequence[float] | np.ndarray) -> Centre:
     return (x, y, z)
 
 
-def _shifted(
-    camera: Camera, view: View, mob: Mobject, points: np.ndarray
-) -> np.ndarray:
-    """``points`` through the camera's pre-display code, less the centre
-    their draw maps around, as ``(n, 2)`` scene units of the live frame.
-    """
+def _pre_display(camera: Camera, mob: Mobject, points: np.ndarray) -> np.ndarray:
+    """``points`` through the camera's pre-display code, as ``(n, 2)``."""
     if hasattr(camera, "reset_rotation_matrix"):
         # A ThreeDCamera projects with the matrix of its trackers as they are.
         camera.reset_rotation_matrix()
     shown = np.asarray(camera.transform_points_pre_display(mob, points), dtype=float)
-    centre = view.mapping_centre if draw_kind(mob) == "path" else view.frame_center
-    return shown[:, :2] - np.asarray(centre[:2])
+    return shown[:, :2]
+
+
+def _mapped_around(view: View, mob: Mobject) -> Centre:
+    """The centre ``mob``'s draw maps around."""
+    return view.mapping_centre if draw_kind(mob) == "path" else view.frame_center
+
+
+def _placed(view: View, shown: np.ndarray, centre: Centre, *, home: bool) -> np.ndarray:
+    """Pre-display points less ``centre``, in home-frame units or pixels."""
+    shifted = shown - np.asarray(centre[:2])
+    result = np.empty_like(shifted)
+    if home:
+        result[:, 0] = shifted[:, 0] * (view.home_width / view.frame_width)
+        result[:, 1] = shifted[:, 1] * (view.home_height / view.frame_height)
+    else:
+        result[:, 0] = (
+            shifted[:, 0] * (view.pixel_width / view.frame_width) + view.pixel_width / 2
+        )
+        result[:, 1] = (
+            shifted[:, 1] * -(view.pixel_height / view.frame_height)
+            + view.pixel_height / 2
+        )
+    return result
 
 
 def _box(
@@ -298,28 +324,14 @@ def _box(
     lows: list[np.ndarray] = []
     highs: list[np.ndarray] = []
     for member in mob.family_members_with_points():
-        if home and ink and draw_kind(member) == "points":
-            # A point's ink is whole pixels: placed there, then read in units.
-            box = screen_box(view, _member_pixel_box(camera, view, member, ink=True))
-            low, high = np.array(box[:2]), np.array(box[2:])
-        elif home:
-            shifted = _shifted(camera, view, member, member.points)
-            scale = np.array(
-                [
-                    view.home_width / view.frame_width,
-                    view.home_height / view.frame_height,
-                ]
-            )
-            placed = shifted * scale
-            low, high = placed.min(axis=0), placed.max(axis=0)
-            if ink and draw_kind(member) == "path":
-                pad = _half_stroke(member) * view.cairo_line_width_multiple * scale
-                low, high = low - pad, high + pad
-        else:
-            box = _member_pixel_box(camera, view, member, ink=ink)
-            low, high = np.array(box[:2]), np.array(box[2:])
-        lows.append(low)
-        highs.append(high)
+        found = (
+            _ink_box(camera, view, member, home=home)
+            if ink
+            else _points_box(camera, view, member, home=home)
+        )
+        if found is not None:
+            lows.append(np.array(found[:2]))
+            highs.append(np.array(found[2:]))
     if not lows:
         return None
     low = np.min(lows, axis=0)
@@ -327,45 +339,141 @@ def _box(
     return (float(low[0]), float(low[1]), float(high[0]), float(high[1]))
 
 
-def _member_pixel_box(camera: Camera, view: View, member: Mobject, *, ink: bool) -> Box:
-    """One member's pixel box, widened with ``ink`` to what its draw paints
-    around its points.
-    """
-    placed = pixel_points(camera, view, member, member.points)
+def _points_box(camera: Camera, view: View, member: Mobject, *, home: bool) -> Box:
+    """The box of a member's points, as its draw places them."""
+    shown = _pre_display(camera, member, member.points)
+    return _span(_placed(view, shown, _mapped_around(view, member), home=home))
+
+
+def _span(placed: np.ndarray) -> Box:
     low, high = placed.min(axis=0), placed.max(axis=0)
-    kind = draw_kind(member) if ink else None
-    if kind == "path":
-        half = _half_stroke(member) * view.cairo_line_width_multiple
-        pad = np.array(
-            [
-                half * view.pixel_width / view.frame_width,
-                half * view.pixel_height / view.frame_height,
-            ]
-        )
-        low, high = low - pad, high + pad
-    elif kind == "points":
-        # Each point paints the pixel it truncates to, nudged both ways by the
-        # camera's thickening.
-        thickness = camera.adjusted_thickness(member.get_stroke_width())
-        nudges = camera.get_thickening_nudges(thickness)
-        low = np.floor(low) + float(nudges.min())
-        high = np.floor(high) + float(nudges.max()) + 1
     return (float(low[0]), float(low[1]), float(high[0]), float(high[1]))
 
 
-def _half_stroke(member: Mobject) -> float:
-    """Half the widest stroke the member draws, in stroke-width units; zero
-    when it draws none (no width, or no opacity).
+def _ink_box(camera: Camera, view: View, member: Mobject, *, home: bool) -> Box | None:
+    """What one member's own draw paints, or ``None`` for nothing."""
+    kind = draw_kind(member)
+    if kind == "path":
+        corners = _path_ink(camera, view, member)
+        if corners is None:
+            return None
+        return _span(_placed(view, corners, view.mapping_centre, home=home))
+    if kind == "points":
+        found = _cloud_ink(camera, view, member)
+        if found is None or not home:
+            return found
+        return screen_box(view, found)
+    if kind == "image":
+        if not _image_painted(camera, view, member):
+            return None
+        return _points_box(camera, view, member, home=home)
+    return None
+
+
+def _path_ink(camera: Camera, view: View, member: Mobject) -> np.ndarray | None:
+    """The corners of the box a path's fill and strokes paint, in
+    pre-display scene units: Cairo's own extents of the path the camera
+    builds, stroked with the camera's width, join and cap, under the matrix
+    the camera's context maps with (Cairo flattens curves to a tolerance in
+    pixels). ``None`` when nothing is painted.
     """
-    widest = 0.0
+    import cairo
+
+    from arachne.camera.camera import CAP_STYLE_MAP, LINE_JOIN_MAP
+    from arachne.mobject.types.vectorized_mobject import VMobject
+
+    assert isinstance(member, VMobject)
+    ctx = cairo.Context(_extents_surface())
+    centre = view.mapping_centre
+    x_scale = view.pixel_width / view.frame_width
+    y_scale = view.pixel_height / view.frame_height
+    ctx.set_matrix(
+        cairo.Matrix(
+            x_scale,
+            0,
+            0,
+            -y_scale,
+            view.pixel_width / 2 - centre[0] * x_scale,
+            view.pixel_height / 2 + centre[1] * y_scale,
+        )
+    )
+    if hasattr(camera, "reset_rotation_matrix"):
+        camera.reset_rotation_matrix()
+    camera.set_cairo_context_path(ctx, member)
+    extents: list[tuple[float, float, float, float]] = []
+    if _painted(member.get_fill_opacities()):
+        extents.append(ctx.fill_extents())
     for background in (True, False):
         width = float(member.get_stroke_width(background))
-        if width <= 0:
+        if width <= 0 or not _painted(member.get_stroke_opacities(background)):
             continue
-        opacities = np.asarray(
-            member.get_stroke_opacities(background),
-            dtype=float,
-        )
-        if opacities.size and np.any(opacities > 0):
-            widest = max(widest, width)
-    return widest / 2
+        ctx.set_line_width(width * view.cairo_line_width_multiple)
+        ctx.set_line_join(LINE_JOIN_MAP[member.joint_type])
+        ctx.set_line_cap(CAP_STYLE_MAP[member.cap_style])
+        extents.append(ctx.stroke_extents())
+    found = [e for e in extents if e[2] > e[0] and e[3] > e[1]]
+    if not found:
+        return None
+    box = np.array(found)
+    return np.array(
+        [
+            [box[:, 0].min(), box[:, 1].min()],
+            [box[:, 2].max(), box[:, 3].max()],
+        ]
+    )
+
+
+def _painted(opacities: object) -> bool:
+    values = np.asarray(opacities, dtype=float)
+    return bool(values.size and np.any(values > 0))
+
+
+_SURFACE: list[Any] = []
+
+
+def _extents_surface() -> Any:
+    """A surface for Cairo to measure paths on; extents ignore its bounds."""
+    import cairo
+
+    if not _SURFACE:
+        _SURFACE.append(cairo.ImageSurface(cairo.FORMAT_ARGB32, 1, 1))
+    return _SURFACE[0]
+
+
+def _cloud_ink(camera: Camera, view: View, member: Mobject) -> Box | None:
+    """The pixels a point cloud's draw paints: each point's pixel (the
+    camera truncates), thickened by the camera's nudges at the thickness it
+    scales to from the configured pixel size, those on the frame only.
+    """
+    shown = _pre_display(camera, member, member.points)
+    coords = _placed(view, shown, view.frame_center, home=False).astype(np.int64)
+    # Camera.adjusted_thickness, scaled from the configured pixel size rather
+    # than from whatever configuration is active now.
+    configured = view.configured_pixels[0] + view.configured_pixels[1]
+    factor = configured / (view.pixel_width + view.pixel_height)
+    thickness = 1 + (member.get_stroke_width() - 1) * factor
+    thick = camera.thickened_coordinates(coords, thickness)
+    thick = thick[camera.on_screen_pixels(thick)]
+    if not len(thick):
+        return None
+    low, high = thick.min(axis=0), thick.max(axis=0) + 1
+    return (float(low[0]), float(low[1]), float(high[0]), float(high[1]))
+
+
+def _image_painted(camera: Camera, view: View, member: Mobject) -> bool:
+    """Whether the camera's draw of an image paints it: it skips a quad with
+    no side, or one less than half a pixel high from its longest side
+    (``Camera.display_image_mobject``).
+    """
+    shown = _pre_display(camera, member, member.points)
+    target = _placed(view, shown, view.frame_center, home=False)
+    target = target - target.astype(np.int64).min(axis=0)
+    vertices = [target[i] for i in (0, 1, 3, 2)]
+    sides = [vertices[(i + 1) % 4] - vertices[i] for i in range(4)]
+    lengths = np.linalg.norm(sides, axis=1)
+    longest = int(np.argmax(lengths))
+    if lengths[longest] == 0:
+        return False
+    base, previous = sides[longest], sides[(longest - 1) % 4]
+    height = abs(base[0] * previous[1] - base[1] * previous[0]) / lengths[longest]
+    return bool(height >= 0.5)
