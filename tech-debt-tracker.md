@@ -249,6 +249,9 @@ lifted.
   scene's code replaced (on the class or the instance), not only the
   methods a draw calls, so a replaced member that never affects drawing
   still sends the camera to Cairo (`render.fallback`) or, where a record
-  reads the detector, refuses it. Narrow it to the display path's methods
-  only if a case is ever refused over a member that does not affect
-  drawing (the refusal names the member).
+  reads the detector, refuses it. A concrete case: an instance patch of
+  `display_multiple_vectorized_mobjects` falls back, though the camera
+  never calls it through the instance (`display_funcs` binds the method
+  when the camera is made). Narrow it to the display path's methods only
+  if a case is ever refused over a member that does not affect drawing
+  (the refusal names the member).
