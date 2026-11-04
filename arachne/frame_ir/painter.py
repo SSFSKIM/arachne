@@ -75,7 +75,7 @@ def user_camera(camera: Any) -> tuple[str, str] | None:
 def _own_code(camera: Any) -> tuple[str, str] | None:
     """:func:`user_camera` for ``camera`` alone."""
     from arachne.camera.camera import Camera
-    from arachne.timeline.camera_code import replaced_methods
+    from arachne.timeline.camera_code import display_funcs_rewired, replaced_methods
     from arachne.timeline.frozen import engine_class
 
     if not isinstance(camera, Camera):
@@ -103,6 +103,12 @@ def _own_code(camera: Any) -> tuple[str, str] | None:
         return (
             shadowed,
             f"{shadowed}, replaced on the camera instance by the scene's code,",
+        )
+    if display_funcs_rewired(camera):
+        subject = f"{kind.__name__}.display_funcs"
+        return (
+            subject,
+            f"{subject}, rewired on the camera instance by the scene's code,",
         )
     return None
 
@@ -154,12 +160,14 @@ _CLASS_BOOKKEEPING = frozenset(
 
 def changed_members(camera: Any) -> tuple[str, ...]:
     """The engine camera members the scene's code changed on ``camera``: the
-    names its own classes define over an engine camera's, and the methods
+    names its own classes define over an engine camera's, the methods
     replaced on the instance or on an engine class
-    (:func:`~arachne.timeline.camera_code.replaced_methods`).
+    (:func:`~arachne.timeline.camera_code.replaced_methods`), and
+    ``display_funcs`` when it holds anything other than the engine's own
+    display methods (:func:`~arachne.timeline.camera_code.display_funcs_rewired`).
     """
     from arachne.camera.camera import Camera
-    from arachne.timeline.camera_code import replaced_methods
+    from arachne.timeline.camera_code import display_funcs_rewired, replaced_methods
     from arachne.timeline.frozen import engine_class
 
     if not isinstance(camera, Camera):
@@ -174,6 +182,8 @@ def changed_members(camera: Any) -> tuple[str, ...]:
         if name not in _CLASS_BOOKKEEPING and hasattr(base, name)
     }
     names.update(r.name for r in replaced_methods(camera))
+    if display_funcs_rewired(camera):
+        names.add("display_funcs")
     return tuple(sorted(names))
 
 
