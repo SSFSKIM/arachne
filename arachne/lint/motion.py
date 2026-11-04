@@ -3,31 +3,31 @@
 A still frame can't show a teleport: a body that slides during one play,
 is set down somewhere else by the script, and is seen there at the next
 play's first frame passes every check of a single instant. This rule reads
-every frame the render shows (:mod:`.frames`) and compares, at each cut, a
-play's last frame with the next play's first.
+every frame the render shows (asked of the lint's frames, :mod:`.frames`)
+and, at each cut, compares where each body stood as the play ended (the
+record's exit of the play, :mod:`arachne.timeline.bodies`: its animations
+finished and cleaned up, the script not yet run on) with the next play's
+first frame.
 
-**Bodies.** At each frame, every top-level mobject that paints something,
-and every direct child of one (but a text's glyphs and a surface's faces),
-is a body, keyed by its stable id. Its position is the centre of the
-points of its members that paint (a path or image with extent, a point
-cloud with a visible stroke), in scene units; its size is their box's.
-Something that paints nothing (alignment padding, a tracker) is no body
-there.
+**Bodies** are as :mod:`arachne.timeline.bodies` reads them: every
+top-level mobject that paints something and every direct child of one (but
+a text's glyphs and a surface's faces), keyed by its stable id, at its
+centre in the scene and as the viewer sees it (``view``: relative to a
+moving camera's frame and scaled by its zoom; under every other camera, a
+three-dimensional one too, the scene's x and y).
 
 **Moving.** A body moves during a play when its centre travels at least
-:data:`TRAVEL_MIN` across that play's consecutive frames by steps that keep
-its box's size within :data:`RIGID` (drawing, growth and reshaping move a
-centre too, and are not travel).
+:data:`TRAVEL_MIN` in the scene across that play's frames and its exit, by
+steps that keep its box's size within :data:`RIGID` (drawing, growth and
+reshaping move a centre too, and are not travel).
 
-**The cut.** A body on screen and visible (some member lays ink) at both
-the play's last frame and the next play's first, which moves during either
-play, jumps when its centre stands more than the tolerance apart across the
-cut. The distance is measured in the scene and scaled to the home frame by
-the later frame's zoom, so a camera cut moves the picture and no body; under
-a three-dimensional camera it is the scene's x and y, z left out, and only
-the centres a finding reports are projected. A body
-that moved during the play before the cut has ``detail.side`` ``"before"``;
-one that moved only after it (set down elsewhere, then thrown) ``"after"``.
+**The cut.** A body visible (some member lays ink) as the play ended and at
+the next play's first frame, which moves during either play, jumps when its
+centre stands more than the tolerance apart across the cut: the scene's
+displacement scaled by the later frame's zoom, so a camera cut moves the
+picture and no body. A body that moved during the play before the cut has
+``detail.side`` ``"before"``; one that moved only after it (set down
+elsewhere, then thrown) ``"after"``.
 
 **What a step across the cut may be instead.** None of these is reported:
 
@@ -35,18 +35,11 @@ one that moved only after it (set down elsewhere, then thrown) ``"after"``.
   whose number of drawn members changed: another shape, not the same one
   elsewhere;
 * *churn*: a step no longer than :data:`CHURN` times the body's largest
-  step between two frames of the play that moved it: within its own motion.
-  That step is the larger of two readings: as the viewer saw it (a camera's
-  pan included), and its step in the scene at the later frame's zoom (so a
-  camera that followed the body, then zoomed in, cancels none of it). The
-  second covers what the first can't: the cut is read from the play's last
-  frame, up to one of its own steps short of where the play leaves the body,
-  and so a distance includes up to one frame of the play's own motion,
-  which a reading at the play's end would not. A jump within about one step
-  of the allowance is the band where the two readings can disagree;
+  step, as the viewer saw it (a camera's pan included), between two of the
+  frames and the exit of the play that moved it: within its own motion;
 * *relabelled*: a look-alike sibling (same group, same size) stood where it
-  lands just before the cut, or stands where it left just after: the
-  picture shows a body in each place, not one crossing the gap;
+  lands as the play ended, or stands where it left just after: the picture
+  shows a body in each place, not one crossing the gap;
 * *redrawn*: a top-level group drawing nothing of its own whose box moved
   while none of its members jumped: a part changed under it.
 
@@ -54,12 +47,15 @@ one that moved only after it (set down elsewhere, then thrown) ``"after"``.
 its members; a group whose box moved because a member jumped defers to the
 member. A finding names its body's stable id, creating line and name (the
 scene's name for it at the cut, or the first it is given after), at the
-next play's first frame; its ``detail`` holds the centres on screen before
-and after (home-frame units, through the projection), the distance and the
-two plays. A jump object has no box (``bbox`` and ``screen_bbox`` are
-``None``), as the moment of the jump has none.
+next play's first frame; its ``detail`` holds its centres as viewed before
+and after, the distance and the two plays. A jump object has no box
+(``bbox`` and ``screen_bbox`` are ``None``), as the moment of the jump has
+none.
 
-Nothing arms the rule by default: it runs when passed to :func:`.lint`.
+A record that keeps no exit of a play it shows (one made without them) is
+read through the lint's forward run, which keeps them; it is never measured
+another way. Nothing arms the rule by default: it runs when passed to
+:func:`.lint`.
 """
 
 from __future__ import annotations
@@ -74,29 +70,20 @@ __all__ = [
     "motion_jump",
 ]
 
-from collections.abc import Iterator
 from dataclasses import dataclass, field
 from fractions import Fraction
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import numpy as np
 
-from arachne.camera.projection import (
-    View,
-    draw_kind,
-    member_box,
-    record_view,
-    view_of,
-)
+from arachne.timeline.bodies import Body, Exit, bodies
 from arachne.timeline.clock import frames_in
 from arachne.timeline.draw import Drawing
 
 from .findings import Finding, FindingObject, Holder
 from .instants import render_grid
-from .parts import _paint, _text_types, _viewing_nodes
 
 if TYPE_CHECKING:
-    from arachne.mobject.mobject import Mobject
     from arachne.timeline.record import Capture, PlayRecord, Record
 
     from .core import LintContext
@@ -116,66 +103,36 @@ RESHAPE = 0.25
 CHURN = 2.0
 #: The smallest size, in scene units, a share of a size is taken of.
 _SIZE_FLOOR = 0.1
-#: Scene units under which two points are one place.
-_ONE_PLACE = 1e-3
-
-
-@dataclass(frozen=True, eq=False)
-class _Body:
-    """A body as one frame shows it. ``view`` is its centre as the viewer
-    sees it under a moving camera (scene units of the home frame);
-    ``visible``, ``screen`` and the naming fields are read at a play's
-    first and last frames only.
-    """
-
-    id: str
-    parent: str | None
-    centre: np.ndarray
-    size: np.ndarray
-    view: np.ndarray
-    members: int
-    own: bool
-    visible: bool = False
-    screen: tuple[float, float] | None = None
-    type: str = ""
-    text: str | None = None
-    scene_line: int | None = None
 
 
 @dataclass(frozen=True, eq=False)
 class _Frame:
-    """One frame: its time, its play, the zoom of its view and its bodies,
-    each group before its members.
+    """One frame: its time, the zoom of its view and its bodies, each group
+    before its members.
     """
 
     t: Fraction
-    play: int
     zoom: float
-    bodies: dict[str, _Body]
+    bodies: dict[str, Body]
 
 
 @dataclass(eq=False)
 class _Play:
-    """What one play's frames show of its bodies: how far each travelled,
-    its largest step between two frames as viewed (``largest``, a camera's
-    pan included) and in the scene (``largest_scene``), and where it was last
-    seen.
+    """What one play shows of its bodies, its frames and then its exit: how
+    far each travelled, its largest step as viewed, and where it was last
+    seen (as the play ended, when it was there).
     """
 
     record: PlayRecord
     frames: list[_Frame]
+    exit: Exit
     travel: dict[str, float] = field(default_factory=dict)
     largest: dict[str, float] = field(default_factory=dict)
-    largest_scene: dict[str, float] = field(default_factory=dict)
-    last: dict[str, _Body] = field(default_factory=dict)
+    last: dict[str, Body] = field(default_factory=dict)
 
     @property
     def first_frame(self) -> _Frame:
         return self.frames[0]
-
-    @property
-    def last_frame(self) -> _Frame:
-        return self.frames[-1]
 
     def moved(self, body: str) -> bool:
         return self.travel.get(body, 0.0) >= TRAVEL_MIN
@@ -188,9 +145,13 @@ class MotionJump:
     jump_tol: float = JUMP_TOL
 
     def request_frames(self, frames: Frames) -> None:
-        """Ask the lint for every frame the render shows of each play."""
-        wanted = _wanted(frames.session.record)
-        edges = {t for _, shown in wanted for t in (shown[0], shown[-1])}
+        """Ask the lint for every frame the render shows of each play; and
+        for its forward run, when the record keeps no exit of one of them.
+        """
+        record = frames.session.record
+        wanted = _wanted(record)
+        if not _has_exits(record, wanted):
+            frames.require_forward()
 
         def read(
             source: Record,
@@ -198,17 +159,31 @@ class MotionJump:
             play: PlayRecord | None,
             capture: Capture,
             live: bool,
-        ) -> tuple[float, dict[str, _Body]]:
-            return _read(source, play, capture, live=live, edge=t in edges)
+        ) -> tuple[float, dict[str, Body]]:
+            return _read(source, play, capture, live=live)
 
         frames.request(self, [t for _, shown in wanted for t in shown], read)
 
     def __call__(self, context: LintContext) -> list[Finding]:
         record = context.record
+        wanted = _wanted(record)
+        execution = context.frames.execution
+        if not _has_exits(execution, wanted):
+            raise RuntimeError(
+                "The execution the lint read keeps no exit of a play it shows:"
+                " the motion rule can't measure its cuts."
+            )
+        assert execution.exits is not None
         read = iter(context.frames.result(self))
         plays = [
-            _measure(_Play(play, [_Frame(t, play.index, *next(read)) for t in shown]))
-            for play, shown in _wanted(record)
+            _measure(
+                _Play(
+                    play,
+                    [_Frame(t, *next(read)) for t in shown],
+                    execution.exits[play.index],
+                )
+            )
+            for play, shown in wanted
         ]
         names = _Names(record)
         found: list[Finding] = []
@@ -236,183 +211,62 @@ def _wanted(record: Record) -> list[tuple[PlayRecord, list[Fraction]]]:
     return wanted
 
 
+def _has_exits(record: Record, wanted: list[tuple[PlayRecord, list[Fraction]]]) -> bool:
+    """Whether ``record`` keeps the exit of every play it shows."""
+    exits = record.exits
+    return exits is not None and all(play.index in exits for play, _ in wanted)
+
+
 def _read(
     record: Record,
     play: PlayRecord | None,
     capture: Capture,
     *,
     live: bool,
-    edge: bool,
-) -> tuple[float, dict[str, _Body]]:
-    """The zoom of one frame's view and its bodies, each group before its
-    members: of the live scene of a forward run, or of ``capture`` shown
-    from the record.
+) -> tuple[float, dict[str, Body]]:
+    """The zoom of one frame's view and its bodies: of the live scene of a
+    forward run, or of ``capture`` shown from the record.
     """
+    scene = record._scene
+    camera, timeline = scene.renderer.camera, scene.timeline
+
+    def read() -> tuple[float, dict[str, Body]]:
+        return bodies(
+            capture.draw_list(),
+            camera,
+            record.origin,
+            home=timeline.home,
+            configured_pixels=timeline.configured_pixels,
+        )
+
     if live:
-        return _bodies(record, capture, edge=edge, live=True)
+        return read()
     static = list(play.static) if play is not None and capture.moving else []
     with Drawing(record) as drawing:
         drawing.show(capture, [*capture.draw_list(), *static, *capture.moving])
-        return _bodies(record, capture, edge=edge, live=False)
-
-
-def _bodies(
-    record: Record, capture: Capture, *, edge: bool, live: bool
-) -> tuple[float, dict[str, _Body]]:
-    camera = record._scene.renderer.camera
-    timeline = record._scene.timeline
-    view = view_of(
-        camera, home=timeline.home, configured_pixels=timeline.configured_pixels
-    )
-    zoom_x = view.home_width / view.frame_width
-    zoom_y = view.home_height / view.frame_height
-    # As the viewer sees a centre under a moving camera; every other camera
-    # shows the home frame.
-    cx, cy = view.frame_center[:2] if view.camera == "moving" else (0.0, 0.0)
-    # At a play's edges, the projection places each body on screen: a live
-    # run's camera holds the map it draws with, a shown capture maps paths
-    # around the centre the render froze.
-    projected = (view if live else record_view(record)) if edge else None
-    bodies: dict[str, _Body] = {}
-    for mob, parent in _candidates(capture.draw_list(), _viewing_nodes(camera)):
-        origin = record.origin(mob)
-        if origin.id in bodies:
-            continue
-        leaves = [m for m in mob.get_family() if len(m.points)]
-        lit = [m for m in leaves if _lays(m)]
-        if not lit:
-            continue
-        points = np.concatenate([np.asarray(m.points, dtype=float)[:, :2] for m in lit])
-        low, high = points.min(axis=0), points.max(axis=0)
-        centre = (low + high) / 2
-        named: dict[str, Any] = {}
-        if projected is not None:
-            named = {
-                "visible": any(_visible(m) for m in leaves),
-                "screen": _screen_centre(camera, projected, lit),
-                "type": type(mob).__name__,
-                "text": _label(mob),
-                "scene_line": origin.scene_line,
-            }
-        bodies[origin.id] = _Body(
-            id=origin.id,
-            parent=record.origin(parent).id if parent is not None else None,
-            centre=centre,
-            size=high - low,
-            view=np.array([(centre[0] - cx) * zoom_x, (centre[1] - cy) * zoom_y]),
-            members=len(leaves),
-            own=_lays(mob),
-            **named,
-        )
-    return zoom_x, bodies
-
-
-def _screen_centre(
-    camera: Any, view: View, lit: list[Mobject]
-) -> tuple[float, float] | None:
-    """The centre, in home-frame units, of the box the projection places
-    ``lit``'s points in.
-    """
-    boxes = [box for m in lit if (box := member_box(camera, view, m, home=True))]
-    if not boxes:
-        return None
-    return (
-        (min(b[0] for b in boxes) + max(b[2] for b in boxes)) / 2,
-        (min(b[1] for b in boxes) + max(b[3] for b in boxes)) / 2,
-    )
-
-
-def _candidates(
-    roots: list[Mobject], hidden: set[int]
-) -> Iterator[tuple[Mobject, Mobject | None]]:
-    """The scene's top-level mobjects with points, each followed by its
-    direct children with points (none of a text's or a surface's), with the
-    top-level holding each child; the camera's own are none of them.
-    """
-    from arachne.mobject.three_d.three_dimensions import Surface
-    from arachne.mobject.value_tracker import ValueTracker
-
-    whole = (*_text_types(), Surface)
-
-    def drawn(mob: Mobject) -> bool:
-        return (
-            id(mob) not in hidden
-            and not isinstance(mob, ValueTracker)
-            and any(len(m.points) for m in mob.get_family())
-        )
-
-    seen: set[int] = set()
-    for top in roots:
-        if id(top) in seen or id(top) in hidden:
-            continue
-        seen.add(id(top))
-        if drawn(top):
-            yield top, None
-        if isinstance(top, whole):
-            continue
-        for child in top.submobjects:
-            if id(child) not in seen and drawn(child):
-                seen.add(id(child))
-                yield child, top
-
-
-def _lays(mob: Mobject) -> bool:
-    """Whether one member's own draw paints anything: a path or an image
-    whose points are not all in one place, or a point cloud with a visible
-    stroke.
-    """
-    kind = draw_kind(mob)
-    points = np.asarray(mob.points)
-    if not len(points) or kind is None:
-        return False
-    if kind == "points":
-        _, alpha, _ = _paint(mob, kind)
-        return alpha > 0 and float(np.max(getattr(mob, "stroke_width", 0))) > 0
-    return bool((np.abs(points - points[0]) >= _ONE_PLACE).any())
-
-
-def _visible(mob: Mobject) -> bool:
-    """Whether a member lays ink a viewer can see move: a fill, or a stroke
-    with width and opacity, over more than one place; a visible point
-    cloud; an image not wholly transparent.
-    """
-    kind = draw_kind(mob)
-    if kind is None or not len(mob.points):
-        return False
-    if kind == "image":
-        raster = np.asarray(getattr(mob, "pixel_array", np.zeros((0, 0, 4))))
-        return not (raster.ndim == 3 and raster.shape[-1] == 4) or bool(
-            raster[..., 3].any()
-        )
-    if kind == "points":
-        return _lays(mob)
-    fill, stroke, _ = _paint(mob, kind)
-    spread = np.ptp(np.asarray(mob.points)[:, :2], axis=0).max()
-    return (fill > 0 or stroke > 0) and float(spread) > 0
-
-
-def _label(mob: Mobject) -> str | None:
-    from arachne.timeline.state import _text
-
-    return _text(mob) if isinstance(mob, _text_types()) else None
+        return read()
 
 
 def _measure(play: _Play) -> _Play:
-    """``play`` with each body's travel, largest step and last sight."""
-    previous: _Frame | None = None
-    for frame in play.frames:
-        for key, body in frame.bodies.items():
+    """``play`` with each body's travel, largest step and last sight, over
+    its frames and then its exit.
+    """
+    seen = [(frame.zoom, frame.bodies) for frame in play.frames]
+    seen.append((play.exit.zoom, play.exit.bodies))
+    previous: dict[str, Body] | None = None
+    for _, shown in seen:
+        for key, body in shown.items():
             play.last[key] = body
-            if previous is None or key not in previous.bodies:
+            if previous is None or key not in previous:
                 continue
-            was = previous.bodies[key]
+            was = previous[key]
             viewed = float(np.hypot(*(body.view - was.view)))
             play.largest[key] = max(play.largest.get(key, 0.0), viewed)
-            step = float(np.hypot(*(body.centre - was.centre)))
-            play.largest_scene[key] = max(play.largest_scene.get(key, 0.0), step)
             if _kept_size(was.size, body.size, RIGID):
-                play.travel[key] = play.travel.get(key, 0.0) + step
-        previous = frame
+                play.travel[key] = play.travel.get(key, 0.0) + float(
+                    np.hypot(*(body.centre - was.centre))
+                )
+        previous = shown
     return play
 
 
@@ -478,7 +332,7 @@ class _Names:
 class _Step:
     """A body's step across a cut, as found."""
 
-    body: _Body
+    body: Body
     shift: np.ndarray
     distance: float
     side: str
@@ -493,7 +347,7 @@ class _Cut:
         self.tol = tol
         self.before, self.after = before, after
         self.names = names
-        self.left = before.last_frame.bodies
+        self.left = before.exit.bodies
         self.came = after.first_frame.bodies
         self.zoom = after.first_frame.zoom
 
@@ -553,14 +407,7 @@ class _Cut:
             now.members == 1 and not _same_size(was.size, now.size)
         ):
             return "reshaped"
-        # The step as viewed, pan included; or the body's own step in the
-        # scene at the later zoom, which the stretch from the last frame to
-        # where the play left the body is one of.
-        own = max(
-            mover.largest.get(key, 0.0),
-            mover.largest_scene.get(key, 0.0) * self.zoom,
-        )
-        if distance <= CHURN * own:
+        if distance <= CHURN * mover.largest.get(key, 0.0):
             return "churn"
         if self.relabelled(key):
             return "relabelled"
@@ -627,8 +474,8 @@ class _Cut:
                     group.type,
                 ),
             )
-        start = self.left[key].screen
-        end = body.screen
+        start = self.left[key].view
+        end = body.view
         label = body.text if body.text is not None else name
         what = f"{label or body.type} [{key}]"
         mover = self.before if step.side == "before" else self.after
@@ -669,11 +516,9 @@ class _Cut:
         )
 
 
-def _point(xy: tuple[float, float] | None) -> list[float] | None:
-    return None if xy is None else [round(float(v), 4) for v in xy]
+def _point(xy: np.ndarray) -> list[float]:
+    return [round(float(v), 4) for v in xy]
 
 
-def _where(xy: tuple[float, float] | None) -> str:
-    if xy is None:
-        return "off the picture"
+def _where(xy: np.ndarray) -> str:
     return f"({xy[0]:.2f}, {xy[1]:.2f})"
