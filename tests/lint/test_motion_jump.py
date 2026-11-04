@@ -1,0 +1,165 @@
+"""The motion rule: a body seen elsewhere across the cut between two plays."""
+
+from __future__ import annotations
+
+from fractions import Fraction
+from pathlib import Path
+
+import pytest
+
+from arachne.lint import RULES, lint
+from arachne.lint.motion import JUMP_TOL, MotionJump, motion_jump
+from arachne.lint.serialise import report
+
+from .conftest import line_of
+from .report_shape import assert_report
+
+MOTION = Path(__file__).parent / "motion_scenes.py"
+
+
+@pytest.fixture
+def jumps_of(session_of):
+    """The ``motion.jump`` findings of a scene of ``motion_scenes.py``."""
+
+    def find(name: str, *, rule=motion_jump, exempt=(), **settings):
+        session = session_of(name, MOTION, frame_rate=15, **settings)
+        result = lint(session, rules=(rule,), exempt=exempt)
+        return [f for f in result.findings if f.code == "motion.jump"]
+
+    return find
+
+
+def test_a_teleport_is_a_warning_at_the_next_play_s_first_frame(jumps_of):
+    (jump,) = jumps_of("Teleport")
+    assert jump.severity == "warning"
+    assert jump.t_start == jump.t_end == Fraction(1)
+    assert jump.line is not None
+    assert jump.line.line == line_of("after-teleport", MOTION)
+    (puck,) = jump.objects
+    assert puck.source_line == line_of("puck", MOTION)
+    assert puck.name == "puck"
+    assert puck.kind == "Dot"
+    assert puck.bbox is None
+    assert puck.screen_bbox is None
+    detail = jump.detail
+    assert detail["side"] == "before"
+    assert detail["boundary"] == {"from_play": 0, "to_play": 1}
+    assert detail["distance"] == pytest.approx(4.0, abs=0.05)
+    assert detail["from"] == pytest.approx([-1.0, 0.0], abs=0.05)
+    assert detail["to"] == pytest.approx([3.0, 0.0], abs=1e-6)
+    assert "puck" in jump.message
+
+
+def test_a_record_that_can_t_draw_finds_the_same_teleport(jumps_of, session_of):
+    assert session_of("RefusedTeleport", MOTION, frame_rate=15).record.refusal
+    (drawn,) = jumps_of("Teleport")
+    (forward,) = jumps_of("RefusedTeleport")
+    assert forward.t_start == drawn.t_start
+    assert forward.objects[0].id == drawn.objects[0].id
+    assert forward.detail["distance"] == pytest.approx(drawn.detail["distance"])
+
+
+def test_a_teleport_under_a_three_d_camera_is_measured_in_the_scene(jumps_of):
+    (jump,) = jumps_of("TiltedTeleport")
+    assert jump.detail["distance"] == pytest.approx(4.0, abs=0.05)
+    # Its centres on screen are projected: the tilt foreshortens them.
+    assert jump.detail["to"] != pytest.approx([3.0, 0.0], abs=0.05)
+
+
+def test_a_step_within_the_tolerance_is_no_jump(jumps_of):
+    assert JUMP_TOL == 0.25
+    assert jumps_of("Nudge") == []
+    (jump,) = jumps_of("Nudge", rule=MotionJump(jump_tol=0.1))
+    assert jump.detail["distance"] == pytest.approx(0.2, abs=0.01)
+
+
+def test_a_static_object_rearranged_between_plays_is_silent(jumps_of):
+    assert jumps_of("StaticReset") == []
+
+
+def test_a_body_set_down_and_then_thrown_jumps_on_the_after_side(jumps_of):
+    (jump,) = jumps_of("PlacedThenThrown")
+    assert jump.detail["side"] == "after"
+    assert jump.t_start == Fraction(1)
+    assert jump.line.line == line_of("throw", MOTION)
+    assert jump.objects[0].source_line == line_of("stone", MOTION)
+    assert jump.detail["distance"] == pytest.approx(3.0, abs=1e-6)
+
+
+def test_a_camera_cut_moves_nothing(jumps_of):
+    assert jumps_of("CameraCut") == []
+
+
+def test_a_body_faded_out_moved_and_faded_in_is_silent(jumps_of):
+    assert jumps_of("FadedAcross") == []
+
+
+def test_a_group_redrawn_while_its_parts_stand_is_silent(jumps_of):
+    assert jumps_of("RedrawnRig") == []
+
+
+def test_a_shape_redrawn_at_another_size_is_silent(jumps_of):
+    assert jumps_of("Restarted") == []
+
+
+def test_a_set_back_within_the_body_s_own_steps_is_churn(jumps_of):
+    assert jumps_of("FastReset") == []
+    (jump,) = jumps_of("SlowReset")
+    assert jump.detail["distance"] == pytest.approx(1.17, abs=0.02)
+
+
+def test_look_alikes_trading_places_are_silent(jumps_of):
+    assert jumps_of("Conveyor") == []
+
+
+def test_a_group_that_jumped_whole_is_one_finding(jumps_of):
+    (jump,) = jumps_of("PairJumps")
+    (pair,) = jump.objects
+    assert pair.name == "pair"
+    assert pair.kind == "VGroup"
+    assert pair.source_line == line_of("pair", MOTION)
+    assert jump.detail["distance"] == pytest.approx(3.0, abs=0.02)
+
+
+def test_a_group_defers_to_the_member_that_jumped(jumps_of):
+    (jump,) = jumps_of("MemberJumps")
+    (square,) = jump.objects
+    assert square.kind == "Square"
+    assert square.name == "pair[1]"
+    assert [holder.name for holder in square.within] == ["pair"]
+    assert jumps_of("MemberJumps", exempt=["name:pair"]) == []
+
+
+def test_a_body_named_after_it_jumped_keeps_its_object(jumps_of, session_of):
+    (jump,) = jumps_of("NamedLate")
+    (puck,) = jump.objects
+    assert puck.source_line == line_of("unnamed", MOTION)
+    assert puck.name == "puck"
+    session = session_of("NamedLate", MOTION, frame_rate=15)
+    (view,) = [
+        node
+        for node in session.state_at(0).nodes
+        if node.source_line is not None
+        and node.source_line.line == line_of("unnamed", MOTION)
+    ]
+    assert puck.id == view.id
+    for selector in (puck.id, "name:puck", f"line:{puck.source_line}"):
+        assert jumps_of("NamedLate", exempt=[selector]) == [], selector
+
+
+def test_the_report_carries_a_jump_as_a_warning_that_passes(session_of):
+    session = session_of("Teleport", MOTION, frame_rate=15)
+    out = report(lint(session, rules=(motion_jump,)))
+    assert_report(out)
+    assert out["pass"] is True
+    (violation,) = out["violations"]
+    assert violation["code"] == "motion.jump"
+    assert violation["severity"] == "warning"
+    assert violation["objects"][0]["bbox"] is None
+    assert set(violation["detail"]) == {"side", "distance", "from", "to", "boundary"}
+
+
+def test_nothing_looks_for_jumps_unasked(session_of):
+    assert motion_jump not in RULES
+    session = session_of("Teleport", MOTION, frame_rate=15)
+    assert lint(session).findings == ()
