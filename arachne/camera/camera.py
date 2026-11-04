@@ -634,11 +634,24 @@ class Camera:
         cached_ctx = self.get_cached_cairo_context(pixel_array)
         if cached_ctx:
             return cached_ctx
+        fc = self.frame_center
+        ctx = self.make_cairo_context(pixel_array, fc)
+        self.pixel_array_to_mapping_centre[id(pixel_array)] = np.array(fc, dtype=float)
+        self.cache_cairo_context(pixel_array, ctx)
+        return ctx
+
+    def make_cairo_context(
+        self, pixel_array: PixelArray, centre: Point3D
+    ) -> cairo.Context:
+        """A new cairo context drawing into ``pixel_array``, mapping the
+        frame to pixels around ``centre`` (what :meth:`get_cairo_context`
+        freezes: the frame's centre at its first draw into the array).
+        """
         pw = self.pixel_width
         ph = self.pixel_height
         fw = self.frame_width
         fh = self.frame_height
-        fc = self.frame_center
+        fc = centre
         surface = cairo.ImageSurface.create_for_data(
             pixel_array.data,
             cairo.FORMAT_ARGB32,
@@ -657,8 +670,6 @@ class Camera:
                 (ph / 2) + fc[1] * (ph / fh),
             ),
         )
-        self.pixel_array_to_mapping_centre[id(pixel_array)] = np.array(fc, dtype=float)
-        self.cache_cairo_context(pixel_array, ctx)
         return ctx
 
     def display_multiple_vectorized_mobjects(
