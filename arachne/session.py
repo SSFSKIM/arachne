@@ -565,7 +565,7 @@ def execute(
     # the source in this process left its construction caches filled.
     forget_construction_caches()
     with tempconfig(settings):
-        ORIGINS.start(base_dir)
+        ORIGINS.start(base_dir, str(path))
         added_path = base_dir not in sys.path
         if added_path:
             sys.path.insert(0, base_dir)
