@@ -232,3 +232,18 @@ lifted.
   a point there, and no test reproduces it yet. Direction: when
   the rounded plane crosses the eye, fall back to the point's own key, as
   `at` already does when no shared plane applies.
+
+## Live frames in XF (`arachne/frame_ir/live.py`)
+
+- **A live play's static picture and its frames share one stream, and each
+  capture prunes the other's records.** `LiveFrames` draws a frozen play's
+  static picture (`begin`) and then its frames through the same camera, so
+  the camera's live stream sees the two kinds of capture alternate;
+  `keep_only` keeps only the slots the last capture drew, and the next one
+  uploads the other's records again. The frames are right (each delta is
+  whole against the stream), but the uploads repeat, which costs the core's
+  no-draw path the work the IR is meant to save. The fix is a stream
+  per capture role (static, frames), as `painter_for` keeps for record
+  drawing. Reproducer: a live scene with a frozen wait over static
+  mobjects, its deltas kept with `IrCairoPainter.keep_all` (the static
+  records set again in each frame's delta).
