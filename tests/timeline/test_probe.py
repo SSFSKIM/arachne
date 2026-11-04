@@ -17,7 +17,13 @@ from arachne import LEFT, RIGHT, Dot, Group
 from arachne.session import Session
 from arachne.timeline import admission
 from arachne.timeline.execution import Divergence
-from arachne.timeline.probe import _tree_difference, _walk
+from arachne.timeline.probe import (
+    PlayProbe,
+    Probe,
+    _paint_name,
+    _tree_difference,
+    _walk,
+)
 from arachne.timeline.purity import Proof, Refused
 from arachne.timeline.record import NodeState
 
@@ -330,3 +336,201 @@ def test_recording_again_stops_at_its_cap(tmp_path, monkeypatch):
     finally:
         session.close()
         admission.DEMOTED.clear()
+
+
+#: A scene whose first execution plays only the play a frame hook writes
+#: into, and whose later ones play a clean play before it, counting its
+#: executions in a file beside it.
+SHIFTED = """
+from pathlib import Path
+
+from arachne import Dot, Scene, ValueTracker
+
+
+class ShiftedSchedule(Scene):
+    def construct(self):
+        counter = Path(__file__).with_name("counter.txt")
+        count = int(counter.read_text()) if counter.exists() else 0
+        counter.write_text(str(count + 1))
+        if count > 0:
+            tracker = ValueTracker(0)
+            clean = Dot().add_updater(lambda m: m.set_x(tracker.get_value()))
+            self.add(clean)
+            self.play(tracker.animate.set_value(1), run_time=0.4)  # @clean
+            clean.clear_updaters()
+        tracker = ValueTracker(0)
+        self.written = Dot().add_updater(lambda m: m.set_x(tracker.get_value()))
+        self.add(self.written)
+        self.play(tracker.animate.set_value(2), run_time=0.4)  # @written
+
+    def update_to_time(self, t):
+        super().update_to_time(t)
+        if hasattr(self, "written"):
+            self.written.set_y(t)
+"""
+
+
+def _source_line(source: str, tag: str) -> int:
+    for number, line in enumerate(dedent(source).splitlines(), start=1):
+        if line.rstrip().endswith(f"# @{tag}"):
+            return number
+    raise LookupError(tag)
+
+
+def test_a_demotion_follows_its_play_when_the_plays_shift(tmp_path):
+    """The second execution plays a clean play first: the demotion found at
+    index 0 of the first ticks the play it was found in, now index 1, and
+    the clean play stays on route 2; the divergence names the play's index
+    in the record the session holds.
+    """
+    admission.DEMOTED.clear()
+    scene = tmp_path / "shifted.py"
+    scene.write_text(dedent(SHIFTED))
+    session = Session.open(scene, "ShiftedSchedule", config={**SMALL, "frame_rate": 15})
+    try:
+        clean, written = session.record.plays
+        assert clean.source_line.line == _source_line(SHIFTED, "clean")
+        assert written.source_line.line == _source_line(SHIFTED, "written")
+        assert (clean.route, written.route) == ("state", "ticked")
+        assert written.admission.reasons[0].startswith("probe.demoted")
+        assert not session.probe.settled
+        assert session.probe.demoted == (1,)
+        (found,) = [d for d in session.divergences if d.kind == "probe"]
+        assert found.play == 1
+        assert found.source_line == written.source_line
+        (also,) = session.probe.divergences
+        assert also.play == 1
+    finally:
+        session.close()
+        admission.DEMOTED.clear()
+
+
+@pytest.mark.parametrize("name", ["CameraPaintHook", "ZoomedCameraPaintHook"])
+def test_the_camera_s_paint_is_compared_exactly(session_of, name):
+    session = session_of(name, PROBE_SCENES, frame_rate=15)
+    assert session.probe.demoted == (0,)
+    (found,) = [d for d in session.divergences if d.kind == "probe"]
+    assert "background" in found.reason
+
+
+CHANGING = """
+from arachne import RIGHT, Dot, Scene
+
+
+class Changing(Scene):
+    def construct(self):
+        dot = Dot()
+        self.add(dot)
+        self.play(dot.animate.shift(RIGHT), run_time=0.4)
+"""
+
+
+def test_executions_of_two_sources_have_no_schedule_divergence(tmp_path):
+    """A source edited between executions is stale, never diverged."""
+    from arachne.session import _schedule_change
+
+    scene = tmp_path / "changing.py"
+    scene.write_text(dedent(CHANGING))
+    config = {**SMALL, "frame_rate": 15}
+    first = Session.open(scene, "Changing", config=config, probe=False)
+    scene.write_text(dedent(CHANGING) + "        self.wait(0.4)\n")
+    second = Session.open(scene, "Changing", config=config, probe=False)
+    try:
+        assert first.record.identity.source_digest != (
+            second.record.identity.source_digest
+        )
+        assert len(first.record.plays) != len(second.record.plays)
+        assert _schedule_change(first.record, second.record) is None
+        assert _schedule_change(first.record, first.record) is None
+    finally:
+        first.close()
+        second.close()
+
+
+#: Every field a mobject or a camera stores its paint in as a plain number,
+#: found by a sweep of the engine's assignments; and fields that are not.
+PAINT_NAMES = [
+    "fill_opacity",
+    "stroke_opacity",
+    "background_stroke_opacity",
+    "opacity",
+    "original_fill_opacity",
+    "bar_fill_opacity",
+    "_background_opacity",
+    "stroke_width",
+    "background_stroke_width",
+    "initial_stroke_width",
+    "bar_stroke_width",
+    "default_frame_stroke_width",
+    "max_stroke_width_to_length_ratio",
+    "sheen_factor",
+    "cairo_line_width_multiple",
+    "_background_color",
+]
+NOT_PAINT_NAMES = ["width", "radius", "angle", "tip_length", "frame_width", "number"]
+
+
+def test_every_style_field_is_paint_and_no_geometry_field_is():
+    assert [n for n in PAINT_NAMES if not _paint_name(n)] == []
+    assert [n for n in NOT_PAINT_NAMES if _paint_name(n)] == []
+
+
+SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20">'
+    '<rect width="20" height="20"/></svg>'
+)
+
+SVG_HOOK = """
+from pathlib import Path
+
+from arachne import Dot, Scene, SVGMobject, ValueTracker
+
+
+class SvgOpacityHook(Scene):
+    def construct(self):
+        self.svg = SVGMobject(Path(__file__).with_name("tiny.svg"), opacity=1.0)
+        tracker = ValueTracker(0)
+        mover = Dot().add_updater(lambda m: m.set_x(tracker.get_value()))
+        self.add(self.svg, mover)
+        self.play(tracker.animate.set_value(2), run_time=0.4)
+
+    def update_to_time(self, t):
+        super().update_to_time(t)
+        if hasattr(self, "svg"):
+            self.svg.opacity -= 1e-12
+"""
+
+
+def test_a_stored_opacity_is_paint(tmp_path):
+    admission.DEMOTED.clear()
+    (tmp_path / "tiny.svg").write_text(SVG)
+    scene = tmp_path / "svg_hook.py"
+    scene.write_text(dedent(SVG_HOOK))
+    session = Session.open(
+        scene,
+        "SvgOpacityHook",
+        config={**SMALL, "frame_rate": 15, "media_dir": str(tmp_path / "media")},
+    )
+    try:
+        assert session.probe.demoted == (0,)
+        (found,) = [d for d in session.divergences if d.kind == "probe"]
+        assert "opacity" in found.reason
+    finally:
+        session.close()
+        admission.DEMOTED.clear()
+
+
+def test_a_probe_moved_to_another_execution_follows_its_plays():
+    """A play the other execution does not play is left out, and its
+    divergence names no play; the others take their indices there.
+    """
+    gone = Divergence("probe", 0, None, "it differed")
+    kept = Divergence("probe", 1, None, "it differed too")
+    found = Probe(
+        (PlayProbe(0, "demoted"), PlayProbe(1, "demoted"), PlayProbe(2, "agreed")),
+        (gone, kept),
+    )
+    moved = found.moved({0: None, 1: 3, 2: 0})
+    assert [(p.play, p.outcome) for p in moved.plays] == [(0, "agreed"), (3, "demoted")]
+    assert moved.demoted == (3,)
+    assert [d.play for d in moved.divergences] == [None, 3]

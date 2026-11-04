@@ -35,10 +35,12 @@ __all__ = [
     "PROBE_DEMOTED",
     "Admission",
     "Callback",
+    "PlayIdentity",
     "admit",
     "camera_refusal",
     "demote",
     "demoted",
+    "play_identities",
 ]
 
 import inspect
@@ -100,29 +102,49 @@ class Admission:
 #: The code of a demoted play's reason for ticking.
 PROBE_DEMOTED = "probe.demoted"
 
+#: A play as executions of one scene know it: its source line, its kind
+#: (``"play"`` or ``"wait"``) and how many plays of that line came before
+#: it. Its index is not: an execution that plays one play more before it
+#: shifts every index after.
+PlayIdentity = tuple[SourceLine | None, str, int]
+
+
+def play_identities(plays: Sequence[Any]) -> list[PlayIdentity]:
+    """The :data:`PlayIdentity` of each of ``plays`` (a record's, in order)."""
+    seen: dict[SourceLine | None, int] = {}
+    found: list[PlayIdentity] = []
+    for play in plays:
+        count = seen.get(play.source_line, 0)
+        seen[play.source_line] = count + 1
+        found.append((play.source_line, play.kind, count))
+    return found
+
+
 #: The plays the probe demoted, as (source digest, scene class, play
-#: index): those a session's recording of that scene ticks, for the rest of
-#: the process. A source holds many scenes, so the scene's name is part of
-#: the key.
-DEMOTED: set[tuple[str, str, int]] = set()
+#: identity): those a session's recording of that scene ticks, for the rest
+#: of the process. A source holds many scenes, so the scene's name is part
+#: of the key; a play is known by its identity, so a demotion ticks the play
+#: it was found in, wherever it falls in another execution, and nothing in
+#: an execution that does not play it.
+DEMOTED: set[tuple[str, str, PlayIdentity]] = set()
 
 
-def demote(source_digest: str, scene_class: str, index: int) -> None:
-    """Tick play ``index`` of the scene ``scene_class`` of the source
+def demote(source_digest: str, scene_class: str, identity: PlayIdentity) -> None:
+    """Tick the play ``identity`` of the scene ``scene_class`` of the source
     ``source_digest`` in every recording a session makes of it from now on.
     """
-    DEMOTED.add((source_digest, scene_class, index))
+    DEMOTED.add((source_digest, scene_class, identity))
 
 
-def demoted(source_digest: str | None, scene_class: str) -> frozenset[int]:
+def demoted(source_digest: str | None, scene_class: str) -> frozenset[PlayIdentity]:
     """The plays of the scene ``scene_class`` of the source
     ``source_digest`` the probe demoted; none for an unknown source.
     """
     if source_digest is None:
         return frozenset()
     return frozenset(
-        index
-        for digest, name, index in DEMOTED
+        identity
+        for digest, name, identity in DEMOTED
         if digest == source_digest and name == scene_class
     )
 

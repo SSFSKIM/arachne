@@ -19,7 +19,10 @@ kept there:
   a point cloud's colours, a number in a field that holds paint), geometry
   (points, placements, other numbers) within :data:`.execution.TOLERANCE`,
   anything else exactly;
-- the camera's fixed-orientation centres, within the tolerance.
+- the camera's inputs: its paint (background colour and opacity, line
+  width, a supplied background) exactly, its other values and its
+  fixed-orientation centres within the tolerance, and the same for every
+  camera drawing into one of its displays.
 
 A play that differs is found ``demoted`` and reported as a
 ``replay.diverged`` divergence of kind ``probe`` at its line; the session
@@ -37,8 +40,9 @@ from __future__ import annotations
 
 __all__ = ["PlayProbe", "Probe", "probe"]
 
-from collections.abc import Callable, Iterable, Iterator, Sequence
-from dataclasses import dataclass
+import re
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from dataclasses import dataclass, replace
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any
 
@@ -97,6 +101,25 @@ class Probe:
     def unprobed(self) -> int:
         """How many plays had fewer than two instants to restore."""
         return sum(p.outcome == "unprobed" for p in self.plays)
+
+    def moved(self, places: Mapping[int, int | None]) -> Probe:
+        """This probe, its plays moved to the indices ``places`` gives them
+        in another execution of the scene: a play that one does not play is
+        left out, and a divergence of it names no play.
+        """
+        plays = sorted(
+            (
+                replace(each, play=place)
+                for each in self.plays
+                if (place := places.get(each.play)) is not None
+            ),
+            key=lambda each: each.play,
+        )
+        divergences = tuple(
+            replace(d, play=places.get(d.play)) if d.play is not None else d
+            for d in self.divergences
+        )
+        return Probe(tuple(plays), divergences, self.settled)
 
     def then(self, later: Probe) -> Probe:
         """This probe followed by ``later``'s, of the scene recorded again:
@@ -210,10 +233,12 @@ def _difference(
         )
         if why is not None:
             return why
-        extras = CameraExtras.observe(camera, None)
-        centers = () if extras is None else extras.centers
-        return _centre_difference(
-            mine, centers, theirs, kept.camera.centers if kept.camera else ()
+        return _camera_difference(
+            mine,
+            CameraExtras.observe(camera, None),
+            theirs,
+            kept.camera,
+            "the camera's",
         )
 
 
@@ -285,7 +310,7 @@ def _fields_difference(state: NodeState, kept: NodeState) -> str | None:
     if mine.keys() != theirs.keys():
         return f"fields {', '.join(sorted(mine.keys() ^ theirs.keys()))} differ"
     for name in sorted(mine):
-        why = _value_difference(mine[name], theirs[name], paint=name in _PAINT_NAMES)
+        why = _value_difference(mine[name], theirs[name], paint=_paint_name(name))
         if why is not None:
             return f"{name} {why}"
     return None
@@ -301,19 +326,19 @@ def _keyed(state: NodeState) -> dict[str, Any]:
     }
 
 
-#: The fields that hold a mobject's paint as plain numbers, outside any
-#: :class:`~arachne.mobject.values.Paint`: a point cloud's stroke width, an
-#: image's opacities, the opacities a VMobject keeps beside its paint.
-_PAINT_NAMES = frozenset(
-    {
-        "fill_opacity",
-        "stroke_opacity",
-        "background_stroke_opacity",
-        "stroke_width",
-        "background_stroke_width",
-        "sheen_factor",
-    }
-)
+#: What names a field that holds paint as a plain number or a colour,
+#: outside any :class:`~arachne.mobject.values.Paint`: every opacity (a
+#: VMobject's beside its paint, an image's, an SVG's ``opacity``, a
+#: camera's background), every stroke or line width (a point cloud's, the
+#: widths a mobject keeps to restyle with, a camera's line-width multiple),
+#: a sheen, a colour and a camera's background. A sweep of the engine's
+#: assignments found no style number it misses.
+_PAINT_NAME = re.compile(r"opacity|stroke_width|line_width|sheen|colou?r|background")
+
+
+def _paint_name(name: str) -> bool:
+    """Whether the field ``name`` holds paint, compared exactly."""
+    return _PAINT_NAME.search(name) is not None
 
 
 def _paint_arrays() -> tuple[type, ...]:
@@ -345,9 +370,15 @@ def _value_difference(a: Any, b: Any, *, paint: bool = False) -> str | None:
     """
     from arachne.mobject.placement import Placement
     from arachne.mobject.values import Paint
+    from arachne.utils.color import ManimColor
 
     if isinstance(a, _paint_arrays()) or isinstance(b, _paint_arrays()):
         paint = True
+    if isinstance(a, ManimColor) or isinstance(b, ManimColor):
+        # A colour by its numbers, exactly.
+        paint = True
+        a = np.asarray(a.to_rgba(), dtype=float) if isinstance(a, ManimColor) else a
+        b = np.asarray(b.to_rgba(), dtype=float) if isinstance(b, ManimColor) else b
     if isinstance(a, Paint) or isinstance(b, Paint):
         if isinstance(a, Paint) and isinstance(b, Paint):
             if a.key == b.key:
@@ -391,6 +422,50 @@ def _same(a: Any, b: Any) -> bool:
     return type(a) is type(b) and bool(a == b)
 
 
+def _camera_difference(
+    mine: Sequence[tuple[Mobject, NodeState]],
+    extras: CameraExtras | None,
+    theirs: Sequence[tuple[Mobject, NodeState]],
+    kept: CameraExtras | None,
+    which: str,
+) -> str | None:
+    """How a camera's restored inputs differ from the kept ones: its values
+    (paint exactly, the rest as :func:`_value_difference` compares them),
+    its background exactly, its fixed-orientation centres, and the same of
+    every camera drawing into one of its displays.
+    """
+    if extras is None or kept is None:
+        if extras is kept:
+            return None
+        return f"{which} inputs differ from those kept"
+    names = [name for name, _ in extras.values]
+    if names != [name for name, _ in kept.values]:
+        return f"{which} values differ from those kept"
+    for (name, value), (_, twin) in zip(extras.values, kept.values, strict=True):
+        why = _value_difference(value, twin, paint=_paint_name(name))
+        if why is not None:
+            return f"{which} {name} {why}"
+    background, twin_background = extras.background, kept.background
+    if (background is None) != (twin_background is None) or (
+        background is not None and not _same(background, twin_background)
+    ):
+        return f"{which} background differs from the kept one"
+    why = _centre_difference(mine, extras.centers, theirs, kept.centers)
+    if why is not None:
+        return f"{which} {why}"
+    if len(extras.sub_cameras) != len(kept.sub_cameras):
+        return f"{which} displays draw other cameras than those kept"
+    for number, ((_, sub), (_, twin_sub)) in enumerate(
+        zip(extras.sub_cameras, kept.sub_cameras, strict=True)
+    ):
+        why = _camera_difference(
+            mine, sub, theirs, twin_sub, f"{which} display camera {number}'s"
+        )
+        if why is not None:
+            return why
+    return None
+
+
 def _centre_difference(
     mine: Sequence[tuple[Mobject, NodeState]],
     centers: Sequence[tuple[Mobject, np.ndarray]],
@@ -403,7 +478,7 @@ def _centre_difference(
     if _positions(mine, (m for m, _ in centers)) != _positions(
         theirs, (m for m, _ in kept)
     ):
-        return "the camera's fixed-orientation mobjects differ from those kept"
+        return "fixed-orientation mobjects differ from those kept"
     for (_, center), (_, twin) in zip(centers, kept, strict=True):
         why = _value_difference(
             np.asarray(center, dtype=float), np.asarray(twin, dtype=float)
