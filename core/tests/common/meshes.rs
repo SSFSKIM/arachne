@@ -243,13 +243,7 @@ pub fn to_pixels(view: &View, width: u32, height: u32, p: [f64; 3]) -> ([f64; 2]
         Camera::ThreeD(c) => {
             let projection = Projection::new(c, view.frame_center);
             let shown = pre_display(&[p], Some(&projection), Placement::Projected)[0];
-            let d = c.focal_distance;
-            let factor = if d - shown[2] < 0.0 {
-                1e6
-            } else {
-                d / (d - shown[2])
-            };
-            (map.apply(shown), -factor)
+            (map.apply(shown), -projection.factor(shown[2]))
         }
         _ => (map.apply(p), 0.0),
     }

@@ -8,7 +8,7 @@ mod common;
 
 use arachne_core::composite::*;
 use arachne_core::mesh;
-use arachne_core::tiles::{self, Rendered};
+use arachne_core::tiles;
 use arachne_core::xf::*;
 use common::meshes::*;
 use common::three_d_view;
@@ -690,4 +690,127 @@ fn synthetic_producers_draw_identically_on_any_number_of_threads() {
         c.background + c.fast + c.coverage + c.sample,
         (w * h) as u64
     );
+}
+
+#[test]
+fn a_pixel_without_emission_keeps_a_translucent_backgrounds_bytes() {
+    // CE stores a translucent background unpremultiplied: its channels can exceed its alpha.
+    let bg = [200, 100, 50, 128];
+    let (w, h) = (80, 8);
+    let red = Emitter {
+        rect: [0, 0, 4, 8],
+        radiance: [0.5, 0.0, 0.0],
+        depth: 1.0,
+    };
+    let dark = Emitter {
+        rect: [4, 0, 8, 8],
+        radiance: [0.0; 3],
+        depth: 1.0,
+    };
+    let drawn = tiles::render(Frame::filled(w, h, bg), &[&red, &dark], 1);
+    let l = srgb_decode(200.0 / 255.0);
+    let r = (srgb_encode(l + (1.0 - l) * (1.0 - libm::exp(-0.5))) * 255.0 + 0.5) as u8;
+    for y in 0..h {
+        for x in 0..w {
+            let want = if x < 4 { [r, 100, 50, r.max(128)] } else { bg };
+            assert_eq!(at(&drawn, w, x, y), want, "pixel {x},{y}");
+        }
+    }
+}
+
+/// A small deterministic generator, for sweeps.
+struct Lcg(u64);
+
+impl Lcg {
+    fn unit(&mut self) -> f64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (self.0 >> 11) as f64 / (1u64 << 53) as f64
+    }
+}
+
+/// Fragments stacked in one pixel, through the transparent pass.
+struct Stack(Vec<Fragment>);
+
+impl Producer for Stack {
+    fn transparent(&self, pass: &mut TransparentPass<'_>) {
+        for f in &self.0 {
+            pass.add(0, 0, *f);
+        }
+    }
+}
+
+#[test]
+fn the_coverage_resolve_is_within_its_stated_bound_of_the_sample_resolve() {
+    // A pixel with one partial mask takes the coverage resolve: its 8-bit coverage, rounded from
+    // the mask's count, blended once. The sample resolve would blend at each sub-sample and
+    // average. They differ by rounding only, within COVERAGE_TO_SAMPLE_LSB.
+    let mut rng = Lcg(5);
+    let mut colour = |opaque: bool| {
+        let a = if opaque { 1.0 } else { rng.unit() };
+        premultiply([rng.unit(), rng.unit(), rng.unit(), a])
+    };
+    let (mut cases, mut widest) = (0, 0);
+    for round in 0..400 {
+        for count in 1..SAMPLES {
+            let mask = ((1u32 << count) - 1) as u16;
+            let partial = colour(round % 2 == 0);
+            let full = colour(round % 3 == 0);
+            let front = colour(false);
+            // Back to front: the partial mask alone, over a full layer, under a full layer, and
+            // between two.
+            let stacks: [Vec<(u16, [u8; 4])>; 4] = [
+                vec![(mask, partial)],
+                vec![(FULL, full), (mask, partial)],
+                vec![(mask, partial), (FULL, front)],
+                vec![(FULL, full), (mask, partial), (FULL, front)],
+            ];
+            for stack in stacks {
+                let n = stack.len();
+                let fragments: Vec<Fragment> = stack
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (m, c))| {
+                        let depth = Plane::constant((n - i) as f64);
+                        Fragment::new(depth, *c, Coverage::Mask(*m), i as u32, 0)
+                    })
+                    .collect();
+                let drawn = tiles::render(Frame::filled(1, 1, GREY), &[&Stack(fragments)], 1);
+                if drawn.resolves[0] != Resolve::Coverage as u8 {
+                    // An opaque full layer in front hides the rest: nothing to compare.
+                    assert!(n > 1, "a lone partial mask takes the coverage resolve");
+                    continue;
+                }
+                let mut sum = [0u32; 4];
+                for s in 0..SAMPLES {
+                    let mut px = GREY;
+                    for (m, c) in &stack {
+                        if m & (1 << s) != 0 {
+                            px = blend(*c, 255, px);
+                        }
+                    }
+                    for k in 0..4 {
+                        sum[k] += px[k] as u32;
+                    }
+                }
+                let sample = sum.map(|v| (v + 8) / 16);
+                for k in 0..4 {
+                    let gap = (drawn.rgba[k] as i64 - sample[k] as i64).unsigned_abs();
+                    widest = widest.max(gap);
+                    assert!(
+                        gap <= COVERAGE_TO_SAMPLE_LSB as u64,
+                        "mask {mask:016b} stack {stack:?}: coverage {:?}, sample {sample:?}",
+                        &drawn.rgba[..4]
+                    );
+                }
+                cases += 1;
+            }
+        }
+    }
+    assert!(cases > 10_000, "{cases} cases");
+    if std::env::var_os("CORE_STATS").is_some() {
+        eprintln!("coverage vs sample resolve: widest gap {widest} over {cases} cases");
+    }
 }
