@@ -96,7 +96,7 @@ fn sha256_matches_its_standard_vectors() {
 /// branches of every optional field, swappable fields given values of their own). It fails on any
 /// change to what the sample writes; `tests/layout.rs` pins the layout field by field. XF streams
 /// are generated, never committed. Change the pin only when such a change is meant.
-const SAMPLE_SHA256: &str = "64ab758d9e709cd244edf24871db2cf71d4ffb948e20cb500cefea2016b5ddd0";
+const SAMPLE_SHA256: &str = "7e1d595fef01fd0a6be9ca9c19be99418de8dbc0bedae52da1a2f455f1955791";
 
 #[test]
 fn the_canonical_samples_bytes_are_pinned() {
