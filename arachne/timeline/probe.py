@@ -93,16 +93,18 @@ class Probe:
     def then(self, later: Probe) -> Probe:
         """This probe followed by ``later``'s, of the scene recorded again:
         a play found in both as ``later`` found it, unless this one demoted
-        it; every divergence of both.
+        it; every divergence of both, each cause once.
         """
         found = {p.play: p for p in self.plays}
         for each in later.plays:
-            if found.get(each.play, each).outcome != "demoted":
+            earlier = found.get(each.play)
+            if earlier is None or earlier.outcome != "demoted":
                 found[each.play] = each
-        return Probe(
-            tuple(found[index] for index in sorted(found)),
-            (*self.divergences, *later.divergences),
-        )
+        divergences: list[Divergence] = []
+        for divergence in (*self.divergences, *later.divergences):
+            if all(kept.cause != divergence.cause for kept in divergences):
+                divergences.append(divergence)
+        return Probe(tuple(found[index] for index in sorted(found)), tuple(divergences))
 
 
 def probe(record: Record) -> Probe:
@@ -135,7 +137,9 @@ def _probe_play(record: Record, play: PlayRecord) -> PlayProbe:
         try:
             why = _difference(record, play, t, base)
         except Unrestorable as refused:
-            return PlayProbe(play.index, "unrestorable", instants, starts, refused.reason)
+            return PlayProbe(
+                play.index, "unrestorable", instants, starts, refused.reason
+            )
         if why is not None:
             return PlayProbe(
                 play.index,

@@ -170,6 +170,15 @@ class Divergence:
     changed_inputs: tuple[str, ...] = ()
     code: str = "replay.diverged"
 
+    @property
+    def cause(self) -> tuple[Any, ...]:
+        """What the divergence is a finding of, alike however many
+        comparisons found it: its kind, the play and line, and the inputs
+        that changed. Not its reason, whose amounts vary from one execution
+        to the next.
+        """
+        return (self.kind, self.play, self.source_line, self.changed_inputs)
+
 
 @dataclass(frozen=True, eq=False)
 class NodeValues:

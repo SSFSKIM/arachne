@@ -14,7 +14,7 @@ import pytest
 
 from arachne.timeline import admission
 from arachne.timeline.execution import Divergence
-from arachne.timeline.purity import Proof
+from arachne.timeline.purity import Proof, Refused
 
 from . import camera_scenes, probe_scenes, restore_scenes, route_scenes
 from .conftest import render
@@ -36,13 +36,23 @@ def _line(tag: str) -> int:
 def planted(monkeypatch):
     """The prover takes a :func:`.probe_scenes.planted` setter as proven, one
     that writes its own mobject and reads nothing: a forged proof, outside
-    what admission vouches for, which the probe is the backstop of.
+    what admission vouches for, which the probe is the backstop of. A
+    :func:`.probe_scenes.planted_later` setter is refused the first time
+    and taken as proven after.
     """
     prove = admission.prove_setter_body
+    seen: set[int] = set()
 
     def forged(function, receiver, scene, **kwargs):
-        if getattr(function, "planted", False):
+        mark = getattr(function, "planted", None)
+        if mark is True:
             return Proof(writes=[receiver])
+        if mark == "later":
+            line = function.__code__.co_firstlineno
+            if line in seen:
+                return Proof(writes=[receiver])
+            seen.add(line)
+            raise Refused("not admitted in its first execution")
         return prove(function, receiver, scene, **kwargs)
 
     monkeypatch.setattr(admission, "prove_setter_body", forged)
@@ -196,3 +206,21 @@ def test_a_render_never_reads_a_demotion(session_of, planted):
     assert session.probe.demoted == (0,)
     scene, _ = render(probe_scenes.PlantedDrift, 15)
     assert scene.record.plays[0].route == "state"
+
+
+def test_a_cause_seen_in_several_passes_is_reported_once(session_of, planted):
+    """Each pass demotes one play, and each recording again differs from the
+    first at its first play (an unseeded draw): one execution divergence,
+    however many recordings found it, and each probe divergence once.
+    """
+    session = session_of("TwoPassDrift", PROBE_SCENES, frame_rate=15)
+    assert session.probe.demoted == (0, 1)
+    assert [p.route for p in session.record.plays] == ["ticked", "ticked"]
+    found = [(d.kind, d.play) for d in session.divergences]
+    assert sorted(found) == [("execution", 0), ("probe", 0), ("probe", 1)]
+    assert sorted((d.kind, d.play) for d in session.probe.divergences) == [
+        ("probe", 0),
+        ("probe", 1),
+    ]
+    (second,) = [d for d in session.divergences if d.play == 1]
+    assert second.source_line.line == _line("second")
