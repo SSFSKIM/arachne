@@ -30,6 +30,7 @@ from ._config import config as global_config
 from ._config import tempconfig
 from .constants import QUALITIES
 from .timeline import admission
+from .timeline.admission import PlayIdentity, play_identities
 from .timeline.clock import exact
 from .timeline.draw import Drawing
 from .timeline.execution import (
@@ -46,6 +47,7 @@ from .timeline.probe import Probe
 from .timeline.probe import probe as probe_record
 from .timeline.recorder import Recorder, _scene_file
 from .timeline.routes import draw
+from .timeline.source import SourceLine
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -145,15 +147,16 @@ class Session:
             "on_start": on_start,
             "instants": tuple(instants),
         }
-        demoted: set[int] = set()
+        demoted: set[PlayIdentity] = set()
         session = cls(*_execute(path, scene, settings, options, demoted))
         if not probe:
             return session
         # Probe the record. On a demotion, record the scene again with the
         # play ticked, a new execution compared with the first, and probe
         # that: each pass ticks at least one play more, while the executions
-        # play the same plays. When they don't, that is where they differ,
-        # and the plays the probe found no longer stand for one another.
+        # play the same plays of the same source. When they don't, the
+        # session holds the last execution, its plays where the probe found
+        # them (a demotion follows its play's identity, never its index).
         latest = found = probe_record(session.record)
         first: ExecutionSummary | None = None
         # A backstop: with the same plays in every execution, each pass ticks
@@ -164,15 +167,16 @@ class Session:
         while True:
             for divergence in latest.divergences:
                 session._keep(divergence)
-            new = set(latest.demoted) - demoted
+            record = session.record
+            identities = play_identities(record.plays)
+            new = {identities[index] for index in latest.demoted} - demoted
             if not new:
                 break
-            record = session.record
             digest = record.identity.source_digest
-            for index in new:
-                demoted.add(index)
+            for identity in new:
+                demoted.add(identity)
                 if digest is not None:
-                    admission.demote(digest, record.scene_class, index)
+                    admission.demote(digest, record.scene_class, identity)
             if executions >= cap:
                 settled = False
                 break
@@ -182,9 +186,15 @@ class Session:
             executions += 1
             with contextlib.suppress(Incomparable):
                 session.compare(first)
-            changed = _schedule_change(record, session.record)
-            if changed is not None:
-                session._keep(changed)
+            if not _same_source(record, session.record) or _schedule_shift(
+                record, session.record
+            ):
+                # Another source is stale, never a divergence; the same one
+                # playing other plays is where its executions differ.
+                changed = _schedule_change(record, session.record)
+                if changed is not None:
+                    session._keep(changed)
+                found = session._found_in(found, record)
                 settled = False
                 break
             latest = probe_record(session.record)
@@ -247,6 +257,28 @@ class Session:
         if all(kept.cause != divergence.cause for kept in self.divergences):
             self.divergences.append(divergence)
 
+    def _found_in(self, found: Probe, before: Record) -> Probe:
+        """``found``, the probe of ``before``, moved to the record held, an
+        execution recorded after it: each play at its index there by its
+        identity, a play it does not play left out and its divergence naming
+        no play; the same for the probe's divergences kept.
+        """
+        places = {
+            identity: index
+            for index, identity in enumerate(play_identities(self.record.plays))
+        }
+        moved = {
+            index: places.get(identity)
+            for index, identity in enumerate(play_identities(before.plays))
+        }
+        self.divergences = [
+            replace(d, play=moved.get(d.play))
+            if d.kind == "probe" and d.play is not None
+            else d
+            for d in self.divergences
+        ]
+        return found.moved(moved)
+
     def _executed_again(self, scene: Scene, record: Record, module: ModuleType) -> None:
         """Hold the scene executed again, ``record`` its record, in place of
         the one held.
@@ -299,7 +331,7 @@ def _execute(
     scene: str,
     settings: dict[str, Any],
     options: dict[str, Any],
-    demoted: set[int],
+    demoted: set[PlayIdentity],
 ) -> tuple[Scene, Record, ModuleType]:
     """Import ``path`` afresh and execute its scene ``scene`` under
     ``settings``, recorded by a ``Recorder`` given ``options`` that ticks the
@@ -345,33 +377,57 @@ def _execute(
     return instance, record, module
 
 
-def _schedule_change(before: Record, after: Record) -> Divergence | None:
+def _same_source(before: Record, after: Record) -> bool:
+    """Whether two executions ran one known source."""
+    digest = before.identity.source_digest
+    return digest is not None and digest == after.identity.source_digest
+
+
+def _schedule_shift(
+    before: Record, after: Record
+) -> tuple[int, SourceLine | None, str] | None:
     """Where ``after``, the execution recorded after ``before``, plays other
-    plays: another kind or line at an index, or another count.
+    plays (another kind or line at an index, or another count): the index,
+    the line there and how.
     """
-    changed = changed_inputs(before.identity, after.identity)
     for index, (a, b) in enumerate(zip(before.plays, after.plays, strict=False)):
         if (a.kind, a.source_line) != (b.kind, b.source_line):
-            return Divergence(
-                "execution",
+            return (
                 index,
                 b.source_line,
                 f"its play {index} is a {b.kind} at {b.source_line}, where the"
                 f" execution before played a {a.kind} at {a.source_line}",
-                changed,
             )
     if len(before.plays) != len(after.plays):
         index = min(len(before.plays), len(after.plays))
         longer = after if len(after.plays) > index else before
-        return Divergence(
-            "execution",
+        return (
             index,
             longer.plays[index].source_line,
             f"this execution ran {len(after.plays)} plays, and the one before"
             f" {len(before.plays)}",
-            changed,
         )
     return None
+
+
+def _schedule_change(before: Record, after: Record) -> Divergence | None:
+    """Where ``after``, an execution of ``before``'s source recorded after
+    it, plays other plays, as a divergence; ``None`` when they play the same,
+    and for two sources or an unknown one, which are stale, never diverged.
+    """
+    if not _same_source(before, after):
+        return None
+    shift = _schedule_shift(before, after)
+    if shift is None:
+        return None
+    index, line, reason = shift
+    return Divergence(
+        "execution",
+        index,
+        line,
+        reason,
+        changed_inputs(before.identity, after.identity),
+    )
 
 
 def _source_digest(scene: Scene) -> str | None:

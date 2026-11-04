@@ -14,6 +14,7 @@ from arachne import (
     LEFT,
     RIGHT,
     UP,
+    WHITE,
     Dot,
     Group,
     PMobject,
@@ -21,6 +22,7 @@ from arachne import (
     Square,
     Succession,
     ValueTracker,
+    ZoomedScene,
     always_redraw,
     linear,
     there_and_back,
@@ -184,3 +186,35 @@ class SharedChildHook(Scene):
         if hasattr(self, "second"):
             self.second.remove(self.left, self.right)
             self.second.add(self.left if t == 0 else self.right)
+
+
+class CameraPaintHook(Scene):
+    """A frame hook turning the background white after the first frame."""
+
+    def construct(self):
+        tracker = ValueTracker(0)
+        mover = Dot().add_updater(lambda m: m.set_x(tracker.get_value()))
+        self.add(mover)
+        self.play(tracker.animate.set_value(2), run_time=0.4)
+
+    def update_to_time(self, t):
+        super().update_to_time(t)
+        self.camera.background_color = BLACK if t == 0 else WHITE
+
+
+class ZoomedCameraPaintHook(ZoomedScene):
+    """A frame hook fading the zoomed camera's background after the first
+    frame: the paint of a camera that draws into a display.
+    """
+
+    def construct(self):
+        self.activate_zooming(animate=False)
+        tracker = ValueTracker(0)
+        mover = Dot().add_updater(lambda m: m.set_x(tracker.get_value()))
+        self.add(mover)
+        self.play(tracker.animate.set_value(2), run_time=0.4)
+
+    def update_to_time(self, t):
+        super().update_to_time(t)
+        if hasattr(self, "zoomed_camera"):
+            self.zoomed_camera.background_opacity = 1.0 if t == 0 else 0.5

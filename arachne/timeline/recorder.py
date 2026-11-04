@@ -26,7 +26,7 @@ import numpy as np
 
 from arachne._config import config, logger
 
-from .admission import admit, camera_refusal
+from .admission import PlayIdentity, admit, camera_refusal, play_identities
 from .clock import TICK_RATE, exact, play_end
 from .dispatch import draw_refusal, scene_hooks
 from .draw import CameraExtras, LiveFrames, camera_nodes
@@ -274,9 +274,10 @@ class Recorder:
     engine's bodies, never the scene's frame hooks): what a restore or an
     analytic answer there is compared with. A ticked play evaluates none.
 
-    ``demoted`` are the indices of plays the probe demoted (:mod:`.probe`):
-    each ticks where it would be a state-function play. A session passes
-    them; a render never does.
+    ``demoted`` are the identities of plays the probe demoted
+    (:data:`.admission.PlayIdentity`, :mod:`.probe`): the play of each
+    ticks where it would be a state-function play. A session passes them; a
+    render never does.
     """
 
     def __init__(
@@ -290,7 +291,7 @@ class Recorder:
         on_tick: Callable[[Scene, Fraction, bool], object] | None = None,
         on_start: Callable[[Scene, Fraction], object] | None = None,
         instants: Iterable[Fraction | float] = (),
-        demoted: Iterable[int] = (),
+        demoted: Iterable[PlayIdentity] = (),
     ) -> None:
         if stepping not in (True, False, BRUTE_FORCE):
             raise ValueError(
@@ -630,7 +631,8 @@ class Recorder:
             held=play.held,
             base_dir=_base_dir(record),
             refusal=body.refusal,
-            demoted=play.index in self.demoted,
+            demoted=bool(self.demoted)
+            and play_identities(record.plays[: play.index + 1])[-1] in self.demoted,
         )
         play.admission = admission
         play.route = admission.route
