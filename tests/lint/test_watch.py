@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from arachne.lint import lint
+from arachne.lint.armed import ArmedRule
 from arachne.lint.departures import departures
 from arachne.lint.plays import played
 from arachne.lint.serialise import report
@@ -46,9 +47,12 @@ CE_SPANS = {
     "TagChasesDot": ("clip.frame_edge", True, (1.0, 2.5)),
     "FixedCaptionAtEdge": ("clip.frame_edge", True, (0.0, 2.0)),
     "ZoomedPastCaption": ("clip.frame_edge", True, (0.8, 3.0)),
+    "WordSlipsToEdge": ("clip.frame_edge", True, (2.7, 3.7)),
     "SettledNoteFades": ("overlap.text", False, (1.0, 1.0)),
     "SettledNoteFadesInAGroup": ("overlap.text", False, (1.0, 1.0)),
     "SettledNoteRemoved": ("overlap.text", False, (1.0, 1.0)),
+    "RailSnapsUnderNote": ("overlap.text", False, (1.2, 1.2)),
+    "NoteRemovedAndReadded": ("overlap.text", False, (0.6, 0.6)),
 }
 #: Scenes the reference checks find nothing in.
 CE_SILENT = [
@@ -58,6 +62,14 @@ CE_SILENT = [
     "NoteOnCard",
     "PuckCarriedOff",
     "NoteSweptAcross",
+    # Judged on the scene as a play left it, finished and cleaned up.
+    "RimWordSnapsIn",
+    "BoxSnapsAway",
+    "PuckRunsOffThenBack",
+    # One authored group a play's own group took members of.
+    "PanelPulsesTwo",
+    # A removal departs only what it removes.
+    "DotTakenFromPanel",
 ]
 #: The planted span each held defect must lie in.
 PLANTED = {
@@ -69,6 +81,7 @@ PLANTED = {
     "TagChasesDot": (0.5, 3.0),
     "FixedCaptionAtEdge": (0.0, 2.0),
     "ZoomedPastCaption": (0.5, 3.0),
+    "WordSlipsToEdge": (2.6, 3.8),
 }
 HELD = [name for name, (_, held, _) in CE_SPANS.items() if held]
 DEPARTED = [name for name, (_, held, _) in CE_SPANS.items() if not held]
@@ -126,6 +139,33 @@ def test_a_hold_just_over_a_second_is_held_where_ce_holds_it(run):
     assert finding.t_end == Fraction(9, 2)
     assert abs(finding.t_start - Fraction(34, 10)) <= Fraction(1, 15)
     assert abs(finding.t_end - Fraction(67, 15)) <= Fraction(1, 30)
+
+
+def test_the_watch_reads_a_play_s_frames_at_the_rate_asked(run):
+    # CE's pass at 8 of the 15 fps the clock keeps never samples the word at
+    # the edge a second apart; reading every frame, it is held.
+    _, every = run("WordSlipsToEdge", (hold_watch.where(),))
+    assert [f.code for f in _found(every)] == ["clip.frame_edge"]
+    _, sampled = run("WordSlipsToEdge", (hold_watch.where(sample_fps=8),))
+    assert _found(sampled) == []
+
+
+@pytest.mark.parametrize(
+    ("name", "margin"),
+    [
+        ("CaptionHeldAtEdge", Fraction(0)),
+        ("CaptionHeldAFrameMore", Fraction(1, 15)),
+        ("CaptionHeldLonger", None),
+    ],
+)
+def test_a_hold_decided_within_a_frame_says_so(run, name, margin):
+    _, result = run(name, (hold_watch.where(),))
+    [finding] = _found(result)
+    assert finding.held is True
+    if margin is None:
+        assert "clock_margin" not in finding.detail
+    else:
+        assert finding.detail["clock_margin"] == pytest.approx(float(margin))
 
 
 @pytest.mark.parametrize(
@@ -208,11 +248,19 @@ def test_a_settled_caption_that_departs_is_swept(run, name):
 
 @pytest.mark.parametrize(
     ("name", "tag"),
-    [("SettledNoteFades", "fade"), ("SettledNoteFadesInAGroup", "group-fade")],
+    [
+        ("SettledNoteFades", "fade"),
+        # A group made for the fade takes the word out of the scene's top
+        # level as the play begins; the word was settled when it was called.
+        ("SettledNoteFadesInAGroup", "group-fade"),
+        ("SettledNoteRemoved", "remove"),
+        # Swept in the scene the play left, before the script removed it.
+        ("RailSnapsUnderNote", "remove-note"),
+        # Put back at once, it was removed all the same.
+        ("NoteRemovedAndReadded", "readd"),
+    ],
 )
-def test_a_fade_names_its_play_s_line(run, name, tag):
-    # A group made for the fade takes the word out of the scene's top level
-    # as the play begins; the word was settled when the scene called it.
+def test_a_departure_names_the_line_that_made_it(run, name, tag):
     _, result = run(name, (departures.where(),))
     [finding] = _found(result)
     assert finding.line is not None
@@ -234,12 +282,57 @@ def test_a_departure_at_exactly_the_settling_wait_is_swept_and_tagged(run):
     assert finding.detail["clock_margin"] == 0
 
 
+@pytest.mark.parametrize(
+    ("name", "margin"),
+    [("NoteFadesAFrameLate", Fraction(1, 15)), ("NoteFadesWellAfter", None)],
+)
+def test_a_departure_a_frame_past_settling_still_says_so(run, name, margin):
+    # CE ends these waits at 8 and 9 frames (0.533 and 0.6 s) and sweeps both.
+    _, result = run(name, (departures.where(),))
+    [finding] = _found(result)
+    assert finding.code == "overlap.text"
+    if margin is None:
+        assert "clock_margin" not in finding.detail
+    else:
+        assert finding.detail["clock_margin"] == pytest.approx(float(margin))
+
+
 def test_a_departure_s_exemption_excuses_it(run, session_of):
     session = session_of("SettledNoteFades", SCENES, frame_rate=15)
     [finding] = _found(lint(session, rules=(departures.where(),)))
     pair = [o.id for o in finding.objects]
     excused = lint(session, rules=(departures.where(exempt=[pair]),))
     assert _found(excused) == []
+
+
+# The states the rules read --------------------------------------------------
+
+
+def _execution_seen(session):
+    seen = []
+
+    def watch(context, rule):
+        seen.append(context.frames.execution)
+        return []
+
+    lint(session, rules=(ArmedRule(watch),))
+    return seen[0]
+
+
+def test_a_lint_s_forward_run_keeps_every_play_s_state(session_of):
+    session = session_of("SettledNoteRemoved", SCENES, frame_rate=15)
+    assert session.record.states is None
+    execution = _execution_seen(session)
+    assert execution is not session.record
+    assert set(execution.states.exits) == set(range(len(execution.plays)))
+    [removal] = execution.states.removals
+    assert removal.source_line.line == line_of("remove", SCENES)
+
+
+def test_a_record_that_keeps_its_states_is_read_itself(session_of):
+    armed = Path(__file__).parents[1] / "timeline" / "state_scenes.py"
+    session = session_of("FadesAndRemoves", armed, frame_rate=15)
+    assert _execution_seen(session) is session.record
 
 
 # The play accessor ----------------------------------------------------------

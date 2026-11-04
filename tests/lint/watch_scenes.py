@@ -19,6 +19,7 @@ from arachne import (
     Dot,
     FadeIn,
     FadeOut,
+    Indicate,
     Line,
     MovingCameraScene,
     Rectangle,
@@ -26,9 +27,16 @@ from arachne import (
     Square,
     Text,
     ThreeDScene,
+    UpdateFromAlphaFunc,
     VGroup,
     always_redraw,
+    linear,
 )
+
+
+def at_the_end(alpha):
+    """A rate that holds a play's start until its very end."""
+    return 0 if alpha < 1 else 1
 
 
 class CaptionParkedAtEdge(Scene):
@@ -201,6 +209,18 @@ class NoteFadesAtHalf(SettledNoteFades):
     hold = 0.5
 
 
+class NoteFadesAFrameLate(SettledNoteFades):
+    """The same, faded one frame (at 15 fps) past settling."""
+
+    hold = 17 / 30
+
+
+class NoteFadesWellAfter(SettledNoteFades):
+    """The same, faded a frame and a half past settling."""
+
+    hold = 0.6
+
+
 class SettledNoteFadesInAGroup(Scene):
     """The settled word faded out inside a group made only for the fade."""
 
@@ -235,7 +255,7 @@ class SettledNoteRemoved(Scene):
         note = Text("note", font_size=36).move_to(rail.get_center())
         self.add(rail, note)
         self.wait(1)
-        self.remove(note)
+        self.remove(note)  # @remove
         self.wait(0.5)
 
 
@@ -264,3 +284,155 @@ class ZoomedPastCaption(MovingCameraScene):
         self.add(far, cut)
         self.play(self.camera.frame.animate.scale(0.5).move_to(LEFT * 3.5))
         self.wait(2)
+
+
+# The scene as a play leaves it -----------------------------------------------
+
+
+class RimWordSnapsIn(Scene):
+    """A word across the right edge for under a second, brought to the
+    middle by a play that holds it still until its last instant: it was at
+    the edge only until the play ended.
+    """
+
+    def construct(self):
+        word = Text("edge", font_size=32).move_to(RIGHT * 6.95)
+        self.add(word)
+        self.wait(0.4)
+        self.play(word.animate.move_to(ORIGIN), run_time=0.6, rate_func=at_the_end)
+
+
+class BoxSnapsAway(Scene):
+    """A box that jumps away from its tag as its play ends: the tag was
+    never seen beside a still box.
+    """
+
+    def construct(self):
+        box = Square(1).shift(LEFT * 3)
+        tag = Text("B", font_size=32).next_to(box, DOWN, buff=0.12)
+        self.add(box, tag)
+        self.play(box.animate.shift(RIGHT * 4), run_time=0.6, rate_func=at_the_end)
+        self.wait(1.4)
+
+
+class PuckRunsOffThenBack(Scene):
+    """A filled puck carried from near the edge wholly off the frame, then
+    set back in the middle by the script.
+    """
+
+    def construct(self):
+        puck = Circle(radius=0.4, fill_opacity=1).move_to(RIGHT * 6.5)
+        self.add(puck)
+        self.wait(0.6)
+        self.play(puck.animate.move_to(RIGHT * 9), run_time=2, rate_func=linear)
+        puck.move_to(ORIGIN)
+        self.wait(0.2)
+
+
+class RailSnapsUnderNote(Scene):
+    """A line moved onto a settled word as its play ends, and the word then
+    taken out by the script.
+    """
+
+    def construct(self):
+        rail = Line(LEFT * 4, RIGHT * 4).shift(UP * 2)
+        note = Text("note", font_size=36)
+        self.add(rail, note)
+        self.wait(0.6)
+        self.play(
+            UpdateFromAlphaFunc(
+                rail, lambda m, a: m.move_to(UP * 2 if a < 1 else ORIGIN)
+            ),
+            run_time=0.6,
+        )
+        self.remove(note)  # @remove-note
+        self.wait(0.2)
+
+
+# Groups a play makes, and the script's removals ------------------------------
+
+
+class PanelPulsesTwo(Scene):
+    """One authored panel (a line, a word on it, a dot), two of whose
+    members pulse in a group made for the pulse, then hold.
+    """
+
+    def construct(self):
+        rail = Line(LEFT * 4, RIGHT * 4)
+        note = Text("note", font_size=36)
+        mark = Dot(UP * 2)
+        self.add(VGroup(rail, note, mark))
+        self.wait(0.6)
+        self.play(Indicate(VGroup(note, mark)), run_time=0.6)
+        self.wait(2)
+
+
+class DotTakenFromPanel(Scene):
+    """A dot taken out of the panel that also holds a settled word lying
+    on a line: only the dot departs.
+    """
+
+    def construct(self):
+        rail = Line(LEFT * 4, RIGHT * 4)
+        note = Text("note", font_size=36)
+        mark = Dot(UP * 2)
+        self.add(rail, VGroup(note, mark))
+        self.wait(0.6)
+        self.remove(mark)
+        self.wait(0.2)
+
+
+class NoteRemovedAndReadded(Scene):
+    """A settled word on a line, removed by the script and added straight
+    back.
+    """
+
+    def construct(self):
+        rail = Line(LEFT * 4, RIGHT * 4)
+        note = Text("note", font_size=36)
+        self.add(rail, note)
+        self.wait(0.6)
+        self.remove(note)  # @readd
+        self.add(note)
+        self.wait(0.2)
+
+
+# Sampling, and the clock's margin ----------------------------------------------
+
+
+class WordSlipsToEdge(Scene):
+    """One long play that holds a word in the middle for 2.6 s, then puts it
+    across the right edge for its last 1.13 s.
+    """
+
+    def construct(self):
+        word = Text("edge", font_size=32)
+        self.add(word)
+        run = 56 / 15
+        self.play(
+            word.animate.move_to(RIGHT * 6.95),
+            run_time=run,
+            rate_func=lambda a: 0 if a * run < 2.6 else 1,
+        )
+
+
+class CaptionHeldAtEdge(Scene):
+    """A caption across the right edge for ``hold`` seconds, and the end."""
+
+    hold = 1.0
+
+    def construct(self):
+        self.add(Text("margin call", font_size=32).move_to(RIGHT * 6.4))
+        self.wait(self.hold)
+
+
+class CaptionHeldAFrameMore(CaptionHeldAtEdge):
+    """The same, held one frame (at 15 fps) longer."""
+
+    hold = 16 / 15
+
+
+class CaptionHeldLonger(CaptionHeldAtEdge):
+    """The same, held a frame and a half longer."""
+
+    hold = 1.1

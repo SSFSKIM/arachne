@@ -9,7 +9,16 @@ rather than asked at times::
 
 Nothing arms them unasked. A rule that samples frames of its own says
 which (``reads``); they are read with the lint's other frames, from the
-record or the lint's one forward run (:mod:`.frames`).
+record or the lint's one forward run (:mod:`.frames`). Between frames an
+armed rule reads the states its execution keeps (``Record.states``): the
+scene as each play ended, finished and cleaned up, and as the script
+removed from it; it asks that the execution keep them.
+
+``sample_fps`` is the rate a hold watch samples a play's frames at when
+another engine's pass is matched: that pass reads the first frame of the
+render's grid at or after each ``1/sample_fps`` of a play, and its last; by
+default every frame of the grid is read. Durations are measured on the
+engine's clock either way.
 """
 
 from __future__ import annotations
@@ -48,7 +57,8 @@ class ArmedRule:
     watch: Callable[[LintContext, ArmedRule], Iterable[Finding]]
     since: Fraction = Fraction(0)
     terms: Terms = field(default_factory=lambda: Terms(mid_scene=True))
-    reads: Callable[[Record, Fraction], Sequence[Fraction]] | None = None
+    reads: Callable[[Record, ArmedRule], Sequence[Fraction]] | None = None
+    sample_fps: Fraction | None = None
 
     def where(
         self,
@@ -57,19 +67,26 @@ class ArmedRule:
         pad: float = DEFAULT_PAD,
         text_gap: float | None = None,
         exempt: Iterable[Any] = (),
+        sample_fps: Fraction | float | None = None,
     ) -> ArmedRule:
         """This rule armed at ``since`` under the terms given."""
         terms = Terms(pad, text_gap, Exemptions.parse(exempt), mid_scene=True)
-        return replace(self, since=exact(since), terms=terms)
+        return replace(
+            self,
+            since=exact(since),
+            terms=terms,
+            sample_fps=exact(sample_fps) if sample_fps is not None else None,
+        )
 
     def request_frames(self, frames: Frames) -> None:
-        """Ask the lint for the frames this rule samples, before any is read."""
+        """Ask the lint for the frames this rule samples, before any is read,
+        and that its execution keep its states, to the scene's end.
+        """
+        frames.require_states()
+        frames.complete(self._owner)
         if self.reads is None:
             return
-        from .core import target_resolution
-        from .parts import build_parts
-
-        target = target_resolution(frames.session)
+        target = _target(frames)
 
         def read(
             record: Record,
@@ -78,6 +95,8 @@ class ArmedRule:
             capture: Capture,
             live: bool,
         ) -> Parts:
+            from .parts import build_parts
+
             return build_parts(
                 record,
                 t,
@@ -88,11 +107,27 @@ class ArmedRule:
                 live=live,
             )
 
-        frames.request(self._owner, self.reads(frames.session.record, self.since), read)
+        frames.request(self._owner, self.reads(frames.session.record, self), read)
 
-    def frames(self, context: LintContext) -> list[Parts]:
-        """The parts of each frame :attr:`reads` named, in its order."""
-        return context.frames.result(self._owner)
+    def frames(self, context: LintContext) -> dict[Fraction, Parts]:
+        """The parts of each frame :attr:`reads` named, by its time."""
+        times = self.reads(context.record, self) if self.reads is not None else ()
+        return dict(zip(times, context.frames.result(self._owner), strict=True))
+
+    def state(self, context: LintContext, capture: Capture) -> Parts:
+        """The parts of a state the execution keeps (``Record.states``)."""
+        from .parts import build_parts
+
+        execution = context.frames.execution
+        answer = "recorded" if execution is context.record else "forward"
+        return build_parts(
+            execution,
+            capture.instant,
+            None,
+            capture,
+            answer=answer,
+            target=_target(context.frames),
+        )
 
     @property
     def _owner(self) -> tuple[str, int]:
@@ -100,3 +135,9 @@ class ArmedRule:
 
     def __call__(self, context: LintContext) -> list[Finding]:
         return list(self.watch(context, self))
+
+
+def _target(frames: Frames) -> tuple[int, int]:
+    from .core import target_resolution
+
+    return target_resolution(frames.session)
