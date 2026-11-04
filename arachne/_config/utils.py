@@ -363,6 +363,7 @@ class ManimConfig(MutableMapping):
         "scene_names",
         "seed",
         "show_in_file_browser",
+        "static_layer",
         "tex_dir",
         "tex_template",
         "tex_template_file",
@@ -667,6 +668,7 @@ class ManimConfig(MutableMapping):
             "dry_run",
         ]:
             setattr(self, key, parser["CLI"].getboolean(key, fallback=False))
+        self.static_layer = parser["CLI"].getboolean("static_layer", fallback=True)
 
         # int keys
         for key in [
@@ -1365,6 +1367,19 @@ class ManimConfig(MutableMapping):
     @dry_run.setter
     def dry_run(self, val: bool) -> None:
         self._set_boolean("dry_run", val)
+
+    @property
+    def static_layer(self) -> bool:
+        """Whether a play's static mobjects are painted once and reused as
+        each frame's background while they are unchanged (the default), or
+        drawn in every frame. Every frame is the same either way; off, it is
+        the check of that and a debugging switch.
+        """
+        return self._d["static_layer"]
+
+    @static_layer.setter
+    def static_layer(self, value: bool) -> None:
+        self._set_boolean("static_layer", value)
 
     @property
     def renderer(self) -> NoReturn:
