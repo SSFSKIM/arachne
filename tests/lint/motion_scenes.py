@@ -245,6 +245,37 @@ class ZoomCut(MovingCameraScene):
         self.wait()
 
 
+class FollowedZoomCut(MovingCameraScene):
+    """The camera follows a sliding puck, then only zooms in tenfold between
+    plays: the puck stands still on screen all along, and does not jump.
+    """
+
+    def construct(self):
+        puck = Dot()
+        self.add(puck)
+        self.play(
+            puck.animate.shift(RIGHT),
+            self.camera.frame.animate.shift(RIGHT),
+            rate_func=linear,
+        )
+        self.camera.frame.scale(0.1)
+        self.wait()
+
+
+class ZoomedReset(MovingCameraScene):
+    """A puck slides, is set back half a unit, and the camera zooms in
+    tenfold: a jump the zoom makes large.
+    """
+
+    def construct(self):
+        puck = Dot(LEFT * 0.5)
+        self.add(puck)
+        self.play(puck.animate.shift(RIGHT), rate_func=linear)
+        puck.shift(LEFT * 0.5)
+        self.camera.frame.scale(0.1)
+        self.wait()
+
+
 class ZoomedTeleport(MovingCameraScene):
     """A puck slides, is set down 2 units on, and the camera zooms in."""
 
