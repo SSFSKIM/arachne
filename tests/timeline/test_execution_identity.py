@@ -8,6 +8,7 @@ files it reads, so that editing them between executions is the test's to do.
 from __future__ import annotations
 
 import builtins
+import dataclasses
 import hashlib
 import importlib
 import json
@@ -24,7 +25,12 @@ import pytest
 import arachne
 from arachne.session import Session
 from arachne.timeline import inputs
-from arachne.timeline.execution import ExecutionSummary, compare, summarize
+from arachne.timeline.execution import (
+    ExecutionSummary,
+    Incomparable,
+    compare,
+    summarize,
+)
 from arachne.timeline.source import SourceLine
 from arachne.utils.module_ops import get_module
 
@@ -186,6 +192,60 @@ def test_a_directory_that_does_not_resolve_is_left_out_of_the_exclusions():
             raise ValueError(f"{name} does not resolve")
 
     assert inputs.engine_dirs(Unresolvable()) == []
+
+
+def _resolved(directory: Path) -> str:
+    return os.path.realpath(directory)
+
+
+def test_a_cache_directory_built_from_another_field_is_excluded(tmp_path):
+    from arachne import config, tempconfig
+
+    assets = tmp_path / "assets"
+    with tempconfig({"assets_dir": str(assets), "tex_dir": "{assets_dir}/cache/Tex"}):
+        dirs = inputs.engine_dirs(config)
+    assert _resolved(assets / "cache" / "Tex") in dirs
+    # The assets themselves are the scene's to read.
+    assert _resolved(assets) not in dirs
+
+
+def test_a_cache_directory_built_from_the_quality_is_excluded(tmp_path):
+    from arachne import config, tempconfig
+
+    with tempconfig(
+        {
+            "pixel_height": 480,
+            "pixel_width": 854,
+            "frame_rate": 15,
+            "text_dir": str(tmp_path / "texts" / "{quality}"),
+        }
+    ):
+        dirs = inputs.engine_dirs(config)
+    assert _resolved(tmp_path / "texts" / "480p15") in dirs
+
+
+def test_a_directory_cut_at_a_module_or_scene_name_is_excluded_up_to_it(tmp_path):
+    from arachne import config, tempconfig
+
+    with tempconfig(
+        {"partial_movie_dir": str(tmp_path / "parts" / "{module_name}" / "x")}
+    ):
+        dirs = inputs.engine_dirs(config)
+    assert _resolved(tmp_path / "parts") in dirs
+
+
+def test_a_template_that_does_not_resolve_excludes_nothing(tmp_path):
+    from arachne import config, tempconfig
+
+    data = tmp_path / "data"
+    with tempconfig(
+        {
+            "text_dir": str(data / "{missing.attribute}"),
+            "tex_dir": str(data / "{module_name}_cache"),
+        }
+    ):
+        dirs = inputs.engine_dirs(config)
+    assert not [path for path in dirs if path.startswith(_resolved(data))]
 
 
 HELPED = (
@@ -593,6 +653,61 @@ def test_two_sources_are_not_compared(scene_dir):
     second = _open(scene, "Reads").summary()
     with pytest.raises(ValueError, match="source"):
         compare(first, second)
+
+
+def _unknown(summary: ExecutionSummary) -> ExecutionSummary:
+    return dataclasses.replace(
+        summary, identity=dataclasses.replace(summary.identity, source_digest=None)
+    )
+
+
+def test_executions_whose_source_is_unknown_are_not_compared(scene_dir):
+    _write(scene_dir, "data.txt", "0.5")
+    scene = _write(scene_dir, "scene.py", READS)
+    known = _open(scene, "Reads").summary()
+    unknown = _unknown(known)
+    for mine, theirs in ((unknown, unknown), (known, unknown), (unknown, known)):
+        with pytest.raises(Incomparable, match="unknown"):
+            compare(mine, theirs)
+
+
+def test_a_source_gone_by_the_end_of_its_run_is_unknown_and_not_compared(
+    scene_dir,
+):
+    """A scene file removed while it runs leaves its record's source unknown:
+    the render goes on, and the record is compared with no execution.
+    """
+    _write(scene_dir, "remove.txt", "0")
+    scene = _write(
+        scene_dir,
+        "scene.py",
+        HEADER
+        + """
+class Vanishing(Scene):
+    def construct(self):
+        if int((HERE / "remove.txt").read_text()):
+            Path(__file__).unlink()
+        dot = Dot()
+        self.add(dot)
+        self.play(dot.animate.shift(RIGHT), run_time=0.5)
+""",
+    )
+    known = _open(scene, "Vanishing")
+    (scene_dir / "remove.txt").write_text("1")
+    gone = _open(scene, "Vanishing")
+    assert not scene.exists()
+    assert gone.record.identity.source_digest is None
+    with pytest.raises(Incomparable, match="unknown"):
+        gone.compare(known.summary())
+    with pytest.raises(Incomparable, match="unknown"):
+        known.compare(gone.summary())
+    # Its summary carries the unknown source to another process as such.
+    carried = ExecutionSummary.from_json(gone.summary().to_json())
+    assert carried.identity.source_digest is None
+    with pytest.raises(Incomparable, match="unknown"):
+        compare(carried, carried)
+    assert gone.divergences == []
+    assert known.divergences == []
 
 
 def _diverged_after_editing(scene: Path, name: str, data: Path, value: str):

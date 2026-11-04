@@ -173,7 +173,8 @@ class Session:
     def compare(self, summary: ExecutionSummary) -> Divergence | None:
         """Compare the session's execution with ``summary``'s, an execution of
         the same source (:func:`.execution.compare`): the first play where they
-        differ, also kept in :attr:`divergences`, or ``None``.
+        differ, also kept in :attr:`divergences`, or ``None``. Raises
+        :class:`.execution.Incomparable` for another source, or an unknown one.
         """
         found = compare(self.summary(), summary)
         if found is not None:
