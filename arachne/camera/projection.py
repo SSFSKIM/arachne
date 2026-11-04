@@ -38,6 +38,7 @@ __all__ = [
     "View",
     "draw_kind",
     "home_box",
+    "member_box",
     "pixel_box",
     "pixel_points",
     "record_view",
@@ -249,6 +250,26 @@ def home_box(
     points' own scene units, exactly.
     """
     return _box(camera, view, mob, ink=ink, home=True)
+
+
+def member_box(
+    camera: Camera,
+    view: View,
+    member: Mobject,
+    *,
+    ink: bool = False,
+    home: bool = False,
+) -> Box | None:
+    """The box of one member's own draw, none of its children's: of its
+    points as the camera places them, or with ``ink`` of what its draw
+    paints (as :func:`pixel_box` says it), in pixels or with ``home`` in
+    home-frame units; ``None`` when it has no points or paints nothing.
+    """
+    if not len(member.points):
+        return None
+    if ink:
+        return _ink_box(camera, view, member, home=home)
+    return _points_box(camera, view, member, home=home)
 
 
 def screen_box(view: View, box: Box) -> Box:
@@ -463,8 +484,14 @@ def _cloud_ink(camera: Camera, view: View, member: Mobject) -> Box | None:
 def _image_painted(camera: Camera, view: View, member: Mobject) -> bool:
     """Whether the camera's draw of an image paints it: it skips a quad with
     no side, or one less than half a pixel high from its longest side
-    (``Camera.display_image_mobject``).
+    (``Camera.display_image_mobject``), and a raster whose every pixel is
+    fully transparent paints nothing (its opacity is in its alpha).
     """
+    raster = getattr(member, "pixel_array", None)
+    if raster is not None:
+        raster = np.asarray(raster)
+        if raster.ndim == 3 and raster.shape[-1] == 4 and not raster[..., 3].any():
+            return False
     shown = _pre_display(camera, member, member.points)
     target = _placed(view, shown, view.frame_center, home=False)
     target = target - target.astype(np.int64).min(axis=0)

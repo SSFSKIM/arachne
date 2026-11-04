@@ -20,6 +20,7 @@ from arachne.camera.projection import (
     View,
     draw_kind,
     home_box,
+    member_box,
     pixel_box,
     record_view,
     render_mapping_centre,
@@ -320,6 +321,54 @@ def test_a_fixed_orientation_label_projects_from_its_recorded_centre(probes):
 
 def _pixel_x(view: View, x: float) -> float:
     return x * view.pixel_width / view.home_width + view.pixel_width / 2
+
+
+def _members() -> list[tuple[str, object]]:
+    """Mobjects whose own points draw one thing and whose children draw
+    others: an arrow's shaft holding its tip, a number line holding its tip
+    and ticks.
+    """
+    from arachne import Arrow, NumberLine
+
+    return [
+        ("arrow", Arrow([-2, -1, 0], [2, 1, 0], stroke_width=12)),
+        ("number_line", NumberLine(x_range=[-2, 2, 1], length=5, include_tip=True)),
+    ]
+
+
+@pytest.mark.parametrize("name", [name for name, _ in _members()])
+def test_a_member_s_box_is_its_own_draw(name):
+    """A member's box is what its own draw paints, without its children:
+    the same mobject drawn alone, within a pixel, and not its family's box.
+    """
+    from arachne import Camera, tempconfig
+
+    with tempconfig(SIZE):
+        (mob,) = [mob for found, mob in _members() if found == name]
+        camera = Camera()
+        view = view_of(camera)
+        own = member_box(camera, view, mob, ink=True)
+        points = member_box(camera, view, mob)
+        family = pixel_box(camera, view, mob, ink=True)
+        alone = mob.copy()
+        alone.submobjects = []
+        camera.reset()
+        camera.capture_mobjects([alone])
+        drawn = _frame_box(camera.pixel_array)
+    assert own is not None
+    assert drawn is not None
+    assert max(abs(a - b) for a, b in zip(drawn, own, strict=True)) <= 1, (drawn, own)
+    assert family != own
+    assert points == pytest.approx(pixel_box(camera, view, alone), abs=1e-9)
+
+
+def test_a_member_box_without_points_is_none():
+    from arachne import Camera, VGroup, tempconfig
+
+    with tempconfig(SIZE):
+        camera = Camera()
+        assert member_box(camera, view_of(camera), VGroup()) is None
+        assert member_box(camera, view_of(camera), VGroup(), ink=True) is None
 
 
 def test_draw_kinds():
