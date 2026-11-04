@@ -3,29 +3,33 @@
 A capture's mobjects are read as a frame draws them, in its paint order:
 the play's static mobjects, then its moving ones, or the whole scene when
 nothing moves, each family flattened into the members that have points.
-Each drawn member is a :class:`Leaf`: its points where the camera puts
-them, in screen units of the home frame (the configuration's frame,
-centred, y up, so equal to scene units under a still camera), its box,
-its box with half its stroke as drawn around it, its box in scene units,
-its fill and stroke, and its place in the paint order. A leaf that draws
-nothing (fully transparent, as alignment padding is) is left out.
+The scene's camera's own mobjects (its frame, trackers and light) are how
+it views and are not read; a zoomed display and another camera's frame the
+scene shows are. Each drawn member is a :class:`Leaf`: its points where the
+camera puts them, in screen units of the home frame (the configuration's
+frame, centred, y up, so equal to scene units under a still camera), its
+box, the box of what its draw paints (its ink, the shared projection's), its
+box in scene units, its fill and stroke, and its place in the paint order. A
+leaf whose draw paints nothing (fully transparent, as alignment padding is)
+is left out.
 
 A :class:`Part` is what a rule measures: a text (a ``Text``, ``MathTex``,
 number and the like, whole) as the ink of its glyph leaves, and every other
-leaf on its own. Each part has its stable id, creating line and name, the
-groups holding it, and whether it is axis furniture (an axis line, its tip,
-ticks and numbers) or part of a grid (a number plane or vector field). Two
-copies of one text with the same ink in one place are one text, counting
-its ``copies`` (a transform's copy left on its original). Reading texts as
-whole and equal ink as one follows ManimGX's diagnostics, credited in
-``NOTICE.md``.
+leaf on its own, a text's background rectangle among them. Each part has its
+stable id, creating line and name, the groups holding it, and whether it is
+axis furniture (an axis line, its tip, ticks and numbers) or part of a grid
+(a number plane or vector field). Two copies of one text laying the same ink
+in one place are one text, counting its ``copies`` (a transform's copy left
+on its original); a copy drawn otherwise (a wider stroke) is a text of its
+own. Reading texts as whole and equal ink as one follows ManimGX's
+diagnostics, credited in ``NOTICE.md``.
 """
 
 from __future__ import annotations
 
 __all__ = ["Leaf", "Part", "Parts", "build_parts"]
 
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from fractions import Fraction
 from functools import cached_property
@@ -33,17 +37,17 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from arachne.timeline.draw import Drawing, camera_nodes
-
-from ._screen import (
+from arachne.camera.projection import (
     Box,
     View,
     draw_kind,
+    member_box,
     pixel_points,
     record_view,
-    scene_line,
     view_of,
 )
+from arachne.timeline.draw import Drawing
+
 from .findings import FindingObject, Holder
 
 if TYPE_CHECKING:
@@ -64,8 +68,10 @@ class Leaf:
     ``points`` are its points on the screen, ``(n, 2)`` in home-frame
     units: a path's Bézier control points (``curve_size`` per curve, as the
     drawing strokes them), a point cloud's points, an image's corners.
-    ``stroke_width`` is its widest visible stroke (its background stroke
-    included) as drawn, in home-frame units, 0 when it has none.
+    ``ink_box`` is the box of what its draw paints, ``screen_box`` of its
+    points. ``stroke_width`` is its widest visible stroke (its background
+    stroke included) as drawn, in home-frame units, 0 when it has none; a
+    point cloud's is the thickness its ink adds to its points.
     """
 
     id: str
@@ -199,25 +205,27 @@ def build_parts(
     *,
     answer: str,
     target: tuple[int, int],
-    prepare: Callable[[Drawing], None] | None = None,
     live: bool = False,
 ) -> Parts:
     """The parts ``capture`` draws, the frame at ``t`` of ``play`` (``None``
     for the final capture): read from the record, every mobject given its
-    captured state (and ``prepare`` run once it is), or with ``live`` from
-    the scene as it is now, a forward run holding that capture. Pixel boxes
-    are at ``target``, ``(width, height)``.
+    captured state, or with ``live`` from the scene as it is now, a forward
+    run holding that capture. Pixel boxes are at ``target``,
+    ``(width, height)``.
     """
     if live:
         # The run is drawing as it goes: its camera holds the map its frames
         # are drawn with, and its record is not finished.
-        view = view_of(record._scene.renderer.camera)
+        timeline = record._scene.timeline
+        view = view_of(
+            record._scene.renderer.camera,
+            home=timeline.home,
+            configured_pixels=timeline.configured_pixels,
+        )
         return _read(record, t, play, capture, answer, view, target)
     static, moving = _lists(play, capture)
     with Drawing(record) as drawing:
         drawing.show(capture, [*capture.draw_list(), *static, *moving])
-        if prepare is not None:
-            prepare(drawing)
         return _read(record, t, play, capture, answer, record_view(record), target)
 
 
@@ -243,7 +251,7 @@ def _read(
 ) -> Parts:
     camera = record._scene.renderer.camera
     names = play.names if play is not None else record.final_names
-    hidden = {id(mob) for mob in camera_nodes(camera)}
+    hidden = _viewing_nodes(camera)
     static, moving = _lists(play, capture)
     order: dict[int, int] = {}
     drawn: list[Mobject] = []
@@ -271,7 +279,7 @@ def _read(
         if leaf is None:
             continue
         text = next((m for m in (*chain, mob) if _is_text(m)), None)
-        if text is None:
+        if text is None or _is_backdrop(mob, chain):
             parts.append(reader.part(mob, chain, (leaf,), kind=leaf.draw))
         else:
             texts.setdefault(id(text), []).append(leaf)
@@ -294,6 +302,16 @@ def _read(
     parts.sort(key=lambda part: part.order)
     index = play.index if play is not None else None
     return Parts(t, index, answer, view, tuple(parts), target)
+
+
+def _viewing_nodes(camera: Any) -> set[int]:
+    """The ids of the camera's own mobjects: its frame, trackers and light,
+    which it views with. The displays a camera keeps of other cameras'
+    pictures are not among them: they are drawn as the scene's.
+    """
+    from arachne.mobject.mobject import Mobject
+
+    return {id(value) for value in vars(camera).values() if isinstance(value, Mobject)}
 
 
 def _chains(
@@ -329,6 +347,15 @@ def _is_text(mob: Mobject) -> bool:
     return isinstance(mob, _text_types())
 
 
+def _is_backdrop(mob: Mobject, chain: tuple[Mobject, ...]) -> bool:
+    """Whether ``mob`` is, or is in, a background rectangle: under a text,
+    not its glyphs.
+    """
+    from arachne.mobject.geometry.shape_matchers import BackgroundRectangle
+
+    return any(isinstance(m, BackgroundRectangle) for m in (*chain, mob))
+
+
 def _grid_types() -> tuple[type, ...]:
     from arachne.mobject.graphing.coordinate_systems import NumberPlane, PolarPlane
     from arachne.mobject.vector_field import VectorField
@@ -348,8 +375,14 @@ def _furniture(line: Mobject) -> Iterator[Mobject]:
 
 
 def _ink_key(leaves: list[Leaf]) -> bytes:
+    """What a text's leaves lay: their points, and each one's ink and
+    stroke as drawn.
+    """
     points = np.vstack([leaf.points for leaf in leaves])
-    return bytes(np.round(points, _INK_DECIMALS).tobytes())
+    drawn = np.array([(*leaf.ink_box, leaf.stroke_width) for leaf in leaves])
+    return b"".join(
+        np.round(values, _INK_DECIMALS).tobytes() for values in (points, drawn)
+    )
 
 
 class _Reader:
@@ -387,26 +420,34 @@ class _Reader:
         if not len(points):
             return None
         fill, stroke, width = _paint(mob, kind)
-        if kind == "path" and fill <= 0 and width <= 0:
-            return None
         if kind == "points" and stroke <= 0:
+            return None
+        ink = member_box(self.camera, self.view, mob, ink=True, home=True)
+        if ink is None:
             return None
         screen = _screen(self.view, pixel_points(self.camera, self.view, mob, points))
         box = _box(screen)
-        drawn = (
-            width
-            * self.view.cairo_line_width_multiple
-            * self.view.home_width
-            / self.view.frame_width
-        )
-        half = drawn / 2
+        if kind == "points":
+            # A cloud's points are drawn as squares as thick as its stroke.
+            drawn = max(
+                ink[2] - ink[0] - box[2] + box[0],
+                ink[3] - ink[1] - box[3] + box[1],
+                0.0,
+            )
+        else:
+            drawn = (
+                width
+                * self.view.cairo_line_width_multiple
+                * self.view.home_width
+                / self.view.frame_width
+            )
         return Leaf(
             id=self.record.origin(mob).id,
             type=type(mob).__name__,
             draw=kind,
             points=screen,
             screen_box=box,
-            ink_box=(box[0] - half, box[1] - half, box[2] + half, box[3] + half),
+            ink_box=ink,
             scene_box=_box(points[:, :2]),
             fill_opacity=fill,
             stroke_opacity=stroke,
@@ -435,7 +476,7 @@ class _Reader:
             kind=kind,
             name=self.names.get(id(mob)),
             source_line=origin.source_line,
-            scene_line=scene_line(origin),
+            scene_line=origin.scene_line,
             text=(_text(mob) or "") if is_text else None,
             leaves=leaves,
             screen_box=_union(leaf.screen_box for leaf in leaves),
@@ -452,7 +493,7 @@ class _Reader:
     def _holder(self, mob: Mobject) -> Holder:
         origin = self.record.origin(mob)
         return Holder(
-            origin.id, self.names.get(id(mob)), scene_line(origin), type(mob).__name__
+            origin.id, self.names.get(id(mob)), origin.scene_line, type(mob).__name__
         )
 
 
