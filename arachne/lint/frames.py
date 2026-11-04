@@ -81,8 +81,9 @@ class Frames:
         self._complete: set[Hashable] = set()
         self._read = False
         self._forward_only = False
-        self._states = False
-        #: The forward run's record, once one has given frames.
+        #: From when the execution must keep its states, once a reader asks.
+        self._states_since: Fraction | None = None
+        #: The forward run's record, once one has run.
         self.forward: Record | None = None
 
     def request(
@@ -114,16 +115,20 @@ class Frames:
             raise RuntimeError("The lint's frames are read: ask before they are.")
         self._forward_only = True
 
-    def require_states(self) -> None:
+    def require_states(self, since: Fraction = Fraction(0)) -> None:
         """Have the execution the frames come from (:attr:`execution`) keep
-        the scene as each play ended and as the script removed from it
-        (``Record.states``): a forward run, when one runs, keeps them, and
-        one runs, every frame read from it, when the session's record keeps
-        none. Raises :class:`RuntimeError` once the frames are read.
+        every state of the scene between frames from the time ``since`` on
+        (``Record.states``: the scene as the script called each play, as
+        each ended and as the script removed from it): a forward run, when
+        one runs, keeps them all, and one runs, every frame read from it,
+        when the session's record does not keep them from the earliest
+        ``since`` asked. Raises :class:`RuntimeError` once the frames are
+        read.
         """
         if self._read:
             raise RuntimeError("The lint's frames are read: ask before they are.")
-        self._states = True
+        held = self._states_since
+        self._states_since = since if held is None else min(held, since)
 
     def complete(self, owner: Hashable) -> None:
         """Ask, for ``owner``, that a forward run, when one runs, run to the
@@ -157,10 +162,15 @@ class Frames:
             session._source.settings if session._source is not None else {}
         )
         # A record on the render's grid evaluated each frame of it as the
-        # render does; one on another grid holds states no frame shows.
+        # render does; one on another grid holds states no frame shows. One
+        # that does not keep every state a reader asks for is never read.
+        since = self._states_since
+        uncovered = since is not None and (
+            record.states is None or not record.states.covers(record.plays, since)
+        )
         from_record = (
             not self._forward_only
-            and not (self._states and record.states is None)
+            and not uncovered
             and record.grid == render_grid(record)
         )
         missing: list[Fraction] = []
@@ -184,7 +194,7 @@ class Frames:
                     request.found[t] = request.read(
                         record, t, resolved.play, resolved.capture, False
                     )
-            if missing:
+            if missing or uncovered:
                 from arachne.timeline.fallback import visit_frames
 
                 needed = set(missing)
@@ -207,12 +217,14 @@ class Frames:
                         request.found[t] = request.read(forward, t, play, capture, True)
 
                 visits = sorted(needed | set(later))
-                visit_frames(
+                self.forward = visit_frames(
                     session,
                     visits,
                     visit,
-                    to_end=bool(self._complete),
-                    states=self._states,
+                    # A run asked for no frame, for its states alone, runs
+                    # to the end.
+                    to_end=bool(self._complete) or not visits,
+                    states=since is not None,
                 )
                 missing = visits
         unread = [
