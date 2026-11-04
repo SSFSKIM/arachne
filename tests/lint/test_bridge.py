@@ -21,6 +21,7 @@ from arachne.lint.bridge import (
     apart,
     arm,
     armed,
+    armed_terms,
     clear,
     declare,
     declared,
@@ -853,7 +854,7 @@ def test_apart_measures_a_pair_at_the_call(session_of):
     )  # the reference checks'
 
 
-def test_apart_measures_each_argument_whole_as_r_does(session_of):
+def test_apart_measures_each_argument_whole(session_of):
     found = session_of("ApartWholes", BRIDGE, frame_rate=15).scene.found
     assert {pair: _codes(v) for pair, v in found.items()} == {
         # A group of a text and a dot is a region, not a text: held to the
@@ -879,3 +880,82 @@ def test_apart_measures_each_argument_whole_as_r_does(session_of):
     assert large["detail"] == pytest.approx({"gap": 0.2, "required": 0.6}, abs=1e-3)
     (itself,) = found["itself"]
     assert itself["detail"]["overlap"] == pytest.approx(0.4424, abs=1e-3)
+
+
+def test_apart_reads_its_arguments_once(session_of):
+    """A generator of targets is read once (reference: overlap.text, -0.3996
+    against 0.4996).
+    """
+    session = session_of("ApartFromAGenerator", BRIDGE, frame_rate=15)
+    (found,) = session.scene.found
+    assert found["code"] == "overlap.text"
+    assert found["detail"]["overlap"] == pytest.approx(0.3996, abs=1e-3)
+    (call,) = [c for c in session.record.bridge.calls if c.kind == "apart"]
+    assert len(call.operands) == 2
+
+
+def test_a_late_arming_in_the_forward_run_measures_no_earlier_cut(session_of):
+    """The forward run arms after the jump, the record never does
+    (reference: no jump).
+    """
+    session = session_of("ArmsLateWhenFew", BRIDGE, grid=Fraction(30), frame_rate=15)
+    seen = {}
+
+    def execution(context):
+        seen["execution"] = context.frames.execution
+        return ()
+
+    found = lint(session, rules=(execution,)).findings
+    assert session.record.armed_at is None
+    assert seen["execution"].armed_at == 2
+    assert _jumps(lint(session)) == [] == [f for f in found if f.code == "motion.jump"]
+
+
+@pytest.mark.parametrize(
+    ("scene", "held"),
+    # The reference hold watch reads the entries the list held at the arming:
+    # none, so the render fails, when it was given the phrase afterwards; the
+    # phrase, so it is excused, when it was emptied afterwards.
+    [
+        ("ExemptListChangedWhileHeld", ["overlap.text"]),
+        ("ExemptListEmptiedWhileHeld", []),
+    ],
+)
+def test_the_scene_s_exemptions_are_the_entries_given_at_each_call(
+    session_of, scene, held
+):
+    session = session_of(scene, BRIDGE, frame_rate=15)
+    kept = exemptions(session.record)
+
+    def undeclared(context):
+        (parts,) = [p for p in context.parts if p.t == 1]
+        return sweep_findings(parts, Terms(mid_scene=True))
+
+    found = _clearance(lint(session, at=[Fraction(1)], rules=(undeclared,)))
+    assert [f.code for f in found if not kept.exempts(f)] == held
+    # A check the arming holds at the end reads the list as it is then.
+    live = armed_terms(session.record)
+    assert live is not None
+    assert [f.code for f in found if not live.exempt.exempts(f)] == (
+        [] if held else ["overlap.text"]
+    )
+
+
+@pytest.mark.parametrize("grid", [Fraction(15), Fraction(30)])
+def test_an_exempted_family_is_read_as_it_stood_at_each_instant(session_of, grid):
+    """The group holds the phrase from 0.4 s to 0.8 s only; on the render's
+    grid and read from a forward run alike.
+    """
+    session = session_of("ExemptGainedThenLost", BRIDGE, grid=grid, frame_rate=15)
+    codes = [_swept(session, Fraction(t)) for t in ("1/5", "3/5", "1")]
+    assert codes == [["overlap.text"], [], ["overlap.text"]]
+
+
+def test_an_unchanged_exemption_is_kept_once(session_of):
+    """Through a frozen wait the group's family does not change: it is kept
+    at the call, and at no frame after.
+    """
+    record = session_of("ExemptHeldThroughAWait", BRIDGE, frame_rate=15).record
+    (call,) = record.bridge.calls
+    kept = [r for r in call.readings if r.values and "exempt" in r.values]
+    assert len(kept) == 1
