@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Scene lint report, v1",
+  "description": "One scene's lint report. A finding is data and never ends the process. The report's violations are its errors and warnings; notes are kept apart, in the same violation shape. The report passes unless a violation is an error.",
+  "type": "object",
+  "required": ["pass", "duration_s", "violations"],
+  "properties": {
+    "pass": {"type": "boolean"},
+    "duration_s": {"type": "number"},
+    "violations": {
+      "type": "array",
+      "items": {
+        "allOf": [
+          {"$ref": "#/$defs/violation"},
+          {"properties": {"severity": {"enum": ["error", "warning"]}}}
+        ]
+      }
+    },
+    "key_frames": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["t", "path"],
+        "properties": {"t": {"type": "number"}, "path": {"type": "string"}}
+      }
+    }
+  },
+  "$defs": {
+    "box": {
+      "type": ["array", "null"],
+      "items": {"type": "number"},
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "violation": {
+      "type": "object",
+      "required": [
+        "code", "class", "severity", "held", "t_start", "t_end", "objects", "message", "fix", "line"
+      ],
+      "properties": {
+        "code": {"type": "string"},
+        "class": {"type": "string"},
+        "severity": {"enum": ["error", "warning", "note"]},
+        "held": {"type": "boolean"},
+        "t_start": {"type": ["number", "null"]},
+        "t_end": {"type": ["number", "null"]},
+        "objects": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "source_line", "kind", "label_or_text", "bbox", "screen_bbox"],
+            "properties": {
+              "id": {"type": "string"},
+              "source_line": {"type": ["integer", "null"]},
+              "kind": {"type": "string"},
+              "label_or_text": {"type": ["string", "null"]},
+              "name": {"type": ["string", "null"]},
+              "bbox": {"$ref": "#/$defs/box"},
+              "screen_bbox": {"$ref": "#/$defs/box"}
+            }
+          }
+        },
+        "message": {"type": "string"},
+        "fix": {"type": "string"},
+        "line": {"type": ["integer", "null"]},
+        "detail": {"type": "object"}
+      }
+    }
+  }
+}
