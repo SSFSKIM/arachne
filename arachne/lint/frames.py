@@ -15,7 +15,12 @@ for every frame from the forward run (:meth:`Frames.require_forward`), and
 every reader is then served from it. A reader whose frames matter only if
 the forward run is the execution read asks for them from that run alone
 (``forward_only``): they are read when the other requests need one, and
-not otherwise (:meth:`Frames.answered`).
+not otherwise (:meth:`Frames.answered`). One that reads the states a
+record keeps between frames (``Record.states``: the scene as the script
+called each play, as each ended and as the script removed from it) asks
+that the execution keep them from a time on (:meth:`Frames.require_states`):
+the forward run then keeps them, and runs when the session's record does
+not keep every one of them from then on.
 
 One run matters beyond its cost: two executions of a scene need not agree (a
 helper module's state is not restored between them), so what two readers of
@@ -76,6 +81,7 @@ class Frames:
         self._complete: set[Hashable] = set()
         self._read = False
         self._forward_only = False
+        self._states = False
         #: The forward run's record, once one has given frames.
         self.forward: Record | None = None
 
@@ -107,6 +113,17 @@ class Frames:
         if self._read:
             raise RuntimeError("The lint's frames are read: ask before they are.")
         self._forward_only = True
+
+    def require_states(self) -> None:
+        """Have the execution the frames come from (:attr:`execution`) keep
+        the scene as each play ended and as the script removed from it
+        (``Record.states``): a forward run, when one runs, keeps them, and
+        one runs, every frame read from it, when the session's record keeps
+        none. Raises :class:`RuntimeError` once the frames are read.
+        """
+        if self._read:
+            raise RuntimeError("The lint's frames are read: ask before they are.")
+        self._states = True
 
     def complete(self, owner: Hashable) -> None:
         """Ask, for ``owner``, that a forward run, when one runs, run to the
@@ -141,7 +158,11 @@ class Frames:
         )
         # A record on the render's grid evaluated each frame of it as the
         # render does; one on another grid holds states no frame shows.
-        from_record = not self._forward_only and record.grid == render_grid(record)
+        from_record = (
+            not self._forward_only
+            and not (self._states and record.states is None)
+            and record.grid == render_grid(record)
+        )
         missing: list[Fraction] = []
         with tempconfig(settings):
             for t in sorted(asking):
@@ -186,7 +207,13 @@ class Frames:
                         request.found[t] = request.read(forward, t, play, capture, True)
 
                 visits = sorted(needed | set(later))
-                visit_frames(session, visits, visit, to_end=bool(self._complete))
+                visit_frames(
+                    session,
+                    visits,
+                    visit,
+                    to_end=bool(self._complete),
+                    states=self._states,
+                )
                 missing = visits
         unread = [
             t

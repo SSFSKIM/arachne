@@ -211,6 +211,7 @@ def visit_frames(
     visit: Visit,
     *,
     to_end: bool = False,
+    states: bool = False,
 ) -> None:
     """Execute the session's scene once more on its render's frame grid and
     show ``visit`` the live scene at each of ``instants``, frames of that
@@ -218,7 +219,9 @@ def visit_frames(
     each evaluated as the render evaluates that frame, through the scene's
     own frame hooks, where the record may hold no capture of it. The run is
     kept and compared as :func:`answer_instants`' is. With ``to_end`` it
-    runs to the scene's end rather than stopping past the last instant.
+    runs to the scene's end rather than stopping past the last instant;
+    with ``states`` its record keeps the states the lint's temporal rules
+    read (``Record.states``).
     """
     _forward(
         session,
@@ -227,6 +230,7 @@ def visit_frames(
         visit=visit,
         render_grid=True,
         to_end=to_end,
+        states=states,
     )
 
 
@@ -269,6 +273,7 @@ class _ForwardRecorder(Recorder):
         demoted: Iterable[PlayIdentity],
         visit: Visit | None = None,
         shown: Mapping[Fraction, Fraction] | None = None,
+        states: bool = False,
     ) -> None:
         super().__init__(
             scene,
@@ -278,6 +283,7 @@ class _ForwardRecorder(Recorder):
             instants=instants,
             demoted=demoted,
             exits="all",
+            states="all" if states else "none",
         )
         if known:
             self.execution = Execution(known=dict(known))
@@ -360,13 +366,15 @@ def _forward(
     visit: Visit | None = None,
     render_grid: bool = False,
     to_end: bool = False,
+    states: bool = False,
 ) -> tuple[dict[Fraction, tuple[State, Image.Image | None]], Fallback | None]:
     """Execute the session's scene again for ``instants`` (in time order),
     keep the run in :attr:`.Session.forward_runs` and any divergence in
     :attr:`.Session.divergences`, and answer each instant from it; with the
     fallback every answer takes when the source changed since the record.
     ``visit`` sees the live scene at each instant answered. With
-    ``render_grid`` the run is on the render's grid whatever the record's.
+    ``render_grid`` the run is on the render's grid whatever the record's;
+    with ``states`` its record keeps the temporal rules' states.
     """
     from arachne.session import _reads, execute
 
@@ -420,6 +428,7 @@ def _forward(
             demoted={whole_line(line) for line, _, _ in source.demoted},
             visit=visit,
             shown=shown,
+            states=states,
         )
         made.append(forward)
         return forward
