@@ -28,7 +28,7 @@ from arachne.timeline.clock import exact
 
 from .exempt import Exemptions
 from .findings import Finding, fold, in_range
-from .frames import read_frames
+from .frames import Frames
 from .instants import LintInstant, lint_instants
 from .parts import Parts, build_parts
 
@@ -40,7 +40,8 @@ if TYPE_CHECKING:
 @dataclass(frozen=True, eq=False)
 class LintContext:
     """What a rule reads: the session, its record, the lint rate, the lint
-    instants in time order and the parts drawn at each.
+    instants in time order, the parts drawn at each, and the lint's frames
+    (:class:`.Frames`), where a rule finds the frames it asked for.
     """
 
     session: Session
@@ -48,10 +49,18 @@ class LintContext:
     fps: Fraction
     instants: tuple[LintInstant, ...]
     parts: tuple[Parts, ...]
+    frames: Frames
 
 
-#: A rule: the findings it makes of a lint's context.
+#: A rule: the findings it makes of a lint's context. A rule that reads
+#: frames of its own also has ``request_frames(frames)``, which the lint
+#: calls before any frame is read, so that one execution of the scene serves
+#: the parts and every rule (:mod:`.frames`); it then finds them in
+#: ``context.frames.result(...)`` under the owner it asked as.
 Rule = Callable[[LintContext], Iterable[Finding]]
+
+#: Who the parts read at the lint instants are asked for by.
+_PARTS = "parts"
 
 #: The rules a lint runs unless told others.
 RULES: tuple[Rule, ...] = ()
@@ -107,8 +116,16 @@ def lint(
     exemptions = Exemptions.parse(exempt)
     record = session.record
     instants = lint_instants(record, fps, at=at)
-    parts = _parts(session, instants)
-    context = LintContext(session, record, exact(fps), instants, parts)
+    rules = tuple(rules)
+    frames = Frames(session)
+    _request_parts(frames, instants)
+    for rule in rules:
+        request = getattr(rule, "request_frames", None)
+        if request is not None:
+            request(frames)
+    frames.read()
+    parts = tuple(frames.result(_PARTS))
+    context = LintContext(session, record, exact(fps), instants, parts, frames)
     found = [finding for rule in rules for finding in rule(context)]
     # After the parts: a forward run that read them may have found one.
     found.extend(_diverged(session))
@@ -137,11 +154,11 @@ def target_resolution(session: Session) -> tuple[int, int]:
     return int(width), int(height)
 
 
-def _parts(session: Session, instants: tuple[LintInstant, ...]) -> tuple[Parts, ...]:
-    """The parts drawn at each instant: from the record, and what it can't
-    answer from one forward run, read from its live scene.
+def _request_parts(frames: Frames, instants: tuple[LintInstant, ...]) -> None:
+    """Ask for the parts drawn at each instant: from the record, and what it
+    can't answer from the lint's forward run, read from its live scene.
     """
-    target = target_resolution(session)
+    target = target_resolution(frames.session)
 
     def read(
         record: Record,
@@ -160,7 +177,7 @@ def _parts(session: Session, instants: tuple[LintInstant, ...]) -> tuple[Parts, 
             live=live,
         )
 
-    return tuple(read_frames(session, [instant.t for instant in instants], read))
+    frames.request(_PARTS, [instant.t for instant in instants], read)
 
 
 def _diverged(session: Session) -> list[Finding]:
