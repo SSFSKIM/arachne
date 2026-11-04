@@ -12,6 +12,9 @@ refuses, an instant it can't restore) comes from one forward run, as
 :meth:`~arachne.session.Session.answers` gives it. A painter that refuses a
 frame (it raises an error whose ``code`` is ``render.unsupported``) leaves
 that play without a picture and gives a ``render.unsupported`` finding.
+A session recorded on another grid than the render's gives that recording's
+own frames at the render's frame times, which may differ from the render's
+where a frame hook or dt updater ran at other instants.
 
 :func:`key_frames` writes one PNG per play; :func:`storyboard` lays the same
 frames out six to a sheet, each a :data:`TILE` of 960 by 540 pixels (large

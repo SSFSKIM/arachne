@@ -16,10 +16,11 @@ lint of the same frame never disagree:
 - :meth:`Query.offscreen`: the texts the picture's edge cuts or leaves out
   (``clip.frame_edge``);
 - :meth:`Query.text_heights`: each text's height, as ``text.small`` reads it;
-- :meth:`Query.markers`: the point-sized filled shapes (dots, pens, state
-  points) a sweep lets touch a curve, and where they are.
+- :meth:`Query.markers`: the record's named markers in force there (its
+  section, the subcaptions showing, the moment tags and sounds of its play),
+  as the record keeps them.
 
-Every number is in home-frame units: scene units of the frame the
+Every number about the picture is in home-frame units: scene units of the frame the
 configuration describes, centred, y up, the camera's projection applied
 (:mod:`arachne.camera.projection`). The findings each answer carries are the
 rules' own, with boxes as a report gives them (scene units, and pixels of
@@ -30,7 +31,6 @@ from __future__ import annotations
 
 __all__ = [
     "Contact",
-    "Marker",
     "Occlusion",
     "Offscreen",
     "Query",
@@ -64,7 +64,7 @@ from .rules.text_small import text_heights
 if TYPE_CHECKING:
     from arachne.camera.projection import View
     from arachne.session import Session
-    from arachne.timeline.record import Capture, PlayRecord, Record
+    from arachne.timeline.record import Capture, Marker, PlayRecord, Record
 
 #: The codes of a pair that touches, as :meth:`Query.overlaps` gives them.
 _TOUCHING = ("overlap.text", "gap.text", "contact.held")
@@ -133,14 +133,6 @@ class TextHeight:
     pixels: float
 
 
-@dataclass(frozen=True)
-class Marker:
-    """A point-sized filled shape and the centre of its box."""
-
-    thing: Thing
-    centre: tuple[float, float]
-
-
 @dataclass(frozen=True, eq=False)
 class _Read:
     parts: Parts
@@ -153,10 +145,17 @@ class Query:
     answered it (``"recorded"`` or ``"forward"``).
     """
 
-    def __init__(self, parts: Parts, boxes: dict[str, Box | None], terms: Terms):
+    def __init__(
+        self,
+        parts: Parts,
+        boxes: dict[str, Box | None],
+        terms: Terms,
+        markers: tuple[Marker, ...],
+    ):
         self.parts = parts
         self._boxes = boxes
         self._terms = terms
+        self._markers = markers
 
     @property
     def t(self) -> Fraction:
@@ -220,15 +219,13 @@ class Query:
         )
 
     def markers(self) -> tuple[Marker, ...]:
-        """The point-sized filled shapes on the picture."""
-        found = []
-        for unit in measured_units(self.parts):
-            if not unit.marker or not unit.on(self.frame):
-                continue
-            thing = _unit_thing(unit)
-            x0, y0, x1, y1 = thing.box
-            found.append(Marker(thing, ((x0 + x1) / 2, (y0 + y1) / 2)))
-        return tuple(found)
+        """The named markers in force at the frame, in the order they were
+        placed: the section it is in, each subcaption whose span covers it,
+        and the moment tags (``mark``) and sounds of the play holding it (at
+        the scene's end, those placed there). They are the record's own
+        (:class:`~arachne.timeline.record.Marker`): kind, time, data, line.
+        """
+        return self._markers
 
     @cached_property
     def _pairs(self) -> list[Finding]:
@@ -250,8 +247,36 @@ def query(session: Session, t: Fraction | float) -> Query:
     frames.request(query, [instant.t], _reader(session))
     frames.read()
     (read,) = frames.result(query)
-    terms = terms_at(frames.execution, instant.t, Terms())
-    return Query(read.parts, read.boxes, terms)
+    execution = frames.execution
+    terms = terms_at(execution, instant.t, Terms())
+    return Query(read.parts, read.boxes, terms, _in_force(execution, instant.t))
+
+
+def _in_force(record: Record, t: Fraction) -> tuple[Marker, ...]:
+    """The named markers of ``record`` in force at ``t``, in the order they
+    were placed.
+    """
+    play = record.play_at(t)
+    section: Marker | None = None
+    found: list[Marker] = []
+    for marker in record.markers:
+        if marker.t > t:
+            continue
+        if marker.kind == "section":
+            if section is None or marker.t >= section.t:
+                section = marker
+        elif marker.kind == "subcaption":
+            if t < marker.t + exact(marker.data["duration"]):
+                found.append(marker)
+        elif marker.kind in ("mark", "sound"):
+            # The play's own, as the record keeps them per play.
+            if play is not None:
+                if any(marker is kept for kept in play.markers):
+                    found.append(marker)
+            elif marker.t == t:
+                found.append(marker)
+    chosen = {id(m) for m in found} | ({id(section)} if section else set())
+    return tuple(m for m in record.markers if id(m) in chosen)
 
 
 def _reader(session: Session) -> FrameReader[_Read]:
