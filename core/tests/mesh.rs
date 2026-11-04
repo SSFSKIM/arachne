@@ -859,3 +859,86 @@ fn a_fixed_orientation_label_on_a_surface_facing_the_camera_ties_by_draw_order()
         }
     }
 }
+
+/// Points at one depth, kept facing the camera or projected, tie with each other and with a
+/// surface facing the camera through them: the later in the draw order shows, at depths on and
+/// beside the plane grid's rounding.
+#[test]
+fn points_at_one_depth_tie_by_draw_order_whether_or_not_fixed_in_orientation() {
+    let theta = -(90.0 * (std::f64::consts::TAU / 360.0));
+    let mut view = arachne_core::probes::view(W, H, 0.0, theta);
+    let Camera::ThreeD(c) = &mut view.camera else {
+        unreachable!()
+    };
+    c.focal_distance = 10.0;
+    let (white, green) = ([1.0, 1.0, 1.0, 1.0], [0.0, 1.0, 0.0, 1.0]);
+    let (white_paint, green_paint) = (Stops::new(vec![white]), Stops::new(vec![green]));
+    let mut failures = Vec::new();
+    for z in [0.125, 0.13, 0.1300002] {
+        let point = Shape::new(ShapeData::Path {
+            points: vec![[0.0, 0.0, z]],
+        });
+        let points = |slot: u32, paint: &Stops, fixed: bool| {
+            let mut r = Record::new(RecordKind::Points, slot, 100 + slot);
+            r.geometry.shape_a = Some(point.key());
+            r.depth.space = Space::World;
+            r.depth.fixed_orientation_centre = fixed.then_some([0.0, 0.0, z]);
+            r.body = Body::Points(Points {
+                colors: paint.key(),
+                radius: 5.0,
+            });
+            (point.clone(), r)
+        };
+        let surface = quad(square_at(z, 2.0));
+        let surface_record = (
+            surface.clone(),
+            mesh_record(2, &surface, green, Space::World),
+        );
+        let pairs = [
+            (
+                "fixed point, world point",
+                points(1, &white_paint, true),
+                points(2, &green_paint, false),
+            ),
+            (
+                "world point, surface",
+                points(1, &white_paint, false),
+                surface_record.clone(),
+            ),
+            (
+                "fixed point, surface",
+                points(1, &white_paint, true),
+                surface_record.clone(),
+            ),
+        ];
+        for (name, first, second) in pairs {
+            for (order, want) in [([2, 1], white), ([1, 2], green)] {
+                let mut d = Delta::new(Time { num: 0, den: 1 }, 0);
+                d.view = Some(view.clone());
+                d.upload = vec![first.0.clone()];
+                if second.0.key() != first.0.key() {
+                    d.upload.push(second.0.clone());
+                }
+                d.upload_paints = vec![white_paint.clone(), green_paint.clone()];
+                d.set = vec![first.1.clone(), second.1.clone()];
+                d.order = Some(
+                    order
+                        .iter()
+                        .map(|slot| OrderEntry {
+                            layer: Layer::Moving,
+                            slot: *slot,
+                            part: 0,
+                        })
+                        .collect(),
+                );
+                let mut stream = Stream::new();
+                stream.apply(&d).unwrap();
+                let got = px(&stream.draw(W, H, 1).unwrap(), W / 2, H / 2);
+                if got != premultiply(want) {
+                    failures.push(format!("z {z}, {name}, order {order:?}: {got:?}"));
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

@@ -17,7 +17,7 @@
 //! the platform, so the results may differ from CE's in the last bits.
 
 use crate::composite::Plane;
-use crate::depth::WorldPlane;
+use crate::depth::{Direction, WorldPlane};
 use crate::xf::{Space, ThreeDCamera};
 
 /// `arachne.constants.DEGREES`.
@@ -160,7 +160,7 @@ impl Projection {
     /// pixels. The same plane always gives the same numbers, so things on one plane tie exactly.
     pub fn key_plane(
         &self,
-        plane: &crate::depth::WorldPlane,
+        plane: &WorldPlane,
         map: &FrameMap,
         at: [f64; 3],
         min_cos: f64,
@@ -168,25 +168,43 @@ impl Projection {
         if self.exponential || self.zoom == 0.0 {
             return None;
         }
-        let (n, c, r, d) = (
-            plane.normal,
-            self.frame_center,
-            &self.rotation,
-            self.focal_distance,
-        );
+        let basis = self.key_basis(plane.normal, map);
+        self.key_plane_on(&basis, plane.offset, map, self.rotated(at), min_cos)
+    }
+
+    /// The part of [`Projection::key_plane`] that depends on the plane's normal alone.
+    fn key_basis(&self, n: [f64; 3], map: &FrameMap) -> KeyBasis {
+        let (c, r) = (self.frame_center, &self.rotation);
         let m = [0, 1, 2].map(|i| r[i][0] * n[0] + r[i][1] * n[1] + r[i][2] * n[2]);
-        let k = plane.offset - (n[0] * c[0] + n[1] * c[1] + n[2] * c[2]);
+        KeyBasis {
+            m,
+            m_len: (m[0] * m[0] + m[1] * m[1] + m[2] * m[2]).sqrt(),
+            n_dot_centre: n[0] * c[0] + n[1] * c[1] + n[2] * c[2],
+            gx: m[0] / (self.zoom * map.xx),
+            gy: m[1] / (self.zoom * map.yy),
+        }
+    }
+
+    /// The rest of [`Projection::key_plane`]: the plane with normal basis `basis` at `offset`,
+    /// seen from `q`, the rotated point `at`.
+    fn key_plane_on(
+        &self,
+        basis: &KeyBasis,
+        offset: f64,
+        map: &FrameMap,
+        q: [f64; 3],
+        min_cos: f64,
+    ) -> Option<crate::composite::Plane> {
+        let (m, d) = (basis.m, self.focal_distance);
+        let k = offset - basis.n_dot_centre;
         let denominator = k - m[2] * d;
-        let q = self.rotated(at);
         let sight = [q[0], q[1], q[2] - d];
         let sight_len = (sight[0] * sight[0] + sight[1] * sight[1] + sight[2] * sight[2]).sqrt();
-        let m_len = (m[0] * m[0] + m[1] * m[1] + m[2] * m[2]).sqrt();
-        let cos = denominator.abs() / (m_len * sight_len);
+        let cos = denominator.abs() / (basis.m_len * sight_len);
         if cos.is_nan() || cos < min_cos || denominator == 0.0 {
             return None;
         }
-        let gx = m[0] / (self.zoom * map.xx);
-        let gy = m[1] / (self.zoom * map.yy);
+        let (gx, gy) = (basis.gx, basis.gy);
         let plane = crate::composite::Plane {
             a: -(-gx * map.x0 - gy * map.y0 - m[2] * d) / denominator,
             b: -gx / denominator,
@@ -204,13 +222,62 @@ impl Projection {
     /// and the two tie by draw order. Where a plane cannot key depth (the exponential option, a
     /// centre at or behind the eye), it is the centre's own key everywhere.
     pub fn facing_plane(&self, centre: [f64; 3], map: &FrameMap) -> Plane {
-        let own = || Plane::constant(-self.factor(self.project(centre)[2]));
-        if !self.keys_planar_at(centre) {
+        self.facing_planes(map).at(centre)
+    }
+
+    /// [`Projection::facing_plane`] for many centres under the frame mapping `map`.
+    pub fn facing_planes<'a>(&'a self, map: &'a FrameMap) -> FacingPlanes<'a> {
+        // The plane `q_z = const` in the camera's axes: its world normal is the rotation's last row.
+        let shared = if self.exponential || self.zoom == 0.0 {
+            None
+        } else {
+            Direction::of(self.rotation[2]).map(|dir| (dir, self.key_basis(dir.normal(), map)))
+        };
+        FacingPlanes {
+            projection: self,
+            map,
+            shared,
+        }
+    }
+}
+
+/// What [`Projection::key_plane`] works out from a plane's normal alone.
+#[derive(Clone, Copy, Debug)]
+struct KeyBasis {
+    /// The normal in the camera's axes.
+    m: [f64; 3],
+    m_len: f64,
+    /// The normal against the frame centre.
+    n_dot_centre: f64,
+    /// The key's gradient across the frame, before the denominator.
+    gx: f64,
+    gy: f64,
+}
+
+/// The camera-facing planes of one camera and frame mapping ([`Projection::facing_planes`]), with
+/// what every centre shares worked out once: a point cloud keys each point by one.
+pub struct FacingPlanes<'a> {
+    projection: &'a Projection,
+    map: &'a FrameMap,
+    shared: Option<(Direction, KeyBasis)>,
+}
+
+impl FacingPlanes<'_> {
+    /// [`Projection::facing_plane`] at `centre`.
+    pub fn at(&self, centre: [f64; 3]) -> Plane {
+        let p = self.projection;
+        let own = || Plane::constant(-p.factor(p.project(centre)[2]));
+        let q = p.rotated(centre);
+        // `keys_planar_at`, from the rotated centre this needs anyway.
+        let planar = !p.exponential && p.focal_distance - q[2] > 0.0;
+        if !planar {
             return own();
         }
-        // The plane `q_z = const` in the camera's axes: its world normal is the rotation's last row.
-        WorldPlane::canonical(self.rotation[2], centre)
-            .and_then(|plane| self.key_plane(&plane, map, centre, 0.0))
+        let Some((dir, basis)) = &self.shared else {
+            return own();
+        };
+        dir.through(centre)
+            .and_then(|plane| p.key_plane_on(basis, plane.offset, self.map, q, 0.0))
             .unwrap_or_else(own)
     }
 }
@@ -233,8 +300,8 @@ pub enum Placement {
 /// camera, is `projection`; and the depth key it takes as a whole, when it takes one: the plane a
 /// fixed orientation faces the camera on ([`Projection::facing_plane`], through the frame mapping
 /// `map`), or in front of all depth (overlay records under a 3D camera, and everything under a
-/// flat one, where records tie and paint in draw order). Projected points take each their own key
-/// (`-factor`).
+/// flat one, where records tie and paint in draw order). Projected points take each the plane a
+/// fixed orientation centred on them faces the camera on.
 pub fn placement(
     projection: Option<&Projection>,
     map: &FrameMap,

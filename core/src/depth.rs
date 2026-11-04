@@ -42,9 +42,17 @@ fn round_to_grid(v: f64) -> f64 {
     (v / PLANE_GRID).round() * PLANE_GRID + 0.0
 }
 
-impl WorldPlane {
-    /// The canonical plane with normal `n` (any length but zero) through `p`.
-    pub(crate) fn canonical(n: [f64; 3], p: [f64; 3]) -> Option<WorldPlane> {
+/// The direction of canonical planes: a unit normal turned so its largest component is positive,
+/// kept for finding many planes with it through different points.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Direction {
+    unit: [f64; 3],
+    normal: [f64; 3],
+}
+
+impl Direction {
+    /// The direction of `n` (any length but zero), or `None` for a zero or non-finite `n`.
+    pub(crate) fn of(n: [f64; 3]) -> Option<Direction> {
         let norm = dot(n, n).sqrt();
         if !(norm > 0.0 && norm.is_finite()) {
             return None;
@@ -56,14 +64,34 @@ impl WorldPlane {
         if unit[largest] < 0.0 {
             unit = unit.map(|v| -v);
         }
-        let offset = dot(unit, p);
+        Some(Direction {
+            unit,
+            normal: unit.map(round_to_grid),
+        })
+    }
+
+    /// The rounded normal every plane in this direction has.
+    pub(crate) fn normal(&self) -> [f64; 3] {
+        self.normal
+    }
+
+    /// The canonical plane in this direction through `p`.
+    pub(crate) fn through(&self, p: [f64; 3]) -> Option<WorldPlane> {
+        let offset = dot(self.unit, p);
         if !offset.is_finite() {
             return None;
         }
         Some(WorldPlane {
-            normal: unit.map(round_to_grid),
+            normal: self.normal,
             offset: round_to_grid(offset),
         })
+    }
+}
+
+impl WorldPlane {
+    /// The canonical plane with normal `n` (any length but zero) through `p`.
+    pub(crate) fn canonical(n: [f64; 3], p: [f64; 3]) -> Option<WorldPlane> {
+        Direction::of(n)?.through(p)
     }
 
     /// The plane through a triangle's corners, or `None` for a degenerate triangle.
