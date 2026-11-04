@@ -58,6 +58,44 @@ class Blend:
     alpha: float
 
 
+#: The mobject attributes extraction reads off a mobject, beside what the
+#: camera's own capture reads: a user override of one draws live
+#: (``dispatch.draw_methods``). Keep it in step with this module's reads.
+MOBJECT_READS = (
+    # paths
+    "points",
+    "get_fill_rgbas",
+    "get_stroke_rgbas",
+    "get_stroke_width",
+    "get_gradient_start_and_end_points",
+    "get_background_image",
+    "tolerance_for_point_equality",
+    "n_points_per_cubic_curve",
+    "joint_type",
+    "cap_style",
+    "shade_in_3d",
+    # blends: the style fields compared with the interpolated ends
+    "fill_rgbas",
+    "stroke_rgbas",
+    "background_stroke_rgbas",
+    "stroke_width",
+    "background_stroke_width",
+    # depth (a sort point only under a ThreeDCamera, whose own depth sort
+    # reads get_z_index_reference_point already)
+    "z_index",
+    # point clouds and images
+    "rgbas",
+    "get_pixel_array",
+    "resampling_algorithm",
+    # surfaces and displays
+    "submobjects",
+    "resolution",
+    "u_index",
+    "v_index",
+    "get_family",
+    "camera",
+)
+
 #: CE's default tolerance for closing a subpath (XF assumes it).
 _TOLERANCE = 1e-6
 
