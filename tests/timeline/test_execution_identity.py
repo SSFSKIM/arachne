@@ -248,6 +248,39 @@ def test_a_template_that_does_not_resolve_excludes_nothing(tmp_path):
     assert not [path for path in dirs if path.startswith(_resolved(data))]
 
 
+@pytest.mark.parametrize("here", [".", Path(".")], ids=["str", "path"])
+def test_a_media_directory_that_is_the_working_directory(
+    scene_dir, tmp_path, monkeypatch, here
+):
+    """``get_dir`` gives ``Path(".")`` for it, a path of no parts. Elsewhere
+    it is excluded as the working directory; where it holds the scene's
+    directory, it is not, and the scene's inputs stay inputs.
+    """
+    from arachne import config, tempconfig
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    with tempconfig({"media_dir": here}):
+        assert _resolved(elsewhere) in inputs.engine_dirs(config)
+
+    data = _write(scene_dir, "data.txt", "1")
+    scene = _write(
+        scene_dir,
+        "scene.py",
+        HEADER
+        + """
+class ReadsHere(Scene):
+    def construct(self):
+        (HERE / "data.txt").read_text()
+        self.wait(0.25)
+""",
+    )
+    monkeypatch.chdir(scene_dir)
+    session = Session.open(scene, "ReadsHere", config={**SMALL, "media_dir": here})
+    assert session.record.identity.input_digests == (("data.txt", _sha256(data)),)
+
+
 HELPED = (
     HEADER
     + """
