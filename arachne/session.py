@@ -4,9 +4,12 @@
 forward with nothing written, and keeps the scene's :class:`Record` with
 every instant the run evaluated. :meth:`Session.state_at` answers from the
 record, and :meth:`Session.frame` draws one frame from it; neither runs the
-scene's code again. :meth:`Session.compare` compares the session's execution
-with another of the same source, perhaps from another process, and keeps
-where they differ in :attr:`Session.divergences`.
+scene's code again. :meth:`Session.answers` answers a batch of instants, and
+what the record can't answer there a forward run does: the scene executed
+once more, for the whole batch (:mod:`.timeline.fallback`).
+:meth:`Session.compare` compares the session's execution with another of
+the same source, perhaps from another process, and keeps where they differ
+in :attr:`Session.divergences`.
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ import importlib.util
 import itertools
 import os
 import sys
+from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -27,6 +31,7 @@ from .constants import QUALITIES
 from .timeline.clock import exact
 from .timeline.draw import Drawing
 from .timeline.execution import Divergence, ExecutionSummary, compare, summarize
+from .timeline.fallback import Answer, ForwardRun, answer_instants
 from .timeline.origins import ORIGINS
 from .timeline.recorder import Recorder
 from .timeline.routes import draw
@@ -65,6 +70,10 @@ class Session:
         self.divergences: list[Divergence] = []
         #: The record last summarised, and its summary.
         self._summary: tuple[Record, ExecutionSummary] | None = None
+        #: What :meth:`open` executed, which a forward run executes again.
+        self._source: Source | None = None
+        #: The forward runs that answered what the record could not, in order.
+        self.forward_runs: list[ForwardRun] = []
 
     @classmethod
     def open(
@@ -99,47 +108,30 @@ class Session:
         written either way.
         """
         path = Path(file).resolve()
-        base_dir = str(path.parent)
         settings = {
             **(config or {}),
             "dry_run": True,
             "disable_caching": True,
         }
-        with tempconfig(settings):
-            ORIGINS.start(base_dir)
-            added_path = base_dir not in sys.path
-            if added_path:
-                sys.path.insert(0, base_dir)
-            try:
-                module = _import(path)
-                try:
-                    scene_class = getattr(module, scene, None)
-                    if not isinstance(scene_class, type):
-                        raise LookupError(
-                            f"{path.name} defines no scene named {scene!r}."
-                        )
-                    instance: Scene = scene_class()
-                    instance.timeline = Recorder(
-                        instance,
-                        grid=global_config.frame_rate if grid == "render" else grid,
-                        draws=False,
-                        stepping=stepping,
-                        on_step=on_step,
-                        on_tick=on_tick,
-                        on_start=on_start,
-                        instants=instants,
-                    )
-                    instance.render()
-                except BaseException:
-                    sys.modules.pop(module.__name__, None)
-                    raise
-            finally:
-                ORIGINS.stop()
-                if added_path and base_dir in sys.path:
-                    sys.path.remove(base_dir)
+
+        def recorder(instance: Scene) -> Recorder:
+            return Recorder(
+                instance,
+                grid=global_config.frame_rate if grid == "render" else grid,
+                draws=False,
+                stepping=stepping,
+                on_step=on_step,
+                on_tick=on_tick,
+                on_start=on_start,
+                instants=instants,
+            )
+
+        instance, module = execute(path, scene, settings, recorder)
         record = instance.record
         assert record is not None
-        return cls(instance, record, module)
+        session = cls(instance, record, module)
+        session._source = Source(path, scene, settings, stepping)
+        return session
 
     def state_at(self, t: Fraction | float) -> State:
         """The scene at ``t``, from the record: restored there when a
@@ -167,6 +159,25 @@ class Session:
                 lambda play: self._static_picture(drawing, play),
             )
         return self.scene.renderer.camera.get_image(pixels)
+
+    def answers(
+        self,
+        instants: Iterable[Fraction | float],
+        quality: str | None = None,
+        *,
+        frames: bool = True,
+    ) -> list[Answer]:
+        """The state at each of ``instants``, and its frame unless ``frames``
+        is false (at ``quality`` as :meth:`frame` draws it), in order.
+
+        The record answers what it can. The instants it can't (a state play
+        that can't be restored there, a record that refuses drawing) are
+        answered by one forward run for them all (:mod:`.timeline.fallback`):
+        a new execution of the scene, whose answers say ``"forward"`` and
+        name why the record could not answer, and which is compared with
+        the record's execution (:attr:`forward_runs`, :attr:`divergences`).
+        """
+        return answer_instants(self, instants, quality, frames=frames)
 
     def summary(self) -> ExecutionSummary:
         """The summary of the session's execution, which another execution
@@ -210,18 +221,71 @@ class Session:
                 )
             height = QUALITIES[quality]["pixel_height"]
             width = QUALITIES[quality]["pixel_width"]
-        # The frame keeps its size in scene units, as a render at that
-        # quality has it; only the pixels change.
-        camera.pixel_height, camera.pixel_width = height, width
-        camera.init_background()
-        camera.pixel_array_to_cairo_context.clear()
-        camera.reset()
+        resize(camera, height, width)
         self._quality = quality
         self._static = None
 
     def close(self) -> None:
         """Let go of the scene and its record."""
         sys.modules.pop(self.module.__name__, None)
+
+
+def resize(camera: Any, height: int, width: int) -> None:
+    """Give ``camera`` ``height`` by ``width`` pixels. The frame keeps its
+    size in scene units, as a render at another quality has it; only the
+    pixels change.
+    """
+    camera.pixel_height, camera.pixel_width = height, width
+    camera.init_background()
+    camera.pixel_array_to_cairo_context.clear()
+    camera.reset()
+
+
+@dataclass(frozen=True)
+class Source:
+    """What a session executed: the scene class ``scene`` of ``path``, under
+    ``settings``, its ticked plays stepping as ``stepping`` says.
+    """
+
+    path: Path
+    scene: str
+    settings: dict[str, Any]
+    stepping: bool | Literal["brute_force"]
+
+
+def execute(
+    path: Path,
+    scene: str,
+    settings: dict[str, Any],
+    recorder: Callable[[Scene], Recorder],
+) -> tuple[Scene, ModuleType]:
+    """Import ``path`` under a module of its own and execute its scene class
+    ``scene`` under ``settings``, recorded by ``recorder(scene)``: the scene
+    and its module. An execution that raises leaves its module unimported.
+    """
+    base_dir = str(path.parent)
+    with tempconfig(settings):
+        ORIGINS.start(base_dir)
+        added_path = base_dir not in sys.path
+        if added_path:
+            sys.path.insert(0, base_dir)
+        try:
+            module = _import(path)
+            try:
+                scene_class = getattr(module, scene, None)
+                if not isinstance(scene_class, type):
+                    raise LookupError(f"{path.name} defines no scene named {scene!r}.")
+                instance: Scene = scene_class()
+                instance.timeline = recorder(instance)
+                instance.render()
+            except BaseException:
+                sys.modules.pop(module.__name__, None)
+                raise
+        finally:
+            ORIGINS.stop()
+            if added_path and base_dir in sys.path:
+                sys.path.remove(base_dir)
+    return instance, module
 
 
 def _import(path: Path) -> ModuleType:
