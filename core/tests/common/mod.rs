@@ -179,6 +179,7 @@ pub fn sample_deltas() -> Vec<Delta> {
     });
     let mut cloud = Record::new(RecordKind::Points, 3, 103);
     cloud.geometry.shape_a = Some(cloud_shape.key);
+    cloud.geometry.reveal = Some((0.25, 0.75));
     cloud.body = Body::Points(Points {
         colors: per_point.key,
         radius: 2.0,
@@ -221,6 +222,11 @@ pub fn sample_deltas() -> Vec<Delta> {
 
     let mut mesh = Record::new(RecordKind::Mesh, 7, 107);
     mesh.geometry.shape_a = Some(tri.key);
+    mesh.geometry.blend = Some(Blend {
+        shape_b: bare.key,
+        place_b: place(0.0, 0.0, 1.0),
+        t: 0.5,
+    });
     mesh.paint.fill = Paint::One([0.5, 0.5, 0.5, 1.0]);
     mesh.depth.space = Space::World;
 

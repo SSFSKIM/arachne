@@ -900,3 +900,86 @@ fn the_reserved_record_kinds_carry_their_payload_as_an_item() {
     ]);
     record_both_ways(&r, &fields);
 }
+
+#[test]
+fn a_blend_without_a_reveal_sets_flag_bit_2_only() {
+    let mut r = plain(RecordKind::Path);
+    r.geometry.blend = Some(Blend {
+        shape_b: KB,
+        place_b: A2,
+        t: 0.375,
+    });
+    record_both_ways(
+        &r,
+        &[
+            (0, "record kind (path)", u8(1)),
+            (1, "features", u64(0)),
+            (9, "slot", u32(7)),
+            (13, "object", u32(70)),
+            (17, "geometry flags (shape_a, blend)", u8(3)),
+            (18, "shape_a", key(&KA)),
+            (34, "place_a", f64s(&IDENTITY_BYTES)),
+            (130, "shape_b", key(&KB)),
+            (146, "place_b", affine(&A2)),
+            (242, "blend t", f64(0.375)),
+            (250, "fill (none)", u8(0)),
+            (251, "stroke (none)", u8(0)),
+            (252, "background stroke (none)", u8(0)),
+            (253, "stroke_width", f64(0.5)),
+            (261, "background_stroke_width", f64(0.25)),
+            (269, "has gradient", u8(0)),
+            (270, "joint (auto)", u8(0)),
+            (271, "cap (auto)", u8(0)),
+            (272, "has paint_b", u8(0)),
+            (273, "mix", f64(0.125)),
+            (281, "has dash", u8(0)),
+            (282, "space (screen)", u8(0)),
+            (283, "z_index", f64(2.5)),
+            (291, "sort_point", f64s(&[0.5, 1.5, 2.5])),
+            (315, "shade_in_3d", u8(0)),
+            (316, "has fixed-orientation centre", u8(0)),
+            (317, "has clip", u8(0)),
+            (318, "opacity", f64(0.875)),
+            (326, "layer", u16(9)),
+        ],
+    );
+}
+
+#[test]
+fn a_reveal_without_a_blend_sets_flag_bit_4_only() {
+    let mut r = plain(RecordKind::Path);
+    r.geometry.reveal = Some((0.125, 0.875));
+    record_both_ways(
+        &r,
+        &[
+            (0, "record kind (path)", u8(1)),
+            (1, "features", u64(0)),
+            (9, "slot", u32(7)),
+            (13, "object", u32(70)),
+            (17, "geometry flags (shape_a, reveal)", u8(5)),
+            (18, "shape_a", key(&KA)),
+            (34, "place_a", f64s(&IDENTITY_BYTES)),
+            (130, "reveal lo", f64(0.125)),
+            (138, "reveal hi", f64(0.875)),
+            (146, "fill (none)", u8(0)),
+            (147, "stroke (none)", u8(0)),
+            (148, "background stroke (none)", u8(0)),
+            (149, "stroke_width", f64(0.5)),
+            (157, "background_stroke_width", f64(0.25)),
+            (165, "has gradient", u8(0)),
+            (166, "joint (auto)", u8(0)),
+            (167, "cap (auto)", u8(0)),
+            (168, "has paint_b", u8(0)),
+            (169, "mix", f64(0.125)),
+            (177, "has dash", u8(0)),
+            (178, "space (screen)", u8(0)),
+            (179, "z_index", f64(2.5)),
+            (187, "sort_point", f64s(&[0.5, 1.5, 2.5])),
+            (211, "shade_in_3d", u8(0)),
+            (212, "has fixed-orientation centre", u8(0)),
+            (213, "has clip", u8(0)),
+            (214, "opacity", f64(0.875)),
+            (222, "layer", u16(9)),
+        ],
+    );
+}

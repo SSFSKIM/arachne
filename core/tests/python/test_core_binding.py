@@ -109,6 +109,29 @@ def test_keys_are_blake2b_of_the_documented_canonical_bytes():
     key = ac.FrameDelta().upload_paint(rows)
     canonical = bytes([0x10, 1, 1, 2]) + struct.pack("<QQ", 3, 4) + rows.tobytes()
     assert key == hashlib.blake2b(canonical, digest_size=16).digest()
+    # A mesh: positions f64, triangles u32 (dtype code 2), normals f64.
+    positions = np.array([[0, 1.5, -2], [3.25, 0, 1], [0.5, 0.25, 0.125]])
+    triangles = np.array([[0, 1, 2], [2, 1, 0]], dtype=np.uint32)
+    normals = np.array([[0, 0, 1], [0, 1, 0], [1, 0, 0]], dtype=float)
+    key = ac.FrameDelta().upload_mesh(positions, triangles, normals=normals)
+    canonical = (
+        bytes([2, 3])
+        + bytes([1, 2])
+        + struct.pack("<QQ", 3, 3)
+        + positions.tobytes()
+        + bytes([2, 2])
+        + struct.pack("<QQ", 2, 3)
+        + triangles.tobytes()
+        + bytes([1, 2])
+        + struct.pack("<QQ", 3, 3)
+        + normals.tobytes()
+    )
+    assert key == hashlib.blake2b(canonical, digest_size=16).digest()
+    # An image: one u8 array (dtype code 3) of dims height, width, 4.
+    rgba = np.arange(24, dtype=np.uint8).reshape(2, 3, 4)
+    key = ac.FrameDelta().upload_image(rgba)
+    canonical = bytes([3, 1, 3, 3]) + struct.pack("<QQQ", 2, 3, 4) + rgba.tobytes()
+    assert key == hashlib.blake2b(canonical, digest_size=16).digest()
 
 
 def test_a_delta_that_references_what_the_stream_lacks_is_refused():
@@ -166,7 +189,7 @@ def canonical_sample() -> list[ac.FrameDelta]:
         np.array([[0, 1, 2]], dtype=np.uint32),
         normals=np.array([[0, 0, 1], [0, 0.6, 0.8], [0.6, 0, 0.8]], dtype=float),
     )
-    first.upload_mesh(
+    bare_mesh = first.upload_mesh(
         np.array([[0, 0, 0], [0, 1, 0], [1, 0, 0]], dtype=float),
         np.array([[0, 2, 1]], dtype=np.uint32),
     )
@@ -230,7 +253,9 @@ def canonical_sample() -> list[ac.FrameDelta]:
         joint="bevel",
         cap="round",
     )
-    first.set_record("points", 3, 13, shape=cloud, colors=per_point, radius=2.0)
+    first.set_record(
+        "points", 3, 13, shape=cloud, colors=per_point, radius=2.0, reveal=(0.25, 0.75)
+    )
     first.set_record(
         "image",
         4,
@@ -270,7 +295,14 @@ def canonical_sample() -> list[ac.FrameDelta]:
         joint="miter",
         cap="butt",
     )
-    first.set_record("mesh", 7, 17, shape=mesh, fill=(0.5, 0.5, 0.5, 1))
+    first.set_record(
+        "mesh",
+        7,
+        17,
+        shape=mesh,
+        fill=(0.5, 0.5, 0.5, 1),
+        blend=(bare_mesh, np.eye(3, 4), 0.5),
+    )
     first.set_record(
         "volume", 8, 18, payload=b"\x09\x08\x07", features=0x0102030405060708
     )
@@ -305,7 +337,7 @@ def canonical_sample() -> list[ac.FrameDelta]:
 # The sha256 of the canonical sample's file bytes. It catches any change to how the binding builds
 # the sample or how XF writes it; the field-by-field layout is pinned by core/tests/layout.rs.
 # XF streams are generated, never committed. Change the pin only when such a change is meant.
-SAMPLE_SHA256 = "ef4ceb2d77308ba215c264334acc803fe2ba0d183bdafd9c55b3c6af5a7edea0"
+SAMPLE_SHA256 = "121c71621e339faf132af50176e2ed4ad4acadac2950b4fe7716ed7d4dda42fb"
 
 
 def test_every_kind_can_be_built_and_survives_a_file(tmp_path):
