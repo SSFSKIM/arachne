@@ -174,8 +174,9 @@ def test_a_forward_run_is_compared_with_the_record(scene_dir, edited):
     """Deterministic, the forward run agrees with the record wherever both
     kept an instant. With the data files edited between the two, it is
     another execution: the divergence is at the first play, at its line,
-    and names every file the record's execution read that changed since,
-    one read only after the forward run stopped included.
+    and names the file both executions read before it whose content
+    differed, not one the record's execution read only after the plays
+    compared.
     """
     session, scene = _open_written(scene_dir)
     try:
@@ -196,7 +197,7 @@ def test_a_forward_run_is_compared_with_the_record(scene_dir, edited):
         assert divergence.kind == "execution"
         assert divergence.play == 0
         assert divergence.source_line.line == _line(scene, "play")
-        assert divergence.changed_inputs == ("data.txt", "late.txt")
+        assert divergence.changed_inputs == ("data.txt",)
         assert session.divergences == [divergence]
         # The answer is the new execution's: the tracker began at 1.5 there.
         dot = answer.state.named("dot")
@@ -252,7 +253,7 @@ def test_a_source_edited_since_the_record_makes_it_stale_not_divergent(scene_dir
         (answer,) = session.answers([Fraction(1, 7)])
         assert answer.state.answer == "forward"
         assert answer.fallback.kind == "source-changed"
-        assert answer.fallback.reason == "source.changed: fallback_helper.py"
+        assert answer.fallback.reason == "source.changed"
         assert "fallback_helper.py" in answer.fallback.detail
         assert session.stale
         (run,) = session.forward_runs
@@ -313,6 +314,112 @@ def test_an_input_the_forward_run_never_read_is_named_when_it_changed(scene_dir)
         assert run.divergence.changed_inputs == ("data.txt",)
     finally:
         session.close()
+
+
+READS_THEN_WRITES_BACK = (
+    HEADER
+    + """
+class ReadsThenWritesBack(Scene):
+    def construct(self):
+        global SHIFT
+        SHIFT = 0.0
+        data = HERE / "data.txt"
+        start = float(data.read_text())
+        data.write_text("0.5")
+        tracker = ValueTracker(start)
+        dot = Dot().add_updater(lambda m: m.set_x(tracker.get_value() + SHIFT))
+        self.add(dot)
+        self.play(tracker.animate.set_value(2), run_time=1)
+        SHIFT = 1.0
+        self.play(tracker.animate.set_value(0), run_time=1)
+"""
+)
+
+
+def test_an_input_is_named_by_what_each_execution_read(scene_dir):
+    """The scene reads its data file and writes the record's value back:
+    after the forward run, the file holds what the record's execution read,
+    but the forward run read something else, and that is the change.
+    """
+    data = scene_dir / "data.txt"
+    data.write_text("0.5")
+    session = _open_in(scene_dir, READS_THEN_WRITES_BACK, "ReadsThenWritesBack")
+    try:
+        data.write_text("1.5")
+        session.answers([Fraction(1, 7)])
+        (run,) = session.forward_runs
+        assert data.read_text() == "0.5"
+        assert run.divergence is not None
+        assert run.divergence.changed_inputs == ("data.txt",)
+    finally:
+        session.close()
+
+
+READS_ALONG = (
+    HEADER
+    + """
+class ReadsAlong(Scene):
+    def construct(self):
+        (HERE / "before.txt").read_text()
+        dot = Dot().add_updater(lambda m: (HERE / "during.txt").read_text())
+        self.add(dot)
+        self.play(dot.animate.shift(RIGHT), run_time=1)
+        (HERE / "between.txt").read_text()
+        self.play(dot.animate.shift(LEFT), run_time=1)
+        (HERE / "after.txt").read_text()
+"""
+)
+
+
+def test_an_input_is_kept_with_the_play_it_was_first_read_for(scene_dir):
+    """Each file the scene reads is kept with the first play its content
+    could change: the one running as it is read, or else the next to begin
+    (one past the last, after the script's last play).
+    """
+    for name in ("before", "during", "between", "after"):
+        (scene_dir / f"{name}.txt").write_text(name)
+    session = _open_in(scene_dir, READS_ALONG, "ReadsAlong")
+    try:
+        assert {read.path: read.play for read in session._source.reads} == {
+            "before.txt": 0,
+            "during.txt": 0,
+            "between.txt": 1,
+            "after.txt": 2,
+        }
+    finally:
+        session.close()
+
+
+@pytest.mark.parametrize(
+    ("mine", "theirs", "bound", "changed"),
+    [
+        # Both read it before the bound: named when they read different content.
+        ([("a", "x", 0)], [("a", "x", 0)], 1, ()),
+        ([("a", "x", 0)], [("a", "y", 0)], 1, ("a",)),
+        # Only one read it before the bound (a file gone, a conditional read).
+        ([("a", "x", 0)], [], 1, ("a",)),
+        ([], [("a", "x", 0)], 1, ("a",)),
+        ([("a", "x", 0)], [("a", "x", 1)], 1, ("a",)),
+        # First read at or after the bound in both: never named.
+        ([("a", "x", 1)], [("a", "y", 1)], 1, ()),
+        ([("a", "x", 2)], [], 1, ()),
+        # No bound (both compared to their end): every read counts.
+        ([("a", "x", 5)], [("a", "y", 5)], None, ("a",)),
+        ([("b", "x", 0), ("a", "x", 0)], [("a", "y", 0)], None, ("a", "b")),
+    ],
+)
+def test_changed_inputs_are_those_of_the_compared_plays(mine, theirs, bound, changed):
+    from arachne.timeline.fallback import _changed_inputs
+    from arachne.timeline.inputs import Read
+
+    assert (
+        _changed_inputs(
+            tuple(Read(*read) for read in mine),
+            tuple(Read(*read) for read in theirs),
+            bound,
+        )
+        == changed
+    )
 
 
 DEFAULTS = (
