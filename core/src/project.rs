@@ -16,6 +16,8 @@
 //! it is the same on every machine. NumPy multiplies through BLAS and takes sin, cos and exp from
 //! the platform, so the results may differ from CE's in the last bits.
 
+use crate::composite::Plane;
+use crate::depth::WorldPlane;
 use crate::xf::{Space, ThreeDCamera};
 
 /// `arachne.constants.DEGREES`.
@@ -195,6 +197,22 @@ impl Projection {
             .all(|v| v.is_finite())
             .then_some(plane)
     }
+
+    /// The depth key across the plane through `centre` that faces the camera, as a plane on the
+    /// pixel plane: where a fixed-orientation mobject sits. It is made canonical as a world plane is
+    /// ([`WorldPlane`]), so a surface facing the camera through the same point gets the same numbers
+    /// and the two tie by draw order. Where a plane cannot key depth (the exponential option, a
+    /// centre at or behind the eye), it is the centre's own key everywhere.
+    pub fn facing_plane(&self, centre: [f64; 3], map: &FrameMap) -> Plane {
+        let own = || Plane::constant(-self.factor(self.project(centre)[2]));
+        if !self.keys_planar_at(centre) {
+            return own();
+        }
+        // The plane `q_z = const` in the camera's axes: its world normal is the rotation's last row.
+        WorldPlane::canonical(self.rotation[2], centre)
+            .and_then(|plane| self.key_plane(&plane, map, centre, 0.0))
+            .unwrap_or_else(own)
+    }
 }
 
 /// How a mobject's points are placed before display.
@@ -212,25 +230,28 @@ pub enum Placement {
 }
 
 /// How a record in `space` is placed for display under a camera whose projection, if it is a 3D
-/// camera, is `projection`; and the depth key every point of it shares, when they share one (a
-/// fixed orientation's centre, or in front of all depth: overlay records under a 3D camera, and
-/// everything under a flat one, where records tie and paint in draw order). Projected points take
-/// each their own key (`-factor`).
+/// camera, is `projection`; and the depth key it takes as a whole, when it takes one: the plane a
+/// fixed orientation faces the camera on ([`Projection::facing_plane`], through the frame mapping
+/// `map`), or in front of all depth (overlay records under a 3D camera, and everything under a
+/// flat one, where records tie and paint in draw order). Projected points take each their own key
+/// (`-factor`).
 pub fn placement(
     projection: Option<&Projection>,
+    map: &FrameMap,
     space: Space,
     fixed_orientation_centre: Option<[f64; 3]>,
-) -> (Placement, Option<f64>) {
+) -> (Placement, Option<Plane>) {
+    let in_front = Some(Plane::constant(f64::NEG_INFINITY));
     match (projection, space) {
         (Some(p), Space::World) => match fixed_orientation_centre {
             Some(centre) => (
                 Placement::FixedOrientation(centre),
-                Some(-p.factor(p.project(centre)[2])),
+                Some(p.facing_plane(centre, map)),
             ),
             None => (Placement::Projected, None),
         },
-        (Some(_), Space::Overlay) => (Placement::FixedInFrame, Some(f64::NEG_INFINITY)),
-        _ => (Placement::Flat, Some(f64::NEG_INFINITY)),
+        (Some(_), Space::Overlay) => (Placement::FixedInFrame, in_front),
+        _ => (Placement::Flat, in_front),
     }
 }
 

@@ -16,7 +16,7 @@
 use crate::composite::{
     Coverage, FULL, Fragment, OpaquePass, Plane, Producer, Rect, TransparentPass,
 };
-use crate::project::{Projection, placement, pre_display, subpixel_coords};
+use crate::project::{FrameMap, Projection, placement, pre_display, subpixel_coords};
 use crate::tiles::{TILE, tile_index, tiles_across};
 use crate::xf::*;
 
@@ -52,7 +52,7 @@ struct Block {
     point: u32,
     points: u32,
     colour: [u8; 4],
-    key: f64,
+    depth: Plane,
     order: u32,
 }
 
@@ -85,6 +85,13 @@ pub fn lower(view: &View, width: u32, height: u32, draws: &[PointsDraw<'_>]) -> 
         Camera::ThreeD(c) => Some(Projection::new(c, view.frame_center)),
         _ => None,
     };
+    let map = FrameMap::cairo(
+        width,
+        height,
+        view.frame_width,
+        view.frame_height,
+        view.frame_center,
+    );
     let mut out = Blocks {
         blocks: Vec::new(),
         bins: vec![Vec::new(); (tiles_across(width) * height.div_ceil(TILE)) as usize],
@@ -100,8 +107,9 @@ pub fn lower(view: &View, width: u32, height: u32, draws: &[PointsDraw<'_>]) -> 
             continue;
         }
         let lo = (-t).div_euclid(2) + 1;
-        let (place_kind, key) = placement(
+        let (place_kind, keyed) = placement(
             projection.as_ref(),
+            &map,
             rec.depth.space,
             rec.depth.fixed_orientation_centre,
         );
@@ -111,7 +119,8 @@ pub fn lower(view: &View, width: u32, height: u32, draws: &[PointsDraw<'_>]) -> 
                 continue; // CE draws a non-finite point nowhere on the frame.
             }
             let shown = pre_display(&[world], projection.as_ref(), place_kind)[0];
-            let key = key.unwrap_or_else(|| -projection.as_ref().unwrap().factor(shown[2]));
+            let depth = keyed
+                .unwrap_or_else(|| Plane::constant(-projection.as_ref().unwrap().factor(shown[2])));
             let [sx, sy] = subpixel_coords(
                 &[shown],
                 width,
@@ -120,7 +129,7 @@ pub fn lower(view: &View, width: u32, height: u32, draws: &[PointsDraw<'_>]) -> 
                 view.frame_height,
                 view.frame_center,
             )[0];
-            if !(sx.is_finite() && sy.is_finite()) || key.is_nan() {
+            if !(sx.is_finite() && sy.is_finite()) || depth.a.is_nan() {
                 continue;
             }
             // `astype(int64)`, beyond whose range no block reaches the frame.
@@ -170,7 +179,7 @@ pub fn lower(view: &View, width: u32, height: u32, draws: &[PointsDraw<'_>]) -> 
                 point: i as u32,
                 points: draw.positions.len() as u32,
                 colour,
-                key,
+                depth,
                 order: draw.order,
             });
         }
@@ -192,7 +201,7 @@ impl Blocks {
             for y in b.y0.max(rect.y0)..b.y1.min(rect.y1) {
                 for x in b.x0.max(rect.x0)..b.x1.min(rect.x1) {
                     let f = Fragment::new(
-                        Plane::constant(b.key),
+                        b.depth,
                         b.colour,
                         Coverage::Mask(FULL),
                         b.order,

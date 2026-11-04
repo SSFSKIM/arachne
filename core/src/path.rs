@@ -32,7 +32,7 @@ use crate::project::{FrameMap, Projection, placement, pre_display};
 use crate::scanline::{self, Edge, Scratch};
 use crate::tiles::{TILE, tile_index, tiles_across};
 use crate::xf::*;
-use kurbo::{BezPath, ParamCurve as _, PathEl, Point, Shape as _};
+use kurbo::{BezPath, ParamCurve as _, ParamCurveArclen as _, PathEl, PathSeg, Point, Shape as _};
 
 /// Cairo's default tolerance for flattening curves, in pixels.
 pub const TOLERANCE: f64 = 0.1;
@@ -192,41 +192,58 @@ fn mapped(path: &BezPath, map: &FrameMap) -> BezPath {
         .collect()
 }
 
-/// A path whose curves outside `area` (`[x0, y0, x1, y1]`) are replaced by their chords. A curve
-/// lies inside its control points' hull, and so does its chord, so where the hull misses the area,
-/// nothing inside it changes; a curve whose hull meets the area but is far larger is split until its
-/// pieces are near the area's size or miss it.
-fn culled(path: &BezPath, area: [f64; 4]) -> BezPath {
-    let size = (area[2] - area[0]).max(area[3] - area[1]);
-    let misses = |pts: &[Point]| {
-        pts.iter().all(|p| p.x < area[0])
-            || pts.iter().all(|p| p.x > area[2])
-            || pts.iter().all(|p| p.y < area[1])
-            || pts.iter().all(|p| p.y > area[3])
-    };
+/// Whether a curve's control points all lie on one side of `area` (`[x0, y0, x1, y1]`) and
+/// beyond it: the curve lies inside their hull, so it misses the area.
+fn misses(pts: &[Point], area: [f64; 4]) -> bool {
+    pts.iter().all(|p| p.x < area[0])
+        || pts.iter().all(|p| p.x > area[2])
+        || pts.iter().all(|p| p.y < area[1])
+        || pts.iter().all(|p| p.y > area[3])
+}
+
+/// A curve as pieces in order, each handed to `piece` with whether it misses `area`: a curve whose
+/// hull meets the area but is far larger is split until its pieces are near the area's size or
+/// miss it.
+fn cull_pieces(c: kurbo::CubicBez, area: [f64; 4], piece: &mut dyn FnMut(kurbo::CubicBez, bool)) {
     fn split(
         c: kurbo::CubicBez,
         depth: u32,
+        area: [f64; 4],
         size: f64,
-        misses: &dyn Fn(&[Point]) -> bool,
-        out: &mut BezPath,
+        piece: &mut dyn FnMut(kurbo::CubicBez, bool),
     ) {
-        let pts = [c.p0, c.p1, c.p2, c.p3];
-        if misses(&pts) {
-            out.line_to(c.p3);
+        if misses(&[c.p0, c.p1, c.p2, c.p3], area) {
+            piece(c, true);
             return;
         }
         let r = c.bounding_box();
         if depth == 0 || r.width().max(r.height()) <= 64.0 * size {
-            out.curve_to(c.p1, c.p2, c.p3);
+            piece(c, false);
             return;
         }
         let (a, b) = c.subdivide();
-        split(a, depth - 1, size, misses, out);
-        split(b, depth - 1, size, misses, out);
+        split(a, depth - 1, area, size, piece);
+        split(b, depth - 1, area, size, piece);
     }
+    let size = (area[2] - area[0]).max(area[3] - area[1]);
+    split(c, 40, area, size, piece);
+}
+
+/// A path whose curves outside `area` (`[x0, y0, x1, y1]`) are replaced by their chords. A curve
+/// lies inside its control points' hull, and so does its chord, so where the hull misses the area,
+/// nothing inside it changes ([`cull_pieces`]).
+fn culled(path: &BezPath, area: [f64; 4]) -> BezPath {
     let mut out = BezPath::new();
     let mut last = Point::ZERO;
+    let curve = |c: kurbo::CubicBez, out: &mut BezPath| {
+        cull_pieces(c, area, &mut |piece, missed| {
+            if missed {
+                out.line_to(piece.p3);
+            } else {
+                out.curve_to(piece.p1, piece.p2, piece.p3);
+            }
+        })
+    };
     for el in path.elements() {
         match *el {
             PathEl::MoveTo(p) => {
@@ -238,29 +255,164 @@ fn culled(path: &BezPath, area: [f64; 4]) -> BezPath {
                 last = p;
             }
             PathEl::QuadTo(a, b) => {
-                split(
-                    kurbo::QuadBez::new(last, a, b).raise(),
-                    40,
-                    size,
-                    &misses,
-                    &mut out,
-                );
+                curve(kurbo::QuadBez::new(last, a, b).raise(), &mut out);
                 last = b;
             }
             PathEl::CurveTo(a, b, c) => {
-                split(
-                    kurbo::CubicBez::new(last, a, b, c),
-                    40,
-                    size,
-                    &misses,
-                    &mut out,
-                );
+                curve(kurbo::CubicBez::new(last, a, b, c), &mut out);
                 last = c;
             }
             PathEl::ClosePath => out.close_path(),
         }
     }
     out
+}
+
+/// kurbo's accuracy for the arc lengths its dashing measures.
+const DASH_ACCURACY: f64 = 1e-6;
+
+/// A subpath's pieces, each with whether it misses the guard area.
+type Pieces = Vec<(PathSeg, bool)>;
+
+/// The dashes of a path as kurbo lays them (each subpath starting `offset` into `pattern`, a closed
+/// subpath's last dash joined to its first when both are on), keeping, when `area` is given, only
+/// what can reach it. A piece of a curve that misses the area ([`cull_pieces`]) is measured, not
+/// dashed: the dashes after it start where the whole curve's length puts them, never where a
+/// shortcut around it would.
+fn dashed(path: &BezPath, offset: f64, pattern: &[f64; 2], area: Option<[f64; 4]>) -> BezPath {
+    let Some(area) = area else {
+        return BezPath::from_vec(dash(path, offset, pattern));
+    };
+    let mut out = Vec::new();
+    let mut pieces = Pieces::new();
+    let (mut start, mut last) = (Point::ZERO, Point::ZERO);
+    for el in path.elements() {
+        match *el {
+            PathEl::MoveTo(p) => {
+                dash_subpath(&pieces, false, offset, pattern, &mut out);
+                pieces.clear();
+                (start, last) = (p, p);
+            }
+            PathEl::LineTo(p) => {
+                let line = kurbo::Line::new(last, p);
+                pieces.push((PathSeg::Line(line), misses(&[last, p], area)));
+                last = p;
+            }
+            PathEl::QuadTo(a, b) => {
+                let c = kurbo::QuadBez::new(last, a, b).raise();
+                cull_pieces(c, area, &mut |c, missed| {
+                    pieces.push((PathSeg::Cubic(c), missed))
+                });
+                last = b;
+            }
+            PathEl::CurveTo(a, b, c) => {
+                let c = kurbo::CubicBez::new(last, a, b, c);
+                cull_pieces(c, area, &mut |c, missed| {
+                    pieces.push((PathSeg::Cubic(c), missed))
+                });
+                last = c.p3;
+            }
+            PathEl::ClosePath => {
+                if last != start {
+                    let line = kurbo::Line::new(last, start);
+                    pieces.push((PathSeg::Line(line), misses(&[last, start], area)));
+                }
+                dash_subpath(&pieces, true, offset, pattern, &mut out);
+                pieces.clear();
+                last = start;
+            }
+        }
+    }
+    dash_subpath(&pieces, false, offset, pattern, &mut out);
+    BezPath::from_vec(out)
+}
+
+fn dash(path: &BezPath, offset: f64, pattern: &[f64; 2]) -> Vec<PathEl> {
+    kurbo::dash(path.elements().iter().copied(), offset, pattern).collect()
+}
+
+/// One subpath's dashes into `out`, its pieces that miss the guard area measured and dropped.
+fn dash_subpath(
+    pieces: &[(PathSeg, bool)],
+    closed: bool,
+    offset: f64,
+    pattern: &[f64; 2],
+    out: &mut Vec<PathEl>,
+) {
+    let Some(&(first, _)) = pieces.first() else {
+        return;
+    };
+    let run_path = |run: &[(PathSeg, bool)], close: bool| {
+        let mut path = BezPath::new();
+        path.move_to(run[0].0.start());
+        for (seg, _) in run {
+            path.push(seg_el(seg));
+        }
+        if close {
+            path.close_path();
+        }
+        path
+    };
+    if pieces.iter().all(|(_, missed)| !missed) {
+        out.extend(dash(&run_path(pieces, closed), offset, pattern));
+        return;
+    }
+    // Runs of pieces that may reach the area, each with how far into the subpath it starts.
+    let mut runs: Vec<(f64, &[(PathSeg, bool)])> = Vec::new();
+    let (mut travelled, mut open) = (0.0, None);
+    for (i, (seg, missed)) in pieces.iter().enumerate() {
+        match (missed, open) {
+            (true, Some((at, from))) => {
+                runs.push((at, &pieces[from..i]));
+                open = None;
+            }
+            (false, None) => open = Some((travelled, i)),
+            _ => {}
+        }
+        travelled += seg.arclen(DASH_ACCURACY);
+    }
+    if let Some((at, from)) = open {
+        runs.push((at, &pieces[from..]));
+    }
+    // Each run's dashes, one subpath each (in the order kurbo gives them, its first dash last).
+    let mut dashes: Vec<Vec<Vec<PathEl>>> = runs
+        .iter()
+        .map(|(at, run)| {
+            let mut each: Vec<Vec<PathEl>> = Vec::new();
+            for el in dash(&run_path(run, false), offset + at, pattern) {
+                match (el, each.last_mut()) {
+                    (PathEl::MoveTo(_), _) | (_, None) => each.push(vec![el]),
+                    (_, Some(current)) => current.push(el),
+                }
+            }
+            each
+        })
+        .collect();
+    // A closed subpath whose start lies in a run, its last run ending there and its first
+    // beginning there: as kurbo does, a dash running to the end continues into a dash starting at
+    // the start.
+    let start = first.start();
+    let near = |p: Point| (p - start).hypot() <= 1e-9 * (1.0 + start.x.abs().max(start.y.abs()));
+    if closed && runs.len() > 1 && !pieces[0].1 && !pieces[pieces.len() - 1].1 {
+        let opening = dashes[0].iter().position(|d| d[0] == PathEl::MoveTo(start));
+        let closing = dashes[runs.len() - 1]
+            .iter()
+            .position(|d| d.len() > 1 && d.last().and_then(|el| el.end_point()).is_some_and(near));
+        if let (Some(i), Some(j)) = (opening, closing) {
+            let head = dashes[0].remove(i);
+            dashes[runs.len() - 1][j].extend(head.into_iter().skip(1));
+        }
+    }
+    out.extend(dashes.into_iter().flatten().flatten());
+}
+
+/// A segment as the path element that draws it from its start.
+fn seg_el(seg: &PathSeg) -> PathEl {
+    match *seg {
+        PathSeg::Line(l) => PathEl::LineTo(l.p1),
+        PathSeg::Quad(q) => PathEl::QuadTo(q.p1, q.p2),
+        PathSeg::Cubic(c) => PathEl::CurveTo(c.p1, c.p2, c.p3),
+    }
 }
 
 /// A path flattened to closed rings of pixel points.
@@ -391,8 +543,9 @@ impl<'v> Lowering<'v> {
         if world.len() < 4 || world.iter().flatten().any(|v| !v.is_finite()) {
             return; // CE draws a mobject with a non-finite point as one point: nothing.
         }
-        let (placement, key) = placement(
+        let (placement, keyed) = placement(
             self.projection.as_ref(),
+            &self.map,
             rec.depth.space,
             rec.depth.fixed_orientation_centre,
         );
@@ -401,8 +554,8 @@ impl<'v> Lowering<'v> {
         if user.elements().is_empty() {
             return;
         }
-        let depth = match key {
-            Some(k) => LayerDepth::Plane(Plane::constant(k)),
+        let depth = match keyed {
+            Some(plane) => LayerDepth::Plane(plane),
             None => {
                 // How far the path's pixels reach from its curve: half the widest stroke and the
                 // pixel's antialiasing beyond it, a miter's length at most (for binning).
@@ -418,7 +571,11 @@ impl<'v> Lowering<'v> {
         };
         let alpha = |c: [f64; 4]| [c[0], c[1], c[2], c[3] * rec.opacity];
         let scale = self.map.xx.abs().max(self.map.yy.abs());
-        let guard = self.guarded(&user, rec);
+        let area = self.guard(&user, rec);
+        let guarded = match area {
+            Some(area) => culled(&user, area),
+            None => user.clone(),
+        };
         for (k, paint, width) in [
             (0, draw.background_stroke, rec.paint.background_stroke_width),
             (1, draw.fill, 0.0),
@@ -430,26 +587,28 @@ impl<'v> Lowering<'v> {
                 continue;
             }
             let outline_px = if k == 1 {
-                mapped(&guard, &self.map)
+                mapped(&guarded, &self.map)
             } else {
                 let w = width * self.view.cairo_line_width_multiple;
                 if w.is_nan() || w <= 0.0 {
                     continue;
                 }
-                let mut style = kurbo::Stroke::new(w)
+                let style = kurbo::Stroke::new(w)
                     .with_join(kurbo_join(rec.paint.joint))
                     .with_caps(kurbo_cap(rec.paint.cap))
                     .with_miter_limit(MITER_LIMIT);
-                if let Some(dash) = rec.dash
-                    && dash.duty < 1.0
-                {
-                    style = style.with_dashes(
-                        dash.phase * dash.period,
-                        [dash.period * dash.duty, dash.period * (1.0 - dash.duty)],
-                    );
-                }
+                // Dashes are laid on the whole outline, then culled, so culling never moves them.
+                let dashes = rec.dash.filter(|d| d.duty < 1.0).map(|d| {
+                    let pattern = [d.period * d.duty, d.period * (1.0 - d.duty)];
+                    dashed(&user, d.phase * d.period, &pattern, area)
+                });
                 let stroked = kurbo::stroke(
-                    guard.elements().iter().copied(),
+                    dashes
+                        .as_ref()
+                        .unwrap_or(&guarded)
+                        .elements()
+                        .iter()
+                        .copied(),
                     &style,
                     &kurbo::StrokeOpts::default(),
                     TOLERANCE / scale,
@@ -466,9 +625,10 @@ impl<'v> Lowering<'v> {
         }
     }
 
-    /// The outline with its curves outside the frame's guard band replaced by chords, when it
-    /// reaches that far (a stroke's reach beyond its curve kept inside the band).
-    fn guarded(&self, user: &BezPath, rec: &Record) -> BezPath {
+    /// When the outline reaches beyond the frame's guard band, the area its curves outside may be
+    /// simplified away beyond ([`culled`], [`dashed`]): the frame widened by a stroke's reach beyond
+    /// its curve and a pixel. `None` when the outline stays inside the band.
+    fn guard(&self, user: &BezPath, rec: &Record) -> Option<[f64; 4]> {
         let m = &self.map;
         let to_user = |px: f64, py: f64| [(px - m.x0) / m.xx, (py - m.y0) / m.yy];
         let reach = rec
@@ -494,19 +654,16 @@ impl<'v> Lowering<'v> {
             })
         });
         if inside {
-            return user.clone();
+            return None;
         }
         let [fx0, fy0] = to_user(0.0, 0.0);
         let [fx1, fy1] = to_user(self.width as f64, self.height as f64);
-        culled(
-            user,
-            [
-                fx0.min(fx1) - reach - 1.0,
-                fy0.min(fy1) - reach - 1.0,
-                fx0.max(fx1) + reach + 1.0,
-                fy0.max(fy1) + reach + 1.0,
-            ],
-        )
+        Some([
+            fx0.min(fx1) - reach - 1.0,
+            fy0.min(fy1) - reach - 1.0,
+            fx0.max(fx1) + reach + 1.0,
+            fy0.max(fy1) + reach + 1.0,
+        ])
     }
 
     /// The depth of a path placed in world space under a 3D camera.

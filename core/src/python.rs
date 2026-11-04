@@ -8,7 +8,7 @@ use numpy::{
     PyArrayMethods,
 };
 use pyo3::call::PyCallArgs;
-use pyo3::exceptions::{PyTypeError, PyValueError};
+use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 use std::collections::HashSet;
@@ -48,6 +48,7 @@ fn draw_error(py: Python<'_>, err: DrawError) -> PyErr {
             object,
             reason,
         }) => python_error(py, "Unsupported", (kind, slot, object, reason)),
+        threads @ DrawError::Threads(_) => PyRuntimeError::new_err(threads.to_string()),
         other => xf_error(py, other.to_string()),
     }
 }
