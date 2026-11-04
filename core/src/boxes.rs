@@ -24,6 +24,18 @@ pub fn record_box<'a>(
     rec: &'a Record,
     shape: impl Fn(&Key) -> Option<&'a ShapeData>,
 ) -> Option<PixelBox> {
+    if let Some(pre) = &rec.pre_projected {
+        // Placed by a camera of the scene's own: the points as that camera put them before
+        // display, mapped as they are, nothing projected again.
+        let Some(ShapeData::Path { points }) = shape(&pre.points) else {
+            return None;
+        };
+        return mapped_box(
+            view,
+            mapping_centre_of(view, rec.kind),
+            points.iter().copied(),
+        );
+    }
     let geometry = &rec.geometry;
     let place_a = &geometry.place_a;
     let placed = |points: &[[f64; 3]], m: &Affine| -> Vec<[f64; 3]> {
@@ -97,18 +109,28 @@ pub fn record_box<'a>(
         rec.depth.space,
         rec.depth.fixed_orientation_centre,
     );
-    let centre = mapping_centre_of(view, rec.kind);
-    let (pw, ph) = (pw as f64, ph as f64);
+    let shown = groups
+        .iter()
+        .filter(|g| !g.is_empty())
+        .flat_map(|group| pre_display(group, projection.as_ref(), place_kind));
+    mapped_box(view, mapping_centre_of(view, rec.kind), shown)
+}
+
+/// The pixel box of points already placed for display, mapped as `projection._placed` maps
+/// them: `centre` subtracted, then scaled about the frame's middle.
+fn mapped_box(
+    view: &View,
+    centre: [f64; 3],
+    points: impl IntoIterator<Item = [f64; 3]>,
+) -> Option<PixelBox> {
+    let (pw, ph) = (view.pixel_width as f64, view.pixel_height as f64);
     let (x_mult, y_mult) = (pw / view.frame_width, -(ph / view.frame_height));
     let mut found: Option<PixelBox> = None;
-    for group in groups.iter().filter(|g| !g.is_empty()) {
-        for p in pre_display(group, projection.as_ref(), place_kind) {
-            // `projection._placed`: the centre subtracted, then scaled about the frame's middle.
-            let x = (p[0] - centre[0]) * x_mult + pw / 2.0;
-            let y = (p[1] - centre[1]) * y_mult + ph / 2.0;
-            let b = found.get_or_insert([x, y, x, y]);
-            *b = [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)];
-        }
+    for p in points {
+        let x = (p[0] - centre[0]) * x_mult + pw / 2.0;
+        let y = (p[1] - centre[1]) * y_mult + ph / 2.0;
+        let b = found.get_or_insert([x, y, x, y]);
+        *b = [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)];
     }
     found
 }
@@ -341,6 +363,52 @@ mod tests {
         );
         // Twice nearer than the focal plane's half: twice as far out.
         assert!((p[0] - 2.0).abs() < 1e-9, "{p:?}");
+    }
+
+    #[test]
+    fn a_pre_projected_record_is_boxed_by_the_points_its_camera_placed() {
+        // The record's own shape sits far off; the camera of the scene's own placed it at
+        // (1, 1)..(2, 2), and that is what is mapped, around the mapping centre, unprojected.
+        let camera = ThreeDCamera {
+            phi: 1.0,
+            theta: -1.0,
+            gamma: 0.0,
+            focal_distance: 20.0,
+            zoom: 1.0,
+            exponential_projection: false,
+            light_source: [0.0; 3],
+            shading_factor: 0.2,
+            should_apply_shading: true,
+        };
+        let mut v = view(Camera::ThreeD(camera));
+        v.mapping_centre = [1.0, 0.0, 0.0];
+        v.frame_center = [0.0, 1.0, 0.0];
+        let (mut rec, data, key) = path(line(&[[5.0, 5.0, 5.0], [6.0, 6.0, 6.0]]));
+        rec.depth.space = Space::World;
+        let carried = Key([9; 16]);
+        let placed = ShapeData::Path {
+            points: line(&[[1.0, 1.0, 3.0], [2.0, 2.0, -3.0]]),
+        };
+        rec.features |= FEATURE_PRE_PROJECTED;
+        rec.pre_projected = Some(PreProjected {
+            points: carried,
+            gradient: None,
+            fill: Paint::None,
+            stroke: Paint::One([1.0; 4]),
+            background_stroke: Paint::None,
+        });
+        let got = record_box(&v, &rec, |k| {
+            if *k == key {
+                Some(&data)
+            } else if *k == carried {
+                Some(&placed)
+            } else {
+                None
+            }
+        })
+        .unwrap();
+        close(got, [80.0, 25.0, 90.0, 35.0]);
+        assert!(record_box(&v, &rec, |k| (*k == key).then_some(&data)).is_none());
     }
 
     #[test]
