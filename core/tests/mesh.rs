@@ -1,7 +1,7 @@
 //! Meshes drawn through a Stream: coverage against exact area, no seams along internal edges,
 //! depth resolved at every sub-sample, transparency in depth order whatever the draw order, ties by
-//! draw order, CE's light and soft light, the resolve classes, and identical bytes on any number of
-//! threads. Set `CORE_STATS=1` to print the coverage error and each scene's share of pixels per
+//! draw order, fixed orientation at its centre's depth, CE's light and soft light, the resolve
+//! classes, and identical bytes on any number of threads. Set `CORE_STATS=1` to print the coverage error and each scene's share of pixels per
 //! resolve.
 
 mod common;
@@ -9,7 +9,7 @@ mod common;
 use arachne_core::composite::{
     Resolve, SAMPLES, blend, premultiply, sample_point, srgb_decode, srgb_encode,
 };
-use arachne_core::project::FrameMap;
+use arachne_core::project::{FrameMap, Projection};
 use arachne_core::shade::{ce_shaded_rgb, ce_unit_normal};
 use arachne_core::stream::{DrawError, Stream, StreamError};
 use arachne_core::xf::*;
@@ -787,4 +787,85 @@ fn soft_light_needs_an_ambient_share_and_a_wrap_it_can_use() {
             "{ambient} {wrap}"
         );
     }
+}
+
+#[test]
+fn a_fixed_orientation_mesh_is_a_camera_facing_plane_at_its_centres_depth() {
+    // A label kept facing the camera about its centre, which lies on a level surface the camera
+    // sees at a slant: the surface passes through the label's plane, in front of half the label
+    // and behind the other half, whichever is drawn first.
+    let view = close_view();
+    let centre = [0.4, 0.3, 0.0];
+    let label_corners = [
+        [-0.8, -0.6, 0.0],
+        [2.0, -0.6, 0.0],
+        [2.0, 1.2, 0.0],
+        [-0.8, 1.2, 0.0],
+    ];
+    let label = quad(label_corners);
+    let level = quad(square_at(0.0, 4.0));
+    let (white, green) = ([1.0, 1.0, 1.0, 1.0], [0.1, 0.6, 0.2, 1.0]);
+    let mut label_record = mesh_record(1, &label, white, Space::World);
+    label_record.depth.fixed_orientation_centre = Some(centre);
+    let items = [
+        (label.clone(), label_record),
+        (level.clone(), mesh_record(2, &level, green, Space::World)),
+    ];
+    let drawn = stream_of(view.clone(), &items, &[1, 2])
+        .render(W, H, 1)
+        .unwrap();
+    let reversed = stream_of(view.clone(), &items, &[2, 1])
+        .render(W, H, 1)
+        .unwrap();
+    assert_eq!(drawn.rgba, reversed.rgba, "depth decides, not draw order");
+
+    // The oracle: the label's corners moved by its centre's projection, unrotated, at the
+    // centre's depth key everywhere.
+    let Camera::ThreeD(c) = &view.camera else {
+        unreachable!()
+    };
+    let projection = Projection::new(c, view.frame_center);
+    let moved = projection.project(centre);
+    let key = -projection.factor(moved[2]);
+    let map = FrameMap::cairo(W, H, view.frame_width, view.frame_height, view.frame_center);
+    let shown = label_corners.map(|p| {
+        map.apply([
+            p[0] + moved[0] - centre[0],
+            p[1] + moved[1] - centre[1],
+            0.0,
+        ])
+    });
+    let label_projected = Projected {
+        triangles: [[0, 1, 2], [0, 2, 3]]
+            .iter()
+            .map(|t: &[usize; 3]| (t.map(|i| shown[i]), [key; 3]))
+            .collect(),
+    };
+    let meshes = [
+        (label_projected, premultiply(white)),
+        (project_mesh(&view, W, H, &level), premultiply(green)),
+    ];
+    let mut fronts = [0, 0];
+    for y in 0..H {
+        for x in 0..W {
+            let (xf, yf) = (x as f64, y as f64);
+            let points = grid_points(xf - 0.05, yf - 0.05, xf + 1.05, yf + 1.05, 24);
+            let at: Vec<Option<usize>> = points.iter().map(|p| front_at(&meshes, *p)).collect();
+            for m in 0..2 {
+                if at.iter().all(|f| *f == Some(m)) {
+                    fronts[m] += 1;
+                    assert_eq!(px(&drawn.rgba, x, y), meshes[m].1, "pixel {x},{y}");
+                }
+            }
+        }
+    }
+    // The label is in front somewhere and behind the surface somewhere.
+    let label_area = area(&shown) as usize;
+    let label_front = fronts[0];
+    assert!(label_front > 100, "label in front at {label_front} pixels");
+    assert!(
+        label_front + 100 < label_area,
+        "label in front at {label_front} of its {label_area} pixels"
+    );
+    assert!(fronts[1] > 1000, "surface in front at {} pixels", fronts[1]);
 }

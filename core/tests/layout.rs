@@ -360,6 +360,24 @@ fn a_moving_view_with_an_image_and_another_light_model() {
 }
 
 #[test]
+fn a_view_in_soft_diffuse_light_is_light_model_1_with_its_two_parameters() {
+    let view = View {
+        light: LightModel::SoftDiffuse {
+            ambient: 0.25,
+            wrap: 0.5,
+        },
+        ..flat_view()
+    };
+    let mut fields = flat_view_fields()[..10].to_vec();
+    fields.extend([
+        (91, "light model (soft diffuse)", u8(1)),
+        (92, "light parameter count", u32(2)),
+        (96, "light parameters: ambient, wrap", f64s(&[0.25, 0.5])),
+    ]);
+    view_both_ways(&view, &fields);
+}
+
+#[test]
 fn a_three_d_view_lays_out_every_camera_value() {
     let view = View {
         camera: Camera::ThreeD(ThreeDCamera {

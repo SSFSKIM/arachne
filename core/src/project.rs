@@ -112,8 +112,16 @@ impl Projection {
         let r = &self.rotation;
         let row = |k: usize| q[0] * r[k][0] + q[1] * r[k][1] + q[2] * r[k][2];
         let (x, y, z) = (row(0), row(1), row(2));
+        let scale = self.factor(z) * self.zoom;
+        [x * scale, y * scale, z]
+    }
+
+    /// The perspective factor `project` scales a point by at a projected depth `z` (before zoom),
+    /// as `ThreeDCamera.project_points` takes it. The rasterizer's depth key is this, negated, so
+    /// position and depth come from one formula.
+    pub fn factor(&self, z: f64) -> f64 {
         let d = self.focal_distance;
-        let factor = if self.exponential {
+        if self.exponential {
             if z < 0.0 {
                 d / (d - z)
             } else {
@@ -123,9 +131,7 @@ impl Projection {
             1e6
         } else {
             d / (d - z)
-        };
-        let scale = factor * self.zoom;
-        [x * scale, y * scale, z]
+        }
     }
 }
 

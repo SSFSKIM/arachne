@@ -4,20 +4,11 @@
 //! A tile's pixels are a function of its own fragments only, and nothing is summed across tiles
 //! but integer counts, so the frame's bytes are the same whichever thread drew which tile.
 
-use crate::composite::{Frame, OpaquePass, Producer, Rect, ResolveCounts, Resolved};
+use crate::composite::{Frame, OpaquePass, Producer, Rect, Rendered, ResolveCounts};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// A tile's side in pixels.
 pub const TILE: u32 = 64;
-
-/// A drawn frame: its bytes, each pixel's resolve (a [`crate::composite::Resolve`] code, row by
-/// row) and the count of pixels per resolve.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Rendered {
-    pub rgba: Vec<u8>,
-    pub resolves: Vec<u8>,
-    pub counts: ResolveCounts,
-}
 
 /// Tiles across a frame `width` pixels wide.
 pub fn tiles_across(width: u32) -> u32 {
@@ -44,7 +35,7 @@ fn tile_rects(width: u32, height: u32) -> Vec<Rect> {
     rects
 }
 
-fn draw_tile(rect: Rect, frame: &Frame, producers: &[&dyn Producer]) -> Resolved {
+fn draw_tile(rect: Rect, frame: &Frame, producers: &[&dyn Producer]) -> Rendered {
     let mut opaque = OpaquePass::new(rect, producers);
     for (i, p) in producers.iter().enumerate() {
         opaque.source = i as u16;
