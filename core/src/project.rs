@@ -16,7 +16,7 @@
 //! it is the same on every machine. NumPy multiplies through BLAS and takes sin, cos and exp from
 //! the platform, so the results may differ from CE's in the last bits.
 
-use crate::xf::ThreeDCamera;
+use crate::xf::{Space, ThreeDCamera};
 
 /// `arachne.constants.DEGREES`.
 const DEGREES: f64 = std::f64::consts::TAU / 360.0;
@@ -107,13 +107,18 @@ impl Projection {
 
     /// One point through `ThreeDCamera.project_points`.
     pub fn project(&self, p: [f64; 3]) -> [f64; 3] {
+        let [x, y, z] = self.rotated(p);
+        let scale = self.factor(z) * self.zoom;
+        [x * scale, y * scale, z]
+    }
+
+    /// A point about the frame centre, rotated into the camera's axes (before perspective).
+    fn rotated(&self, p: [f64; 3]) -> [f64; 3] {
         let c = self.frame_center;
         let q = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
         let r = &self.rotation;
         let row = |k: usize| q[0] * r[k][0] + q[1] * r[k][1] + q[2] * r[k][2];
-        let (x, y, z) = (row(0), row(1), row(2));
-        let scale = self.factor(z) * self.zoom;
-        [x * scale, y * scale, z]
+        [row(0), row(1), row(2)]
     }
 
     /// The perspective factor `project` scales a point by at a projected depth `z` (before zoom),
@@ -133,6 +138,63 @@ impl Projection {
             d / (d - z)
         }
     }
+
+    /// Whether `factor` is `d / (d - z)` at a world point: in front of the eye, under CE's default
+    /// projection. Only there is the depth key affine across a plane on screen (`key_plane`).
+    pub fn keys_planar_at(&self, p: [f64; 3]) -> bool {
+        !self.exponential && self.focal_distance - self.rotated(p)[2] > 0.0
+    }
+
+    /// The depth key (`-factor`) across a world plane, as a plane on the pixel plane under the
+    /// frame mapping `map`; `None` under the exponential option or where the plane is seen within
+    /// `min_cos` of edge-on (the cosine between its normal and the sight line to `at`, a point on
+    /// it). The caller makes sure every point it keys this way is in front of the eye
+    /// ([`Projection::keys_planar_at`]).
+    ///
+    /// With `q = R (p - centre)`, the plane `n . p = e` is `m . q = k` for `m = R n` and
+    /// `k = e - n . centre`. Under `factor = d / (d - q_z)`, a point projects to
+    /// `X = q_x f zoom`, `Y = q_y f zoom` with `q_z = d - d / f`, so on the plane
+    /// `f = (m_x X / zoom + m_y Y / zoom - m_z d) / (k - m_z d)`: affine in `X` and `Y`, and so in
+    /// pixels. The same plane always gives the same numbers, so things on one plane tie exactly.
+    pub fn key_plane(
+        &self,
+        plane: &crate::depth::WorldPlane,
+        map: &FrameMap,
+        at: [f64; 3],
+        min_cos: f64,
+    ) -> Option<crate::composite::Plane> {
+        if self.exponential || self.zoom == 0.0 {
+            return None;
+        }
+        let (n, c, r, d) = (
+            plane.normal,
+            self.frame_center,
+            &self.rotation,
+            self.focal_distance,
+        );
+        let m = [0, 1, 2].map(|i| r[i][0] * n[0] + r[i][1] * n[1] + r[i][2] * n[2]);
+        let k = plane.offset - (n[0] * c[0] + n[1] * c[1] + n[2] * c[2]);
+        let denominator = k - m[2] * d;
+        let q = self.rotated(at);
+        let sight = [q[0], q[1], q[2] - d];
+        let sight_len = (sight[0] * sight[0] + sight[1] * sight[1] + sight[2] * sight[2]).sqrt();
+        let m_len = (m[0] * m[0] + m[1] * m[1] + m[2] * m[2]).sqrt();
+        let cos = denominator.abs() / (m_len * sight_len);
+        if cos.is_nan() || cos < min_cos || denominator == 0.0 {
+            return None;
+        }
+        let gx = m[0] / (self.zoom * map.xx);
+        let gy = m[1] / (self.zoom * map.yy);
+        let plane = crate::composite::Plane {
+            a: -(-gx * map.x0 - gy * map.y0 - m[2] * d) / denominator,
+            b: -gx / denominator,
+            c: -gy / denominator,
+        };
+        [plane.a, plane.b, plane.c]
+            .iter()
+            .all(|v| v.is_finite())
+            .then_some(plane)
+    }
 }
 
 /// How a mobject's points are placed before display.
@@ -147,6 +209,29 @@ pub enum Placement {
     /// Fixed orientation (`add_fixed_orientation_mobjects`) about this centre: points move by the
     /// centre's projection offset.
     FixedOrientation([f64; 3]),
+}
+
+/// How a record in `space` is placed for display under a camera whose projection, if it is a 3D
+/// camera, is `projection`; and the depth key every point of it shares, when they share one (a
+/// fixed orientation's centre, or in front of all depth: overlay records under a 3D camera, and
+/// everything under a flat one, where records tie and paint in draw order). Projected points take
+/// each their own key (`-factor`).
+pub fn placement(
+    projection: Option<&Projection>,
+    space: Space,
+    fixed_orientation_centre: Option<[f64; 3]>,
+) -> (Placement, Option<f64>) {
+    match (projection, space) {
+        (Some(p), Space::World) => match fixed_orientation_centre {
+            Some(centre) => (
+                Placement::FixedOrientation(centre),
+                Some(-p.factor(p.project(centre)[2])),
+            ),
+            None => (Placement::Projected, None),
+        },
+        (Some(_), Space::Overlay) => (Placement::FixedInFrame, Some(f64::NEG_INFINITY)),
+        _ => (Placement::Flat, Some(f64::NEG_INFINITY)),
+    }
 }
 
 /// `transform_points_pre_display`. A 3D placement needs the projection.

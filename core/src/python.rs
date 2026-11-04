@@ -830,10 +830,28 @@ fn write_xf(path: PathBuf, deltas: &Bound<'_, PyList>) -> PyResult<()> {
     Ok(())
 }
 
+/// The class probes' streams, the parity kit's fixtures: `(name, width, height, deltas)` each,
+/// built in code (`parity/probes.rs`), never stored.
+#[pyfunction]
+fn probe_fixtures() -> Vec<(&'static str, u32, u32, Vec<PyFrameDelta>)> {
+    crate::probes::all()
+        .into_iter()
+        .map(|p| {
+            let deltas = p.deltas.into_iter().map(PyFrameDelta::wrap).collect();
+            (p.name, p.width, p.height, deltas)
+        })
+        .collect()
+}
+
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("XF_VERSION", XF_VERSION)?;
     m.add("RESOLVES", ("background", "fast", "coverage", "sample"))?;
+    m.add(
+        "COVERAGE_TO_SAMPLE_LSB",
+        crate::composite::COVERAGE_TO_SAMPLE_LSB,
+    )?;
+    m.add_function(wrap_pyfunction!(probe_fixtures, m)?)?;
     m.add_class::<PyFrameDelta>()?;
     m.add_class::<PyStream>()?;
     m.add_class::<PyApplyStats>()?;

@@ -37,6 +37,23 @@ pub const IDENTITY: Affine = [
     [0.0, 0.0, 1.0, 0.0],
 ];
 
+/// A point through a placement.
+pub fn place(m: &Affine, p: [f64; 3]) -> [f64; 3] {
+    std::array::from_fn(|i| m[i][0] * p[0] + m[i][1] * p[1] + m[i][2] * p[2] + m[i][3])
+}
+
+/// The placement `outer` applied after `inner`.
+pub fn compose(outer: &Affine, inner: &Affine) -> Affine {
+    std::array::from_fn(|i| {
+        let mut row = [0.0; 4];
+        for (j, v) in row.iter_mut().enumerate() {
+            *v = outer[i][0] * inner[0][j] + outer[i][1] * inner[1][j] + outer[i][2] * inner[2][j];
+        }
+        row[3] += outer[i][3];
+        row
+    })
+}
+
 /// The kind codes of shapes and paint tables. They lead the canonical bytes a key hashes, so a
 /// shape and a paint table never share a key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

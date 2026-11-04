@@ -65,6 +65,16 @@ Cairo 1.18 wrote (`core/tests/data/gen_blend.py`). Also from specifications: the
 61966-2-1), and Direct3D's standard 16-sample pattern, moved half a cell so its centroid is the pixel's centre
 (`core/src/composite.rs`).
 
+The path rasterizer's coverage (`core/src/scanline.rs`) accumulates each edge's signed area into the cells it crosses
+and prefix-sums them along the row, the analytic method font rasterizers use (among them
+[font-rs](https://github.com/raphlinus/font-rs), by Raph Levien), written from its published description, not from
+code; it cuts rows at crossings and accumulates only the edges where the nonzero
+winding changes, so self-overlapping outlines stay exact. The planes of flat paths (`core/src/depth.rs`) use Newell's
+method for a polygon's normal (M. E. Newell, as given in Sutherland, Sproull and Schumacker, "A Characterization of
+Ten Hidden-Surface Algorithms", 1974). CE's subpath split and close rules are reimplemented from CE 0.20.1
+(`VMobject.get_subpath_split_indices_from_points`, `consider_points_equals_2d`), under CE's MIT licence like the rest of
+this fork.
+
 ## Dependencies of the core
 
 The core (`core/`, the crate `arachne-core` and its Python binding) is built with these Rust crates, under their own
@@ -73,6 +83,8 @@ licences, none of them GPL:
 | Crate | Licence | Used for |
 |---|---|---|
 | `libm` | MIT | transcendental functions in pure Rust |
+| `kurbo` | Apache-2.0 OR MIT | stroking, dashing and flattening paths (built without `std`, on `libm`) |
+| `polycool`, `arrayvec`, `smallvec` | MIT OR Apache-2.0 | through `kurbo` |
 | `pyo3`, `pyo3-ffi`, `pyo3-macros`, `pyo3-macros-backend`, `pyo3-build-config` | MIT OR Apache-2.0 | the Python binding |
 | `numpy` (rust-numpy) | BSD-2-Clause | NumPy arrays in the binding |
 | `ndarray` | MIT OR Apache-2.0 | through `numpy` |

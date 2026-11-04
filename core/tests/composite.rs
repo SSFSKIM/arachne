@@ -494,7 +494,10 @@ fn a_meshs_opaque_depth_is_its_plane_at_each_sub_sample() {
             positions,
             triangles,
             normals: None,
+            place: IDENTITY,
+            fill: [0.5, 0.5, 0.5, 1.0],
             order: 0,
+            sub: 0,
         }],
     );
     let fog = Fog::new(-1e9, 0.0, [1.0; 3], 1);
