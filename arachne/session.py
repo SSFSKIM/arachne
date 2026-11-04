@@ -29,7 +29,7 @@ from .timeline.recorder import Recorder
 from .timeline.routes import draw
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterable
     from types import ModuleType
 
     from PIL import Image
@@ -70,6 +70,7 @@ class Session:
         on_step: Callable[[Scene, Fraction], object] | None = None,
         on_tick: Callable[[Scene, Fraction, bool], object] | None = None,
         on_start: Callable[[Scene, Fraction], object] | None = None,
+        instants: Iterable[Fraction | float] = (),
     ) -> Session:
         """Execute the scene class named ``scene`` from ``file`` and record it.
 
@@ -82,9 +83,12 @@ class Session:
         ``False`` runs every tick of a ticked play in full, and
         ``"brute_force"`` is the verification mode of
         :mod:`.timeline.reference`; ``on_step``,
-        ``on_tick`` and ``on_start`` are ``Recorder``'s diagnostic hooks. ``config`` overrides the
-        configuration the scene is executed under; nothing is written either
-        way.
+        ``on_tick`` and ``on_start`` are ``Recorder``'s diagnostic hooks.
+        ``instants`` are extra instants the trusted and state-function plays
+        are evaluated and recorded at, between frames (``Recorder``'s): the
+        forward evaluation a restore there is compared with. ``config``
+        overrides the configuration the scene is executed under; nothing is
+        written either way.
         """
         path = Path(file).resolve()
         base_dir = str(path.parent)
@@ -115,6 +119,7 @@ class Session:
                         on_step=on_step,
                         on_tick=on_tick,
                         on_start=on_start,
+                        instants=instants,
                     )
                     instance.render()
                 except BaseException:
@@ -129,7 +134,9 @@ class Session:
         return cls(instance, record, module)
 
     def state_at(self, t: Fraction | float) -> State:
-        """The scene at ``t``, from the record."""
+        """The scene at ``t``, from the record: restored there when a
+        state-function play holds ``t`` and the record did not sample it.
+        """
         return self.record.state_at(t)
 
     def frame(self, t: Fraction | float, quality: str | None = None) -> Image.Image:
@@ -137,10 +144,10 @@ class Session:
         at ``quality`` (a key of :data:`~arachne.constants.QUALITIES`) when
         given, else at the pixel size the scene was executed with.
 
-        Raises :class:`~arachne.timeline.routes.Unavailable` at an instant a
-        state-function play was not sampled at, and
-        :class:`~arachne.timeline.routes.RecordRefused` for a scene whose
-        camera the record can't draw.
+        A state-function play is restored at an instant it was not sampled
+        at; raises :class:`~arachne.timeline.restore.Unrestorable` where it
+        can't be, and :class:`~arachne.timeline.routes.RecordRefused` for a
+        scene whose camera the record can't draw.
         """
         self._use_quality(quality)
         record = self.record
