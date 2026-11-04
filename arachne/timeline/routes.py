@@ -12,14 +12,17 @@ route a play takes is decided when it begins (:mod:`.admission`).
   instant (answer ``"analytic"``).
 - ``"state"`` (route 2): the play is sampled at the instants its consumer
   reads (a render's frame grid; a session's 60 Hz tick) and at its events;
-  an unsampled instant is :class:`Unavailable` until the planned restore work lands.
+  at any other instant it is restored from its latest kept capture before
+  the instant and evaluated there (answer ``"restored"``, :mod:`.restore`).
 - ``"ticked"`` (route 3): the play steps on the global 60 Hz tick, its events
   taken at the first tick at or after their instants, and an instant reads
-  the last tick at or before it. Sound by construction: a sample is the
-  forward run's own state. A tick that no frame of the record's grid reads,
-  no event falls on and that does not end the play only steps: its dt-free
-  callbacks run at the frames, as CE runs them, unless stepping work may
-  read them (:mod:`.ticking`).
+  the last capture the record kept at or before it: the frame a render
+  shows there (answer ``"recorded"``, the state naming the instant it
+  reflects). Sound by construction: a sample is the forward run's own
+  state. A tick that no frame of the record's grid reads, no event falls on
+  and that does not end the play only steps: its dt-free callbacks run at
+  the frames, as CE runs them, unless stepping work may read them
+  (:mod:`.ticking`), and the record keeps none of them.
 
 At an instant a frame of the record's grid reads (:meth:`.Recorder.reads`),
 a route evaluates the play through the scene's ``update_to_time``, as CE
@@ -48,7 +51,7 @@ __all__ = [
 
 from collections.abc import Callable
 from fractions import Fraction
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
 import numpy as np
 
@@ -70,7 +73,8 @@ if TYPE_CHECKING:
 
 class Unavailable(LookupError):
     """The record can't answer this instant: a state-function play (route 2)
-    was not sampled there, and restoring it is not built yet (planned restore work).
+    was not sampled there and can't be restored there
+    (:class:`.restore.Unrestorable`).
     """
 
 
@@ -182,8 +186,8 @@ def _events_at_end(run: PlayRun, plan: EventPlan) -> None:
 
 
 class _SampledRoute:
-    """Evaluate a play at its start, its event instants and the instants its
-    consumer reads, and keep every one.
+    """Evaluate a play at its start, its event instants, the instants its
+    consumer reads and those the recorder was asked for, and keep every one.
     """
 
     name = ""
@@ -202,9 +206,11 @@ class _SampledRoute:
         if _held(run):
             return
         start, end = run.start, run.requested_end
+        asked = run.recorder.instants
         instants = sorted(
             {start, *plan.instants(start, end)}
             | {t for t in self.consumer_instants(run) if start <= t < end}
+            | {t for t in asked if start <= t < end}
         )
         progress = run.progress(instants)
         previous = start
@@ -343,48 +349,68 @@ def _evaluator(
     return evaluate
 
 
-def _resolve(
-    record: Record, t: Fraction
-) -> tuple[PlayRecord | None, Capture, Callable[[Drawing], None] | None, str]:
-    """The play holding ``t``, the capture to show, what brings it to ``t``
-    (``None`` when the capture is the instant's own) and the answer's kind.
+class _Resolved(NamedTuple):
+    """How the record answers an instant: the play holding it, the capture
+    to show, what brings that capture to the instant (``None`` when the
+    capture is the instant's own state), the answer's kind and the instant
+    whose state the answer is.
     """
+
+    play: PlayRecord | None
+    capture: Capture
+    prepare: Callable[[Drawing], None] | None
+    kind: str
+    as_of: Fraction
+
+
+def _resolve(record: Record, t: Fraction) -> _Resolved:
+    """How the record answers ``t``, by the route of the play holding it."""
     if record.refusal is not None:
         raise RecordRefused(record.refusal)
     play = record.play_at(t)
     if play is None:
         _, capture = record.capture_at(t)
-        return None, capture, None, "recorded"
-    if play.held or play.route == "ticked":
-        return play, play.capture_at(t), None, "recorded"
+        return _Resolved(None, capture, None, "recorded", t)
+    if play.held:
+        return _Resolved(play, play.capture_at(t), None, "recorded", t)
+    if play.route == "ticked":
+        # The last capture kept at or before t: the frame a render shows at
+        # t. A stepping tick after it is no state a frame reads, and the
+        # record keeps none.
+        capture = play.base_at(t)
+        holds = capture.until is None or t < capture.until
+        return _Resolved(
+            play, capture, None, "recorded", t if holds else capture.instant
+        )
     if play.route == "state":
         sample = play.sample_at(t)
-        if sample is None:
-            raise Unavailable(
-                f"Play {play.index} is a state-function play (route 2) the record did"
-                f" not sample at {t}; answering it there needs restore, which is"
-                " planned work."
-            )
-        return play, sample, None, "recorded"
+        if sample is not None:
+            return _Resolved(play, sample, None, "recorded", t)
+        from .restore import restorer
+
+        base, prepare = restorer(record, play, t)
+        return _Resolved(play, base, prepare, "restored", t)
     base = play.base_at(t)
     if base.instant == t:
-        return play, base, None, "recorded"
-    return play, base, _evaluator(play, base, t), "analytic"
+        return _Resolved(play, base, None, "recorded", t)
+    return _Resolved(play, base, _evaluator(play, base, t), "analytic", t)
 
 
 def answer(record: Record, t: Fraction) -> State:
     """The scene's state at ``t``, from the route of the play holding it."""
     from .state import build_state
 
-    play, capture, evaluate, kind = _resolve(record, t)
+    resolved = _resolve(record, t)
+    play = resolved.play
     return build_state(
         record,
         t,
         play,
-        capture,
+        resolved.capture,
         route=play.route if play else None,
-        answer=kind,
-        prepare=evaluate,
+        answer=resolved.kind,
+        as_of=resolved.as_of,
+        prepare=resolved.prepare,
     )
 
 
@@ -395,9 +421,15 @@ def draw(
     static: Callable[[PlayRecord], PixelArray | None],
 ) -> PixelArray:
     """The frame at ``t``, drawn from the record through the route of the play
-    holding it; ``static(play)`` gives the play's static picture.
+    holding it; ``static(play)`` gives the play's static picture. A restored
+    frame reads no static picture kept for its play: it draws the play's
+    static mobjects afresh (:meth:`.Drawing.static`), into the same pixels,
+    so that no picture kept from the record's captures stands in for a state
+    the record never captured.
     """
-    play, capture, evaluate, _ = _resolve(record, t)
+    resolved = _resolve(record, t)
+    play = resolved.play
     if play is None:
         return drawing.final()
-    return drawing.sample(play, capture, static(play), prepare=evaluate)
+    picture = drawing.static(play) if resolved.kind == "restored" else static(play)
+    return drawing.sample(play, resolved.capture, picture, prepare=resolved.prepare)
