@@ -272,3 +272,37 @@ to 1 for both forms.
 `set_record(..., fill_image=key)` sets the optional field and bit 0 together, preserving other
 `features` bits. Passing bit 0 in `features` without `fill_image` raises `XfError`; Python cannot
 construct a disagreement. The package exports `FEATURES = {"background_image": 1}`.
+
+## Python read-back
+
+`FrameDelta.from_bytes(raw).contents()` returns the decoded delta held by the core, not a
+reconstruction from drawing state. Its keys are `version`, `t` (both pairs), `seq`, `view` (a dict
+or `None`), `objects` (a list of `(ref, stable_id, source)` tuples), `upload`, `upload_paints`,
+`release` (key bytes), `set`, `remove` (slots), and `order` (a list or `None`).
+
+- A view dictionary uses `set_view`'s keyword names. `camera` is `flat`, `moving` or `three_d`, with
+  the 3D parameters present only for `three_d`; `background` is an RGBA 4-tuple or image key bytes;
+  `light_model` is always `(code, [parameters])`. Both centres are 3-tuples.
+- Each upload is `(kind_name, key_bytes, data)`: a path's data is float64 `(n, 3)`; a mesh's is a
+  dictionary with `positions` (float64 `(v, 3)`), `triangles` (uint32 `(t, 3)`) and `normals`
+  (float64 `(v, 3)` or `None`); an image's is uint8 `(height, width, 4)`; a reserved or unknown
+  shape's is opaque bytes (`volume`, `field`, or `kind<code>`). Each paint upload is
+  `(key_bytes, float64 (n, 4) array)`. Keys are always 16-byte `bytes` values.
+- Each record is `(kind_name, slot, object, fields)`. For a known kind, `fields` uses
+  `set_record`'s keyword names, including the body's arguments. `features` always contains the
+  full bitset; when `fill_image` is present its bit is already set, and `set_record` accepts it
+  unchanged. Absent optional fields are omitted; paints are `None`, float64 `(1, 4)` or `(2, 4)`
+  arrays, or table key bytes. `paint_b`, when present, is a dictionary of its paint and width
+  arguments. `joint`, `cap` and `space` are names. `place` and clip/blend placements are float64
+  `(3, 4)` arrays, `placements` is float64 `(n, 3, 4)`, `corners` is float64 `(4, 3)`, `uv` is
+  uint32 `(n, 2)`, and `payload` is bytes. `gradient` is a flat 6-tuple; `set_record` accepts it or
+  the two 3-tuples accepted by construction. A sub-frame is `(rank, view_dict, order)`, with its
+  corners, resampling and image opacity alongside it in `fields`. An unknown record kind exposes
+  only `features` and the unread `payload` after its slot/object header, not invented fixed fields.
+- An order entry is `(layer_name, slot, part)`, with `static`, `moving` or `overlay` as the name.
+
+All arrays are independent NumPy copies, including empty arrays with their full dimensions.
+Read-back performs no floating-point arithmetic: every f64 bit, including signed zero, subnormals
+and NaN payloads, survives rebuilding a current-version delta made through Python's construction
+methods byte for byte.
+Opaque uploads and unknown record kinds are readable but have no Python construction method.
