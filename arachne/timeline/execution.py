@@ -161,7 +161,8 @@ class Divergence:
     #: The first play they differ in; ``None`` when they differ only in what
     #: the script left after its last play (the record's final capture). For
     #: a probe's, the play it demoted, by its index in the execution the
-    #: session holds; ``None`` when that execution does not play it.
+    #: session holds; ``None`` when that execution does not play it, or
+    #: plays its line otherwise, so which play it is there is unknown.
     play: int | None
     #: The line of the scene's code that played it.
     source_line: SourceLine | None

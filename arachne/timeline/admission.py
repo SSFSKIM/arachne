@@ -40,7 +40,10 @@ __all__ = [
     "camera_refusal",
     "demote",
     "demoted",
+    "line_plays",
     "play_identities",
+    "play_identity",
+    "whole_line",
 ]
 
 import inspect
@@ -105,48 +108,79 @@ PROBE_DEMOTED = "probe.demoted"
 #: A play as executions of one scene know it: its source line, its kind
 #: (``"play"`` or ``"wait"``) and how many plays of that line came before
 #: it. Its index is not: an execution that plays one play more before it
-#: shifts every index after.
-PlayIdentity = tuple[SourceLine | None, str, int]
+#: shifts every index after. ``(line, None, None)`` stands for every play of
+#: the line (:func:`whole_line`).
+PlayIdentity = tuple[SourceLine | None, str | None, int | None]
+
+
+def play_identity(play: Any, counts: dict[SourceLine | None, int]) -> PlayIdentity:
+    """The :data:`PlayIdentity` of ``play``, given how many plays of each
+    line came before it (``counts``, which it counts on).
+    """
+    count = counts.get(play.source_line, 0)
+    counts[play.source_line] = count + 1
+    return (play.source_line, play.kind, count)
 
 
 def play_identities(plays: Sequence[Any]) -> list[PlayIdentity]:
     """The :data:`PlayIdentity` of each of ``plays`` (a record's, in order)."""
-    seen: dict[SourceLine | None, int] = {}
-    found: list[PlayIdentity] = []
+    counts: dict[SourceLine | None, int] = {}
+    return [play_identity(play, counts) for play in plays]
+
+
+def line_plays(plays: Sequence[Any]) -> dict[SourceLine | None, tuple[str, ...]]:
+    """The kinds of the plays of each line, in order: what tells whether the
+    plays of a line in two executions correspond one to one.
+    """
+    found: dict[SourceLine | None, tuple[str, ...]] = {}
     for play in plays:
-        count = seen.get(play.source_line, 0)
-        seen[play.source_line] = count + 1
-        found.append((play.source_line, play.kind, count))
+        found[play.source_line] = (*found.get(play.source_line, ()), play.kind)
     return found
 
 
+def whole_line(line: SourceLine | None) -> PlayIdentity:
+    """The identity that stands for every play of ``line``."""
+    return (line, None, None)
+
+
 #: The plays the probe demoted, as (source digest, scene class, play
-#: identity): those a session's recording of that scene ticks, for the rest
-#: of the process. A source holds many scenes, so the scene's name is part
-#: of the key; a play is known by its identity, so a demotion ticks the play
-#: it was found in, wherever it falls in another execution, and nothing in
-#: an execution that does not play it.
-DEMOTED: set[tuple[str, str, PlayIdentity]] = set()
+#: identity, the kinds of that line's plays in the execution it was found
+#: in): those a session's recording of that scene ticks, for the rest of the
+#: process. A source holds many scenes, so the scene's name is part of the
+#: key. A play is known by its identity, so a demotion ticks the play it was
+#: found in wherever it falls in another execution; while that execution's
+#: plays of the line are not the same kinds in the same order, which play it
+#: was is unknown, and the session demotes the whole line (``None`` kinds).
+DEMOTED: set[tuple[str, str, PlayIdentity, tuple[str, ...] | None]] = set()
 
 
-def demote(source_digest: str, scene_class: str, identity: PlayIdentity) -> None:
+def demote(
+    source_digest: str,
+    scene_class: str,
+    identity: PlayIdentity,
+    line: tuple[str, ...] | None,
+) -> None:
     """Tick the play ``identity`` of the scene ``scene_class`` of the source
-    ``source_digest`` in every recording a session makes of it from now on.
+    ``source_digest``, found where its line played ``line``, in every
+    recording a session makes of it from now on.
     """
-    DEMOTED.add((source_digest, scene_class, identity))
+    DEMOTED.add((source_digest, scene_class, identity, line))
 
 
-def demoted(source_digest: str | None, scene_class: str) -> frozenset[PlayIdentity]:
+def demoted(
+    source_digest: str | None, scene_class: str
+) -> dict[PlayIdentity, tuple[str, ...] | None]:
     """The plays of the scene ``scene_class`` of the source
-    ``source_digest`` the probe demoted; none for an unknown source.
+    ``source_digest`` the probe demoted, each with its line's plays where it
+    was found; none for an unknown source.
     """
     if source_digest is None:
-        return frozenset()
-    return frozenset(
-        identity
-        for digest, name, identity in DEMOTED
+        return {}
+    return {
+        identity: line
+        for digest, name, identity, line in DEMOTED
         if digest == source_digest and name == scene_class
-    )
+    }
 
 
 def camera_refusal(camera: Any) -> str | None:

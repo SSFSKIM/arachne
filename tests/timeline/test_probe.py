@@ -304,34 +304,37 @@ def _open_growing(tmp_path):
 
 
 def test_executions_that_change_their_plays_stop_the_recording_again(tmp_path):
-    """The second execution plays two plays where the first played one: the
-    session keeps it, with the demotion found applied, reports where the
-    executions differ, and records nothing more.
+    """The second execution plays two plays of the line where the first
+    played one, so which of them the demotion was for is unknown: the
+    session records once more with every play of the line ticked, keeps
+    that, reports where the executions differ, and probes no more.
     """
     admission.DEMOTED.clear()
     session, counter = _open_growing(tmp_path)
     try:
-        assert counter.read_text() == "2"
-        assert [p.route for p in session.record.plays] == ["ticked", "state"]
+        assert counter.read_text() == "3"
+        assert [p.route for p in session.record.plays] == ["ticked"] * 3
         assert not session.probe.settled
         kinds = sorted((d.kind, d.play) for d in session.divergences)
-        assert kinds == [("execution", 1), ("probe", 0)]
+        assert kinds == [("execution", 1), ("probe", None)]
     finally:
         session.close()
         admission.DEMOTED.clear()
 
 
 def test_recording_again_stops_at_its_cap(tmp_path, monkeypatch):
-    """Were a changed schedule not to stop it, the passes stop at one more
-    than the first execution's plays.
+    """Were neither a changed schedule to stop it nor a demotion to tick its
+    play, the passes stop at twice the first execution's plays and one.
     """
     from arachne import session as session_module
+    from arachne.timeline.recorder import Recorder
 
-    monkeypatch.setattr(session_module, "_schedule_change", lambda a, b: None)
+    monkeypatch.setattr(session_module, "_schedule_shift", lambda a, b: None)
+    monkeypatch.setattr(Recorder, "_demoted", lambda self, play: False)
     admission.DEMOTED.clear()
     session, counter = _open_growing(tmp_path)
     try:
-        assert counter.read_text() == "2"
+        assert counter.read_text() == "3"
         assert not session.probe.settled
     finally:
         session.close()
@@ -534,3 +537,90 @@ def test_a_probe_moved_to_another_execution_follows_its_plays():
     assert [(p.play, p.outcome) for p in moved.plays] == [(0, "agreed"), (3, "demoted")]
     assert moved.demoted == (3,)
     assert [d.play for d in moved.divergences] == [None, 3]
+
+
+#: A scene playing one play per role from one line, counting its executions
+#: in a file beside it; a frame hook writes into the play of role "bad".
+#: ``ROLES`` is filled in per test: the roles of the first execution, then
+#: of every later one.
+ROLES = """
+from pathlib import Path
+
+from arachne import Dot, Scene, ValueTracker
+
+FIRST, LATER = {first!r}, {later!r}
+
+
+class Occurrences(Scene):
+    def construct(self):
+        counter = Path(__file__).with_name("counter.txt")
+        count = int(counter.read_text()) if counter.exists() else 0
+        counter.write_text(str(count + 1))
+        self.role = None
+        for role in FIRST if count == 0 else LATER:
+            self.role = role
+            tracker = ValueTracker(0)
+            self.dot = Dot().add_updater(lambda m: m.set_x(tracker.get_value()))
+            self.add(self.dot)
+            self.play(tracker.animate.set_value(2), run_time=0.4)  # @role
+            self.dot.clear_updaters()
+
+    def update_to_time(self, t):
+        super().update_to_time(t)
+        if self.role == "bad":
+            self.dot.set_y(t)
+"""
+
+
+def _open_occurrences(tmp_path, first, later):
+    scene = tmp_path / "occurrences.py"
+    scene.write_text(dedent(ROLES.format(first=first, later=later)))
+    return Session.open(scene, "Occurrences", config={**SMALL, "frame_rate": 15})
+
+
+@pytest.mark.parametrize(
+    ("first", "later"),
+    [
+        (["bad", "clean"], ["clean"]),
+        (["clean", "bad"], ["new", "clean", "bad"]),
+    ],
+    ids=["an earlier occurrence gone", "an earlier occurrence added"],
+)
+def test_a_demotion_at_a_line_whose_occurrences_changed_ticks_the_whole_line(
+    tmp_path, first, later
+):
+    """Which play of the line the demotion was found in is unknown once its
+    plays there change: every play of the line ticks, so the one that keeps
+    history never restores, and the divergence names the line, no play.
+    """
+    admission.DEMOTED.clear()
+    session = _open_occurrences(tmp_path, first, later)
+    try:
+        plays = session.record.plays
+        assert len(plays) == len(later)
+        assert [p.route for p in plays] == ["ticked"] * len(later)
+        assert all(p.admission.reasons[0].startswith("probe.demoted") for p in plays)
+        assert not session.probe.settled
+        (found,) = [d for d in session.divergences if d.kind == "probe"]
+        assert found.play is None
+        assert found.source_line.line == _source_line(ROLES, "role")
+        assert session.probe.demoted == ()
+        assert [d.play for d in session.probe.divergences] == [None]
+    finally:
+        session.close()
+        admission.DEMOTED.clear()
+
+
+def test_a_demotion_at_a_line_whose_occurrences_did_not_change_keeps_its_play(
+    tmp_path,
+):
+    """Another line's plays changing leaves this line's correspondence."""
+    admission.DEMOTED.clear()
+    session = _open_occurrences(tmp_path, ["clean", "bad"], ["clean", "bad"])
+    try:
+        assert [p.route for p in session.record.plays] == ["state", "ticked"]
+        assert session.probe.settled
+        assert session.probe.demoted == (1,)
+    finally:
+        session.close()
+        admission.DEMOTED.clear()
