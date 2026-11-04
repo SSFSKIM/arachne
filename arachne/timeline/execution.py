@@ -397,7 +397,12 @@ def summarize(record: Record) -> ExecutionSummary:
     )
 
 
-def compare(mine: ExecutionSummary, theirs: ExecutionSummary) -> Divergence | None:
+def compare(
+    mine: ExecutionSummary,
+    theirs: ExecutionSummary,
+    *,
+    until: Fraction | None = None,
+) -> Divergence | None:
     """The first play where ``mine`` differs from ``theirs``, an execution
     of the same source, or ``None``. Each play's span, the state it began
     from and the states at every instant both kept are compared, then the
@@ -407,6 +412,12 @@ def compare(mine: ExecutionSummary, theirs: ExecutionSummary) -> Divergence | No
     and for one whose source is unknown (a ``None`` digest: a source file
     gone before its run ended, a scene defined in no file), which is the
     same source as none.
+
+    With ``until``, only what both did up to that instant is compared: the
+    plays that began by then, the instants up to it, a play's end where
+    either reached it, and not where the scripts ended. An execution
+    stopped once past ``until`` (a forward run, :mod:`.fallback`) is so
+    compared with a whole one.
     """
     digests = (mine.identity.source_digest, theirs.identity.source_digest)
     if None in digests:
@@ -420,23 +431,27 @@ def compare(mine: ExecutionSummary, theirs: ExecutionSummary) -> Divergence | No
             f" {digests[0]} and {digests[1]}."
         )
     changed = changed_inputs(mine.identity, theirs.identity)
-    for play, other in zip(mine.plays, theirs.plays, strict=False):
-        reason = _play_difference(mine, play, theirs, other)
+    plays = _begun(mine.plays, until)
+    others = _begun(theirs.plays, until)
+    for play, other in zip(plays, others, strict=False):
+        reason = _play_difference(mine, play, theirs, other, until)
         if reason is not None:
             return Divergence(
                 "execution", play.index, play.source_line, reason, changed
             )
-    if len(mine.plays) != len(theirs.plays):
-        index = min(len(mine.plays), len(theirs.plays))
-        longer = mine.plays if len(mine.plays) > index else theirs.plays
+    if len(plays) != len(others):
+        index = min(len(plays), len(others))
+        longer = plays if len(plays) > index else others
         return Divergence(
             "execution",
             index,
             longer[index].source_line,
-            f"this execution ran {len(mine.plays)} plays, and the other"
-            f" {len(theirs.plays)}",
+            f"this execution ran {len(plays)} plays, and the other {len(others)}"
+            + ("" if until is None else f" by {float(until):g} s"),
             changed,
         )
+    if until is not None:
+        return None
     reason = _end_difference(mine, theirs)
     if reason is not None:
         return Divergence("execution", None, None, reason, changed)
@@ -453,11 +468,21 @@ def changed_inputs(mine: Identity, theirs: Identity) -> tuple[str, ...]:
     )
 
 
+def _begun(
+    plays: tuple[PlaySummary, ...], until: Fraction | None
+) -> tuple[PlaySummary, ...]:
+    """The plays that began by ``until`` (all of them without it)."""
+    if until is None:
+        return plays
+    return tuple(play for play in plays if play.start <= until)
+
+
 def _play_difference(
     mine: ExecutionSummary,
     play: PlaySummary,
     theirs: ExecutionSummary,
     other: PlaySummary,
+    until: Fraction | None = None,
 ) -> str | None:
     if play.start != other.start:
         return (
@@ -469,12 +494,12 @@ def _play_difference(
         return f"it began from another state: {why}"
     for t, state in play.instants.items():
         shared = other.instants.get(t)
-        if shared is None:
+        if shared is None or (until is not None and t > until):
             continue
         why = _state_difference(mine, state, theirs, shared)
         if why is not None:
             return f"at {float(t):g} s, {why}"
-    if play.end != other.end:
+    if play.end != other.end and (until is None or min(play.end, other.end) <= until):
         return (
             f"it ended at {float(play.end):g} s, and at {float(other.end):g} s"
             " in the other execution"

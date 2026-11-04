@@ -76,6 +76,25 @@ class _Origins:
             self._ordinals.clear()
             self._ordinals.update(ordinals)
 
+    @contextmanager
+    def kept(self) -> Iterator[None]:
+        """Whatever the block does to the table (another execution starts
+        and stops tagging), afterwards it holds what it held before: the
+        switch, the base directory, every origin of an object still alive,
+        and the numbering.
+        """
+        saved = (self.active, self.base_dir, dict(self._entries), dict(self._ordinals))
+        try:
+            yield
+        finally:
+            self.active, self.base_dir, entries, ordinals = saved
+            self._entries.clear()
+            self._entries.update(
+                (key, entry) for key, entry in entries.items() if entry[0]() is not None
+            )
+            self._ordinals.clear()
+            self._ordinals.update(ordinals)
+
     def tag(self, obj: object) -> None:
         """Give ``obj`` the origin of the scene code now creating it."""
         line = scene_location(sys._getframe(2), self.base_dir)
