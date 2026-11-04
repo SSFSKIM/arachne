@@ -147,11 +147,7 @@ class PlayRun:
             return None
         structure = current_structure(self.scene, play._animations)
         if structure != plan.structure:
-            plan = plan_ticks(
-                self.scene,
-                list(play._animations),
-                _base_dir(self.recorder.ensure_record()),
-            )
+            plan = plan_ticks(self.scene, list(play._animations))
             if plan.unbounded is not None:
                 self._unbounded(plan.unbounded, tick)
                 return None
@@ -176,9 +172,7 @@ class PlayRun:
         if not self.plans:
             return
         play = self.play
-        plan = plan_ticks(
-            self.scene, list(play._animations), _base_dir(recorder.ensure_record())
-        )
+        plan = plan_ticks(self.scene, list(play._animations))
         self._set_plan(plan, self.start)
         if plan.unbounded is not None and recorder.stepping:
             assert play.admission is not None

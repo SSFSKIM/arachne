@@ -140,24 +140,6 @@ lifted.
   - which plays are ungoverned (`admission._update_replaced`,
     `dispatch.user_overrides`, the camera's displays).
 
-## The diagnostic analysis (`arachne/timeline/ticking.py`, `handed.py`, `coverage.py`)
-
-- **The analysis of what callbacks reach and write is kept for diagnostics
-  only, and carries what only the stepping plan it once fed used.** A
-  comparison of two runs asks it (`TickPlan.stepping_families` and the
-  plan's `skipped`, `known` and `stepping`, each worked out the first time
-  it is asked from the scene and animations the plan holds weakly, and
-  `reach`); nothing that plans or runs a
-  play consults it, which
-  `tests/timeline/test_brute_force.py::test_stepping_never_enters_the_analysis`
-  holds by patching it to raise. Inside it, the tracking of which code may
-  change the structure (`_Effect.restructures`, `unknown`, `_RESTRUCTURERS`)
-  is computed and read by nothing, and `_Writes.plan_reads_hold` now only
-  widens the families to every member when the analysis read a value of a
-  mutable kind. Taking the structure tracking out means rewriting `_Writes`
-  and `_Reach` throughout; worth it if the analysis is kept long, or moot
-  if it is removed with its last diagnostic consumer.
-
 ## Hooks (`arachne/timeline/recorder.py`)
 
 - **`on_tick` and `on_step` must only observe, and nothing enforces it.**
@@ -168,23 +150,6 @@ lifted.
   digest of the scene at every tick; their one consumer is an instrument
   that only reads. `on_start` is safe: the play's ticks begin from whatever
   it left.
-
-## Queries over the table (`arachne/timeline/coverage.py`)
-
-- **`proven_pure` and `result_kept` answer from code, and miss.** Filters
-  for precision only, with no use in the analysis. `proven_pure`
-  answers `True` for a function reading an attribute of what an argument
-  holds (unpacked, iterated, aliased: `n = m; n.shift(1)`), a closure's name
-  another function rebinds (`nonlocal`), a global another module may
-  rebind, and NumPy's input and output (`np.save`, `np.load`); on a cached
-  function's `__wrapped__` it reads the cache's own decorator.
-  `result_kept` answers `None` for an array a comparison makes
-  (`np.array(t) > 0`) and a list a comprehension takes out of a result,
-  each changed in place. It is conservative elsewhere: a helper returning
-  `np.array(...).reshape(-1, 2)` is reported as letting its result out.
-  Reproducers, strict expected failures:
-  `tests/timeline/test_coverage.py::test_what_a_function_reads_beyond_its_arguments_is_not_pure`,
-  `::test_a_result_changed_through_what_holds_it_is_kept`.
 
 ## Content keys (`arachne/timeline/record.py`)
 
