@@ -28,6 +28,7 @@ from arachne import (
     FadeIn,
     ImageMobject,
     LineJointType,
+    MappingCamera,
     MovingCameraScene,
     PMobject,
     Polygon,
@@ -264,6 +265,86 @@ class Watched(ThreeDScene):
         self.play(tracker.animate.set_value(1), run_time=0.4)
         self.wait(0.2)
 
+
+# Drawn as the scene runs: a user override of a method the camera reads
+# refuses the record, and the frames are drawn live.
+
+
+class WideStroke(Square):
+    """A square whose stroke width is the user's."""
+
+    def get_stroke_width(self, background=False):
+        return 3.0 if background else 9.0
+
+
+class CountedFill(Square):
+    """A square whose fill changes with every read of it: drawn as often as
+    CE draws it, it ends where CE's ends.
+    """
+
+    calls = 0
+
+    def get_fill_rgbas(self):
+        type(self).calls += 1
+        rgbas = np.array(super().get_fill_rgbas())
+        rgbas[:, 0] = (type(self).calls % 9) / 9
+        return rgbas
+
+
+class LiveOverride(Scene):
+    """A user override of a draw method."""
+
+    def construct(self):
+        square = WideStroke(color=BLUE)
+        self.add(square)
+        self.play(square.animate.shift(RIGHT), run_time=0.4)
+
+
+class LiveCounted(Scene):
+    """An override whose colour depends on how often it is called."""
+
+    def construct(self):
+        CountedFill.calls = 0
+        square = CountedFill(fill_opacity=0.8)
+        self.add(square, Circle(color=RED).shift(LEFT * 2))
+        self.play(square.animate.shift(UP), run_time=0.4)
+        self.wait(0.2)
+
+
+class LiveMapped(Scene):
+    """A MappingCamera: point clouds drawn where its mapping puts them."""
+
+    def __init__(self, **kwargs):
+        super().__init__(camera_class=MappingCamera, **kwargs)
+        self.renderer.camera.mapping_func = lambda p: p + np.array(
+            [0.5 * np.sin(p[1]), 0.0, 0.0]
+        )
+
+    def construct(self):
+        cloud = PMobject(stroke_width=3)
+        rng = np.random.default_rng(1)
+        cloud.add_points(rng.uniform(-2, 2, size=(120, 3)) * [1, 1, 0], color=YELLOW)
+        self.add(cloud, Dot(LEFT * 3, radius=0.3))
+        self.play(cloud.animate.shift(RIGHT), run_time=0.4)
+        self.wait(0.2)
+
+
+class SplitAlone(Square):
+    """A square that says its path has no subpaths, though it has points."""
+
+    def get_subpath_split_indices_from_points(self, points, n_dims=3):
+        return np.zeros((0, 2), dtype=int)
+
+
+class LiveUnstated(Scene):
+    """A read the record would answer otherwise than the mobject does."""
+
+    def construct(self):
+        self.add(SplitAlone(color=GREEN))
+        self.wait(0.2)
+
+
+LIVE_SCENES = [LiveOverride, LiveCounted, LiveMapped]
 
 SCENES = [
     Shapes2D,

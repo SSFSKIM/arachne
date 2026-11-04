@@ -354,6 +354,25 @@ class CairoDrawer:
             for i in range(count)
         ]
 
+    def proxy_of(
+        self,
+        record: Record,
+        shapes: dict[bytes, Any],
+        paints: dict[bytes, Any],
+    ) -> Any:
+        """The proxy the camera would read ``record`` through, its keys
+        found among ``shapes`` and ``paints``.
+        """
+        state = StreamState()
+        state.shapes = shapes
+        state.paints = paints
+        held = self._state
+        self._state = state
+        try:
+            return self._make(-1, record)
+        finally:
+            self._state = held
+
     # Drawing
 
     def capture(
