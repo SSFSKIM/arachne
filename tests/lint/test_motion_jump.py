@@ -245,19 +245,31 @@ def test_a_body_that_joins_late_and_jumps_is_found(jumps_of):
     assert jump.detail["distance"] == pytest.approx(3.0, abs=1e-6)
 
 
-@pytest.mark.parametrize("strip", ["all", "one"])
+def test_an_armed_session_is_measured_from_its_own_record(session_of):
+    session = session_of("ArmedTeleport", MOTION, frame_rate=15)
+    assert set(session.record.exits) == {0, 1}
+    (found,) = lint(session, rules=(motion_jump,)).findings
+    assert session.forward_runs == []
+    assert found.detail["distance"] == pytest.approx(4.0, abs=1e-6)
+
+
+@pytest.mark.parametrize("strip", ["unarmed", "all", "one"])
 def test_a_record_without_its_exits_is_read_from_a_forward_run(session_of, strip):
-    """A record that keeps no state of a play's end, or not of every play's,
-    is never measured another way: the lint's forward run keeps them.
+    """A record that keeps no state of a play's end, or not of every play's
+    (a scene that never armed the rule, or armed it late), is never measured
+    another way: the lint's forward run keeps them.
     """
-    drawn = session_of("Teleport", MOTION, frame_rate=15)
-    (expected,) = lint(drawn, rules=(motion_jump,)).findings
-    assert drawn.forward_runs == []
-    session = session_of("Teleport", MOTION, frame_rate=15)
-    if strip == "all":
-        session.record.exits = None
+    armed = session_of("ArmedTeleport", MOTION, frame_rate=15)
+    (expected,) = lint(armed, rules=(motion_jump,)).findings
+    if strip == "unarmed":
+        session = session_of("Teleport", MOTION, frame_rate=15)
+        assert session.record.exits is None
     else:
-        del session.record.exits[0]
+        session = session_of("ArmedTeleport", MOTION, frame_rate=15)
+        if strip == "all":
+            session.record.exits = None
+        else:
+            del session.record.exits[0]
     (found,) = lint(session, rules=(motion_jump,)).findings
     assert len(session.forward_runs) == 1
     assert dict(found.detail) == dict(expected.detail)
