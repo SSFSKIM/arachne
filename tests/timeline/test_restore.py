@@ -70,10 +70,12 @@ def _assert_restored_equals_forward(session, oracle, t) -> None:
 
 
 def _restore_against_forward(session_of, path, name, fps) -> tuple:
-    session = session_of(name, path, frame_rate=fps)
+    # The restore itself is under test, so no probe demotes the play first
+    # (a frame hook writing what its frames show is demoted, test_probe.py).
+    session = session_of(name, path, frame_rate=fps, probe=False)
     instants = [t for play in _state_plays(session) for t in _unsampled(play)]
     assert instants
-    oracle = session_of(name, path, frame_rate=fps, instants=instants)
+    oracle = session_of(name, path, frame_rate=fps, instants=instants, probe=False)
     for t in instants:
         _assert_restored_equals_forward(session, oracle, t)
     return session, oracle, instants
@@ -193,7 +195,8 @@ def test_a_frame_hooks_writes_are_restored_from_the_latest_capture(session_of):
     """The hook counts frames; between two frames a forward run shows the
     count of the frames so far, which the play's start capture does not hold.
     """
-    session = session_of("FrameCounter", RESTORE_SCENES, frame_rate=15)
+    # Unprobed: the probe demotes the play (test_probe.py).
+    session = session_of("FrameCounter", RESTORE_SCENES, frame_rate=15, probe=False)
     (play,) = session.record.plays
     assert play.route == "state"
     assert play.frame_hooks == ("update_to_time",)
@@ -266,9 +269,12 @@ def test_extra_instants_are_non_frame_evaluations_of_trusted_and_state_plays(
     session_of,
 ):
     """A ticked play evaluates none; the frame hook runs at the frames only."""
-    plain = session_of("FrameCounter", RESTORE_SCENES, frame_rate=15)
+    # Unprobed: the probe demotes the play (test_probe.py).
+    plain = session_of("FrameCounter", RESTORE_SCENES, frame_rate=15, probe=False)
     extra = [Fraction(1, 7), Fraction(3, 7)]
-    asked = session_of("FrameCounter", RESTORE_SCENES, frame_rate=15, instants=extra)
+    asked = session_of(
+        "FrameCounter", RESTORE_SCENES, frame_rate=15, instants=extra, probe=False
+    )
     (play,) = asked.record.plays
     assert all(play.sample_at(t) is not None for t in extra)
     assert asked.scene.count.number == plain.scene.count.number
@@ -426,7 +432,8 @@ def test_a_binding_changed_in_place_during_the_play_is_unrestorable(session_of):
     """The hook changes the list at frames and the scene puts it back after
     the play: what the list holds now is no evidence of what it held there.
     """
-    session = session_of("HookMutates", RESTORE_SCENES, frame_rate=15)
+    # Unprobed: the probe sees the hook's change and demotes the play.
+    session = session_of("HookMutates", RESTORE_SCENES, frame_rate=15, probe=False)
     (play,) = session.record.plays
     assert play.route == "state"
     with pytest.raises(Unrestorable) as raised:
