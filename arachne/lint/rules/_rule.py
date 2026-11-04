@@ -57,7 +57,10 @@ class InstantRule:
     before it), or at every lint instant when ``at`` is ``None``. Findings
     about the same objects with the same code at consecutive instants it
     checks are one finding, from the first of them to the last. ``line`` is
-    the scene line its findings name: where the scene asked for it.
+    the scene line its findings name: where the scene asked for it. At each
+    instant its terms are those the scene declared by then
+    (:meth:`.LintContext.terms_at`): the declared ``pad`` and ``text_gap``
+    in place of its own, the declared exemptions beside its own.
     """
 
     check: Check
@@ -90,7 +93,9 @@ class InstantRule:
         runs: dict[tuple[Any, ...], list[Any]] = {}
         done: list[Finding] = []
         for step, parts in enumerate(chosen):
-            for finding in self.check(parts, self.terms):
+            # The terms the scene declared by then hold beside the rule's own.
+            terms = context.terms_at(parts.t, self.terms)
+            for finding in self.check(parts, terms):
                 if self.line is not None:
                     finding = replace(finding, line=self.line)
                 key = (finding.code, tuple(o.id for o in finding.objects))

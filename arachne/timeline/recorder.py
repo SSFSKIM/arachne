@@ -99,15 +99,19 @@ class BridgeCall:
     record keeps it.
 
     ``kind`` is ``"record"`` (a check at one instant), ``"watch"`` (a check
-    at every kept capture from the call on) or ``"declare"`` (terms for the
-    lint's rules). ``t`` is the scene time of the call and ``play`` the play
-    it belongs to: the one running, or between plays the next to begin (one
-    past the last after it). ``line`` is the call site, the scene file's
-    line. ``operands`` are the points as values and the mobjects by stable
-    id (a watched function has none: its values are its readings);
-    ``reference`` the reference mobject's stable id. ``readings`` are the
-    call's evaluations in time order: one for a record, one at the call and
-    then one per kept capture for a watch.
+    at every kept capture from the call on), ``"clear"`` (a watch stopped:
+    its operand is the watch's index among the calls), ``"sweep"`` and
+    ``"apart"`` (checks of the scene as it stands at the call),
+    ``"declare"`` (terms for the lint's rules) or ``"arm"`` (terms, and the
+    checks made over time asked for). ``t`` is the scene time of the call
+    and ``play`` the play it belongs to: the one running, or between plays
+    the next to begin (one past the last after it). ``line`` is the call
+    site, the scene file's line. ``operands`` are the points as values and
+    the mobjects by stable id (a watched function has none: its values are
+    its readings); ``reference`` the reference mobject's stable id.
+    ``readings`` are the call's evaluations in time order: one for a
+    record, a sweep or an apart (its findings), one at the call and then one
+    per kept capture for a watch.
     """
 
     kind: str
@@ -171,16 +175,9 @@ class Bridge:
         """Whether a watch is read at the kept captures."""
         return bool(self._readers)
 
-    def terms_at(self, t: Fraction | float) -> dict[str, Any]:
-        """The terms declared at or before ``t``, a later declaration of a
-        term replacing an earlier one.
-        """
-        at = exact(t)
-        terms: dict[str, Any] = {}
-        for call in self.calls:
-            if call.kind == "declare" and call.t <= at:
-                terms.update(call.terms)
-        return terms
+    def stop(self, call: BridgeCall) -> None:
+        """Read the watch ``call`` at no capture from now on."""
+        self._readers = [(kept, r) for kept, r in self._readers if kept is not call]
 
     def read(
         self, t: Fraction, line: SourceLine | None, until: Fraction | None = None
