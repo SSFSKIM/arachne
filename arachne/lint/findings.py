@@ -9,8 +9,10 @@ report gives it: found by the hold watch, on screen at least a second.
 
 :func:`fold` folds look-alikes: more than three findings in a row of one
 code about the same kinds of objects in the same groups, or unnamed (a
-label on each of five planets) keep the first, which carries the rest. The idea is
-ManimGX's report, credited in ``NOTICE.md``.
+label on each of five planets) keep the first, which carries the rest; a
+code the table marks as never folding (each finding an event at its own
+time) keeps every one. The idea is ManimGX's report, credited in
+``NOTICE.md``.
 """
 
 from __future__ import annotations
@@ -135,7 +137,7 @@ def fold(findings: Iterable[Finding], similar: int = SIMILAR) -> list[Finding]:
     """
     runs: list[list[Finding]] = []
     for finding in findings:
-        if runs and _alike(runs[-1][-1], finding):
+        if runs and CODES[finding.code].folds and _alike(runs[-1][-1], finding):
             runs[-1].append(finding)
         else:
             runs.append([finding])
