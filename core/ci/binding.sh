@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Builds the core's wheel (one abi3 wheel for CPython 3.12+), checks the extension links no GPU
-# library, and runs the binding's tests under each Python version given (default 3.14).
+# library, and runs the binding's tests and the parity kit under each Python version given (default
+# 3.14).
 set -euo pipefail
 source "$(dirname "$0")/toolchain.sh"
 command -v uv >/dev/null || pipx install uv==0.12.3
@@ -17,4 +18,5 @@ for version in "${@:-3.14}"; do
   uv venv --quiet --python "$version" "$work/venv-$version"
   VIRTUAL_ENV="$work/venv-$version" uv pip install --quiet "$wheel" pytest
   "$work/venv-$version/bin/python" -m pytest -q
+  "$work/venv-$version/bin/python" -m arachne_core.parity --backend cpu
 done

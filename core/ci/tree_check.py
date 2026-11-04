@@ -2,8 +2,9 @@
 
 ``tree_check.py deps``
     Fails if the core's dependency tree (every kind, every target, every feature) holds a GPU crate,
-    or if kurbo is built with its ``std`` feature, which routes its float functions to the
-    platform's libm instead of the pure-Rust one.
+    if kurbo (the path rasterizer's stroker) is missing from it, or if kurbo or polycool is built
+    with its ``std`` feature, which routes its float functions to the platform's libm instead of
+    the pure-Rust one.
 
 ``tree_check.py links <extension>``
     Fails if the built extension links a GPU library. Prints what it links.
@@ -53,25 +54,35 @@ def check_deps() -> list[str]:
     print(f"deps: {len(crates)} crates: {' '.join(crates)}")
     problems = [f"a GPU crate in the tree: {c}" for c in crates if GPU_CRATES.match(c)]
 
-    features = cargo(
-        "tree",
-        "--locked",
-        "--all-features",
-        "--target",
-        "all",
-        "-e",
-        "features",
-        "-i",
-        "kurbo",
-    )
-    if features.returncode != 0:
-        if "did not match any packages" not in features.stderr:
-            sys.exit(f"cargo tree -i kurbo failed:\n{features.stderr}")
-        print("deps: kurbo is not in the tree")
-    elif 'kurbo feature "std"' in features.stdout:
-        problems.append("kurbo is built with its std feature (the platform's libm)")
-    else:
-        print("deps: kurbo is built without std")
+    # kurbo, and polycool (its cubic root finder), take their float functions from the platform's
+    # libm when built with std.
+    for crate, required in (("kurbo", True), ("polycool", False)):
+        features = cargo(
+            "tree",
+            "--locked",
+            "--all-features",
+            "--target",
+            "all",
+            "-e",
+            "features",
+            "-i",
+            crate,
+        )
+        if features.returncode != 0:
+            if "did not match any packages" not in features.stderr:
+                sys.exit(f"cargo tree -i {crate} failed:\n{features.stderr}")
+            if required:
+                problems.append(f"{crate} is not in the tree")
+        elif not features.stdout.startswith(f"{crate} v"):
+            sys.exit(
+                f"cargo tree -i {crate} printed what this check does not read:\n{features.stdout}"
+            )
+        elif f'{crate} feature "std"' in features.stdout:
+            problems.append(
+                f"{crate} is built with its std feature (the platform's libm)"
+            )
+        else:
+            print(f"deps: {crate} is built without std")
     return problems
 
 

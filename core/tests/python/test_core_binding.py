@@ -84,6 +84,31 @@ def test_a_record_this_build_cannot_draw_refuses_the_whole_frame():
     assert (err.kind, err.slot, err.object) == ("path", 3, 33)
     assert err.code == "render.unsupported"
     assert "render.unsupported" in str(err)
+    assert "gradient" in err.reason
+
+
+def test_a_path_draws_its_fill_and_stroke():
+    width, height = 64, 36
+    stream = ac.Stream()
+    delta = background_delta(width, height, (0, 0, 0, 1))
+    key = delta.upload_path(square(1.0))
+    delta.set_record(
+        "path",
+        1,
+        11,
+        shape=key,
+        fill=(1, 0, 0, 1),
+        stroke=(0, 0, 1, 1),
+        stroke_width=8.0,
+    )
+    delta.set_order([("moving", 1, 0)])
+    stream.apply(delta)
+    rgba, resolves = stream.draw_resolves(width, height)
+    assert (rgba[height // 2, width // 2] == [255, 0, 0, 255]).all()
+    # The square's left side, at x = -1, under its stroke 8 x 0.01 frame units wide.
+    side = int((-1.0 + FRAME["frame_width"] / 2) * width / FRAME["frame_width"])
+    assert rgba[height // 2, side, 2] > 0
+    assert (resolves == ac.RESOLVES.index("coverage")).sum() > 0
 
 
 def test_a_reserved_kind_is_refused_and_nothing_is_drawn():

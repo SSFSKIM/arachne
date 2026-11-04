@@ -8,9 +8,11 @@
 //! - Depth: in world space under a 3D camera, the projection's factor, negated, which is affine
 //!   across a projected triangle (for CE's default projection; under the exponential option, or
 //!   with a corner at or behind the eye, the plane through the corners approximates it), so a plane
-//!   per triangle is exact at every sub-sample; a fixed orientation record is a camera-facing plane
-//!   at its centre's depth. Anything else is in front of the scene, and ties go by draw order, as
-//!   under a flat camera, where everything ties.
+//!   per triangle is exact at every sub-sample. The plane comes from the triangle's canonical world
+//!   plane (`depth::WorldPlane`), so coplanar triangles of any triangulation, and paths on their
+//!   plane, get bit-identical depth and tie by draw order. A fixed orientation record is a
+//!   camera-facing plane at its centre's depth. Anything else is in front of the scene, and ties go
+//!   by draw order, as under a flat camera, where everything ties.
 //! - Colour: the fill, by the record's group opacity; lit when the record is `shade_in_3d` and the
 //!   3D camera applies shading, as `shade` lights a triangle's corners and interpolates them.
 //! - Coverage: corners snapped to [`SUBPIXEL`] units, sub-samples tested against exact integer edge
@@ -23,7 +25,8 @@ use crate::composite::{
     Coverage, FULL, Fragment, OpaquePass, Plane, Producer, Rect, SAMPLES, SUBPIXEL,
     TransparentPass, premultiply, sample_fixed,
 };
-use crate::project::{FrameMap, Placement, Projection, pre_display};
+use crate::depth::WorldPlane;
+use crate::project::{FrameMap, Projection, placement, pre_display};
 use crate::shade::{Light, TriangleColour};
 use crate::tiles::{TILE, tile_index, tiles_across};
 use crate::xf::*;
@@ -31,14 +34,23 @@ use crate::xf::*;
 /// How far outside the frame, in pixels, a triangle may reach before it is clipped.
 const GUARD: f64 = 65536.0;
 
-/// One mesh record to draw, with its shape's arrays and its place in the draw order.
+/// One mesh to draw: a shape's arrays through a placement, filled with one colour (straight RGBA,
+/// before the record's group opacity), with the record's depth and light, at its place in the draw
+/// order. Its triangles take the sub-orders from `sub` on.
 pub struct MeshDraw<'a> {
     pub record: &'a Record,
     pub positions: &'a [[f64; 3]],
     pub triangles: &'a [[u32; 3]],
     pub normals: Option<&'a [[f64; 3]]>,
+    pub place: Affine,
+    pub fill: [f64; 4],
     pub order: u32,
+    pub sub: u32,
 }
+
+/// A mesh triangle seen within this cosine of edge-on takes the plane through its corners' keys
+/// instead of its canonical plane (it covers almost nothing; this keeps its plane's numbers tame).
+const MIN_PLANE_COS: f64 = 1e-9;
 
 /// A triangle on the pixel plane, ready to rasterize.
 #[derive(Clone, Debug)]
@@ -53,6 +65,9 @@ struct Tri {
     opaque: bool,
     order: u32,
     sub: u32,
+    /// Which mesh drawn it belongs to (from 1), so the compositor can merge one surface's
+    /// fragments that tile a pixel.
+    surface: u32,
 }
 
 /// Mesh records lowered to triangles, binned by tile: a producer of mask fragments.
@@ -60,10 +75,6 @@ pub struct Meshes {
     tris: Vec<Tri>,
     bins: Vec<Vec<u32>>,
     width: u32,
-}
-
-fn transform(m: &Affine, p: [f64; 3]) -> [f64; 3] {
-    std::array::from_fn(|i| m[i][0] * p[0] + m[i][1] * p[1] + m[i][2] * p[2] + m[i][3])
 }
 
 /// A normal through a placement: by the cofactors of its linear part, normalized.
@@ -101,33 +112,22 @@ pub fn lower(view: &View, width: u32, height: u32, draws: &[MeshDraw<'_>]) -> Me
         bins: vec![Vec::new(); (tiles_across(width) * height.div_ceil(TILE)) as usize],
         width,
     };
-    for draw in draws {
+    for (surface, draw) in draws.iter().enumerate() {
         let rec = draw.record;
-        let Paint::One(fill) = rec.paint.fill else {
-            continue; // No fill: nothing to draw (other paints are refused before drawing).
-        };
+        let fill = draw.fill;
         let world: Vec<[f64; 3]> = draw
             .positions
             .iter()
-            .map(|p| transform(&rec.geometry.place_a, *p))
+            .map(|p| place(&draw.place, *p))
             .collect();
         if world.iter().flatten().any(|v| !v.is_finite()) {
             continue; // CE draws such a mobject as one point: nothing.
         }
-        let (placement, keyed) = match (camera, rec.depth.space) {
-            (Some(_), Space::World) => match rec.depth.fixed_orientation_centre {
-                Some(centre) => {
-                    let p = projection.as_ref().unwrap();
-                    (
-                        Placement::FixedOrientation(centre),
-                        Some(-p.factor(p.project(centre)[2])),
-                    )
-                }
-                None => (Placement::Projected, None),
-            },
-            (Some(_), Space::Overlay) => (Placement::FixedInFrame, Some(f64::NEG_INFINITY)),
-            _ => (Placement::Flat, Some(f64::NEG_INFINITY)),
-        };
+        let (placement, keyed) = placement(
+            projection.as_ref(),
+            rec.depth.space,
+            rec.depth.fixed_orientation_centre,
+        );
         let shown = pre_display(&world, projection.as_ref(), placement);
         let corners: Vec<([f64; 2], f64)> = shown
             .iter()
@@ -149,15 +149,25 @@ pub fn lower(view: &View, width: u32, height: u32, draws: &[MeshDraw<'_>]) -> Me
         };
         let normals: Option<Vec<[f64; 3]>> = draw.normals.map(|ns| {
             ns.iter()
-                .map(|n| transform_normal(&rec.geometry.place_a, *n))
+                .map(|n| transform_normal(&draw.place, *n))
                 .collect()
         });
         let opaque = premultiply([0.0, 0.0, 0.0, alpha])[3] == 255;
         for (sub, t) in draw.triangles.iter().enumerate() {
             let idx = t.map(|i| i as usize);
             let px = idx.map(|i| corners[i].0);
-            let depth =
-                Plane::through(idx.map(|i| [corners[i].0[0], corners[i].0[1], corners[i].1]));
+            let through =
+                || Plane::through(idx.map(|i| [corners[i].0[0], corners[i].0[1], corners[i].1]));
+            // A projected triangle lies on its world plane, made canonical so coplanar meshes of
+            // any triangulation (and paths on the same plane) get the same depth plane.
+            let depth = match (keyed, projection.as_ref()) {
+                (None, Some(p)) if idx.iter().all(|i| p.keys_planar_at(world[*i])) => {
+                    WorldPlane::of_triangle(idx.map(|i| world[i]))
+                        .and_then(|plane| p.key_plane(&plane, &map, world[idx[0]], MIN_PLANE_COS))
+                        .unwrap_or_else(through)
+                }
+                _ => through(),
+            };
             let colour = match &light {
                 None => TriangleColour::flat(rgb, alpha),
                 Some(light) => light.triangle(
@@ -168,7 +178,17 @@ pub fn lower(view: &View, width: u32, height: u32, draws: &[MeshDraw<'_>]) -> Me
                     px,
                 ),
             };
-            meshes.push(px, depth, colour, opaque, draw.order, sub as u32, height);
+            let tri = Tri {
+                edges: [[0; 4]; 3],
+                bbox: [0; 4],
+                depth,
+                colour,
+                opaque,
+                order: draw.order,
+                sub: draw.sub + sub as u32,
+                surface: surface as u32 + 1,
+            };
+            meshes.push(px, tri, height);
         }
     }
     meshes
@@ -227,17 +247,9 @@ fn snap(p: [f64; 2]) -> [i64; 2] {
 }
 
 impl Meshes {
-    #[allow(clippy::too_many_arguments)]
-    fn push(
-        &mut self,
-        px: [[f64; 2]; 3],
-        depth: Plane,
-        colour: TriangleColour,
-        opaque: bool,
-        order: u32,
-        sub: u32,
-        height: u32,
-    ) {
+    /// Adds the triangle at `px` on the pixel plane, with `tri`'s depth, colour and place (its
+    /// edges and box are computed here).
+    fn push(&mut self, px: [[f64; 2]; 3], tri: Tri, height: u32) {
         if px.iter().flatten().any(|v| !v.is_finite()) {
             return;
         }
@@ -291,11 +303,7 @@ impl Meshes {
             self.tris.push(Tri {
                 edges,
                 bbox,
-                depth,
-                colour,
-                opaque,
-                order,
-                sub,
+                ..tri.clone()
             });
             for ty in bbox[1] / TILE..=(bbox[3] - 1) / TILE {
                 for tx in bbox[0] / TILE..=(bbox[2] - 1) / TILE {
@@ -343,7 +351,8 @@ impl Meshes {
                     add(
                         x,
                         y,
-                        Fragment::new(t.depth, colour, Coverage::Mask(mask), t.order, t.sub),
+                        Fragment::new(t.depth, colour, Coverage::Mask(mask), t.order, t.sub)
+                            .on_surface(t.surface),
                     );
                 }
             }

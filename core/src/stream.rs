@@ -4,8 +4,8 @@
 
 use crate::composite::{self, Frame, Rendered};
 use crate::mesh::{self, MeshDraw};
-use crate::tiles;
 use crate::xf::*;
+use crate::{instance, path, tiles};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
@@ -481,9 +481,10 @@ impl Stream {
     /// Draws the frame, and reports how each pixel was resolved.
     ///
     /// This build draws the background (the view's colour, or its image cropped as CE crops it)
-    /// and `mesh` records. It refuses, whole, any frame whose order draws what it cannot: the
-    /// other record kinds until their drawers land, a mesh carrying a field it does not draw yet,
-    /// reserved or unknown kinds, unknown feature bits, and unknown light models.
+    /// and `mesh`, `path`, `points` and `instances` records. It refuses, whole, any frame whose
+    /// order draws what it cannot: `face_group` and `image` records until their drawers land, a
+    /// record carrying a field it does not draw yet, reserved or unknown kinds, unknown feature
+    /// bits, and unknown light models.
     pub fn render(&self, width: u32, height: u32, threads: usize) -> Result<Rendered, DrawError> {
         if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
             return Err(DrawError::Invalid(format!(
@@ -507,7 +508,7 @@ impl Stream {
         if let Some(refused) = self
             .order
             .iter()
-            .find_map(|e| refusal(&self.records[&e.slot]))
+            .find_map(|e| refusal(&self.records[&e.slot], &self.shapes))
         {
             return Err(DrawError::Unsupported(refused));
         }
@@ -530,34 +531,84 @@ impl Stream {
                 })?
             }
         };
-        let mut draws = Vec::new();
+        let (mut meshes, mut paths, mut discs) = (Vec::new(), Vec::new(), Vec::new());
         for (order, e) in self.order.iter().enumerate() {
             let record = &self.records[&e.slot];
-            if record.kind != RecordKind::Mesh {
-                continue;
-            }
-            let Some(ShapeData::Mesh {
-                positions,
-                triangles,
-                normals,
-            }) = record
+            let order = order as u32;
+            let shape = record
                 .geometry
                 .shape_a
                 .and_then(|k| self.shapes.get(&k))
-                .map(|s| &s.data)
-            else {
-                unreachable!("apply checked the mesh record's shape");
-            };
-            draws.push(MeshDraw {
-                record,
-                positions,
-                triangles,
-                normals: normals.as_deref(),
-                order: order as u32,
-            });
+                .map(|s| &s.data);
+            let table = |key: &Key| &self.paints[key];
+            match (record.kind, shape, &record.body) {
+                (
+                    RecordKind::Mesh,
+                    Some(ShapeData::Mesh {
+                        positions,
+                        triangles,
+                        normals,
+                    }),
+                    _,
+                ) => {
+                    if let Some(fill) = instance::one(&record.paint.fill) {
+                        meshes.push(MeshDraw {
+                            record,
+                            positions,
+                            triangles,
+                            normals: normals.as_deref(),
+                            place: record.geometry.place_a,
+                            fill,
+                            order,
+                            sub: 0,
+                        });
+                    }
+                }
+                (RecordKind::Path, Some(ShapeData::Path { points }), _) => {
+                    paths.push(instance::path_record(record, points, order));
+                }
+                (RecordKind::Points, Some(ShapeData::Path { points }), Body::Points(p)) => {
+                    instance::discs(record, points, table(&p.colors), order, &mut discs);
+                }
+                (RecordKind::Instances, Some(shape), Body::Instances(body)) => match shape {
+                    ShapeData::Path { points } => instance::path_members(
+                        record,
+                        points,
+                        body,
+                        table(&body.fill),
+                        table(&body.stroke),
+                        order,
+                        &mut paths,
+                    ),
+                    ShapeData::Mesh {
+                        positions,
+                        triangles,
+                        normals,
+                    } => instance::mesh_members(
+                        record,
+                        positions,
+                        triangles,
+                        normals.as_deref(),
+                        body,
+                        table(&body.fill),
+                        order,
+                        &mut meshes,
+                    ),
+                    _ => unreachable!("apply checked the instances record's shape"),
+                },
+                _ => unreachable!("drawing refused every other record"),
+            }
         }
-        let meshes = mesh::lower(view, width, height, &draws);
-        Ok(tiles::render(frame, &[&meshes], threads))
+        let meshes = mesh::lower(view, width, height, &meshes);
+        let mut lowering = path::Lowering::new(view, width, height);
+        for draw in &paths {
+            lowering.path(draw);
+        }
+        for draw in &discs {
+            lowering.disc(draw);
+        }
+        let paths = lowering.finish();
+        Ok(tiles::render(frame, &[&meshes, &paths], threads))
     }
 
     pub fn view(&self) -> Option<&View> {
@@ -614,34 +665,71 @@ fn check_shape(shape: &Shape) -> Result<(), StreamError> {
     Ok(())
 }
 
-/// What of a mesh record this build does not draw yet, if anything.
-fn mesh_refusal(rec: &Record) -> Option<&'static str> {
+/// What of a drawn record's fixed fields this build does not draw yet, if anything: blends,
+/// reveals, paint blends and clips for every kind; for meshes (and instances of a mesh) strokes,
+/// gradient fills and dashes; for paths (and instances of a path) gradient paints and dashes it
+/// cannot read.
+fn field_refusal(rec: &Record, mesh: bool) -> Option<String> {
+    let kind = rec.kind.name();
     let p = &rec.paint;
-    let strokes = |paint: &Paint, width: f64| !matches!(paint, Paint::None) && width > 0.0;
+    let drawn = |paint: &Paint, width: Option<f64>| {
+        !matches!(paint, Paint::None) && width.is_none_or(|w| w > 0.0)
+    };
+    let gradient = |paint: &Paint| matches!(paint, Paint::Two(_) | Paint::Table(_));
+    let strokes = [
+        (&p.stroke, p.stroke_width),
+        (&p.background_stroke, p.background_stroke_width),
+    ];
+    let not_yet = |what: &str| Some(format!("a {kind}'s {what} is not drawn yet"));
     if rec.geometry.blend.is_some() {
-        Some("a mesh's blend is not drawn yet")
+        not_yet("blend")
     } else if rec.geometry.reveal.is_some() {
-        Some("a mesh's reveal is not drawn yet")
-    } else if strokes(&p.stroke, p.stroke_width)
-        || strokes(&p.background_stroke, p.background_stroke_width)
-    {
-        Some("a mesh's stroke is not drawn yet")
-    } else if matches!(p.fill, Paint::Two(_) | Paint::Table(_)) {
-        Some("a mesh's gradient fill is not drawn yet")
+        not_yet("reveal")
     } else if p.paint_b.is_some() {
-        Some("a mesh's paint blend is not drawn yet")
-    } else if rec.dash.is_some() {
-        Some("a mesh's dash is not drawn yet")
+        not_yet("paint blend")
     } else if rec.clip.is_some() {
-        Some("a mesh's clip is not drawn yet")
+        not_yet("clip")
+    } else if rec.kind == RecordKind::Points {
+        None
+    } else if mesh {
+        if strokes.iter().any(|(paint, w)| drawn(paint, Some(*w))) {
+            not_yet("stroke")
+        } else if gradient(&p.fill) {
+            not_yet("gradient fill")
+        } else if rec.dash.is_some() {
+            not_yet("dash")
+        } else {
+            None
+        }
+    } else if gradient(&p.fill)
+        || strokes
+            .iter()
+            .any(|(paint, w)| drawn(paint, Some(*w)) && gradient(paint))
+    {
+        not_yet("gradient paint")
+    } else if let Some(d) = rec.dash
+        && !(d.period > 0.0
+            && d.period.is_finite()
+            && d.duty > 0.0
+            && d.duty <= 1.0
+            && d.phase.is_finite())
+    {
+        Some(format!(
+            "a {kind}'s dash needs a finite period above 0, a duty in (0, 1] and a finite phase"
+        ))
     } else {
         None
     }
 }
 
-/// Why this build refuses to draw a record, if it does. It draws `mesh` records; the other drawn
-/// kinds wait for their drawers.
-fn refusal(rec: &Record) -> Option<Unsupported> {
+/// Why this build refuses to draw a record, if it does. It draws `mesh`, `path`, `points` and
+/// `instances` records; `face_group` and `image` records wait for their drawers.
+fn refusal(rec: &Record, shapes: &HashMap<Key, Shape>) -> Option<Unsupported> {
+    let prototype = rec
+        .geometry
+        .shape_a
+        .and_then(|k| shapes.get(&k))
+        .map(|s| &s.data);
     let reason = if rec.features & !KNOWN_FEATURES != 0 {
         format!(
             "feature bits {:#x} are not ones this build knows",
@@ -651,8 +739,26 @@ fn refusal(rec: &Record) -> Option<Unsupported> {
         format!("record kind {code} is not one this build knows")
     } else if rec.kind.is_reserved() {
         format!("{} is a reserved kind", rec.kind.name())
-    } else if rec.kind == RecordKind::Mesh {
-        mesh_refusal(rec)?.to_string()
+    } else if matches!(
+        rec.kind,
+        RecordKind::Mesh | RecordKind::Path | RecordKind::Points | RecordKind::Instances
+    ) {
+        let mesh = matches!(prototype, Some(ShapeData::Mesh { .. }));
+        if let Some(reason) = field_refusal(rec, mesh) {
+            reason
+        } else if let (Body::Instances(body), Some(data)) = (&rec.body, prototype) {
+            // Each instance's parts take sub-orders of their own, in 32 bits.
+            let per = match data {
+                ShapeData::Mesh { triangles, .. } => triangles.len(),
+                _ => 3,
+            };
+            if (body.placements.len() as u64) * (per as u64) <= u32::MAX as u64 {
+                return None;
+            }
+            "an instances record of more parts than 2^32".into()
+        } else {
+            return None;
+        }
     } else {
         format!("this build does not draw {} records yet", rec.kind.name())
     };

@@ -1,0 +1,754 @@
+//! The path rasterizer: paths (CE's cubic Bézier outlines, glyphs included) and discs lowered to
+//! coverage layers, and those rasterized into fragments carrying their exact area, with their masks
+//! at the sub-samples on demand.
+//!
+//! - Placement: a path's points through its placement, then as CE places a mobject's points for
+//!   display (`project::pre_display`), as for meshes.
+//! - Outline: CE's subpath rule on the placed points (`VMobject.get_subpath_split_indices_from_points`
+//!   in two dimensions, and a subpath closed when its first and last points are equal by
+//!   `consider_points_equals_2d`), each subpath a move and its cubics, in the frame's units, as CE
+//!   hands them to Cairo.
+//! - Paint, in CE's order: the background stroke, the fill, the stroke, as three layers at one depth
+//!   tying by that order. The fill is nonzero (Cairo's default, which CE never changes); strokes are
+//!   expanded by kurbo in the frame's units, as Cairo strokes in user space: CE's width times the
+//!   view's `cairo_line_width_multiple`, its joint (auto is a miter) and cap (auto is butt), Cairo's
+//!   miter limit of 10, and the record's dash. Each layer is flattened on the pixel plane to Cairo's
+//!   tolerance of 0.1 px, so flattening follows the projected size.
+//! - Depth: a path in world space under a 3D camera lies on its plane when it has one seen clearly
+//!   (`depth::WorldPlane`, made canonical, so text and axes on one plane, and a mesh on it, tie
+//!   exactly); otherwise (a curve in space, a plane seen nearly edge-on) each pixel takes the depth
+//!   of the path's own curve (`depth::Centreline`: the front-most part that reaches the pixel, else
+//!   the nearest). A fixed-orientation path is a camera-facing
+//!   plane at its centre's depth; anything else is in front of the scene, tying by draw order.
+//! - Coverage: each pixel's exact nonzero area (`scanline::cover`); a pixel the compositor resolves
+//!   sample by sample asks for the layer's winding at the sub-samples (`scanline::mask`).
+//!
+//! Discs are the points of a `points` record: one filled circle per point, at the point's place on
+//! the pixel plane, its diameter the thickness CE draws a point with.
+
+use crate::composite::{
+    Coverage, Fragment, OpaquePass, Plane, Producer, Rect, TransparentPass, premultiply,
+};
+use crate::depth::{Centreline, WorldPlane};
+use crate::project::{FrameMap, Projection, placement, pre_display};
+use crate::scanline::{self, Edge, Scratch};
+use crate::tiles::{TILE, tile_index, tiles_across};
+use crate::xf::*;
+use kurbo::{BezPath, ParamCurve as _, PathEl, Point, Shape as _};
+
+/// Cairo's default tolerance for flattening curves, in pixels.
+pub const TOLERANCE: f64 = 0.1;
+
+/// Cairo's default miter limit, which CE never changes (kurbo's default is 4).
+pub const MITER_LIMIT: f64 = 10.0;
+
+/// CE's default `tolerance_for_point_equality`, which XF does not carry.
+const POINT_EQUALITY: f64 = 1e-6;
+
+/// A path seen within this cosine of edge-on (about 3 degrees) takes its depth from its curve, not
+/// from its plane: a stroke's width is on screen, and across it a grazing plane's depth would run
+/// far in front of and behind the curve.
+const MIN_PLANE_COS: f64 = 0.05;
+
+/// How far outside the frame, in pixels, a path may reach before its curves outside the frame are
+/// replaced by their chords.
+const GUARD: f64 = 65536.0;
+
+/// One path to draw: a shape's points through a placement, painted by a record's paint block, with
+/// each paint resolved to one colour (straight RGBA, before the group opacity) or none.
+pub struct PathDraw<'a> {
+    pub record: &'a Record,
+    pub points: &'a [[f64; 3]],
+    pub place: Affine,
+    pub fill: Option<[f64; 4]>,
+    pub stroke: Option<[f64; 4]>,
+    pub background_stroke: Option<[f64; 4]>,
+    pub order: u32,
+    /// The first of the three sub-orders the path's layers take (background stroke, fill, stroke).
+    pub sub: u32,
+}
+
+/// One disc to draw: a point of a `points` record.
+pub struct DiscDraw<'a> {
+    pub record: &'a Record,
+    pub point: [f64; 3],
+    pub colour: [f64; 4],
+    pub order: u32,
+    pub sub: u32,
+}
+
+/// Where a layer's fragments sit in depth.
+#[derive(Clone, Copy, Debug)]
+enum LayerDepth {
+    Plane(Plane),
+    /// The depth along a curve: an index into `Paths::centrelines`.
+    Curve(u32),
+}
+
+/// One coverage layer: a fill, a stroke's outline or a disc, with its colour and place.
+struct Layer {
+    edges: Vec<Edge>,
+    /// The first tile row the layer touches, and per tile row from it, the range of its edges
+    /// (indices into `band_edges`) overlapping that row.
+    band0: u32,
+    bands: Vec<(u32, u32)>,
+    band_edges: Vec<u32>,
+    /// Pixels `x0..x1` by `y0..y1`, inside the frame.
+    bbox: [u32; 4],
+    colour: [u8; 4],
+    depth: LayerDepth,
+    order: u32,
+    sub: u32,
+}
+
+impl Layer {
+    fn candidates(&self, y: u32) -> &[u32] {
+        let band = y / TILE;
+        match band.checked_sub(self.band0) {
+            Some(b) if (b as usize) < self.bands.len() => {
+                let (lo, hi) = self.bands[b as usize];
+                &self.band_edges[lo as usize..hi as usize]
+            }
+            _ => &[],
+        }
+    }
+}
+
+/// A curve's depth, the bounds of its segments widened by how far its pixels may reach from it,
+/// and how far a pixel takes the front-most segment that reaches it.
+struct CurveDepth {
+    line: Centreline,
+    bounds: Vec<[f64; 4]>,
+    reach: f64,
+}
+
+/// Paths and discs lowered to coverage layers, binned by tile: a producer of area fragments.
+pub struct Paths {
+    layers: Vec<Layer>,
+    centrelines: Vec<CurveDepth>,
+    bins: Vec<Vec<u32>>,
+    width: u32,
+}
+
+/// numpy's `isclose(a, b)` with CE's tolerance, for one coordinate.
+fn close(a: f64, b: f64) -> bool {
+    a == b || ((a - b).abs() <= POINT_EQUALITY + 1e-5 * b.abs() && (a - b).is_finite())
+}
+
+/// CE's subpath ranges `start..end` over the placed points, compared in two dimensions.
+fn subpaths(points: &[[f64; 3]]) -> Vec<(usize, usize)> {
+    let n = points.len();
+    if n < 4 {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut start = 0;
+    for b in (4..n).step_by(4) {
+        let (end, next) = (points[b - 1], points[b]);
+        if !(close(end[0], next[0]) && close(end[1], next[1])) {
+            out.push((start, b));
+            start = b;
+        }
+    }
+    out.push((start, n));
+    out
+}
+
+/// The outline CE hands Cairo, in the frame's units: per subpath of four points or more, a move to
+/// its first point, its cubics, and a close when its ends are equal.
+fn outline(shown: &[[f64; 3]]) -> BezPath {
+    let mut path = BezPath::new();
+    let pt = |p: [f64; 3]| Point::new(p[0], p[1]);
+    for (start, end) in subpaths(shown) {
+        if end - start < 4 {
+            continue;
+        }
+        let (a, b) = (shown[start], shown[end - 1]);
+        // `consider_points_equals_2d(first, last)`: tolerance relative to the last point.
+        let closed = close(a[0], b[0]) && close(a[1], b[1]);
+        path.move_to(pt(a));
+        for i in (start..=end - 4).step_by(4) {
+            // A closed subpath ends exactly at its start. Kept, the gap CE's tolerance allows
+            // would add a closing segment of arbitrary direction and joins to it; Cairo, whose
+            // points sit on a 1/256-pixel grid, drops it as degenerate at common sizes.
+            let last = if closed && i + 4 == end {
+                a
+            } else {
+                shown[i + 3]
+            };
+            path.curve_to(pt(shown[i + 1]), pt(shown[i + 2]), pt(last));
+        }
+        if closed {
+            path.close_path();
+        }
+    }
+    path
+}
+
+/// A path through the frame mapping (an affine map of each point).
+fn mapped(path: &BezPath, map: &FrameMap) -> BezPath {
+    let m = |p: Point| {
+        let [x, y] = map.apply([p.x, p.y, 0.0]);
+        Point::new(x, y)
+    };
+    path.elements()
+        .iter()
+        .map(|el| match *el {
+            PathEl::MoveTo(p) => PathEl::MoveTo(m(p)),
+            PathEl::LineTo(p) => PathEl::LineTo(m(p)),
+            PathEl::QuadTo(a, b) => PathEl::QuadTo(m(a), m(b)),
+            PathEl::CurveTo(a, b, c) => PathEl::CurveTo(m(a), m(b), m(c)),
+            PathEl::ClosePath => PathEl::ClosePath,
+        })
+        .collect()
+}
+
+/// A path whose curves outside `area` (`[x0, y0, x1, y1]`) are replaced by their chords. A curve
+/// lies inside its control points' hull, and so does its chord, so where the hull misses the area,
+/// nothing inside it changes; a curve whose hull meets the area but is far larger is split until its
+/// pieces are near the area's size or miss it.
+fn culled(path: &BezPath, area: [f64; 4]) -> BezPath {
+    let size = (area[2] - area[0]).max(area[3] - area[1]);
+    let misses = |pts: &[Point]| {
+        pts.iter().all(|p| p.x < area[0])
+            || pts.iter().all(|p| p.x > area[2])
+            || pts.iter().all(|p| p.y < area[1])
+            || pts.iter().all(|p| p.y > area[3])
+    };
+    fn split(
+        c: kurbo::CubicBez,
+        depth: u32,
+        size: f64,
+        misses: &dyn Fn(&[Point]) -> bool,
+        out: &mut BezPath,
+    ) {
+        let pts = [c.p0, c.p1, c.p2, c.p3];
+        if misses(&pts) {
+            out.line_to(c.p3);
+            return;
+        }
+        let r = c.bounding_box();
+        if depth == 0 || r.width().max(r.height()) <= 64.0 * size {
+            out.curve_to(c.p1, c.p2, c.p3);
+            return;
+        }
+        let (a, b) = c.subdivide();
+        split(a, depth - 1, size, misses, out);
+        split(b, depth - 1, size, misses, out);
+    }
+    let mut out = BezPath::new();
+    let mut last = Point::ZERO;
+    for el in path.elements() {
+        match *el {
+            PathEl::MoveTo(p) => {
+                out.move_to(p);
+                last = p;
+            }
+            PathEl::LineTo(p) => {
+                out.line_to(p);
+                last = p;
+            }
+            PathEl::QuadTo(a, b) => {
+                split(
+                    kurbo::QuadBez::new(last, a, b).raise(),
+                    40,
+                    size,
+                    &misses,
+                    &mut out,
+                );
+                last = b;
+            }
+            PathEl::CurveTo(a, b, c) => {
+                split(
+                    kurbo::CubicBez::new(last, a, b, c),
+                    40,
+                    size,
+                    &misses,
+                    &mut out,
+                );
+                last = c;
+            }
+            PathEl::ClosePath => out.close_path(),
+        }
+    }
+    out
+}
+
+/// A path flattened to closed rings of pixel points.
+fn rings(path: &BezPath) -> Vec<Vec<[f64; 2]>> {
+    let mut rings = Vec::new();
+    let mut ring: Vec<[f64; 2]> = Vec::new();
+    kurbo::flatten(path.elements().iter().copied(), TOLERANCE, |el| match el {
+        PathEl::MoveTo(p) => {
+            if ring.len() > 2 {
+                rings.push(std::mem::take(&mut ring));
+            }
+            ring.clear();
+            ring.push([p.x, p.y]);
+        }
+        PathEl::LineTo(p) => ring.push([p.x, p.y]),
+        PathEl::ClosePath => {
+            if ring.len() > 2 {
+                rings.push(std::mem::take(&mut ring));
+            }
+            ring.clear();
+        }
+        PathEl::QuadTo(..) | PathEl::CurveTo(..) => unreachable!("flatten emits lines"),
+    });
+    if ring.len() > 2 {
+        rings.push(ring);
+    }
+    rings
+}
+
+fn kurbo_join(joint: Joint) -> kurbo::Join {
+    match joint {
+        Joint::Auto | Joint::Miter => kurbo::Join::Miter,
+        Joint::Round => kurbo::Join::Round,
+        Joint::Bevel => kurbo::Join::Bevel,
+    }
+}
+
+fn kurbo_cap(cap: Cap) -> kurbo::Cap {
+    match cap {
+        Cap::Auto | Cap::Butt => kurbo::Cap::Butt,
+        Cap::Round => kurbo::Cap::Round,
+        Cap::Square => kurbo::Cap::Square,
+    }
+}
+
+/// The screen polyline of a path's cubics with the depth key carried along each (the cubic of its
+/// control points' keys, at the same parameter).
+fn curve_depth(shown: &[[f64; 3]], map: &FrameMap, projection: &Projection) -> Centreline {
+    let mut points = Vec::new();
+    let mut breaks = Vec::new();
+    let screen = |p: [f64; 3]| (map.apply(p), -projection.factor(p[2]));
+    for (start, end) in subpaths(shown) {
+        if end - start < 4 {
+            continue;
+        }
+        breaks.push(points.len());
+        points.push(screen(shown[start]));
+        for i in (start..=end - 4).step_by(4) {
+            let c = [i, i + 1, i + 2, i + 3].map(|k| screen(shown[k]));
+            let length: f64 = (0..3)
+                .map(|k| {
+                    let (a, b) = (c[k].0, c[k + 1].0);
+                    ((b[0] - a[0]) * (b[0] - a[0]) + (b[1] - a[1]) * (b[1] - a[1])).sqrt()
+                })
+                .sum();
+            let n = if length.is_finite() {
+                (length / 2.0).ceil().clamp(1.0, 64.0) as usize
+            } else {
+                1
+            };
+            for s in 1..=n {
+                let t = s as f64 / n as f64;
+                let u = 1.0 - t;
+                let w = [u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t];
+                let at = |f: &dyn Fn(usize) -> f64| {
+                    w[0] * f(0) + w[1] * f(1) + w[2] * f(2) + w[3] * f(3)
+                };
+                points.push(([at(&|k| c[k].0[0]), at(&|k| c[k].0[1])], at(&|k| c[k].1)));
+            }
+        }
+    }
+    Centreline::new(&points, &breaks)
+}
+
+/// Lowering state shared by every path and disc of a frame.
+pub struct Lowering<'v> {
+    view: &'v View,
+    map: FrameMap,
+    projection: Option<Projection>,
+    width: u32,
+    height: u32,
+    paths: Paths,
+}
+
+impl<'v> Lowering<'v> {
+    /// Starts lowering for a frame of `width x height` pixels drawn from `view`.
+    pub fn new(view: &'v View, width: u32, height: u32) -> Lowering<'v> {
+        let map = FrameMap::cairo(
+            width,
+            height,
+            view.frame_width,
+            view.frame_height,
+            view.frame_center,
+        );
+        let projection = match &view.camera {
+            Camera::ThreeD(c) => Some(Projection::new(c, view.frame_center)),
+            _ => None,
+        };
+        Lowering {
+            view,
+            map,
+            projection,
+            width,
+            height,
+            paths: Paths {
+                layers: Vec::new(),
+                centrelines: Vec::new(),
+                bins: vec![Vec::new(); (tiles_across(width) * height.div_ceil(TILE)) as usize],
+                width,
+            },
+        }
+    }
+
+    /// Lowers one path into up to three layers.
+    pub fn path(&mut self, draw: &PathDraw<'_>) {
+        let rec = draw.record;
+        let world: Vec<[f64; 3]> = draw.points.iter().map(|p| place(&draw.place, *p)).collect();
+        if world.len() < 4 || world.iter().flatten().any(|v| !v.is_finite()) {
+            return; // CE draws a mobject with a non-finite point as one point: nothing.
+        }
+        let (placement, key) = placement(
+            self.projection.as_ref(),
+            rec.depth.space,
+            rec.depth.fixed_orientation_centre,
+        );
+        let shown = pre_display(&world, self.projection.as_ref(), placement);
+        let user = outline(&shown);
+        if user.elements().is_empty() {
+            return;
+        }
+        let depth = match key {
+            Some(k) => LayerDepth::Plane(Plane::constant(k)),
+            None => {
+                // How far the path's pixels reach from its curve: half the widest stroke and the
+                // pixel's antialiasing beyond it, a miter's length at most (for binning).
+                let width = rec
+                    .paint
+                    .stroke_width
+                    .max(rec.paint.background_stroke_width);
+                let half = width * self.view.cairo_line_width_multiple * self.map.xx.abs() / 2.0;
+                let reach = half + 1.0;
+                let bins = (half * MITER_LIMIT).max(TILE as f64) + 2.0;
+                self.world_depth(&world, &shown, reach, bins)
+            }
+        };
+        let alpha = |c: [f64; 4]| [c[0], c[1], c[2], c[3] * rec.opacity];
+        let scale = self.map.xx.abs().max(self.map.yy.abs());
+        let guard = self.guarded(&user, rec);
+        for (k, paint, width) in [
+            (0, draw.background_stroke, rec.paint.background_stroke_width),
+            (1, draw.fill, 0.0),
+            (2, draw.stroke, rec.paint.stroke_width),
+        ] {
+            let Some(colour) = paint else { continue };
+            let colour = premultiply(alpha(colour));
+            if colour[3] == 0 {
+                continue;
+            }
+            let outline_px = if k == 1 {
+                mapped(&guard, &self.map)
+            } else {
+                let w = width * self.view.cairo_line_width_multiple;
+                if w.is_nan() || w <= 0.0 {
+                    continue;
+                }
+                let mut style = kurbo::Stroke::new(w)
+                    .with_join(kurbo_join(rec.paint.joint))
+                    .with_caps(kurbo_cap(rec.paint.cap))
+                    .with_miter_limit(MITER_LIMIT);
+                if let Some(dash) = rec.dash
+                    && dash.duty < 1.0
+                {
+                    style = style.with_dashes(
+                        dash.phase * dash.period,
+                        [dash.period * dash.duty, dash.period * (1.0 - dash.duty)],
+                    );
+                }
+                let stroked = kurbo::stroke(
+                    guard.elements().iter().copied(),
+                    &style,
+                    &kurbo::StrokeOpts::default(),
+                    TOLERANCE / scale,
+                );
+                mapped(&stroked, &self.map)
+            };
+            self.push(
+                scanline::edges_of(&rings(&outline_px)),
+                colour,
+                depth,
+                draw.order,
+                draw.sub + k,
+            );
+        }
+    }
+
+    /// The outline with its curves outside the frame's guard band replaced by chords, when it
+    /// reaches that far (a stroke's reach beyond its curve kept inside the band).
+    fn guarded(&self, user: &BezPath, rec: &Record) -> BezPath {
+        let m = &self.map;
+        let to_user = |px: f64, py: f64| [(px - m.x0) / m.xx, (py - m.y0) / m.yy];
+        let reach = rec
+            .paint
+            .stroke_width
+            .max(rec.paint.background_stroke_width)
+            * self.view.cairo_line_width_multiple
+            * MITER_LIMIT;
+        let [ax, ay] = to_user(-GUARD, -GUARD);
+        let [bx, by] = to_user(self.width as f64 + GUARD, self.height as f64 + GUARD);
+        let area = [ax.min(bx), ay.min(by), ax.max(bx), ay.max(by)];
+        let inside = user.elements().iter().all(|el| {
+            let pts: &[Point] = match el {
+                PathEl::MoveTo(p) | PathEl::LineTo(p) => std::slice::from_ref(p),
+                PathEl::CurveTo(a, b, c) => &[*a, *b, *c][..],
+                _ => &[],
+            };
+            pts.iter().all(|p| {
+                p.x >= area[0] + reach
+                    && p.x <= area[2] - reach
+                    && p.y >= area[1] + reach
+                    && p.y <= area[3] - reach
+            })
+        });
+        if inside {
+            return user.clone();
+        }
+        let [fx0, fy0] = to_user(0.0, 0.0);
+        let [fx1, fy1] = to_user(self.width as f64, self.height as f64);
+        culled(
+            user,
+            [
+                fx0.min(fx1) - reach - 1.0,
+                fy0.min(fy1) - reach - 1.0,
+                fx0.max(fx1) + reach + 1.0,
+                fy0.max(fy1) + reach + 1.0,
+            ],
+        )
+    }
+
+    /// The depth of a path placed in world space under a 3D camera.
+    fn world_depth(
+        &mut self,
+        world: &[[f64; 3]],
+        shown: &[[f64; 3]],
+        reach: f64,
+        bins: f64,
+    ) -> LayerDepth {
+        let p = self
+            .projection
+            .as_ref()
+            .expect("world depth needs the 3D camera");
+        if world.iter().all(|q| p.keys_planar_at(*q))
+            && let Some(plane) = WorldPlane::of_points(world)
+            && let Some(key) = p.key_plane(&plane, &self.map, world[0], MIN_PLANE_COS)
+        {
+            return LayerDepth::Plane(key);
+        }
+        let line = curve_depth(shown, &self.map, p);
+        if line.is_empty() {
+            return LayerDepth::Plane(Plane::constant(f64::NEG_INFINITY));
+        }
+        let bounds = line.segment_bounds(bins).collect();
+        self.paths.centrelines.push(CurveDepth {
+            line,
+            bounds,
+            reach,
+        });
+        LayerDepth::Curve(self.paths.centrelines.len() as u32 - 1)
+    }
+
+    /// Lowers one disc.
+    pub fn disc(&mut self, draw: &DiscDraw<'_>) {
+        let rec = draw.record;
+        let Body::Points(points) = &rec.body else {
+            unreachable!("a disc is a point of a points record")
+        };
+        // CE draws a point as a square block of `int(thickness)` pixels a side.
+        let diameter = points.radius.trunc();
+        if diameter.is_nan() || diameter < 1.0 {
+            return;
+        }
+        let world = place(&rec.geometry.place_a, draw.point);
+        if world.iter().any(|v| !v.is_finite()) {
+            return;
+        }
+        let (placement, key) = placement(
+            self.projection.as_ref(),
+            rec.depth.space,
+            rec.depth.fixed_orientation_centre,
+        );
+        let shown = pre_display(&[world], self.projection.as_ref(), placement)[0];
+        let v = self.view;
+        let [cx, cy] = crate::project::subpixel_coords(
+            &[shown],
+            self.width,
+            self.height,
+            v.frame_width,
+            v.frame_height,
+            v.frame_center,
+        )[0];
+        let key = key.unwrap_or_else(|| -self.projection.as_ref().unwrap().factor(shown[2]));
+        let colour = premultiply([
+            draw.colour[0],
+            draw.colour[1],
+            draw.colour[2],
+            draw.colour[3] * rec.opacity,
+        ]);
+        if colour[3] == 0 || !(cx.is_finite() && cy.is_finite()) {
+            return;
+        }
+        let circle = kurbo::Circle::new((cx, cy), diameter / 2.0).to_path(TOLERANCE);
+        self.push(
+            scanline::edges_of(&rings(&circle)),
+            colour,
+            LayerDepth::Plane(Plane::constant(key)),
+            draw.order,
+            draw.sub,
+        );
+    }
+
+    fn push(&mut self, edges: Vec<Edge>, colour: [u8; 4], depth: LayerDepth, order: u32, sub: u32) {
+        if edges.is_empty() {
+            return;
+        }
+        let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+        for e in &edges {
+            x0 = x0.min(e.x_min());
+            x1 = x1.max(e.x_max());
+            y0 = y0.min(e.y0);
+            y1 = y1.max(e.y1);
+        }
+        let clamp = |v: f64, limit: u32| v.clamp(0.0, limit as f64) as u32;
+        let bbox = [
+            clamp(x0.floor(), self.width),
+            clamp(y0.floor(), self.height),
+            clamp(x1.ceil() + 1.0, self.width),
+            clamp(y1.ceil(), self.height),
+        ];
+        if bbox[0] >= bbox[2] || bbox[1] >= bbox[3] {
+            return;
+        }
+        let band0 = bbox[1] / TILE;
+        let band_end = (bbox[3] - 1) / TILE;
+        let mut lists: Vec<Vec<u32>> = vec![Vec::new(); (band_end - band0 + 1) as usize];
+        for (i, e) in edges.iter().enumerate() {
+            let first = (e.y0.max(bbox[1] as f64) as u32 / TILE).max(band0);
+            let last = ((e.y1.min(bbox[3] as f64) - 1e-9).max(0.0) as u32 / TILE).min(band_end);
+            for band in first..=last {
+                lists[(band - band0) as usize].push(i as u32);
+            }
+        }
+        let mut bands = Vec::with_capacity(lists.len());
+        let mut band_edges = Vec::new();
+        for list in lists {
+            let start = band_edges.len() as u32;
+            band_edges.extend(list);
+            bands.push((start, band_edges.len() as u32));
+        }
+        let index = self.paths.layers.len() as u32;
+        for ty in band0..=band_end {
+            for tx in bbox[0] / TILE..=(bbox[2] - 1) / TILE {
+                self.paths.bins[tile_index(self.width, tx * TILE, ty * TILE)].push(index);
+            }
+        }
+        self.paths.layers.push(Layer {
+            edges,
+            band0,
+            bands,
+            band_edges,
+            bbox,
+            colour,
+            depth,
+            order,
+            sub,
+        });
+    }
+
+    /// The lowered paths and discs, ready to draw.
+    pub fn finish(self) -> Paths {
+        self.paths
+    }
+}
+
+impl Paths {
+    /// Whether nothing was lowered.
+    pub fn is_empty(&self) -> bool {
+        self.layers.is_empty()
+    }
+
+    fn depth_at(&self, depth: LayerDepth, x: u32, y: u32, near: &mut Vec<u32>) -> Plane {
+        match depth {
+            LayerDepth::Plane(p) => p,
+            LayerDepth::Curve(i) => {
+                let curve = &self.centrelines[i as usize];
+                let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
+                near.clear();
+                near.extend(
+                    curve
+                        .bounds
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, b)| px >= b[0] && px <= b[2] && py >= b[1] && py <= b[3])
+                        .map(|(k, _)| k as u32),
+                );
+                curve.line.plane_at(x, y, near, curve.reach)
+            }
+        }
+    }
+
+    /// Rasterizes the opaque or the other layers of the tile at `rect`.
+    fn raster(&self, rect: Rect, opaque: bool, mut add: impl FnMut(u32, u32, Fragment)) {
+        let mut scratch = Scratch::default();
+        let mut near = Vec::new();
+        for &i in &self.bins[tile_index(self.width, rect.x0, rect.y0)] {
+            let layer = &self.layers[i as usize];
+            if (layer.colour[3] == 255) != opaque {
+                continue;
+            }
+            let area = Rect {
+                x0: rect.x0.max(layer.bbox[0]),
+                y0: rect.y0.max(layer.bbox[1]),
+                x1: rect.x1.min(layer.bbox[2]),
+                y1: rect.y1.min(layer.bbox[3]),
+            };
+            if area.x0 >= area.x1 || area.y0 >= area.y1 {
+                continue;
+            }
+            let candidates = layer.candidates(area.y0);
+            scanline::cover(
+                &layer.edges,
+                candidates,
+                area,
+                &mut scratch,
+                |y, x0, x1, a| {
+                    for x in x0..x1 {
+                        let depth = self.depth_at(layer.depth, x, y, &mut near);
+                        add(
+                            x,
+                            y,
+                            Fragment::new(
+                                depth,
+                                layer.colour,
+                                Coverage::Area {
+                                    area: a as f32,
+                                    id: i,
+                                },
+                                layer.order,
+                                layer.sub,
+                            ),
+                        );
+                    }
+                },
+            );
+        }
+    }
+}
+
+impl Producer for Paths {
+    fn opaque(&self, pass: &mut OpaquePass<'_>) {
+        self.raster(pass.rect(), true, |x, y, f| pass.add(x, y, f));
+    }
+
+    fn transparent(&self, pass: &mut TransparentPass<'_>) {
+        self.raster(pass.rect(), false, |x, y, f| pass.add(x, y, f));
+    }
+
+    fn mask(&self, id: u32, x: u32, y: u32) -> u16 {
+        let layer = &self.layers[id as usize];
+        scanline::mask(&layer.edges, layer.candidates(y), x, y)
+    }
+}

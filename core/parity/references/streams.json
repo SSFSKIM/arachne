@@ -1,0 +1,11 @@
+{
+  "curve_behind_surface": "62f311cc3c9acb007ee2740d2cba33f3f05a9355a16fd4b025b1f76b264fa4e2",
+  "depth_rule_both_ways": "b5388fc8073216d7d5ce89b898b98d5403b68281c22dc38e91eb42ed42430924",
+  "edge_on_surface": "6a922f37b7f02da406fa08ccfc15acde23cc4ab999b4cb2872bbd3a4cae625a6",
+  "fixed_label_over_surface": "3d35c5f9ce2d2889fd5af0d4dc4a49a348e0e4c178562302eb7e664b04062c98",
+  "intersecting_surfaces": "cbc313c21cc311c4a900135fbbf1f9e020d22b7c079d7120f4c78e672dd9b348",
+  "orbit": "fdf907b1b313c45992976d0904abd74eb46991115ef34a61ed668a6148774b9b",
+  "seam": "63002b32fc1aceba2ebc90c9cc5bd9ca0b6d8b172f84d645cc05b8fd8e5d17d0",
+  "stroke_crossing_surface": "3761794f2a995bfaf11383a8e8d84bf23557c72cee7af3ab21a3140fef6d7e54",
+  "translucent_over_opaque": "d67533908eeb130b8c12b3f2ae496972548fc36ba849f58d448470ffaa4f3bb3"
+}

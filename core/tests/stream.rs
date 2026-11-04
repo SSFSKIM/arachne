@@ -1,5 +1,6 @@
-//! The Stream: applying deltas atomically, and drawing what this build draws (the background and
-//! meshes, `tests/mesh.rs`) while refusing every record it cannot draw yet, whole.
+//! The Stream: applying deltas atomically, and drawing what this build draws (the background here;
+//! meshes, `tests/mesh.rs`; paths, points and instances, `tests/path.rs`) while refusing every
+//! record it cannot draw yet, whole.
 
 mod common;
 
@@ -88,8 +89,10 @@ fn drawing_needs_a_view_and_a_size() {
 }
 
 #[test]
-fn every_record_kind_is_refused_whole_until_its_drawer_lands() {
-    // The sample's mesh is refused too: it carries a blend, which this build does not draw.
+fn every_record_this_build_cannot_draw_is_refused_whole() {
+    // Kinds with no drawer yet are refused, and the drawn kinds are refused for what they carry
+    // that this build does not draw: the sample's path a blend, its points a reveal, its mesh a
+    // blend. Its instances record draws.
     let mut s = Stream::new();
     let deltas = common::sample_deltas();
     s.apply(&deltas[0]).unwrap();
@@ -123,15 +126,19 @@ fn every_record_kind_is_refused_whole_until_its_drawer_lands() {
         }]);
         s.apply(&d).unwrap();
         match s.draw(64, 36, 1) {
-            Err(DrawError::Unsupported(u)) => {
+            Ok(_) if kind == "instances" => {}
+            Err(DrawError::Unsupported(u)) if kind != "instances" => {
                 assert_eq!(u.kind, kind);
                 assert_eq!(u.slot, Some(slot));
                 assert_eq!(u.object, Some(100 + slot));
-                if kind == "mesh" {
-                    assert!(u.reason.contains("blend"), "{}", u.reason);
-                }
+                let carried = match kind {
+                    "path" | "mesh" => "blend",
+                    "points" => "reveal",
+                    _ => "",
+                };
+                assert!(u.reason.contains(carried), "slot {slot}: {}", u.reason);
             }
-            other => panic!("slot {slot}: {other:?}"),
+            other => panic!("slot {slot}: {:?}", other.map(|f| f.len())),
         }
     }
 }
