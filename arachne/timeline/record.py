@@ -42,7 +42,7 @@ from .source import SourceLine
 
 if TYPE_CHECKING:
     from arachne.animation.animation import Animation
-    from arachne.frame_ir.extract import Blend
+    from arachne.frame_ir.extract import Term
     from arachne.mobject.mobject import Mobject
     from arachne.scene.scene import Scene
 
@@ -299,17 +299,20 @@ class PlayRecord:
             for capture in self.samples
         )
 
-    def leaf_terms(self, t: Fraction) -> dict[Mobject, Blend]:
-        """The leaves whose state at ``t`` a straight-path blend states: for a
-        trusted play of the transform family on a straight path, each leaf
-        the animation interpolates, with its start and end mobjects and its
-        own alpha at ``t`` (the play's alpha through the animation's rate
-        function and lag). Empty for another play, and at an instant whose
-        animations the record did not keep. The blend is what the forward run
-        computed there only if the leaf holds it; a drawer checks that.
+    def leaf_terms(self, t: Fraction) -> dict[Mobject, Term]:
+        """The leaves whose state at ``t`` a term of their animation states,
+        for a trusted play: of the transform family on a straight path, each
+        leaf the animation interpolates, with its start and end mobjects and
+        its own alpha at ``t`` (the play's alpha through the animation's rate
+        function and lag), a blend; of a partial reveal (``Create``), each
+        leaf with its start and its window at that alpha, a reveal. Empty for
+        another play, and at an instant whose animations the record did not
+        keep. A term is what the forward run computed there only if the leaf
+        holds it; a drawer checks that.
         """
+        from arachne.animation.creation import ShowPartial
         from arachne.animation.transform import Transform
-        from arachne.frame_ir.extract import Blend
+        from arachne.frame_ir.extract import Blend, Reveal
         from arachne.utils.bezier import interpolate
 
         from .frozen import engine_class
@@ -322,15 +325,16 @@ class PlayRecord:
             id(animation): state
             for animation, state in self._animation_states.get(base.seq, ())
         }
-        found: dict[Mobject, Blend] = {}
+        found: dict[Mobject, Term] = {}
         for animation in self._animations:
             state = states.get(id(animation))
-            if (
-                state is None
-                or not engine_class(type(animation))
-                or not isinstance(animation, Transform)
-                or state.get("_path_func") is not interpolate
-            ):
+            if state is None or not engine_class(type(animation)):
+                continue
+            blends = (
+                isinstance(animation, Transform)
+                and state.get("_path_func") is interpolate
+            )
+            if not blends and not isinstance(animation, ShowPartial):
                 continue
             saved = dict(vars(animation))
             try:
@@ -338,10 +342,13 @@ class PlayRecord:
                 vars(animation).update(state)
                 alpha = _alpha(t - self.start, animation.run_time)
                 families = list(animation.get_all_families_zipped())
-                for index, (leaf, start, end) in enumerate(families):
-                    found[leaf] = Blend(
-                        start, end, animation.get_sub_alpha(alpha, index, len(families))
-                    )
+                for index, (leaf, start, *end) in enumerate(families):
+                    sub = animation.get_sub_alpha(alpha, index, len(families))
+                    if blends:
+                        found[leaf] = Blend(start, end[0], sub)
+                    else:
+                        lo, hi = animation._get_bounds(sub)  # type: ignore[attr-defined]
+                        found[leaf] = Reveal(start, lo, hi)
             finally:
                 vars(animation).clear()
                 vars(animation).update(saved)

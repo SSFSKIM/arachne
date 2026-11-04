@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from .geometry import revealed
 from .xf import (
     FEATURE_BACKGROUND_IMAGE,
     Delta,
@@ -56,6 +57,21 @@ class Blend:
     start: Any
     end: Any
     alpha: float
+
+
+@dataclass(frozen=True)
+class Reveal:
+    """A leaf drawn as a reveal window of the ``start`` mobject's path: the
+    part between ``lo`` and ``hi`` (``pointwise_become_partial``).
+    """
+
+    start: Any
+    lo: float
+    hi: float
+
+
+#: What the record states of a leaf at an instant.
+Term = Blend | Reveal
 
 
 #: The mobject attributes extraction reads off a mobject, beside what the
@@ -212,7 +228,7 @@ class FrameStream:
         groups: Sequence[tuple[str, Sequence[Mobject]]],
         *,
         t: Fraction = Fraction(0),
-        terms: Mapping[int, Blend] | None = None,
+        terms: Mapping[int, Term] | None = None,
     ) -> Delta:
         """The delta of the frame the camera draws from ``groups`` (each a
         layer and the list one capture of the camera is handed, in order), as
@@ -275,7 +291,7 @@ class FrameStream:
         objects: list[tuple[int, str, str]],
         uploads: dict[bytes, Any],
         records: dict[int, Record],
-        terms: Mapping[int, Blend] | None,
+        terms: Mapping[int, Term] | None,
     ) -> dict[int, tuple[int, dict[str, Any], list[tuple[str, int, int]]]]:
         """Each display's picture in this capture, as CE's MultiCamera makes
         it: its camera handed the capture's list (less the display itself,
@@ -325,7 +341,7 @@ class FrameStream:
         uploads: dict[bytes, Any],
         records: dict[int, Record],
         order: list[tuple[str, int, int]],
-        terms: Mapping[int, Blend] | None,
+        terms: Mapping[int, Term] | None,
         sub_frames: Mapping[int, Any],
     ) -> None:
         from arachne.mobject.types.image_mobject import (
@@ -348,13 +364,16 @@ class FrameStream:
                     order.append((layer, slot, index))
                     continue
                 slot = self._slot(leaf, objects)
-                blend = terms.get(id(leaf)) if terms else None
+                term = terms.get(id(leaf)) if terms else None
                 record = None
-                if blend is not None:
-                    # One blend record a frame, wherever the leaf is drawn.
+                if term is not None:
+                    # One term record a frame, wherever the leaf is drawn.
                     record = self._blends.get(id(leaf))
                     if record is None:
-                        record = self._blend_record(camera, leaf, blend, uploads)
+                        if isinstance(term, Reveal):
+                            record = self._reveal_record(camera, leaf, term, uploads)
+                        else:
+                            record = self._blend_record(camera, leaf, term, uploads)
                         if record is not None:
                             self._blends[id(leaf)] = record
                 if record is None:
@@ -539,6 +558,27 @@ class FrameStream:
             gs, ge = vmob.get_gradient_start_and_end_points()
             fields["gradient"] = _floats(gs) + _floats(ge)
         fields.update(_depth_fields(self._depth(camera, vmob)))
+        return Record("path", fields)
+
+    def _reveal_record(
+        self, camera: Any, vmob: Any, reveal: Reveal, uploads: dict[bytes, Any]
+    ) -> Record | None:
+        """``vmob`` as a reveal window of its start's path, or ``None`` when
+        the window does not give its points bit for bit.
+        """
+        if not _plain_path(vmob) or not _plain_path(reveal.start):
+            return None
+        a = np.asarray(reveal.start.points)
+        if not np.array_equal(revealed(a, reveal.lo, reveal.hi), np.asarray(vmob.points)):
+            return None
+        own: dict[bytes, Any] = {}
+        fields: dict[str, Any] = {
+            "shape": _path_shape(a, own),
+            "reveal": (float(reveal.lo), float(reveal.hi)),
+        }
+        self._style(vmob, fields, own)
+        fields.update(_depth_fields(self._depth(camera, vmob)))
+        uploads.update(own)
         return Record("path", fields)
 
     def _faces(
@@ -760,6 +800,18 @@ def _stops(fields: Mapping[str, Any]) -> int:
         elif value is not None:
             most = max(most, len(value))
     return most
+
+
+def _plain_path(vmob: Any) -> bool:
+    """Whether ``vmob`` is a path a term's geometry can state: cubic curves
+    closed at CE's tolerance, no background-image fill, unshaded.
+    """
+    return (
+        vmob.tolerance_for_point_equality == _TOLERANCE
+        and vmob.n_points_per_cubic_curve == 4
+        and not vmob.get_background_image()
+        and not bool(getattr(vmob, "shade_in_3d", False))
+    )
 
 
 def _depth_fields(extras: tuple[Any, ...]) -> dict[str, Any]:

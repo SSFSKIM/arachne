@@ -109,6 +109,16 @@ class LaggedMorph(Scene):
         self.play(Transform(group, target, lag_ratio=0.3), run_time=0.6)
 
 
+class Reveals(Scene):
+    """Partial reveals: each leaf of a Create drawn as a window of its path."""
+
+    def construct(self):
+        square = Square(color=BLUE, fill_opacity=0.4)
+        group = VGroup(Circle(color=RED).shift(LEFT * 2), Star(color=YELLOW).shift(RIGHT * 2))
+        self.play(Create(square), run_time=0.6)
+        self.play(Create(group, lag_ratio=0.5), run_time=0.6)
+
+
 class Clouds(Scene):
     """A point cloud and an image."""
 
@@ -350,6 +360,7 @@ SCENES = [
     Shapes2D,
     Morph,
     LaggedMorph,
+    Reveals,
     Clouds,
     BackgroundImageFill,
     MovingFrame,
