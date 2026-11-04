@@ -26,7 +26,7 @@ from arachne.lint.plays import played
 from arachne.lint.serialise import report
 from arachne.lint.watch import HOLD_PERSIST, hold_watch
 
-from . import watch_scenes
+from . import armed_scenes, run_counter, watch_scenes
 from .conftest import line_of
 from .report_shape import assert_report
 
@@ -326,6 +326,95 @@ def test_a_departure_s_exemption_excuses_it(run, session_of):
     pair = [o.id for o in finding.objects]
     excused = lint(session, rules=(departures.where(exempt=[pair]),))
     assert _found(excused) == []
+
+
+# The terms a scene arms ------------------------------------------------------
+
+ARMED = Path(armed_scenes.__file__)
+
+#: What the reference checks report on CE for each scene of
+#: ``armed_scenes.py``, its bridge calls made as theirs (``arm`` as
+#: ``guard_fades``, ``sweep`` as ``assert_scene_clear``): code, held, the
+#: objects' kinds, and the span, or the instant for a departure.
+ARMED_CE = {
+    # The arming's pair excuses the departure.
+    "ExemptedNoteFades": [],
+    # The list the arming was handed names the second word's contact only
+    # after the first was removed: the first is swept, the second excused.
+    "ExemptionGrowsBetweenRemovals": [
+        ("overlap.text", False, {"Line", "Text"}, (0.7, 0.7)),
+    ],
+    # A text_gap of 0.5 holds the first pair, swept as it departs, and the
+    # second, on screen from the start; re-armed without one as the first
+    # fade ends, the second departs unswept and its hold ends there: the
+    # fade's end is held to the arming before it.
+    "RearmedWithoutTextGap": [
+        ("gap.text", True, {"Text"}, (0.0, 1.7)),
+        ("gap.text", False, {"Text"}, (0.7, 0.7)),
+    ],
+    # Re-armed without a text_gap as the first wait ends.
+    "HeldGapUntilRearmed": [("gap.text", True, {"Text"}, (0.0, 2.0))],
+    # Excused by the closing sweep: every exemption is read at the end.
+    "CaptionExcusedAtClose": [],
+    # The group the arming excuses holds the caption at the end, not while
+    # it was held at the edge.
+    "CaptionExcusedThroughGroup": [],
+    "CaptionLeavesTheGroup": [("clip.frame_edge", True, {"Text"}, (0.0, 2.3))],
+}
+
+
+@pytest.fixture
+def run_armed(session_of):
+    """Lint a scene that arms itself, the temporal rules asked from its start."""
+
+    def lint_scene(name):
+        session = session_of(name, ARMED, frame_rate=15)
+        return session, lint(session, rules=(hold_watch.where(), departures.where()))
+
+    return lint_scene
+
+
+@pytest.mark.parametrize("name", list(ARMED_CE))
+def test_the_rules_hold_a_scene_to_the_terms_it_armed(run_armed, name):
+    _, result = run_armed(name)
+    found = sorted(_found(result), key=lambda f: (not f.held, f.t_start, f.code))
+    expected = sorted(ARMED_CE[name], key=lambda e: (not e[1], e[3][0], e[0]))
+    assert len(found) == len(expected), [(f.code, f.held) for f in found]
+    for finding, (code, held, kinds, (start, end)) in zip(found, expected, strict=True):
+        assert (finding.code, finding.held) == (code, held)
+        assert {o.kind for o in finding.objects} == kinds
+        assert abs(finding.t_start - Fraction(start)) <= NEAR
+        assert abs(finding.t_end - Fraction(end)) <= NEAR
+
+
+def test_an_unarmed_scene_s_declaration_holds_the_rules_asked(run_armed):
+    # Its twin, declaring nothing, is held and swept.
+    _, plain = run_armed("UndeclaredNoteFades")
+    assert sorted((f.code, f.held) for f in _found(plain)) == [
+        ("overlap.text", False),
+        ("overlap.text", True),
+    ]
+    _, result = run_armed("DeclaredNoteFades")
+    assert _found(result) == []
+
+
+def test_the_first_removal_is_swept_at_its_line(run_armed):
+    _, result = run_armed("ExemptionGrowsBetweenRemovals")
+    [finding] = _found(result)
+    assert finding.line.line == line_of("remove-first", ARMED)
+    assert "first" in {o.label_or_text for o in finding.objects}
+
+
+def test_a_scene_s_arming_keeps_the_states_the_rules_read(session_of):
+    # Every execution of the scene counts itself: the session's, and any
+    # forward run a lint makes.
+    run_counter.executions = 0
+    session = session_of("CountedArmedScene", ARMED, frame_rate=15)
+    assert run_counter.executions == 1
+    assert session.record.states is not None
+    result = lint(session, rules=(hold_watch.where(), departures.where()))
+    assert "overlap.text" in {f.code for f in _found(result)}
+    assert run_counter.executions == 1
 
 
 # The states the rules read --------------------------------------------------

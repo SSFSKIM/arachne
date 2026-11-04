@@ -50,6 +50,13 @@ too short to show a frame included; the frames between are the render's.
 The armed rule's ``sample_fps`` (:mod:`.armed`) has the watch read a
 play's frames at another engine's sampling rate.
 
+Each sample is held to the ``pad`` and ``text_gap`` in force at it
+(:meth:`.ArmedRule.terms_at`) and to no exemption: what the scene excuses
+is known whole only at its end, where a held defect is dropped when an
+exemption excuses one of the units it named when first seen
+(:meth:`.ArmedRule.exemptions`; a bare selector anything, a pair the
+geometry of the two it names, never a text drawn under the other).
+
 A finding is keyed by the unit it names (:class:`~arachne.lint.parts.Unit`),
 so one rebuilt every frame in place is one finding. A held span decided
 within one frame of the render's grid of :data:`HOLD_PERSIST` (that frame
@@ -82,6 +89,7 @@ from arachne.timeline.clock import frames_in
 
 from ._scope import Animated, animated, animated_by, asked, named_by
 from .armed import ArmedRule
+from .exempt import Exemptions
 from .findings import Finding
 from .instants import render_grid
 from .plays import family_at, played
@@ -97,7 +105,6 @@ if TYPE_CHECKING:
 
     from .core import LintContext
     from .parts import Box, Parts
-    from .rules._rule import Terms
 
 #: A defect on screen this long, in seconds, was watched.
 HOLD_PERSIST = Fraction(1)
@@ -129,13 +136,14 @@ _HOME = 1e-3
 
 @dataclass
 class _Open:
-    """A defect open since ``first``, last seen at ``last``, and the worst
-    finding seen of it.
+    """A defect open since ``first``, last seen at ``last``, the worst
+    finding seen of it, and the units it named when first seen.
     """
 
     first: Fraction
     last: Fraction
     finding: Finding
+    units: tuple[Measured, ...]
 
 
 @dataclass(frozen=True)
@@ -208,14 +216,14 @@ def _watch(context: LintContext, rule: ArmedRule) -> list[Finding]:
     # Plays, frames and states, from the one execution the frames come from.
     record = context.frames.execution
     states = rule.states(context)
-    watch = _Watch(record, rule.terms)
+    watch = _Watch(record, rule)
     shown = rule.frames(context)
     for step in _schedule(record, rule.since, rule.sample_fps):
         play = record.plays[step.play] if step.play is not None else None
         if play is not None and step.kind == "entry":
             # The scene as the script called the play, before it began.
             called = states.calls[play.index]
-            watch.sample(rule.state(context, called), step.at, (), ())
+            watch.sample(rule.state(context, called), step, (), ())
             continue
         if play is not None and step.kind == "exit":
             # The scene as the play left it: its animations finished and
@@ -224,7 +232,7 @@ def _watch(context: LintContext, rule: ArmedRule) -> list[Finding]:
             parts = rule.state(context, left)
             watch.regroup(play, states.calls[play.index], left)
             watch.after_play(play, parts, left)
-            watch.sample(parts, step.at, (), ())
+            watch.sample(parts, step, (), ())
             continue
         # A frame the session's record schedules and its execution does not
         # (two executions of the scene that differ, which the lint reports)
@@ -233,18 +241,18 @@ def _watch(context: LintContext, rule: ArmedRule) -> list[Finding]:
         if parts is None:
             continue
         if play is not None and step.kind == "inside":
-            watch.sample(parts, step.at, watch.moved(play), watch.going(play))
+            watch.sample(parts, step, watch.moved(play), watch.going(play))
         else:
-            watch.sample(parts, step.at, (), ())
+            watch.sample(parts, step, (), ())
     return watch.report(1 / render_grid(record))
 
 
 class _Watch:
     """The watch's state as it reads its samples in order."""
 
-    def __init__(self, record: Record, terms: Terms) -> None:
+    def __init__(self, record: Record, rule: ArmedRule) -> None:
         self.record = record
-        self.terms = terms
+        self.rule = rule
         self.open: dict[tuple[Any, ...], _Open] = {}
         self.held: list[_Open] = []
         self.framed: dict[str, float] = {}
@@ -317,14 +325,19 @@ class _Watch:
     def sample(
         self,
         parts: Parts,
-        at: Fraction,
+        step: _Step,
         moved: list[Animated] | tuple[()],
         going: list[Animated] | tuple[()],
     ) -> None:
-        """Read the frame ``parts`` shows, standing for the time ``at``, with
+        """Read the frame ``parts`` shows, the sample ``step``, with
         ``moved`` animated and ``going`` leaving.
         """
+        at = step.at
         frame = parts.frame
+        # The pad and text_gap in force at the sample; no exemption is read
+        # until the scene has ended (:meth:`report`).
+        terms = self.rule.terms_at(self.record, at, step.play)
+        terms = replace(terms, exempt=Exemptions())
         every = asked(parts, measured_units(parts))
         leaving = set().union(*(g.family for g in going)) if going else set()
         staying = [u for u in every if u.root not in leaving]
@@ -338,7 +351,7 @@ class _Watch:
         by_id = {u.id: u for u in live}
         found: dict[tuple[Any, ...], Finding] = {}
         edged = live if home else [u for u in live if _meets(u.glyph_box, frame)]
-        edge_terms = replace(self.terms, mid_scene=False)
+        edge_terms = replace(terms, mid_scene=False)
         for f in edge_findings(parts, edge_terms, margin=TEXT_MARGIN, among=edged):
             found[("edge", f.objects[0].id)] = f
         if home:
@@ -347,7 +360,7 @@ class _Watch:
             for f in self._left_behind(parts, live, moved):
                 found[("strand", f.objects[0].id)] = f
             owned = [self._owned(u) for u in live]
-            for f in pair_findings(parts, self.terms, among=owned, text_only=True):
+            for f in pair_findings(parts, terms, among=owned, text_only=True):
                 # Two things the play carries together are its own geometry
                 # in motion, not an arrangement anyone placed.
                 if all(named_by(by_id[o.id], moved) for o in f.objects):
@@ -357,7 +370,8 @@ class _Watch:
         for key, finding in found.items():
             held = self.open.get(key)
             if held is None:
-                self.open[key] = _Open(at, at, finding)
+                units = tuple(by_id[o.id] for o in finding.objects)
+                self.open[key] = _Open(at, at, finding, units)
                 continue
             held.last = at
             if _badness(finding) > _badness(held.finding):
@@ -416,7 +430,6 @@ class _Watch:
                 framed is None
                 or past <= SHAPE_EXIT_TOL
                 or size > SHAPE_GROWTH * max(framed, 1e-6)
-                or muted(self.terms.exempt, unit)
             ):
                 continue
             gone = not unit.on(parts.frame)
@@ -493,13 +506,6 @@ class _Watch:
             gap = _measure(label, thing)
             if gap < gap0 + LABEL_LEFT:
                 continue
-            exempt = self.terms.exempt
-            if (
-                muted(exempt, label)
-                or muted(exempt, thing)
-                or paired(exempt, label, thing)
-            ):
-                continue
             away = float(np.linalg.norm(centre[other] - referent))
             found.append(
                 _finding(
@@ -523,10 +529,16 @@ class _Watch:
             self.held.append(held)
 
     def report(self, frame: Fraction) -> list[Finding]:
+        """What was held on screen, less what the scene's exemptions, read
+        at its end, excuse.
+        """
         for key in list(self.open):
             self._close(key)
+        exempt = self.rule.exemptions(self.record)
         found = []
         for held in sorted(self.held, key=lambda h: h.first):
+            if _excused(exempt, held):
+                continue
             finding = held.finding
             detail = dict(finding.detail)
             margin = held.last - held.first - HOLD_PERSIST
@@ -559,6 +571,22 @@ def _finding(
     t = Fraction(parts.t)
     return Finding(
         code, t, t, tuple(u.object for u in units), message=message, detail=detail
+    )
+
+
+def _excused(exempt: Exemptions, held: _Open) -> bool:
+    """Whether ``exempt`` excuses a held defect, by the units it named when
+    first seen: a bare selector naming any of them excuses anything; a pair
+    naming both of two excuses their geometry, never a text drawn under the
+    other.
+    """
+    units = held.units
+    if any(muted(exempt, unit) for unit in units):
+        return True
+    return (
+        len(units) == 2
+        and held.finding.code != "occlusion.glyph"
+        and paired(exempt, *units)
     )
 
 
