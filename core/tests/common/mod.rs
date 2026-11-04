@@ -13,6 +13,7 @@ pub fn flat_view(width: u32, height: u32, background: [f64; 4]) -> View {
         frame_width: 14.222222222222221,
         frame_height: 8.0,
         frame_center: [0.0; 3],
+        mapping_centre: [0.0; 3],
         background: Background::Color(background),
         camera: Camera::Flat,
         cairo_line_width_multiple: 0.01,
@@ -81,7 +82,7 @@ pub fn square_points(half: f64) -> Vec<[f64; 3]> {
     points
 }
 
-/// Three deltas that between them give every field XF 0 has a value distinct from its neighbours',
+/// Three deltas that between them give every field XF 1 has a value distinct from its neighbours',
 /// use every enum code, and take both branches of every optional field and flag: the first sets
 /// everything, the second changes the view and removes and releases, the third re-sets a face group
 /// without strokes and leaves the view and the order as they are.
@@ -130,7 +131,8 @@ pub fn sample_deltas() -> Vec<Delta> {
     ]);
 
     let mut path = Record::new(RecordKind::Path, 1, 101);
-    path.features = 0;
+    path.features = FEATURE_BACKGROUND_IMAGE;
+    path.fill_image = Some(picture.key());
     path.geometry = Geometry {
         shape_a: Some(square.key()),
         place_a: place(0.5, 0.0, 0.0),
@@ -202,14 +204,32 @@ pub fn sample_deltas() -> Vec<Delta> {
     image.geometry.shape_a = Some(picture.key());
     image.depth.space = Space::Overlay;
     image.body = Body::Image(ImageSource::Picture {
-        corners: [[-1.0, 1.0, 0.0], [1.0, 1.0, 0.0], [-1.0, -1.0, 0.0]],
+        corners: [
+            [-1.0, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [-1.0, -1.0, 0.0],
+            [1.125, -1.25, 0.125],
+        ],
         resampling: 3,
         opacity: 0.75,
     });
 
     let mut display = Record::new(RecordKind::Image, 5, 105);
     display.body = Body::Image(ImageSource::SubFrame {
-        view: Box::new(flat_view(32, 18, [0.4, 0.3, 0.2, 1.0])),
+        rank: 2,
+        corners: [
+            [-2.0, 1.0, 0.25],
+            [2.0, 1.0, 0.5],
+            [-2.0, -1.0, 0.75],
+            [2.25, -1.125, 1.0],
+        ],
+        resampling: 2,
+        opacity: 0.625,
+        view: Box::new(View {
+            frame_center: [0.25, -0.5, 0.75],
+            mapping_centre: [-0.125, 0.375, 0.875],
+            ..flat_view(32, 18, [0.4, 0.3, 0.2, 1.0])
+        }),
         order: vec![OrderEntry {
             layer: Layer::Static,
             slot: 1,
@@ -257,6 +277,7 @@ pub fn sample_deltas() -> Vec<Delta> {
 
     let mut first = Delta::new(Time { num: 1, den: 15 }, 0);
     let mut view = three_d_view(64, 36);
+    view.mapping_centre = [-0.75, 0.625, -0.125];
     view.background = Background::Color([0.1, 0.2, 0.3, 0.9]);
     view.light = LightModel::Other {
         code: 7,

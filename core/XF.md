@@ -8,9 +8,8 @@ meaning and the binary form (`src/xf/wire.rs`), which fixtures and dumped stream
 
 ## Versions and refusal
 
-The version is (major, minor). This build is **XF 0.0**: before XF 1 the layout may still change.
-From XF 1 on it is append-only: a new field or kind bumps the minor, and nothing removes or retypes a
-field.
+The version is (major, minor). This build is **XF 1.0**. From here the layout is append-only:
+a new field or kind bumps the minor, and nothing removes or retypes a field.
 
 - A reader refuses a major it does not know, and reads a newer minor of its own major, skipping what
   that minor appended (every record, shape, paint table, object and view is length-prefixed).
@@ -19,8 +18,15 @@ field.
   a feature bit it does not draw, or the view names a light model it does not know. It never draws a
   frame partly. A record outside the order is not drawn, so it is not refused.
 
-XF 0 defines no feature bits. This build draws the background (a colour, or an image cropped to the
-frame as CE crops it), `mesh` records filled with one colour, `path` records whose fill and strokes
+XF 1 defines feature bit 0 (value 1), `background_image`: the record's fill and strokes are painted
+through CE's background-image fill. CE draws the path's paint into a separate array and multiplies
+it by an image at the frame's pixel size. The fixed `fill_image` field holds that image's key and is
+present exactly when bit 0 is set; for a known record kind a decoder refuses a disagreement as
+invalid XF (`XfError`). The image must be an image shape held by the stream or uploaded in the delta,
+and a key still used by `fill_image` cannot be released. This build refuses drawn records with bit 0
+(`render.unsupported`): **drawn by Cairo only**.
+
+This build draws the background (a colour, or an image cropped to the frame as CE crops it), `mesh` records filled with one colour, `path` records whose fill and strokes
 are each one colour, `points` records, and `instances` records of a path or a mesh. It refuses any of
 those carrying a blend, a reveal, a paint blend or a clip; a path with a gradient paint (two stops or a
 table) or a dash it cannot read, or a `shade_in_3d` path with paint under a 3D camera that applies
@@ -63,23 +69,43 @@ shape's and table's key against its content, except for shape kinds it does not 
   - *dash:* period, duty, phase (never set from CE, whose dashes are submobjects);
   - *depth:* space (screen, world, overlay), z-index, sort point, `shade_in_3d`, and a
     fixed-orientation centre;
-  - *clip* (reserved, never set from CE), group *opacity* (1 from CE), and a *layer*;
+  - *clip* (reserved, never set from CE), group *opacity* (1 from CE), a *layer*, and optional
+    *fill_image* (the image key for feature bit 0);
   - the body: nothing for `path` and `mesh`; for `face_group`, per-face (u, v), the grid's size and
     per-face fill (and stroke) tables, the faces' stacked points being the record's path shape; for
     `points`, a per-point colour table and the radius (CE's stroke width); for `image`, either the
-    picture placed at three corners with its resampling (PIL's value) and opacity, or a sub-frame (a
-    view and an order over the same slots, for a MultiCamera display); for `instances`, per-instance
+    picture placed at four corners with its resampling (PIL's value) and opacity, or a sub-frame
+    (a capture rank, the same corners, resampling and opacity, then a view and an order over the same
+    slots, for a MultiCamera display). Corners are CE's image points in CE's order: upper left, upper
+    right, lower left, lower right. CE projects all four independently; after transforms the fourth
+    is not exactly `c1 + c2 - c0`. A picture uses `shape_a`; a sub-frame has no `shape_a` and is refused
+    if one is set. Neither image form is drawn by this build yet. For `instances`, per-instance
     placements, fill and stroke tables and object refs, the record's shape and paint block being the
     prototype every instance shares; for reserved kinds, opaque bytes.
 - **The view** holds the pixel size, the frame's width, height and centre (the camera's own values:
   CE fits the frame's height to the pixels' aspect ratio), the background (RGBA with the background
   opacity as alpha, or an image key), the camera (flat, moving, or 3D with phi, theta, gamma, focal
   distance, zoom, the exponential option, the light source, shading factor and whether shading
-  applies), CE's `cairo_line_width_multiple`, `use_z_index`, and the light model: CE's (code 0, no
-  parameters) or soft diffuse (code 1, parameters `[ambient, wrap]`: the share of light a surface
+  applies), `mapping_centre`, CE's `cairo_line_width_multiple`, `use_z_index`, and the light model:
+  CE's (code 0, no parameters) or soft diffuse (code 1, parameters `[ambient, wrap]`: the share of light a surface
   facing away from the light keeps, in 0..=1, and how far the light wraps past the terminator, at
   least 0; a placeholder whose parameters are set with the 3D look). A delta whose view gives soft
-  diffuse light parameters outside those ranges is refused.
+  diffuse light parameters outside those ranges is refused. `mapping_centre` is the centre CE's
+  cached Cairo context froze into its frame-to-pixel matrix for the pixel array this view draws
+  into. `Camera.get_cairo_context` bakes `frame_center` into that matrix the first time it sees a
+  pixel array and caches the context, while a 3D camera's projection subtracts the live
+  `frame_center`: paths are mapped to pixels around `mapping_centre`, projected around
+  `frame_center`. This applies to sub-frame views too. **Drawers of this build map by frame_centre;
+  the field is carried for Cairo** (`frame_centre` here is the `frame_center` field).
+- **Sub-frame capture.** A display's `rank` is its place in its camera's capture sequence, CE's
+  `image_mobjects_from_cameras` order, starting at 0. CE captures displays one after another at the
+  start of each capture call. The sub-frame order lists the slots that display's camera draws in
+  that capture, its own slot included when CE lets a camera capture its own display. A display
+  drawn inside a sub-frame shows that display's picture as it stands at that point, not a recursively
+  redrawn view. The sub-frames of the displays in one layer of the order are drawn, in rank order,
+  before that layer's entries. Two display records drawn in the same layer of one view's order may
+  not share a rank; apply refuses that as invalid XF (`XfError`). Ranks need not follow draw order;
+  the same rank in different layers or views is allowed.
 - **The order** lists (layer, slot, part) in CE's draw order. The layer is static, moving or overlay;
   the part addresses a face of a face group, else 0.
 - **A delta** applies, in this order: the view, objects, shape and table uploads, records set,
@@ -205,18 +231,20 @@ record    u8 kind  u64 features  u32 slot  u32 object
           [f64 period  f64 duty  f64 phase]?           (dash)
           u8 space  f64 z_index  f64 x3 sort_point  bool shade_in_3d  [f64 x3]?   (fixed-orientation centre)
           [key  affine]?                                (clip)
-          f64 opacity  u16 layer
+          f64 opacity  u16 layer  [key fill_image]?
           body by kind:
             path 1, mesh 6: nothing
             face_group 2: count (u32 u  u32 v)*  u32 grid_u  u32 grid_v  key fill  [key stroke]?
             points 3: key colors  f64 radius
-            image 4: u8 0  f64 x9 corners  u8 resampling  f64 opacity
-                   | u8 1  item(view)  count (u8 layer  u32 slot  u32 part)*
+            image 4: u8 0  f64 x12 corners  u8 resampling  f64 opacity
+                   | u8 1  u32 rank  f64 x12 corners  u8 resampling  f64 opacity
+                     item(view)  count (u8 layer  u32 slot  u32 part)*
             instances 5: count affine*  key fill  key stroke  u32 object per instance
             volume 64, field 65, emission 66 (reserved): item(payload)
           (anything after the body belongs to a newer minor and is skipped)
 paint     u8 0 (none) | u8 1  f64 x4 | u8 2  f64 x8 | u8 3  key
-view      u32 pixel_width  u32 pixel_height  f64 frame_width  f64 frame_height  f64 x3 centre
+view      u32 pixel_width  u32 pixel_height  f64 frame_width  f64 frame_height
+          f64 x3 centre  f64 x3 mapping_centre
           u8 0  f64 x4 rgba | u8 1  key image          (background)
           u8 0 flat | u8 1 moving | u8 2  f64 phi theta gamma focal_distance zoom
             bool exponential  f64 x3 light_source  f64 shading_factor  bool should_apply_shading
@@ -231,3 +259,16 @@ literals and checks the writer and the reader against them, so a drift made the 
 it; and the canonical samples (`tests/common/mod.rs` in Rust, `canonical_sample()` in the binding's
 tests), which use every enum code and give swappable fields values of their own, pin the sha256 of their
 bytes, so any change to what the samples write fails the pin.
+
+## Python construction
+
+`FrameDelta.set_view(..., mapping_centre=...)` defaults `mapping_centre` to the given
+`frame_center` (itself `[0, 0, 0]` by default), also for a sub-frame's view dictionary.
+`set_record("image", ..., corners=...)` takes a `(4, 3)` array-like in CE's corner order.
+For a display, use `set_record("image", ..., corners=..., resampling=..., image_opacity=...,
+sub_frame=(rank, view_dict, order))`, with no `shape`; resampling defaults to 3 and image opacity
+to 1 for both forms.
+
+`set_record(..., fill_image=key)` sets the optional field and bit 0 together, preserving other
+`features` bits. Passing bit 0 in `features` without `fill_image` raises `XfError`; Python cannot
+construct a disagreement. The package exports `FEATURES = {"background_image": 1}`.

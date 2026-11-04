@@ -12,13 +12,16 @@ pub use key::Key;
 
 /// The XF version this build reads, writes and draws: (major, minor).
 ///
-/// Before the freeze (XF 1) the major is 0 and the layout may change; after it, the layout is
-/// append-only and a new field or kind bumps the minor.
-pub const XF_VERSION: (u16, u16) = (0, 0);
+/// From XF 1 the layout is append-only: a new field or kind bumps the minor, and nothing removes
+/// or retypes a field.
+pub const XF_VERSION: (u16, u16) = (1, 0);
 
-/// The feature bits this build's drawer knows. A record carrying any other bit is refused
-/// (`render.unsupported`), never drawn partly. XF 0 defines none.
-pub const KNOWN_FEATURES: u64 = 0;
+/// CE's background-image fill: paint the path into a separate array and multiply by an image.
+/// Carried by XF, drawn by Cairo only in this build.
+pub const FEATURE_BACKGROUND_IMAGE: u64 = 1;
+
+/// Feature bits this build understands. A drawer can still refuse a known feature it cannot draw.
+pub const KNOWN_FEATURES: u64 = FEATURE_BACKGROUND_IMAGE;
 
 /// An exact time: numerator over a positive denominator.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -200,7 +203,7 @@ pub struct ObjectInfo {
     pub source: String,
 }
 
-/// The record kinds. The reserved ones are typed and versioned, and refused by an XF 0 or XF 1
+/// The record kinds. The reserved ones are typed and versioned, and refused by this build's
 /// drawer; a code this build does not know is kept as `Unknown` and refused the same way.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecordKind {
@@ -455,15 +458,21 @@ pub struct Points {
 /// What an image record shows.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ImageSource {
-    /// The record's image shape, placed at three corners.
+    /// The record's image shape, at CE's four corners: upper left, upper right, lower left, lower right.
     Picture {
-        corners: [[f64; 3]; 3],
+        corners: [[f64; 3]; 4],
         /// PIL's `Image.Resampling` value.
         resampling: u8,
         opacity: f64,
     },
     /// A MultiCamera display: another view over the same slots.
     SubFrame {
+        /// Its place in the camera's capture sequence, starting at zero.
+        rank: u32,
+        /// Placement of the captured picture, in the same order as `Picture`'s corners.
+        corners: [[f64; 3]; 4],
+        resampling: u8,
+        opacity: f64,
         view: Box<View>,
         order: Vec<OrderEntry>,
     },
@@ -509,6 +518,8 @@ pub struct Record {
     /// Group opacity (1 from CE).
     pub opacity: f64,
     pub layer: u16,
+    /// The image multiplied into the record's paint; present exactly when bit 0 is set.
+    pub fill_image: Option<Key>,
     pub body: Body,
 }
 
@@ -527,6 +538,7 @@ impl Record {
             clip: None,
             opacity: 1.0,
             layer: 0,
+            fill_image: None,
             body: Body::None,
         }
     }
@@ -535,6 +547,7 @@ impl Record {
     pub fn shape_keys(&self) -> Vec<Key> {
         let mut keys = Vec::new();
         keys.extend(self.geometry.shape_a);
+        keys.extend(self.fill_image);
         if let Some(blend) = &self.geometry.blend {
             keys.push(blend.shape_b);
         }
@@ -657,6 +670,9 @@ pub struct View {
     pub frame_width: f64,
     pub frame_height: f64,
     pub frame_center: [f64; 3],
+    /// Centre frozen into CE's cached Cairo frame-to-pixel matrix for this view's pixel array.
+    /// Carried for Cairo; drawers of this build still map by `frame_center`.
+    pub mapping_centre: [f64; 3],
     pub background: Background,
     pub camera: Camera,
     pub cairo_line_width_multiple: f64,

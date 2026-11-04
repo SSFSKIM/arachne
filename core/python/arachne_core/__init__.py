@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from arachne_core._core import (
     COVERAGE_TO_SAMPLE_LSB,
+    FEATURES,
     RESOLVES,
     XF_VERSION,
     ApplyStats,
@@ -26,6 +27,7 @@ from arachne_core._errors import Unsupported, XfError
 
 __all__ = [
     "COVERAGE_TO_SAMPLE_LSB",
+    "FEATURES",
     "RESOLVES",
     "XF_VERSION",
     "ApplyStats",
