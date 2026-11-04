@@ -402,6 +402,7 @@ def compare(
     theirs: ExecutionSummary,
     *,
     until: Fraction | None = None,
+    before_play: int | None = None,
 ) -> Divergence | None:
     """The first play where ``mine`` differs from ``theirs``, an execution
     of the same source, or ``None``. Each play's span, the state it began
@@ -417,7 +418,9 @@ def compare(
     plays that began by then, the instants up to it, a play's end where
     either reached it, and not where the scripts ended. An execution
     stopped once past ``until`` (a forward run, :mod:`.fallback`) is so
-    compared with a whole one.
+    compared with a whole one. With ``before_play``, only the plays before
+    that one are compared, and not where the scripts ended: what one
+    execution drew while it ran is written into it from there on.
     """
     digests = (mine.identity.source_digest, theirs.identity.source_digest)
     if None in digests:
@@ -431,8 +434,8 @@ def compare(
             f" {digests[0]} and {digests[1]}."
         )
     changed = changed_inputs(mine.identity, theirs.identity)
-    plays = _begun(mine.plays, until)
-    others = _begun(theirs.plays, until)
+    plays = _begun(mine.plays, until)[:before_play]
+    others = _begun(theirs.plays, until)[:before_play]
     for play, other in zip(plays, others, strict=False):
         reason = _play_difference(mine, play, theirs, other, until)
         if reason is not None:
@@ -450,7 +453,7 @@ def compare(
             + ("" if until is None else f" by {float(until):g} s"),
             changed,
         )
-    if until is not None:
+    if until is not None or before_play is not None:
         return None
     reason = _end_difference(mine, theirs)
     if reason is not None:

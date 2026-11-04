@@ -43,6 +43,7 @@ from __future__ import annotations
 __all__ = ["Answer", "Fallback", "ForwardRun", "answer_instants"]
 
 import math
+import os
 import random
 import sys
 from collections.abc import Iterable, Iterator, Mapping
@@ -54,6 +55,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import numpy as np
 
 from .clock import exact
+from .dispatch import _all_engine_classes
 from .draw import Drawing, LiveFrames
 from .execution import (
     Divergence,
@@ -62,6 +64,7 @@ from .execution import (
     compare,
     summarize,
 )
+from .inputs import digest_of, file_digests, source_files
 from .origins import ORIGINS
 from .recorder import Recorder
 from .restore import Unrestorable
@@ -72,10 +75,10 @@ if TYPE_CHECKING:
     from PIL import Image
 
     from arachne.scene.scene import Scene
-    from arachne.session import Session
+    from arachne.session import Session, Source
     from arachne.typing import PixelArray
 
-    from .record import Identity, PlayRecord, Record
+    from .record import PlayRecord, Record
     from .state import State
 
 
@@ -122,17 +125,22 @@ class Answer:
 class ForwardRun:
     """One forward run: the instants it answered, in time order, how many
     plays it ran before it stopped (every play, when it ran the script to
-    its end), where it differs from the record's execution if it does, and
-    up to which instant the two were compared (``None``: all of both).
-    ``source_changed``: the scene's source is not the record's (or one of
-    the two is unknown), so the record is stale and the two were not
-    compared at all.
+    its end), and where it differs from the record's execution if it does.
+
+    What was compared: up to ``compared_until`` (the last instant asked, for
+    a run that stopped; ``None``: to the end of both), and of those plays
+    only the first ``compared_plays`` when a play was drawn as it ran, whose
+    drawing may write into the scene from its start on (``None``: no such
+    bound). ``source_changed``: the scene's source is not the record's (or
+    one of the two is unknown), so the record is stale and nothing was
+    compared.
     """
 
     instants: tuple[Fraction, ...]
     plays: int
     divergence: Divergence | None
     compared_until: Fraction | None
+    compared_plays: int | None = None
     source_changed: bool = False
 
 
@@ -209,8 +217,8 @@ class _ForwardRecorder(Recorder):
         if known:
             self.execution = Execution(known=dict(known))
         self.stop_after = stop_after
-        #: Where the first play drawn as it ran began, once one has.
-        self.live_from: Fraction | None = None
+        #: The index of the first play drawn as it ran, once one has.
+        self.live_from: int | None = None
 
     def refusal(self) -> str | None:
         # The renderer asks this first as each play begins.
@@ -226,7 +234,7 @@ class _ForwardRecorder(Recorder):
         live: LiveFrames | None = None,
     ) -> PlayRecord:
         if live is not None and self.live_from is None:
-            self.live_from = self.scene.time
+            self.live_from = len(self.ensure_record().plays)
         played = super().play(skipped=skipped, cache_key=cache_key, live=live)
         if self.draws and live is None and played.draw_refusal is not None:
             raise _Unforeseen(played.draw_refusal)
@@ -265,21 +273,22 @@ def _forward(
 
     def recorder(scene: Scene) -> Recorder:
         forward_camera = scene.renderer.camera
-        if frames:
-            _resize(forward_camera, shape)
+        _resize(forward_camera, shape)
         if refused:
             fps = exact(forward_camera.frame_rate)
             grid: Fraction | None = fps
             extra: frozenset[Fraction] = frozenset()
-            if frames:
-                _keep_frames(scene, fps, _on_screen(fps, instants), written)
+            # Drawn whether or not frames are asked for: what a play drawn as
+            # it runs draws may be written into the scene.
+            asked = _on_screen(fps, instants) if frames else []
+            _keep_frames(scene, fps, asked, written)
         else:
             grid = record.grid
             extra = frozenset(instants) | {_last_frame(record, t) for t in instants}
         forward = _ForwardRecorder(
             scene,
             grid=grid,
-            draws=refused and frames,
+            draws=refused,
             stepping=source.stepping,
             instants=extra,
             stop_after=instants[-1],
@@ -310,35 +319,28 @@ def _forward(
             sys.modules.pop(module.__name__, None)
             whole = True
         executed = forward.ensure_record()
+        until = None if whole else instants[-1]
         # What a play drawn as it runs draws may be written into the scene (a
-        # zoomed display's picture), which the record's execution, drawing
-        # nothing, never holds: the two are compared before the first.
-        ends = [
-            end
-            for end in (None if whole else instants[-1], forward.live_from)
-            if end is not None
-        ]
-        until = min(ends) if ends else None
+        # zoomed display's picture, a mapped mobject's points), from its
+        # static picture on, which the record's execution, drawing nothing,
+        # never holds: only the plays before the first are compared.
+        before_play = forward.live_from
         mine, theirs = session.summary(), summarize(executed)
         stale: Fallback | None = None
         try:
-            divergence = compare(mine, theirs, until=until)
+            divergence = compare(mine, theirs, until=until, before_play=before_play)
         except Incomparable:
             # Another program than the record's: nothing to compare, and no
             # divergence (two executions of one source differing), but the
             # record is stale.
             divergence = None
-            stale = _source_changed(mine.identity, theirs.identity)
+            stale = _source_changed(source, record)
             session.stale = True
-        if divergence is not None and not whole:
-            # A file only the record's execution read, the forward run having
-            # stopped before it, is no difference between them.
-            read = {path for path, _ in executed.identity.input_digests}
+        if divergence is not None:
+            # What changed since the record's execution read it, whether or
+            # not the forward run read it before it stopped.
             divergence = replace(
-                divergence,
-                changed_inputs=tuple(
-                    path for path in divergence.changed_inputs if path in read
-                ),
+                divergence, changed_inputs=_changed_inputs(record, executed)
             )
         session.forward_runs.append(
             ForwardRun(
@@ -346,6 +348,7 @@ def _forward(
                 len(executed.plays),
                 divergence,
                 until,
+                before_play,
                 source_changed=stale is not None,
             )
         )
@@ -363,25 +366,62 @@ def _forward(
         return answered, stale
 
 
-def _source_changed(mine: Identity, theirs: Identity) -> Fallback:
+def _source_changed(source: Source, record: Record) -> Fallback:
     """Why a forward run of another source than the record's answered: the
-    scene's source changed since the record was made, which is not a
-    divergence. The identity digests the source as a whole, so no file is
-    named.
+    scene's source changed since the record was made, which is no
+    divergence. It names the files that changed (added and removed ones
+    included), or says the source differs when they can't be told.
     """
-    before, now = mine.source_digest, theirs.source_digest
-    if before is not None and now is not None:
-        detail = (
-            "the scene's source differs from the record's (source digest"
-            f" {before[:12]}, now {now[:12]}): the record is stale, and these are"
-            " the answers of the source as it is now"
+    changed: list[str] = []
+    scene_file = record.scene_file
+    if source.files is not None and scene_file is not None:
+        scene_dir = os.path.dirname(scene_file)
+        try:
+            now = dict(file_digests(source_files(scene_file), scene_dir))
+        except OSError:
+            now = None
+        if now is not None:
+            before = dict(source.files)
+            changed = sorted(
+                path
+                for path in before.keys() | now.keys()
+                if before.get(path) != now.get(path)
+            )
+    if changed:
+        names = ", ".join(changed)
+        return Fallback(
+            "source-changed",
+            f"source.changed: {names}",
+            f"the scene's source changed since the record was made ({names}): the"
+            " record is stale, and these are the answers of the source as it is now",
         )
-    else:
-        detail = (
-            "the scene's source is unknown for the record or the forward run, so"
-            " the record can't be shown to be of the source executed now"
-        )
-    return Fallback("source-changed", "source.changed", detail)
+    return Fallback(
+        "source-changed",
+        "source.changed",
+        "the scene's source differs from the record's, or is unknown for one of"
+        " them: the record is stale, and these are the answers of the source as"
+        " it is now",
+    )
+
+
+def _changed_inputs(record: Record, forward: Record) -> tuple[str, ...]:
+    """The input files the record's execution read whose content differs
+    now (a file gone included), and those the forward run read that the
+    record's execution did not, by path relative to the scene's directory.
+    """
+    if record.scene_file is None:
+        return ()
+    scene_dir = os.path.dirname(record.scene_file)
+    recorded = dict(record.identity.input_digests)
+    changed = {
+        path
+        for path, digest in recorded.items()
+        if digest_of(os.path.join(scene_dir, path)) != digest
+    }
+    changed.update(
+        path for path, _ in forward.identity.input_digests if path not in recorded
+    )
+    return tuple(sorted(changed))
 
 
 def _recorded(
@@ -507,12 +547,68 @@ def _resize(camera: Any, shape: tuple[int, int]) -> None:
 @contextmanager
 def _kept() -> Iterator[None]:
     """Whatever another execution does inside the block to the process's
-    origin table and random generators, they hold what they held before.
+    origin table, random generators and engine classes, they hold what they
+    held before, however the block ends.
     """
     generators = (random.getstate(), np.random.get_state())  # noqa: NPY002
-    with ORIGINS.kept():
+    with ORIGINS.kept(), _classes_kept():
         try:
             yield
         finally:
             random.setstate(generators[0])
             np.random.set_state(generators[1])  # noqa: NPY002
+
+
+_MISSING = object()
+
+
+@contextmanager
+def _classes_kept() -> Iterator[None]:
+    """The engine's classes hold afterwards what they held before: a scene
+    sets a default (``Dot.set_default``, which replaces ``__init__``) or
+    adds an animation override, and a run that stops or raises never
+    reaches the scene's own reset. Each class's attributes are put back,
+    those it gained removed, and the dicts, lists and sets they hold given
+    back their items.
+    """
+    saved = []
+    for cls in _all_engine_classes():
+        members = dict(vars(cls))
+        items = {
+            key: value.copy()
+            for key, value in members.items()
+            if type(value) in (dict, list, set)
+        }
+        saved.append((cls, members, items))
+    try:
+        yield
+    finally:
+        for cls, members, items in saved:
+            current = vars(cls)
+            for key in [key for key in current if key not in members]:
+                delattr(cls, key)
+            for key, value in members.items():
+                if current.get(key, _MISSING) is not value:
+                    setattr(cls, key, value)
+            for key, copy in items.items():
+                _put_back(members[key], copy)
+
+
+def _put_back(container: Any, copy: Any) -> None:
+    """Give a dict, list or set the items of its ``copy`` again, when they
+    are not the very items it holds now.
+    """
+    if isinstance(container, dict):
+        if len(container) != len(copy) or any(
+            copy.get(key, _MISSING) is not value for key, value in container.items()
+        ):
+            container.clear()
+            container.update(copy)
+    elif isinstance(container, list):
+        if len(container) != len(copy) or any(
+            a is not b for a, b in zip(container, copy, strict=True)
+        ):
+            container[:] = copy
+    elif container != copy:
+        container.clear()
+        container.update(copy)

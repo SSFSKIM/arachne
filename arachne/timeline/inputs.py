@@ -266,7 +266,18 @@ def source_files(scene_file: str) -> list[str]:
 
 def source_digest(files: Iterable[str], scene_dir: str) -> str:
     """One sha256 over ``files``: each one's path relative to
-    ``scene_dir`` and the sha256 of what it holds, by path.
+    ``scene_dir`` and the sha256 of what it holds, by path
+    (:func:`file_digests`).
+    """
+    digest = hashlib.sha256()
+    for relative, content in file_digests(files, scene_dir):
+        digest.update(f"{relative}\0{content}\n".encode())
+    return digest.hexdigest()
+
+
+def file_digests(files: Iterable[str], scene_dir: str) -> tuple[tuple[str, str], ...]:
+    """Each of ``files`` as ``(path relative to scene_dir, sha256 of what it
+    holds)``, by path. Raises ``OSError`` for a file that can't be read.
     """
     entries = []
     for path in files:
@@ -277,10 +288,18 @@ def source_digest(files: Iterable[str], scene_dir: str) -> str:
                     hashlib.file_digest(file, "sha256").hexdigest(),
                 )
             )
-    digest = hashlib.sha256()
-    for relative, content in sorted(entries):
-        digest.update(f"{relative}\0{content}\n".encode())
-    return digest.hexdigest()
+    return tuple(sorted(entries))
+
+
+def digest_of(path: str) -> str | None:
+    """The sha256 of what ``path`` holds now, or ``None`` when it can't be
+    read (gone, say).
+    """
+    try:
+        with open(path, "rb") as file:
+            return hashlib.file_digest(file, "sha256").hexdigest()
+    except OSError:
+        return None
 
 
 def _named_files(path: str, scene_dir: str) -> Iterator[str]:
