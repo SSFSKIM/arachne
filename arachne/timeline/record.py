@@ -583,6 +583,23 @@ class Record:
         node = self._nodes.get(id(mob))
         return node.at(capture.seq) if node is not None else None
 
+    def first_change(self, mobs: Iterable[Mobject], capture: Capture) -> int | None:
+        """The seq of the earliest capture after ``capture`` at which one of
+        ``mobs`` holds another version than it held there, or ``None`` when
+        none does in any capture made so far. A mobject's state is the same
+        at every capture before that seq: the record keeps one version per
+        change, so this compares versions, not values.
+        """
+        first: int | None = None
+        for mob in mobs:
+            node = self._nodes.get(id(mob))
+            if node is None:
+                continue
+            index = bisect.bisect_right(node.seqs, capture.seq)
+            if index < len(node.seqs) and (first is None or node.seqs[index] < first):
+                first = node.seqs[index]
+        return first
+
     def origin(self, mob: Mobject) -> Origin:
         """``mob``'s creating line and stable id."""
         node = self._nodes.get(id(mob))
