@@ -1052,3 +1052,65 @@ fn a_reveal_without_a_blend_sets_flag_bit_4_only() {
         ],
     );
 }
+
+
+#[test]
+fn pre_projected_is_a_tail_after_the_body_not_a_geometry_flag() {
+    let mut r = plain(RecordKind::Points);
+    r.body = Body::Points(Points { colors: KB, radius: 2.25 });
+    r.features = FEATURE_PRE_PROJECTED;
+    r.pre_projected = Some(PreProjected {
+        points: KC,
+        gradient: Some([[-1.0, -2.0, -3.0], [4.0, 5.0, 6.0]]),
+        fill: Paint::One([0.1, 0.2, 0.3, 0.4]),
+        stroke: Paint::Two([[0.5, 0.6, 0.7, 0.8], [0.9, 1.0, 0.05, 0.15]]),
+        background_stroke: Paint::Table(KD),
+    });
+    let mut fields = plain_fields(3, 0, 0, 0);
+    fields[1] = (1, "features (pre_projected)", u64(2));
+    fields.extend([
+        (209, "colors key", key(&KB)),
+        (225, "radius", f64(2.25)),
+        (233, "pre_projected points", key(&KC)),
+        (249, "pre_projected has gradient", u8(1)),
+        (250, "pre_projected gradient", f64s(&[-1.0, -2.0, -3.0, 4.0, 5.0, 6.0])),
+        (298, "pre_projected fill (one)", u8(1)),
+        (299, "pre_projected fill rgba", f64s(&[0.1, 0.2, 0.3, 0.4])),
+        (331, "pre_projected stroke (two)", u8(2)),
+        (332, "pre_projected stroke rgba", f64s(&[0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 0.05, 0.15])),
+        (396, "pre_projected background (table)", u8(3)),
+        (397, "pre_projected background key", key(&KD)),
+    ]);
+    record_both_ways(&r, &fields);
+    r.pre_projected = Some(PreProjected {
+        points: KC, gradient: None, fill: Paint::None,
+        stroke: Paint::None, background_stroke: Paint::None,
+    });
+    fields.retain(|(offset, _, _)| *offset <= 225);
+    fields.extend([
+        (233, "pre_projected points", key(&KC)),
+        (249, "pre_projected has gradient", u8(0)),
+        (250, "pre_projected fill (none)", u8(0)),
+        (251, "pre_projected stroke (none)", u8(0)),
+        (252, "pre_projected background (none)", u8(0)),
+    ]);
+    record_both_ways(&r, &fields);
+    r.features = 0;
+    r.pre_projected = None;
+    fields.retain(|(offset, _, _)| *offset < 233);
+    fields[1] = (1, "features", u64(0));
+    record_both_ways(&r, &fields);
+}
+
+#[test]
+fn the_writer_asserts_both_pre_projected_presence_disagreements() {
+    let mut r = plain(RecordKind::Path);
+    r.features = FEATURE_PRE_PROJECTED;
+    assert!(std::panic::catch_unwind(|| wire::encode_record(&r)).is_err());
+    r.features = 0;
+    r.pre_projected = Some(PreProjected {
+        points: KC, gradient: None, fill: Paint::None,
+        stroke: Paint::None, background_stroke: Paint::None,
+    });
+    assert!(std::panic::catch_unwind(|| wire::encode_record(&r)).is_err());
+}
