@@ -365,17 +365,12 @@ class _Resolved(NamedTuple):
     as_of: Fraction
 
 
-def _last_frame_read(record: Record, t: Fraction) -> tuple[PlayRecord, Capture]:
-    """The capture the last frame of the record's grid at or before ``t``
-    reads (every 60 Hz tick is a frame without a grid), with its play: the
-    frame a render shows at ``t``. It may be an earlier play's; a capture no
-    frame read (a play too short for any frame) is never it.
+def _last_frame(record: Record, t: Fraction) -> Fraction:
+    """The last frame of the record's grid at or before ``t``: every 60 Hz
+    tick without a grid.
     """
     grid = record.grid if record.grid is not None else Fraction(TICK_RATE)
-    frame = Fraction(math.floor(t * grid)) / grid
-    play, capture = record.capture_at(frame)
-    assert play is not None, "a frame inside a play is read inside a play"
-    return play, capture
+    return Fraction(math.floor(t * grid)) / grid
 
 
 def _resolve(record: Record, t: Fraction) -> _Resolved:
@@ -392,11 +387,18 @@ def _resolve(record: Record, t: Fraction) -> _Resolved:
     if play.route == "ticked":
         # A ticked play's record keeps only the ticks a frame of its grid
         # reads (not its events, nor its last tick unless a frame reads
-        # them). The answer is the last capture a frame read at or before
-        # t, the frame a render shows there: before the play's first frame,
-        # an earlier play's.
-        shown, capture = _last_frame_read(record, t)
-        return _Resolved(shown, capture, None, "recorded", capture.instant)
+        # them). The answer is the state the last frame at or before t
+        # shows, as a render shows it there.
+        frame = _last_frame(record, t)
+        if frame >= play.start:
+            # A tick the record kept, since a frame reads it.
+            capture = play.capture_at(frame)
+            return _Resolved(play, capture, None, "recorded", capture.instant)
+        # Before the play's first frame the frame is an earlier play's, and
+        # that play's route answers it: a trusted or state play without a
+        # frame hook evaluates the frames of a record without a grid only
+        # when asked, so its capture there may be an earlier instant's.
+        return _resolve(record, frame)
     if play.route == "state":
         sample = play.sample_at(t)
         if sample is not None:
