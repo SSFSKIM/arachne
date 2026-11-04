@@ -194,6 +194,14 @@ lifted.
   plays up to the refusal, or to know the refusal before the first run
   (the class's definitions are readable once the scene module is loaded).
 
+## Execution summaries (`arachne/timeline/execution.py`)
+
+- **A supplied camera background is hashed again at every capture
+  summarised.** `summarize` digests `CameraExtras.background` (a full
+  picture, read-only) once per state it walks, though a scene that set it
+  once shares one array across every capture. Cache the digest by the
+  array's identity before summaries are measured at corpus scale.
+
 ## Scene hooks (`arachne/timeline/hooks.py`)
 
 - **A frame hook's effects are recorded where a frame reads them, not
