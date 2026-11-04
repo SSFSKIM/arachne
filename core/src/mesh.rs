@@ -95,13 +95,8 @@ fn transform_normal(m: &Affine, n: [f64; 3]) -> [f64; 3] {
 
 /// Lowers mesh records to triangles for a frame of `width x height` pixels.
 pub fn lower(view: &View, width: u32, height: u32, draws: &[MeshDraw<'_>]) -> Meshes {
-    let map = FrameMap::cairo(
-        width,
-        height,
-        view.frame_width,
-        view.frame_height,
-        view.frame_center,
-    );
+    // A mesh is a surface's faces: CE paints them as paths, through its Cairo context.
+    let map = FrameMap::of_kind(view, RecordKind::Mesh, width, height);
     let camera = match &view.camera {
         Camera::ThreeD(c) => Some(c),
         _ => None,
