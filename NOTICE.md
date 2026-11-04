@@ -13,7 +13,9 @@ whose copyright and permission notices are kept in full:
 - `LICENSES/manim-community-MIT.txt`: Copyright (c) 2024, the Manim Community Developers
 
 Those notices apply to the code that came from those projects, including the history of this repository up to and
-including the Manim Community Edition v0.22.1 release commit.
+including the Manim Community Edition v0.22.1 release commit, and the core's Rust ports of CE's camera and frame
+arithmetic (`core/src/project.rs`: projection and the frame-to-pixel mappings; `core/src/composite.rs`: the
+background's bytes and the background image's crop).
 
 ## Ideas credited
 
@@ -39,12 +41,16 @@ These ideas came from other projects; no code was taken from them.
 These are written in Rust in the core, from a specification or from another project's implementation.
 
 The core's content keys use BLAKE2b (RFC 7693, by Jean-Philippe Aumasson, Samuel Neves, Zooko Wilcox-O'Hearn and
-Christian Winnerlein), implemented in `core/src/xf/key.rs` from the RFC.
+Christian Winnerlein), implemented in `core/src/xf/key.rs` from the RFC. The core's tests pin bytes with SHA-256
+(FIPS 180-4, a NIST standard), implemented in `core/tests/wire.rs` from the standard. Neither specification needs a
+licence file.
 
 The core's rotation matrices (`core/src/project.rs`, `rotation_matrix`) are a Rust port of the arithmetic of
 [SciPy](https://scipy.org)'s `Rotation.from_rotvec` and `Rotation.as_matrix`, including the Taylor-series constants
-it uses for small angles, so that they match CE's `space_ops.rotation_matrix`, which calls them. SciPy is
-"Copyright (c) 2001-2002 Enthought, Inc. 2003, SciPy Developers", under the BSD-3-Clause license.
+it uses for small angles, so that they match CE's `space_ops.rotation_matrix`, which calls them. That arithmetic
+remains under SciPy's BSD-3-Clause license, whose copyright notice, conditions and disclaimer are kept in full:
+
+- `LICENSES/scipy-BSD-3-Clause.txt`: Copyright (c) 2001-2002 Enthought, Inc. 2003, SciPy Developers
 
 ## Dependencies of the core
 
