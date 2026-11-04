@@ -6,6 +6,8 @@ to probe.
 
 from __future__ import annotations
 
+import random
+
 from arachne import (
     DOWN,
     LEFT,
@@ -25,6 +27,14 @@ from arachne import (
 def planted(function):
     """Mark ``function`` as one the tests' patched prover admits unproven."""
     function.planted = True
+    return function
+
+
+def planted_later(function):
+    """Mark ``function`` as one the tests' patched prover refuses the first
+    time it sees it, and admits unproven in every execution after.
+    """
+    function.planted = "later"
     return function
 
 
@@ -108,3 +118,26 @@ class EventOnLastFrame(Scene):
                 square.animate(run_time=0.05).shift(RIGHT),
             )
         )
+
+
+class TwoPassDrift(Scene):
+    """Two plays of running-max setters, the second admitted only from the
+    second execution on, so the probe demotes one play a pass; and a dot
+    placed by an unseeded random draw, so every execution begins its first
+    play elsewhere than the one before.
+    """
+
+    def construct(self):
+        jitter = random.Random().random()
+        tracker = ValueTracker(0)
+        first = Dot(LEFT * 2 + UP * jitter).add_updater(
+            planted(lambda m: m.set_x(max(m.get_x(), tracker.get_value())))
+        )
+        self.add(first)
+        self.play(tracker.animate.set_value(2), rate_func=there_and_back)
+        first.clear_updaters()
+        second = Dot(LEFT * 2 + DOWN).add_updater(
+            planted_later(lambda m: m.set_x(max(m.get_x(), tracker.get_value())))
+        )
+        self.add(second)
+        self.play(tracker.animate.set_value(2), rate_func=there_and_back)  # @second
