@@ -125,6 +125,7 @@ pub fn lower(view: &View, width: u32, height: u32, draws: &[MeshDraw<'_>]) -> Me
         }
         let (placement, keyed) = placement(
             projection.as_ref(),
+            &map,
             rec.depth.space,
             rec.depth.fixed_orientation_centre,
         );
@@ -132,8 +133,12 @@ pub fn lower(view: &View, width: u32, height: u32, draws: &[MeshDraw<'_>]) -> Me
         let corners: Vec<([f64; 2], f64)> = shown
             .iter()
             .map(|p| {
-                let key = keyed.unwrap_or_else(|| -projection.as_ref().unwrap().factor(p[2]));
-                (map.apply(*p), key)
+                let at = map.apply(*p);
+                let key = match keyed {
+                    Some(plane) => plane.at(at[0], at[1]),
+                    None => -projection.as_ref().unwrap().factor(p[2]),
+                };
+                (at, key)
             })
             .collect();
         let alpha = fill[3] * rec.opacity;
@@ -161,6 +166,7 @@ pub fn lower(view: &View, width: u32, height: u32, draws: &[MeshDraw<'_>]) -> Me
             // A projected triangle lies on its world plane, made canonical so coplanar meshes of
             // any triangulation (and paths on the same plane) get the same depth plane.
             let depth = match (keyed, projection.as_ref()) {
+                (Some(plane), _) => plane,
                 (None, Some(p)) if idx.iter().all(|i| p.keys_planar_at(world[*i])) => {
                     WorldPlane::of_triangle(idx.map(|i| world[i]))
                         .and_then(|plane| p.key_plane(&plane, &map, world[idx[0]], MIN_PLANE_COS))

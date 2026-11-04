@@ -230,7 +230,7 @@ impl Producer for Emitter {
 const GREY: [u8; 4] = [128, 128, 128, 255];
 
 fn render(w: u32, h: u32, producers: &[&dyn Producer], threads: usize) -> Rendered {
-    tiles::render(Frame::filled(w, h, GREY), producers, threads)
+    tiles::render(Frame::filled(w, h, GREY), producers, threads).unwrap()
 }
 
 fn at(r: &Rendered, w: u32, x: u32, y: u32) -> [u8; 4] {
@@ -750,7 +750,7 @@ fn a_pixel_without_emission_keeps_a_translucent_backgrounds_bytes() {
         radiance: [0.0; 3],
         depth: 1.0,
     };
-    let drawn = tiles::render(Frame::filled(w, h, bg), &[&red, &dark], 1);
+    let drawn = tiles::render(Frame::filled(w, h, bg), &[&red, &dark], 1).unwrap();
     let l = srgb_decode(200.0 / 255.0);
     let r = (srgb_encode(l + (1.0 - l) * (1.0 - libm::exp(-0.5))) * 255.0 + 0.5) as u8;
     for y in 0..h {
@@ -820,7 +820,8 @@ fn the_coverage_resolve_is_within_its_stated_bound_of_the_sample_resolve() {
                         Fragment::new(depth, *c, Coverage::Mask(*m), i as u32, 0)
                     })
                     .collect();
-                let drawn = tiles::render(Frame::filled(1, 1, GREY), &[&Stack(fragments)], 1);
+                let drawn =
+                    tiles::render(Frame::filled(1, 1, GREY), &[&Stack(fragments)], 1).unwrap();
                 if drawn.resolves[0] != Resolve::Coverage as u8 {
                     // An opaque full layer in front hides the rest: nothing to compare.
                     assert!(n > 1, "a lone partial mask takes the coverage resolve");
@@ -885,10 +886,10 @@ fn a_paths_exact_area_lands_within_the_bound_on_either_resolve() {
         let over = Veil(front);
         let stacks: [Vec<&dyn Producer>; 3] = [vec![&path], vec![&wall, &path], vec![&path, &over]];
         for stack in stacks {
-            let drawn = tiles::render(Frame::filled(w, h, GREY), &stack, 1);
+            let drawn = tiles::render(Frame::filled(w, h, GREY), &stack, 1).unwrap();
             let mut with = stack.clone();
             with.push(&EverySample);
-            let sampled = tiles::render(Frame::filled(w, h, GREY), &with, 1);
+            let sampled = tiles::render(Frame::filled(w, h, GREY), &with, 1).unwrap();
             for y in 0..h {
                 for x in 0..w {
                     let area = path.area(x, y);
@@ -919,6 +920,57 @@ fn a_paths_exact_area_lands_within_the_bound_on_either_resolve() {
             "a path's area, coverage vs sample resolve: widest gap {widest} over {pixels} pixels"
         );
     }
+}
+
+/// A surface tiling a pixel with two triangles of different colours, white on the left half and
+/// black on the right, and in front of it a partial path area or a partial mask covering the white
+/// half in red: the pixel is red where the surface was white and black where it was black. On the
+/// coverage resolve the surface's colours would be averaged before the red is laid over, losing
+/// which half was white (192, 64, 64), so the pixel takes the sample resolve. A surface of one
+/// colour loses nothing to the average and stays on the coverage resolve.
+#[test]
+fn a_surface_of_several_colours_under_a_partial_layer_keeps_where_each_colour_is() {
+    let left = (0..SAMPLES).fold(0u16, |m, s| {
+        if SAMPLE_OFFSETS[s][0] < 0 {
+            m | 1 << s
+        } else {
+            m
+        }
+    });
+    assert_eq!(left.count_ones(), 8);
+    let red = premultiply([1.0, 0.0, 0.0, 1.0]);
+    let surface = |right: [u8; 4]| {
+        vec![
+            Fragment::new(Plane::constant(2.0), [255; 4], Coverage::Mask(left), 0, 0).on_surface(1),
+            Fragment::new(Plane::constant(2.0), right, Coverage::Mask(!left), 0, 1).on_surface(1),
+        ]
+    };
+    let black = [0, 0, 0, 255];
+    let path = HalfPlane::new([1.0, 0.0, 0.5], red, Plane::constant(1.0));
+    let under_path = Stack(surface(black));
+    let mut with_mask = surface(black);
+    with_mask.push(Fragment::new(
+        Plane::constant(1.0),
+        red,
+        Coverage::Mask(left),
+        1,
+        0,
+    ));
+    let under_mask = Stack(with_mask);
+    let cases: [(&str, Vec<&dyn Producer>); 2] = [
+        ("a path's partial area", vec![&under_path, &path]),
+        ("a partial mask", vec![&under_mask]),
+    ];
+    for (what, producers) in cases {
+        let drawn = tiles::render(Frame::filled(1, 1, GREY), &producers, 1).unwrap();
+        assert_eq!(drawn.resolves[0], Resolve::Sample as u8, "{what}");
+        assert_eq!(drawn.rgba, [128, 0, 0, 255], "{what}");
+    }
+
+    let one_colour = Stack(surface([255; 4]));
+    let drawn = tiles::render(Frame::filled(1, 1, GREY), &[&one_colour, &path], 1).unwrap();
+    assert_eq!(drawn.resolves[0], Resolve::Coverage as u8);
+    assert_eq!(drawn.rgba, blend(red, 128, [255; 4]));
 }
 
 /// A translucent layer over every pixel, in front of everything.

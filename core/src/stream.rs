@@ -72,6 +72,8 @@ pub enum DrawError {
     NoView,
     Invalid(String),
     Unsupported(Unsupported),
+    /// A drawing thread the system would not start.
+    Threads(String),
 }
 
 impl fmt::Display for DrawError {
@@ -79,6 +81,7 @@ impl fmt::Display for DrawError {
         match self {
             DrawError::NoView => f.write_str("the stream has no view yet"),
             DrawError::Invalid(m) => f.write_str(m),
+            DrawError::Threads(m) => write!(f, "a drawing thread could not start: {m}"),
             DrawError::Unsupported(u) => write!(
                 f,
                 "render.unsupported: {} (slot {:?}, object {:?}): {}",
@@ -90,7 +93,9 @@ impl fmt::Display for DrawError {
 
 impl std::error::Error for DrawError {}
 
-/// The stream as a delta would leave it, read without changing anything.
+/// The stream as a delta would leave it, read without changing anything, by the rules commit
+/// applies: a key the stream holds keeps what it holds (a validated delta re-uploads only the same
+/// content under it, and uploads each key once); the last record set in a slot wins, then removals.
 struct After<'a> {
     stream: &'a Stream,
     uploads: HashMap<Key, &'a Shape>,
@@ -117,10 +122,10 @@ impl<'a> After<'a> {
         if self.released.contains(key) {
             return None;
         }
-        self.uploads
+        self.stream
+            .shapes
             .get(key)
-            .copied()
-            .or_else(|| self.stream.shapes.get(key))
+            .or_else(|| self.uploads.get(key).copied())
             .map(|s| s.data())
     }
 
@@ -128,10 +133,10 @@ impl<'a> After<'a> {
         if self.released.contains(key) {
             return None;
         }
-        self.upload_paints
+        self.stream
+            .paints
             .get(key)
-            .copied()
-            .or_else(|| self.stream.paints.get(key))
+            .or_else(|| self.upload_paints.get(key).copied())
     }
 
     fn record(&self, slot: u32) -> Option<&'a Record> {
@@ -142,6 +147,14 @@ impl<'a> After<'a> {
             .get(&slot)
             .copied()
             .or_else(|| self.stream.records.get(&slot))
+    }
+
+    /// The records the delta sets that it does not also remove: the ones commit keeps.
+    fn kept_sets(&self) -> impl Iterator<Item = &'a Record> + '_ {
+        self.set
+            .values()
+            .copied()
+            .filter(|r| !self.removed.contains(&r.slot))
     }
 
     fn records(&self) -> impl Iterator<Item = &'a Record> + '_ {
@@ -407,8 +420,39 @@ impl Stream {
     }
 
     fn check(&self, delta: &Delta) -> Result<(), StreamError> {
+        let mut uploaded = HashSet::new();
+        for key in delta
+            .upload
+            .iter()
+            .map(|s| s.key())
+            .chain(delta.upload_paints.iter().map(|s| s.key()))
+        {
+            if !uploaded.insert(key) {
+                return Err(StreamError::Invalid(format!(
+                    "a delta uploads {} twice",
+                    key.hex()
+                )));
+            }
+        }
+        let held_with_other = |key: Key| {
+            Err(StreamError::Invalid(format!(
+                "an upload of {}, which the stream holds with other content",
+                key.hex()
+            )))
+        };
         for shape in &delta.upload {
             check_shape(shape)?;
+            let held = self.shapes.get(&shape.key());
+            if self.paints.contains_key(&shape.key())
+                || held.is_some_and(|h| !same_content(h.data(), shape.data()))
+            {
+                return held_with_other(shape.key());
+            }
+        }
+        for stops in &delta.upload_paints {
+            if self.shapes.contains_key(&stops.key()) {
+                return held_with_other(stops.key());
+            }
         }
         let after = After::new(self, delta);
         for key in &delta.release {
@@ -464,7 +508,7 @@ impl Stream {
                 }
             }
         }
-        for rec in &delta.set {
+        for rec in after.kept_sets() {
             after.check_record(rec)?;
         }
         if let Some(view) = &delta.view {
@@ -518,10 +562,11 @@ impl Stream {
                 reason: format!("light model {code} is not one this build knows"),
             }));
         }
+        let shading = matches!(&view.camera, Camera::ThreeD(c) if c.should_apply_shading);
         if let Some(refused) = self
             .order
             .iter()
-            .find_map(|e| refusal(&self.records[&e.slot], &self.shapes))
+            .find_map(|e| refusal(&self.records[&e.slot], &self.shapes, shading))
         {
             return Err(DrawError::Unsupported(refused));
         }
@@ -621,7 +666,7 @@ impl Stream {
         let blocks = points::lower(view, width, height, &clouds);
         let mut producers: Vec<&dyn Producer> = vec![&meshes, &paths, &blocks];
         producers.extend_from_slice(extra);
-        Ok(tiles::render(frame, &producers, threads))
+        tiles::render(frame, &producers, threads).map_err(|e| DrawError::Threads(e.to_string()))
     }
 
     pub fn view(&self) -> Option<&View> {
@@ -645,44 +690,81 @@ impl Stream {
     }
 }
 
+/// Whether a shape held under a key and one uploaded under it have one content. A key is computed
+/// from, or checked against, the contents of every kind this build knows, so two such shapes of one
+/// kind are the same; a kind it does not know carries the key it was stated with, so its bytes are
+/// compared.
+fn same_content(held: &ShapeData, uploaded: &ShapeData) -> bool {
+    match (held, uploaded) {
+        (
+            ShapeData::Reserved { code, payload },
+            ShapeData::Reserved {
+                code: other,
+                payload: other_payload,
+            },
+        ) => code == other && payload == other_payload,
+        (ShapeData::Reserved { .. }, _) | (_, ShapeData::Reserved { .. }) => false,
+        (a, b) => std::mem::discriminant(a) == std::mem::discriminant(b),
+    }
+}
+
 /// The longest side of a frame this build draws, in pixels.
 pub const MAX_SIDE: u32 = 16384;
 
-/// A shape that contradicts itself: a triangle naming a vertex the mesh lacks, or normals that
-/// are not one per vertex.
+/// A shape that contradicts itself: a triangle naming a vertex the mesh lacks, normals that are not
+/// one per vertex, or an image whose pixels are not its width times its height.
 fn check_shape(shape: &Shape) -> Result<(), StreamError> {
-    if let ShapeData::Mesh {
-        positions,
-        triangles,
-        normals,
-    } = shape.data()
-    {
-        if triangles
-            .iter()
-            .flatten()
-            .any(|i| *i as usize >= positions.len())
-        {
-            return Err(StreamError::Invalid(format!(
-                "mesh {}: a triangle names a vertex past its {}",
-                shape.key().hex(),
-                positions.len()
-            )));
+    let invalid = |why: String| {
+        Err(StreamError::Invalid(format!(
+            "{}: {why}",
+            shape.key().hex()
+        )))
+    };
+    match shape.data() {
+        ShapeData::Mesh {
+            positions,
+            triangles,
+            normals,
+        } => {
+            if triangles
+                .iter()
+                .flatten()
+                .any(|i| *i as usize >= positions.len())
+            {
+                return invalid(format!(
+                    "a mesh's triangle names a vertex past its {}",
+                    positions.len()
+                ));
+            }
+            if normals.as_ref().is_some_and(|n| n.len() != positions.len()) {
+                return invalid("a mesh needs one normal per vertex".into());
+            }
         }
-        if normals.as_ref().is_some_and(|n| n.len() != positions.len()) {
-            return Err(StreamError::Invalid(format!(
-                "mesh {}: one normal per vertex",
-                shape.key().hex()
-            )));
+        ShapeData::Image {
+            width,
+            height,
+            rgba,
+        } => {
+            let size = (*width as usize)
+                .checked_mul(*height as usize)
+                .and_then(|n| n.checked_mul(4));
+            if size != Some(rgba.len()) {
+                return invalid(format!(
+                    "an image of {width} x {height} pixels in {} bytes",
+                    rgba.len()
+                ));
+            }
         }
+        ShapeData::Path { .. } | ShapeData::Reserved { .. } => {}
     }
     Ok(())
 }
 
 /// What of a drawn record's fixed fields this build does not draw yet, if anything: blends,
 /// reveals, paint blends and clips for every kind; for meshes (and instances of a mesh) strokes,
-/// gradient fills and dashes; for paths (and instances of a path) gradient paints and dashes it
-/// cannot read.
-fn field_refusal(rec: &Record, mesh: bool) -> Option<String> {
+/// gradient fills and dashes; for paths (and instances of a path) CE's lighting under a camera
+/// that shades (`shading`), gradient paints and dashes it cannot read.
+fn field_refusal(rec: &Record, mesh: bool, shading: bool) -> Option<String> {
     let kind = rec.kind.name();
     let p = &rec.paint;
     let drawn = |paint: &Paint, width: Option<f64>| {
@@ -714,6 +796,14 @@ fn field_refusal(rec: &Record, mesh: bool) -> Option<String> {
         } else {
             None
         }
+    } else if shading
+        && rec.depth.shade_in_3d
+        && (drawn(&p.fill, None) || strokes.iter().any(|(paint, w)| drawn(paint, Some(*w))))
+    {
+        // CE lights each paint into two stops, at the path's start and end corners
+        // (`ThreeDCamera.modified_rgbas`), drawn as a linear gradient: drawn unlit it would be a
+        // wrong frame.
+        not_yet("shading")
     } else if gradient(&p.fill)
         || strokes
             .iter()
@@ -735,9 +825,10 @@ fn field_refusal(rec: &Record, mesh: bool) -> Option<String> {
     }
 }
 
-/// Why this build refuses to draw a record, if it does. It draws `mesh`, `path`, `points` and
-/// `instances` records; `face_group` and `image` records wait for their drawers.
-fn refusal(rec: &Record, shapes: &HashMap<Key, Shape>) -> Option<Unsupported> {
+/// Why this build refuses to draw a record, if it does, under a camera that shades or not
+/// (`shading`). It draws `mesh`, `path`, `points` and `instances` records; `face_group` and
+/// `image` records wait for their drawers.
+fn refusal(rec: &Record, shapes: &HashMap<Key, Shape>, shading: bool) -> Option<Unsupported> {
     let prototype = rec
         .geometry
         .shape_a
@@ -757,7 +848,7 @@ fn refusal(rec: &Record, shapes: &HashMap<Key, Shape>) -> Option<Unsupported> {
         RecordKind::Mesh | RecordKind::Path | RecordKind::Points | RecordKind::Instances
     ) {
         let mesh = matches!(prototype, Some(ShapeData::Mesh { .. }));
-        if let Some(reason) = field_refusal(rec, mesh) {
+        if let Some(reason) = field_refusal(rec, mesh, shading) {
             reason
         } else if let (Body::Instances(body), Some(data)) = (&rec.body, prototype) {
             // Each instance's parts take sub-orders of their own, in 32 bits.

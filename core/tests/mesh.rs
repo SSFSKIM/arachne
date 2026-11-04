@@ -806,3 +806,56 @@ fn a_fixed_orientation_mesh_is_a_camera_facing_plane_at_its_centres_depth() {
     );
     assert!(fronts[1] > 1000, "surface in front at {} pixels", fronts[1]);
 }
+
+/// A label kept facing the camera, lying on a surface that faces the camera too: they are on one
+/// plane, so they tie, and the later in the draw order shows, a mesh label or a path label alike.
+#[test]
+fn a_fixed_orientation_label_on_a_surface_facing_the_camera_ties_by_draw_order() {
+    let theta = -(90.0 * (std::f64::consts::TAU / 360.0));
+    let mut view = arachne_core::probes::view(W, H, 0.0, theta);
+    let Camera::ThreeD(c) = &mut view.camera else {
+        unreachable!()
+    };
+    c.focal_distance = 10.0;
+    let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    assert_eq!(Projection::new(c, view.frame_center).rotation(), identity);
+    let z = 0.13;
+    let surface = quad(square_at(z, 2.0));
+    let (white, green) = ([1.0, 1.0, 1.0, 1.0], [0.1, 0.6, 0.2, 1.0]);
+    let mesh_label = quad(square_at(z, 0.5));
+    let path_label = Shape::new(ShapeData::Path {
+        points: common::square_points(0.5)
+            .into_iter()
+            .map(|[x, y, _]| [x, y, z])
+            .collect(),
+    });
+    for (name, label) in [("mesh", mesh_label), ("path", path_label)] {
+        let mut label_record = if name == "mesh" {
+            mesh_record(1, &label, white, Space::World)
+        } else {
+            let mut r = Record::new(RecordKind::Path, 1, 101);
+            r.geometry.shape_a = Some(label.key());
+            r.paint.fill = Paint::One(white);
+            r.depth.space = Space::World;
+            r
+        };
+        label_record.depth.fixed_orientation_centre = Some([0.0, 0.0, z]);
+        let items = [
+            (label.clone(), label_record),
+            (
+                surface.clone(),
+                mesh_record(2, &surface, green, Space::World),
+            ),
+        ];
+        for (order, want) in [([2, 1], premultiply(white)), ([1, 2], premultiply(green))] {
+            let frame = stream_of(view.clone(), &items, &order)
+                .draw(W, H, 1)
+                .unwrap();
+            assert_eq!(
+                px(&frame, W / 2, H / 2),
+                want,
+                "{name} label, order {order:?}"
+            );
+        }
+    }
+}

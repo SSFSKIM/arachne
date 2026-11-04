@@ -47,8 +47,9 @@ pixel was resolved.
   the masks at the sub-samples; `src/depth.rs`, canonical planes and depth along curves.
 - `src/instance.rs`: `instances` and `points` records drawn as their members; `src/points.rs`, point
   clouds as CE's square blocks of whole pixels.
-- `src/tiles.rs`: the frame cut into tiles, drawn on threads scoped to the draw call; the bytes are
-  the same on any number of threads.
+- `src/tiles.rs`: the frame cut into tiles, drawn on threads scoped to the draw call (at most one
+  per tile and 256; a thread the system will not start fails the draw); the bytes are the same on
+  any number of threads.
 - `parity/`: the parity kit, the class probes (`probes.rs`, asserted by `tests/probes.rs`) as
   fixtures, the core's reference frames and `tolerances.json`; `python -m arachne_core.parity
   --backend cpu` runs it (`parity/README.md`).

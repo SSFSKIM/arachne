@@ -44,7 +44,7 @@ fn round_to_grid(v: f64) -> f64 {
 
 impl WorldPlane {
     /// The canonical plane with normal `n` (any length but zero) through `p`.
-    fn canonical(n: [f64; 3], p: [f64; 3]) -> Option<WorldPlane> {
+    pub(crate) fn canonical(n: [f64; 3], p: [f64; 3]) -> Option<WorldPlane> {
         let norm = dot(n, n).sqrt();
         if !(norm > 0.0 && norm.is_finite()) {
             return None;
@@ -83,7 +83,9 @@ impl WorldPlane {
 
     /// The plane the points lie on (Newell's normal, through their first point), the axis plane
     /// of a coordinate they all share when they lie on a line, or `None` when they are not on one
-    /// plane.
+    /// plane. Newell's normal sums the outline's signed areas, so an outline crossing itself on a
+    /// plane (a bowtie) can cancel it; the points then take a second estimate, the normal of the
+    /// widest triangle on their first point, before they are found to lie on no plane.
     pub fn of_points(points: &[[f64; 3]]) -> Option<WorldPlane> {
         let first = *points.first()?;
         if let Some(axis) = shared_axis(points) {
@@ -114,21 +116,53 @@ impl WorldPlane {
             n[1] += (a[2] - b[2]) * (a[0] + b[0]);
             n[2] += (a[0] - b[0]) * (a[1] + b[1]);
         }
-        let norm = dot(n, n).sqrt();
-        if norm.is_nan() || norm <= PLANAR_TOLERANCE * extent * extent {
-            return None; // On a line, with no coordinate shared: no plane of its own.
-        }
-        let unit = n.map(|v| v / norm);
-        let d0 = dot(unit, first);
+        // Whether every point lies on the plane with normal `n` through the first point. A normal
+        // too short to point anywhere (points on a line, or a sum that cancelled) gives no plane.
         let tolerance = PLANAR_TOLERANCE * extent.max(1.0);
-        if points
-            .iter()
-            .any(|p| (dot(unit, *p) - d0).abs() > tolerance)
-        {
-            return None;
+        let holds = |n: [f64; 3]| {
+            let norm = dot(n, n).sqrt();
+            if norm.is_nan() || norm <= PLANAR_TOLERANCE * extent * extent {
+                return false;
+            }
+            let unit = n.map(|v| v / norm);
+            let d0 = dot(unit, first);
+            points
+                .iter()
+                .all(|p| (dot(unit, *p) - d0).abs() <= tolerance)
+        };
+        if holds(n) {
+            return WorldPlane::canonical(n, first);
         }
-        WorldPlane::canonical(n, first)
+        let widest = widest_normal(points, first);
+        if holds(widest) {
+            return WorldPlane::canonical(widest, first);
+        }
+        None // Not on one plane, or on a line with no coordinate shared: no plane of its own.
     }
+}
+
+/// The normal of the widest triangle with a corner at `first`: its second corner the point
+/// farthest from `first`, its third the point farthest from the line through those two.
+fn widest_normal(points: &[[f64; 3]], first: [f64; 3]) -> [f64; 3] {
+    let from_first = |p: &[f64; 3]| [p[0] - first[0], p[1] - first[1], p[2] - first[2]];
+    let cross = |u: [f64; 3], v: [f64; 3]| {
+        [
+            u[1] * v[2] - u[2] * v[1],
+            u[2] * v[0] - u[0] * v[2],
+            u[0] * v[1] - u[1] * v[0],
+        ]
+    };
+    let longest = |a: &[f64; 3], b: &[f64; 3]| dot(*a, *a).total_cmp(&dot(*b, *b));
+    let far = points
+        .iter()
+        .map(from_first)
+        .max_by(longest)
+        .unwrap_or([0.0; 3]);
+    points
+        .iter()
+        .map(|p| cross(far, from_first(p)))
+        .max_by(longest)
+        .unwrap_or([0.0; 3])
 }
 
 /// The axis plane of a coordinate every point shares exactly, preferring z, then y, then x.

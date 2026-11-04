@@ -41,6 +41,10 @@
 //! unit, with their union for its mask and their colour averaged over the sub-samples each covers;
 //! every other fragment is a unit of its own. So a surface's internal edges take the coverage
 //! resolve, and an opaque surface tiling the pixel hides what is behind it at every sub-sample.
+//! The average is exact only while every other layer covers the whole pixel: a unit of several
+//! colours beside a partial mask or a path's partial area (an edge of something else crossing a
+//! lit surface's internal edge) counts as a partial mask, so the sample resolve keeps which of
+//! its colours the partial layer covers.
 
 use std::cmp::Ordering;
 
@@ -314,7 +318,9 @@ pub fn area_coverage(area: f32) -> u8 {
 /// moving surface (worst 1 in three cases) and where a surface's silhouette, a path's edge and a
 /// crossing meet, the edges across each other or along. A partial mask and a path's partial area
 /// never share a coverage-resolve pixel (that pixel takes the sample resolve), so the coverage
-/// resolve never composites a silhouette and a path's edge as independent shapes.
+/// resolve never composites a silhouette and a path's edge as independent shapes. The bound holds
+/// for pixels with at most one partial path layer: two or more coincide as independent coverages
+/// on the coverage resolve (as Cairo blends them) and as their overlap on the sample resolve.
 pub const COVERAGE_TO_SAMPLE_LSB: u8 = 2;
 
 /// A mask's count as an 8-bit coverage.
@@ -792,17 +798,25 @@ fn resolve_pixel(
     {
         units = &units[..=p];
     }
-    let partial_masks = units
-        .iter()
-        .filter(|u| unit_mask(**u).is_some_and(|m| m != FULL))
-        .count();
+    let partial = |u: &(usize, usize)| unit_mask(*u).is_some_and(|m| m != FULL);
+    let mut partial_masks = units.iter().filter(|u| partial(u)).count();
     // Masks come from surfaces, so paths alone never reach the sample resolve this way.
-    let partial_area = || {
-        units.iter().any(
-            |u| matches!(frags[order[u.0]].coverage, Coverage::Area { area, .. } if area < 1.0),
-        )
-    };
-    let one_order = (partial_masks == 0 || partial_masks == 1 && !partial_area())
+    let partial_area = units
+        .iter()
+        .any(|u| matches!(frags[order[u.0]].coverage, Coverage::Area { area, .. } if area < 1.0));
+    // A surface tiling the pixel in several colours composites as their average, which is exact
+    // only while everything else covers the whole pixel: beside a partial layer, which covers some
+    // of its colours and not others, it counts as partial itself.
+    if partial_masks > 0 || partial_area {
+        partial_masks += units
+            .iter()
+            .filter(|u| {
+                let first = frags[order[u.0]].colour;
+                !partial(u) && order[u.0..u.1].iter().any(|i| frags[*i].colour != first)
+            })
+            .count();
+    }
+    let one_order = (partial_masks == 0 || partial_masks == 1 && !partial_area)
         && (0..SAMPLES).all(|k| units.windows(2).all(|w| before(w[0], w[1], k)));
     if one_order {
         let mut px = bg;
