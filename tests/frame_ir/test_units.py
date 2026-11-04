@@ -1,8 +1,9 @@
 """Every graphical unit drawn on both draw paths, frame for frame the same
 bytes: the frames comparison draws each unit's scene directly, checks it
-against its control frames, then draws it again from the Frame IR and
-requires each frame's sha256 to equal the first's
-(``frames_comparison.BOTH_PATHS_ENV``).
+against its control frames, then draws it again on ``ir_cairo``, where its
+frames come from the record or are drawn live, both through the Frame IR,
+and requires that pass to have drawn from XF and each frame's sha256 to
+equal the first's (``frames_comparison.BOTH_PATHS_ENV``).
 """
 
 from __future__ import annotations

@@ -202,9 +202,8 @@ class LivePainter:
     counts those whose real draw differs from the picture drawn from XF.
     """
 
-    def __init__(self, *, draw: bool = True, validate: bool | None = None) -> None:
+    def __init__(self, *, draw: bool = True) -> None:
         self.draw = draw
-        self.validate = validate
         self._painters: dict[int, tuple[Any, Any]] = {}
         self._checker = CairoDrawer()
         self.captures = 0
@@ -216,7 +215,7 @@ class LivePainter:
         if found is None or found[0] is not camera:
             from .painter import IrCairoPainter
 
-            painter = IrCairoPainter(validate=self.validate, stream=_LiveStream())
+            painter = IrCairoPainter(stream=_LiveStream())
             found = (camera, painter)
             self._painters[id(camera)] = found
         return found[1]
