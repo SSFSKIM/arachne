@@ -170,12 +170,16 @@ def restorer(
 
 
 def _restoring(
-    record: Record, play: PlayRecord, t: Fraction
+    record: Record, play: PlayRecord, t: Fraction, base: Capture | None = None
 ) -> tuple[Capture, Callable[[Drawing], AbstractContextManager[None]]]:
-    """The capture a restore of ``play`` at ``t`` starts from, and the
-    context that holds the scene restored at ``t`` in a drawing showing it.
+    """The capture a restore of ``play`` at ``t`` starts from (``base``, by
+    default its latest kept capture at or before ``t``), and the context
+    that holds the scene restored at ``t`` in a drawing showing it.
     """
-    base = play.base_at(t)
+    if base is None:
+        base = play.base_at(t)
+    elif base.instant > t:
+        raise ValueError(f"A restore at {t} can't start from {base.instant}, after it.")
     point = play._animation_states.get(base.seq)
     if not isinstance(point, RestorePoint) or point.version != REGISTERED_STATE_VERSION:
         raise Unrestorable(
@@ -224,10 +228,16 @@ def _restoring(
 
 
 @contextmanager
-def restored(record: Record, t: Fraction | float) -> Iterator[Scene]:
+def restored(
+    record: Record, t: Fraction | float, *, base: Capture | None = None
+) -> Iterator[Scene]:
     """The scene inside the block holding the state of the state play that
     holds ``t``, restored there: its clock at ``t`` and the names its
     callbacks read as the play began. Everything is put back after it.
+
+    ``base`` is the play's kept capture the restore starts from, at or
+    before ``t`` with no event between: by default the latest. (The probe
+    starts from the play's start or an event, :mod:`.probe`.)
     """
     from .clock import exact
 
@@ -235,7 +245,7 @@ def restored(record: Record, t: Fraction | float) -> Iterator[Scene]:
     play = record.play_at(t)
     if play is None or play.route != "state" or play.held:
         raise LookupError(f"No state-function play holds {t}.")
-    _, restoring = _restoring(record, play, t)
+    _, restoring = _restoring(record, play, t, base)
     with Drawing(record) as drawing, restoring(drawing):
         yield record._scene
 
