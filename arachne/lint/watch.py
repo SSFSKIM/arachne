@@ -35,17 +35,24 @@ together. What a play carries wholly off the frame left on purpose: the
 edge it crossed on the way out was transit, and it is not asked again until
 it is back on the frame. A camera away from its home frame is asked only
 about texts its edge cuts. Under a ThreeDCamera only what it keeps fixed in
-the frame is asked.
+the frame is asked. A top level a play made out of members of one authored
+group (``Scene.add`` takes the members of a group made for the play out of
+the groups holding them) is still that group: its parts are never paired
+with each other.
 
 A play's first frame is read as the scene when it called the play
-(nothing in it is in motion yet). As it ends, the scene is its last frame
-less what it removes, standing for the play's end: the frame after it
-already shows what the script changed between the two plays.
+(nothing in it is in motion yet). As it ends, the watch reads the scene the
+play left (its animations finished and cleaned up, before the script runs
+on: ``Record.states``), at the play's end; what it carried off is judged
+there.
+
+The armed rule's ``sample_fps`` (:mod:`.armed`) has the watch read a
+play's frames at another engine's sampling rate.
 
 A finding is keyed by the unit it names (:class:`~arachne.lint.parts.Unit`),
 so one rebuilt every frame in place is one finding. A held span decided
-within one frame of the render's grid of :data:`HOLD_PERSIST` says so in
-``detail.clock_margin`` (seconds past it).
+within one frame of the render's grid of :data:`HOLD_PERSIST` (that frame
+included) says so in ``detail.clock_margin`` (seconds past it).
 """
 
 from __future__ import annotations
@@ -72,11 +79,11 @@ import numpy as np
 
 from arachne.timeline.clock import frames_in
 
-from ._scope import Animated, animated_by, asked, named_by
+from ._scope import Animated, animated, animated_by, asked, named_by
 from .armed import ArmedRule
 from .findings import Finding
 from .instants import render_grid
-from .plays import played
+from .plays import family_at, played
 from .rules._excuse import muted, paired
 from .rules._geometry import box_gap
 from .rules._pairs import _measure, pair_findings
@@ -85,7 +92,7 @@ from .rules.frame_edge import edge_findings
 
 if TYPE_CHECKING:
     from arachne.camera.projection import View
-    from arachne.timeline.record import PlayRecord, Record
+    from arachne.timeline.record import Capture, PlayRecord, Record
 
     from .core import LintContext
     from .parts import Box, Parts
@@ -133,62 +140,95 @@ class _Open:
 @dataclass(frozen=True)
 class _Step:
     """One sample of the watch: what it is (``"entry"``, ``"inside"``,
-    ``"exit"`` or ``"final"``), the play it is of, the frame it reads and
-    the time it stands for.
+    ``"exit"`` or ``"final"``), the play it is of, the frame it reads
+    (``None`` for an exit, which reads the state the play left) and the
+    time it stands for.
     """
 
     kind: str
     play: int | None
-    frame: Fraction
+    frame: Fraction | None
     at: Fraction
 
 
-def _schedule(record: Record, since: Fraction) -> list[_Step]:
-    """When the watch samples, from ``since`` on: as each play begins, then
-    at the first frame at least :data:`HOLD_SAMPLE` after the sample before
-    while it plays (a frozen frame has none), and as it ends; and the scene
-    as it closes.
+def _schedule(
+    record: Record, since: Fraction, sample_fps: Fraction | None
+) -> list[_Step]:
+    """When the watch samples, from ``since`` on: as each play begins (its
+    first frame), then at the first frame it reads (:func:`_read_frames`) at
+    least :data:`HOLD_SAMPLE` after the sample before while it plays (a
+    frozen frame has none), and as it ends; and the scene as it closes.
     """
     grid = render_grid(record)
     steps = []
     for play in record.plays:
-        frames = frames_in(play.start, play.end, grid)
-        if play.start < since or not frames:
+        if play.start < since:
             continue
-        steps.append(_Step("entry", play.index, frames[0], frames[0]))
-        if not play.held:
-            last = play.start
-            for frame in frames:
-                if frame - last >= HOLD_SAMPLE:
-                    steps.append(_Step("inside", play.index, frame, frame))
-                    last = frame
-        # The play's last frame, read for the scene as the play leaves it.
-        steps.append(_Step("exit", play.index, frames[-1], play.end))
+        frames = frames_in(play.start, play.end, grid)
+        if frames:
+            steps.append(_Step("entry", play.index, frames[0], frames[0]))
+            if not play.held:
+                last = play.start
+                for frame in _read_frames(play, frames, sample_fps):
+                    if frame - last >= HOLD_SAMPLE:
+                        steps.append(_Step("inside", play.index, frame, frame))
+                        last = frame
+        steps.append(_Step("exit", play.index, None, play.end))
     steps.append(_Step("final", None, record.duration, record.duration))
     return steps
 
 
-def _frames(record: Record, since: Fraction) -> list[Fraction]:
-    return [step.frame for step in _schedule(record, since)]
+def _read_frames(
+    play: PlayRecord, frames: list[Fraction], sample_fps: Fraction | None
+) -> list[Fraction]:
+    """The frames of ``play`` the watch reads: all of them, or at a sampling
+    rate the first at or after each ``1/sample_fps`` of the play, and its last.
+    """
+    if sample_fps is None:
+        return frames
+    read: list[Fraction] = []
+    tick = play.start
+    for frame in frames:
+        if frame >= tick:
+            read.append(frame)
+            while tick <= frame:
+                tick += 1 / sample_fps
+    if read[-1] != frames[-1]:
+        read.append(frames[-1])
+    return read
+
+
+def _frames(record: Record, rule: ArmedRule) -> list[Fraction]:
+    steps = _schedule(record, rule.since, rule.sample_fps)
+    return [step.frame for step in steps if step.frame is not None]
 
 
 def _watch(context: LintContext, rule: ArmedRule) -> list[Finding]:
-    record = context.record
+    # Plays, frames and states, from the one execution the frames come from.
+    record = context.frames.execution
+    states = record.states
     watch = _Watch(record, rule.terms)
-    plays = record.plays
-    steps = _schedule(record, rule.since)
     shown = rule.frames(context)
-    for index, (step, parts) in enumerate(zip(steps, shown, strict=True)):
-        play = plays[step.play] if step.play is not None else None
-        if play is None or step.kind == "entry":
+    for step in _schedule(record, rule.since, rule.sample_fps):
+        play = record.plays[step.play] if step.play is not None else None
+        if play is not None and step.kind == "exit":
+            left = states.exits.get(play.index) if states is not None else None
+            if left is None:
+                continue
+            # The scene as the play left it: its animations finished and
+            # cleaned up, before the script runs on.
+            parts = rule.state(context, left)
+            watch.regroup(play, left)
+            watch.after_play(play, parts, left)
             watch.sample(parts, step.at, (), ())
-        elif step.kind == "inside":
+            continue
+        parts = shown.get(step.frame) if step.frame is not None else None
+        if parts is None:
+            continue
+        if play is not None and step.kind == "inside":
             watch.sample(parts, step.at, watch.moved(play), watch.going(play))
         else:
-            # The frame after the play shows what it carried off; its last
-            # frame stands for how it left the scene, less what it removed.
-            watch.after_play(play, shown[index + 1])
-            watch.sample(parts, step.at, (), watch.removed(play))
+            watch.sample(parts, step.at, (), ())
     return watch.report(1 / render_grid(record))
 
 
@@ -207,34 +247,63 @@ class _Watch:
             str, tuple[str, float, np.ndarray, np.ndarray, np.ndarray]
         ] = {}
         self.named: set[str] = set()
+        #: The top level a play made out of members of one authored group,
+        #: by stable id, and that group's (:meth:`regroup`).
+        self.owner: dict[str, str] = {}
         self._animated: dict[tuple[int, str], list[Animated]] = {}
 
     # What a play animates
 
-    def moved(self, play: PlayRecord, at: str = "start") -> list[Animated]:
+    def moved(self, play: PlayRecord) -> list[Animated]:
         """What ``play`` animates."""
-        return self._of(play, "moved", at)
+        return self._of(play, "moved")
 
     def going(self, play: PlayRecord) -> list[Animated]:
         """What ``play`` takes away or pulses: not asked while it plays."""
-        return self._of(play, "going", "start")
+        return self._of(play, "going")
 
-    def removed(self, play: PlayRecord) -> list[Animated]:
-        """What ``play`` takes out of the scene as it ends."""
-        return self._of(play, "removed", "start")
-
-    def _of(self, play: PlayRecord, which: str, at: str) -> list[Animated]:
-        key = (play.index, f"{which}:{at}")
+    def _of(self, play: PlayRecord, which: str) -> list[Animated]:
+        key = (play.index, which)
         found = self._animated.get(key)
         if found is None:
             leaves = played(play)
             if which == "going":
                 leaves = tuple(leaf for leaf in leaves if leaf.departs or leaf.emphasis)
-            elif which == "removed":
-                leaves = tuple(leaf for leaf in leaves if leaf.remover)
-            found = animated_by(self.record, play, leaves, at=at)
+            found = animated_by(self.record, play, leaves)
             self._animated[key] = found
         return found
+
+    def regroup(self, play: PlayRecord, left: Capture) -> None:
+        """After ``play``, as it left the scene (``left``): a top level it
+        made out of members of one authored group is still that group, whose
+        parts are never paired with each other; one gathered from several
+        keeps its own. (``Scene.add`` takes the members of a group made for
+        the play out of the groups holding them.)
+        """
+        record = self.record
+        was: dict[str, str] = {}
+        for top in play.called:
+            key = record.origin(top).id
+            owner = self.owner.get(key, key)
+            for member in family_at(record, top, left):
+                was.setdefault(record.origin(member).id, owner)
+        before = {record.origin(top).id for top in play.called}
+        for top in left.roots:
+            key = record.origin(top).id
+            if key in before:
+                continue
+            owners = {
+                was[i]
+                for member in family_at(record, top, left)
+                if (i := record.origin(member).id) in was
+            }
+            if len(owners) == 1:
+                self.owner[key] = owners.pop()
+
+    def _owned(self, unit: Measured) -> Measured:
+        """``unit`` held by its authored group's top level (:meth:`regroup`)."""
+        owner = self.owner.get(unit.root)
+        return unit if owner is None else replace(unit, root=owner)
 
     # Reading a sample
 
@@ -270,7 +339,8 @@ class _Watch:
                 found[("exit", f.objects[0].id)] = f
             for f in self._left_behind(parts, live, moved):
                 found[("strand", f.objects[0].id)] = f
-            for f in pair_findings(parts, self.terms, among=live, text_only=True):
+            owned = [self._owned(u) for u in live]
+            for f in pair_findings(parts, self.terms, among=owned, text_only=True):
                 # Two things the play carries together are its own geometry
                 # in motion, not an arrangement anyone placed.
                 if all(named_by(by_id[o.id], moved) for o in f.objects):
@@ -288,11 +358,16 @@ class _Watch:
         for key in [k for k in self.open if k not in found]:
             self._close(key)
 
-    def after_play(self, play: PlayRecord, parts: Parts) -> None:
-        """After ``play``, at the frame that follows it: what it carried wholly
-        off the frame left on purpose, and its way out was transit.
+    def after_play(self, play: PlayRecord, parts: Parts, left: Capture) -> None:
+        """After ``play``, as it left the scene (``left``, whose parts are
+        ``parts``): what it carried wholly off the frame left on purpose, and
+        its way out was transit.
         """
-        moved = self.moved(play, at="end")
+        moved = [
+            animated(self.record, leaf.mobject, left)
+            for leaf in played(play)
+            if leaf.mobject is not None
+        ]
         for unit in asked(parts, measured_units(parts)):
             if unit.on(parts.frame):
                 self.carried.discard(unit.id)
@@ -448,7 +523,7 @@ class _Watch:
             finding = held.finding
             detail = dict(finding.detail)
             margin = held.last - held.first - HOLD_PERSIST
-            if margin < frame:
+            if margin <= frame:
                 detail["clock_margin"] = float(margin)
             found.append(
                 replace(
