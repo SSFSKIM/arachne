@@ -510,13 +510,8 @@ pub struct Lowering<'v> {
 impl<'v> Lowering<'v> {
     /// Starts lowering for a frame of `width x height` pixels drawn from `view`.
     pub fn new(view: &'v View, width: u32, height: u32) -> Lowering<'v> {
-        let map = FrameMap::cairo(
-            width,
-            height,
-            view.frame_width,
-            view.frame_height,
-            view.frame_center,
-        );
+        // Paths and path instances map through CE's Cairo context, around its frozen centre.
+        let map = FrameMap::of_kind(view, RecordKind::Path, width, height);
         let projection = match &view.camera {
             Camera::ThreeD(c) => Some(Projection::new(c, view.frame_center)),
             _ => None,

@@ -36,6 +36,8 @@ pub fn three_d_view(width: u32, height: u32) -> View {
             should_apply_shading: true,
         }),
         frame_center: [0.5, -0.25, 0.0],
+        // A camera whose centre never moved: CE's context froze the same centre.
+        mapping_centre: [0.5, -0.25, 0.0],
         ..flat_view(width, height, [0.0, 0.0, 0.0, 1.0])
     }
 }

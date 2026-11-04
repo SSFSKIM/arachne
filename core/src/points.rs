@@ -19,7 +19,9 @@
 use crate::composite::{
     Coverage, FULL, Fragment, OpaquePass, Plane, Producer, Rect, TransparentPass,
 };
-use crate::project::{FrameMap, Projection, placement, pre_display, subpixel_coords};
+use crate::project::{
+    FrameMap, Projection, mapping_centre_of, placement, pre_display, subpixel_coords,
+};
 use crate::tiles::{TILE, tile_index, tiles_across};
 use crate::xf::*;
 
@@ -88,13 +90,7 @@ pub fn lower(view: &View, width: u32, height: u32, draws: &[PointsDraw<'_>]) -> 
         Camera::ThreeD(c) => Some(Projection::new(c, view.frame_center)),
         _ => None,
     };
-    let map = FrameMap::cairo(
-        width,
-        height,
-        view.frame_width,
-        view.frame_height,
-        view.frame_center,
-    );
+    let map = FrameMap::of_kind(view, RecordKind::Points, width, height);
     let facing = projection.as_ref().map(|p| p.facing_planes(&map));
     let mut out = Blocks {
         blocks: Vec::new(),
@@ -132,7 +128,7 @@ pub fn lower(view: &View, width: u32, height: u32, draws: &[PointsDraw<'_>]) -> 
                 height,
                 view.frame_width,
                 view.frame_height,
-                view.frame_center,
+                mapping_centre_of(view, RecordKind::Points),
             )[0];
             if !(sx.is_finite() && sy.is_finite()) || depth.a.is_nan() {
                 continue;
