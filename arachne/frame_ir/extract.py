@@ -577,7 +577,9 @@ class FrameStream:
         if not _plain_path(vmob) or not _plain_path(reveal.start):
             return None
         a = np.asarray(reveal.start.points)
-        if not np.array_equal(revealed(a, reveal.lo, reveal.hi), np.asarray(vmob.points)):
+        if not np.array_equal(
+            revealed(a, reveal.lo, reveal.hi), np.asarray(vmob.points)
+        ):
             return None
         own: dict[bytes, Any] = {}
         fields: dict[str, Any] = {

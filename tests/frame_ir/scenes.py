@@ -114,7 +114,9 @@ class Reveals(Scene):
 
     def construct(self):
         square = Square(color=BLUE, fill_opacity=0.4)
-        group = VGroup(Circle(color=RED).shift(LEFT * 2), Star(color=YELLOW).shift(RIGHT * 2))
+        group = VGroup(
+            Circle(color=RED).shift(LEFT * 2), Star(color=YELLOW).shift(RIGHT * 2)
+        )
         self.play(Create(square), run_time=0.6)
         self.play(Create(group, lag_ratio=0.5), run_time=0.6)
 
@@ -326,8 +328,8 @@ class LiveMapped(Scene):
 
     def __init__(self, **kwargs):
         super().__init__(camera_class=MappingCamera, **kwargs)
-        self.renderer.camera.mapping_func = lambda p: p + np.array(
-            [0.5 * np.sin(p[1]), 0.0, 0.0]
+        self.renderer.camera.mapping_func = lambda p: (
+            p + np.array([0.5 * np.sin(p[1]), 0.0, 0.0])
         )
 
     def construct(self):
