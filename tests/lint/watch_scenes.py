@@ -393,7 +393,7 @@ class NoteRemovedAndReadded(Scene):
         note = Text("note", font_size=36)
         self.add(rail, note)
         self.wait(0.6)
-        self.remove(note)  # @readd
+        self.remove(note)  # @put-back
         self.add(note)
         self.wait(0.2)
 

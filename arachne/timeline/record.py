@@ -177,6 +177,14 @@ class Capture:
     camera: CameraExtras | None
     until: Fraction | None = None
 
+    @property
+    def drawn_seq(self) -> int:
+        """The place of a capture a frame draws in the record's history of
+        drawn captures (a state no frame draws has none).
+        """
+        assert isinstance(self.seq, int), "a capture no frame draws"
+        return self.seq
+
     def draw_list(self) -> list[Mobject]:
         """The scene's mobjects with the foreground last, as CE draws a frame
         when no list is given (``list_update(mobjects, foreground_mobjects)``).
@@ -708,7 +716,7 @@ class Record:
                 if id(display) not in self._display_joins:
                     picture = display.camera.pixel_array.copy()  # type: ignore[attr-defined]
                     picture.flags.writeable = False
-                    self._display_joins[id(display)] = (seq, picture)
+                    self._display_joins[id(display)] = (capture.drawn_seq, picture)
         return capture
 
     def entry_refusal(self) -> str | None:
@@ -843,7 +851,7 @@ class Record:
         found: list[Sample] = []
         for t in frames_in(Fraction(0), self.duration, rate):
             play, capture = self.capture_at(t)
-            found.append(Sample(t, play.index if play else None, capture.seq))
+            found.append(Sample(t, play.index if play else None, capture.drawn_seq))
         return found
 
     def markers_in(self, start: Fraction, end: Fraction) -> list[Marker]:
