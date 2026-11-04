@@ -356,7 +356,70 @@ class LiveUnstated(Scene):
         self.wait(0.2)
 
 
-LIVE_SCENES = [LiveOverride, LiveCounted, LiveMapped]
+def _cloud() -> PMobject:
+    cloud = PMobject(stroke_width=6)
+    cloud.add_points(np.array([[1.0, 1.0, 0.0], [-1.0, 0.5, 0.0]]), color=RED)
+    return cloud
+
+
+# The mapping centre: CE freezes it into an array's Cairo context at the
+# first draw through that context (a path), never at a point cloud's or an
+# image's; a frame centre moved before that first draw is the one frozen.
+
+
+class RecordCloudFirst(Scene):
+    """A point cloud alone, then the frame centre moved, then a path."""
+
+    def construct(self):
+        self.add(_cloud())
+        self.wait(0.2)
+        self.renderer.camera.frame_center = np.array([1.0, 0.5, 0.0])
+        self.add(Square())
+        self.wait(0.2)
+
+
+class LiveCloudFirst(Scene):
+    """As :class:`RecordCloudFirst`, its path a user's: drawn live from the
+    play the path joins, after record frames of the cloud alone.
+    """
+
+    def construct(self):
+        self.add(_cloud())
+        self.wait(0.2)
+        self.renderer.camera.frame_center = np.array([1.0, 0.5, 0.0])
+        self.add(WideStroke())
+        self.wait(0.2)
+
+
+class LiveFromStartCloudFirst(Scene):
+    """Drawn live from the start (a user's path with no points draws
+    nothing), a cloud alone, then the frame centre moved, then a path.
+    """
+
+    def construct(self):
+        hollow = WideStroke()
+        hollow.clear_points()
+        self.add(hollow, _cloud())
+        self.wait(0.2)
+        self.renderer.camera.frame_center = np.array([1.0, 0.5, 0.0])
+        self.add(Square())
+        self.wait(0.2)
+
+
+class LiveMovedCentre(Scene):
+    """Drawn live, a path from the first frame, then the frame centre moved:
+    the centre stays the first one.
+    """
+
+    def construct(self):
+        self.add(WideStroke(), _cloud())
+        self.wait(0.2)
+        self.renderer.camera.frame_center = np.array([1.0, 0.5, 0.0])
+        self.play(FadeIn(Circle(radius=0.5)), run_time=0.3)
+
+
+MOVED_CENTRE_LIVE = [LiveCloudFirst, LiveFromStartCloudFirst, LiveMovedCentre]
+LIVE_SCENES = [LiveOverride, LiveCounted, LiveMapped, *MOVED_CENTRE_LIVE]
 
 SCENES = [
     Shapes2D,
@@ -367,6 +430,7 @@ SCENES = [
     BackgroundImageFill,
     MovingFrame,
     MovedFlatCentre,
+    RecordCloudFirst,
     Zoomed,
     Lit3D,
     Orbit,
