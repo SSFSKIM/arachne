@@ -273,3 +273,19 @@ def test_a_record_without_its_exits_is_read_from_a_forward_run(session_of, strip
     (found,) = lint(session, rules=(motion_jump,)).findings
     assert len(session.forward_runs) == 1
     assert dict(found.detail) == dict(expected.detail)
+
+
+def test_a_forward_run_keeps_every_play_s_exit(session_of):
+    session = session_of("Repeated", MOTION, frame_rate=15)
+    assert session.record.exits is None
+    read = []
+
+    def observe(context):
+        read.append(context.frames.execution)
+        return ()
+
+    lint(session, rules=(motion_jump, observe))
+    (execution,) = read
+    assert execution is not session.record
+    assert len(execution.plays) == len(session.record.plays) > 2
+    assert set(execution.exits) == {play.index for play in execution.plays}
