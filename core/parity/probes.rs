@@ -206,7 +206,7 @@ pub fn closed(n: usize, f: impl Fn(f64) -> [f64; 3]) -> Shape {
 /// A mesh record in world space, filled with one colour.
 pub fn mesh_record(slot: u32, shape: &Shape, rgba: [f64; 4], shade: bool) -> Record {
     let mut r = Record::new(RecordKind::Mesh, slot, 100 + slot);
-    r.geometry.shape_a = Some(shape.key);
+    r.geometry.shape_a = Some(shape.key());
     r.paint.fill = Paint::One(rgba);
     r.depth.space = Space::World;
     r.depth.shade_in_3d = shade;
@@ -216,7 +216,7 @@ pub fn mesh_record(slot: u32, shape: &Shape, rgba: [f64; 4], shade: bool) -> Rec
 /// A stroked path record in world space (CE's units of width).
 pub fn stroke_record(slot: u32, shape: &Shape, rgba: [f64; 4], width: f64) -> Record {
     let mut r = Record::new(RecordKind::Path, slot, 100 + slot);
-    r.geometry.shape_a = Some(shape.key);
+    r.geometry.shape_a = Some(shape.key());
     r.paint.stroke = Paint::One(rgba);
     r.paint.stroke_width = width;
     r.depth.space = Space::World;
@@ -226,7 +226,7 @@ pub fn stroke_record(slot: u32, shape: &Shape, rgba: [f64; 4], width: f64) -> Re
 /// A filled path record.
 pub fn fill_record(slot: u32, shape: &Shape, rgba: [f64; 4], space: Space) -> Record {
     let mut r = Record::new(RecordKind::Path, slot, 100 + slot);
-    r.geometry.shape_a = Some(shape.key);
+    r.geometry.shape_a = Some(shape.key());
     r.paint.fill = Paint::One(rgba);
     r.depth.space = space;
     r
@@ -237,7 +237,7 @@ pub fn first_delta(view: View, items: &[(Shape, Record)], order: &[u32]) -> Delt
     let mut d = Delta::new(Time { num: 0, den: 1 }, 0);
     d.view = Some(view);
     for (shape, record) in items {
-        if !d.upload.iter().any(|s| s.key == shape.key) {
+        if !d.upload.iter().any(|s| s.key() == shape.key()) {
             d.upload.push(shape.clone());
         }
         d.objects.push(ObjectInfo {
@@ -1042,8 +1042,8 @@ pub fn paint_kinds() -> Probe {
             shift(-1.1, 0.0, 0.7),
             shift(-0.6, 0.3, 0.9),
         ],
-        fill: fills.key,
-        stroke: strokes.key,
+        fill: fills.key(),
+        stroke: strokes.key(),
         objects: vec![401, 402, 403],
     });
     // Twelve points along a line, every fourth below the sheet, neighbours' blocks overlapping.
@@ -1058,10 +1058,10 @@ pub fn paint_kinds() -> Probe {
         points: cloud_points,
     });
     let mut d = Record::new(RecordKind::Points, 5, 105);
-    d.geometry.shape_a = Some(cloud.key);
+    d.geometry.shape_a = Some(cloud.key());
     d.depth.space = Space::World;
     d.body = Body::Points(Points {
-        colors: colours.key,
+        colors: colours.key(),
         radius: 4.0,
     });
     let items = [

@@ -420,15 +420,15 @@ impl PyFrameDelta {
         let uploaded = delta
             .upload
             .iter()
-            .map(|s| s.key)
-            .chain(delta.upload_paints.iter().map(|s| s.key))
+            .map(|s| s.key())
+            .chain(delta.upload_paints.iter().map(|s| s.key()))
             .collect();
         PyFrameDelta { delta, uploaded }
     }
 
     fn upload(&mut self, py: Python<'_>, data: ShapeData) -> Py<PyBytes> {
         let shape = Shape::new(data);
-        let key = shape.key;
+        let key = shape.key();
         if self.uploaded.insert(key) {
             self.delta.upload.push(shape);
         }
@@ -590,7 +590,7 @@ impl PyFrameDelta {
                 .map(|r| [r[0], r[1], r[2], r[3]])
                 .collect(),
         );
-        let key = stops.key;
+        let key = stops.key();
         if self.uploaded.insert(key) {
             self.delta.upload_paints.push(stops);
         }

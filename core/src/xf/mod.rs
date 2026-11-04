@@ -94,11 +94,32 @@ pub enum ShapeData {
     Reserved { code: u8, payload: Vec<u8> },
 }
 
-/// A shape and its key.
+/// A shape and its key, which cannot part once made: the key is computed from the contents when
+/// the shape is made ([`Shape::new`]) or checked against them when it is read ([`wire`]), and
+/// neither changes afterwards, so a stream never holds one content under another's key.
+///
+/// ```
+/// use arachne_core::xf::{Shape, ShapeData};
+/// let shape = Shape::new(ShapeData::Path { points: vec![[0.0; 3]; 4] });
+/// assert!(matches!(shape.data(), ShapeData::Path { points } if points.len() == 4));
+/// assert_eq!(shape.key(), Shape::new(shape.data().clone()).key());
+/// ```
+///
+/// ```compile_fail
+/// use arachne_core::xf::{Shape, ShapeData};
+/// let mut shape = Shape::new(ShapeData::Path { points: vec![[0.0; 3]; 4] });
+/// shape.data = ShapeData::Path { points: Vec::new() };
+/// ```
+///
+/// ```compile_fail
+/// use arachne_core::xf::{Shape, ShapeData};
+/// let mut shape = Shape::new(ShapeData::Path { points: vec![[0.0; 3]; 4] });
+/// shape.key.0[0] ^= 1;
+/// ```
 #[derive(Clone, Debug, PartialEq)]
 pub struct Shape {
-    pub key: Key,
-    pub data: ShapeData,
+    key: Key,
+    data: ShapeData,
 }
 
 impl Shape {
@@ -109,14 +130,42 @@ impl Shape {
             data,
         }
     }
+
+    /// A shape under the key it was read with: contents [`wire`] checked against the key, or a
+    /// kind this build does not know, whose canonical bytes it cannot compute.
+    pub(crate) fn read(key: Key, data: ShapeData) -> Shape {
+        Shape { key, data }
+    }
+
+    pub fn key(&self) -> Key {
+        self.key
+    }
+
+    pub fn data(&self) -> &ShapeData {
+        &self.data
+    }
 }
 
 /// A table of RGBA rows: the stops of a paint of 3+ stops, or a per-face or per-point colour table.
-/// Colours are CE's floats (straight alpha, sRGB-encoded channels in 0..1).
+/// Colours are CE's floats (straight alpha, sRGB-encoded channels in 0..1). Like a [`Shape`]'s,
+/// its rows cannot change once keyed.
+///
+/// ```
+/// use arachne_core::xf::Stops;
+/// let stops = Stops::new(vec![[1.0, 0.0, 0.0, 1.0]]);
+/// assert_eq!(stops.rows().len(), 1);
+/// assert_eq!(stops.key(), Stops::new(stops.rows().to_vec()).key());
+/// ```
+///
+/// ```compile_fail
+/// use arachne_core::xf::Stops;
+/// let mut stops = Stops::new(vec![[1.0, 0.0, 0.0, 1.0]]);
+/// stops.rows.push([0.0, 0.0, 1.0, 1.0]);
+/// ```
 #[derive(Clone, Debug, PartialEq)]
 pub struct Stops {
-    pub key: Key,
-    pub rows: Vec<[f64; 4]>,
+    key: Key,
+    rows: Vec<[f64; 4]>,
 }
 
 impl Stops {
@@ -126,6 +175,19 @@ impl Stops {
             key: key::paint_key(&rows),
             rows,
         }
+    }
+
+    /// A table under the key [`wire`] checked its rows against.
+    pub(crate) fn read(key: Key, rows: Vec<[f64; 4]>) -> Stops {
+        Stops { key, rows }
+    }
+
+    pub fn key(&self) -> Key {
+        self.key
+    }
+
+    pub fn rows(&self) -> &[[f64; 4]] {
+        &self.rows
     }
 }
 

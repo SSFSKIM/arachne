@@ -105,8 +105,8 @@ impl<'a> After<'a> {
     fn new(stream: &'a Stream, delta: &'a Delta) -> After<'a> {
         After {
             stream,
-            uploads: delta.upload.iter().map(|s| (s.key, s)).collect(),
-            upload_paints: delta.upload_paints.iter().map(|s| (s.key, s)).collect(),
+            uploads: delta.upload.iter().map(|s| (s.key(), s)).collect(),
+            upload_paints: delta.upload_paints.iter().map(|s| (s.key(), s)).collect(),
             set: delta.set.iter().map(|r| (r.slot, r)).collect(),
             released: delta.release.iter().copied().collect(),
             removed: delta.remove.iter().copied().collect(),
@@ -121,7 +121,7 @@ impl<'a> After<'a> {
             .get(key)
             .copied()
             .or_else(|| self.stream.shapes.get(key))
-            .map(|s| &s.data)
+            .map(|s| s.data())
     }
 
     fn paint(&self, key: &Key) -> Option<&'a Stops> {
@@ -209,11 +209,11 @@ impl After<'_> {
         let stops = self
             .paint(key)
             .ok_or_else(|| missing_key("paint table", key, Some(rec.slot)))?;
-        if stops.rows.len() != rows {
+        if stops.rows().len() != rows {
             return Err(StreamError::Invalid(format!(
                 "slot {}: a table of {} rows where {rows} are needed",
                 rec.slot,
-                stops.rows.len()
+                stops.rows().len()
             )));
         }
         Ok(())
@@ -382,10 +382,10 @@ impl Stream {
             self.objects.insert(o.object, o.clone());
         }
         for s in &delta.upload {
-            self.shapes.entry(s.key).or_insert_with(|| s.clone());
+            self.shapes.entry(s.key()).or_insert_with(|| s.clone());
         }
         for s in &delta.upload_paints {
-            self.paints.entry(s.key).or_insert_with(|| s.clone());
+            self.paints.entry(s.key()).or_insert_with(|| s.clone());
         }
         for r in &delta.set {
             self.records.insert(r.slot, r.clone());
@@ -532,7 +532,7 @@ impl Stream {
                     width: iw,
                     height: ih,
                     rgba,
-                }) = self.shapes.get(key).map(|s| &s.data)
+                }) = self.shapes.get(key).map(|s| s.data())
                 else {
                     unreachable!("apply checked the background image");
                 };
@@ -552,7 +552,7 @@ impl Stream {
                 .geometry
                 .shape_a
                 .and_then(|k| self.shapes.get(&k))
-                .map(|s| &s.data);
+                .map(|s| s.data());
             let table = |key: &Key| &self.paints[key];
             match (record.kind, shape, &record.body) {
                 (
@@ -655,7 +655,7 @@ fn check_shape(shape: &Shape) -> Result<(), StreamError> {
         positions,
         triangles,
         normals,
-    } = &shape.data
+    } = shape.data()
     {
         if triangles
             .iter()
@@ -664,14 +664,14 @@ fn check_shape(shape: &Shape) -> Result<(), StreamError> {
         {
             return Err(StreamError::Invalid(format!(
                 "mesh {}: a triangle names a vertex past its {}",
-                shape.key.hex(),
+                shape.key().hex(),
                 positions.len()
             )));
         }
         if normals.as_ref().is_some_and(|n| n.len() != positions.len()) {
             return Err(StreamError::Invalid(format!(
                 "mesh {}: one normal per vertex",
-                shape.key.hex()
+                shape.key().hex()
             )));
         }
     }
@@ -742,7 +742,7 @@ fn refusal(rec: &Record, shapes: &HashMap<Key, Shape>) -> Option<Unsupported> {
         .geometry
         .shape_a
         .and_then(|k| shapes.get(&k))
-        .map(|s| &s.data);
+        .map(|s| s.data());
     let reason = if rec.features & !KNOWN_FEATURES != 0 {
         format!(
             "feature bits {:#x} are not ones this build knows",
