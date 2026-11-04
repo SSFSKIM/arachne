@@ -528,16 +528,15 @@ class Recorder:
         play.held = bool(scene.is_current_animation_frozen_frame())
         play.frame_hooks = scene_hooks(scene, FRAME_HOOKS)
         play.play_internal_overridden = bool(scene_hooks(scene, ("play_internal",)))
-        body = _Body(refusal)
+        extras = CameraExtras.observe(scene.renderer.camera, None)
+        body = _Body(play, refusal, live, extras)
         try:
-            run = self._prepare(body, play, live)
-            extras = CameraExtras.observe(scene.renderer.camera, None)
-            run._extras = extras
             play.static_seq = self.capture("static", start, play, extras).seq
             if live is not None:
                 live.begin(play)
             if play.held:
                 # A frozen frame: CE calls none of the scene's hooks.
+                self._prepare(body)
                 self._run_play(body)
             else:
                 self._play_internal(body)
@@ -545,7 +544,7 @@ class Recorder:
             if body.plan is not None:
                 body.plan.release()
 
-        # The run that evaluated it: planned again if play_internal moved its span.
+        # The run that evaluated it, planned once play_internal's body began.
         final = body.run
         assert final is not None
         play.end = final.end
@@ -559,14 +558,15 @@ class Recorder:
             )
         return play
 
-    def _prepare(
-        self, body: _Body, play: PlayRecord, live: LiveFrames | None
-    ) -> PlayRun:
+    def _prepare(self, body: _Body) -> PlayRun:
         """Plan the play over its span (``play.requested_end``): its events,
         its admission and route, and the run that evaluates it, kept in
-        ``body`` and returned.
+        ``body`` and returned. A play is planned where its evaluation begins
+        (``play_internal``'s body), from what the scene's code left by then:
+        the run times, the span and every callback as the route will run them.
         """
         scene = self.scene
+        play = body.play
         start, end = play.start, play.requested_end
         plan = body.plan = plan_events(scene.animations or [], start, end)
         record = self.ensure_record()
@@ -580,7 +580,10 @@ class Recorder:
         play.admission = admission
         play.route = admission.route
         play.events = tuple(plan.instants(start, end + 1))
-        run = body.run = PlayRun(self, play, ROUTE_CLASSES[admission.route](), live)
+        run = body.run = PlayRun(
+            self, play, ROUTE_CLASSES[admission.route](), body.live
+        )
+        run._extras = body.extras
         # Which of its ticks only step (those no frame reads) is planned
         # once the play has been evaluated at its start (``started``); a
         # brute-force run plans nothing (:mod:`.reference`).
@@ -638,20 +641,13 @@ class Recorder:
         scene = self.scene
         assert scene.animations is not None
         # CE's second call: play_internal takes the play's length again, and
-        # plays that one. The scene's code may have changed it since the play
-        # was compiled (its own get_run_time, or an animation's run time), so
-        # a play whose span moved is planned again for the new one.
+        # plays that one. The scene's code may have changed what the play is
+        # since it was compiled (its own get_run_time, an animation's run
+        # time), so the play is planned only now.
         scene.duration = scene.get_run_time(scene.animations)
-        run = body.run
-        assert run is not None
-        assert body.plan is not None
-        end = self.requested_end(run.start)
-        if end != run.requested_end:
-            body.plan.release()
-            body.plan = None
-            play = run.play
-            play.requested_end = play.end = end
-            self._prepare(body, play, run.live)._extras = run._extras
+        play = body.play
+        play.requested_end = play.end = self.requested_end(play.start)
+        self._prepare(body)
         self._run_play(body)
 
     def _run_play(self, body: _Body) -> None:
@@ -760,13 +756,22 @@ class Recorder:
 
 
 class _Body:
-    """A play being run: its run and event plan (planned again when
-    ``play_internal`` gives it another span), why the record can't draw it if
-    it can't, and whether ``play_internal``'s body ran.
+    """A play being run: why the record can't draw it if it can't, its live
+    drawing and the camera's inputs at its start, its run and event plan once
+    planned, and whether ``play_internal``'s body ran.
     """
 
-    def __init__(self, refusal: str | None) -> None:
+    def __init__(
+        self,
+        play: PlayRecord,
+        refusal: str | None,
+        live: LiveFrames | None,
+        extras: CameraExtras | None,
+    ) -> None:
+        self.play = play
         self.refusal = refusal
+        self.live = live
+        self.extras = extras
         self.run: PlayRun | None = None
         self.plan: EventPlan | None = None
         self.ran = False

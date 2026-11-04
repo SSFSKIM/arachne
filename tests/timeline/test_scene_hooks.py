@@ -199,6 +199,35 @@ def test_the_run_time_play_internal_asks_for_sets_the_span(
         assert play.events == (Fraction(3, 2), 2)
 
 
+@pytest.mark.parametrize("stepping", [True, BRUTE_FORCE])
+def test_a_play_is_planned_from_the_run_times_its_body_begins_with(
+    session_of, stepping
+):
+    """``play_internal`` retimes an animation without moving the span: the
+    play's events are the retimed ones.
+    """
+    session = session_of(
+        "SameSpanRetimed", HOOK_SCENES, frame_rate=4, stepping=stepping
+    )
+    (play,) = session.record.plays
+    assert play.route == "ticked"
+    assert play.end - play.start == 3
+    assert play.events == (Fraction(3, 2), 3)
+    # The first part moves up over 1.5 s: at 1.25 s it is 5/6 of the way.
+    x0, y0, x1, y1 = session.state_at(Fraction(5, 4)).named("first").box
+    assert (y0 + y1) / 2 == pytest.approx(5 / 6, abs=1e-9)
+
+
+def test_a_live_play_draws_the_frames_of_the_span_its_body_takes():
+    scene, frames = render(hook_scenes.LiveSpanGrows, 4)
+    record = scene.record
+    assert record.refusal is not None
+    wait, play = record.plays
+    assert (play.start, play.end) == (Fraction(1, 10), Fraction(11, 10))
+    # The wait's frame at 0, then the play's at 0.25, 0.5, 0.75 and 1.
+    assert len(frames) == 1 + 4
+
+
 # (h) the dt an override sees, the dt an updater integrates
 
 
