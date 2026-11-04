@@ -16,6 +16,7 @@ from arachne import LineJointType, config, tempconfig
 from arachne.frame_ir.painter import IrCairoPainter, painter_for
 from arachne.frame_ir.xf import Record
 from arachne.session import Session
+from arachne.utils.bezier import interpolate
 
 from ..timeline import camera_scenes
 from ..timeline.conftest import render
@@ -106,7 +107,6 @@ def test_a_create_play_uploads_no_shape_after_its_first_frame(kept):
 
 def _halfway():
     from arachne import RIGHT, Square
-    from arachne.utils.bezier import interpolate
 
     start, end = Square(), Square().shift(RIGHT)
     leaf = start.copy()
@@ -120,7 +120,12 @@ def _halfway():
         None,
         lambda leaf, start, end: setattr(leaf, "tolerance_for_point_equality", 1e-3),
         lambda leaf, start, end: setattr(leaf, "joint_type", LineJointType.ROUND),
-        lambda leaf, start, end: setattr(start, "stroke_width", -1.0),
+        # The leaf holds the interpolated width, so only CE's clamp, which
+        # comes after the interpolation, tells the blend from the leaf.
+        lambda leaf, start, end: (
+            setattr(start, "stroke_width", -1.0),
+            setattr(leaf, "stroke_width", interpolate(-1.0, end.stroke_width, 0.5)),
+        ),
     ],
     ids=["plain", "tolerance", "own joint", "negative width"],
 )
@@ -350,6 +355,82 @@ def test_extraction_reads_no_mobject_name_the_camera_does_not(camera_class):
     assert overridable
     assert overridable <= own
     assert dispatch.draw_methods(cls) == own
+
+
+def test_a_frame_with_what_cairo_does_not_draw_inside_a_sub_frame_is_refused():
+    """A record drawn only inside a display's sub-frame is checked too."""
+    import arachne_core
+
+    from arachne.frame_ir.cairo_painter import CairoDrawer, Unsupported
+    from arachne.frame_ir.xf import Delta, StreamState
+
+    delta = _square_and(lambda key: Record("path", {"shape": key, "opacity": 0.5}))
+    display = Record(
+        "image",
+        {"corners": tuple(range(12)), "sub_frame": (0, delta.view, [("static", 1, 0)])},
+    )
+    delta.set.append((2, display))
+    delta.order = [("static", 0, 0), ("static", 2, 0)]
+    read = arachne_core.FrameDelta.from_bytes(delta.to_core().to_bytes())
+    state = StreamState()
+    state.apply(Delta.from_contents(read.contents()))
+    with pytest.raises(Unsupported, match="opacity other than 1"):
+        CairoDrawer().draw(state)
+
+
+def test_drawing_restores_the_shown_states_when_settling_fails():
+    from arachne.timeline.draw import Drawing
+
+    session = Session.open(SCENES, "Morph", config={**MEDIUM, "draw_path": "ir_cairo"})
+    try:
+        record = session.record
+        square = session.scene.mobjects[0]
+        before = np.array(square.points)
+        play = next(p for p in record.plays if p.animations == ("Transform(Square)",))
+        capture = play.capture_at(play.start + (play.end - play.start) / 2)
+
+        class Failing:
+            def settle(self) -> None:
+                raise RuntimeError("settling failed")
+
+        with pytest.raises(RuntimeError, match="settling failed"):
+            with Drawing(record) as drawing:
+                drawing.show(capture, capture.draw_list())
+                assert not np.array_equal(square.points, before)
+                drawing._painted_by = Failing()
+        np.testing.assert_array_equal(square.points, before)
+    finally:
+        session.close()
+
+
+#: Names the read scan finds in extraction's source that are no mobject's:
+#: dictionaries' and deltas' methods, and locals that are arrays or fields.
+_NOT_MOBJECT_READS = frozenset({"set", "update", "remove", "base", "pixel_array"})
+
+
+def test_every_mobject_read_in_extraction_is_declared():
+    """``extract.MOBJECT_READS`` lists what extraction reads off a mobject:
+    the read scan of its source finds nothing else a mobject class defines
+    (but a sort point, which only a ThreeDCamera's depth asks for, and its
+    own sort reads it already).
+    """
+    from arachne.camera.three_d_camera import ThreeDCamera
+    from arachne.frame_ir import extract
+    from arachne.timeline import dispatch
+
+    functions = []
+    for value in vars(extract).values():
+        if dispatch._engine_function(value) and value.__module__ == extract.__name__:
+            functions.append(value)
+        elif isinstance(value, type) and value.__module__ == extract.__name__:
+            functions.extend(
+                f for f in map(dispatch._function_of, vars(value).values()) if f
+            )
+    reads = set().union(*(dispatch._reads(f)[0] for f in functions))
+    found = reads & set(dispatch._mobject_definitions())
+    undeclared = found - set(extract.MOBJECT_READS) - _NOT_MOBJECT_READS
+    assert undeclared <= {"get_z_index_reference_point"}, undeclared
+    assert undeclared <= dispatch.camera_draw_methods(ThreeDCamera)
 
 
 def test_the_drawing_lint_codes_are_declared():
