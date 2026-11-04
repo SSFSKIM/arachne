@@ -529,6 +529,15 @@ def _words():
     return first, second
 
 
+def _pair_around():
+    """A group of two words far apart, and a word between them."""
+    pair = VGroup(
+        Text("left", font_size=40).shift(LEFT * 3),
+        Text("right", font_size=40).shift(RIGHT * 3),
+    )
+    return pair, Text("middle", font_size=40)
+
+
 class SweptRows(Scene):
     """Two rows a hair apart, swept at 1.5 s under the terms it gives."""
 
@@ -735,11 +744,7 @@ class ApartWholes(Scene):
         self.wait(0.5)
         upper, lower = _rows(0.08)
         mixed = VGroup(upper, Dot(LEFT * 4))
-        pair = VGroup(
-            Text("left", font_size=40).shift(LEFT * 3),
-            Text("right", font_size=40).shift(RIGHT * 3),
-        )
-        middle = Text("middle", font_size=40)
+        pair, middle = _pair_around()
         marker = Dot().next_to(upper, DOWN, buff=0.2)
         self.found = {
             "mixed_subject": apart(mixed, lower),
