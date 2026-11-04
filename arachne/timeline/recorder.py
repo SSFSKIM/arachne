@@ -26,7 +26,13 @@ import numpy as np
 
 from arachne._config import config, logger
 
-from .admission import PlayIdentity, admit, camera_refusal, play_identities
+from .admission import (
+    PlayIdentity,
+    admit,
+    camera_refusal,
+    play_identity,
+    whole_line,
+)
 from .clock import TICK_RATE, exact, play_end
 from .dispatch import draw_refusal, scene_hooks
 from .draw import CameraExtras, LiveFrames, camera_nodes
@@ -275,9 +281,9 @@ class Recorder:
     analytic answer there is compared with. A ticked play evaluates none.
 
     ``demoted`` are the identities of plays the probe demoted
-    (:data:`.admission.PlayIdentity`, :mod:`.probe`): the play of each
-    ticks where it would be a state-function play. A session passes them; a
-    render never does.
+    (:data:`.admission.PlayIdentity`, :mod:`.probe`): the play of each, or
+    every play of a line demoted whole, ticks where it would be a
+    state-function play. A session passes them; a render never does.
     """
 
     def __init__(
@@ -306,6 +312,9 @@ class Recorder:
         self.on_start = on_start
         self.instants = tuple(sorted({exact(t) for t in instants}))
         self.demoted = frozenset(demoted)
+        #: Each play's identity, counted as the plays are recorded.
+        self._identities: list[PlayIdentity] = []
+        self._line_counts: dict[SourceLine | None, int] = {}
         self.record: Record | None = None
         self._tagging = False
         #: Which execution of the scene this is, with the plays an earlier
@@ -576,6 +585,10 @@ class Recorder:
             _animations=tuple(animations),
         )
         record.plays.append(play)
+        if play.index == 0:
+            self._identities.clear()
+            self._line_counts.clear()
+        self._identities.append(play_identity(play, self._line_counts))
 
         scene.begin_animations()
         play.moving = tuple(scene.moving_mobjects)
@@ -631,8 +644,7 @@ class Recorder:
             held=play.held,
             base_dir=_base_dir(record),
             refusal=body.refusal,
-            demoted=bool(self.demoted)
-            and play_identities(record.plays[: play.index + 1])[-1] in self.demoted,
+            demoted=self._demoted(play),
         )
         play.admission = admission
         play.route = admission.route
@@ -652,6 +664,13 @@ class Recorder:
             and self.stepping != BRUTE_FORCE
         )
         return run
+
+    def _demoted(self, play: PlayRecord) -> bool:
+        """Whether the probe demoted ``play``, or every play of its line."""
+        if not self.demoted:
+            return False
+        identity = self._identities[play.index]
+        return identity in self.demoted or whole_line(identity[0]) in self.demoted
 
     def _play_internal(self, body: _Body) -> None:
         """Call the scene's ``play_internal``, as CE's renderer does for a play

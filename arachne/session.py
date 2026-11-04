@@ -30,7 +30,12 @@ from ._config import config as global_config
 from ._config import tempconfig
 from .constants import QUALITIES
 from .timeline import admission
-from .timeline.admission import PlayIdentity, play_identities
+from .timeline.admission import (
+    PlayIdentity,
+    line_plays,
+    play_identities,
+    whole_line,
+)
 from .timeline.clock import exact
 from .timeline.draw import Drawing
 from .timeline.execution import (
@@ -147,58 +152,80 @@ class Session:
             "on_start": on_start,
             "instants": tuple(instants),
         }
-        demoted: set[PlayIdentity] = set()
-        session = cls(*_execute(path, scene, settings, options, demoted))
+        # Each demoted play's identity, with its line's plays where it was
+        # found (``None`` for a line demoted whole).
+        demotions: dict[PlayIdentity, tuple[str, ...] | None] = {}
+        session = cls(*_execute(path, scene, settings, options, demotions))
         if not probe:
             return session
         # Probe the record. On a demotion, record the scene again with the
         # play ticked, a new execution compared with the first, and probe
         # that: each pass ticks at least one play more, while the executions
-        # play the same plays of the same source. When they don't, the
-        # session holds the last execution, its plays where the probe found
-        # them (a demotion follows its play's identity, never its index).
+        # play the same plays of the same source. When they don't, the probe
+        # stops, and the session holds the last execution. A demotion follows
+        # its play's identity; where its line's plays changed, which play it
+        # was is unknown, and every play of the line ticks.
         latest = found = probe_record(session.record)
+        described = session.record
+        probing = True
         first: ExecutionSummary | None = None
-        # A backstop: with the same plays in every execution, each pass ticks
-        # one more of them, so this many executions always suffice.
-        cap = len(session.record.plays) + 1
+        # A backstop: each pass ticks one more play, or every play of one
+        # more line a play was demoted at, so this many executions suffice
+        # while the executions play the same plays.
+        cap = 2 * len(session.record.plays) + 1
         executions = 1
         settled = True
         while True:
-            for divergence in latest.divergences:
-                session._keep(divergence)
             record = session.record
-            identities = play_identities(record.plays)
-            new = {identities[index] for index in latest.demoted} - demoted
-            if not new:
-                break
             digest = record.identity.source_digest
-            for identity in new:
-                demoted.add(identity)
-                if digest is not None:
-                    admission.demote(digest, record.scene_class, identity)
+            demoting: dict[PlayIdentity, tuple[str, ...] | None] = {}
+            if probing:
+                for divergence in latest.divergences:
+                    session._keep(divergence)
+                identities = play_identities(record.plays)
+                lines = line_plays(record.plays)
+                for index in latest.demoted:
+                    identity = identities[index]
+                    if identity not in demotions:
+                        demoting[identity] = lines[identity[0]]
+            demoting.update(
+                (whole_line(line), None)
+                for line in _changed_lines({**demotions, **demoting}, record)
+            )
+            if not demoting:
+                break
+            demotions.update(demoting)
+            if digest is not None:
+                for identity, line in demoting.items():
+                    admission.demote(digest, record.scene_class, identity, line)
             if executions >= cap:
                 settled = False
                 break
             if first is None:
                 first = session.summary()
-            session._executed_again(*_execute(path, scene, settings, options, demoted))
+            session._executed_again(
+                *_execute(path, scene, settings, options, demotions)
+            )
             executions += 1
             with contextlib.suppress(Incomparable):
                 session.compare(first)
-            if not _same_source(record, session.record) or _schedule_shift(
-                record, session.record
+            if probing and (
+                not _same_source(record, session.record)
+                or _schedule_shift(record, session.record)
             ):
                 # Another source is stale, never a divergence; the same one
                 # playing other plays is where its executions differ.
                 changed = _schedule_change(record, session.record)
                 if changed is not None:
                     session._keep(changed)
-                found = session._found_in(found, record)
+                probing = False
                 settled = False
-                break
-            latest = probe_record(session.record)
-            found = found.then(latest)
+            if probing:
+                latest = probe_record(session.record)
+                found = found.then(latest)
+                described = session.record
+        whole = {line for line, kind, _ in demotions if kind is None}
+        found = session._found_in(found, described, whole)
         session.probe = replace(found, settled=settled)
         return session
 
@@ -257,15 +284,19 @@ class Session:
         if all(kept.cause != divergence.cause for kept in self.divergences):
             self.divergences.append(divergence)
 
-    def _found_in(self, found: Probe, before: Record) -> Probe:
+    def _found_in(
+        self, found: Probe, before: Record, whole: set[SourceLine | None]
+    ) -> Probe:
         """``found``, the probe of ``before``, moved to the record held, an
         execution recorded after it: each play at its index there by its
-        identity, a play it does not play left out and its divergence naming
-        no play; the same for the probe's divergences kept.
+        identity, a play it does not play, or one of a line demoted
+        ``whole``, left out and its divergence naming no play (only its
+        line); the same for the probe's divergences kept.
         """
         places = {
             identity: index
             for index, identity in enumerate(play_identities(self.record.plays))
+            if identity[0] not in whole
         }
         moved = {
             index: places.get(identity)
@@ -331,12 +362,12 @@ def _execute(
     scene: str,
     settings: dict[str, Any],
     options: dict[str, Any],
-    demoted: set[PlayIdentity],
+    demotions: dict[PlayIdentity, tuple[str, ...] | None],
 ) -> tuple[Scene, Record, ModuleType]:
     """Import ``path`` afresh and execute its scene ``scene`` under
     ``settings``, recorded by a ``Recorder`` given ``options`` that ticks the
-    ``demoted`` plays and those the probe demoted in an earlier session of
-    the source (:func:`.admission.demoted`), which join ``demoted``.
+    plays of ``demotions`` and those the probe demoted in an earlier session
+    of the source (:func:`.admission.demoted`), which join ``demotions``.
     """
     base_dir = str(path.parent)
     with tempconfig(settings):
@@ -351,9 +382,10 @@ def _execute(
                 if not isinstance(scene_class, type):
                     raise LookupError(f"{path.name} defines no scene named {scene!r}.")
                 instance: Scene = scene_class()
-                demoted |= admission.demoted(
+                for identity, line in admission.demoted(
                     _source_digest(instance), type(instance).__name__
-                )
+                ).items():
+                    demotions.setdefault(identity, line)
                 grid = options["grid"]
                 instance.timeline = Recorder(
                     instance,
@@ -362,7 +394,7 @@ def _execute(
                         "grid": global_config.frame_rate if grid == "render" else grid,
                     },
                     draws=False,
-                    demoted=demoted,
+                    demoted=demotions,
                 )
                 instance.render()
             except BaseException:
@@ -375,6 +407,22 @@ def _execute(
     record = instance.record
     assert record is not None
     return instance, record, module
+
+
+def _changed_lines(
+    demotions: dict[PlayIdentity, tuple[str, ...] | None], record: Record
+) -> set[SourceLine | None]:
+    """The lines a play was demoted at whose plays in ``record`` are not the
+    kinds, in order, they were where it was found, and that are not demoted
+    whole yet: which of them the demotion was for is unknown.
+    """
+    lines = line_plays(record.plays)
+    whole = {line for line, kind, _ in demotions if kind is None}
+    return {
+        line
+        for (line, kind, _), found in demotions.items()
+        if kind is not None and line not in whole and lines.get(line, ()) != found
+    }
 
 
 def _same_source(before: Record, after: Record) -> bool:
