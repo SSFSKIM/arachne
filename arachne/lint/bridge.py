@@ -140,7 +140,7 @@ def record(
         subject=_subject(operands),
     )
     call.readings.append(
-        Reading(call.t, call.line, _measure(points, reference, margin))
+        Reading(call.t, call.line, _measure(points, reference, margin), seq=call.seq)
     )
     return _violations(_record_findings(call))
 
@@ -193,7 +193,7 @@ def watch(
         subject=_subject(operands),
         reader=read,
     )
-    reading = Reading(call.t, call.line, read())
+    reading = Reading(call.t, call.line, read(), seq=call.seq)
     call.readings.append(reading)
     found = _finding(call, reading, reading.t, call.line)
     return Watch(call, _violations([found] if found is not None else []))
@@ -320,31 +320,43 @@ def arm(*, motion_jump: float | None = None, **terms: Any) -> list[dict[str, Any
 
 
 def declared(
-    source: Record, t: Fraction | float, *, play: int | None = None
+    source: Record,
+    t: Fraction | float,
+    *,
+    play: int | None = None,
+    seq: int | Fraction | None = None,
 ) -> dict[str, Any]:
     """The terms ``source``'s scene declared at or before ``t`` (by
     :func:`declare` and :func:`arm`): a later ``pad`` or ``text_gap``
     replacing an earlier, exemptions adding up, each read as it stood at
     ``t``. With ``play``, at an instant of that play (as the script called
     it, while it ran, or as it ended): no call made after it, between it and
-    the next at its end, holds there.
+    the next at its end, holds there. With ``seq``, at the state of that seq
+    the record keeps (``Record.states``): only what the script did before
+    it holds there, a call or a change made after it at the same instant
+    not.
     """
     at = exact(t)
     return _held(
-        (call for call in source.bridge.calls if _by(call, at, play)),
-        lambda call: _exempt_at(call, at),
+        (call for call in source.bridge.calls if _by(call, at, play, seq)),
+        lambda call: _exempt_at(call, at, seq=seq),
     )
 
 
 def terms_at(
-    source: Record, t: Fraction | float, base: Terms, *, play: int | None = None
+    source: Record,
+    t: Fraction | float,
+    base: Terms,
+    *,
+    play: int | None = None,
+    seq: int | Fraction | None = None,
 ) -> Terms:
     """``base`` under the terms declared at or before ``t`` (within
-    ``play``, as :func:`declared` reads it): the declared ``pad`` and
-    ``text_gap`` replace its own, and the declared exemptions, as they stood
-    at ``t``, hold beside its own.
+    ``play`` and before ``seq``, as :func:`declared` reads them): the
+    declared ``pad`` and ``text_gap`` replace its own, and the declared
+    exemptions, as they stood at ``t``, hold beside its own.
     """
-    return _apply(base, declared(source, t, play=play), join=True)
+    return _apply(base, declared(source, t, play=play, seq=seq), join=True)
 
 
 def exemptions(source: Record, t: Fraction | float | None = None) -> Exemptions:
@@ -366,17 +378,21 @@ def exemptions(source: Record, t: Fraction | float | None = None) -> Exemptions:
 
 
 def armed_entries(
-    source: Record, t: Fraction | float, *, play: int | None = None
+    source: Record,
+    t: Fraction | float,
+    *,
+    play: int | None = None,
+    seq: int | Fraction | None = None,
 ) -> Exemptions:
     """The entries the value the arming in force at ``t`` was handed held
-    there (within ``play``, as :func:`declared` reads it), each read as it
-    stands at the scene's end: what a check made there adds to the
-    declaration a check of the whole scene is held to, as the reference
-    checks' departure guard adds its arming's to the hold watch's. None
-    before any arming.
+    there (within ``play`` and before ``seq``, as :func:`declared` reads
+    them), each read as it stands at the scene's end: what a check made
+    there adds to the declaration a check of the whole scene is held to, as
+    the reference checks' departure guard adds its arming's to the hold
+    watch's. None before any arming.
     """
     at = exact(t)
-    arming = armed(source, at, play=play)
+    arming = armed(source, at, play=play, seq=seq)
     if arming is None or "exempt" not in arming.terms:
         return Exemptions()
     named: tuple[Any, ...] = ()
@@ -385,7 +401,7 @@ def armed_entries(
         values = reading.values
         if values is None or "seen" not in values:
             continue
-        if reading.t <= at:
+        if reading.t <= at and _before(reading.seq, seq):
             named = values["named"]
         seen = values["seen"]
     kept = Exemptions()
@@ -395,35 +411,46 @@ def armed_entries(
 
 
 def armed(
-    source: Record, t: Fraction | float | None = None, *, play: int | None = None
+    source: Record,
+    t: Fraction | float | None = None,
+    *,
+    play: int | None = None,
+    seq: int | Fraction | None = None,
 ) -> BridgeCall | None:
     """The arming in force at ``t`` (by default, at the scene's end; within
-    ``play``, as :func:`declared` reads it): the last :func:`arm` call at
-    or before it, whose terms hold its ``motion_jump`` and the terms it
-    declared; ``None`` before any.
+    ``play`` and before ``seq``, as :func:`declared` reads them): the last
+    :func:`arm` call at or before it, whose terms hold its ``motion_jump``
+    and the terms it declared; ``None`` before any.
     """
     at = None if t is None else exact(t)
     found = None
     for call in source.bridge.calls:
-        if call.kind == "arm" and (at is None or _by(call, at, play)):
+        if call.kind == "arm" and (at is None or _by(call, at, play, seq)):
             found = call
     return found
 
 
 def armed_terms(
-    source: Record, t: Fraction | float | None = None, *, play: int | None = None
+    source: Record,
+    t: Fraction | float | None = None,
+    *,
+    play: int | None = None,
+    seq: int | Fraction | None = None,
 ) -> Terms | None:
     """What the arming in force at ``t`` (by default, the scene's end;
-    within ``play``, as :func:`declared` reads it) holds a check at ``t``
-    to: its own ``pad`` and ``text_gap``, and its exemptions as the value it
-    was handed stood at ``t`` (not those of earlier armings, which
-    :func:`exemptions` accumulates); ``None`` before any arming.
+    within ``play`` and before ``seq``, as :func:`declared` reads them)
+    holds a check at ``t`` to: its own ``pad`` and ``text_gap``, and its
+    exemptions as the value it was handed stood at ``t`` (not those of
+    earlier armings, which :func:`exemptions` accumulates); ``None`` before
+    any arming.
     """
     at = source.duration if t is None else exact(t)
-    arming = armed(source, at, play=play)
+    arming = armed(source, at, play=play, seq=seq)
     if arming is None:
         return None
-    exempt = _exempt_at(arming, at) if "exempt" in arming.terms else Exemptions()
+    exempt = (
+        _exempt_at(arming, at, seq=seq) if "exempt" in arming.terms else Exemptions()
+    )
     return Terms(arming.terms["pad"], arming.terms["text_gap"], exempt)
 
 
@@ -560,11 +587,23 @@ def _check_code(code: str, reference: Any) -> None:
         )
 
 
-def _by(call: BridgeCall, t: Fraction, play: int | None) -> bool:
-    """Whether ``call`` was made by ``t``, and with ``play``, by that play's
-    end: a call between plays belongs to the next (``BridgeCall.play``).
+def _by(
+    call: BridgeCall, t: Fraction, play: int | None, seq: int | Fraction | None = None
+) -> bool:
+    """Whether ``call`` was made by ``t``, with ``play`` by that play's end
+    (a call between plays belongs to the next, ``BridgeCall.play``), and
+    with ``seq`` before the capture of that seq.
     """
-    return call.t <= t and (play is None or call.play <= play)
+    return (
+        call.t <= t and (play is None or call.play <= play) and _before(call.seq, seq)
+    )
+
+
+def _before(made: int | Fraction, seq: int | Fraction | None) -> bool:
+    """Whether what the script did after the capture ``made`` (a call, a
+    reading: their ``seq``) came before the capture ``seq``, when given.
+    """
+    return seq is None or made < seq
 
 
 def _terms(terms: Mapping[str, Any]) -> dict[str, Any]:
@@ -682,7 +721,7 @@ def _declaring(
         kind, caller, terms=kept, reader=reader, changes_only=True
     )
     if reader is not None:
-        call.readings.append(Reading(call.t, call.line, reader()))
+        call.readings.append(Reading(call.t, call.line, reader(), seq=call.seq))
     return call
 
 
@@ -707,13 +746,20 @@ def _exempt_now(bridge: Bridge, call: BridgeCall) -> Exemptions:
     return now
 
 
-def _exempt_at(call: BridgeCall, t: Fraction, way: str = "exempt") -> Exemptions:
+def _exempt_at(
+    call: BridgeCall,
+    t: Fraction,
+    way: str = "exempt",
+    *,
+    seq: int | Fraction | None = None,
+) -> Exemptions:
     """``call``'s exemptions as they stood at ``t``, read ``way``
-    (:func:`_declaring`): their last reading at or before it.
+    (:func:`_declaring`): their last reading at or before it, and with
+    ``seq`` before the capture of that seq.
     """
     found: Exemptions = call.terms["exempt"]
     for reading in call.readings:
-        if reading.t > t:
+        if reading.t > t or not _before(reading.seq, seq):
             break
         if reading.values is not None and way in reading.values:
             found = reading.values[way]
@@ -792,7 +838,7 @@ def _found(call: BridgeCall, found: Iterable[Finding]) -> list[dict[str, Any]]:
         replace(finding, t_start=call.t, t_end=call.t, line=call.line)
         for finding in found
     )
-    call.readings.append(Reading(call.t, call.line, {"findings": kept}))
+    call.readings.append(Reading(call.t, call.line, {"findings": kept}, seq=call.seq))
     return _violations(kept)
 
 

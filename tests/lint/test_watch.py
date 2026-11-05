@@ -396,6 +396,11 @@ ARMED_CE = {
         ("overlap.text", False, {"Line", "Text"}, (1.6, 1.6)),
     ],
     "ListExemptedThenRemoved": [],
+    # A removal is checked as the script makes it: what the scene excuses or
+    # arms just after, at the same instant, does not reach back to it.
+    "ExcusedAfterTheRemoval": [("overlap.text", False, {"Line", "Text"}, (0.7, 0.7))],
+    "RearmedAfterTheRemoval": [("overlap.text", False, {"Line", "Text"}, (0.7, 0.7))],
+    "GapRearmedAfterTheRemoval": [("gap.text", False, {"Text"}, (0.7, 0.7))],
 }
 
 

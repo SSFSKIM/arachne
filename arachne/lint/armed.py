@@ -86,16 +86,24 @@ class ArmedRule:
         terms = Terms(pad, text_gap, Exemptions.parse(exempt), mid_scene=True)
         return replace(self, since=exact(since), terms=terms, sample_fps=rate)
 
-    def terms_at(self, record: Record, t: Fraction, play: int | None = None) -> Terms:
+    def terms_at(
+        self,
+        record: Record,
+        t: Fraction,
+        play: int | None = None,
+        seq: int | Fraction | None = None,
+    ) -> Terms:
         """The terms ``record``'s scene is held to at ``t``, an instant of
         ``play`` when given (as the script called it, while it ran, or as it
-        ended; a call the script makes after it holds from the next): its
+        ended; a call the script makes after it holds from the next), and
+        with ``seq`` at the state of that seq the record keeps (what the
+        script does after it, at the same instant, holds from then on): its
         arming in force there, its exemptions beside the rule's own; else
         the rule's own under what the scene declared by then.
         """
-        arming = armed_terms(record, t, play=play)
+        arming = armed_terms(record, t, play=play, seq=seq)
         if arming is None:
-            return terms_at(record, t, self.terms, play=play)
+            return terms_at(record, t, self.terms, play=play, seq=seq)
         return replace(
             self.terms,
             pad=arming.pad,
@@ -104,18 +112,21 @@ class ArmedRule:
         )
 
     def exemptions(
-        self, record: Record, checked: Iterable[tuple[Fraction, int]] = ()
+        self,
+        record: Record,
+        checked: Iterable[tuple[Fraction, int, int | Fraction]] = (),
     ) -> Exemptions:
         """What a check of ``record``'s whole scene is held to: the rule's
         own exemptions, and every one the scene stated (declared, armed or
         swept with), each read at the scene's end (:func:`.bridge.exemptions`);
-        and for each instant ``checked`` (a time, within a play) where a
-        check of the frame was held to the scene's arming, the entries the
-        arming's value held there, read at the end (:func:`.bridge.armed_entries`).
+        and for each state ``checked`` (a time, within a play, at a seq)
+        where a check of the scene was held to the scene's arming, the
+        entries the arming's value held there, read at the end
+        (:func:`.bridge.armed_entries`).
         """
         kept = _joined(self.terms.exempt, exemptions(record))
-        for t, play in checked:
-            kept = _joined(kept, armed_entries(record, t, play=play))
+        for t, play, seq in checked:
+            kept = _joined(kept, armed_entries(record, t, play=play, seq=seq))
         return kept
 
     def request_frames(self, frames: Frames) -> None:

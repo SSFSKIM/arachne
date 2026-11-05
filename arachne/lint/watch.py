@@ -262,7 +262,9 @@ def _watch(context: LintContext, rule: ArmedRule) -> list[Finding]:
     # to what the scene excuses, outside a ThreeDCamera (whose departures
     # are checked on the layer it keeps fixed).
     checked = [] if watch.three_d else departed(record, states, rule.since)
-    return watch.report(1 / render_grid(record), [(d.t, d.play) for d in checked])
+    return watch.report(
+        1 / render_grid(record), [(d.t, d.play, d.seq) for d in checked]
+    )
 
 
 class _Watch:
@@ -550,7 +552,7 @@ class _Watch:
             self.held.append(held)
 
     def report(
-        self, frame: Fraction, checked: list[tuple[Fraction, int]]
+        self, frame: Fraction, checked: list[tuple[Fraction, int, int | Fraction]]
     ) -> list[Finding]:
         """What was held on screen, less what the scene's exemptions, read
         at its end, excuse.
