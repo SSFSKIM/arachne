@@ -19,7 +19,7 @@
 
 use crate::composite::Plane;
 use crate::depth::{Direction, WorldPlane};
-use crate::xf::{RecordKind, Space, ThreeDCamera, View};
+use crate::xf::{Record, RecordKind, Space, ThreeDCamera, View, place};
 
 /// `arachne.constants.DEGREES`.
 const DEGREES: f64 = std::f64::consts::TAU / 360.0;
@@ -342,31 +342,33 @@ pub fn placement(
     }
 }
 
-/// The depth key a pre-projected record in `space` takes as a whole, when it takes one, its
-/// points `shown` where its camera placed them and `axes` the projection in that camera's axes
-/// ([`Projection::in_camera_axes`]) under a 3D camera: as [`placement`] keys a record placed by the
-/// engine, except that a fixed orientation faces the camera at the middle of its points' depths
-/// (where CE's offset moved its centre, the centre of their box). `None` for points keyed each on
-/// its own: through `axes`, from where it puts them back ([`Projection::unproject`]).
+/// The depth key a pre-projected record in `space` takes as a whole, when it takes one, `axes`
+/// the projection in its camera's axes ([`Projection::in_camera_axes`]) under a 3D camera: as
+/// [`placement`] keys a record placed by the engine, a fixed orientation facing the camera at its
+/// centre where that camera placed it (`pivot`, [`produced_pivot`]). `None` for points keyed each
+/// on its own: through `axes`, from where it puts them back ([`Projection::unproject`]).
 pub fn produced_key(
     axes: Option<&Projection>,
     map: &FrameMap,
     space: Space,
-    fixed_orientation: bool,
-    shown: &[[f64; 3]],
+    pivot: Option<[f64; 3]>,
 ) -> Option<Plane> {
     match (axes, space) {
-        (Some(p), Space::World) if fixed_orientation => {
-            let (lo, hi) = shown
-                .iter()
-                .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), q| {
-                    (lo.min(q[2]), hi.max(q[2]))
-                });
-            Some(p.facing_plane([0.0, 0.0, (lo + hi) / 2.0], map))
-        }
-        (Some(_), Space::World) => None,
+        (Some(p), Space::World) => pivot.map(|pivot| p.facing_plane(pivot, map)),
         _ => Some(Plane::constant(f64::NEG_INFINITY)),
     }
+}
+
+/// Where a camera of the scene's own placed a pre-projected record's fixed-orientation centre, in
+/// its axes, when the record has one: CE moves every point of a fixed orientation by its centre's
+/// projection offset, so the centre moved as the record's first point did, from `own` (placed by
+/// the record's placement) to `shown`. The centre is the record's own, not its points' middle: a
+/// family's members turn about their parent's centre, and a centre function may name any point.
+pub fn produced_pivot(record: &Record, own: &[[f64; 3]], shown: &[[f64; 3]]) -> Option<[f64; 3]> {
+    let centre = record.depth.fixed_orientation_centre?;
+    let own = place(&record.geometry.place_a, *own.first()?);
+    let shown = *shown.first()?;
+    Some(std::array::from_fn(|k| centre[k] + (shown[k] - own[k])))
 }
 
 /// `transform_points_pre_display`. A 3D placement needs the projection.
