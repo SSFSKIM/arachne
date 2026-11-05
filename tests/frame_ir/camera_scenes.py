@@ -241,6 +241,69 @@ class PatchedStateSolids(Solids):
         camera.transform_points_pre_display = placed
 
 
+class ProjectingStateSolids(Solids):
+    """:class:`Solids` through the engine's camera, its projection replaced
+    on the instance by one that also sets the line width (three times the
+    engine's, and more with depth) from the depth of the points it projects:
+    a change of a kind the gate proved (``painter.PROVEN_ON_THE_GATE``),
+    rebinding the camera's state as it draws.
+    """
+
+    def patch(self, camera) -> None:
+        project = camera.project_points
+
+        def projected(points):
+            out = np.array(project(points))
+            if len(out) and self.rebinds(camera):
+                camera.cairo_line_width_multiple = 0.03 * (
+                    1 + abs(float(np.mean(out[:, 2])))
+                )
+            return out
+
+        camera.project_points = projected
+
+    def rebinds(self, camera) -> bool:
+        """Whether the projection sets the line width as it now runs: on
+        every call.
+        """
+        return True
+
+
+class LaterPlayStateSolids(ProjectingStateSolids):
+    """:class:`ProjectingStateSolids` whose code first sets the line width in
+    the second play: only once the camera has turned to the angle it turns
+    to between the two plays.
+    """
+
+    def construct(self):
+        self.set_camera_orientation(phi=60 * DEGREES, theta=-45 * DEGREES)
+        self.patch(self.renderer.camera)
+        surface = Surface(
+            lambda u, v: np.array([u, v, 0.4 * np.sin(u) * np.cos(v)]),
+            u_range=[-1.5, 1.5],
+            v_range=[-1.5, 1.5],
+            resolution=(6, 6),
+            fill_opacity=0.8,
+        )
+        self.add(surface, Dot([-1.0, -1.0, 0.0], color=RED))
+        self.play(Rotate(surface, 30 * DEGREES, axis=OUT), run_time=0.4)
+        self.set_camera_orientation(theta=-20 * DEGREES)
+        self.play(Rotate(surface, 30 * DEGREES, axis=OUT), run_time=0.4)
+
+    def rebinds(self, camera) -> bool:
+        return camera.get_theta() > -30 * DEGREES
+
+
+class MidPlayStateSolids(ProjectingStateSolids):
+    """:class:`ProjectingStateSolids` whose code sets the line width only while
+    the camera's turn in the second play is under way: from partway through
+    a play to before the next play begins.
+    """
+
+    def rebinds(self, camera) -> bool:
+        return -40 * DEGREES < camera.get_theta() < -25 * DEGREES
+
+
 class TintedSolids(Solids):
     """:class:`Solids` through the engine's camera, its shading replaced on
     the instance: a method other than the projection that changes the

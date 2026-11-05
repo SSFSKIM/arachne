@@ -697,21 +697,25 @@ class Drawing:
             camera.set_pixel_array(pixels)
             return pixels
         camera.reset()
-        with self._captures(capture.instant):
+        with self._captures(capture.instant, ("static", play.index)):
             camera.capture_mobjects(list(play.static))
         self._pictures[play.index] = self._painted(play, capture)
         return camera.pixel_array.copy()
 
-    def _captures(self, t: Fraction) -> contextlib.AbstractContextManager[Any]:
+    def _captures(
+        self, t: Fraction, play: Any
+    ) -> contextlib.AbstractContextManager[Any]:
         """Within: the camera's captures are frames at the scene's instant
-        ``t`` described from what the camera produced, where this drawing's
-        frames are (:attr:`captured`); else nothing changes.
+        ``t`` of the play ``play`` (its index; ``("static", index)`` for its
+        static picture; ``"final"``) described from what the camera produced,
+        where this drawing's frames are (:attr:`captured`); else nothing
+        changes.
         """
         if not self.captured:
             return contextlib.nullcontext()
         from arachne.frame_ir.live import live
 
-        return live(self.camera, t, self.draw_path)
+        return live(self.camera, t, self.draw_path, play)
 
     def _painted(self, play: PlayRecord, capture: Capture) -> _Picture:
         """What the play's static picture paints, its static mobjects shown at
@@ -746,7 +750,8 @@ class Drawing:
         targets = list(capture.moving) or capture.draw_list()
         if self.painter is not None:
             return self._paint(play, capture, targets, prepare, instant)
-        with self._captures(capture.instant if instant is None else instant):
+        shown = capture.instant if instant is None else instant
+        with self._captures(shown, play.index):
             if self.static_layer and self._picture_holds(play, capture):
                 self.show(capture, targets)
                 if prepare is not None:
@@ -993,7 +998,7 @@ class Drawing:
             self.camera.set_pixel_array(pixels)
             return pixels
         self.camera.reset()
-        with self._captures(capture.instant):
+        with self._captures(capture.instant, "final"):
             self.camera.capture_mobjects(targets)
         return self.camera.pixel_array.copy()
 
@@ -1031,6 +1036,8 @@ class LiveFrames:
         self._static: PixelArray | None = None
         self._pending: tuple[Fraction, Fraction] | None = None
         self._open = False
+        #: The index of the play whose frames are drawn.
+        self._play: int | None = None
 
     def begin(self, play: PlayRecord) -> None:
         """The play's animations have begun. A frozen frame's static picture
@@ -1039,13 +1046,14 @@ class LiveFrames:
         background after the play. With ``static_layer`` off, none is.
         """
         self._open = True
+        self._play = play.index
         self._pending = None
         self._static = None
         if play.held and play.static and self.static_layer:
             from arachne.frame_ir.live import live
 
             self.camera.reset()
-            with live(self.camera, play.start):
+            with live(self.camera, play.start, play=("static", play.index)):
                 self.camera.capture_mobjects(list(play.static))
             self._static = self.camera.pixel_array.copy()
 
@@ -1074,7 +1082,7 @@ class LiveFrames:
         camera = self.camera
         from arachne.frame_ir.live import live
 
-        with live(camera, instant):
+        with live(camera, instant, play=self._play):
             if self._static is not None:
                 camera.set_frame_to_background(self._static)
             else:

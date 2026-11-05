@@ -21,7 +21,9 @@ read by its MultiCamera) holds the described frame.
 
 With ``draw`` (the ``ir_cairo`` path) the capture is the real draw, which
 the description is compared with (:attr:`LivePainter.differing`); without,
-Cairo's calls go to a context that draws nothing (the core path's capture).
+Cairo's calls go to a context that draws nothing (the core path's capture),
+but for the captures the core keeps as the camera drew them
+(:meth:`LivePainter._sample`).
 """
 
 from __future__ import annotations
@@ -31,11 +33,13 @@ __all__ = ["LivePainter", "live"]
 import contextlib
 import os
 import weakref
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from fractions import Fraction
 from typing import Any
 
 import numpy as np
+
+from arachne.mobject.values import FrozenArray
 
 from .cairo_painter import CairoDrawer
 from .extract import (
@@ -120,6 +124,8 @@ _UNSETTLED: weakref.WeakKeyDictionary[Any, str] = weakref.WeakKeyDictionary()
 #: and by identity above it (its pixel arrays: the camera's real draw, compared
 #: with the description, sees whatever writing into them shows).
 _COPIED_ELEMENTS = 1 << 16
+#: What a camera holds that is told by its value.
+_VALUES = (bool, int, float, complex, str, bytes, np.generic)
 
 
 def _held(value: Any) -> tuple[Any, ...]:
@@ -129,18 +135,14 @@ def _held(value: Any) -> tuple[Any, ...]:
     read-only ``FrozenArray`` is told by identity alone, and so is a large
     array.
     """
-    from arachne.mobject.values import FrozenArray
-
-    if isinstance(value, FrozenArray) and not value.flags.writeable:
-        return ("object", value)
+    if value is None or isinstance(value, _VALUES):
+        return ("value", value)
     if isinstance(value, np.ndarray):
+        if isinstance(value, FrozenArray) and not value.flags.writeable:
+            return ("object", value)
         if value.size <= _COPIED_ELEMENTS:
             return ("array", value, value.copy())
         return ("object", value)
-    if value is None or isinstance(
-        value, bool | int | float | complex | str | bytes | np.generic
-    ):
-        return ("value", value)
     if isinstance(value, dict):
         return ("dict", value, tuple(value.items()))
     if isinstance(value, list | tuple):
@@ -205,10 +207,10 @@ def _changed(before: _State, after: _State) -> str | None:
     return None
 
 
-def _producing(name: str, method: Any, camera: Any, watched: bool) -> Any:
+def _producing(name: str, method: Any, camera: Any, watched: Callable[[], bool]) -> Any:
     """``method`` (``camera``'s ``name``, whatever the scene made it), keeping
-    what it returns for each recorded mobject in that mobject's log. Where
-    ``watched``, a call that changes what the camera holds
+    what it returns for each recorded mobject in that mobject's log. While
+    ``watched()``, a call that changes what the camera holds
     (:func:`_camera_state`) is kept in :data:`_UNSETTLED`: the frame reads
     that state beyond the values XF
     carries of the capture, so the camera's own draw stands.
@@ -222,7 +224,7 @@ def _producing(name: str, method: Any, camera: Any, watched: bool) -> Any:
             return method(mobject, *args, **kwargs)
         log = mobject._xf_log
         start = len(log)
-        before = _camera_state(camera, kind) if watched else None
+        before = _camera_state(camera, kind) if watched() else None
         result = method(mobject, *args, **kwargs)
         changed = (
             None if before is None else _changed(before, _camera_state(camera, kind))
@@ -382,6 +384,20 @@ class LivePainter:
     def __init__(self, *, draw: bool = True, path: str = "ir_cairo") -> None:
         self.draw = draw
         self.path = path
+        #: The play the frame within :meth:`around` belongs to, if known.
+        self.play: Any = None
+        #: The frames :meth:`around` has drawn, the one within it included.
+        self._frames = 0
+        #: Whether the frame within :meth:`around` is the scene's first: no
+        #: capture was described before it.
+        self._opening = False
+        #: Per camera (by id): the play last watched, and the frame watched
+        #: in it (its first). A camera absent here has not captured yet.
+        self._watched: dict[int, tuple[Any, int]] = {}
+        #: Whether the capture being drawn is watched call by call, and
+        #: whether the camera's own draw of it is made.
+        self._watching = draw
+        self._real = draw
         self._painters: dict[int, tuple[Any, Any]] = {}
         self._checker = CairoDrawer()
         self.captures = 0
@@ -406,11 +422,17 @@ class LivePainter:
         return found[1]
 
     @contextlib.contextmanager
-    def around(self, camera: Any, t: Fraction) -> Iterator[LivePainter]:
+    def around(
+        self, camera: Any, t: Fraction, play: Any = None
+    ) -> Iterator[LivePainter]:
         """Within: ``camera``'s captures, and its displays' cameras', are
-        described in XF and drawn back from it, as frames at instant ``t``.
+        described in XF and drawn back from it, as one frame at instant ``t``
+        of the play ``play`` (any key that tells plays apart, if known).
         """
         self.instant = t
+        self.play = play
+        self._frames += 1
+        self._opening = not self.captures
         displays = vars(camera).get("image_mobjects_from_cameras", ())
         cameras = [camera, *(display.camera for display in displays)]
         undo: list[Any] = []
@@ -459,8 +481,8 @@ class LivePainter:
             context = camera.get_cairo_context
 
             def no_context(pixel_array: Any) -> Any:
-                context(pixel_array)  # CE's context still freezes its centre
-                return _NoContext()
+                found = context(pixel_array)  # CE's context still freezes its centre
+                return found if self._real else _NoContext()
 
             own["get_cairo_context"] = engine_own(no_context)
             added.append("get_cairo_context")
@@ -474,15 +496,15 @@ class LivePainter:
             # mobject it draws is kept, and its records are pre-projected.
             # Where the capture is the real draw, what it holds is watched
             # call by call, and the draw stands where it changes. The core
-            # draws no capture of the camera's own: it draws only cameras
-            # whose changes the gate proved (``painter.PROVEN_ON_THE_GATE``),
-            # and does not pay for the watch.
+            # draws only cameras whose changes the gate proved
+            # (``painter.PROVEN_ON_THE_GATE``) and watches a sample of their
+            # captures (:meth:`_sample`).
             for name in _PRODUCED:
                 if name in own:
                     held[name] = own[name]
                 method = getattr(camera, name)
                 own[name] = engine_own(
-                    _producing(name, method, camera, watched=self.draw)
+                    _producing(name, method, camera, lambda: self._watching)
                 )
                 added.append(name)
             own["_xf_pre_projected"] = True
@@ -513,6 +535,7 @@ class LivePainter:
 
     def _capture(self, camera: Any, capture: Any) -> Any:
         def described(mobjects: Any, **kwargs: Any) -> None:
+            self._sample(camera)
             frames = vars(camera)["_xf_live"]
             background = np.array(camera.pixel_array)
             drawn: list[tuple[type, _Recording]] = []
@@ -549,15 +572,38 @@ class LivePainter:
 
         return described
 
+    def _sample(self, camera: Any) -> None:
+        """Whether ``camera``'s capture about to run is watched call by call,
+        and whether the camera's own draw of it is made. With a real draw
+        (``ir_cairo``) both, always. On the core, which draws no capture of
+        the camera's own, the watch samples: every capture of the first frame
+        of each play (a play's static picture is a frame of its own). The
+        scene's first frame is also drawn as the camera draws it, so a change
+        seen there sends the whole scene to Cairo from its first frame; a
+        camera fallen so draws every later capture itself.
+        """
+        if self.draw:
+            self._watching = self._real = True
+            return
+        key = id(camera)
+        watched = self._watched.get(key)
+        if watched is None or (self.play is not None and watched[0] != self.play):
+            watched = self._watched[key] = (self.play, self._frames)
+        fallen = camera in _UNSETTLED
+        self._watching = watched[1] == self._frames and not fallen
+        self._real = self._opening or fallen
+
     def _fall_back(self, camera: Any) -> None:
         """The capture just drawn stands as the camera drew it, with one
-        ``render.fallback`` per camera saying why (:data:`_UNSETTLED`).
+        ``render.fallback`` per camera saying why (:data:`_UNSETTLED`). On the
+        core the scene's first frame is drawn so; a change first seen in a
+        later play, after the core has drawn frames, is ``render.unable``.
         """
         reason = _UNSETTLED[camera]
-        if not self.draw:
+        if not self._real:
             raise Unable(
-                f"render.unable: a {type(camera).__name__}: {reason}, and nothing"
-                " drew the frame"
+                f"render.unable: a {type(camera).__name__}: {reason}, after the"
+                " core had drawn its frames"
             )
         if id(camera) in self._fallen:
             return
@@ -566,10 +612,11 @@ class LivePainter:
 
         own = self._own_codes.get(id(camera))
         subject, why = own if own is not None else (type(camera).__name__, "")
+        where = "" if self.draw else " for the whole scene"
         raise_finding(
             "render.fallback",
             subject,
-            f"{why} is drawn on Cairo: {reason}; its draw reads state beyond the"
+            f"{why} is drawn on Cairo{where}: {reason}; its draw reads state beyond the"
             " points, colours and order XF carries of the camera's capture",
         )
 
@@ -860,11 +907,12 @@ _LIVE: weakref.WeakKeyDictionary[Any, tuple[int, LivePainter]] = (
 
 @contextlib.contextmanager
 def live(
-    camera: Any, t: Fraction, draw_path: str | None = None
+    camera: Any, t: Fraction, draw_path: str | None = None, play: Any = None
 ) -> Iterator[LivePainter | None]:
     """Within: ``camera`` captures through the draw path ``draw_path`` (the
     option of that name, unless given), each capture a frame at the scene's
-    instant ``t``. On ``cairo`` nothing changes.
+    instant ``t`` of the play ``play`` (a key that tells plays apart, if
+    known). On ``cairo`` nothing changes.
     """
     from .painter import DRAW_PATHS, camera_path
 
@@ -883,7 +931,7 @@ def live(
         # draws the picture (its real draw would only be thrown away).
         found = (pid, LivePainter(draw=path != "core", path=path))
         _LIVE[camera] = found
-    with found[1].around(camera, t) as painter:
+    with found[1].around(camera, t, play) as painter:
         yield painter
 
 
