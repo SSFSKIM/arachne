@@ -312,13 +312,20 @@ impl Linear {
                 1 << 16,
             ],
         );
-        let (dx, dy) = (self.p2[0] - self.p1[0], self.p2[1] - self.p1[1]);
+        // pixman's products are 64-bit, but Cairo fits a gradient's ends within half the 16.16
+        // range before they reach it (`_cairo_gradient_pattern_fit_to_range`); ends anywhere in
+        // the range need 128 bits here, where they are taken as they are.
+        let wide = |v: i64| v as i128;
+        let (dx, dy) = (
+            wide(self.p2[0]) - wide(self.p1[0]),
+            wide(self.p2[1]) - wide(self.p1[1]),
+        );
         let l = dx * dx + dy * dy;
         let invden = 65536.0 * 65536.0 / (l as f64 * v[2] as f64);
         let v2 = v[2] as f64 * (1.0 / 65536.0);
-        let along =
-            (dx * v[0] + dy * v[1]) as f64 - (dx * self.p1[0] + dy * self.p1[1]) as f64 * v2;
-        let inc = (dx * t[0][0] + dy * t[1][0]) as f64 * invden;
+        let along = (dx * wide(v[0]) + dy * wide(v[1])) as f64
+            - (dx * wide(self.p1[0]) + dy * wide(self.p1[1])) as f64 * v2;
+        let inc = (dx * wide(t[0][0]) + dy * wide(t[1][0])) as f64 * invden;
         ((along * invden) as i64, inc)
     }
 
@@ -442,6 +449,40 @@ mod tests {
             panic!("a gradient whose ends meet is solid")
         };
         assert_eq!(avg, [128, 0, 128, 255]);
+    }
+
+    /// A gradient whose ends lie far outside the frame, up to the ends of the 16.16 range, still
+    /// paints its middle colour at the middle: the products along it do not overflow.
+    #[test]
+    fn a_gradient_with_ends_across_the_whole_fixed_point_range_paints_its_middle() {
+        let ctm = Matrix {
+            xx: 13.5,
+            yx: 0.0,
+            xy: 0.0,
+            yy: -13.5,
+            x0: 96.0,
+            y0: 54.0,
+        };
+        let (red, blue) = ([1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]);
+        let ext = [0, 0, 192, 108];
+        let edge = 32767.0 + 65535.0 / 65536.0;
+        for (p1, p2) in [
+            ([-25000.0, 0.0], [25000.0, 0.0]),
+            ([0.0, -25000.0], [0.0, 25000.0]),
+            ([-25000.0, -25000.0], [25000.0, 25000.0]),
+            ([-edge, 0.0], [edge, 0.0]),
+            ([-32768.0, -32768.0], [edge, edge]),
+        ] {
+            let Source::Linear(g) = source(&ctm, p1, p2, &[red, blue], ext) else {
+                panic!("two colours between two ends are a gradient")
+            };
+            let [r, gr, b, a] = g.at(96, 54, 0);
+            assert!(
+                r.abs_diff(128) <= 1 && gr == 0 && b.abs_diff(128) <= 1 && a == 255,
+                "{p1:?}..{p2:?}: {:?}",
+                [r, gr, b, a]
+            );
+        }
     }
 
     #[test]
