@@ -21,8 +21,12 @@ needs: the scene's camera and each display's (a sub-frame's view). When a
 frame's grid differs from the last frame's, every shape and record held is
 snapped again, from the values the scene made, so a snapped value is the
 same function of its value and the frame's grid whatever frames came
-before. Dimensionless values (angles, zoom, the linear part of an affine,
-interpolation parameters) are snapped to :data:`RATIO_GRID`. Colours,
+before. A view's scales (its frame width and height, its zoom) keep
+:data:`SCALE_BITS` significant bits whatever their magnitude
+(:func:`relative`), so a frame zoomed to a millionth of a unit keeps its
+size and the grid it sets; the grid is read from them. Dimensionless values
+(angles, the linear part of an affine, interpolation parameters) are snapped
+to :data:`RATIO_GRID`. Colours,
 widths, opacities, z-indices and the camera's constants are not geometry the
 scene computes: they reach the core as given. Every field is classified
 here; a field this module does not know is refused, so nothing reaches the
@@ -61,9 +65,11 @@ from __future__ import annotations
 __all__ = [
     "POSITION_GRID",
     "RATIO_GRID",
+    "SCALE_BITS",
     "Canonical",
     "canonical_order",
     "input_grid",
+    "relative",
     "snap",
 ]
 
@@ -77,10 +83,13 @@ import numpy as np
 from .xf import Delta, Record, Shape
 
 #: The fixed grid of positions that order, not place: the camera's depth
-#: sort keys, and the frame width a view's input grid is read from.
+#: sort keys; and the grid of a frame no view sees.
 POSITION_GRID = 2.0**-16
 #: The grid dimensionless values are snapped to.
 RATIO_GRID = 2.0**-24
+#: The significant bits a view's scales (frame width and height, zoom) keep,
+#: relative to their own magnitude (:func:`relative`).
+SCALE_BITS = 24
 #: How far below the pixel's binary exponent the input grid sits.
 _STEPS_EXPONENT = 9
 
@@ -102,16 +111,30 @@ def snap(values: Any, grid: float) -> Any:
     return found
 
 
+def relative(values: Any) -> Any:
+    """``values`` (a number or a tuple) kept to :data:`SCALE_BITS`
+    significant bits, as given: exact (``frexp`` and ``ldexp`` move only the
+    exponent), and a scale keeps its precision however small it is.
+    """
+    mantissa, exponent = np.frexp(np.asarray(values, dtype=np.float64))
+    found = np.ldexp(np.round(mantissa * 2.0**SCALE_BITS) / 2.0**SCALE_BITS, exponent)
+    found = found + 0.0
+    if isinstance(values, tuple):
+        return tuple(float(v) for v in found.ravel())
+    return float(found)
+
+
 def input_grid(views: list[Mapping[str, Any]]) -> float:
     """The grid positions seen through ``views`` are snapped to: the finest
     of each view's ``2^(e - 9)``, ``e`` the binary exponent (``math.frexp``,
     exact) of the scene units its pixel spans, read from its frame width
-    and zoom on fixed grids.
+    and zoom kept to :data:`SCALE_BITS` bits (:func:`relative`). This is the
+    one function that decides the grid: every snap of a frame reads it.
     """
     found = math.inf
     for view in views:
-        width = snap(float(view["frame_width"]), POSITION_GRID)
-        zoom = snap(float(view.get("zoom", 1.0)), RATIO_GRID)
+        width = relative(float(view["frame_width"]))
+        zoom = relative(float(view.get("zoom", 1.0)))
         span = width / (int(view["pixel_width"]) * zoom)
         if not (span > 0 and math.isfinite(span)):
             continue
@@ -156,6 +179,10 @@ def _ratio(value: Any, grid: float) -> Any:
     return snap(value, RATIO_GRID)
 
 
+def _scale(value: Any, grid: float) -> Any:
+    return relative(value)
+
+
 def _affine(value: Any, grid: float) -> np.ndarray:
     """An affine (``(3, 4)``, or ``(n, 3, 4)``): its linear part a ratio, its
     translation a position.
@@ -172,8 +199,8 @@ def _as_given(value: Any, grid: float) -> Any:
 
 #: What each view field is.
 _VIEW: dict[str, Callable[[Any, float], Any]] = {
-    "frame_width": _position,
-    "frame_height": _position,
+    "frame_width": _scale,
+    "frame_height": _scale,
     "frame_center": _position,
     "mapping_centre": _position,
     "focal_distance": _position,
@@ -181,7 +208,7 @@ _VIEW: dict[str, Callable[[Any, float], Any]] = {
     "phi": _ratio,
     "theta": _ratio,
     "gamma": _ratio,
-    "zoom": _ratio,
+    "zoom": _scale,
     "pixel_width": _as_given,
     "pixel_height": _as_given,
     "camera": _as_given,

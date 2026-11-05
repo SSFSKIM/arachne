@@ -404,3 +404,36 @@ def test_a_snapped_shape_nothing_holds_after_a_swap_is_released():
     # Slot 1 last drew the reveal slot 0 first drew.
     first_reveal = dict(opened.set)[0].fields["shape"]
     assert dropped.release == [first_reveal]
+
+
+def test_a_frame_a_millionth_wide_keeps_its_view_and_a_grid_to_match():
+    """Zoomed to a frame 1e-6 wide at 192 pixels, a pixel spans about 5.2e-9
+    (in [2^-28, 2^-27)): the input grid is 2^-36, the frame keeps its width
+    and height to 24 significant bits, and its centre, a position, lands on
+    that grid rather than on a fixed one.
+    """
+    width, height = 1e-6, 1e-6 * 108 / 192
+    centre = (3.3e-7, -1.7e-7, 0.0)
+    view = {
+        **_FLAT_VIEW,
+        "frame_width": width,
+        "frame_height": height,
+        "frame_center": centre,
+        "mapping_centre": centre,
+    }
+    assert canonical.input_grid([view]) == 2.0**-36
+    found = Canonical(planes=False)(Delta(seq=0, view=view)).view
+    assert found is not None
+    assert found["input_grid"] == 2.0**-36
+    assert found["frame_width"] == pytest.approx(width, rel=2.0**-23)
+    assert found["frame_height"] == pytest.approx(height, rel=2.0**-23)
+    assert found["frame_center"] == canonical.snap(centre, 2.0**-36)
+    assert found["frame_center"][0] == pytest.approx(centre[0], abs=2.0**-36)
+
+
+@pytest.mark.parametrize(
+    ("pixel_width", "grid"), [(1920, 2.0**-16), (854, 2.0**-14), (192, 2.0**-12)]
+)
+def test_the_configured_frame_keeps_its_grid(pixel_width, grid):
+    """The configured frame, 14.2 units wide: 2^-16 at 1080p."""
+    assert canonical.input_grid([{**_FLAT_VIEW, "pixel_width": pixel_width}]) == grid
