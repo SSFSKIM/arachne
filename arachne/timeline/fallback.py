@@ -79,6 +79,7 @@ from .state import build_state
 if TYPE_CHECKING:
     from PIL import Image
 
+    from arachne._config.utils import ManimConfig
     from arachne.scene.scene import Scene
     from arachne.session import Session, Source
     from arachne.typing import PixelArray
@@ -379,7 +380,9 @@ def _forward(
         if divergence is not None:
             session._keep(divergence)
         if refused:
-            answered = _rendered(forward, executed, instants, written, frames=frames)
+            answered = _rendered(
+                forward, executed, instants, written, source.settings, frames=frames
+            )
         elif executed.refusal is not None:
             raise RecordRefused(
                 f"{executed.refusal}; the forward run's record refuses drawing where"
@@ -501,13 +504,17 @@ def _rendered(
     record: Record,
     instants: list[Fraction],
     written: dict[Fraction, PixelArray],
+    settings: ManimConfig,
     *,
     frames: bool,
 ) -> dict[Fraction, tuple[State, Image.Image | None]]:
     """Each instant answered as the forward run's render shows it: by the
     last frame at or before it and the state that frame shows, or after the
-    script ended, by the scene as it left it.
+    script ended, by the scene as it left it, drawn under the configuration
+    the run executed under (``settings``), its draw path among it.
     """
+    from arachne._config import tempconfig
+
     scene = forward.scene
     camera = scene.renderer.camera
     fps = exact(camera.frame_rate)
@@ -518,7 +525,8 @@ def _rendered(
         if ended and frames and final is None:
             # As the render draws the scene its record can't: from the live
             # scene, which the script left so.
-            scene.renderer._draw_final(scene)
+            with tempconfig(settings):
+                scene.renderer._draw_final(scene)
             final = camera.pixel_array.copy()
         shown = t if ended else _on_screen(fps, [t])[0]
         state = _state(record, t, _route(record, shown))

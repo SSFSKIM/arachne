@@ -5,13 +5,18 @@ code runs exactly as often as on the direct path.
 
 from __future__ import annotations
 
+import contextlib
 from fractions import Fraction
+from pathlib import Path
 
 import numpy as np
 import pytest
 
+from arachne import config
 from arachne.frame_ir import live as live_module
 from arachne.frame_ir.extract import Unable
+from arachne.session import Session
+from arachne.timeline import admission
 
 from ..timeline.conftest import render
 from . import scenes
@@ -140,3 +145,55 @@ def test_without_drawing_the_capture_describes_the_same_frames(
 def test_a_read_the_record_would_answer_otherwise_is_unable():
     with pytest.raises(Unable, match="render.unable: a SplitAlone's"):
         render(scenes.LiveUnstated, FPS, draw_path="ir_cairo", **MEDIUM)
+
+
+@pytest.fixture
+def entries(monkeypatch):
+    """Each live draw's instant, the draw path the configuration holds then,
+    and the live painter it draws through (``None`` on Cairo).
+    """
+    seen: list[tuple[Fraction, str, live_module.LivePainter | None]] = []
+    original = live_module.live
+
+    @contextlib.contextmanager
+    def observed(camera, t, draw_path=None):
+        with original(camera, t, draw_path) as painter:
+            seen.append((t, config.draw_path, painter))
+            yield painter
+
+    monkeypatch.setattr(live_module, "live", observed)
+    return seen
+
+
+def _answered_past_the_end(entries) -> None:
+    """A forward run of a session opened on ``ir_cairo``, in a process on
+    Cairo, answers an instant after the script ended: its play's frames are
+    drawn as the scene runs, and the scene as the script left it after.
+    """
+    assert config.draw_path == "cairo"
+    admission.DEMOTED.clear()
+    session = Session.open(
+        Path(scenes.__file__),
+        "LiveOverride",
+        config={**MEDIUM, "frame_rate": FPS, "draw_path": "ir_cairo"},
+    )
+    try:
+        assert session.record.refusal is not None, "drawn live"
+        entries.clear()
+        (answer,) = session.answers([Fraction(1)])
+    finally:
+        session.close()
+        admission.DEMOTED.clear()
+    assert answer.state.answer == "forward"
+    assert entries[-1][0] == Fraction(2, 5), "the scene as the script left it"
+
+
+def test_a_forward_run_draws_past_the_script_s_end_on_the_session_s_path(entries):
+    _answered_past_the_end(entries)
+    assert [path for _, path, _ in entries] == ["ir_cairo"] * len(entries)
+
+
+def test_a_forward_run_draws_its_frames_and_the_end_through_one_painter(entries):
+    _answered_past_the_end(entries)
+    assert all(painter is not None for _, _, painter in entries)
+    assert len({id(painter) for _, _, painter in entries}) == 1
