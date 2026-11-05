@@ -624,10 +624,11 @@ def test_sub_frame_placement_rank_and_self_capture():
 
 
 @pytest.mark.parametrize("kind", ["path", "points", "image"])
-def test_pre_projected_sets_its_feature_and_is_cairo_only(kind):
+def test_pre_projected_sets_its_feature_and_is_drawn_from_its_tail(kind):
     delta = background_delta(4, 4, (0, 0, 0, 1))
-    points = delta.upload_path([[1, 2, 3], [4, 5, 6]])
     shape = delta.upload_path(square())
+    # As many points as the shape: a points record's colours are one per point.
+    points = delta.upload_path(square(0.5) + [0, 0, 1])
     body = {}
     if kind == "points":
         body = {"colors": delta.upload_paint(np.ones((16, 4))), "radius": 2}
@@ -651,10 +652,11 @@ def test_pre_projected_sets_its_feature_and_is_cairo_only(kind):
     order = ac.FrameDelta()
     order.set_order([("moving", 3, 0)])
     stream.apply(order)
-    with pytest.raises(ac.Unsupported) as refused:
-        stream.draw(4, 4)
-    assert "pre-projected" in refused.value.reason
-    assert "Cairo" in refused.value.reason
+    if kind == "image":
+        with pytest.raises(ac.Unsupported, match="image records"):
+            stream.draw(4, 4)
+    else:
+        assert stream.draw(4, 4).shape == (4, 4, 4)
 
 
 def test_pre_projected_bit_needs_its_field_and_preserves_other_bits():

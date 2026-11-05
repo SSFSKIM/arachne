@@ -9,6 +9,12 @@ changes the gate has proven on ``ir_cairo`` against the camera's own draw
 (``PROVEN_ON_THE_GATE``) is drawn on the core from what it produced; any
 other draws on Cairo, with one finding. A frame the core refuses is
 ``render.unable``, never drawn on another path.
+
+A proven change can still rebind what the camera holds as it draws, which
+XF does not carry. The core watches for that in the first frame of each
+play, and draws the scene's first frame as the camera draws it: a rebinding
+seen there sends the whole scene to Cairo; one first seen in a later play is
+``render.unable``.
 """
 
 from __future__ import annotations
@@ -121,24 +127,49 @@ def test_a_frame_the_core_refuses_is_unable_not_drawn_on_another_path(monkeypatc
         render(core_scenes.FixedLabelOverSquare, FPS, draw_path="core", **MEDIUM)
 
 
-def test_a_proven_change_that_rebinds_the_camera_s_state_draws_from_its_description(
-    findings, monkeypatch
+def test_a_proven_change_that_rebinds_the_camera_s_state_draws_on_cairo_for_the_whole_scene(
+    findings,
 ):
-    """The residual the census accepts. A change of a proven kind whose code
-    rebinds what the camera holds as it draws (here the line width, from each
-    mobject's depth) falls back on ``ir_cairo``, where the camera's state is
-    watched call by call. The core does not watch it (the watch costs about a
-    third of a changed camera's draw time there), so the scene is drawn on the
-    core from its description, with no finding: one line width for the frame,
-    not one per mobject.
+    """A change of a kind the gate proved whose code rebinds what the camera
+    holds as it draws (here the line width, from the depth of what it
+    projects) on every call. The core watches the first capture of each
+    play, and draws the scene's very first capture as the camera draws it:
+    the change is seen there, so the whole scene is drawn on Cairo, its
+    first frame too, with one finding naming the code and the attribute.
     """
-    monkeypatch.setattr(
-        painter,
-        "PROVEN_ON_THE_GATE",
-        painter.PROVEN_ON_THE_GATE | {("instance", "transform_points_pre_display")},
-    )
+    scene_class = camera_scenes.ProjectingStateSolids
+    _, direct = render(scene_class, FPS, **MEDIUM)
     before = CorePainter.drawn_total
-    _, core = render(camera_scenes.PatchedStateSolids, FPS, draw_path="core", **MEDIUM)
-    assert CorePainter.drawn_total > before, "drawn on the core"
-    assert len(core) > 0
-    assert not findings, findings
+    _, core = render(scene_class, FPS, draw_path="core", **MEDIUM)
+    assert CorePainter.drawn_total == before, "no frame drawn on the core"
+    assert len(direct) == len(core) > 0
+    for index, (a, b) in enumerate(zip(direct, core, strict=True)):
+        np.testing.assert_array_equal(a, b, err_msg=f"frame {index}")
+    [finding] = _fallbacks(findings)
+    assert "whole scene" in finding.message
+    assert "project_points" in finding.message
+    assert "cairo_line_width_multiple" in finding.message
+
+
+def test_a_rebinding_first_seen_in_a_later_play_is_unable():
+    """The core has drawn the frames before it: a fallback now would show
+    partway through the scene, so nothing draws it.
+    """
+    with pytest.raises(Unable, match="cairo_line_width_multiple"):
+        render(camera_scenes.LaterPlayStateSolids, FPS, draw_path="core", **MEDIUM)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="the residual of a sampled watch: a rebinding that begins after a"
+    " play's first frame and ends before the next play's is not seen. The core"
+    " draws it from its description: on the one frame of 15 it rebinds in, 3.9%"
+    " of the pixels differ from the camera's own draw, against 2.9% for the"
+    " same camera when it never rebinds",
+)
+def test_a_rebinding_that_begins_partway_through_a_play_is_seen(findings):
+    try:
+        render(camera_scenes.MidPlayStateSolids, FPS, draw_path="core", **MEDIUM)
+    except Unable:
+        return
+    assert _fallbacks(findings), "the core drew the rebinding camera unseen"
