@@ -17,7 +17,7 @@ import math
 import os
 import random
 import sys
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
@@ -641,7 +641,9 @@ class Recorder:
             yield
             return
         assert record is not None
-        before = self._state("removal")
+        # The operands too, which the scene need not hold (a group made to
+        # name what is removed, changed later): what they hold departs.
+        before = self._state("removal", operands)
         line = self.scene_line(sys._getframe(1))
         yield
         states.removals.append(
@@ -656,9 +658,10 @@ class Recorder:
             )
         )
 
-    def _state(self, kind: str) -> Capture:
-        """The scene now, as a capture no frame draws, and what the scene's
-        declarations name now (:meth:`Bridge.read_changes`).
+    def _state(self, kind: str, extra: Sequence[Mobject] = ()) -> Capture:
+        """The scene now, with ``extra`` beside it, as a capture no frame
+        draws, and what the scene's declarations name now
+        (:meth:`Bridge.read_changes`).
         """
         camera = self.scene.renderer.camera
         record = self.ensure_record()
@@ -666,7 +669,7 @@ class Recorder:
         return record._capture(
             kind,
             self.scene.time,
-            camera_nodes(camera),
+            [*extra, *camera_nodes(camera)],
             CameraExtras.observe(camera, None),
             drawn=False,
         )
