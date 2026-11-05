@@ -451,6 +451,11 @@ class LivePainter:
         #: Per camera (by id), within :meth:`around`: the painter whose pixels
         #: its array holds (``painter.painter_kind``).
         self._drawn_by: dict[int, str] = {}
+        #: On the core, within :meth:`around`: the frame's input grid, over
+        #: the scene camera's view and every display camera's
+        #: (``canonical.input_grid``, once per frame), which every painter of
+        #: the frame snaps its geometry to.
+        self.grid: float | None = None
 
     def painter(self, camera: Any) -> Any:
         """The painter of ``camera``'s captures: the path's for the scene's
@@ -471,7 +476,34 @@ class LivePainter:
                 )
             found = (camera, painter)
             self._painters[id(camera)] = found
+            self._give_grid(painter)
         return found[1]
+
+    def _give_grid(self, painter: Any) -> None:
+        """``painter`` snaps at the frame's grid (:attr:`grid`)."""
+        canonical = getattr(painter, "canonical", None)
+        if canonical is not None:
+            canonical.frame_grid = self.grid
+
+    def _frame_grid(self, camera: Any, displays: Any) -> float | None:
+        """On the core, the grid of a frame ``camera`` draws with ``displays``,
+        as a frame drawn from the record has it: ``canonical.input_grid`` over
+        the camera's view and each display camera's, that one at the pixel
+        width a MultiCamera's capture sizes it to
+        (``MultiCamera.update_sub_cameras``, which keeps its frame width).
+        """
+        if self.path != "core":
+            return None
+        from .canonical import input_grid
+
+        views = [view_values(camera, _view_kind(camera))]
+        for display in displays:
+            view = view_values(display.camera, _view_kind(display.camera))
+            if hasattr(camera, "update_sub_cameras"):
+                width = camera.pixel_array.shape[1]
+                view["pixel_width"] = int(width * display.width / camera.frame_width)
+            views.append(view)
+        return input_grid(views)
 
     def _is_scene_camera(self, camera: Any) -> bool:
         return self._scene is not None and camera is self._scene[0]
@@ -503,6 +535,9 @@ class LivePainter:
         self._opening = not delivered(camera, asked)
         displays = vars(camera).get("image_mobjects_from_cameras", ())
         cameras = [camera, *(display.camera for display in displays)]
+        self.grid = self._frame_grid(camera, displays)
+        for _, painter in self._painters.values():
+            self._give_grid(painter)
         undo: list[Any] = []
         static = isinstance(play, tuple) and play[:1] == ("static",)
         try:

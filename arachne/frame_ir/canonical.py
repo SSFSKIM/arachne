@@ -312,6 +312,11 @@ class Canonical:
         self._view: dict[str, Any] | None = None
         #: The grid the held geometry is snapped to.
         self.grid: float | None = None
+        #: The frame's grid, where the drawing decided it over every view the
+        #: frame is drawn through (:func:`input_grid`, once per frame: a live
+        #: frame's cameras each describe through a Canonical of their own);
+        #: ``None``, decided here from the views this stream holds.
+        self.frame_grid: float | None = None
         #: Each held record's planarity codes, by slot.
         self._planes: dict[int, tuple[int, ...]] = {}
         self._decider: Any = None
@@ -333,7 +338,9 @@ class Canonical:
             self._records.pop(slot, None)
             self._planes.pop(slot, None)
         self._decide(delta)
-        grid = input_grid(self._views())
+        grid = self.frame_grid
+        if grid is None:
+            grid = input_grid(self._views())
         regrid = grid != self.grid
         self.grid = grid
         if self._view is not None and (delta.view is not None or regrid):
