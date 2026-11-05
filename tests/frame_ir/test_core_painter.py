@@ -26,6 +26,12 @@ MEDIUM = {"pixel_width": 192, "pixel_height": 108}
 
 
 def test_the_overlay_is_ce_s_wherever_the_core_and_ce_agree_beneath_it():
+    """Cairo draws the overlay over the core's frame as CE draws it over its
+    own: wherever the frames beneath agree, the overlaid pixels are CE's, up
+    to a few levels at the overlay's edges, where its geometry, snapped for
+    the core (``frame_ir.canonical``, at most 1/128 of a pixel), covers a
+    pixel a little otherwise.
+    """
     _, ce = render(core_scenes.FixedLabelOverSquare, FPS, **MEDIUM)
     _, ce_bare = render(core_scenes.FixedLabelOverSquareBare, FPS, **MEDIUM)
     before = CorePainter.drawn_total
@@ -40,7 +46,8 @@ def test_the_overlay_is_ce_s_wherever_the_core_and_ce_agree_beneath_it():
         a, b, a_bare, b_bare = frames
         agree = np.all(a_bare == b_bare, axis=-1)
         overlaid = np.any(a != a_bare, axis=-1)
-        np.testing.assert_array_equal(b[agree], a[agree], err_msg=f"frame {index}")
+        off = np.abs(b[agree].astype(int) - a[agree].astype(int))
+        assert off.max(initial=0) <= 4, f"frame {index}: {off.max()} levels off"
         compared += int((agree & overlaid).sum())
     # The overlay's own pixels over agreeing content, translucent ones among
     # them, not a handful at its edge.
@@ -205,16 +212,22 @@ def _inside(frame: np.ndarray, margin: int = 2) -> np.ndarray:
 def test_a_lit_face_is_ce_s_colours_inside_it():
     """Each face of a shaded prism and surface is lit as CE lights it (two
     stops, a linear gradient), coloured as Cairo colours it: inside every
-    face, away from its edges, the core's pixels are CE's.
+    face, away from its edges, the core's pixels are CE's, up to one level
+    where the geometry the core is handed, snapped (``frame_ir.canonical``),
+    rounds a colour across a half level CE's does not, at under one in a
+    hundred.
     """
     size = {"pixel_width": 480, "pixel_height": 270}
     _, ce = render(core_scenes.ShadedSolids, FPS, **size)
     _, core = render(core_scenes.ShadedSolids, FPS, draw_path="core", **size)
     assert len(ce) == len(core) > 0
-    compared = 0
+    compared = rounded = 0
     for index, (a, b) in enumerate(zip(ce, core, strict=True)):
         inside = _inside(a)
-        np.testing.assert_array_equal(b[inside], a[inside], err_msg=f"frame {index}")
+        off = np.abs(b[inside].astype(int) - a[inside].astype(int))
+        assert off.max(initial=0) <= 1, f"frame {index}: {off.max()} levels off"
         compared += int(inside.sum())
+        rounded += int(np.any(off, axis=-1).sum())
     # Hundreds of pixels inside the faces of every frame, not a handful.
     assert compared > 500 * len(ce), compared
+    assert rounded <= compared // 100, (rounded, compared)

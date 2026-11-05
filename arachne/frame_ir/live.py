@@ -463,8 +463,12 @@ class LivePainter:
         if found is None or found[0] is not camera:
             from .painter import painter_class
 
-            path = self.path if self._is_scene_camera(camera) else "ir_cairo"
-            painter = painter_class(path)(stream=_LiveStream())
+            if self._is_scene_camera(camera):
+                painter = painter_class(self.path)(stream=_LiveStream())
+            else:
+                painter = painter_class("ir_cairo")(
+                    stream=_LiveStream(), canonical=self.path == "core"
+                )
             found = (camera, painter)
             self._painters[id(camera)] = found
         return found[1]
@@ -643,6 +647,10 @@ class LivePainter:
 
             own["get_cairo_context"] = engine_own(no_context)
             added.append("get_cairo_context")
+            # The core's input order: its depth sort on snapped keys
+            # (``canonical.canonical_order``).
+            own["_xf_canonical_order"] = True
+            added.append("_xf_canonical_order")
             set_array = camera.set_pixel_array
 
             def installing(pixel_array: Any, *args: Any, **kwargs: Any) -> Any:

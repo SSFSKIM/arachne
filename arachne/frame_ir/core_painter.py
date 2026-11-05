@@ -22,6 +22,7 @@ from typing import Any
 import numpy as np
 
 from .cairo_painter import CairoDrawer
+from .canonical import Canonical, canonical_order
 from .extract import FrameStream, Term, Unable
 from .replay import Replays
 from .xf import Delta, StreamState
@@ -66,6 +67,9 @@ class CorePainter:
         self.replays = Replays() if self.replay_overlay else None
         self.threads = threads
         self.keep = self.keep_all if keep is None else keep
+        #: The deltas as the core received them, their geometry snapped
+        #: (:mod:`.canonical`).
+        self.canonical = Canonical()
         self.deltas: list[Delta] = []
         self.last: Delta | None = None
         #: Frames this painter drew.
@@ -83,22 +87,28 @@ class CorePainter:
     ) -> np.ndarray:
         """The frame the camera draws from ``groups`` (each a layer and the
         list one capture is handed), drawn by the core from its XF
-        description, the overlay by Cairo.
+        description, the overlay by Cairo. The camera's depth sort is taken
+        on snapped keys (:func:`~.canonical.canonical_order`).
         """
-        return self.draw(self.stream.frame(camera, groups, t=t, terms=terms))
+        with canonical_order(camera):
+            delta = self.stream.frame(camera, groups, t=t, terms=terms)
+        return self.draw(delta)
 
     def draw(self, delta: Delta) -> np.ndarray:
-        """The frame ``delta`` brings the stream to."""
+        """The frame ``delta`` brings the stream to, its geometry snapped
+        (:mod:`.canonical`): the core is handed nothing else.
+        """
         import arachne_core
 
-        read = arachne_core.FrameDelta.from_bytes(delta.to_core().to_bytes())
+        sent = self.canonical(delta)
+        read = arachne_core.FrameDelta.from_bytes(sent.to_core().to_bytes())
         self.core.apply(read)
         self.state.apply(Delta.from_contents(read.contents()))
-        self.last = delta
+        self.last = sent
         self.frames += 1
         CorePainter.drawn_total += 1
         if self.keep:
-            self.deltas.append(delta)
+            self.deltas.append(sent)
         view = self.state.view
         assert view is not None
         try:

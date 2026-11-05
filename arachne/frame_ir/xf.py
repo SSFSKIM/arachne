@@ -36,8 +36,9 @@ from typing import Any
 import numpy as np
 
 #: The newest XF version this module knows. A delta is written at the lowest
-#: version its content needs: 1.1 only when it carries a pre-projected record.
-XF_VERSION = (1, 1)
+#: version its content needs: 1.1 when it carries a pre-projected record, 1.2
+#: when it carries snapped geometry (an input grid, a record's planes).
+XF_VERSION = (1, 2)
 #: The record's paint is CE's background-image fill (Cairo only).
 FEATURE_BACKGROUND_IMAGE = 1
 #: The record carries what a camera of the scene's own made of it
