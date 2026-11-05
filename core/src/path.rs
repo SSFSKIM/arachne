@@ -856,11 +856,12 @@ impl<'v> Lowering<'v> {
         bins: f64,
         surface: bool,
     ) -> LayerDepth {
+        let grid = crate::depth::input_grid(self.view);
         if world.iter().all(|q| p.keys_planar_at(*q))
             && let Some(plane) = if surface {
-                WorldPlane::nearest(world)
+                WorldPlane::nearest(world, grid)
             } else {
-                WorldPlane::of_points(world)
+                WorldPlane::of_points(world, grid)
             }
             && let Some(key) = p.key_plane(&plane, &self.map, world[0], MIN_PLANE_COS)
         {

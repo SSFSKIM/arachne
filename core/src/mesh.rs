@@ -102,6 +102,7 @@ pub fn lower(view: &View, width: u32, height: u32, draws: &[MeshDraw<'_>]) -> Me
         _ => None,
     };
     let projection = camera.map(|c| Projection::new(c, view.frame_center));
+    let grid = crate::depth::input_grid(view);
     let mut meshes = Meshes {
         tris: Vec::new(),
         bins: vec![Vec::new(); (tiles_across(width) * height.div_ceil(TILE)) as usize],
@@ -163,7 +164,7 @@ pub fn lower(view: &View, width: u32, height: u32, draws: &[MeshDraw<'_>]) -> Me
             let depth = match (keyed, projection.as_ref()) {
                 (Some(plane), _) => plane,
                 (None, Some(p)) if idx.iter().all(|i| p.keys_planar_at(world[*i])) => {
-                    WorldPlane::of_triangle(idx.map(|i| world[i]))
+                    WorldPlane::of_triangle(idx.map(|i| world[i]), grid)
                         .and_then(|plane| p.key_plane(&plane, &map, world[idx[0]], MIN_PLANE_COS))
                         .unwrap_or_else(through)
                 }
