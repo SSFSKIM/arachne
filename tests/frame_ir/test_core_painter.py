@@ -25,12 +25,30 @@ FPS = 15
 MEDIUM = {"pixel_width": 192, "pixel_height": 108}
 
 
+def _varies_around(values: np.ndarray) -> np.ndarray:
+    """Where ``values`` (height x width x channels) differ anywhere in a
+    pixel's 3 x 3 neighbourhood.
+    """
+    height, width = values.shape[:2]
+    padded = np.pad(values, ((1, 1), (1, 1), (0, 0)), mode="edge")
+    around = np.stack(
+        [
+            padded[1 + dy : 1 + dy + height, 1 + dx : 1 + dx + width]
+            for dy in (-1, 0, 1)
+            for dx in (-1, 0, 1)
+        ]
+    )
+    return np.any(around.max(axis=0) != around.min(axis=0), axis=-1)
+
+
 def test_the_overlay_is_ce_s_wherever_the_core_and_ce_agree_beneath_it():
     """Cairo draws the overlay over the core's frame as CE draws it over its
-    own: wherever the frames beneath agree, the overlaid pixels are CE's, up
-    to a few levels at the overlay's edges, where its geometry, snapped for
-    the core (``frame_ir.canonical``, at most 1/256 of a pixel), covers a
-    pixel a little otherwise.
+    own: wherever the frames beneath agree, the overlaid pixels are CE's,
+    byte for byte, but at the overlay's edges (its glyphs' and its outlines',
+    where what it adds to the frame changes from pixel to pixel), up to a few
+    levels: there its geometry, snapped for the core
+    (``frame_ir.canonical``, at most 1/256 of a pixel), covers a pixel a
+    little otherwise.
     """
     _, ce = render(core_scenes.FixedLabelOverSquare, FPS, **MEDIUM)
     _, ce_bare = render(core_scenes.FixedLabelOverSquareBare, FPS, **MEDIUM)
@@ -41,17 +59,26 @@ def test_the_overlay_is_ce_s_wherever_the_core_and_ce_agree_beneath_it():
     )
     assert CorePainter.drawn_total > before, "drawn on the core"
     assert len(ce) == len(core) == len(ce_bare) == len(core_bare) > 0
-    compared = 0
+    compared = inside = 0
     for index, frames in enumerate(zip(ce, core, ce_bare, core_bare, strict=True)):
         a, b, a_bare, b_bare = frames
         agree = np.all(a_bare == b_bare, axis=-1)
         overlaid = np.any(a != a_bare, axis=-1)
-        off = np.abs(b[agree].astype(int) - a[agree].astype(int))
-        assert off.max(initial=0) <= 4, f"frame {index}: {off.max()} levels off"
+        edge = _varies_around(a.astype(int) - a_bare.astype(int))
+        off = np.abs(b.astype(int) - a.astype(int)).max(axis=-1)
+        assert off[agree & edge].max(initial=0) <= 4, (
+            f"frame {index}: {off[agree & edge].max()} levels off at an edge"
+        )
+        away = agree & ~edge
+        assert not off[away].any(), (
+            f"frame {index}: {int((off[away] > 0).sum())} pixels off away from an edge"
+        )
         compared += int((agree & overlaid).sum())
+        inside += int((away & overlaid).sum())
     # The overlay's own pixels over agreeing content, translucent ones among
-    # them, not a handful at its edge.
+    # them, not a handful at its edge; and its inside, byte for byte.
     assert compared > 1000, compared
+    assert inside > 300, inside
 
 
 def test_the_overlay_is_drawn_over_every_frame_that_has_one(monkeypatch):
