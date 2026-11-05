@@ -303,6 +303,16 @@ lifted.
   if a case is ever refused over a member that does not affect drawing
   (the refusal names the member).
 
+## Restored frames on a described path (`arachne/timeline/draw.py`)
+
+- **A restore on `ir_cairo` repaints from scratch.** A restored frame is
+  painted by a painter of its own (`Drawing.restored`), so that nothing a
+  restore builds stays in the record's stream; it extracts and uploads the
+  whole frame each time. That is about 4x per restore on image-heavy scenes
+  (92 ms against 22.5 ms at 854x480) and about 1x in 3D. Remedy: cache image
+  uploads across restores (they are immutable), or give the restore a
+  copy-on-write view of the record's stream.
+
 ## The image cache (`arachne/mobject/svg/svg_mobject.py`)
 
 - **An image built from the cache is not the image parsing built.** Inherited from Manim Community Edition: a
