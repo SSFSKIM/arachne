@@ -907,7 +907,18 @@ fn a_blend_and_its_paint_blend_draw_what_they_mix() {
         points: path_points(&blending.geometry, &a, Some(&b)).unwrap(),
     });
     let mut plain = path_record(1, &mixed);
-    plain.paint = drawn_paint(&blending.paint).unwrap();
+    let drawn = drawn_paint(&blending.paint, |_: &Key| unreachable!("no tables")).unwrap();
+    let paint = |rows: Option<Vec<[f64; 4]>>| match rows.as_deref() {
+        None => Paint::None,
+        Some([c]) => Paint::One(*c),
+        Some([c, d]) => Paint::Two([*c, *d]),
+        Some(_) => unreachable!("one or two rows"),
+    };
+    plain.paint.fill = paint(drawn.fill);
+    plain.paint.stroke = paint(drawn.stroke);
+    plain.paint.background_stroke = paint(drawn.background_stroke);
+    plain.paint.stroke_width = drawn.stroke_width;
+    plain.paint.background_stroke_width = drawn.background_stroke_width;
     let got = drawn_alone(blending, vec![shape_a.clone(), shape_b]).unwrap();
     assert_eq!(got, drawn_alone(plain, vec![mixed]).unwrap());
     assert_ne!(
@@ -917,8 +928,8 @@ fn a_blend_and_its_paint_blend_draw_what_they_mix() {
 }
 
 #[test]
-fn a_blend_the_core_cannot_make_is_refused_whole() {
-    // Two shapes of different lengths, and a paint blend of a table: neither is made from CE.
+fn a_blend_of_shapes_of_different_lengths_is_refused_whole() {
+    // CE aligns a morph's points before it blends them: never made from CE.
     let shape = square();
     let short = Shape::new(ShapeData::Path {
         points: common::square_points(1.0)[..4].to_vec(),
@@ -933,28 +944,63 @@ fn a_blend_the_core_cannot_make_is_refused_whole() {
         panic!("drawn")
     };
     assert!(u.reason.contains("different lengths"), "{}", u.reason);
-    let table = Stops::new(vec![[0.0; 4], [0.5; 4], [1.0; 4]]);
+}
+
+#[test]
+fn a_paint_blend_of_tables_draws_what_its_mix_draws() {
+    // A morph between gradients of three colours or more: CE mixes the aligned rows one by one.
+    let shape = Shape::new(ShapeData::Path {
+        points: common::square_points(6.0),
+    });
+    let start = Stops::new(vec![
+        [1.0, 0.0, 0.0, 1.0],
+        [0.0, 1.0, 0.0, 1.0],
+        [0.0, 0.0, 1.0, 1.0],
+    ]);
+    let end = Stops::new(vec![
+        [1.0, 1.0, 1.0, 1.0],
+        [0.0, 0.0, 0.0, 1.0],
+        [1.0, 1.0, 0.0, 0.5],
+    ]);
+    let mix = Stops::new(vec![
+        [1.0, 0.25, 0.25, 1.0],
+        [0.0, 0.75, 0.0, 1.0],
+        [0.25, 0.25, 0.75, 0.875],
+    ]);
+    let ends = Some([[-6.0, -6.0, 0.0], [6.0, 6.0, 0.0]]);
     let mut tabled = path_record(1, &shape);
+    tabled.paint.fill = Paint::Table(start.key());
+    tabled.paint.gradient = ends;
     tabled.paint.paint_b = Some(PaintB {
-        fill: Paint::Table(table.key()),
+        fill: Paint::Table(end.key()),
         stroke: Paint::None,
         background_stroke: Paint::None,
         stroke_width: 0.0,
         background_stroke_width: 0.0,
     });
-    tabled.paint.mix = 0.5;
-    let mut d = delta(0);
-    d.view = Some(common::flat_view(8, 8, [0.0, 0.0, 0.0, 1.0]));
-    d.upload = vec![shape];
-    d.upload_paints = vec![table];
-    d.order = Some(vec![entry(1)]);
-    d.set = vec![tabled];
-    let mut s = Stream::new();
-    s.apply(&d).unwrap();
-    let Err(DrawError::Unsupported(u)) = s.draw(8, 8, 1) else {
-        panic!("drawn")
+    tabled.paint.mix = 0.25;
+    let mut plain = path_record(1, &shape);
+    plain.paint.fill = Paint::Table(mix.key());
+    plain.paint.gradient = ends;
+    let frame = |record: Record| {
+        let mut d = delta(0);
+        d.view = Some(common::flat_view(48, 27, [0.0, 0.0, 0.0, 1.0]));
+        d.upload = vec![shape.clone()];
+        d.upload_paints = vec![start.clone(), end.clone(), mix.clone()];
+        d.order = Some(vec![entry(1)]);
+        d.set = vec![record];
+        let mut s = Stream::new();
+        s.apply(&d).unwrap();
+        s.draw(48, 27, 1).unwrap()
     };
-    assert!(u.reason.contains("table"), "{}", u.reason);
+    let got = frame(tabled);
+    assert_eq!(got, frame(plain));
+    assert!(
+        got.chunks(4)
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+            > 20
+    );
 }
 
 /// Two unit squares side by side, as one shape of two faces: the left face, then the right.

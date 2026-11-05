@@ -52,7 +52,7 @@ under a camera that shades, and drawn through a reveal, a blend and a paint blen
 interpolation makes them; `face_group` records, each face as the path of that face; `points`
 records; and `instances` records of a path or a mesh. It refuses a clip on any of them; a blend,
 reveal or paint blend on any kind but a path, a blend of shapes of different lengths and a paint
-blend of a table; a path with a gradient paint and no ends, or an instance's gradient; a dash it
+blend of row counts that do not broadcast; a path with a gradient paint and no ends, or an instance's gradient; a dash it
 cannot read; CE's lighting under another light model; a mesh with a stroke, a gradient fill or a
 dash; and the reserved kinds. `image` records, records fixed in frame and background-image fills
 are drawn by Cairo over the core's frame, in CE's order (the overlay). How records are drawn is
