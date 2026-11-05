@@ -449,12 +449,11 @@ def draw(
     holding it; ``static(play)`` gives the play's static picture. A restored
     frame takes no static picture (:func:`_restored_frame`).
     """
-    return _draw(drawing, record, _resolve(record, t), static)
+    return _draw(drawing, _resolve(record, t), static)
 
 
 def _draw(
     drawing: Drawing,
-    record: Record,
     resolved: _Resolved,
     static: Callable[[PlayRecord], PixelArray | None],
 ) -> PixelArray:
@@ -463,34 +462,30 @@ def _draw(
     if play is None:
         return drawing.final()
     if resolved.kind == "restored":
-        return _restored_frame(drawing, record, play, resolved)
+        return _restored_frame(drawing, resolved)
     return drawing.sample(
         play, resolved.capture, static(play), prepare=resolved.prepare
     )
 
 
-def _restored_frame(
-    drawing: Drawing, record: Record, play: PlayRecord, resolved: _Resolved
-) -> PixelArray:
+def _restored_frame(drawing: Drawing, resolved: _Resolved) -> PixelArray:
     """A restored instant's frame, with no static picture: a picture kept
     from the record's captures, or a layer of whatever they show unchanged,
     knows nothing of the values a restore gives. The frame is drawn whole,
-    in a render's painter order: the play's static mobjects first, as every
-    frame of the play shows them (CE draws them once, when the play's
-    animations begin), then its moving mobjects at the restored instant.
+    every mobject at its state at the instant, in a render's painter order:
+    the frame's static list, rebuilt as a frame drawn without the static
+    layer rebuilds it, then the play's moving mobjects over it.
     """
+    from .draw import static_list
+
     capture, prepare = resolved.capture, resolved.prepare
     assert prepare is not None
     camera = drawing.camera
-    targets = list(capture.moving) or capture.draw_list()
-    if play.static:
-        # The static mobjects, and the camera, as the play began.
-        drawing.show(record._captures[play.static_seq], play.static)
-        camera.reset()
-        camera.capture_mobjects(list(play.static))
-    drawing.show(capture, targets)
+    roots = capture.draw_list()
+    targets = list(capture.moving) or roots
+    drawing.show(capture, [*roots, *targets])
     prepare(drawing)
-    if not play.static:
-        camera.reset()
+    camera.reset()
+    camera.capture_mobjects(static_list(camera, roots, capture.moving))
     camera.capture_mobjects(targets)
     return camera.pixel_array.copy()
