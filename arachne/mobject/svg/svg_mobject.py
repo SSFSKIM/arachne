@@ -36,6 +36,20 @@ def forget_parsed_svgs() -> None:
     SVG_HASH_TO_MOB_MAP.clear()
 
 
+def parsed_svgs() -> dict[int, SVGMobject]:
+    """The cache of parsed images as it is now, to restore with
+    :func:`restore_parsed_svgs`. Its images are never changed: a hit takes a
+    copy.
+    """
+    return dict(SVG_HASH_TO_MOB_MAP)
+
+
+def restore_parsed_svgs(parsed: dict[int, SVGMobject]) -> None:
+    """Make the cache of parsed images what :func:`parsed_svgs` returned."""
+    SVG_HASH_TO_MOB_MAP.clear()
+    SVG_HASH_TO_MOB_MAP.update(parsed)
+
+
 def _convert_point_to_3d(x: float, y: float) -> np.ndarray:
     return np.array([x, y, 0.0])
 

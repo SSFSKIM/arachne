@@ -310,6 +310,12 @@ lifted.
   (a timeline diagram, say) replaces it and the render fails. No scene in the gated corpus does. Direction:
   keep the recorder where scene code can't reach it, and read it only from there. The session already reads
   its record from the recorder it made.
-- **Engine code calls `set_points` on mobjects** where Manim Community Edition assigned `points`, so a
-  `Mobject` subclass that defines its own `set_points` changes what those paths do. Direction: none until a
-  scene does it.
+
+## The image cache (`arachne/mobject/svg/svg_mobject.py`)
+
+- **An image built from the cache is not the image parsing built.** Inherited from Manim Community Edition: a
+  cache hit adds copies of the cached parts, but the image itself never gets parsing's `flip(RIGHT)`, so its
+  own `sheen_direction` stays unflipped (its parts match). Invisible unless a sheen is set on the image, and
+  within one process the first of two equal images differs from the second, as in CE. Each execution now
+  finds the cache as a fresh process (a session) or as the scene's first execution (a render executed again)
+  found it, so two executions of one source agree. Direction: none while CE's behaviour is the reference.
