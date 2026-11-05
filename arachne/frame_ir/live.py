@@ -388,9 +388,11 @@ class LivePainter:
         self.play: Any = None
         #: The frames :meth:`around` has drawn, the one within it included.
         self._frames = 0
-        #: Whether the frame within :meth:`around` is the scene's first: no
-        #: capture was described before it.
+        #: Whether the frame within :meth:`around` belongs to the scene's
+        #: first: no frame but a static picture has been drawn before it.
         self._opening = False
+        #: Whether a frame other than a play's static picture has been drawn.
+        self._written = False
         #: Per camera (by id): the play last watched, and the frame watched
         #: in it (its first). A camera absent here has not captured yet.
         self._watched: dict[int, tuple[Any, int]] = {}
@@ -432,7 +434,7 @@ class LivePainter:
         self.instant = t
         self.play = play
         self._frames += 1
-        self._opening = not self.captures
+        self._opening = not self._written
         displays = vars(camera).get("image_mobjects_from_cameras", ())
         cameras = [camera, *(display.camera for display in displays)]
         undo: list[Any] = []
@@ -445,6 +447,10 @@ class LivePainter:
         finally:
             for restore in reversed(undo):
                 restore()
+        # A play's static picture is drawn under its first frame: the scene's
+        # first frame is both.
+        if not (isinstance(play, tuple) and play[:1] == ("static",)):
+            self._written = True
 
     def _install(self, camera: Any) -> Any:
         from arachne.camera.camera import Camera
@@ -568,7 +574,11 @@ class LivePainter:
                     return
                 self.differing += 1
             self.captures += 1
-            np.copyto(camera.pixel_array, pixels)
+            if self.draw or not self._opening:
+                # On the core the scene's first frame stays the camera's own
+                # draw, every capture in it: a change seen in any of them
+                # then leaves no frame of the core's behind it.
+                np.copyto(camera.pixel_array, pixels)
 
         return described
 
@@ -578,9 +588,10 @@ class LivePainter:
         (``ir_cairo``) both, always. On the core, which draws no capture of
         the camera's own, the watch samples: every capture of the first frame
         of each play (a play's static picture is a frame of its own). The
-        scene's first frame is also drawn as the camera draws it, so a change
-        seen there sends the whole scene to Cairo from its first frame; a
-        camera fallen so draws every later capture itself.
+        scene's first frame (with the static picture drawn under it) stands
+        as the camera draws it, every capture in it, so a change seen there
+        sends the whole scene to Cairo from its first frame; a camera fallen
+        so draws every later capture itself.
         """
         if self.draw:
             self._watching = self._real = True

@@ -127,21 +127,29 @@ def test_a_frame_the_core_refuses_is_unable_not_drawn_on_another_path(monkeypatc
         render(core_scenes.FixedLabelOverSquare, FPS, draw_path="core", **MEDIUM)
 
 
+@pytest.mark.parametrize(
+    "scene_class",
+    [
+        # Seen in the first capture of all: the play's static picture.
+        camera_scenes.ProjectingStateSolids,
+        # Seen only in the first frame's capture of what moves, after the
+        # static picture was captured.
+        camera_scenes.MovingStateSolids,
+    ],
+    ids=lambda c: c.__name__,
+)
 def test_a_proven_change_that_rebinds_the_camera_s_state_draws_on_cairo_for_the_whole_scene(
-    findings,
+    scene_class, findings
 ):
     """A change of a kind the gate proved whose code rebinds what the camera
     holds as it draws (here the line width, from the depth of what it
-    projects) on every call. The core watches the first capture of each
-    play, and draws the scene's very first capture as the camera draws it:
-    the change is seen there, so the whole scene is drawn on Cairo, its
-    first frame too, with one finding naming the code and the attribute.
+    projects). The core watches the first frame of each play, and draws the
+    scene's first frame, every capture in it, as the camera draws it: the
+    change is seen there, so the whole scene is drawn on Cairo, its first
+    frame too, with one finding naming the code and the attribute.
     """
-    scene_class = camera_scenes.ProjectingStateSolids
     _, direct = render(scene_class, FPS, **MEDIUM)
-    before = CorePainter.drawn_total
     _, core = render(scene_class, FPS, draw_path="core", **MEDIUM)
-    assert CorePainter.drawn_total == before, "no frame drawn on the core"
     assert len(direct) == len(core) > 0
     for index, (a, b) in enumerate(zip(direct, core, strict=True)):
         np.testing.assert_array_equal(a, b, err_msg=f"frame {index}")
