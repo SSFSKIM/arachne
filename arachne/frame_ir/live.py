@@ -34,6 +34,7 @@ import contextlib
 import os
 import weakref
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from fractions import Fraction
 from typing import Any
 
@@ -120,6 +121,23 @@ _CAMERA_RGBAS = "__camera_rgbas__"
 #: (``render.fallback``), with why: what their code changed while producing
 #: a record's values, or the capture their draw first differed at.
 _UNSETTLED: weakref.WeakKeyDictionary[Any, str] = weakref.WeakKeyDictionary()
+
+
+@dataclass
+class _Described:
+    """What a camera's pixels are on the core, described: the pixels the
+    description drew, the background it drew over, and the captures' draws
+    it was made of (each a leaf's kind and recording, in order) with the
+    fixed-orientation centres they asked for.
+    """
+
+    camera: Any
+    pixels: np.ndarray
+    background: np.ndarray
+    drawn: list[tuple[type, _Recording]]
+    centres: dict[int, list[Any]]
+
+
 #: An array the camera holds is compared element by element up to this size,
 #: and by identity above it (its pixel arrays: the camera's real draw, compared
 #: with the description, sees whatever writing into them shows).
@@ -419,6 +437,12 @@ class LivePainter:
         #: The scene's camera and the draw path its frames were asked for on,
         #: within :meth:`around`.
         self._scene: tuple[Any, str] | None = None
+        #: On the core, per camera (by id): what its last capture in the frame
+        #: within :meth:`around` drew, described; and what its last play's
+        #: static picture is. A capture that starts on one of them describes
+        #: the frame from it (:meth:`_under`).
+        self._last: dict[int, _Described] = {}
+        self._static_pictures: dict[int, _Described] = {}
 
     def painter(self, camera: Any) -> Any:
         """The painter of ``camera``'s captures."""
@@ -446,6 +470,7 @@ class LivePainter:
         self.play = play
         self._scene = (camera, asked)
         self._frames += 1
+        self._last.clear()
         self._opening = not delivered(camera, asked)
         displays = vars(camera).get("image_mobjects_from_cameras", ())
         cameras = [camera, *(display.camera for display in displays)]
@@ -458,6 +483,8 @@ class LivePainter:
             )
             yield self
             self._settle_opening(static)
+            if static:
+                self._static_pictures.update(self._last)
         finally:
             for restore in reversed(undo):
                 restore()
@@ -509,6 +536,36 @@ class LivePainter:
                 np.copyto(camera.pixel_array, real)
                 return described
         return now
+
+    def _under(
+        self, camera: Any, background: np.ndarray, drawn: list[tuple[type, _Recording]]
+    ) -> _Described | None:
+        """The description a capture of ``camera`` that draws ``drawn``
+        continues as one frame: the frame's capture before it, or the play's
+        static picture, where ``background`` (the description of what the
+        camera holds) is that picture's pixels. The frame is then described
+        from that picture's background with the draws of every capture in
+        it, depth tested across all of them, as a frame drawn from the record
+        is. Only a picture that drew something over its background, none of
+        whose leaves this capture draws (CE draws such a leaf twice: in the
+        picture's pixels, and again).
+        """
+        if self.draw:
+            return None
+        drawing = {id(recording._xf_leaf) for _, recording in drawn}
+        for picture in (
+            self._last.get(id(camera)),
+            self._static_pictures.get(id(camera)),
+        ):
+            if (
+                picture is not None
+                and picture.camera is camera
+                and np.array_equal(background, picture.pixels)
+                and not np.array_equal(picture.pixels, picture.background)
+                and not any(id(r._xf_leaf) in drawing for _, r in picture.drawn)
+            ):
+                return picture
+        return None
 
     def _install(self, camera: Any) -> Any:
         from arachne.camera.camera import Camera
@@ -636,7 +693,18 @@ class LivePainter:
             # XF carries, so its own draw stands, from then on.
             self._fall_back(camera)
             return
+        under = self._under(camera, background, drawn)
+        if under is not None:
+            background = under.background
+            merged = dict(under.centres)
+            for key, values in centres.items():
+                merged[key] = [*merged.get(key, []), *values]
+            drawn, centres = [*under.drawn, *drawn], merged
         pixels = self._describe(camera, drawn, centres, background)
+        if not self.draw:
+            self._last[id(camera)] = _Described(
+                camera, pixels, background, drawn, centres
+            )
         if self.draw and not np.array_equal(camera.pixel_array, pixels):
             if vars(camera).get("_xf_pre_projected"):
                 # A camera described from its own capture drew other than

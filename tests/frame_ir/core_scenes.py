@@ -19,6 +19,7 @@ from arachne import (
     YELLOW,
     Circle,
     ImageMobject,
+    Line,
     Prism,
     Rectangle,
     Scene,
@@ -105,6 +106,41 @@ class LiveSolids(ThreeDScene):
         )
         self.add(surface, WideStroke(color=YELLOW).shift([0, 0, 0.5]))
         self.move_camera(theta=-30 * DEGREES, run_time=0.4)
+
+
+class StrokeUnderSquare(ThreeDScene):
+    """An opaque square at z = 0 over a stroke at z = -1, which moves: seen
+    from above, the square hides the stroke where they cross, though CE
+    draws the stroke after it. ``line`` is the stroke's class.
+    """
+
+    line = Line
+
+    def construct(self):
+        self.set_camera_orientation(phi=20 * DEGREES, theta=-60 * DEGREES)
+        square = Square(side_length=2, color=BLUE, fill_opacity=1.0)
+        stroke = self.line(
+            [-3.0, 0.0, -1.0], [3.0, 0.0, -1.0], color=YELLOW, stroke_width=8
+        )
+        self.add(square, stroke)
+        self.play(stroke.animate.shift([0.0, 0.4, 0.0]), run_time=0.2)
+
+
+class OwnLine(Line):
+    """A line whose stroke width is read through the scene's own code (which
+    only hands it on): a scene with one is drawn as it runs (``LiveFrames``).
+    """
+
+    def get_stroke_width(self, background=False):
+        return super().get_stroke_width(background)
+
+
+class LiveStrokeUnderSquare(StrokeUnderSquare):
+    """:class:`StrokeUnderSquare` drawn as the scene runs: each frame is a
+    capture of the square, then one of the stroke.
+    """
+
+    line = OwnLine
 
 
 def _pixels(opacity: int = 255) -> np.ndarray:
