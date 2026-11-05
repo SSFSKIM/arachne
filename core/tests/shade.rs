@@ -198,14 +198,33 @@ fn a_corner_a_floats_noise_from_its_neighbour_is_lit_by_the_faces_normal() {
             "{got:?} against {rgb:?}"
         );
     }
-    // A neighbour exactly on the corner is no noise: CE's own rule, whatever the grid.
-    let mut exact = raw.clone();
+    // Not snapped (grid 0): never degenerate.
+    assert!(decided_normals(&raw, 0.0).iter().all(|n| *n != [0.0; 3]));
+}
+
+/// A pole whose points coincide exactly lies on the same side of the boundary as one whose
+/// points a float's noise keeps apart: both corners are degenerate and lit by the face's normal,
+/// so a pole lights the same whichever way the machine that made it rounded.
+#[test]
+fn a_pole_of_coincident_points_is_lit_as_one_a_floats_noise_apart() {
+    let noise = pole_face();
+    let mut exact = noise.clone();
     for p in &mut exact {
         if p[2] > 1.49 {
             *p = [0.0, 0.0, 1.5];
         }
     }
-    assert_ne!(decided_normals(&exact, GRID)[1], [0.0; 3]);
-    // Not snapped (grid 0): never degenerate.
-    assert!(decided_normals(&raw, 0.0).iter().all(|n| *n != [0.0; 3]));
+    assert_ne!(exact, noise);
+    let (drawn, drawn_exact) = (snapped(&noise), snapped(&exact));
+    assert_eq!(drawn, drawn_exact, "the snap takes both to one pole");
+    // The end corner is the pole's; corner 0, on the latitude below, is found from chords that
+    // reach the pole, so it moves by the noise alone.
+    let (decided, decided_exact) = (decided_normals(&noise, GRID), decided_normals(&exact, GRID));
+    assert_eq!(decided[1], [0.0; 3], "{decided:?}");
+    assert_eq!(decided_exact[1], [0.0; 3], "{decided_exact:?}");
+    let lit = ce_face_stops_decided(&drawn, &RED, LIGHT, decided);
+    let lit_exact = ce_face_stops_decided(&drawn_exact, &RED, LIGHT, decided_exact);
+    for (a, b) in lit.iter().flatten().zip(lit_exact.iter().flatten()) {
+        assert!((a - b).abs() < 1e-12, "{lit:?} against {lit_exact:?}");
+    }
 }
