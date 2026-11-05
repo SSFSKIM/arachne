@@ -9,6 +9,9 @@ graphical units' configuration, and its frames are compared with the control dat
 - an animated example plays its animations and compares 4 frames spread evenly over it
   plus its last; its frame count is pinned in ``control_data/frame_counts.json``.
 
+The 3D examples (their scene a ``ThreeDScene``) also run on the core, against
+the control data in ``control_data/core/``.
+
 Run with ``--set_test`` to write the control data instead.
 """
 
@@ -30,12 +33,15 @@ from arachne.utils.testing._frames_testers import _ControlDataWriter, _FramesTes
 from arachne.utils.testing._test_class_makers import DummySceneFileWriter
 from arachne.utils.testing.frames_comparison import _config_test
 
-from .collect import DOCS_DIR, EXCLUDED, DocsExample, collect, sample_indices
+from .collect import DOCS_DIR, EXCLUDED, DocsExample, collect, sample_indices, three_d
 
 CONTROL_DIR = Path(__file__).parent / "control_data"
+#: The 3D examples drawn on the core, depth-tested: their own control data.
+CORE_CONTROL_DIR = CONTROL_DIR / "core"
 FRAME_COUNTS = CONTROL_DIR / "frame_counts.json"
 
 EXAMPLES = [example for example in collect() if example.name not in EXCLUDED]
+CORE_EXAMPLES = [example for example in EXAMPLES if three_d(example)]
 
 
 class _CapturingWriter(DummySceneFileWriter):
@@ -71,10 +77,15 @@ class _CapturingRenderer(CairoRenderer):
         super().__init__(*args, **kwargs)
 
 
-def render(example: DocsExample, tmp_path: Path) -> _CapturingWriter:
-    """Run the block's own scene class and return what its renderer wrote."""
+def render(
+    example: DocsExample, tmp_path: Path, draw_path: str = "cairo"
+) -> _CapturingWriter:
+    """Run the block's own scene class on ``draw_path`` and return what its
+    renderer wrote.
+    """
     settings = _config_test(last_frame=example.still)
     overrides = {
+        "draw_path": draw_path,
         "text_dir": tmp_path,
         "tex_dir": tmp_path,
         "assets_dir": DOCS_DIR / "_static",
@@ -128,19 +139,24 @@ def test_control_data_covers_exactly_the_examples(request) -> None:
         pytest.skip("the control data is being written")
     stored = {path.stem for path in CONTROL_DIR.glob("*.npz")}
     assert stored == {example.name for example in EXAMPLES}
+    on_core = {path.stem for path in CORE_CONTROL_DIR.glob("*.npz")}
+    assert on_core == {example.name for example in CORE_EXAMPLES}
     counts = json.loads(FRAME_COUNTS.read_text())
     assert set(counts) == {example.name for example in EXAMPLES if not example.still}
 
 
-@pytest.mark.parametrize("example", EXAMPLES, ids=lambda example: example.name)
-def test_docs_example(example: DocsExample, request, tmp_path: Path) -> None:
-    writer = render(example, tmp_path)
+def _compare(
+    example: DocsExample, writer: _CapturingWriter, path: Path, request, *, count: bool
+) -> None:
+    """Hold ``writer``'s frames against the control data at ``path``, or write it
+    there under ``--set_test``; ``count`` records an animated example's frame count
+    when writing (the control data's frame count is one for every draw path).
+    """
     frames = compared_frames(example, writer)
-    path = CONTROL_DIR / f"{example.name}.npz"
     if request.config.getoption("--set_test"):
-        CONTROL_DIR.mkdir(exist_ok=True)
+        path.parent.mkdir(exist_ok=True)
         tester = _ControlDataWriter(path, size_frame=frames[0].shape[:2])
-        if not example.still:
+        if count and not example.still:
             _record_frame_count(example.name, writer.frames_written)
     else:
         assert path.is_file(), f"no control data for {example.name} ({example.origin})"
@@ -154,3 +170,21 @@ def test_docs_example(example: DocsExample, request, tmp_path: Path) -> None:
     with tester.testing():
         for index, frame in enumerate(frames):
             tester.check_frame(index, frame)
+
+
+@pytest.mark.parametrize("example", EXAMPLES, ids=lambda example: example.name)
+def test_docs_example(example: DocsExample, request, tmp_path: Path) -> None:
+    writer = render(example, tmp_path)
+    _compare(example, writer, CONTROL_DIR / f"{example.name}.npz", request, count=True)
+
+
+@pytest.mark.parametrize("example", CORE_EXAMPLES, ids=lambda example: example.name)
+def test_docs_example_on_core(example: DocsExample, request, tmp_path: Path) -> None:
+    pytest.importorskip("arachne_core")
+    from arachne.frame_ir.core_painter import CorePainter
+
+    drawn = CorePainter.drawn_total
+    writer = render(example, tmp_path, draw_path="core")
+    assert CorePainter.drawn_total > drawn, f"the core drew no frame of {example.name}"
+    path = CORE_CONTROL_DIR / f"{example.name}.npz"
+    _compare(example, writer, path, request, count=False)
