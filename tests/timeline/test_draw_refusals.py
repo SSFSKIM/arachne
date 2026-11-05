@@ -306,7 +306,12 @@ def test_a_retry_keeps_what_the_caller_set_on_the_scene():
     assert scene.record.execution.number == 2
 
 
-SVG = Path(__file__).parents[1] / "test_graphical_units" / "img_svg_resources" / "arcs01.svg"
+SVG = (
+    Path(__file__).parents[1]
+    / "test_graphical_units"
+    / "img_svg_resources"
+    / "arcs01.svg"
+)
 
 
 class ImageThenTransientFill(soundness_scenes.TransientFill):
