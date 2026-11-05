@@ -16,8 +16,9 @@ from unittest import mock
 import numpy as np
 import pytest
 
-from arachne import BLUE, RED, Dot, tempconfig
+from arachne import BLUE, RED, Dot, SVGMobject, tempconfig
 from arachne.camera.camera import Camera
+from arachne.mobject.svg.svg_mobject import forget_parsed_svgs
 from arachne.timeline import draw, recorder
 from arachne.timeline.dispatch import draw_protocols
 from arachne.timeline.routes import RecordRefused
@@ -303,3 +304,29 @@ def test_a_retry_keeps_what_the_caller_set_on_the_scene():
         scene.anchor = np.array([1.0, 0.0, 0.0])
         scene.render()
     assert scene.record.execution.number == 2
+
+
+SVG = Path(__file__).parents[1] / "test_graphical_units" / "img_svg_resources" / "arcs01.svg"
+
+
+class ImageThenTransientFill(soundness_scenes.TransientFill):
+    """``TransientFill`` after an image: executed again, it builds the image
+    from the cache as its first execution did.
+    """
+
+    def construct(self):
+        self.add(SVGMobject(SVG).scale(0.3))
+        super().construct()
+
+
+def test_an_execution_again_finds_the_images_its_first_execution_found():
+    """One process renders several scenes, an earlier one leaving its images
+    cached: a scene executed again builds its images as its first execution
+    did, from the cache as that execution found it.
+    """
+    forget_parsed_svgs()
+    for _ in range(2):  # the first parses the image, the second finds it cached
+        scene, _ = render(ImageThenTransientFill, 6)
+        execution = scene.record.execution
+        assert execution.number == 2
+        assert execution.divergence is None
