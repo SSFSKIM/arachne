@@ -8,7 +8,7 @@
 mod common;
 
 use arachne_core::composite::{SAMPLES, area_coverage, blend, premultiply, sample_point};
-use arachne_core::depth::WorldPlane;
+use arachne_core::depth::{Planarity, WorldPlane};
 use arachne_core::project::{FrameMap, Placement, Projection, pre_display, subpixel_coords};
 use arachne_core::scanline;
 use arachne_core::stream::{DrawError, Stream};
@@ -560,11 +560,11 @@ fn a_planar_outline_crossing_itself_keeps_its_plane() {
         [-1.0, 1.0, 0.0],
         [1.0, -1.0, 0.0],
     ];
-    let want = WorldPlane::of_triangle([bowtie[0], bowtie[1], bowtie[2]], G).unwrap();
+    let want = WorldPlane::of_triangle([bowtie[0], bowtie[1], bowtie[2]], 0.0).unwrap();
     let mut closed = bowtie.to_vec();
     closed.push(bowtie[0]);
     for points in [bowtie.to_vec(), closed, lines(&bowtie)] {
-        assert_eq!(WorldPlane::of_points(&points, G), Some(want), "{points:?}");
+        assert_eq!(WorldPlane::of_points(&points), Some(want), "{points:?}");
     }
     let skew = [
         [0.0, 0.0, 0.0],
@@ -572,9 +572,9 @@ fn a_planar_outline_crossing_itself_keeps_its_plane() {
         [0.0, 1.0, 0.0],
         [1.0, 1.0, 0.5],
     ];
-    assert_eq!(WorldPlane::of_points(&skew, G), None, "not on one plane");
+    assert_eq!(WorldPlane::of_points(&skew), None, "not on one plane");
     let line = [[0.0, 0.0, 0.0], [1.0, 2.0, 3.0], [2.0, 4.0, 6.0]];
-    assert_eq!(WorldPlane::of_points(&line, G), None, "on a line");
+    assert_eq!(WorldPlane::of_points(&line), None, "on a line");
 }
 
 /// A surface's face, curved a little, takes the plane nearest it: the one a planar face would
@@ -594,24 +594,17 @@ fn a_curved_face_takes_the_plane_nearest_it() {
         [1.0, 1.0, 0.0],
         [0.0, 1.0, 0.5],
     ];
-    assert_eq!(WorldPlane::of_points(&bent, G), None);
-    assert_eq!(
-        WorldPlane::nearest(&bent, G),
-        WorldPlane::of_points(&flat, G)
-    );
-    assert_eq!(
-        WorldPlane::nearest(&flat, G),
-        WorldPlane::of_points(&flat, G)
-    );
+    assert_eq!(WorldPlane::of_points(&bent), None);
+    assert_eq!(WorldPlane::nearest(&bent), WorldPlane::of_points(&flat));
+    assert_eq!(WorldPlane::nearest(&flat), WorldPlane::of_points(&flat));
     let line = [[0.0, 0.0, 0.0], [1.0, 2.0, 3.0], [2.0, 4.0, 6.0]];
-    assert_eq!(WorldPlane::nearest(&line, G), None);
+    assert_eq!(WorldPlane::nearest(&line), None);
 }
 
 /// A line whose points share a coordinate takes that coordinate's axis plane, and so does the
 /// same line placed by arithmetic that lands a point an ulp off the shared value, either way:
-/// machines whose maths differ in the last bit key it alike, as does a point within a step of
-/// the grid (an ulp's difference that straddles a grid boundary snaps a step apart). A coordinate
-/// a hundred steps apart is not shared.
+/// machines whose maths differ in the last bit key it alike. A coordinate apart by far more than
+/// rounding is not shared.
 #[test]
 fn a_line_sharing_a_coordinate_to_the_last_bit_takes_its_axis_plane() {
     let ulp_up = |v: f64| f64::from_bits(v.to_bits() + 1);
@@ -624,7 +617,7 @@ fn a_line_sharing_a_coordinate_to_the_last_bit_takes_its_axis_plane() {
                 [1.0 - 2.0 * t, shared, 1.0 + t]
             })
             .collect();
-        let want = WorldPlane::of_points(&exact, G);
+        let want = WorldPlane::of_points(&exact);
         assert_eq!(
             want.map(|p| p.normal),
             Some([0.0, 1.0, 0.0]),
@@ -635,27 +628,20 @@ fn a_line_sharing_a_coordinate_to_the_last_bit_takes_its_axis_plane() {
                 let mut off = exact.clone();
                 off[at][1] = nudge(shared);
                 assert_eq!(
-                    WorldPlane::of_points(&off, G),
+                    WorldPlane::of_points(&off),
                     want,
                     "y = {shared}, point {at}"
                 );
             }
         }
-        let mut step = exact.clone();
-        step[3][1] = shared + 0.5 * G;
-        assert_eq!(WorldPlane::of_points(&step, G), want, "within a step");
         let mut apart = exact.clone();
-        apart[3][1] = shared + 100.0 * G;
-        assert_ne!(
-            WorldPlane::of_points(&apart, G),
-            want,
-            "a hundred steps apart"
-        );
+        apart[3][1] = shared + 1e-6;
+        assert_ne!(WorldPlane::of_points(&apart), want, "apart by 1e-6");
     }
     // At zero an ulp is a subnormal-sized step, and the line still keys as the plane y = 0.
     let zero: Vec<[f64; 3]> = vec![[1.0, 0.0, 1.0], [-1.0, -f64::MIN_POSITIVE, 2.0]];
     assert_eq!(
-        WorldPlane::of_points(&zero, G).map(|p| (p.normal, p.offset)),
+        WorldPlane::of_points(&zero).map(|p| (p.normal, p.offset)),
         Some(([0.0, 1.0, 0.0], 0.0))
     );
 }
@@ -670,9 +656,13 @@ fn points_an_ulp_off_a_line_have_no_plane() {
     let ulp_down = |v: f64| f64::from_bits(v.to_bits() - 1);
     for nudge in [ulp_up, ulp_down] {
         let line = [[0.0, 0.0, 0.0], [1.0, 2.0, 3.0], [2.0, 4.0, nudge(6.0)]];
-        assert_eq!(WorldPlane::of_points(&line, G), None, "{line:?}");
-        assert_eq!(WorldPlane::nearest(&line, G), None, "nearest {line:?}");
-        assert_eq!(WorldPlane::of_triangle(line, G), None, "triangle {line:?}");
+        assert_eq!(WorldPlane::of_points(&line), None, "{line:?}");
+        assert_eq!(WorldPlane::nearest(&line), None, "nearest {line:?}");
+        assert_eq!(
+            WorldPlane::of_triangle(line, 0.0),
+            None,
+            "triangle {line:?}"
+        );
     }
 }
 
@@ -686,32 +676,6 @@ fn snapped(p: [f64; 3]) -> [f64; 3] {
     snapped_to(p, G)
 }
 
-/// A regular pentagon of radius `r` about `centre`, in the plane spanned by the unit vectors `u`
-/// and `v`, its points snapped, with that plane's normal off it by `bend` at one vertex.
-fn snapped_pentagon(
-    centre: [f64; 3],
-    u: [f64; 3],
-    v: [f64; 3],
-    r: f64,
-    bend: f64,
-) -> Vec<[f64; 3]> {
-    let n = [
-        u[1] * v[2] - u[2] * v[1],
-        u[2] * v[0] - u[0] * v[2],
-        u[0] * v[1] - u[1] * v[0],
-    ];
-    (0..5)
-        .map(|i| {
-            let a = std::f64::consts::TAU * f64::from(i) / 5.0;
-            let (s, c) = (libm::sin(a), libm::cos(a));
-            let off = if i == 2 { bend } else { 0.0 };
-            snapped(std::array::from_fn(|k| {
-                centre[k] + r * (c * u[k] + s * v[k]) + off * n[k]
-            }))
-        })
-        .collect()
-}
-
 /// A tilted plane's unit vectors, none along an axis.
 fn tilted() -> ([f64; 3], [f64; 3]) {
     let u = [0.6, 0.64, 0.48];
@@ -720,55 +684,233 @@ fn tilted() -> ([f64; 3], [f64; 3]) {
     (u, raw.map(|x| x / norm))
 }
 
-/// A polyhedron's face, its vertices snapped to the input grid (each up to half a step off the
-/// plane in every coordinate), keeps its plane: snapped, a face on a plane stays on one.
+/// A triangle the snap leaves a sliver a grid step or two wide has no world plane at that grid
+/// (its normal is the snap's noise), and its depth comes from its own corners on screen, exact
+/// for a triangle. The decision moves its depth only, never what it covers: drawn alone, it
+/// draws the same pixels as when a plane is found for it.
 #[test]
-fn a_face_snapped_to_the_input_grid_keeps_its_plane() {
+fn a_triangle_the_snap_makes_degenerate_draws_what_it_covers() {
+    let view = looking_down();
     let (u, v) = tilted();
-    for r in [0.05, 0.6, 1.4, 7.0] {
-        for centre in [[0.3, -1.1, 0.7], [5.1, 2.3, -4.4]] {
-            let face = snapped_pentagon(centre, u, v, r, 0.0);
-            let plane = WorldPlane::of_points(&face, G);
-            assert!(plane.is_some(), "r {r} at {centre:?}: {face:?}");
+    let n = [
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    ];
+    let at = |s: f64, off: f64| -> [f64; 3] {
+        snapped(std::array::from_fn(|k| {
+            0.3 + s * u[k] + off * (0.6 * v[k] + 0.8 * n[k])
+        }))
+    };
+    for length in [0.5, 2.0, 5.0] {
+        let triangle = [at(-length, 0.0), at(0.4 * length, 1.5 * G), at(length, 0.0)];
+        assert_eq!(
+            WorldPlane::of_triangle(triangle, G),
+            None,
+            "length {length}"
+        );
+        let shape = Shape::new(ShapeData::Mesh {
+            positions: triangle.to_vec(),
+            triangles: vec![[0, 1, 2]],
+            normals: None,
+        });
+        let mut record = Record::new(RecordKind::Mesh, 1, 101);
+        record.geometry.shape_a = Some(shape.key());
+        record.paint.fill = Paint::One(WHITE);
+        record.depth.space = Space::World;
+        assert!(
+            WorldPlane::of_triangle(triangle, 0.0).is_some(),
+            "length {length}"
+        );
+        let mut grid_view = view.clone();
+        grid_view.input_grid = G;
+        let items = [(shape, record)];
+        assert!(
+            draw(grid_view, &items) == draw(view.clone(), &items),
+            "length {length}: the sliver draws other pixels"
+        );
+    }
+}
+
+/// SplitMix64: a seeded stream of numbers, the same on every machine.
+struct Seeded(u64);
+
+impl Seeded {
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// Uniform in `[0, 1)`.
+    fn unit(&mut self) -> f64 {
+        (self.next() >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    fn between(&mut self, lo: f64, hi: f64) -> f64 {
+        lo + (hi - lo) * self.unit()
+    }
+
+    /// A rotation drawn uniformly: the images of the x and y axes, and of z, its plane's normal.
+    fn rotation(&mut self) -> [[f64; 3]; 3] {
+        let q = loop {
+            let q: [f64; 4] = std::array::from_fn(|_| self.between(-1.0, 1.0));
+            let norm = q.iter().map(|v| v * v).sum::<f64>();
+            if norm > 0.01 && norm <= 1.0 {
+                break q.map(|v| v / norm.sqrt());
+            }
+        };
+        let [w, x, y, z] = q;
+        [
+            [
+                1.0 - 2.0 * (y * y + z * z),
+                2.0 * (x * y + w * z),
+                2.0 * (x * z - w * y),
+            ],
+            [
+                2.0 * (x * y - w * z),
+                1.0 - 2.0 * (x * x + z * z),
+                2.0 * (y * z + w * x),
+            ],
+            [
+                2.0 * (x * z + w * y),
+                2.0 * (y * z - w * x),
+                1.0 - 2.0 * (x * x + y * y),
+            ],
+        ]
+    }
+
+    /// `v` moved 1 to 4 ulp, up or down.
+    fn nudged(&mut self, v: f64) -> f64 {
+        let steps = 1 + self.next() % 4;
+        let up = self.next().is_multiple_of(2);
+        (0..steps).fold(v, |v, _| if up { v.next_up() } else { v.next_down() })
+    }
+}
+
+/// A face's outline in its own plane, at unit size: a Platonic solid's face (a regular triangle,
+/// square or pentagon), a rectangle up to four times as long as it is wide, or a convex polygon of
+/// up to twelve corners at uneven radii.
+fn outline(seeded: &mut Seeded) -> Vec<[f64; 2]> {
+    let regular = |n: u32, turn: f64| -> Vec<[f64; 2]> {
+        (0..n)
+            .map(|i| {
+                let a = turn + std::f64::consts::TAU * f64::from(i) / f64::from(n);
+                [libm::cos(a), libm::sin(a)]
+            })
+            .collect()
+    };
+    match seeded.next() % 5 {
+        0 => regular(3, seeded.between(0.0, 1.0)),
+        1 => regular(4, seeded.between(0.0, 1.0)),
+        2 => regular(5, seeded.between(0.0, 1.0)),
+        3 => {
+            let (w, h) = (1.0, seeded.between(0.25, 1.0));
+            vec![[-w, -h], [w, -h], [w, h], [-w, h]]
+        }
+        _ => {
+            let n = 4 + (seeded.next() % 9) as u32;
+            regular(n, seeded.between(0.0, 1.0))
+                .into_iter()
+                .map(|[x, y]| {
+                    let r = seeded.between(0.7, 1.0);
+                    [r * x, r * y]
+                })
+                .collect()
         }
     }
 }
 
-/// Points snapped from a line in no axis's direction have no plane of their own: the normal
-/// their snapping gives is noise.
+/// A seeded face: its outline at a random rotation, size from 0.01 to 100 and offset up to 50
+/// from the origin, one corner (of four or more) moved off its plane by `bend` times its size.
+fn seeded_face(seeded: &mut Seeded, bend: f64) -> Vec<[f64; 3]> {
+    let [u, v, n] = seeded.rotation();
+    let size = libm::pow(10.0, seeded.between(-2.0, 2.0));
+    let centre: [f64; 3] = std::array::from_fn(|_| seeded.between(-50.0, 50.0));
+    let shape = outline(seeded);
+    let bent_at = if shape.len() > 3 {
+        (seeded.next() as usize) % shape.len()
+    } else {
+        usize::MAX
+    };
+    shape
+        .iter()
+        .enumerate()
+        .map(|(i, [x, y])| {
+            let off = if i == bent_at { bend * size } else { 0.0 };
+            std::array::from_fn(|k| centre[k] + size * (x * u[k] + y * v[k]) + off * n[k])
+        })
+        .collect()
+}
+
+/// A face decided flat before the snap keeps a fitted plane after it, at every grid the engine
+/// snaps to; a face bent off its plane at one corner by a hundred grid steps is decided a curve,
+/// and fits none.
 #[test]
-fn points_snapped_from_a_line_have_no_plane() {
-    for length in [0.01, 1.0, 6.0, 30.0] {
-        let line: Vec<[f64; 3]> = (0..7)
-            .map(|i| {
-                let t = length * f64::from(i) / 6.0;
-                snapped([0.31 + 0.6 * t, -0.17 + 0.64 * t, 0.05 + 0.48 * t])
-            })
-            .collect();
-        assert_eq!(WorldPlane::of_points(&line, G), None, "{length}: {line:?}");
-        assert_eq!(
-            WorldPlane::nearest(&line, G),
-            None,
-            "nearest {length}: {line:?}"
-        );
-        let triangle = [line[0], line[3], line[6]];
-        assert_eq!(
-            WorldPlane::of_triangle(triangle, G),
-            None,
-            "triangle {length}"
-        );
+fn a_face_decided_flat_keeps_a_fitted_plane_under_the_snap() {
+    let mut seeded = Seeded(0x5EED_F00D);
+    for grid in [1.0 / 1_048_576.0, 1.0 / 65_536.0, G, 1.0 / 8_192.0] {
+        for case in 0..3000 {
+            let face = seeded_face(&mut seeded, 0.0);
+            let snap = |points: &[[f64; 3]]| -> Vec<[f64; 3]> {
+                points.iter().map(|p| snapped_to(*p, grid)).collect()
+            };
+            let what = format!("grid {grid}, case {case}: {face:?}");
+            let decided = WorldPlane::decide(&face, false);
+            assert!(
+                matches!(decided, Planarity::Newell | Planarity::Widest),
+                "flat, {what}: {decided:?}"
+            );
+            assert!(
+                WorldPlane::fit(&snap(&face), decided).is_some(),
+                "fit, {what}"
+            );
+            if face.len() > 3 {
+                let mut bent = face.clone();
+                let n = WorldPlane::fit(&face, decided).unwrap().normal;
+                for k in 0..3 {
+                    bent[1][k] += 100.0 * grid * n[k];
+                }
+                assert_eq!(
+                    WorldPlane::decide(&bent, false),
+                    Planarity::Curve,
+                    "bent, {what}"
+                );
+            }
+        }
     }
 }
 
-/// A face off its plane by a hundred steps of the input grid at one vertex is no plane: the
-/// grid's bounds tell what snapping moves from what content bends.
+/// A face off its plane at one corner by 1e-6 to 1e-3 of its size is decided a curve, and a
+/// flat face flat, whatever the last bits of its points: moved 1 to 4 ulp, each keeps its
+/// decision. (A face within ulps of the bound, 1e-9 of its extent off its plane, can still be
+/// decided apart on two machines: content reaches that only by coincidence.)
 #[test]
-fn a_face_bent_by_a_hundred_grid_steps_has_no_plane() {
-    let (u, v) = tilted();
-    let bend = 100.0 * G;
-    for r in [0.6, 1.4, 7.0] {
-        let face = snapped_pentagon([0.3, -1.1, 0.7], u, v, r, bend);
-        assert_eq!(WorldPlane::of_points(&face, G), None, "r {r}: {face:?}");
+fn a_planarity_decision_does_not_move_with_the_last_bits() {
+    let mut seeded = Seeded(0xD1CE);
+    for case in 0..4000 {
+        let bend = match case % 4 {
+            0 => 0.0,
+            _ => libm::pow(10.0, seeded.between(-6.0, -3.0)),
+        };
+        let face = seeded_face(&mut seeded, bend);
+        let decided = WorldPlane::decide(&face, false);
+        let want = if bend == 0.0 || face.len() == 3 {
+            matches!(decided, Planarity::Newell | Planarity::Widest)
+        } else {
+            decided == Planarity::Curve
+        };
+        assert!(want, "case {case}, bend {bend}: {decided:?} {face:?}");
+        for _ in 0..4 {
+            let nudged: Vec<[f64; 3]> = face.iter().map(|p| p.map(|v| seeded.nudged(v))).collect();
+            assert_eq!(
+                WorldPlane::decide(&nudged, false),
+                decided,
+                "case {case}, bend {bend}: {nudged:?}"
+            );
+        }
     }
 }
 
@@ -1343,155 +1485,4 @@ fn the_scanlines_masks_and_areas_follow_the_nonzero_winding() {
     }
     // 128 samples a side resolve an edge to within about 1/128 of the pixel.
     assert!(worst < 0.02, "worst area error {worst}");
-}
-
-/// SplitMix64: a seeded stream of numbers, the same on every machine.
-struct Seeded(u64);
-
-impl Seeded {
-    fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-
-    /// Uniform in `[0, 1)`.
-    fn unit(&mut self) -> f64 {
-        (self.next() >> 11) as f64 / (1u64 << 53) as f64
-    }
-
-    fn between(&mut self, lo: f64, hi: f64) -> f64 {
-        lo + (hi - lo) * self.unit()
-    }
-
-    /// A rotation drawn uniformly: the images of the x and y axes, and of z, its plane's normal.
-    fn rotation(&mut self) -> [[f64; 3]; 3] {
-        let q = loop {
-            let q: [f64; 4] = std::array::from_fn(|_| self.between(-1.0, 1.0));
-            let norm = q.iter().map(|v| v * v).sum::<f64>();
-            if norm > 0.01 && norm <= 1.0 {
-                break q.map(|v| v / norm.sqrt());
-            }
-        };
-        let [w, x, y, z] = q;
-        [
-            [
-                1.0 - 2.0 * (y * y + z * z),
-                2.0 * (x * y + w * z),
-                2.0 * (x * z - w * y),
-            ],
-            [
-                2.0 * (x * y - w * z),
-                1.0 - 2.0 * (x * x + z * z),
-                2.0 * (y * z + w * x),
-            ],
-            [
-                2.0 * (x * z + w * y),
-                2.0 * (y * z - w * x),
-                1.0 - 2.0 * (x * x + y * y),
-            ],
-        ]
-    }
-}
-
-/// A face's outline in its own plane, at unit size: a Platonic solid's face (a regular triangle,
-/// square or pentagon), a rectangle up to four times as long as it is wide, or a convex polygon of
-/// up to twelve corners at uneven radii.
-fn outline(seeded: &mut Seeded) -> Vec<[f64; 2]> {
-    let regular = |n: u32, turn: f64| -> Vec<[f64; 2]> {
-        (0..n)
-            .map(|i| {
-                let a = turn + std::f64::consts::TAU * f64::from(i) / f64::from(n);
-                [libm::cos(a), libm::sin(a)]
-            })
-            .collect()
-    };
-    match seeded.next() % 5 {
-        0 => regular(3, seeded.between(0.0, 1.0)),
-        1 => regular(4, seeded.between(0.0, 1.0)),
-        2 => regular(5, seeded.between(0.0, 1.0)),
-        3 => {
-            let (w, h) = (1.0, seeded.between(0.25, 1.0));
-            vec![[-w, -h], [w, -h], [w, h], [-w, h]]
-        }
-        _ => {
-            let n = 4 + (seeded.next() % 9) as u32;
-            regular(n, seeded.between(0.0, 1.0))
-                .into_iter()
-                .map(|[x, y]| {
-                    let r = seeded.between(0.7, 1.0);
-                    [r * x, r * y]
-                })
-                .collect()
-        }
-    }
-}
-
-/// Faces at random rotations, sizes from 0.01 to 100 and offsets up to 50 from the origin, their
-/// corners snapped to the grid, keep a plane at the grids the engine snaps to; the same face with
-/// one corner bent off it by a hundred steps has none (a face of four corners or more: three are
-/// always on a plane).
-#[test]
-fn snapped_faces_keep_their_plane_and_bent_ones_lose_it() {
-    let mut seeded = Seeded(0x5EED_F00D);
-    for grid in [1.0 / 1_048_576.0, 1.0 / 65_536.0, G, 1.0 / 8_192.0] {
-        for case in 0..3000 {
-            let [u, v, n] = seeded.rotation();
-            let size = libm::pow(10.0, seeded.between(-2.0, 2.0));
-            let centre: [f64; 3] = std::array::from_fn(|_| seeded.between(-50.0, 50.0));
-            let shape = outline(&mut seeded);
-            let bent_at = (seeded.next() as usize) % shape.len();
-            let face = |bend: f64| -> Vec<[f64; 3]> {
-                shape
-                    .iter()
-                    .enumerate()
-                    .map(|(i, [x, y])| {
-                        let off = if i == bent_at { bend } else { 0.0 };
-                        snapped_to(
-                            std::array::from_fn(|k| {
-                                centre[k] + size * (x * u[k] + y * v[k]) + off * n[k]
-                            }),
-                            grid,
-                        )
-                    })
-                    .collect()
-            };
-            let flat = face(0.0);
-            let what = format!("grid {grid}, case {case}, size {size}: {flat:?}");
-            assert!(WorldPlane::of_points(&flat, grid).is_some(), "flat, {what}");
-            if flat.len() == 3 {
-                let triangle = [flat[0], flat[1], flat[2]];
-                assert!(
-                    WorldPlane::of_triangle(triangle, grid).is_some(),
-                    "triangle, {what}"
-                );
-            } else {
-                let bent = face(100.0 * grid);
-                assert_eq!(WorldPlane::of_points(&bent, grid), None, "bent, {what}");
-            }
-        }
-    }
-}
-
-/// Without a grid (a stream not snapped), the bounds are the old relative ones: a face a step of
-/// the grid off its plane at one corner, which the grid's bounds would take as flat, has none.
-#[test]
-fn unsnapped_points_keep_the_relative_bound() {
-    let (u, v) = tilted();
-    let n = [
-        u[1] * v[2] - u[2] * v[1],
-        u[2] * v[0] - u[0] * v[2],
-        u[0] * v[1] - u[1] * v[0],
-    ];
-    let face: Vec<[f64; 3]> = (0..5)
-        .map(|i| {
-            let a = std::f64::consts::TAU * f64::from(i) / 5.0;
-            let off = if i == 2 { G } else { 0.0 };
-            std::array::from_fn(|k| 0.3 + libm::cos(a) * u[k] + libm::sin(a) * v[k] + off * n[k])
-        })
-        .collect();
-    assert!(WorldPlane::of_points(&face, G).is_some());
-    assert_eq!(WorldPlane::of_points(&face, 0.0), None);
 }

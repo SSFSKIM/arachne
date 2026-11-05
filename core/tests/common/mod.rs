@@ -19,6 +19,7 @@ pub fn flat_view(width: u32, height: u32, background: [f64; 4]) -> View {
         cairo_line_width_multiple: 0.01,
         use_z_index: true,
         light: LightModel::Ce,
+        input_grid: 0.0,
     }
 }
 
@@ -384,6 +385,26 @@ pub fn pre_projected_sample() -> Delta {
     });
     d.upload = vec![original, projected];
     d.upload_paints = vec![stops];
+    d.set = vec![r];
+    d
+}
+
+/// XF 1.2's canonical sample: a view snapped to a grid and a record carrying its planes,
+/// separate so the earlier samples retain their exact bytes.
+pub fn snapped_sample() -> Delta {
+    let mut d = Delta::new(Time { num: 4, den: 15 }, 5);
+    d.version = (1, 2);
+    let mut view = flat_view(32, 18, [0.0, 0.0, 0.0, 1.0]);
+    view.input_grid = 1.0 / 32768.0;
+    d.view = Some(view);
+    let shape = Shape::new(ShapeData::Path {
+        points: square_points(1.0),
+    });
+    let mut r = Record::new(RecordKind::Path, 12, 112);
+    r.geometry.shape_a = Some(shape.key());
+    r.paint.fill = Paint::One([0.2, 0.4, 0.6, 1.0]);
+    r.planes = Some(vec![1, 6, 0]);
+    d.upload = vec![shape];
     d.set = vec![r];
     d
 }

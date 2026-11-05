@@ -158,6 +158,7 @@ fn a_kind_this_reader_does_not_know_is_kept_not_parsed() {
 fn trailing_fields_of_a_newer_minor_are_skipped() {
     let mut record = Record::new(RecordKind::Path, 3, 4);
     record.opacity = 0.25;
+    record.planes = Some(vec![1]);
     let mut raw = wire::encode_record(&record);
     raw.extend_from_slice(&[1, 2, 3, 4, 5]);
     let delta = wire::decode_delta(&delta_with_raw_record(&raw)).unwrap();
@@ -363,30 +364,26 @@ fn bytes_after_a_tail_are_still_skipped_and_do_not_shift_the_next_record() {
         .unwrap()
         .set
         .remove(0);
-    let mut extended = raw.clone();
+    // XF 1.2's planes follow the tail; a newer minor's bytes follow them.
+    let mut planned = raw.clone();
+    planned.extend_from_slice(&[1, 0, 0, 0, 1]);
+    let mut expected_planned = expected.clone();
+    expected_planned.planes = Some(vec![1]);
+    let mut extended = planned.clone();
     extended.extend_from_slice(&[0xff, 0xfe, 0xfd]);
     let mut bytes = delta_with_raw_record(&extended);
-    bytes[2..4].copy_from_slice(&2u16.to_le_bytes());
-    assert_eq!(wire::decode_delta(&bytes).unwrap().set[0], expected);
-
-    // Without bit 1, decode takes XF 1.0's skip-after-body path, even with a tail present.
-    extended[1..9].copy_from_slice(&0u64.to_le_bytes());
-    let skipped = wire::decode_delta(&delta_with_raw_record(&extended)).unwrap();
-    assert!(skipped.set[0].pre_projected.is_none());
-    assert_eq!(
-        wire::encode_record(&skipped.set[0]),
-        wire::encode_record(&Record::new(RecordKind::Path, 3, 4))
-    );
+    bytes[2..4].copy_from_slice(&3u16.to_le_bytes());
+    assert_eq!(wire::decode_delta(&bytes).unwrap().set[0], expected_planned);
 
     let mut d = Delta::new(Time { num: 0, den: 1 }, 0);
-    d.set = vec![expected, Record::new(RecordKind::Path, 9, 10)];
+    d.set = vec![expected_planned, Record::new(RecordKind::Path, 9, 10)];
     let encoded = wire::encode_delta(&d);
     // First item at 53; extend it without touching the second record or the delta's suffix.
     let mut appended = encoded[..49].to_vec();
-    appended.extend_from_slice(&((raw.len() + 3) as u32).to_le_bytes());
-    appended.extend_from_slice(&raw);
+    appended.extend_from_slice(&((planned.len() + 3) as u32).to_le_bytes());
+    appended.extend_from_slice(&planned);
     appended.extend_from_slice(&[0xff, 0xfe, 0xfd]);
-    appended.extend_from_slice(&encoded[53 + raw.len()..]);
+    appended.extend_from_slice(&encoded[53 + planned.len()..]);
     assert_eq!(wire::decode_delta(&appended).unwrap().set, d.set);
 }
 
@@ -402,7 +399,17 @@ fn the_writer_uses_the_lowest_minor_that_carries_the_content() {
         .set;
     d.version = (1, 0);
     assert_eq!(&wire::encode_delta(&d)[..4], &[1, 0, 1, 0]);
-    assert_eq!(&wire::encode_file(&[d])[4..8], &[1, 0, 1, 0]);
+    assert_eq!(&wire::encode_file(&[d.clone()])[4..8], &[1, 0, 1, 0]);
+    // XF 1.2: a record's planes, or a view's input grid (the frame's or a sub-frame's).
+    let mut planned = d.clone();
+    planned.set[0].planes = Some(vec![1]);
+    assert_eq!(&wire::encode_delta(&planned)[..4], &[1, 0, 2, 0]);
+    let mut gridded = Delta::new(Time { num: 0, den: 1 }, 0);
+    let mut view = common::flat_view(16, 9, [0.0, 0.0, 0.0, 1.0]);
+    view.input_grid = 1.0 / 32768.0;
+    gridded.view = Some(view);
+    assert_eq!(&wire::encode_delta(&gridded)[..4], &[1, 0, 2, 0]);
+    assert_eq!(&wire::encode_file(&[d, gridded])[4..8], &[1, 0, 2, 0]);
 }
 
 #[test]
@@ -422,6 +429,18 @@ fn the_pre_projected_canonical_samples_bytes_are_pinned() {
     assert_eq!(
         sha256_hex(&bytes),
         "df6b52077f443b5db275ed07837ef7235a089298af0c410c770150ddf796983c"
+    );
+    assert_eq!(wire::decode_file(&bytes).unwrap(), vec![delta]);
+}
+
+#[test]
+fn the_snapped_canonical_samples_bytes_are_pinned() {
+    let delta = common::snapped_sample();
+    let bytes = wire::encode_file(std::slice::from_ref(&delta));
+    assert_eq!(&bytes[4..8], &[1, 0, 2, 0]);
+    assert_eq!(
+        sha256_hex(&bytes),
+        "a1a03ee745bf337c03e6d01285f31ad11e70ceb20d4bc936e787222bc49d5483"
     );
     assert_eq!(wire::decode_file(&bytes).unwrap(), vec![delta]);
 }

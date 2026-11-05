@@ -139,6 +139,7 @@ fn a_path_filled_with_a_gradient_is_drawn_with_cairo_s_bytes() {
             cairo_line_width_multiple: 0.01,
             use_z_index: true,
             light: LightModel::Ce,
+            input_grid: 0.0,
         });
         d.upload = vec![shape];
         d.upload_paints = vec![table];

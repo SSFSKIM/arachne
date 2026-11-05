@@ -76,6 +76,7 @@ pub fn path_record<'a>(
         background_stroke_width: paint.background_stroke_width,
         order,
         sub: 0,
+        which: 0,
     }
 }
 
@@ -106,6 +107,7 @@ pub fn produced_path<'a, 't>(
         background_stroke_width: p.background_stroke_width,
         order,
         sub: 0,
+        which: 0,
     }
 }
 
@@ -136,6 +138,7 @@ pub fn path_members<'a>(
             background_stroke_width: p.background_stroke_width,
             order,
             sub: 3 * i as u32,
+            which: i,
         });
     }
 }
@@ -170,6 +173,7 @@ pub fn face<'a, 't>(
         background_stroke_width: p.background_stroke_width,
         order,
         sub: 0,
+        which: i,
     }
 }
 

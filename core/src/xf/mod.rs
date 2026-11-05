@@ -14,7 +14,7 @@ pub use key::Key;
 ///
 /// From XF 1 the layout is append-only: a new field or kind bumps the minor, and nothing removes
 /// or retypes a field.
-pub const XF_VERSION: (u16, u16) = (1, 1);
+pub const XF_VERSION: (u16, u16) = (1, 2);
 
 /// CE's background-image fill: paint the path into a separate array and multiply by an image.
 /// Carried by XF, drawn by Cairo only in this build.
@@ -537,6 +537,11 @@ pub struct Record {
     pub body: Body,
     /// Present exactly when bit 1 is set; follows the body on the wire.
     pub pre_projected: Option<PreProjected>,
+    /// How each path the record draws lies, decided before its geometry was snapped
+    /// ([`crate::depth::Planarity`] codes, XF 1.2): one per path, in the order the record draws
+    /// them (a face group's faces, an instances record's members, else one). `None` when the
+    /// writer did not decide: the drawer decides from the points it is handed.
+    pub planes: Option<Vec<u8>>,
 }
 
 impl Record {
@@ -557,6 +562,7 @@ impl Record {
             fill_image: None,
             body: Body::None,
             pre_projected: None,
+            planes: None,
         }
     }
 
@@ -704,6 +710,9 @@ pub struct View {
     pub cairo_line_width_multiple: f64,
     pub use_z_index: bool,
     pub light: LightModel,
+    /// The grid the delta's geometry was snapped to, in scene units (XF 1.2); `0.0` when it was
+    /// not (absent on the wire).
+    pub input_grid: f64,
 }
 
 /// The layer an order entry draws in.

@@ -298,6 +298,7 @@ fn flat_view() -> View {
         cairo_line_width_multiple: 0.01,
         use_z_index: true,
         light: LightModel::Ce,
+        input_grid: 0.0,
     }
 }
 
@@ -601,6 +602,7 @@ fn a_path_record_lays_out_every_fixed_field() {
     r.opacity = 0.75;
     r.layer = 0x0102;
     r.fill_image = Some(KF);
+    r.planes = Some(vec![1, 4, 0]);
     record_both_ways(
         &r,
         &[
@@ -658,6 +660,8 @@ fn a_path_record_lays_out_every_fixed_field() {
             (729, "layer", u16(0x0102)),
             (731, "has fill_image", u8(1)),
             (732, "fill_image", key(&KF)),
+            (748, "planes count (XF 1.2)", u32(3)),
+            (752, "planarity codes", vec![1, 4, 0]),
         ],
     );
 }
@@ -1129,4 +1133,28 @@ fn the_writer_asserts_both_pre_projected_presence_disagreements() {
         background_stroke: Paint::None,
     });
     assert!(std::panic::catch_unwind(|| wire::encode_record(&r)).is_err());
+}
+
+/// XF 1.2: a view snapped to a grid carries it after the light model's parameters, and its delta
+/// is version 1.2.
+#[test]
+fn a_view_snapped_to_a_grid_carries_its_grid_last() {
+    let view = View {
+        input_grid: 0.125,
+        ..flat_view()
+    };
+    let mut fields = flat_view_fields();
+    fields.push((120, "input_grid (XF 1.2)", f64(0.125)));
+    let mut d = empty_delta();
+    d.view = Some(view.clone());
+    let written = wire::encode_delta(&d);
+    assert_eq!(&written[..4], &[1, 0, 2, 0]);
+    assert_layout(&written[33..written.len() - 25], &fields);
+    let mut hand = hand_delta(Some(&laid_out(&fields)), &[], &[]);
+    hand[2..4].copy_from_slice(&u16(2));
+    assert_eq!(written, hand);
+    assert_eq!(
+        wire::decode_delta(&hand).unwrap().view.as_ref(),
+        Some(&view)
+    );
 }

@@ -3,7 +3,7 @@
 use crate::xf::*;
 use numpy::{Element, PyArray1, PyArray2, PyArrayMethods};
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict, PyList};
+use pyo3::types::{PyBytes, PyDict, PyList, PyTuple};
 
 fn key<'py>(py: Python<'py>, key: Key) -> Bound<'py, PyBytes> {
     PyBytes::new(py, &key.0)
@@ -65,6 +65,9 @@ fn view<'py>(py: Python<'py>, v: &View) -> PyResult<Bound<'py, PyDict>> {
     out.set_item("cairo_line_width_multiple", v.cairo_line_width_multiple)?;
     out.set_item("use_z_index", v.use_z_index)?;
     out.set_item("light_model", v.light.code_and_params())?;
+    if v.input_grid != 0.0 {
+        out.set_item("input_grid", v.input_grid)?;
+    }
     Ok(out)
 }
 
@@ -162,6 +165,10 @@ fn record<'py>(py: Python<'py>, r: &Record) -> PyResult<Bound<'py, PyDict>> {
     out.set_item("layer", r.layer)?;
     if let Some(k) = r.fill_image {
         out.set_item("fill_image", key(py, k))?;
+    }
+    if let Some(planes) = &r.planes {
+        let codes: Vec<u32> = planes.iter().map(|c| u32::from(*c)).collect();
+        out.set_item("planes", PyTuple::new(py, codes)?)?;
     }
     if let Some(p) = &r.pre_projected {
         let projected = PyDict::new(py);
