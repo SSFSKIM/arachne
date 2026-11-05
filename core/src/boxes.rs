@@ -4,6 +4,7 @@
 //! `arachne.camera.projection.pixel_box` gives the record's mobject (points, not ink), so the two
 //! can be compared record by record; nothing here rasterizes.
 
+use crate::geometry::path_points;
 use crate::project::{FrameMap, Projection, mapping_centre_of, placement, pre_display};
 use crate::xf::*;
 
@@ -44,21 +45,14 @@ pub fn record_box<'a>(
     let data = geometry.shape_a.and_then(|k| shape(&k));
     let groups: Vec<Vec<[f64; 3]>> = match (rec.kind, data, &rec.body) {
         (RecordKind::Path, Some(ShapeData::Path { points }), _) => {
-            let mut a = placed(points, place_a);
-            if let Some((lo, hi)) = geometry.reveal {
-                a = revealed(&a, lo, hi);
-            }
-            if let Some(blend) = &geometry.blend
-                && let Some(ShapeData::Path { points: b }) = shape(&blend.shape_b)
-            {
-                let b = placed(b, &blend.place_b);
-                a = a
-                    .iter()
-                    .zip(&b)
-                    .map(|(p, q)| std::array::from_fn(|k| (1.0 - blend.t) * p[k] + blend.t * q[k]))
-                    .collect();
-            }
-            vec![a]
+            let b = geometry
+                .blend
+                .as_ref()
+                .and_then(|blend| match shape(&blend.shape_b) {
+                    Some(ShapeData::Path { points }) => Some(points.as_slice()),
+                    _ => None,
+                });
+            vec![path_points(geometry, points, b)?]
         }
         (RecordKind::FaceGroup, Some(ShapeData::Path { points }), Body::FaceGroup(faces)) => {
             let count = faces.uv.len();
@@ -133,72 +127,6 @@ fn mapped_box(
         *b = [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)];
     }
     found
-}
-
-/// `VMobject.pointwise_become_partial(path, lo, hi)` of a path holding no points before: the part
-/// of the cubic spline `points` between `lo` and `hi`.
-pub fn revealed(points: &[[f64; 3]], lo: f64, hi: f64) -> Vec<[f64; 3]> {
-    if lo <= 0.0 && hi >= 1.0 {
-        return points.to_vec();
-    }
-    let curves = points.len() / 4;
-    if curves == 0 {
-        return Vec::new();
-    }
-    let (lower, lower_residue) = integer_interpolate(curves, lo);
-    let (upper, upper_residue) = integer_interpolate(curves, hi);
-    let curve = |i: usize| -> [[f64; 3]; 4] { std::array::from_fn(|k| points[4 * i + k]) };
-    if lower == upper {
-        return partial_cubic(curve(lower), lower_residue, upper_residue).to_vec();
-    }
-    let mut out = partial_cubic(curve(lower), lower_residue, 1.0).to_vec();
-    out.extend_from_slice(&points[4 * (lower + 1)..4 * upper]);
-    out.extend(partial_cubic(curve(upper), 0.0, upper_residue));
-    out
-}
-
-/// `bezier.integer_interpolate(0, end, alpha)`.
-fn integer_interpolate(end: usize, alpha: f64) -> (usize, f64) {
-    if alpha >= 1.0 {
-        return (end - 1, 1.0);
-    }
-    if alpha <= 0.0 {
-        return (0, 0.0);
-    }
-    let scaled = end as f64 * alpha;
-    (scaled as usize, scaled.rem_euclid(1.0))
-}
-
-/// The part of one cubic between `a` and `b` (`bezier.partial_bezier_points`), by de Casteljau.
-fn partial_cubic(c: [[f64; 3]; 4], a: f64, b: f64) -> [[f64; 3]; 4] {
-    let lerp = |p: [f64; 3], q: [f64; 3], t: f64| -> [f64; 3] {
-        std::array::from_fn(|k| p[k] + (q[k] - p[k]) * t)
-    };
-    // The curve from `t` on.
-    let tail = |c: [[f64; 3]; 4], t: f64| -> [[f64; 3]; 4] {
-        let (ab, bc, cd) = (
-            lerp(c[0], c[1], t),
-            lerp(c[1], c[2], t),
-            lerp(c[2], c[3], t),
-        );
-        let (abc, bcd) = (lerp(ab, bc, t), lerp(bc, cd, t));
-        [lerp(abc, bcd, t), bcd, cd, c[3]]
-    };
-    // The curve up to `t`.
-    let head = |c: [[f64; 3]; 4], t: f64| -> [[f64; 3]; 4] {
-        let (ab, bc, cd) = (
-            lerp(c[0], c[1], t),
-            lerp(c[1], c[2], t),
-            lerp(c[2], c[3], t),
-        );
-        let (abc, bcd) = (lerp(ab, bc, t), lerp(bc, cd, t));
-        [c[0], ab, abc, lerp(abc, bcd, t)]
-    };
-    if a >= 1.0 {
-        return [c[3]; 4];
-    }
-    let from_a = tail(c, a);
-    head(from_a, (b - a) / (1.0 - a))
 }
 
 #[cfg(test)]
@@ -409,18 +337,5 @@ mod tests {
         .unwrap();
         close(got, [80.0, 25.0, 90.0, 35.0]);
         assert!(record_box(&v, &rec, |k| (*k == key).then_some(&data)).is_none());
-    }
-
-    #[test]
-    fn a_reveal_cuts_whole_curves_and_parts_as_ce_does() {
-        let points = line(&[[0.0, 0.0, 0.0], [3.0, 0.0, 0.0], [3.0, 3.0, 0.0]]);
-        let part = revealed(&points, 0.25, 0.75);
-        assert_eq!(part.len(), 8);
-        let x = |p: [f64; 3]| (p[0] * 1e9).round() / 1e9;
-        assert_eq!(x(part[0]), 1.5);
-        assert_eq!(part[3], [3.0, 0.0, 0.0]);
-        assert!((part[7][1] - 1.5).abs() < 1e-12);
-        assert_eq!(revealed(&points, 0.0, 1.0), points);
-        assert_eq!(revealed(&[], 0.2, 0.4), Vec::<[f64; 3]>::new());
     }
 }

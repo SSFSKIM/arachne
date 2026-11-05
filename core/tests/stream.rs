@@ -840,3 +840,115 @@ fn pre_projected_records_are_cairo_only_and_refused_only_when_drawn() {
         u.reason
     );
 }
+
+/// The frame one path record draws alone, over black, at 48 x 27 pixels (a flat camera, so no
+/// depth can differ), with `uploads` beside its shape.
+fn drawn_alone(record: Record, uploads: Vec<Shape>) -> Result<Vec<u8>, DrawError> {
+    let mut d = delta(0);
+    d.view = Some(common::flat_view(48, 27, [0.0, 0.0, 0.0, 1.0]));
+    d.upload = uploads;
+    d.order = Some(vec![entry(record.slot)]);
+    d.set = vec![record];
+    let mut s = Stream::new();
+    s.apply(&d).unwrap();
+    s.draw(48, 27, 1)
+}
+
+fn outlined(slot: u32, shape: &Shape) -> Record {
+    let mut r = path_record(slot, shape);
+    r.paint.stroke = Paint::One([1.0, 1.0, 0.0, 1.0]);
+    r.paint.stroke_width = 8.0;
+    r
+}
+
+#[test]
+fn a_reveal_draws_the_window_it_cuts() {
+    use arachne_core::geometry::revealed;
+    let shape = Shape::new(ShapeData::Path {
+        points: common::square_points(2.0),
+    });
+    let mut windowed = outlined(1, &shape);
+    windowed.geometry.reveal = Some((0.2, 0.65));
+    let cut = Shape::new(ShapeData::Path {
+        points: revealed(&common::square_points(2.0), 0.2, 0.65),
+    });
+    let got = drawn_alone(windowed, vec![shape.clone()]).unwrap();
+    assert_eq!(got, drawn_alone(outlined(1, &cut), vec![cut]).unwrap());
+    assert_ne!(got, drawn_alone(outlined(1, &shape), vec![shape]).unwrap());
+}
+
+#[test]
+fn a_blend_and_its_paint_blend_draw_what_they_mix() {
+    use arachne_core::geometry::{drawn_paint, path_points};
+    let (a, b) = (common::square_points(1.0), common::square_points(3.0));
+    let (shape_a, shape_b) = (
+        Shape::new(ShapeData::Path { points: a.clone() }),
+        Shape::new(ShapeData::Path { points: b.clone() }),
+    );
+    let mut blending = outlined(1, &shape_a);
+    blending.geometry.blend = Some(Blend {
+        shape_b: shape_b.key(),
+        place_b: IDENTITY,
+        t: 0.3,
+    });
+    blending.paint.paint_b = Some(PaintB {
+        fill: Paint::One([0.0, 0.0, 1.0, 0.5]),
+        stroke: Paint::One([0.0, 1.0, 1.0, 1.0]),
+        background_stroke: Paint::None,
+        stroke_width: 2.0,
+        background_stroke_width: 0.0,
+    });
+    blending.paint.mix = 0.3;
+    let mixed = Shape::new(ShapeData::Path {
+        points: path_points(&blending.geometry, &a, Some(&b)).unwrap(),
+    });
+    let mut plain = path_record(1, &mixed);
+    plain.paint = drawn_paint(&blending.paint).unwrap();
+    let got = drawn_alone(blending, vec![shape_a.clone(), shape_b]).unwrap();
+    assert_eq!(got, drawn_alone(plain, vec![mixed]).unwrap());
+    assert_ne!(
+        got,
+        drawn_alone(outlined(1, &shape_a), vec![shape_a]).unwrap()
+    );
+}
+
+#[test]
+fn a_blend_the_core_cannot_make_is_refused_whole() {
+    // Two shapes of different lengths, and a paint blend of a table: neither is made from CE.
+    let shape = square();
+    let short = Shape::new(ShapeData::Path {
+        points: common::square_points(1.0)[..4].to_vec(),
+    });
+    let mut uneven = path_record(1, &shape);
+    uneven.geometry.blend = Some(Blend {
+        shape_b: short.key(),
+        place_b: IDENTITY,
+        t: 0.5,
+    });
+    let Err(DrawError::Unsupported(u)) = drawn_alone(uneven, vec![shape.clone(), short]) else {
+        panic!("drawn")
+    };
+    assert!(u.reason.contains("different lengths"), "{}", u.reason);
+    let table = Stops::new(vec![[0.0; 4], [0.5; 4], [1.0; 4]]);
+    let mut tabled = path_record(1, &shape);
+    tabled.paint.paint_b = Some(PaintB {
+        fill: Paint::Table(table.key()),
+        stroke: Paint::None,
+        background_stroke: Paint::None,
+        stroke_width: 0.0,
+        background_stroke_width: 0.0,
+    });
+    tabled.paint.mix = 0.5;
+    let mut d = delta(0);
+    d.view = Some(common::flat_view(8, 8, [0.0, 0.0, 0.0, 1.0]));
+    d.upload = vec![shape];
+    d.upload_paints = vec![table];
+    d.order = Some(vec![entry(1)]);
+    d.set = vec![tabled];
+    let mut s = Stream::new();
+    s.apply(&d).unwrap();
+    let Err(DrawError::Unsupported(u)) = s.draw(8, 8, 1) else {
+        panic!("drawn")
+    };
+    assert!(u.reason.contains("table"), "{}", u.reason);
+}

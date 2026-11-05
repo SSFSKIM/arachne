@@ -10,6 +10,7 @@
 //! - [`mesh`]: the triangle rasterizer, a producer of mask fragments with depth.
 //! - [`path`]: the path rasterizer (fills, strokes, dashes, glyphs), a producer of
 //!   exact-area fragments with depth, on [`scanline`]'s exact nonzero coverage.
+//! - [`geometry`]: a path record's reveal, blend and paint blend made into what is drawn.
 //! - [`depth`]: canonical planes, so coplanar things tie exactly, and depth along curves.
 //! - [`instance`]: `instances` and `points` records drawn as their members; [`points`], point
 //!   clouds as CE's square blocks.
@@ -24,6 +25,7 @@
 pub mod boxes;
 pub mod composite;
 pub mod depth;
+pub mod geometry;
 pub mod instance;
 pub mod mesh;
 pub mod path;

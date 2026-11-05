@@ -56,11 +56,16 @@ const GUARD: f64 = 65536.0;
 /// each paint resolved to one colour (straight RGBA, before the group opacity) or none.
 pub struct PathDraw<'a> {
     pub record: &'a Record,
-    pub points: &'a [[f64; 3]],
+    /// The shape's points, or the points a reveal or a blend made of it
+    /// ([`crate::geometry::path_points`], placed already).
+    pub points: std::borrow::Cow<'a, [[f64; 3]]>,
     pub place: Affine,
     pub fill: Option<[f64; 4]>,
     pub stroke: Option<[f64; 4]>,
     pub background_stroke: Option<[f64; 4]>,
+    /// The stroke widths drawn, in CE's units: the record's, or a paint blend's mix of them.
+    pub stroke_width: f64,
+    pub background_stroke_width: f64,
     pub order: u32,
     /// The first of the three sub-orders the path's layers take (background stroke, fill, stroke).
     pub sub: u32,
@@ -554,10 +559,7 @@ impl<'v> Lowering<'v> {
             None => {
                 // How far the path's pixels reach from its curve: half the widest stroke and the
                 // pixel's antialiasing beyond it, a miter's length at most (for binning).
-                let width = rec
-                    .paint
-                    .stroke_width
-                    .max(rec.paint.background_stroke_width);
+                let width = draw.stroke_width.max(draw.background_stroke_width);
                 let half = width * self.view.cairo_line_width_multiple * self.map.xx.abs() / 2.0;
                 let reach = half + 1.0;
                 let bins = (half * MITER_LIMIT).max(TILE as f64) + 2.0;
@@ -566,15 +568,15 @@ impl<'v> Lowering<'v> {
         };
         let alpha = |c: [f64; 4]| [c[0], c[1], c[2], c[3] * rec.opacity];
         let scale = self.map.xx.abs().max(self.map.yy.abs());
-        let area = self.guard(&user, rec);
+        let area = self.guard(&user, draw.stroke_width.max(draw.background_stroke_width));
         let guarded = match area {
             Some(area) => culled(&user, area),
             None => user.clone(),
         };
         for (k, paint, width) in [
-            (0, draw.background_stroke, rec.paint.background_stroke_width),
+            (0, draw.background_stroke, draw.background_stroke_width),
             (1, draw.fill, 0.0),
-            (2, draw.stroke, rec.paint.stroke_width),
+            (2, draw.stroke, draw.stroke_width),
         ] {
             let Some(colour) = paint else { continue };
             let colour = premultiply(alpha(colour));
@@ -623,15 +625,10 @@ impl<'v> Lowering<'v> {
     /// When the outline reaches beyond the frame's guard band, the area its curves outside may be
     /// simplified away beyond ([`culled`], [`dashed`]): the frame widened by a stroke's reach beyond
     /// its curve and a pixel. `None` when the outline stays inside the band.
-    fn guard(&self, user: &BezPath, rec: &Record) -> Option<[f64; 4]> {
+    fn guard(&self, user: &BezPath, widest: f64) -> Option<[f64; 4]> {
         let m = &self.map;
         let to_user = |px: f64, py: f64| [(px - m.x0) / m.xx, (py - m.y0) / m.yy];
-        let reach = rec
-            .paint
-            .stroke_width
-            .max(rec.paint.background_stroke_width)
-            * self.view.cairo_line_width_multiple
-            * MITER_LIMIT;
+        let reach = widest * self.view.cairo_line_width_multiple * MITER_LIMIT;
         let [ax, ay] = to_user(-GUARD, -GUARD);
         let [bx, by] = to_user(self.width as f64 + GUARD, self.height as f64 + GUARD);
         let area = [ax.min(bx), ay.min(by), ax.max(bx), ay.max(by)];
