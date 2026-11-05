@@ -299,6 +299,27 @@ class MemberReplaced(Scene):
         _plays(self)
 
 
+class _ListsThrough(Camera):
+    """A camera class of the scene's own, listing what it draws as the
+    engine's camera does.
+    """
+
+    def get_mobjects_to_display(self, *args, **kwargs):
+        return super().get_mobjects_to_display(*args, **kwargs)
+
+
+class OwnCamera(Scene):
+    """The plays the replaced-method scenes play, through a camera class of
+    the scene's own.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(camera_class=_ListsThrough, **kwargs)
+
+    def construct(self):
+        _plays(self)
+
+
 class HookedIn(Scene):
     """A watched function and a recorded point, both read from a count the
     scene's own frame hook keeps: the render's frames keep the point on the
@@ -353,9 +374,9 @@ class LateUnchanged(Scene):
 
 
 class LateCamera(LateUnchanged):
-    """The scene's frame hook replaces a camera method on the instance part
-    way through the last play; the replacement fails once the scene has
-    recorded.
+    """The scene's frame hook replaces a camera method that places what is
+    drawn, on the instance, part way through the last play: with one that
+    places it as the engine's does.
     """
 
     def late(self, t):
@@ -365,10 +386,6 @@ class LateCamera(LateUnchanged):
             original = camera.transform_points_pre_display
 
             def transform_points_pre_display(*args, **kwargs):
-                if RECORDED[0]:
-                    raise AssertionError(
-                        "the scene's camera code ran after it recorded"
-                    )
                 return original(*args, **kwargs)
 
             camera.transform_points_pre_display = transform_points_pre_display

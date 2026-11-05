@@ -12,6 +12,8 @@ import wave
 from fractions import Fraction
 from pathlib import Path
 
+import numpy as np
+
 from arachne import (
     DOWN,
     LEFT,
@@ -25,6 +27,7 @@ from arachne import (
     Scene,
     Square,
     Text,
+    ThreeDScene,
     linear,
 )
 from arachne.lint.bridge import declare
@@ -141,3 +144,46 @@ class KeepsItsOwnRecord(Scene):
         self.record("added")
         self.play(low.animate.shift(RIGHT * 0.1), run_time=0.5)
         self.wait(0.5)
+
+
+def _words_on_words(scene):
+    """Two words, one over the other, all along: a play, then a wait."""
+    top = Text("top", font_size=36)
+    low = Text("low", font_size=36).move_to(top.get_center() + DOWN * 0.1)
+    scene.add(top, low, Square(side_length=0.5).shift(DOWN * 2))
+    scene.play(low.animate.shift(RIGHT * 0.1), run_time=0.5)
+    scene.wait(0.5)
+
+
+class ReplacesItsProjection(ThreeDScene):
+    """The camera instance holds the scene's own projection: the picture
+    slid sideways, where the lint's measures can't follow it.
+    """
+
+    def construct(self):
+        camera = self.renderer.camera
+        project = camera.project_points
+
+        def shifted(points):
+            return project(points) + np.array([-1.0, 0.0, 0.0])
+
+        camera.project_points = shifted
+        _words_on_words(self)
+
+
+class CountsItsDraws(Scene):
+    """The camera instance holds a wrapper of the scene's around the method
+    that paints each shape: it counts, and paints as the engine does.
+    """
+
+    def construct(self):
+        camera = self.renderer.camera
+        display = camera.display_vectorized
+        self.drawn = 0
+
+        def counting(vmobject, ctx):
+            self.drawn += 1
+            return display(vmobject, ctx)
+
+        camera.display_vectorized = counting
+        _words_on_words(self)

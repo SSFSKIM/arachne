@@ -50,6 +50,7 @@ if TYPE_CHECKING:
 
     from .admission import Admission
     from .bodies import Exit
+    from .camera_code import Replaced
     from .draw import CameraExtras
     from .recorder import Bridge
     from .state import State
@@ -608,6 +609,11 @@ class Record:
         #: mobject runs the scene's code as it is drawn, and its frames were
         #: drawn while the scene ran.
         self.refusal: str | None = None
+        #: The camera methods the scene's code replaced while it ran, each
+        #: once, in the order found (:func:`.camera_code.replaced_methods`, on
+        #: every camera a frame is drawn with). The record still draws its
+        #: frames; what measures the picture without the camera reads them.
+        self.camera_replaced: tuple[Replaced, ...] = ()
         #: Which execution of the scene made it.
         self.execution = Execution()
         #: The first mobject found as it entered a capture since

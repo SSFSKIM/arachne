@@ -33,6 +33,7 @@ from arachne.lint.bridge import (
 from arachne.lint.exempt import Exemptions
 from arachne.lint.instants import lint_instants
 from arachne.lint.motion import motion_jump
+from arachne.lint.query import CameraReplaced
 from arachne.lint.rules import Terms, contact, sweep_findings
 from arachne.lint.rules import sweep as sweep_rule
 from arachne.session import Session
@@ -377,38 +378,77 @@ def test_an_unknown_code_or_a_missing_reference_is_refused(session_of, scene, er
         session_of(scene, BRIDGE, frame_rate=15)
 
 
-# The record refuses a replaced camera method
+# A replaced camera method keeps the record and marks the picture's measures
 
 
 @pytest.mark.parametrize(
-    ("scene", "member", "form"),
+    ("scene", "member"),
     [
-        ("InstanceReplaced", "Camera.get_mobjects_to_display", "instance"),
-        ("ClassReplaced", "Camera.get_mobjects_to_display", "class"),
-        ("MemberReplaced", "Camera.get_coords_of_all_pixels", "instance"),
+        ("InstanceReplaced", "Camera.get_mobjects_to_display (on the instance)"),
+        ("ClassReplaced", "Camera.get_mobjects_to_display (on the class)"),
+        ("MemberReplaced", "Camera.get_coords_of_all_pixels (on the instance)"),
     ],
 )
-def test_a_replaced_camera_method_refuses_the_record(session_of, scene, member, form):
+def test_a_replaced_camera_method_keeps_the_record_and_marks_its_queries(
+    session_of, scene, member
+):
     original = vars(Camera)["get_mobjects_to_display"]
     try:
         session = session_of(scene, BRIDGE, frame_rate=15)
     finally:
         Camera.get_mobjects_to_display = original
-    refusal = session.record.refusal
-    assert refusal is not None
-    assert refusal.startswith("camera.replaced:")
-    assert member in refusal
-    assert form in refusal
-    assert all(play.route == "ticked" for play in session.record.plays)
+    assert session.record.refusal is None
+    assert member in [
+        f"{r.qualname} (on the {r.form})" for r in session.record.camera_replaced
+    ]
+    query = session.query(Fraction(1, 3))
+    assert query.answer == "recorded"
+    marked = query.overlaps()
+    assert isinstance(marked, CameraReplaced)
+    assert marked.replaced == (member,)
 
 
-def test_the_engine_s_camera_refuses_nothing(session_of):
+def test_the_engine_s_camera_refuses_and_marks_nothing(session_of):
     session = session_of("NothingReplaced", BRIDGE, frame_rate=15)
     assert session.record.refusal is None
+    assert session.record.camera_replaced == ()
+    assert session.query(Fraction(1, 3)).overlaps() == ()
 
 
-def test_a_refused_scene_lints_through_one_forward_run(session_of):
-    session = session_of("InstanceReplaced", BRIDGE, frame_rate=15)
+def _lint_parts(session):
+    """What the lint reads of ``session``: each instant's time, answer and
+    parts with their boxes.
+    """
+    seen = []
+
+    def keep(context):
+        seen.extend(context.parts)
+        return ()
+
+    lint(session, rules=(keep,))
+    return [(p.t, p.answer, [(q.id, q.screen_box) for q in p.parts]) for p in seen]
+
+
+@pytest.mark.parametrize(
+    ("replaced", "engine"),
+    [("InstanceReplaced", "NothingReplaced"), ("LateCamera", "LateUnchanged")],
+)
+def test_a_replaced_camera_method_leaves_the_lint_as_it_reads_unreplaced(
+    session_of, replaced, engine
+):
+    """The lint measures a replaced camera's scene from its record, as it
+    measures the engine's: the same parts, no forward run.
+    """
+    sessions = [session_of(name, BRIDGE, frame_rate=15) for name in (replaced, engine)]
+    read = [_lint_parts(session) for session in sessions]
+    assert all(answer == "recorded" for _, answer, _ in read[0])
+    assert read[0] == read[1]
+    assert all(session.forward_runs == [] for session in sessions)
+
+
+def test_a_scene_s_own_camera_class_lints_through_one_forward_run(session_of):
+    session = session_of("OwnCamera", BRIDGE, frame_rate=15)
+    assert session.record.refusal.startswith("camera.unsupported:")
     seen = []
 
     def keep(context):
@@ -423,33 +463,25 @@ def test_a_refused_scene_lints_through_one_forward_run(session_of):
     assert session.divergences == []
 
 
-def test_a_refused_scene_renders_the_frames_it_renders_unrefused():
-    _, replaced = render(bridge_scenes.InstanceReplaced, 15)
+@pytest.mark.parametrize("scene", ["InstanceReplaced", "OwnCamera"])
+def test_a_changed_camera_renders_the_frames_the_engine_s_renders(scene):
+    _, changed = render(getattr(bridge_scenes, scene), 15)
     _, engine = render(bridge_scenes.NothingReplaced, 15)
-    assert len(replaced) == len(engine)
-    assert all(np.array_equal(a, b) for a, b in zip(replaced, engine, strict=True))
+    assert len(changed) == len(engine)
+    assert all(np.array_equal(a, b) for a, b in zip(changed, engine, strict=True))
 
 
-def test_a_camera_method_replaced_during_the_last_play_refuses_the_record(
+def test_a_camera_method_replaced_during_the_last_play_marks_the_record_s_queries(
     session_of,
 ):
     """Replaced mid-play, after the play began and before the script ended:
-    the record refuses, and the lint calls no scene camera code.
+    the record is kept, and its queries' measures of the picture are marked.
     """
     session = session_of("LateCamera", BRIDGE, frame_rate=15)
-    refusal = session.record.refusal
-    assert refusal is not None
-    assert "Camera.transform_points_pre_display (on the instance)" in refusal
-    session.module.RECORDED[0] = True
-    seen = []
-
-    def keep(context):
-        seen.extend(context.parts)
-        return ()
-
-    lint(session, rules=(keep,))
-    assert seen
-    assert all(p.answer == "forward" for p in seen)
+    assert session.record.refusal is None
+    marked = session.query(Fraction(1, 3)).text_heights()
+    assert isinstance(marked, CameraReplaced)
+    assert marked.replaced == ("Camera.transform_points_pre_display (on the instance)",)
 
 
 def test_a_camera_method_replaced_mid_play_renders_the_same_frames():
