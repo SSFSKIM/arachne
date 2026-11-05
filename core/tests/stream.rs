@@ -820,28 +820,28 @@ fn every_pre_projected_paint_table_must_exist_and_cannot_be_released_in_use() {
 }
 
 #[test]
-fn pre_projected_records_are_cairo_only_and_refused_only_when_drawn() {
+fn a_pre_projected_record_is_drawn_from_its_tail_alone() {
+    // The record's own paint fills the square; its camera painted nothing, and nothing is drawn.
     let shape = square();
     let mut d = delta(0);
     d.view = Some(common::flat_view(4, 4, [0.0, 0.0, 0.0, 1.0]));
     d.upload = vec![shape.clone()];
     d.set = vec![pre_projected_path(&shape, shape.key())];
+    d.order = Some(vec![entry(1)]);
     let mut s = Stream::new();
     s.apply(&d).unwrap();
-    assert!(s.draw(4, 4, 1).is_ok());
-    d.order = Some(vec![entry(1)]);
+    assert_eq!(s.draw(4, 4, 1).unwrap(), [0, 0, 0, 255].repeat(16));
+    let mut painted = pre_projected_path(&shape, shape.key());
+    painted.pre_projected.as_mut().unwrap().fill = Paint::One([0.0, 1.0, 0.0, 1.0]);
+    let mut d = delta(1);
+    d.set = vec![painted];
     s.apply(&d).unwrap();
-    let Err(DrawError::Unsupported(u)) = s.draw(4, 4, 1) else {
-        panic!("not refused")
-    };
-    assert_eq!(
-        (u.kind.as_str(), u.slot, u.object),
-        ("path", Some(1), Some(101))
-    );
+    // A square a fraction of a pixel across: some green is drawn.
     assert!(
-        u.reason.contains("pre-projected") && u.reason.contains("Cairo"),
-        "{}",
-        u.reason
+        s.draw(4, 4, 1)
+            .unwrap()
+            .chunks(4)
+            .any(|p| p[1] > 0 && p[0] == 0)
     );
 }
 

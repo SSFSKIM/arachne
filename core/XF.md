@@ -37,19 +37,26 @@ records; every other known kind, including `face_group` and `mesh`, is invalid X
 The decoder reads the tail if and only if the bit is set; the encoder asserts agreement between
 the bit and its optional field. The points key must name a path shape held or uploaded, the
 three paints' table keys must exist, and no key still used by the tail can be released.
-This build refuses drawn bit-1 records (`render.unsupported`): **pre-projected records are drawn
-by Cairo only in this build**. An XF 1.0 reader skips the tail under its newer-minor rule, but
+This build draws bit-1 `path` and `points` records from the tail alone: the tail's points as
+placed, its paints and gradient ends as produced, never projected or lit again, keyed in depth in
+the camera's own axes (the view's angles are never used for them); a bit-1 `image` is Cairo's
+overlay's, as every image is. An XF 1.0 reader skips the tail under its newer-minor rule, but
 still reads the feature bit in the fixed header; its drawer refuses the unknown bit rather than
 projecting or shading those points again. Bytes after the tail remain newer-minor fields and
 are skipped. Geometry flags are unchanged: bits outside `0b111` remain invalid.
 
-This build draws the background (a colour, or an image cropped to the frame as CE crops it), `mesh` records filled with one colour, `path` records whose fill and strokes
-are each one colour, `points` records, and `instances` records of a path or a mesh. It refuses any of
-those carrying a blend, a reveal, a paint blend or a clip; a path with a gradient paint (two stops or a
-table) or a dash it cannot read, or a `shade_in_3d` path with paint under a 3D camera that applies
-shading (CE lights it as a two-stop gradient); a mesh with a stroke, a gradient fill or a dash; and the
-`face_group` and `image` kinds and the reserved ones, until their drawers exist. How records are drawn is described under
-"Drawing" below.
+This build draws the background (a colour, or an image cropped to the frame as CE crops it); `mesh`
+records filled with one colour; `path` records, their paints one colour or a linear gradient between
+the record's ends (coloured as Cairo and pixman colour it), lit as CE lights a `shade_in_3d` path
+under a camera that shades, and drawn through a reveal, a blend and a paint blend as CE's
+interpolation makes them; `face_group` records, each face as the path of that face; `points`
+records; and `instances` records of a path or a mesh. It refuses a clip on any of them; a blend,
+reveal or paint blend on any kind but a path, a blend of shapes of different lengths and a paint
+blend of a table; a path with a gradient paint and no ends, or an instance's gradient; a dash it
+cannot read; CE's lighting under another light model; a mesh with a stroke, a gradient fill or a
+dash; and the reserved kinds. `image` records, records fixed in frame and background-image fills
+are drawn by Cairo over the core's frame, in CE's order (the overlay). How records are drawn is
+described under "Drawing" below.
 
 ## Content keys
 
