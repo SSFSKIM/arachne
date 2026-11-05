@@ -21,6 +21,7 @@ from arachne import (
     IN,
     PI,
     RED,
+    RIGHT,
     TAU,
     ParametricFunction,
     Surface,
@@ -288,12 +289,24 @@ def test_the_core_is_never_handed_a_frame_without_what_is_decided_before_the_sna
 
 
 class SpringFixedInFrame(ThreeDScene):
-    """The spring fixed in frame: a shaded record Cairo's overlay draws."""
+    """The spring fixed in frame, tipped towards the viewer: a shaded record
+    Cairo's overlay draws. (Untipped, its two lit corners would be one point
+    of the frame, and its gradient's direction a float's noise.)
+    """
+
+    shaded = True
 
     def construct(self):
         self.set_camera_orientation(phi=80 * DEGREES, theta=-60 * DEGREES)
-        self.add_fixed_in_frame_mobjects(spring())
+        tipped = spring().set_shade_in_3d(self.shaded).rotate(-80 * DEGREES, RIGHT)
+        self.add_fixed_in_frame_mobjects(tipped)
         self.wait(1 / FPS)
+
+
+class UnshadedSpringFixedInFrame(SpringFixedInFrame):
+    """:class:`SpringFixedInFrame` unshaded: where its snap moves its pixels."""
+
+    shaded = False
 
 
 def test_what_the_core_routes_to_cairo_s_overlay_is_outside_the_guard(monkeypatch):
@@ -312,3 +325,33 @@ def test_a_path_filled_from_a_background_image_is_drawn_past_the_guard():
     """
     _, frames = render(BackgroundFilledOverlay, FPS, draw_path="core", **FULL)
     assert frames
+
+
+def _snapped_from_made(scene, monkeypatch) -> int:
+    """Pixels of ``scene``'s last frame more than 2 levels from the frame the
+    core draws from its values as made, past the guard.
+    """
+    _, snapped = render(scene, FPS, draw_path="core", **FULL)
+    with monkeypatch.context() as patched:
+        patched.setattr(Canonical, "__call__", lambda self, delta: delta)
+        draw = CorePainter.draw
+        patched.setattr(
+            CorePainter, "draw", lambda self, delta: draw(self, delta, _unguarded=True)
+        )
+        _, made = render(scene, FPS, draw_path="core", **FULL)
+    differ = np.abs(snapped[-1].astype(int) - made[-1].astype(int)).max(-1)
+    return int((differ > 2).sum())
+
+
+def test_a_shaded_curve_cairo_s_overlay_draws_is_lit_by_its_normals_as_made(
+    monkeypatch,
+):
+    """Cairo's overlay lights the spring fixed in frame by the normals its
+    record carries, decided on its points as made, as it lights the spring
+    as made: the snap moves no more of its pixels than it moves of the spring
+    unshaded. Lit by normals found again from its snapped points, which the
+    snap's step turns by tens of degrees, thousands more move.
+    """
+    shaded = _snapped_from_made(SpringFixedInFrame, monkeypatch)
+    unshaded = _snapped_from_made(UnshadedSpringFixedInFrame, monkeypatch)
+    assert shaded <= unshaded, (shaded, unshaded)
