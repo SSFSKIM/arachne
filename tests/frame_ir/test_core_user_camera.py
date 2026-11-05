@@ -119,3 +119,26 @@ def test_a_frame_the_core_refuses_is_unable_not_drawn_on_another_path(monkeypatc
     monkeypatch.setattr(CorePainter, "__init__", refusing)
     with pytest.raises(Unable, match="render.unable: the core does not draw a path"):
         render(core_scenes.FixedLabelOverSquare, FPS, draw_path="core", **MEDIUM)
+
+
+def test_a_proven_change_that_rebinds_the_camera_s_state_draws_from_its_description(
+    findings, monkeypatch
+):
+    """The residual the census accepts. A change of a proven kind whose code
+    rebinds what the camera holds as it draws (here the line width, from each
+    mobject's depth) falls back on ``ir_cairo``, where the camera's state is
+    watched call by call. The core does not watch it (the watch costs about a
+    third of a changed camera's draw time there), so the scene is drawn on the
+    core from its description, with no finding: one line width for the frame,
+    not one per mobject.
+    """
+    monkeypatch.setattr(
+        painter,
+        "PROVEN_ON_THE_GATE",
+        painter.PROVEN_ON_THE_GATE | {("instance", "transform_points_pre_display")},
+    )
+    before = CorePainter.drawn_total
+    _, core = render(camera_scenes.PatchedStateSolids, FPS, draw_path="core", **MEDIUM)
+    assert CorePainter.drawn_total > before, "drawn on the core"
+    assert len(core) > 0
+    assert not findings, findings
