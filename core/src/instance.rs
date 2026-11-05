@@ -10,6 +10,8 @@
 //!
 //! Members are drawn one by one: correct, not yet fast.
 
+use std::borrow::Cow;
+
 use crate::mesh::MeshDraw;
 use crate::path::PathDraw;
 use crate::points::PointsDraw;
@@ -39,15 +41,25 @@ pub fn one(paint: &Paint) -> Option<[f64; 4]> {
     }
 }
 
-/// The path a `path` record draws.
-pub fn path_record<'a>(record: &'a Record, points: &'a [[f64; 3]], order: u32) -> PathDraw<'a> {
+/// The path a `path` record draws: `points` placed by `place` (the shape and the record's
+/// placement, or what a reveal or a blend made of it, placed already), painted by `paint` (the
+/// record's paint, or a paint blend's mix: [`crate::geometry::drawn_paint`]).
+pub fn path_record<'a>(
+    record: &'a Record,
+    points: Cow<'a, [[f64; 3]]>,
+    place: Affine,
+    paint: &PaintBlock,
+    order: u32,
+) -> PathDraw<'a> {
     PathDraw {
         record,
         points,
-        place: record.geometry.place_a,
-        fill: one(&record.paint.fill),
-        stroke: one(&record.paint.stroke),
-        background_stroke: one(&record.paint.background_stroke),
+        place,
+        fill: one(&paint.fill),
+        stroke: one(&paint.stroke),
+        background_stroke: one(&paint.background_stroke),
+        stroke_width: paint.stroke_width,
+        background_stroke_width: paint.background_stroke_width,
         order,
         sub: 0,
     }
@@ -67,11 +79,13 @@ pub fn path_members<'a>(
     for (i, placement) in body.placements.iter().enumerate() {
         out.push(PathDraw {
             record,
-            points,
+            points: Cow::Borrowed(points),
             place: compose(placement, &record.geometry.place_a),
             fill: one(&p.fill).map(|_| fill.rows()[i]),
             stroke: one(&p.stroke).map(|_| stroke.rows()[i]),
             background_stroke: one(&p.background_stroke),
+            stroke_width: p.stroke_width,
+            background_stroke_width: p.background_stroke_width,
             order,
             sub: 3 * i as u32,
         });

@@ -5,7 +5,8 @@
 use crate::composite::{self, Frame, Producer, Rendered};
 use crate::mesh::{self, MeshDraw};
 use crate::xf::*;
-use crate::{instance, path, points, tiles};
+use crate::{geometry, instance, path, points, tiles};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
@@ -689,8 +690,12 @@ impl Stream {
                         });
                     }
                 }
-                (RecordKind::Path, Some(ShapeData::Path { points }), _) => {
-                    paths.push(instance::path_record(record, points, order));
+                (RecordKind::Path, Some(ShapeData::Path { .. }), _) => {
+                    let (points, place) =
+                        drawn_points(record, &self.shapes).expect("drawing refused the others");
+                    let paint = geometry::drawn_paint(&record.paint)
+                        .expect("drawing refused a paint it cannot mix");
+                    paths.push(instance::path_record(record, points, place, &paint, order));
                 }
                 (RecordKind::Points, Some(ShapeData::Path { points }), Body::Points(p)) => {
                     clouds.push(instance::points(record, points, table(&p.colors), order));
@@ -850,12 +855,21 @@ fn check_shape(shape: &Shape) -> Result<(), StreamError> {
 }
 
 /// What of a drawn record's fixed fields this build does not draw yet, if anything: blends,
-/// reveals, paint blends and clips for every kind; for meshes (and instances of a mesh) strokes,
+/// reveals and paint blends of any kind but a path, a paint blend of a table, clips for every
+/// kind; for meshes (and instances of a mesh) strokes,
 /// gradient fills and dashes; for paths (and instances of a path) CE's lighting under a camera
 /// that shades (`shading`), gradient paints and dashes it cannot read.
 fn field_refusal(rec: &Record, mesh: bool, shading: bool) -> Option<String> {
     let kind = rec.kind.name();
-    let p = &rec.paint;
+    // A path's blend, reveal and paint blend are drawn as what they make of it (`geometry`); the
+    // paint judged below is the one drawn.
+    let shaped = rec.geometry.blend.is_some()
+        || rec.geometry.reveal.is_some()
+        || rec.paint.paint_b.is_some();
+    let p = &match crate::geometry::drawn_paint(&rec.paint) {
+        Ok(p) => p,
+        Err(what) => return Some(format!("a {kind}'s {what} is not drawn")),
+    };
     let drawn = |paint: &Paint, width: Option<f64>| {
         !matches!(paint, Paint::None) && width.is_none_or(|w| w > 0.0)
     };
@@ -865,12 +879,15 @@ fn field_refusal(rec: &Record, mesh: bool, shading: bool) -> Option<String> {
         (&p.background_stroke, p.background_stroke_width),
     ];
     let not_yet = |what: &str| Some(format!("a {kind}'s {what} is not drawn yet"));
-    if rec.geometry.blend.is_some() {
-        not_yet("blend")
-    } else if rec.geometry.reveal.is_some() {
-        not_yet("reveal")
-    } else if p.paint_b.is_some() {
-        not_yet("paint blend")
+    if shaped && rec.kind != RecordKind::Path {
+        // CE's blends and reveals are of paths alone; extraction states no other.
+        not_yet(if rec.geometry.blend.is_some() {
+            "blend"
+        } else if rec.geometry.reveal.is_some() {
+            "reveal"
+        } else {
+            "paint blend"
+        })
     } else if rec.clip.is_some() {
         not_yet("clip")
     } else if rec.kind == RecordKind::Points {
@@ -926,6 +943,30 @@ pub fn is_overlay(rec: &Record) -> bool {
         || rec.features & FEATURE_BACKGROUND_IMAGE != 0
 }
 
+/// The points a `path` record draws and the placement they still take: its shape and its own
+/// placement, or, under a reveal or a blend, the points those make of it
+/// ([`geometry::path_points`]), placed already. `None` when it has no path shape, or blends two
+/// shapes of different lengths.
+fn drawn_points<'a>(
+    rec: &Record,
+    shapes: &'a HashMap<Key, Shape>,
+) -> Option<(Cow<'a, [[f64; 3]]>, Affine)> {
+    let path = |key: &Key| match shapes.get(key).map(|s| s.data()) {
+        Some(ShapeData::Path { points }) => Some(points.as_slice()),
+        _ => None,
+    };
+    let a = path(rec.geometry.shape_a.as_ref()?)?;
+    let g = &rec.geometry;
+    if g.blend.is_none() && g.reveal.is_none() {
+        return Some((Cow::Borrowed(a), g.place_a));
+    }
+    let b = match &g.blend {
+        Some(blend) => Some(path(&blend.shape_b)?),
+        None => None,
+    };
+    Some((Cow::Owned(geometry::path_points(g, a, b)?), IDENTITY))
+}
+
 fn refusal(rec: &Record, shapes: &HashMap<Key, Shape>, shading: bool) -> Option<Unsupported> {
     let prototype = rec
         .geometry
@@ -952,6 +993,8 @@ fn refusal(rec: &Record, shapes: &HashMap<Key, Shape>, shading: bool) -> Option<
         let mesh = matches!(prototype, Some(ShapeData::Mesh { .. }));
         if let Some(reason) = field_refusal(rec, mesh, shading) {
             reason
+        } else if rec.kind == RecordKind::Path && drawn_points(rec, shapes).is_none() {
+            "a path's blend of two shapes of different lengths".into()
         } else if let (Body::Instances(body), Some(data)) = (&rec.body, prototype) {
             // Each instance's parts take sub-orders of their own, in 32 bits.
             let per = match data {
