@@ -1,6 +1,8 @@
 # Logic is as follows:
 # 1. Download cairo source code: https://cairographics.org/releases/cairo-<version>.tar.xz
-# 2. Verify the downloaded file using the sha256sums file: https://cairographics.org/releases/cairo-<version>.tar.xz.sha256sum
+#    A download is retried, with a growing wait, through a reset connection or another
+#    network failure (a URLError that is no 4xx response); any other error fails at once.
+# 2. Verify the downloaded file against its pinned checksum, CAIRO_SHA256.
 # 3. Extract the downloaded file.
 # 4. Create a virtual environment and install meson and ninja.
 # 5. Run meson build in the extracted directory. Also, set required prefix.
@@ -14,6 +16,8 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
+import urllib.error
 import urllib.request
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -22,13 +26,18 @@ from sys import stdout
 
 CAIRO_VERSION = "1.18.0"
 CAIRO_URL = f"https://cairographics.org/releases/cairo-{CAIRO_VERSION}.tar.xz"
-CAIRO_SHA256_URL = f"{CAIRO_URL}.sha256sum"
+# The checksum cairographics.org publishes beside the tarball; it changes with CAIRO_VERSION
+# (https://cairographics.org/releases/cairo-1.18.0.tar.xz.sha256sum).
+CAIRO_SHA256 = "243a0736b978a33dee29f9cca7521733b78a65b5418206fef7bd1c3d4cf10b64"
+
+# Attempts at one download, and the wait before the second; it doubles after each.
+DOWNLOAD_ATTEMPTS = 5
+DOWNLOAD_WAIT = 5.0
 
 VENV_NAME = "meson-venv"
 BUILD_DIR = "build"
 INSTALL_PREFIX = Path(__file__).parent.parent.parent / "third_party" / "cairo"
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -36,8 +45,29 @@ def is_ci():
     return os.getenv("CI", None) is not None
 
 
-def download_file(url, path):
-    logger.info(f"Downloading {url} to {path}")
+def _retried(error):
+    # A failure of the network, not of the request: a reset or refused
+    # connection, a server error. A missing file is no such failure.
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code >= 500
+    return isinstance(error, (urllib.error.URLError, ConnectionResetError))
+
+
+def download_file(url, path, *, attempts=DOWNLOAD_ATTEMPTS, wait=DOWNLOAD_WAIT, sleep=time.sleep):
+    for attempt in range(1, attempts + 1):
+        logger.info(f"Downloading {url} to {path} (attempt {attempt} of {attempts})")
+        try:
+            _fetch(url, path)
+            return
+        except (urllib.error.URLError, ConnectionResetError) as error:
+            if not _retried(error) or attempt == attempts:
+                raise
+            logger.warning(f"Downloading {url} failed ({error}); retrying in {wait:.0f} s")
+            sleep(wait)
+            wait *= 2
+
+
+def _fetch(url, path):
     block_size = 1024 * 1024
     with urllib.request.urlopen(url) as response, open(path, "wb") as file:
         while True:
@@ -119,13 +149,8 @@ def main():
             logger.info(f"Downloading cairo version {CAIRO_VERSION}")
             download_file(CAIRO_URL, os.path.join(tmpdir, "cairo.tar.xz"))
 
-            logger.info("Downloading cairo sha256sum")
-            download_file(CAIRO_SHA256_URL, os.path.join(tmpdir, "cairo.sha256sum"))
-
             logger.info("Verifying cairo sha256sum")
-            with open(os.path.join(tmpdir, "cairo.sha256sum")) as file:
-                sha256sum = file.read().split()[0]
-            verify_sha256sum(os.path.join(tmpdir, "cairo.tar.xz"), sha256sum)
+            verify_sha256sum(os.path.join(tmpdir, "cairo.tar.xz"), CAIRO_SHA256)
 
             logger.info("Extracting cairo")
             extract_tar_xz(os.path.join(tmpdir, "cairo.tar.xz"), tmpdir)
@@ -220,6 +245,7 @@ def main():
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if "--set-env-vars" in sys.argv:
         with gha_group("Setting environment variables"):
             # append the pkgconfig directory to PKG_CONFIG_PATH
