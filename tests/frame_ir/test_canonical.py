@@ -23,6 +23,7 @@ from arachne import (
     RIGHT,
     UP,
     YELLOW,
+    Line,
     Line3D,
     Square,
     ThreeDAxes,
@@ -214,6 +215,50 @@ class StronglyZoomed(core_scenes.ZoomedFrameMoves):
         super(core_scenes.ZoomedFrameMoves, self).__init__(
             zoom_factor=0.02, zoomed_display_height=2, zoomed_display_width=3, **kwargs
         )
+
+
+class StronglyZoomedLine(StronglyZoomed):
+    """:class:`StronglyZoomed` with a line in the main frame between points
+    off any grid. ``line`` is the line's class.
+    """
+
+    line = Line
+
+    def construct(self):
+        start, end = [-3.1234567, -2.2345678, 0.0], [2.9876543, -1.3456789, 0.0]
+        self.add(self.line(start, end, color=YELLOW))
+        super().construct()
+
+
+class LiveStronglyZoomedLine(StronglyZoomedLine):
+    """:class:`StronglyZoomedLine` drawn as the scene runs."""
+
+    line = core_scenes.OwnLine
+
+
+def test_a_zoomed_scene_drawn_live_is_snapped_as_drawn_from_its_record(monkeypatch):
+    """Drawn as it runs, a zoomed scene's main frame is snapped at the grid
+    its display's camera sets, as when it is drawn from its record: every
+    frame's grid is the same on both routes, and so are its pixels.
+    """
+    call = Canonical.__call__
+    grids: dict[str, dict] = {"recorded": {}, "live": {}}
+    route = ["recorded"]
+
+    def recording(self, delta):
+        found = call(self, delta)
+        grids[route[0]].setdefault(delta.t, set()).add(self.grid)
+        return found
+
+    monkeypatch.setattr(Canonical, "__call__", recording)
+    _, recorded = render(StronglyZoomedLine, FPS, draw_path="core", **MEDIUM)
+    route[0] = "live"
+    _, live = render(LiveStronglyZoomedLine, FPS, draw_path="core", **MEDIUM)
+    assert all(len(found) == 1 for found in grids["recorded"].values())
+    assert grids["live"] == grids["recorded"]
+    assert len(live) == len(recorded)
+    for k, (a, b) in enumerate(zip(recorded, live, strict=True)):
+        assert np.array_equal(a, b), k
 
 
 @pytest.mark.parametrize(
