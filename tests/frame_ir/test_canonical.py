@@ -224,7 +224,7 @@ def test_what_the_core_is_handed_carries_its_grid_and_planes(scene_class, monkey
     """Every delta the core is handed states its input grid, and every record
     that draws paths carries how they lie: a stream that lost either would
     have the core decide flatness from snapped points. The grid is fine
-    enough for every camera that sees the geometry: a step is at most 1/128
+    enough for every camera that sees the geometry: a step is at most 1/256
     of the pixel of the scene's camera and of each display's.
     """
     call = Canonical.__call__
@@ -255,7 +255,7 @@ def test_what_the_core_is_handed_carries_its_grid_and_planes(scene_class, monkey
     monkeypatch.setattr(Canonical, "__call__", checking)
     render(scene_class, FPS, draw_path="core", **MEDIUM)
     assert steps
-    assert max(steps) <= 1 / 128
+    assert max(steps) <= 1 / 256
 
 
 class LineAcrossTheFrame(ThreeDScene):
