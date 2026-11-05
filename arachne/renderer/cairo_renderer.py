@@ -135,7 +135,7 @@ class CairoRenderer:
                 renderer_state=self._grid_phase(scene),
             )
 
-        timeline = scene.timeline
+        timeline = scene._arachne_timeline
         fps = exact(self.camera.frame_rate)
         if timeline.refusal() is not None:
             # The record can't draw this camera's frames: draw them as the
@@ -167,9 +167,9 @@ class CairoRenderer:
         static = None
         if draw:
             static = self._draw_play(scene, play, frames)
-        elif play.held and play.static and scene.timeline.draws:
+        elif play.held and play.static and scene._arachne_timeline.draws:
             # CE draws a frozen frame's static picture whatever it skips.
-            with Drawing(scene.timeline.ensure_record()) as drawing:
+            with Drawing(scene._arachne_timeline.ensure_record()) as drawing:
                 static = drawing.static(play)
         # As in CE, a frozen frame's static picture stays the renderer's
         # background after it (what update_frame draws over), and no other
@@ -184,7 +184,7 @@ class CairoRenderer:
         (``Record.refusal``), drawing each frame from the live scene while
         the play runs.
         """
-        timeline = scene.timeline
+        timeline = scene._arachne_timeline
         draw = cache_key is not None and timeline.draws
         if draw and self.file_writer.is_already_cached(cache_key):
             draw = False
@@ -240,7 +240,7 @@ class CairoRenderer:
         """Draw the play's frames, one per instant of the frame grid in its
         span, from its recorded samples, and return its static picture.
         """
-        record = scene.timeline.ensure_record()
+        record = scene._arachne_timeline.ensure_record()
         self.file_writer.begin_animation(True, animation_index=self.num_plays)
         with Drawing(record) as drawing:
             static = drawing.static(play)
@@ -422,7 +422,7 @@ class CairoRenderer:
         record's final capture once the run has ended.
         """
         self.static_image = None
-        record = scene.timeline.record
+        record = scene._arachne_timeline.record
         if record is None or record.final is None or record.refusal is not None:
             # Nothing recorded, or a camera the record can't draw: the live
             # scene is the script's last state.

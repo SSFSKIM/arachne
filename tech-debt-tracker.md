@@ -303,14 +303,6 @@ lifted.
   if a case is ever refused over a member that does not affect drawing
   (the refusal names the member).
 
-## Names a scene's code can take (`arachne/scene/scene.py`)
-
-- **The recorder is read as `scene.timeline`.** The renderer, the manager and `Scene` itself reach the
-  recorder through that public name, and tools set it there too, so a scene whose code sets `self.timeline`
-  (a timeline diagram, say) replaces it and the render fails. No scene in the gated corpus does. Direction:
-  keep the recorder where scene code can't reach it, and read it only from there. The session already reads
-  its record from the recorder it made.
-
 ## The image cache (`arachne/mobject/svg/svg_mobject.py`)
 
 - **An image built from the cache is not the image parsing built.** Inherited from Manim Community Edition: a

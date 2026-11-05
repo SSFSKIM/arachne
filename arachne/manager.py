@@ -167,7 +167,7 @@ class Manager(Generic[SceneT]):
                 self._execute()
                 break
             except Reexecute as again:
-                record = self.scene.timeline.ensure_record()
+                record = self.scene._arachne_timeline.ensure_record()
                 if known and again.play >= min(known):
                     # Every play from the earliest known refusal on is drawn
                     # as it runs and never raises this.
@@ -191,7 +191,7 @@ class Manager(Generic[SceneT]):
                 )
                 restore_parsed_svgs(parsed)
                 self._renew_scene()
-                self.scene.timeline.reexecuting(known, earlier)
+                self.scene._arachne_timeline.reexecuting(known, earlier)
         self.post_construct()
 
         if open_after_render or presentation.show_in_file_browser:
@@ -203,7 +203,7 @@ class Manager(Generic[SceneT]):
 
     def _execute(self) -> None:
         """Execute the scene's script once, recording it."""
-        timeline = self.scene.timeline
+        timeline = self.scene._arachne_timeline
         timeline.begin_run()
         try:
             self.setup()
@@ -315,7 +315,7 @@ class Manager(Generic[SceneT]):
             When called while another play or wait runs, as from an updater.
         """
         # The re-entrancy guard follows ManimCommunity/manim PR #5006's.
-        timeline = self.scene.timeline
+        timeline = self.scene._arachne_timeline
         if self._playing is not None:
             line = timeline.location()
             raise RuntimeError(
@@ -364,7 +364,7 @@ class Manager(Generic[SceneT]):
             Whether animation output in this section should be skipped.
         """
         self.file_writer.next_section(name, section_type, skip_animations)
-        self.scene.timeline.mark(
+        self.scene._arachne_timeline.mark(
             "section",
             {"name": name, "type": str(section_type), "skip": skip_animations},
         )
@@ -390,7 +390,7 @@ class Manager(Generic[SceneT]):
             end=datetime.timedelta(seconds=float(self.time + offset + duration)),
         )
         self.file_writer.subcaptions.append(subtitle)
-        self.scene.timeline.mark(
+        self.scene._arachne_timeline.mark(
             "subcaption",
             {"content": content, "duration": duration},
             t=max(self.scene.time + exact(offset), Fraction(0)),
@@ -422,7 +422,7 @@ class Manager(Generic[SceneT]):
         if self.skip_animations:
             return
         self.file_writer.add_sound(sound_file, self.time + time_offset, gain, **kwargs)
-        self.scene.timeline.mark(
+        self.scene._arachne_timeline.mark(
             "sound",
             {"file": str(sound_file), "gain": gain},
             t=max(self.scene.time + exact(time_offset), Fraction(0)),

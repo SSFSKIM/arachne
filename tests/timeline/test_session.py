@@ -18,6 +18,7 @@ from .scenes import (
     FixedOrientation,
     Panned,
     SuppliedBackground,
+    TimelineDiagram,
     WrittenBackground,
 )
 
@@ -226,3 +227,16 @@ def test_a_scene_whose_code_names_a_method_record_opens(session_of):
     session = session_of("DefinesRecord", grid=15)
     assert len(session.record.plays) == 1
     assert session.state_at(Fraction(1, 5)).answer in ("analytic", "recorded")
+
+
+def test_a_scene_whose_code_sets_self_timeline_renders_records_and_answers(session_of):
+    """The engine keeps its recorder under a name of its own: a scene that
+    names its diagram ``self.timeline`` renders, records and is answered.
+    """
+    scene, frames = render(TimelineDiagram, 6)
+    assert type(scene.timeline).__name__ == "NumberLine"
+    assert [play.kind for play in scene.record.plays] == ["play", "wait"]
+    session = session_of("TimelineDiagram", grid=6)
+    assert len(frames) == len(session.record.samples(6))
+    for k, frame in enumerate(frames):
+        assert np.array_equal(frame, _pixels(session.frame(Fraction(k, 6)))), k
