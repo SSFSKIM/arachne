@@ -37,7 +37,10 @@ def test_snapped_is_no_further_from_cairo_than_unsnapped(scene, monkeypatch):
     _, snapped = render(scene, FPS, draw_path="core", **FULL)
     # The core handed the deltas as made: the reference, past the guard.
     monkeypatch.setattr(Canonical, "__call__", lambda self, delta: delta)
-    monkeypatch.setattr(CorePainter, "_refuse_undecided", lambda self, sent: None)
+    draw = CorePainter.draw
+    monkeypatch.setattr(
+        CorePainter, "draw", lambda self, delta: draw(self, delta, _unguarded=True)
+    )
     _, unsnapped = render(scene, FPS, draw_path="core", **FULL)
     far = _far_from(snapped[-1], cairo[-1]), _far_from(unsnapped[-1], cairo[-1])
     assert far[0] <= far[1] * 1.02 + 4, far

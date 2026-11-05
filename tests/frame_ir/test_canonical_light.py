@@ -36,6 +36,7 @@ from arachne.mobject.three_d.three_d_utils import (
 )
 
 from ..timeline.conftest import render
+from .core_scenes import BackgroundFilledOverlay
 
 pytest.importorskip("arachne_core")
 
@@ -110,7 +111,10 @@ def test_a_shaded_curve_is_as_far_from_cairo_snapped_as_not(monkeypatch):
     _, snapped = render(Spring, FPS, draw_path="core", **FULL)
     # The core handed the deltas as made: the reference, past the guard.
     monkeypatch.setattr(Canonical, "__call__", lambda self, delta: delta)
-    monkeypatch.setattr(CorePainter, "_refuse_undecided", lambda self, sent: None)
+    draw = CorePainter.draw
+    monkeypatch.setattr(
+        CorePainter, "draw", lambda self, delta: draw(self, delta, _unguarded=True)
+    )
     _, unsnapped = render(Spring, FPS, draw_path="core", **FULL)
     assert _off_cairo(snapped[-1], cairo[-1]) <= _off_cairo(unsnapped[-1], cairo[-1])
 
@@ -281,3 +285,30 @@ def test_the_core_is_never_handed_a_frame_without_what_is_decided_before_the_sna
     losing(monkeypatch)
     with pytest.raises(Unable, match=f"render.unable: .*{named}"):
         render(SpringAlone, FPS, draw_path="core", **FULL)
+
+
+class SpringFixedInFrame(ThreeDScene):
+    """The spring fixed in frame: a shaded record Cairo's overlay draws."""
+
+    def construct(self):
+        self.set_camera_orientation(phi=80 * DEGREES, theta=-60 * DEGREES)
+        self.add_fixed_in_frame_mobjects(spring())
+        self.wait(1 / FPS)
+
+
+def test_what_the_core_routes_to_cairo_s_overlay_is_outside_the_guard(monkeypatch):
+    """The guard reads only the records the core draws: the spring fixed in
+    frame, which the core leaves to Cairo's overlay to draw from its own
+    points, is drawn without the planes the core would have needed.
+    """
+    _without_planes(monkeypatch)
+    _, frames = render(SpringFixedInFrame, FPS, draw_path="core", **FULL)
+    assert frames
+
+
+def test_a_path_filled_from_a_background_image_is_drawn_past_the_guard():
+    """A path filled from a background image, which the core refuses to
+    draw, is Cairo's overlay's, and the guard lets its frames through.
+    """
+    _, frames = render(BackgroundFilledOverlay, FPS, draw_path="core", **FULL)
+    assert frames
