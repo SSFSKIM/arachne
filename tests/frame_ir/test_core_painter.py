@@ -101,6 +101,55 @@ def test_a_painter_holds_none_of_the_frames_it_drew_its_overlay_over():
     assert held <= 1, f"{held} of {len(drawn)} frames held"
 
 
+def test_a_display_left_after_a_frame_holds_the_sub_frame_its_record_drew():
+    """Once the frame is drawn, a display's camera is left holding the
+    picture of its sub-frame as the display's record carries it: the view
+    snapped as the records it draws are, not the view as the camera made it
+    (a centre off the grid, here).
+    """
+    from fractions import Fraction
+
+    from arachne import (
+        RED,
+        Circle,
+        ImageMobjectFromCamera,
+        Line,
+        MovingCamera,
+        MultiCamera,
+        tempconfig,
+    )
+
+    with tempconfig(MEDIUM):
+        camera = MultiCamera()
+        display = ImageMobjectFromCamera(MovingCamera())
+        display.stretch_to_fit_width(camera.frame_width / 2)
+        display.stretch_to_fit_height(camera.frame_height / 2)
+        display.move_to([camera.frame_width / 4, camera.frame_height / 4, 0.0])
+        display.camera.frame.scale(0.37).move_to([0.123456789, 0.0987654321, 0.0])
+        camera.add_image_mobject_from_camera(display)
+        shapes = [
+            Circle(radius=0.05 + 0.11 * k, color=RED).shift([0.03 * k, 0.0, 0.0])
+            for k in range(12)
+        ]
+        shapes += [
+            Line([-2.0, -1.0 + 0.17 * k, 0.0], [2.0, 0.3 * k, 0.0]) for k in range(9)
+        ]
+        painter = CorePainter()
+        painter.paint(camera, [("moving", [*shapes, display])], t=Fraction(0))
+        painter.settle()
+        (record,) = [
+            r for r in painter.state.records.values() if "sub_frame" in r.fields
+        ]
+        _, view, order = record.fields["sub_frame"]
+        held = display.camera.pixel_array
+        drawn = painter.drawer.capture(
+            painter.state, view, order, display.camera.background
+        )
+    assert np.any(drawn != display.camera.background), "the sub-frame draws"
+    differ = np.abs(held.astype(int) - drawn.astype(int)).max(-1)
+    assert not differ.any(), int((differ > 0).sum())
+
+
 def test_a_live_frame_tests_depth_across_its_static_and_moving_captures():
     """Drawn as the scene runs, a frame is two captures, its static list and
     then its moving one, as CE draws it. The core describes the two as one

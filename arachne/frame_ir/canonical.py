@@ -522,6 +522,12 @@ class Canonical:
         """
         return self._snapped.get(key, key)
 
+    def snapped_view(self, view: Mapping[str, Any]) -> dict[str, Any]:
+        """``view`` as the last frame handed the core its views: a display's
+        sub-frame view as the display's record carries it.
+        """
+        return self._view_of(view)
+
     def _view_of(self, view: Mapping[str, Any]) -> dict[str, Any]:
         assert self.grid is not None
         found = {
