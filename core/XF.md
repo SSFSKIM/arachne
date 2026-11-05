@@ -8,10 +8,10 @@ meaning and the binary form (`src/xf/wire.rs`), which fixtures and dumped stream
 
 ## Versions and refusal
 
-The version is (major, minor). This build is **XF 1.1**. From here the layout is append-only:
+The version is (major, minor). This build is **XF 1.2**. From here the layout is append-only:
 a new field or kind bumps the minor, and nothing removes or retypes a field. A writer emits the
 lowest supported version that carries a delta's content: **1.0 without a pre-projected tail, 1.1
-with one**. A file's version is the highest version its deltas need (1.0 for an empty file).
+with one, 1.2 with an input grid (on the view or a sub-frame's view) or a record's planes**. A file's version is the highest version its deltas need (1.0 for an empty file).
 Explicit foreign or newer version declarations are retained, since this writer cannot determine
 what their content requires. `XF_VERSION` names the build's supported version, not every delta's.
 
@@ -44,6 +44,23 @@ overlay's, as every image is. An XF 1.0 reader skips the tail under its newer-mi
 still reads the feature bit in the fixed header; its drawer refuses the unknown bit rather than
 projecting or shading those points again. Bytes after the tail remain newer-minor fields and
 are skipped. Geometry flags are unchanged: bits outside `0b111` remain invalid.
+
+XF 1.2 carries snapped geometry. A writer may snap a delta's geometry to a grid (so that a scene's
+arithmetic, which differs between machines in its last bits, reaches the drawer as the same bytes
+everywhere). It then states the grid as the view's `input_grid` (scene units; absent when the
+geometry is not snapped), and it decides how each path a record draws lies before it snaps, on the
+values as made, carrying the decision as the record's `planes`: one planarity code per path, in
+the order the record draws them (a face group's faces, an instances record's members, else one).
+Snapped, the points of a curve and of a plane can be the same points; carried, the decision never
+depends on the grid. The codes: 0 a curve (keyed by its curve's depth), 1 a plane of Newell's
+normal through the first point, 2 a plane of the widest triangle's normal on the first point
+(an outline crossing itself), 3 a surface's face on no one plane (Newell's normal through the
+centroid), 4, 5, 6 the axis plane x, y or z through the first point (points on a line sharing
+that coordinate). The drawer fits the decided plane to the points it is handed. A record without
+`planes` is decided by the drawer from its points, as before XF 1.2: right for geometry that was
+not snapped. The binding's `Stream.planes(slots)` gives the codes for records a stream holds,
+decided as the drawer decides them, for a writer to carry. An XF 1.1 reader skips both fields
+under its newer-minor rule.
 
 This build draws the background (a colour, or an image cropped to the frame as CE crops it); `mesh`
 records filled with one colour; `path` records, their paints one colour or a linear gradient between
@@ -173,7 +190,11 @@ shape's and table's key against its content, except for shape kinds it does not 
   triangle on its first point), a mesh triangle's and a fixed orientation's are made canonical (unit
   normal, largest component positive, offset from it, both rounded to multiples of 2^-20; points on
   a line take the axis plane of a coordinate they share), so text, axes, labels and surfaces on one
-  plane tie by draw order instead of fighting. A path that is not
+  plane tie by draw order instead of fighting. Whether a path is flat is its record's `planes` when
+  the record carries them (XF 1.2: decided before its points were snapped), else found from its
+  points; a mesh triangle is found from its corners, within the grid's noise when the view states
+  an `input_grid` (a triangle the snap leaves under about a grid step wide takes its depth from its
+  own corners). A path that is not
   flat, or whose plane is within about 3 degrees of edge-on, takes the depth of its own curve: each
   pixel the front-most part of the curve that reaches it (half the widest stroke and a pixel), else
   the nearest.
@@ -281,7 +302,9 @@ record    u8 kind  u64 features  u32 slot  u32 object
             key points
             [f64 x6 gradient]?
             paint fill  paint stroke  paint background
-          (anything after the known body and tail belongs to a newer minor and is skipped)
+          planes (XF 1.2), after the body and tail, when the record carries them:
+            count u8*   (one planarity code per path the record draws)
+          (anything after the known fields belongs to a newer minor and is skipped)
 paint     u8 0 (none) | u8 1  f64 x4 | u8 2  f64 x8 | u8 3  key
 view      u32 pixel_width  u32 pixel_height  f64 frame_width  f64 frame_height
           f64 x3 centre  f64 x3 mapping_centre
@@ -290,6 +313,7 @@ view      u32 pixel_width  u32 pixel_height  f64 frame_width  f64 frame_height
             bool exponential  f64 x3 light_source  f64 shading_factor  bool should_apply_shading
           f64 cairo_line_width_multiple  bool use_z_index
           u8 light model (0: CE's, 1: soft diffuse)  count f64*   (its parameters)
+          [f64 input_grid]   (XF 1.2, when the geometry was snapped: nonzero)
 ```
 
 Joint codes: 0 auto, 1 round, 2 bevel, 3 miter. Cap codes: 0 auto, 1 round, 2 butt, 3 square. Space
@@ -319,6 +343,11 @@ stops, or a table key). `points` is required. Passing bit 1 without `pre_project
 `XfError`, as does using the field on a disallowed kind. The package exports
 `FEATURES = {"background_image": 1, "pre_projected": 2}`.
 
+XF 1.2: `set_view(..., input_grid=g)` states the grid the geometry was snapped to (omitted or 0:
+not snapped, and the field is not written); `set_record(..., planes=[codes])` carries the record's
+planarity codes. `Stream.planes(slots)` returns, for each slot holding a record that draws paths,
+the list of codes the drawer decides from the points the stream holds.
+
 ## Python read-back
 
 `FrameDelta.from_bytes(raw).contents()` returns the decoded delta held by the core, not a
@@ -328,7 +357,8 @@ or `None`), `objects` (a list of `(ref, stable_id, source)` tuples), `upload`, `
 
 - A view dictionary uses `set_view`'s keyword names. `camera` is `flat`, `moving` or `three_d`, with
   the 3D parameters present only for `three_d`; `background` is an RGBA 4-tuple or image key bytes;
-  `light_model` is always `(code, [parameters])`. Both centres are 3-tuples.
+  `light_model` is always `(code, [parameters])`. Both centres are 3-tuples. `input_grid` is present
+  only when the view carries one.
 - Each upload is `(kind_name, key_bytes, data)`: a path's data is float64 `(n, 3)`; a mesh's is a
   dictionary with `positions` (float64 `(v, 3)`), `triangles` (uint32 `(t, 3)`) and `normals`
   (float64 `(v, 3)` or `None`); an image's is uint8 `(height, width, 4)`; a reserved or unknown
@@ -337,7 +367,7 @@ or `None`), `objects` (a list of `(ref, stable_id, source)` tuples), `upload`, `
 - Each record is `(kind_name, slot, object, fields)`. For a known kind, `fields` uses
   `set_record`'s keyword names, including the body's arguments. `features` always contains the
   full bitset; when `fill_image` is present its bit is already set, and `set_record` accepts it
-  unchanged. Absent optional fields are omitted; paints are `None`, float64 `(1, 4)` or `(2, 4)`
+  unchanged. Absent optional fields are omitted (`planes`, when present, is a tuple of codes); paints are `None`, float64 `(1, 4)` or `(2, 4)`
   arrays, or table key bytes. `paint_b`, when present, is a dictionary of its paint and width
   arguments. `joint`, `cap` and `space` are names. `place` and clip/blend placements are float64
   `(3, 4)` arrays, `placements` is float64 `(n, 3, 4)`, `corners` is float64 `(4, 3)`, `uv` is

@@ -32,7 +32,7 @@ def background_delta(width: int, height: int, rgba) -> ac.FrameDelta:
 
 
 def test_the_version_is_xf_1():
-    assert ac.XF_VERSION == (1, 1)
+    assert ac.XF_VERSION == (1, 2)
 
 
 def test_mapping_centre_defaults_to_the_live_frame_center():
@@ -703,3 +703,59 @@ def test_pre_projected_canonical_sample_is_pinned_separately(tmp_path):
     ac.write_xf(file, [delta])
     assert hashlib.sha256(file.read_bytes()).hexdigest() == PRE_PROJECTED_SHA256
     assert ac.read_xf(file)[0].to_bytes() == delta.to_bytes()
+
+
+def snapped_sample():
+    delta = ac.FrameDelta(t=(4, 15), seq=5)
+    delta.set_view(
+        pixel_width=32,
+        pixel_height=18,
+        background=(0.0, 0.0, 0.0, 1.0),
+        input_grid=1 / 32768,
+        **FRAME,
+    )
+    shape = delta.upload_path(square())
+    delta.set_record(
+        "path", 12, 112, shape=shape, fill=(0.2, 0.4, 0.6, 1.0), planes=[1, 6, 0]
+    )
+    return delta
+
+
+SNAPPED_SHA256 = "a1a03ee745bf337c03e6d01285f31ad11e70ceb20d4bc936e787222bc49d5483"
+
+
+def test_snapped_canonical_sample_is_pinned_separately(tmp_path):
+    delta = snapped_sample()
+    assert delta.version == (1, 2)
+    file = tmp_path / "snapped.xf"
+    ac.write_xf(file, [delta])
+    assert hashlib.sha256(file.read_bytes()).hexdigest() == SNAPPED_SHA256
+    contents = ac.read_xf(file)[0].contents()
+    assert contents["view"]["input_grid"] == 1 / 32768
+    assert contents["set"][0][3]["planes"] == (1, 6, 0)
+
+
+def test_an_unsnapped_delta_carries_neither_field_and_stays_below_1_2():
+    delta = ac.FrameDelta(t=(0, 1), seq=0)
+    delta.set_view(pixel_width=4, pixel_height=4, **FRAME)
+    delta.set_record("path", 1, 1, shape=delta.upload_path(square()))
+    contents = delta.contents()
+    assert "input_grid" not in contents["view"]
+    assert "planes" not in contents["set"][0][3]
+    assert delta.version == (1, 0)
+
+
+def test_the_planes_of_a_record_are_found_as_the_drawer_finds_them():
+    delta = ac.FrameDelta(t=(0, 1), seq=0)
+    delta.set_view(pixel_width=8, pixel_height=8, camera="three_d", **FRAME)
+    flat = delta.upload_path(square())
+    bent = square()
+    bent[5, 2] = 0.25
+    on_a_line = np.array([[t, 2 * t, 3 * t] for t in np.linspace(0, 1, 8)])
+    delta.set_record("path", 1, 1, shape=flat, fill=(1, 1, 1, 1))
+    delta.set_record("path", 2, 2, shape=delta.upload_path(bent), fill=(1, 1, 1, 1))
+    delta.set_record("path", 3, 3, shape=delta.upload_path(on_a_line))
+    stream = ac.Stream()
+    stream.apply(delta)
+    # A flat square shares z: its axis plane (z, code 6); bent: a curve (0); a line too.
+    assert stream.planes([1, 2, 3, 9]) == {1: [6], 2: [0], 3: [0]}

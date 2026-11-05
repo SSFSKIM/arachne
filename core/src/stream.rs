@@ -768,6 +768,76 @@ impl Stream {
         tiles::render(frame, &producers, threads).map_err(|e| DrawError::Threads(e.to_string()))
     }
 
+    /// Per slot of `slots`, how each path its record draws lies, decided from the points the
+    /// stream holds ([`path::Lowering::planarity`], codes of [`crate::depth::Planarity`]), in the
+    /// order of the record's `planes`: what a writer that snaps the record's geometry afterwards
+    /// carries with it. A slot holding no record that draws paths (or one the drawer would refuse)
+    /// has no entry. Nothing is drawn.
+    pub fn planes(&self, slots: &[u32]) -> Result<BTreeMap<u32, Vec<u8>>, DrawError> {
+        let view = self.view.as_ref().ok_or(DrawError::NoView)?;
+        let lowering = path::Lowering::new(view, view.pixel_width, view.pixel_height);
+        let shading = matches!(&view.camera, Camera::ThreeD(c) if c.should_apply_shading);
+        let ce_light = view.light == LightModel::Ce;
+        let mut found = BTreeMap::new();
+        for slot in slots {
+            let Some(record) = self.records.get(slot) else {
+                continue;
+            };
+            if refusal(record, &self.shapes, &self.paints, shading, ce_light).is_some() {
+                continue;
+            }
+            let shape = record
+                .geometry
+                .shape_a
+                .and_then(|k| self.shapes.get(&k))
+                .map(|s| s.data());
+            let table = |key: &Key| &self.paints[key];
+            let mut paths = Vec::new();
+            match (record.kind, shape, &record.body) {
+                (RecordKind::FaceGroup, Some(ShapeData::Path { points }), Body::FaceGroup(f)) => {
+                    for part in 0..f.uv.len() as u32 {
+                        paths.push(instance::face(record, points, f, part, table, 0));
+                    }
+                }
+                (RecordKind::Path, Some(ShapeData::Path { points: own }), _)
+                    if let Some(tail) = &record.pre_projected =>
+                {
+                    if let Some(placed) = path_shape(&self.shapes, &tail.points) {
+                        paths.push(instance::produced_path(record, own, placed, tail, table, 0));
+                    }
+                }
+                (RecordKind::Path, Some(ShapeData::Path { .. }), _) => {
+                    if let (Some((points, place)), Ok(paint)) = (
+                        drawn_points(record, &self.shapes),
+                        geometry::drawn_paint(&record.paint, table),
+                    ) {
+                        paths.push(instance::path_record(record, points, place, paint, 0));
+                    }
+                }
+                (
+                    RecordKind::Instances,
+                    Some(ShapeData::Path { points }),
+                    Body::Instances(body),
+                ) => instance::path_members(
+                    record,
+                    points,
+                    body,
+                    table(&body.fill),
+                    table(&body.stroke),
+                    0,
+                    &mut paths,
+                ),
+                _ => continue,
+            }
+            let codes = paths
+                .iter()
+                .map(|draw| lowering.planarity(draw).code())
+                .collect();
+            found.insert(*slot, codes);
+        }
+        Ok(found)
+    }
+
     /// Per slot the order draws, the pixel box of its record's points as the camera places them
     /// for display and maps them to pixels by the mapping its kind is drawn through
     /// ([`crate::boxes::record_box`]); a record placing no point has no entry. Nothing is drawn,

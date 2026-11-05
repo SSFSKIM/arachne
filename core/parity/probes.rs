@@ -106,6 +106,7 @@ pub fn view(width: u32, height: u32, phi: f64, theta: f64) -> View {
         cairo_line_width_multiple: 0.01,
         use_z_index: true,
         light: LightModel::Ce,
+        input_grid: 0.0,
     }
 }
 
