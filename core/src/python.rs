@@ -758,6 +758,7 @@ impl PyFrameDelta {
         record.layer = fields.or("layer", 0u16)?;
         record.body = body_of(kind, &fields)?;
         record.planes = fields.get::<Vec<u8>>("planes")?;
+        record.normals = fields.get::<Vec<[f64; 3]>>("normals")?;
         fields.finish()?;
         self.delta.set.push(record);
         self.delta.version = wire::encoded_version(&self.delta);
@@ -897,6 +898,22 @@ impl PyStream {
             .into_iter()
             .map(|(slot, codes)| (slot, codes.into_iter().map(u32::from).collect()))
             .collect())
+    }
+
+    /// Per slot of ``slots`` holding a record the camera shades, the normals each path it draws
+    /// is lit by at its two lit corners, decided from the points the stream holds as a writer that
+    /// snaps them to ``grid`` carries them: a list of ``(x, y, z)``, two per path in the order of
+    /// the record's ``planes``, the zero vector at a degenerate corner (``core/XF.md``). Nothing is
+    /// drawn.
+    fn normals(
+        &self,
+        py: Python<'_>,
+        slots: Vec<u32>,
+        grid: f64,
+    ) -> PyResult<BTreeMap<u32, Vec<[f64; 3]>>> {
+        self.stream
+            .normals(&slots, grid)
+            .map_err(|e| draw_error(py, e))
     }
 
     /// Per slot the order draws, the pixel box ``(x_min, y_min, x_max, y_max)`` (x right, y down)

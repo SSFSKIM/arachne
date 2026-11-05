@@ -716,12 +716,25 @@ def snapped_sample():
     )
     shape = delta.upload_path(square())
     delta.set_record(
-        "path", 12, 112, shape=shape, fill=(0.2, 0.4, 0.6, 1.0), planes=[1, 6, 0]
+        "path",
+        12,
+        112,
+        shape=shape,
+        fill=(0.2, 0.4, 0.6, 1.0),
+        planes=[1, 6, 0],
+        normals=[
+            (0, 0.6, 0.8),
+            (0, 0, 0),
+            (0.6, 0, -0.8),
+            (0, 0, 1),
+            (0, 0, 0),
+            (1, 0, 0),
+        ],
     )
     return delta
 
 
-SNAPPED_SHA256 = "a1a03ee745bf337c03e6d01285f31ad11e70ceb20d4bc936e787222bc49d5483"
+SNAPPED_SHA256 = "217cef58ae3b74302edc0d74b1740fd16264efb2780b8694f56b24c79585a866"
 
 
 def test_snapped_canonical_sample_is_pinned_separately(tmp_path):
@@ -733,6 +746,7 @@ def test_snapped_canonical_sample_is_pinned_separately(tmp_path):
     contents = ac.read_xf(file)[0].contents()
     assert contents["view"]["input_grid"] == 1 / 32768
     assert contents["set"][0][3]["planes"] == (1, 6, 0)
+    assert contents["set"][0][3]["normals"][:2] == ((0, 0.6, 0.8), (0, 0, 0))
 
 
 def test_an_unsnapped_delta_carries_neither_field_and_stays_below_1_2():
@@ -742,6 +756,7 @@ def test_an_unsnapped_delta_carries_neither_field_and_stays_below_1_2():
     contents = delta.contents()
     assert "input_grid" not in contents["view"]
     assert "planes" not in contents["set"][0][3]
+    assert "normals" not in contents["set"][0][3]
     assert delta.version == (1, 0)
 
 

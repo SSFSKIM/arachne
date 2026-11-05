@@ -170,6 +170,13 @@ fn record<'py>(py: Python<'py>, r: &Record) -> PyResult<Bound<'py, PyDict>> {
         let codes: Vec<u32> = planes.iter().map(|c| u32::from(*c)).collect();
         out.set_item("planes", PyTuple::new(py, codes)?)?;
     }
+    if let Some(normals) = &r.normals {
+        let rows = normals
+            .iter()
+            .map(|n| PyTuple::new(py, n))
+            .collect::<PyResult<Vec<_>>>()?;
+        out.set_item("normals", PyTuple::new(py, rows)?)?;
+    }
     if let Some(p) = &r.pre_projected {
         let projected = PyDict::new(py);
         projected.set_item("points", key(py, p.points))?;

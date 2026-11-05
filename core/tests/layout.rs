@@ -603,6 +603,7 @@ fn a_path_record_lays_out_every_fixed_field() {
     r.layer = 0x0102;
     r.fill_image = Some(KF);
     r.planes = Some(vec![1, 4, 0]);
+    r.normals = Some(vec![[0.0, 0.6, 0.8], [0.0, 0.0, 0.0]]);
     record_both_ways(
         &r,
         &[
@@ -662,6 +663,8 @@ fn a_path_record_lays_out_every_fixed_field() {
             (732, "fill_image", key(&KF)),
             (748, "planes count (XF 1.2)", u32(3)),
             (752, "planarity codes", vec![1, 4, 0]),
+            (755, "normals count (XF 1.2)", u32(2)),
+            (759, "normals", f64s(&[0.0, 0.6, 0.8, 0.0, 0.0, 0.0])),
         ],
     );
 }

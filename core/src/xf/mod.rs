@@ -542,6 +542,12 @@ pub struct Record {
     /// them (a face group's faces, an instances record's members, else one). `None` when the
     /// writer did not decide: the drawer decides from the points it is handed.
     pub planes: Option<Vec<u8>>,
+    /// The normals CE's lighting lights each path the record draws by, at its two lit corners,
+    /// decided before its geometry was snapped ([`crate::shade::decided_normals`], XF 1.2): two
+    /// per path, in the order of `planes`; the zero vector at a degenerate corner, lit by the
+    /// face's own normal. Carried for records the camera shades. `None` when the writer did not
+    /// decide: the drawer finds them from the points it is handed.
+    pub normals: Option<Vec<[f64; 3]>>,
 }
 
 impl Record {
@@ -563,6 +569,7 @@ impl Record {
             body: Body::None,
             pre_projected: None,
             planes: None,
+            normals: None,
         }
     }
 

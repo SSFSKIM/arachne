@@ -775,6 +775,36 @@ impl Stream {
     /// carries with it. A slot holding no record that draws paths (or one the drawer would refuse)
     /// has no entry. Nothing is drawn.
     pub fn planes(&self, slots: &[u32]) -> Result<BTreeMap<u32, Vec<u8>>, DrawError> {
+        self.each_paths(slots, |lowering, paths| {
+            Some(paths.iter().map(|d| lowering.planarity(d).code()).collect())
+        })
+    }
+
+    /// Per slot of `slots` holding a record the camera shades, the normals each path it draws is
+    /// lit by at its two lit corners ([`path::Lowering::normals`]), decided from the points the
+    /// stream holds as a writer that snaps them to `grid` carries them: two per path, in the order
+    /// of the record's `planes`. Other slots have no entry. Nothing is drawn.
+    pub fn normals(
+        &self,
+        slots: &[u32],
+        grid: f64,
+    ) -> Result<BTreeMap<u32, Vec<[f64; 3]>>, DrawError> {
+        self.each_paths(slots, |lowering, paths| {
+            let mut found = Vec::new();
+            for draw in paths {
+                found.extend(lowering.normals(draw, grid)?);
+            }
+            Some(found)
+        })
+    }
+
+    /// `answer(lowering, paths)` per slot of `slots` holding a record that draws paths the drawer
+    /// would not refuse, `paths` those it draws, in order; a `None` answer has no entry.
+    fn each_paths<T>(
+        &self,
+        slots: &[u32],
+        answer: impl Fn(&path::Lowering<'_>, &[path::PathDraw<'_>]) -> Option<T>,
+    ) -> Result<BTreeMap<u32, T>, DrawError> {
         let view = self.view.as_ref().ok_or(DrawError::NoView)?;
         let lowering = path::Lowering::new(view, view.pixel_width, view.pixel_height);
         let shading = matches!(&view.camera, Camera::ThreeD(c) if c.should_apply_shading);
@@ -830,11 +860,9 @@ impl Stream {
                 ),
                 _ => continue,
             }
-            let codes = paths
-                .iter()
-                .map(|draw| lowering.planarity(draw).code())
-                .collect();
-            found.insert(*slot, codes);
+            if let Some(answer) = answer(&lowering, &paths) {
+                found.insert(*slot, answer);
+            }
         }
         Ok(found)
     }

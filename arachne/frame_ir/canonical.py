@@ -32,7 +32,13 @@ Whether a path is flat is decided before its points are snapped, by the
 core's own rules on the values as made (``Stream.planes`` on a stream of the
 unsnapped deltas), and carried with the snapped record as its ``planes``:
 snapped, the points of a slightly curved face and of a flat one can be the
-same points. The view carries the grid as its ``input_grid`` (XF 1.2).
+same points. So is what CE's lighting derives from nearby points: the
+normals each shaded path is lit by at its two lit corners
+(``Stream.normals``, decided for the frame's grid), carried as the record's
+``normals`` and snapped to :data:`RATIO_GRID`. On a finely sampled curve
+that normal is the cross product of two nearly opposite chords, which the
+snap's step would turn by tens of degrees. The view carries the grid as its
+``input_grid`` (XF 1.2).
 
 Only the core's inputs are snapped (:class:`~.core_painter.CorePainter`,
 and the display pictures drawn alongside them on the core path): frames
@@ -309,8 +315,9 @@ class Canonical:
                 for slot, record in sorted(self._records.items())
                 if slot not in setting
             )
+        normals = self._normals(setting, grid)
         found.set = [
-            (slot, self._record(slot, record, found))
+            (slot, self._record(slot, record, found, normals.get(slot)))
             for slot, record in setting.items()
         ]
         for slot in delta.remove:
@@ -343,6 +350,21 @@ class Canonical:
         if slots and self._view is not None:
             for slot, codes in self._decider.planes(slots).items():
                 self._planes[slot] = tuple(codes)
+
+    def _normals(
+        self, setting: Mapping[int, Record], grid: float
+    ) -> dict[int, list[tuple[float, ...]]]:
+        """The normals each shaded record of ``setting`` is lit by, decided
+        by the core on the values as made for points snapped to ``grid``,
+        snapped to :data:`RATIO_GRID`; by slot.
+        """
+        slots = [slot for slot, record in setting.items() if record.kind in _PATH_KINDS]
+        if self._decider is None or not slots or self._view is None:
+            return {}
+        return {
+            slot: [snap(tuple(n), RATIO_GRID) for n in normals]
+            for slot, normals in self._decider.normals(slots, grid).items()
+        }
 
     def _hold(self, holder: Any, points: Any, found: Delta) -> bytes:
         """``points`` snapped, held by ``holder`` (instead of what it held),
@@ -412,7 +434,13 @@ class Canonical:
             points = blended(points, self._shapes[key].data, t)
         return points
 
-    def _record(self, slot: int, record: Record, found: Delta) -> Record:
+    def _record(
+        self,
+        slot: int,
+        record: Record,
+        found: Delta,
+        normals: list[tuple[float, ...]] | None = None,
+    ) -> Record:
         assert self.grid is not None
         grid = self.grid
         fields = dict(record.fields)
@@ -449,6 +477,8 @@ class Canonical:
                 snapped[name] = _classified(_RECORD, "record", name)(value, grid)
         if slot in self._planes:
             snapped["planes"] = self._planes[slot]
+        if normals is not None:
+            snapped["normals"] = normals
         return Record(record.kind, snapped)
 
 

@@ -401,9 +401,15 @@ pub fn encode_record(r: &Record) -> Vec<u8> {
             write_paint(w, &p.stroke);
             write_paint(w, &p.background_stroke);
         }
-        if let Some(planes) = &r.planes {
+        // XF 1.2: planes, then normals, both written when either is carried (an empty list
+        // stands for one not carried), so a newer minor's fields follow at a known place.
+        if r.planes.is_some() || r.normals.is_some() {
+            let planes = r.planes.as_deref().unwrap_or_default();
             w.count(planes.len());
             planes.iter().for_each(|code| w.u8(*code));
+            let normals = r.normals.as_deref().unwrap_or_default();
+            w.count(normals.len());
+            normals.iter().for_each(|n| w.f64s(n));
         }
     })
 }
@@ -421,7 +427,9 @@ pub fn encoded_version(d: &Delta) -> (u16, u16) {
         _ => None,
     });
     let snapped = d.view.iter().chain(sub_views).any(|v| v.input_grid != 0.0)
-        || d.set.iter().any(|r| r.planes.is_some());
+        || d.set
+            .iter()
+            .any(|r| r.planes.is_some() || r.normals.is_some());
     let minor = if snapped {
         2
     } else {
@@ -910,10 +918,17 @@ fn decode_record(r: &mut R) -> Result<Record> {
             background_stroke: read_paint(r)?,
         });
     }
-    // XF 1.2: the record's planes, when it carries them.
+    // XF 1.2: the record's planes, then its normals, when it carries them (an empty list: not
+    // carried).
     if r.at < r.b.len() {
         let n = r.count(1)?;
-        rec.planes = Some((0..n).map(|_| r.u8()).collect::<Result<Vec<_>>>()?);
+        let planes = (0..n).map(|_| r.u8()).collect::<Result<Vec<_>>>()?;
+        rec.planes = (!planes.is_empty()).then_some(planes);
+    }
+    if r.at < r.b.len() {
+        let n = r.count(24)?;
+        let normals = (0..n).map(|_| r.f64s()).collect::<Result<Vec<_>>>()?;
+        rec.normals = (!normals.is_empty()).then_some(normals);
     }
     // Whatever follows belongs to a newer minor version: skipped.
     Ok(rec)
