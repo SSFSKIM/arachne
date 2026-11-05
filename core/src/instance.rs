@@ -12,6 +12,7 @@
 
 use std::borrow::Cow;
 
+use crate::geometry::{DrawnPaint, rows};
 use crate::mesh::MeshDraw;
 use crate::path::PathDraw;
 use crate::points::PointsDraw;
@@ -43,37 +44,25 @@ pub fn one(paint: &Paint) -> Option<[f64; 4]> {
     }
 }
 
-/// A paint's colour rows: one colour, two stops, or a table's rows (found by `table`); `None`
-/// for no paint.
-pub fn rows<'a>(paint: &Paint, table: impl Fn(&Key) -> &'a Stops) -> Option<Vec<[f64; 4]>> {
-    match paint {
-        Paint::None => None,
-        Paint::One(c) => Some(vec![*c]),
-        Paint::Two(cs) => Some(cs.to_vec()),
-        Paint::Table(key) => Some(table(key).rows().to_vec()),
-    }
-}
-
 /// The path a `path` record draws: `points` placed by `place` (the shape and the record's
 /// placement, or what a reveal or a blend made of it, placed already), painted by `paint` (the
-/// record's paint, or a paint blend's mix: [`crate::geometry::drawn_paint`]), its tables found by
-/// `table`.
-pub fn path_record<'a, 't>(
+/// record's paint, or a paint blend's mix: [`crate::geometry::drawn_paint`]), its gradient between
+/// the record's ends.
+pub fn path_record<'a>(
     record: &'a Record,
     points: Cow<'a, [[f64; 3]]>,
     place: Affine,
-    paint: &PaintBlock,
-    table: impl Fn(&Key) -> &'t Stops + Copy,
+    paint: DrawnPaint,
     order: u32,
 ) -> PathDraw<'a> {
     PathDraw {
         record,
         points,
         place,
-        fill: rows(&paint.fill, table),
-        stroke: rows(&paint.stroke, table),
-        background_stroke: rows(&paint.background_stroke, table),
-        ends: paint.gradient,
+        fill: paint.fill,
+        stroke: paint.stroke,
+        background_stroke: paint.background_stroke,
+        ends: record.paint.gradient,
         surface: false,
         pre_projected: false,
         stroke_width: paint.stroke_width,

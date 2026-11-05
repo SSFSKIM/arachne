@@ -37,14 +37,45 @@ pub fn interpolate(p: [f64; 3], q: [f64; 3], t: f64) -> [f64; 3] {
     std::array::from_fn(|k| (1.0 - t) * p[k] + t * q[k])
 }
 
-/// The paint block a record draws with: its own, or, under a paint blend, its own mixed toward
-/// `paint_b` by `mix` as CE's style interpolation mixes them (each paint's rows and each width by
-/// `interpolate`, `paint_b`'s own where `mix` is 1). An empty paint mixed with a painted one
-/// stays empty, as numpy broadcasts no rows against one; one colour mixed with two takes two.
-/// `Err` names what it cannot mix: a paint of a table of rows.
-pub fn drawn_paint(paint: &PaintBlock) -> Result<PaintBlock, &'static str> {
+/// A paint's colour rows (straight RGBA: one colour, or a gradient's stops, a table's found by
+/// `table`), or `None` for no paint.
+pub fn rows<'t>(paint: &Paint, table: impl Fn(&Key) -> &'t Stops) -> Option<Vec<[f64; 4]>> {
+    match paint {
+        Paint::None => None,
+        Paint::One(c) => Some(vec![*c]),
+        Paint::Two(cs) => Some(cs.to_vec()),
+        Paint::Table(key) => Some(table(key).rows().to_vec()),
+    }
+}
+
+/// The paints a path record draws with, each resolved to its rows ([`rows`]), and its widths.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DrawnPaint {
+    pub fill: Option<Vec<[f64; 4]>>,
+    pub stroke: Option<Vec<[f64; 4]>>,
+    pub background_stroke: Option<Vec<[f64; 4]>>,
+    pub stroke_width: f64,
+    pub background_stroke_width: f64,
+}
+
+/// The paint a record draws with, its tables found by `table`: its own, or, under a paint blend,
+/// its own mixed toward `paint_b` by `mix` as CE's style interpolation mixes them (each paint's
+/// rows and each width by `interpolate`, `paint_b`'s own where `mix` is 1). An empty paint mixed
+/// with a painted one stays empty, as numpy broadcasts no rows against one; one colour mixed with
+/// several takes as many. `Err` names what it cannot mix: row counts numpy does not broadcast.
+pub fn drawn_paint<'t>(
+    paint: &PaintBlock,
+    table: impl Fn(&Key) -> &'t Stops + Copy,
+) -> Result<DrawnPaint, &'static str> {
+    let own = |p: &Paint| rows(p, table);
     let Some(b) = &paint.paint_b else {
-        return Ok(paint.clone());
+        return Ok(DrawnPaint {
+            fill: own(&paint.fill),
+            stroke: own(&paint.stroke),
+            background_stroke: own(&paint.background_stroke),
+            stroke_width: paint.stroke_width,
+            background_stroke_width: paint.background_stroke_width,
+        });
     };
     let mix = paint.mix;
     let width = |a: f64, z: f64| {
@@ -54,31 +85,23 @@ pub fn drawn_paint(paint: &PaintBlock) -> Result<PaintBlock, &'static str> {
             (1.0 - mix) * a + mix * z
         }
     };
-    Ok(PaintBlock {
-        fill: mixed(&paint.fill, &b.fill, mix)?,
-        stroke: mixed(&paint.stroke, &b.stroke, mix)?,
-        background_stroke: mixed(&paint.background_stroke, &b.background_stroke, mix)?,
+    let blend = |a: &Paint, z: &Paint| mixed(own(a), own(z), mix);
+    Ok(DrawnPaint {
+        fill: blend(&paint.fill, &b.fill)?,
+        stroke: blend(&paint.stroke, &b.stroke)?,
+        background_stroke: blend(&paint.background_stroke, &b.background_stroke)?,
         stroke_width: width(paint.stroke_width, b.stroke_width),
         background_stroke_width: width(paint.background_stroke_width, b.background_stroke_width),
-        paint_b: None,
-        mix: 0.0,
-        ..paint.clone()
     })
 }
 
-fn mixed(a: &Paint, z: &Paint, mix: f64) -> Result<Paint, &'static str> {
-    let rows = |p: &Paint| -> Result<Vec<[f64; 4]>, &'static str> {
-        match p {
-            Paint::None => Ok(Vec::new()),
-            Paint::One(c) => Ok(vec![*c]),
-            Paint::Two(cs) => Ok(cs.to_vec()),
-            Paint::Table(_) => Err("a paint blend of a table of colours"),
-        }
-    };
+type Rows = Option<Vec<[f64; 4]>>;
+
+fn mixed(a: Rows, z: Rows, mix: f64) -> Result<Rows, &'static str> {
     if mix == 1.0 {
-        return Ok(z.clone());
+        return Ok(z);
     }
-    let (ra, rz) = (rows(a)?, rows(z)?);
+    let (ra, rz) = (a.unwrap_or_default(), z.unwrap_or_default());
     // numpy's broadcasting of the two row arrays: one row stretches to the other's count.
     let n = match (ra.len(), rz.len()) {
         (0, _) | (_, 0) => 0,
@@ -93,12 +116,7 @@ fn mixed(a: &Paint, z: &Paint, mix: f64) -> Result<Paint, &'static str> {
             std::array::from_fn(|k| (1.0 - mix) * p[k] + mix * q[k])
         })
         .collect();
-    Ok(match out.as_slice() {
-        [] => Paint::None,
-        [c] => Paint::One(*c),
-        [c, d] => Paint::Two([*c, *d]),
-        _ => unreachable!("rows of at most two"),
-    })
+    Ok((!out.is_empty()).then_some(out))
 }
 
 /// `VMobject.pointwise_become_partial(path, lo, hi)` of a path holding no points before: the part
@@ -218,6 +236,18 @@ mod tests {
 
     #[test]
     fn a_paint_blend_mixes_as_ce_s_style_interpolation() {
+        let start = Stops::new(vec![
+            [1.0, 0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0, 1.0],
+        ]);
+        let end = Stops::new(vec![
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0, 1.0],
+            [0.0, 0.0, 0.0, 0.0],
+        ]);
+        let tables = [start.clone(), end.clone()];
+        let table = |key: &Key| tables.iter().find(|t| t.key() == *key).unwrap();
         let paint = PaintBlock {
             fill: Paint::One([1.0, 0.0, 0.0, 1.0]),
             stroke: Paint::Two([[0.0, 0.0, 0.0, 1.0], [1.0, 1.0, 1.0, 1.0]]),
@@ -234,29 +264,68 @@ mod tests {
             mix: 0.25,
             ..PaintBlock::default()
         };
-        let got = drawn_paint(&paint).unwrap();
-        assert_eq!(got.fill, Paint::One([0.75, 0.0, 0.25, 0.875]));
+        let got = drawn_paint(&paint, table).unwrap();
+        assert_eq!(got.fill, Some(vec![[0.75, 0.0, 0.25, 0.875]]));
         assert_eq!(
             got.stroke,
-            Paint::Two([[0.25, 0.0, 0.0, 1.0], [1.0, 0.75, 0.75, 1.0]])
+            Some(vec![[0.25, 0.0, 0.0, 1.0], [1.0, 0.75, 0.75, 1.0]])
         );
         // No rows broadcast against one: still none.
-        assert_eq!(got.background_stroke, Paint::None);
+        assert_eq!(got.background_stroke, None);
         assert_eq!(got.stroke_width, 3.5);
         assert_eq!(got.background_stroke_width, 1.5);
-        assert!(got.paint_b.is_none());
         // At 1 the end's paint is taken whole, as CE takes it.
-        let end = drawn_paint(&PaintBlock {
-            mix: 1.0,
-            ..paint.clone()
-        })
+        let at_end = drawn_paint(
+            &PaintBlock {
+                mix: 1.0,
+                ..paint.clone()
+            },
+            table,
+        )
         .unwrap();
-        assert_eq!(end.background_stroke, Paint::One([1.0, 1.0, 1.0, 1.0]));
-        assert_eq!(end.stroke_width, 2.0);
-        let table = PaintBlock {
-            fill: Paint::Table(Key([2; 16])),
+        assert_eq!(at_end.background_stroke, Some(vec![[1.0, 1.0, 1.0, 1.0]]));
+        assert_eq!(at_end.stroke_width, 2.0);
+        // Tables mix row by row, a table against one colour row by row against it.
+        let tables_blend = PaintBlock {
+            fill: Paint::Table(start.key()),
+            stroke: Paint::Table(start.key()),
+            paint_b: Some(PaintB {
+                fill: Paint::Table(end.key()),
+                stroke: Paint::One([1.0, 1.0, 1.0, 1.0]),
+                ..paint.paint_b.clone().unwrap()
+            }),
+            mix: 0.5,
+            ..paint.clone()
+        };
+        let got = drawn_paint(&tables_blend, table).unwrap();
+        assert_eq!(
+            got.fill,
+            Some(vec![
+                [0.5, 0.0, 0.0, 1.0],
+                [0.5, 1.0, 0.5, 1.0],
+                [0.0, 0.0, 0.5, 0.5],
+            ])
+        );
+        assert_eq!(
+            got.stroke,
+            Some(vec![
+                [1.0, 0.5, 0.5, 1.0],
+                [0.5, 1.0, 0.5, 1.0],
+                [0.5, 0.5, 1.0, 1.0],
+            ])
+        );
+        // Three rows against two: numpy does not broadcast them.
+        let unequal = PaintBlock {
+            fill: Paint::Table(start.key()),
             ..paint
         };
-        assert!(drawn_paint(&table).is_err());
+        let unequal = PaintBlock {
+            paint_b: Some(PaintB {
+                fill: Paint::Two([[0.0; 4]; 2]),
+                ..unequal.paint_b.clone().unwrap()
+            }),
+            ..unequal
+        };
+        assert!(drawn_paint(&unequal, table).is_err());
     }
 }
