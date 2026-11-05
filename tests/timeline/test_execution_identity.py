@@ -1022,3 +1022,28 @@ def test_a_summary_from_another_process_compares_with_a_session(scene_dir, tmp_p
     assert divergence.play == 1
     assert divergence.changed_inputs == ("data.txt",)
     assert edited.divergences == [divergence]
+
+
+SVG = Path(__file__).parents[1] / "test_graphical_units" / "img_svg_resources" / "arcs01.svg"
+
+
+def test_an_svg_drawn_again_in_one_process_is_the_execution_it_was(scene_dir):
+    """The SVG cache carries a parsed image from one execution to the next,
+    so a second execution in one process must build what the first built.
+    """
+    shutil.copy(SVG, scene_dir / "image.svg")
+    scene = _write(
+        scene_dir,
+        "scene.py",
+        HEADER
+        + """
+class Drawn(Scene):
+    def construct(self):
+        image = SVGMobject(HERE / "image.svg")
+        self.add(image)
+        self.play(image.animate.shift(RIGHT), run_time=0.5)
+""",
+    )
+    first = _open(scene, "Drawn").summary()
+    again = _open(scene, "Drawn").summary()
+    assert compare(first, again) is None

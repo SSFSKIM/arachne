@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from ._config import config as global_config
 from ._config import tempconfig
 from .constants import QUALITIES
+from .mobject.svg.svg_mobject import forget_parsed_svgs
 from .timeline import admission
 from .timeline.admission import (
     PlayIdentity,
@@ -506,6 +507,9 @@ def execute(
     and its module. An execution that raises leaves its module unimported.
     """
     base_dir = str(path.parent)
+    # Each execution starts as a fresh process does: another execution of
+    # the source in this process left its parsed images cached.
+    forget_parsed_svgs()
     with tempconfig(settings):
         ORIGINS.start(base_dir)
         added_path = base_dir not in sys.path
