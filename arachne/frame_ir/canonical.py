@@ -40,6 +40,17 @@ that normal is the cross product of two nearly opposite chords, which the
 snap's step would turn by tens of degrees. The view carries the grid as its
 ``input_grid`` (XF 1.2).
 
+Whether a path's cubics join and whether its subpaths close are decided by
+the core on the snapped points, by CE's point-equality rule (each coordinate
+within ``1e-6 + 1e-5 * |b|``). A comparison is sensitive only at its
+threshold: a snap moves each point at most ``g / 2``, so a gap moves at most
+``g``, and only a gap made within ``g`` of the tolerance can be decided
+otherwise (near the origin, where the tolerance is under ``g``, a gap of up
+to about ``g`` that CE leaves open can be closed). Content keeps far from it
+(joins are copies of one point, closed ends a float's noise apart, breaks
+pixels apart), and :data:`point_equality_disagreements` records every
+boundary decided otherwise, so the test suite finds any that does not.
+
 Only the core's inputs are snapped (:class:`~.core_painter.CorePainter`,
 and the display pictures drawn alongside them on the core path): frames
 drawn on ``ir_cairo`` stay what Cairo draws from the scene's own values.
@@ -372,6 +383,7 @@ class Canonical:
         """
         assert self.grid is not None
         shape = Shape("path", _position(points, self.grid))
+        _count_disagreements(np.asarray(points, dtype=np.float64), shape.data)
         if self._snapped.get(holder) == shape.key:
             return shape.key
         holders = self._holders.setdefault(shape.key, set())
@@ -480,6 +492,56 @@ class Canonical:
         if normals is not None:
             snapped["normals"] = normals
         return Record(record.kind, snapped)
+
+
+#: CE's ``tolerance_for_point_equality`` and the relative tolerance of its
+#: ``consider_points_equals_2d``.
+_POINT_EQUALITY = 1e-6
+_POINT_RTOL = 1e-5
+
+#: Every path whose snapped points CE's point-equality rule decides otherwise
+#: than its points as made, where its cubics join or its subpaths close: the
+#: number of points, the coordinates compared (2 as the core compares them on
+#: a flat camera, 3 for the placed points of a 3D one), and how many
+#: boundaries differ. Measured, never acted on; the tests assert it stays
+#: empty.
+point_equality_disagreements: list[tuple[int, int, int]] = []
+
+
+def _equal(a: np.ndarray, b: np.ndarray, dims: int) -> np.ndarray:
+    gap = np.abs(a[..., :dims] - b[..., :dims])
+    within = gap <= _POINT_EQUALITY + _POINT_RTOL * np.abs(b[..., :dims])
+    return np.all((gap == 0) | within, axis=-1)
+
+
+def _boundaries(points: np.ndarray, splits: np.ndarray, dims: int) -> np.ndarray:
+    """CE's decisions on ``points``: whether each cubic's end is the next's
+    start, then, for each subpath ``splits`` (the starts of those that do
+    not join) delimit, whether its end is its start.
+    """
+    at = np.arange(4, len(points), 4)
+    joins = _equal(points[at - 1], points[at], dims)
+    starts = np.concatenate([[0], splits])
+    ends = np.concatenate([splits, [len(points)]])
+    long = ends - starts >= 4
+    closes = _equal(points[starts[long]], points[ends[long] - 1], dims)
+    return np.concatenate([joins, closes])
+
+
+def _count_disagreements(made: np.ndarray, snapped: np.ndarray) -> None:
+    """Records ``made`` in :data:`point_equality_disagreements` where its
+    snapped points' boundaries are decided otherwise.
+    """
+    if made.ndim != 2 or len(made) < 4:
+        return
+    for dims in (2, 3):
+        at = np.arange(4, len(made), 4)
+        splits = at[~_equal(made[at - 1], made[at], dims)]
+        differ = int(
+            (_boundaries(made, splits, dims) != _boundaries(snapped, splits, dims)).sum()
+        )
+        if differ:
+            point_equality_disagreements.append((len(made), dims, differ))
 
 
 #: The identity placement.
