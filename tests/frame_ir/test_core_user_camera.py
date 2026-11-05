@@ -160,6 +160,31 @@ def test_a_proven_change_that_rebinds_the_camera_s_state_draws_on_cairo_for_the_
     assert "cairo_line_width_multiple" in finding.message
 
 
+def test_frames_delivered_from_cairo_after_a_fallback_are_told_from_the_core_s(
+    findings,
+):
+    """The core drew a description in that scene (its static picture's) and
+    then fell back: what tells a unit's frames as the core's is the pixels
+    delivered, not that the core drew. A scene drawn on the core has every
+    delivered frame from it.
+    """
+    before = CorePainter.drawn_total
+    with CorePainter.keeping_frames() as drew:
+        _, fallen = render(
+            camera_scenes.MovingStateSolids, FPS, draw_path="core", **MEDIUM
+        )
+    assert CorePainter.drawn_total > before, "the core drew a description"
+    assert _fallbacks(findings)
+    assert fallen
+    assert not any(drew(frame) for frame in fallen)
+    with CorePainter.keeping_frames() as drew:
+        _, core = render(
+            core_scenes.FixedLabelOverSquare, FPS, draw_path="core", **MEDIUM
+        )
+    assert core
+    assert all(drew(frame) for frame in core)
+
+
 def test_a_watched_camera_that_changes_nothing_has_every_frame_from_the_core(
     findings, monkeypatch
 ):
