@@ -13,9 +13,9 @@ between them, with probability about ``|difference| / grid`` per value.
 A value is snapped as ``round(x / grid) * grid``: the grid is a power of
 two, so each step is exact IEEE arithmetic and gives the same bits on every
 machine (``-0.0`` is made ``0.0``). Positions (scene units) are snapped to
-the **input grid** (:func:`input_grid`): ``2^(e - 8)`` for ``e`` the binary
+the **input grid** (:func:`input_grid`): ``2^(e - 9)`` for ``e`` the binary
 exponent of the scene units one pixel spans, ``u = frame_width /
-(pixel_width * zoom)``, so a pixel holds 128 to 256 steps whatever the
+(pixel_width * zoom)``, so a pixel holds 256 to 512 steps whatever the
 camera's zoom. The grid is the finest any camera that sees the geometry
 needs: the scene's camera and each display's (a sub-frame's view). When a
 frame's grid differs from the last frame's, every shape and record held is
@@ -65,7 +65,7 @@ POSITION_GRID = 2.0**-16
 #: The grid dimensionless values are snapped to.
 RATIO_GRID = 2.0**-24
 #: How far below the pixel's binary exponent the input grid sits.
-_STEPS_EXPONENT = 8
+_STEPS_EXPONENT = 9
 
 #: The record kinds that draw paths, whose flatness is decided before the
 #: snap.
@@ -87,7 +87,7 @@ def snap(values: Any, grid: float) -> Any:
 
 def input_grid(views: list[Mapping[str, Any]]) -> float:
     """The grid positions seen through ``views`` are snapped to: the finest
-    of each view's ``2^(e - 8)``, ``e`` the binary exponent (``math.frexp``,
+    of each view's ``2^(e - 9)``, ``e`` the binary exponent (``math.frexp``,
     exact) of the scene units its pixel spans, read from its frame width
     and zoom on fixed grids.
     """

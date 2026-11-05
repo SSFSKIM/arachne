@@ -29,7 +29,7 @@ def test_the_overlay_is_ce_s_wherever_the_core_and_ce_agree_beneath_it():
     """Cairo draws the overlay over the core's frame as CE draws it over its
     own: wherever the frames beneath agree, the overlaid pixels are CE's, up
     to a few levels at the overlay's edges, where its geometry, snapped for
-    the core (``frame_ir.canonical``, at most 1/128 of a pixel), covers a
+    the core (``frame_ir.canonical``, at most 1/256 of a pixel), covers a
     pixel a little otherwise.
     """
     _, ce = render(core_scenes.FixedLabelOverSquare, FPS, **MEDIUM)
