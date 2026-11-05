@@ -104,10 +104,18 @@ class CameraExtras:
 
     @classmethod
     def observe(
-        cls, camera: Camera, previous: CameraExtras | None
+        cls,
+        camera: Camera,
+        previous: CameraExtras | None,
+        *,
+        evaluate: bool = True,
     ) -> CameraExtras | None:
         """Evaluate ``camera``'s inputs now; ``previous`` itself when they are
         what it already holds. ``None`` for an object that is not a camera.
+        Without ``evaluate``, for a state no frame draws, no centre function
+        is called: each fixed-orientation mobject's centre is the one
+        ``previous`` recorded, and one it recorded none of is left
+        unoriented.
         """
         from arachne.camera.camera import Camera
         from arachne.camera.three_d_camera import ThreeDCamera
@@ -120,9 +128,14 @@ class CameraExtras:
         centers: tuple[tuple[Mobject, np.ndarray], ...] = ()
         if isinstance(camera, ThreeDCamera):
             fixed = frozenset(camera.fixed_in_frame_mobjects)
-            centers = _centers(camera.fixed_orientation_mobjects)
+            orientations = camera.fixed_orientation_mobjects
+            centers = (
+                _centers(orientations)
+                if evaluate
+                else _recorded_centers(orientations, previous)
+            )
         displays = _displays(camera)
-        sub_cameras = _sub_cameras(camera, displays, previous)
+        sub_cameras = _sub_cameras(camera, displays, previous, evaluate)
         if previous is None:
             return cls(values, fixed, centers, background, displays, sub_cameras)
         if (
@@ -199,9 +212,11 @@ def _sub_cameras(
     camera: Camera,
     displays: tuple[Mobject, ...] | None,
     previous: CameraExtras | None,
+    evaluate: bool = True,
 ) -> tuple[tuple[Camera, CameraExtras], ...]:
-    """The inputs of each display's camera now; ``previous.sub_cameras``
-    itself when they are the same.
+    """The inputs of each display's camera now (``evaluate`` as
+    :meth:`CameraExtras.observe` takes it); ``previous.sub_cameras`` itself
+    when they are the same.
     """
     from arachne.camera.camera import Camera
 
@@ -211,7 +226,7 @@ def _sub_cameras(
     for display in displays or ():
         sub = getattr(display, "camera", None)
         if isinstance(sub, Camera) and sub is not camera:
-            extras = CameraExtras.observe(sub, earlier.get(id(sub)))
+            extras = CameraExtras.observe(sub, earlier.get(id(sub)), evaluate=evaluate)
             assert extras is not None
             found.append((sub, extras))
     if len(found) == len(before) and all(
@@ -242,6 +257,19 @@ def _centers(
             values[id(center_func)] = value
         centers.append((mob, value))
     return tuple(centers)
+
+
+def _recorded_centers(
+    orientations: dict[Mobject, Callable[[], Any]], previous: CameraExtras | None
+) -> tuple[tuple[Mobject, np.ndarray], ...]:
+    """The centres ``previous`` recorded for the fixed-orientation mobjects
+    of ``orientations``, calling no centre function: those it recorded none
+    of are left out.
+    """
+    recorded = {id(mob): value for mob, value in previous.centers} if previous else {}
+    return tuple(
+        (mob, recorded[id(mob)]) for mob in orientations if id(mob) in recorded
+    )
 
 
 def _camera_values(
@@ -567,6 +595,15 @@ class Drawing:
             state.install(mob)
         if capture.camera is not None and capture.camera.displays is not None:
             self._show_display_pictures(capture, [mob for mob, _ in reached])
+
+    def show_camera(self, capture: Capture) -> None:
+        """Give the camera, alone, its recorded inputs at ``capture``: for a
+        read of a live scene that holds that capture (a forward run's),
+        which then calls none of the camera's callbacks, as drawing from
+        the record calls none.
+        """
+        if capture.camera is not None:
+            self._install_camera(self.camera, capture.camera)
 
     def _install_camera(self, camera: Camera, extras: CameraExtras) -> None:
         """Give ``camera`` and its displays' cameras their recorded inputs,
