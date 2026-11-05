@@ -183,8 +183,13 @@ def test_docs_example_on_core(example: DocsExample, request, tmp_path: Path) -> 
     pytest.importorskip("arachne_core")
     from arachne.frame_ir.core_painter import CorePainter
 
-    drawn = CorePainter.drawn_total
-    writer = render(example, tmp_path, draw_path="core")
-    assert CorePainter.drawn_total > drawn, f"the core drew no frame of {example.name}"
+    with CorePainter.keeping_frames() as drew:
+        writer = render(example, tmp_path, draw_path="core")
+    delivered = [pixels for pixels, _ in writer.frames]
+    if writer.still is not None:
+        delivered.append(writer.still)
+    assert delivered, f"{example.name} delivered no frame"
+    not_core = [index for index, pixels in enumerate(delivered) if not drew(pixels)]
+    assert not not_core, f"frames {not_core} of {example.name} were not drawn by the core"
     path = CORE_CONTROL_DIR / f"{example.name}.npz"
     _compare(example, writer, path, request, count=False)
