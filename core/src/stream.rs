@@ -627,11 +627,12 @@ impl Stream {
             }));
         }
         let shading = matches!(&view.camera, Camera::ThreeD(c) if c.should_apply_shading);
+        let ce_light = view.light == LightModel::Ce;
         if let Some(refused) = self
             .order
             .iter()
             .filter(|e| drawn(e))
-            .find_map(|e| refusal(&self.records[&e.slot], &self.shapes, shading))
+            .find_map(|e| refusal(&self.records[&e.slot], &self.shapes, shading, ce_light))
         {
             return Err(DrawError::Unsupported(refused));
         }
@@ -695,7 +696,9 @@ impl Stream {
                         drawn_points(record, &self.shapes).expect("drawing refused the others");
                     let paint = geometry::drawn_paint(&record.paint)
                         .expect("drawing refused a paint it cannot mix");
-                    paths.push(instance::path_record(record, points, place, &paint, order));
+                    paths.push(instance::path_record(
+                        record, points, place, &paint, table, order,
+                    ));
                 }
                 (RecordKind::Points, Some(ShapeData::Path { points }), Body::Points(p)) => {
                     clouds.push(instance::points(record, points, table(&p.colors), order));
@@ -856,11 +859,13 @@ fn check_shape(shape: &Shape) -> Result<(), StreamError> {
 
 /// What of a drawn record's fixed fields this build does not draw yet, if anything: blends,
 /// reveals and paint blends of any kind but a path, a paint blend of a table, clips for every
-/// kind; for meshes (and instances of a mesh) strokes,
-/// gradient fills and dashes; for paths (and instances of a path) CE's lighting under a camera
-/// that shades (`shading`), gradient paints and dashes it cannot read.
-fn field_refusal(rec: &Record, mesh: bool, shading: bool) -> Option<String> {
+/// kind; for meshes (and instances of a mesh) strokes, gradient fills and dashes; for paths (and
+/// instances of a path) CE's lighting under a camera that shades (`shading`) with a light model
+/// other than CE's (`ce_light`), a gradient paint without its ends or on an instance, and dashes
+/// it cannot read.
+fn field_refusal(rec: &Record, mesh: bool, shading: bool, ce_light: bool) -> Option<String> {
     let kind = rec.kind.name();
+    let shaded = shading && rec.depth.shade_in_3d;
     // A path's blend, reveal and paint blend are drawn as what they make of it (`geometry`); the
     // paint judged below is the one drawn.
     let shaped = rec.geometry.blend.is_some()
@@ -902,19 +907,22 @@ fn field_refusal(rec: &Record, mesh: bool, shading: bool) -> Option<String> {
         } else {
             None
         }
-    } else if shading
-        && rec.depth.shade_in_3d
+    } else if shaded
+        && !ce_light
         && (drawn(&p.fill, None) || strokes.iter().any(|(paint, w)| drawn(paint, Some(*w))))
     {
         // CE lights each paint into two stops, at the path's start and end corners
-        // (`ThreeDCamera.modified_rgbas`), drawn as a linear gradient: drawn unlit it would be a
-        // wrong frame.
-        not_yet("shading")
-    } else if gradient(&p.fill)
+        // (`ThreeDCamera.modified_rgbas`), drawn as a linear gradient; another light model has no
+        // look for a path yet.
+        not_yet("shading under a light model other than CE's")
+    } else if (gradient(&p.fill)
         || strokes
             .iter()
-            .any(|(paint, w)| drawn(paint, Some(*w)) && gradient(paint))
+            .any(|(paint, w)| drawn(paint, Some(*w)) && gradient(paint)))
+        && (rec.kind == RecordKind::Instances || (!shaded && p.gradient.is_none()))
     {
+        // A path's gradient runs between its ends (or a shaded path's corners); an instance's
+        // colours are rows of a table, one each.
         not_yet("gradient paint")
     } else if let Some(d) = rec.dash
         && !(d.period > 0.0
@@ -967,7 +975,12 @@ fn drawn_points<'a>(
     Some((Cow::Owned(geometry::path_points(g, a, b)?), IDENTITY))
 }
 
-fn refusal(rec: &Record, shapes: &HashMap<Key, Shape>, shading: bool) -> Option<Unsupported> {
+fn refusal(
+    rec: &Record,
+    shapes: &HashMap<Key, Shape>,
+    shading: bool,
+    ce_light: bool,
+) -> Option<Unsupported> {
     let prototype = rec
         .geometry
         .shape_a
@@ -991,7 +1004,7 @@ fn refusal(rec: &Record, shapes: &HashMap<Key, Shape>, shading: bool) -> Option<
         RecordKind::Mesh | RecordKind::Path | RecordKind::Points | RecordKind::Instances
     ) {
         let mesh = matches!(prototype, Some(ShapeData::Mesh { .. }));
-        if let Some(reason) = field_refusal(rec, mesh, shading) {
+        if let Some(reason) = field_refusal(rec, mesh, shading, ce_light) {
             reason
         } else if rec.kind == RecordKind::Path && drawn_points(rec, shapes).is_none() {
             "a path's blend of two shapes of different lengths".into()
