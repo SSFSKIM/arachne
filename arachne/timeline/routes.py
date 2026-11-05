@@ -471,9 +471,17 @@ def _draw(
         # is drawn from its description as any other is, by a painter of its
         # own that keeps nothing of it for later frames.
         assert resolved.prepare is not None
-        return drawing.restored(play, resolved.capture, resolved.prepare)
+        return drawing.restored(
+            play, resolved.capture, resolved.prepare, resolved.as_of
+        )
+    # A described frame is labelled with the instant it shows: an evaluated
+    # one's, not the capture's it was evaluated from.
     return drawing.sample(
-        play, resolved.capture, static(play), prepare=resolved.prepare
+        play,
+        resolved.capture,
+        static(play),
+        prepare=resolved.prepare,
+        instant=resolved.as_of,
     )
 
 

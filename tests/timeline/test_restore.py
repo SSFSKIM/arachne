@@ -559,6 +559,46 @@ def test_a_restored_frame_on_a_described_path_is_drawn_from_its_description(
         assert np.array_equal(pixels, np.asarray(oracle.frame(t))), t
 
 
+@pytest.mark.parametrize(
+    ("name", "path", "kind"),
+    [
+        ("DrivenSquare", RESTORE_SCENES, "restored"),
+        ("TrustedTransform", ROUTE_SCENES, "analytic"),
+    ],
+)
+def test_an_evaluated_frame_is_described_at_its_instant(
+    session_of, monkeypatch, name, path, kind
+):
+    """A frame evaluated between captures (restored, or a trusted play's
+    analytic evaluation) is described at the instant evaluated, as the
+    forward run labels its frame there, not at the capture it began from.
+    """
+    pytest.importorskip("arachne_core")
+    from arachne.frame_ir.painter import IrCairoPainter
+
+    labels: list[Fraction] = []
+    original = IrCairoPainter.draw
+
+    def draw(self, delta):
+        labels.append(delta.to_core().contents()["t"])
+        return original(self, delta)
+
+    monkeypatch.setattr(IrCairoPainter, "draw", draw)
+    described = {"draw_path": "ir_cairo"}
+    session = session_of(name, path, frame_rate=15, **described)
+    play = session.record.plays[0]
+    instants = _unsampled(play)
+    oracle = session_of(name, path, frame_rate=15, instants=instants, **described)
+    for t in instants:
+        assert session.state_at(t).answer == kind, t
+        found = []
+        for answering in (session, oracle):
+            labels.clear()
+            answering.frame(t)
+            found.append(labels[-1])
+        assert found[0] == found[1] == (t.numerator, t.denominator), t
+
+
 def _kept_by(painter) -> tuple[int, ...]:
     """What a painter keeps across frames: its stream's mobjects and
     extractions, the records it holds, and the frames it described.
