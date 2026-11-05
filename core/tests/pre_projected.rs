@@ -144,7 +144,9 @@ fn scene() -> Scene {
 
 /// The record a camera of the scene's own produced for `rec`: its points where `placement` puts
 /// them, its paints lit as CE lights a shaded path; the record's own shape and colours replaced by
-/// ones nothing should draw, so only the tail can draw what the frame shows.
+/// ones nothing should draw, so only the tail can draw what the frame shows. A fixed orientation
+/// keeps its own shape: its first point against where the camera placed it says where the camera
+/// moved its centre.
 fn produced(
     view: &View,
     (shape, rec): &(Shape, Record),
@@ -173,7 +175,9 @@ fn produced(
         stroke: lit(&rec.paint.stroke),
         background_stroke: lit(&rec.paint.background_stroke),
     });
-    r.geometry.shape_a = Some(decoy.key());
+    if !matches!(placement, Placement::FixedOrientation(_)) {
+        r.geometry.shape_a = Some(decoy.key());
+    }
     r.paint.fill = Paint::One([1.0, 0.0, 1.0, 1.0]);
     r.paint.stroke = Paint::One([1.0, 0.0, 1.0, 1.0]);
     uploads.push(tail);
@@ -205,8 +209,8 @@ fn pre_projected_scene(view: &View, s: &Scene) -> (Vec<(Shape, Record)>, Vec<Sha
     );
     let items = vec![
         (decoy.clone(), square),
-        (decoy.clone(), curve),
-        (decoy, facing),
+        (decoy, curve),
+        (s.facing.0.clone(), facing),
     ];
     (items, extra)
 }
@@ -247,6 +251,45 @@ fn a_pre_projected_path_draws_what_its_camera_placed_and_painted_at_that_camera_
         .filter(|p| p[0] < 40 && p[1] > 120 && p[1] == p[2])
         .count();
     assert!(cap >= 10, "{cap} pixels of the cap");
+}
+
+/// A fixed orientation faces the camera at its pivot, wherever its own points' middle is: a member
+/// of a family fixed about its parent's centre (or about a custom centre) sits at the same depth
+/// whichever camera placed it.
+#[test]
+fn a_pre_projected_fixed_orientation_is_keyed_at_its_pivot_not_its_points_middle() {
+    let view = common::three_d_view(W, H);
+    let s = scene();
+    // A child square over the floor, fixed about its parent's centre under the floor, where the
+    // floor hides that centre on screen: the floor hides the child too.
+    let pivot = [0.0, 0.0, -2.5];
+    let child_shape = path(ring(&[
+        [-0.3, -0.3, 1.0],
+        [0.3, -0.3, 1.0],
+        [0.3, 0.3, 1.0],
+        [-0.3, 0.3, 1.0],
+    ]));
+    let mut child = record(RecordKind::Path, 6, &child_shape);
+    child.depth.fixed_orientation_centre = Some(pivot);
+    child.paint.fill = Paint::One([1.0, 0.9, 0.1, 1.0]);
+    let child = (child_shape, child);
+    let engine = draw(&view, &[child.clone(), s.floor.clone()], Vec::new()).unwrap();
+    let floor = draw(&view, std::slice::from_ref(&s.floor), Vec::new()).unwrap();
+    assert_eq!(engine, floor, "the floor hides the child on this camera");
+    let decoy = path(ring(&[[5.0, 3.0, 0.0], [6.0, 3.0, 0.0], [6.0, 3.5, 0.0]]));
+    let mut extra = Vec::new();
+    let placed = produced(
+        &view,
+        &child,
+        Placement::FixedOrientation(pivot),
+        &decoy,
+        &mut extra,
+    );
+    let produced = draw(&view, &[(child.0.clone(), placed), s.floor.clone()], extra).unwrap();
+    let differ = (0..(W * H) as usize)
+        .filter(|i| engine[4 * i..4 * i + 4] != produced[4 * i..4 * i + 4])
+        .count();
+    assert_eq!(differ, 0, "{differ} pixels differ");
 }
 
 #[test]

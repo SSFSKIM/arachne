@@ -37,6 +37,9 @@ pub struct PointsDraw<'a> {
     /// The positions are where a camera of the scene's own placed the points (a pre-projected
     /// record's tail), placed and projected already.
     pub pre_projected: bool,
+    /// Where that camera placed the record's fixed-orientation centre, when it has one
+    /// ([`crate::project::produced_pivot`]).
+    pub pivot: Option<[f64; 3]>,
     pub order: u32,
 }
 
@@ -117,8 +120,7 @@ pub fn lower(view: &View, width: u32, height: u32, draws: &[PointsDraw<'_>]) -> 
         }
         let lo = (-t).div_euclid(2) + 1;
         let (place_kind, keyed) = if draw.pre_projected {
-            let fixed = rec.depth.fixed_orientation_centre.is_some();
-            let key = produced_key(axes.as_ref(), &map, rec.depth.space, fixed, draw.positions);
+            let key = produced_key(axes.as_ref(), &map, rec.depth.space, draw.pivot);
             (Placement::Flat, key)
         } else {
             placement(

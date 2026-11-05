@@ -697,12 +697,14 @@ impl Stream {
                 (RecordKind::FaceGroup, Some(ShapeData::Path { points }), Body::FaceGroup(f)) => {
                     paths.push(instance::face(record, points, f, e.part, table, order));
                 }
-                (RecordKind::Path, Some(ShapeData::Path { .. }), _)
+                (RecordKind::Path, Some(ShapeData::Path { points: own }), _)
                     if let Some(tail) = &record.pre_projected =>
                 {
                     let placed = path_shape(&self.shapes, &tail.points)
                         .expect("apply checked the tail's points");
-                    paths.push(instance::produced_path(record, placed, tail, table, order));
+                    paths.push(instance::produced_path(
+                        record, own, placed, tail, table, order,
+                    ));
                 }
                 (RecordKind::Path, Some(ShapeData::Path { .. }), _) => {
                     let (points, place) =
@@ -717,7 +719,13 @@ impl Stream {
                             .expect("apply checked the tail's points"),
                         None => points,
                     };
-                    clouds.push(instance::points(record, positions, table(&p.colors), order));
+                    clouds.push(instance::points(
+                        record,
+                        points,
+                        positions,
+                        table(&p.colors),
+                        order,
+                    ));
                 }
                 (RecordKind::Instances, Some(shape), Body::Instances(body)) => match shape {
                     ShapeData::Path { points } => instance::path_members(
