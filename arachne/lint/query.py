@@ -27,11 +27,22 @@ frame the configuration describes, centred, y up, the camera's projection applie
 (:mod:`arachne.camera.projection`). The findings each answer carries are the
 rules' own, with boxes as a report gives them (scene units, and pixels of
 the session's resolution).
+
+Those numbers are the engine camera's. A scene whose code replaced a method
+of its camera (:attr:`~arachne.timeline.record.Record.camera_replaced`) may
+draw its picture elsewhere, so each answer that measures the picture
+(:meth:`Query.bbox`, :meth:`Query.overlaps`, :meth:`Query.occlusions`,
+:meth:`Query.offscreen`, :meth:`Query.text_heights`) is a
+:class:`CameraReplaced` in its place, unless every method replaced only
+paints (:data:`DRAW_ONLY`). The time, the play, the ids a frame holds and the
+markers are still answered.
 """
 
 from __future__ import annotations
 
 __all__ = [
+    "DRAW_ONLY",
+    "CameraReplaced",
     "Contact",
     "Occlusion",
     "Offscreen",
@@ -66,10 +77,31 @@ from .rules.text_small import text_heights
 if TYPE_CHECKING:
     from arachne.camera.projection import View
     from arachne.session import Session
+    from arachne.timeline.camera_code import Replaced
     from arachne.timeline.record import Capture, Marker, PlayRecord, Record
 
 #: The codes of a pair that touches, as :meth:`Query.overlaps` gives them.
 _TOUCHING = ("overlap.text", "gap.text", "contact.held")
+
+#: The camera methods that only paint: each puts down the pixels of shapes
+#: whose place on the picture the projection decides (the path setter calls
+#: it, and it is not listed), so a replacement that wraps one, to count or to
+#: restyle, changes how the picture looks and not where anything on it is.
+#: Closed: a replaced method not listed here, a projection among them, marks
+#: the answers that measure the picture.
+DRAW_ONLY = (
+    # Paints one vectorized shape: its path, stroke and fill on the context.
+    "display_vectorized",
+    # Paint the points of point clouds at the pixels they fall on.
+    "display_multiple_point_cloud_mobjects",
+    "display_point_cloud",
+    # Paint images over the corners they are placed at.
+    "display_multiple_image_mobjects",
+    "display_image_mobject",
+    # Set the Cairo context's path and colour for the paint that follows.
+    "set_cairo_context_path",
+    "set_cairo_context_color",
+)
 
 
 @dataclass(frozen=True)
@@ -135,6 +167,26 @@ class TextHeight:
     pixels: float
 
 
+@dataclass(frozen=True)
+class CameraReplaced:
+    """Given in place of a measurement of the picture: the scene replaced
+    camera methods that place what it draws (``replaced``, each as
+    ``Owner.name (on the instance|class)``), so the picture need not be where
+    the engine's camera would put it.
+    """
+
+    replaced: tuple[str, ...]
+    code: str = "query.camera_replaced"
+
+    @property
+    def message(self) -> str:
+        return (
+            f"{self.code}: the scene replaced {', '.join(self.replaced)}, so the"
+            " picture is not measured: it may not be where the engine's camera"
+            " puts it"
+        )
+
+
 @dataclass(frozen=True, eq=False)
 class _Read:
     parts: Parts
@@ -153,11 +205,14 @@ class Query:
         boxes: dict[str, Box | None],
         terms: Terms,
         markers: tuple[Marker, ...],
+        replaced: CameraReplaced | None = None,
     ):
         self.parts = parts
         self._boxes = boxes
         self._terms = terms
         self._markers = markers
+        #: What each measure of the picture is in its place, if anything.
+        self.replaced = replaced
 
     @property
     def t(self) -> Fraction:
@@ -176,26 +231,31 @@ class Query:
         """The picture's box, in home-frame units."""
         return self.parts.frame
 
-    def bbox(self, node_id: str) -> Box | None:
+    def bbox(self, node_id: str) -> Box | None | CameraReplaced:
         """The box of the mobject with stable id ``node_id`` and its family,
         their points where the picture shows them; ``None`` when they have
         no points. Raises :class:`KeyError` for an id the frame doesn't hold.
         """
         try:
-            return self._boxes[node_id]
+            box = self._boxes[node_id]
         except KeyError:
             raise KeyError(f"no mobject {node_id!r} at t={self.t}") from None
+        return self.replaced or box
 
-    def overlaps(self) -> tuple[Contact, ...]:
+    def overlaps(self) -> tuple[Contact, ...] | CameraReplaced:
         """The pairs that touch."""
+        if self.replaced:
+            return self.replaced
         return tuple(
             _contact(finding, self._things(finding))
             for finding in self._pairs
             if finding.code in _TOUCHING
         )
 
-    def occlusions(self) -> tuple[Occlusion, ...]:
+    def occlusions(self) -> tuple[Occlusion, ...] | CameraReplaced:
         """The texts something drawn after them lies over."""
+        if self.replaced:
+            return self.replaced
         found = []
         for finding in self._pairs:
             if finding.code != "occlusion.glyph":
@@ -204,8 +264,10 @@ class Query:
             found.append(Occlusion(text, over, finding.detail["covered"], finding))
         return tuple(found)
 
-    def offscreen(self) -> tuple[Offscreen, ...]:
+    def offscreen(self) -> tuple[Offscreen, ...] | CameraReplaced:
         """The texts the picture's edge cuts, or that lie wholly outside it."""
+        if self.replaced:
+            return self.replaced
         found = []
         for finding in edge_findings(self.parts, self._terms):
             (thing,) = self._things(finding)
@@ -213,8 +275,10 @@ class Query:
             found.append(Offscreen(thing, detail["edge"], detail["past"], finding))
         return tuple(found)
 
-    def text_heights(self) -> tuple[TextHeight, ...]:
+    def text_heights(self) -> tuple[TextHeight, ...] | CameraReplaced:
         """Every text on the picture, with its height."""
+        if self.replaced:
+            return self.replaced
         return tuple(
             TextHeight(_part_thing(part), units, pixels)
             for part, units, pixels in text_heights(self.parts)
@@ -251,7 +315,25 @@ def query(session: Session, t: Fraction | float) -> Query:
     (read,) = frames.result(query)
     execution = frames.execution
     terms = terms_at(execution, instant.t, Terms())
-    return Query(read.parts, read.boxes, terms, _in_force(execution, instant.t))
+    return Query(
+        read.parts,
+        read.boxes,
+        terms,
+        _in_force(execution, instant.t),
+        _replaced(record.camera_replaced),
+    )
+
+
+def _replaced(found: tuple[Replaced, ...]) -> CameraReplaced | None:
+    """What the picture's measures are in their place, when a replaced
+    camera method is not one that only paints.
+    """
+    placing = tuple(
+        f"{each.qualname} (on the {each.form})"
+        for each in found
+        if each.name not in DRAW_ONLY
+    )
+    return CameraReplaced(placing) if placing else None
 
 
 def _in_force(record: Record, t: Fraction) -> tuple[Marker, ...]:

@@ -14,6 +14,7 @@ from arachne.camera.camera import Camera
 from arachne.lint import lint
 from arachne.lint.codes import THRESHOLD_HEIGHT
 from arachne.lint.motion import motion_jump
+from arachne.lint.query import CameraReplaced
 from arachne.lint.rules import contact, frame_edge, occlusion, text_small
 
 from . import defect_scenes, projection_scenes, query_scenes
@@ -349,3 +350,55 @@ def test_a_scene_that_takes_record_and_timeline_for_its_own_is_queried(
     assert {found.a.text, found.b.text} == {"top", "low"}
     assert query.bbox(found.a.id) is not None
     assert lint(session, rules=(motion_jump,)).findings == ()
+
+
+# a replaced camera ---------------------------------------------------------------
+
+
+def _screen_space(query, node_id):
+    """Every answer a query measures on the picture."""
+    return {
+        "bbox": query.bbox(node_id),
+        "overlaps": query.overlaps(),
+        "occlusions": query.occlusions(),
+        "offscreen": query.offscreen(),
+        "text_heights": query.text_heights(),
+    }
+
+
+def test_a_replaced_projection_marks_the_screen_space_answers(session_of):
+    """The scene's own projection keeps the record, which draws its frames;
+    the lint's measures of the picture can't follow it, so a query says so in
+    their place, and answers what the picture doesn't decide.
+    """
+    session = session_of("ReplacesItsProjection", QUERIES, frame_rate=15)
+    assert session.record.refusal is None
+    t = Fraction(2, 3)
+    query = session.query(t)
+    state = session.state_at(t)
+    (square,) = [n for n in state.nodes if n.type == "Square"]
+    for name, answer in _screen_space(query, square.id).items():
+        assert isinstance(answer, CameraReplaced), name
+        assert answer.code == "query.camera_replaced"
+        assert answer.replaced == ("ThreeDCamera.project_points (on the instance)",)
+        assert "ThreeDCamera.project_points" in answer.message
+    assert (query.t, query.play, query.answer) == (t, 1, "recorded")
+    assert {n.type for n in state.nodes} >= {"Text", "Square"}
+    with pytest.raises(KeyError, match="nowhere"):
+        query.bbox("nowhere")
+
+
+def test_a_draw_counting_wrapper_leaves_the_answers_measured(session_of):
+    """A wrapper on a method that only paints changes nothing a query
+    measures: no answer is marked.
+    """
+    session = session_of("CountsItsDraws", QUERIES, frame_rate=15)
+    t = Fraction(2, 3)
+    query = session.query(t)
+    (square,) = [n for n in session.state_at(t).nodes if n.type == "Square"]
+    answers = _screen_space(query, square.id)
+    assert not any(isinstance(a, CameraReplaced) for a in answers.values())
+    assert answers["bbox"] == square.box
+    (found,) = answers["overlaps"]
+    assert found.code == "overlap.text"
+    assert {found.a.text, found.b.text} == {"top", "low"}

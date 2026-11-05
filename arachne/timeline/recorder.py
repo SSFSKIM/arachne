@@ -585,7 +585,26 @@ class Recorder:
             self.record.bridge = Bridge()
             self._camera_refusal = camera_refusal(scene.renderer.camera)
             self.record.refusal = self._camera_refusal
+            self._note_replaced()
         return self.record
+
+    def _note_replaced(self) -> None:
+        """Add to the record the camera methods the scene's code has
+        replaced by now, on every camera a frame is drawn with.
+        """
+        from .camera_code import drawn_cameras, replaced_methods
+
+        record = self.record
+        assert record is not None
+        known = {(r.owner, r.name, r.form) for r in record.camera_replaced}
+        found = list(record.camera_replaced)
+        for camera in drawn_cameras(self.scene.renderer.camera):
+            for replaced in replaced_methods(camera):
+                key = (replaced.owner, replaced.name, replaced.form)
+                if key not in known:
+                    known.add(key)
+                    found.append(replaced)
+        record.camera_replaced = tuple(found)
 
     def arm_motion(self) -> None:
         """Arm the motion rule: the record notes the first play to end from
@@ -691,6 +710,7 @@ class Recorder:
         if self._refusal_for is not None and self._refusal_for[0] == index:
             return self._refusal_for[1]
         reason = self._camera()
+        self._note_replaced()
         live_from = self.execution.live_from
         if reason is None and live_from is not None and index >= live_from:
             # From the earliest known refusal on, the record draws nothing:
@@ -792,10 +812,11 @@ class Recorder:
         try:
             record.identity = self._identity(record)
             if record.refusal is None:
-                # What the script added after its last play, or a camera
-                # method it replaced since: the final frame, drawn from the
-                # live scene.
-                record.refusal = self._draw_refusal() or self._camera()
+                # What the script added after its last play: the final frame,
+                # drawn from the live scene.
+                record.refusal = self._draw_refusal()
+            # A camera method the script replaced since its last play began.
+            self._note_replaced()
             if self.execution.number > 1:
                 self.execution = record.execution = replace(
                     self.execution,
@@ -1110,9 +1131,8 @@ class Recorder:
         joined = record.entry_refusal()
         if refusal is None:
             # A mobject a callback added while the play ran, found as it
-            # entered a capture or still there at the end; or a camera method
-            # the scene's code replaced while it ran.
-            joined = joined or self._draw_refusal() or self._camera()
+            # entered a capture or still there at the end.
+            joined = joined or self._draw_refusal()
             play.draw_refusal = joined
             if record.refusal is None:
                 record.refusal = joined
