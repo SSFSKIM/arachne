@@ -156,8 +156,8 @@ def entries(monkeypatch):
     original = live_module.live
 
     @contextlib.contextmanager
-    def observed(camera, t, draw_path=None):
-        with original(camera, t, draw_path) as painter:
+    def observed(camera, t, draw_path=None, play=None):
+        with original(camera, t, draw_path, play) as painter:
             seen.append((t, config.draw_path, painter))
             yield painter
 
