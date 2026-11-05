@@ -269,6 +269,15 @@ class ProjectingStateSolids(Solids):
         return True
 
 
+class SteadyProjectingSolids(ProjectingStateSolids):
+    """:class:`ProjectingStateSolids` whose projection never sets the line
+    width: a watched camera that changes nothing as it draws.
+    """
+
+    def rebinds(self, camera, points) -> bool:
+        return False
+
+
 class MovingStateSolids(ProjectingStateSolids):
     """:class:`ProjectingStateSolids` whose code sets the line width only as
     it projects a square far to the right, the one mobject that moves: the

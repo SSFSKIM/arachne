@@ -393,6 +393,12 @@ class LivePainter:
         self._opening = False
         #: Whether a frame other than a play's static picture has been drawn.
         self._written = False
+        #: Per hedged camera (by id), within the scene's first frame: the
+        #: camera, its own draw so far and the description of it.
+        self._chain: dict[int, tuple[Any, Any, Any]] = {}
+        #: Per hedged camera (by id): its own draw of the static picture under
+        #: the scene's first frame, and the description that replaced it.
+        self._statics: dict[int, tuple[Any, Any]] = {}
         #: Per camera (by id): the play last watched, and the frame watched
         #: in it (its first). A camera absent here has not captured yet.
         self._watched: dict[int, tuple[Any, int]] = {}
@@ -438,19 +444,65 @@ class LivePainter:
         displays = vars(camera).get("image_mobjects_from_cameras", ())
         cameras = [camera, *(display.camera for display in displays)]
         undo: list[Any] = []
+        static = isinstance(play, tuple) and play[:1] == ("static",)
         try:
             # Installed one by one, so a failure undoes what was installed.
             undo.extend(
                 self._install(each) for each in cameras if "_xf_live" not in vars(each)
             )
             yield self
+            self._settle_opening(static)
         finally:
             for restore in reversed(undo):
                 restore()
         # A play's static picture is drawn under its first frame: the scene's
         # first frame is both.
-        if not (isinstance(play, tuple) and play[:1] == ("static",)):
+        if not static:
             self._written = True
+
+    def _settle_opening(self, static: bool) -> None:
+        """The scene's first frame has been drawn by each hedged camera
+        (:meth:`_hedged`) as it draws, and described alongside. Where the
+        camera changed nothing, the description replaces its picture, so the
+        frame is the core's as every later one is; a static picture keeps
+        its own draw beside it, for a fallback to draw over (:meth:`_behind`).
+        """
+        for key, (camera, real, described) in self._chain.items():
+            if camera not in _UNSETTLED:
+                np.copyto(camera.pixel_array, described)
+                if static:
+                    self._statics[key] = (real, described)
+        self._chain.clear()
+
+    def _hedged(self, camera: Any) -> bool:
+        """Whether ``camera``'s captures in the scene's first frame are drawn
+        as the camera draws them while the frame is drawn: on the core, a
+        camera whose code the watch watches (one the scene's code changed),
+        so a change seen in that frame falls back with nothing of the core's
+        drawn before it.
+        """
+        return not self.draw and id(camera) in self._own_codes
+
+    def _behind(self, camera: Any, now: Any) -> Any:
+        """The picture the description of ``camera``'s capture about to run
+        draws over, where the camera draws it itself: the description of the
+        picture now under it, where that picture is the camera's own draw of
+        the scene's first frame, or the description of it. In the latter
+        case the camera's own draw is put back under its capture, so the
+        camera draws over its own picture throughout.
+        """
+        key = id(camera)
+        chain = self._chain.get(key)
+        for pair in (chain[1:] if chain else None, self._statics.get(key)):
+            if pair is None:
+                continue
+            real, described = pair
+            if np.array_equal(now, real):
+                return described
+            if np.array_equal(now, described):
+                np.copyto(camera.pixel_array, real)
+                return described
+        return now
 
     def _install(self, camera: Any) -> Any:
         from arachne.camera.camera import Camera
@@ -544,6 +596,8 @@ class LivePainter:
             self._sample(camera)
             frames = vars(camera)["_xf_live"]
             background = np.array(camera.pixel_array)
+            if self._real and not self.draw:
+                background = self._behind(camera, background)
             drawn: list[tuple[type, _Recording]] = []
             centres: dict[int, list[Any]] = {}
             frames.append(drawn)
@@ -574,10 +628,13 @@ class LivePainter:
                     return
                 self.differing += 1
             self.captures += 1
-            if self.draw or not self._opening:
-                # On the core the scene's first frame stays the camera's own
-                # draw, every capture in it: a change seen in any of them
-                # then leaves no frame of the core's behind it.
+            if self._real and not self.draw:
+                # The scene's first frame stays the camera's own draw while it
+                # is drawn, every capture in it: a change seen in any of them
+                # then leaves nothing of the core's in it. Its description
+                # replaces it once the frame is drawn (:meth:`_settle_opening`).
+                self._chain[id(camera)] = (camera, np.array(camera.pixel_array), pixels)
+            else:
                 np.copyto(camera.pixel_array, pixels)
 
         return described
@@ -587,11 +644,11 @@ class LivePainter:
         and whether the camera's own draw of it is made. With a real draw
         (``ir_cairo``) both, always. On the core, which draws no capture of
         the camera's own, the watch samples: every capture of the first frame
-        of each play (a play's static picture is a frame of its own). The
-        scene's first frame (with the static picture drawn under it) stands
-        as the camera draws it, every capture in it, so a change seen there
-        sends the whole scene to Cairo from its first frame; a camera fallen
-        so draws every later capture itself.
+        of each play (a play's static picture is a frame of its own). A
+        hedged camera (:meth:`_hedged`) also draws the scene's first frame
+        (with the static picture drawn under it) as it draws, every capture
+        in it, so a change seen there sends the whole scene to Cairo from its
+        first frame; a camera fallen so draws every later capture itself.
         """
         if self.draw:
             self._watching = self._real = True
@@ -602,7 +659,7 @@ class LivePainter:
             watched = self._watched[key] = (self.play, self._frames)
         fallen = camera in _UNSETTLED
         self._watching = watched[1] == self._frames and not fallen
-        self._real = self._opening or fallen
+        self._real = (self._opening and self._hedged(camera)) or fallen
 
     def _fall_back(self, camera: Any) -> None:
         """The capture just drawn stands as the camera drew it, with one

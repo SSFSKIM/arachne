@@ -25,6 +25,7 @@ import pytest
 from arachne.frame_ir import painter
 from arachne.frame_ir.core_painter import CorePainter
 from arachne.frame_ir.extract import Unable
+from arachne.frame_ir.live import LivePainter
 
 from ..timeline.conftest import render
 from . import camera_scenes, core_scenes
@@ -157,6 +158,28 @@ def test_a_proven_change_that_rebinds_the_camera_s_state_draws_on_cairo_for_the_
     assert "whole scene" in finding.message
     assert "project_points" in finding.message
     assert "cairo_line_width_multiple" in finding.message
+
+
+def test_a_watched_camera_that_changes_nothing_has_every_frame_from_the_core(
+    findings, monkeypatch
+):
+    """The camera's own draw of the scene's first frame is only the hedge
+    for a fallback: where nothing changed, the first frame, and the static
+    picture under it, are the core's, as every later frame is. Each frame
+    equals the core's draw with no hedge at all, and the first is not
+    Cairo's.
+    """
+    scene_class = camera_scenes.SteadyProjectingSolids
+    _, cairo = render(scene_class, FPS, **MEDIUM)
+    _, core = render(scene_class, FPS, draw_path="core", **MEDIUM)
+    assert not _fallbacks(findings), findings
+    assert len(core) == len(cairo) > 0
+    assert np.any(core[0] != cairo[0]), "the first frame is the core's, not Cairo's"
+    monkeypatch.setattr(LivePainter, "_hedged", lambda self, camera: False)
+    _, unhedged = render(scene_class, FPS, draw_path="core", **MEDIUM)
+    assert len(core) == len(unhedged)
+    for index, (a, b) in enumerate(zip(core, unhedged, strict=True)):
+        np.testing.assert_array_equal(a, b, err_msg=f"frame {index}")
 
 
 def test_a_rebinding_first_seen_in_a_later_play_is_unable():
