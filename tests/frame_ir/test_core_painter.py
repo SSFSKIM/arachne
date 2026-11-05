@@ -75,3 +75,38 @@ def test_auto_draws_a_2d_scene_as_cairo_does_without_xf():
     assert len(direct) == len(auto) > 0
     for index, (a, b) in enumerate(zip(direct, auto, strict=True)):
         np.testing.assert_array_equal(a, b, err_msg=f"frame {index}")
+
+
+def _inside(frame: np.ndarray, margin: int = 2) -> np.ndarray:
+    """Pixels at least ``margin`` px from any edge in ``frame``: where no
+    neighbour differs from a pixel by more than a gradient's step, eroded
+    by ``margin``.
+    """
+    rgb = frame[..., :3].astype(int)
+    smooth = np.ones(rgb.shape[:2], bool)
+    for dy, dx in ((0, 1), (1, 0), (1, 1), (1, -1)):
+        step = np.abs(rgb - np.roll(rgb, (dy, dx), axis=(0, 1))).max(axis=-1) <= 3
+        smooth &= step & np.roll(step, (-dy, -dx), axis=(0, 1))
+    inside = smooth.copy()
+    for _ in range(margin):
+        inside &= np.roll(inside, 1, 0) & np.roll(inside, -1, 0)
+        inside &= np.roll(inside, 1, 1) & np.roll(inside, -1, 1)
+    return inside & np.any(rgb > 0, axis=-1)
+
+
+def test_a_lit_face_is_ce_s_colours_inside_it():
+    """Each face of a shaded prism and surface is lit as CE lights it (two
+    stops, a linear gradient), coloured as Cairo colours it: inside every
+    face, away from its edges, the core's pixels are CE's.
+    """
+    size = {"pixel_width": 480, "pixel_height": 270}
+    _, ce = render(core_scenes.ShadedSolids, FPS, **size)
+    _, core = render(core_scenes.ShadedSolids, FPS, draw_path="core", **size)
+    assert len(ce) == len(core) > 0
+    compared = 0
+    for index, (a, b) in enumerate(zip(ce, core, strict=True)):
+        inside = _inside(a)
+        np.testing.assert_array_equal(b[inside], a[inside], err_msg=f"frame {index}")
+        compared += int(inside.sum())
+    # Hundreds of pixels inside the faces of every frame, not a handful.
+    assert compared > 500 * len(ce), compared
