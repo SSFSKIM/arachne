@@ -255,7 +255,9 @@ class Canonical:
 
     Shapes whose points snap alike are one snapped shape, uploaded while the
     first of its holders (a shape of the stream, or a record made into
-    points) holds it and released with the last. The stream's uploads are
+    points) holds it and released with the last, as each delta ends: a shape
+    held when a delta starts and when it ends is neither uploaded nor
+    released by it, whatever held it in between. The stream's uploads are
     counted first, then its releases, then its records, as the core applies
     them.
 
@@ -273,6 +275,10 @@ class Canonical:
         self._snapped: dict[Any, bytes] = {}
         #: Each snapped shape held, by its key: its holders.
         self._holders: dict[bytes, set[Any]] = {}
+        #: Within a delta: the snapped shapes it made, and the keys whose
+        #: holders it changed, in the order it did (:meth:`_settle_shapes`).
+        self._made: dict[bytes, Shape] = {}
+        self._touched: dict[bytes, None] = {}
         #: Each record held, by slot, as the scene made it.
         self._records: dict[int, Record] = {}
         #: The view held, as the scene made it.
@@ -289,6 +295,9 @@ class Canonical:
 
     def __call__(self, delta: Delta) -> Delta:
         found = Delta(t=delta.t, seq=delta.seq, objects=list(delta.objects))
+        held = set(self._holders)
+        self._made = {}
+        self._touched = {}
         if delta.view is not None:
             self._view = dict(delta.view)
         for slot, record in delta.set:
@@ -333,6 +342,7 @@ class Canonical:
         ]
         for slot in delta.remove:
             self._let_go(("slot", slot), found)
+        self._settle_shapes(held, found)
         found.remove = list(delta.remove)
         found.order = None if delta.order is None else list(delta.order)
         return found
@@ -378,8 +388,9 @@ class Canonical:
         }
 
     def _hold(self, holder: Any, points: Any, found: Delta) -> bytes:
-        """``points`` snapped, held by ``holder`` (instead of what it held),
-        uploaded in ``found`` when nothing held them; their key.
+        """``points`` snapped, held by ``holder`` (instead of what it held);
+        their key. Whether the delta uploads them is decided once it is built
+        (:meth:`_settle_shapes`).
         """
         assert self.grid is not None
         shape = Shape("path", _position(points, self.grid))
@@ -388,15 +399,16 @@ class Canonical:
             return shape.key
         holders = self._holders.setdefault(shape.key, set())
         if not holders:
-            found.upload.append(shape)
+            self._made.setdefault(shape.key, shape)
+            self._touched[shape.key] = None
         holders.add(holder)
         self._let_go(holder, found)
         self._snapped[holder] = shape.key
         return shape.key
 
     def _let_go(self, holder: Any, found: Delta) -> None:
-        """``holder`` holds its snapped shape no longer: released in
-        ``found`` once nothing holds it.
+        """``holder`` holds its snapped shape no longer. Whether the delta
+        releases it is decided once it is built (:meth:`_settle_shapes`).
         """
         key = self._snapped.pop(holder, None)
         if key is None:
@@ -405,7 +417,20 @@ class Canonical:
         holders.discard(holder)
         if not holders:
             del self._holders[key]
-            found.release.append(key)
+            self._touched[key] = None
+
+    def _settle_shapes(self, held: set[bytes], found: Delta) -> None:
+        """The snapped shapes ``found`` uploads and releases, from what was
+        ``held`` before it and what is held once it is built: a shape held at
+        both ends is neither, however its holders changed in between (two
+        records that swap shapes), and one nothing holds at the end is
+        released in this delta.
+        """
+        for key in self._touched:
+            if key in self._holders and key not in held:
+                found.upload.append(self._made[key])
+            elif key not in self._holders and key in held:
+                found.release.append(key)
 
     def _key(self, key: bytes) -> bytes:
         """A shape's key as the core holds it: its snapped shape's, for a
