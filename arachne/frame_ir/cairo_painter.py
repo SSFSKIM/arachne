@@ -32,11 +32,51 @@ from arachne.mobject.types.vectorized_mobject import VMobject
 
 from .extract import Unable
 from .geometry import blended, revealed
+from .replay import Recording, Replays, replay
 from .xf import FEATURE_BACKGROUND_IMAGE, FEATURE_PRE_PROJECTED, Record, StreamState
 
 #: The record kinds and feature bits Cairo draws.
 _DRAWN_KINDS = frozenset({"path", "face_group", "points", "image"})
 _DRAWN_FEATURES = FEATURE_BACKGROUND_IMAGE | FEATURE_PRE_PROJECTED
+#: Whether the camera draws a record of each kind through its Cairo context
+#: (a path filled through a background image excepted).
+_THROUGH_CONTEXT = {"path": True, "face_group": True, "points": False, "image": False}
+#: The view's values a 3D camera's draw of an unshaded member fixed in frame
+#: never reads: its rotation, projection and light.
+_ROTATION_FIELDS = frozenset(
+    {
+        "phi",
+        "theta",
+        "gamma",
+        "focal_distance",
+        "zoom",
+        "exponential_projection",
+        "light_source",
+        "shading_factor",
+        "should_apply_shading",
+    }
+)
+
+
+def _view_key(view: dict[str, Any], *, flat: bool) -> tuple[Any, ...]:
+    """``view``'s values as a key, without :data:`_ROTATION_FIELDS` if
+    ``flat``.
+    """
+    return tuple(
+        (name, _keyed(value))
+        for name, value in sorted(view.items())
+        if not (flat and name in _ROTATION_FIELDS)
+    )
+
+
+def _keyed(value: Any) -> Any:
+    if isinstance(value, list | tuple):
+        return tuple(_keyed(v) for v in value)
+    if isinstance(value, dict):
+        return tuple((k, _keyed(v)) for k, v in sorted(value.items()))
+    if isinstance(value, np.ndarray):
+        return (value.shape, value.tobytes())
+    return value
 
 
 class Unsupported(Exception):
@@ -280,6 +320,8 @@ class CairoDrawer:
         self._cameras: dict[tuple[str, Any], Any] = {}
         self._arrays: dict[Any, np.ndarray] = {}
         self._proxies: dict[int, tuple[Record, Any]] = {}
+        #: Records (by slot) :meth:`draw_over` found drawable.
+        self._checked: dict[int, Record] = {}
         self._state: StreamState | None = None
 
     # Cameras and arrays
@@ -508,20 +550,45 @@ class CairoDrawer:
         state: StreamState,
         frame: np.ndarray,
         entries: Sequence[tuple[str, int, int]],
+        replays: Replays | None = None,
     ) -> np.ndarray:
         """``frame`` (written in place, and returned) with ``entries`` of
         ``state`` drawn over it in their order, by a camera of the view, as
         CE's capture draws them: a 3D scene's overlay over the core's frame.
+        With ``replays``, a member the camera draws through its context that
+        is the same as in the frame before is not drawn again: the calls it
+        made then are made again (:mod:`.replay`, :meth:`_draw_kept`).
         """
-        self._refuse_unknown(state, entries)
+        if replays is None:
+            self._refuse_unknown(state, entries)
+        else:
+            # A record already found drawable is drawable while it stands (a
+            # display's is checked again: its sub-frame's records can change
+            # under it).
+            checked = self._checked
+            unchecked = [
+                e for e in entries if checked.get(e[1]) is not state.records[e[1]]
+            ]
+            self._refuse_unknown(state, unchecked)
+            for _, slot, _ in unchecked:
+                record = state.records[slot]
+                if "sub_frame" not in record.fields:
+                    checked[slot] = record
+            for slot in [s for s in checked if s not in state.records]:
+                del checked[slot]
         self._state = state
-        return self._draw_order(state, entries, frame)
+        try:
+            return self._draw_order(state, entries, frame, replays)
+        finally:
+            if replays is not None:
+                replays.next_frame()
 
     def _draw_order(
         self,
         state: StreamState,
         order: Sequence[tuple[str, int, int]],
         array: np.ndarray,
+        replays: Replays | None = None,
     ) -> np.ndarray:
         view = state.view
         assert view is not None
@@ -530,13 +597,111 @@ class CairoDrawer:
             del self._proxies[slot]
         camera = self._camera(view, "main")
         camera.pixel_array = array
-        self._seed_images(camera, state)
-        self._orient(camera, state)
+        prepared = False
+
+        def prepare() -> None:
+            # What the camera's own draw reads beyond the view: a run made
+            # again from its calls reads neither.
+            nonlocal prepared
+            if not prepared:
+                self._seed_images(camera, state)
+                self._orient(camera, state)
+                prepared = True
+
+        if replays is None:
+            prepare()
+        views = (_view_key(view, flat=False), _view_key(view, flat=True))
+        key: Any = None
         for _, run in it.groupby(order, key=lambda entry: entry[0]):
             entries = list(run)
             self._draw_displays(entries)
-            self._draw_entries(camera, entries, array)
+            if replays is None:
+                self._draw_entries(camera, entries, array)
+            else:
+                key = self._draw_kept(
+                    camera, entries, array, replays, prepare, key, views
+                )
         return array
+
+    def _draw_kept(
+        self,
+        camera: Any,
+        entries: Sequence[tuple[str, int, int]],
+        array: np.ndarray,
+        replays: Replays,
+        prepare: Any,
+        key: Any,
+        views: tuple[Any, Any],
+    ) -> Any:
+        """Draw ``entries`` as :meth:`_draw_entries` does, each member the
+        camera draws through its context made again from the frame before's
+        calls where its key is the same, else drawn and its calls kept.
+
+        The camera draws a run of paths member by member on one context
+        (``display_multiple_non_background_colored_vmobjects``), and each
+        member sets every state its fill and strokes read. The one thing a
+        member takes from the member before is the current path, where its
+        camera places no points and so it begins no path of its own (CE hands
+        the camera only mobjects with points; a pre-projected record can
+        still hold none). A member's key is
+        therefore its record (by identity), its part and the view it reads (a
+        member fixed in frame and unshaded reads no rotation or light), and,
+        for a member whose calls begin no path, the key of the member before.
+        Images and point clouds never touch the context. Returns the key of
+        the last member drawn through the context.
+        """
+        state = self._state
+        assert state is not None
+        for through_context, run in it.groupby(
+            entries,
+            key=lambda entry: _THROUGH_CONTEXT.get(state.records[entry[1]].kind),
+        ):
+            group = list(run)
+            if not through_context:
+                prepare()
+                self._draw_entries(camera, group, array)
+                continue
+            records = [state.records[slot] for _, slot, _ in group]
+            replays.hold(records)
+            if any(
+                int(record.fields.get("features", 0)) & FEATURE_BACKGROUND_IMAGE
+                for record in records
+            ):
+                # A path filled through a background image is drawn into an
+                # array of its own, the rest of its run through the context:
+                # drawn anew, and the path it leaves is no member's.
+                prepare()
+                self._draw_entries(camera, group, array)
+                key = object()
+                continue
+            context = _context(camera, array)
+            drawing = False
+            for (_, slot, part), record in zip(group, records, strict=True):
+                fields = record.fields
+                flat = fields.get("space") == "overlay" and not fields.get(
+                    "shade_in_3d"
+                )
+                own = (id(record), part, views[flat])
+                calls = replays.found(own)
+                if calls is not None:
+                    key = own
+                else:
+                    calls = replays.found((key, own))
+                    if calls is not None:
+                        key = (key, own)
+                if calls is not None:
+                    replay(context, calls)
+                    continue
+                if not drawing:
+                    prepare()
+                    if isinstance(camera, ThreeDCamera):
+                        camera.reset_rotation_matrix()
+                    drawing = True
+                recording = Recording(context)
+                camera.display_vectorized(self._proxy(slot, part, record), recording)
+                key = own if recording.begins_path() else (key, own)
+                replays.keep(key, recording.calls)
+        return key
 
     @staticmethod
     def _refuse_unknown(
