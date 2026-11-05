@@ -68,6 +68,7 @@ __all__ = [
     "SCALE_BITS",
     "Canonical",
     "canonical_order",
+    "frame_grid",
     "input_grid",
     "relative",
     "snap",
@@ -75,7 +76,7 @@ __all__ = [
 
 import contextlib
 import math
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Any
 
 import numpy as np
@@ -83,7 +84,8 @@ import numpy as np
 from .xf import Delta, Record, Shape
 
 #: The fixed grid of positions that order, not place: the camera's depth
-#: sort keys; and the grid of a frame no view sees.
+#: sort keys, but where the frame's grid is finer (:func:`canonical_order`);
+#: and the grid of a frame no view sees.
 POSITION_GRID = 2.0**-16
 #: The grid dimensionless values are snapped to.
 RATIO_GRID = 2.0**-24
@@ -124,7 +126,7 @@ def relative(values: Any) -> Any:
     return float(found)
 
 
-def input_grid(views: list[Mapping[str, Any]]) -> float:
+def input_grid(views: Sequence[Mapping[str, Any]]) -> float:
     """The grid positions seen through ``views`` are snapped to: the finest
     of each view's ``2^(e - 9)``, ``e`` the binary exponent (``math.frexp``,
     exact) of the scene units its pixel spans, read from its frame width
@@ -143,20 +145,45 @@ def input_grid(views: list[Mapping[str, Any]]) -> float:
     return POSITION_GRID if found == math.inf else found
 
 
+def frame_grid(camera: Any) -> float:
+    """The grid of a frame ``camera`` draws: :func:`input_grid` over its view
+    and each display camera's, that one at the pixel width a MultiCamera's
+    capture sizes it to (``MultiCamera.update_sub_cameras``, which keeps its
+    frame width). Decided once per frame by the drawing, before it sorts or
+    describes anything, and handed to :func:`canonical_order` and to each
+    Canonical of the frame (:attr:`Canonical.frame_grid`).
+    """
+    from .extract import view_values
+    from .live import _view_kind
+
+    views = [view_values(camera, _view_kind(camera))]
+    for display in vars(camera).get("image_mobjects_from_cameras", ()):
+        view = view_values(display.camera, _view_kind(display.camera))
+        if hasattr(camera, "update_sub_cameras"):
+            width = camera.pixel_array.shape[1]
+            view["pixel_width"] = int(width * display.width / camera.frame_width)
+        views.append(view)
+    return input_grid(views)
+
+
 @contextlib.contextmanager
-def canonical_order(camera: Any) -> Iterator[None]:
+def canonical_order(camera: Any, grid: float | None) -> Iterator[None]:
     """Within: ``camera``, and each display camera it draws through, sorts
-    what it draws by depth on snapped keys (``ThreeDCamera``'s
-    ``get_mobjects_to_display``): the order is the core's input too, and a
-    near-tie in it is taken as a tie, which the sort keeps in the order it
-    was handed.
+    what it draws by depth on keys snapped to the finer of the frame's
+    ``grid`` (:func:`frame_grid`) and :data:`POSITION_GRID`
+    (``ThreeDCamera``'s ``get_mobjects_to_display``): the order is the
+    core's input too, and a near-tie in it is taken as a tie, which the sort
+    keeps in the order it was handed. Wherever the frame's grid is no finer
+    than :data:`POSITION_GRID` the keys are those of that grid alone; a deep
+    zoom's keys follow its grid down.
     """
     from arachne.timeline.camera_code import drawn_cameras
 
+    keys = POSITION_GRID if grid is None else min(grid, POSITION_GRID)
     cameras = [each for each in drawn_cameras(camera) if hasattr(each, "__dict__")]
     held = [vars(each).get(_ORDER) for each in cameras]
     for each in cameras:
-        vars(each)[_ORDER] = True
+        vars(each)[_ORDER] = keys
     try:
         yield
     finally:
@@ -167,7 +194,8 @@ def canonical_order(camera: Any) -> Iterator[None]:
                 vars(each)[_ORDER] = before
 
 
-#: The camera attribute under which :func:`canonical_order` holds.
+#: The camera attribute under which :func:`canonical_order` holds the grid
+#: its depth keys are snapped to.
 _ORDER = "_xf_canonical_order"
 
 

@@ -43,6 +43,7 @@ import numpy as np
 from arachne.mobject.values import FrozenArray
 
 from .cairo_painter import CairoDrawer
+from .canonical import canonical_order, frame_grid
 from .extract import (
     FrameStream,
     Unable,
@@ -485,26 +486,6 @@ class LivePainter:
         if canonical is not None:
             canonical.frame_grid = self.grid
 
-    def _frame_grid(self, camera: Any, displays: Any) -> float | None:
-        """On the core, the grid of a frame ``camera`` draws with ``displays``,
-        as a frame drawn from the record has it: ``canonical.input_grid`` over
-        the camera's view and each display camera's, that one at the pixel
-        width a MultiCamera's capture sizes it to
-        (``MultiCamera.update_sub_cameras``, which keeps its frame width).
-        """
-        if self.path != "core":
-            return None
-        from .canonical import input_grid
-
-        views = [view_values(camera, _view_kind(camera))]
-        for display in displays:
-            view = view_values(display.camera, _view_kind(display.camera))
-            if hasattr(camera, "update_sub_cameras"):
-                width = camera.pixel_array.shape[1]
-                view["pixel_width"] = int(width * display.width / camera.frame_width)
-            views.append(view)
-        return input_grid(views)
-
     def _is_scene_camera(self, camera: Any) -> bool:
         return self._scene is not None and camera is self._scene[0]
 
@@ -535,7 +516,9 @@ class LivePainter:
         self._opening = not delivered(camera, asked)
         displays = vars(camera).get("image_mobjects_from_cameras", ())
         cameras = [camera, *(display.camera for display in displays)]
-        self.grid = self._frame_grid(camera, displays)
+        # On the core, the frame's grid, as a frame drawn from the record
+        # decides it: its geometry is snapped to it, and its depth sort keys.
+        self.grid = frame_grid(camera) if self.path == "core" else None
         for _, painter in self._painters.values():
             self._give_grid(painter)
         undo: list[Any] = []
@@ -545,7 +528,12 @@ class LivePainter:
             undo.extend(
                 self._install(each) for each in cameras if "_xf_live" not in vars(each)
             )
-            yield self
+            with (
+                canonical_order(camera, self.grid)
+                if self.grid is not None
+                else contextlib.nullcontext()
+            ):
+                yield self
             self._settle_opening(static)
             if static:
                 self._static_pictures.update(self._last)
@@ -682,10 +670,6 @@ class LivePainter:
 
             own["get_cairo_context"] = engine_own(no_context)
             added.append("get_cairo_context")
-            # The core's input order: its depth sort on snapped keys
-            # (``canonical.canonical_order``).
-            own["_xf_canonical_order"] = True
-            added.append("_xf_canonical_order")
             set_array = camera.set_pixel_array
 
             def installing(pixel_array: Any, *args: Any, **kwargs: Any) -> Any:
