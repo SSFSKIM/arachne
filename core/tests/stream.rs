@@ -359,15 +359,15 @@ fn a_display_can_capture_itself() {
 }
 
 #[test]
-fn a_shaded_path_under_a_shading_camera_is_refused_not_drawn_unlit() {
+fn a_shaded_path_is_lit_as_ce_lights_it_and_refused_under_another_light() {
     // CE lights a `shade_in_3d` path under a 3D camera that shades: each paint becomes two stops,
-    // lit at the path's start and end corners, drawn as a linear gradient. Paths draw no gradient
-    // yet, so such a path, or an instances record of one, refuses the frame instead of drawing
-    // unlit. Without shading, or without `shade_in_3d`, it draws.
+    // lit at the path's start and end corners, drawn as a linear gradient between them. Under CE's
+    // light model a path, or an instances record of one, is drawn so; without shading, or without
+    // `shade_in_3d`, it is drawn unlit. Under another light model a path has no look yet: refused.
     let shape = square();
     let colours = Stops::new(vec![[1.0, 0.0, 0.0, 1.0]]);
     for instanced in [false, true] {
-        for (shade_in_3d, shading) in [(true, true), (false, true), (true, false)] {
+        let draw = |shade_in_3d: bool, shading: bool, light: LightModel| {
             let mut r = path_record(1, &shape);
             if instanced {
                 r.kind = RecordKind::Instances;
@@ -380,7 +380,8 @@ fn a_shaded_path_under_a_shading_camera_is_refused_not_drawn_unlit() {
             }
             r.depth.space = Space::World;
             r.depth.shade_in_3d = shade_in_3d;
-            let mut view = common::three_d_view(16, 9);
+            let mut view = common::three_d_view(48, 27);
+            view.light = light;
             let Camera::ThreeD(c) = &mut view.camera else {
                 unreachable!()
             };
@@ -393,20 +394,23 @@ fn a_shaded_path_under_a_shading_camera_is_refused_not_drawn_unlit() {
             d.order = Some(vec![entry(1)]);
             let mut s = Stream::new();
             s.apply(&d).unwrap();
-            let drawn = s.draw(16, 9, 1);
-            let what =
-                format!("instanced {instanced}, shade_in_3d {shade_in_3d}, shading {shading}");
-            if shade_in_3d && shading {
-                let Err(DrawError::Unsupported(u)) = drawn else {
-                    panic!("{what}: not refused")
-                };
-                let kind = if instanced { "instances" } else { "path" };
-                assert_eq!((u.kind.as_str(), u.slot), (kind, Some(1)), "{what}");
-                assert!(u.reason.contains("shad"), "{what}: {}", u.reason);
-            } else {
-                assert!(drawn.is_ok(), "{what}: {drawn:?}");
-            }
-        }
+            s.draw(48, 27, 1)
+        };
+        let what = format!("instanced {instanced}");
+        let lit = draw(true, true, LightModel::Ce).unwrap();
+        let unlit = draw(false, true, LightModel::Ce).unwrap();
+        assert_eq!(unlit, draw(true, false, LightModel::Ce).unwrap(), "{what}");
+        assert_ne!(lit, unlit, "{what}: drawn unlit");
+        let soft = LightModel::SoftDiffuse {
+            ambient: 0.2,
+            wrap: 0.5,
+        };
+        let Err(DrawError::Unsupported(u)) = draw(true, true, soft) else {
+            panic!("{what}: drawn under soft diffuse light")
+        };
+        let kind = if instanced { "instances" } else { "path" };
+        assert_eq!((u.kind.as_str(), u.slot), (kind, Some(1)), "{what}");
+        assert!(u.reason.contains("light model"), "{what}: {}", u.reason);
     }
 }
 

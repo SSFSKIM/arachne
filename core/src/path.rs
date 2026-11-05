@@ -14,6 +14,12 @@
 //!   view's `cairo_line_width_multiple`, its joint (auto is a miter) and cap (auto is butt), Cairo's
 //!   miter limit of 10, and the record's dash. Each layer is flattened on the pixel plane to Cairo's
 //!   tolerance of 0.1 px, so flattening follows the projected size.
+//! - Colour: one colour, or, for a paint of two or more, a linear gradient between the record's
+//!   ends placed for display, coloured as Cairo's pattern and pixman's fetch colour it
+//!   ([`crate::gradient`]), each pixel from the start of the composite run Cairo would paint it in
+//!   ([`composite_runs`]). A path CE's lighting shades (`shade_in_3d` under a camera that shades)
+//!   is lit into two stops at its start and end corners (`shade::ce_face_stops`), its gradient
+//!   between those corners.
 //! - Depth: a path in world space under a 3D camera lies on its plane when it has one seen clearly
 //!   (`depth::WorldPlane`, made canonical, so text and axes on one plane, and a mesh on it, tie
 //!   exactly); otherwise (a curve in space, a plane seen nearly edge-on) each pixel takes the depth
@@ -28,6 +34,7 @@ use crate::composite::{
     sample_cell,
 };
 use crate::depth::{Centreline, WorldPlane};
+use crate::gradient::{self, Linear};
 use crate::project::{FrameMap, Projection, placement, pre_display};
 use crate::scanline::{self, Edge, Scratch};
 use crate::tiles::{TILE, tile_index, tiles_across};
@@ -53,16 +60,21 @@ const MIN_PLANE_COS: f64 = 0.05;
 const GUARD: f64 = 65536.0;
 
 /// One path to draw: a shape's points through a placement, painted by a record's paint block, with
-/// each paint resolved to one colour (straight RGBA, before the group opacity) or none.
+/// each paint resolved to its colour rows (straight RGBA, before the group opacity: one colour, or
+/// a gradient's stops) or none.
 pub struct PathDraw<'a> {
     pub record: &'a Record,
     /// The shape's points, or the points a reveal or a blend made of it
     /// ([`crate::geometry::path_points`], placed already).
     pub points: std::borrow::Cow<'a, [[f64; 3]]>,
     pub place: Affine,
-    pub fill: Option<[f64; 4]>,
-    pub stroke: Option<[f64; 4]>,
-    pub background_stroke: Option<[f64; 4]>,
+    pub fill: Option<Vec<[f64; 4]>>,
+    pub stroke: Option<Vec<[f64; 4]>>,
+    pub background_stroke: Option<Vec<[f64; 4]>>,
+    /// A gradient's ends in world space, as `get_gradient_start_and_end_points` gives them: where
+    /// a paint of two or more rows runs between, unless CE's lighting shades the path (whose
+    /// gradient runs between its start and end corners).
+    pub ends: Option<[[f64; 3]; 2]>,
     /// The stroke widths drawn, in CE's units: the record's, or a paint blend's mix of them.
     pub stroke_width: f64,
     pub background_stroke_width: f64,
@@ -79,7 +91,99 @@ enum LayerDepth {
     Curve(u32),
 }
 
-/// One coverage layer: a fill or a stroke's outline, with its colour and place.
+/// What a layer paints its pixels with.
+enum LayerPaint {
+    /// One premultiplied colour.
+    Solid([u8; 4]),
+    /// A linear gradient, and per row of the layer's box from its top, Cairo's composite runs
+    /// (`x0..x1`, sorted): a pixel's colour is fetched from the start of its run.
+    Linear(Box<Linear>, Vec<Vec<(u32, u32)>>),
+}
+
+/// A layer's paint before its pixels are known: the gradient is fixed to the drawing's extents.
+enum PaintSpec {
+    Solid([u8; 4]),
+    /// Stops (straight RGBA, group opacity applied) between two ends in the frame's units.
+    Gradient(Vec<[f64; 4]>, [f64; 2], [f64; 2]),
+}
+
+/// Cairo's run length for a gradient source (`inplace_renderer_init`): a run of full coverage at
+/// least this long is composited on its own.
+const RUN_LENGTH: u32 = 256;
+
+/// The composite runs Cairo's in-place span renderer (`_inplace_spans`) makes of one row whose
+/// covered spans are `spans` (`x0, x1, full`, left to right; the gaps between them hold no
+/// coverage): a long full span on its own, the rest gathered from the first pixel on, cut at a
+/// gap once what was gathered is longer than a run.
+fn composite_runs(spans: &[(u32, u32, bool)]) -> Vec<(u32, u32)> {
+    let mut runs = Vec::new();
+    let Some(&(first, _, _)) = spans.first() else {
+        return runs;
+    };
+    let (mut x0, mut x1) = (first, first);
+    let mut at = first;
+    let mut row = Vec::with_capacity(2 * spans.len());
+    for &(a, b, full) in spans {
+        if a > at {
+            row.push((at, a, Some(false)));
+        }
+        row.push((a, b, if full { None } else { Some(true) }));
+        at = b;
+    }
+    // Each span: (x0, x1, None for full, Some(covered) otherwise).
+    for (a, b, coverage) in row {
+        if b - a > 1 {
+            if b - a >= RUN_LENGTH && coverage.is_none() {
+                if x1 != x0 {
+                    runs.push((x0, x1));
+                }
+                runs.push((a, b));
+                x0 = b;
+            } else if coverage == Some(false) && x1 - x0 > RUN_LENGTH {
+                runs.push((x0, x1));
+                x0 = b;
+            }
+        }
+        x1 = b;
+    }
+    if x1 != x0 {
+        runs.push((x0, x1));
+    }
+    runs
+}
+
+/// Cairo's composite runs for every row of a layer's box ([`composite_runs`]), from the layer's
+/// own coverage.
+fn layer_runs(layer: &Layer) -> Vec<Vec<(u32, u32)>> {
+    let mut scratch = Scratch::default();
+    (layer.bbox[1]..layer.bbox[3])
+        .map(|y| {
+            let mut spans: Vec<(u32, u32, bool)> = Vec::new();
+            let row = Rect {
+                x0: layer.bbox[0],
+                y0: y,
+                x1: layer.bbox[2],
+                y1: y + 1,
+            };
+            scanline::cover(
+                &layer.edges,
+                layer.candidates(y),
+                row,
+                &mut scratch,
+                |_, x0, x1, area| {
+                    let full = area >= 1.0;
+                    match spans.last_mut() {
+                        Some(last) if full && last.2 && last.1 == x0 => last.1 = x1,
+                        _ => spans.push((x0, x1, full)),
+                    }
+                },
+            );
+            composite_runs(&spans)
+        })
+        .collect()
+}
+
+/// One coverage layer: a fill or a stroke's outline, with its paint and place.
 struct Layer {
     edges: Vec<Edge>,
     /// The first tile row the layer touches, and per tile row from it, the range of its edges
@@ -89,13 +193,28 @@ struct Layer {
     band_edges: Vec<u32>,
     /// Pixels `x0..x1` by `y0..y1`, inside the frame.
     bbox: [u32; 4],
-    colour: [u8; 4],
+    paint: LayerPaint,
+    /// Every pixel of its paint is opaque.
+    opaque: bool,
     depth: LayerDepth,
     order: u32,
     sub: u32,
 }
 
 impl Layer {
+    /// The premultiplied colour the layer paints at `(x, y)`.
+    fn colour(&self, x: u32, y: u32) -> [u8; 4] {
+        match &self.paint {
+            LayerPaint::Solid(colour) => *colour,
+            LayerPaint::Linear(gradient, rows) => {
+                let runs = &rows[(y - self.bbox[1]) as usize];
+                let i = runs.partition_point(|r| r.0 <= x);
+                let start = if i == 0 { x } else { runs[i - 1].0 };
+                gradient.at(x as i64, y as i64, start as i64)
+            }
+        }
+    }
+
     fn candidates(&self, y: u32) -> &[u32] {
         let band = y / TILE;
         match band.checked_sub(self.band0) {
@@ -573,14 +692,44 @@ impl<'v> Lowering<'v> {
             Some(area) => culled(&user, area),
             None => user.clone(),
         };
+        // CE's lighting (`ThreeDCamera.modified_rgbas`): a shaded path's paint becomes two stops,
+        // lit at its start and end corners, between which its gradient runs.
+        let corners = [0, (world.len() - 1) / 6 * 3];
+        let lit = match (&self.view.camera, rec.depth.shade_in_3d) {
+            (Camera::ThreeD(c), true) if c.should_apply_shading => Some(c.light_source),
+            _ => None,
+        };
+        let ends = match (lit, draw.ends) {
+            (Some(_), _) => Some(corners.map(|i| shown[i])),
+            (None, Some(ends)) => {
+                let shown_ends = pre_display(&ends, self.projection.as_ref(), placement);
+                Some([shown_ends[0], shown_ends[1]])
+            }
+            (None, None) => None,
+        };
         for (k, paint, width) in [
-            (0, draw.background_stroke, draw.background_stroke_width),
-            (1, draw.fill, 0.0),
-            (2, draw.stroke, draw.stroke_width),
+            (0, &draw.background_stroke, draw.background_stroke_width),
+            (1, &draw.fill, 0.0),
+            (2, &draw.stroke, draw.stroke_width),
         ] {
-            let Some(colour) = paint else { continue };
-            let colour = premultiply(alpha(colour));
-            if colour[3] == 0 {
+            let Some(rows) = paint else { continue };
+            let rows = match lit {
+                Some(light) => crate::shade::ce_face_stops(&world, rows, light).to_vec(),
+                None => rows.clone(),
+            };
+            let spec = match (rows.as_slice(), ends) {
+                ([one], _) => PaintSpec::Solid(premultiply(alpha(*one))),
+                (stops, Some([p1, p2])) if stops.len() > 1 => PaintSpec::Gradient(
+                    stops.iter().map(|c| alpha(*c)).collect(),
+                    [p1[0], p1[1]],
+                    [p2[0], p2[1]],
+                ),
+                // Rows without ends are refused before drawing.
+                _ => continue,
+            };
+            if let PaintSpec::Solid(colour) = spec
+                && colour[3] == 0
+            {
                 continue;
             }
             let outline_px = if k == 1 {
@@ -614,7 +763,7 @@ impl<'v> Lowering<'v> {
             };
             self.push(
                 scanline::edges_of(&rings(&outline_px)),
-                colour,
+                spec,
                 depth,
                 draw.order,
                 draw.sub + k,
@@ -689,7 +838,7 @@ impl<'v> Lowering<'v> {
         LayerDepth::Curve(self.paths.centrelines.len() as u32 - 1)
     }
 
-    fn push(&mut self, edges: Vec<Edge>, colour: [u8; 4], depth: LayerDepth, order: u32, sub: u32) {
+    fn push(&mut self, edges: Vec<Edge>, spec: PaintSpec, depth: LayerDepth, order: u32, sub: u32) {
         if edges.is_empty() {
             return;
         }
@@ -727,23 +876,70 @@ impl<'v> Lowering<'v> {
             band_edges.extend(list);
             bands.push((start, band_edges.len() as u32));
         }
+        let solid = |colour: [u8; 4]| Layer {
+            edges: Vec::new(),
+            band0,
+            bands: Vec::new(),
+            band_edges: Vec::new(),
+            bbox,
+            paint: LayerPaint::Solid(colour),
+            opaque: colour[3] == 255,
+            depth,
+            order,
+            sub,
+        };
+        let mut layer = match spec {
+            PaintSpec::Solid(colour) => solid(colour),
+            PaintSpec::Gradient(stops, p1, p2) => {
+                // The composite's bounded extents: the outline's box in Cairo's 24.8 fixed point,
+                // rounded out, cut to the frame. Their middle fixes pixman's translation.
+                let down = |v: f64| gradient::fixed_24_8(v) >> 8;
+                let up = |v: f64| (gradient::fixed_24_8(v) + 255) >> 8;
+                let (ex0, ey0) = (down(x0).max(0), down(y0).max(0));
+                let (ex1, ey1) = (
+                    up(x1).min(self.width as i32),
+                    up(y1).min(self.height as i32),
+                );
+                let extents = [ex0, ey0, (ex1 - ex0).max(0), (ey1 - ey0).max(0)];
+                let m = &self.map;
+                let ctm = gradient::Matrix {
+                    xx: m.xx,
+                    yx: 0.0,
+                    xy: 0.0,
+                    yy: m.yy,
+                    x0: m.x0,
+                    y0: m.y0,
+                };
+                match gradient::source(&ctm, p1, p2, &stops, extents) {
+                    gradient::Source::Solid(colour) if colour[3] == 0 => return,
+                    gradient::Source::Solid(colour) => solid(colour),
+                    gradient::Source::Linear(g) => {
+                        let opaque = g.opaque;
+                        Layer {
+                            paint: LayerPaint::Linear(Box::new(g), Vec::new()),
+                            opaque,
+                            ..solid([0; 4])
+                        }
+                    }
+                }
+            }
+        };
+        layer.edges = edges;
+        layer.bands = bands;
+        layer.band_edges = band_edges;
+        if matches!(layer.paint, LayerPaint::Linear(..)) {
+            let runs = layer_runs(&layer);
+            if let LayerPaint::Linear(_, rows) = &mut layer.paint {
+                *rows = runs;
+            }
+        }
         let index = self.paths.layers.len() as u32;
         for ty in band0..=band_end {
             for tx in bbox[0] / TILE..=(bbox[2] - 1) / TILE {
                 self.paths.bins[tile_index(self.width, tx * TILE, ty * TILE)].push(index);
             }
         }
-        self.paths.layers.push(Layer {
-            edges,
-            band0,
-            bands,
-            band_edges,
-            bbox,
-            colour,
-            depth,
-            order,
-            sub,
-        });
+        self.paths.layers.push(layer);
     }
 
     /// The lowered paths, ready to draw.
@@ -784,7 +980,7 @@ impl Paths {
         let mut near = Vec::new();
         for &i in &self.bins[tile_index(self.width, rect.x0, rect.y0)] {
             let layer = &self.layers[i as usize];
-            if (layer.colour[3] == 255) != opaque {
+            if layer.opaque != opaque {
                 continue;
             }
             let area = Rect {
@@ -810,7 +1006,7 @@ impl Paths {
                             y,
                             Fragment::new(
                                 depth,
-                                layer.colour,
+                                layer.colour(x, y),
                                 Coverage::Area {
                                     area: a as f32,
                                     id: i,
