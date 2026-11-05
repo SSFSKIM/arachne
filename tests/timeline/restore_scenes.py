@@ -17,6 +17,7 @@ from arachne import (
     Dot,
     FadeIn,
     Line,
+    Mobject,
     Scene,
     Square,
     Succession,
@@ -227,6 +228,20 @@ class FramePeriodic(Scene):
         dot = Dot(color=BLUE).add_updater(lambda m: m.set_y(2 * (self.time * 15 % 1)))
         self.add(dot)
         self.play(FadeIn(Circle(radius=0.3).shift(RIGHT * 3)), run_time=1)
+
+
+class DrivenSquare(Scene):
+    """A square added before the point-less driver whose updater places it
+    from a tracker the play animates: CE's moving list begins at the driver,
+    so the square is static while the driver moves it.
+    """
+
+    def construct(self):
+        tracker = ValueTracker(0)
+        square = Square(side_length=1, color=BLUE, fill_opacity=1).shift(LEFT * 3)
+        driver = Mobject().add_updater(lambda m: square.set_x(tracker.get_value() - 3))
+        self.add(square, driver)
+        self.play(tracker.animate.set_value(6), run_time=1, rate_func=linear)
 
 
 class TickedOffGrid(Scene):

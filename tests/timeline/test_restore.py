@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from arachne import tempconfig
 from arachne.timeline.draw import Drawing
 from arachne.timeline.origins import ORIGINS
 from arachne.timeline.record import NodeState
@@ -501,6 +502,36 @@ def test_a_restored_frame_draws_no_static_layer(session_of, monkeypatch):
     assert not np.array_equal(pixels, np.asarray(session.frame(Fraction(7, 15))))
     (dot,) = [n for n in session.state_at(t).nodes if n.type == "Dot"]
     assert dot.box[1] > 0
+
+
+@pytest.mark.parametrize("static_layer", [True, False])
+def test_a_restored_frame_shows_a_static_mobject_where_its_driver_put_it(
+    session_of, static_layer
+):
+    """The square is one of the play's static mobjects, and the driver after
+    it moves it: a restored frame draws it at its state at the instant, as
+    the forward run's frame there does with the static layer on or off.
+    """
+    session = session_of("DrivenSquare", RESTORE_SCENES, frame_rate=15)
+    (play,) = _state_plays(session)
+    assert play.static
+    instants = _unsampled(play)
+    oracle = session_of(
+        "DrivenSquare", RESTORE_SCENES, frame_rate=15, instants=instants
+    )
+
+    def square_x(state) -> float:
+        (square,) = [n for n in state.nodes if n.type == "Square"]
+        return square.box[0]
+
+    start = square_x(session.state_at(play.start))
+    with tempconfig({"static_layer": static_layer}):
+        for t in instants:
+            state = session.state_at(t)
+            assert state.answer == "restored", t
+            assert square_x(state) > start, t
+            expected = np.asarray(oracle.frame(t))
+            assert np.array_equal(np.asarray(session.frame(t)), expected), t
 
 
 def test_a_restored_frame_asked_first_maps_around_the_render_s_centre(session_of):

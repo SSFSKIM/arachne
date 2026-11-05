@@ -295,7 +295,7 @@ class Session:
         freeze_mapping_centre(record)
         with Drawing(record) as drawing:
             return [
-                _draw(drawing, record, found, lambda play: static(drawing, play))
+                _draw(drawing, found, lambda play: static(drawing, play))
                 for found in answers
             ]
 
