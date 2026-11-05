@@ -464,19 +464,24 @@ def _draw(
     if play is None:
         return drawing.final()
     if resolved.kind == "restored":
-        return _restored_frame(drawing, resolved)
+        if drawing.painter is None:
+            return _restored_frame(drawing, resolved)
+        # A painter describes every frame whole, its static list rebuilt once
+        # ``prepare`` has brought the scene to the instant: a restored frame
+        # is drawn from its description as any other is.
+        return drawing.sample(play, resolved.capture, None, prepare=resolved.prepare)
     return drawing.sample(
         play, resolved.capture, static(play), prepare=resolved.prepare
     )
 
 
 def _restored_frame(drawing: Drawing, resolved: _Resolved) -> PixelArray:
-    """A restored instant's frame, with no static picture: a picture kept
-    from the record's captures, or a layer of whatever they show unchanged,
-    knows nothing of the values a restore gives. The frame is drawn whole,
-    every mobject at its state at the instant, in a render's painter order:
-    the frame's static list, rebuilt as a frame drawn without the static
-    layer rebuilds it, then the play's moving mobjects over it.
+    """A restored instant's frame on Cairo, with no static picture: a picture
+    kept from the record's captures, or a layer of whatever they show
+    unchanged, knows nothing of the values a restore gives. The frame is
+    drawn whole, every mobject at its state at the instant, in a render's
+    painter order: the frame's static list, rebuilt as a frame drawn without
+    the static layer rebuilds it, then the play's moving mobjects over it.
     """
     from .draw import static_list
 

@@ -534,6 +534,33 @@ def test_a_restored_frame_shows_a_static_mobject_where_its_driver_put_it(
             assert np.array_equal(np.asarray(session.frame(t)), expected), t
 
 
+def test_a_restored_frame_on_a_described_path_is_drawn_from_its_description(
+    session_of,
+):
+    """On ``ir_cairo`` a restored frame is described in XF and drawn from that
+    description, as the session's other frames are, and equals the forward
+    run's frame there.
+    """
+    pytest.importorskip("arachne_core")
+    from arachne.frame_ir.painter import painter_for
+
+    path = {"draw_path": "ir_cairo"}
+    session = session_of("DrivenSquare", RESTORE_SCENES, frame_rate=15, **path)
+    (play,) = _state_plays(session)
+    instants = _unsampled(play)
+    oracle = session_of(
+        "DrivenSquare", RESTORE_SCENES, frame_rate=15, instants=instants, **path
+    )
+    painter = painter_for(session.record, "ir_cairo")
+    assert painter is not None
+    for t in instants:
+        assert session.state_at(t).answer == "restored", t
+        drawn = painter.frames
+        pixels = np.asarray(session.frame(t))
+        assert painter.frames == drawn + 1, t
+        assert np.array_equal(pixels, np.asarray(oracle.frame(t))), t
+
+
 def test_a_restored_frame_asked_first_maps_around_the_render_s_centre(session_of):
     """A restored frame is drawn with the centre the render froze at its
     first frame, whether it is the first frame the session draws or not.
