@@ -405,3 +405,14 @@ class HeldBetweenFrames(Scene):
         self.play(dot.animate.shift(RIGHT), run_time=2.3)
         self.wait(12 / 3550)
         self.play(dot.animate.shift(UP), run_time=0.4)
+
+
+class DefinesRecord(Scene):
+    """A scene whose code names a method ``record``, as scene code may."""
+
+    def record(self, x):
+        return Dot().shift(RIGHT * x)
+
+    def construct(self):
+        self.add(self.record(1))
+        self.play(FadeIn(self.record(-1)), run_time=0.4)

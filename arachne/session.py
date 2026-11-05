@@ -85,6 +85,7 @@ class Session:
         scene: Scene,
         record: Record,
         module: ModuleType,
+        recorder: Recorder,
         *,
         draw_path: str | None = None,
     ) -> None:
@@ -94,6 +95,9 @@ class Session:
         self.draw_path = draw_path
         self.record = record
         self.module = module
+        # The recorder the session made: read from it, never from a name of
+        # the scene's, which the scene's own code can take.
+        self._recorder = recorder
         self._quality: str | None = None
         self._static: tuple[int, str | None, PixelArray | None] | None = None
         camera = scene.renderer.camera
@@ -388,12 +392,15 @@ class Session:
         ]
         return found.moved(moved)
 
-    def _executed_again(self, scene: Scene, record: Record, module: ModuleType) -> None:
+    def _executed_again(
+        self, scene: Scene, record: Record, module: ModuleType, recorder: Recorder
+    ) -> None:
         """Hold the scene executed again, ``record`` its record, in place of
         the one held.
         """
         sys.modules.pop(self.module.__name__, None)
         self.scene, self.record, self.module = scene, record, module
+        self._recorder = recorder
         camera = scene.renderer.camera
         self._executed_shape = (camera.pixel_height, camera.pixel_width)
         self._quality = None
@@ -535,7 +542,7 @@ def _source(
     capped session registered but did not apply).
     """
     record = session.record
-    recorder = session.scene.timeline
+    recorder = session._recorder
     return Source(
         path,
         scene,
@@ -553,12 +560,14 @@ def _execute(
     settings: ManimConfig,
     options: dict[str, Any],
     demotions: dict[PlayIdentity, tuple[str, ...] | None],
-) -> tuple[Scene, Record, ModuleType]:
+) -> tuple[Scene, Record, ModuleType, Recorder]:
     """Execute ``path``'s scene ``scene`` under ``settings`` (:func:`execute`),
     recorded by a ``Recorder`` given ``options`` that ticks the plays of
     ``demotions`` and those the probe demoted in an earlier session of the
-    source (:func:`.admission.demoted`), which join ``demotions``.
+    source (:func:`.admission.demoted`), which join ``demotions``. The record
+    is the recorder's: a scene class may name an attribute ``record`` too.
     """
+    made: list[Recorder] = []
 
     def recorder(instance: Scene) -> Recorder:
         for identity, line in admission.demoted(
@@ -566,20 +575,23 @@ def _execute(
         ).items():
             demotions.setdefault(identity, line)
         grid = options["grid"]
-        return Recorder(
-            instance,
-            **{
-                **options,
-                "grid": global_config.frame_rate if grid == "render" else grid,
-            },
-            draws=False,
-            demoted=demotions,
+        made.append(
+            Recorder(
+                instance,
+                **{
+                    **options,
+                    "grid": global_config.frame_rate if grid == "render" else grid,
+                },
+                draws=False,
+                demoted=demotions,
+            )
         )
+        return made[-1]
 
     instance, module = execute(path, scene, settings, recorder)
-    record = instance.record
+    record = made[-1].record
     assert record is not None
-    return instance, record, module
+    return instance, record, module, made[-1]
 
 
 def _changed_lines(
