@@ -6,8 +6,7 @@ from __future__ import annotations
 
 __all__ = ["DEFAULT_PAD", "InstantRule", "Terms"]
 
-import bisect
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any
@@ -21,6 +20,7 @@ if TYPE_CHECKING:
     from arachne.timeline.source import SourceLine
 
     from ..core import LintContext
+    from ..frames import Frames
     from ..parts import Parts
 
 #: The clearance two things that must not touch keep, in home-frame units.
@@ -52,9 +52,11 @@ class InstantRule:
     """A :data:`~arachne.lint.core.Rule` made of a check of single
     instants.
 
-    Called with a lint's context it checks the parts at each instant ``at``
-    names (each read at the lint instant on screen then, the last at or
-    before it), or at every lint instant when ``at`` is ``None``. Findings
+    Called with a lint's context it checks the parts at each time ``at``
+    names, each read at the frame of the render on screen then (the last at
+    or before it, or the scene's end past it), as a query of that time reads
+    it, whatever instants the lint samples; or at every lint instant when
+    ``at`` is ``None``. Findings
     about the same objects with the same code at consecutive instants it
     checks are one finding, from the first of them to the last. ``line`` is
     the scene line its findings name: where the scene asked for it. At each
@@ -88,8 +90,29 @@ class InstantRule:
             line=line,
         )
 
+    def request_frames(self, frames: Frames) -> None:
+        """Ask for the frames on screen at the times ``at`` names, through the
+        lint's one source of frames (nothing when ``at`` is ``None``: the
+        lint's own instants serve).
+        """
+        if self.at is None:
+            return
+        from ..core import parts_reader
+        from ..instants import lint_instants
+
+        times = [i.t for i in lint_instants(frames.session.record, at=self.at)]
+        frames.request(self._owner, times, parts_reader(frames.session))
+
+    @property
+    def _owner(self) -> tuple[str, int]:
+        return ("instant rule", id(self))
+
     def __call__(self, context: LintContext) -> list[Finding]:
-        chosen = _chosen(context.parts, self.at)
+        chosen = (
+            list(context.parts)
+            if self.at is None
+            else context.frames.result(self._owner)
+        )
         runs: dict[tuple[Any, ...], list[Any]] = {}
         done: list[Finding] = []
         for step, parts in enumerate(chosen):
@@ -110,17 +133,3 @@ class InstantRule:
         done.extend(replace(first, t_end=end) for first, _, end in runs.values())
         done.sort(key=lambda f: (f.t_start, f.code))
         return done
-
-
-def _chosen(parts: Sequence[Parts], at: tuple[Fraction, ...] | None) -> list[Parts]:
-    """The instants' parts a rule checks: all of them, or those on screen at
-    the times ``at`` names, each once, in time order.
-    """
-    if at is None:
-        return list(parts)
-    times = [p.t for p in parts]
-    picked: dict[int, Parts] = {}
-    for t in at:
-        index = max(bisect.bisect_right(times, t) - 1, 0)
-        picked[index] = parts[index]
-    return [picked[i] for i in sorted(picked)]

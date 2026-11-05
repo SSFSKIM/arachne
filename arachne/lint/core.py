@@ -16,7 +16,15 @@ finds ends the process.
 
 from __future__ import annotations
 
-__all__ = ["RULES", "LintContext", "LintResult", "Rule", "Span", "lint"]
+__all__ = [
+    "RULES",
+    "LintContext",
+    "LintResult",
+    "Rule",
+    "Span",
+    "lint",
+    "parts_reader",
+]
 
 import time
 from collections.abc import Callable, Iterable, Sequence
@@ -29,7 +37,7 @@ from arachne.timeline.clock import exact
 from .bridge import Checks, terms_at
 from .exempt import Exemptions
 from .findings import Finding, fold, in_range
-from .frames import Frames
+from .frames import FrameReader, Frames
 from .instants import LintInstant, lint_instants
 from .parts import Parts, build_parts
 
@@ -171,7 +179,16 @@ def _request_parts(frames: Frames, instants: tuple[LintInstant, ...]) -> None:
     """Ask for the parts drawn at each instant: from the record, and what it
     can't answer from the lint's forward run, read from its live scene.
     """
-    target = target_resolution(frames.session)
+    frames.request(
+        _PARTS, [instant.t for instant in instants], parts_reader(frames.session)
+    )
+
+
+def parts_reader(session: Session) -> FrameReader[Parts]:
+    """The reader of the parts a frame of ``session`` draws, as the lint reads
+    them (:mod:`.frames`): from the record, or a forward run's live scene.
+    """
+    target = target_resolution(session)
 
     def read(
         record: Record,
@@ -190,7 +207,7 @@ def _request_parts(frames: Frames, instants: tuple[LintInstant, ...]) -> None:
             live=live,
         )
 
-    frames.request(_PARTS, [instant.t for instant in instants], read)
+    return read
 
 
 def _diverged(session: Session) -> list[Finding]:
