@@ -707,11 +707,9 @@ impl Stream {
                 (RecordKind::Path, Some(ShapeData::Path { .. }), _) => {
                     let (points, place) =
                         drawn_points(record, &self.shapes).expect("drawing refused the others");
-                    let paint = geometry::drawn_paint(&record.paint)
+                    let paint = geometry::drawn_paint(&record.paint, table)
                         .expect("drawing refused a paint it cannot mix");
-                    paths.push(instance::path_record(
-                        record, points, place, &paint, table, order,
-                    ));
+                    paths.push(instance::path_record(record, points, place, paint, order));
                 }
                 (RecordKind::Points, Some(ShapeData::Path { points }), Body::Points(p)) => {
                     let positions = match &record.pre_projected {
@@ -875,14 +873,20 @@ fn check_shape(shape: &Shape) -> Result<(), StreamError> {
     Ok(())
 }
 
-/// What of a drawn record's fixed fields this build does not draw yet, if anything: blends,
-/// reveals and paint blends of any kind but a path, a paint blend of a table, clips for every
-/// kind; for meshes (and instances of a mesh) strokes, gradient fills and dashes; for paths (and
+/// What of a drawn record's fixed fields this build does not draw yet, if anything, its paint
+/// tables in `paints`: blends, reveals and paint blends of any kind but a path, a paint blend of
+/// row counts numpy does not broadcast (`geometry::drawn_paint`), clips for every kind; for meshes (and instances of a mesh) strokes, gradient fills and dashes; for paths (and
 /// instances of a path) CE's lighting under a camera that shades (`shading`) with a light model
 /// other than CE's (`ce_light`), a gradient paint without its ends or on an instance, and dashes
 /// it cannot read. A pre-projected record is judged by its tail's paints and ends (lit already, so
 /// never refused for shading), and refused with a blend, reveal or paint blend.
-fn field_refusal(rec: &Record, mesh: bool, shading: bool, ce_light: bool) -> Option<String> {
+fn field_refusal(
+    rec: &Record,
+    paints: &HashMap<Key, Stops>,
+    mesh: bool,
+    shading: bool,
+    ce_light: bool,
+) -> Option<String> {
     let kind = rec.kind.name();
     // A pre-projected record's paints are the colours its camera painted with, lit already, and
     // its gradient runs between the ends that camera placed.
@@ -893,21 +897,23 @@ fn field_refusal(rec: &Record, mesh: bool, shading: bool, ce_light: bool) -> Opt
     let shaped = rec.geometry.blend.is_some()
         || rec.geometry.reveal.is_some()
         || rec.paint.paint_b.is_some();
-    let mut p = match crate::geometry::drawn_paint(&rec.paint) {
+    // Tables are checked to exist before drawing.
+    let table = |key: &Key| &paints[key];
+    let mut p = match geometry::drawn_paint(&rec.paint, table) {
         Ok(p) => p,
         Err(what) => return Some(format!("a {kind}'s {what} is not drawn")),
     };
+    let mut ends = rec.paint.gradient;
     if let Some(t) = tail {
-        p.fill = t.fill.clone();
-        p.stroke = t.stroke.clone();
-        p.background_stroke = t.background_stroke.clone();
-        p.gradient = t.gradient;
+        p.fill = geometry::rows(&t.fill, table);
+        p.stroke = geometry::rows(&t.stroke, table);
+        p.background_stroke = geometry::rows(&t.background_stroke, table);
+        ends = t.gradient;
     }
     let p = &p;
-    let drawn = |paint: &Paint, width: Option<f64>| {
-        !matches!(paint, Paint::None) && width.is_none_or(|w| w > 0.0)
-    };
-    let gradient = |paint: &Paint| matches!(paint, Paint::Two(_) | Paint::Table(_));
+    type Rows = Option<Vec<[f64; 4]>>;
+    let drawn = |paint: &Rows, width: Option<f64>| paint.is_some() && width.is_none_or(|w| w > 0.0);
+    let gradient = |paint: &Rows| paint.as_ref().is_some_and(|r| r.len() > 1);
     let strokes = [
         (&p.stroke, p.stroke_width),
         (&p.background_stroke, p.background_stroke_width),
@@ -956,7 +962,7 @@ fn field_refusal(rec: &Record, mesh: bool, shading: bool, ce_light: bool) -> Opt
         || strokes
             .iter()
             .any(|(paint, w)| drawn(paint, Some(*w)) && gradient(paint)))
-        && (rec.kind == RecordKind::Instances || (!shaded && p.gradient.is_none()))
+        && (rec.kind == RecordKind::Instances || (!shaded && ends.is_none()))
     {
         // A path's gradient runs between its ends (or a shaded path's corners); an instance's
         // colours are rows of a table, one each.
@@ -1050,7 +1056,7 @@ fn refusal(
             | RecordKind::Instances
     ) {
         let mesh = matches!(prototype, Some(ShapeData::Mesh { .. }));
-        if let Some(reason) = field_refusal(rec, mesh, shading, ce_light) {
+        if let Some(reason) = field_refusal(rec, paints, mesh, shading, ce_light) {
             reason
         } else if rec.kind == RecordKind::Path && drawn_points(rec, shapes).is_none() {
             "a path's blend of two shapes of different lengths".into()
