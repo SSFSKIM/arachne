@@ -20,9 +20,11 @@ from __future__ import annotations
 
 __all__ = [
     "CARRIED_MEMBERS",
+    "PROVEN_ON_THE_GATE",
     "IrCairoPainter",
     "camera_path",
     "captured",
+    "camera_changes",
     "changed_members",
     "painter_for",
     "scene_path",
@@ -160,13 +162,15 @@ _CLASS_BOOKKEEPING = frozenset(
 )
 
 
-def changed_members(camera: Any) -> tuple[str, ...]:
-    """The engine camera members the scene's code changed on ``camera``: the
-    names its own classes define over an engine camera's, the methods
-    replaced on the instance or on an engine class
-    (:func:`~arachne.timeline.camera_code.replaced_methods`), and
-    ``display_funcs`` when it holds anything other than the engine's own
-    display methods (:func:`~arachne.timeline.camera_code.display_funcs_rewired`).
+def camera_changes(camera: Any) -> tuple[tuple[str, str], ...]:
+    """How the scene's code changed ``camera``, as ``(form, member)`` pairs,
+    sorted: ``"subclass"`` for a name its own classes define over an engine
+    camera's; ``"class"`` and ``"instance"`` for a method replaced on an
+    engine class or on the instance
+    (:func:`~arachne.timeline.camera_code.replaced_methods`); and
+    ``("instance", "display_funcs")`` when ``display_funcs`` holds anything
+    other than the engine's own display methods
+    (:func:`~arachne.timeline.camera_code.display_funcs_rewired`).
     """
     from arachne.camera.camera import Camera
     from arachne.timeline.camera_code import display_funcs_rewired, replaced_methods
@@ -176,17 +180,24 @@ def changed_members(camera: Any) -> tuple[str, ...]:
         return ()
     kind = type(camera)
     base = next(k for k in kind.__mro__ if engine_class(k))
-    names = {
-        name
+    changes = {
+        ("subclass", name)
         for klass in kind.__mro__
         if klass is not object and not engine_class(klass)
         for name in vars(klass)
         if name not in _CLASS_BOOKKEEPING and hasattr(base, name)
     }
-    names.update(r.name for r in replaced_methods(camera))
+    changes.update((r.form, r.name) for r in replaced_methods(camera))
     if display_funcs_rewired(camera):
-        names.add("display_funcs")
-    return tuple(sorted(names))
+        changes.add(("instance", "display_funcs"))
+    return tuple(sorted(changes))
+
+
+def changed_members(camera: Any) -> tuple[str, ...]:
+    """The engine camera members the scene's code changed on ``camera``
+    (:func:`camera_changes`), each once, sorted.
+    """
+    return tuple(sorted({member for _, member in camera_changes(camera)}))
 
 
 def uncarried(camera: Any) -> tuple[Any, str] | None:
@@ -211,6 +222,37 @@ def uncarried(camera: Any) -> tuple[Any, str] | None:
     return None
 
 
+#: The camera changes (:func:`camera_changes`) the corpus gate has drawn on
+#: ``ir_cairo`` with its pixel backstop on, every frame equal to the camera's
+#: own draw: what a camera the scene's code changed may hold to be drawn on
+#: ``core``, which draws only the description (it keeps no draw of the
+#: camera's own to compare with or fall back on mid-scene).
+#: At this revision the gate's corpus proves a camera class of the scene's own
+#: overriding its constructor and ``project_points``, and ``project_points``
+#: replaced on the instance (21 scenes, every capture and sample equal).
+PROVEN_ON_THE_GATE = frozenset(
+    {
+        ("subclass", "__init__"),
+        ("subclass", "project_points"),
+        ("instance", "project_points"),
+    }
+)
+
+
+def unproven_on_core(camera: Any) -> tuple[str, str] | None:
+    """The first change the scene's code made to a camera ``camera`` draws
+    with that the gate has not proven (:data:`PROVEN_ON_THE_GATE`), or
+    ``None``.
+    """
+    from arachne.timeline.camera_code import drawn_cameras
+
+    for each in drawn_cameras(camera):
+        for change in camera_changes(each):
+            if change not in PROVEN_ON_THE_GATE:
+                return change
+    return None
+
+
 def captured(camera: Any, draw_path: str) -> bool:
     """Whether frames of ``camera`` on ``draw_path`` are described from the
     camera's own capture: on a path that describes frames, a camera the
@@ -229,9 +271,12 @@ def camera_path(camera: Any, draw_path: str) -> str:
     camera itself or a display camera it draws through) draws what its code
     makes. Where every change reaches the frame through what the camera's
     capture produces (:data:`CARRIED_MEMBERS`), frames are described from
-    that capture (:func:`captured`) and stay on the path. Otherwise, on a
-    path that describes frames, it draws on Cairo, with a ``render.fallback``
-    finding naming what changed and the member XF cannot carry. A camera
+    that capture (:func:`captured`) and stay on the path; on ``core``, which
+    keeps no draw of the camera's own to fall back on mid-scene, only where
+    the gate has proven each change (:data:`PROVEN_ON_THE_GATE`), the rest
+    drawn on Cairo for the whole scene. Otherwise, on a path that describes
+    frames, it draws on Cairo, with a ``render.fallback`` finding naming
+    what changed and the member XF cannot carry. A camera
     that is no engine camera's subclass stays on the path and is
     ``render.unable`` there.
     """
@@ -242,11 +287,16 @@ def camera_path(camera: Any, draw_path: str) -> str:
     found = uncarried(camera)
     subject, why = own
     if found is None and draw_path == "core":
+        unproven = unproven_on_core(camera)
+        if unproven is None:
+            return draw_path
+        form, member = unproven
         raise_finding(
             "render.fallback",
             subject,
-            f"{why} is drawn on Cairo: the core does not draw what a camera's"
-            " own capture placed yet",
+            f"{why} is drawn on Cairo for the whole scene: no gate has drawn a"
+            f" camera with {member} changed ({form}) on ir_cairo against its own"
+            " draw, and the core keeps no draw of the camera's own to fall back on",
         )
         return "cairo"
     if found is None:

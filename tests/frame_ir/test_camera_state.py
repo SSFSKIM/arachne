@@ -12,10 +12,10 @@ from arachne.frame_ir.live import _camera_state, _changed
 from arachne.mobject.values import FrozenArray, adopt
 
 
-def _around(camera, change, *, checksums=True):
-    before = _camera_state(camera, "three_d", checksums)
+def _around(camera, change):
+    before = _camera_state(camera, "three_d")
     change(camera)
-    return _changed(before, _camera_state(camera, "three_d", checksums))
+    return _changed(before, _camera_state(camera, "three_d"))
 
 
 def test_a_camera_left_alone_has_nothing_changed():
@@ -85,11 +85,14 @@ def test_a_frozen_array_is_told_by_identity():
     assert _around(camera, rebound) == "held"
 
 
-def test_a_large_array_written_into_is_seen_through_its_checksum():
+def test_a_large_array_is_told_by_identity():
+    # Writing into a pixel array shows in the camera's real draw, which is
+    # compared with the description: call by call, only rebinding is seen.
     def drawn_on(camera):
         camera.pixel_array[0, 0, 0] ^= 0xFF
 
-    assert _around(ThreeDCamera(), drawn_on) == "pixel_array"
-    # Where the real draw is compared with the description, it is not
-    # checksummed call by call.
-    assert _around(ThreeDCamera(), drawn_on, checksums=False) is None
+    def rebound(camera):
+        camera.pixel_array = camera.pixel_array.copy()
+
+    assert _around(ThreeDCamera(), drawn_on) is None
+    assert _around(ThreeDCamera(), rebound) == "pixel_array"

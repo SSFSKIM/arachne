@@ -2,8 +2,9 @@
 
 ``core`` draws 3D frames on the core; ``auto`` is ``core`` for a 3D scene (its
 camera a ``ThreeDCamera``) and ``cairo`` for every other, so a 2D scene never
-goes through XF on ``auto``. A camera the scene's code changed draws on Cairo
-on ``core`` until the core draws what such a camera's capture placed.
+goes through XF on ``auto``. A camera the scene's code changed stays on the
+path wherever XF carries what its capture produced; on ``core``, only where
+the gate has proven its changes, else on Cairo for the whole scene.
 """
 
 from __future__ import annotations
@@ -74,18 +75,28 @@ def test_an_engine_camera_on_auto_draws_on_its_scene_s_path(findings):
     assert not findings
 
 
-def test_a_changed_camera_on_the_core_draws_on_cairo_with_its_reason(findings):
-    assert camera_path(camera_scenes.ShiftedCamera(), "core") == "cairo"
-    [finding] = findings
-    assert finding.code == "render.fallback"
-    assert "the core does not draw what a camera's own capture placed" in (
-        finding.message
-    )
-
-
-def test_a_changed_camera_on_ir_cairo_stays_described(findings):
+def test_a_changed_camera_whose_changes_xf_carries_stays_described(findings):
     assert camera_path(camera_scenes.ShiftedCamera(), "ir_cairo") == "ir_cairo"
     assert not findings
+
+
+def test_a_changed_camera_stays_on_the_core_when_the_gate_proved_its_changes(
+    findings, monkeypatch
+):
+    from arachne.frame_ir import painter
+
+    camera = camera_scenes.ShiftedCamera()
+    assert painter.camera_changes(camera) == (("subclass", "project_points"),)
+    monkeypatch.setattr(
+        painter, "PROVEN_ON_THE_GATE", frozenset(painter.camera_changes(camera))
+    )
+    assert camera_path(camera, "core") == "core"
+    assert not findings
+    monkeypatch.setattr(painter, "PROVEN_ON_THE_GATE", frozenset())
+    assert camera_path(camera, "core") == "cairo"
+    [finding] = findings
+    assert finding.code == "render.fallback"
+    assert "whole scene" in finding.message
 
 
 def test_each_path_through_xf_has_its_painter():
