@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 
 from arachne.frame_ir.canonical import Canonical
+from arachne.frame_ir.core_painter import CorePainter
 
 from ..timeline.conftest import render
 from .stress_scenes import FPS, SCENES
@@ -34,7 +35,9 @@ def _far_from(frame: np.ndarray, cairo: np.ndarray) -> int:
 def test_snapped_is_no_further_from_cairo_than_unsnapped(scene, monkeypatch):
     _, cairo = render(scene, FPS, draw_path="ir_cairo", **FULL)
     _, snapped = render(scene, FPS, draw_path="core", **FULL)
+    # The core handed the deltas as made: the reference, past the guard.
     monkeypatch.setattr(Canonical, "__call__", lambda self, delta: delta)
+    monkeypatch.setattr(CorePainter, "_refuse_undecided", lambda self, sent: None)
     _, unsnapped = render(scene, FPS, draw_path="core", **FULL)
     far = _far_from(snapped[-1], cairo[-1]), _far_from(unsnapped[-1], cairo[-1])
     assert far[0] <= far[1] * 1.02 + 4, far

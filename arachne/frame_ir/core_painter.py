@@ -22,10 +22,10 @@ from typing import Any
 import numpy as np
 
 from .cairo_painter import CairoDrawer
-from .canonical import Canonical, canonical_order, frame_grid
+from .canonical import Canonical, canonical_order, frame_grid, shades
 from .extract import FrameStream, Term, Unable
 from .replay import Replays
-from .xf import Delta, StreamState
+from .xf import FEATURE_BACKGROUND_IMAGE, Delta, Record, StreamState
 
 
 class CorePainter:
@@ -72,6 +72,10 @@ class CorePainter:
         self.canonical = Canonical()
         self.deltas: list[Delta] = []
         self.last: Delta | None = None
+        #: The view and records the core holds, as sent
+        #: (:meth:`_refuse_undecided`).
+        self._sent_view: dict[str, Any] | None = None
+        self._sent_records: dict[int, Record] = {}
         #: Frames this painter drew.
         self.frames = 0
         #: Frames whose overlay held at least one entry.
@@ -108,6 +112,7 @@ class CorePainter:
         import arachne_core
 
         sent = self.canonical(delta)
+        self._refuse_undecided(sent)
         read = arachne_core.FrameDelta.from_bytes(sent.to_core().to_bytes())
         self.core.apply(read)
         self.state.apply(Delta.from_contents(read.contents()))
@@ -138,6 +143,51 @@ class CorePainter:
             self.overlaid += 1
             self.drawer.draw_over(self.state, frame, overlay, self.replays)
         return frame
+
+    def _refuse_undecided(self, sent: Delta) -> None:
+        """Refuses (``render.unable``) to hand the core a frame without what
+        the writer decides before the snap (:mod:`.canonical`): a view, its
+        own or a display's, without its input grid; a record drawing paths
+        without its planes; a shaded one without its normals. The core would
+        decide them from snapped points, which is the writer's bug, never a
+        frame to draw on another path.
+        """
+        if sent.view is not None:
+            self._sent_view = sent.view
+        for slot in sent.remove:
+            self._sent_records.pop(slot, None)
+        self._sent_records.update(sent.set)
+        views = [] if sent.view is None else [("the frame", sent.view)]
+        # A view that starts or stops shading reads every record held.
+        checked = self._sent_records.items() if sent.view is not None else sent.set
+        shading = shades(self._sent_view)
+        for slot, record in checked:
+            fields = record.fields
+            if fields.get("sub_frame") is not None:
+                views.append((f"slot {slot}'s display", fields["sub_frame"][1]))
+            if record.kind not in ("path", "face_group") or not fields.get("shape"):
+                continue
+            if int(fields.get("features", 0)) & FEATURE_BACKGROUND_IMAGE:
+                continue  # Cairo's overlay draws it, from its own points
+
+            if "planes" not in fields:
+                raise Unable(
+                    f"render.unable: slot {slot} reaches the core without its planes"
+                )
+            if (
+                shading
+                and fields.get("shade_in_3d")
+                and fields.get("pre_projected") is None
+                and "normals" not in fields
+            ):
+                raise Unable(
+                    f"render.unable: shaded slot {slot} reaches the core without its normals"
+                )
+        for name, view in views:
+            if not view.get("input_grid", 0) > 0:
+                raise Unable(
+                    f"render.unable: {name} reaches the core without an input grid"
+                )
 
     def settle(self) -> None:
         """Leave each display's camera of the last frame holding the picture

@@ -71,6 +71,7 @@ __all__ = [
     "frame_grid",
     "input_grid",
     "relative",
+    "shades",
     "snap",
 ]
 
@@ -286,6 +287,15 @@ _RECORD: dict[str, Callable[[Any, float], Any]] = {
 }
 
 
+def shades(view: Mapping[str, Any] | None) -> bool:
+    """Whether ``view``'s camera shades what it draws in 3D."""
+    return (
+        view is not None
+        and view.get("camera") == "three_d"
+        and bool(view.get("should_apply_shading", True))
+    )
+
+
 def _classified(
     table: Mapping[str, Callable[[Any, float], Any]], what: str, name: str
 ) -> Callable[[Any, float], Any]:
@@ -358,8 +368,10 @@ class Canonical:
         held = set(self._holders)
         self._made = {}
         self._touched = {}
+        shading = shades(self._view)
         if delta.view is not None:
             self._view = dict(delta.view)
+        reshade = shades(self._view) != shading
         for slot, record in delta.set:
             self._records[slot] = record
         for slot in delta.remove:
@@ -396,6 +408,16 @@ class Canonical:
                 (slot, record)
                 for slot, record in sorted(self._records.items())
                 if slot not in setting
+            )
+        elif reshade:
+            # The camera starts or stops shading: each shaded path held is
+            # set again, with the normals it is lit by now, or none.
+            setting.update(
+                (slot, record)
+                for slot, record in sorted(self._records.items())
+                if slot not in setting
+                and record.kind in _PATH_KINDS
+                and record.fields.get("shade_in_3d")
             )
         normals = self._normals(setting, grid)
         found.set = [
@@ -625,7 +647,9 @@ def _count_disagreements(made: np.ndarray, snapped: np.ndarray) -> None:
         at = np.arange(4, len(made), 4)
         splits = at[~_equal(made[at - 1], made[at], dims)]
         differ = int(
-            (_boundaries(made, splits, dims) != _boundaries(snapped, splits, dims)).sum()
+            (
+                _boundaries(made, splits, dims) != _boundaries(snapped, splits, dims)
+            ).sum()
         )
         if differ:
             point_equality_disagreements.append((len(made), dims, differ))

@@ -28,6 +28,8 @@ from arachne import (
     ThreeDScene,
 )
 from arachne.frame_ir.canonical import RATIO_GRID, Canonical
+from arachne.frame_ir.core_painter import CorePainter
+from arachne.frame_ir.extract import Unable
 from arachne.mobject.three_d.three_d_utils import (
     get_3d_vmob_end_corner_unit_normal,
     get_3d_vmob_start_corner_unit_normal,
@@ -106,7 +108,9 @@ def test_a_shaded_curve_is_as_far_from_cairo_snapped_as_not(monkeypatch):
     """
     _, cairo = render(Spring, FPS, draw_path="ir_cairo", **FULL)
     _, snapped = render(Spring, FPS, draw_path="core", **FULL)
+    # The core handed the deltas as made: the reference, past the guard.
     monkeypatch.setattr(Canonical, "__call__", lambda self, delta: delta)
+    monkeypatch.setattr(CorePainter, "_refuse_undecided", lambda self, sent: None)
     _, unsnapped = render(Spring, FPS, draw_path="core", **FULL)
     assert _off_cairo(snapped[-1], cairo[-1]) <= _off_cairo(unsnapped[-1], cairo[-1])
 
@@ -198,3 +202,82 @@ def test_a_pole_of_coincident_points_lights_as_one_a_floats_noise_apart():
     assert not differ.any(), int((differ > 0).sum())
     steps = (_largest_step(coincident[-1], x, y), _largest_step(cairo[-1], x, y))
     assert steps[0] <= steps[1] + 4, steps
+
+
+class SpringLitLater(ThreeDScene):
+    """The spring, alone, its camera shading only from its second frame:
+    ``shading_from`` is the frame the camera starts shading at.
+    """
+
+    shading_from = 1
+
+    def construct(self):
+        camera = self.renderer.camera
+        camera.should_apply_shading = self.shading_from == 0
+        self.add(spring())
+        self.set_camera_orientation(phi=80 * DEGREES, theta=-60 * DEGREES)
+        self.wait(1 / FPS)
+        camera.should_apply_shading = True
+        self.wait(1 / FPS)
+
+
+class SpringLitThroughout(SpringLitLater):
+    """:class:`SpringLitLater`, shading from its first frame."""
+
+    shading_from = 0
+
+
+def test_a_curve_lit_once_the_camera_starts_shading_carries_its_normals():
+    """The spring is uploaded while the camera does not shade, and nothing of
+    it changes when the camera starts to: it is lit there by the normals of
+    its points as made, as a spring shaded from the start is.
+    """
+    _, later = render(SpringLitLater, FPS, draw_path="core", **FULL)
+    _, throughout = render(SpringLitThroughout, FPS, draw_path="core", **FULL)
+    differ = np.abs(later[-1].astype(int) - throughout[-1].astype(int)).max(-1)
+    assert not differ.any(), int((differ > 0).sum())
+
+
+def _without_normals(monkeypatch):
+    monkeypatch.setattr(Canonical, "_normals", lambda self, setting, grid: {})
+
+
+def _without_planes(monkeypatch):
+    decide = Canonical._decide
+
+    def undecided(self, delta):
+        decide(self, delta)
+        self._planes.clear()
+
+    monkeypatch.setattr(Canonical, "_decide", undecided)
+
+
+def _without_grid(monkeypatch):
+    view_of = Canonical._view_of
+
+    def gridless(self, view):
+        found = view_of(self, view)
+        del found["input_grid"]
+        return found
+
+    monkeypatch.setattr(Canonical, "_view_of", gridless)
+
+
+@pytest.mark.parametrize(
+    ("losing", "named"),
+    [
+        (_without_normals, "without its normals"),
+        (_without_planes, "without its planes"),
+        (_without_grid, "without an input grid"),
+    ],
+    ids=["normals", "planes", "input-grid"],
+)
+def test_the_core_is_never_handed_a_frame_without_what_is_decided_before_the_snap(
+    losing, named, monkeypatch
+):
+    """A frame that reaches the core without what the writer decides before
+    the snap is refused, ``render.unable``, and drawn on no other path.
+    """
+    losing(monkeypatch)
+    with pytest.raises(Unable, match=f"render.unable: .*{named}"):
+        render(SpringAlone, FPS, draw_path="core", **FULL)
