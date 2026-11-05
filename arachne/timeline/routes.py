@@ -101,8 +101,10 @@ class Route(Protocol):
 
 def _held(run: PlayRun) -> bool:
     if run.held:
-        # A frozen frame: CE runs nothing during it.
-        run.sample(run.start, until=run.requested_end)
+        # A frozen frame: CE runs nothing during it. Its one state is kept
+        # whether a frame reads it or not: one between two instants of the
+        # grid is still the scene's state over its span.
+        run.sample(run.start, until=run.requested_end, keep=True)
         run.end = run.requested_end
         return True
     return False

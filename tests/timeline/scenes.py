@@ -392,3 +392,16 @@ class Panned(MovingCameraScene):
         self.add(circle)
         self.play(self.camera.frame.animate.shift(RIGHT), run_time=0.5)
         self.wait(0.5)
+
+
+class HeldBetweenFrames(Scene):
+    """A frozen frame that starts off the 15 fps grid (at 2.3 s) and ends
+    before the grid's next instant: no frame reads it.
+    """
+
+    def construct(self):
+        dot = Dot()
+        self.add(dot)
+        self.play(dot.animate.shift(RIGHT), run_time=2.3)
+        self.wait(12 / 3550)
+        self.play(dot.animate.shift(UP), run_time=0.4)
