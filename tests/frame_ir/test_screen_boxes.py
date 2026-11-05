@@ -13,6 +13,7 @@ from arachne.camera import projection
 from arachne.frame_ir.painter import IrCairoPainter
 
 from ..timeline.conftest import render
+from ..timeline.scenes import TimelineDiagram
 from . import camera_scenes, scenes
 
 pytest.importorskip("arachne_core")
@@ -147,3 +148,16 @@ def test_a_moved_three_d_centre_maps_paths_around_the_frozen_centre(monkeypatch)
     squares = [e for e in found if e[2] == "path Square"]
     apart = [e for e in squares if np.max(np.abs(np.subtract(e[3], e[5]))) > 5 * BOUND]
     assert apart, "the centre moved, so some frame maps paths around another centre"
+
+
+def test_a_scene_s_own_timeline_leaves_its_record_view_the_recorder_s():
+    """The view of a record takes the configured frame from the engine's
+    recorder, whatever the scene's code keeps as ``self.timeline``.
+    """
+    scene, _ = render(TimelineDiagram, FPS, **MEDIUM)
+    view = projection.record_view(scene.record)
+    width, height = MEDIUM["pixel_width"], MEDIUM["pixel_height"]
+    assert (view.home_width, view.home_height) == projection.configured_home(
+        width, height
+    )
+    assert view.configured_pixels == (width, height)
