@@ -28,18 +28,22 @@ __all__ = [
     "camera_changes",
     "changed_members",
     "deliver",
+    "deliveries",
     "delivered",
     "fall_back",
+    "fell_back",
+    "painter_kind",
     "painter_for",
     "scene_path",
     "uncarried",
     "unmodelled_state",
 ]
 
+import contextlib
 import inspect
 import os
 import weakref
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from fractions import Fraction
 from typing import Any
 
@@ -282,13 +286,64 @@ ASSUMED_STATE: tuple[tuple[str, str, Callable[[Any], bool]], ...] = (
 )
 
 
+#: What of a Cairo context the core's drawers take as CE's
+#: ``make_cairo_context`` leaves it: CE's draws set the rest (source, line
+#: width, cap, join, path) for each mobject they draw.
+_CONTEXT_STATE: tuple[tuple[str, Callable[[Any], Any]], ...] = (
+    ("matrix", lambda ctx: tuple(ctx.get_matrix())),
+    ("clip", lambda ctx: ctx.clip_extents()),
+    ("operator", lambda ctx: ctx.get_operator()),
+    ("antialias", lambda ctx: ctx.get_antialias()),
+    ("tolerance", lambda ctx: ctx.get_tolerance()),
+    ("fill rule", lambda ctx: ctx.get_fill_rule()),
+)
+_MADE_CONTEXTS: dict[tuple[Any, ...], tuple[Any, ...]] = {}
+
+
+def _context_changed(camera: Any) -> tuple[str, Any] | None:
+    """The first state of the Cairo context ``camera`` keeps for its array
+    (CE draws every path through it) that is not what CE's
+    ``make_cairo_context`` makes for the centre it froze, as ``(name,
+    value)``; ``None`` when it keeps none, or one as made.
+    """
+    get_cached = getattr(camera, "get_cached_cairo_context", None)
+    array = getattr(camera, "pixel_array", None)
+    if get_cached is None or array is None:
+        return None
+    context = get_cached(array)
+    if context is None:
+        return None
+    centre = camera.pixel_array_to_mapping_centre.get(id(array), camera.frame_center)
+    key = (
+        type(camera),
+        array.shape,
+        camera.pixel_width,
+        camera.pixel_height,
+        camera.frame_width,
+        camera.frame_height,
+        tuple(float(v) for v in centre),
+    )
+    made = _MADE_CONTEXTS.get(key)
+    if made is None:
+        fresh = camera.make_cairo_context(np.zeros_like(array), centre)
+        made = tuple(read(fresh) for _, read in _CONTEXT_STATE)
+        _MADE_CONTEXTS[key] = made
+    for (name, read), expected in zip(_CONTEXT_STATE, made, strict=True):
+        value = read(context)
+        if value != expected:
+            return name, value
+    return None
+
+
 def unmodelled_state(camera: Any) -> tuple[Any, str, Any, str] | None:
     """The first state of a camera ``camera`` draws with (itself, or a
     display camera) that the core's drawers (the core, and Cairo's engine
     cameras for its overlay) do not draw as the camera would, as ``(camera,
     attribute, value, the value taken)``, or ``None``: a value of
     :data:`ASSUMED_STATE` other than the one taken, however it was set (a
-    constructor of the scene's own, the scene's code); and the camera's
+    constructor of the scene's own, the scene's code); the Cairo context it
+    keeps for its array, where its state is not as CE makes it (a clip
+    installed, :func:`_context_changed`); and the camera's
     pixel size against the configured one, by whose ratio CE widens a point
     cloud's blocks (``adjusted_thickness``), which the core draws at the
     configured size's.
@@ -302,6 +357,15 @@ def unmodelled_state(camera: Any) -> tuple[Any, str, Any, str] | None:
             value = getattr(each, name, missing)
             if value is not missing and not holds(value):
                 return each, name, value, taken
+        changed = _context_changed(each)
+        if changed is not None:
+            name, value = changed
+            return (
+                each,
+                f"Cairo context's {name}",
+                value,
+                "as get_cairo_context makes it",
+            )
     size = camera.pixel_width + camera.pixel_height
     configured = config.pixel_width + config.pixel_height
     if size != configured:
@@ -314,9 +378,13 @@ def captured(camera: Any, draw_path: str) -> bool:
     camera's own capture: on a path that describes frames, a camera the
     scene's code changed (:func:`user_camera`) in ways XF carries. Its code
     then runs once per capture, as CE runs it, and the records hold what it
-    produced (pre-projected records).
+    produced (pre-projected records). Every frame of a scene that fell back
+    to its camera's own draw (:func:`fall_back`) is too, whatever the camera
+    has become since: the live painter that fell back draws it.
     """
-    return bool(DRAW_PATHS.get(draw_path)) and user_camera(camera) is not None
+    if not DRAW_PATHS.get(draw_path):
+        return False
+    return user_camera(camera) is not None or fell_back(camera, draw_path)
 
 
 def camera_path(camera: Any, draw_path: str) -> str:
@@ -339,22 +407,25 @@ def camera_path(camera: Any, draw_path: str) -> str:
     or not, draws on Cairo for the whole scene, with a ``render.fallback``
     finding.
 
-    A scene's frames take one path, one movie one painter (:func:`deliver`):
-    its first drawing decides it, and a scene on Cairo stays there. On the
-    core a fallback to Cairo is possible only while no frame has been
-    delivered; once one has, a drawing that would take another path is
-    ``render.unable``. (On ``ir_cairo`` Cairo draws every frame either way,
-    so a fallback can come at any frame.)
+    A scene's frames are drawn by one painter, one movie one painter
+    (:func:`deliver`): its first drawing decides the path, and a scene on
+    Cairo stays there. On the core a fallback to Cairo is possible only while
+    no frame has been delivered; once the core has delivered one, a drawing
+    that would take another path is ``render.unable``. (On ``ir_cairo`` Cairo
+    draws every frame either way, so a fallback can come at any frame.) A
+    scene that fell back to its camera's own draw (:func:`fall_back`) keeps
+    its path, whatever the camera has become: every frame of it is drawn
+    from the camera's captures (:func:`captured`) by the live painter that
+    fell back, which draws them as the camera does.
     """
     draw_path = scene_path(camera, draw_path)
-    wanted, fallback = _wanted_path(camera, draw_path)
     route = _route(camera, draw_path)
+    if route.fallen:
+        assert route.path is not None, "a scene falls back from a path"
+        return route.path
+    wanted, fallback = _wanted_path(camera, draw_path)
     path = route.path
-    if route.fallen and path is not None:
-        # Its camera draws every frame itself, through the live painter that
-        # keeps its first frame's pictures as it drew them (:func:`fall_back`).
-        return "cairo" if wanted == "cairo" else path
-    if path is None or (wanted == "cairo" and not (route.delivered and path == "core")):
+    if path is None or (wanted == "cairo" and route.painter != "core"):
         path = route.path = wanted
     elif wanted != path and path != "cairo":
         why = (
@@ -371,17 +442,26 @@ def camera_path(camera: Any, draw_path: str) -> str:
     return path
 
 
+def painter_kind(draw_path: str) -> str:
+    """The painter whose pixels a frame drawn on ``draw_path`` delivers:
+    ``core``, or ``cairo`` for ``cairo`` and ``ir_cairo`` alike (Cairo draws
+    every pixel of both).
+    """
+    return "core" if draw_path == "core" else "cairo"
+
+
 class _Route:
-    """The path a scene's frames take, whether one has been delivered, and
-    whether the scene fell back to its camera's own draw from its first frame
+    """The path a scene's frames take, the painter of the frames delivered
+    (:func:`painter_kind`; ``None`` before the first), and whether the scene
+    fell back to its camera's own draw from its first frame
     (:func:`fall_back`).
     """
 
-    __slots__ = ("delivered", "fallen", "path")
+    __slots__ = ("fallen", "painter", "path")
 
     def __init__(self) -> None:
         self.path: str | None = None
-        self.delivered = False
+        self.painter: str | None = None
         self.fallen = False
 
 
@@ -404,29 +484,69 @@ def _route(camera: Any, draw_path: str) -> _Route:
     return found[1].setdefault(scene_path(camera, draw_path), _Route())
 
 
-def deliver(camera: Any, draw_path: str) -> None:
+#: Within :func:`deliveries`: the painter of each frame delivered in this
+#: process, in order.
+_DELIVERIES: list[str] | None = None
+
+
+def deliver(camera: Any, draw_path: str, painter: str) -> None:
     """A frame of the scene ``camera`` draws, asked for on ``draw_path``, has
-    been delivered (a play's static picture is not one: it is drawn under
-    the play's frames). From now on its frames stay on the path they took
-    (:func:`camera_path`).
+    been delivered, its pixels drawn by ``painter`` (:func:`painter_kind`; a
+    play's static picture is not a frame: it is drawn under the play's
+    frames). One movie, one painter: a frame drawn by another painter than
+    the scene's frames before is ``render.unable``. From now on the scene's
+    frames stay on the path they took (:func:`camera_path`).
     """
-    _route(camera, draw_path).delivered = True
+    route = _route(camera, draw_path)
+    if route.painter is None:
+        route.painter = painter
+    elif painter != route.painter:
+        raise Unable(
+            f"render.unable: a frame drawn by {painter} after the scene's frames"
+            f" before were drawn by {route.painter}, and a scene's frames are"
+            " drawn by one painter"
+        )
+    if _DELIVERIES is not None:
+        _DELIVERIES.append(painter)
+
+
+@contextlib.contextmanager
+def deliveries() -> Iterator[list[str]]:
+    """Within: the painter of each frame delivered in this process
+    (:func:`deliver`), in order, in the list yielded.
+    """
+    global _DELIVERIES
+    held = _DELIVERIES
+    found: list[str] = []
+    _DELIVERIES = found
+    try:
+        yield found
+    finally:
+        _DELIVERIES = held
 
 
 def fall_back(camera: Any, draw_path: str) -> None:
     """The scene ``camera`` draws, asked for on ``draw_path``, fell back to
     its camera's own draw from its first frame, which stands as the camera
     drew it (``live.LivePainter``): every later frame is the camera's own
-    draw too, whatever path a drawing would take (:func:`camera_path`).
+    draw too, whatever the camera becomes: the live painter that fell back
+    draws every later frame (:func:`camera_path`, :func:`captured`).
     """
     _route(camera, draw_path).fallen = True
+
+
+def fell_back(camera: Any, draw_path: str) -> bool:
+    """Whether the scene ``camera`` draws, asked for on ``draw_path``, fell
+    back to its camera's own draw (:func:`fall_back`).
+    """
+    return _route(camera, draw_path).fallen
 
 
 def delivered(camera: Any, draw_path: str) -> bool:
     """Whether a frame of the scene ``camera`` draws, asked for on
     ``draw_path``, has been delivered (:func:`deliver`).
     """
-    return _route(camera, draw_path).delivered
+    return _route(camera, draw_path).painter is not None
 
 
 def _wanted_path(camera: Any, draw_path: str) -> tuple[str, tuple[str, str] | None]:

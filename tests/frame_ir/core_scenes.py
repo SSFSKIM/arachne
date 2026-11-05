@@ -10,6 +10,7 @@ from __future__ import annotations
 import numpy as np
 
 from arachne import (
+    BLACK,
     BLUE,
     DEGREES,
     GREEN,
@@ -19,7 +20,11 @@ from arachne import (
     YELLOW,
     Circle,
     ImageMobject,
+    ImageMobjectFromCamera,
     Line,
+    MovingCamera,
+    MultiCamera,
+    PMobject,
     Prism,
     Rectangle,
     Scene,
@@ -116,14 +121,50 @@ class StrokeUnderSquare(ThreeDScene):
 
     line = Line
 
+    def occluder(self):
+        """What lies over the stroke."""
+        return Square(side_length=2, color=BLUE, fill_opacity=1.0)
+
     def construct(self):
         self.set_camera_orientation(phi=20 * DEGREES, theta=-60 * DEGREES)
-        square = Square(side_length=2, color=BLUE, fill_opacity=1.0)
+        square = self.occluder()
         stroke = self.line(
             [-3.0, 0.0, -1.0], [3.0, 0.0, -1.0], color=YELLOW, stroke_width=8
         )
         self.add(square, stroke)
         self.play(stroke.animate.shift([0.0, 0.4, 0.0]), run_time=0.2)
+
+
+class BlackSquareOverStroke(StrokeUnderSquare):
+    """The occluder in the background's colour, its stroke too: its capture
+    leaves the frame as it found it.
+    """
+
+    def occluder(self):
+        return Square(side_length=2, color=BLACK, fill_opacity=1.0)
+
+
+class TranslucentSquareOverStroke(StrokeUnderSquare):
+    """A half-transparent occluder."""
+
+    def occluder(self):
+        return Square(side_length=2, color=BLUE, fill_opacity=0.5)
+
+
+class OutlineOverStroke(StrokeUnderSquare):
+    """An occluder of stroke alone, which the stroke crosses."""
+
+    def occluder(self):
+        return Square(side_length=2, color=BLUE, stroke_width=12)
+
+
+class SquareOffFrameOverStroke(StrokeUnderSquare):
+    """The occluder outside the frame: its capture draws nothing on it."""
+
+    def occluder(self):
+        return Square(side_length=2, color=BLUE, fill_opacity=1.0).shift(
+            [30.0, 0.0, 0.0]
+        )
 
 
 class OwnLine(Line):
@@ -139,6 +180,40 @@ class LiveStrokeUnderSquare(StrokeUnderSquare):
     """:class:`StrokeUnderSquare` drawn as the scene runs: each frame is a
     capture of the square, then one of the stroke.
     """
+
+    line = OwnLine
+
+
+class ResizedDisplayPoints(Scene):
+    """A MultiCamera showing a display half the frame's size, of a point
+    cloud and a line that moves: CE resizes the display's camera to the
+    display as it captures, and widens the cloud's blocks by the ratio of
+    the configured size to the camera's (``adjusted_thickness``). ``line``
+    is the line's class.
+    """
+
+    line = Line
+
+    def __init__(self, **kwargs):
+        super().__init__(camera_class=MultiCamera, **kwargs)
+
+    def construct(self):
+        frame = self.renderer.camera.frame
+        display = ImageMobjectFromCamera(MovingCamera())
+        display.stretch_to_fit_width(frame.width / 2)
+        display.stretch_to_fit_height(frame.height / 2)
+        display.move_to([frame.width / 4, frame.height / 4, 0.0])
+        self.renderer.camera.add_image_mobject_from_camera(display)
+        cloud = PMobject(stroke_width=4)
+        rng = np.random.default_rng(0)
+        cloud.add_points(rng.uniform(-3, 3, size=(40, 3)) * [1, 1, 0], color=YELLOW)
+        line = self.line([-3.0, -2.0, 0.0], [3.0, -2.0, 0.0], color=RED)
+        self.add(cloud, line, display)
+        self.play(line.animate.shift([0.0, 1.0, 0.0]), run_time=0.2)
+
+
+class LiveResizedDisplayPoints(ResizedDisplayPoints):
+    """:class:`ResizedDisplayPoints` drawn as the scene runs."""
 
     line = OwnLine
 

@@ -406,6 +406,57 @@ class PatchedAfterAPlay(ThreeDScene):
         self.play(square.animate.shift(0.5 * LEFT), run_time=0.2)
 
 
+class UnseenFallback(ProjectingStateSolids):
+    """Every mobject outside the frame, through :class:`ProjectingStateSolids`'
+    camera rebinding only as it projects the square that moves: the play's
+    static picture is described on the core, then the scene falls back, and
+    every frame it delivers is the background, as the core's description of
+    the static picture was.
+    """
+
+    def construct(self):
+        self.set_camera_orientation(phi=60 * DEGREES, theta=-45 * DEGREES)
+        self.patch(self.renderer.camera)
+        square = Square(side_length=1, color=BLUE).move_to([30.0, 0.0, 0.0])
+        self.add(Dot([-30.0, 0.0, 0.0], color=RED), square)
+        self.play(square.animate.shift(0.5 * UP), run_time=0.2)
+
+    def rebinds(self, camera, points) -> bool:
+        return float(np.mean(np.asarray(points)[:, 0])) > 20.0
+
+
+class UnpatchedAfterAFallback(ProjectingStateSolids):
+    """:class:`ProjectingStateSolids`, its projection put back to the
+    engine's after the scene's plays, and one more play: the scene fell back
+    to its camera's own draw in its first frame, and stays there.
+    """
+
+    def construct(self):
+        super().construct()
+        vars(self.renderer.camera).pop("project_points")
+        self.move_camera(theta=-60 * DEGREES, run_time=0.2)
+
+
+class ClippedCamera(ThreeDCamera):
+    """A camera class of the scene's own whose constructor (a change the gate
+    proved) clips its array's Cairo context to the frame's left half: CE
+    draws every path through that context, clipped.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        context = self.get_cairo_context(self.pixel_array)
+        context.rectangle(-20.0, -20.0, 20.0, 40.0)
+        context.clip()
+
+
+class ClippedSolids(Solids):
+    """:class:`Solids` through :class:`ClippedCamera`."""
+
+    def __init__(self, **kwargs):
+        super().__init__(camera_class=ClippedCamera, **kwargs)
+
+
 class LaterPlayStateSolids(ProjectingStateSolids):
     """:class:`ProjectingStateSolids` whose code first sets the line width in
     the second play: only once the camera has turned to the angle it turns

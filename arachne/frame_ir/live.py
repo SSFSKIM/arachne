@@ -439,21 +439,44 @@ class LivePainter:
         self._scene: tuple[Any, str] | None = None
         #: On the core, per camera (by id): what its last capture in the frame
         #: within :meth:`around` drew, described; and what its last play's
-        #: static picture is. A capture that starts on one of them describes
-        #: the frame from it (:meth:`_under`).
+        #: static picture is.
         self._last: dict[int, _Described] = {}
         self._static_pictures: dict[int, _Described] = {}
+        #: On the core, per camera (by id), within :meth:`around`: the
+        #: described picture its array holds, by what put it there (its
+        #: capture, or the picture installed as its array), or ``None``. A
+        #: capture that starts on one describes the frame from it
+        #: (:meth:`_under`).
+        self._holding: dict[int, _Described | None] = {}
+        #: Per camera (by id), within :meth:`around`: the painter whose pixels
+        #: its array holds (``painter.painter_kind``).
+        self._drawn_by: dict[int, str] = {}
 
     def painter(self, camera: Any) -> Any:
-        """The painter of ``camera``'s captures."""
+        """The painter of ``camera``'s captures: the path's for the scene's
+        camera, and Cairo from XF (``ir_cairo``) for a display's, as a frame
+        drawn from the record has a display's picture drawn by Cairo
+        (``CorePainter``'s overlay): the core does not widen a point cloud's
+        blocks by a display camera's size, as CE does.
+        """
         found = self._painters.get(id(camera))
         if found is None or found[0] is not camera:
             from .painter import painter_class
 
-            painter = painter_class(self.path)(stream=_LiveStream())
+            path = self.path if self._is_scene_camera(camera) else "ir_cairo"
+            painter = painter_class(path)(stream=_LiveStream())
             found = (camera, painter)
             self._painters[id(camera)] = found
         return found[1]
+
+    def _is_scene_camera(self, camera: Any) -> bool:
+        return self._scene is not None and camera is self._scene[0]
+
+    def _kind(self, camera: Any) -> str:
+        """The painter ``camera``'s descriptions are drawn by."""
+        from .painter import painter_kind
+
+        return painter_kind(self.path if self._is_scene_camera(camera) else "ir_cairo")
 
     @contextlib.contextmanager
     def around(
@@ -471,6 +494,8 @@ class LivePainter:
         self._scene = (camera, asked)
         self._frames += 1
         self._last.clear()
+        self._holding.clear()
+        self._drawn_by.clear()
         self._opening = not delivered(camera, asked)
         displays = vars(camera).get("image_mobjects_from_cameras", ())
         cameras = [camera, *(display.camera for display in displays)]
@@ -491,7 +516,7 @@ class LivePainter:
         # A play's static picture is drawn under its first frame: the scene's
         # first frame is both.
         if not static:
-            deliver(camera, asked)
+            deliver(camera, asked, self._drawn_by.get(id(camera), self._kind(camera)))
 
     def _settle_opening(self, static: bool) -> None:
         """The scene's first frame has been drawn by each hedged camera
@@ -503,6 +528,7 @@ class LivePainter:
         for key, (camera, real, described) in self._chain.items():
             if camera not in _UNSETTLED:
                 np.copyto(camera.pixel_array, described)
+                self._drawn_by[key] = self._kind(camera)
                 if static:
                     self._statics[key] = (real, described)
         self._chain.clear()
@@ -538,32 +564,41 @@ class LivePainter:
         return now
 
     def _under(
-        self, camera: Any, background: np.ndarray, drawn: list[tuple[type, _Recording]]
+        self, camera: Any, drawn: list[tuple[type, _Recording]]
     ) -> _Described | None:
         """The description a capture of ``camera`` that draws ``drawn``
-        continues as one frame: the frame's capture before it, or the play's
-        static picture, where ``background`` (the description of what the
-        camera holds) is that picture's pixels. The frame is then described
-        from that picture's background with the draws of every capture in
-        it, depth tested across all of them, as a frame drawn from the record
-        is. Only a picture that drew something over its background, none of
-        whose leaves this capture draws (CE draws such a leaf twice: in the
-        picture's pixels, and again).
+        continues as one frame: the picture the camera's array holds by what
+        put it there (:attr:`_holding`), the frame's capture before it or the
+        play's static picture installed as its array. The frame is then
+        described from that picture's background with the draws of every
+        capture in it, depth tested across all of them, as a frame drawn from
+        the record is. Decided by what the captures drew, whatever their
+        pixels show; not where a leaf of the picture is drawn again (CE draws
+        such a leaf twice: in the picture's pixels, and again).
         """
         if self.draw:
             return None
+        picture = self._holding.get(id(camera))
+        if picture is None or picture.camera is not camera:
+            return None
         drawing = {id(recording._xf_leaf) for _, recording in drawn}
+        if any(id(r._xf_leaf) in drawing for _, r in picture.drawn):
+            return None
+        return picture
+
+    def _installed(self, camera: Any, pixel_array: Any) -> _Described | None:
+        """The described picture ``camera``'s array holds once ``pixel_array``
+        is set as it: none for its background (a reset), else the frame's
+        capture before or the play's static picture, the one whose pixels it
+        is (a picture the renderer kept, set back as the frame's background).
+        """
+        if pixel_array is camera.background:
+            return None
         for picture in (
             self._last.get(id(camera)),
             self._static_pictures.get(id(camera)),
         ):
-            if (
-                picture is not None
-                and picture.camera is camera
-                and np.array_equal(background, picture.pixels)
-                and not np.array_equal(picture.pixels, picture.background)
-                and not any(id(r._xf_leaf) in drawing for _, r in picture.drawn)
-            ):
+            if picture is not None and np.array_equal(pixel_array, picture.pixels):
                 return picture
         return None
 
@@ -598,6 +633,7 @@ class LivePainter:
 
             own["points_to_pixel_coords"] = engine_own(mapped)
             added.append("points_to_pixel_coords")
+        held: dict[str, Any] = {}
         if not self.draw:
             context = camera.get_cairo_context
 
@@ -607,7 +643,18 @@ class LivePainter:
 
             own["get_cairo_context"] = engine_own(no_context)
             added.append("get_cairo_context")
-        held: dict[str, Any] = {}
+            set_array = camera.set_pixel_array
+
+            def installing(pixel_array: Any, *args: Any, **kwargs: Any) -> Any:
+                # A reset, or a picture set back as the frame's background.
+                found = set_array(pixel_array, *args, **kwargs)
+                self._holding[id(camera)] = self._installed(camera, pixel_array)
+                return found
+
+            if "set_pixel_array" in own:
+                held["set_pixel_array"] = own["set_pixel_array"]
+            own["set_pixel_array"] = engine_own(installing)
+            added.append("set_pixel_array")
         own_code = _own_code(camera)
         if own_code is not None:
             # Named now: once wrapped, the scene's callables on the instance
@@ -691,9 +738,10 @@ class LivePainter:
             # The camera's code changed what it holds while it produced
             # what a record states: its draw reads that state beyond what
             # XF carries, so its own draw stands, from then on.
+            self._drawn_by[id(camera)] = "cairo"
             self._fall_back(camera)
             return
-        under = self._under(camera, background, drawn)
+        under = self._under(camera, drawn)
         if under is not None:
             background = under.background
             merged = dict(under.centres)
@@ -702,9 +750,9 @@ class LivePainter:
             drawn, centres = [*under.drawn, *drawn], merged
         pixels = self._describe(camera, drawn, centres, background)
         if not self.draw:
-            self._last[id(camera)] = _Described(
-                camera, pixels, background, drawn, centres
-            )
+            described = _Described(camera, pixels, background, drawn, centres)
+            self._last[id(camera)] = described
+            self._holding[id(camera)] = described
         if self.draw and not np.array_equal(camera.pixel_array, pixels):
             if vars(camera).get("_xf_pre_projected"):
                 # A camera described from its own capture drew other than
@@ -714,6 +762,7 @@ class LivePainter:
                 _UNSETTLED[camera] = (
                     f"its capture at t={self.instant} drew other than XF describes it"
                 )
+                self._drawn_by[id(camera)] = "cairo"
                 self._fall_back(camera)
                 return
             self.differing += 1
@@ -724,8 +773,10 @@ class LivePainter:
             # then leaves nothing of the core's in it. Its description
             # replaces it once the frame is drawn (:meth:`_settle_opening`).
             self._chain[id(camera)] = (camera, np.array(camera.pixel_array), pixels)
+            self._drawn_by[id(camera)] = "cairo"
         else:
             np.copyto(camera.pixel_array, pixels)
+            self._drawn_by[id(camera)] = self._kind(camera)
 
     def _sample(self, camera: Any) -> None:
         """Whether ``camera``'s capture about to run is watched call by call,
