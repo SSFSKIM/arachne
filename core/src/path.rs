@@ -26,6 +26,11 @@
 //!   of the path's own curve (`depth::Centreline`: the front-most part that reaches the pixel, else
 //!   the nearest). A fixed-orientation path is a camera-facing
 //!   plane at its centre's depth; anything else is in front of the scene, tying by draw order.
+//! - Pre-projected (XF 1.1's tail): the points, paints and gradient ends a camera of the scene's
+//!   own produced, drawn as they are, never projected or lit again. Depth follows the rules above
+//!   in that camera's axes, the points put back where its projection took them from
+//!   (`Projection::in_camera_axes`, `unproject`), so the view's angles, which that camera may not
+//!   have drawn with, never reach it.
 //! - Coverage: each pixel's exact nonzero area (`scanline::cover`); a pixel the compositor resolves
 //!   sample by sample asks for the layer's winding at the sub-samples (`scanline::mask`).
 
@@ -35,7 +40,7 @@ use crate::composite::{
 };
 use crate::depth::{Centreline, WorldPlane};
 use crate::gradient::{self, Linear};
-use crate::project::{FrameMap, Projection, placement, pre_display};
+use crate::project::{FrameMap, Placement, Projection, placement, pre_display, produced_key};
 use crate::scanline::{self, Edge, Scratch};
 use crate::tiles::{TILE, tile_index, tiles_across};
 use crate::xf::*;
@@ -78,6 +83,10 @@ pub struct PathDraw<'a> {
     /// A face of a surface (a face group's): an outline on no one plane takes the plane nearest it
     /// ([`WorldPlane::nearest`]), not its curve's depth.
     pub surface: bool,
+    /// The points are where a camera of the scene's own placed them (a pre-projected record's
+    /// tail), and the paints and `ends` are what it produced: nothing is projected or lit again,
+    /// and depth is keyed in that camera's axes ([`crate::project::produced_key`]).
+    pub pre_projected: bool,
     /// The stroke widths drawn, in CE's units: the record's, or a paint blend's mix of them.
     pub stroke_width: f64,
     pub background_stroke_width: f64,
@@ -629,6 +638,8 @@ pub struct Lowering<'v> {
     view: &'v View,
     map: FrameMap,
     projection: Option<Projection>,
+    /// The projection in the camera's axes, for pre-projected paths.
+    axes: Option<Projection>,
     width: u32,
     height: u32,
     paths: Paths,
@@ -646,6 +657,7 @@ impl<'v> Lowering<'v> {
         Lowering {
             view,
             map,
+            axes: projection.as_ref().map(Projection::in_camera_axes),
             projection,
             width,
             height,
@@ -661,16 +673,30 @@ impl<'v> Lowering<'v> {
     /// Lowers one path into up to three layers.
     pub fn path(&mut self, draw: &PathDraw<'_>) {
         let rec = draw.record;
+        // A pre-projected path's points are its camera's placed points already (placed by
+        // the identity).
         let world: Vec<[f64; 3]> = draw.points.iter().map(|p| place(&draw.place, *p)).collect();
         if world.len() < 4 || world.iter().flatten().any(|v| !v.is_finite()) {
             return; // CE draws a mobject with a non-finite point as one point: nothing.
         }
-        let (placement, keyed) = placement(
-            self.projection.as_ref(),
-            &self.map,
-            rec.depth.space,
-            rec.depth.fixed_orientation_centre,
-        );
+        let (placement, keyed) = if draw.pre_projected {
+            let fixed = rec.depth.fixed_orientation_centre.is_some();
+            let key = produced_key(
+                self.axes.as_ref(),
+                &self.map,
+                rec.depth.space,
+                fixed,
+                &world,
+            );
+            (Placement::Flat, key)
+        } else {
+            placement(
+                self.projection.as_ref(),
+                &self.map,
+                rec.depth.space,
+                rec.depth.fixed_orientation_centre,
+            )
+        };
         let shown = pre_display(&world, self.projection.as_ref(), placement);
         let user = outline(&shown);
         if user.elements().is_empty() {
@@ -685,7 +711,18 @@ impl<'v> Lowering<'v> {
                 let half = width * self.view.cairo_line_width_multiple * self.map.xx.abs() / 2.0;
                 let reach = half + 1.0;
                 let bins = (half * MITER_LIMIT).max(TILE as f64) + 2.0;
-                self.world_depth(&world, &shown, reach, bins, draw.surface)
+                if draw.pre_projected {
+                    // Placed by the camera already: keyed where it puts the points back in its axes.
+                    let axes = self.axes.clone().expect("a pre-projected path keyed in 3D");
+                    let back: Vec<[f64; 3]> = shown.iter().map(|q| axes.unproject(*q)).collect();
+                    self.world_depth(&axes, &back, &shown, reach, bins, false)
+                } else {
+                    let p = self
+                        .projection
+                        .clone()
+                        .expect("world depth needs the 3D camera");
+                    self.world_depth(&p, &world, &shown, reach, bins, draw.surface)
+                }
             }
         };
         let alpha = |c: [f64; 4]| [c[0], c[1], c[2], c[3] * rec.opacity];
@@ -699,11 +736,13 @@ impl<'v> Lowering<'v> {
         // lit at its start and end corners, between which its gradient runs.
         let corners = [0, (world.len() - 1) / 6 * 3];
         let lit = match (&self.view.camera, rec.depth.shade_in_3d) {
+            _ if draw.pre_projected => None,
             (Camera::ThreeD(c), true) if c.should_apply_shading => Some(c.light_source),
             _ => None,
         };
         let ends = match (lit, draw.ends) {
             (Some(_), _) => Some(corners.map(|i| shown[i])),
+            (None, Some(ends)) if draw.pre_projected => Some(ends),
             (None, Some(ends)) => {
                 let shown_ends = pre_display(&ends, self.projection.as_ref(), placement);
                 Some([shown_ends[0], shown_ends[1]])
@@ -810,19 +849,17 @@ impl<'v> Lowering<'v> {
         ])
     }
 
-    /// The depth of a path placed in world space under a 3D camera.
+    /// The depth of a path placed in world space under a 3D camera's projection `p`, `world` its
+    /// points before `p` placed them at `shown`.
     fn world_depth(
         &mut self,
+        p: &Projection,
         world: &[[f64; 3]],
         shown: &[[f64; 3]],
         reach: f64,
         bins: f64,
         surface: bool,
     ) -> LayerDepth {
-        let p = self
-            .projection
-            .as_ref()
-            .expect("world depth needs the 3D camera");
         if world.iter().all(|q| p.keys_planar_at(*q))
             && let Some(plane) = if surface {
                 WorldPlane::nearest(world)

@@ -17,7 +17,8 @@ use crate::path::PathDraw;
 use crate::points::PointsDraw;
 use crate::xf::*;
 
-/// A `points` record's points, drawn as CE's blocks.
+/// A `points` record's points, drawn as CE's blocks: `positions` its shape's, or its tail's points
+/// when it is pre-projected.
 pub fn points<'a>(
     record: &'a Record,
     positions: &'a [[f64; 3]],
@@ -28,6 +29,7 @@ pub fn points<'a>(
         record,
         positions,
         colours: colours.rows(),
+        pre_projected: record.pre_projected.is_some(),
         order,
     }
 }
@@ -73,8 +75,37 @@ pub fn path_record<'a, 't>(
         background_stroke: rows(&paint.background_stroke, table),
         ends: paint.gradient,
         surface: false,
+        pre_projected: false,
         stroke_width: paint.stroke_width,
         background_stroke_width: paint.background_stroke_width,
+        order,
+        sub: 0,
+    }
+}
+
+/// The path a pre-projected `path` record draws: the points its camera placed (`placed`, its tail's
+/// shape) painted in the colours that camera painted with, its gradient between the ends it placed
+/// (`tail`), at the record's stroke widths.
+pub fn produced_path<'a, 't>(
+    record: &'a Record,
+    placed: &'a [[f64; 3]],
+    tail: &PreProjected,
+    table: impl Fn(&Key) -> &'t Stops + Copy,
+    order: u32,
+) -> PathDraw<'a> {
+    let p = &record.paint;
+    PathDraw {
+        record,
+        points: Cow::Borrowed(placed),
+        place: IDENTITY,
+        fill: rows(&tail.fill, table),
+        stroke: rows(&tail.stroke, table),
+        background_stroke: rows(&tail.background_stroke, table),
+        ends: tail.gradient,
+        surface: false,
+        pre_projected: true,
+        stroke_width: p.stroke_width,
+        background_stroke_width: p.background_stroke_width,
         order,
         sub: 0,
     }
@@ -101,6 +132,7 @@ pub fn path_members<'a>(
             background_stroke: one(&p.background_stroke).map(|c| vec![c]),
             ends: None,
             surface: false,
+            pre_projected: false,
             stroke_width: p.stroke_width,
             background_stroke_width: p.background_stroke_width,
             order,
@@ -133,6 +165,7 @@ pub fn face<'a, 't>(
         background_stroke: rows(&p.background_stroke, table),
         ends: None,
         surface: true,
+        pre_projected: false,
         stroke_width: p.stroke_width,
         background_stroke_width: p.background_stroke_width,
         order,

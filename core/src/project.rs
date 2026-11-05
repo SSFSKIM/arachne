@@ -108,6 +108,25 @@ impl Projection {
         self.rotation
     }
 
+    /// This projection seen in the camera's own axes: no rotation and no centre, only the
+    /// perspective and the zoom. A pre-projected record's points are already in those axes (as
+    /// `project` leaves them), so their depth is keyed through this, never through the view's
+    /// rotation, which a camera of the scene's own may not have drawn with.
+    pub fn in_camera_axes(&self) -> Projection {
+        Projection {
+            rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            frame_center: [0.0; 3],
+            ..self.clone()
+        }
+    }
+
+    /// The point in the camera's axes that `project` places at `shown`: `shown`'s depth, and its
+    /// position before the perspective factor and the zoom.
+    pub fn unproject(&self, shown: [f64; 3]) -> [f64; 3] {
+        let scale = self.factor(shown[2]) * self.zoom;
+        [shown[0] / scale, shown[1] / scale, shown[2]]
+    }
+
     /// One point through `ThreeDCamera.project_points`.
     pub fn project(&self, p: [f64; 3]) -> [f64; 3] {
         let [x, y, z] = self.rotated(p);
@@ -320,6 +339,33 @@ pub fn placement(
         },
         (Some(_), Space::Overlay) => (Placement::FixedInFrame, in_front),
         _ => (Placement::Flat, in_front),
+    }
+}
+
+/// The depth key a pre-projected record in `space` takes as a whole, when it takes one, its
+/// points `shown` where its camera placed them and `axes` the projection in that camera's axes
+/// ([`Projection::in_camera_axes`]) under a 3D camera: as [`placement`] keys a record placed by the
+/// engine, except that a fixed orientation faces the camera at the middle of its points' depths
+/// (where CE's offset moved its centre, the centre of their box). `None` for points keyed each on
+/// its own: through `axes`, from where it puts them back ([`Projection::unproject`]).
+pub fn produced_key(
+    axes: Option<&Projection>,
+    map: &FrameMap,
+    space: Space,
+    fixed_orientation: bool,
+    shown: &[[f64; 3]],
+) -> Option<Plane> {
+    match (axes, space) {
+        (Some(p), Space::World) if fixed_orientation => {
+            let (lo, hi) = shown
+                .iter()
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), q| {
+                    (lo.min(q[2]), hi.max(q[2]))
+                });
+            Some(p.facing_plane([0.0, 0.0, (lo + hi) / 2.0], map))
+        }
+        (Some(_), Space::World) => None,
+        _ => Some(Plane::constant(f64::NEG_INFINITY)),
     }
 }
 

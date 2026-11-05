@@ -628,12 +628,15 @@ impl Stream {
         }
         let shading = matches!(&view.camera, Camera::ThreeD(c) if c.should_apply_shading);
         let ce_light = view.light == LightModel::Ce;
-        if let Some(refused) = self
-            .order
-            .iter()
-            .filter(|e| drawn(e))
-            .find_map(|e| refusal(&self.records[&e.slot], &self.shapes, shading, ce_light))
-        {
+        if let Some(refused) = self.order.iter().filter(|e| drawn(e)).find_map(|e| {
+            refusal(
+                &self.records[&e.slot],
+                &self.shapes,
+                &self.paints,
+                shading,
+                ce_light,
+            )
+        }) {
             return Err(DrawError::Unsupported(refused));
         }
         let frame = match &view.background {
@@ -694,6 +697,13 @@ impl Stream {
                 (RecordKind::FaceGroup, Some(ShapeData::Path { points }), Body::FaceGroup(f)) => {
                     paths.push(instance::face(record, points, f, e.part, table, order));
                 }
+                (RecordKind::Path, Some(ShapeData::Path { .. }), _)
+                    if let Some(tail) = &record.pre_projected =>
+                {
+                    let placed = path_shape(&self.shapes, &tail.points)
+                        .expect("apply checked the tail's points");
+                    paths.push(instance::produced_path(record, placed, tail, table, order));
+                }
                 (RecordKind::Path, Some(ShapeData::Path { .. }), _) => {
                     let (points, place) =
                         drawn_points(record, &self.shapes).expect("drawing refused the others");
@@ -704,7 +714,12 @@ impl Stream {
                     ));
                 }
                 (RecordKind::Points, Some(ShapeData::Path { points }), Body::Points(p)) => {
-                    clouds.push(instance::points(record, points, table(&p.colors), order));
+                    let positions = match &record.pre_projected {
+                        Some(tail) => path_shape(&self.shapes, &tail.points)
+                            .expect("apply checked the tail's points"),
+                        None => points,
+                    };
+                    clouds.push(instance::points(record, positions, table(&p.colors), order));
                 }
                 (RecordKind::Instances, Some(shape), Body::Instances(body)) => match shape {
                     ShapeData::Path { points } => instance::path_members(
@@ -865,19 +880,30 @@ fn check_shape(shape: &Shape) -> Result<(), StreamError> {
 /// kind; for meshes (and instances of a mesh) strokes, gradient fills and dashes; for paths (and
 /// instances of a path) CE's lighting under a camera that shades (`shading`) with a light model
 /// other than CE's (`ce_light`), a gradient paint without its ends or on an instance, and dashes
-/// it cannot read.
+/// it cannot read. A pre-projected record is judged by its tail's paints and ends (lit already, so
+/// never refused for shading), and refused with a blend, reveal or paint blend.
 fn field_refusal(rec: &Record, mesh: bool, shading: bool, ce_light: bool) -> Option<String> {
     let kind = rec.kind.name();
-    let shaded = shading && rec.depth.shade_in_3d;
+    // A pre-projected record's paints are the colours its camera painted with, lit already, and
+    // its gradient runs between the ends that camera placed.
+    let tail = rec.pre_projected.as_ref();
+    let shaded = tail.is_none() && shading && rec.depth.shade_in_3d;
     // A path's blend, reveal and paint blend are drawn as what they make of it (`geometry`); the
     // paint judged below is the one drawn.
     let shaped = rec.geometry.blend.is_some()
         || rec.geometry.reveal.is_some()
         || rec.paint.paint_b.is_some();
-    let p = &match crate::geometry::drawn_paint(&rec.paint) {
+    let mut p = match crate::geometry::drawn_paint(&rec.paint) {
         Ok(p) => p,
         Err(what) => return Some(format!("a {kind}'s {what} is not drawn")),
     };
+    if let Some(t) = tail {
+        p.fill = t.fill.clone();
+        p.stroke = t.stroke.clone();
+        p.background_stroke = t.background_stroke.clone();
+        p.gradient = t.gradient;
+    }
+    let p = &p;
     let drawn = |paint: &Paint, width: Option<f64>| {
         !matches!(paint, Paint::None) && width.is_none_or(|w| w > 0.0)
     };
@@ -896,6 +922,12 @@ fn field_refusal(rec: &Record, mesh: bool, shading: bool, ce_light: bool) -> Opt
         } else {
             "paint blend"
         })
+    } else if shaped && tail.is_some() {
+        // The tail is what its camera drew of the mobject as it stood; extraction never states
+        // both.
+        Some(format!(
+            "a pre-projected {kind} with a blend, reveal or paint blend is not drawn"
+        ))
     } else if rec.clip.is_some() {
         not_yet("clip")
     } else if rec.kind == RecordKind::Points {
@@ -953,6 +985,14 @@ pub fn is_overlay(rec: &Record) -> bool {
         || rec.features & FEATURE_BACKGROUND_IMAGE != 0
 }
 
+/// The points of the path shape `key` names, if it names one.
+fn path_shape<'a>(shapes: &'a HashMap<Key, Shape>, key: &Key) -> Option<&'a [[f64; 3]]> {
+    match shapes.get(key).map(|s| s.data()) {
+        Some(ShapeData::Path { points }) => Some(points.as_slice()),
+        _ => None,
+    }
+}
+
 /// The points a `path` record draws and the placement they still take: its shape and its own
 /// placement, or, under a reveal or a blend, the points those make of it
 /// ([`geometry::path_points`]), placed already. `None` when it has no path shape, or blends two
@@ -961,10 +1001,7 @@ fn drawn_points<'a>(
     rec: &Record,
     shapes: &'a HashMap<Key, Shape>,
 ) -> Option<(Cow<'a, [[f64; 3]]>, Affine)> {
-    let path = |key: &Key| match shapes.get(key).map(|s| s.data()) {
-        Some(ShapeData::Path { points }) => Some(points.as_slice()),
-        _ => None,
-    };
+    let path = |key: &Key| path_shape(shapes, key);
     let a = path(rec.geometry.shape_a.as_ref()?)?;
     let g = &rec.geometry;
     if g.blend.is_none() && g.reveal.is_none() {
@@ -978,11 +1015,13 @@ fn drawn_points<'a>(
 }
 
 /// Why this build refuses to draw a record, if it does, under a camera that shades or not
-/// (`shading`) and CE's light model or another (`ce_light`). It draws `mesh`, `path`,
-/// `face_group`, `points` and `instances` records; `image` records are Cairo's overlay's.
+/// (`shading`) and CE's light model or another (`ce_light`), its paint tables in `paints`. It draws
+/// `mesh`, `path`, `face_group`, `points` and `instances` records, pre-projected ones included;
+/// `image` records are Cairo's overlay's.
 fn refusal(
     rec: &Record,
     shapes: &HashMap<Key, Shape>,
+    paints: &HashMap<Key, Stops>,
     shading: bool,
     ce_light: bool,
 ) -> Option<Unsupported> {
@@ -998,8 +1037,6 @@ fn refusal(
         )
     } else if rec.features & FEATURE_BACKGROUND_IMAGE != 0 {
         "background_image is drawn by Cairo only".into()
-    } else if rec.features & FEATURE_PRE_PROJECTED != 0 {
-        "pre-projected records are drawn by Cairo only in this build".into()
     } else if let RecordKind::Unknown(code) = rec.kind {
         format!("record kind {code} is not one this build knows")
     } else if rec.kind.is_reserved() {
@@ -1034,9 +1071,25 @@ fn refusal(
                 return None;
             }
             "an instances record of more parts than 2^32".into()
-        } else if let (Body::Points(body), Some(ShapeData::Path { points: positions })) =
+        } else if let (Body::Points(body), Some(ShapeData::Path { points: own })) =
             (&rec.body, prototype)
         {
+            let positions = match &rec.pre_projected {
+                Some(tail) => path_shape(shapes, &tail.points).unwrap_or(&[]),
+                None => own,
+            };
+            if rec.pre_projected.is_some()
+                && paints.get(&body.colors).map(|t| t.rows().len()) != Some(positions.len())
+            {
+                return Some(Unsupported {
+                    kind: rec.kind.name(),
+                    slot: Some(rec.slot),
+                    object: Some(rec.object),
+                    reason: "a pre-projected points record placing other than one point per \
+                             colour"
+                        .into(),
+                });
+            }
             // Each block pixel's write takes a sub-order of its own (its offset, then its point),
             // in 32 bits.
             let side = points::side(body.radius) as u128;
