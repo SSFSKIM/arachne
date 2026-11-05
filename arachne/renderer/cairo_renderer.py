@@ -386,6 +386,9 @@ class CairoRenderer:
         finally:
             self._capturing_static = False
         self.static_image = self.get_frame()
+        from ..frame_ir.live import keep_static_picture
+
+        keep_static_picture(self.camera, self.static_image)
         return self.static_image
 
     def update_skipping_status(self) -> None:

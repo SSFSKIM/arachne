@@ -154,6 +154,46 @@ def test_a_live_frame_tests_depth_across_its_captures_whatever_they_drew(
         np.testing.assert_array_equal(a, b, err_msg=f"frame {index}")
 
 
+def _live_line(*, cleared_square: bool) -> np.ndarray:
+    """A live frame on the core of a stroke at z = -1, seen from above; with
+    ``cleared_square``, captured after an opaque black square at z = 0 over
+    it whose picture the scene's code then clears, setting a copy of the
+    camera's background as its array.
+    """
+    from fractions import Fraction
+
+    from arachne import BLACK, DEGREES, YELLOW, Line, Square, tempconfig
+    from arachne.camera.three_d_camera import ThreeDCamera
+    from arachne.frame_ir.live import live
+
+    with tempconfig(MEDIUM):
+        camera = ThreeDCamera()
+        camera.set_phi(20 * DEGREES)
+        camera.set_theta(-60 * DEGREES)
+        square = Square(side_length=2, color=BLACK, fill_opacity=1.0)
+        line = Line([-3.0, 0.0, -1.0], [3.0, 0.0, -1.0], color=YELLOW, stroke_width=8)
+        with live(camera, Fraction(0), "core", play=0):
+            camera.reset()
+            if cleared_square:
+                camera.capture_mobjects([square])
+                camera.set_pixel_array(camera.background.copy())
+            camera.capture_mobjects([line])
+        return np.array(camera.pixel_array)
+
+
+def test_a_picture_the_scene_s_code_clears_hides_nothing_drawn_after_it():
+    """A live frame continues the description of the picture its camera
+    holds only where the renderer put that picture there: a square black on
+    black, its picture cleared by the scene's code with pixels just like it,
+    hides nothing of the stroke captured after.
+    """
+    cleared = _live_line(cleared_square=True)
+    alone = _live_line(cleared_square=False)
+    assert np.any(alone[..., :3] > 0), "the stroke is drawn"
+    differ = np.abs(cleared.astype(int) - alone.astype(int)).max(-1)
+    assert not differ.any(), int((differ > 0).sum())
+
+
 def test_a_resized_display_s_points_are_as_wide_drawn_as_the_scene_runs_as_from_the_record():
     """A MultiCamera's display half the frame's size shows a point cloud
     whose blocks CE widens by the ratio of the configured size to the

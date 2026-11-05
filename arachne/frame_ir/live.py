@@ -443,11 +443,15 @@ class LivePainter:
         #: static picture is.
         self._last: dict[int, _Described] = {}
         self._static_pictures: dict[int, _Described] = {}
+        #: On the core, per camera (by id): the array the renderer keeps of
+        #: its last play's static picture (:meth:`keep`), and the description
+        #: of it.
+        self._kept: dict[int, tuple[Any, _Described]] = {}
         #: On the core, per camera (by id), within :meth:`around`: the
         #: described picture its array holds, by what put it there (its
-        #: capture, or the picture installed as its array), or ``None``. A
-        #: capture that starts on one describes the frame from it
-        #: (:meth:`_under`).
+        #: capture, or the renderer setting a static picture it kept as its
+        #: array), or ``None``. A capture that starts on one describes the
+        #: frame from it (:meth:`_under`).
         self._holding: dict[int, _Described | None] = {}
         #: Per camera (by id), within :meth:`around`: the painter whose pixels
         #: its array holds (``painter.painter_kind``).
@@ -536,7 +540,8 @@ class LivePainter:
                 yield self
             self._settle_opening(static)
             if static:
-                self._static_pictures.update(self._last)
+                # This play's static pictures, and no earlier play's.
+                self._static_pictures = dict(self._last)
         finally:
             for restore in reversed(undo):
                 restore()
@@ -613,20 +618,28 @@ class LivePainter:
             return None
         return picture
 
+    def keep(self, camera: Any, pixels: Any) -> None:
+        """The renderer keeps ``pixels``, a copy of ``camera``'s array, as the
+        static picture of the play just drawn, to set back as its array under
+        the play's frames: set back so (the very array), a live frame
+        continues its description (:meth:`_installed`).
+        """
+        described = self._static_pictures.get(id(camera))
+        if described is None or camera in _UNSETTLED:
+            self._kept.pop(id(camera), None)
+        else:
+            self._kept[id(camera)] = (pixels, described)
+
     def _installed(self, camera: Any, pixel_array: Any) -> _Described | None:
         """The described picture ``camera``'s array holds once ``pixel_array``
-        is set as it: none for its background (a reset), else the frame's
-        capture before or the play's static picture, the one whose pixels it
-        is (a picture the renderer kept, set back as the frame's background).
+        is set as it: the static picture the renderer kept, where it is the
+        array the renderer said it keeps (:meth:`keep`); else none. A reset,
+        or a picture the scene's code sets, is drawn over as its pixels,
+        whatever they are like.
         """
-        if pixel_array is camera.background:
-            return None
-        for picture in (
-            self._last.get(id(camera)),
-            self._static_pictures.get(id(camera)),
-        ):
-            if picture is not None and np.array_equal(pixel_array, picture.pixels):
-                return picture
+        kept = self._kept.get(id(camera))
+        if kept is not None and pixel_array is kept[0]:
+            return kept[1]
         return None
 
     def _install(self, camera: Any) -> Any:
@@ -673,7 +686,7 @@ class LivePainter:
             set_array = camera.set_pixel_array
 
             def installing(pixel_array: Any, *args: Any, **kwargs: Any) -> Any:
-                # A reset, or a picture set back as the frame's background.
+                # A reset, a static picture the renderer kept, or the scene's own.
                 found = set_array(pixel_array, *args, **kwargs)
                 self._holding[id(camera)] = self._installed(camera, pixel_array)
                 return found
@@ -1172,6 +1185,15 @@ def live(
         _LIVE[camera] = found
     with found[1].around(camera, t, play, draw_path) as painter:
         yield painter
+
+
+def keep_static_picture(camera: Any, pixels: Any) -> None:
+    """The renderer keeps ``pixels``, a copy of ``camera``'s array, as the
+    static picture just drawn (:meth:`LivePainter.keep`).
+    """
+    painter = live_painter(camera)
+    if painter is not None:
+        painter.keep(camera, pixels)
 
 
 def live_painter(camera: Any) -> LivePainter | None:

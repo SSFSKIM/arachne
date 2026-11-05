@@ -635,7 +635,12 @@ class Drawing:
         with self._captures(capture.instant, ("static", play.index)):
             camera.capture_mobjects(list(play.static))
         self._pictures[play.index] = self._painted(play, capture)
-        return camera.pixel_array.copy()
+        kept = camera.pixel_array.copy()
+        if self.captured:
+            from arachne.frame_ir.live import keep_static_picture
+
+            keep_static_picture(camera, kept)
+        return kept
 
     def _captures(
         self, t: Fraction, play: Any
@@ -1010,12 +1015,13 @@ class LiveFrames:
         self._pending = None
         self._static = None
         if play.held and play.static and self.static_layer:
-            from arachne.frame_ir.live import live
+            from arachne.frame_ir.live import keep_static_picture, live
 
             self.camera.reset()
             with live(self.camera, play.start, play=("static", play.index)):
                 self.camera.capture_mobjects(list(play.static))
             self._static = self.camera.pixel_array.copy()
+            keep_static_picture(self.camera, self._static)
 
     def pending(self, instant: Fraction, until: Fraction) -> None:
         """The scene holds ``instant``, which answers up to ``until``."""
