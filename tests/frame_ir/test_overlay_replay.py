@@ -99,6 +99,7 @@ def _replayed(painted: list[CorePainter]) -> int:
         # The label after the image in space, which changes every frame.
         (core_scenes.ImageInSpaceOrbit, True),
         (core_scenes.InterleavedOverlay, True),
+        (core_scenes.BackgroundFilledOverlay, True),
         # A 2D scene: its overlay is the display alone, drawn every frame.
         (core_scenes.ZoomedFrameMoves, False),
     ],

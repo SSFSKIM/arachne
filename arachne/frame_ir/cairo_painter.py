@@ -663,45 +663,79 @@ class CairoDrawer:
                 continue
             records = [state.records[slot] for _, slot, _ in group]
             replays.hold(records)
-            if any(
-                int(record.fields.get("features", 0)) & FEATURE_BACKGROUND_IMAGE
-                for record in records
-            ):
-                # A path filled through a background image is drawn into an
-                # array of its own, the rest of its run through the context:
-                # drawn anew, and the path it leaves is no member's.
-                prepare()
-                self._draw_entries(camera, group, array)
-                key = object()
-                continue
             context = _context(camera, array)
             drawing = False
-            for (_, slot, part), record in zip(group, records, strict=True):
-                fields = record.fields
-                flat = fields.get("space") == "overlay" and not fields.get(
-                    "shade_in_3d"
+            # The camera draws paths filled through a background image in
+            # batches of their own, into arrays of their own, never through
+            # the context (``display_multiple_vectorized_mobjects``): drawn
+            # anew, they leave the context as they found it.
+            for filled, batch in it.groupby(
+                zip(group, records, strict=True),
+                key=lambda member: bool(
+                    int(member[1].fields.get("features", 0)) & FEATURE_BACKGROUND_IMAGE
+                ),
+            ):
+                key, drawing = self._draw_batch(
+                    camera,
+                    list(batch),
+                    filled,
+                    array,
+                    context,
+                    replays,
+                    prepare,
+                    key,
+                    views,
+                    drawing,
                 )
-                own = (id(record), part, views[flat])
-                calls = replays.found(own)
-                if calls is not None:
-                    key = own
-                else:
-                    calls = replays.found((key, own))
-                    if calls is not None:
-                        key = (key, own)
-                if calls is not None:
-                    replay(context, calls)
-                    continue
-                if not drawing:
-                    prepare()
-                    if isinstance(camera, ThreeDCamera):
-                        camera.reset_rotation_matrix()
-                    drawing = True
-                recording = Recording(context)
-                camera.display_vectorized(self._proxy(slot, part, record), recording)
-                key = own if recording.begins_path() else (key, own)
-                replays.keep(key, recording.calls)
         return key
+
+    def _draw_batch(
+        self,
+        camera: Any,
+        batch: list[tuple[tuple[str, int, int], Record]],
+        filled: bool,
+        array: np.ndarray,
+        context: Any,
+        replays: Replays,
+        prepare: Any,
+        key: Any,
+        views: tuple[Any, Any],
+        drawing: bool,
+    ) -> tuple[Any, bool]:
+        """One batch of a run the camera draws through its context: paths
+        filled through a background image (``filled``), drawn anew, or
+        members each made again or drawn and kept (:meth:`_draw_kept`).
+        Returns the key of the last member drawn through the context, and
+        whether the camera is ready to draw.
+        """
+        if filled:
+            prepare()
+            self._draw_entries(camera, [entry for entry, _ in batch], array)
+            return key, drawing
+        for (_, slot, part), record in batch:
+            fields = record.fields
+            flat = fields.get("space") == "overlay" and not fields.get("shade_in_3d")
+            own = (id(record), part, views[flat])
+            calls = replays.found(own)
+            if calls is not None:
+                key = own
+            else:
+                calls = replays.found((key, own))
+                if calls is not None:
+                    key = (key, own)
+            if calls is not None:
+                replay(context, calls)
+                continue
+            if not drawing:
+                prepare()
+                if isinstance(camera, ThreeDCamera):
+                    camera.reset_rotation_matrix()
+                drawing = True
+            recording = Recording(context)
+            camera.display_vectorized(self._proxy(slot, part, record), recording)
+            key = own if recording.begins_path() else (key, own)
+            replays.keep(key, recording.calls)
+        return key, drawing
 
     @staticmethod
     def _refuse_unknown(
