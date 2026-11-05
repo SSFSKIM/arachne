@@ -11,6 +11,8 @@ import numpy as np
 import pytest
 from PIL import Image, ImageFont
 
+from arachne.frame_ir import lint as drawing_lint
+from arachne.frame_ir.cairo_painter import Unsupported
 from arachne.lint.keyframes import COLUMNS, LABEL_HEIGHT, ROWS, TILE
 from arachne.timeline.routes import RecordRefused
 
@@ -71,22 +73,21 @@ def test_a_draw_the_painter_refuses_is_a_render_unsupported_finding(
     session_of, tmp_path, monkeypatch
 ):
     session = session_of("Instants", frame_rate=15)
-
-    class Refused(Exception):
-        """What a painter raises for a frame it does not draw."""
-
-        code = "render.unsupported"
-        kind = "mesh"
-
+    monkeypatch.setattr(drawing_lint, "raised", [])
+    refusal = Unsupported("mesh", 3)
     drawn = session.frame
 
     def frame(t, quality=None):
         if t == Fraction(13, 15):
-            raise Refused("render.unsupported: slot 3 is a mesh record")
+            raise refusal
         return drawn(t, quality)
 
     monkeypatch.setattr(session, "frame", frame)
     result = session.key_frames(tmp_path)
+    # The drawing's own finding, as the painter's path raises it.
+    assert drawing_lint.raised == [
+        drawing_lint.Finding("render.unsupported", "mesh", str(refusal))
+    ]
     assert [k.play for k in result.frames] == [0, 4, 5]
     (finding,) = result.findings
     assert finding.code == "render.unsupported"
@@ -109,10 +110,8 @@ def test_a_refusal_in_the_forward_draws_is_a_finding_for_its_play(
     are still drawn.
     """
     session = session_of("Instants", frame_rate=15)
-
-    class Refused(Exception):
-        code = "render.unsupported"
-        kind = "mesh"
+    monkeypatch.setattr(drawing_lint, "raised", [])
+    refusal = Unsupported("mesh", 2)
 
     def requires_forward(t, quality=None):
         raise RecordRefused("the record draws none of these frames")
@@ -121,12 +120,15 @@ def test_a_refusal_in_the_forward_draws_is_a_finding_for_its_play(
 
     def drawn(record, answers, static):
         if any(a.play is not None and a.play.index == 4 for a in answers):
-            raise Refused("render.unsupported: slot 2 is a mesh record")
+            raise refusal
         return painter(record, answers, static)
 
     monkeypatch.setattr(session, "frame", requires_forward)
     monkeypatch.setattr(session, "_drawn", drawn)
     result = session.key_frames(tmp_path)
+    assert drawing_lint.raised == [
+        drawing_lint.Finding("render.unsupported", "mesh", str(refusal))
+    ]
     assert len(session.forward_runs) == 1
     assert [(k.play, k.answer) for k in result.frames] == [
         (0, "forward"),
@@ -144,14 +146,23 @@ def test_a_refusal_in_the_forward_draws_is_a_finding_for_its_play(
     assert session._drawn is drawn
 
 
-def test_another_failure_of_a_draw_is_not_a_finding(session_of, tmp_path, monkeypatch):
+@pytest.mark.parametrize("error", ["a bug", "an error with the code"])
+def test_another_failure_of_a_draw_is_not_a_finding(
+    session_of, tmp_path, monkeypatch, error
+):
+    """Only the painter's own refusal is a finding: another error, one that
+    carries the refusal's code among them, is raised.
+    """
     session = session_of("Instants", frame_rate=15)
 
+    class Failure(Exception):
+        code = "render.unsupported"
+
     def frame(t, quality=None):
-        raise ZeroDivisionError("a bug")
+        raise ZeroDivisionError(error) if error == "a bug" else Failure(error)
 
     monkeypatch.setattr(session, "frame", frame)
-    with pytest.raises(ZeroDivisionError):
+    with pytest.raises(ZeroDivisionError if error == "a bug" else Failure):
         session.key_frames(tmp_path)
 
 

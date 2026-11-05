@@ -10,8 +10,9 @@ Frames are drawn as :meth:`~arachne.session.Session.frame` draws them,
 through the session's painter, and what the record can't draw (a camera it
 refuses, an instant it can't restore) comes from one forward run, as
 :meth:`~arachne.session.Session.answers` gives it. A painter that refuses a
-frame (it raises an error whose ``code`` is ``render.unsupported``) leaves
-that play without a picture and gives a ``render.unsupported`` finding.
+frame (:class:`~arachne.frame_ir.cairo_painter.Unsupported`) leaves that
+play without a picture and gives a ``render.unsupported`` finding, raised
+on the drawing's own findings too (:func:`arachne.frame_ir.lint.raise_finding`).
 A session recorded on another grid than the render's gives that recording's
 own frames at the render's frame times, which may differ from the render's
 where a frame hook or dt updater ran at other instants.
@@ -49,6 +50,8 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
+from arachne.frame_ir.cairo_painter import Unsupported
+from arachne.frame_ir.lint import raise_finding
 from arachne.timeline.clock import frames_in
 from arachne.timeline.restore import Unrestorable
 from arachne.timeline.routes import RecordRefused
@@ -70,8 +73,8 @@ ROWS = 3
 #: The band under each tile its label is written in, in pixels.
 LABEL_HEIGHT = 32
 
-#: The error code a painter's refusal of a frame carries.
-_UNSUPPORTED = "render.unsupported"
+#: The code of a painter's refusal of a frame (:class:`Unsupported`).
+_UNSUPPORTED = Unsupported.code
 _BACKGROUND = (0, 0, 0)
 _LABEL_BACKGROUND = (24, 24, 24)
 _LABEL_INK = (235, 235, 235)
@@ -241,9 +244,7 @@ def _draw(
             images[play.index] = (session.frame(t, quality), "recorded")
         except (RecordRefused, Unrestorable):
             forward.append((play, t))
-        except Exception as error:
-            if getattr(error, "code", None) != _UNSUPPORTED:
-                raise
+        except Unsupported as error:
             findings.append(_refused(play, t, error))
             unshown[play.index] = _unshown(play, str(error))
     if forward:
@@ -280,14 +281,14 @@ def _draw(
 
 
 @contextmanager
-def _refusals_apart(session: Session) -> Iterator[dict[int, Exception]]:
+def _refusals_apart(session: Session) -> Iterator[dict[int, Unsupported]]:
     """Within the block, the session draws a batch of frames one frame at a
-    time, so that the painter refusing one (an error whose ``code`` is
-    ``render.unsupported``) is kept, by its play's index, and the others are
+    time, so that the painter refusing one (:class:`Unsupported`) is kept,
+    by its play's index, and the others are
     still drawn: one forward run serves the batch, whatever the painter
     refuses. A refused frame's pixels are left blank.
     """
-    refused: dict[int, Exception] = {}
+    refused: dict[int, Unsupported] = {}
     held = vars(session).get("_drawn")
     painter = session._drawn
 
@@ -298,9 +299,7 @@ def _refusals_apart(session: Session) -> Iterator[dict[int, Exception]]:
         for answer in answers:
             try:
                 (one,) = painter(record, [answer], static)
-            except Exception as error:
-                if getattr(error, "code", None) != _UNSUPPORTED:
-                    raise
+            except Unsupported as error:
                 if answer.play is not None:
                     refused[answer.play.index] = error
                 one = np.zeros_like(record._scene.renderer.camera.pixel_array)
@@ -321,16 +320,20 @@ def _unshown(play: PlayRecord, reason: str) -> Unshown:
     return Unshown(play.index, play.kind, play.source_line, reason)
 
 
-def _refused(play: PlayRecord, t: Fraction, error: Exception) -> Finding:
-    """The ``render.unsupported`` finding of a frame the painter refused."""
-    subject = getattr(error, "subject", None) or getattr(error, "kind", None)
+def _refused(play: PlayRecord, t: Fraction, error: Unsupported) -> Finding:
+    """The ``render.unsupported`` finding of a frame the painter refused,
+    raised on the drawing's own findings, where the painter's path raises
+    its ``render.fallback`` (its subject the record kind refused), and
+    returned as the lint's, at the play's line.
+    """
+    raise_finding(_UNSUPPORTED, error.kind, str(error))
     return Finding(
         _UNSUPPORTED,
         t,
         t,
         message=f"the key frame of play {play.index} is not drawn: {error}",
         line=play.source_line,
-        detail={"subject": subject},
+        detail={"subject": error.kind},
     )
 
 
