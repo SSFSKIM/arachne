@@ -11,3 +11,11 @@ created, not from `scene.record`). Any name the engine adds to `Scene`, `Mobject
 Community Edition lacks is checked against this rule when it is added. The recorder, for one, is kept as
 `_arachne_timeline` and read only there; `scene.timeline` reads it for tools and tests, and a scene that sets
 `self.timeline` keeps its own value under that name without touching the engine's.
+
+## Caches that build mobjects
+
+A module-level cache that hands out mobjects or their parts is registered in `CACHES` in
+`arachne/mobject/construction_caches.py`. A session's execution forgets every registered cache and a render
+executed again restores them all as its first execution found them, so two executions of one source build
+the same mobjects: a cache hit can build a mobject another way than a miss, and one cache's hit can skip
+filling another.

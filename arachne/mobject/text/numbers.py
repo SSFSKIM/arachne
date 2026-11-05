@@ -15,6 +15,9 @@ from arachne.mobject.types.vectorized_mobject import VMobject
 from arachne.mobject.value_tracker import ValueTracker
 from arachne.typing import Vector3DLike
 
+#: A number's glyphs by their string; one of the construction caches an
+#: execution forgets and restores as a unit
+#: (:mod:`arachne.mobject.construction_caches`).
 string_to_mob_map: dict[str, SingleStringMathTex] = {}
 
 

@@ -9,7 +9,10 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 import srt
 
 from . import logger
-from .mobject.svg.svg_mobject import parsed_svgs, restore_parsed_svgs
+from .mobject.construction_caches import (
+    construction_caches,
+    restore_construction_caches,
+)
 from .scene.section import DefaultSectionType
 from .timeline.clock import exact
 from .timeline.execution import Reexecute, play_keys
@@ -159,9 +162,9 @@ class Manager(Generic[SceneT]):
 
         known: dict[int, str] = {}
         earlier: list[tuple[int, tuple[bytes, ...]]] = []
-        # The images a scene rendered earlier in this process left parsed:
-        # an execution again finds them as the first execution did.
-        parsed = parsed_svgs()
+        # The construction caches as a scene rendered earlier in this process
+        # left them: an execution again finds them as the first execution did.
+        caches = construction_caches()
         while True:
             try:
                 self._execute()
@@ -189,7 +192,7 @@ class Manager(Generic[SceneT]):
                         "n": len(earlier) + 1,
                     },
                 )
-                restore_parsed_svgs(parsed)
+                restore_construction_caches(caches)
                 self._renew_scene()
                 self.scene._arachne_timeline.reexecuting(known, earlier)
         self.post_construct()

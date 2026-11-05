@@ -1052,3 +1052,30 @@ class Drawn(Scene):
     first = _open(scene, "Drawn").summary()
     again = _open(scene, "Drawn").summary()
     assert compare(first, again) is None
+
+
+def test_a_number_then_a_formula_opened_again_in_one_process_is_the_execution_it_was(
+    scene_dir,
+):
+    """A number fills the glyph cache and the image cache at once, and a
+    formula after it finds its image cached. A second execution in one
+    process must start from both as the first did, or the formula is built
+    another way and its sheen direction differs.
+    """
+    scene = _write(
+        scene_dir,
+        "scene.py",
+        HEADER
+        + """
+class NumberThenFormula(Scene):
+    def construct(self):
+        number = DecimalNumber(1, num_decimal_places=0).shift(LEFT)
+        formula = MathTex("1").shift(RIGHT)
+        formula.set_sheen(0.75, formula.get_sheen_direction())
+        self.add(number, formula)
+        self.play(formula.animate.shift(UP), run_time=0.5)
+""",
+    )
+    first = _open(scene, "NumberThenFormula").summary()
+    again = _open(scene, "NumberThenFormula").summary()
+    assert compare(first, again) is None
