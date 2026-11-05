@@ -267,6 +267,111 @@ impl WorldPlane {
     }
 }
 
+/// The bucket sides of the registry's lookup: in unit-normal components, and in scene units of
+/// offset. A lookup takes the bucket and its neighbours, so a plane is found from a fit off by up
+/// to a side; a candidate is taken only when the points lie on it ([`Registry::lies_on`]).
+const NORMAL_BUCKET: f64 = 1.0 / 64.0;
+const OFFSET_BUCKET: f64 = 0.5;
+
+/// How many snap reaches a point may lie off a registered plane and still be on it: its own
+/// snap's, the snap of the points the plane was fitted to, and their fit's tilt across the record.
+const ON_PLANE_REACHES: f64 = 6.0;
+
+/// The planes of a frame's flat records, in the order they were registered, each with the points
+/// of the record that registered it. A flat record on a plane registered before it takes that
+/// plane, bit for bit, so records on one plane tie by draw order: the planes fitted to their
+/// snapped points differ by the snap's noise, about the grid over their size, and would cross.
+///
+/// Two records are on one plane when either's points lie on the other's plane: each point within
+/// [`ON_PLANE_REACHES`] snap reaches of it (and the planes' rounding to [`PLANE_GRID`]). Either
+/// way, since a small record's plane tilts by the snap's noise over its own size, and a larger
+/// record's far points leave it by that tilt over their distance; the larger record's plane holds
+/// the small one's points. The first plane registered that a record is on wins.
+#[derive(Debug, Default)]
+pub(crate) struct Registry {
+    grid: f64,
+    planes: Vec<(WorldPlane, Vec<[f64; 3]>)>,
+    buckets: std::collections::HashMap<[i64; 4], Vec<usize>>,
+}
+
+impl Registry {
+    /// An empty registry for points snapped to `grid` (`0.0`: not snapped).
+    pub(crate) fn new(grid: f64) -> Registry {
+        Registry {
+            grid,
+            ..Registry::default()
+        }
+    }
+
+    fn bucket(plane: &WorldPlane) -> [i64; 4] {
+        let n = plane.normal;
+        [
+            (n[0] / NORMAL_BUCKET).floor() as i64,
+            (n[1] / NORMAL_BUCKET).floor() as i64,
+            (n[2] / NORMAL_BUCKET).floor() as i64,
+            (plane.offset / OFFSET_BUCKET).floor() as i64,
+        ]
+    }
+
+    /// Whether every point lies on `plane`.
+    fn lies_on(&self, plane: &WorldPlane, points: &[[f64; 3]]) -> bool {
+        let largest = points.iter().flatten().fold(0.0f64, |m, v| m.max(v.abs()));
+        let tolerance = ON_PLANE_REACHES * snap_reach(self.grid)
+            + PLANE_GRID * (1.0 + 3.0 * largest)
+            + PLANAR_TOLERANCE * extent(points).max(1.0);
+        points
+            .iter()
+            .all(|p| (dot(plane.normal, *p) - plane.offset).abs() <= tolerance)
+    }
+
+    /// The plane a flat record takes, `own` the plane fitted to its points: the first plane
+    /// registered near `own` (the same, or turned the other way: the canonical normal's largest
+    /// component can flip sign between two fits of one plane) that it is on, else `own`,
+    /// registered.
+    pub(crate) fn merge(&mut self, own: WorldPlane, points: &[[f64; 3]]) -> WorldPlane {
+        let mut first: Option<usize> = None;
+        let turned = WorldPlane {
+            normal: own.normal.map(|v| -v),
+            offset: -own.offset,
+        };
+        for near in [own, turned] {
+            let key = Registry::bucket(&near);
+            for d in 0..81i64 {
+                let step = [d % 3 - 1, d / 3 % 3 - 1, d / 9 % 3 - 1, d / 27 - 1];
+                let at = std::array::from_fn(|k| key[k] + step[k]);
+                for &i in self.buckets.get(&at).into_iter().flatten() {
+                    let (plane, theirs) = &self.planes[i];
+                    if first.is_none_or(|f| i < f)
+                        && (self.lies_on(plane, points) || self.lies_on(&own, theirs))
+                    {
+                        first = Some(i);
+                    }
+                }
+            }
+        }
+        match first {
+            Some(i) => self.planes[i].0,
+            None => {
+                self.buckets
+                    .entry(Registry::bucket(&own))
+                    .or_default()
+                    .push(self.planes.len());
+                self.planes.push((own, points.to_vec()));
+                own
+            }
+        }
+    }
+
+    /// The first plane registered that every point lies on: the plane a record with no plane of
+    /// its own (a line, a curve) lying on a flat record's plane is keyed on.
+    pub(crate) fn containing(&self, points: &[[f64; 3]]) -> Option<WorldPlane> {
+        self.planes
+            .iter()
+            .map(|(plane, _)| *plane)
+            .find(|plane| self.lies_on(plane, points))
+    }
+}
+
 /// The axis plane of coordinate `k` through `p`, its offset rounded to the grid.
 fn axis_plane(k: u8, p: [f64; 3]) -> WorldPlane {
     let mut normal = [0.0; 3];

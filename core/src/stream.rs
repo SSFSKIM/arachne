@@ -758,8 +758,9 @@ impl Stream {
         }
         let meshes = mesh::lower(view, width, height, &meshes);
         let mut lowering = path::Lowering::new(view, width, height);
-        for draw in &paths {
-            lowering.path(draw);
+        let planes = lowering.coplanar(&paths);
+        for (draw, plane) in paths.iter().zip(planes) {
+            lowering.path(draw, plane);
         }
         let paths = lowering.finish();
         let blocks = points::lower(view, width, height, &clouds);

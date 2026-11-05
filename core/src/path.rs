@@ -38,7 +38,7 @@ use crate::composite::{
     Coverage, Fragment, OpaquePass, Plane, Producer, Rect, SAMPLES, TransparentPass, premultiply,
     sample_cell,
 };
-use crate::depth::{Centreline, Planarity, WorldPlane};
+use crate::depth::{Centreline, Planarity, Registry, WorldPlane};
 use crate::gradient::{self, Linear};
 use crate::project::{FrameMap, Placement, Projection, placement, pre_display, produced_key};
 use crate::scanline::{self, Edge, Scratch};
@@ -703,8 +703,79 @@ impl<'v> Lowering<'v> {
         }
     }
 
-    /// Lowers one path into up to three layers.
-    pub fn path(&mut self, draw: &PathDraw<'_>) {
+    /// The points `draw`'s depth is keyed from, and whether they are placed in the world by the
+    /// 3D camera's projection (not fixed in frame, fixed in orientation, or pre-projected);
+    /// `None` for a path [`Lowering::path`] does not draw or keys whole.
+    fn depth_points(&self, draw: &PathDraw<'_>) -> Option<(Vec<[f64; 3]>, bool)> {
+        let world: Vec<[f64; 3]> = draw.points.iter().map(|p| place(&draw.place, *p)).collect();
+        if world.len() < 4 || world.iter().flatten().any(|v| !v.is_finite()) {
+            return None;
+        }
+        if draw.pre_projected {
+            let axes = self.axes.as_ref()?;
+            let keyed = produced_key(Some(axes), &self.map, draw.record.depth.space, draw.pivot);
+            let shown = pre_display(&world, self.projection.as_ref(), Placement::Flat);
+            let back = shown.iter().map(|q| axes.unproject(*q)).collect();
+            return keyed.is_none().then_some((back, false));
+        }
+        let (placed, keyed) = placement(
+            self.projection.as_ref(),
+            &self.map,
+            draw.record.depth.space,
+            draw.record.depth.fixed_orientation_centre,
+        );
+        (keyed.is_none() && matches!(placed, Placement::Projected)).then_some((world, true))
+    }
+
+    /// The plane each of `draws` (in draw order) is keyed on, `None` for its curve's depth.
+    ///
+    /// A flat path (its record's `planes`, or decided from its points) is fitted its plane, then
+    /// merged in the frame's [`Registry`] in draw order: a path whose points lie on a plane a path
+    /// before it registered takes that plane, else registers its own. Then a path with no plane of
+    /// its own (a line, a curve) whose points all lie on a registered plane takes the first such
+    /// plane, whatever the order. So things on one plane tie by draw order, though each plane fitted
+    /// to snapped points differs by the snap's noise. A surface's face on no one plane, and a
+    /// pre-projected path, keep the plane fitted to their own points.
+    pub fn coplanar(&self, draws: &[PathDraw<'_>]) -> Vec<Option<WorldPlane>> {
+        let mut registry = Registry::new(crate::depth::input_grid(self.view));
+        let mut found = vec![None; draws.len()];
+        let mut curves = Vec::new();
+        for (i, draw) in draws.iter().enumerate() {
+            let Some((points, in_world)) = self.depth_points(draw) else {
+                continue;
+            };
+            let planarity = draw
+                .decided()
+                .unwrap_or_else(|| WorldPlane::decide(&points, draw.surface && in_world));
+            // A path any of whose points the camera does not key on a plane keeps its curve's
+            // depth ([`Lowering::world_depth`]): it neither registers a plane nor takes one.
+            if in_world
+                && let Some(p) = self.projection.as_ref()
+                && !points.iter().all(|q| p.keys_planar_at(*q))
+            {
+                continue;
+            }
+            let own = WorldPlane::fit(&points, planarity);
+            found[i] = match (own, planarity, in_world) {
+                (Some(own), Planarity::Newell | Planarity::Widest | Planarity::Axis(_), true) => {
+                    Some(registry.merge(own, &points))
+                }
+                (None, Planarity::Curve, true) => {
+                    curves.push((i, points));
+                    None
+                }
+                (own, _, _) => own,
+            };
+        }
+        for (i, points) in curves {
+            found[i] = registry.containing(&points);
+        }
+        found
+    }
+
+    /// Lowers one path into up to three layers, `plane` the plane it is keyed on
+    /// ([`Lowering::coplanar`]), or `None` for its curve's depth.
+    pub fn path(&mut self, draw: &PathDraw<'_>, plane: Option<WorldPlane>) {
         let rec = draw.record;
         // A pre-projected path's points are its camera's placed points already (placed by
         // the identity).
@@ -741,21 +812,13 @@ impl<'v> Lowering<'v> {
                     // Placed by the camera already: keyed where it puts the points back in its axes.
                     let axes = self.axes.clone().expect("a pre-projected path keyed in 3D");
                     let back: Vec<[f64; 3]> = shown.iter().map(|q| axes.unproject(*q)).collect();
-                    self.world_depth(&axes, &back, &shown, reach, bins, false, draw.decided())
+                    self.world_depth(&axes, &back, &shown, reach, bins, plane)
                 } else {
                     let p = self
                         .projection
                         .clone()
                         .expect("world depth needs the 3D camera");
-                    self.world_depth(
-                        &p,
-                        &world,
-                        &shown,
-                        reach,
-                        bins,
-                        draw.surface,
-                        draw.decided(),
-                    )
+                    self.world_depth(&p, &world, &shown, reach, bins, plane)
                 }
             }
         };
@@ -884,9 +947,8 @@ impl<'v> Lowering<'v> {
     }
 
     /// The depth of a path placed in world space under a 3D camera's projection `p`, `world` its
-    /// points before `p` placed them at `shown`: on the plane `decided` (its writer's decision,
-    /// [`Planarity`]) or, undecided, the plane the points decide, fitted to them.
-    #[allow(clippy::too_many_arguments)]
+    /// points before `p` placed them at `shown`: on `plane` ([`Lowering::coplanar`]), or along its
+    /// curve.
     fn world_depth(
         &mut self,
         p: &Projection,
@@ -894,12 +956,10 @@ impl<'v> Lowering<'v> {
         shown: &[[f64; 3]],
         reach: f64,
         bins: f64,
-        surface: bool,
-        decided: Option<Planarity>,
+        plane: Option<WorldPlane>,
     ) -> LayerDepth {
-        let planarity = decided.unwrap_or_else(|| WorldPlane::decide(world, surface));
         if world.iter().all(|q| p.keys_planar_at(*q))
-            && let Some(plane) = WorldPlane::fit(world, planarity)
+            && let Some(plane) = plane
             && let Some(key) = p.key_plane(&plane, &self.map, world[0], MIN_PLANE_COS)
         {
             return LayerDepth::Plane(key);
