@@ -643,6 +643,22 @@ fn a_line_sharing_a_coordinate_to_the_last_bit_takes_its_axis_plane() {
     );
 }
 
+/// Points on a line have no plane, exact or nearest, wherever arithmetic lands their last bits: a
+/// one-ulp nudge must not give them a normal made of rounding noise, which would key a surface's
+/// edge as an extrapolated plane on one machine and as a centreline on another. A triangle on a
+/// line has none either.
+#[test]
+fn points_an_ulp_off_a_line_have_no_plane() {
+    let ulp_up = |v: f64| f64::from_bits(v.to_bits() + 1);
+    let ulp_down = |v: f64| f64::from_bits(v.to_bits() - 1);
+    for nudge in [ulp_up, ulp_down] {
+        let line = [[0.0, 0.0, 0.0], [1.0, 2.0, 3.0], [2.0, 4.0, nudge(6.0)]];
+        assert_eq!(WorldPlane::of_points(&line), None, "{line:?}");
+        assert_eq!(WorldPlane::nearest(&line), None, "nearest {line:?}");
+        assert_eq!(WorldPlane::of_triangle(line), None, "triangle {line:?}");
+    }
+}
+
 /// A 3D view from 40 degrees off the vertical.
 fn looking_down() -> View {
     arachne_core::probes::view(W, H, 40f64.to_radians(), -60f64.to_radians())

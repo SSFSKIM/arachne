@@ -94,7 +94,8 @@ impl WorldPlane {
         Direction::of(n)?.through(p)
     }
 
-    /// The plane through a triangle's corners, or `None` for a degenerate triangle.
+    /// The plane through a triangle's corners, or `None` for a degenerate triangle (its corners
+    /// on a line, to within rounding: [`points_somewhere`]).
     pub fn of_triangle(p: [[f64; 3]; 3]) -> Option<WorldPlane> {
         if let Some(axis) = shared_axis(&p) {
             return Some(axis);
@@ -106,6 +107,9 @@ impl WorldPlane {
             u[2] * v[0] - u[0] * v[2],
             u[0] * v[1] - u[1] * v[0],
         ];
+        if !points_somewhere(n, extent(&p)) {
+            return None;
+        }
         WorldPlane::canonical(n, p[0])
     }
 
@@ -119,40 +123,18 @@ impl WorldPlane {
         if let Some(axis) = shared_axis(points) {
             return Some(axis);
         }
-        let mut lo = first;
-        let mut hi = first;
-        for p in points {
-            for k in 0..3 {
-                lo[k] = lo[k].min(p[k]);
-                hi[k] = hi[k].max(p[k]);
-            }
-        }
-        let extent = (0..3).map(|k| hi[k] - lo[k]).fold(0.0, f64::max);
+        let extent = extent(points);
         if !(extent > 0.0 && extent.is_finite()) {
             return None;
         }
-        // Newell's normal, about the first point so it does not depend on where the points are.
-        let mut n = [0.0; 3];
-        for i in 0..points.len() {
-            let a = points[i];
-            let b = points[(i + 1) % points.len()];
-            let (a, b) = (
-                [a[0] - first[0], a[1] - first[1], a[2] - first[2]],
-                [b[0] - first[0], b[1] - first[1], b[2] - first[2]],
-            );
-            n[0] += (a[1] - b[1]) * (a[2] + b[2]);
-            n[1] += (a[2] - b[2]) * (a[0] + b[0]);
-            n[2] += (a[0] - b[0]) * (a[1] + b[1]);
-        }
-        // Whether every point lies on the plane with normal `n` through the first point. A normal
-        // too short to point anywhere (points on a line, or a sum that cancelled) gives no plane.
+        let n = newell(points, first);
+        // Whether every point lies on the plane with normal `n` through the first point.
         let tolerance = PLANAR_TOLERANCE * extent.max(1.0);
         let holds = |n: [f64; 3]| {
-            let norm = dot(n, n).sqrt();
-            if norm.is_nan() || norm <= PLANAR_TOLERANCE * extent * extent {
+            if !points_somewhere(n, extent) {
                 return false;
             }
-            let unit = n.map(|v| v / norm);
+            let unit = n.map(|v| v / dot(n, n).sqrt());
             let d0 = dot(unit, first);
             points
                 .iter()
@@ -170,32 +152,67 @@ impl WorldPlane {
 
     /// The plane the points lie on ([`WorldPlane::of_points`]), or, when they lie on none (a
     /// surface's face, curved a little), the plane nearest them: Newell's normal through their
-    /// centroid. `None` for points on a line or a point.
+    /// centroid. `None` for points on a line (to within rounding: [`points_somewhere`]) or a
+    /// point.
     pub fn nearest(points: &[[f64; 3]]) -> Option<WorldPlane> {
         if let Some(plane) = WorldPlane::of_points(points) {
             return Some(plane);
         }
         let first = *points.first()?;
-        let mut n = [0.0; 3];
+        let n = newell(points, first);
+        if !points_somewhere(n, extent(points)) {
+            return None;
+        }
         let mut sum = [0.0; 3];
-        for i in 0..points.len() {
-            let a = points[i];
-            let b = points[(i + 1) % points.len()];
-            let (a, b) = (
-                [a[0] - first[0], a[1] - first[1], a[2] - first[2]],
-                [b[0] - first[0], b[1] - first[1], b[2] - first[2]],
-            );
-            n[0] += (a[1] - b[1]) * (a[2] + b[2]);
-            n[1] += (a[2] - b[2]) * (a[0] + b[0]);
-            n[2] += (a[0] - b[0]) * (a[1] + b[1]);
+        for p in points {
             for k in 0..3 {
-                sum[k] += a[k];
+                sum[k] += p[k] - first[k];
             }
         }
         let count = points.len() as f64;
         let centroid = std::array::from_fn(|k| first[k] + sum[k] / count);
         WorldPlane::canonical(n, centroid)
     }
+}
+
+/// The widest of the points' extents along the three axes.
+fn extent(points: &[[f64; 3]]) -> f64 {
+    (0..3)
+        .map(|k| {
+            let (lo, hi) = points
+                .iter()
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| {
+                    (lo.min(p[k]), hi.max(p[k]))
+                });
+            hi - lo
+        })
+        .fold(0.0, f64::max)
+}
+
+/// Newell's normal of the outline through `points`, about `first` so it does not depend on where
+/// the points are.
+fn newell(points: &[[f64; 3]], first: [f64; 3]) -> [f64; 3] {
+    let mut n = [0.0; 3];
+    for i in 0..points.len() {
+        let a = points[i];
+        let b = points[(i + 1) % points.len()];
+        let (a, b) = (
+            [a[0] - first[0], a[1] - first[1], a[2] - first[2]],
+            [b[0] - first[0], b[1] - first[1], b[2] - first[2]],
+        );
+        n[0] += (a[1] - b[1]) * (a[2] + b[2]);
+        n[1] += (a[2] - b[2]) * (a[0] + b[0]);
+        n[2] += (a[0] - b[0]) * (a[1] + b[1]);
+    }
+    n
+}
+
+/// Whether `n`, a normal found from points spanning `extent`, is long enough to point anywhere.
+/// Points on a line (or a sum that cancelled) give a normal of rounding noise, whose direction an
+/// ulp in their input decides: none of their planes is theirs. The bound scales as the normal
+/// does, with the square of the points' size.
+fn points_somewhere(n: [f64; 3], extent: f64) -> bool {
+    dot(n, n).sqrt() > PLANAR_TOLERANCE * extent * extent
 }
 
 /// The normal of the widest triangle with a corner at `first`: its second corner the point
@@ -231,15 +248,7 @@ fn widest_normal(points: &[[f64; 3]], first: [f64; 3]) -> [f64; 3] {
 /// whatever the other points' order.
 fn shared_axis(points: &[[f64; 3]]) -> Option<WorldPlane> {
     let first = points.first()?;
-    let extent = (0..3)
-        .map(|k| {
-            let (lo, hi) = points.iter().fold((first[k], first[k]), |(lo, hi), p| {
-                (lo.min(p[k]), hi.max(p[k]))
-            });
-            hi - lo
-        })
-        .fold(0.0, f64::max);
-    let tolerance = PLANAR_TOLERANCE * extent.max(1.0);
+    let tolerance = PLANAR_TOLERANCE * extent(points).max(1.0);
     for k in [2, 1, 0] {
         if points.iter().all(|p| (p[k] - first[k]).abs() <= tolerance) {
             let mut normal = [0.0; 3];
