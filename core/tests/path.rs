@@ -598,6 +598,51 @@ fn a_curved_face_takes_the_plane_nearest_it() {
     assert_eq!(WorldPlane::nearest(&line), None);
 }
 
+/// A line whose points share a coordinate takes that coordinate's axis plane, and so does the
+/// same line placed by arithmetic that lands a point an ulp off the shared value, either way:
+/// machines whose maths differ in the last bit key it alike. A coordinate apart by far more than
+/// rounding is not shared.
+#[test]
+fn a_line_sharing_a_coordinate_to_the_last_bit_takes_its_axis_plane() {
+    let ulp_up = |v: f64| f64::from_bits(v.to_bits() + 1);
+    let ulp_down = |v: f64| f64::from_bits(v.to_bits() - 1);
+    for shared in [1.0, -1.0, 2.0, 0.37] {
+        // A cubic from (1, shared, 1) to (-1, shared, 2), as an edge between two vertices.
+        let exact: Vec<[f64; 3]> = (0..4)
+            .map(|i| {
+                let t = i as f64 / 3.0;
+                [1.0 - 2.0 * t, shared, 1.0 + t]
+            })
+            .collect();
+        let want = WorldPlane::of_points(&exact);
+        assert_eq!(
+            want.map(|p| p.normal),
+            Some([0.0, 1.0, 0.0]),
+            "the exact line at y = {shared}"
+        );
+        for nudge in [ulp_up, ulp_down] {
+            for at in [0, 1, 3] {
+                let mut off = exact.clone();
+                off[at][1] = nudge(shared);
+                assert_eq!(
+                    WorldPlane::of_points(&off),
+                    want,
+                    "y = {shared}, point {at}"
+                );
+            }
+        }
+        let mut apart = exact.clone();
+        apart[3][1] = shared + 1e-6;
+        assert_ne!(WorldPlane::of_points(&apart), want, "apart by 1e-6");
+    }
+    // At zero an ulp is a subnormal-sized step, and the line still keys as the plane y = 0.
+    let zero: Vec<[f64; 3]> = vec![[1.0, 0.0, 1.0], [-1.0, -f64::MIN_POSITIVE, 2.0]];
+    assert_eq!(
+        WorldPlane::of_points(&zero).map(|p| (p.normal, p.offset)),
+        Some(([0.0, 1.0, 0.0], 0.0))
+    );
+}
+
 /// A 3D view from 40 degrees off the vertical.
 fn looking_down() -> View {
     arachne_core::probes::view(W, H, 40f64.to_radians(), -60f64.to_radians())

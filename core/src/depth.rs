@@ -222,11 +222,26 @@ fn widest_normal(points: &[[f64; 3]], first: [f64; 3]) -> [f64; 3] {
         .unwrap_or([0.0; 3])
 }
 
-/// The axis plane of a coordinate every point shares exactly, preferring z, then y, then x.
+/// The axis plane of a coordinate every point shares, preferring z, then y, then x, at the first
+/// point's value rounded to the grid. A coordinate is shared when every point lies within the
+/// planarity tolerance of the first point's: content places an edge between two vertices at one
+/// value, and arithmetic that differs between machines in the last bit must not turn its plane
+/// into a centreline on one of them. The boundary sits at that tolerance, which content reaches
+/// only by coincidence, against a fixed reference (the first point), so the test is the same
+/// whatever the other points' order.
 fn shared_axis(points: &[[f64; 3]]) -> Option<WorldPlane> {
     let first = points.first()?;
+    let extent = (0..3)
+        .map(|k| {
+            let (lo, hi) = points.iter().fold((first[k], first[k]), |(lo, hi), p| {
+                (lo.min(p[k]), hi.max(p[k]))
+            });
+            hi - lo
+        })
+        .fold(0.0, f64::max);
+    let tolerance = PLANAR_TOLERANCE * extent.max(1.0);
     for k in [2, 1, 0] {
-        if points.iter().all(|p| p[k] == first[k]) {
+        if points.iter().all(|p| (p[k] - first[k]).abs() <= tolerance) {
             let mut normal = [0.0; 3];
             normal[k] = 1.0;
             return Some(WorldPlane {
