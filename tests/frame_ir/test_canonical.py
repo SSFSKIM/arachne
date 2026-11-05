@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 
 from arachne import (
+    BLUE,
     DEGREES,
     IN,
     OUT,
@@ -482,3 +483,40 @@ def test_a_frame_a_millionth_wide_keeps_its_view_and_a_grid_to_match():
 def test_the_configured_frame_keeps_its_grid(pixel_width, grid):
     """The configured frame, 14.2 units wide: 2^-16 at 1080p."""
     assert canonical.input_grid([{**_FLAT_VIEW, "pixel_width": pixel_width}]) == grid
+
+
+class DeepTranslucentPair(ThreeDScene):
+    """Two translucent shaded squares 2e-5 wide and 5e-6 apart in depth,
+    under a camera zoomed until its frame spans 1e-4: their depth keys differ
+    by less than 2^-16. The nearer is added first; CE draws it last.
+    """
+
+    def construct(self):
+        self.set_camera_orientation(phi=0, theta=-90 * DEGREES, zoom=14.222222 / 1e-4)
+        near = Square(2e-5, color=RED, fill_opacity=0.5, stroke_width=0)
+        near.shift(OUT * 5e-6 + RIGHT * 3e-6).set_shade_in_3d(True)
+        far = Square(2e-5, color=BLUE, fill_opacity=0.5, stroke_width=0)
+        far.set_shade_in_3d(True)
+        self.add(near, far)
+        self.wait(1 / FPS)
+
+
+def test_a_deep_zoom_sorts_by_depth_at_the_frame_s_grid(monkeypatch):
+    """At a frame 1e-4 wide the depth keys are snapped at the frame's grid,
+    not at 2^-16, where the two squares' keys tie: the core is handed them
+    in CE's order, far first.
+    """
+    draw = CorePainter.draw
+    handed: list[list[str]] = []
+
+    def watching(self, delta):
+        mobs = {slot: mob for mob, slot in self.stream._slots.values()}
+        if delta.order is not None:
+            handed.append([mobs[slot].color.to_hex() for _, slot, _ in delta.order])
+        return draw(self, delta)
+
+    monkeypatch.setattr(CorePainter, "draw", watching)
+    render(DeepTranslucentPair, FPS, draw_path="core", **MEDIUM)
+    blue, red = BLUE.to_hex(), RED.to_hex()
+    assert handed
+    assert all(order == [blue, red] for order in handed), handed
