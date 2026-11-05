@@ -22,7 +22,7 @@ from typing import Any
 import numpy as np
 
 from .cairo_painter import CairoDrawer
-from .extract import FrameStream, Term
+from .extract import FrameStream, Term, Unable
 from .xf import Delta, StreamState
 
 
@@ -94,14 +94,21 @@ class CorePainter:
             self.deltas.append(delta)
         view = self.state.view
         assert view is not None
-        frame = np.array(
-            self.core.draw(
+        try:
+            pixels = self.core.draw(
                 view["pixel_width"],
                 view["pixel_height"],
                 threads=self.threads,
                 overlay=False,
             )
-        )
+        except arachne_core.Unsupported as refused:
+            # Every frame of a scene is drawn on one path: a frame the core
+            # refuses is not drawn on another.
+            raise Unable(
+                f"render.unable: the core does not draw a {refused.kind} (slot"
+                f" {refused.slot}): {refused.reason}"
+            ) from refused
+        frame = np.array(pixels)
         overlay = self.core.overlay_entries()
         if overlay:
             self.overlaid += 1
