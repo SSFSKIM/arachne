@@ -75,6 +75,9 @@ pub struct PathDraw<'a> {
     /// a paint of two or more rows runs between, unless CE's lighting shades the path (whose
     /// gradient runs between its start and end corners).
     pub ends: Option<[[f64; 3]; 2]>,
+    /// A face of a surface (a face group's): an outline on no one plane takes the plane nearest it
+    /// ([`WorldPlane::nearest`]), not its curve's depth.
+    pub surface: bool,
     /// The stroke widths drawn, in CE's units: the record's, or a paint blend's mix of them.
     pub stroke_width: f64,
     pub background_stroke_width: f64,
@@ -682,7 +685,7 @@ impl<'v> Lowering<'v> {
                 let half = width * self.view.cairo_line_width_multiple * self.map.xx.abs() / 2.0;
                 let reach = half + 1.0;
                 let bins = (half * MITER_LIMIT).max(TILE as f64) + 2.0;
-                self.world_depth(&world, &shown, reach, bins)
+                self.world_depth(&world, &shown, reach, bins, draw.surface)
             }
         };
         let alpha = |c: [f64; 4]| [c[0], c[1], c[2], c[3] * rec.opacity];
@@ -814,13 +817,18 @@ impl<'v> Lowering<'v> {
         shown: &[[f64; 3]],
         reach: f64,
         bins: f64,
+        surface: bool,
     ) -> LayerDepth {
         let p = self
             .projection
             .as_ref()
             .expect("world depth needs the 3D camera");
         if world.iter().all(|q| p.keys_planar_at(*q))
-            && let Some(plane) = WorldPlane::of_points(world)
+            && let Some(plane) = if surface {
+                WorldPlane::nearest(world)
+            } else {
+                WorldPlane::of_points(world)
+            }
             && let Some(key) = p.key_plane(&plane, &self.map, world[0], MIN_PLANE_COS)
         {
             return LayerDepth::Plane(key);

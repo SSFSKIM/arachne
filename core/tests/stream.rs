@@ -92,7 +92,7 @@ fn drawing_needs_a_view_and_a_size() {
 fn every_record_this_build_cannot_draw_is_refused_whole() {
     // Kinds with no drawer yet are refused, and the drawn kinds are refused for what they carry
     // that this build does not draw: the sample's path a blend, its points a reveal, its mesh a
-    // blend. Its instances record draws.
+    // blend. Its instances record and its face group draw.
     let mut s = Stream::new();
     let deltas = common::sample_deltas();
     s.apply(&deltas[0]).unwrap();
@@ -126,8 +126,8 @@ fn every_record_this_build_cannot_draw_is_refused_whole() {
         }]);
         s.apply(&d).unwrap();
         match s.draw(64, 36, 1) {
-            Ok(_) if kind == "instances" => {}
-            Err(DrawError::Unsupported(u)) if kind != "instances" => {
+            Ok(_) if matches!(kind, "instances" | "face_group") => {}
+            Err(DrawError::Unsupported(u)) if !matches!(kind, "instances" | "face_group") => {
                 assert_eq!(u.kind, kind);
                 assert_eq!(u.slot, Some(slot));
                 assert_eq!(u.object, Some(100 + slot));
@@ -955,4 +955,117 @@ fn a_blend_the_core_cannot_make_is_refused_whole() {
         panic!("drawn")
     };
     assert!(u.reason.contains("table"), "{}", u.reason);
+}
+
+/// Two unit squares side by side, as one shape of two faces: the left face, then the right.
+fn two_faces() -> Vec<[f64; 3]> {
+    let square = |x0: f64| {
+        let shifted: Vec<[f64; 3]> = common::square_points(0.5)
+            .iter()
+            .map(|p| [p[0] + x0, p[1], p[2]])
+            .collect();
+        shifted
+    };
+    [square(-0.5), square(0.5)].concat()
+}
+
+#[test]
+fn a_face_group_draws_each_face_as_the_path_of_that_face() {
+    // CE draws each face of a surface as a path of its own: its points, its row of the face
+    // tables, the record's background stroke and widths. Under a 3D camera that shades, each face
+    // is lit as a shaded path is.
+    let points = two_faces();
+    let shape = Shape::new(ShapeData::Path {
+        points: points.clone(),
+    });
+    let fills = Stops::new(vec![[1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]]);
+    let strokes = Stops::new(vec![[1.0, 1.0, 1.0, 1.0], [0.0, 1.0, 0.0, 1.0]]);
+    for shading in [false, true] {
+        let mut view = common::three_d_view(64, 36);
+        let Camera::ThreeD(c) = &mut view.camera else {
+            unreachable!()
+        };
+        c.should_apply_shading = shading;
+        let style = |r: &mut Record| {
+            r.depth.space = Space::World;
+            r.depth.shade_in_3d = true;
+            r.paint.stroke_width = 2.0;
+        };
+        let mut faces = Record::new(RecordKind::FaceGroup, 1, 101);
+        faces.geometry.shape_a = Some(shape.key());
+        faces.body = Body::FaceGroup(FaceGroup {
+            uv: vec![[0, 0], [1, 0]],
+            grid: [2, 1],
+            fill: fills.key(),
+            stroke: Some(strokes.key()),
+        });
+        style(&mut faces);
+        let mut d = delta(0);
+        d.view = Some(view.clone());
+        d.upload = vec![shape.clone()];
+        d.upload_paints = vec![fills.clone(), strokes.clone()];
+        d.set = vec![faces];
+        d.order = Some(
+            [1, 0]
+                .map(|part| OrderEntry {
+                    layer: Layer::Moving,
+                    slot: 1,
+                    part,
+                })
+                .to_vec(),
+        );
+        let mut s = Stream::new();
+        s.apply(&d).unwrap();
+        let grouped = s.draw(64, 36, 1).unwrap();
+
+        // The same faces as two path records, in the same order.
+        let (left, right) = points.split_at(16);
+        let mut d = delta(0);
+        d.view = Some(view);
+        let mut set = Vec::new();
+        for (slot, half, row) in [(2, right, 1), (3, left, 0)] {
+            let face = Shape::new(ShapeData::Path {
+                points: half.to_vec(),
+            });
+            let mut r = path_record(slot, &face);
+            r.paint.fill = Paint::One(fills.rows()[row]);
+            r.paint.stroke = Paint::One(strokes.rows()[row]);
+            style(&mut r);
+            d.upload.push(face);
+            set.push(r);
+        }
+        d.set = set;
+        d.order = Some(vec![entry(2), entry(3)]);
+        let mut s = Stream::new();
+        s.apply(&d).unwrap();
+        assert_eq!(grouped, s.draw(64, 36, 1).unwrap(), "shading {shading}");
+    }
+}
+
+#[test]
+fn a_face_group_whose_points_do_not_divide_into_its_faces_is_refused() {
+    let shape = Shape::new(ShapeData::Path {
+        points: two_faces()[..13].to_vec(),
+    });
+    let fills = Stops::new(vec![[1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]]);
+    let mut faces = Record::new(RecordKind::FaceGroup, 1, 101);
+    faces.geometry.shape_a = Some(shape.key());
+    faces.body = Body::FaceGroup(FaceGroup {
+        uv: vec![[0, 0], [1, 0]],
+        grid: [2, 1],
+        fill: fills.key(),
+        stroke: None,
+    });
+    let mut d = delta(0);
+    d.view = Some(common::three_d_view(16, 9));
+    d.upload = vec![shape];
+    d.upload_paints = vec![fills];
+    d.set = vec![faces];
+    d.order = Some(vec![entry(1)]);
+    let mut s = Stream::new();
+    s.apply(&d).unwrap();
+    let Err(DrawError::Unsupported(u)) = s.draw(16, 9, 1) else {
+        panic!("drawn")
+    };
+    assert!(u.reason.contains("divide"), "{}", u.reason);
 }

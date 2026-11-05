@@ -574,6 +574,30 @@ fn a_planar_outline_crossing_itself_keeps_its_plane() {
     assert_eq!(WorldPlane::of_points(&line), None, "on a line");
 }
 
+/// A surface's face, curved a little, takes the plane nearest it: the one a planar face would
+/// have when it is flattened onto its mean, and its own when it is planar. Points on a line have
+/// none.
+#[test]
+fn a_curved_face_takes_the_plane_nearest_it() {
+    let flat = [
+        [0.0, 0.0, 0.25],
+        [1.0, 0.0, 0.25],
+        [1.0, 1.0, 0.25],
+        [0.0, 1.0, 0.25],
+    ];
+    let bent = [
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.5],
+        [1.0, 1.0, 0.0],
+        [0.0, 1.0, 0.5],
+    ];
+    assert_eq!(WorldPlane::of_points(&bent), None);
+    assert_eq!(WorldPlane::nearest(&bent), WorldPlane::of_points(&flat));
+    assert_eq!(WorldPlane::nearest(&flat), WorldPlane::of_points(&flat));
+    let line = [[0.0, 0.0, 0.0], [1.0, 2.0, 3.0], [2.0, 4.0, 6.0]];
+    assert_eq!(WorldPlane::nearest(&line), None);
+}
+
 /// A 3D view from 40 degrees off the vertical.
 fn looking_down() -> View {
     arachne_core::probes::view(W, H, 40f64.to_radians(), -60f64.to_radians())
