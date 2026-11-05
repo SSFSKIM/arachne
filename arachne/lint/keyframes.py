@@ -39,11 +39,14 @@ __all__ = [
     "storyboard",
 ]
 
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from arachne.timeline.clock import frames_in
@@ -55,7 +58,7 @@ from .instants import render_grid
 
 if TYPE_CHECKING:
     from arachne.session import Session
-    from arachne.timeline.record import PlayRecord
+    from arachne.timeline.record import PlayRecord, Record
     from arachne.timeline.source import SourceLine
     from arachne.typing import StrPath
 
@@ -72,6 +75,8 @@ _UNSUPPORTED = "render.unsupported"
 _BACKGROUND = (0, 0, 0)
 _LABEL_BACKGROUND = (24, 24, 24)
 _LABEL_INK = (235, 235, 235)
+#: The space, in pixels, a label keeps from its tile's sides.
+_LABEL_INSET = 8
 
 
 @dataclass(frozen=True)
@@ -183,13 +188,13 @@ def storyboard(
             left = place % COLUMNS * width
             top = place // COLUMNS * cell
             sheet.paste(_fitted(image), (left, top))
-            label = _label(key)
+            label = _label(key, font, width - 2 * _LABEL_INSET)
             pen.rectangle(
                 (left, top + height, left + width - 1, top + cell - 1),
                 fill=_LABEL_BACKGROUND,
             )
             pen.text(
-                (left + 8, top + height + LABEL_HEIGHT // 2),
+                (left + _LABEL_INSET, top + height + LABEL_HEIGHT // 2),
                 label,
                 fill=_LABEL_INK,
                 font=font,
@@ -242,10 +247,17 @@ def _draw(
             findings.append(_refused(play, t, error))
             unshown[play.index] = _unshown(play, str(error))
     if forward:
-        answers = session.answers([t for _, t in forward], quality)
-        for (play, _), found in zip(forward, answers, strict=True):
+        with _refusals_apart(session) as refused:
+            answers = session.answers([t for _, t in forward], quality)
+        for (play, t), found in zip(forward, answers, strict=True):
+            refusal = refused.get(play.index)
+            if refusal is not None:
+                findings.append(_refused(play, t, refusal))
+                unshown[play.index] = _unshown(play, str(refusal))
+                continue
             assert found.frame is not None
             images[play.index] = (found.frame, "forward")
+    findings.sort(key=lambda f: f.t_start or 0)
     drawn = [
         (
             KeyFrame(
@@ -265,6 +277,44 @@ def _draw(
         tuple(unshown[index] for index in sorted(unshown)),
         tuple(findings),
     )
+
+
+@contextmanager
+def _refusals_apart(session: Session) -> Iterator[dict[int, Exception]]:
+    """Within the block, the session draws a batch of frames one frame at a
+    time, so that the painter refusing one (an error whose ``code`` is
+    ``render.unsupported``) is kept, by its play's index, and the others are
+    still drawn: one forward run serves the batch, whatever the painter
+    refuses. A refused frame's pixels are left blank.
+    """
+    refused: dict[int, Exception] = {}
+    held = vars(session).get("_drawn")
+    painter = session._drawn
+
+    def drawn(
+        record: Record, answers: Iterable[Any], static: Callable[..., Any]
+    ) -> list[Any]:
+        pixels = []
+        for answer in answers:
+            try:
+                (one,) = painter(record, [answer], static)
+            except Exception as error:
+                if getattr(error, "code", None) != _UNSUPPORTED:
+                    raise
+                if answer.play is not None:
+                    refused[answer.play.index] = error
+                one = np.zeros_like(record._scene.renderer.camera.pixel_array)
+            pixels.append(one)
+        return pixels
+
+    session._drawn = drawn
+    try:
+        yield refused
+    finally:
+        if held is None:
+            del session._drawn
+        else:
+            session._drawn = held
 
 
 def _unshown(play: PlayRecord, reason: str) -> Unshown:
@@ -301,6 +351,19 @@ def _fitted(image: Image.Image) -> Image.Image:
     return tile
 
 
-def _label(key: KeyFrame) -> str:
-    where = str(key.line) if key.line is not None else "line unknown"
-    return f"t={float(key.t):.3f}s   play {key.play} ({key.kind})   {where}"
+def _label(
+    key: KeyFrame, font: ImageFont.FreeTypeFont | ImageFont.ImageFont, room: int
+) -> str:
+    """The tile's label, its time, play and line, within ``room`` pixels in
+    ``font``: a path too long for it loses its start, never its line.
+    """
+    said = f"t={float(key.t):.3f}s   play {key.play} ({key.kind})   "
+    if key.line is None:
+        return said + "line unknown"
+    path, line = key.line.path, f":{key.line.line}"
+    label = said + path + line
+    cut = 0
+    while font.getlength(label) > room and cut < len(path):
+        cut += 1
+        label = f"{said}\u2026{path[cut:]}{line}"
+    return label

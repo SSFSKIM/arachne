@@ -9,9 +9,10 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from PIL import Image
+from PIL import Image, ImageFont
 
 from arachne.lint.keyframes import COLUMNS, LABEL_HEIGHT, ROWS, TILE
+from arachne.timeline.routes import RecordRefused
 
 from ..timeline import scenes as timeline_scenes
 from . import query_scenes
@@ -100,6 +101,49 @@ def test_a_draw_the_painter_refuses_is_a_render_unsupported_finding(
     assert not (tmp_path / "play-001.png").exists()
 
 
+def test_a_refusal_in_the_forward_draws_is_a_finding_for_its_play(
+    session_of, tmp_path, monkeypatch
+):
+    """Frames the record can't draw are drawn from one forward run; the
+    painter refusing one of them gives that play's finding, and the others
+    are still drawn.
+    """
+    session = session_of("Instants", frame_rate=15)
+
+    class Refused(Exception):
+        code = "render.unsupported"
+        kind = "mesh"
+
+    def requires_forward(t, quality=None):
+        raise RecordRefused("the record draws none of these frames")
+
+    painter = session._drawn
+
+    def drawn(record, answers, static):
+        if any(a.play is not None and a.play.index == 4 for a in answers):
+            raise Refused("render.unsupported: slot 2 is a mesh record")
+        return painter(record, answers, static)
+
+    monkeypatch.setattr(session, "frame", requires_forward)
+    monkeypatch.setattr(session, "_drawn", drawn)
+    result = session.key_frames(tmp_path)
+    assert len(session.forward_runs) == 1
+    assert [(k.play, k.answer) for k in result.frames] == [
+        (0, "forward"),
+        (1, "forward"),
+        (5, "forward"),
+    ]
+    (finding,) = result.findings
+    assert finding.code == "render.unsupported"
+    assert finding.t_start == finding.t_end == Fraction(22, 15)
+    assert finding.line == session.record.plays[4].source_line
+    assert finding.detail == {"subject": "mesh"}
+    assert [u.play for u in result.unshown] == [2, 3, 4]
+    assert not (tmp_path / "play-004.png").exists()
+    # The patch is gone once the frames are drawn.
+    assert session._drawn is drawn
+
+
 def test_another_failure_of_a_draw_is_not_a_finding(session_of, tmp_path, monkeypatch):
     session = session_of("Instants", frame_rate=15)
 
@@ -175,6 +219,26 @@ def test_each_tile_is_labelled_with_its_time_play_and_line(session_of, tmp_path)
         assert f"play {key.play}" in tile.label
         line = step if key.play < 6 else last
         assert f"query_scenes.py:{line}" in tile.label
+
+
+def test_a_long_path_is_cut_so_the_label_keeps_its_line(session_of, tmp_path):
+    source = tmp_path / ("a_long_scene_file_name_" * 8 + ".py")
+    source.write_text(
+        "from arachne import Circle, Scene\n"
+        "\n"
+        "\n"
+        "class Long(Scene):\n"
+        "    def construct(self):\n"
+        "        self.add(Circle())\n"
+        "        self.wait(0.2)\n"
+    )
+    session = session_of("Long", source, frame_rate=15)
+    (tile,) = session.storyboard(tmp_path / "sheets").sheets[0].tiles
+    font = ImageFont.load_default(size=LABEL_HEIGHT * 5 // 8)
+    assert 8 + font.getlength(tile.label) <= TILE[0] - 8
+    assert tile.label.startswith("t=0.133s   play 0 (wait)   ")
+    assert tile.label.endswith(".py:7")
+    assert "\u2026" in tile.label
 
 
 def test_a_tile_keeps_the_frame_s_shape(session_of, tmp_path):

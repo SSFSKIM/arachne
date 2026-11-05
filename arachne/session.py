@@ -401,7 +401,8 @@ class Session:
 
     def query(self, t: Fraction | float) -> Query:
         """Numbers about the frame on screen at ``t``, measured as the lint
-        measures it, with nothing drawn (:func:`arachne.lint.query.query`).
+        measures it (:func:`arachne.lint.query.query`): nothing is drawn, but
+        for a record that refuses drawing, read from a forward run that does.
         """
         from .lint.query import query
 

@@ -151,6 +151,22 @@ def test_a_pair_s_things_are_boxed_in_home_units(defect):
         assert thing.line is not None
 
 
+def test_a_rule_asked_at_a_time_reads_the_frame_a_query_reads(session_of):
+    """A rule asked at a time reads the frame on screen then, not the lint's
+    nearest sample before it: 7/15 s is no sample at 4 fps (4/15 and 8/15
+    are), and the words touch at 7/15 s but not at 4/15 s.
+    """
+    session = session_of("SlidingWords", QUERIES, frame_rate=15)
+    t = Fraction(7, 15)
+    query = session.query(t)
+    assert query.t == t
+    assert {r.code for r in query.overlaps()} == {"overlap.text"}
+    assert {r.code for r in session.query(Fraction(4, 15)).overlaps()} == set()
+    found = lint(session, rules=(contact.where(at=[t]),)).findings
+    _same(query.overlaps(), found)
+    assert [f.t_start for f in found] == [t]
+
+
 # offscreen -------------------------------------------------------------------
 
 
@@ -247,6 +263,33 @@ def test_markers_are_the_named_markers_in_force(session_of, t, expected):
         assert by_kind["mark"].t == Fraction(1, 2)
         assert by_kind["mark"].source_line.line == line_of("beat", QUERIES)
         assert by_kind["mark"].data == {"label": "beat", "n": 1}
+
+
+@pytest.mark.parametrize("scene", ["LateSound", "TaggedByAnUpdater"])
+def test_a_play_s_markers_include_those_placed_later_in_it(session_of, scene):
+    session = session_of(scene, QUERIES, frame_rate=15)
+    query = session.query(Fraction(1, 5))
+    play = session.record.play_at(query.t)
+    later = [m for m in play.markers if m.kind in ("mark", "sound")]
+    assert later
+    assert all(m.t > query.t for m in later)
+    assert [m for m in query.markers() if m.kind in ("mark", "sound")] == later
+
+
+def test_a_forward_read_keeps_the_named_markers_of_its_play(session_of):
+    """Off the render's grid the frame is read from a forward run, whose
+    plays keep no markers of their own: the play's span decides.
+    """
+    session = session_of("Narrated", QUERIES, grid=4, frame_rate=15)
+    query = session.query(Fraction(2, 3))
+    assert query.answer == "forward"
+    assert len(session.forward_runs) == 1
+    assert _named(query.markers()) == [
+        ("section", "intro"),
+        ("mark", "beat"),
+        ("sound", "arachne-query-click.wav"),
+        ("subcaption", "hello"),
+    ]
 
 
 def test_the_scene_s_markers_are_all_recorded(session_of):

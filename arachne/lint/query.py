@@ -3,8 +3,10 @@
 :func:`query` reads the frame on screen at a time (the last frame of the
 render's grid at or before it, or the scene's end past it) the way a lint
 asked ``at`` that time reads it: the parts it draws (:mod:`.parts`), from the
-record or, where the record can't answer, one forward run, with nothing
-drawn. Its answers are those parts measured by the lint's own instant rules
+record or, where the record can't answer, one forward run. Read from the
+record, nothing is drawn. A record that refuses drawing (a camera it can't
+draw) is read from a forward run that draws its frames live as the render
+does, so a query of it pays that run, drawing included. Its answers are those parts measured by the lint's own instant rules
 (:mod:`.rules`) under the terms the scene declared by then, so a query and a
 lint of the same frame never disagree:
 
@@ -20,8 +22,8 @@ lint of the same frame never disagree:
   section, the subcaptions showing, the moment tags and sounds of its play),
   as the record keeps them.
 
-Every number about the picture is in home-frame units: scene units of the frame the
-configuration describes, centred, y up, the camera's projection applied
+Every number about the picture is in home-frame units: scene units of the
+frame the configuration describes, centred, y up, the camera's projection applied
 (:mod:`arachne.camera.projection`). The findings each answer carries are the
 rules' own, with boxes as a report gives them (scene units, and pixels of
 the session's resolution).
@@ -49,11 +51,11 @@ from arachne.timeline.clock import exact
 from arachne.timeline.draw import Drawing, camera_nodes
 
 from .bridge import terms_at
-from .core import target_resolution
+from .core import parts_reader
 from .findings import Finding
 from .frames import FrameReader, Frames
 from .instants import lint_instants
-from .parts import Part, Parts, build_parts
+from .parts import Part, Parts
 from .rules import Terms
 from .rules._geometry import union
 from .rules._pairs import pair_findings
@@ -254,33 +256,37 @@ def query(session: Session, t: Fraction | float) -> Query:
 
 def _in_force(record: Record, t: Fraction) -> tuple[Marker, ...]:
     """The named markers of ``record`` in force at ``t``, in the order they
-    were placed.
+    were placed: the last section placed at or before ``t``, each subcaption
+    whose span holds ``t``, and the moment tags and sounds placed in the span
+    of the play holding ``t``, later in it included (after the last play,
+    those placed after it). A play's span decides, not its own list, which a
+    forward run's record does not fill.
     """
     play = record.play_at(t)
+    if play is not None:
+        start, end = play.start, play.end
+    else:
+        start = record.plays[-1].end if record.plays else Fraction(0)
+        end = None
     section: Marker | None = None
     found: list[Marker] = []
     for marker in record.markers:
-        if marker.t > t:
-            continue
         if marker.kind == "section":
-            if section is None or marker.t >= section.t:
+            if marker.t <= t and (section is None or marker.t >= section.t):
                 section = marker
         elif marker.kind == "subcaption":
-            if t < marker.t + exact(marker.data["duration"]):
+            if marker.t <= t < marker.t + exact(marker.data["duration"]):
                 found.append(marker)
-        elif marker.kind in ("mark", "sound"):
-            # The play's own, as the record keeps them per play.
-            if play is not None:
-                if any(marker is kept for kept in play.markers):
-                    found.append(marker)
-            elif marker.t == t:
-                found.append(marker)
+        elif marker.kind in ("mark", "sound") and (
+            start <= marker.t and (end is None or marker.t < end)
+        ):
+            found.append(marker)
     chosen = {id(m) for m in found} | ({id(section)} if section else set())
     return tuple(m for m in record.markers if id(m) in chosen)
 
 
 def _reader(session: Session) -> FrameReader[_Read]:
-    target = target_resolution(session)
+    parts_of = parts_reader(session)
 
     def read(
         record: Record,
@@ -289,15 +295,7 @@ def _reader(session: Session) -> FrameReader[_Read]:
         capture: Capture,
         live: bool,
     ) -> _Read:
-        parts = build_parts(
-            record,
-            t,
-            play,
-            capture,
-            answer="forward" if live else "recorded",
-            target=target,
-            live=live,
-        )
+        parts = parts_of(record, t, play, capture, live)
         if live:
             # The forward run's scene holds the capture now, its camera the
             # map the frame is drawn with: the parts' view.

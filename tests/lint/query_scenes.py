@@ -9,6 +9,7 @@ from __future__ import annotations
 import struct
 import tempfile
 import wave
+from fractions import Fraction
 from pathlib import Path
 
 from arachne import (
@@ -16,14 +17,17 @@ from arachne import (
     LEFT,
     RIGHT,
     UP,
+    Circle,
     Dot,
     FadeIn,
     Line,
+    MovingCameraScene,
     Scene,
     Square,
     Text,
     linear,
 )
+from arachne.lint.bridge import declare
 
 
 class DotsOnALine(Scene):
@@ -76,3 +80,45 @@ class Narrated(Scene):
         self.wait(0.5)
         self.next_section("second")  # @second
         self.play(dot.animate.shift(UP), run_time=0.5)
+
+
+class SlidingWords(MovingCameraScene):
+    """Under a widened view, one word slides through another during 0-1 s,
+    a text gap declared: at 4/15 s they are apart, at 7/15 s they touch.
+    """
+
+    def construct(self):
+        self.camera.frame.set(width=10)
+        moving = Text("ONE", font_size=36).set(width=1).move_to(LEFT * 3)
+        still = Text("TWO", font_size=36).set(width=1)
+        self.add(moving, still)
+        declare(text_gap=0.3)
+        self.play(moving.animate.shift(RIGHT * 6), run_time=1, rate_func=linear)
+
+
+class LateSound(Scene):
+    """A sound placed at the start of a 1 s wait, to sound half-way in."""
+
+    def construct(self):
+        self.next_section("intro")
+        self.add(Circle())
+        self.add_sound(str(_click()), time_offset=0.5)
+        self.wait(1)
+
+
+class TaggedByAnUpdater(Scene):
+    """A moment tag an updater places half-way through a 1 s wait."""
+
+    def construct(self):
+        self.next_section("intro")
+        circle = Circle()
+        self.add(circle)
+        placed = []
+
+        def tag(mob, dt):
+            if self.time >= Fraction(1, 2) and not placed:
+                self.mark("halfway")
+                placed.append(True)
+
+        circle.add_updater(tag)
+        self.wait(1)
