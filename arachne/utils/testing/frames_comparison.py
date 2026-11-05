@@ -271,7 +271,7 @@ def _make_test_comparing_frames(
         if draw_path == "core":
             from arachne.frame_ir.core_painter import CorePainter
 
-            delivered = _FrameDigests(frames_tester)
+            delivered = _FrameDigests(frames_tester, keep_frames=True)
             with CorePainter.keeping_frames() as drew, frames_tester.testing():
                 run(delivered)
             assert delivered.frames, "this unit delivered no frame"
@@ -303,12 +303,14 @@ def _make_test_comparing_frames(
 
 
 class _FrameDigests:
-    """A tester that keeps each frame's sha256, and each frame, and passes
-    the frame on to ``inner``, when there is one.
+    """A tester that keeps each frame's sha256 (and, with ``keep_frames``, a
+    copy of the frame) and passes the frame on to ``inner``, when there is
+    one.
     """
 
-    def __init__(self, inner: Any) -> None:
+    def __init__(self, inner: Any, *, keep_frames: bool = False) -> None:
         self.inner = inner
+        self.keep_frames = keep_frames
         self.digests: list[tuple[int, str]] = []
         self.frames: list[tuple[int, Any]] = []
 
@@ -319,7 +321,8 @@ class _FrameDigests:
     def check_frame(self, frame_number: int, frame: Any) -> None:
         data = memoryview(frame).tobytes()
         self.digests.append((frame_number, hashlib.sha256(data).hexdigest()))
-        self.frames.append((frame_number, np.array(frame, copy=True)))
+        if self.keep_frames:
+            self.frames.append((frame_number, np.array(frame, copy=True)))
         if self.inner is not None:
             self.inner.check_frame(frame_number, frame)
 
