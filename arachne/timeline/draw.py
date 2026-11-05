@@ -432,8 +432,8 @@ class _Validity:
     """
 
     nodes: frozenset[int]
-    until: int | None
-    camera_until: int | None
+    until: int | Fraction | None
+    camera_until: int | Fraction | None
 
 
 def _same_items(a: Sequence[Any], b: Sequence[Any]) -> bool:
