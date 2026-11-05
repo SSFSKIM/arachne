@@ -55,13 +55,20 @@ none.
 A scene that arms the rule (:meth:`.Recorder.arm_motion`) has the cuts
 measured from the first play to end after the arming on
 (``Record.armed_at``), and its session's record keeps those plays' exits;
-the cuts before are not seen. The arming is the execution's the lint reads:
-a forward run that armed later than the session's record measures only
-the cuts after its own arming. A scene that never armed it has every cut
-measured. A record that keeps no exit of a play it measures (the scene
-never armed the rule) is read through the lint's forward run, which keeps
-every play's; it is never measured another way. The rule is not among the
-defaults: it runs when passed to :func:`.lint`.
+the cuts before are not seen. The plays, their exits and the arming are
+those of the execution the lint reads: a forward run that armed later than
+the session's record measures only the cuts after its own arming, and one
+that armed earlier the cuts from its own (every frame of the scene the
+record's plays leave out is asked for from a forward run, should the lint
+make one: one whose plays are split or frozen otherwise is read whole). A
+scene that never armed it has every cut measured. A record that keeps no
+exit of a play it measures (the scene never armed the rule) is read
+through the lint's forward run, which keeps every play's; it is never
+measured another way. A play of the execution whose frames were not read
+(it plays otherwise than the session's record, which they were asked for
+by) is not measured: the two executions differ, and the lint says so with
+a ``replay.diverged``. The rule is not among the defaults: it runs when
+passed to :func:`.lint`.
 """
 
 from __future__ import annotations
@@ -90,6 +97,7 @@ from .findings import Finding, FindingObject, Holder
 from .instants import render_grid
 
 if TYPE_CHECKING:
+    from arachne.session import Session
     from arachne.timeline.record import Capture, PlayRecord, Record
 
     from .core import LintContext
@@ -151,8 +159,11 @@ class MotionJump:
     jump_tol: float = JUMP_TOL
 
     def request_frames(self, frames: Frames) -> None:
-        """Ask the lint for every frame the render shows of each play; and
-        for its forward run, when the record keeps no exit of one of them.
+        """Ask the lint for every frame the render shows of each play from
+        the record's arming on; for every other frame of the scene too, from
+        a forward run if the lint makes one (whose own plays and arming are
+        known only once it has run); and for that run, when the record keeps
+        no exit of one of them.
         """
         record = frames.session.record
         wanted = _wanted(record)
@@ -168,33 +179,48 @@ class MotionJump:
         ) -> tuple[float, dict[str, Body]]:
             return _read(source, play, capture, live=live)
 
-        frames.request(self, [t for _, shown in wanted for t in shown], read)
+        frames.request(self, _times(wanted), read)
+        others = _others(record, wanted)
+        if others:
+            frames.request(self._others, others, read, forward_only=True)
 
     def __call__(self, context: LintContext) -> list[Finding]:
+        frames = context.frames
         record = context.record
-        execution = context.frames.execution
-        read = iter(context.frames.result(self))
-        # The frames asked for, by the session's record's arming; of them,
-        # the plays from the arming of the execution read on.
-        first = execution.armed_at or 0
-        wanted = []
-        for play, shown in _wanted(record):
-            frames = [_Frame(t, *next(read)) for t in shown]
-            if play.index >= first:
-                wanted.append((play, frames))
-        # The session's record when it keeps them all, else the forward run,
-        # which keeps every play's.
-        exits = execution.exits
-        assert exits is not None, "an execution read without its exits"
-        assert all(play.index in exits for play, _ in wanted), "an exit missing"
-        plays = [
-            _measure(_Play(play, frames, exits[play.index])) for play, frames in wanted
-        ]
-        names = _Names(record)
+        wanted = _wanted(record)
+        seen = dict(zip(_times(wanted), frames.result(self), strict=True))
+        if frames.answered(self._others):
+            others = _others(record, wanted)
+            seen.update(zip(others, frames.result(self._others), strict=True))
+        # The plays, exits, arming and names of the execution read: the
+        # session's record when it keeps them all, else the forward run,
+        # which keeps every play's exit.
+        execution = frames.execution
+        exits = execution.exits or {}
+        plays: list[_Play | None] = []
+        unread: PlayRecord | None = None
+        for play, shown in _wanted(execution):
+            if play.index in exits and all(t in seen for t in shown):
+                read = [_Frame(t, *seen[t]) for t in shown]
+                plays.append(_measure(_Play(play, read, exits[play.index])))
+            else:
+                # A play other than those the frames were asked for: the
+                # two executions differ.
+                plays.append(None)
+                unread = unread or play
+        names = _Names(execution)
         found: list[Finding] = []
         for before, after in zip(plays, plays[1:], strict=False):
-            found.extend(_Cut(self.jump_tol, before, after, names).findings())
+            if before is not None and after is not None:
+                found.extend(_Cut(self.jump_tol, before, after, names).findings())
+        if unread is not None:
+            found.extend(_unmeasured(context.session, execution, unread))
         return found
+
+    @property
+    def _others(self) -> tuple[str, int]:
+        """Who the frames only a forward run reads are asked for by."""
+        return ("motion from a forward run", id(self))
 
 
 #: The rule at the default tolerance.
@@ -219,6 +245,45 @@ def _wanted(record: Record) -> list[tuple[PlayRecord, list[Fraction]]]:
             # A frozen play shows one picture all along.
             wanted.append((play, shown[:1] if play.held else shown))
     return wanted
+
+
+def _times(wanted: list[tuple[PlayRecord, list[Fraction]]]) -> list[Fraction]:
+    """The frames ``wanted`` shows, in order."""
+    return [t for _, shown in wanted for t in shown]
+
+
+def _others(
+    record: Record, wanted: list[tuple[PlayRecord, list[Fraction]]]
+) -> list[Fraction]:
+    """Every frame of the render's grid over ``record``'s scene but those
+    ``wanted`` shows: what a forward execution may play otherwise (armed
+    earlier, its plays split or frozen otherwise) over the same span.
+    """
+    shown = set(_times(wanted))
+    every = frames_in(Fraction(0), record.duration, render_grid(record))
+    return [t for t in every if t not in shown]
+
+
+def _unmeasured(session: Session, execution: Record, play: PlayRecord) -> list[Finding]:
+    """What a play of the execution read is, whose frames or exit were not
+    read (the frames are asked for by the session's record, which plays it
+    otherwise): a ``replay.diverged`` of the two executions, unless the
+    session holds one already, which the lint reports.
+    """
+    from arachne.timeline.execution import Divergence
+
+    from .core import divergence_finding
+
+    if any(divergence.kind == "execution" for divergence in session.divergences):
+        return []
+    reason = (
+        f"the session's record does not play play {play.index}"
+        f" ({float(play.start):g} s to {float(play.end):g} s) as the execution"
+        " the lint read does, so its motion across that play's cuts is not"
+        " measured"
+    )
+    divergence = Divergence("execution", play.index, play.source_line, reason)
+    return [divergence_finding(execution, divergence)]
 
 
 def _has_exits(record: Record, wanted: list[tuple[PlayRecord, list[Fraction]]]) -> bool:

@@ -233,6 +233,9 @@ def visit_frames(
         to_end=to_end,
         states=states,
         runs=executed,
+        # Its visits are what it is for; an instant asked may lie where this
+        # execution keeps no capture (it plays otherwise than the record).
+        answer=False,
     )
     return executed[0]
 
@@ -371,6 +374,7 @@ def _forward(
     to_end: bool = False,
     states: bool = False,
     runs: list[Record] | None = None,
+    answer: bool = True,
 ) -> tuple[dict[Fraction, tuple[State, Image.Image | None]], Fallback | None]:
     """Execute the session's scene again for ``instants`` (in time order),
     keep the run in :attr:`.Session.forward_runs` and any divergence in
@@ -379,7 +383,10 @@ def _forward(
     ``visit`` sees the live scene at each instant answered. With
     ``render_grid`` the run is on the render's grid whatever the record's;
     with ``states`` its record keeps the temporal rules' states; the run's
-    record is appended to ``runs`` when given.
+    record is appended to ``runs`` when given. Without ``answer`` no instant
+    is answered (a run made for its visits): the instants asked of the
+    session's record need not be ones the run kept, where it plays
+    otherwise.
     """
     from arachne.session import _reads, execute
 
@@ -509,14 +516,20 @@ def _forward(
         if divergence is not None:
             session._keep(divergence)
         if refused:
-            answered = _rendered(forward, executed, instants, written, frames=frames)
+            answered = (
+                _rendered(forward, executed, instants, written, frames=frames)
+                if answer
+                else {}
+            )
         elif executed.refusal is not None:
             raise RecordRefused(
                 f"{executed.refusal}; the forward run's record refuses drawing where"
                 " the record's execution did not"
             )
         else:
-            answered = _recorded(session, executed, instants, frames=frames)
+            answered = (
+                _recorded(session, executed, instants, frames=frames) if answer else {}
+            )
         return answered, stale
 
 

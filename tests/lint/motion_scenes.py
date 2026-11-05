@@ -420,3 +420,89 @@ class LiveImageJump(Scene):
         display.clear_updaters()
         display.shift(RIGHT * 3)
         self.wait(0.5)  # @after-live-jump
+
+
+class _CountsFrames(Scene):
+    """A scene whose frame hook counts its calls: an execution on a finer
+    grid than the render's counts more of them by the end of a play.
+    """
+
+    def update_to_time(self, t):
+        super().update_to_time(t)
+        self.count += 1
+
+    def on_render_grid(self):
+        """Whether the count so far is the render's (15 fps for a second)."""
+        return self.count < 20
+
+
+class ArmedByTheCount(_CountsFrames):
+    """Four plays, the same on any grid; the scene arms the motion rule
+    before play 1 on the render's grid and before play 3 on a finer one.
+    Play 1 slides the puck, which is set down 4 units on before play 2.
+    """
+
+    def construct(self):
+        self.count = 0
+        puck = Dot(LEFT * 3, radius=0.2)
+        self.add(puck)
+        self.play(puck.animate.shift(RIGHT), run_time=1)
+        render = self.on_render_grid()
+        if render:
+            self.timeline.arm_motion()
+        self.play(puck.animate.shift(RIGHT), run_time=1)
+        puck.move_to(RIGHT * 3)
+        self.wait()  # @after-counted-teleport
+        if not render:
+            self.timeline.arm_motion()
+        self.play(puck.animate.shift(DOWN), run_time=1)
+
+
+class PlaysByTheCount(_CountsFrames):
+    """A puck slid for a second and set down 3 units on; then, on the
+    render's grid, one play of a second, and on a finer one two of half a
+    second each: the same two seconds, split otherwise.
+    """
+
+    def construct(self):
+        self.count = 0
+        puck = Dot(LEFT * 3, radius=0.2)
+        self.add(puck)
+        self.play(puck.animate.shift(RIGHT), run_time=1)
+        puck.shift(RIGHT * 3)
+        if self.on_render_grid():
+            self.play(puck.animate.shift(UP), run_time=1)
+        else:
+            self.play(puck.animate.shift(UP * 0.5), run_time=0.5)
+            self.play(puck.animate.shift(UP * 0.5), run_time=0.5)
+
+
+class FrozenByTheCount(_CountsFrames):
+    """A puck slid for a second and set down 3 units on, then a wait of a
+    second, frozen on a finer grid and not on the render's: the same spans
+    and the same scene, one picture or every frame.
+    """
+
+    def construct(self):
+        self.count = 0
+        puck = Dot(LEFT * 3, radius=0.2)
+        self.add(puck)
+        self.play(puck.animate.shift(RIGHT), run_time=1)
+        puck.shift(RIGHT * 3)
+        self.wait(1, frozen_frame=not self.on_render_grid())
+        self.play(puck.animate.shift(UP), run_time=1)
+
+
+class LongerByTheCount(_CountsFrames):
+    """A puck slid for a second and set down 3 units on, then slid again,
+    for a second on the render's grid and for half a second on a finer one.
+    """
+
+    def construct(self):
+        self.count = 0
+        puck = Dot(LEFT * 3, radius=0.2)
+        self.add(puck)
+        self.play(puck.animate.shift(RIGHT), run_time=1)
+        puck.shift(RIGHT * 3)
+        run_time = 1 if self.on_render_grid() else 0.5
+        self.play(puck.animate.shift(UP), run_time=run_time)

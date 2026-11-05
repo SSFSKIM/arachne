@@ -43,6 +43,7 @@ from .parts import Parts, build_parts
 
 if TYPE_CHECKING:
     from arachne.session import Session
+    from arachne.timeline.execution import Divergence
     from arachne.timeline.record import Capture, PlayRecord, Record
 
     from .rules import Terms
@@ -214,40 +215,40 @@ def _diverged(session: Session) -> list[Finding]:
     """The session's divergences, as ``replay.diverged`` findings over the
     play they name, or the whole scene.
     """
-    record = session.record
-    found = []
-    for divergence in session.divergences:
-        play = (
-            record.plays[divergence.play]
-            if divergence.play is not None and divergence.play < len(record.plays)
-            else None
-        )
-        start, end = (play.start, play.end) if play else (Fraction(0), record.duration)
-        where = (
-            f"play {divergence.play}" if divergence.play is not None else "the scene"
-        )
-        what = (
-            "the probe ticked a play whose restore differed from its record"
-            if divergence.kind == "probe"
-            else "two executions of this source differ"
-        )
-        found.append(
-            Finding(
-                divergence.code,
-                start,
-                end,
-                message=f"{what}, at {where}: {divergence.reason}",
-                line=divergence.source_line,
-                severity="note" if divergence.kind == "probe" else "error",
-                detail={
-                    "kind": divergence.kind,
-                    "play": divergence.play,
-                    "reason": divergence.reason,
-                    "changed_inputs": list(divergence.changed_inputs),
-                },
-            )
-        )
-    return found
+    return [divergence_finding(session.record, d) for d in session.divergences]
+
+
+def divergence_finding(record: Record, divergence: Divergence) -> Finding:
+    """``divergence`` as a ``replay.diverged`` finding over the play of
+    ``record`` it names, or the whole scene: a probe's a note, an
+    execution's an error.
+    """
+    play = (
+        record.plays[divergence.play]
+        if divergence.play is not None and divergence.play < len(record.plays)
+        else None
+    )
+    start, end = (play.start, play.end) if play else (Fraction(0), record.duration)
+    where = f"play {divergence.play}" if divergence.play is not None else "the scene"
+    what = (
+        "the probe ticked a play whose restore differed from its record"
+        if divergence.kind == "probe"
+        else "two executions of this source differ"
+    )
+    return Finding(
+        divergence.code,
+        start,
+        end,
+        message=f"{what}, at {where}: {divergence.reason}",
+        line=divergence.source_line,
+        severity="note" if divergence.kind == "probe" else "error",
+        detail={
+            "kind": divergence.kind,
+            "play": divergence.play,
+            "reason": divergence.reason,
+            "changed_inputs": list(divergence.changed_inputs),
+        },
+    )
 
 
 def _stale(session: Session) -> Finding:
