@@ -24,30 +24,9 @@ from ..types.vectorized_mobject import VGroup, VMobject
 __all__ = ["SVGMobject", "VMobjectFromSVGPath"]
 
 
+#: Parsed images; one of the construction caches an execution forgets and
+#: restores as a unit (:mod:`arachne.mobject.construction_caches`).
 SVG_HASH_TO_MOB_MAP: dict[int, SVGMobject] = {}
-
-
-def forget_parsed_svgs() -> None:
-    """Empty the cache of parsed images, so that an execution builds its
-    images as a fresh process does. An image built from the cache is not
-    the one parsing built: its parts are the cached copy's, but the image
-    itself was never flipped, so its own sheen direction differs.
-    """
-    SVG_HASH_TO_MOB_MAP.clear()
-
-
-def parsed_svgs() -> dict[int, SVGMobject]:
-    """The cache of parsed images as it is now, to restore with
-    :func:`restore_parsed_svgs`. Its images are never changed: a hit takes a
-    copy.
-    """
-    return dict(SVG_HASH_TO_MOB_MAP)
-
-
-def restore_parsed_svgs(parsed: dict[int, SVGMobject]) -> None:
-    """Make the cache of parsed images what :func:`parsed_svgs` returned."""
-    SVG_HASH_TO_MOB_MAP.clear()
-    SVG_HASH_TO_MOB_MAP.update(parsed)
 
 
 def _convert_point_to_3d(x: float, y: float) -> np.ndarray:

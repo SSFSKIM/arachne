@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from ._config import config as global_config
 from ._config import tempconfig
 from .constants import QUALITIES
-from .mobject.svg.svg_mobject import forget_parsed_svgs
+from .mobject.construction_caches import forget_construction_caches
 from .timeline import admission
 from .timeline.admission import (
     PlayIdentity,
@@ -508,8 +508,8 @@ def execute(
     """
     base_dir = str(path.parent)
     # Each execution starts as a fresh process does: another execution of
-    # the source in this process left its parsed images cached.
-    forget_parsed_svgs()
+    # the source in this process left its construction caches filled.
+    forget_construction_caches()
     with tempconfig(settings):
         ORIGINS.start(base_dir)
         added_path = base_dir not in sys.path

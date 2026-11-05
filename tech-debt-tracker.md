@@ -309,5 +309,6 @@ lifted.
   cache hit adds copies of the cached parts, but the image itself never gets parsing's `flip(RIGHT)`, so its
   own `sheen_direction` stays unflipped (its parts match). Invisible unless a sheen is set on the image, and
   within one process the first of two equal images differs from the second, as in CE. Each execution now
-  finds the cache as a fresh process (a session) or as the scene's first execution (a render executed again)
+  finds the construction caches (`arachne/mobject/construction_caches.py`: this one and a number's glyph
+  cache, which fills it) as a fresh process (a session) or as the scene's first execution (a render executed again)
   found it, so two executions of one source agree. Direction: none while CE's behaviour is the reference.

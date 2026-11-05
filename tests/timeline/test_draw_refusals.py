@@ -16,9 +16,19 @@ from unittest import mock
 import numpy as np
 import pytest
 
-from arachne import BLUE, RED, Dot, SVGMobject, tempconfig
+from arachne import (
+    BLUE,
+    LEFT,
+    RED,
+    RIGHT,
+    DecimalNumber,
+    Dot,
+    MathTex,
+    SVGMobject,
+    tempconfig,
+)
 from arachne.camera.camera import Camera
-from arachne.mobject.svg.svg_mobject import forget_parsed_svgs
+from arachne.mobject.construction_caches import forget_construction_caches
 from arachne.timeline import draw, recorder
 from arachne.timeline.dispatch import draw_protocols
 from arachne.timeline.routes import RecordRefused
@@ -329,9 +339,35 @@ def test_an_execution_again_finds_the_images_its_first_execution_found():
     cached: a scene executed again builds its images as its first execution
     did, from the cache as that execution found it.
     """
-    forget_parsed_svgs()
+    forget_construction_caches()
     for _ in range(2):  # the first parses the image, the second finds it cached
         scene, _ = render(ImageThenTransientFill, 6)
+        execution = scene.record.execution
+        assert execution.number == 2
+        assert execution.divergence is None
+
+
+class NumberThenFormulaThenTransientFill(soundness_scenes.TransientFill):
+    """``TransientFill`` after a number and a formula whose image the number
+    left cached: executed again, the formula is built as its first execution
+    built it.
+    """
+
+    def construct(self):
+        self.add(DecimalNumber(1, num_decimal_places=0).shift(LEFT))
+        formula = MathTex("1").shift(RIGHT)
+        formula.set_sheen(0.75, formula.get_sheen_direction())
+        self.add(formula)
+        super().construct()
+
+
+def test_an_execution_again_finds_the_glyphs_and_images_its_first_execution_found():
+    """A number fills the glyph cache and the image cache together: executed
+    again, a scene starts from both as its first execution did.
+    """
+    forget_construction_caches()
+    for _ in range(2):  # the first fills both caches, the second finds them filled
+        scene, _ = render(NumberThenFormulaThenTransientFill, 6)
         execution = scene.record.execution
         assert execution.number == 2
         assert execution.divergence is None
