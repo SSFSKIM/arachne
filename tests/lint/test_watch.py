@@ -401,6 +401,12 @@ ARMED_CE = {
     "ExcusedAfterTheRemoval": [("overlap.text", False, {"Line", "Text"}, (0.7, 0.7))],
     "RearmedAfterTheRemoval": [("overlap.text", False, {"Line", "Text"}, (0.7, 0.7))],
     "GapRearmedAfterTheRemoval": [("gap.text", False, {"Text"}, (0.7, 0.7))],
+    # What departs through a group the scene never added is that group's
+    # family as the script removed it, whatever the group holds later.
+    "RemovedThroughAWrapper": [("overlap.text", False, {"Line", "Text"}, (0.7, 0.7))],
+    "RemovedThroughAKeptWrapper": [
+        ("overlap.text", False, {"Line", "Text"}, (0.7, 0.7)),
+    ],
 }
 
 

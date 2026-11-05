@@ -72,6 +72,18 @@ def test_a_removal_keeps_the_scene_before_it_and_its_line(session_of):
     assert clear.source_line.line == _line("clear")
 
 
+def test_a_removal_keeps_its_operands_as_they_were(session_of):
+    # The group is no part of the scene, and holds nothing by the end: the
+    # removal's state holds what it held as the script removed it.
+    record = session_of("RemovesThroughAGroup", STATES, probe=False).record
+    [removal] = record.states.removals
+    [group] = removal.operands
+    assert group.submobjects == []
+    held = record.node_state(group, removal.capture)
+    assert held is not None
+    assert _types(record, held.submobjects) == ["Text"]
+
+
 def test_states_are_kept_from_the_arming_on(session_of):
     record = session_of("ArmsStatesLate", STATES, probe=False).record
     states = record.states

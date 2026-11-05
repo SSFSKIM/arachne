@@ -50,6 +50,22 @@ class FadesAndRemovesUnarmed(FadesAndRemoves):
     armed = False
 
 
+class RemovesThroughAGroup(Scene):
+    """Armed: the script removes a group it never added, which then lets
+    go of what it held.
+    """
+
+    def construct(self):
+        self.timeline.arm_states()
+        word = Text("word")
+        group = VGroup(word)
+        self.add(word)
+        self.wait(0.5)
+        self.remove(group)
+        group.remove(word)
+        self.wait(0.5)
+
+
 class ArmsStatesLate(Scene):
     """A removal and a play before the arming, one of each after."""
 

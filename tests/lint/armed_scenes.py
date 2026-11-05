@@ -292,3 +292,31 @@ class GapRearmedAfterTheRemoval(Scene):
         self.remove(low)
         arm()
         self.wait(0.5)
+
+
+class RemovedThroughAWrapper(Scene):
+    """A word settled across a line, removed through a group the scene
+    never added (which, as in CE, leaves the word on screen), and the group
+    then lets it go; the scene ends before the word was on the line for a
+    second.
+    """
+
+    keep = False
+
+    def construct(self):
+        arm()
+        rail = Line(LEFT * 4, RIGHT * 4)
+        note = Text("note", font_size=36).move_to(rail.get_center())
+        self.add(rail, note)
+        wrapper = VGroup(note)
+        self.wait(0.7)
+        self.remove(wrapper)
+        if not self.keep:
+            wrapper.remove(note)
+        self.wait(0.2)
+
+
+class RemovedThroughAKeptWrapper(RemovedThroughAWrapper):
+    """...which keeps it."""
+
+    keep = True
