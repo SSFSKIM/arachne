@@ -28,6 +28,7 @@ from arachne import (
     ThreeDAxes,
     ThreeDScene,
 )
+from arachne.frame_ir import canonical
 from arachne.frame_ir.canonical import Canonical
 from arachne.frame_ir.core_painter import CorePainter
 from arachne.frame_ir.xf import Delta, Record, Shape, StreamState
@@ -295,3 +296,31 @@ def test_a_thin_curved_face_keeps_its_coverage_when_snapped():
         return int(np.clip(rgb[..., 0] - rgb[..., 1], 0, None).sum())
 
     assert red(core[0]) == pytest.approx(red(cairo[0]), rel=0.01)
+
+
+def _square_closing(gap: float) -> np.ndarray:
+    """A unit square at the origin as CE lays it, its last point ``gap`` off
+    its first in x.
+    """
+    corners = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [gap, 0, 0]], float)
+    return np.concatenate(
+        [np.linspace(a, b, 4) for a, b in zip(corners[:-1], corners[1:], strict=True)]
+    )
+
+
+@pytest.mark.parametrize(
+    ("gap", "decided_otherwise"),
+    [(1e-16, False), (3e-5, True), (1e-3, False)],
+    ids=["noise", "in-band", "open"],
+)
+def test_a_closing_gap_in_the_band_is_counted(gap, decided_otherwise):
+    """CE leaves a square open whose end is 3e-5 from its start at the origin
+    (its tolerance there is 1e-6); snapped to 2^-14 the two meet. The counter
+    records it: the band is a gap within a grid step of CE's tolerance.
+    """
+    made = _square_closing(gap)
+    canonical.point_equality_disagreements.clear()
+    canonical._count_disagreements(made, canonical.snap(made, 2.0**-14))
+    found = bool(canonical.point_equality_disagreements)
+    canonical.point_equality_disagreements.clear()
+    assert found == decided_otherwise

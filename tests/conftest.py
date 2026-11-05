@@ -32,6 +32,20 @@ def _cpu() -> str:
     return f"{model} ({'avx512f' if ' avx512f' in flags else 'no avx512f'})"
 
 
+@pytest.fixture(autouse=True)
+def _snapping_keeps_ces_point_equality():
+    """No path the test draws on the core has a join or a closed end that CE's
+    point-equality rule decides otherwise on its snapped points
+    (``frame_ir.canonical``).
+    """
+    from arachne.frame_ir import canonical
+
+    canonical.point_equality_disagreements.clear()
+    yield
+    found = list(canonical.point_equality_disagreements)
+    assert not found, f"(points, coordinates, boundaries) decided otherwise: {found}"
+
+
 def pytest_report_header(config):
     return f"\nCairo Version: {cairo.cairo_version()}\nCPU: {_cpu()}"
 
