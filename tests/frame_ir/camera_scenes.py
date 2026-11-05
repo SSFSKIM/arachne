@@ -254,7 +254,7 @@ class ProjectingStateSolids(Solids):
 
         def projected(points):
             out = np.array(project(points))
-            if len(out) and self.rebinds(camera):
+            if len(out) and self.rebinds(camera, points):
                 camera.cairo_line_width_multiple = 0.03 * (
                     1 + abs(float(np.mean(out[:, 2])))
                 )
@@ -262,11 +262,29 @@ class ProjectingStateSolids(Solids):
 
         camera.project_points = projected
 
-    def rebinds(self, camera) -> bool:
-        """Whether the projection sets the line width as it now runs: on
-        every call.
+    def rebinds(self, camera, points) -> bool:
+        """Whether the projection sets the line width as it projects
+        ``points``: on every call.
         """
         return True
+
+
+class MovingStateSolids(ProjectingStateSolids):
+    """:class:`ProjectingStateSolids` whose code sets the line width only as
+    it projects a square far to the right, the one mobject that moves: the
+    change first shows in the first frame's capture of what moves, after the
+    play's static picture was captured.
+    """
+
+    def construct(self):
+        self.set_camera_orientation(phi=60 * DEGREES, theta=-45 * DEGREES)
+        self.patch(self.renderer.camera)
+        square = Square(side_length=1, color=BLUE).move_to([3.0, 0.0, 0.0])
+        self.add(Dot([-1.0, -1.0, 0.0], color=RED), square)
+        self.play(square.animate.shift(0.5 * UP), run_time=0.4)
+
+    def rebinds(self, camera, points) -> bool:
+        return float(np.mean(np.asarray(points)[:, 0])) > 2.0
 
 
 class LaterPlayStateSolids(ProjectingStateSolids):
@@ -290,7 +308,7 @@ class LaterPlayStateSolids(ProjectingStateSolids):
         self.set_camera_orientation(theta=-20 * DEGREES)
         self.play(Rotate(surface, 30 * DEGREES, axis=OUT), run_time=0.4)
 
-    def rebinds(self, camera) -> bool:
+    def rebinds(self, camera, points) -> bool:
         return camera.get_theta() > -30 * DEGREES
 
 
@@ -300,7 +318,7 @@ class MidPlayStateSolids(ProjectingStateSolids):
     a play to before the next play begins.
     """
 
-    def rebinds(self, camera) -> bool:
+    def rebinds(self, camera, points) -> bool:
         return -40 * DEGREES < camera.get_theta() < -25 * DEGREES
 
 
