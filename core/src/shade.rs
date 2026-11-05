@@ -115,12 +115,14 @@ fn lit_corners(n: usize) -> [usize; 2] {
 /// ([`ce_face_stops`]), or the zero vector at a degenerate corner, which the drawer lights by the
 /// face's own normal ([`ce_face_stops_decided`]).
 ///
-/// A corner is degenerate when a point its normal is found from lies off it by more than nothing
-/// and less than one grid step in every coordinate. CE's normal there is the direction of the
-/// float noise in the points as made (a sphere's pole, where `cos(pi / 2)` leaves its points
-/// about 1e-16 apart), and it is the snap's noise in the points drawn. A point exactly on the
-/// corner keeps CE's own rule for a zero vector, which is no noise. A smooth curve's points, a
-/// hundred steps apart and more, are far from the boundary on the other side.
+/// The degenerate-corner rule: a corner is degenerate when a point its normal is found from lies
+/// off it by less than one grid step in every coordinate, coincident points included. CE's normal
+/// there is its fixed fallback for coincident points, or the direction of the float noise that
+/// keeps them apart (a sphere's pole, where `cos(pi / 2)` leaves its points about 1e-16 apart);
+/// which of the two a pole gets is the rounding of the machine that made it, and in the points
+/// drawn both are one snapped point. The boundary sits at one grid step, far from content on
+/// both sides: poles and apexes at 0 or 1e-16, a smooth curve's points a hundred steps apart and
+/// more.
 pub fn decided_normals(points: &[V3], grid: f64) -> [V3; 2] {
     if points.is_empty() {
         return [UP; 2];
@@ -128,10 +130,7 @@ pub fn decided_normals(points: &[V3], grid: f64) -> [V3; 2] {
     lit_corners(points.len()).map(|i| {
         if anchors(points.len()) > 2 {
             let (v1, v2) = corner_vectors(points, i);
-            let short = |v: V3| {
-                let m = max_abs(v);
-                m > 0.0 && m < grid
-            };
+            let short = |v: V3| max_abs(v) < grid;
             if short(v1) || short(v2) {
                 return [0.0; 3];
             }
