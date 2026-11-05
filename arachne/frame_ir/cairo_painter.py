@@ -26,9 +26,16 @@ import numpy as np
 from arachne.camera.camera import Camera
 from arachne.camera.three_d_camera import ThreeDCamera
 from arachne.constants import CapStyleType, LineJointType
+from arachne.mobject.three_d.three_d_utils import (
+    get_3d_vmob_end_corner,
+    get_3d_vmob_end_corner_unit_normal,
+    get_3d_vmob_start_corner,
+    get_3d_vmob_start_corner_unit_normal,
+)
 from arachne.mobject.types.image_mobject import AbstractImageMobject
 from arachne.mobject.types.point_cloud_mobject import PMobject
 from arachne.mobject.types.vectorized_mobject import VMobject
+from arachne.utils.color import get_shaded_rgb
 
 from .extract import Unable
 from .geometry import blended, revealed
@@ -238,12 +245,63 @@ class _PainterCamera(_Produced, Camera):
 
 
 class _Painter3DCamera(_Produced, ThreeDCamera):
-    """A ThreeDCamera mapping frame to pixels around the view's mapping centre."""
+    """A ThreeDCamera mapping frame to pixels around the view's mapping centre.
+
+    A shaded path whose record carries its normals is lit by them, as the
+    core lights it: they were decided on its points as made, where the
+    normals CE would find again from its snapped points are the snap's.
+    """
 
     _xf_centre: tuple[float, ...] = (0.0, 0.0, 0.0)
 
     def get_cairo_context(self, pixel_array: Any) -> Any:
         return _context(self, pixel_array)
+
+    def modified_rgbas(self, vmobject: Any, rgbas: Any) -> Any:
+        decided = getattr(vmobject, "__dict__", {}).get("_xf_normals")
+        if (
+            decided is None
+            or not self.should_apply_shading
+            or not vmobject.shade_in_3d
+            or vmobject.get_num_points() == 0
+        ):
+            return super().modified_rgbas(vmobject, rgbas)
+        light = self.light_source.points[0]
+        shaded = rgbas.repeat(2, axis=0) if len(rgbas) < 2 else np.array(rgbas[:2])
+        corners = (get_3d_vmob_start_corner(vmobject), get_3d_vmob_end_corner(vmobject))
+        for k, corner in enumerate(corners):
+            shaded[k, :3] = get_shaded_rgb(
+                shaded[k, :3], corner, _lit_normal(vmobject, decided[k], k), light
+            )
+        return shaded
+
+
+def _lit_normal(vmobject: Any, decided: Sequence[float], corner: int) -> np.ndarray:
+    """The normal a shaded path is lit by at its lit ``corner`` (0, its start;
+    1, its end), its writer having decided ``decided`` there: as decided, or
+    at a degenerate corner (the zero vector) its face's Newell normal over its
+    points, and where that cancels too CE's own corner normal; as the core's
+    ``shade::ce_face_stops_decided`` lights it.
+    """
+    normal = np.asarray(decided, dtype=float)
+    if normal.any():
+        return normal
+    points = np.asarray(vmobject.points, dtype=float)
+    a = points - points[0]
+    b = np.roll(a, -1, axis=0)
+    newell = np.array(
+        [
+            ((a[:, 1] - b[:, 1]) * (a[:, 2] + b[:, 2])).sum(),
+            ((a[:, 2] - b[:, 2]) * (a[:, 0] + b[:, 0])).sum(),
+            ((a[:, 0] - b[:, 0]) * (a[:, 1] + b[:, 1])).sum(),
+        ]
+    )
+    length = float(np.sqrt(newell @ newell))
+    if length > 0.0:
+        return newell / length
+    if corner == 0:
+        return get_3d_vmob_start_corner_unit_normal(vmobject)
+    return get_3d_vmob_end_corner_unit_normal(vmobject)
 
 
 #: What a 3D painter camera calls to turn its view into a rotation matrix.
@@ -455,6 +513,7 @@ class CairoDrawer:
             if gradient is None
             else (np.array(gradient[:3]), np.array(gradient[3:])),
             _xf_pre=_pre(f, state),
+            _xf_normals=f.get("normals"),
         )
 
     def _faces(self, state: StreamState, f: dict[str, Any]) -> list[Any]:
@@ -476,6 +535,8 @@ class CairoDrawer:
             "_xf_image": None,
             "_xf_gradient": None,
         }
+        # Two normals per face, in its order.
+        normals = f.get("normals")
         return [
             _bare(
                 _PathProxy,
@@ -483,6 +544,7 @@ class CairoDrawer:
                 submobjects=[],
                 _xf_fill=fills[i : i + 1],
                 _xf_stroke=strokes[i : i + 1],
+                _xf_normals=None if normals is None else normals[2 * i : 2 * i + 2],
                 **common,
             )
             for i in range(count)
