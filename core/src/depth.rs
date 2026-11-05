@@ -167,6 +167,35 @@ impl WorldPlane {
         }
         None // Not on one plane, or on a line with no coordinate shared: no plane of its own.
     }
+
+    /// The plane the points lie on ([`WorldPlane::of_points`]), or, when they lie on none (a
+    /// surface's face, curved a little), the plane nearest them: Newell's normal through their
+    /// centroid. `None` for points on a line or a point.
+    pub fn nearest(points: &[[f64; 3]]) -> Option<WorldPlane> {
+        if let Some(plane) = WorldPlane::of_points(points) {
+            return Some(plane);
+        }
+        let first = *points.first()?;
+        let mut n = [0.0; 3];
+        let mut sum = [0.0; 3];
+        for i in 0..points.len() {
+            let a = points[i];
+            let b = points[(i + 1) % points.len()];
+            let (a, b) = (
+                [a[0] - first[0], a[1] - first[1], a[2] - first[2]],
+                [b[0] - first[0], b[1] - first[1], b[2] - first[2]],
+            );
+            n[0] += (a[1] - b[1]) * (a[2] + b[2]);
+            n[1] += (a[2] - b[2]) * (a[0] + b[0]);
+            n[2] += (a[0] - b[0]) * (a[1] + b[1]);
+            for k in 0..3 {
+                sum[k] += a[k];
+            }
+        }
+        let count = points.len() as f64;
+        let centroid = std::array::from_fn(|k| first[k] + sum[k] / count);
+        WorldPlane::canonical(n, centroid)
+    }
 }
 
 /// The normal of the widest triangle with a corner at `first`: its second corner the point

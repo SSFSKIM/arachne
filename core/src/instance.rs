@@ -72,6 +72,7 @@ pub fn path_record<'a, 't>(
         stroke: rows(&paint.stroke, table),
         background_stroke: rows(&paint.background_stroke, table),
         ends: paint.gradient,
+        surface: false,
         stroke_width: paint.stroke_width,
         background_stroke_width: paint.background_stroke_width,
         order,
@@ -99,11 +100,43 @@ pub fn path_members<'a>(
             stroke: one(&p.stroke).map(|_| vec![stroke.rows()[i]]),
             background_stroke: one(&p.background_stroke).map(|c| vec![c]),
             ends: None,
+            surface: false,
             stroke_width: p.stroke_width,
             background_stroke_width: p.background_stroke_width,
             order,
             sub: 3 * i as u32,
         });
+    }
+}
+
+/// Face `part` of a `face_group` record, as CE draws each face of a surface: the record's points
+/// cut into one equal run per face, face `part`'s run through the record's placement, filled and
+/// stroked by row `part` of the face tables (found by `table`), with the record's background
+/// stroke and widths; a face of a surface for depth ([`PathDraw::surface`]).
+pub fn face<'a, 't>(
+    record: &'a Record,
+    points: &'a [[f64; 3]],
+    faces: &FaceGroup,
+    part: u32,
+    table: impl Fn(&Key) -> &'t Stops + Copy,
+    order: u32,
+) -> PathDraw<'a> {
+    let size = points.len() / faces.uv.len();
+    let i = part as usize;
+    let p = &record.paint;
+    PathDraw {
+        record,
+        points: Cow::Borrowed(&points[i * size..(i + 1) * size]),
+        place: record.geometry.place_a,
+        fill: Some(vec![table(&faces.fill).rows()[i]]),
+        stroke: faces.stroke.map(|key| vec![table(&key).rows()[i]]),
+        background_stroke: rows(&p.background_stroke, table),
+        ends: None,
+        surface: true,
+        stroke_width: p.stroke_width,
+        background_stroke_width: p.background_stroke_width,
+        order,
+        sub: 0,
     }
 }
 
