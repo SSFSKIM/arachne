@@ -565,6 +565,9 @@ class Drawing:
         self.record = record
         self.static_layer = static_layer
         camera = record._scene.renderer.camera
+        #: The draw path the frames were asked for on (the scene's route,
+        #: ``painter.camera_path``, is kept by it).
+        self._asked = draw_path
         # A camera the scene's code changed in a way XF cannot carry draws on
         # Cairo (render.fallback).
         draw_path = camera_path(camera, draw_path)
@@ -747,6 +750,26 @@ class Drawing:
         captures); ``instant`` is the instant the frame shows then, which a
         described frame is labelled with (by default the capture's).
         """
+        pixels = self._sample(play, capture, static, prepare, instant)
+        self._deliver()
+        return pixels
+
+    def _deliver(self) -> None:
+        """A frame of the scene has been delivered: its frames stay on the
+        path they took (``painter.camera_path``).
+        """
+        from arachne.frame_ir.painter import deliver
+
+        deliver(self.camera, self._asked)
+
+    def _sample(
+        self,
+        play: PlayRecord,
+        capture: Capture,
+        static: PixelArray | None,
+        prepare: Callable[[Drawing], None] | None,
+        instant: Fraction | None,
+    ) -> PixelArray:
         targets = list(capture.moving) or capture.draw_list()
         if self.painter is not None:
             return self._paint(play, capture, targets, prepare, instant)
@@ -996,11 +1019,13 @@ class Drawing:
             )
             self._painted_by = self.painter
             self.camera.set_pixel_array(pixels)
-            return pixels
-        self.camera.reset()
-        with self._captures(capture.instant, "final"):
-            self.camera.capture_mobjects(targets)
-        return self.camera.pixel_array.copy()
+        else:
+            self.camera.reset()
+            with self._captures(capture.instant, "final"):
+                self.camera.capture_mobjects(targets)
+            pixels = self.camera.pixel_array.copy()
+        self._deliver()
+        return pixels
 
 
 class LiveFrames:

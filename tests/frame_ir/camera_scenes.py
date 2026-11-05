@@ -205,6 +205,43 @@ class PatchedPictures(Pictures):
     patch = PatchedSolids.patch
 
 
+class HalfBright(ThreeDCamera):
+    """A camera class of the scene's own whose constructor sets the value a
+    full colour channel is written as to 128 (the engine's is 255, its
+    array's largest): CE writes a point cloud's colours by it.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.rgb_max_val = 128
+
+
+class HalfBrightPictures(Pictures):
+    """:class:`Pictures` through :class:`HalfBright`."""
+
+    def __init__(self, **kwargs):
+        super().__init__(camera_class=HalfBright, **kwargs)
+
+
+class DimmingProjection(ThreeDCamera):
+    """A camera class of the scene's own whose projection (a change the gate
+    proved) sets the scale a point cloud's colours are written with, as
+    :class:`DimmedCamera`'s pre-display code does.
+    """
+
+    def project_points(self, points):
+        out = super().project_points(points)
+        self.rgb_max_val = 160
+        return out
+
+
+class DimmingPictures(Pictures):
+    """:class:`Pictures` through :class:`DimmingProjection`."""
+
+    def __init__(self, **kwargs):
+        super().__init__(camera_class=DimmingProjection, **kwargs)
+
+
 class DepthStrokedSolids(Solids):
     """:class:`Solids` through :class:`DepthStroked`."""
 
@@ -308,9 +345,7 @@ class NestingCamera(ThreeDCamera, MultiCamera):
     def project_points(self, points):
         out = np.array(super().project_points(points))
         if len(out):
-            self.cairo_line_width_multiple = 0.03 * (
-                1 + abs(float(np.mean(out[:, 2])))
-            )
+            self.cairo_line_width_multiple = 0.03 * (1 + abs(float(np.mean(out[:, 2]))))
         return out
 
 
@@ -327,6 +362,48 @@ class NestedStateSolids(Solids):
         display = ImageMobjectFromCamera(MovingCamera())
         self.renderer.camera.add_image_mobject_from_camera(display)
         super().construct()
+
+
+class WrappedAfterAPlay(ThreeDScene):
+    """A play drawn on the core, then the camera's capture replaced on the
+    instance by a wrapper that only hands its mobjects on: a change XF does
+    not carry (on its own it draws the scene on Cairo), made after the core
+    delivered frames.
+    """
+
+    def construct(self):
+        self.set_camera_orientation(phi=60 * DEGREES, theta=-45 * DEGREES)
+        square = Square(fill_opacity=0.8, color=BLUE)
+        self.add(square, Dot([-1.0, -1.0, 0.0], color=RED))
+        self.play(square.animate.shift(0.5 * RIGHT), run_time=0.2)
+        camera = self.renderer.camera
+        capture = camera.capture_mobjects
+
+        def wrapped(mobjects, **kwargs):
+            return capture(mobjects, **kwargs)
+
+        camera.capture_mobjects = wrapped
+        self.play(square.animate.shift(0.5 * LEFT), run_time=0.2)
+
+
+class PatchedAfterAPlay(ThreeDScene):
+    """A play drawn on the core from the record, then the camera's projection
+    replaced on the instance by :class:`ProjectingStateSolids`', which
+    rebinds the line width as it projects: a change of a kind the gate
+    proved, seen in the next play's first frame, after the core delivered
+    frames.
+    """
+
+    patch = ProjectingStateSolids.patch
+    rebinds = ProjectingStateSolids.rebinds
+
+    def construct(self):
+        self.set_camera_orientation(phi=60 * DEGREES, theta=-45 * DEGREES)
+        square = Square(fill_opacity=0.8, color=BLUE)
+        self.add(square, Dot([-1.0, -1.0, 0.0], color=RED))
+        self.play(square.animate.shift(0.5 * RIGHT), run_time=0.2)
+        self.patch(self.renderer.camera)
+        self.play(square.animate.shift(0.5 * LEFT), run_time=0.2)
 
 
 class LaterPlayStateSolids(ProjectingStateSolids):
