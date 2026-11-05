@@ -393,12 +393,14 @@ class Session:
         """
         return answer_instants(self, instants, quality, frames=frames)
 
+    @_under_its_settings
     def lint(self, **options: Any) -> LintResult:
         """Lint the session (:func:`arachne.lint.lint`, given ``options``)."""
         from .lint import lint
 
         return lint(self, **options)
 
+    @_under_its_settings
     def query(self, t: Fraction | float) -> Query:
         """Numbers about the frame on screen at ``t``, measured as the lint
         measures it (:func:`arachne.lint.query.query`): nothing is drawn, but
@@ -408,6 +410,7 @@ class Session:
 
         return query(self, t)
 
+    @_under_its_settings
     def key_frames(self, out_dir: StrPath, quality: str | None = None) -> KeyFrames:
         """One PNG per play or wait in ``out_dir``, its last frame
         (:func:`arachne.lint.keyframes.key_frames`).
@@ -416,6 +419,7 @@ class Session:
 
         return key_frames(self, out_dir, quality)
 
+    @_under_its_settings
     def storyboard(self, out_dir: StrPath, quality: str | None = None) -> Storyboard:
         """Sheets of six labelled key frames in ``out_dir``
         (:func:`arachne.lint.keyframes.storyboard`).
