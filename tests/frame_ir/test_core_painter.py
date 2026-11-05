@@ -94,6 +94,30 @@ def test_a_painter_holds_none_of_the_frames_it_drew_its_overlay_over():
     assert held <= 1, f"{held} of {len(drawn)} frames held"
 
 
+def test_a_live_frame_tests_depth_across_its_static_and_moving_captures():
+    """Drawn as the scene runs, a frame is two captures, its static list and
+    then its moving one, as CE draws it. The core describes the two as one
+    frame and tests depth across both, as it does a frame drawn from the
+    record: the square hides the stroke under it on either route, and the
+    frames are the same, byte for byte.
+    """
+    from arachne.frame_ir.live import live_painter
+
+    _, cairo = render(core_scenes.StrokeUnderSquare, FPS, **MEDIUM)
+    _, recorded = render(core_scenes.StrokeUnderSquare, FPS, draw_path="core", **MEDIUM)
+    scene, live = render(
+        core_scenes.LiveStrokeUnderSquare, FPS, draw_path="core", **MEDIUM
+    )
+    found = live_painter(scene.renderer.camera)  # type: ignore[attr-defined]
+    assert found is not None
+    assert found.captures > 0, "drawn as the scene runs"
+    assert len(live) == len(recorded) == len(cairo) > 0
+    # Depth is at work: CE draws the stroke over the square.
+    assert np.any(recorded[0] != cairo[0])
+    for index, (a, b) in enumerate(zip(live, recorded, strict=True)):
+        np.testing.assert_array_equal(a, b, err_msg=f"frame {index}")
+
+
 def test_auto_draws_a_3d_scene_on_the_core():
     before = CorePainter.drawn_total
     render(core_scenes.FixedLabelOverSquare, FPS, draw_path="auto", **MEDIUM)
