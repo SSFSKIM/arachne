@@ -153,9 +153,10 @@ class ThreeDCamera(Camera):
     ) -> list[Mobject]:  # NOTE : DocStrings From parent
         mobjects = super().get_mobjects_to_display(*args, **kwargs)
         rot_matrix = self.get_rotation_matrix()
-        # On the core path the keys are snapped (frame_ir.canonical), so the
-        # order the core is handed is the same on every machine.
-        canonical = vars(self).get("_xf_canonical_order", False)
+        # On the core path the keys are snapped to the grid
+        # frame_ir.canonical.canonical_order holds here, so the order the core
+        # is handed is the same on every machine.
+        keys = vars(self).get("_xf_canonical_order")
 
         def z_key(mob: Mobject) -> float:
             if not (hasattr(mob, "shade_in_3d") and mob.shade_in_3d):
@@ -163,10 +164,10 @@ class ThreeDCamera(Camera):
             # Assign a number to a three dimensional mobjects
             # based on how close it is to the camera
             distance: float = np.dot(mob.get_z_index_reference_point(), rot_matrix.T)[2]
-            if canonical:
-                from ..frame_ir.canonical import POSITION_GRID, snap
+            if keys:
+                from ..frame_ir.canonical import snap
 
-                distance = snap(distance, POSITION_GRID)
+                distance = snap(distance, keys)
             return distance
 
         return sorted(mobjects, key=z_key)
