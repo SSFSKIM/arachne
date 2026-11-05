@@ -61,6 +61,39 @@ def test_the_overlay_is_drawn_over_every_frame_that_has_one(monkeypatch):
     assert sum(p.overlaid for p in painted) == sum(p.frames for p in painted)
 
 
+def test_a_painter_holds_none_of_the_frames_it_drew_its_overlay_over():
+    """Cairo draws each frame's overlay through a context on that frame, and a
+    context holds its frame: kept for the frames after, every frame of a render
+    would stay in memory to its end (about 8 MB each at 1080p).
+    """
+    import gc
+    import weakref
+    from fractions import Fraction
+
+    from arachne import Rectangle, Square, tempconfig
+    from arachne.camera.three_d_camera import ThreeDCamera
+
+    with tempconfig(MEDIUM):
+        camera = ThreeDCamera()
+        square = Square(fill_opacity=1.0)
+        bar = Rectangle(width=3, height=0.4, fill_opacity=0.5)
+        camera.add_fixed_in_frame_mobjects(bar)
+        painter = CorePainter()
+        drawn = []
+        for index in range(6):
+            square.shift([0.1, 0.0, 0.0])
+            frame = painter.paint(
+                camera, [("moving", [square, bar])], t=Fraction(index, FPS)
+            )
+            drawn.append(weakref.ref(frame))
+            del frame
+        assert painter.overlaid == len(drawn)
+        gc.collect()
+        held = sum(ref() is not None for ref in drawn)
+    # The last frame stays the drawing camera's picture until the next.
+    assert held <= 1, f"{held} of {len(drawn)} frames held"
+
+
 def test_auto_draws_a_3d_scene_on_the_core():
     before = CorePainter.drawn_total
     render(core_scenes.FixedLabelOverSquare, FPS, draw_path="auto", **MEDIUM)

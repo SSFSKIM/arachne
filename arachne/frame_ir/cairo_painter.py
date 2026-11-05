@@ -280,36 +280,26 @@ _pin_engine_methods(_Painter3DCamera, ThreeDCamera, _ROTATION)
 
 
 def _context(camera: Any, pixel_array: np.ndarray) -> Any:
-    """CE's ``get_cairo_context``, its matrix built from the centre CE froze."""
-    contexts: dict[int, Any] = camera.__dict__.setdefault("_xf_contexts", {})
+    """CE's ``get_cairo_context``, its matrix built from the centre CE froze.
+
+    The camera keeps one context, on the array it draws into now, made again
+    for another array or another mapping. A context draws into its array and
+    so holds it: kept past its frame, every frame a painter draws over (a new
+    array each time on the core) would stay in memory to the render's end.
+    """
     centre = camera._xf_centre
-    key = id(pixel_array)
-    found = contexts.get(key)
-    if (
-        found is not None
-        and found[0] is pixel_array
-        and found[1]
-        == (
-            centre,
-            camera.pixel_width,
-            camera.pixel_height,
-            camera.frame_width,
-            camera.frame_height,
-        )
-    ):
+    mapping = (
+        centre,
+        camera.pixel_width,
+        camera.pixel_height,
+        camera.frame_width,
+        camera.frame_height,
+    )
+    found = vars(camera).get("_xf_context")
+    if found is not None and found[0] is pixel_array and found[1] == mapping:
         return found[2]
     ctx = camera.make_cairo_context(pixel_array, np.array(centre))
-    contexts[key] = (
-        pixel_array,
-        (
-            centre,
-            camera.pixel_width,
-            camera.pixel_height,
-            camera.frame_width,
-            camera.frame_height,
-        ),
-        ctx,
-    )
+    camera._xf_context = (pixel_array, mapping, ctx)
     return ctx
 
 
