@@ -67,11 +67,12 @@ normal there: a cross product of the chords to the points three on and three bac
 finely sampled curve are nearly opposite, so the snap's step turns it by tens of degrees. The
 writer decides those normals on the values as made and carries them as the record's `normals`:
 two per path, in the order of `planes`. A corner is degenerate when a point its normal is found
-from lies off it by more than nothing and less than one grid step in every coordinate (a sphere's
-pole, whose points `cos(pi / 2)` leaves about 1e-16 apart): CE's normal there is the direction of
-float noise, so the writer carries the zero vector and the drawer lights that corner by the face's
-Newell normal over the points it is handed (where that cancels too, CE's normal from them). A
-neighbour exactly on the corner keeps CE's rule for a zero vector. Without `normals` the drawer
+from lies off it by less than one grid step in every coordinate, coincident points included (a
+sphere's pole or a cone's apex, whose points coincide or lie the float noise of `cos(pi / 2)`
+apart): CE's normal there is its fixed fallback or the noise's direction, whichever the rounding
+of the machine that made the points gives, so the writer carries the zero vector and the drawer
+lights that corner by the face's Newell normal over the points it is handed (where that cancels
+too, CE's normal from them). Without `normals` the drawer
 finds them from its points, as before XF 1.2. `Stream.normals(slots, grid)` gives them for records
 a stream holds. An XF 1.1 reader skips these fields under its newer-minor rule.
 

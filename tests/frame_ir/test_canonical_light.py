@@ -3,11 +3,12 @@
 A shaded path is lit at two corners by CE's normal there, the cross product of
 the chords to the points three on and three back. On a finely sampled curve
 those chords are nearly opposite, and the snap's step would turn the normal by
-tens of degrees; at a sphere's pole they are a float's noise long, and the
-normal is the noise's direction. The engine decides the normals on the values
-as made (``Stream.normals``) and carries them with the snapped record
-(``frame_ir.canonical``); at a corner a float's noise from its neighbour the
-core lights the face by its own normal instead.
+tens of degrees; at a sphere's pole they are a float's noise long or nothing,
+and the normal is the noise's direction or CE's fixed fallback. The engine
+decides the normals on the values as made (``Stream.normals``) and carries them
+with the snapped record (``frame_ir.canonical``); at a corner less than a grid
+step from its neighbour, coincident included, the core lights the face by its
+own normal instead.
 """
 
 from __future__ import annotations
@@ -115,15 +116,20 @@ class LitSphere(ThreeDScene):
     have two corners ``cos(pi / 2)`` apart.
     """
 
+    #: Whether each pole's points coincide exactly instead.
+    coincident_poles = False
+
     def construct(self):
+        coincident = self.coincident_poles
+
+        def point(u, v):
+            ring = 0.0 if coincident and abs(u) == PI / 2 else np.cos(u)
+            return np.array(
+                [1.5 * ring * np.cos(v), 1.5 * ring * np.sin(v), 1.5 * np.sin(u)]
+            )
+
         sphere = Surface(
-            lambda u, v: np.array(
-                [
-                    1.5 * np.cos(u) * np.cos(v),
-                    1.5 * np.cos(u) * np.sin(v),
-                    1.5 * np.sin(u),
-                ]
-            ),
+            point,
             v_range=[0, TAU],
             u_range=[-PI / 2, PI / 2],
             checkerboard_colors=False,
@@ -152,6 +158,21 @@ def _largest_step(frame: np.ndarray, x: int, y: int) -> int:
     return max(int(across.max()), int(down.max()))
 
 
+class CoincidentPoleSphere(LitSphere):
+    """The lit sphere with each pole's points exactly coincident."""
+
+    coincident_poles = True
+
+
+def _top_pole(scene) -> tuple[int, int]:
+    """The pixel the sphere's top pole projects to."""
+    camera = scene.renderer.camera
+    px, py, _ = camera.project_point(np.array([0.0, 0.0, 1.5]))
+    x = int((px / camera.frame_width + 0.5) * camera.pixel_width)
+    y = int((0.5 - py / camera.frame_height) * camera.pixel_height)
+    return x, y
+
+
 def test_a_spheres_pole_lights_as_its_neighbours_do():
     """Around the sphere's top pole the core's light steps from pixel to pixel
     no more than Cairo's does (at its faces' seams): no blotch where the
@@ -159,9 +180,21 @@ def test_a_spheres_pole_lights_as_its_neighbours_do():
     """
     scene, core = render(LitSphere, FPS, draw_path="core", **FULL)
     _, cairo = render(LitSphere, FPS, draw_path="ir_cairo", **FULL)
-    camera = scene.renderer.camera
-    px, py, _ = camera.project_point(np.array([0.0, 0.0, 1.5]))
-    x = int((px / camera.frame_width + 0.5) * camera.pixel_width)
-    y = int((0.5 - py / camera.frame_height) * camera.pixel_height)
+    x, y = _top_pole(scene)
     steps = (_largest_step(core[-1], x, y), _largest_step(cairo[-1], x, y))
+    assert steps[0] <= steps[1] + 4, steps
+
+
+def test_a_pole_of_coincident_points_lights_as_one_a_floats_noise_apart():
+    """A pole whose points coincide exactly is lit as the pole whose points
+    ``cos(pi / 2)`` keeps apart, and as its neighbours: which side of zero a
+    machine's rounding leaves a pole's points on changes nothing drawn.
+    """
+    scene, noise = render(LitSphere, FPS, draw_path="core", **FULL)
+    _, coincident = render(CoincidentPoleSphere, FPS, draw_path="core", **FULL)
+    _, cairo = render(LitSphere, FPS, draw_path="ir_cairo", **FULL)
+    x, y = _top_pole(scene)
+    differ = np.abs(coincident[-1].astype(int) - noise[-1].astype(int)).max(-1)
+    assert not differ.any(), int((differ > 0).sum())
+    steps = (_largest_step(coincident[-1], x, y), _largest_step(cairo[-1], x, y))
     assert steps[0] <= steps[1] + 4, steps
