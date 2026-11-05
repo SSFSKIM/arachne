@@ -555,8 +555,8 @@ impl Stream {
     /// Draws the frame, and reports how each pixel was resolved.
     ///
     /// This build draws the background (the view's colour, or its image cropped as CE crops it)
-    /// and `mesh`, `path`, `points` and `instances` records. It refuses, whole, any frame whose
-    /// order draws what it cannot: `face_group` and `image` records until their drawers land, a
+    /// and `mesh`, `path`, `face_group`, `points` and `instances` records. It refuses, whole, any
+    /// frame whose order draws what it cannot: `image` records (Cairo's overlay draws them), a
     /// record carrying a field it does not draw yet, reserved or unknown kinds, unknown feature
     /// bits, and unknown light models.
     pub fn render(&self, width: u32, height: u32, threads: usize) -> Result<Rendered, DrawError> {
@@ -690,6 +690,9 @@ impl Stream {
                             sub: 0,
                         });
                     }
+                }
+                (RecordKind::FaceGroup, Some(ShapeData::Path { points }), Body::FaceGroup(f)) => {
+                    paths.push(instance::face(record, points, f, e.part, table, order));
                 }
                 (RecordKind::Path, Some(ShapeData::Path { .. }), _) => {
                     let (points, place) =
@@ -909,7 +912,9 @@ fn field_refusal(rec: &Record, mesh: bool, shading: bool, ce_light: bool) -> Opt
         }
     } else if shaded
         && !ce_light
-        && (drawn(&p.fill, None) || strokes.iter().any(|(paint, w)| drawn(paint, Some(*w))))
+        && (rec.kind == RecordKind::FaceGroup
+            || drawn(&p.fill, None)
+            || strokes.iter().any(|(paint, w)| drawn(paint, Some(*w))))
     {
         // CE lights each paint into two stops, at the path's start and end corners
         // (`ThreeDCamera.modified_rgbas`), drawn as a linear gradient; another light model has no
@@ -939,9 +944,6 @@ fn field_refusal(rec: &Record, mesh: bool, shading: bool, ce_light: bool) -> Opt
     }
 }
 
-/// Why this build refuses to draw a record, if it does, under a camera that shades or not
-/// (`shading`). It draws `mesh`, `path`, `points` and `instances` records; `face_group` and
-/// `image` records wait for their drawers.
 /// Whether a 3D scene's frame leaves `rec` to Cairo's overlay, drawn over the core's frame in CE's
 /// order: a record fixed in frame, an image (a display's included), or a path filled through a
 /// background image.
@@ -975,6 +977,9 @@ fn drawn_points<'a>(
     Some((Cow::Owned(geometry::path_points(g, a, b)?), IDENTITY))
 }
 
+/// Why this build refuses to draw a record, if it does, under a camera that shades or not
+/// (`shading`) and CE's light model or another (`ce_light`). It draws `mesh`, `path`,
+/// `face_group`, `points` and `instances` records; `image` records are Cairo's overlay's.
 fn refusal(
     rec: &Record,
     shapes: &HashMap<Key, Shape>,
@@ -1001,13 +1006,24 @@ fn refusal(
         format!("{} is a reserved kind", rec.kind.name())
     } else if matches!(
         rec.kind,
-        RecordKind::Mesh | RecordKind::Path | RecordKind::Points | RecordKind::Instances
+        RecordKind::Mesh
+            | RecordKind::Path
+            | RecordKind::FaceGroup
+            | RecordKind::Points
+            | RecordKind::Instances
     ) {
         let mesh = matches!(prototype, Some(ShapeData::Mesh { .. }));
         if let Some(reason) = field_refusal(rec, mesh, shading, ce_light) {
             reason
         } else if rec.kind == RecordKind::Path && drawn_points(rec, shapes).is_none() {
             "a path's blend of two shapes of different lengths".into()
+        } else if let (Body::FaceGroup(faces), Some(ShapeData::Path { points })) =
+            (&rec.body, prototype)
+        {
+            if !faces.uv.is_empty() && points.len() % faces.uv.len() == 0 {
+                return None;
+            }
+            "a face group whose points do not divide into its faces".into()
         } else if let (Body::Instances(body), Some(data)) = (&rec.body, prototype) {
             // Each instance's parts take sub-orders of their own, in 32 bits.
             let per = match data {
