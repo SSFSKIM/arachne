@@ -25,7 +25,7 @@ from .cairo_painter import CairoDrawer
 from .canonical import Canonical, canonical_order, frame_grid, shades
 from .extract import FrameStream, Term, Unable
 from .replay import Replays
-from .xf import FEATURE_BACKGROUND_IMAGE, Delta, Record, StreamState
+from .xf import Delta, StreamState
 
 
 class CorePainter:
@@ -72,10 +72,6 @@ class CorePainter:
         self.canonical = Canonical()
         self.deltas: list[Delta] = []
         self.last: Delta | None = None
-        #: The view and records the core holds, as sent
-        #: (:meth:`_refuse_undecided`).
-        self._sent_view: dict[str, Any] | None = None
-        self._sent_records: dict[int, Record] = {}
         #: Frames this painter drew.
         self.frames = 0
         #: Frames whose overlay held at least one entry.
@@ -105,17 +101,21 @@ class CorePainter:
         finally:
             self.canonical.frame_grid = None
 
-    def draw(self, delta: Delta) -> np.ndarray:
+    def draw(self, delta: Delta, *, _unguarded: bool = False) -> np.ndarray:
         """The frame ``delta`` brings the stream to, its geometry snapped
-        (:mod:`.canonical`): the core is handed nothing else.
+        (:mod:`.canonical`): the core is handed nothing else. ``_unguarded``
+        draws past :meth:`_refuse_undecided`, for a test's reference drawn
+        from the values as made; nothing else passes it.
         """
         import arachne_core
 
         sent = self.canonical(delta)
-        self._refuse_undecided(sent)
         read = arachne_core.FrameDelta.from_bytes(sent.to_core().to_bytes())
         self.core.apply(read)
         self.state.apply(Delta.from_contents(read.contents()))
+        overlay = self.core.overlay_entries()
+        if not _unguarded:
+            self._refuse_undecided(overlay)
         self.last = sent
         self.frames += 1
         CorePainter.drawn_total += 1
@@ -138,38 +138,36 @@ class CorePainter:
                 f" {refused.slot}): {refused.reason}"
             ) from refused
         frame = np.array(pixels)
-        overlay = self.core.overlay_entries()
         if overlay:
             self.overlaid += 1
             self.drawer.draw_over(self.state, frame, overlay, self.replays)
         return frame
 
-    def _refuse_undecided(self, sent: Delta) -> None:
-        """Refuses (``render.unable``) to hand the core a frame without what
-        the writer decides before the snap (:mod:`.canonical`): a view, its
-        own or a display's, without its input grid; a record drawing paths
-        without its planes; a shaded one without its normals. The core would
-        decide them from snapped points, which is the writer's bug, never a
-        frame to draw on another path.
+    def _refuse_undecided(self, overlay: Sequence[tuple[str, int, int]]) -> None:
+        """Refuses (``render.unable``) a frame the core would draw without
+        what the writer decides before the snap (:mod:`.canonical`): a view
+        without its input grid, a record drawing paths without its planes, a
+        shaded one without its normals. The core would decide them from
+        snapped points, which is the writer's bug, never a frame to draw on
+        another path. Only what the core draws is read: the records of its
+        order it does not leave to Cairo's ``overlay``, which draws them from
+        their own points.
         """
-        if sent.view is not None:
-            self._sent_view = sent.view
-        for slot in sent.remove:
-            self._sent_records.pop(slot, None)
-        self._sent_records.update(sent.set)
-        views = [] if sent.view is None else [("the frame", sent.view)]
-        # A view that starts or stops shading reads every record held.
-        checked = self._sent_records.items() if sent.view is not None else sent.set
-        shading = shades(self._sent_view)
-        for slot, record in checked:
+        view = self.state.view
+        assert view is not None
+        if not view.get("input_grid", 0) > 0:
+            raise Unable(
+                "render.unable: the frame reaches the core without an input grid"
+            )
+        shading = shades(view)
+        cairo = {slot for _, slot, _ in overlay}
+        for _, slot, _ in self.state.order:
+            if slot in cairo:
+                continue
+            record = self.state.records[slot]
             fields = record.fields
-            if fields.get("sub_frame") is not None:
-                views.append((f"slot {slot}'s display", fields["sub_frame"][1]))
             if record.kind not in ("path", "face_group") or not fields.get("shape"):
                 continue
-            if int(fields.get("features", 0)) & FEATURE_BACKGROUND_IMAGE:
-                continue  # Cairo's overlay draws it, from its own points
-
             if "planes" not in fields:
                 raise Unable(
                     f"render.unable: slot {slot} reaches the core without its planes"
@@ -182,11 +180,6 @@ class CorePainter:
             ):
                 raise Unable(
                     f"render.unable: shaded slot {slot} reaches the core without its normals"
-                )
-        for name, view in views:
-            if not view.get("input_grid", 0) > 0:
-                raise Unable(
-                    f"render.unable: {name} reaches the core without an input grid"
                 )
 
     def settle(self) -> None:
