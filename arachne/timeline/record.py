@@ -622,6 +622,10 @@ class Record:
         self._captures: list[Capture] = []
         #: Undrawn captures since the last drawn one (:meth:`_capture`).
         self._undrawn = 0
+        #: The seq of the last capture taken, drawn or not; -1 before any.
+        #: What the script does after it and before the next is placed
+        #: there (``BridgeCall.seq``).
+        self.last_seq: int | Fraction = -1
         #: Per MultiCamera display (by id): the first capture its camera was
         #: drawn into at, and that camera's picture before it, which the
         #: display shows wherever it is on screen before then.
@@ -656,6 +660,7 @@ class Record:
             # undrawn one since.
             self._undrawn += 1
             seq = len(self._captures) - Fraction(1, self._undrawn + 1)
+        self.last_seq = seq
         previous = self._captures[-1] if self._captures else None
         roots = _reuse(tuple(scene.mobjects), previous.roots if previous else None)
         foreground = _reuse(

@@ -85,13 +85,16 @@ class Reading:
     measure: a probe that gave no point), and ``until``, the instant the
     state it read holds until: the frames in ``[t, until)`` show it.
     ``None`` for a reading at one instant only (a call's own, the scene's
-    end).
+    end). ``seq`` places it in the script's order among the record's
+    captures: made after the capture of that seq and before the next, as
+    ``BridgeCall.seq`` places a call.
     """
 
     t: Fraction
     line: SourceLine | None
     values: Mapping[str, Any] | None
     until: Fraction | None = None
+    seq: int | Fraction = -1
 
 
 @dataclass(frozen=True, eq=False)
@@ -113,7 +116,11 @@ class BridgeCall:
     ``readings`` are the call's evaluations in time order: one for a
     record, a sweep or an apart (its findings), one at the call and then one
     per kept capture for a watch, and for a call stating exemptions what
-    they name, at the call and then at each kept capture.
+    they name, at the call and then at each kept capture. ``seq`` places the
+    call in the script's order among the record's captures: after the
+    capture of that seq (drawn or not; -1 for none) and before the next, so
+    that a state the record keeps (``Record.states``) at the same instant
+    is known to come before or after it.
     """
 
     kind: str
@@ -128,6 +135,7 @@ class BridgeCall:
     #: How a finding names what was checked.
     subject: str = ""
     readings: list[Reading] = field(default_factory=list)
+    seq: int | Fraction = -1
 
     def reading_at(self, t: Fraction) -> Reading | None:
         """The last reading at or before ``t``: what was on screen then."""
@@ -198,23 +206,28 @@ class Bridge:
         self._readers = [(kept, r) for kept, r in self._readers if kept is not call]
 
     def read(
-        self, t: Fraction, line: SourceLine | None, until: Fraction | None = None
+        self,
+        t: Fraction,
+        line: SourceLine | None,
+        until: Fraction | None = None,
+        *,
+        seq: int | Fraction,
     ) -> None:
         """Read every call with a reader made at or before ``t`` there, in a
-        state that holds until ``until``.
+        state that holds until ``until``, after the capture of ``seq``.
         """
         for call, reader in self._readers:
             if call.t <= t:
-                self._read(call, reader, t, line, until)
+                self._read(call, reader, t, line, until, seq)
 
-    def read_changes(self, t: Fraction) -> None:
-        """Read, at ``t``, every call read only where its reading changes
-        (what a declaration's exemptions name): at a state the record keeps
-        between frames, where a watch is never read.
+    def read_changes(self, t: Fraction, *, seq: int | Fraction) -> None:
+        """Read, at ``t`` after the capture of ``seq``, every call read only
+        where its reading changes (what a declaration's exemptions name): at
+        a state the record keeps between frames, where a watch is never read.
         """
         for call, reader in self._readers:
             if call.t <= t and id(call) in self._changes_only:
-                self._read(call, reader, t, None, None)
+                self._read(call, reader, t, None, None, seq)
 
     def _read(
         self,
@@ -223,6 +236,7 @@ class Bridge:
         t: Fraction,
         line: SourceLine | None,
         until: Fraction | None,
+        seq: int | Fraction,
     ) -> None:
         values = reader()
         if (
@@ -231,7 +245,7 @@ class Bridge:
             and call.readings[-1].values == values
         ):
             return
-        call.readings.append(Reading(t, line, values, until))
+        call.readings.append(Reading(t, line, values, until, seq))
 
 
 class PlayRun:
@@ -648,7 +662,7 @@ class Recorder:
         """
         camera = self.scene.renderer.camera
         record = self.ensure_record()
-        record.bridge.read_changes(self.scene.time)
+        record.bridge.read_changes(self.scene.time, seq=record.last_seq)
         return record._capture(
             kind,
             self.scene.time,
@@ -1179,6 +1193,7 @@ class Recorder:
             self._play_reading(),
             self.scene_line(caller),
             **fields,
+            seq=record.last_seq,
         )
         return record.bridge.add(call, reader, changes_only=changes_only)
 
@@ -1201,7 +1216,12 @@ class Recorder:
         """
         record = self.ensure_record()
         if record.bridge.watching:
-            record.bridge.read(instant, self.scene_line(sys._getframe(1)), until)
+            record.bridge.read(
+                instant,
+                self.scene_line(sys._getframe(1)),
+                until,
+                seq=record.last_seq,
+            )
 
     def _read_frozen(self, play: PlayRecord, end: Fraction) -> None:
         """Read the scene's watches at each frame of the frozen play

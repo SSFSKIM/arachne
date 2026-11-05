@@ -75,7 +75,9 @@ class Departure:
     keeps (as the script called the play, or just before it removed), within
     ``play`` (:meth:`.ArmedRule.terms_at`'s bound), at ``line``, of the
     topmost settled members ``settled`` (by stable id, each with how long
-    past settling it was).
+    past settling it was). ``seq`` is its state's place in the script's
+    order: what the script does after it, at the same instant, does not
+    reach back to it.
     """
 
     t: Fraction
@@ -83,6 +85,10 @@ class Departure:
     capture: Capture
     line: SourceLine | None
     settled: dict[str, tuple[Animated, Fraction]]
+
+    @property
+    def seq(self) -> int | Fraction:
+        return self.capture.seq
 
 
 def departed(record: Record, states: States, since: Fraction) -> list[Departure]:
@@ -149,7 +155,7 @@ def _departures(context: LintContext, rule: ArmedRule) -> list[Finding]:
             _sweep(
                 rule.state(context, departure.capture),
                 departure.settled,
-                rule.terms_at(record, departure.t, departure.play),
+                rule.terms_at(record, departure.t, departure.play, departure.seq),
                 departure.line,
                 departure.t,
                 grid,

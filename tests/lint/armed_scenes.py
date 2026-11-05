@@ -245,3 +245,50 @@ class ListExemptedThenRemoved(Scene):
         self.wait(1.6)
         self.remove(note)
         self.wait(0.5)
+
+
+class ExcusedAfterTheRemoval(Scene):
+    """A word settled across a line, removed by the script; the list the
+    arming was handed names it just after.
+    """
+
+    def construct(self):
+        excused = []
+        arm(exempt=excused)
+        rail = Line(LEFT * 4, RIGHT * 4)
+        note = Text("note", font_size=36).move_to(rail.get_center())
+        self.add(rail, note)
+        self.wait(0.7)
+        self.remove(note)
+        excused.append(note)
+        self.wait(0.5)
+
+
+class RearmedAfterTheRemoval(Scene):
+    """...the scene re-arms, excusing it, just after."""
+
+    def construct(self):
+        arm()
+        rail = Line(LEFT * 4, RIGHT * 4)
+        note = Text("note", font_size=36).move_to(rail.get_center())
+        self.add(rail, note)
+        self.wait(0.7)
+        self.remove(note)
+        arm(exempt=[note])
+        self.wait(0.5)
+
+
+class GapRearmedAfterTheRemoval(Scene):
+    """Two words 0.3 apart under a text_gap of 0.5, one removed by the
+    script; the scene re-arms without a text_gap just after.
+    """
+
+    def construct(self):
+        arm(text_gap=0.5)
+        top = Text("top", font_size=30)
+        low = Text("low", font_size=30).next_to(top, direction=DOWN, buff=0.3)
+        self.add(top, low)
+        self.wait(0.7)
+        self.remove(low)
+        arm()
+        self.wait(0.5)
