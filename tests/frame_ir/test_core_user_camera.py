@@ -160,6 +160,25 @@ def test_a_proven_change_that_rebinds_the_camera_s_state_draws_on_cairo_for_the_
     assert "cairo_line_width_multiple" in finding.message
 
 
+def test_a_rebinding_seen_after_a_display_s_camera_captured_falls_back_whole(
+    findings,
+):
+    """A camera that captures its display's camera inside its own capture
+    (a ThreeDCamera that is also a MultiCamera): the display's capture is
+    watched by its own rule, and the camera's capture goes on by the camera's.
+    A rebinding the camera makes in the scene's first frame, after that
+    nested capture, sends the whole scene to Cairo; it is not ``unable``.
+    """
+    _, direct = render(camera_scenes.NestedStateSolids, FPS, **MEDIUM)
+    _, core = render(camera_scenes.NestedStateSolids, FPS, draw_path="core", **MEDIUM)
+    assert len(direct) == len(core) > 0
+    for index, (a, b) in enumerate(zip(direct, core, strict=True)):
+        np.testing.assert_array_equal(a, b, err_msg=f"frame {index}")
+    [finding] = _fallbacks(findings)
+    assert "whole scene" in finding.message
+    assert "cairo_line_width_multiple" in finding.message
+
+
 def test_frames_delivered_from_cairo_after_a_fallback_are_told_from_the_core_s(
     findings,
 ):

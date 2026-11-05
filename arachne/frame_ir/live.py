@@ -593,51 +593,66 @@ class LivePainter:
 
     def _capture(self, camera: Any, capture: Any) -> Any:
         def described(mobjects: Any, **kwargs: Any) -> None:
+            # A capture can run inside another (a MultiCamera's display's
+            # camera, captured within the camera's own): it is watched by its
+            # own camera's rule, and the capture around it goes on by its own.
+            held = (self._watching, self._real)
             self._sample(camera)
-            frames = vars(camera)["_xf_live"]
-            background = np.array(camera.pixel_array)
-            if self._real and not self.draw:
-                background = self._behind(camera, background)
-            drawn: list[tuple[type, _Recording]] = []
-            centres: dict[int, list[Any]] = {}
-            frames.append(drawn)
-            restore = self._record_centres(camera, centres)
             try:
-                capture(mobjects, **kwargs)
+                self._described(camera, capture, mobjects, kwargs)
             finally:
-                restore()
-                frames.pop()
-            if camera in _UNSETTLED:
-                # The camera's code changed what it holds while it produced
-                # what a record states: its draw reads that state beyond what
-                # XF carries, so its own draw stands, from then on.
-                self._fall_back(camera)
-                return
-            pixels = self._describe(camera, drawn, centres, background)
-            if self.draw and not np.array_equal(camera.pixel_array, pixels):
-                if vars(camera).get("_xf_pre_projected"):
-                    # A camera described from its own capture drew other than
-                    # its description (state XF cannot see: its Cairo
-                    # context's, held in place, outside the camera): its own
-                    # draw stands, from then on.
-                    _UNSETTLED[camera] = (
-                        f"its capture at t={self.instant} drew other than XF"
-                        " describes it"
-                    )
-                    self._fall_back(camera)
-                    return
-                self.differing += 1
-            self.captures += 1
-            if self._real and not self.draw:
-                # The scene's first frame stays the camera's own draw while it
-                # is drawn, every capture in it: a change seen in any of them
-                # then leaves nothing of the core's in it. Its description
-                # replaces it once the frame is drawn (:meth:`_settle_opening`).
-                self._chain[id(camera)] = (camera, np.array(camera.pixel_array), pixels)
-            else:
-                np.copyto(camera.pixel_array, pixels)
+                self._watching, self._real = held
 
         return described
+
+    def _described(
+        self, camera: Any, capture: Any, mobjects: Any, kwargs: dict[str, Any]
+    ) -> None:
+        """``camera``'s ``capture`` of ``mobjects``, described in XF and drawn
+        back from it, as :meth:`_sample` decided for it.
+        """
+        frames = vars(camera)["_xf_live"]
+        background = np.array(camera.pixel_array)
+        if self._real and not self.draw:
+            background = self._behind(camera, background)
+        drawn: list[tuple[type, _Recording]] = []
+        centres: dict[int, list[Any]] = {}
+        frames.append(drawn)
+        restore = self._record_centres(camera, centres)
+        try:
+            capture(mobjects, **kwargs)
+        finally:
+            restore()
+            frames.pop()
+        if camera in _UNSETTLED:
+            # The camera's code changed what it holds while it produced
+            # what a record states: its draw reads that state beyond what
+            # XF carries, so its own draw stands, from then on.
+            self._fall_back(camera)
+            return
+        pixels = self._describe(camera, drawn, centres, background)
+        if self.draw and not np.array_equal(camera.pixel_array, pixels):
+            if vars(camera).get("_xf_pre_projected"):
+                # A camera described from its own capture drew other than
+                # its description (state XF cannot see: its Cairo
+                # context's, held in place, outside the camera): its own
+                # draw stands, from then on.
+                _UNSETTLED[camera] = (
+                    f"its capture at t={self.instant} drew other than XF"
+                    " describes it"
+                )
+                self._fall_back(camera)
+                return
+            self.differing += 1
+        self.captures += 1
+        if self._real and not self.draw:
+            # The scene's first frame stays the camera's own draw while it
+            # is drawn, every capture in it: a change seen in any of them
+            # then leaves nothing of the core's in it. Its description
+            # replaces it once the frame is drawn (:meth:`_settle_opening`).
+            self._chain[id(camera)] = (camera, np.array(camera.pixel_array), pixels)
+        else:
+            np.copyto(camera.pixel_array, pixels)
 
     def _sample(self, camera: Any) -> None:
         """Whether ``camera``'s capture about to run is watched call by call,

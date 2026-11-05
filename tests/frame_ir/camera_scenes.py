@@ -24,7 +24,9 @@ from arachne import (
     YELLOW,
     Dot,
     ImageMobject,
+    ImageMobjectFromCamera,
     MovingCamera,
+    MultiCamera,
     PMobject,
     Rotate,
     Square,
@@ -294,6 +296,37 @@ class MovingStateSolids(ProjectingStateSolids):
 
     def rebinds(self, camera, points) -> bool:
         return float(np.mean(np.asarray(points)[:, 0])) > 2.0
+
+
+class NestingCamera(ThreeDCamera, MultiCamera):
+    """A camera class of the scene's own that is a ThreeDCamera and a
+    MultiCamera: its capture captures its display's camera first, inside its
+    own. Its projection sets the line width from the depth of what it
+    projects, as :class:`ProjectingStateSolids`'s does.
+    """
+
+    def project_points(self, points):
+        out = np.array(super().project_points(points))
+        if len(out):
+            self.cairo_line_width_multiple = 0.03 * (
+                1 + abs(float(np.mean(out[:, 2])))
+            )
+        return out
+
+
+class NestedStateSolids(Solids):
+    """:class:`Solids` through a :class:`NestingCamera` with a display of a
+    flat camera's view: the rebinding shows in the scene's first frame, in
+    the capture that has just captured the display's camera.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(camera_class=NestingCamera, **kwargs)
+
+    def construct(self):
+        display = ImageMobjectFromCamera(MovingCamera())
+        self.renderer.camera.add_image_mobject_from_camera(display)
+        super().construct()
 
 
 class LaterPlayStateSolids(ProjectingStateSolids):
