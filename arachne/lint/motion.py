@@ -303,7 +303,7 @@ def _read(
     forward run, or of ``capture`` shown from the record.
     """
     scene = record._scene
-    camera, timeline = scene.renderer.camera, scene.timeline
+    camera, timeline = scene.renderer.camera, scene._arachne_timeline
 
     def read() -> tuple[float, dict[str, Body]]:
         return bodies(

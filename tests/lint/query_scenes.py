@@ -122,3 +122,22 @@ class TaggedByAnUpdater(Scene):
 
         circle.add_updater(tag)
         self.wait(1)
+
+
+class KeepsItsOwnRecord(Scene):
+    """A scene whose code takes ``record`` and ``timeline`` for its own: a
+    method that keeps entries, and a value. Two words overlap all along.
+    """
+
+    def record(self, entry):
+        self.entries.append(entry)
+
+    def construct(self):
+        self.entries = []
+        self.timeline = "the scene's own"
+        top = Text("top", font_size=36)
+        low = Text("low", font_size=36).move_to(top.get_center() + DOWN * 0.1)
+        self.add(top, low)
+        self.record("added")
+        self.play(low.animate.shift(RIGHT * 0.1), run_time=0.5)
+        self.wait(0.5)

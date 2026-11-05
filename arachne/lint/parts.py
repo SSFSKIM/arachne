@@ -270,7 +270,7 @@ def build_parts(
         # are drawn with, and its record is not finished. Read through the
         # values the capture recorded, so that reading runs none of the
         # scene's code and leaves the run as it would be unread.
-        timeline = record._scene.timeline
+        timeline = record._scene._arachne_timeline
         with Drawing(record) as drawing:
             drawing.show_camera(capture)
             view = view_of(
