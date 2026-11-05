@@ -468,8 +468,10 @@ def _draw(
             return _restored_frame(drawing, resolved)
         # A painter describes every frame whole, its static list rebuilt once
         # ``prepare`` has brought the scene to the instant: a restored frame
-        # is drawn from its description as any other is.
-        return drawing.sample(play, resolved.capture, None, prepare=resolved.prepare)
+        # is drawn from its description as any other is, by a painter of its
+        # own that keeps nothing of it for later frames.
+        assert resolved.prepare is not None
+        return drawing.restored(play, resolved.capture, resolved.prepare)
     return drawing.sample(
         play, resolved.capture, static(play), prepare=resolved.prepare
     )

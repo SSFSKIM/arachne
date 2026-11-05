@@ -542,7 +542,7 @@ def test_a_restored_frame_on_a_described_path_is_drawn_from_its_description(
     run's frame there.
     """
     pytest.importorskip("arachne_core")
-    from arachne.frame_ir.painter import painter_for
+    from arachne.frame_ir.painter import IrCairoPainter
 
     path = {"draw_path": "ir_cairo"}
     session = session_of("DrivenSquare", RESTORE_SCENES, frame_rate=15, **path)
@@ -551,14 +551,82 @@ def test_a_restored_frame_on_a_described_path_is_drawn_from_its_description(
     oracle = session_of(
         "DrivenSquare", RESTORE_SCENES, frame_rate=15, instants=instants, **path
     )
-    painter = painter_for(session.record, "ir_cairo")
-    assert painter is not None
     for t in instants:
         assert session.state_at(t).answer == "restored", t
-        drawn = painter.frames
+        drawn = IrCairoPainter.drawn_total
         pixels = np.asarray(session.frame(t))
-        assert painter.frames == drawn + 1, t
+        assert IrCairoPainter.drawn_total == drawn + 1, t
         assert np.array_equal(pixels, np.asarray(oracle.frame(t))), t
+
+
+def _kept_by(painter) -> tuple[int, ...]:
+    """What a painter keeps across frames: its stream's mobjects and
+    extractions, the records it holds, and the frames it described.
+    """
+    stream = painter.stream
+    return (
+        len(stream._slots),
+        len(stream._cache),
+        len(stream._held),
+        len(painter.state.records),
+        len(painter.state.shapes),
+        stream._seq,
+        painter.frames,
+    )
+
+
+def test_restores_leave_nothing_in_the_record_s_stream(session_of):
+    """What a restore builds (``always_redraw``'s new line at each restore)
+    and the state it reaches belong to no other frame: however often a
+    session restores, the record's painter keeps what its own frames left.
+    """
+    pytest.importorskip("arachne_core")
+    from arachne.frame_ir.painter import painter_for
+
+    session = session_of(
+        "DetachedTracker", RESTORE_SCENES, frame_rate=15, draw_path="ir_cairo"
+    )
+    play = _state_plays(session)[0]
+    t = _unsampled(play)[0]
+    session.frame(play.start)
+    painter = painter_for(session.record, "ir_cairo")
+    assert painter is not None
+    kept = _kept_by(painter)
+    assert kept[0] > 0
+    for _ in range(11):
+        assert session.state_at(t).answer == "restored"
+        session.frame(t)
+    assert _kept_by(painter) == kept
+
+
+def test_a_frame_after_a_restore_is_described_as_without_it(session_of):
+    """The frame drawn after restores is the delta, and the pixels, the same
+    frame has in a session that restored nothing: nothing of a restore
+    reaches what later frames are described against.
+    """
+    pytest.importorskip("arachne_core")
+    from arachne.frame_ir.painter import painter_for
+
+    drawn = []
+    # Each session drawn before the next opens: an execution's objects are
+    # named by the origins of the execution that ran last.
+    for restoring in (True, False):
+        session = session_of(
+            "DetachedTracker", RESTORE_SCENES, frame_rate=15, draw_path="ir_cairo"
+        )
+        play = _state_plays(session)[0]
+        later = play.start + Fraction(4, 15)
+        assert session.state_at(later).answer == "recorded"
+        session.frame(play.start)
+        if restoring:
+            for t in _unsampled(play):
+                session.frame(t)
+        pixels = np.asarray(session.frame(later))
+        painter = painter_for(session.record, "ir_cairo")
+        drawn.append((pixels, painter.last.to_core().to_bytes()))
+    (restored_pixels, restored_delta), (plain_pixels, plain_delta) = drawn
+    assert np.array_equal(restored_pixels, plain_pixels)
+    assert restored_delta == plain_delta
 
 
 def test_a_restored_frame_asked_first_maps_around_the_render_s_centre(session_of):

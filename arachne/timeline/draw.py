@@ -667,18 +667,37 @@ class Drawing:
         self.camera.capture_mobjects(targets)
         return self.camera.pixel_array.copy()
 
+    def restored(
+        self, play: PlayRecord, capture: Capture, prepare: Callable[[Drawing], None]
+    ) -> PixelArray:
+        """The frame of an instant ``prepare`` restores from ``capture``, on a
+        draw path that describes frames: described whole and drawn by a
+        painter of its own, made for it and discarded after. What a restore
+        builds, and the state it reaches, belong to no other frame, so none
+        of it is kept in the record's stream, and the frames drawn after are
+        described as though it had not been drawn.
+        """
+        from arachne.frame_ir.painter import IrCairoPainter
+
+        assert self.painter is not None
+        targets = list(capture.moving) or capture.draw_list()
+        return self._paint(play, capture, targets, prepare, IrCairoPainter())
+
     def _paint(
         self,
         play: PlayRecord,
         capture: Capture,
         targets: list[Mobject],
         prepare: Callable[[Drawing], None] | None,
+        painter: Any = None,
     ) -> PixelArray:
-        """The frame at ``capture`` from the painter: its static list rebuilt
-        at the frame's state, then the moving list, each as one capture of
-        the camera would draw it.
+        """The frame at ``capture`` from the painter (``painter``, else the
+        drawing's): its static list rebuilt at the frame's state, then the
+        moving list, each as one capture of the camera would draw it.
         """
-        assert self.painter is not None
+        if painter is None:
+            painter = self.painter
+        assert painter is not None
         self.show(capture, [*capture.draw_list(), *targets])
         if prepare is not None:
             prepare(self)
@@ -689,13 +708,13 @@ class Drawing:
             terms = {
                 id(mob): term for mob, term in play.leaf_terms(capture.instant).items()
             }
-        pixels = self.painter.paint(
+        pixels = painter.paint(
             camera,
             [("static", listed), ("moving", targets)],
             t=capture.instant,
             terms=terms,
         )
-        self._painted_by = self.painter
+        self._painted_by = painter
         camera.set_pixel_array(pixels)
         return pixels
 
