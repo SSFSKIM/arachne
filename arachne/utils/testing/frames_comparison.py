@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any
 
 import cairo
-import numpy as np
 import pytest
 from _pytest.fixtures import FixtureRequest
 
@@ -225,8 +224,8 @@ def _make_test_comparing_frames(
         whether to visually show_diff (see --show_diff)
     draw_path
         The draw path the frames are drawn on (the test's config holds it).
-        On ``core``, the test fails unless every frame delivered is one the
-        core drew.
+        On ``core``, the test fails unless the core drew every frame
+        delivered (``painter.deliveries``).
 
     Returns
     -------
@@ -269,13 +268,12 @@ def _make_test_comparing_frames(
 
     def real_test() -> None:
         if draw_path == "core":
-            from arachne.frame_ir.core_painter import CorePainter
+            from arachne.frame_ir.painter import deliveries
 
-            delivered = _FrameDigests(frames_tester, keep_frames=True)
-            with CorePainter.keeping_frames() as drew, frames_tester.testing():
-                run(delivered)
-            assert delivered.frames, "this unit delivered no frame"
-            not_core = [n for n, frame in delivered.frames if not drew(frame)]
+            with deliveries() as painters, frames_tester.testing():
+                run(frames_tester)
+            assert painters, "this unit delivered no frame"
+            not_core = [n for n, painter in enumerate(painters) if painter != "core"]
             assert not not_core, (
                 f"frames {not_core} of this unit were not drawn by the core"
             )
@@ -303,16 +301,13 @@ def _make_test_comparing_frames(
 
 
 class _FrameDigests:
-    """A tester that keeps each frame's sha256 (and, with ``keep_frames``, a
-    copy of the frame) and passes the frame on to ``inner``, when there is
-    one.
+    """A tester that keeps each frame's sha256 and passes the frame on to
+    ``inner``, when there is one.
     """
 
-    def __init__(self, inner: Any, *, keep_frames: bool = False) -> None:
+    def __init__(self, inner: Any) -> None:
         self.inner = inner
-        self.keep_frames = keep_frames
         self.digests: list[tuple[int, str]] = []
-        self.frames: list[tuple[int, Any]] = []
 
     @contextlib.contextmanager
     def testing(self) -> Any:
@@ -321,8 +316,6 @@ class _FrameDigests:
     def check_frame(self, frame_number: int, frame: Any) -> None:
         data = memoryview(frame).tobytes()
         self.digests.append((frame_number, hashlib.sha256(data).hexdigest()))
-        if self.keep_frames:
-            self.frames.append((frame_number, np.array(frame, copy=True)))
         if self.inner is not None:
             self.inner.check_frame(frame_number, frame)
 

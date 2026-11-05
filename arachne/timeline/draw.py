@@ -755,12 +755,15 @@ class Drawing:
         return pixels
 
     def _deliver(self) -> None:
-        """A frame of the scene has been delivered: its frames stay on the
-        path they took (``painter.camera_path``).
+        """A frame of the scene has been delivered, by this drawing's painter:
+        its frames stay on the path they took (``painter.deliver``). A frame
+        described from the camera's captures was delivered by the live
+        painter that drew it (``live.LivePainter.around``).
         """
-        from arachne.frame_ir.painter import deliver
+        from arachne.frame_ir.painter import deliver, painter_kind
 
-        deliver(self.camera, self._asked)
+        if not self.captured:
+            deliver(self.camera, self._asked, painter_kind(self.draw_path))
 
     def _sample(
         self,
