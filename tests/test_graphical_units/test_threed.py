@@ -5,30 +5,34 @@ from arachne.utils.testing.frames_comparison import frames_comparison
 
 __module_test__ = "threed"
 
+#: Each unit runs on Cairo against ``control_data/threed/`` and on the core,
+#: depth-tested, against ``control_data/threed/core/``.
+DRAW_PATHS = ("cairo", "core")
 
-@frames_comparison(base_scene=ThreeDScene)
+
+@frames_comparison(base_scene=ThreeDScene, draw_paths=DRAW_PATHS)
 def test_AddFixedInFrameMobjects(scene):
     scene.set_camera_orientation(phi=75 * DEGREES, theta=-45 * DEGREES)
     text = Tex("This is a 3D tex")
     scene.add_fixed_in_frame_mobjects(text)
 
 
-@frames_comparison(base_scene=ThreeDScene)
+@frames_comparison(base_scene=ThreeDScene, draw_paths=DRAW_PATHS)
 def test_Cube(scene):
     scene.add(Cube())
 
 
-@frames_comparison(base_scene=ThreeDScene)
+@frames_comparison(base_scene=ThreeDScene, draw_paths=DRAW_PATHS)
 def test_Sphere(scene):
     scene.add(Sphere())
 
 
-@frames_comparison(base_scene=ThreeDScene)
+@frames_comparison(base_scene=ThreeDScene, draw_paths=DRAW_PATHS)
 def test_Dot3D(scene):
     scene.add(Dot3D())
 
 
-@frames_comparison(base_scene=ThreeDScene)
+@frames_comparison(base_scene=ThreeDScene, draw_paths=DRAW_PATHS)
 def test_Cone(scene):
     scene.add(Cone(resolution=16))
 
@@ -45,12 +49,12 @@ def test_Cone_get_start_and_get_end():
     )
 
 
-@frames_comparison(base_scene=ThreeDScene)
+@frames_comparison(base_scene=ThreeDScene, draw_paths=DRAW_PATHS)
 def test_Cylinder(scene):
     scene.add(Cylinder())
 
 
-@frames_comparison(base_scene=ThreeDScene)
+@frames_comparison(base_scene=ThreeDScene, draw_paths=DRAW_PATHS)
 def test_Line3D(scene):
     line1 = Line3D(resolution=16).shift(LEFT * 2)
     line2 = Line3D(resolution=16).shift(RIGHT * 2)
@@ -59,22 +63,22 @@ def test_Line3D(scene):
     scene.add(line1, line2, perp_line, parallel_line)
 
 
-@frames_comparison(base_scene=ThreeDScene)
+@frames_comparison(base_scene=ThreeDScene, draw_paths=DRAW_PATHS)
 def test_Arrow3D(scene):
     scene.add(Arrow3D(resolution=16))
 
 
-@frames_comparison(base_scene=ThreeDScene)
+@frames_comparison(base_scene=ThreeDScene, draw_paths=DRAW_PATHS)
 def test_Torus(scene):
     scene.add(Torus())
 
 
-@frames_comparison(base_scene=ThreeDScene)
+@frames_comparison(base_scene=ThreeDScene, draw_paths=DRAW_PATHS)
 def test_Axes(scene):
     scene.add(ThreeDAxes())
 
 
-@frames_comparison(base_scene=ThreeDScene)
+@frames_comparison(base_scene=ThreeDScene, draw_paths=DRAW_PATHS)
 def test_CameraMoveAxes(scene):
     """Tests camera movement to explore varied views of a static scene."""
     axes = ThreeDAxes()
@@ -83,14 +87,14 @@ def test_CameraMoveAxes(scene):
     scene.move_camera(phi=PI / 8, theta=-PI / 8, frame_center=[1, 2, 3], zoom=2)
 
 
-@frames_comparison(base_scene=ThreeDScene)
+@frames_comparison(base_scene=ThreeDScene, draw_paths=DRAW_PATHS)
 def test_CameraMove(scene):
     cube = Cube()
     scene.add(cube)
     scene.move_camera(phi=PI / 4, theta=PI / 4, frame_center=[0, 0, -1], zoom=0.5)
 
 
-@frames_comparison(base_scene=ThreeDScene)
+@frames_comparison(base_scene=ThreeDScene, draw_paths=DRAW_PATHS)
 def test_AmbientCameraMove(scene):
     cube = Cube()
     scene.begin_ambient_camera_rotation(rate=0.5)
@@ -98,7 +102,7 @@ def test_AmbientCameraMove(scene):
     scene.wait()
 
 
-@frames_comparison(base_scene=ThreeDScene)
+@frames_comparison(base_scene=ThreeDScene, draw_paths=DRAW_PATHS)
 def test_MovingVertices(scene):
     scene.set_camera_orientation(phi=75 * DEGREES, theta=30 * DEGREES)
     vertices = [1, 2, 3, 4]
@@ -114,7 +118,7 @@ def test_MovingVertices(scene):
     scene.wait()
 
 
-@frames_comparison(base_scene=ThreeDScene)
+@frames_comparison(base_scene=ThreeDScene, draw_paths=DRAW_PATHS)
 def test_SurfaceColorscale(scene):
     resolution_fa = 16
     scene.set_camera_orientation(phi=75 * DEGREES, theta=-30 * DEGREES)
@@ -138,7 +142,7 @@ def test_SurfaceColorscale(scene):
     scene.add(axes, trig_plane)
 
 
-@frames_comparison(base_scene=ThreeDScene)
+@frames_comparison(base_scene=ThreeDScene, draw_paths=DRAW_PATHS)
 def test_Y_Direction(scene):
     resolution_fa = 16
     scene.set_camera_orientation(phi=75 * DEGREES, theta=-120 * DEGREES)
