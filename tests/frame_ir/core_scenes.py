@@ -17,6 +17,8 @@ from arachne import (
     RED,
     WHITE,
     YELLOW,
+    Circle,
+    ImageMobject,
     Prism,
     Rectangle,
     Scene,
@@ -24,6 +26,7 @@ from arachne import (
     Surface,
     Text,
     ThreeDScene,
+    ZoomedScene,
 )
 
 
@@ -102,3 +105,79 @@ class LiveSolids(ThreeDScene):
         )
         self.add(surface, WideStroke(color=YELLOW).shift([0, 0, 0.5]))
         self.move_camera(theta=-30 * DEGREES, run_time=0.4)
+
+
+def _pixels(opacity: int = 255) -> np.ndarray:
+    pixels = np.zeros((8, 12, 4), dtype=np.uint8)
+    pixels[..., 0] = np.arange(12) * 20
+    pixels[..., 1] = np.arange(8)[:, None] * 30
+    pixels[..., 3] = opacity
+    return pixels
+
+
+class ImageInSpaceOrbit(ThreeDScene):
+    """An image lying in space and a label fixed in frame, under an orbit:
+    the image's overlay run is drawn again every frame, the label's is
+    made again from the frame before's calls.
+    """
+
+    def construct(self):
+        self.set_camera_orientation(phi=60 * DEGREES, theta=-45 * DEGREES)
+        self.add(Square(side_length=4, color=BLUE, fill_opacity=1.0))
+        self.add(ImageMobject(_pixels()).scale(1.5).shift([0.0, 0.0, 0.5]))
+        label = Text("Orbit", font_size=48, color=YELLOW).to_corner([-1, 1, 0])
+        self.add_fixed_in_frame_mobjects(label)
+        self.move_camera(theta=-20 * DEGREES, run_time=0.4)
+
+
+class InterleavedOverlay(ThreeDScene):
+    """Members fixed in frame interleaved: a translucent label, a translucent
+    image, a second label, a gradient-filled bar and a stroked circle, over
+    a surface under an orbit, with the second label changing colour
+    partway: glyphs, strokes, translucent fills and gradients made again
+    from the frame before's calls, a run before an image and after it.
+    """
+
+    def construct(self):
+        self.set_camera_orientation(phi=60 * DEGREES, theta=-45 * DEGREES)
+        self.add(
+            Surface(
+                lambda u, v: np.array([u, v, 0.3 * np.sin(u) * np.cos(v)]),
+                u_range=[-2, 2],
+                v_range=[-2, 2],
+                resolution=(6, 6),
+                checkerboard_colors=[BLUE, GREEN],
+            )
+        )
+        first = Text("First", font_size=48, color=YELLOW).shift([-3.0, 2.5, 0.0])
+        first.set_fill(opacity=0.6)
+        image = ImageMobject(_pixels(160)).scale(1.2).shift([0.0, 2.5, 0.0])
+        second = Text("Second", font_size=48, color=WHITE).shift([3.0, 2.5, 0.0])
+        bar = Rectangle(width=4, height=0.5, fill_opacity=0.8, stroke_width=0)
+        bar.set_fill([RED, BLUE]).shift([0.0, -2.5, 0.0])
+        ring = Circle(radius=0.6, color=RED).set_stroke(width=6, opacity=0.7)
+        ring.shift([4.5, -2.5, 0.0])
+        self.add_fixed_in_frame_mobjects(first, image, second, bar, ring)
+        self.move_camera(theta=-30 * DEGREES, run_time=0.4)
+        self.play(second.animate.set_color(RED), run_time=0.2)
+        self.move_camera(theta=-20 * DEGREES, run_time=0.2)
+
+
+class ZoomedFrameMoves(ZoomedScene):
+    """A zoomed display (a MultiCamera display) whose camera's frame moves,
+    a label in the main frame beside it: the display's picture changes
+    every frame.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(
+            zoom_factor=0.3, zoomed_display_height=2, zoomed_display_width=3, **kwargs
+        )
+
+    def construct(self):
+        self.add(Circle(color=RED).shift([-2.0, 0.0, 0.0]), Square(color=BLUE))
+        self.add(Text("Zoom", font_size=36).to_corner([-1, -1, 0]))
+        self.activate_zooming(animate=False)
+        self.play(
+            self.zoomed_camera.frame.animate.shift([-1.5, 0.0, 0.0]), run_time=0.4
+        )

@@ -23,6 +23,7 @@ import numpy as np
 
 from .cairo_painter import CairoDrawer
 from .extract import FrameStream, Term, Unable
+from .replay import Replays
 from .xf import Delta, StreamState
 
 
@@ -38,6 +39,10 @@ class CorePainter:
     keep_all = False
     #: Frames drawn by the core in this process.
     drawn_total = 0
+    #: Whether the overlay's runs the camera draws through its context are
+    #: made again from the frame before's calls where they are the same
+    #: (:mod:`.replay`).
+    replay_overlay = True
 
     def __init__(
         self,
@@ -57,6 +62,8 @@ class CorePainter:
         #: The stream as the core read it back, which the overlay is drawn from.
         self.state = StreamState()
         self.drawer = CairoDrawer()
+        #: The overlay's kept runs, from frame to frame.
+        self.replays = Replays() if self.replay_overlay else None
         self.threads = threads
         self.keep = self.keep_all if keep is None else keep
         self.deltas: list[Delta] = []
@@ -112,7 +119,7 @@ class CorePainter:
         overlay = self.core.overlay_entries()
         if overlay:
             self.overlaid += 1
-            self.drawer.draw_over(self.state, frame, overlay)
+            self.drawer.draw_over(self.state, frame, overlay, self.replays)
         return frame
 
     def settle(self) -> None:
