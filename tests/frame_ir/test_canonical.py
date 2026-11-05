@@ -324,3 +324,83 @@ def test_a_closing_gap_in_the_band_is_counted(gap, decided_otherwise):
     found = bool(canonical.point_equality_disagreements)
     canonical.point_equality_disagreements.clear()
     assert found == decided_otherwise
+
+
+#: A flat view of the configured frame at 192x108.
+_FLAT_VIEW = {
+    "pixel_width": 192,
+    "pixel_height": 108,
+    "frame_width": 14.222222222222221,
+    "frame_height": 8.0,
+    "frame_center": (0.0, 0.0, 0.0),
+    "mapping_centre": (0.0, 0.0, 0.0),
+    "cairo_line_width_multiple": 0.01,
+    "use_z_index": True,
+    "background": (0.0, 0.0, 0.0, 1.0),
+    "camera": "flat",
+}
+
+
+def _revealing(shape: Shape) -> Record:
+    """A path record drawing the first half of ``shape``."""
+    return Record(
+        "path",
+        {
+            "shape": shape.key,
+            "reveal": (0.0, 0.5),
+            "fill": np.array([[1.0, 1.0, 1.0, 0.0]]),
+            "stroke": np.array([[1.0, 1.0, 1.0, 1.0]]),
+            "stroke_width": 4.0,
+            "joint": "auto",
+            "cap": "auto",
+            "space": "screen",
+            "z_index": 0.0,
+            "shade_in_3d": False,
+        },
+    )
+
+
+def _sent_to_the_core(deltas: list[Delta]) -> list[Delta]:
+    """``deltas`` through Canonical, each applied to a core stream and drawn."""
+    import arachne_core
+
+    snapper = Canonical()
+    core = arachne_core.Stream()
+    sent = []
+    for delta in deltas:
+        found = snapper(delta)
+        core.apply(arachne_core.FrameDelta.from_bytes(found.to_core().to_bytes()))
+        core.draw(192, 108, threads=1, overlay=False)
+        sent.append(found)
+    return sent
+
+
+def _swapping() -> list[Delta]:
+    """Two reveals of two squares, then the reveals swap the squares."""
+    a = Shape("path", np.array(Square(1.5).shift(2 * RIGHT).points))
+    b = Shape("path", np.array(Square(1.0).shift(UP).points))
+    first = Delta(seq=0, view=dict(_FLAT_VIEW), upload=[a, b])
+    first.set = [(0, _revealing(a)), (1, _revealing(b))]
+    return [first, Delta(seq=1, set=[(0, _revealing(b)), (1, _revealing(a))])]
+
+
+def test_two_records_swapping_their_snapped_shapes_keep_both_held():
+    """Two reveals swap the shapes they draw: slot 0 goes from the points of
+    one to the other's, slot 1 back. Each snapped shape is held at the end of
+    the delta as at its start, so it is neither uploaded again nor released,
+    and the core draws the frame.
+    """
+    opened, swapped = _sent_to_the_core(_swapping())
+    assert len(opened.upload) == 4, "two stream shapes and two reveals"
+    assert not swapped.upload, [shape.key.hex()[:8] for shape in swapped.upload]
+    assert not swapped.release, [key.hex()[:8] for key in swapped.release]
+
+
+def test_a_snapped_shape_nothing_holds_after_a_swap_is_released():
+    """After the swap, slot 1 is removed: the reveal only it held is released
+    in that delta, and nothing else is.
+    """
+    opened, _, dropped = _sent_to_the_core([*_swapping(), Delta(seq=2, remove=[1])])
+    # Slot 1 last drew the reveal slot 0 first drew.
+    first_reveal = dict(opened.set)[0].fields["shape"]
+    assert dropped.release == [first_reveal]
