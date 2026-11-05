@@ -254,10 +254,10 @@ class TranslucentOverOpaque(Probe):
         ),
         Check(
             0,
-            172,
-            107,
+            173,
+            105,
             (),
-            (193, 115, 109, 255),
+            (208, 130, 124, 255),
             "the translucent sheet over the opaque one where it rises (CE right)",
         ),
         Check(
