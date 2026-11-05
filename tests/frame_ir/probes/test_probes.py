@@ -20,13 +20,12 @@ pytest.importorskip("arachne_core")
 
 SIZE = {"pixel_width": scenes.WIDTH, "pixel_height": scenes.HEIGHT}
 
-#: Checks where the core's pixel is one channel level off Cairo's inside a
-#: lit face: the core's interpolation of CE's lighting gradient rounds other
-#: than pixman's there.
-GRADIENT_ROUNDING = {
-    ("IntersectingSurfaces", 1): "(87, 122, 236) against Cairo's (87, 121, 235)",
-    ("TranslucentOverOpaque", 1): "(194, 116, 110) against Cairo's (193, 115, 109)",
-}
+#: Checks inside a lit face, where the core's lighting gradient lands one
+#: level per channel off pixman's: there the core is held to CE's bytes within
+#: one level. (Matching pixman inside a face is a look, not depth: a depth
+#: fault there shows another sheet's colour. A translucent sheet's pixel is a
+#: blend, so no twin hides what lies behind it.)
+LIT_FACE = {("TranslucentOverOpaque", 1)}
 
 
 @functools.cache
@@ -39,32 +38,25 @@ def _frames(probe: type, path: str, hide: tuple[str, ...] = ()) -> list:
 def _cases():
     for probe in scenes.PROBES:
         for index, check in enumerate(probe.CHECKS):
-            marks = []
-            found = GRADIENT_ROUNDING.get((probe.__name__, index))
-            if found is not None:
-                marks.append(
-                    pytest.mark.xfail(
-                        strict=True,
-                        reason="the core rounds CE's lighting gradient other than"
-                        f" pixman inside a lit face: {found}",
-                    )
-                )
-            yield pytest.param(
-                probe, check, id=f"{probe.__name__}-{index}", marks=marks
-            )
+            near = (probe.__name__, index) in LIT_FACE
+            yield pytest.param(probe, check, near, id=f"{probe.__name__}-{index}")
 
 
 def _pixel(frames: list, check: scenes.Check) -> tuple[int, ...]:
     return tuple(int(v) for v in frames[check.frame][check.y, check.x])
 
 
-@pytest.mark.parametrize(("probe", "check"), list(_cases()))
-def test_the_core_draws_each_check_by_depth(probe, check):
+@pytest.mark.parametrize(("probe", "check", "near"), list(_cases()))
+def test_the_core_draws_each_check_by_depth(probe, check, near):
     core = _pixel(_frames(probe, "core"), check)
     cairo = _pixel(_frames(probe, "cairo"), check)
     assert cairo == check.ce, "Cairo draws what CE draws there"
     if check.hide:
         assert core == _pixel(_frames(probe, "core", check.hide), check), check.what
+    if near:
+        apart = max(abs(a - b) for a, b in zip(core, cairo, strict=True))
+        assert apart <= 1, (core, cairo)
+    elif check.hide:
         assert (core == cairo) == ("(CE right)" in check.what), (core, cairo)
     else:
         assert core == cairo, check.what

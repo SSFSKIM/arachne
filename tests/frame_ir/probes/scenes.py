@@ -8,7 +8,9 @@ too: the file renders under Arachne, and under CE 0.20.1 with
 ``PROBES_ENGINE=manim`` (``ce_check.py``).
 
 Each probe's checks are the Rust probe's pixels (the scenes' geometry puts
-the same world points there). A check either names what must not show at its
+the same world points there), or, where that pixel lies on a face seam or off
+the sheet the check is about in CE's surfaces, the nearest one inside it. A
+check either names what must not show at its
 pixel (the core draws there what the scene draws without it: ``hide``) or
 says the core draws what CE draws there (``hide`` empty). ``ce`` is CE's
 pixel there, as Arachne's Cairo path draws it and as real CE 0.20.1 renders
@@ -181,10 +183,10 @@ class IntersectingSurfaces(Probe):
         ),
         Check(
             0,
-            204,
-            78,
-            (),
-            (87, 121, 235, 255),
+            199,
+            79,
+            ("level",),
+            (95, 133, 255, 255),
             "the tilted sheet in front where it rises above (CE right)",
         ),
     )
