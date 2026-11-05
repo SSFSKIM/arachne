@@ -310,13 +310,21 @@ class Session:
         gives a play's static picture. Paths map around the centre the render
         froze at its first frame, whatever order frames are asked in
         (:mod:`.timeline.mapping`).
+
+        They are drawn under the configuration the session was opened with,
+        entered once for them all: what the camera reads while it draws (a
+        point cloud's thickness reads the frame's pixel size), and what a
+        restore's callbacks read, are the session's, whatever the process
+        holds then.
         """
-        freeze_mapping_centre(record)
-        with Drawing(record, draw_path=self.draw_path) as drawing:
-            return [
-                _draw(drawing, found, lambda play: static(drawing, play))
-                for found in answers
-            ]
+        source = self._source
+        with tempconfig(source.settings if source is not None else {}):
+            freeze_mapping_centre(record)
+            with Drawing(record, draw_path=self.draw_path) as drawing:
+                return [
+                    _draw(drawing, found, lambda play: static(drawing, play))
+                    for found in answers
+                ]
 
     def answers(
         self,

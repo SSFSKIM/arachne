@@ -18,6 +18,7 @@ from arachne import (
     FadeIn,
     Line,
     Mobject,
+    PointCloudDot,
     Scene,
     Square,
     Succession,
@@ -228,6 +229,22 @@ class FramePeriodic(Scene):
         dot = Dot(color=BLUE).add_updater(lambda m: m.set_y(2 * (self.time * 15 % 1)))
         self.add(dot)
         self.play(FadeIn(Circle(radius=0.3).shift(RIGHT * 3)), run_time=1)
+
+
+class CloudPlays(Scene):
+    """A point cloud an updater places from a tracker the first play
+    animates, then moved by the second play's own animation: a camera draws
+    a cloud's points at a thickness read from the configured frame size.
+    """
+
+    def construct(self):
+        tracker = ValueTracker(0)
+        cloud = PointCloudDot(radius=1, stroke_width=4, density=6)
+        cloud.add_updater(lambda m: m.move_to(RIGHT * tracker.get_value()))
+        self.add(cloud)
+        self.play(tracker.animate.set_value(2), run_time=1, rate_func=linear)
+        cloud.clear_updaters()
+        self.play(cloud.animate.shift(UP), run_time=1, rate_func=linear)
 
 
 class DrivenSquare(Scene):

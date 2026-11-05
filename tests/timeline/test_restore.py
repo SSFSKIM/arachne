@@ -512,12 +512,13 @@ def test_a_restored_frame_shows_a_static_mobject_where_its_driver_put_it(
     it moves it: a restored frame draws it at its state at the instant, as
     the forward run's frame there does with the static layer on or off.
     """
-    session = session_of("DrivenSquare", RESTORE_SCENES, frame_rate=15)
+    layer = {"static_layer": static_layer}
+    session = session_of("DrivenSquare", RESTORE_SCENES, frame_rate=15, **layer)
     (play,) = _state_plays(session)
     assert play.static
     instants = _unsampled(play)
     oracle = session_of(
-        "DrivenSquare", RESTORE_SCENES, frame_rate=15, instants=instants
+        "DrivenSquare", RESTORE_SCENES, frame_rate=15, instants=instants, **layer
     )
 
     def square_x(state) -> float:
@@ -525,13 +526,47 @@ def test_a_restored_frame_shows_a_static_mobject_where_its_driver_put_it(
         return square.box[0]
 
     start = square_x(session.state_at(play.start))
-    with tempconfig({"static_layer": static_layer}):
-        for t in instants:
-            state = session.state_at(t)
-            assert state.answer == "restored", t
-            assert square_x(state) > start, t
-            expected = np.asarray(oracle.frame(t))
-            assert np.array_equal(np.asarray(session.frame(t)), expected), t
+    for t in instants:
+        state = session.state_at(t)
+        assert state.answer == "restored", t
+        assert square_x(state) > start, t
+        expected = np.asarray(oracle.frame(t))
+        assert np.array_equal(np.asarray(session.frame(t)), expected), t
+
+
+@pytest.mark.parametrize("draw_path", ["cairo", "ir_cairo"])
+def test_a_session_s_frames_do_not_depend_on_the_process_s_configuration(
+    session_of, draw_path
+):
+    """A camera draws a point cloud at a thickness it reads from the
+    configured frame size: a session's frames, recorded, restored and
+    analytic, are drawn under the configuration it was opened with,
+    whatever the process holds then.
+    """
+    if draw_path == "ir_cairo":
+        pytest.importorskip("arachne_core")
+    session = session_of(
+        "CloudPlays",
+        RESTORE_SCENES,
+        frame_rate=15,
+        pixel_width=160,
+        pixel_height=90,
+        draw_path=draw_path,
+    )
+    driven, moved = session.record.plays
+    assert (driven.route, moved.route) == ("state", "trusted")
+    asked = {
+        "recorded": driven.start,
+        "restored": _unsampled(driven)[0],
+        "analytic": _unsampled(moved)[0],
+    }
+    for kind, t in asked.items():
+        assert session.state_at(t).answer == kind, t
+        drawn = []
+        for size in ((1920, 1080), (160, 90)):
+            with tempconfig({"pixel_width": size[0], "pixel_height": size[1]}):
+                drawn.append(np.asarray(session.frame(t)))
+        assert np.array_equal(*drawn), kind
 
 
 def test_a_restored_frame_on_a_described_path_is_drawn_from_its_description(
