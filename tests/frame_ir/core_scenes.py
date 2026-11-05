@@ -81,3 +81,24 @@ class ShadedSolids(ThreeDScene):
         ).shift([1.6, 0, 0])
         self.add(prism, surface)
         self.move_camera(theta=-30 * DEGREES, run_time=0.4)
+
+
+class LiveSolids(ThreeDScene):
+    """A surface and a square whose stroke width is the scene's own code
+    (``scenes.WideStroke``), under a short orbit: drawn as the scene runs
+    (``LiveFrames``), through the engine's camera.
+    """
+
+    def construct(self):
+        from .scenes import WideStroke
+
+        self.set_camera_orientation(phi=60 * DEGREES, theta=-50 * DEGREES)
+        surface = Surface(
+            lambda u, v: np.array([u, v, 0.15 * np.sin(u) * np.cos(v)]),
+            u_range=[-1.5, 1.5],
+            v_range=[-1.5, 1.5],
+            resolution=(6, 6),
+            checkerboard_colors=[BLUE, GREEN],
+        )
+        self.add(surface, WideStroke(color=YELLOW).shift([0, 0, 0.5]))
+        self.move_camera(theta=-30 * DEGREES, run_time=0.4)

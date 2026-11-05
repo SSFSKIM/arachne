@@ -25,7 +25,7 @@ import pytest
 from arachne.frame_ir import painter
 from arachne.frame_ir.core_painter import CorePainter
 from arachne.frame_ir.extract import Unable
-from arachne.frame_ir.live import LivePainter
+from arachne.frame_ir.live import LivePainter, live_painter
 
 from ..timeline.conftest import render
 from . import camera_scenes, core_scenes
@@ -180,6 +180,27 @@ def test_a_watched_camera_that_changes_nothing_has_every_frame_from_the_core(
     assert len(core) == len(unhedged)
     for index, (a, b) in enumerate(zip(core, unhedged, strict=True)):
         np.testing.assert_array_equal(a, b, err_msg=f"frame {index}")
+
+
+def test_an_engine_camera_drawn_live_on_the_core_draws_its_first_frame_there():
+    """The first frame's hedge is a changed camera's alone: an engine camera
+    drawn as the scene runs, whose code nothing watches, has every frame
+    from the core, the first too, and holds no hedged state.
+    """
+    scene_class = core_scenes.LiveSolids
+    _, cairo = render(scene_class, FPS, **MEDIUM)
+    before = CorePainter.drawn_total
+    scene, core = render(scene_class, FPS, draw_path="core", **MEDIUM)
+    camera = scene.renderer.camera  # type: ignore[attr-defined]
+    found = live_painter(camera)
+    assert found is not None
+    assert found.captures > 0, "drawn as the scene runs"
+    assert len(core) == len(cairo) > 0
+    assert CorePainter.drawn_total > before, "drawn on the core"
+    assert np.any(core[0] != cairo[0]), "the first frame is the core's, not Cairo's"
+    assert not found._hedged(camera)
+    assert not found._chain
+    assert not found._statics
 
 
 def test_a_rebinding_first_seen_in_a_later_play_is_unable():
