@@ -207,3 +207,41 @@ class CountedArmedScene(Scene):
         self.play(FadeOut(note))
         self.remove(caption)
         self.wait(0.5)
+
+
+class GeneratorExempted(Scene):
+    """A word across a line for 1.6 s; the arming excuses it through a
+    one-shot generator.
+    """
+
+    #: Whether the script removes the word after it settled.
+    removed = False
+
+    def construct(self):
+        rail = Line(LEFT * 4, RIGHT * 4)
+        note = Text("note", font_size=36).move_to(rail.get_center())
+        arm(exempt=(mob for mob in [note]))
+        self.add(rail, note)
+        self.wait(1.6)
+        if self.removed:
+            self.remove(note)
+            self.wait(0.5)
+
+
+class GeneratorExemptedThenRemoved(GeneratorExempted):
+    """...then removed by the script."""
+
+    removed = True
+
+
+class ListExemptedThenRemoved(Scene):
+    """The same word excused by a list, then removed."""
+
+    def construct(self):
+        rail = Line(LEFT * 4, RIGHT * 4)
+        note = Text("note", font_size=36).move_to(rail.get_center())
+        arm(exempt=[note])
+        self.add(rail, note)
+        self.wait(1.6)
+        self.remove(note)
+        self.wait(0.5)

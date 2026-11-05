@@ -250,6 +250,24 @@ def test_the_watch_starts_where_it_was_armed(run, session_of):
     assert _found(late) == []
 
 
+def test_a_watch_armed_inside_a_play_watches_the_rest_of_it(session_of):
+    # The caption stays clipped through the frozen two-second wait from 1 s
+    # to 3 s: armed a quarter of the way in, the watch holds it from there.
+    session = session_of("CaptionParkedAtEdge", SCENES, frame_rate=15)
+    [whole] = _found(lint(session, rules=(hold_watch.where(),)))
+    [late] = _found(lint(session, rules=(hold_watch.where(since=1.25),)))
+    assert (late.code, late.held) == ("clip.frame_edge", True)
+    assert late.t_start == Fraction(5, 4)
+    assert late.t_end == whole.t_end
+    assert [o.id for o in late.objects] == [o.id for o in whole.objects]
+
+
+@pytest.mark.parametrize("rate", [0, -1, -0.5])
+def test_a_sampling_rate_must_be_positive(rate):
+    with pytest.raises(ValueError, match="sample_fps"):
+        hold_watch.where(sample_fps=rate)
+
+
 # Departures -----------------------------------------------------------------
 
 
@@ -370,6 +388,14 @@ ARMED_CE = {
     "ExemptionGrowsAfterTheDeparture": [
         ("clip.frame_edge", True, {"Text"}, (0.0, 2.3)),
     ],
+    # A one-shot generator is read once, as the arming declares it: the
+    # declaration the hold watch is held to keeps its entries, while the
+    # value the arming was handed, read again at the departure, is spent.
+    "GeneratorExempted": [],
+    "GeneratorExemptedThenRemoved": [
+        ("overlap.text", False, {"Line", "Text"}, (1.6, 1.6)),
+    ],
+    "ListExemptedThenRemoved": [],
 }
 
 

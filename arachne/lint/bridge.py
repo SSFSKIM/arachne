@@ -654,13 +654,15 @@ def _declaring(
     ``seen`` holds, by key, every entry it has held, read as it stands
     (:func:`armed_entries`). All are read at the call and again whenever a
     kept capture finds them changed, and can be read while the scene runs
-    (:meth:`.Bridge.read_now`).
+    (:meth:`.Bridge.read_now`). The value is iterated once at the call: a
+    one-shot iterable (a generator) gives up its entries there, to the terms
+    and ``hold``, and holds none when read again.
     """
-    kept = {**_terms(terms), **extra}
     reader = None
     if "exempt" in terms:
         named = terms["exempt"]
         entries = _entries(named)
+        terms = {**terms, "exempt": entries}
         seen: dict[Any, Any] = {}
 
         def reader() -> Mapping[str, Any]:
@@ -675,6 +677,7 @@ def _declaring(
                 "seen": {k: Exemptions.parse([e]) for k, e in seen.items()},
             }
 
+    kept = {**_terms(terms), **extra}
     call = recorder.bridge_call(
         kind, caller, terms=kept, reader=reader, changes_only=True
     )
