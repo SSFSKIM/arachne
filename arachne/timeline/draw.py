@@ -642,6 +642,7 @@ class Drawing:
         static: PixelArray | None,
         *,
         prepare: Callable[[Drawing], None] | None = None,
+        instant: Fraction | None = None,
     ) -> PixelArray:
         """The frame at ``capture``: its static mobjects, then the play's
         moving mobjects there over them, or the whole scene when nothing
@@ -649,11 +650,12 @@ class Drawing:
         which stands for the static mobjects while they and the camera's
         inputs are unchanged since the play began. ``prepare`` runs once the
         capture is shown (a trusted play's evaluation at an instant between
-        captures).
+        captures); ``instant`` is the instant the frame shows then, which a
+        described frame is labelled with (by default the capture's).
         """
         targets = list(capture.moving) or capture.draw_list()
         if self.painter is not None:
-            return self._paint(play, capture, targets, prepare)
+            return self._paint(play, capture, targets, prepare, instant)
         if self.static_layer and self._picture_holds(play, capture):
             self.show(capture, targets)
             if prepare is not None:
@@ -668,20 +670,26 @@ class Drawing:
         return self.camera.pixel_array.copy()
 
     def restored(
-        self, play: PlayRecord, capture: Capture, prepare: Callable[[Drawing], None]
+        self,
+        play: PlayRecord,
+        capture: Capture,
+        prepare: Callable[[Drawing], None],
+        instant: Fraction,
     ) -> PixelArray:
-        """The frame of an instant ``prepare`` restores from ``capture``, on a
-        draw path that describes frames: described whole and drawn by a
-        painter of its own, made for it and discarded after. What a restore
-        builds, and the state it reaches, belong to no other frame, so none
-        of it is kept in the record's stream, and the frames drawn after are
-        described as though it had not been drawn.
+        """The frame at ``instant``, which ``prepare`` restores from
+        ``capture``, on a draw path that describes frames: described whole
+        and drawn by a painter of its own, made for it and discarded after.
+        What a restore builds, and the state it reaches, belong to no other
+        frame, so none of it is kept in the record's stream, and the frames
+        drawn after are described as though it had not been drawn.
         """
         from arachne.frame_ir.painter import IrCairoPainter
 
         assert self.painter is not None
         targets = list(capture.moving) or capture.draw_list()
-        return self._paint(play, capture, targets, prepare, IrCairoPainter())
+        return self._paint(
+            play, capture, targets, prepare, instant, painter=IrCairoPainter()
+        )
 
     def _paint(
         self,
@@ -689,11 +697,14 @@ class Drawing:
         capture: Capture,
         targets: list[Mobject],
         prepare: Callable[[Drawing], None] | None,
+        instant: Fraction | None = None,
+        *,
         painter: Any = None,
     ) -> PixelArray:
-        """The frame at ``capture`` from the painter (``painter``, else the
-        drawing's): its static list rebuilt at the frame's state, then the
-        moving list, each as one capture of the camera would draw it.
+        """The frame at ``instant`` (by default the capture's) from the
+        painter (``painter``, else the drawing's): its static list rebuilt at
+        the frame's state, then the moving list, each as one capture of the
+        camera would draw it.
         """
         if painter is None:
             painter = self.painter
@@ -711,7 +722,7 @@ class Drawing:
         pixels = painter.paint(
             camera,
             [("static", listed), ("moving", targets)],
-            t=capture.instant,
+            t=capture.instant if instant is None else instant,
             terms=terms,
         )
         self._painted_by = painter
