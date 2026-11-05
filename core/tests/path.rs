@@ -984,25 +984,10 @@ fn what_paths_and_points_do_not_draw_yet_is_refused_whole() {
         r.paint.stroke_width = 4.0;
         r
     };
+    // A path's blend, reveal and paint blend draw (tests/stream.rs); a points record's reveal is
+    // refused below.
     type Change = fn(&mut Record, Key);
-    let cases: [(&str, Change); 10] = [
-        ("blend", |r, k| {
-            r.geometry.blend = Some(Blend {
-                shape_b: k,
-                place_b: shift(0.0, 0.0, 0.0),
-                t: 0.5,
-            })
-        }),
-        ("reveal", |r, _| r.geometry.reveal = Some((0.0, 0.5))),
-        ("paint blend", |r, _| {
-            r.paint.paint_b = Some(PaintB {
-                fill: Paint::One(WHITE),
-                stroke: Paint::None,
-                background_stroke: Paint::None,
-                stroke_width: 0.0,
-                background_stroke_width: 0.0,
-            })
-        }),
+    let cases: [(&str, Change); 7] = [
         ("clip", |r, k| r.clip = Some((k, shift(0.0, 0.0, 0.0)))),
         ("gradient", |r, _| {
             r.paint.stroke = Paint::Two([WHITE, [0.0, 0.0, 0.0, 1.0]])
