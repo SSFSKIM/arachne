@@ -221,14 +221,16 @@ class StronglyZoomed(core_scenes.ZoomedFrameMoves):
     ids=["recorded", "live", "zoomed"],
 )
 def test_what_the_core_is_handed_carries_its_grid_and_planes(scene_class, monkeypatch):
-    """Every delta the core is handed states its input grid, and every record
-    that draws paths carries how they lie: a stream that lost either would
-    have the core decide flatness from snapped points. The grid is fine
-    enough for every camera that sees the geometry: a step is at most 1/256
-    of the pixel of the scene's camera and of each display's.
+    """Every delta the core is handed states its input grid, every record that
+    draws paths carries how they lie, and every record the camera shades the
+    normals it is lit by: a stream that lost any would have the core decide
+    them from snapped points. The grid is fine enough for every camera that
+    sees the geometry: a step is at most 1/256 of the pixel of the scene's
+    camera and of each display's.
     """
     call = Canonical.__call__
     steps: list[float] = []
+    shaded: list[int] = []
 
     def checking(self, delta):
         found = call(self, delta)
@@ -240,6 +242,11 @@ def test_what_the_core_is_handed_carries_its_grid_and_planes(scene_class, monkey
         for slot, record in found.set:
             if record.kind in ("path", "face_group") and record.fields.get("shape"):
                 assert "planes" in record.fields, f"slot {slot}: {record.kind}"
+                if record.fields.get("shade_in_3d") and self._view.get(
+                    "should_apply_shading"
+                ):
+                    assert "normals" in record.fields, f"slot {slot}: {record.kind}"
+                    shaded.append(slot)
             if record.fields.get("sub_frame") is not None:
                 assert record.fields["sub_frame"][1]["input_grid"] == self.grid
         views += [
@@ -256,6 +263,8 @@ def test_what_the_core_is_handed_carries_its_grid_and_planes(scene_class, monkey
     render(scene_class, FPS, draw_path="core", **MEDIUM)
     assert steps
     assert max(steps) <= 1 / 256
+    # The parallel lines are shaded: their normals were checked, not passed by.
+    assert shaded or scene_class is not ParallelLines
 
 
 class LineAcrossTheFrame(ThreeDScene):

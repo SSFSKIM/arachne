@@ -11,7 +11,7 @@ meaning and the binary form (`src/xf/wire.rs`), which fixtures and dumped stream
 The version is (major, minor). This build is **XF 1.2**. From here the layout is append-only:
 a new field or kind bumps the minor, and nothing removes or retypes a field. A writer emits the
 lowest supported version that carries a delta's content: **1.0 without a pre-projected tail, 1.1
-with one, 1.2 with an input grid (on the view or a sub-frame's view) or a record's planes**. A file's version is the highest version its deltas need (1.0 for an empty file).
+with one, 1.2 with an input grid (on the view or a sub-frame's view) or a record's planes or normals**. A file's version is the highest version its deltas need (1.0 for an empty file).
 Explicit foreign or newer version declarations are retained, since this writer cannot determine
 what their content requires. `XF_VERSION` names the build's supported version, not every delta's.
 
@@ -59,8 +59,21 @@ centroid), 4, 5, 6 the axis plane x, y or z through the first point (points on a
 that coordinate). The drawer fits the decided plane to the points it is handed. A record without
 `planes` is decided by the drawer from its points, as before XF 1.2: right for geometry that was
 not snapped. The binding's `Stream.planes(slots)` gives the codes for records a stream holds,
-decided as the drawer decides them, for a writer to carry. An XF 1.1 reader skips both fields
-under its newer-minor rule.
+decided as the drawer decides them, for a writer to carry.
+
+The same holds for what CE's lighting derives from nearby points. A record the camera shades
+(`shade_in_3d` under a camera that shades) is lit at two corners of each path it draws, by CE's
+normal there: a cross product of the chords to the points three on and three back, which on a
+finely sampled curve are nearly opposite, so the snap's step turns it by tens of degrees. The
+writer decides those normals on the values as made and carries them as the record's `normals`:
+two per path, in the order of `planes`. A corner is degenerate when a point its normal is found
+from lies off it by more than nothing and less than one grid step in every coordinate (a sphere's
+pole, whose points `cos(pi / 2)` leaves about 1e-16 apart): CE's normal there is the direction of
+float noise, so the writer carries the zero vector and the drawer lights that corner by the face's
+Newell normal over the points it is handed (where that cancels too, CE's normal from them). A
+neighbour exactly on the corner keeps CE's rule for a zero vector. Without `normals` the drawer
+finds them from its points, as before XF 1.2. `Stream.normals(slots, grid)` gives them for records
+a stream holds. An XF 1.1 reader skips these fields under its newer-minor rule.
 
 This build draws the background (a colour, or an image cropped to the frame as CE crops it); `mesh`
 records filled with one colour; `path` records, their paints one colour or a linear gradient between
@@ -302,8 +315,10 @@ record    u8 kind  u64 features  u32 slot  u32 object
             key points
             [f64 x6 gradient]?
             paint fill  paint stroke  paint background
-          planes (XF 1.2), after the body and tail, when the record carries them:
+          planes and normals (XF 1.2), after the body and tail, both when the record carries
+          either (an empty list: not carried):
             count u8*   (one planarity code per path the record draws)
+            count (f64 x3)*   (two normals per path the record draws)
           (anything after the known fields belongs to a newer minor and is skipped)
 paint     u8 0 (none) | u8 1  f64 x4 | u8 2  f64 x8 | u8 3  key
 view      u32 pixel_width  u32 pixel_height  f64 frame_width  f64 frame_height
@@ -345,8 +360,10 @@ stops, or a table key). `points` is required. Passing bit 1 without `pre_project
 
 XF 1.2: `set_view(..., input_grid=g)` states the grid the geometry was snapped to (omitted or 0:
 not snapped, and the field is not written); `set_record(..., planes=[codes])` carries the record's
-planarity codes. `Stream.planes(slots)` returns, for each slot holding a record that draws paths,
-the list of codes the drawer decides from the points the stream holds.
+planarity codes, and `normals=[(x, y, z), ...]` its lit corners' normals. `Stream.planes(slots)`
+returns, for each slot holding a record that draws paths, the list of codes the drawer decides from
+the points the stream holds; `Stream.normals(slots, grid)`, for each slot holding a record the
+camera shades, its normals decided for points snapped to `grid`.
 
 ## Python read-back
 
@@ -367,7 +384,8 @@ or `None`), `objects` (a list of `(ref, stable_id, source)` tuples), `upload`, `
 - Each record is `(kind_name, slot, object, fields)`. For a known kind, `fields` uses
   `set_record`'s keyword names, including the body's arguments. `features` always contains the
   full bitset; when `fill_image` is present its bit is already set, and `set_record` accepts it
-  unchanged. Absent optional fields are omitted (`planes`, when present, is a tuple of codes); paints are `None`, float64 `(1, 4)` or `(2, 4)`
+  unchanged. Absent optional fields are omitted (`planes`, when present, is a tuple of codes, `normals` a
+  tuple of `(x, y, z)` tuples); paints are `None`, float64 `(1, 4)` or `(2, 4)`
   arrays, or table key bytes. `paint_b`, when present, is a dictionary of its paint and width
   arguments. `joint`, `cap` and `space` are names. `place` and clip/blend placements are float64
   `(3, 4)` arrays, `placements` is float64 `(n, 3, 4)`, `corners` is float64 `(4, 3)`, `uv` is

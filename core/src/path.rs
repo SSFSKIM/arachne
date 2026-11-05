@@ -101,6 +101,16 @@ pub struct PathDraw<'a> {
 }
 
 impl PathDraw<'_> {
+    /// The normals its lit corners are lit by, as its record's writer decided before the snap, if
+    /// it did.
+    fn decided_normals(&self) -> Option<[[f64; 3]; 2]> {
+        let normals = self.record.normals.as_ref()?;
+        Some([
+            *normals.get(2 * self.which)?,
+            *normals.get(2 * self.which + 1)?,
+        ])
+    }
+
     /// How the path lies, as its record's writer decided before the snap, if it did.
     fn decided(&self) -> Option<Planarity> {
         let code = *self.record.planes.as_ref()?.get(self.which)?;
@@ -703,6 +713,18 @@ impl<'v> Lowering<'v> {
         }
     }
 
+    /// The normals `draw`'s lit corners are lit by, decided from its points as a writer that snaps
+    /// them to `grid` carries them ([`crate::shade::decided_normals`]); `None` for a path CE's
+    /// lighting does not shade (not `shade_in_3d`, a camera that does not shade, or pre-projected).
+    pub fn normals(&self, draw: &PathDraw<'_>, grid: f64) -> Option<[[f64; 3]; 2]> {
+        let shades = matches!(&self.view.camera, Camera::ThreeD(c) if c.should_apply_shading);
+        if draw.pre_projected || !shades || !draw.record.depth.shade_in_3d {
+            return None;
+        }
+        let world: Vec<[f64; 3]> = draw.points.iter().map(|p| place(&draw.place, *p)).collect();
+        Some(crate::shade::decided_normals(&world, grid))
+    }
+
     /// The points `draw`'s depth is keyed from, and whether they are placed in the world by the
     /// 3D camera's projection (not fixed in frame, fixed in orientation, or pre-projected);
     /// `None` for a path [`Lowering::path`] does not draw or keys whole.
@@ -853,7 +875,12 @@ impl<'v> Lowering<'v> {
         ] {
             let Some(rows) = paint else { continue };
             let rows = match lit {
-                Some(light) => crate::shade::ce_face_stops(&world, rows, light).to_vec(),
+                Some(light) => match draw.decided_normals() {
+                    Some(normals) => {
+                        crate::shade::ce_face_stops_decided(&world, rows, light, normals).to_vec()
+                    }
+                    None => crate::shade::ce_face_stops(&world, rows, light).to_vec(),
+                },
                 None => rows.clone(),
             };
             let spec = match (rows.as_slice(), ends) {
