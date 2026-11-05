@@ -41,23 +41,37 @@ pub fn one(paint: &Paint) -> Option<[f64; 4]> {
     }
 }
 
+/// A paint's colour rows: one colour, two stops, or a table's rows (found by `table`); `None`
+/// for no paint.
+pub fn rows<'a>(paint: &Paint, table: impl Fn(&Key) -> &'a Stops) -> Option<Vec<[f64; 4]>> {
+    match paint {
+        Paint::None => None,
+        Paint::One(c) => Some(vec![*c]),
+        Paint::Two(cs) => Some(cs.to_vec()),
+        Paint::Table(key) => Some(table(key).rows().to_vec()),
+    }
+}
+
 /// The path a `path` record draws: `points` placed by `place` (the shape and the record's
 /// placement, or what a reveal or a blend made of it, placed already), painted by `paint` (the
-/// record's paint, or a paint blend's mix: [`crate::geometry::drawn_paint`]).
-pub fn path_record<'a>(
+/// record's paint, or a paint blend's mix: [`crate::geometry::drawn_paint`]), its tables found by
+/// `table`.
+pub fn path_record<'a, 't>(
     record: &'a Record,
     points: Cow<'a, [[f64; 3]]>,
     place: Affine,
     paint: &PaintBlock,
+    table: impl Fn(&Key) -> &'t Stops + Copy,
     order: u32,
 ) -> PathDraw<'a> {
     PathDraw {
         record,
         points,
         place,
-        fill: one(&paint.fill),
-        stroke: one(&paint.stroke),
-        background_stroke: one(&paint.background_stroke),
+        fill: rows(&paint.fill, table),
+        stroke: rows(&paint.stroke, table),
+        background_stroke: rows(&paint.background_stroke, table),
+        ends: paint.gradient,
         stroke_width: paint.stroke_width,
         background_stroke_width: paint.background_stroke_width,
         order,
@@ -81,9 +95,10 @@ pub fn path_members<'a>(
             record,
             points: Cow::Borrowed(points),
             place: compose(placement, &record.geometry.place_a),
-            fill: one(&p.fill).map(|_| fill.rows()[i]),
-            stroke: one(&p.stroke).map(|_| stroke.rows()[i]),
-            background_stroke: one(&p.background_stroke),
+            fill: one(&p.fill).map(|_| vec![fill.rows()[i]]),
+            stroke: one(&p.stroke).map(|_| vec![stroke.rows()[i]]),
+            background_stroke: one(&p.background_stroke).map(|c| vec![c]),
+            ends: None,
             stroke_width: p.stroke_width,
             background_stroke_width: p.background_stroke_width,
             order,
