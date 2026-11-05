@@ -136,6 +136,43 @@ def test_a_camera_that_sets_such_state_as_it_draws_falls_back_whole(findings):
     assert any("rgb_max_val" in f.message for f in _fallbacks(findings))
 
 
+def test_a_constructor_that_clips_the_camera_s_cairo_context_draws_on_cairo(
+    findings,
+):
+    """A camera class of the scene's own whose constructor clips the Cairo
+    context it keeps for its array: CE draws every path through it clipped,
+    which XF does not carry. The census reads the context's state, and the
+    whole scene is drawn on Cairo, with one finding naming it.
+    """
+    _, direct = render(camera_scenes.ClippedSolids, FPS, **MEDIUM)
+    before = CorePainter.drawn_total
+    _, core = render(camera_scenes.ClippedSolids, FPS, draw_path="core", **MEDIUM)
+    assert CorePainter.drawn_total == before, "no frame drawn on the core"
+    assert len(direct) == len(core) > 0
+    for index, (a, b) in enumerate(zip(direct, core, strict=True)):
+        np.testing.assert_array_equal(a, b, err_msg=f"frame {index}")
+    [finding] = _fallbacks(findings)
+    assert "whole scene" in finding.message
+    assert "clip" in finding.message
+
+
+def test_a_scene_that_fell_back_stays_on_its_camera_s_own_draw(findings):
+    """The scene fell back to its camera's own draw in its first frame; its
+    projection is then put back to the engine's, and it plays again. A
+    scene's frames are drawn by one painter: the later play is the camera's
+    own draw too, as on Cairo.
+    """
+    _, direct = render(camera_scenes.UnpatchedAfterAFallback, FPS, **MEDIUM)
+    _, core = render(
+        camera_scenes.UnpatchedAfterAFallback, FPS, draw_path="core", **MEDIUM
+    )
+    assert len(direct) == len(core) > 0
+    for index, (a, b) in enumerate(zip(direct, core, strict=True)):
+        np.testing.assert_array_equal(a, b, err_msg=f"frame {index}")
+    [finding] = _fallbacks(findings)
+    assert "whole scene" in finding.message
+
+
 class _Refusing:
     """A core stream that refuses every frame, as the core refuses a record
     it does not draw.
@@ -218,25 +255,69 @@ def test_frames_delivered_from_cairo_after_a_fallback_are_told_from_the_core_s(
     findings,
 ):
     """The core drew a description in that scene (its static picture's) and
-    then fell back: what tells a unit's frames as the core's is the pixels
-    delivered, not that the core drew. A scene drawn on the core has every
-    delivered frame from it.
+    then fell back: each frame delivered is tagged with the painter that drew
+    it, so a unit's frames are told as the core's by what drew them, not by
+    whether the core drew. A scene drawn on the core has every delivered
+    frame from it.
     """
     before = CorePainter.drawn_total
-    with CorePainter.keeping_frames() as drew:
+    with painter.deliveries() as painters:
         _, fallen = render(
             camera_scenes.MovingStateSolids, FPS, draw_path="core", **MEDIUM
         )
     assert CorePainter.drawn_total > before, "the core drew a description"
     assert _fallbacks(findings)
     assert fallen
-    assert not any(drew(frame) for frame in fallen)
-    with CorePainter.keeping_frames() as drew:
+    assert painters
+    assert set(painters) == {"cairo"}
+    with painter.deliveries() as painters:
         _, core = render(
             core_scenes.FixedLabelOverSquare, FPS, draw_path="core", **MEDIUM
         )
     assert core
-    assert all(drew(frame) for frame in core)
+    assert painters
+    assert set(painters) == {"core"}
+
+
+def test_a_fallback_drawing_the_pixels_the_core_drew_is_told_from_the_core(
+    findings,
+):
+    """Every mobject of the scene lies outside the frame: the core described
+    its static picture, the background alone, before the scene fell back,
+    and every frame delivered after is the background too. What the core
+    drew and what was delivered have the same pixels; the frames are still
+    told as Cairo's, by the painter each was delivered by.
+    """
+    before = CorePainter.drawn_total
+    with painter.deliveries() as painters:
+        _, fallen = render(
+            camera_scenes.UnseenFallback, FPS, draw_path="core", **MEDIUM
+        )
+    assert CorePainter.drawn_total > before, "the core drew a description"
+    assert _fallbacks(findings)
+    assert fallen
+    assert painters
+    assert set(painters) == {"cairo"}
+
+
+def test_a_frame_from_another_painter_than_the_scene_s_frames_before_is_unable():
+    """One movie, one painter, checked where frames are delivered: a frame
+    drawn by another painter than the scene's frames before is
+    ``render.unable``, naming both. ``cairo`` and ``ir_cairo`` are one
+    painter (Cairo draws every pixel of both).
+    """
+
+    class Camera:
+        pass
+
+    camera = Camera()
+    painter.deliver(camera, "core", "core")
+    painter.deliver(camera, "core", "core")
+    with pytest.raises(Unable, match="drawn by cairo after .* drawn by core"):
+        painter.deliver(camera, "core", "cairo")
+    other = Camera()
+    painter.deliver(other, "ir_cairo", painter.painter_kind("ir_cairo"))
+    painter.deliver(other, "ir_cairo", painter.painter_kind("cairo"))
 
 
 def test_a_watched_camera_that_changes_nothing_has_every_frame_from_the_core(

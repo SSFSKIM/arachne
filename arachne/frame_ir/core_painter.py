@@ -13,13 +13,11 @@ rounds.
 
 from __future__ import annotations
 
-__all__ = ["CorePainter", "frame_digest"]
+__all__ = ["CorePainter"]
 
-import contextlib
-import hashlib
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from fractions import Fraction
-from typing import Any, ClassVar
+from typing import Any
 
 import numpy as np
 
@@ -41,9 +39,6 @@ class CorePainter:
     keep_all = False
     #: Frames drawn by the core in this process.
     drawn_total = 0
-    #: The digests of the frames the core drew in this process, while
-    #: :meth:`keeping_frames` keeps them.
-    _kept: ClassVar[set[str] | None] = None
     #: Whether the overlay's runs the camera draws through its context are
     #: made again from the frame before's calls where they are the same
     #: (:mod:`.replay`).
@@ -125,25 +120,7 @@ class CorePainter:
         if overlay:
             self.overlaid += 1
             self.drawer.draw_over(self.state, frame, overlay, self.replays)
-        if CorePainter._kept is not None:
-            CorePainter._kept.add(frame_digest(frame))
         return frame
-
-    @classmethod
-    @contextlib.contextmanager
-    def keeping_frames(cls) -> Iterator[Callable[[np.ndarray], bool]]:
-        """Within: every frame the core draws in this process is kept by its
-        digest. Yields whether a frame's pixels are a frame the core drew: a
-        delivered frame is the core's only so (the core may have drawn a
-        description that a fallback then replaced with the camera's own draw).
-        """
-        held = cls._kept
-        kept: set[str] = set()
-        cls._kept = kept
-        try:
-            yield lambda frame: frame_digest(frame) in kept
-        finally:
-            cls._kept = held
 
     def settle(self) -> None:
         """Leave each display's camera of the last frame holding the picture
@@ -155,8 +132,3 @@ class CorePainter:
             camera.pixel_array = self.drawer.capture(
                 self.state, view, order, camera.background
             )
-
-
-def frame_digest(frame: Any) -> str:
-    """The sha256 of a frame's pixels."""
-    return hashlib.sha256(memoryview(np.ascontiguousarray(frame)).tobytes()).hexdigest()

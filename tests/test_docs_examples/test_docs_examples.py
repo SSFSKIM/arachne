@@ -181,15 +181,12 @@ def test_docs_example(example: DocsExample, request, tmp_path: Path) -> None:
 @pytest.mark.parametrize("example", CORE_EXAMPLES, ids=lambda example: example.name)
 def test_docs_example_on_core(example: DocsExample, request, tmp_path: Path) -> None:
     pytest.importorskip("arachne_core")
-    from arachne.frame_ir.core_painter import CorePainter
+    from arachne.frame_ir.painter import deliveries
 
-    with CorePainter.keeping_frames() as drew:
+    with deliveries() as painters:
         writer = render(example, tmp_path, draw_path="core")
-    delivered = [pixels for pixels, _ in writer.frames]
-    if writer.still is not None:
-        delivered.append(writer.still)
-    assert delivered, f"{example.name} delivered no frame"
-    not_core = [index for index, pixels in enumerate(delivered) if not drew(pixels)]
+    assert painters, f"{example.name} delivered no frame"
+    not_core = [index for index, painter in enumerate(painters) if painter != "core"]
     assert not not_core, (
         f"frames {not_core} of {example.name} were not drawn by the core"
     )

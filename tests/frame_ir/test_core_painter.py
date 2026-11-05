@@ -118,6 +118,57 @@ def test_a_live_frame_tests_depth_across_its_static_and_moving_captures():
         np.testing.assert_array_equal(a, b, err_msg=f"frame {index}")
 
 
+@pytest.mark.parametrize(
+    "scene_class",
+    [
+        core_scenes.BlackSquareOverStroke,
+        core_scenes.TranslucentSquareOverStroke,
+        core_scenes.OutlineOverStroke,
+        core_scenes.SquareOffFrameOverStroke,
+    ],
+    ids=lambda c: c.__name__,
+)
+def test_a_live_frame_tests_depth_across_its_captures_whatever_they_drew(
+    scene_class,
+):
+    """Whether a live frame's captures are depth tested together is decided
+    by what they are, not by what their pixels show: an occluder in the
+    background's colour, a translucent one, one of stroke alone and one off
+    the frame give the same frames, byte for byte, drawn as the scene runs
+    and from the record.
+    """
+    _, recorded = render(scene_class, FPS, draw_path="core", **MEDIUM)
+    live_class = type(
+        f"Live{scene_class.__name__}", (scene_class,), {"line": core_scenes.OwnLine}
+    )
+    _, live = render(live_class, FPS, draw_path="core", **MEDIUM)
+    assert len(live) == len(recorded) > 0
+    for index, (a, b) in enumerate(zip(live, recorded, strict=True)):
+        np.testing.assert_array_equal(a, b, err_msg=f"frame {index}")
+
+
+def test_a_resized_display_s_points_are_as_wide_drawn_as_the_scene_runs_as_from_the_record():
+    """A MultiCamera's display half the frame's size shows a point cloud
+    whose blocks CE widens by the ratio of the configured size to the
+    display camera's: drawn as the scene runs, the display's captures are
+    Cairo's, as from the record, and the frames are the same, byte for byte.
+    """
+    from arachne.frame_ir.live import live_painter
+
+    _, recorded = render(
+        core_scenes.ResizedDisplayPoints, FPS, draw_path="core", **MEDIUM
+    )
+    scene, live = render(
+        core_scenes.LiveResizedDisplayPoints, FPS, draw_path="core", **MEDIUM
+    )
+    found = live_painter(scene.renderer.camera)  # type: ignore[attr-defined]
+    assert found is not None
+    assert found.captures > 0, "drawn as the scene runs"
+    assert len(live) == len(recorded) > 0
+    for index, (a, b) in enumerate(zip(live, recorded, strict=True)):
+        np.testing.assert_array_equal(a, b, err_msg=f"frame {index}")
+
+
 def test_auto_draws_a_3d_scene_on_the_core():
     before = CorePainter.drawn_total
     render(core_scenes.FixedLabelOverSquare, FPS, draw_path="auto", **MEDIUM)
