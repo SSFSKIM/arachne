@@ -11,6 +11,10 @@
 //!   2^-20 that needs the plane to sit within a few ulps of a half-grid point.) A path whose points
 //!   lie on a line has no plane of its own: it takes the axis plane of a coordinate all its points
 //!   share exactly (z first, then y, then x), so an axis on the floor ties with the floor.
+//! - **Whether** a path is flat ([`Planarity`]) is decided apart from **fitting** its plane: a
+//!   writer that snaps geometry to a grid decides on the values as made and carries the decision
+//!   (XF's `planes`), since snapped points of a slightly curved face and of a flat one can be the
+//!   same points; the drawer fits the decided plane to the snapped points.
 //! - A **centreline** carries the depth of something that is not on one plane (a curve in space,
 //!   or a plane seen edge-on): its screen polyline with a depth key at each vertex. A pixel takes
 //!   the depth of a segment, as the plane along that segment, so where it crosses another object
@@ -24,18 +28,12 @@ use crate::composite::Plane;
 /// components.
 pub const PLANE_GRID: f64 = 1.0 / 1_048_576.0;
 
-/// How far, relative to the points' extent, points may lie off the plane they define, for
-/// points not snapped to a grid (and the floor under the grid's bounds: rounding in the fit).
+/// How far, relative to the points' extent, points may lie off the plane they define.
 const PLANAR_TOLERANCE: f64 = 1e-9;
 
-/// How far past the first-order bound of a snapped fit its tolerance sits: room for the bound's
-/// second-order terms (a grid offset times a grid offset) and the fit's own rounding.
-const FIT_MARGIN: f64 = 1.5;
-
-/// The grid the view's geometry was snapped to, in scene units (`0.0`: not snapped). Every
-/// planarity bound reads it from here.
-pub(crate) fn input_grid(_view: &crate::xf::View) -> f64 {
-    0.0
+/// The grid the view's geometry was snapped to, in scene units (`0.0`: not snapped).
+pub(crate) fn input_grid(view: &crate::xf::View) -> f64 {
+    view.input_grid
 }
 
 /// How far a point snapped to `grid` may lie from where it was: half a step in each coordinate.
@@ -43,7 +41,7 @@ fn snap_reach(grid: f64) -> f64 {
     grid * 0.75f64.sqrt()
 }
 
-/// The outline's perimeter, closed: Newell's normal sums over its closing edge too.
+/// The outline's perimeter, closed.
 fn perimeter(points: &[[f64; 3]]) -> f64 {
     (0..points.len())
         .map(|i| {
@@ -54,15 +52,51 @@ fn perimeter(points: &[[f64; 3]]) -> f64 {
         .sum()
 }
 
-/// The points' farthest distance from `first`.
-fn reach(points: &[[f64; 3]], first: [f64; 3]) -> f64 {
-    points
-        .iter()
-        .map(|p| {
-            let d = [p[0] - first[0], p[1] - first[1], p[2] - first[2]];
-            dot(d, d).sqrt()
+/// How a path's points lie, as [`WorldPlane::decide`] finds it from the values content gave them;
+/// [`WorldPlane::fit`] then fits that plane to the points as drawn. Snapped to a grid, points of a
+/// curve and points of a plane can be the same points, so the decision is made before the snap
+/// and carried with the record (XF's `planes`), and the grid never decides whether something is
+/// flat.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Planarity {
+    /// On no plane of its own: keyed by its curve.
+    Curve,
+    /// On a plane: Newell's normal, through the first point.
+    Newell,
+    /// On a plane whose outline crosses itself, cancelling Newell's normal: the widest triangle's
+    /// normal on the first point, through it.
+    Widest,
+    /// A surface's face on no one plane: the plane nearest it, Newell's normal through the
+    /// points' centroid.
+    Nearest,
+    /// On a line sharing coordinate `k` (0 x, 1 y, 2 z): that axis plane, at the first point's
+    /// value.
+    Axis(u8),
+}
+
+impl Planarity {
+    /// The decision's code in XF's `planes`.
+    pub fn code(self) -> u8 {
+        match self {
+            Planarity::Curve => 0,
+            Planarity::Newell => 1,
+            Planarity::Widest => 2,
+            Planarity::Nearest => 3,
+            Planarity::Axis(k) => 4 + k,
+        }
+    }
+
+    /// The decision a code in XF's `planes` names, or `None` for a code it does not.
+    pub fn of_code(code: u8) -> Option<Planarity> {
+        Some(match code {
+            0 => Planarity::Curve,
+            1 => Planarity::Newell,
+            2 => Planarity::Widest,
+            3 => Planarity::Nearest,
+            4..=6 => Planarity::Axis(code - 4),
+            _ => return None,
         })
-        .fold(0.0, f64::max)
+    }
 }
 
 /// A plane in world space, canonical: `normal . p = offset`.
@@ -132,11 +166,14 @@ impl WorldPlane {
         Direction::of(n)?.through(p)
     }
 
-    /// The plane through a triangle's corners, snapped to `grid`, or `None` for a degenerate
-    /// triangle (its corners on a line, to within rounding and the grid: [`points_somewhere`]).
+    /// The plane through a triangle's corners, snapped to `grid` (`0.0`: not snapped), or `None`
+    /// for a degenerate triangle (its corners on a line, to within rounding and the grid:
+    /// [`points_somewhere`]). A triangle the snap leaves under about a grid step wide is found
+    /// degenerate and takes its depth from its own corners on screen instead: exact for a
+    /// triangle, and only coplanar ties hang on the world plane.
     pub fn of_triangle(p: [[f64; 3]; 3], grid: f64) -> Option<WorldPlane> {
-        if let Some(axis) = shared_axis(&p, grid) {
-            return Some(axis);
+        if let Some(k) = shared_axis(&p, grid) {
+            return Some(axis_plane(k, p[0]));
         }
         let u = [p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2]];
         let v = [p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]];
@@ -151,76 +188,92 @@ impl WorldPlane {
         WorldPlane::canonical(n, p[0])
     }
 
-    /// The plane the points lie on (Newell's normal, through their first point), the axis plane
-    /// of a coordinate they all share when they lie on a line, or `None` when they are not on one
-    /// plane. Newell's normal sums the outline's signed areas, so an outline crossing itself on a
-    /// plane (a bowtie) can cancel it; the points then take a second estimate, the normal of the
-    /// widest triangle on their first point, before they are found to lie on no plane.
-    ///
-    /// Points snapped to `grid` (each up to [`snap_reach`] `δ` from where content put it) lie off
-    /// their plane by up to `2δ` against the first point, and their normal is off by the
-    /// snapping's change to it, which Newell's sum bounds by `2δP` for the outline's perimeter
-    /// `P`: through the first point, a point at distance `R` from it lies off the fitted plane by
-    /// at most `2δ(1 + 2RP/|n|)`. Points within that bound (with [`FIT_MARGIN`]) are on the
-    /// plane; content bent by more than it is not. Unsnapped points (`grid` zero) keep the bound
-    /// relative to their extent, and snapped ones keep it where it is the wider.
-    pub fn of_points(points: &[[f64; 3]], grid: f64) -> Option<WorldPlane> {
-        let first = *points.first()?;
-        if let Some(axis) = shared_axis(points, grid) {
-            return Some(axis);
+    /// How the points lie ([`Planarity`]): on the axis plane of a coordinate they all share when
+    /// they lie on a line; on the plane of Newell's normal through their first point; else, as
+    /// Newell's sum of the outline's signed areas cancels for an outline crossing itself on a
+    /// plane (a bowtie), on the plane of the widest triangle on their first point; else, for a
+    /// surface's face, on the plane nearest them; else on none. A point lies on a plane within
+    /// [`PLANAR_TOLERANCE`] of the points' extent.
+    pub fn decide(points: &[[f64; 3]], surface: bool) -> Planarity {
+        let Some(&first) = points.first() else {
+            return Planarity::Curve;
+        };
+        if let Some(k) = shared_axis(points, 0.0) {
+            return Planarity::Axis(k);
         }
         let extent = extent(points);
         if !(extent > 0.0 && extent.is_finite()) {
-            return None;
+            return Planarity::Curve;
         }
-        let n = newell(points, first);
-        let (perimeter, reach) = (perimeter(points), reach(points, first));
+        let tolerance = PLANAR_TOLERANCE * extent.max(1.0);
         // Whether every point lies on the plane with normal `n` through the first point.
         let holds = |n: [f64; 3]| {
-            if !points_somewhere(n, extent, perimeter, grid) {
+            if !points_somewhere(n, extent, 0.0, 0.0) {
                 return false;
             }
-            let length = dot(n, n).sqrt();
-            let fit = 2.0 * snap_reach(grid) * (1.0 + 2.0 * reach * perimeter / length);
-            let tolerance = (PLANAR_TOLERANCE * extent.max(1.0)).max(FIT_MARGIN * fit);
-            let unit = n.map(|v| v / length);
+            let unit = n.map(|v| v / dot(n, n).sqrt());
             let d0 = dot(unit, first);
             points
                 .iter()
                 .all(|p| (dot(unit, *p) - d0).abs() <= tolerance)
         };
+        let n = newell(points, first);
         if holds(n) {
-            return WorldPlane::canonical(n, first);
+            Planarity::Newell
+        } else if holds(widest_normal(points, first)) {
+            Planarity::Widest
+        } else if surface && points_somewhere(n, extent, 0.0, 0.0) {
+            Planarity::Nearest
+        } else {
+            Planarity::Curve // Not on one plane, or on a line with no coordinate shared.
         }
-        let widest = widest_normal(points, first);
-        if holds(widest) {
-            return WorldPlane::canonical(widest, first);
+    }
+
+    /// The canonical plane `planarity` puts the points on, fitted to them as they are (snapped,
+    /// for the core's input): `None` for a curve, or for a fit whose normal is zero.
+    pub fn fit(points: &[[f64; 3]], planarity: Planarity) -> Option<WorldPlane> {
+        let first = *points.first()?;
+        match planarity {
+            Planarity::Curve => None,
+            Planarity::Newell => WorldPlane::canonical(newell(points, first), first),
+            Planarity::Widest => WorldPlane::canonical(widest_normal(points, first), first),
+            Planarity::Nearest => {
+                let mut sum = [0.0; 3];
+                for p in points {
+                    for k in 0..3 {
+                        sum[k] += p[k] - first[k];
+                    }
+                }
+                let count = points.len() as f64;
+                let centroid = std::array::from_fn(|k| first[k] + sum[k] / count);
+                WorldPlane::canonical(newell(points, first), centroid)
+            }
+            Planarity::Axis(k) => Some(axis_plane(k, first)),
         }
-        None // Not on one plane, or on a line with no coordinate shared: no plane of its own.
+    }
+
+    /// The plane the points lie on, decided and fitted from these points
+    /// ([`WorldPlane::decide`], [`WorldPlane::fit`]), or `None` when they are not on one plane.
+    pub fn of_points(points: &[[f64; 3]]) -> Option<WorldPlane> {
+        WorldPlane::fit(points, WorldPlane::decide(points, false))
     }
 
     /// The plane the points lie on ([`WorldPlane::of_points`]), or, when they lie on none (a
     /// surface's face, curved a little), the plane nearest them: Newell's normal through their
-    /// centroid. `None` for points on a line (to within rounding and the grid:
-    /// [`points_somewhere`]) or a point.
-    pub fn nearest(points: &[[f64; 3]], grid: f64) -> Option<WorldPlane> {
-        if let Some(plane) = WorldPlane::of_points(points, grid) {
-            return Some(plane);
-        }
-        let first = *points.first()?;
-        let n = newell(points, first);
-        if !points_somewhere(n, extent(points), perimeter(points), grid) {
-            return None;
-        }
-        let mut sum = [0.0; 3];
-        for p in points {
-            for k in 0..3 {
-                sum[k] += p[k] - first[k];
-            }
-        }
-        let count = points.len() as f64;
-        let centroid = std::array::from_fn(|k| first[k] + sum[k] / count);
-        WorldPlane::canonical(n, centroid)
+    /// centroid. `None` for points on a line (to within rounding: [`points_somewhere`]) or a
+    /// point.
+    pub fn nearest(points: &[[f64; 3]]) -> Option<WorldPlane> {
+        WorldPlane::fit(points, WorldPlane::decide(points, true))
+    }
+}
+
+/// The axis plane of coordinate `k` through `p`, its offset rounded to the grid.
+fn axis_plane(k: u8, p: [f64; 3]) -> WorldPlane {
+    let mut normal = [0.0; 3];
+    normal[k as usize] = 1.0;
+    WorldPlane {
+        normal,
+        offset: round_to_grid(p[k as usize]),
     }
 }
 
@@ -257,11 +310,12 @@ fn newell(points: &[[f64; 3]], first: [f64; 3]) -> [f64; 3] {
 }
 
 /// Whether `n`, a normal found from points spanning `extent` around an outline of `perimeter`,
-/// snapped to `grid`, is long enough to point anywhere. Points on a line (or a sum that
-/// cancelled) give a normal of noise, whose direction an ulp in their input, or their snapping,
-/// decides: none of their planes is theirs. Rounding's noise scales as the normal does, with the
-/// square of the points' size; snapping's is at most `2δP` (Newell's sum moved by each point's
-/// snap, [`WorldPlane::of_points`]), and the bound is twice that.
+/// snapped to `grid` (`0.0`: not snapped), is long enough to point anywhere. Points on a line (or a
+/// sum that cancelled) give a normal of noise, whose direction an ulp in their input, or their
+/// snapping, decides: none of their planes is theirs. Rounding's noise scales as the normal does,
+/// with the square of the points' size; snapping's is at most `2δP` for points each moved up to
+/// `δ` ([`snap_reach`]: Newell's sum, or a cross product, moved by each point's snap), and the
+/// bound is twice that.
 fn points_somewhere(n: [f64; 3], extent: f64, perimeter: f64, grid: f64) -> bool {
     let rounding = PLANAR_TOLERANCE * extent * extent;
     let snapping = 4.0 * snap_reach(grid) * perimeter;
@@ -292,28 +346,22 @@ fn widest_normal(points: &[[f64; 3]], first: [f64; 3]) -> [f64; 3] {
         .unwrap_or([0.0; 3])
 }
 
-/// The axis plane of a coordinate every point shares, preferring z, then y, then x, at the first
-/// point's value rounded to the grid. A coordinate is shared when every point lies within the
-/// planarity tolerance of the first point's, or within a step of `grid` for snapped points (one
-/// value snaps to one value, and values an ulp apart that straddle a grid boundary to two a step
-/// apart): content places an edge between two vertices at one value, and arithmetic that differs
-/// between machines in the last bit must not turn its plane into a centreline on one of them. The
-/// boundary sits at that tolerance, which content reaches only by coincidence, against a fixed
-/// reference (the first point), so the test is the same whatever the other points' order.
-fn shared_axis(points: &[[f64; 3]], grid: f64) -> Option<WorldPlane> {
+/// The coordinate every point shares, preferring z, then y, then x. A coordinate is shared when
+/// every point lies within the planarity tolerance of the first point's, or within a step of
+/// `grid` for snapped points (one value snaps to one value, and values an ulp apart that straddle
+/// a grid boundary to two a step apart): content places an edge between two vertices at one value,
+/// and arithmetic that differs between machines in the last bit must not turn its plane into a
+/// centreline on one of them. The boundary sits at that tolerance, which content reaches only by
+/// coincidence, against a fixed reference (the first point), so the test is the same whatever the
+/// other points' order.
+fn shared_axis(points: &[[f64; 3]], grid: f64) -> Option<u8> {
     let first = points.first()?;
     let tolerance = (PLANAR_TOLERANCE * extent(points).max(1.0)).max(grid);
-    for k in [2, 1, 0] {
-        if points.iter().all(|p| (p[k] - first[k]).abs() <= tolerance) {
-            let mut normal = [0.0; 3];
-            normal[k] = 1.0;
-            return Some(WorldPlane {
-                normal,
-                offset: round_to_grid(first[k]),
-            });
-        }
-    }
-    None
+    [2u8, 1, 0].into_iter().find(|&k| {
+        points
+            .iter()
+            .all(|p| (p[k as usize] - first[k as usize]).abs() <= tolerance)
+    })
 }
 
 /// A curve's depth on screen: segments of its screen polyline with a depth key at each end, binned

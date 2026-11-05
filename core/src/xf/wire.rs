@@ -179,6 +179,9 @@ fn encode_view(v: &View) -> Vec<u8> {
         w.u8(code);
         w.count(params.len());
         w.f64s(&params);
+        if v.input_grid != 0.0 {
+            w.f64(v.input_grid);
+        }
     })
 }
 
@@ -398,6 +401,10 @@ pub fn encode_record(r: &Record) -> Vec<u8> {
             write_paint(w, &p.stroke);
             write_paint(w, &p.background_stroke);
         }
+        if let Some(planes) = &r.planes {
+            w.count(planes.len());
+            planes.iter().for_each(|code| w.u8(*code));
+        }
     })
 }
 
@@ -409,11 +416,21 @@ pub fn encoded_version(d: &Delta) -> (u16, u16) {
     if d.version.0 != XF_VERSION.0 || d.version.1 > XF_VERSION.1 {
         return d.version;
     }
-    let minor = u16::from(
-        d.set
-            .iter()
-            .any(|r| r.features & FEATURE_PRE_PROJECTED != 0),
-    );
+    let sub_views = d.set.iter().filter_map(|r| match &r.body {
+        Body::Image(ImageSource::SubFrame { view, .. }) => Some(&**view),
+        _ => None,
+    });
+    let snapped = d.view.iter().chain(sub_views).any(|v| v.input_grid != 0.0)
+        || d.set.iter().any(|r| r.planes.is_some());
+    let minor = if snapped {
+        2
+    } else {
+        u16::from(
+            d.set
+                .iter()
+                .any(|r| r.features & FEATURE_PRE_PROJECTED != 0),
+        )
+    };
     (1, minor)
 }
 
@@ -629,6 +646,8 @@ fn decode_view(r: &mut R) -> Result<View> {
     let n = r.count(8)?;
     let params = (0..n).map(|_| r.f64()).collect::<Result<Vec<_>>>()?;
     let light = LightModel::from_code(code, params);
+    // XF 1.2: the input grid, when the view carries one.
+    let input_grid = if r.at < r.b.len() { r.f64()? } else { 0.0 };
     Ok(View {
         pixel_width,
         pixel_height,
@@ -641,6 +660,7 @@ fn decode_view(r: &mut R) -> Result<View> {
         cairo_line_width_multiple,
         use_z_index,
         light,
+        input_grid,
     })
 }
 
@@ -889,6 +909,11 @@ fn decode_record(r: &mut R) -> Result<Record> {
             stroke: read_paint(r)?,
             background_stroke: read_paint(r)?,
         });
+    }
+    // XF 1.2: the record's planes, when it carries them.
+    if r.at < r.b.len() {
+        let n = r.count(1)?;
+        rec.planes = Some((0..n).map(|_| r.u8()).collect::<Result<Vec<_>>>()?);
     }
     // Whatever follows belongs to a newer minor version: skipped.
     Ok(rec)

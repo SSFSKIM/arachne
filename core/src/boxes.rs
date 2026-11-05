@@ -157,6 +157,7 @@ mod tests {
             cairo_line_width_multiple: 0.01,
             use_z_index: true,
             light: LightModel::Ce,
+            input_grid: 0.0,
         }
     }
 

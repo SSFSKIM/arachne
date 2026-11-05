@@ -270,6 +270,7 @@ fn view_of(fields: Fields) -> PyResult<View> {
         cairo_line_width_multiple: fields.or("cairo_line_width_multiple", 0.01)?,
         use_z_index: fields.or("use_z_index", true)?,
         light,
+        input_grid: fields.or("input_grid", 0.0)?,
     };
     fields.finish()?;
     Ok(view)
@@ -756,6 +757,7 @@ impl PyFrameDelta {
         record.opacity = fields.or("opacity", 1.0)?;
         record.layer = fields.or("layer", 0u16)?;
         record.body = body_of(kind, &fields)?;
+        record.planes = fields.get::<Vec<u8>>("planes")?;
         fields.finish()?;
         self.delta.set.push(record);
         self.delta.version = wire::encoded_version(&self.delta);
@@ -883,6 +885,18 @@ impl PyStream {
     /// filled through a background image.
     fn overlay_entries(&self) -> Vec<(&'static str, u32, u32)> {
         contents::order(&self.stream.overlay_entries())
+    }
+
+    /// Per slot of ``slots`` holding a record that draws paths, how each of them lies, decided
+    /// from the points the stream holds: a tuple of planarity codes in the order of the record's
+    /// ``planes`` (``core/XF.md``). A writer that snaps a record's geometry decides on the values
+    /// as made and carries this with the snapped record. Nothing is drawn.
+    fn planes(&self, py: Python<'_>, slots: Vec<u32>) -> PyResult<BTreeMap<u32, Vec<u32>>> {
+        let found = self.stream.planes(&slots).map_err(|e| draw_error(py, e))?;
+        Ok(found
+            .into_iter()
+            .map(|(slot, codes)| (slot, codes.into_iter().map(u32::from).collect()))
+            .collect())
     }
 
     /// Per slot the order draws, the pixel box ``(x_min, y_min, x_max, y_max)`` (x right, y down)

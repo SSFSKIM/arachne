@@ -38,7 +38,7 @@ use crate::composite::{
     Coverage, Fragment, OpaquePass, Plane, Producer, Rect, SAMPLES, TransparentPass, premultiply,
     sample_cell,
 };
-use crate::depth::{Centreline, WorldPlane};
+use crate::depth::{Centreline, Planarity, WorldPlane};
 use crate::gradient::{self, Linear};
 use crate::project::{FrameMap, Placement, Projection, placement, pre_display, produced_key};
 use crate::scanline::{self, Edge, Scratch};
@@ -96,6 +96,16 @@ pub struct PathDraw<'a> {
     pub order: u32,
     /// The first of the three sub-orders the path's layers take (background stroke, fill, stroke).
     pub sub: u32,
+    /// Which of the paths its record draws this is: its place in the record's `planes`.
+    pub which: usize,
+}
+
+impl PathDraw<'_> {
+    /// How the path lies, as its record's writer decided before the snap, if it did.
+    fn decided(&self) -> Option<Planarity> {
+        let code = *self.record.planes.as_ref()?.get(self.which)?;
+        Planarity::of_code(code)
+    }
 }
 
 /// Where a layer's fragments sit in depth.
@@ -673,6 +683,26 @@ impl<'v> Lowering<'v> {
         }
     }
 
+    /// How `draw`'s points lie, decided from the points as given ([`WorldPlane::decide`]): the
+    /// points its depth is keyed from, its placed points, or a pre-projected path's put back in
+    /// its camera's axes. `Curve` for a path [`Lowering::path`] does not draw.
+    pub fn planarity(&self, draw: &PathDraw<'_>) -> Planarity {
+        let world: Vec<[f64; 3]> = draw.points.iter().map(|p| place(&draw.place, *p)).collect();
+        if world.len() < 4 || world.iter().flatten().any(|v| !v.is_finite()) {
+            return Planarity::Curve;
+        }
+        if draw.pre_projected {
+            let Some(axes) = self.axes.as_ref() else {
+                return Planarity::Curve;
+            };
+            let shown = pre_display(&world, self.projection.as_ref(), Placement::Flat);
+            let back: Vec<[f64; 3]> = shown.iter().map(|q| axes.unproject(*q)).collect();
+            WorldPlane::decide(&back, false)
+        } else {
+            WorldPlane::decide(&world, draw.surface)
+        }
+    }
+
     /// Lowers one path into up to three layers.
     pub fn path(&mut self, draw: &PathDraw<'_>) {
         let rec = draw.record;
@@ -711,13 +741,21 @@ impl<'v> Lowering<'v> {
                     // Placed by the camera already: keyed where it puts the points back in its axes.
                     let axes = self.axes.clone().expect("a pre-projected path keyed in 3D");
                     let back: Vec<[f64; 3]> = shown.iter().map(|q| axes.unproject(*q)).collect();
-                    self.world_depth(&axes, &back, &shown, reach, bins, false)
+                    self.world_depth(&axes, &back, &shown, reach, bins, false, draw.decided())
                 } else {
                     let p = self
                         .projection
                         .clone()
                         .expect("world depth needs the 3D camera");
-                    self.world_depth(&p, &world, &shown, reach, bins, draw.surface)
+                    self.world_depth(
+                        &p,
+                        &world,
+                        &shown,
+                        reach,
+                        bins,
+                        draw.surface,
+                        draw.decided(),
+                    )
                 }
             }
         };
@@ -846,7 +884,9 @@ impl<'v> Lowering<'v> {
     }
 
     /// The depth of a path placed in world space under a 3D camera's projection `p`, `world` its
-    /// points before `p` placed them at `shown`.
+    /// points before `p` placed them at `shown`: on the plane `decided` (its writer's decision,
+    /// [`Planarity`]) or, undecided, the plane the points decide, fitted to them.
+    #[allow(clippy::too_many_arguments)]
     fn world_depth(
         &mut self,
         p: &Projection,
@@ -855,14 +895,11 @@ impl<'v> Lowering<'v> {
         reach: f64,
         bins: f64,
         surface: bool,
+        decided: Option<Planarity>,
     ) -> LayerDepth {
-        let grid = crate::depth::input_grid(self.view);
+        let planarity = decided.unwrap_or_else(|| WorldPlane::decide(world, surface));
         if world.iter().all(|q| p.keys_planar_at(*q))
-            && let Some(plane) = if surface {
-                WorldPlane::nearest(world, grid)
-            } else {
-                WorldPlane::of_points(world, grid)
-            }
+            && let Some(plane) = WorldPlane::fit(world, planarity)
             && let Some(key) = p.key_plane(&plane, &self.map, world[0], MIN_PLANE_COS)
         {
             return LayerDepth::Plane(key);
