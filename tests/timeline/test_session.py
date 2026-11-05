@@ -214,7 +214,8 @@ def test_a_frozen_frame_no_frame_reads_is_answered_through_its_span(session_of):
     """
     session = session_of("HeldBetweenFrames", grid=15)
     held = session.record.plays[1]
-    assert held.held and held.start == Fraction(23, 10)
+    assert held.held
+    assert held.start == Fraction(23, 10)
     assert Fraction(23, 10) < held.end < Fraction(35, 15)  # before the next frame
     for t in (held.start, (held.start + held.end) / 2):
         assert session.state_at(t).answer == "recorded", t

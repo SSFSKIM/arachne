@@ -361,7 +361,9 @@ class Scene:
         or wraps this (:mod:`arachne.timeline.hooks`). Between frames the play
         runs the updaters without calling this.
         """
-        hooks.update_mobjects(self, self._arachne_timeline.base_dt("update_mobjects", dt))
+        hooks.update_mobjects(
+            self, self._arachne_timeline.base_dt("update_mobjects", dt)
+        )
 
     def update_meshes(self, dt: float) -> None:
         """CE's per-frame mesh update, called from :meth:`update_to_time`

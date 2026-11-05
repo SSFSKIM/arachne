@@ -1024,7 +1024,12 @@ def test_a_summary_from_another_process_compares_with_a_session(scene_dir, tmp_p
     assert edited.divergences == [divergence]
 
 
-SVG = Path(__file__).parents[1] / "test_graphical_units" / "img_svg_resources" / "arcs01.svg"
+SVG = (
+    Path(__file__).parents[1]
+    / "test_graphical_units"
+    / "img_svg_resources"
+    / "arcs01.svg"
+)
 
 
 def test_an_svg_drawn_again_in_one_process_is_the_execution_it_was(scene_dir):

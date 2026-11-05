@@ -9,8 +9,8 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 import srt
 
 from . import logger
-from .scene.section import DefaultSectionType
 from .mobject.svg.svg_mobject import parsed_svgs, restore_parsed_svgs
+from .scene.section import DefaultSectionType
 from .timeline.clock import exact
 from .timeline.execution import Reexecute, play_keys
 from .utils.exceptions import EndSceneEarlyException
