@@ -185,10 +185,15 @@ class CorePainter:
     def settle(self) -> None:
         """Leave each display's camera of the last frame holding the picture
         CE's last capture leaves in it, as :meth:`IrCairoPainter.settle
-        <.painter.IrCairoPainter.settle>` does: displays are Cairo's.
+        <.painter.IrCairoPainter.settle>` does: displays are Cairo's. The
+        sub-frame's records are drawn as the core was handed them, snapped,
+        so its view is too, as the display's record carries it.
         """
         for display, (_, view, order) in self.stream.last_sub_frames:
             camera = display.camera
             camera.pixel_array = self.drawer.capture(
-                self.state, view, order, camera.background
+                self.state,
+                self.canonical.snapped_view(view),
+                order,
+                camera.background,
             )
