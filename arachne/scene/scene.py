@@ -510,7 +510,7 @@ class Scene:
         *mobjects
             The mobjects to remove.
         """
-        with self.timeline.removing("remove", mobjects):
+        with self._arachne_timeline.removing("remove", mobjects):
             for list_name in "mobjects", "foreground_mobjects":
                 self.restructure_mobjects(mobjects, list_name, False)
         return self
@@ -825,7 +825,7 @@ class Scene:
             self.mobjects and self.foreground_mobjects
             removed.
         """
-        with self.timeline.removing("clear", tuple(self.mobjects)):
+        with self._arachne_timeline.removing("clear", tuple(self.mobjects)):
             self.mobjects = []
             self.foreground_mobjects = []
         return self

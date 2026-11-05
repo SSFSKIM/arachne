@@ -115,7 +115,7 @@ class CairoRenderer:
 
         # The scene as the script called the play, before it adds what the
         # animations animate.
-        scene.timeline.calling()
+        scene._arachne_timeline.calling()
         scene.compile_animation_data(*args, **kwargs)
         skipped = self.skip_animations
         cache_key: str | None = None

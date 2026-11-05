@@ -13,6 +13,7 @@ import pytest
 from arachne.camera.camera import Camera
 from arachne.lint import lint
 from arachne.lint.codes import THRESHOLD_HEIGHT
+from arachne.lint.motion import motion_jump
 from arachne.lint.rules import contact, frame_edge, occlusion, text_small
 
 from . import defect_scenes, projection_scenes, query_scenes
@@ -328,3 +329,23 @@ def test_a_refused_record_is_queried_through_one_forward_run(session_of):
     assert query.answer == "forward"
     assert len(session.forward_runs) == 1
     assert [part.type for part in query.parts.parts] == ["Dot"]
+
+
+@pytest.mark.parametrize(("grid", "answer"), [("render", "recorded"), (4, "forward")])
+def test_a_scene_that_takes_record_and_timeline_for_its_own_is_queried(
+    session_of, grid, answer
+):
+    """The engine reaches its recorder by a name of its own: a scene's
+    ``record`` method and ``timeline`` value are the scene's, from the record
+    or from a forward run.
+    """
+    session = session_of("KeepsItsOwnRecord", QUERIES, grid=grid, frame_rate=15)
+    assert session.scene.entries == ["added"]
+    assert session.scene.timeline == "the scene's own"
+    query = session.query(Fraction(2, 3))
+    assert query.answer == answer
+    [found] = query.overlaps()
+    assert found.code == "overlap.text"
+    assert {found.a.text, found.b.text} == {"top", "low"}
+    assert query.bbox(found.a.id) is not None
+    assert lint(session, rules=(motion_jump,)).findings == ()

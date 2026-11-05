@@ -194,8 +194,8 @@ def record_view(record: Record) -> View:
     return view_of(
         camera,
         mapping_centre=frozen if frozen is not None else camera.frame_center,
-        home=record._scene.timeline.home,
-        configured_pixels=record._scene.timeline.configured_pixels,
+        home=record._scene._arachne_timeline.home,
+        configured_pixels=record._scene._arachne_timeline.configured_pixels,
     )
 
 
