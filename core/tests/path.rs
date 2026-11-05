@@ -991,6 +991,155 @@ fn a_path_on_a_meshs_plane_ties_with_it_by_draw_order() {
     );
 }
 
+/// The grid the engine snaps a camera's geometry to: `2^(e - 9)`, `e` the binary exponent of the
+/// scene units one of its pixels spans.
+fn camera_grid(view: &View) -> f64 {
+    let (_, e) = libm::frexp(view.frame_width / f64::from(view.pixel_width));
+    libm::ldexp(1.0, e - 9)
+}
+
+/// A path through `points` in world space as the engine hands it to the core: its points snapped
+/// to `grid`, its planarity decided on them as content made them.
+fn on_grid(record: impl Fn(&Shape) -> Record, points: &[[f64; 3]], grid: f64) -> (Shape, Record) {
+    let shape = path(points.iter().map(|p| snapped_to(*p, grid)).collect());
+    let mut r = record(&shape);
+    r.depth.space = Space::World;
+    r.planes = Some(vec![WorldPlane::decide(points, false).code()]);
+    (shape, r)
+}
+
+/// A square on the tilted plane through `centre`: `half` its half side, `turn` its angle, `at`
+/// its centre in the plane's coordinates.
+fn tilted_square(centre: [f64; 3], half: f64, turn: f64, at: [f64; 2]) -> Vec<[f64; 3]> {
+    let (u, v) = tilted();
+    (0..4)
+        .map(|i| {
+            let a = turn + std::f64::consts::FRAC_PI_2 * f64::from(i);
+            let (x, y) = (at[0] + half * libm::cos(a), at[1] + half * libm::sin(a));
+            std::array::from_fn(|k| centre[k] + x * u[k] + y * v[k])
+        })
+        .collect()
+}
+
+/// The view [`looking_down`] with the grid the engine snaps its geometry to.
+fn looking_down_on_grid() -> View {
+    let mut view = looking_down();
+    view.input_grid = camera_grid(&view);
+    view
+}
+
+/// The pixels well inside a world polygon on screen.
+fn inside_on_screen(view: &View, corners: &[[f64; 3]]) -> Vec<(u32, u32)> {
+    let shown: Vec<[f64; 2]> = corners
+        .iter()
+        .map(|p| arachne_core::probes::screen_of(view, W, H, *p))
+        .collect();
+    pixels_inside(&shown, 1.0, W, H)
+}
+
+const CENTRES: [[f64; 3]; 3] = [
+    [0.31, -0.42, 0.23],
+    [-1.13, 0.61, -0.52],
+    [0.83, 0.94, 0.41],
+];
+
+/// A small square inside a larger one on one tilted plane, turned against it, each snapped to the
+/// camera's grid as the engine hands them to the core: the later on top wherever they overlap, in
+/// either order. Fitted alone, the planes of the two snapped squares differ by the snap's noise
+/// and cross; on one plane, they tie by draw order.
+#[test]
+fn a_small_square_on_a_turned_square_ties_with_it_by_draw_order() {
+    let view = looking_down_on_grid();
+    let grid = view.input_grid;
+    let (green, white) = ([0.1, 0.6, 0.2, 1.0], WHITE);
+    let mut wrong = Vec::new();
+    for centre in CENTRES {
+        let large = tilted_square(centre, 2.5, 0.4, [0.0, 0.0]);
+        for (half, at) in [(0.5, [0.7, -0.3]), (0.45, [-0.9, 0.6]), (1.0, [0.0, 0.0])] {
+            let small = tilted_square(centre, half, 1.1, at);
+            let inside = inside_on_screen(&view, &small);
+            assert!(
+                inside.len() > 10,
+                "{centre:?} {half}: {} pixels",
+                inside.len()
+            );
+            for small_on_top in [true, false] {
+                let mut items = vec![
+                    on_grid(|s| fill(1, s, green), &ring(&large), grid),
+                    on_grid(|s| fill(2, s, white), &ring(&small), grid),
+                ];
+                if !small_on_top {
+                    items.reverse();
+                }
+                let frame = draw(view.clone(), &items);
+                let want = premultiply(if small_on_top { white } else { green });
+                let off = inside.iter().filter(|(x, y)| px(&frame, *x, *y) != want);
+                let off = off.count();
+                if off > 0 {
+                    wrong.push(format!(
+                        "{centre:?} half {half}, small on top {small_on_top}: {off} of {} pixels",
+                        inside.len()
+                    ));
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// A line drawn on a tilted square's plane, each snapped to the camera's grid as the engine hands
+/// them to the core. The line has no plane of its own; it is keyed on the plane of the square it
+/// lies on, so they tie by draw order. Drawn after the square, the line is its own pixels over the
+/// square's; drawn before, the square hides it.
+#[test]
+fn a_line_on_a_tilted_plane_ties_with_it_by_draw_order() {
+    let view = looking_down_on_grid();
+    let grid = view.input_grid;
+    let (u, v) = tilted();
+    let green = [0.1, 0.6, 0.2, 1.0];
+    let mut wrong = Vec::new();
+    for centre in CENTRES {
+        let corners = tilted_square(centre, 2.5, 0.4, [0.0, 0.0]);
+        let inside = inside_on_screen(&view, &corners);
+        let square = on_grid(|s| fill(1, s, green), &ring(&corners), grid);
+        let square_alone = draw(view.clone(), std::slice::from_ref(&square));
+        for (a, b) in [([-1.7, -0.9], [1.9, 0.6]), ([-0.4, 1.6], [0.5, -1.8])] {
+            let at = |q: [f64; 2]| -> [f64; 3] {
+                std::array::from_fn(|k| centre[k] + q[0] * u[k] + q[1] * v[k])
+            };
+            let line = on_grid(|s| stroke(2, s, WHITE, 24.0), &lines(&[at(a), at(b)]), grid);
+            assert_eq!(line.1.planes, Some(vec![Planarity::Curve.code()]));
+            let line_alone = draw(view.clone(), std::slice::from_ref(&line));
+            let lit = inside
+                .iter()
+                .filter(|(x, y)| px(&line_alone, *x, *y)[0] > 128);
+            assert!(lit.count() > 10, "{centre:?} {a:?}: the line is drawn");
+            let on_top = draw(view.clone(), &[square.clone(), line.clone()]);
+            let beneath = draw(view.clone(), &[line.clone(), square.clone()]);
+            let (mut off_top, mut off_beneath) = (0, 0);
+            for (x, y) in &inside {
+                let cover = f64::from(px(&line_alone, *x, *y)[0]) / 255.0;
+                let under = px(&square_alone, *x, *y);
+                let got = px(&on_top, *x, *y);
+                let over = (0..3).any(|k| {
+                    let want = 255.0 * cover + f64::from(under[k]) * (1.0 - cover);
+                    (f64::from(got[k]) - want).abs() > 1.0
+                });
+                off_top += usize::from(over);
+                off_beneath += usize::from(px(&beneath, *x, *y) != under);
+            }
+            if off_top + off_beneath > 0 {
+                wrong.push(format!(
+                    "{centre:?} {a:?}: {off_top} pixels off with the line on top, \
+                     {off_beneath} with the square on top, of {}",
+                    inside.len()
+                ));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
 fn points_record(slot: u32, shape: &Shape, colours: &Stops, radius: f64) -> Record {
     let mut r = Record::new(RecordKind::Points, slot, 100 + slot);
     r.geometry.shape_a = Some(shape.key());
