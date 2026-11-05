@@ -159,8 +159,43 @@ class InterleavedOverlay(ThreeDScene):
         ring.shift([4.5, -2.5, 0.0])
         self.add_fixed_in_frame_mobjects(first, image, second, bar, ring)
         self.move_camera(theta=-30 * DEGREES, run_time=0.4)
+        # Fill and stroke style changing mid-play, no point moving.
         self.play(second.animate.set_color(RED), run_time=0.2)
+        self.play(ring.animate.set_stroke(width=12, opacity=0.4), run_time=0.2)
         self.move_camera(theta=-20 * DEGREES, run_time=0.2)
+
+
+class BackgroundFilledOverlay(ThreeDScene):
+    """A shape fixed in frame filled from a background image, between two
+    labels fixed in frame, over a surface under an orbit: the filled shape
+    is drawn anew every frame, the labels around it made again; the
+    filled shape's fill shifts partway.
+    """
+
+    def construct(self):
+        from PIL import Image
+
+        self.set_camera_orientation(phi=60 * DEGREES, theta=-45 * DEGREES)
+        self.add(
+            Surface(
+                lambda u, v: np.array([u, v, 0.3 * np.sin(u) * np.cos(v)]),
+                u_range=[-2, 2],
+                v_range=[-2, 2],
+                resolution=(6, 6),
+                checkerboard_colors=[BLUE, GREEN],
+            )
+        )
+        array = np.zeros((40, 60, 4), dtype=np.uint8)
+        array[..., 0] = np.linspace(0, 255, 60, dtype=np.uint8)
+        array[..., 2] = 200
+        array[..., 3] = 255
+        disc = Circle(radius=1.0, fill_opacity=1).shift([0.0, 2.0, 0.0])
+        disc.color_using_background_image(Image.fromarray(array, mode="RGBA"))
+        before = Text("Before", font_size=40, color=YELLOW).shift([-3.5, 2.5, 0.0])
+        after = Text("After", font_size=40, color=WHITE).shift([3.5, 2.5, 0.0])
+        self.add_fixed_in_frame_mobjects(before, disc, after)
+        self.move_camera(theta=-30 * DEGREES, run_time=0.4)
+        self.play(disc.animate.shift([0.5, 0.0, 0.0]), run_time=0.2)
 
 
 class ZoomedFrameMoves(ZoomedScene):
