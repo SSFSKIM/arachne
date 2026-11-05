@@ -534,6 +534,51 @@ def test_a_restored_frame_shows_a_static_mobject_where_its_driver_put_it(
         assert np.array_equal(np.asarray(session.frame(t)), expected), t
 
 
+def test_every_public_session_operation_runs_under_the_session_s_settings():
+    """Every public member of ``Session`` (a method, a classmethod or a
+    property) is marked as running under the configuration the session was
+    opened with, so one added later can't miss it.
+    """
+    from arachne.session import Session
+
+    public = {
+        name: value for name, value in vars(Session).items() if not name.startswith("_")
+    }
+    assert {"open", "state_at", "frame", "answers", "summary", "compare"} <= set(public)
+    unmarked = []
+    for name, value in public.items():
+        if isinstance(value, classmethod | staticmethod):
+            value = value.__func__
+        elif isinstance(value, property):
+            value = value.fget
+        elif not callable(value):
+            continue
+        if not getattr(value, "__session_settings__", False):
+            unmarked.append(name)
+    assert unmarked == []
+
+
+def test_a_session_s_states_do_not_depend_on_the_process_s_configuration(
+    session_of,
+):
+    """A restore's callback reads the configured frame (a ``FunctionGraph``
+    spans its width): the state a session answers there, alone or in a
+    batch, is the one its own configuration gives, whatever the process
+    holds then.
+    """
+    session = session_of("GraphAcrossTheFrame", RESTORE_SCENES, frame_rate=15)
+    (play,) = _state_plays(session)
+    t = _unsampled(play)[0]
+    with tempconfig(session._source.settings):
+        expected = _canonical(session.state_at(t))
+    with tempconfig({"frame_width": 20.0}):
+        alone = session.state_at(t)
+        (batch,) = session.answers([t], frames=False)
+    assert alone.answer == batch.state.answer == "restored"
+    assert _canonical(alone) == expected
+    assert _canonical(batch.state) == expected
+
+
 @pytest.mark.parametrize("draw_path", ["cairo", "ir_cairo"])
 def test_a_session_s_frames_do_not_depend_on_the_process_s_configuration(
     session_of, draw_path

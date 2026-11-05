@@ -19,6 +19,7 @@ from __future__ import annotations
 __all__ = ["Session"]
 
 import contextlib
+import functools
 import importlib.util
 import itertools
 import os
@@ -26,7 +27,7 @@ import sys
 from dataclasses import dataclass, replace
 from fractions import Fraction
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 from ._config import config as global_config
 from ._config import tempconfig
@@ -72,6 +73,42 @@ if TYPE_CHECKING:
     from .typing import PixelArray, StrPath
 
 _MODULE_NUMBERS = itertools.count()
+_T = TypeVar("_T")
+
+
+def _under_its_settings(method: Callable[..., _T]) -> Callable[..., _T]:
+    """Run a public :class:`Session` operation under the configuration the
+    session was opened with (:attr:`Source.settings`): whatever it reads of
+    the configuration as it evaluates or draws (a callback building a graph
+    across the frame, a camera drawing a point cloud) is the session's,
+    whatever the process holds then. Entered once: an operation another
+    calls runs inside the first's.
+    """
+
+    @functools.wraps(method)
+    def run(self: Session, *args: Any, **kwargs: Any) -> _T:
+        source = self._source
+        if source is None or self._settled:
+            # Not opened yet (``open`` runs under its settings itself), or
+            # inside an operation that entered them.
+            return method(self, *args, **kwargs)
+        self._settled = True
+        try:
+            with tempconfig(source.settings):
+                return method(self, *args, **kwargs)
+        finally:
+            self._settled = False
+
+    run.__session_settings__ = True  # type: ignore[attr-defined]
+    return run
+
+
+def _enters_its_settings(function: Callable[..., _T]) -> Callable[..., _T]:
+    """Mark an operation that enters the session's configuration itself:
+    :meth:`Session.open`, which makes it.
+    """
+    function.__session_settings__ = True  # type: ignore[attr-defined]
+    return function
 
 
 class Session:
@@ -114,6 +151,8 @@ class Session:
         #: What :meth:`open` executed last, the execution the session holds,
         #: which a forward run executes again.
         self._source: Source | None = None
+        # Whether an operation of the session's runs, under its settings.
+        self._settled = False
         #: The forward runs that answered what the record could not, in order.
         self.forward_runs: list[ForwardRun] = []
         #: Whether the scene's source was found changed since the record was
@@ -122,6 +161,7 @@ class Session:
         self.stale = False
 
     @classmethod
+    @_enters_its_settings
     def open(
         cls,
         file: StrPath,
@@ -182,105 +222,110 @@ class Session:
             # execution of the session, a forward run's too, executes under,
             # whatever the process's is then.
             effective = global_config.copy()
-        options = {
-            "grid": grid,
-            "stepping": stepping,
-            "on_step": on_step,
-            "on_tick": on_tick,
-            "on_start": on_start,
-            "instants": tuple(instants),
-        }
-        # Each demoted play's identity, with its line's plays where it was
-        # found (``None`` for a line demoted whole).
-        demotions: dict[PlayIdentity, tuple[str, ...] | None] = {}
-        session = cls(
-            *_execute(path, scene, effective, options, demotions),
-            draw_path=effective.draw_path,
-        )
-        if not probe:
+        # Executing, probing (its restores run callbacks) and comparing
+        # read that configuration too.
+        with tempconfig(effective):
+            options = {
+                "grid": grid,
+                "stepping": stepping,
+                "on_step": on_step,
+                "on_tick": on_tick,
+                "on_start": on_start,
+                "instants": tuple(instants),
+            }
+            # Each demoted play's identity, with its line's plays where it was
+            # found (``None`` for a line demoted whole).
+            demotions: dict[PlayIdentity, tuple[str, ...] | None] = {}
+            session = cls(
+                *_execute(path, scene, effective, options, demotions),
+                draw_path=effective.draw_path,
+            )
+            if not probe:
+                session._source = _source(session, path, scene, effective, stepping)
+                return session
+            # Probe the record. On a demotion, record the scene again with the
+            # play ticked, a new execution compared with the first, and probe
+            # that: each pass ticks at least one play more, while the executions
+            # play the same plays of the same source. When they don't, the probe
+            # stops, and the session holds the last execution. A demotion follows
+            # its play's identity; where its line's plays changed, which play it
+            # was is unknown, and every play of the line ticks.
+            latest = found = probe_record(session.record)
+            described = session.record
+            probing = True
+            first: ExecutionSummary | None = None
+            # A backstop: each pass ticks one more play, or every play of one
+            # more line a play was demoted at, so this many executions suffice
+            # while the executions play the same plays.
+            cap = 2 * len(session.record.plays) + 1
+            executions = 1
+            settled = True
+            while True:
+                record = session.record
+                digest = record.identity.source_digest
+                demoting: dict[PlayIdentity, tuple[str, ...] | None] = {}
+                if probing:
+                    for divergence in latest.divergences:
+                        session._keep(divergence)
+                    identities = play_identities(record.plays)
+                    lines = line_plays(record.plays)
+                    for index in latest.demoted:
+                        identity = identities[index]
+                        if identity not in demotions:
+                            demoting[identity] = lines[identity[0]]
+                demoting.update(
+                    (whole_line(line), None)
+                    for line in _changed_lines({**demotions, **demoting}, record)
+                )
+                if not demoting:
+                    break
+                demotions.update(demoting)
+                if digest is not None:
+                    for identity, line in demoting.items():
+                        admission.demote(digest, record.scene_class, identity, line)
+                if executions >= cap:
+                    settled = False
+                    break
+                if first is None:
+                    first = session.summary()
+                session._executed_again(
+                    *_execute(path, scene, effective, options, demotions)
+                )
+                executions += 1
+                with contextlib.suppress(Incomparable):
+                    session.compare(first)
+                if not _same_source(record, session.record):
+                    # Another source is stale, never a divergence, whether or not
+                    # the probe still runs.
+                    session.stale = True
+                    probing = False
+                    settled = False
+                elif probing and _schedule_shift(record, session.record):
+                    # The same source playing other plays is where its
+                    # executions differ.
+                    changed = _schedule_change(record, session.record)
+                    if changed is not None:
+                        session._keep(changed)
+                    probing = False
+                    settled = False
+                if probing:
+                    latest = probe_record(session.record)
+                    found = found.then(latest)
+                    described = session.record
+            whole = {line for line, kind, _ in demotions if kind is None}
+            found = session._found_in(found, described, whole)
+            session.probe = replace(found, settled=settled)
             session._source = _source(session, path, scene, effective, stepping)
             return session
-        # Probe the record. On a demotion, record the scene again with the
-        # play ticked, a new execution compared with the first, and probe
-        # that: each pass ticks at least one play more, while the executions
-        # play the same plays of the same source. When they don't, the probe
-        # stops, and the session holds the last execution. A demotion follows
-        # its play's identity; where its line's plays changed, which play it
-        # was is unknown, and every play of the line ticks.
-        latest = found = probe_record(session.record)
-        described = session.record
-        probing = True
-        first: ExecutionSummary | None = None
-        # A backstop: each pass ticks one more play, or every play of one
-        # more line a play was demoted at, so this many executions suffice
-        # while the executions play the same plays.
-        cap = 2 * len(session.record.plays) + 1
-        executions = 1
-        settled = True
-        while True:
-            record = session.record
-            digest = record.identity.source_digest
-            demoting: dict[PlayIdentity, tuple[str, ...] | None] = {}
-            if probing:
-                for divergence in latest.divergences:
-                    session._keep(divergence)
-                identities = play_identities(record.plays)
-                lines = line_plays(record.plays)
-                for index in latest.demoted:
-                    identity = identities[index]
-                    if identity not in demotions:
-                        demoting[identity] = lines[identity[0]]
-            demoting.update(
-                (whole_line(line), None)
-                for line in _changed_lines({**demotions, **demoting}, record)
-            )
-            if not demoting:
-                break
-            demotions.update(demoting)
-            if digest is not None:
-                for identity, line in demoting.items():
-                    admission.demote(digest, record.scene_class, identity, line)
-            if executions >= cap:
-                settled = False
-                break
-            if first is None:
-                first = session.summary()
-            session._executed_again(
-                *_execute(path, scene, effective, options, demotions)
-            )
-            executions += 1
-            with contextlib.suppress(Incomparable):
-                session.compare(first)
-            if not _same_source(record, session.record):
-                # Another source is stale, never a divergence, whether or not
-                # the probe still runs.
-                session.stale = True
-                probing = False
-                settled = False
-            elif probing and _schedule_shift(record, session.record):
-                # The same source playing other plays is where its
-                # executions differ.
-                changed = _schedule_change(record, session.record)
-                if changed is not None:
-                    session._keep(changed)
-                probing = False
-                settled = False
-            if probing:
-                latest = probe_record(session.record)
-                found = found.then(latest)
-                described = session.record
-        whole = {line for line, kind, _ in demotions if kind is None}
-        found = session._found_in(found, described, whole)
-        session.probe = replace(found, settled=settled)
-        session._source = _source(session, path, scene, effective, stepping)
-        return session
 
+    @_under_its_settings
     def state_at(self, t: Fraction | float) -> State:
         """The scene at ``t``, from the record: restored there when a
         state-function play holds ``t`` and the record did not sample it.
         """
         return self.record.state_at(t)
 
+    @_under_its_settings
     def frame(self, t: Fraction | float, quality: str | None = None) -> Image.Image:
         """The frame at ``t``, drawn from the record as a render draws it;
         at ``quality`` (a key of :data:`~arachne.constants.QUALITIES`) when
@@ -311,21 +356,19 @@ class Session:
         froze at its first frame, whatever order frames are asked in
         (:mod:`.timeline.mapping`).
 
-        They are drawn under the configuration the session was opened with,
-        entered once for them all: what the camera reads while it draws (a
-        point cloud's thickness reads the frame's pixel size), and what a
-        restore's callbacks read, are the session's, whatever the process
-        holds then.
+        Called inside an operation, so under the configuration the session
+        was opened with (:func:`_under_its_settings`): what the camera reads
+        while it draws (a point cloud's thickness reads the frame's pixel
+        size), and what a restore's callbacks read, are the session's.
         """
-        source = self._source
-        with tempconfig(source.settings if source is not None else {}):
-            freeze_mapping_centre(record)
-            with Drawing(record, draw_path=self.draw_path) as drawing:
-                return [
-                    _draw(drawing, found, lambda play: static(drawing, play))
-                    for found in answers
-                ]
+        freeze_mapping_centre(record)
+        with Drawing(record, draw_path=self.draw_path) as drawing:
+            return [
+                _draw(drawing, found, lambda play: static(drawing, play))
+                for found in answers
+            ]
 
+    @_under_its_settings
     def answers(
         self,
         instants: Iterable[Fraction | float],
@@ -347,6 +390,7 @@ class Session:
         """
         return answer_instants(self, instants, quality, frames=frames)
 
+    @_under_its_settings
     def summary(self) -> ExecutionSummary:
         """The summary of the session's execution, which another execution
         of its source, in this process or another, is compared with
@@ -356,6 +400,7 @@ class Session:
             self._summary = (self.record, summarize(self.record))
         return self._summary[1]
 
+    @_under_its_settings
     def compare(self, summary: ExecutionSummary) -> Divergence | None:
         """Compare the session's execution with ``summary``'s, an execution of
         the same source (:func:`.execution.compare`): the first play where they
@@ -441,6 +486,7 @@ class Session:
         self._quality = quality
         self._static = None
 
+    @_under_its_settings
     def close(self) -> None:
         """Let go of the scene and its record."""
         sys.modules.pop(self.module.__name__, None)

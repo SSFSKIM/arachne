@@ -16,6 +16,7 @@ from arachne import (
     DecimalNumber,
     Dot,
     FadeIn,
+    FunctionGraph,
     Line,
     Mobject,
     PointCloudDot,
@@ -245,6 +246,19 @@ class CloudPlays(Scene):
         self.play(tracker.animate.set_value(2), run_time=1, rate_func=linear)
         cloud.clear_updaters()
         self.play(cloud.animate.shift(UP), run_time=1, rate_func=linear)
+
+
+class GraphAcrossTheFrame(Scene):
+    """A graph ``always_redraw`` builds at a slope a tracker the play
+    animates: ``FunctionGraph`` spans the configured frame's width by
+    default, so the callback reads the frame's half-width.
+    """
+
+    def construct(self):
+        tracker = ValueTracker(0.2)
+        graph = always_redraw(lambda: FunctionGraph(lambda x: tracker.get_value() * x))
+        self.add(graph)
+        self.play(tracker.animate.set_value(0.8), run_time=1, rate_func=linear)
 
 
 class DrivenSquare(Scene):
