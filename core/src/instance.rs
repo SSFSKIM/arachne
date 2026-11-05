@@ -16,21 +16,27 @@ use crate::geometry::{DrawnPaint, rows};
 use crate::mesh::MeshDraw;
 use crate::path::PathDraw;
 use crate::points::PointsDraw;
+use crate::project::produced_pivot;
 use crate::xf::*;
 
 /// A `points` record's points, drawn as CE's blocks: `positions` its shape's, or its tail's points
 /// when it is pre-projected.
 pub fn points<'a>(
     record: &'a Record,
+    own: &[[f64; 3]],
     positions: &'a [[f64; 3]],
     colours: &'a Stops,
     order: u32,
 ) -> PointsDraw<'a> {
+    let pre_projected = record.pre_projected.is_some();
     PointsDraw {
         record,
         positions,
         colours: colours.rows(),
-        pre_projected: record.pre_projected.is_some(),
+        pre_projected,
+        pivot: pre_projected
+            .then(|| produced_pivot(record, own, positions))
+            .flatten(),
         order,
     }
 }
@@ -65,6 +71,7 @@ pub fn path_record<'a>(
         ends: record.paint.gradient,
         surface: false,
         pre_projected: false,
+        pivot: None,
         stroke_width: paint.stroke_width,
         background_stroke_width: paint.background_stroke_width,
         order,
@@ -77,6 +84,7 @@ pub fn path_record<'a>(
 /// (`tail`), at the record's stroke widths.
 pub fn produced_path<'a, 't>(
     record: &'a Record,
+    own: &[[f64; 3]],
     placed: &'a [[f64; 3]],
     tail: &PreProjected,
     table: impl Fn(&Key) -> &'t Stops + Copy,
@@ -93,6 +101,7 @@ pub fn produced_path<'a, 't>(
         ends: tail.gradient,
         surface: false,
         pre_projected: true,
+        pivot: produced_pivot(record, own, placed),
         stroke_width: p.stroke_width,
         background_stroke_width: p.background_stroke_width,
         order,
@@ -122,6 +131,7 @@ pub fn path_members<'a>(
             ends: None,
             surface: false,
             pre_projected: false,
+            pivot: None,
             stroke_width: p.stroke_width,
             background_stroke_width: p.background_stroke_width,
             order,
@@ -155,6 +165,7 @@ pub fn face<'a, 't>(
         ends: None,
         surface: true,
         pre_projected: false,
+        pivot: None,
         stroke_width: p.stroke_width,
         background_stroke_width: p.background_stroke_width,
         order,

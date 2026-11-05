@@ -87,6 +87,9 @@ pub struct PathDraw<'a> {
     /// tail), and the paints and `ends` are what it produced: nothing is projected or lit again,
     /// and depth is keyed in that camera's axes ([`crate::project::produced_key`]).
     pub pre_projected: bool,
+    /// Where that camera placed the record's fixed-orientation centre, when it has one
+    /// ([`crate::project::produced_pivot`]).
+    pub pivot: Option<[f64; 3]>,
     /// The stroke widths drawn, in CE's units: the record's, or a paint blend's mix of them.
     pub stroke_width: f64,
     pub background_stroke_width: f64,
@@ -680,14 +683,7 @@ impl<'v> Lowering<'v> {
             return; // CE draws a mobject with a non-finite point as one point: nothing.
         }
         let (placement, keyed) = if draw.pre_projected {
-            let fixed = rec.depth.fixed_orientation_centre.is_some();
-            let key = produced_key(
-                self.axes.as_ref(),
-                &self.map,
-                rec.depth.space,
-                fixed,
-                &world,
-            );
+            let key = produced_key(self.axes.as_ref(), &self.map, rec.depth.space, draw.pivot);
             (Placement::Flat, key)
         } else {
             placement(
