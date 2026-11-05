@@ -217,3 +217,12 @@ def test_a_frozen_frame_no_frame_reads_is_answered_through_its_span(session_of):
     assert Fraction(23, 10) < held.end < Fraction(35, 15)  # before the next frame
     for t in (held.start, (held.start + held.end) / 2):
         assert session.state_at(t).answer == "recorded", t
+
+
+def test_a_scene_whose_code_names_a_method_record_opens(session_of):
+    """The session reads its record from the engine, never from a name the
+    scene's own code can take.
+    """
+    session = session_of("DefinesRecord", grid=15)
+    assert len(session.record.plays) == 1
+    assert session.state_at(Fraction(1, 5)).answer in ("analytic", "recorded")
