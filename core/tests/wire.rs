@@ -165,6 +165,25 @@ fn trailing_fields_of_a_newer_minor_are_skipped() {
     assert_eq!(delta.set[0], record);
 }
 
+/// XF 1.2's normals follow the planes, both written when either is carried; an empty list reads
+/// as one not carried. A newer minor's bytes after them are skipped.
+#[test]
+fn a_records_normals_follow_its_planes() {
+    let mut record = Record::new(RecordKind::Path, 3, 4);
+    record.normals = Some(vec![[0.0, 0.6, 0.8], [0.0; 3]]);
+    let mut raw = wire::encode_record(&record);
+    raw.extend_from_slice(&[1, 2, 3]);
+    let delta = wire::decode_delta(&delta_with_raw_record(&raw)).unwrap();
+    assert_eq!(delta.set[0], record);
+    record.planes = Some(vec![1]);
+    let delta = wire::decode_delta(&delta_with_raw_record(&wire::encode_record(&record))).unwrap();
+    assert_eq!(delta.set[0], record);
+    let mut d = Delta::new(Time { num: 0, den: 1 }, 0);
+    record.planes = None;
+    d.set = vec![record];
+    assert_eq!(&wire::encode_delta(&d)[..4], &[1, 0, 2, 0]);
+}
+
 #[test]
 fn another_major_is_refused() {
     let mut delta = Delta::new(Time { num: 0, den: 1 }, 0);
@@ -364,9 +383,9 @@ fn bytes_after_a_tail_are_still_skipped_and_do_not_shift_the_next_record() {
         .unwrap()
         .set
         .remove(0);
-    // XF 1.2's planes follow the tail; a newer minor's bytes follow them.
+    // XF 1.2's planes and normals (none) follow the tail; a newer minor's bytes follow them.
     let mut planned = raw.clone();
-    planned.extend_from_slice(&[1, 0, 0, 0, 1]);
+    planned.extend_from_slice(&[1, 0, 0, 0, 1, 0, 0, 0, 0]);
     let mut expected_planned = expected.clone();
     expected_planned.planes = Some(vec![1]);
     let mut extended = planned.clone();
@@ -440,7 +459,7 @@ fn the_snapped_canonical_samples_bytes_are_pinned() {
     assert_eq!(&bytes[4..8], &[1, 0, 2, 0]);
     assert_eq!(
         sha256_hex(&bytes),
-        "a1a03ee745bf337c03e6d01285f31ad11e70ceb20d4bc936e787222bc49d5483"
+        "217cef58ae3b74302edc0d74b1740fd16264efb2780b8694f56b24c79585a866"
     );
     assert_eq!(wire::decode_file(&bytes).unwrap(), vec![delta]);
 }

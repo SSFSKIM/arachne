@@ -398,7 +398,7 @@ fn extent(points: &[[f64; 3]]) -> f64 {
 
 /// Newell's normal of the outline through `points`, about `first` so it does not depend on where
 /// the points are.
-fn newell(points: &[[f64; 3]], first: [f64; 3]) -> [f64; 3] {
+pub(crate) fn newell(points: &[[f64; 3]], first: [f64; 3]) -> [f64; 3] {
     let mut n = [0.0; 3];
     for i in 0..points.len() {
         let a = points[i];

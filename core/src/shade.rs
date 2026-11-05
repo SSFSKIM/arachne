@@ -81,6 +81,88 @@ fn scale_div(v: V3, d: f64) -> V3 {
     [v[0] / d, v[1] / d, v[2] / d]
 }
 
+/// The largest absolute coordinate of `v`.
+fn max_abs(v: V3) -> f64 {
+    v[0].abs().max(v[1].abs()).max(v[2].abs())
+}
+
+/// `len(vmob.get_anchors())` for `n` points: start and end anchors zipped, or the one point.
+fn anchors(n: usize) -> usize {
+    if n == 1 {
+        return 1;
+    }
+    let starts = n.div_ceil(4);
+    let ends = if n >= 4 { (n - 4) / 4 + 1 } else { 0 };
+    2 * starts.min(ends)
+}
+
+/// The two vectors CE's normal at point `i` of a face's points is found from: to the points
+/// three on and three back, wrapping as `get_3d_vmob_unit_normal` does.
+fn corner_vectors(points: &[V3], i: usize) -> (V3, V3) {
+    let n = points.len();
+    let im3 = if i > 2 { i - 3 } else { n - 4 };
+    let ip3 = if i < n - 3 { i + 3 } else { 3 };
+    (sub(points[ip3], points[i]), sub(points[im3], points[i]))
+}
+
+/// The corners CE lights a face at: its first point and point `((n - 1) // 6) * 3`.
+fn lit_corners(n: usize) -> [usize; 2] {
+    [0, (n - 1) / 6 * 3]
+}
+
+/// The normals a writer that snaps a shaded face's points to `grid` carries for its two lit
+/// corners (XF 1.2 `normals`), decided on the points as made: CE's normal at each
+/// ([`ce_face_stops`]), or the zero vector at a degenerate corner, which the drawer lights by the
+/// face's own normal ([`ce_face_stops_decided`]).
+///
+/// A corner is degenerate when a point its normal is found from lies off it by more than nothing
+/// and less than one grid step in every coordinate. CE's normal there is the direction of the
+/// float noise in the points as made (a sphere's pole, where `cos(pi / 2)` leaves its points
+/// about 1e-16 apart), and it is the snap's noise in the points drawn. A point exactly on the
+/// corner keeps CE's own rule for a zero vector, which is no noise. A smooth curve's points, a
+/// hundred steps apart and more, are far from the boundary on the other side.
+pub fn decided_normals(points: &[V3], grid: f64) -> [V3; 2] {
+    if points.is_empty() {
+        return [UP; 2];
+    }
+    lit_corners(points.len()).map(|i| {
+        if anchors(points.len()) > 2 {
+            let (v1, v2) = corner_vectors(points, i);
+            let short = |v: V3| {
+                let m = max_abs(v);
+                m > 0.0 && m < grid
+            };
+            if short(v1) || short(v2) {
+                return [0.0; 3];
+            }
+        }
+        face_unit_normal(points, i)
+    })
+}
+
+/// [`ce_face_stops`] with the corners' normals its writer decided ([`decided_normals`]): each as
+/// carried, or at a degenerate corner (the zero vector) the face's Newell normal over `points`,
+/// oriented as CE's corner normal is on a face it winds about; where that cancels too, CE's own
+/// normal from `points`.
+pub fn ce_face_stops_decided(
+    points: &[V3],
+    rgbas: &[[f64; 4]],
+    light: V3,
+    decided: [V3; 2],
+) -> [[f64; 4]; 2] {
+    face_stops(points, rgbas, light, |k, corner| {
+        if decided[k] != [0.0; 3] {
+            return decided[k];
+        }
+        let newell = crate::depth::newell(points, points[0]);
+        if dot(newell, newell) > 0.0 {
+            normalize(newell)
+        } else {
+            face_unit_normal(points, corner)
+        }
+    })
+}
+
 /// `color.get_shaded_rgb`: light or shadow added to a colour at `point` facing `unit_normal`.
 pub fn ce_shaded_rgb(rgb: V3, point: V3, unit_normal: V3, light: V3) -> V3 {
     let to_sun = normalize(sub(light, point));
@@ -94,21 +176,11 @@ pub fn ce_shaded_rgb(rgb: V3, point: V3, unit_normal: V3, light: V3) -> V3 {
 
 /// `three_d_utils.get_3d_vmob_unit_normal` for the point at `i` of a face's points.
 fn face_unit_normal(points: &[V3], i: usize) -> V3 {
-    let n = points.len();
-    // `len(vmob.get_anchors())`: start and end anchors zipped, or the one point.
-    let anchors = if n == 1 {
-        1
-    } else {
-        let starts = n.div_ceil(4);
-        let ends = if n >= 4 { (n - 4) / 4 + 1 } else { 0 };
-        2 * starts.min(ends)
-    };
-    if anchors <= 2 {
+    if anchors(points.len()) <= 2 {
         return UP;
     }
-    let im3 = if i > 2 { i - 3 } else { n - 4 };
-    let ip3 = if i < n - 3 { i + 3 } else { 3 };
-    let normal = ce_unit_normal(sub(points[ip3], points[i]), sub(points[im3], points[i]));
+    let (v1, v2) = corner_vectors(points, i);
+    let normal = ce_unit_normal(v1, v2);
     if dot(normal, normal) == 0.0 {
         return UP;
     }
@@ -119,6 +191,18 @@ fn face_unit_normal(points: &[V3], i: usize) -> V3 {
 /// on): its first two colour stops (one repeated when it has one), lit at its start corner (the
 /// first point) and its end corner (point `((n - 1) // 6) * 3`).
 pub fn ce_face_stops(points: &[V3], rgbas: &[[f64; 4]], light: V3) -> [[f64; 4]; 2] {
+    face_stops(points, rgbas, light, |_, corner| {
+        face_unit_normal(points, corner)
+    })
+}
+
+/// A face's two stops, lit at its corners by `normal(k, corner)` for the `k`th lit corner.
+fn face_stops(
+    points: &[V3],
+    rgbas: &[[f64; 4]],
+    light: V3,
+    normal: impl Fn(usize, usize) -> V3,
+) -> [[f64; 4]; 2] {
     let mut stops = match rgbas {
         [one] => [*one, *one],
         [a, b, ..] => [*a, *b],
@@ -127,12 +211,11 @@ pub fn ce_face_stops(points: &[V3], rgbas: &[[f64; 4]], light: V3) -> [[f64; 4];
     if points.is_empty() {
         return stops;
     }
-    let end = (points.len() - 1) / 6 * 3;
-    for (stop, corner) in stops.iter_mut().zip([0, end]) {
+    for (k, (stop, corner)) in stops.iter_mut().zip(lit_corners(points.len())).enumerate() {
         let rgb = ce_shaded_rgb(
             [stop[0], stop[1], stop[2]],
             points[corner],
-            face_unit_normal(points, corner),
+            normal(k, corner),
             light,
         );
         stop[..3].copy_from_slice(&rgb);

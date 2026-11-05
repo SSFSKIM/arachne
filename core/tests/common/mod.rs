@@ -389,7 +389,7 @@ pub fn pre_projected_sample() -> Delta {
     d
 }
 
-/// XF 1.2's canonical sample: a view snapped to a grid and a record carrying its planes,
+/// XF 1.2's canonical sample: a view snapped to a grid and a record carrying its planes and normals,
 /// separate so the earlier samples retain their exact bytes.
 pub fn snapped_sample() -> Delta {
     let mut d = Delta::new(Time { num: 4, den: 15 }, 5);
@@ -404,6 +404,14 @@ pub fn snapped_sample() -> Delta {
     r.geometry.shape_a = Some(shape.key());
     r.paint.fill = Paint::One([0.2, 0.4, 0.6, 1.0]);
     r.planes = Some(vec![1, 6, 0]);
+    r.normals = Some(vec![
+        [0.0, 0.6, 0.8],
+        [0.0, 0.0, 0.0],
+        [0.6, 0.0, -0.8],
+        [0.0, 0.0, 1.0],
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+    ]);
     d.upload = vec![shape];
     d.set = vec![r];
     d
