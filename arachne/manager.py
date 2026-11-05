@@ -10,6 +10,7 @@ import srt
 
 from . import logger
 from .scene.section import DefaultSectionType
+from .mobject.svg.svg_mobject import forget_parsed_svgs
 from .timeline.clock import exact
 from .timeline.execution import Reexecute, play_keys
 from .utils.exceptions import EndSceneEarlyException
@@ -224,6 +225,9 @@ class Manager(Generic[SceneT]):
         """
         scene = self.scene
         arguments = scene._arguments
+        # The execution before left its parsed images cached: this one
+        # builds them as the first did.
+        forget_parsed_svgs()
         # A renderer the scene was given (rather than made) is used again.
         scene.renderer.renew()
         vars(scene).clear()

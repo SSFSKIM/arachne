@@ -27,6 +27,15 @@ __all__ = ["SVGMobject", "VMobjectFromSVGPath"]
 SVG_HASH_TO_MOB_MAP: dict[int, SVGMobject] = {}
 
 
+def forget_parsed_svgs() -> None:
+    """Empty the cache of parsed images, so that an execution builds its
+    images as a fresh process does. An image built from the cache is not
+    the one parsing built: its parts are the cached copy's, but the image
+    itself was never flipped, so its own sheen direction differs.
+    """
+    SVG_HASH_TO_MOB_MAP.clear()
+
+
 def _convert_point_to_3d(x: float, y: float) -> np.ndarray:
     return np.array([x, y, 0.0])
 
