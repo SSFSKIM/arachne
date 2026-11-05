@@ -101,6 +101,41 @@ def test_a_changed_camera_the_gate_has_not_proved_draws_on_cairo_for_the_whole_s
     assert "project_points" in finding.message
 
 
+def test_a_constructor_that_sets_state_the_core_does_not_model_draws_on_cairo(
+    findings,
+):
+    """A camera class of the scene's own whose constructor (a change the gate
+    proved) sets what the core takes as given: here the value a full colour
+    channel is written as, by which CE writes a point cloud's colours. Nothing
+    the camera produces shows it, so the census reads the camera's state, and
+    the whole scene is drawn on Cairo, with one finding naming it.
+    """
+    _, direct = render(camera_scenes.HalfBrightPictures, FPS, **MEDIUM)
+    before = CorePainter.drawn_total
+    _, core = render(camera_scenes.HalfBrightPictures, FPS, draw_path="core", **MEDIUM)
+    assert CorePainter.drawn_total == before, "no frame drawn on the core"
+    assert len(direct) == len(core) > 0
+    for index, (a, b) in enumerate(zip(direct, core, strict=True)):
+        np.testing.assert_array_equal(a, b, err_msg=f"frame {index}")
+    [finding] = _fallbacks(findings)
+    assert "whole scene" in finding.message
+    assert "rgb_max_val" in finding.message
+
+
+def test_a_camera_that_sets_such_state_as_it_draws_falls_back_whole(findings):
+    """The same state set by the camera's projection in its first capture:
+    the watch sees the change in the scene's first frame, so the whole scene
+    is the camera's own draw from there, and its state, now not what the
+    core takes as given, changes nothing after it.
+    """
+    _, direct = render(camera_scenes.DimmingPictures, FPS, **MEDIUM)
+    _, core = render(camera_scenes.DimmingPictures, FPS, draw_path="core", **MEDIUM)
+    assert len(direct) == len(core) > 0
+    for index, (a, b) in enumerate(zip(direct, core, strict=True)):
+        np.testing.assert_array_equal(a, b, err_msg=f"frame {index}")
+    assert any("rgb_max_val" in f.message for f in _fallbacks(findings))
+
+
 class _Refusing:
     """A core stream that refuses every frame, as the core refuses a record
     it does not draw.
@@ -253,6 +288,30 @@ def test_a_rebinding_first_seen_in_a_later_play_is_unable():
     """
     with pytest.raises(Unable, match="cairo_line_width_multiple"):
         render(camera_scenes.LaterPlayStateSolids, FPS, draw_path="core", **MEDIUM)
+
+
+@pytest.mark.parametrize(
+    "scene_class",
+    [
+        # Changed in a way XF does not carry: on its own, Cairo for the scene.
+        camera_scenes.WrappedAfterAPlay,
+        # Changed in a way the gate proved, then rebinding in its first frame:
+        # on its own, the scene's first frame would fall back.
+        camera_scenes.PatchedAfterAPlay,
+    ],
+    ids=lambda c: c.__name__,
+)
+def test_a_camera_changed_after_the_core_delivered_frames_is_unable(
+    scene_class, findings
+):
+    """One movie, one painter: the scene's first drawing decides the path its
+    frames take, a fallback is possible only while no frame has been
+    delivered, and a drawing that would take another path after that is
+    ``render.unable``, recorded and live drawing alike.
+    """
+    with pytest.raises(Unable, match="render.unable"):
+        render(scene_class, FPS, draw_path="core", **MEDIUM)
+    assert not _fallbacks(findings), findings
 
 
 @pytest.mark.xfail(

@@ -389,10 +389,9 @@ class LivePainter:
         #: The frames :meth:`around` has drawn, the one within it included.
         self._frames = 0
         #: Whether the frame within :meth:`around` belongs to the scene's
-        #: first: no frame but a static picture has been drawn before it.
+        #: first: no frame of the scene, live or recorded, has been delivered
+        #: before it (``painter.delivered``).
         self._opening = False
-        #: Whether a frame other than a play's static picture has been drawn.
-        self._written = False
         #: Per hedged camera (by id), within the scene's first frame: the
         #: camera, its own draw so far and the description of it.
         self._chain: dict[int, tuple[Any, Any, Any]] = {}
@@ -417,6 +416,9 @@ class LivePainter:
         self._own_codes: dict[int, tuple[str, str]] = {}
         #: The scene's instant the captures within :meth:`around` draw.
         self.instant = Fraction(0)
+        #: The scene's camera and the draw path its frames were asked for on,
+        #: within :meth:`around`.
+        self._scene: tuple[Any, str] | None = None
 
     def painter(self, camera: Any) -> Any:
         """The painter of ``camera``'s captures."""
@@ -431,16 +433,20 @@ class LivePainter:
 
     @contextlib.contextmanager
     def around(
-        self, camera: Any, t: Fraction, play: Any = None
+        self, camera: Any, t: Fraction, play: Any = None, asked: str = "core"
     ) -> Iterator[LivePainter]:
         """Within: ``camera``'s captures, and its displays' cameras', are
         described in XF and drawn back from it, as one frame at instant ``t``
-        of the play ``play`` (any key that tells plays apart, if known).
+        of the play ``play`` (any key that tells plays apart, if known), of
+        a scene whose frames were asked for on the draw path ``asked``.
         """
+        from .painter import deliver, delivered
+
         self.instant = t
         self.play = play
+        self._scene = (camera, asked)
         self._frames += 1
-        self._opening = not self._written
+        self._opening = not delivered(camera, asked)
         displays = vars(camera).get("image_mobjects_from_cameras", ())
         cameras = [camera, *(display.camera for display in displays)]
         undo: list[Any] = []
@@ -458,7 +464,7 @@ class LivePainter:
         # A play's static picture is drawn under its first frame: the scene's
         # first frame is both.
         if not static:
-            self._written = True
+            deliver(camera, asked)
 
     def _settle_opening(self, static: bool) -> None:
         """The scene's first frame has been drawn by each hedged camera
@@ -638,8 +644,7 @@ class LivePainter:
                 # context's, held in place, outside the camera): its own
                 # draw stands, from then on.
                 _UNSETTLED[camera] = (
-                    f"its capture at t={self.instant} drew other than XF"
-                    " describes it"
+                    f"its capture at t={self.instant} drew other than XF describes it"
                 )
                 self._fall_back(camera)
                 return
@@ -692,6 +697,11 @@ class LivePainter:
             return
         self._fallen.add(id(camera))
         from .lint import raise_finding
+        from .painter import fall_back
+
+        if not self.draw and self._scene is not None:
+            # The whole scene is its camera's own draw from its first frame.
+            fall_back(*self._scene)
 
         own = self._own_codes.get(id(camera))
         subject, why = own if own is not None else (type(camera).__name__, "")
@@ -1014,7 +1024,7 @@ def live(
         # draws the picture (its real draw would only be thrown away).
         found = (pid, LivePainter(draw=path != "core", path=path))
         _LIVE[camera] = found
-    with found[1].around(camera, t, play) as painter:
+    with found[1].around(camera, t, play, draw_path) as painter:
         yield painter
 
 
