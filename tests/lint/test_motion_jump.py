@@ -329,6 +329,72 @@ def test_a_scene_that_never_armed_has_every_cut_measured(session_of):
     ]
 
 
+#: What the reference checks find on CE for the counted scenes, at a 15 fps
+#: clock (the render's grid): (t, distance, from, to, from_play, to_play).
+COUNTED_CE = {
+    "ArmedByTheCount": (2.0, 4.0, [-1.0, 0.0], [3.0, 0.0], 1, 2),
+    "PlaysByTheCount": (1.0, 3.0, [-2.0, 0.0], [1.0, 0.0], 0, 1),
+    "FrozenByTheCount": (1.0, 3.0, [-2.0, 0.0], [1.0, 0.0], 0, 1),
+}
+
+
+@pytest.mark.parametrize("name", list(COUNTED_CE))
+def test_a_finer_record_s_motion_is_the_render_s_execution_s(session_of, name):
+    """Recorded on a finer grid than the render's, the scene arms the rule
+    later (ArmedByTheCount), splits a play in two (PlaysByTheCount) or
+    freezes a wait (FrozenByTheCount); the lint reads the render's
+    execution, a forward run, and measures its own plays from its own
+    arming, as the reference checks find on CE. Where the two executions'
+    plays differ, so does the lint: a replay.diverged.
+    """
+    finer = session_of(name, MOTION, grid=None, frame_rate=15)
+    render = session_of(name, MOTION, frame_rate=15)
+    found = lint(finer, rules=(motion_jump,)).findings
+    (jump,) = [f for f in found if f.code == "motion.jump"]
+    (expected,) = lint(render, rules=(motion_jump,)).findings
+    t, distance, start, end, before, after = COUNTED_CE[name]
+    for finding in (jump, expected):
+        assert finding.t_start == Fraction(t)
+        assert finding.detail["distance"] == pytest.approx(distance, abs=1e-6)
+        assert finding.detail["from"] == pytest.approx(start, abs=1e-6)
+        assert finding.detail["to"] == pytest.approx(end, abs=1e-6)
+        assert finding.detail["boundary"] == {"from_play": before, "to_play": after}
+    assert jump.line == expected.line
+    (run,) = finer.forward_runs
+    diverged = [f for f in found if f.code == "replay.diverged"]
+    if len(finer.record.plays) == len(render.record.plays):
+        assert run.divergence is None
+        assert diverged == []
+    else:
+        assert run.divergence is not None
+        assert [f.severity for f in diverged] == ["error"]
+
+
+def test_an_execution_s_play_left_unread_is_a_divergence(session_of):
+    """The render's execution waits longer than the finer record: its wait's
+    frames past the record's end were never asked for, so that play is not
+    measured, and the lint says the executions differ, once, whether or
+    not the comparison of the two found it first.
+    """
+    finer = session_of("LongerByTheCount", MOTION, grid=None, frame_rate=15)
+
+    def forget(context):
+        # As if the comparison had found nothing.
+        context.session.divergences.clear()
+        return ()
+
+    # The record's end, a lint instant, is inside the longer execution's
+    # last play, which kept no capture there: the forward run visits it.
+    plain = lint(finer, rules=()).findings
+    assert [f.code for f in plain] == ["replay.diverged"]
+    for rules in ((motion_jump,), (forget, motion_jump)):
+        found = lint(finer, rules=rules).findings
+        assert [f.code for f in found if f.code == "motion.jump"] == []
+        (diverged,) = [f for f in found if f.code == "replay.diverged"]
+        assert diverged.severity == "error"
+        assert diverged.detail["play"] == 1
+
+
 def test_a_live_camera_picture_that_turned_visible_jumps(session_of):
     """As the other backend finds it: 3 units, from play 1 to play 2, the
     display having turned visible while it held the same view of its camera.

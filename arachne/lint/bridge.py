@@ -476,7 +476,9 @@ class _IfForward:
         self._frames = frames
         self.session = frames.session
 
-    def request(self, owner: Any, times: Any, read: Any) -> None:
+    def request(
+        self, owner: Any, times: Any, read: Any, *, forward_only: bool = True
+    ) -> None:
         self._frames.request(owner, times, read, forward_only=True)
 
     def require_forward(self) -> None:
