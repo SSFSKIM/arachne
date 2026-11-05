@@ -25,6 +25,7 @@ from arachne import (
     LaggedStart,
     Mobject,
     MovingCameraScene,
+    NumberLine,
     Scene,
     Square,
     Succession,
@@ -416,3 +417,13 @@ class DefinesRecord(Scene):
     def construct(self):
         self.add(self.record(1))
         self.play(FadeIn(self.record(-1)), run_time=0.4)
+
+
+class TimelineDiagram(Scene):
+    """A scene whose code keeps its own diagram as ``self.timeline``."""
+
+    def construct(self):
+        self.timeline = NumberLine(x_range=[0, 4], length=4)
+        self.add(self.timeline)
+        self.play(self.timeline.animate.shift(UP), run_time=0.5)
+        self.wait(0.25)

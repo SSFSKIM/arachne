@@ -522,7 +522,7 @@ def execute(
                 if not isinstance(scene_class, type):
                     raise LookupError(f"{path.name} defines no scene named {scene!r}.")
                 instance: Scene = scene_class()
-                instance.timeline = recorder(instance)
+                instance._arachne_timeline = recorder(instance)
                 instance.render()
             except BaseException:
                 sys.modules.pop(module.__name__, None)

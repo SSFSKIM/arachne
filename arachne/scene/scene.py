@@ -50,6 +50,18 @@ if TYPE_CHECKING:
     from ..timeline.record import Record
 
 
+class _Timeline:
+    """The scene's recorder, read as ``scene.timeline``. Only read: a
+    scene's code that sets ``self.timeline`` keeps its own value there, and
+    the engine goes on reading its recorder as ``_arachne_timeline``.
+    """
+
+    def __get__(self, scene: Scene | None, owner: type | None = None) -> Any:
+        if scene is None:
+            return self
+        return scene._arachne_timeline
+
+
 class Scene:
     """A Scene is the canvas of your animation.
 
@@ -183,8 +195,10 @@ class Scene:
         self.mobjects: list[Mobject] = []
         # TODO, remove need for foreground mobjects
         self.foreground_mobjects: list[Mobject] = []
-        #: Records the scene's run, keeping the instants of its frame grid.
-        self.timeline = Recorder(self, grid=config.frame_rate)
+        # Records the scene's run, keeping the instants of its frame grid;
+        # read as :attr:`timeline`. The engine reads it under this name only:
+        # a scene's code may take ``timeline`` for itself.
+        self._arachne_timeline = Recorder(self, grid=config.frame_rate)
 
         random.seed(self.random_seed)
         np.random.seed(self.random_seed)  # noqa: NPY002 (only way to set seed globally)
@@ -204,26 +218,28 @@ class Scene:
     @property
     def record(self) -> Record | None:
         """The forward record of this scene's run, once it has started."""
-        return self.timeline.record
+        return self._arachne_timeline.record
+
+    timeline = _Timeline()
 
     def __deepcopy__(self, clone_from_id: dict[int, Any]) -> Scene:
         cls = self.__class__
         result = cls.__new__(cls)
         clone_from_id[id(self)] = result
         for k, v in self.__dict__.items():
-            if k in ["manager", "renderer", "time_progression", "timeline"]:
+            if k in ["manager", "renderer", "time_progression", "_arachne_timeline"]:
                 continue
             if k == "camera_class":
                 setattr(result, k, v)
             setattr(result, k, copy.deepcopy(v, clone_from_id))
         result.manager = None
-        result.timeline = Recorder(
+        result._arachne_timeline = Recorder(
             result,
-            grid=self.timeline.grid,
-            stepping=self.timeline.stepping,
-            on_step=self.timeline.on_step,
-            on_tick=self.timeline.on_tick,
-            on_start=self.timeline.on_start,
+            grid=self._arachne_timeline.grid,
+            stepping=self._arachne_timeline.stepping,
+            on_step=self._arachne_timeline.on_step,
+            on_tick=self._arachne_timeline.on_tick,
+            on_start=self._arachne_timeline.on_start,
         )
 
         return result
@@ -345,7 +361,7 @@ class Scene:
         or wraps this (:mod:`arachne.timeline.hooks`). Between frames the play
         runs the updaters without calling this.
         """
-        hooks.update_mobjects(self, self.timeline.base_dt("update_mobjects", dt))
+        hooks.update_mobjects(self, self._arachne_timeline.base_dt("update_mobjects", dt))
 
     def update_meshes(self, dt: float) -> None:
         """CE's per-frame mesh update, called from :meth:`update_to_time`
@@ -372,7 +388,7 @@ class Scene:
         Called as :meth:`update_mobjects` is: at a frame the updaters run with
         the play's own ``dt``, and between frames without this being called.
         """
-        hooks.update_self(self, self.timeline.base_dt("update_self", dt))
+        hooks.update_self(self, self._arachne_timeline.base_dt("update_self", dt))
 
     def should_update_mobjects(self) -> bool:
         """
@@ -1263,7 +1279,7 @@ class Scene:
         is evaluated, whatever is skipped) raises
         :class:`~arachne.timeline.hooks.SceneHookRefused`.
         """
-        self.timeline.play_body(skip_rendering)
+        self._arachne_timeline.play_body(skip_rendering)
 
     def update_to_time(self, t: float) -> None:
         """Bring the current play to its local time ``t``. A play calls it at
@@ -1277,7 +1293,7 @@ class Scene:
         Called outside a play's evaluation, it does CE's work with ``dt`` the
         time since the last call: one animation after the other.
         """
-        frame = self.timeline.frame
+        frame = self._arachne_timeline.frame
         if frame is not None:
             frame.reach_time(t)
             self.last_t = t
@@ -1305,7 +1321,7 @@ class Scene:
         (:attr:`record`) with its time and source line, for tools that read
         the timeline.
         """
-        self.timeline.mark("mark", {"label": label, **data})
+        self._arachne_timeline.mark("mark", {"label": label, **data})
 
     def add_subcaption(
         self, content: str, duration: float | Fraction = 1, offset: float | Fraction = 0
