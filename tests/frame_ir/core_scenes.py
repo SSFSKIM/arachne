@@ -7,16 +7,21 @@ agree on beneath it.
 
 from __future__ import annotations
 
+import numpy as np
+
 from arachne import (
     BLUE,
     DEGREES,
+    GREEN,
     ORIGIN,
     RED,
     WHITE,
     YELLOW,
+    Prism,
     Rectangle,
     Scene,
     Square,
+    Surface,
     Text,
     ThreeDScene,
 )
@@ -56,3 +61,23 @@ class FlatSquares(Scene):
         moved = Square(color=RED)
         self.add(Square(color=BLUE, fill_opacity=0.5), moved)
         self.play(moved.animate.shift([1.0, 0.0, 0.0]), run_time=0.2)
+
+
+class ShadedSolids(ThreeDScene):
+    """A prism and a gently curved surface lit by CE's light, each face a
+    two-stop gradient, under a short orbit: nothing occludes itself, so
+    CE's order and the core's depth agree inside every face.
+    """
+
+    def construct(self):
+        self.set_camera_orientation(phi=60 * DEGREES, theta=-50 * DEGREES)
+        prism = Prism(dimensions=[1.6, 1.2, 1.0], fill_color=RED).shift([-2.2, 0, 0])
+        surface = Surface(
+            lambda u, v: np.array([u, v, 0.15 * np.sin(u) * np.cos(v)]),
+            u_range=[-1.5, 1.5],
+            v_range=[-1.5, 1.5],
+            resolution=(6, 6),
+            checkerboard_colors=[BLUE, GREEN],
+        ).shift([1.6, 0, 0])
+        self.add(prism, surface)
+        self.move_camera(theta=-30 * DEGREES, run_time=0.4)
