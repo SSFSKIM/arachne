@@ -661,16 +661,19 @@ class Recorder:
     def _state(self, kind: str, extra: Sequence[Mobject] = ()) -> Capture:
         """The scene now, with ``extra`` beside it, as a capture no frame
         draws, and what the scene's declarations name now
-        (:meth:`Bridge.read_changes`).
+        (:meth:`Bridge.read_changes`). No frame is drawn of it, so the
+        camera's callbacks are not called for it: their values are the last
+        a drawn capture recorded.
         """
         camera = self.scene.renderer.camera
         record = self.ensure_record()
         record.bridge.read_changes(self.scene.time, seq=record.last_seq)
+        drawn = record._captures[-1].camera if record._captures else None
         return record._capture(
             kind,
             self.scene.time,
             [*extra, *camera_nodes(camera)],
-            CameraExtras.observe(camera, None),
+            CameraExtras.observe(camera, drawn, evaluate=False),
             drawn=False,
         )
 

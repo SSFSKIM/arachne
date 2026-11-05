@@ -296,11 +296,13 @@ def _reader(session: Session) -> FrameReader[_Read]:
         live: bool,
     ) -> _Read:
         parts = parts_of(record, t, play, capture, live)
-        if live:
-            # The forward run's scene holds the capture now, its camera the
-            # map the frame is drawn with: the parts' view.
-            return _Read(parts, _boxes(record, capture, parts.view))
         with Drawing(record) as drawing:
+            if live:
+                # The forward run's scene holds the capture now, its camera
+                # the map the frame is drawn with (the parts' view), through
+                # the inputs the capture recorded.
+                drawing.show_camera(capture)
+                return _Read(parts, _boxes(record, capture, parts.view))
             drawing.show(capture, capture.draw_list())
             return _Read(parts, _boxes(record, capture, record_view(record)))
 

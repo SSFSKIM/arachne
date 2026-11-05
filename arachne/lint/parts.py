@@ -261,19 +261,24 @@ def build_parts(
     """The parts ``capture`` draws, the frame at ``t`` of ``play`` (``None``
     for the final capture): read from the record, every mobject given its
     captured state, or with ``live`` from the scene as it is now, a forward
-    run holding that capture. Pixel boxes are at ``target``,
-    ``(width, height)``.
+    run holding that capture, through the camera's inputs as the capture
+    recorded them (its callbacks' values, not the callbacks). Pixel boxes
+    are at ``target``, ``(width, height)``.
     """
     if live:
         # The run is drawing as it goes: its camera holds the map its frames
-        # are drawn with, and its record is not finished.
+        # are drawn with, and its record is not finished. Read through the
+        # values the capture recorded, so that reading runs none of the
+        # scene's code and leaves the run as it would be unread.
         timeline = record._scene.timeline
-        view = view_of(
-            record._scene.renderer.camera,
-            home=timeline.home,
-            configured_pixels=timeline.configured_pixels,
-        )
-        return _read(record, t, play, capture, answer, view, target)
+        with Drawing(record) as drawing:
+            drawing.show_camera(capture)
+            view = view_of(
+                record._scene.renderer.camera,
+                home=timeline.home,
+                configured_pixels=timeline.configured_pixels,
+            )
+            return _read(record, t, play, capture, answer, view, target)
     static, moving = _lists(play, capture)
     with Drawing(record) as drawing:
         drawing.show(capture, [*capture.draw_list(), *static, *moving])
