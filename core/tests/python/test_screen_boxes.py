@@ -75,7 +75,7 @@ def test_the_drawer_paints_a_path_where_its_box_is():
     assert (x0, x1) == pytest.approx((55.0, 65.0))
 
 
-def test_a_face_group_has_a_box_though_the_drawer_refuses_it():
+def test_a_face_group_has_a_box_and_is_drawn():
     delta = view_delta()
     faces = delta.upload_path(np.concatenate([square((-2, 0)), square((3, 1))]))
     fills = delta.upload_paint(np.ones((2, 4)))
@@ -92,8 +92,7 @@ def test_a_face_group_has_a_box_though_the_drawer_refuses_it():
     stream = ac.Stream()
     stream.apply(delta)
     assert stream.screen_boxes() == {1: pytest.approx((50.0, 25.0, 120.0, 55.0))}
-    with pytest.raises(ac.Unsupported):
-        stream.draw(160, 90)
+    assert stream.draw(160, 90).shape == (90, 160, 4)
 
 
 def test_only_slots_in_the_order_with_points_have_boxes():

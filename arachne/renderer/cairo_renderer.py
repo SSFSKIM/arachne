@@ -61,6 +61,8 @@ class CairoRenderer:
         self.skip_animations = skip_animations
         self.animations_hashes: list[str | None] = []
         self.num_plays = 0
+        #: Whether the capture being made is a play's static picture.
+        self._capturing_static = False
         self._clock = Fraction(0)
         self.static_image: PixelArray | None = None
 
@@ -292,7 +294,10 @@ class CairoRenderer:
         kwargs["include_submobjects"] = include_submobjects
         from ..frame_ir.live import live
 
-        with live(self.camera, self.clock):
+        # A play's static picture is told apart from its frames: the core
+        # watches the first of each (``LivePainter._sample``).
+        play = ("static", self.num_plays) if self._capturing_static else self.num_plays
+        with live(self.camera, self.clock, play=play):
             self.camera.capture_mobjects(mobjects, **kwargs)
 
     def render(
@@ -375,7 +380,11 @@ class CairoRenderer:
         self.static_image = None
         if not static_mobjects:
             return None
-        self.update_frame(scene, mobjects=static_mobjects)
+        self._capturing_static = True
+        try:
+            self.update_frame(scene, mobjects=static_mobjects)
+        finally:
+            self._capturing_static = False
         self.static_image = self.get_frame()
         return self.static_image
 
