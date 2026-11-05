@@ -168,17 +168,29 @@ def _schedule(
     play (the state it calls it on), then at the first frame it reads
     (:func:`_read_frames`) at least :data:`HOLD_SAMPLE` after the sample
     before while it plays (a frozen frame has none), and as it ends (the
-    state it leaves); and the scene as it closes.
+    state it leaves); and the scene as it closes. A play ``since`` falls
+    inside is watched from there: at ``since``, by the frame on screen then
+    (or the play's first after it), and on as any play is.
     """
     grid = render_grid(record)
     steps = []
     for play in record.plays:
-        if play.start < since:
-            continue
-        steps.append(_Step("entry", play.index, None, play.start))
         frames = frames_in(play.start, play.end, grid)
+        last = play.start
+        if play.start >= since:
+            steps.append(_Step("entry", play.index, None, play.start))
+        elif play.end > since:
+            # Armed inside the play: its call is before the watch.
+            before = [frame for frame in frames if frame <= since]
+            after = [frame for frame in frames if frame > since]
+            first = before[-1] if before else (after[0] if after else None)
+            if first is not None:
+                last = max(first, since)
+                steps.append(_Step("inside", play.index, first, last))
+                frames = [frame for frame in frames if frame > first]
+        else:
+            continue
         if frames and not play.held:
-            last = play.start
             for frame in _read_frames(play, frames, sample_fps):
                 if frame - last >= HOLD_SAMPLE:
                     steps.append(_Step("inside", play.index, frame, frame))

@@ -77,14 +77,14 @@ class ArmedRule:
         exempt: Iterable[Any] = (),
         sample_fps: Fraction | float | None = None,
     ) -> ArmedRule:
-        """This rule armed at ``since`` under the terms given."""
+        """This rule armed at ``since`` under the terms given. Raises
+        :class:`ValueError` for a ``sample_fps`` that is not positive.
+        """
+        rate = exact(sample_fps) if sample_fps is not None else None
+        if rate is not None and rate <= 0:
+            raise ValueError(f"sample_fps is a rate above 0, not {sample_fps!r}")
         terms = Terms(pad, text_gap, Exemptions.parse(exempt), mid_scene=True)
-        return replace(
-            self,
-            since=exact(since),
-            terms=terms,
-            sample_fps=exact(sample_fps) if sample_fps is not None else None,
-        )
+        return replace(self, since=exact(since), terms=terms, sample_fps=rate)
 
     def terms_at(self, record: Record, t: Fraction, play: int | None = None) -> Terms:
         """The terms ``record``'s scene is held to at ``t``, an instant of

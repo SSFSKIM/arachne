@@ -247,13 +247,14 @@ class States:
 
     def covers(self, plays: Sequence[PlayRecord], since: Fraction) -> bool:
         """Whether every state of the scene from the time ``since`` on is
-        kept: it was armed by then, and every play starting then or later
-        has its call and its exit.
+        kept: it was armed by then, every play starting then or later has its
+        call and its exit, and a play running then has its exit.
         """
         return self.armed <= since and all(
-            play.index in self.calls and play.index in self.exits
+            (play.start < since or play.index in self.calls)
+            and play.index in self.exits
             for play in plays
-            if play.start >= since
+            if play.end > since or play.start >= since
         )
 
 
