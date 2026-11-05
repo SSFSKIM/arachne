@@ -10,8 +10,30 @@ import pytest
 import arachne
 
 
+def _cpu() -> str:
+    """The CPU's model, and whether it has AVX-512 (numpy's vectorised loops
+    differ with it in their last bits).
+    """
+    try:
+        info = Path("/proc/cpuinfo").read_text()
+    except OSError:
+        import platform
+
+        return platform.processor() or platform.machine()
+    model = next(
+        (
+            line.split(":", 1)[1].strip()
+            for line in info.splitlines()
+            if line.startswith("model name")
+        ),
+        "unknown",
+    )
+    flags = next((line for line in info.splitlines() if line.startswith("flags")), "")
+    return f"{model} ({'avx512f' if ' avx512f' in flags else 'no avx512f'})"
+
+
 def pytest_report_header(config):
-    return f"\nCairo Version: {cairo.cairo_version()}"
+    return f"\nCairo Version: {cairo.cairo_version()}\nCPU: {_cpu()}"
 
 
 def pytest_addoption(parser):
