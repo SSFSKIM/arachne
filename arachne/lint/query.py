@@ -84,10 +84,11 @@ if TYPE_CHECKING:
 _TOUCHING = ("overlap.text", "gap.text", "contact.held")
 
 #: The camera methods that only paint: each puts down the pixels of shapes
-#: whose place on the picture the projection decides (the path setter calls
-#: it, and it is not listed), so a replacement that wraps one, to count or to
-#: restyle, changes how the picture looks and not where anything on it is.
-#: Closed: a replaced method not listed here, a projection among them, marks
+#: whose place on the picture the projection and the path setter decide
+#: (neither is listed: the path setter builds each outline from the projected
+#: points), so a replacement that wraps one, to count or to restyle, changes
+#: how the picture looks and not where anything on it is. Closed: a replaced
+#: method not listed here, a projection or the path setter among them, marks
 #: the answers that measure the picture.
 DRAW_ONLY = (
     # Paints one vectorized shape: its path, stroke and fill on the context.
@@ -98,8 +99,7 @@ DRAW_ONLY = (
     # Paint images over the corners they are placed at.
     "display_multiple_image_mobjects",
     "display_image_mobject",
-    # Set the Cairo context's path and colour for the paint that follows.
-    "set_cairo_context_path",
+    # Sets the Cairo context's colour for the paint that follows.
     "set_cairo_context_color",
 )
 

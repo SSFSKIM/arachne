@@ -402,3 +402,17 @@ def test_a_draw_counting_wrapper_leaves_the_answers_measured(session_of):
     (found,) = answers["overlaps"]
     assert found.code == "overlap.text"
     assert {found.a.text, found.b.text} == {"top", "low"}
+
+
+def test_a_replaced_path_setter_marks_the_screen_space_answers(session_of):
+    """The path setter builds each outline from the projected points, so the
+    scene's own may put the picture elsewhere: it is no method that only
+    paints.
+    """
+    session = session_of("ReplacesItsPathSetter", QUERIES, frame_rate=15)
+    t = Fraction(2, 3)
+    query = session.query(t)
+    (square,) = [n for n in session.state_at(t).nodes if n.type == "Square"]
+    for name, answer in _screen_space(query, square.id).items():
+        assert isinstance(answer, CameraReplaced), name
+        assert answer.replaced == ("Camera.set_cairo_context_path (on the instance)",)

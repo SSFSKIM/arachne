@@ -187,3 +187,20 @@ class CountsItsDraws(Scene):
 
         camera.display_vectorized = counting
         _words_on_words(self)
+
+
+class ReplacesItsPathSetter(Scene):
+    """The camera instance holds the scene's own path setter, which builds
+    each outline from the projected points: here, slid sideways.
+    """
+
+    def construct(self):
+        camera = self.renderer.camera
+        set_path = camera.set_cairo_context_path
+
+        def shifted(ctx, vmobject):
+            ctx.translate(-20, 0)
+            return set_path(ctx, vmobject)
+
+        camera.set_cairo_context_path = shifted
+        _words_on_words(self)
