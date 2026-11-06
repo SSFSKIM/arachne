@@ -24,6 +24,7 @@ from arachne import (
     RIGHT,
     TAU,
     ParametricFunction,
+    Square,
     Surface,
     ThreeDAxes,
     ThreeDScene,
@@ -355,3 +356,61 @@ def test_a_shaded_curve_cairo_s_overlay_draws_is_lit_by_its_normals_as_made(
     shaded = _snapped_from_made(SpringFixedInFrame, monkeypatch)
     unshaded = _snapped_from_made(UnshadedSpringFixedInFrame, monkeypatch)
     assert shaded <= unshaded, (shaded, unshaded)
+
+
+def _guarding(record_fields: dict, *, prototype_held: bool = True) -> None:
+    """The guard on a frame whose one record is an ``instances`` record over
+    a square's path shape (``prototype_held``; else over a shape the Python
+    stream does not hold, as a mesh is), under a shading 3D view.
+    """
+    from arachne.frame_ir.xf import Delta, Record, Shape
+
+    square = Shape("path", Square().points)
+    view = {"camera": "three_d", "should_apply_shading": True, "input_grid": 2**-14}
+    record = Record(
+        "instances",
+        {
+            "shape": square.key,
+            "placements": np.stack([np.eye(3, 4)] * 2),
+            "objects": [1, 2],
+            "shade_in_3d": True,
+            **record_fields,
+        },
+    )
+    painter = CorePainter()
+    painter.state.apply(
+        Delta(
+            view=view,
+            upload=[square] if prototype_held else [],
+            set=[(1, record)],
+            order=[("moving", 1, 0)],
+        )
+    )
+    painter._refuse_undecided([])
+
+
+#: What the writer decides for a two-member instances record of one path.
+_DECIDED = {"planes": (0, 0), "normals": [(0.0, 0.0, 1.0)] * 4}
+
+
+@pytest.mark.parametrize(
+    ("dropped", "named"),
+    [("planes", "without its planes"), ("normals", "without its normals")],
+)
+def test_instances_of_a_path_reach_the_core_only_with_what_is_decided_before_the_snap(
+    dropped, named
+):
+    """The core draws an ``instances`` record whose prototype is a path as
+    it draws a path: such a record without its planes, or shaded without its
+    normals, is refused as a path is.
+    """
+    _guarding(_DECIDED)
+    with pytest.raises(Unable, match=f"render.unable: .*{named}"):
+        _guarding({k: v for k, v in _DECIDED.items() if k != dropped})
+
+
+def test_instances_of_a_prototype_that_is_no_path_are_outside_the_path_checks():
+    """An ``instances`` record over a prototype that is no path (a mesh,
+    which the Python stream does not hold) carries no planes or normals.
+    """
+    _guarding({}, prototype_held=False)
