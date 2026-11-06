@@ -36,6 +36,7 @@ from arachne.lint.motion import motion_jump
 from arachne.lint.query import CameraReplaced
 from arachne.lint.rules import Terms, contact, sweep_findings
 from arachne.lint.rules import sweep as sweep_rule
+from arachne.lint.serialise import violation
 from arachne.session import Session
 from arachne.timeline import admission
 from arachne.timeline.clock import frames_in
@@ -661,6 +662,26 @@ def test_a_sweep_finds_at_the_call_s_line_and_time(session_of):
     assert found.t_start == found.t_end == Fraction(3, 2)
     assert [o.id for o in found.objects] == [o["id"] for o in returned["objects"]]
     assert len(found.objects) == 2
+
+
+def test_a_sweep_s_members_of_two_lines_fold_into_one_finding(session_of):
+    """Five squares of one line on five of another, swept at one instant
+    with another pair among theirs: the lint gives one finding for the line
+    pair, counting the other four, and the other pair's own.
+    """
+    session = session_of("SweptMembers", BRIDGE, frame_rate=15)
+    assert len(session.scene.found) == 6
+    rows, rings = _clearance(lint(session))
+    assert [o.source_line for o in rows.objects] == [_line("uppers"), _line("lowers")]
+    assert len(rows.folded) == 4
+    assert {o.source_line for f in rows.folded for o in f.objects} == {
+        _line("uppers"),
+        _line("lowers"),
+    }
+    assert rows.t_start == rows.t_end == Fraction(1, 2)
+    assert rings.folded == ()
+    assert violation(rows)["detail"]["folded"] == 4
+    assert "and 4 more like it" in violation(rows)["message"]
 
 
 @pytest.mark.parametrize("scene", ["SweptRowsLoose", "SweptRowsNoGap"])
