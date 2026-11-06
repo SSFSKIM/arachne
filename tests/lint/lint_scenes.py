@@ -18,6 +18,7 @@ from arachne import (
     Circle,
     Dot,
     ImageMobject,
+    Line,
     MappingCamera,
     PMobject,
     Scene,
@@ -188,4 +189,41 @@ class CornerCloud(Scene):
         corners = [[x, y, 0.0] for x in (-w, w) for y in (-h, h)]
         cloud = PMobject(stroke_width=40).add_points(np.array(corners))
         self.add(cloud)
+        self.wait(0.25)
+
+
+def lines(across: int, down: int, *, side: float = 2.0, short: float = 0.0) -> VGroup:
+    """``across`` horizontal and ``down`` vertical lines spaced evenly over a
+    square of ``side``, each from edge to edge of it, or ``short`` of each
+    edge.
+    """
+    half = side / 2
+
+    def spaced(count):
+        return (
+            [half * (2 * i / (count - 1) - 1) for i in range(count)]
+            if count > 1
+            else [0.0]
+        )
+
+    reach = half - short
+    rows = (
+        [Line([-reach, y, 0], [reach, y, 0]) for y in spaced(across)] if across else []
+    )
+    cols = [Line([x, -reach, 0], [x, reach, 0]) for x in spaced(down)] if down else []
+    return VGroup(*rows, *cols)
+
+
+class Lattices(Scene):
+    """Groups of lines side by side: a lattice of three each way, and three
+    that are not one (one direction only, two lines one way, lines stopping
+    short of the box their group spans).
+    """
+
+    def construct(self):
+        lattice = lines(3, 3).shift(LEFT * 4.5)
+        parallel = lines(5, 0).shift(LEFT * 1.5)
+        sparse = lines(2, 5).shift(RIGHT * 1.5)
+        short = VGroup(lines(3, 0, short=0.3), lines(0, 3)).shift(RIGHT * 4.5)
+        self.add(lattice, parallel, sparse, short)
         self.wait(0.25)

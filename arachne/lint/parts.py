@@ -18,7 +18,8 @@ number and the like, whole) as the ink of its glyph leaves, and every other
 leaf on its own, a text's background rectangle among them. Each part has its
 stable id, creating line and name, the groups holding it, and whether it is
 axis furniture (an axis line, its tip, ticks and numbers) or part of a grid
-(a number plane or vector field). Two copies of one text laying the same ink
+(a number plane or vector field, or a lattice of lines: :func:`_lattice`).
+Two copies of one text laying the same ink
 in one place are one text, counting its ``copies`` (a transform's copy left
 on its original); a copy drawn otherwise (a wider stroke) is a text of its
 own. Reading texts as whole and equal ink as one follows ManimGX's
@@ -60,6 +61,13 @@ if TYPE_CHECKING:
 _SAME_POINT = 1e-6
 #: Decimals ink is compared to, in screen units, for two copies of a text.
 _INK_DECIMALS = 3
+#: Lines a lattice needs each way.
+LATTICE_LINES = 3
+#: How near (a share of its box's longer side) a lattice line's end lies to
+#: the edge of the box, and a point of it to its straight course.
+_LATTICE_NEAR = 1e-3
+#: Radians within which two lattice lines run one way.
+_LATTICE_ANGLE = 1e-3
 
 
 @dataclass(frozen=True)
@@ -80,7 +88,8 @@ class Unit:
     unit's own family, or for furniture its axes' (or lone number line's)
     whole family. An exemption naming any of these, or a group holding the
     unit, names the unit. ``tip`` says whether it carries a tip of its own
-    (an arrow), which makes an open stroke a thing on screen.
+    (an arrow), which makes an open stroke a thing on screen. ``grid`` says
+    whether it is part of a grid, as :attr:`Part.grid`.
     """
 
     id: str
@@ -93,6 +102,7 @@ class Unit:
     within: tuple[Holder, ...]
     family: tuple[Holder, ...] = ()
     tip: bool = False
+    grid: bool = False
 
 
 @dataclass(frozen=True, eq=False)
@@ -423,6 +433,65 @@ def _grid_types() -> tuple[type, ...]:
     return (NumberPlane, PolarPlane, VectorField)
 
 
+def _lattice(group: Mobject) -> bool:
+    """Whether ``group``, a mobject at the scene's top level, is a lattice of
+    lines: everything it draws a stroke that is open, straight and unfilled,
+    in exactly two directions, at least :data:`LATTICE_LINES` each way, and
+    each from one edge to the opposite edge of the box of the group's own
+    lines (the group's bounding box, not the frame's). Lines one way only
+    are not a grid: force lines or rulings, where a touch is real.
+    """
+    from arachne.mobject.types.vectorized_mobject import VMobject
+
+    strokes = []
+    for member in group.get_family():
+        points = np.asarray(member.points, dtype=float)
+        if not len(points):
+            continue
+        if not isinstance(member, VMobject) or np.any(member.get_fill_opacities() > 0):
+            return False
+        strokes.append(points[:, :2])
+    if len(strokes) < 2 * LATTICE_LINES:
+        return False
+    every = np.vstack(strokes)
+    low, high = every.min(axis=0), every.max(axis=0)
+    near = _LATTICE_NEAR * float(max(high - low))
+    if near <= 0:
+        return False
+    directions: list[tuple[float, int]] = []
+    for points in strokes:
+        start, end = points[0], points[-1]
+        course = end - start
+        length = float(np.hypot(*course))
+        if length <= near:
+            return False
+        rel = points - start
+        off = np.abs(course[0] * rel[:, 1] - course[1] * rel[:, 0]) / length
+        if float(off.max()) > near or not _edge_to_edge(start, end, low, high, near):
+            return False
+        angle = float(np.arctan2(course[1], course[0])) % np.pi
+        for index, (seen, count) in enumerate(directions):
+            if min(abs(angle - seen), np.pi - abs(angle - seen)) <= _LATTICE_ANGLE:
+                directions[index] = (seen, count + 1)
+                break
+        else:
+            directions.append((angle, 1))
+    return len(directions) == 2 and all(n >= LATTICE_LINES for _, n in directions)
+
+
+def _edge_to_edge(
+    start: np.ndarray, end: np.ndarray, low: np.ndarray, high: np.ndarray, near: float
+) -> bool:
+    """Whether a line's ends lie on opposite edges of the box ``low``,
+    ``high`` (left and right, or bottom and top), within ``near``.
+    """
+    for axis in (0, 1):
+        ends = sorted((float(start[axis]), float(end[axis])))
+        if abs(ends[0] - low[axis]) <= near and abs(ends[1] - high[axis]) <= near:
+            return True
+    return False
+
+
 def _furniture(line: Mobject) -> Iterator[Mobject]:
     """An axis's furniture: its line, and the families of its tip, ticks
     and numbers.
@@ -470,8 +539,12 @@ class _Reader:
         self.furniture: set[int] = set()
         self.grids: set[int] = set()
         grids = _grid_types()
+        lattices = {
+            key for key, (mob, chain) in chains.items() if not chain and _lattice(mob)
+        }
         for key, (mob, chain) in chains.items():
-            if any(isinstance(m, grids) for m in (*chain, mob)):
+            path = (*chain, mob)
+            if any(isinstance(m, grids) for m in path) or id(path[0]) in lattices:
                 self.grids.add(key)
             if isinstance(mob, NumberLine):
                 self.furniture.update(id(m) for m in _furniture(mob))
@@ -599,6 +672,7 @@ class _Reader:
                 within=tuple(self._holder(m) for m in above),
                 family=self._family(source),
                 tip=_has_tip(mob),
+                grid=id(mob) in self.grids,
             )
             self._units[id(mob)] = found
             plate = getattr(mob, "background_rectangle", None)
