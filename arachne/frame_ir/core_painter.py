@@ -21,8 +21,10 @@ from typing import Any
 
 import numpy as np
 
+from . import contributors
 from .cairo_painter import CairoDrawer
 from .canonical import _PATH_KINDS, Canonical, canonical_order, frame_grid, shades
+from .contributors import Box, PixelContributors
 from .extract import FrameStream, Term, Unable
 from .replay import Replays
 from .xf import Delta, StreamState
@@ -142,6 +144,21 @@ class CorePainter:
             self.overlaid += 1
             self.drawer.draw_over(self.state, frame, overlay, self.replays)
         return frame
+
+    def contributors(self, box: Box) -> dict[tuple[int, int], PixelContributors]:
+        """The leaves the last frame composites at each pixel of ``box``,
+        bottom first (:mod:`.contributors`): the core's, in depth order per
+        sub-sample, under the overlay's, which Cairo paints over them in CE's
+        order (each overlay leaf drawn again alone). Nothing the painter
+        draws next changes.
+        """
+        found = contributors.from_core(self.core.contributors(*box), self.state.objects)
+        overlay = self.core.overlay_entries()
+        if not overlay:
+            return found
+        return contributors.over(
+            found, self.drawer.contributors(self.state, overlay, box)
+        )
 
     def _refuse_undecided(self, overlay: Sequence[tuple[str, int, int]]) -> None:
         """Refuses (``render.unable``) a frame the core would draw without

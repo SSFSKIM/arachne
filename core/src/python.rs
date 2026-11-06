@@ -929,6 +929,53 @@ impl PyStream {
             .collect())
     }
 
+    /// What the core composites at each pixel of the box ``x0 <= x < x1``, ``y0 <= y < y1``
+    /// (clipped to the frame) that holds a fragment, the overlay's entries left out as
+    /// ``draw(overlay=False)`` leaves them: ``{(x, y): (leaves, orders, crossing)}``. ``leaves``
+    /// are ``(object, part, coverage, (r, g, b, a), shown)``, bottom first: each drawn leaf
+    /// covering one of the pixel's sub-samples, hidden ones included (``shown`` false), with its
+    /// share of the sub-samples (0 to 255) and its premultiplied colour. ``orders`` are the
+    /// distinct sequences the sub-samples see, bottom first, as ``(index into leaves,
+    /// coverage)``; ``crossing`` is whether two leaves come in both orders (``contributors.rs``).
+    /// Nothing is drawn.
+    #[allow(clippy::type_complexity)]
+    fn contributors(
+        &self,
+        py: Python<'_>,
+        x0: u32,
+        y0: u32,
+        x1: u32,
+        y1: u32,
+    ) -> PyResult<
+        BTreeMap<
+            (u32, u32),
+            (
+                Vec<(u32, u32, u8, (u8, u8, u8, u8), bool)>,
+                Vec<Vec<(usize, u8)>>,
+                bool,
+            ),
+        >,
+    > {
+        let stream = &self.stream;
+        let found = py
+            .detach(|| stream.contributors(x0, y0, x1, y1))
+            .map_err(|e| draw_error(py, e))?;
+        Ok(found
+            .into_iter()
+            .map(|(at, pixel)| {
+                let leaves = pixel
+                    .leaves
+                    .into_iter()
+                    .map(|l| {
+                        let [r, g, b, a] = l.colour;
+                        (l.object, l.part, l.coverage, (r, g, b, a), l.shown)
+                    })
+                    .collect();
+                (at, (leaves, pixel.orders, pixel.crossing))
+            })
+            .collect())
+    }
+
     /// Draws the frame as ``draw`` does, and returns it with each pixel's resolve: a uint8 array
     /// (height, width) indexing ``RESOLVES`` (background, fast, coverage, sample).
     #[pyo3(signature = (width, height, *, threads=1))]

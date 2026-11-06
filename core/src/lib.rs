@@ -17,6 +17,8 @@
 //!   clouds as CE's square blocks.
 //! - [`boxes`]: where each record lands on the frame, found without drawing (`screen_boxes`).
 //! - [`tiles`]: a frame cut into tiles, drawn on threads scoped to the draw call.
+//! - [`contributors`]: per pixel, the drawn leaves its colour is made of, read from the passes the
+//!   resolves read (`Stream::contributors`).
 //! - [`probes`]: the class probes, the parity kit's fixtures (`parity/probes.rs`).
 //!
 //! The core's output may not depend on the machine: no runtime CPU-feature dispatch, no fused
@@ -25,6 +27,7 @@
 
 pub mod boxes;
 pub mod composite;
+pub mod contributors;
 pub mod depth;
 pub mod geometry;
 pub mod gradient;
