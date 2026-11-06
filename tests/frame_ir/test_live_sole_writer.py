@@ -10,8 +10,12 @@ the core draws over it, what it held at the start. A write either check sees
 leaves the frame layered for attribution. Where the camera drew the frame
 itself so far (the scene's first frame of a camera the scene's code
 changed, or its first capture after a reset), the whole scene falls back to
-its camera's own draw, which is Cairo's; elsewhere the frame is
-``render.unable``. The write is never dropped.
+its camera's own draw, which is Cairo's. A capture begun on a reset in a
+later frame, or on a picture the scene set, draws over what was written as
+its pixels, as Cairo draws over it: each shown equal to Cairo's frame. Where
+the core's own pixels are under the write, the frame is ``render.unable``
+(and the render draws the scene again on Cairo). The write is never
+dropped.
 
 Frames here are 192 x 108 pixels over CE's 8-unit frame height: 13.5 pixels a
 unit, the origin at pixel (96, 54).
@@ -232,17 +236,104 @@ def test_a_write_between_captures_the_core_drew_is_unable():
         )
 
 
-def test_a_write_after_the_core_drew_frames_is_unable():
-    """After the reset, on a frame after the scene's first: the core drew the
-    frames before, so this one cannot be the camera's own draw.
+# What the core draws over as pixels: a capture begun on a reset or on a
+# picture the scene set holds nothing of the core's, so what the array holds
+# is drawn under the capture, as Cairo draws it.
+
+
+class AlignedShift(ThreeDCamera):
+    """A projection of the scene's own, a change the gate proved, sliding what
+    it projects left by 27 pixels: on the pixel grid, where the core draws
+    :func:`_aligned`'s squares as Cairo does.
     """
-    _, top = _squares()
-    with pytest.raises(Unable, match="render.unable"):
-        _frames(
-            ThreeDCamera,
-            [_reset, _capture(top)],
-            [_reset, _written(_green), _capture(top)],
-        )
+
+    def project_points(self, points):
+        return super().project_points(points) + np.array([-2.0, 0.0, 0.0])
+
+
+def _aligned():
+    """An opaque square under a translucent one, every edge on the pixel grid
+    (27 and 9 pixels from the centre): the core draws them byte for byte as
+    Cairo does, so a frame of them is compared whole.
+    """
+    from arachne import BLUE, RED, Square
+
+    under = Square(side_length=4, fill_color=RED, fill_opacity=1.0, stroke_width=0)
+    top = Square(side_length=4 / 3, fill_color=BLUE, fill_opacity=0.5, stroke_width=0)
+    return under, top
+
+
+def _band(camera):
+    """A band across both squares' edges and the background around them: drawn
+    under the opaque square, blended under the translucent one, and shown
+    where nothing covers it.
+    """
+    camera.pixel_array[50:58, 30:150] = (0, 255, 0, 255)
+
+
+def _picture(camera):
+    """A picture of the scene's own, set as the camera's array."""
+    picture = np.array(camera.background)
+    picture[:, :, 0] = 40
+    picture[30:80, 60:130] = (200, 10, 10, 255)
+    camera.set_pixel_array(picture)
+
+
+#: A camera of the engine's, and one the scene's code changed, whose first
+#: frame the camera draws itself before the core's description replaces it.
+CAMERAS = pytest.mark.parametrize(
+    "camera_class", [ThreeDCamera, AlignedShift], ids=["plain", "hedged"]
+)
+
+
+def _as_on_cairo(camera_class, *frames):
+    """The frames ``frames`` on the core, each equal to Cairo's, and the
+    camera.
+    """
+    camera, core = _frames(camera_class, *frames)
+    _, cairo = _frames(camera_class, *frames, draw_path="cairo")
+    for index, (a, b) in enumerate(zip(core, cairo, strict=True)):
+        np.testing.assert_array_equal(a, b, err_msg=f"frame {index}")
+    return camera, cairo
+
+
+@CAMERAS
+def test_a_write_after_a_reset_on_a_later_frame_is_drawn_under_its_capture(
+    camera_class, findings
+):
+    """The core drew the frames before, and the reset left nothing of the
+    core's in the array: the capture draws over what was written, as Cairo
+    draws over it, and the frame is layered.
+    """
+    under, top = _aligned()
+    camera, cairo = _as_on_cairo(
+        camera_class,
+        [_reset, _capture(under, top)],
+        [_reset, _band, _capture(under, top)],
+    )
+    assert np.any(cairo[0] != cairo[1]), "the write shows"
+    _layered(_core_painter(camera))
+    assert not _fallbacks(findings)
+
+
+@CAMERAS
+@pytest.mark.parametrize("written", [False, True], ids=["set", "set-then-written"])
+@pytest.mark.parametrize("frame", [0, 1], ids=["first-frame", "later-frame"])
+def test_a_picture_set_as_the_array_is_drawn_under_its_capture(
+    camera_class, written, frame, findings
+):
+    """A picture the scene set with ``set_pixel_array``, written into or not,
+    in the scene's first frame or a later one: the capture draws over it as
+    Cairo draws over it, and the frame is layered.
+    """
+    under, top = _aligned()
+    setting = [_picture, *([_band] if written else []), _capture(under, top)]
+    plain = [_reset, _capture(under, top)]
+    frames = [setting, plain] if frame == 0 else [plain, setting]
+    camera, _ = _as_on_cairo(camera_class, *frames)
+    if frame == 1:
+        _layered(_core_painter(camera))
+    assert not _fallbacks(findings)
 
 
 # What changes nothing.
