@@ -15,7 +15,15 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from arachne import DEGREES, ThreeDCamera, tempconfig
+from arachne import (
+    DEGREES,
+    Camera,
+    OldMultiCamera,
+    Scene,
+    Square,
+    ThreeDCamera,
+    tempconfig,
+)
 from arachne.frame_ir.core_painter import CorePainter
 
 from ..timeline.conftest import SMALL, render
@@ -160,3 +168,56 @@ def test_a_play_drawn_on_the_core_is_cached_apart_from_its_cairo_frames():
     assert not set(hashes["core"]) & set(hashes["cairo"])
     # Cairo draws every pixel of both of its paths.
     assert hashes["ir_cairo"] == hashes["cairo"]
+
+
+# OldMultiCamera: a camera drawn through the cameras it holds.
+
+
+class SideBySide(OldMultiCamera):
+    """Two engine cameras side by side, each over half the frame, made by the
+    scene (CE's own ``SplitScreenCamera`` cannot be made: its camera's
+    ``__init__`` reads the cameras it holds before it holds them).
+    """
+
+    def __init__(self, **kwargs):
+        from arachne import config
+
+        half = {
+            "pixel_width": config.pixel_width // 2,
+            "pixel_height": config.pixel_height,
+            "frame_width": config.frame_width / 2,
+        }
+        left, right = Camera(**half), Camera(**half)
+        super().__init__((left, (0, 0)), (right, (0, half["pixel_width"])), **kwargs)
+
+
+class SplitSquares(Scene):
+    """A square moving across a split screen: each half is drawn by its own
+    camera, and copied into the scene camera's array by numbers.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(camera_class=SideBySide, **kwargs)
+
+    def construct(self):
+        square = Square(side_length=2, fill_opacity=0.7)
+        self.add(square)
+        self.play(square.animate.shift([1.5, 0.5, 0]), run_time=0.4)
+
+
+@pytest.mark.parametrize("path", ["core", "ir_cairo"])
+def test_a_scene_drawn_through_an_old_multi_camera_is_drawn_on_cairo(path, findings):
+    """Its picture is its held cameras' arrays copied into its own, which XF
+    does not describe: the scene goes to Cairo before its first frame, with
+    one finding, and renders as Cairo renders it.
+    """
+    _, cairo = render(SplitSquares, FPS, **MEDIUM)
+    before = CorePainter.drawn_total
+    _, drawn = render(SplitSquares, FPS, draw_path=path, **MEDIUM)
+    assert len(drawn) == len(cairo) > 0
+    for index, (a, b) in enumerate(zip(cairo, drawn, strict=True)):
+        np.testing.assert_array_equal(a, b, err_msg=f"frame {index}")
+    assert CorePainter.drawn_total == before
+    [finding] = _fallbacks(findings)
+    assert "render.unable" not in finding.message
+    assert "a OldMultiCamera draws what XF 1 does not describe" in finding.message
