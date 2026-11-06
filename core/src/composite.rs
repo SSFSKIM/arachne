@@ -313,20 +313,80 @@ pub fn area_coverage(area: f32) -> u8 {
     ((area as f64).clamp(0.0, 1.0) * 255.0 + 0.5) as u8
 }
 
-/// How far, per byte, the coverage resolve of a pixel with one partial mask may land from what
-/// the sample resolve would give it (blend at each sub-sample, then average): the mask's count is
-/// rounded to an 8-bit coverage and the blend rounds again, where the sample resolve rounds once
-/// per sub-sample and once in the average. It bounds a path's exact area the same way, since the
-/// sample resolve composites the path with its exact area in each sub-sample's cell.
-/// `tests/composite.rs` sweeps both (one partial mask or path alone, over a full layer, under
-/// one); `tests/resolve_switch.rs` holds pixels that switch resolves to it, as a path crosses a
-/// moving surface (worst 1 in three cases) and where a surface's silhouette, a path's edge and a
-/// crossing meet, the edges across each other or along. A partial mask and a path's partial area
-/// never share a coverage-resolve pixel (that pixel takes the sample resolve), so the coverage
-/// resolve never composites a silhouette and a path's edge as independent shapes. The bound holds
-/// for pixels with at most one partial path layer: two or more coincide as independent coverages
-/// on the coverage resolve (as Cairo blends them) and as their overlap on the sample resolve.
-pub const COVERAGE_TO_SAMPLE_LSB: u8 = 2;
+/// How far, per byte, the coverage resolve may land from what the sample resolve would give the
+/// same pixel (blend at each sub-sample, then average), for a pixel holding one partial mask of
+/// one colour over full layers and under at most one translucent full layer: the mask's count is
+/// rounded to an 8-bit coverage and blended once, where the sample resolve blends at each covered
+/// sub-sample and rounds the average, and the layer in front rounds each side again.
+/// `tests/coverage_bound.rs` enumerates that scope exhaustively through [`blend`] and
+/// [`mask_coverage`] (every partial colour channel and alpha, every byte beneath, every count,
+/// every front alpha): the widest gap is exactly 3, and 2 with nothing in front, the values
+/// [`coverage_to_sample_bound`] derives for it. Every other pixel on the coverage resolve (a
+/// path's partial area, a surface's masks in several colours, more layers in front) takes that
+/// function's bound for its stack.
+pub const COVERAGE_TO_SAMPLE_LSB: u8 = 3;
+
+/// The partial layer of a pixel on the coverage resolve, for [`coverage_to_sample_bound`]. A pixel
+/// holds at most one: two partial masks, or a partial mask and a path's partial area, take the
+/// sample resolve. Two or more paths' partial areas take the coverage resolve, as independent
+/// coverages (as Cairo blends them), and on the sample resolve as their overlap in each cell: they
+/// differ there by how the shapes overlap, not by rounding, and no bound here covers them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Partial {
+    /// One mask in one colour.
+    Mask,
+    /// One surface's masks in several colours, one unit: its colour their average.
+    MergedMask,
+    /// One path's exact area.
+    Path,
+}
+
+/// `mul` lies within 127/255 of `a * b / 255`, `mul_7f` within 128/255 (every pair of bytes;
+/// the tests below).
+const MUL_ERROR: f64 = 127.0 / 255.0;
+const MUL_7F_ERROR: f64 = 128.0 / 255.0;
+
+/// How far a path's exact area may lie from the mean of its cells' areas ([`Producer::cell_areas`]):
+/// both are exact in f64 up to their sums' rounding, then stored as f32. `tests/coverage_bound.rs`
+/// holds the rasterizer to it.
+pub const AREA_DRIFT: f64 = 1e-6;
+
+/// How far, per byte, the coverage resolve of a pixel holding `partial` over full layers, under
+/// `fronts` translucent full layers, may land from the sample resolve of the same pixel. Colours
+/// are premultiplied (no channel above its alpha), as every colour the core blends is, so no blend
+/// below saturates.
+///
+/// Per channel, let `B(c)` be the exact blend of the partial layer at coverage `c` over `d`, what
+/// lies beneath it (the same at every sub-sample, and the same bytes on both resolves): `B` is
+/// linear in `c`, its slope at most 1 per coverage level. The coverage resolve blends once at its
+/// coverage `c`; the sample resolve blends at each sub-sample's coverage `c_k` and averages, which
+/// is `B` at the mean of the `c_k` plus the mean of their roundings. Before the sample resolve
+/// rounds its average, the two differ by at most
+///
+/// `g = |c - mean c_k| + e(c) + mean e(c_k) + m + fronts * 2 * MUL_ERROR`, where
+/// - `|c - mean c_k|` is at most 1/2 for a mask (its count rounded to a byte, the `c_k` all or
+///   nothing), and `1 + 255 * AREA_DRIFT` for a path (its area and each cell's rounded to a byte);
+/// - `e` is one blend's rounding: at a partial coverage the larger of an opaque source's
+///   `2 * MUL_7F_ERROR` and a translucent one's `3 * MUL_ERROR` (the source and its alpha scaled
+///   by the coverage, what lies beneath by what is left), at full coverage `MUL_ERROR`, at none 0;
+/// - `m`, for a merged mask, is under 1: its colour and alpha are each the nearest byte to their
+///   average, half a level each, scaled by the coverage;
+/// - each translucent full layer in front (its colour plus `mul(x, 255 - alpha)`, on both sides)
+///   scales the difference by less than 1 and rounds once on each side.
+///
+/// The sample resolve rounds its average to the nearest byte, so the bytes differ by at most
+/// `floor(g + 1/2)`: 2 + `fronts` for a mask, 3 + `fronts` for a merged mask, 4 + `fronts` for a
+/// path. `tests/coverage_bound.rs` holds random and adversarial stacks of each to it through the
+/// resolves themselves.
+pub fn coverage_to_sample_bound(partial: Partial, fronts: u32) -> u8 {
+    let partial_blend = (2.0 * MUL_7F_ERROR).max(3.0 * MUL_ERROR);
+    let g = match partial {
+        Partial::Mask => 0.5 + partial_blend + MUL_ERROR,
+        Partial::MergedMask => 0.5 + partial_blend + MUL_ERROR + 1.0,
+        Partial::Path => 1.0 + 255.0 * AREA_DRIFT + 2.0 * partial_blend,
+    } + fronts as f64 * 2.0 * MUL_ERROR;
+    (g + 0.5).floor() as u8
+}
 
 /// A mask's count as an 8-bit coverage.
 pub fn mask_coverage(mask: u16) -> u8 {
@@ -991,4 +1051,45 @@ impl Frame {
 /// truncated toward zero and wrapped as NumPy's cast wraps, not premultiplied.
 pub fn background_pixel(rgba: [f64; 4]) -> [u8; 4] {
     rgba.map(|c| (c * 255.0) as i64 as u8)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_byte_products_round_within_their_stated_errors() {
+        // Every pair of bytes: the widest `|255 mul(a, b) - a b|`, which is 255 times the error.
+        let widest = |f: fn(u8, u8) -> u8| {
+            (0..=255u8)
+                .flat_map(|a| (0..=255u8).map(move |b| (a, b)))
+                .map(|(a, b)| (255 * f(a, b) as i64 - a as i64 * b as i64).abs())
+                .max()
+                .unwrap()
+        };
+        assert_eq!(widest(mul) as f64 / 255.0, MUL_ERROR);
+        assert_eq!(widest(mul_7f) as f64 / 255.0, MUL_7F_ERROR);
+    }
+
+    #[test]
+    fn the_derived_bounds_grow_by_one_per_layer_in_front() {
+        assert_eq!(
+            coverage_to_sample_bound(Partial::Mask, 1),
+            COVERAGE_TO_SAMPLE_LSB
+        );
+        for fronts in 0..8 {
+            assert_eq!(
+                coverage_to_sample_bound(Partial::Mask, fronts),
+                2 + fronts as u8
+            );
+            assert_eq!(
+                coverage_to_sample_bound(Partial::MergedMask, fronts),
+                3 + fronts as u8
+            );
+            assert_eq!(
+                coverage_to_sample_bound(Partial::Path, fronts),
+                4 + fronts as u8
+            );
+        }
+    }
 }
