@@ -126,7 +126,7 @@ pub(crate) fn of_pixel(
         // The sub-sample's fragments as the sample resolve ranks them.
         ranked.clear();
         ranked.extend((0..frags.len()).filter(|i| coverage[*i][k] != 0));
-        order::rank(
+        let how = order::rank(
             &ranked,
             |a, b| {
                 a != b
@@ -152,6 +152,7 @@ pub(crate) fn of_pixel(
             painted,
             &mut at_k,
         );
+        assert_ne!(how, order::Ranked::Strong, "{}", order::ONE_SAMPLE);
         // Front to back: runs of one leaf's fragments, each with its greatest coverage here.
         let mut seq: Vec<(usize, u8)> = Vec::new();
         let mut seen = vec![false; n];
@@ -225,10 +226,11 @@ pub(crate) fn of_pixel(
         })
         .collect();
     // The pixel's one order, as the resolve ranks it: each leaf at its front-most fragment in it
-    // is the tie-break, and a crossing's order.
+    // is the tie-break, and a crossing's order. Where the strong orders cycle the resolve takes no
+    // order of the pixel, and this one, broken by wins, orders the listing alone.
     let all: Vec<usize> = (0..frags.len()).collect();
     let mut one: Vec<usize> = Vec::new();
-    order::rank(
+    order::rank_through_cycles(
         &all,
         |a, b| a != b && pair(a, b).0 == Ordering::Less,
         |a, b| pair(a, b).1.is_strong(),
