@@ -6,8 +6,8 @@
 //! On a plane the depth key is affine on screen (`Projection::key_plane`), so where the core keys
 //! one point of a face several ways they agree but for rounding and the face plane's rounding to
 //! the grid: the face's plane (`key_plane`, of the plane the corners lie on, rounded), the plane
-//! through a triangle's keyed corners (`Plane::through_with_errors`), and the plane along an
-//! outline's segment between keyed vertices (`Centreline::plane_at`), read at a point on the
+//! through a triangle's keyed corners (`Plane::through_with_errors`), and the key along an
+//! outline's segment between keyed vertices (`Centreline::key_under`), at a point on the
 //! segment; and two segments meeting at a vertex, read at the vertex.
 
 use arachne_core::composite::Plane;
@@ -250,15 +250,11 @@ fn read(p: &Plane, x: [f64; 2]) -> (f64, f64) {
     (p.at(x[0], x[1]), p.err + p.read_error(x[0], x[1]))
 }
 
-/// The plane along the segment between keyed points `a` and `b` that the core reads at `at`.
-fn segment(a: ([f64; 2], f64, f64), b: ([f64; 2], f64, f64), at: [f64; 2]) -> Plane {
+/// The key the core reads at `at` along the segment between keyed points `a` and `b`, with its
+/// error bound there.
+fn segment(a: ([f64; 2], f64, f64), b: ([f64; 2], f64, f64), at: [f64; 2]) -> (f64, f64) {
     let line = Centreline::with_errors(&[(a.0, a.1), (b.0, b.1)], &[a.2, b.2], &[]);
-    line.plane_at(
-        at[0].floor() as u32,
-        at[1].floor() as u32,
-        &[],
-        f64::INFINITY,
-    )
+    line.key_under(at, &[], f64::INFINITY)
 }
 
 /// The screen box of keyed points, a pixel around it.
@@ -298,7 +294,7 @@ fn one_depth_computed_each_way_the_core_keys_it_lies_within_their_error_bounds()
                 continue;
             };
             let k = f.corners.map(|c| s.keyed(c));
-            // Each pixel a point lands in must be on the frame's pixel grid for `plane_at`.
+            // Points on the frame's pixel grid, where the core keys them.
             if k.iter()
                 .any(|(p, _, _)| !(p[0] >= 0.0 && p[1] >= 0.0 && p[0] < 4e4 && p[1] < 4e4))
             {
@@ -345,10 +341,10 @@ fn one_depth_computed_each_way_the_core_keys_it_lies_within_their_error_bounds()
                 let t = rng.unit();
                 let q = add(f.corners[i], scale(sub(f.corners[j], f.corners[i]), t));
                 let x = s.screen(q);
-                let (a, b) = (read(&kp, x), read(&segment(k[i], k[j], x), x));
+                let (a, b) = (read(&kp, x), segment(k[i], k[j], x));
                 along.see(a, b, || describe("key_plane against a segment", q, a, b));
                 // The same edge as the neighbouring face's outline traverses it, the other way.
-                let c = read(&segment(k[j], k[i], x), x);
+                let c = segment(k[j], k[i], x);
                 reversed.see(b, c, || {
                     describe("a segment against itself reversed", q, b, c)
                 });
@@ -357,10 +353,7 @@ fn one_depth_computed_each_way_the_core_keys_it_lies_within_their_error_bounds()
             for i in 0..3 {
                 let (prev, next) = ((i + 2) % 3, (i + 1) % 3);
                 let x = k[i].0;
-                let (a, b) = (
-                    read(&segment(k[prev], k[i], x), x),
-                    read(&segment(k[i], k[next], x), x),
-                );
+                let (a, b) = (segment(k[prev], k[i], x), segment(k[i], k[next], x));
                 vertex.see(a, b, || {
                     describe("two segments at a vertex", f.corners[i], a, b)
                 });
@@ -418,7 +411,7 @@ fn a_face_and_its_own_outline_tie_where_the_outline_runs() {
         let t = rng.unit();
         let q = add(f.corners[0], scale(sub(f.corners[1], f.corners[0]), t));
         let x = s.screen(q);
-        let (a, b) = (read(&kp, x), read(&segment(k[0], k[1], x), x));
+        let (a, b) = (read(&kp, x), segment(k[0], k[1], x));
         assert!(
             tied(a.0, a.1, b.0, b.1),
             "plane {:?}, corners {:?}, at {x:?}: {a:?} against {b:?}",

@@ -631,10 +631,10 @@ impl Stream {
     ) -> Result<BTreeMap<(u32, u32), crate::contributors::PixelContributors>, DrawError> {
         let mut out = BTreeMap::new();
         let leaf = |f: &composite::Fragment| self.leaf_of(f);
-        self.visit_contributors(x0, y0, x1, y1, |x, y, frags, coverage, _| {
+        self.visit_contributors(x0, y0, x1, y1, |x, y, frags, coverage, depths, _| {
             out.insert(
                 (x, y),
-                crate::contributors::of_pixel(x, y, frags, coverage, &leaf),
+                crate::contributors::of_pixel(frags, coverage, depths, &leaf),
             );
         })?;
         Ok(out)
@@ -655,7 +655,7 @@ impl Stream {
     ) -> Result<BTreeMap<(u32, u32), Vec<Vec<[f64; 5]>>>, DrawError> {
         let mut out: BTreeMap<(u32, u32), Vec<Vec<[f64; 5]>>> = BTreeMap::new();
         let mut seen = std::collections::BTreeSet::new();
-        self.visit_contributors(x0, y0, x1, y1, |_, _, frags, _, producers| {
+        self.visit_contributors(x0, y0, x1, y1, |_, _, frags, _, _, producers| {
             for f in frags {
                 if let composite::Coverage::Area { id, .. } = f.coverage
                     && seen.insert((f.source(), id))
@@ -674,8 +674,8 @@ impl Stream {
     }
 
     /// Visits each pixel of `x0..x1` by `y0..y1` (clipped to the view's frame) that holds a
-    /// fragment, with its fragments, their coverage at each sub-sample and the producers that
-    /// added them, from the frame [`Stream::render_under_overlay`] draws: the one pass the
+    /// fragment, with its fragments, their coverage at each sub-sample, their depths and the
+    /// producers that added them, from the frame [`Stream::render_under_overlay`] draws: the one pass the
     /// contributor reports read.
     #[allow(clippy::type_complexity)]
     fn visit_contributors(
@@ -689,6 +689,7 @@ impl Stream {
             u32,
             &[composite::Fragment],
             &[[u8; composite::SAMPLES]],
+            &[composite::Depths],
             &[&dyn Producer],
         ),
     ) -> Result<(), DrawError> {
@@ -712,9 +713,10 @@ impl Stream {
                 {
                     continue;
                 }
-                tiles::passes(rect, producers).visit_pixels(keep, |x, y, frags, coverage| {
-                    visit(x, y, frags, coverage, producers)
-                });
+                tiles::passes(rect, producers)
+                    .visit_pixels(keep, |x, y, frags, coverage, depths| {
+                        visit(x, y, frags, coverage, depths, producers)
+                    });
             }
         })
     }

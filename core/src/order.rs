@@ -4,12 +4,12 @@
 //! their own error bounds of each other ([`tied`]); everywhere else, and at such a tie, they keep
 //! the stream's paint order (the later drawn in front), which is the order Cairo paints them in.
 //!
-//! A depth's error bound ([`crate::composite::depth_error`]) is how far it may stand from the
-//! exact depth of the core's own inputs for it (the snapped points and the normals carried): the
-//! plane's [`crate::composite::Plane::err`], set by its constructor from its inputs, and the
-//! rounding of reading the plane at the point, `4u (|a| + |b x| + |c y|)` (`u = 2^-53`; it grows
-//! with the key's gradient times the pixel's coordinate, as the planes are anchored at the
-//! frame's origin). The constructors count:
+//! A depth's error bound (a fragment's `Depths::err` at a pixel) is how far it may stand from the
+//! exact depth of the core's own inputs for it (the snapped points and the normals carried). On a
+//! plane it is the plane's [`crate::composite::Plane::err`], set by its constructor from its
+//! inputs, and the rounding of reading the plane at the point, `4u (|a| + |b x| + |c y|)`
+//! (`u = 2^-53`; it grows with the key's gradient times the pixel's coordinate, as the planes are
+//! anchored at the frame's origin). The constructors count:
 //!
 //! - a face's plane on screen (`Projection::key_plane`): its world plane rounded to
 //!   [`crate::depth::PLANE_GRID`] (each normal component and the offset within half a step), and
@@ -17,8 +17,10 @@
 //!   as the plane nears the eye; each over the screen box its fragments lie in;
 //! - the plane through a triangle's keyed corners (`Plane::through_with_errors`): the corners'
 //!   keys' errors, and the determinant's cancellation, `u L / h` for a thin triangle;
-//! - the plane along a curve's segment (`Centreline::plane_at`): its ends' keys' errors carried
-//!   across the box it is read in, and the gradient's rounding;
+//! - a curve's key at a point (`Centreline::key_under`, a curve's depth where no one plane gives
+//!   it): its segment's ends' keys' errors, which a key between them carries at most once, and the
+//!   rounding of the key along the segment; the front-most of several segments, the largest of
+//!   their errors;
 //! - a point's key (`Projection::key_error`): the rotation's and the perspective's rounding, which
 //!   grows as the point nears the eye.
 //!
@@ -235,7 +237,7 @@ fn ranked(
 mod tests {
     use super::*;
     use crate::composite::{
-        Coverage, Plane, Resolve, SAMPLE_OFFSETS, Scratch, blend, depth_error, resolve_pixel,
+        Coverage, Depths, Plane, Resolve, SAMPLE_OFFSETS, Scratch, blend, resolve_pixel,
         sample_point,
     };
 
@@ -248,7 +250,12 @@ mod tests {
     fn resolve(frags: &[Fragment], rows: &[[u8; SAMPLES]]) -> (Resolve, [u8; 4]) {
         let mut s = Scratch::default();
         s.fragments.extend_from_slice(frags);
-        resolve_pixel(&mut s, [0, 0, 0, 255], 0, 0, |i, _| rows[i])
+        resolve_pixel(
+            &mut s,
+            [0, 0, 0, 255],
+            |i, _| rows[i],
+            |_, f| Depths::of_plane(f, 0, 0),
+        )
     }
 
     /// `a` against `b` at pixel (0, 0), as the resolve reads them there.
@@ -258,14 +265,15 @@ mod tests {
         b: &Fragment,
         cb: &[u8; SAMPLES],
     ) -> (Ordering, Decided) {
-        let depth = |f: &Fragment| crate::composite::sample_depths(f, 0, 0);
-        let (da, db) = (depth(a), depth(b));
-        let seen = |f, coverage, depth| Seen {
-            fragment: f,
-            coverage,
-            depth,
-            err: depth_error(f, 0, 0),
-        };
+        let (da, db) = (Depths::of_plane(a, 0, 0), Depths::of_plane(b, 0, 0));
+        fn seen<'a>(f: &'a Fragment, coverage: &'a [u8; SAMPLES], d: &'a Depths) -> Seen<'a> {
+            Seen {
+                fragment: f,
+                coverage,
+                depth: &d.samples,
+                err: d.err,
+            }
+        }
         pair(seen(a, ca, &da), seen(b, cb, &db))
     }
 
@@ -351,7 +359,8 @@ mod tests {
                 ..Plane::constant(d)
             };
             let cap = at_depth(cap, RED, Coverage::Mask(u16::MAX), 1);
-            let bound = depth_error(&cap, 0, 0) + depth_error(&outline(0.0), 0, 0);
+            let bound =
+                Depths::of_plane(&cap, 0, 0).err + Depths::of_plane(&outline(0.0), 0, 0).err;
             assert!(err > 0.0 || bound < 1e-14, "{bound:e}");
             assert_eq!(
                 resolve(&[cap, outline(0.9 * bound)], &[FULL, half]).1,

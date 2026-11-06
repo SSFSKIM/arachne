@@ -37,7 +37,7 @@
 //!   - whether it **covers** the pixel: at every sub-sample one of its fragments is opaque and
 //!     covers it whole, so nothing beneath it reaches the pixel.
 
-use crate::composite::{Fragment, SAMPLES, Scratch, depth_error, resolve_pixel, sample_depths};
+use crate::composite::{Depths, Fragment, SAMPLES, Scratch, resolve_pixel};
 use crate::order::{self, Decided};
 use std::cmp::Ordering;
 
@@ -74,15 +74,14 @@ pub struct PixelContributors {
     pub decided: Vec<(usize, usize, Decided)>,
 }
 
-/// The report of pixel `(x, y)` from its fragments, their coverage at each sub-sample, and the
-/// leaf each belongs to.
-// The sub-sample `k` indexes each fragment's coverage row and places the sub-sample's point.
+/// The report of a pixel from its fragments, their coverage and depth at each sub-sample (and
+/// depth at its centre), and the leaf each belongs to.
+// The sub-sample `k` indexes each fragment's coverage and depth rows.
 #[allow(clippy::needless_range_loop)]
 pub(crate) fn of_pixel(
-    x: u32,
-    y: u32,
     frags: &[Fragment],
     coverage: &[[u8; SAMPLES]],
+    depths: &[Depths],
     leaf_of: &dyn Fn(&Fragment) -> (u32, u32),
 ) -> PixelContributors {
     // Leaves by first appearance among the fragments, and each fragment's leaf.
@@ -101,13 +100,11 @@ pub(crate) fn of_pixel(
         })
         .collect();
     let n = ids.len();
-    let depths: Vec<[f64; SAMPLES]> = frags.iter().map(|f| sample_depths(f, x, y)).collect();
-    let errs: Vec<f64> = frags.iter().map(|f| depth_error(f, x, y)).collect();
     let seen = |i: usize| order::Seen {
         fragment: &frags[i],
         coverage: &coverage[i],
-        depth: &depths[i],
-        err: errs[i],
+        depth: &depths[i].samples,
+        err: depths[i].err,
     };
     let pair = |a: usize, b: usize| order::pair(seen(a), seen(b));
     let painted = |a: usize, b: usize| order::painted(&frags[a], &frags[b]);
@@ -132,21 +129,21 @@ pub(crate) fn of_pixel(
                 a != b
                     && order::at_sample(
                         &frags[a],
-                        depths[a][k],
-                        errs[a],
+                        depths[a].samples[k],
+                        depths[a].err,
                         &frags[b],
-                        depths[b][k],
-                        errs[b],
+                        depths[b].samples[k],
+                        depths[b].err,
                     ) == Ordering::Less
             },
             |a, b| {
                 order::strong_at(
                     &frags[a],
-                    depths[a][k],
-                    errs[a],
+                    depths[a].samples[k],
+                    depths[a].err,
                     &frags[b],
-                    depths[b][k],
-                    errs[b],
+                    depths[b].samples[k],
+                    depths[b].err,
                 )
             },
             painted,
@@ -212,17 +209,20 @@ pub(crate) fn of_pixel(
     // transparent pixel, with the coverage the resolve reads.
     let mut scratch = Scratch::default();
     let mut rows: Vec<[u8; SAMPLES]> = Vec::new();
+    let mut depth_rows: Vec<Depths> = Vec::new();
     let drawn: Vec<[u8; 4]> = (0..n)
         .map(|l| {
             scratch.fragments.clear();
             rows.clear();
+            depth_rows.clear();
             for (i, f) in frags.iter().enumerate() {
                 if of[i] == l {
                     scratch.fragments.push(*f);
                     rows.push(coverage[i]);
+                    depth_rows.push(depths[i]);
                 }
             }
-            resolve_pixel(&mut scratch, [0; 4], x, y, |i, _| rows[i]).1
+            resolve_pixel(&mut scratch, [0; 4], |i, _| rows[i], |i, _| depth_rows[i]).1
         })
         .collect();
     // The pixel's one order, as the resolve ranks it: each leaf at its front-most fragment in it
@@ -335,6 +335,11 @@ mod tests {
     use super::*;
     use crate::composite::{Coverage, Plane};
 
+    /// Each fragment's depths at pixel `(0, 0)` from its plane, as the passes give a plane's.
+    fn planes(frags: &[Fragment]) -> Vec<Depths> {
+        frags.iter().map(|f| Depths::of_plane(f, 0, 0)).collect()
+    }
+
     /// A fragment of leaf `object` at depth `a + b x` (nearer is smaller), drawn `order`th.
     fn fragment(a: f64, b: f64, colour: [u8; 4], order: u32, object: u32) -> Fragment {
         Fragment::new(
@@ -382,7 +387,7 @@ mod tests {
             fragment(1.0, 0.0, [0, 0, 128, 128], 2, 1),
         ];
         let rows = [[255; SAMPLES]; 3];
-        let p = of_pixel(0, 0, &frags, &rows, &by_sub);
+        let p = of_pixel(&frags, &rows, &planes(&frags), &by_sub);
         assert_eq!(p.orders.len(), 1);
         assert_eq!(objects(&p, &p.orders[0]), vec![1, 2, 1]);
         assert!(p.crossing);
@@ -398,7 +403,12 @@ mod tests {
         let fill = masked(fragment(1.0, 0.0, [255, 0, 0, 255], 0, 0), &full);
         let stroke = masked(fragment(1.0, 0.0, [0, 0, 128, 128], 0, 1), &full);
         let one_leaf = |_: &Fragment| (1, 0);
-        let p = of_pixel(0, 0, &[fill, stroke], &[full; 2], &one_leaf);
+        let p = of_pixel(
+            &[fill, stroke],
+            &[full; 2],
+            &planes(&[fill, stroke]),
+            &one_leaf,
+        );
         assert_eq!(p.leaves.len(), 1);
         assert_eq!(p.leaves[0].drawn, [127, 0, 128, 255]);
         assert!(p.leaves[0].covers);
@@ -411,7 +421,7 @@ mod tests {
             masked(fragment(1.0, 0.0, [200, 0, 0, 255], 0, 0), &halves[0]),
             masked(fragment(1.0, 0.0, [0, 100, 0, 255], 0, 0), &halves[1]),
         ];
-        let p = of_pixel(0, 0, &tiles, &halves, &one_leaf);
+        let p = of_pixel(&tiles, &halves, &planes(&tiles), &one_leaf);
         assert_eq!(p.leaves[0].drawn, [100, 50, 0, 255]);
         assert_eq!(p.leaves[0].coverage, 255);
         // Opaque at every sub-sample between them: nothing beneath reaches the pixel.
@@ -432,11 +442,17 @@ mod tests {
         };
         let frags = [area([255, 0, 0, 255], 0), area([0, 0, 255, 255], 1)];
         let one_leaf = |_: &Fragment| (1, 0);
-        let p = of_pixel(0, 0, &frags, &[half, half], &one_leaf);
+        let p = of_pixel(&frags, &[half, half], &planes(&frags), &one_leaf);
         assert_eq!(p.leaves[0].drawn, [64, 0, 128, 192]);
         let mut scratch = Scratch::default();
         scratch.fragments.extend_from_slice(&frags);
-        let resolved = resolve_pixel(&mut scratch, [0; 4], 0, 0, |_, _| half).1;
+        let resolved = resolve_pixel(
+            &mut scratch,
+            [0; 4],
+            |_, _| half,
+            |_, f| Depths::of_plane(f, 0, 0),
+        )
+        .1;
         assert_eq!(p.leaves[0].drawn, resolved);
     }
 
@@ -450,7 +466,7 @@ mod tests {
             fragment(1.0, -1.0, [0, 0, 255, 255], 2, 3),
         ];
         let rows = [only(&[0, 2]), only(&[0, 1]), only(&[1, 2])];
-        let p = of_pixel(0, 0, &frags, &rows, &by_sub);
+        let p = of_pixel(&frags, &rows, &planes(&frags), &by_sub);
         assert!(p.crossing);
         assert_eq!(p.leaves.len(), 3);
         let mut seen: Vec<Vec<u32>> = p.orders.iter().map(|o| objects(&p, o)).collect();
@@ -471,7 +487,7 @@ mod tests {
         let mut one = only(&[0]);
         one[2] = 40;
         let rows = [one, only(&[0, 1]), only(&[1, 2])];
-        let p = of_pixel(0, 0, &frags, &rows, &by_sub);
+        let p = of_pixel(&frags, &rows, &planes(&frags), &by_sub);
         assert_eq!(p.samples.len(), SAMPLES);
         let at = |k: usize| -> Vec<(u32, u8)> {
             p.samples[k]
@@ -504,7 +520,7 @@ mod tests {
             fragment(0.0, 0.0, [0, 0, 255, 255], 1, 2),
         ];
         let rows = [[255; SAMPLES], only(&covered)];
-        let p = of_pixel(0, 0, &frags, &rows, &by_sub);
+        let p = of_pixel(&frags, &rows, &planes(&frags), &by_sub);
         assert!(p.crossing);
         // Bottom first: leaf 2 is in front at more of the sub-samples both cover.
         let objects: Vec<u32> = p.leaves.iter().map(|l| l.object).collect();
@@ -528,7 +544,7 @@ mod tests {
             only(&[1, 2]),
             only(&[2, 3]),
         ];
-        let p = of_pixel(0, 0, &frags, &rows, &by_sub);
+        let p = of_pixel(&frags, &rows, &planes(&frags), &by_sub);
         let objects: Vec<u32> = p.leaves.iter().map(|l| l.object).collect();
         assert_eq!(objects, vec![1, 2, 3, 4]);
         assert_eq!(
