@@ -36,6 +36,7 @@ __all__ = [
     "painter_for",
     "scene_path",
     "uncarried",
+    "undescribed_camera",
     "unmodelled_state",
 ]
 
@@ -374,6 +375,29 @@ def unmodelled_state(camera: Any) -> tuple[Any, str, Any, str] | None:
     return None
 
 
+def undescribed_camera(camera: Any) -> str | None:
+    """Why a camera ``camera`` draws with (itself, or a display camera) is of
+    no kind XF describes a view of, or ``None``: CE's ``OldMultiCamera`` and
+    its ``SplitScreenCamera``, whose picture is the arrays of cameras it holds
+    copied into its own. Such a scene draws on Cairo, never ``render.unable``
+    on a path that describes frames. What is no engine camera at all stays on
+    the path, and is ``render.unable`` there (:func:`camera_path`).
+    """
+    from arachne.camera.camera import Camera
+    from arachne.timeline.camera_code import drawn_cameras
+
+    from .live import _view_kind
+
+    for each in drawn_cameras(camera):
+        if not isinstance(each, Camera):
+            continue
+        try:
+            _view_kind(each)
+        except Unable as unable:
+            return str(unable).removeprefix("render.unable: ")
+    return None
+
+
 def captured(camera: Any, draw_path: str) -> bool:
     """Whether frames of ``camera`` on ``draw_path`` are described from the
     camera's own capture: on a path that describes frames, a camera the
@@ -556,6 +580,13 @@ def _wanted_path(camera: Any, draw_path: str) -> tuple[str, tuple[str, str] | No
     path and, for a fallback, the ``render.fallback`` finding's subject and
     message.
     """
+    undescribed = undescribed_camera(camera) if DRAW_PATHS[draw_path] else None
+    if undescribed is not None:
+        own = user_camera(camera)
+        subject = own[0] if own is not None else type(camera).__name__
+        why = own[1].rstrip(",") if own is not None else f"a {type(camera).__name__}"
+        where = " for the whole scene" if draw_path == "core" else ""
+        return "cairo", (subject, f"{why} is drawn on Cairo{where}: {undescribed}")
     if draw_path == "core":
         unmodelled = unmodelled_state(camera)
         if unmodelled is not None:
