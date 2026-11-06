@@ -355,3 +355,40 @@ def test_the_shape_refuses_what_the_report_never_holds(session_of):
     broken(lambda out: out["violations"][0].setdefault("detail", {}).update(folded=0))
     with pytest.raises(AssertionError):
         assert_notes([good["violations"][0]])
+
+
+# Grids
+
+
+def _grid_flags(session, name: str) -> set[bool]:
+    """Whether each part of the group the scene names ``name`` is marked
+    part of a grid, at the scene's end.
+    """
+    seen = []
+
+    def keep(context):
+        seen.extend(context.parts)
+        return ()
+
+    lint(session, rules=(keep,), at=[session.record.duration])
+    (parts,) = seen
+    made = [part for part in parts.parts if part.within and part.within[0].name == name]
+    assert made
+    flags = {part.grid for part in made}
+    units = {leaf.unit.grid for part in made for leaf in part.leaves if leaf.unit}
+    assert units == flags
+    return flags
+
+
+@pytest.mark.parametrize(
+    ("name", "grid"),
+    [("lattice", True), ("parallel", False), ("sparse", False), ("short", False)],
+)
+def test_a_lattice_of_lines_is_a_grid_by_its_geometry(session_of, name, grid):
+    """A group of open, straight, unfilled lines in exactly two directions,
+    at least three each way, each from edge to edge of the group's own box,
+    is a grid; lines one way only, two lines one way, or lines that stop
+    short of the group's box are not.
+    """
+    session = session_of("Lattices", frame_rate=15)
+    assert _grid_flags(session, name) == {grid}
