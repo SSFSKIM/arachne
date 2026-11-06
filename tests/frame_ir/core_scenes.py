@@ -35,6 +35,8 @@ from arachne import (
     ZoomedScene,
 )
 
+from .camera_scenes import ShiftedCamera
+
 
 class FixedLabelOverSquare(ThreeDScene):
     """A translucent label and a translucent bar fixed in the frame, over an
@@ -61,6 +63,28 @@ class FixedLabelOverSquareBare(FixedLabelOverSquare):
     """:class:`FixedLabelOverSquare` without its overlay."""
 
     overlay = False
+
+
+class CornerLabel(ThreeDScene):
+    """A white label fixed in the frame's top right corner, over the
+    background alone, the camera tilted: the core draws nothing but the
+    background, Cairo the whole label.
+    """
+
+    def construct(self):
+        self.set_camera_orientation(phi=60 * DEGREES, theta=-45 * DEGREES)
+        label = Text("Overlay in a corner, W = 2", font_size=30, color=WHITE)
+        self.add_fixed_in_frame_mobjects(label.to_corner([1.0, 1.0, 0.0]))
+        self.wait(0.1)
+
+
+class CornerLabelOwnCamera(CornerLabel):
+    """:class:`CornerLabel` through a camera class of the scene's own (drawn
+    as the scene runs).
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(camera_class=ShiftedCamera, **kwargs)
 
 
 class FlatSquares(Scene):

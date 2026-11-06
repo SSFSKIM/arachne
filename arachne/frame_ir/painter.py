@@ -50,7 +50,6 @@ from typing import Any
 import numpy as np
 
 from .cairo_painter import CairoDrawer
-from .canonical import Canonical
 from .contributors import Box, LiveFrame, Outline, PixelContributors
 from .extract import FrameStream, Term, Unable
 from .lint import raise_finding
@@ -639,7 +638,6 @@ class IrCairoPainter:
         *,
         keep: bool | None = None,
         stream: FrameStream | None = None,
-        canonical: bool = False,
     ) -> None:
         try:
             import arachne_core
@@ -652,10 +650,6 @@ class IrCairoPainter:
         self.state = StreamState()
         self.drawer = CairoDrawer()
         self.keep = self.keep_all if keep is None else keep
-        #: With ``canonical``, the deltas' geometry snapped as the core's is
-        #: (:mod:`.canonical`): a picture drawn on the core path beside the
-        #: core's frames (a display's, drawn as the scene runs).
-        self.canonical = Canonical(planes=False) if canonical else None
         self.deltas: list[Delta] = []
         self.last: Delta | None = None
         #: Frames this painter drew.
@@ -680,8 +674,6 @@ class IrCairoPainter:
 
         # Through the wire: the bytes, parsed back by the core, are what the
         # core applies and what Cairo draws from.
-        if self.canonical is not None:
-            delta = self.canonical(delta)
         read = arachne_core.FrameDelta.from_bytes(delta.to_core().to_bytes())
         self.core.apply(read)
         self.state.apply(Delta.from_contents(read.contents()))

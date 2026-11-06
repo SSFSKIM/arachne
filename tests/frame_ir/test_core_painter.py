@@ -25,30 +25,15 @@ FPS = 15
 MEDIUM = {"pixel_width": 192, "pixel_height": 108}
 
 
-def _varies_around(values: np.ndarray) -> np.ndarray:
-    """Where ``values`` (height x width x channels) differ anywhere in a
-    pixel's 3 x 3 neighbourhood.
-    """
-    height, width = values.shape[:2]
-    padded = np.pad(values, ((1, 1), (1, 1), (0, 0)), mode="edge")
-    around = np.stack(
-        [
-            padded[1 + dy : 1 + dy + height, 1 + dx : 1 + dx + width]
-            for dy in (-1, 0, 1)
-            for dx in (-1, 0, 1)
-        ]
-    )
-    return np.any(around.max(axis=0) != around.min(axis=0), axis=-1)
+#: The frame the corner label is measured at, CE's low quality.
+LOW = {"pixel_width": 854, "pixel_height": 480}
 
 
 def test_the_overlay_is_ce_s_wherever_the_core_and_ce_agree_beneath_it():
     """Cairo draws the overlay over the core's frame as CE draws it over its
-    own: wherever the frames beneath agree, the overlaid pixels are CE's,
-    byte for byte, but at the overlay's edges (its glyphs' and its outlines',
-    where what it adds to the frame changes from pixel to pixel), up to a few
-    levels: there its geometry, snapped for the core
-    (``frame_ir.canonical``, at most 1/256 of a pixel), covers a pixel a
-    little otherwise.
+    own, from the scene's own values: wherever the frames beneath agree, the
+    overlaid pixels are CE's, byte for byte, its edges included (its glyphs'
+    and its outlines').
     """
     _, ce = render(core_scenes.FixedLabelOverSquare, FPS, **MEDIUM)
     _, ce_bare = render(core_scenes.FixedLabelOverSquareBare, FPS, **MEDIUM)
@@ -59,26 +44,46 @@ def test_the_overlay_is_ce_s_wherever_the_core_and_ce_agree_beneath_it():
     )
     assert CorePainter.drawn_total > before, "drawn on the core"
     assert len(ce) == len(core) == len(ce_bare) == len(core_bare) > 0
-    compared = inside = 0
+    compared = 0
     for index, frames in enumerate(zip(ce, core, ce_bare, core_bare, strict=True)):
         a, b, a_bare, b_bare = frames
         agree = np.all(a_bare == b_bare, axis=-1)
         overlaid = np.any(a != a_bare, axis=-1)
-        edge = _varies_around(a.astype(int) - a_bare.astype(int))
         off = np.abs(b.astype(int) - a.astype(int)).max(axis=-1)
-        assert off[agree & edge].max(initial=0) <= 4, (
-            f"frame {index}: {off[agree & edge].max()} levels off at an edge"
-        )
-        away = agree & ~edge
-        assert not off[away].any(), (
-            f"frame {index}: {int((off[away] > 0).sum())} pixels off away from an edge"
+        assert not off[agree].any(), (
+            f"frame {index}: {int((off[agree] > 0).sum())} pixels off, up to"
+            f" {off[agree].max()} levels"
         )
         compared += int((agree & overlaid).sum())
-        inside += int((away & overlaid).sum())
     # The overlay's own pixels over agreeing content, translucent ones among
-    # them, not a handful at its edge; and its inside, byte for byte.
+    # them, not a handful at its edge.
     assert compared > 1000, compared
-    assert inside > 300, inside
+
+
+@pytest.mark.parametrize(
+    "scene_class",
+    [core_scenes.CornerLabel, core_scenes.CornerLabelOwnCamera],
+    ids=["recorded", "live"],
+)
+def test_a_label_fixed_in_frame_is_drawn_from_the_scene_s_values(scene_class):
+    """The overlay is drawn from the values the scene made, not from the
+    core's snapped ones: Cairo's scan conversion is not continuous in its
+    input (24.8 fixed point, whole sub-rows), so a snap of at most 1/512 of
+    a pixel moved a shallow glyph edge's pixel by up to 14 levels. A label
+    over the background alone is CE's frame, byte for byte, drawn from the
+    record and drawn as the scene runs.
+    """
+    _, ce = render(scene_class, FPS, **LOW)
+    before = CorePainter.drawn_total
+    _, core = render(scene_class, FPS, draw_path="core", **LOW)
+    assert CorePainter.drawn_total > before, "drawn on the core"
+    assert len(ce) == len(core) > 0
+    for index, (a, b) in enumerate(zip(ce, core, strict=True)):
+        assert np.any(a != a[0, 0]), "the label is drawn"
+        off = np.abs(b.astype(int) - a.astype(int)).max(axis=-1)
+        assert not off.any(), (
+            f"frame {index}: {int((off > 0).sum())} pixels off, up to {off.max()} levels"
+        )
 
 
 def test_the_overlay_is_drawn_over_every_frame_that_has_one(monkeypatch):
@@ -128,14 +133,11 @@ def test_a_painter_holds_none_of_the_frames_it_drew_its_overlay_over():
     assert held <= 1, f"{held} of {len(drawn)} frames held"
 
 
-def test_a_display_left_after_a_frame_holds_the_sub_frame_its_record_drew():
-    """Once the frame is drawn, a display's camera is left holding the
-    picture of its sub-frame as the display's record carries it: the view
-    snapped as the records it draws are, not the view as the camera made it
-    (a centre off the grid, here).
+def _displayed():
+    """A MultiCamera showing a display of a quarter of the frame, whose
+    camera's centre is off any grid, of circles and lines: the camera, the
+    display and the mobjects to capture.
     """
-    from fractions import Fraction
-
     from arachne import (
         RED,
         Circle,
@@ -143,38 +145,153 @@ def test_a_display_left_after_a_frame_holds_the_sub_frame_its_record_drew():
         Line,
         MovingCamera,
         MultiCamera,
-        tempconfig,
     )
 
+    camera = MultiCamera()
+    display = ImageMobjectFromCamera(MovingCamera())
+    display.stretch_to_fit_width(camera.frame_width / 2)
+    display.stretch_to_fit_height(camera.frame_height / 2)
+    display.move_to([camera.frame_width / 4, camera.frame_height / 4, 0.0])
+    display.camera.frame.scale(0.37).move_to([0.123456789, 0.0987654321, 0.0])
+    camera.add_image_mobject_from_camera(display)
+    shapes = [
+        Circle(radius=0.05 + 0.11 * k, color=RED).shift([0.03 * k, 0.0, 0.0])
+        for k in range(12)
+    ]
+    shapes += [
+        Line([-2.0, -1.0 + 0.17 * k, 0.0], [2.0, 0.3 * k, 0.0]) for k in range(9)
+    ]
+    return camera, display, [*shapes, display]
+
+
+def _labelled():
+    """A tilted ThreeDCamera, a square in space off any grid, which the core
+    rasterizes, and a label fixed in frame, which Cairo paints: the camera,
+    the label and the mobjects to capture.
+    """
+    from arachne import DEGREES, Square, Text
+    from arachne.camera.three_d_camera import ThreeDCamera
+
+    camera = ThreeDCamera()
+    camera.set_phi(60 * DEGREES)
+    camera.set_theta(-45 * DEGREES)
+    square = Square(side_length=2.3456789, fill_opacity=0.5)
+    square.rotate(0.123, axis=[1.0, 1.0, 0.0])
+    label = Text("Overlay in a corner, W = 2", font_size=30)
+    label.to_corner([1.0, 1.0, 0.0])
+    camera.add_fixed_in_frame_mobjects(label)
+    return camera, label, [square, label]
+
+
+def test_a_display_left_after_a_frame_holds_the_sub_frame_ce_s_capture_leaves():
+    """Once the frame is drawn, a display's camera is left holding the
+    picture of its sub-frame as CE's capture leaves it: drawn, as the overlay
+    is, from the display's record as the scene made it, its view and the
+    records it draws unsnapped (a centre off the grid, here).
+    """
+    from fractions import Fraction
+
+    from arachne import tempconfig
+
     with tempconfig(MEDIUM):
-        camera = MultiCamera()
-        display = ImageMobjectFromCamera(MovingCamera())
-        display.stretch_to_fit_width(camera.frame_width / 2)
-        display.stretch_to_fit_height(camera.frame_height / 2)
-        display.move_to([camera.frame_width / 4, camera.frame_height / 4, 0.0])
-        display.camera.frame.scale(0.37).move_to([0.123456789, 0.0987654321, 0.0])
-        camera.add_image_mobject_from_camera(display)
-        shapes = [
-            Circle(radius=0.05 + 0.11 * k, color=RED).shift([0.03 * k, 0.0, 0.0])
-            for k in range(12)
-        ]
-        shapes += [
-            Line([-2.0, -1.0 + 0.17 * k, 0.0], [2.0, 0.3 * k, 0.0]) for k in range(9)
-        ]
+        camera, display, mobjects = _displayed()
+        camera.capture_mobjects(mobjects)
+        ce = display.camera.pixel_array
+        camera, display, mobjects = _displayed()
         painter = CorePainter()
-        painter.paint(camera, [("moving", [*shapes, display])], t=Fraction(0))
+        painter.paint(camera, [("moving", mobjects)], t=Fraction(0))
         painter.settle()
-        (record,) = [
-            r for r in painter.state.records.values() if "sub_frame" in r.fields
-        ]
-        _, view, order = record.fields["sub_frame"]
         held = display.camera.pixel_array
-        drawn = painter.drawer.capture(
-            painter.state, view, order, display.camera.background
-        )
-    assert np.any(drawn != display.camera.background), "the sub-frame draws"
-    differ = np.abs(held.astype(int) - drawn.astype(int)).max(-1)
+    assert np.any(ce != display.camera.background), "the sub-frame draws"
+    differ = np.abs(held.astype(int) - ce.astype(int)).max(-1)
     assert not differ.any(), int((differ > 0).sum())
+
+
+def test_the_core_is_handed_snapped_values_and_cairo_paints_the_scene_s():
+    """On one frame, every point the core rasterizes is on the frame's input
+    grid, as the core read it back (``state``), and every point of the
+    overlay Cairo paints is the scene's own, bit for bit (``made``).
+    """
+    from fractions import Fraction
+
+    from arachne import tempconfig
+
+    with tempconfig(LOW):
+        camera, label, mobjects = _labelled()
+        painter = CorePainter()
+        painter.paint(camera, [("moving", mobjects)], t=Fraction(0))
+    state, made = painter.state, painter.made
+    grid = state.view["input_grid"]
+    overlay = painter.core.overlay_entries()
+    painted = {slot for _, slot, _ in overlay}
+    rasterized = {slot for _, slot, _ in state.order} - painted
+    assert rasterized
+    for slot in rasterized:
+        points = state.shapes[state.records[slot].fields["shape"]].data
+        np.testing.assert_array_equal(points, np.round(points / grid) * grid)
+    glyphs = label.family_members_with_points()
+    assert len(overlay) == len(glyphs)
+    for (_, slot, _), glyph in zip(overlay, glyphs, strict=True):
+        points = made.shapes[made.records[slot].fields["shape"]].data
+        np.testing.assert_array_equal(points, glyph.points)
+        assert not np.array_equal(points, np.round(points / grid) * grid)
+
+
+def test_the_overlay_is_reported_and_settled_from_the_state_it_is_drawn_from(
+    monkeypatch,
+):
+    """What Cairo draws of the overlay, the contributors and outlines it
+    reports of it, and the display pictures a frame leaves behind all read
+    one state, the stream as the scene made it (``made``); the snapped state
+    the core read (``state``) is read only for the leaves the core draws.
+    """
+    from fractions import Fraction
+
+    from arachne import tempconfig
+    from arachne.frame_ir.cairo_painter import CairoDrawer
+
+    read: list[tuple[str, object, set[int]]] = []
+    # Each spied method and the place of its entries among its arguments.
+    for name, at in (("draw_over", 1), ("contributors", 0), ("outlines", 0)):
+        kept = getattr(CairoDrawer, name)
+
+        def spy(self, state, *args, _kept=kept, _name=name, _at=at, **kwargs):
+            read.append((_name, state, {slot for _, slot, _ in args[_at]}))
+            return _kept(self, state, *args, **kwargs)
+
+        monkeypatch.setattr(CairoDrawer, name, spy)
+    kept_capture = CairoDrawer.capture
+
+    def capturing(self, state, view, order, background):
+        read.append(("capture", state, {slot for _, slot, _ in order}))
+        return kept_capture(self, state, view, order, background)
+
+    monkeypatch.setattr(CairoDrawer, "capture", capturing)
+    with tempconfig(LOW):
+        camera, _, mobjects = _labelled()
+        labelled = CorePainter()
+        labelled.paint(camera, [("moving", mobjects)], t=Fraction(0))
+        labelled.contributors((600, 20, 700, 60))
+        labelled.outlines()
+    with tempconfig(MEDIUM):
+        camera, _, mobjects = _displayed()
+        displayed = CorePainter()
+        displayed.paint(camera, [("moving", mobjects)], t=Fraction(0))
+        displayed.settle()
+    assert {name for name, _, _ in read} == {
+        "draw_over",
+        "contributors",
+        "outlines",
+        "capture",
+    }
+    for name, state, slots in read:
+        (painter,) = [p for p in (labelled, displayed) if state in (p.made, p.state)]
+        if state is painter.made:
+            continue
+        painted = {slot for _, slot, _ in painter.core.overlay_entries()}
+        assert name == "outlines", name
+        assert not slots & painted, (name, slots & painted)
+    assert any(name == "capture" and state is displayed.made for name, state, _ in read)
 
 
 def test_a_live_frame_tests_depth_across_its_static_and_moving_captures():

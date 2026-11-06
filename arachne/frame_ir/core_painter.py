@@ -1,14 +1,18 @@
 """Frames drawn by the core, with Cairo's overlay over them.
 
 On ``draw_path=core`` a frame goes through XF as on ``ir_cairo``: the delta's
-bytes are parsed back by the core and applied to its ``Stream``. The core then
-draws the frame without its overlay, and Cairo draws the overlay over the
-core's pixels with CE's own camera code, in CE's order
-(:meth:`~.cairo_painter.CairoDrawer.draw_over`). The overlay is what the core's
-``Stream.overlay_entries`` names: mobjects fixed in frame, images (MultiCamera
-displays included) and paths filled through a background image. Drawn onto
-the core's frame as CE draws onto its own, the overlay rounds where CE's
-rounds.
+bytes, its geometry snapped (:mod:`.canonical`), are parsed back by the core
+and applied to its ``Stream``. The core then draws the frame without its
+overlay, and Cairo draws the overlay over the core's pixels with CE's own
+camera code, in CE's order (:meth:`~.cairo_painter.CairoDrawer.draw_over`).
+The overlay is what the core's ``Stream.overlay_entries`` names: mobjects
+fixed in frame, images (MultiCamera displays included) and paths filled
+through a background image. Cairo draws it from the deltas as the scene made
+them, never snapped, as CE draws from the scene's own values: Cairo's scan
+conversion is not continuous in its input (24.8 fixed point, whole sub-rows),
+so a snap far under its own grid would still move a pixel by many levels.
+Drawn onto the core's frame as CE draws onto its own, from CE's values, the
+overlay rounds where CE's rounds.
 """
 
 from __future__ import annotations
@@ -73,8 +77,11 @@ class CorePainter:
             ) from error
         self.core: Any = arachne_core.Stream()
         self.stream = FrameStream() if stream is None else stream
-        #: The stream as the core read it back, which the overlay is drawn from.
+        #: The stream as the core read it back.
         self.state = StreamState()
+        #: The stream as the scene made it, unsnapped: what Cairo draws the
+        #: overlay from, as CE draws it.
+        self.made = StreamState()
         self.drawer = CairoDrawer()
         #: The overlay's kept runs, from frame to frame.
         self.replays = Replays() if self.replay_overlay else None
@@ -127,6 +134,7 @@ class CorePainter:
         read = arachne_core.FrameDelta.from_bytes(sent.to_core().to_bytes())
         self.core.apply(read)
         self.state.apply(Delta.from_contents(read.contents()))
+        self.made.apply(delta)
         overlay = self.core.overlay_entries()
         if not _unguarded:
             self._refuse_undecided(overlay)
@@ -154,21 +162,31 @@ class CorePainter:
         frame = np.array(pixels)
         if overlay:
             self.overlaid += 1
-            self.drawer.draw_over(self.state, frame, overlay, self.replays)
+            self.drawer.draw_over(self.made, frame, overlay, self.replays)
         return frame
 
     def outlines(self) -> dict[tuple[int, int], tuple[Outline, ...]]:
         """What Cairo is handed for each leaf of the last frame drawn through
         the camera's context, by ``(slot, part)`` (:meth:`.cairo_painter.
-        CairoDrawer.outlines`): the geometry its edges are measured against.
-        Refused (``LiveFrame``) unless the last frame is :attr:`whole`.
+        CairoDrawer.outlines`): the geometry its edges are measured against,
+        as the core was handed it, and the overlay's as Cairo drew it, from
+        the scene's values. Refused (``LiveFrame``) unless the last frame is
+        :attr:`whole`.
         """
         if not self.whole:
             raise LiveFrame(
                 "outlines: the last capture was drawn over an earlier picture;"
                 " take them from the frame's state extracted whole"
             )
-        return self.drawer.outlines(self.state, self.state.order)
+        cairo = {slot for _, slot, _ in self.core.overlay_entries()}
+        order = self.state.order
+        found = self.drawer.outlines(
+            self.state, [e for e in order if e[1] not in cairo]
+        )
+        found.update(
+            self.drawer.outlines(self.made, [e for e in order if e[1] in cairo])
+        )
+        return found
 
     def contributors(self, box: Box) -> dict[tuple[int, int], PixelContributors]:
         """The leaves the last frame composites at each pixel of ``box``,
@@ -188,7 +206,7 @@ class CorePainter:
         if not overlay:
             return found
         return contributors.over(
-            found, self.drawer.contributors(self.state, overlay, box)
+            found, self.drawer.contributors(self.made, overlay, box)
         )
 
     def _refuse_undecided(self, overlay: Sequence[tuple[str, int, int]]) -> None:
@@ -242,15 +260,11 @@ class CorePainter:
     def settle(self) -> None:
         """Leave each display's camera of the last frame holding the picture
         CE's last capture leaves in it, as :meth:`IrCairoPainter.settle
-        <.painter.IrCairoPainter.settle>` does: displays are Cairo's. The
-        sub-frame's records are drawn as the core was handed them, snapped,
-        so its view is too, as the display's record carries it.
+        <.painter.IrCairoPainter.settle>` does: displays are Cairo's, drawn
+        from the scene's values as the overlay is.
         """
         for display, (_, view, order) in self.stream.last_sub_frames:
             camera = display.camera
             camera.pixel_array = self.drawer.capture(
-                self.state,
-                self.canonical.snapped_view(view),
-                order,
-                camera.background,
+                self.made, view, order, camera.background
             )

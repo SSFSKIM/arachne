@@ -466,16 +466,17 @@ class LivePainter:
         self._drawn_by: dict[int, str] = {}
         #: On the core, within :meth:`around`: the frame's input grid, over
         #: the scene camera's view and every display camera's
-        #: (``canonical.input_grid``, once per frame), which every painter of
-        #: the frame snaps its geometry to.
+        #: (``canonical.input_grid``, once per frame), which the scene
+        #: camera's painter snaps the core's geometry to.
         self.grid: float | None = None
 
     def painter(self, camera: Any) -> Any:
         """The painter of ``camera``'s captures: the path's for the scene's
-        camera, and Cairo from XF (``ir_cairo``) for a display's, as a frame
-        drawn from the record has a display's picture drawn by Cairo
-        (``CorePainter``'s overlay): the core does not widen a point cloud's
-        blocks by a display camera's size, as CE does.
+        camera, and Cairo from XF (``ir_cairo``, unsnapped) for a display's,
+        as a frame drawn from the record has a display's picture drawn by
+        Cairo from the scene's values (``CorePainter``'s overlay): the core
+        does not widen a point cloud's blocks by a display camera's size, as
+        CE does.
         """
         found = self._painters.get(id(camera))
         if found is None or found[0] is not camera:
@@ -484,9 +485,7 @@ class LivePainter:
             if self._is_scene_camera(camera):
                 painter = painter_class(self.path)(stream=_LiveStream())
             else:
-                painter = painter_class("ir_cairo")(
-                    stream=_LiveStream(), canonical=self.path == "core"
-                )
+                painter = painter_class("ir_cairo")(stream=_LiveStream())
             painter.live = True
             found = (camera, painter)
             self._painters[id(camera)] = found
