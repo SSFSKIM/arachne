@@ -424,3 +424,25 @@ def test_a_body_set_down_before_a_play_starting_between_frames_still_jumped(jump
     # Where the next play began, before it moved the puck at all.
     assert jump.detail["to"] == pytest.approx([3.0, 0.0], abs=1e-6)
     assert jump.t_start == Fraction(2, 5)
+
+
+@pytest.mark.parametrize("name", ["SetDownWithinAStride", "Teleport"])
+def test_the_verdict_is_the_reference_clock_s_whatever_the_render_s_rate(
+    session_of, name
+):
+    """A body's own motion is measured between frames of the 15 fps
+    reference clock, which a 30 fps render shows every other frame of: a
+    set-down within two of its steps there is churn at either rate, and a
+    teleport a jump at either.
+    """
+    found = {}
+    for fps in (15, 30):
+        session = session_of(name, MOTION, frame_rate=fps)
+        result = lint(session, rules=(motion_jump,))
+        found[fps] = [
+            (f.t_start, f.objects[0].id, f.detail["distance"])
+            for f in result.findings
+            if f.code == "motion.jump"
+        ]
+    assert found[15] == found[30]
+    assert bool(found[15]) is (name == "Teleport")
