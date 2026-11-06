@@ -13,6 +13,8 @@ own normal instead.
 
 from __future__ import annotations
 
+import re
+
 import numpy as np
 import pytest
 
@@ -282,11 +284,20 @@ def test_the_core_is_never_handed_a_frame_without_what_is_decided_before_the_sna
     losing, named, monkeypatch
 ):
     """A frame that reaches the core without what the writer decides before
-    the snap is refused, ``render.unable``, and drawn on no other path.
+    the snap is refused, ``render.unable``, and drawn on no other path among
+    the core's frames: the render draws the whole scene again on Cairo.
     """
+    from arachne.frame_ir import lint
+
+    _, cairo = render(SpringAlone, FPS, **FULL)
+    monkeypatch.setattr(lint, "raised", [])
     losing(monkeypatch)
-    with pytest.raises(Unable, match=f"render.unable: .*{named}"):
-        render(SpringAlone, FPS, draw_path="core", **FULL)
+    _, core = render(SpringAlone, FPS, draw_path="core", **FULL)
+    assert len(core) == len(cairo) > 0
+    for index, (a, b) in enumerate(zip(cairo, core, strict=True)):
+        np.testing.assert_array_equal(a, b, err_msg=f"frame {index}")
+    [finding] = [f for f in lint.raised if f.code == "render.fallback"]
+    assert re.search(f"render.unable: .*{named}", finding.message), finding.message
 
 
 class SpringFixedInFrame(ThreeDScene):
