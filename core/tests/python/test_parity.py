@@ -1,5 +1,5 @@
 """The parity kit: the core passes its own references, a frame off by more than its class's bound
-fails, a probe changed since its reference fails, and the coverage bound is the core's constant.
+fails, a probe changed since its reference fails, and every bound is a placeholder.
 """
 
 from __future__ import annotations
@@ -32,15 +32,15 @@ def test_the_core_passes_every_fixture():
     ]
 
 
-def test_every_bound_is_a_placeholder_and_coverage_starts_at_the_cores_constant():
-    # The constant bounds the coverage resolve against the sample resolve for a pixel with one
-    # partial mask or one path edge (a silhouette under a path's edge always takes the sample
-    # resolve); every bound waits for the cross-architecture measurement.
+def test_every_bound_is_a_placeholder():
+    # The bounds are drift between backends against the core's own frames, not the core's
+    # coverage-to-sample constant; every one, coverage among them, waits for the
+    # cross-architecture measurement.
     tolerances = json.loads((KIT / "tolerances.json").read_text())
     bounds = tolerances["bounds"]
     assert set(bounds) == set(arachne_core.RESOLVES)
     assert set(tolerances["placeholder"]) == set(arachne_core.RESOLVES)
-    assert bounds["coverage"] == arachne_core.COVERAGE_TO_SAMPLE_LSB
+    assert "coverage" in tolerances["placeholder"]
 
 
 def test_a_pixel_beyond_its_class_bound_fails_its_fixture(tmp_path):
@@ -50,7 +50,8 @@ def test_a_pixel_beyond_its_class_bound_fails_its_fixture(tmp_path):
     coverage = arachne_core.RESOLVES.index("coverage")
     y, x = np.argwhere(resolves[1] == coverage)[0]
     # Within the bound passes; one past it fails.
-    for off, passes in [(arachne_core.COVERAGE_TO_SAMPLE_LSB, True), (3, False)]:
+    bound = json.loads((KIT / "tolerances.json").read_text())["bounds"]["coverage"]
+    for off, passes in [(bound, True), (bound + 1, False)]:
         moved = rgba.copy()
         v = int(rgba[1, y, x, 0])
         moved[1, y, x, 0] = v - off if v >= off else v + off
