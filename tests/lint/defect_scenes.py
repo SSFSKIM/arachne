@@ -17,10 +17,12 @@ from arachne import (
     UP,
     WHITE,
     Arrow,
+    Arrow3D,
     ArrowVectorField,
     BackgroundRectangle,
     Circle,
     Create,
+    Cylinder,
     FadeIn,
     Group,
     Line,
@@ -457,6 +459,62 @@ class FarWordInDepth(ThreeDScene):
 
 class NearWordInDepth(FarWordInDepth):
     x = 1.0
+
+
+class _SideView(ThreeDScene):
+    """Seen from the side: x across the picture, z up, and depth along y,
+    the camera on the side of negative y. The camera is made looking
+    straight down and turned to the side before anything is drawn. A rod
+    along x at the origin, and what :meth:`beside` adds.
+    """
+
+    radius = 0.14
+    #: The rod's faces: along it, then around it.
+    resolution = (8, 2)
+
+    def construct(self):
+        self.set_camera_orientation(phi=90 * DEGREES, theta=-90 * DEGREES)
+        self.add(_rod(self.radius, self.resolution), *self.beside())
+        self.wait(0.5)
+
+    def beside(self):
+        return []
+
+
+def _rod(radius: float, resolution: tuple[int, int] = (8, 2)) -> Cylinder:
+    return Cylinder(radius=radius, height=4, direction=RIGHT, resolution=resolution)
+
+
+def _facing(word: Text, y: float, *, as_group: bool = False) -> Text:
+    """``word`` turned to face the side view, ``y`` deep, and sorted by its
+    depth as the rod's faces are: each glyph by its own, or ``as_group`` the
+    whole word by its centre's.
+    """
+    word.rotate(90 * DEGREES, axis=RIGHT).shift(y * UP)
+    return word.set_shade_in_3d(True, z_index_as_group=as_group)
+
+
+class ArrowBeforeARod(_SideView):
+    """A 3D arrow along the rod, wholly in front of it in depth, drawn over
+    it on screen.
+    """
+
+    def beside(self):
+        y = -0.3 * UP
+        return [Arrow3D(LEFT * 1.5 + y, RIGHT * 1.5 + y, resolution=8)]
+
+
+class WordAheadOfAFineRod(_SideView):
+    """A word sorted whole, wholly in front of a thick rod of many faces
+    around and drawn over it: the faces above the word's centre lie behind
+    it all the same.
+    """
+
+    radius = 0.3
+    resolution = (2, 16)
+
+    def beside(self):
+        return [_facing(Text("ahead", font_size=36), -0.6, as_group=True)]
 
 
 # Small text ------------------------------------------------------------------

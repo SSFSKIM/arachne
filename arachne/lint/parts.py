@@ -3,7 +3,9 @@
 A capture's mobjects are read as a frame draws them, in its paint order:
 the play's static mobjects, then its moving ones, or the whole scene when
 nothing moves, each family flattened into the members that have points.
-The scene's camera's own mobjects (its frame, trackers and light) are how
+A ThreeDCamera's depth sort is read with the rotation of the angles on
+show, which a frame's capture makes before it sorts, whatever rotation
+the camera held before the read. The scene's camera's own mobjects (its frame, trackers and light) are how
 it views and are not read; a zoomed display and another camera's frame the
 scene shows are. Each drawn member is a :class:`Leaf`: its points where the
 camera puts them, in screen units of the home frame (the configuration's
@@ -43,6 +45,7 @@ from arachne.camera.projection import (
     View,
     draw_kind,
     held_still,
+    hold_rotation,
     member_place,
     point_thickness,
     record_view,
@@ -379,6 +382,10 @@ def _read(
     names = play.names if play is not None else record.final_names
     hidden = _viewing_nodes(camera)
     static, moving = _lists(play, capture)
+    # A frame's capture makes a ThreeDCamera's rotation for the angles on
+    # show before its depth sort; the camera may hold one an earlier read or
+    # capture left.
+    hold_rotation(camera)
     order: dict[int, int] = {}
     drawn: list[Mobject] = []
     for position, mob in enumerate(
