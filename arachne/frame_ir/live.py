@@ -119,6 +119,27 @@ _PRE_DISPLAY = "__pre_display__"
 _CAMERA_RGBAS = "__camera_rgbas__"
 
 
+#: The camera's methods that write a picture into the array they are handed
+#: (CE's ``Camera``; no engine subclass adds one): within a capture its
+#: draw, outside one a picture composited into the array, no capture's
+#: (``LivePainter._compositing``). ``set_pixel_array`` (``reset``,
+#: ``set_frame_to_background``) sets the array instead; it is watched apart.
+_COMPOSITING = (
+    "overlay_rgba_array",
+    "overlay_PIL_image",
+    "display_multiple_vectorized_mobjects",
+    "display_multiple_non_background_colored_vmobjects",
+    "display_multiple_background_colored_vmobjects",
+    "display_vectorized",
+    "apply_fill",
+    "apply_stroke",
+    "display_multiple_point_cloud_mobjects",
+    "display_point_cloud",
+    "display_multiple_image_mobjects",
+    "display_image_mobject",
+)
+
+
 #: Cameras whose captures are their own draw from now on
 #: (``render.fallback``), with why: what their code changed while producing
 #: a record's values, or the capture their draw first differed at.
@@ -458,9 +479,13 @@ class LivePainter:
         #: frame from it (:meth:`_under`).
         self._holding: dict[int, _Described | None] = {}
         #: On the core, per camera (by id), within :meth:`around`: whether
-        #: its array holds its own background as its last reset left it,
-        #: no capture drawn into it since.
+        #: its array was last set by a reset (its own background), no
+        #: capture drawn into it since.
         self._reset: dict[int, bool] = {}
+        #: On the core, within :meth:`around`: the cameras (by id) whose
+        #: array one of their methods wrote outside a capture
+        #: (:data:`_COMPOSITING`) since it was last set or captured.
+        self._composited: set[int] = set()
         #: Per camera (by id), within :meth:`around`: the painter whose pixels
         #: its array holds (``painter.painter_kind``).
         self._drawn_by: dict[int, str] = {}
@@ -510,12 +535,20 @@ class LivePainter:
 
     @contextlib.contextmanager
     def around(
-        self, camera: Any, t: Fraction, play: Any = None, asked: str = "core"
+        self,
+        camera: Any,
+        t: Fraction,
+        play: Any = None,
+        asked: str = "core",
+        *,
+        reset: bool = False,
     ) -> Iterator[LivePainter]:
         """Within: ``camera``'s captures, and its displays' cameras', are
         described in XF and drawn back from it, as one frame at instant ``t``
         of the play ``play`` (any key that tells plays apart, if known), of
-        a scene whose frames were asked for on the draw path ``asked``.
+        a scene whose frames were asked for on the draw path ``asked``. With
+        ``reset``, ``camera``'s array is as its reset just left it, set
+        before the frame's route was read: its first capture begins on it.
         """
         from .painter import deliver, delivered
 
@@ -526,6 +559,9 @@ class LivePainter:
         self._last.clear()
         self._holding.clear()
         self._reset.clear()
+        self._composited.clear()
+        if reset:
+            self._reset[id(camera)] = True
         self._drawn_by.clear()
         self._opening = not delivered(camera, asked)
         displays = vars(camera).get("image_mobjects_from_cameras", ())
@@ -700,12 +736,18 @@ class LivePainter:
                 found = set_array(pixel_array, *args, **kwargs)
                 self._holding[id(camera)] = self._installed(camera, pixel_array)
                 self._reset[id(camera)] = pixel_array is camera.background
+                self._composited.discard(id(camera))
                 return found
 
             if "set_pixel_array" in own:
                 held["set_pixel_array"] = own["set_pixel_array"]
             own["set_pixel_array"] = engine_own(installing)
             added.append("set_pixel_array")
+            for name in _COMPOSITING:
+                if name in own:
+                    held[name] = own[name]
+                own[name] = engine_own(self._compositing(camera, getattr(camera, name)))
+                added.append(name)
         own_code = _own_code(camera)
         if own_code is not None:
             # Named now: once wrapped, the scene's callables on the instance
@@ -736,6 +778,19 @@ class LivePainter:
             own.update(held)
 
         return restore
+
+    def _compositing(self, camera: Any, method: Any) -> Any:
+        """``method``, a method of ``camera`` that writes the array it is
+        handed (:data:`_COMPOSITING`): called outside a capture, the picture
+        the camera's array holds is no capture's, nor its reset's.
+        """
+
+        def compositing(*args: Any, **kwargs: Any) -> Any:
+            if not vars(camera)["_xf_live"]:
+                self._composited.add(id(camera))
+            return method(*args, **kwargs)
+
+        return compositing
 
     def _display(self, camera: Any, kind: type, func: Any) -> Any:
         from arachne.timeline.camera_code import engine_own
@@ -774,8 +829,24 @@ class LivePainter:
         """
         frames = vars(camera)["_xf_live"]
         background = np.array(camera.pixel_array)
-        # Begun on the camera's reset, or continuing a picture that was.
-        whole = self._reset.pop(id(camera), False)
+        # Whole: begun on the camera's reset with nothing written into its
+        # array since, or continuing a picture that was, nothing written
+        # since that picture's capture. What wrote is the record's: set
+        # (``set_pixel_array``), drawn by a capture, or composited by one of
+        # the camera's methods outside a capture (``_compositing``). A write
+        # no method hears (a scene's code assigning into the array) is
+        # refused by a capture begun on a reset where the array no longer
+        # holds the background that reset installed; that compare only
+        # refuses (a recorded whole), never makes a capture whole. A
+        # continuing capture is drawn from the picture's description, over
+        # its background, so no such write reaches it (:meth:`_under`).
+        composited = id(camera) in self._composited
+        self._composited.discard(id(camera))
+        whole = (
+            self._reset.pop(id(camera), False)
+            and not composited
+            and np.array_equal(background, camera.background)
+        )
         if self._real and not self.draw:
             background = self._behind(camera, background)
         drawn: list[tuple[type, _Recording]] = []
@@ -796,7 +867,7 @@ class LivePainter:
             return
         under = self._under(camera, drawn)
         if under is not None:
-            background, whole = under.background, under.whole
+            background, whole = under.background, under.whole and not composited
             merged = dict(under.centres)
             for key, values in centres.items():
                 merged[key] = [*merged.get(key, []), *values]
@@ -1177,12 +1248,20 @@ _LIVE: weakref.WeakKeyDictionary[Any, tuple[int, LivePainter]] = (
 
 @contextlib.contextmanager
 def live(
-    camera: Any, t: Fraction, draw_path: str | None = None, play: Any = None
+    camera: Any,
+    t: Fraction,
+    draw_path: str | None = None,
+    play: Any = None,
+    *,
+    reset: bool = False,
 ) -> Iterator[LivePainter | None]:
     """Within: ``camera`` captures through the draw path ``draw_path`` (the
     option of that name, unless given), each capture a frame at the scene's
     instant ``t`` of the play ``play`` (a key that tells plays apart, if
-    known). On ``cairo`` nothing changes.
+    known). On ``cairo`` nothing changes. ``reset`` says the camera was
+    reset just before, nothing written into its array since: its first
+    capture begins on that reset (:attr:`.CorePainter.whole`), as one reset
+    within does.
     """
     from .painter import DRAW_PATHS, camera_path
 
@@ -1201,7 +1280,7 @@ def live(
         # draws the picture (its real draw would only be thrown away).
         found = (pid, LivePainter(draw=path != "core", path=path))
         _LIVE[camera] = found
-    with found[1].around(camera, t, play, draw_path) as painter:
+    with found[1].around(camera, t, play, draw_path, reset=reset) as painter:
         yield painter
 
 
