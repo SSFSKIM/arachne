@@ -987,8 +987,9 @@ impl PyStream {
     /// ``leaves`` are ``(object, part, coverage, colour, drawn, shown, covers)``, bottom first,
     /// each leaf once: each drawn leaf covering one of the pixel's sub-samples, hidden ones
     /// included (``shown`` false), with its share of the sub-samples (0 to 255), its nearest
-    /// fragment's colour and what it draws alone over a transparent pixel (premultiplied
-    /// ``(r, g, b, a)`` both), and whether it hides everything beneath it (``covers``).
+    /// fragment's colour (that one fragment's paint, not the leaf's drawn colour) and what it
+    /// draws alone over a transparent pixel (premultiplied ``(r, g, b, a)`` both; neither is
+    /// what the pixel shows of it), and whether it hides everything beneath it (``covers``).
     /// ``orders`` are the distinct sequences the sub-samples see, bottom first, as ``(index into
     /// leaves, coverage)``, a leaf once per run of its fragments; ``crossing`` is whether they
     /// order two leaves both ways or admit no one order (``contributors.rs``). Nothing is drawn.
