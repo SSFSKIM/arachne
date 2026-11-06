@@ -51,6 +51,7 @@ __all__ = [
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
+from weakref import WeakKeyDictionary
 
 import numpy as np
 
@@ -336,11 +337,51 @@ def _centre(value: Sequence[float] | np.ndarray) -> Centre:
     return (x, y, z)
 
 
+#: Each ThreeDCamera's rotation matrix as :func:`_rotate` last made it, with
+#: the angles it was made from.
+_ROTATIONS: WeakKeyDictionary[Any, tuple[tuple[float, float, float], np.ndarray]] = (
+    WeakKeyDictionary()
+)
+
+#: What the engine's ThreeDCamera makes its rotation matrix with, and from.
+_ROTATION_CODE = (
+    "reset_rotation_matrix",
+    "generate_rotation_matrix",
+    "get_phi",
+    "get_theta",
+    "get_gamma",
+)
+
+
+def _rotate(camera: Camera) -> None:
+    """Have a ThreeDCamera project with the matrix of its trackers as they
+    are. The engine's matrix is made from its three angles alone, so it is
+    made again only when they moved since it was last made here, or when
+    something else replaced it (the camera's own capture); a camera whose
+    class makes it in code of its own makes it again every time.
+    """
+    from arachne.camera.three_d_camera import ThreeDCamera
+
+    if not hasattr(camera, "reset_rotation_matrix"):
+        return
+    if not isinstance(camera, ThreeDCamera) or not all(
+        name not in vars(camera)
+        and getattr(type(camera), name) is getattr(ThreeDCamera, name)
+        for name in _ROTATION_CODE
+    ):
+        camera.reset_rotation_matrix()
+        return
+    angles = (camera.get_phi(), camera.get_theta(), camera.get_gamma())
+    made = _ROTATIONS.get(camera)
+    if made is not None and made[0] == angles and camera.rotation_matrix is made[1]:
+        return
+    camera.reset_rotation_matrix()
+    _ROTATIONS[camera] = (angles, camera.rotation_matrix)
+
+
 def _pre_display(camera: Camera, mob: Mobject, points: np.ndarray) -> np.ndarray:
     """``points`` through the camera's pre-display code, as ``(n, 2)``."""
-    if hasattr(camera, "reset_rotation_matrix"):
-        # A ThreeDCamera projects with the matrix of its trackers as they are.
-        camera.reset_rotation_matrix()
+    _rotate(camera)
     shown = np.asarray(camera.transform_points_pre_display(mob, points), dtype=float)
     return shown[:, :2]
 
@@ -447,8 +488,7 @@ def _path_ink(camera: Camera, view: View, member: Mobject) -> np.ndarray | None:
             view.pixel_height / 2 + centre[1] * y_scale,
         )
     )
-    if hasattr(camera, "reset_rotation_matrix"):
-        camera.reset_rotation_matrix()
+    _rotate(camera)
     camera.set_cairo_context_path(ctx, member)
     extents: list[tuple[float, float, float, float]] = []
     if _painted(member.get_fill_opacities()):
