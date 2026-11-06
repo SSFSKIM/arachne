@@ -84,7 +84,10 @@ class FindingObject:
 @dataclass(frozen=True)
 class Finding:
     """One finding. ``severity`` and ``fix`` default to the code's; ``cls``
-    is the code's class. ``folded`` holds the look-alikes folded into it.
+    is the code's class. ``folded`` holds the look-alikes folded into it,
+    each with its own times; a finding they fold into holds over all of
+    theirs and its own, which ``own_range`` keeps (``None`` for one that
+    folded nothing), and :attr:`members` gives each back as it was found.
     """
 
     code: str
@@ -98,6 +101,7 @@ class Finding:
     detail: Mapping[str, Any] = field(default_factory=dict)
     fix: str = ""
     folded: tuple[Finding, ...] = ()
+    own_range: tuple[Fraction | None, Fraction | None] | None = None
 
     def __post_init__(self) -> None:
         entry = code(self.code)
@@ -123,6 +127,18 @@ class Finding:
     def cls(self) -> str:
         """The class a report names the finding's kind by."""
         return CODES[self.code].cls
+
+    @property
+    def members(self) -> tuple[Finding, ...]:
+        """The findings it stands for, each as it was found: itself over its
+        own times, then those folded into it; itself alone when it folded
+        nothing.
+        """
+        if self.own_range is None:
+            return (self,)
+        start, end = self.own_range
+        own = replace(self, t_start=start, t_end=end, folded=(), own_range=None)
+        return (own, *self.folded)
 
 
 def in_range(finding: Finding, t_range: Sequence[float] | None) -> bool:
@@ -169,18 +185,22 @@ def fold(
 
 
 def _folded(members: list[Finding]) -> Finding:
-    """The first of ``members`` carrying the rest, over all their times."""
+    """The first of ``members`` carrying the rest, over all their times,
+    keeping its own.
+    """
     head, rest = members[0], members[1:]
     spans = [
         (m.t_start, m.t_end if m.t_end is not None else m.t_start)
         for m in members
         if m.t_start is not None
     ]
+    own = head.own_range if head.own_range is not None else (head.t_start, head.t_end)
+    folded = (*head.folded, *rest)
     if not spans:
-        return replace(head, folded=(*head.folded, *rest))
+        return replace(head, folded=folded, own_range=own)
     start = min(begin for begin, _ in spans)
     end = max(finish for _, finish in spans)
-    return replace(head, t_start=start, t_end=end, folded=(*head.folded, *rest))
+    return replace(head, t_start=start, t_end=end, folded=folded, own_range=own)
 
 
 def _alike(finding: Finding, timeline: Sequence[Fraction]) -> Hashable:
