@@ -150,6 +150,14 @@ class Manager(Generic[SceneT]):
         down no run that raised: :meth:`tear_down` runs once, for the
         execution that completes.
 
+        A scene drawn on the core that the core cannot draw
+        (``render.unable``: never drawn wrong, and never one frame by another
+        painter among the core's) is executed again the same way, from the
+        start, drawn on Cairo: the core may refuse a scene, but never makes
+        an unrenderable one of a scene Cairo renders. A ``render.fallback``
+        finding carries the refusal; the draw path asked for is the
+        option's again once the render ends.
+
         Parameters
         ----------
         preview
@@ -159,12 +167,54 @@ class Manager(Generic[SceneT]):
         open_after_render = preview or presentation.open_after_render
         if open_after_render and not self.output_spec.enabled:
             raise ValueError("Previewing after render requires a media artifact.")
-
         known: dict[int, str] = {}
         earlier: list[tuple[int, tuple[bytes, ...]]] = []
         # The construction caches as a scene rendered earlier in this process
         # left them: an execution again finds them as the first execution did.
         caches = construction_caches()
+        # While the scene is drawn on Cairo after the core refused it: the
+        # draw path asked for, the option's again once the render ends.
+        asked: str | None = None
+        try:
+            while True:
+                try:
+                    self._executions(known, earlier, caches)
+                    self.post_construct()
+                    break
+                except Exception as unable:
+                    if asked is not None or not self._refused_by_the_core(unable):
+                        raise
+                    asked = self._draw_on_cairo(unable)
+                    # As for a play's refusal: the interrupted execution's
+                    # encoders were aborted and its run abandoned.
+                    record = self.scene._arachne_timeline.ensure_record()
+                    earlier.append((record.execution.number, play_keys(record)))
+                    restore_construction_caches(caches)
+                    self._renew_scene()
+                    self.scene._arachne_timeline.reexecuting(known, earlier)
+        finally:
+            if asked is not None:
+                from . import config
+
+                config.draw_path = asked
+
+        if open_after_render or presentation.show_in_file_browser:
+            open_media_file(
+                self.file_writer,
+                preview=open_after_render,
+                show_in_file_browser=presentation.show_in_file_browser,
+            )
+
+    def _executions(
+        self,
+        known: dict[int, str],
+        earlier: list[tuple[int, tuple[bytes, ...]]],
+        caches: Any,
+    ) -> None:
+        """Execute the scene until an execution completes: again from the
+        start for each play it meant to draw from its record that a mobject
+        the record can't draw joined mid-play (``known``, by play).
+        """
         while True:
             try:
                 self._execute()
@@ -195,14 +245,39 @@ class Manager(Generic[SceneT]):
                 restore_construction_caches(caches)
                 self._renew_scene()
                 self.scene._arachne_timeline.reexecuting(known, earlier)
-        self.post_construct()
 
-        if open_after_render or presentation.show_in_file_browser:
-            open_media_file(
-                self.file_writer,
-                preview=open_after_render,
-                show_in_file_browser=presentation.show_in_file_browser,
-            )
+    def _refused_by_the_core(self, error: Exception) -> bool:
+        """Whether ``error`` is the core's refusal (``render.unable``) of a
+        scene whose frames are asked for on the core (``core``, or ``auto``
+        for its camera). Read only once raised: the drawing imported it by
+        then, and the engine's code is read before (``timeline.frozen``).
+        """
+        from . import config
+        from .frame_ir.extract import Unable
+        from .frame_ir.painter import scene_path
+
+        if not isinstance(error, Unable):
+            return False
+        return scene_path(self.scene.renderer.camera, config.draw_path) == "core"
+
+    def _draw_on_cairo(self, unable: Exception) -> str:
+        """The scene, refused by the core (``unable``), is drawn on Cairo from
+        now on, with a ``render.fallback`` finding: return the draw path that
+        was asked for.
+        """
+        from . import config
+        from .frame_ir.lint import raise_finding
+
+        name = type(self.scene).__name__
+        raise_finding(
+            "render.fallback",
+            name,
+            f"{name} is drawn on Cairo for the whole scene, executed again from"
+            f" its start: the core could not draw it ({unable})",
+        )
+        asked = config.draw_path
+        config.draw_path = "cairo"
+        return asked
 
     def _execute(self) -> None:
         """Execute the scene's script once, recording it."""

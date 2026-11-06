@@ -8,13 +8,14 @@ decides before the first frame, for the whole scene: a camera holding only
 changes the gate has proven on ``ir_cairo`` against the camera's own draw
 (``PROVEN_ON_THE_GATE``) is drawn on the core from what it produced; any
 other draws on Cairo, with one finding. A frame the core refuses is
-``render.unable``, never drawn on another path.
+``render.unable``, never drawn on another path among the core's frames; the
+render then draws the whole scene again on Cairo (``test_core_refusal``).
 
 A proven change can still rebind what the camera holds as it draws, which
 XF does not carry. The core watches for that in the first frame of each
 play, and draws the scene's first frame as the camera draws it: a rebinding
 seen there sends the whole scene to Cairo; one first seen in a later play is
-``render.unable``.
+``render.unable``, and the scene is drawn again on Cairo.
 """
 
 from __future__ import annotations
@@ -171,33 +172,6 @@ def test_a_scene_that_fell_back_stays_on_its_camera_s_own_draw(findings):
         np.testing.assert_array_equal(a, b, err_msg=f"frame {index}")
     [finding] = _fallbacks(findings)
     assert "whole scene" in finding.message
-
-
-class _Refusing:
-    """A core stream that refuses every frame, as the core refuses a record
-    it does not draw.
-    """
-
-    def __init__(self, stream):
-        self.stream = stream
-
-    def __getattr__(self, name):
-        return getattr(self.stream, name)
-
-    def draw(self, *args, **kwargs):
-        raise arachne_core.Unsupported("path", 3, 7, "a path's clip is not drawn yet")
-
-
-def test_a_frame_the_core_refuses_is_unable_not_drawn_on_another_path(monkeypatch):
-    held = CorePainter.__init__
-
-    def refusing(self, **kwargs):
-        held(self, **kwargs)
-        self.core = _Refusing(self.core)
-
-    monkeypatch.setattr(CorePainter, "__init__", refusing)
-    with pytest.raises(Unable, match="render.unable: the core does not draw a path"):
-        render(core_scenes.FixedLabelOverSquare, FPS, draw_path="core", **MEDIUM)
 
 
 @pytest.mark.parametrize(
@@ -363,14 +337,6 @@ def test_an_engine_camera_drawn_live_on_the_core_draws_its_first_frame_there():
     assert not found._statics
 
 
-def test_a_rebinding_first_seen_in_a_later_play_is_unable():
-    """The core has drawn the frames before it: a fallback now would show
-    partway through the scene, so nothing draws it.
-    """
-    with pytest.raises(Unable, match="cairo_line_width_multiple"):
-        render(camera_scenes.LaterPlayStateSolids, FPS, draw_path="core", **MEDIUM)
-
-
 @pytest.mark.parametrize(
     "scene_class",
     [
@@ -388,11 +354,18 @@ def test_a_camera_changed_after_the_core_delivered_frames_is_unable(
     """One movie, one painter: the scene's first drawing decides the path its
     frames take, a fallback is possible only while no frame has been
     delivered, and a drawing that would take another path after that is
-    ``render.unable``, recorded and live drawing alike.
+    ``render.unable``, recorded and live drawing alike. The render then draws
+    the whole scene again on Cairo (``test_core_refusal``): no frame of the
+    core's is among them, and no camera's own fallback is.
     """
-    with pytest.raises(Unable, match="render.unable"):
-        render(scene_class, FPS, draw_path="core", **MEDIUM)
-    assert not _fallbacks(findings), findings
+    _, cairo = render(scene_class, FPS, **MEDIUM)
+    _, core = render(scene_class, FPS, draw_path="core", **MEDIUM)
+    assert len(core) == len(cairo) > 0
+    for index, (a, b) in enumerate(zip(cairo, core, strict=True)):
+        np.testing.assert_array_equal(a, b, err_msg=f"frame {index}")
+    [finding] = _fallbacks(findings)
+    assert finding.subject == scene_class.__name__
+    assert "render.unable" in finding.message
 
 
 @pytest.mark.xfail(

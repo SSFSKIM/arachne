@@ -137,7 +137,7 @@ class CairoRenderer:
                 encoder_fingerprint=video_encoder_fingerprint(
                     scene.session_spec.video_encoder,
                 ),
-                renderer_state=self._grid_phase(scene),
+                renderer_state=(*self._grid_phase(scene), *self._painter_state()),
             )
 
         timeline = scene._arachne_timeline
@@ -238,6 +238,17 @@ class CairoRenderer:
         start = scene.time
         fps = exact(self.camera.frame_rate)
         return (str((start * fps) % 1), str((start * TICK_RATE) % 1))
+
+    def _painter_state(self) -> tuple[str, ...]:
+        """The painter a play's frames are asked of, where it is not Cairo: a
+        segment drawn on the core is not Cairo's, and a render on one path
+        never reuses the other's (a scene the core refused is drawn on Cairo
+        again from its start, past the core's segments of the plays before).
+        Cairo's two paths draw the same pixels, so share their segments.
+        """
+        from ..frame_ir.painter import scene_path
+
+        return ("core",) if scene_path(self.camera, config.draw_path) == "core" else ()
 
     def _draw_play(
         self, scene: Scene, play: PlayRecord, frames: list[Fraction]
