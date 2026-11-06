@@ -119,6 +119,52 @@ def test_on_the_core_path_the_overlay_s_leaves_lie_over_the_core_s():
     assert [leaf.painter for leaf in beside.leaves] == ["core"]
 
 
+def test_on_the_core_path_the_overlay_s_leaves_are_reported_as_drawn_from_the_scene():
+    """Each leaf of the overlay is drawn again alone, and outlined, as the
+    frame drew it, from the values the scene made: at every pixel of a label
+    fixed in frame, what it draws is what Cairo draws from the scene's own
+    values (``ir_cairo``), its glyphs' edges included, and its outlines are
+    the paths Cairo is handed there.
+    """
+    from arachne import DEGREES, Text, tempconfig
+    from arachne.camera.three_d_camera import ThreeDCamera
+
+    with tempconfig({"pixel_width": 854, "pixel_height": 480}):
+        camera = ThreeDCamera()
+        camera.set_phi(60 * DEGREES)
+        camera.set_theta(-45 * DEGREES)
+        label = Text("Overlay in a corner, W = 2", font_size=30)
+        label.to_corner([1.0, 1.0, 0.0])
+        camera.add_fixed_in_frame_mobjects(label)
+        (left, top), (right, bottom) = (
+            camera.points_to_pixel_coords(label, np.array([corner]))[0]
+            for corner in (
+                label.get_corner([-1.0, 1.0, 0.0]),
+                label.get_corner([1.0, -1.0, 0.0]),
+            )
+        )
+        box = (int(left) - 2, int(top) - 2, int(right) + 3, int(bottom) + 3)
+        core, cairo = CorePainter(), IrCairoPainter()
+        for painter in (core, cairo):
+            painter.paint(camera, [("moving", [label])], t=Fraction(0))
+        on_core, on_cairo = core.contributors(box), cairo.contributors(box)
+        outlined, outlined_on_cairo = core.outlines(), cairo.outlines()
+    assert on_core.keys() == on_cairo.keys()
+    assert len(on_core) > 1000
+    for pixel, found in on_core.items():
+        assert [leaf.drawn for leaf in found.leaves if leaf.painter == "cairo"] == [
+            leaf.drawn for leaf in on_cairo[pixel].leaves
+        ], pixel
+    assert outlined.keys() == outlined_on_cairo.keys()
+    for key, ops in outlined.items():
+        theirs = outlined_on_cairo[key]
+        assert [len(op.subpaths) for op in ops] == [len(op.subpaths) for op in theirs]
+        for op, their in zip(ops, theirs, strict=True):
+            for mine, other in zip(op.subpaths, their.subpaths, strict=True):
+                assert (mine.start, mine.closed) == (other.start, other.closed), key
+                np.testing.assert_array_equal(mine.segments, other.segments, str(key))
+
+
 def test_from_core_names_stable_ids_and_what_each_leaf_draws_alone():
     found = {
         (3, 4): (
