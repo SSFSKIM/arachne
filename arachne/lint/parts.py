@@ -51,6 +51,7 @@ from arachne.camera.projection import (
 from arachne.timeline.draw import Drawing
 
 from .findings import FindingObject, Holder
+from .leaf_memo import Lays, LeafMemo, Placed, Viewing
 
 if TYPE_CHECKING:
     from arachne.mobject.mobject import Mobject
@@ -267,13 +268,16 @@ def build_parts(
     answer: str,
     target: tuple[int, int],
     live: bool = False,
+    memo: LeafMemo | None = None,
 ) -> Parts:
     """The parts ``capture`` draws, the frame at ``t`` of ``play`` (``None``
     for the final capture): read from the record, every mobject given its
     captured state, or with ``live`` from the scene as it is now, a forward
     run holding that capture, through the camera's inputs as the capture
     recorded them (its callbacks' values, not the callbacks). Pixel boxes
-    are at ``target``, ``(width, height)``.
+    are at ``target``, ``(width, height)``. A read of the record through a
+    ``memo`` keeps what it reads off each leaf for the memo's later reads
+    (:mod:`.leaf_memo`); a live read keeps nothing.
     """
     if live:
         # The run is drawing as it goes: its camera holds the map its frames
@@ -288,11 +292,13 @@ def build_parts(
                 home=timeline.home,
                 configured_pixels=timeline.configured_pixels,
             )
-            return _read(record, t, play, capture, answer, view, target)
+            return _read(record, t, play, capture, answer, view, target, None)
     static, moving = _lists(play, capture)
     with Drawing(record) as drawing:
         drawing.show(capture, [*capture.draw_list(), *static, *moving])
-        return _read(record, t, play, capture, answer, record_view(record), target)
+        return _read(
+            record, t, play, capture, answer, record_view(record), target, memo
+        )
 
 
 class PartsCache:
@@ -304,12 +310,17 @@ class PartsCache:
     A live read is of a forward run's scene as the run holds the capture at
     ``t``: the run reaches each instant once, and every reader of it is
     shown the scene there before the run moves on.
+
+    What its builds read off each leaf is kept across them, in its ``memo``
+    (:class:`~.leaf_memo.LeafMemo`; none with ``memo=False``): a leaf held
+    as it was is read once, not once per instant.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, memo: bool = True) -> None:
         self._built: dict[
             tuple[Any, ...], tuple[Record, PlayRecord | None, Capture, Parts]
         ] = {}
+        self.memo = LeafMemo() if memo else None
 
     def build(
         self,
@@ -327,7 +338,14 @@ class PartsCache:
         found = self._built.get(key)
         if found is None:
             built = build_parts(
-                record, t, play, capture, answer=answer, target=target, live=live
+                record,
+                t,
+                play,
+                capture,
+                answer=answer,
+                target=target,
+                live=live,
+                memo=None if live else self.memo,
             )
             # What the key names by id is held, so no id in it is reused.
             found = (record, play, capture, built)
@@ -354,8 +372,10 @@ def _read(
     answer: str,
     view: View,
     target: tuple[int, int],
+    memo: LeafMemo | None,
 ) -> Parts:
     camera = record._scene.renderer.camera
+    viewing = memo.viewing(record, capture, camera, view) if memo is not None else None
     names = play.names if play is not None else record.final_names
     hidden = _viewing_nodes(camera)
     static, moving = _lists(play, capture)
@@ -372,7 +392,7 @@ def _read(
         # A mobject drawn twice is seen where it was drawn last.
         order[id(mob)] = position
     chains = _chains([*capture.draw_list(), *static, *moving], hidden)
-    reader = _Reader(record, camera, view, names, chains)
+    reader = _Reader(record, camera, view, names, chains, viewing)
     texts: dict[int, list[Leaf]] = {}
     text_of: dict[int, Mobject] = {}
     parts: list[Part] = []
@@ -564,6 +584,7 @@ class _Reader:
         view: View,
         names: dict[int, str],
         chains: dict[int, tuple[Mobject, tuple[Mobject, ...]]],
+        viewing: Viewing | None = None,
     ) -> None:
         from arachne.mobject.graphing.number_line import NumberLine
 
@@ -571,6 +592,8 @@ class _Reader:
         self.camera = camera
         self.view = view
         self.names = names
+        #: The lint's memo as this read sees it; ``None`` keeps nothing.
+        self._viewing = viewing
         self._units: dict[int, Unit] = {}
         #: Each source's family, and each unit's background rectangle (ids).
         self._families: dict[int, tuple[Holder, ...]] = {}
@@ -600,44 +623,63 @@ class _Reader:
         points = np.asarray(mob.points, dtype=float)
         if not len(points):
             return None
-        fill, stroke, width = _paint(mob, kind)
-        if kind == "points" and stroke <= 0:
+        viewing = self._viewing
+        node = viewing.node(mob, chain) if viewing is not None else None
+        if viewing is None or node is None:
+            lays = _lays(mob, kind, points)
+        else:
+            lays = viewing.lays(node, lambda: _lays(mob, kind, points))
+        if kind == "points" and lays.stroke <= 0:
             return None
-        ink = member_box(self.camera, self.view, mob, ink=True, home=True)
-        if ink is None:
+        if viewing is None or node is None or kind == "image":
+            placed = self._place(mob, points)
+        else:
+            placed = viewing.placed(node, lambda: self._place(mob, points))
+        if placed is None:
             return None
-        screen = _screen(self.view, pixel_points(self.camera, self.view, mob, points))
-        box = _box(screen)
         # Stroke widths as drawn: Cairo's units per width, on the home frame.
         scale = (
             self.view.cairo_line_width_multiple
             * self.view.home_width
             / self.view.frame_width
         )
-        line, halo, halo_opacity = _strokes(mob, kind)
-        drawn = point_thickness(self.view, mob) if kind == "points" else width * scale
+        drawn = (
+            point_thickness(self.view, mob) if kind == "points" else lays.width * scale
+        )
         unit = self.unit(mob, chain) if kind == "path" else None
         return Leaf(
             id=self.record.origin(mob).id,
             type=type(mob).__name__,
             draw=kind,
-            points=screen,
-            screen_box=box,
-            ink_box=ink,
-            scene_box=_box(points[:, :2]),
-            fill_opacity=fill,
-            stroke_opacity=stroke,
+            points=placed.screen,
+            screen_box=placed.box,
+            ink_box=placed.ink,
+            scene_box=lays.scene_box,
+            fill_opacity=lays.fill,
+            stroke_opacity=lays.stroke,
             stroke_width=drawn,
-            closed=kind == "path" and _closed(mob, points),
+            closed=lays.closed,
             order=order,
-            curve_size=int(getattr(mob, "n_points_per_cubic_curve", 4)),
-            line_width=line * scale,
-            halo_width=halo * scale,
-            halo_opacity=halo_opacity,
+            curve_size=lays.curve_size,
+            line_width=lays.line * scale,
+            halo_width=lays.halo * scale,
+            halo_opacity=lays.halo_opacity,
             unit=unit,
-            first_fill_opacity=_first_fill(mob) if kind == "path" else fill,
+            first_fill_opacity=lays.first_fill,
             plate=unit is not None and id(mob) in self._plates.get(unit.id, ()),
         )
+
+    def _place(self, mob: Mobject, points: np.ndarray) -> Placed | None:
+        """Where the camera puts ``mob`` (its ``points``), or ``None`` when
+        its draw paints nothing.
+        """
+        ink = member_box(self.camera, self.view, mob, ink=True, home=True)
+        if ink is None:
+            return None
+        screen = _screen(self.view, pixel_points(self.camera, self.view, mob, points))
+        # Read-only on every read, kept or not: kept reads share it.
+        screen.setflags(write=False)
+        return Placed(ink=ink, screen=screen, box=_box(screen))
 
     def unit(self, mob: Mobject, chain: tuple[Mobject, ...]) -> Unit | None:
         """What a sweep measures ``mob`` (held by ``chain``) as part of:
@@ -769,6 +811,26 @@ class _Reader:
         return Holder(
             origin.id, self.names.get(id(mob)), origin.scene_line, type(mob).__name__
         )
+
+
+def _lays(mob: Mobject, kind: str, points: np.ndarray) -> Lays:
+    """What ``mob`` (its ``points``, drawn as ``kind``) lays whatever the
+    camera.
+    """
+    fill, stroke, width = _paint(mob, kind)
+    line, halo, halo_opacity = _strokes(mob, kind)
+    return Lays(
+        fill=fill,
+        stroke=stroke,
+        width=width,
+        line=line,
+        halo=halo,
+        halo_opacity=halo_opacity,
+        closed=kind == "path" and _closed(mob, points),
+        scene_box=_box(points[:, :2]),
+        first_fill=_first_fill(mob) if kind == "path" else fill,
+        curve_size=int(getattr(mob, "n_points_per_cubic_curve", 4)),
+    )
 
 
 def _paint(mob: Mobject, kind: str) -> tuple[float, float, float]:

@@ -163,6 +163,37 @@ class CameraExtras:
             return previous
         return cls(values, fixed, centers, background, displays, sub_cameras)
 
+    def same(self, other: CameraExtras) -> bool:
+        """Whether ``other`` gives a camera what these give it
+        (:meth:`install`): another observation of a camera that did not
+        change, as each play's first capture and the final one observe it
+        anew. Displays and their cameras are not compared: inputs with any
+        are the same only as one object.
+        """
+        if self is other:
+            return True
+        if (
+            self.displays is not None
+            or other.displays is not None
+            or self.sub_cameras
+            or other.sub_cameras
+        ):
+            return False
+        return (
+            len(self.values) == len(other.values)
+            and all(
+                a == c and _same_value(b, d)
+                for (a, b), (c, d) in zip(self.values, other.values, strict=True)
+            )
+            and self.fixed_in_frame == other.fixed_in_frame
+            and len(self.centers) == len(other.centers)
+            and all(
+                a is c and np.array_equal(b, d)
+                for (a, b), (c, d) in zip(self.centers, other.centers, strict=True)
+            )
+            and self.background is other.background
+        )
+
     def install(self, camera: Camera) -> None:
         """Give ``camera`` these inputs."""
         from arachne.camera.three_d_camera import ThreeDCamera

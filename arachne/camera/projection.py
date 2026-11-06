@@ -37,6 +37,7 @@ __all__ = [
     "ThreeDView",
     "View",
     "draw_kind",
+    "hold_rotation",
     "home_box",
     "member_box",
     "pixel_box",
@@ -377,6 +378,13 @@ def _rotate(camera: Camera) -> None:
         return
     camera.reset_rotation_matrix()
     _ROTATIONS[camera] = (angles, camera.rotation_matrix)
+
+
+def hold_rotation(camera: Camera) -> None:
+    """Leave ``camera`` as a projection through it does: a ThreeDCamera's
+    rotation made for its angles as they are, which its depth sort reads.
+    """
+    _rotate(camera)
 
 
 def _pre_display(camera: Camera, mob: Mobject, points: np.ndarray) -> np.ndarray:

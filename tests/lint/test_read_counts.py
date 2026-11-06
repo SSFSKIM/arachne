@@ -102,9 +102,11 @@ def _parts_built(monkeypatch) -> list[tuple]:
     built: list[tuple] = []
     build = parts_module.build_parts
 
-    def counted(record, t, play, capture, *, answer, target, live=False):
+    def counted(record, t, play, capture, *, answer, target, live=False, memo=None):
         built.append((id(record), t, id(play), id(capture), answer, target, live))
-        return build(record, t, play, capture, answer=answer, target=target, live=live)
+        return build(
+            record, t, play, capture, answer=answer, target=target, live=live, memo=memo
+        )
 
     monkeypatch.setattr(parts_module, "build_parts", counted)
     monkeypatch.setattr(core, "build_parts", counted, raising=False)
