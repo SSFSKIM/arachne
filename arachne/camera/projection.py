@@ -40,6 +40,7 @@ __all__ = [
     "hold_rotation",
     "home_box",
     "member_box",
+    "member_place",
     "pixel_box",
     "pixel_points",
     "point_thickness",
@@ -275,6 +276,49 @@ def member_box(
     return _points_box(camera, view, member, home=home)
 
 
+def member_place(
+    camera: Camera, view: View, member: Mobject
+) -> tuple[Box, np.ndarray] | None:
+    """What :func:`member_box` (with ``ink`` and ``home``) and
+    :func:`pixel_points` of its points give for one member, together:
+    ``None`` when its draw paints nothing. A path the camera traces with
+    the engine's own code is projected once for both, as that trace
+    projects its points once and traces those.
+    """
+    if not len(member.points):
+        return None
+    if draw_kind(member) == "path" and _engine_trace(camera):
+        _rotate(camera)
+        shown = camera.transform_points_pre_display(member, member.points)
+        ink = _ink_box(camera, view, member, home=True, shown=shown)
+        if ink is None:
+            return None
+        flat = np.asarray(shown, dtype=float)[:, :2]
+        return ink, _placed(view, flat, _mapped_around(view, member), home=False)
+    ink = member_box(camera, view, member, ink=True, home=True)
+    if ink is None:
+        return None
+    points = np.asarray(member.points, dtype=float)
+    return ink, pixel_points(camera, view, member, points)
+
+
+def _engine_trace(camera: Camera) -> bool:
+    """Whether ``camera`` traces a path with the engine's own code:
+    ``Camera.set_cairo_context_path`` and the trace it ends in as the engine
+    defined them, neither overridden by its class nor replaced, on the class
+    or the instance.
+    """
+    from arachne.camera.camera import Camera
+    from arachne.timeline.frozen import class_members
+
+    taken = class_members(Camera)
+    kind = type(camera)
+    return all(
+        name not in vars(camera) and getattr(kind, name, None) is taken.get(name)
+        for name in ("set_cairo_context_path", "_trace_path")
+    )
+
+
 def point_thickness(view: View, member: Mobject) -> float:
     """The side of the square a point cloud's draw paints for each of its
     points, in home-frame units: as thick as the camera thickens it at the
@@ -449,11 +493,21 @@ def _span(placed: np.ndarray) -> Box:
     return (float(low[0]), float(low[1]), float(high[0]), float(high[1]))
 
 
-def _ink_box(camera: Camera, view: View, member: Mobject, *, home: bool) -> Box | None:
-    """What one member's own draw paints, or ``None`` for nothing."""
+def _ink_box(
+    camera: Camera,
+    view: View,
+    member: Mobject,
+    *,
+    home: bool,
+    shown: np.ndarray | None = None,
+) -> Box | None:
+    """What one member's own draw paints, or ``None`` for nothing. A
+    path's points already through the camera's pre-display code are
+    ``shown`` (:func:`member_place`).
+    """
     kind = draw_kind(member)
     if kind == "path":
-        corners = _path_ink(camera, view, member)
+        corners = _path_ink(camera, view, member, shown)
         if corners is None:
             return None
         return _span(_placed(view, corners, view.mapping_centre, home=home))
@@ -469,12 +523,16 @@ def _ink_box(camera: Camera, view: View, member: Mobject, *, home: bool) -> Box 
     return None
 
 
-def _path_ink(camera: Camera, view: View, member: Mobject) -> np.ndarray | None:
+def _path_ink(
+    camera: Camera, view: View, member: Mobject, shown: np.ndarray | None = None
+) -> np.ndarray | None:
     """The corners of the box a path's fill and strokes paint, in
     pre-display scene units: Cairo's own extents of the path the camera
     builds, stroked with the camera's width, join and cap, under the matrix
     the camera's context maps with (Cairo flattens curves to a tolerance in
-    pixels). ``None`` when nothing is painted.
+    pixels). ``None`` when nothing is painted. With ``shown``, the path
+    is traced through those points, as the engine's trace traces the points
+    it projects.
     """
     import cairo
 
@@ -497,7 +555,10 @@ def _path_ink(camera: Camera, view: View, member: Mobject) -> np.ndarray | None:
         )
     )
     _rotate(camera)
-    camera.set_cairo_context_path(ctx, member)
+    if shown is None:
+        camera.set_cairo_context_path(ctx, member)
+    else:
+        camera._trace_path(ctx, member, shown)
     extents: list[tuple[float, float, float, float]] = []
     if _painted(member.get_fill_opacities()):
         extents.append(ctx.fill_extents())
