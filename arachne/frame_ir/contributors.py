@@ -1,0 +1,161 @@
+"""What each pixel of a frame is made of: the drawn leaves that contribute to
+it, in the order they were composited.
+
+A leaf is one drawn thing of a frame's XF stream, ``(object, part)``: a
+record's object and its order entry's part (a face of a face group), an
+``instances`` record's member reporting its own object. Both painters report
+leaves the same way, so the two reports of one frame can be set side by side:
+
+- the core (``arachne_core.Stream.contributors``) reads them from the
+  fragments it composites, in depth order, per sub-sample: its leaves carry
+  their share of the pixel's sub-samples (``coverage``) and their colour, and a
+  pixel whose sub-samples order two leaves both ways (two surfaces crossing
+  inside it) is a ``crossing`` with each order;
+- Cairo (:meth:`.cairo_painter.CairoDrawer.contributors`) draws each leaf alone
+  over a transparent frame, with the camera's own code, and reads what it left
+  in each pixel, in paint order.
+
+Hidden leaves are reported too (``shown`` false): a leaf behind an opaque
+front is evidence that something lies behind it, where a leaf the painter did
+not draw is absent. A leaf's ``id`` is the stable id its stream gives its
+object (``StreamState.objects``), which matches a leaf across two streams that
+number their objects apart.
+"""
+
+from __future__ import annotations
+
+__all__ = ["Box", "Leaf", "PixelContributors", "from_core", "over"]
+
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
+
+#: A pixel box, ``(x0, y0, x1, y1)``: the pixels ``x0 <= x < x1``,
+#: ``y0 <= y < y1``.
+Box = tuple[int, int, int, int]
+RGBA = tuple[int, int, int, int]
+
+
+@dataclass(frozen=True)
+class Leaf:
+    """One leaf of a pixel.
+
+    ``drawn`` is what the leaf alone adds to the pixel over a transparent
+    one, premultiplied RGBA: its alpha is the leaf's coverage of the pixel
+    times its opacity. The core also knows the two apart: ``coverage`` is its
+    share of the pixel's 16 sub-samples (0 to 255) and ``colour`` its
+    premultiplied colour where it covers; Cairo's leaves carry ``None`` for
+    both. ``painter`` is ``"core"`` or ``"cairo"``: on the core path, the
+    overlay's leaves are Cairo's.
+    """
+
+    object: int
+    part: int
+    id: str | None
+    drawn: RGBA
+    shown: bool
+    painter: str
+    coverage: int | None = None
+    colour: RGBA | None = None
+
+    @property
+    def key(self) -> tuple[str | int, int]:
+        """The leaf's identity across streams: its object's stable id (the
+        object's number where the stream gave none) and its part.
+        """
+        return (self.object if self.id is None else self.id, self.part)
+
+
+@dataclass(frozen=True)
+class PixelContributors:
+    """The leaves of one pixel, bottom first.
+
+    ``orders`` are the distinct sequences of leaves the pixel's sub-samples
+    see, bottom first, each leaf as ``(index into leaves, coverage there)``
+    (Cairo: one sequence, each leaf's drawn alpha). ``crossing`` is whether
+    two leaves come in one order at one sub-sample and the other at another;
+    the leaves are then in their depth order at the pixel's centre.
+    """
+
+    leaves: tuple[Leaf, ...]
+    orders: tuple[tuple[tuple[int, int], ...], ...]
+    crossing: bool = False
+
+    @property
+    def keys(self) -> tuple[tuple[str | int, int], ...]:
+        """The leaves' identities, bottom first."""
+        return tuple(leaf.key for leaf in self.leaves)
+
+    @property
+    def shown(self) -> tuple[Leaf, ...]:
+        """The leaves not hidden behind an opaque front."""
+        return tuple(leaf for leaf in self.leaves if leaf.shown)
+
+
+def _drawn(colour: RGBA, coverage: int) -> RGBA:
+    r, g, b, a = colour
+    return (
+        (r * coverage + 127) // 255,
+        (g * coverage + 127) // 255,
+        (b * coverage + 127) // 255,
+        (a * coverage + 127) // 255,
+    )
+
+
+def from_core(
+    found: Mapping[tuple[int, int], tuple],
+    objects: Mapping[int, tuple[str, str]],
+) -> dict[tuple[int, int], PixelContributors]:
+    """The core's report (``Stream.contributors``) as :class:`PixelContributors`,
+    each leaf's stable id found in ``objects`` (``StreamState.objects``).
+    """
+    out: dict[tuple[int, int], PixelContributors] = {}
+    for at, (leaves, orders, crossing) in found.items():
+        out[at] = PixelContributors(
+            leaves=tuple(
+                Leaf(
+                    object=obj,
+                    part=part,
+                    id=objects.get(obj, (None,))[0],
+                    drawn=_drawn(tuple(colour), coverage),
+                    shown=shown,
+                    painter="core",
+                    coverage=coverage,
+                    colour=tuple(colour),
+                )
+                for obj, part, coverage, colour, shown in leaves
+            ),
+            orders=tuple(tuple(tuple(e) for e in order) for order in orders),
+            crossing=bool(crossing),
+        )
+    return out
+
+
+def over(
+    under: Mapping[tuple[int, int], PixelContributors],
+    top: Mapping[tuple[int, int], PixelContributors],
+) -> dict[tuple[int, int], PixelContributors]:
+    """``top``'s leaves composited over ``under``'s, pixel by pixel: the core
+    path's frame, the core's leaves under Cairo's overlay. A leaf of
+    ``under`` an opaque leaf of ``top`` covers whole is hidden; every
+    sequence of ``under`` continues with ``top``'s.
+    """
+    out = dict(under)
+    for at, above in top.items():
+        below = under.get(at)
+        if below is None:
+            out[at] = above
+            continue
+        covered = any(leaf.drawn[3] == 255 for leaf in above.leaves)
+        shift = len(below.leaves)
+        lifted = tuple(
+            tuple((i + shift, c) for i, c in order) for order in above.orders
+        )
+        out[at] = PixelContributors(
+            leaves=tuple(
+                replace(leaf, shown=leaf.shown and not covered) for leaf in below.leaves
+            )
+            + above.leaves,
+            orders=tuple(order + extra for order in below.orders for extra in lifted),
+            crossing=below.crossing,
+        )
+    return out

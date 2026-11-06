@@ -51,6 +51,7 @@ import numpy as np
 
 from .cairo_painter import CairoDrawer
 from .canonical import Canonical
+from .contributors import Box, PixelContributors
 from .extract import FrameStream, Term, Unable
 from .lint import raise_finding
 from .xf import Delta, StreamState
@@ -687,6 +688,14 @@ class IrCairoPainter:
         if self.keep:
             self.deltas.append(delta)
         return self.drawer.draw(self.state).copy()
+
+    def contributors(self, box: Box) -> dict[tuple[int, int], PixelContributors]:
+        """The leaves the last frame paints at each pixel of ``box``, in
+        CE's paint order, bottom first (:mod:`.contributors`), each leaf
+        drawn again alone; the frame and the painter's next frame are
+        unchanged.
+        """
+        return self.drawer.contributors(self.state, self.state.order, box)
 
     def settle(self) -> None:
         """Leave each display's camera of the last frame holding the picture
