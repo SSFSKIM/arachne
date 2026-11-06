@@ -356,24 +356,44 @@ fn a_path_crossing_a_surface_in_depth_takes_the_sample_resolve_with_its_cells_ar
         order: 0,
     };
     // The path is in front of the wall left of x = 20.3 and behind it to the right.
-    let depth = Plane {
-        a: -20.3 * 0.25,
-        b: 0.25,
-        c: 0.0,
-    };
+    let depth = Plane::new(-20.3 * 0.25, 0.25, 0.0);
     let path = HalfPlane::new([1.0, 0.45, 30.0], red, depth);
     let drawn = render(w, h, &[&wall, &path], 1);
-    let (mut samples, mut partial) = (0, 0);
+    let (mut samples, mut partial, mut edge) = (0, 0, 0);
     for y in 0..h {
         for x in 0..w {
             let area = path.area(x, y);
             let class = class_at(&drawn, w, x, y);
             let got = at(&drawn, w, x, y);
-            if area == 0.0 || x >= 21 {
+            if area > 0.0 && (area as f32) < 1.0 {
+                edge += 1;
+            }
+            // Each sub-sample's cell area, and whether the path is in front of the wall there.
+            let cells: Vec<(f64, bool)> = (0..SAMPLES)
+                .map(|s| {
+                    let [px, py] = sample_point(x, y, s);
+                    let [column, row] = sample_cell(s);
+                    let cell = path.area_in(
+                        x as f64 + column as f64 / 4.0,
+                        y as f64 + row as f64 / 4.0,
+                        0.25,
+                    );
+                    (cell, depth.at(px, py) < 0.0)
+                })
+                .collect();
+            // Depth orders the two only where both cover: at the sub-samples the path covers.
+            let covered = |front: bool| {
+                cells
+                    .iter()
+                    .any(|(cell, f)| area_coverage(*cell as f32) != 0 && *f == front)
+            };
+            if area == 0.0 || covered(false) && !covered(true) {
                 // Nothing in front of the wall: its pixels take the fast path.
                 assert_eq!(got, blue, "pixel {x},{y}");
                 assert_eq!(class, Resolve::Fast as u8, "pixel {x},{y}");
-            } else if x < 20 {
+            } else if !covered(false) {
+                // In front wherever it covers (or covering no sub-sample, over the wall in paint
+                // order): one order, the coverage resolve.
                 assert_eq!(
                     got,
                     blend(red, area_coverage(area as f32), blue),
@@ -389,16 +409,9 @@ fn a_path_crossing_a_surface_in_depth_takes_the_sample_resolve_with_its_cells_ar
                     partial += 1;
                 }
                 let mut sum = [0u32; 4];
-                for s in 0..SAMPLES {
-                    let [px, py] = sample_point(x, y, s);
-                    let [column, row] = sample_cell(s);
-                    let cell = path.area_in(
-                        x as f64 + column as f64 / 4.0,
-                        y as f64 + row as f64 / 4.0,
-                        0.25,
-                    );
-                    let c = if depth.at(px, py) < 0.0 {
-                        blend(red, area_coverage(cell as f32), blue)
+                for (cell, front) in &cells {
+                    let c = if *front {
+                        blend(red, area_coverage(*cell as f32), blue)
                     } else {
                         blue
                     };
@@ -411,9 +424,10 @@ fn a_path_crossing_a_surface_in_depth_takes_the_sample_resolve_with_its_cells_ar
         }
     }
     assert!(samples > 10 && partial > 0, "{samples} {partial}");
-    // Cells' areas were asked for once per sample-resolve pixel the path covers in part, and
-    // nowhere else (where it covers the whole pixel, every cell is full).
-    assert_eq!(path.asks.load(Ordering::Relaxed), partial);
+    // Cells' areas were asked for once per pixel where the path covers part of the wall's pixel,
+    // to find which sub-samples both cover, and nowhere else (where it covers the whole pixel,
+    // every cell is full).
+    assert_eq!(path.asks.load(Ordering::Relaxed), edge);
 }
 
 #[test]
@@ -436,11 +450,7 @@ fn the_depth_order_is_read_at_the_sub_samples_not_between_them() {
         let near = Single {
             at: (3, 5),
             fragment: Fragment::new(
-                Plane {
-                    a: -cross,
-                    b: 1.0,
-                    c: 0.0,
-                },
+                Plane::new(-cross, 1.0, 0.0),
                 red,
                 Coverage::Mask(FULL),
                 1,
@@ -708,11 +718,7 @@ fn synthetic_producers_draw_identically_on_any_number_of_threads() {
     let path = HalfPlane::new(
         [0.7, 1.0, 150.0],
         premultiply([0.9, 0.2, 0.2, 0.7]),
-        Plane {
-            a: -1.0,
-            b: 0.03,
-            c: 0.002,
-        },
+        Plane::new(-1.0, 0.03, 0.002),
     );
     let fog = Fog::new(0.25, 0.2, [0.7, 0.7, 0.8], 2);
     let glow = Emitter {

@@ -167,11 +167,27 @@ impl Projection {
         !self.exponential && self.focal_distance - self.rotated(p)[2] > 0.0
     }
 
+    /// How far the depth key `-factor(z)` of a point `project` placed at `shown` may stand from its
+    /// exact value: the rotation rounds `q = R (p - centre)` by about `3u |q|` (taken with the
+    /// centre's size), and `factor = d / (d - z)` moves by `f^2 / d` per unit of `z` and rounds by
+    /// `2u` of itself, so the error grows as the point nears the eye.
+    pub fn key_error(&self, shown: [f64; 3]) -> f64 {
+        use crate::composite::U;
+        let d = self.focal_distance;
+        let f = self.factor(shown[2]);
+        let c = self.frame_center;
+        let reach = shown[2].abs()
+            + libm::hypot(shown[0], shown[1]) / (f * self.zoom).abs()
+            + (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt();
+        U * (2.0 * f.abs() + 4.0 * f * f / d.abs() * reach)
+    }
+
     /// The depth key (`-factor`) across a world plane, as a plane on the pixel plane under the
     /// frame mapping `map`; `None` under the exponential option or where the plane is seen within
     /// `min_cos` of edge-on (the cosine between its normal and the sight line to `at`, a point on
     /// it). The caller makes sure every point it keys this way is in front of the eye
-    /// ([`Projection::keys_planar_at`]).
+    /// ([`Projection::keys_planar_at`]). `region` (`[x0, y0, x1, y1]` in pixels) is where the
+    /// plane is read: its error bound ([`Plane::err`]) holds there.
     ///
     /// With `q = R (p - centre)`, the plane `n . p = e` is `m . q = k` for `m = R n` and
     /// `k = e - n . centre`. Under `factor = d / (d - q_z)`, a point projects to
@@ -184,12 +200,21 @@ impl Projection {
         map: &FrameMap,
         at: [f64; 3],
         min_cos: f64,
+        region: [f64; 4],
     ) -> Option<crate::composite::Plane> {
         if self.exponential || self.zoom == 0.0 {
             return None;
         }
         let basis = self.key_basis(plane.normal, map);
-        self.key_plane_on(&basis, plane.offset, map, self.rotated(at), min_cos)
+        let unrounded = self.key_basis(plane.unrounded.normal, map);
+        self.key_plane_on(
+            (&basis, &unrounded),
+            plane,
+            map,
+            self.rotated(at),
+            min_cos,
+            region,
+        )
     }
 
     /// The part of [`Projection::key_plane`] that depends on the plane's normal alone.
@@ -205,35 +230,120 @@ impl Projection {
         }
     }
 
-    /// The rest of [`Projection::key_plane`]: the plane with normal basis `basis` at `offset`,
-    /// seen from `q`, the rotated point `at`.
+    /// The rest of [`Projection::key_plane`]: `plane`, whose normal and unrounded normal have the
+    /// bases `bases`, seen from `q`, the rotated point `at`, read in `region`.
     fn key_plane_on(
         &self,
-        basis: &KeyBasis,
-        offset: f64,
+        bases: (&KeyBasis, &KeyBasis),
+        plane: &WorldPlane,
         map: &FrameMap,
         q: [f64; 3],
         min_cos: f64,
+        region: [f64; 4],
     ) -> Option<crate::composite::Plane> {
-        let (m, d) = (basis.m, self.focal_distance);
-        let k = offset - basis.n_dot_centre;
-        let denominator = k - m[2] * d;
+        let (basis, unrounded) = bases;
+        let d = self.focal_distance;
+        let denominator = plane.offset - basis.n_dot_centre - basis.m[2] * d;
         let sight = [q[0], q[1], q[2] - d];
         let sight_len = (sight[0] * sight[0] + sight[1] * sight[1] + sight[2] * sight[2]).sqrt();
         let cos = denominator.abs() / (basis.m_len * sight_len);
         if cos.is_nan() || cos < min_cos || denominator == 0.0 {
             return None;
         }
-        let (gx, gy) = (basis.gx, basis.gy);
-        let plane = crate::composite::Plane {
-            a: -(-gx * map.x0 - gy * map.y0 - m[2] * d) / denominator,
-            b: -gx / denominator,
-            c: -gy / denominator,
+        let exact = plane.unrounded;
+        let exact_denominator = exact.offset - unrounded.n_dot_centre - unrounded.m[2] * d;
+        if exact_denominator.is_nan() || exact_denominator.abs() <= exact.offset_err {
+            return None; // The plane before rounding may pass through the eye.
+        }
+        let key = |b: &KeyBasis, denominator: f64| {
+            [
+                -(-b.gx * map.x0 - b.gy * map.y0 - b.m[2] * d) / denominator,
+                -b.gx / denominator,
+                -b.gy / denominator,
+            ]
         };
-        [plane.a, plane.b, plane.c]
+        let [a, b, c] = key(basis, denominator);
+        let before = key(unrounded, exact_denominator);
+        let plane = crate::composite::Plane {
+            a,
+            b,
+            c,
+            err: self.key_plane_error(
+                (unrounded, exact.offset, exact_denominator),
+                [[a, b, c], before],
+                exact.offset_err,
+                map,
+                region,
+            ),
+        };
+        [plane.a, plane.b, plane.c, plane.err]
             .iter()
             .all(|v| v.is_finite())
             .then_some(plane)
+    }
+
+    /// How far [`Projection::key_plane_on`]'s plane may stand, in `region`, from the key across the
+    /// exact plane its world plane was rounded from (its unrounded normal, and the exact offset
+    /// along it). The key is `f = N / D`: `N = m . s` for `s = (-(X - x0) / (zoom xx),
+    /// -(Y - y0) / (zoom yy), d)` (the pixel in scene units, and the focal distance) and
+    /// `D = e - n . eye`, the plane's distance from the eye. `unrounded` is the unrounded plane's
+    /// basis, offset and `D`; `keys` the rounded plane's key plane and the unrounded one's, as
+    /// computed.
+    ///
+    /// The rounding to the grid is carried as it happened, not as its worst half step: both planes
+    /// are keyed, and the two keys differ by an affine function of the pixel, largest at a corner
+    /// of the region, read there (each read rounding by `4u` of its terms). The unrounded plane's
+    /// key arithmetic adds, at a corner, `(dN + |f| dD) / |D| + 4u |f|`, where the rotation rounds
+    /// `m` by `8u |m|` (so `N` by that times `|s|`, plus `4u` of `N`'s terms) and `D` by `4u` of
+    /// its terms plus that times `|eye|`. Its offset lies within `offset_err` of the exact one,
+    /// which moves `D` by as much: `|f| offset_err / (|D| - offset_err)`. Every term is convex
+    /// across the region, so the sum is largest at a corner. Without bound as the plane nears the
+    /// eye.
+    fn key_plane_error(
+        &self,
+        unrounded: (&KeyBasis, f64, f64),
+        keys: [[f64; 3]; 2],
+        offset_err: f64,
+        map: &FrameMap,
+        region: [f64; 4],
+    ) -> f64 {
+        use crate::composite::U;
+        let (d, c, r) = (self.focal_distance, self.frame_center, &self.rotation);
+        let norm = |v: [f64; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        let eye = [0, 1, 2].map(|i| c[i] + d * r[2][i]);
+        let mut worst: f64 = 0.0;
+        for x in [region[0], region[2]] {
+            for y in [region[1], region[3]] {
+                let s = [
+                    (x - map.x0) / (self.zoom * map.xx),
+                    (y - map.y0) / (self.zoom * map.yy),
+                    d,
+                ];
+                // Each plane's own arithmetic, at this corner, and its key there.
+                let arithmetic = |(basis, offset, denominator): (&KeyBasis, f64, f64)| {
+                    let m = basis.m;
+                    let (tx, ty) = (basis.gx * (x - map.x0), basis.gy * (y - map.y0));
+                    let dn = 8.0 * U * basis.m_len;
+                    let de = 4.0 * U * (offset.abs() + basis.m_len * norm(c));
+                    let dd = de + dn * norm(eye) + 4.0 * U * (m[2] * d).abs();
+                    let f = (m[2] * d - tx - ty).abs() / denominator.abs();
+                    let dnum = dn * norm(s) + 4.0 * U * (tx.abs() + ty.abs() + (m[2] * d).abs());
+                    ((dnum + f * dd) / denominator.abs() + 4.0 * U * f, f)
+                };
+                let (exact, f) = arithmetic(unrounded);
+                let shift = f * offset_err / (unrounded.2.abs() - offset_err);
+                let read = |k: [f64; 3]| {
+                    (
+                        k[0] + k[1] * x + k[2] * y,
+                        k[0].abs() + (k[1] * x).abs() + (k[2] * y).abs(),
+                    )
+                };
+                let ((at, terms), (before, before_terms)) = (read(keys[0]), read(keys[1]));
+                let gap = (at - before).abs() + 4.0 * U * (terms + before_terms);
+                worst = worst.max(gap + exact + shift);
+            }
+        }
+        worst
     }
 
     /// The depth key across the plane through `centre` that faces the camera, as a plane on the
@@ -251,7 +361,13 @@ impl Projection {
         let shared = if self.exponential || self.zoom == 0.0 {
             None
         } else {
-            Direction::of(self.rotation[2]).map(|dir| (dir, self.key_basis(dir.normal(), map)))
+            Direction::of(self.rotation[2]).map(|dir| {
+                let bases = (
+                    self.key_basis(dir.normal(), map),
+                    self.key_basis(dir.unit(), map),
+                );
+                (dir, bases)
+            })
         };
         FacingPlanes {
             projection: self,
@@ -279,25 +395,35 @@ struct KeyBasis {
 pub struct FacingPlanes<'a> {
     projection: &'a Projection,
     map: &'a FrameMap,
-    shared: Option<(Direction, KeyBasis)>,
+    shared: Option<(Direction, (KeyBasis, KeyBasis))>,
 }
 
 impl FacingPlanes<'_> {
     /// [`Projection::facing_plane`] at `centre`.
     pub fn at(&self, centre: [f64; 3]) -> Plane {
         let p = self.projection;
-        let own = || Plane::constant(-p.factor(p.project(centre)[2]));
+        let own = || {
+            let shown = p.project(centre);
+            Plane {
+                err: p.key_error(shown),
+                ..Plane::constant(-p.factor(shown[2]))
+            }
+        };
         let q = p.rotated(centre);
         // `keys_planar_at`, from the rotated centre this needs anyway.
         let planar = !p.exponential && p.focal_distance - q[2] > 0.0;
         if !planar {
             return own();
         }
-        let Some((dir, basis)) = &self.shared else {
+        let Some((dir, (basis, unrounded))) = &self.shared else {
             return own();
         };
+        // Read anywhere on the frame, taken generously as the box twice the frame mapping's centre
+        // about it.
+        let (x0, y0) = (self.map.x0.abs(), self.map.y0.abs());
+        let frame = [-x0, -y0, 3.0 * x0, 3.0 * y0];
         dir.through(centre)
-            .and_then(|plane| p.key_plane_on(basis, plane.offset, self.map, q, 0.0))
+            .and_then(|plane| p.key_plane_on((basis, unrounded), &plane, self.map, q, 0.0, frame))
             .unwrap_or_else(own)
     }
 }

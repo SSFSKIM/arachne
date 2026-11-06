@@ -90,9 +90,11 @@ def test_the_two_painters_order_one_frame_s_leaves_by_paint_order_and_by_depth()
     assert [leaf.shown for leaf in painted.leaves] == [False, True]
     assert [leaf.shown for leaf in composited.leaves] == [False, True]
     assert {leaf.painter for leaf in composited.leaves} == {"core"}
-    # The core knows each leaf's coverage and colour apart.
+    # The core knows each leaf's coverage and colour apart, and that depth ordered them.
     assert [leaf.coverage for leaf in composited.leaves] == [255, 255]
     assert composited.leaves[1].colour == composited.leaves[1].drawn
+    assert composited.decided == ((0, 1, "depth"),)
+    assert painted.decided == ()
 
 
 def test_on_the_core_path_the_overlay_s_leaves_lie_over_the_core_s():
@@ -116,6 +118,8 @@ def test_on_the_core_path_the_overlay_s_leaves_lie_over_the_core_s():
         int(v) for v in frame[CENTRE[1], CENTRE[0]]
     )
     assert under_bar.orders == (((0, 255), (1, 255)),)
+    # The overlay is painted over the core's frame.
+    assert under_bar.decided == ((0, 1, "paint"),)
     assert [leaf.painter for leaf in beside.leaves] == ["core"]
 
 
@@ -174,9 +178,11 @@ def test_from_core_names_stable_ids_and_what_each_leaf_draws_alone():
             ],
             [[(0, 255), (1, 255)], [(0, 255)]],
             False,
+            [(0, 1, "depth")],
         )
     }
     (pixel,) = from_core(found, {7: ("Square#1", "scene.py:3")}).values()
+    assert pixel.decided == ((0, 1, "depth"),)
     assert pixel.keys == (("Square#1", 0), (8, 2))
     assert pixel.leaves[1].drawn == (50, 0, 0, 64)
     assert pixel.leaves[0].drawn == (0, 0, 200, 255)
@@ -208,6 +214,7 @@ def test_over_hides_what_an_opaque_top_leaf_covers_and_continues_each_order():
         ((0, 255), (2, 255)),
     )
     assert covered.crossing is True
+    assert covered.decided == ((0, 2, "paint"), (1, 2, "paint"))
     # A translucent top hides nothing.
     assert [leaf.shown for leaf in merged[(1, 0)].leaves] == [True, True]
     assert merged[(2, 0)] == top[(2, 0)]

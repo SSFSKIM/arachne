@@ -126,15 +126,18 @@ pub fn lower(view: &View, width: u32, height: u32, draws: &[MeshDraw<'_>]) -> Me
             rec.depth.fixed_orientation_centre,
         );
         let shown = pre_display(&world, projection.as_ref(), placement);
-        let corners: Vec<([f64; 2], f64)> = shown
+        // Each corner on screen, its key and how far that key may err.
+        let corners: Vec<([f64; 2], f64, f64)> = shown
             .iter()
             .map(|p| {
                 let at = map.apply(*p);
-                let key = match keyed {
-                    Some(plane) => plane.at(at[0], at[1]),
-                    None => -projection.as_ref().unwrap().factor(p[2]),
-                };
-                (at, key)
+                match keyed {
+                    Some(plane) => (at, plane.at(at[0], at[1]), 0.0),
+                    None => {
+                        let projection = projection.as_ref().unwrap();
+                        (at, -projection.factor(p[2]), projection.key_error(*p))
+                    }
+                }
             })
             .collect();
         let alpha = fill[3] * rec.opacity;
@@ -157,15 +160,28 @@ pub fn lower(view: &View, width: u32, height: u32, draws: &[MeshDraw<'_>]) -> Me
         for (sub, t) in draw.triangles.iter().enumerate() {
             let idx = t.map(|i| i as usize);
             let px = idx.map(|i| corners[i].0);
-            let through =
-                || Plane::through(idx.map(|i| [corners[i].0[0], corners[i].0[1], corners[i].1]));
+            let through = || {
+                Plane::through_with_errors(
+                    idx.map(|i| [corners[i].0[0], corners[i].0[1], corners[i].1]),
+                    idx.map(|i| corners[i].2),
+                )
+            };
+            // The triangle's box on screen: a mask covers a sub-sample only inside it.
+            let region = [
+                px.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min),
+                px.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min),
+                px.iter().map(|p| p[0]).fold(f64::NEG_INFINITY, f64::max),
+                px.iter().map(|p| p[1]).fold(f64::NEG_INFINITY, f64::max),
+            ];
             // A projected triangle lies on its world plane, made canonical so coplanar meshes of
             // any triangulation (and paths on the same plane) get the same depth plane.
             let depth = match (keyed, projection.as_ref()) {
                 (Some(plane), _) => plane,
                 (None, Some(p)) if idx.iter().all(|i| p.keys_planar_at(world[*i])) => {
                     WorldPlane::of_triangle(idx.map(|i| world[i]), grid)
-                        .and_then(|plane| p.key_plane(&plane, &map, world[idx[0]], MIN_PLANE_COS))
+                        .and_then(|plane| {
+                            p.key_plane(&plane, &map, world[idx[0]], MIN_PLANE_COS, region)
+                        })
                         .unwrap_or_else(through)
                 }
                 _ => through(),

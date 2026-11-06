@@ -41,7 +41,8 @@
 //!   - whether it **covers** the pixel: at every sub-sample one of its fragments is opaque and
 //!     covers it whole, so nothing beneath it reaches the pixel.
 
-use crate::composite::{Fragment, SAMPLES, Scratch, front_to_back, resolve_pixel, sample_point};
+use crate::composite::{Fragment, SAMPLES, Scratch, depth_error, resolve_pixel, sample_depths};
+use crate::order::{self, Decided};
 use std::cmp::Ordering;
 
 /// One leaf of a pixel ([`PixelContributors::leaves`]).
@@ -72,6 +73,10 @@ pub struct PixelContributors {
     /// fragment covers empty), as `orders` gives them: `orders` is their distinct ones.
     pub samples: Vec<Vec<(usize, u8)>>,
     pub crossing: bool,
+    /// How each pair of leaves was ordered, `(a, b, rule)` for indices `a < b` into `leaves`:
+    /// the strongest rule (`Majority`, then `Depth`, then `Tie`, then `Paint`) that ordered a
+    /// fragment of one against a fragment of the other ([`order::pair`]).
+    pub decided: Vec<(usize, usize, Decided)>,
 }
 
 /// The report of pixel `(x, y)` from its fragments, their coverage at each sub-sample, and the
@@ -101,6 +106,16 @@ pub(crate) fn of_pixel(
         })
         .collect();
     let n = ids.len();
+    let depths: Vec<[f64; SAMPLES]> = frags.iter().map(|f| sample_depths(f, x, y)).collect();
+    let errs: Vec<f64> = frags.iter().map(|f| depth_error(f, x, y)).collect();
+    let seen = |i: usize| order::Seen {
+        fragment: &frags[i],
+        coverage: &coverage[i],
+        depth: &depths[i],
+        err: errs[i],
+    };
+    let pair = |a: usize, b: usize| order::pair(seen(a), seen(b));
+    let painted = |a: usize, b: usize| order::painted(&frags[a], &frags[b]);
     let mut covered = vec![false; n];
     let mut sums = vec![0u32; n];
     let mut shown = vec![false; n];
@@ -111,18 +126,37 @@ pub(crate) fn of_pixel(
     let mut sequences: Vec<Vec<(usize, u8)>> = Vec::new();
     let mut per_sample: Vec<Vec<(usize, u8)>> = vec![Vec::new(); SAMPLES];
     let mut at_k: Vec<usize> = Vec::new();
+    let mut ranked: Vec<usize> = Vec::new();
     for k in 0..SAMPLES {
-        let [px, py] = sample_point(x, y, k);
-        at_k.clear();
-        at_k.extend((0..frags.len()).filter(|i| coverage[*i][k] != 0));
-        at_k.sort_by(|&i, &j| {
-            front_to_back(
-                &frags[i],
-                frags[i].depth.at(px, py),
-                &frags[j],
-                frags[j].depth.at(px, py),
-            )
-        });
+        // The sub-sample's fragments as the sample resolve ranks them.
+        ranked.clear();
+        ranked.extend((0..frags.len()).filter(|i| coverage[*i][k] != 0));
+        order::rank(
+            &ranked,
+            |a, b| {
+                a != b
+                    && order::at_sample(
+                        &frags[a],
+                        depths[a][k],
+                        errs[a],
+                        &frags[b],
+                        depths[b][k],
+                        errs[b],
+                    ) == Ordering::Less
+            },
+            |a, b| {
+                order::strong_at(
+                    &frags[a],
+                    depths[a][k],
+                    errs[a],
+                    &frags[b],
+                    depths[b][k],
+                    errs[b],
+                )
+            },
+            painted,
+            &mut at_k,
+        );
         // Front to back: runs of one leaf's fragments, each with its greatest coverage here.
         let mut seq: Vec<(usize, u8)> = Vec::new();
         let mut seen = vec![false; n];
@@ -195,31 +229,31 @@ pub(crate) fn of_pixel(
             resolve_pixel(&mut scratch, [0; 4], x, y, |i, _| rows[i]).1
         })
         .collect();
-    // Each leaf's nearest fragment at the pixel's centre: the tie-break, and a crossing's order.
-    let (cx, cy) = (x as f64 + 0.5, y as f64 + 0.5);
-    let nearest: Vec<Option<usize>> = (0..n)
+    // The pixel's one order, as the resolve ranks it: each leaf at its front-most fragment in it
+    // is the tie-break, and a crossing's order.
+    let all: Vec<usize> = (0..frags.len()).collect();
+    let mut one: Vec<usize> = Vec::new();
+    order::rank(
+        &all,
+        |a, b| a != b && pair(a, b).0 == Ordering::Less,
+        |a, b| pair(a, b).1.is_strong(),
+        painted,
+        &mut one,
+    );
+    let mut at = vec![usize::MAX; frags.len()];
+    for (pos, &i) in one.iter().enumerate() {
+        at[i] = pos;
+    }
+    let nearest: Vec<usize> = (0..n)
         .map(|l| {
-            (0..frags.len()).filter(|i| of[*i] == l).min_by(|&i, &j| {
-                front_to_back(
-                    &frags[i],
-                    frags[i].depth.at(cx, cy),
-                    &frags[j],
-                    frags[j].depth.at(cx, cy),
-                )
-            })
+            (0..frags.len())
+                .filter(|i| of[*i] == l)
+                .map(|i| at[i])
+                .min()
+                .unwrap_or(usize::MAX)
         })
         .collect();
-    let centre = |a: usize, b: usize| -> Ordering {
-        match (nearest[a], nearest[b]) {
-            (Some(i), Some(j)) => front_to_back(
-                &frags[i],
-                frags[i].depth.at(cx, cy),
-                &frags[j],
-                frags[j].depth.at(cx, cy),
-            ),
-            _ => a.cmp(&b),
-        }
-    };
+    let centre = |a: usize, b: usize| -> Ordering { nearest[a].cmp(&nearest[b]).then(a.cmp(&b)) };
     let live: Vec<usize> = (0..n).filter(|l| covered[*l]).collect();
     // Front to back: every sub-sample's order kept, the rest by depth at the centre; where no
     // order keeps them all (a cycle across sub-samples), a crossing.
@@ -272,11 +306,30 @@ pub(crate) fn of_pixel(
     };
     let orders = sequences.into_iter().map(reindexed).collect();
     let samples = per_sample.into_iter().map(reindexed).collect();
+    // How each pair of leaves was ordered: from their fragments' pairs, the strongest rule.
+    let mut ruled = vec![vec![Decided::Paint; n]; n];
+    for a in 0..frags.len() {
+        for b in a + 1..frags.len() {
+            let (la, lb) = (of[a], of[b]);
+            if la != lb {
+                let d = pair(a, b).1;
+                ruled[la][lb] = ruled[la][lb].max(d);
+                ruled[lb][la] = ruled[la][lb];
+            }
+        }
+    }
+    let mut decided = Vec::new();
+    for (p, &la) in order.iter().rev().enumerate() {
+        for (q, &lb) in order.iter().rev().enumerate().skip(p + 1) {
+            decided.push((p, q, ruled[la][lb]));
+        }
+    }
     PixelContributors {
         leaves,
         orders,
         samples,
         crossing,
+        decided,
     }
 }
 
@@ -288,7 +341,7 @@ mod tests {
     /// A fragment of leaf `object` at depth `a + b x` (nearer is smaller), drawn `order`th.
     fn fragment(a: f64, b: f64, colour: [u8; 4], order: u32, object: u32) -> Fragment {
         Fragment::new(
-            Plane { a, b, c: 0.0 },
+            Plane::new(a, b, 0.0),
             colour,
             Coverage::Mask(0),
             order,
@@ -440,5 +493,57 @@ mod tests {
             }
         }
         assert_eq!(distinct, p.orders);
+    }
+
+    #[test]
+    fn two_leaves_crossing_inside_the_pixel_are_ordered_as_most_shared_sub_samples_order_them() {
+        // Leaf 1 is in front left of x = 0.6 (and at the centre), leaf 2 right of it; leaf 2
+        // covers one sub-sample left of the crossing and the rest of what it covers right of it.
+        let x = |k: usize| crate::composite::sample_point(0, 0, k)[0];
+        let mut covered: Vec<usize> = (0..SAMPLES).filter(|k| x(*k) > 0.6).collect();
+        covered.push((0..SAMPLES).find(|k| x(*k) < 0.6).unwrap());
+        let frags = [
+            fragment(-0.6, 1.0, [255, 0, 0, 255], 0, 1),
+            fragment(0.0, 0.0, [0, 0, 255, 255], 1, 2),
+        ];
+        let rows = [[255; SAMPLES], only(&covered)];
+        let p = of_pixel(0, 0, &frags, &rows, &by_sub);
+        assert!(p.crossing);
+        // Bottom first: leaf 2 is in front at more of the sub-samples both cover.
+        let objects: Vec<u32> = p.leaves.iter().map(|l| l.object).collect();
+        assert_eq!(objects, vec![1, 2]);
+        assert_eq!(p.decided, vec![(0, 1, Decided::Majority)]);
+    }
+
+    #[test]
+    fn the_report_says_how_each_pair_of_leaves_was_ordered() {
+        // Leaf 1 behind leaf 2 by depth where both cover; leaf 3 coincident with leaf 2 and drawn
+        // after it; leaf 4 in front, sharing no sub-sample with leaf 1.
+        let frags = [
+            fragment(2.0, 0.0, [255, 0, 0, 128], 0, 1),
+            fragment(1.0, 0.0, [0, 255, 0, 128], 1, 2),
+            fragment(1.0, 0.0, [0, 0, 255, 128], 2, 3),
+            fragment(0.5, 0.0, [9, 9, 9, 128], 3, 4),
+        ];
+        let rows = [
+            only(&[0, 1]),
+            only(&[0, 1, 2]),
+            only(&[1, 2]),
+            only(&[2, 3]),
+        ];
+        let p = of_pixel(0, 0, &frags, &rows, &by_sub);
+        let objects: Vec<u32> = p.leaves.iter().map(|l| l.object).collect();
+        assert_eq!(objects, vec![1, 2, 3, 4]);
+        assert_eq!(
+            p.decided,
+            vec![
+                (0, 1, Decided::Depth),
+                (0, 2, Decided::Depth),
+                (0, 3, Decided::Paint),
+                (1, 2, Decided::Tie),
+                (1, 3, Decided::Depth),
+                (2, 3, Decided::Depth),
+            ]
+        );
     }
 }

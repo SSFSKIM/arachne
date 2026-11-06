@@ -112,12 +112,19 @@ class PixelContributors:
     leaf another lies between comes twice (Cairo: one sequence, each leaf's
     drawn alpha). ``crossing`` is whether the sequences order two leaves both
     ways, or admit no one order; the leaves are then in their depth order at
-    the pixel's centre.
+    the pixel's centre. ``decided`` is how the core ordered each pair of
+    leaves, ``(a, b, rule)`` for indices ``a < b`` into ``leaves``: ``"paint"``
+    (no sub-sample both cover: paint order), ``"tie"`` (one depth within the
+    key arithmetic's error wherever both cover: paint order), ``"depth"``, or
+    ``"majority"`` (their depths cross inside the pixel: the one in front at
+    more of the sub-samples both cover). Cairo paints in paint order and
+    reports none.
     """
 
     leaves: tuple[Leaf, ...]
     orders: tuple[tuple[tuple[int, int], ...], ...]
     crossing: bool = False
+    decided: tuple[tuple[int, int, str], ...] = ()
 
     @property
     def keys(self) -> tuple[tuple[str | int, int], ...]:
@@ -169,7 +176,7 @@ def from_core(
     each leaf's stable id found in ``objects`` (``StreamState.objects``).
     """
     out: dict[tuple[int, int], PixelContributors] = {}
-    for at, (leaves, orders, crossing) in found.items():
+    for at, (leaves, orders, crossing, decided) in found.items():
         out[at] = PixelContributors(
             leaves=tuple(
                 Leaf(
@@ -187,6 +194,7 @@ def from_core(
             ),
             orders=tuple(tuple(tuple(e) for e in order) for order in orders),
             crossing=bool(crossing),
+            decided=tuple(tuple(d) for d in decided),
         )
     return out
 
@@ -198,7 +206,8 @@ def over(
     """``top``'s leaves composited over ``under``'s, pixel by pixel: the core
     path's frame, the core's leaves under Cairo's overlay. A leaf of
     ``under`` is hidden where a leaf of ``top`` covers the pixel; every
-    sequence of ``under`` continues with ``top``'s.
+    sequence of ``under`` continues with ``top``'s, and ``top``'s leaves are
+    over ``under``'s in paint order.
     """
     out = dict(under)
     for at, above in top.items():
@@ -218,5 +227,12 @@ def over(
             + above.leaves,
             orders=tuple(order + extra for order in below.orders for extra in lifted),
             crossing=below.crossing,
+            decided=below.decided
+            + tuple(
+                (a, b + shift, "paint")
+                for a in range(shift)
+                for b in range(len(above.leaves))
+            )
+            + tuple((a + shift, b + shift, rule) for a, b, rule in above.decided),
         )
     return out
