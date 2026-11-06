@@ -38,7 +38,7 @@ from arachne.mobject.types.point_cloud_mobject import PMobject
 from arachne.mobject.types.vectorized_mobject import VMobject
 from arachne.utils.color import get_shaded_rgb
 
-from .contributors import Box, Leaf, PixelContributors
+from .contributors import Box, Leaf, Outline, PixelContributors, Subpath
 from .extract import Unable
 from .geometry import blended, revealed
 from .replay import Recording, Replays, replay
@@ -765,6 +765,41 @@ class CairoDrawer:
             )
         return out
 
+    def outlines(
+        self,
+        state: StreamState,
+        entries: Sequence[tuple[str, int, int]],
+    ) -> dict[tuple[int, int], tuple[Outline, ...]]:
+        """What the camera hands Cairo for each entry of ``entries`` drawn
+        through its context (paths and faces), by ``(slot, part)``: each fill
+        and stroke in the order made (:class:`~.contributors.Outline`), the
+        path in pixels. The camera draws each entry alone, as for
+        :meth:`contributors`, into a frame of its own. Entries drawn by other
+        means (images, point clouds) have none. Refused as :meth:`draw`
+        refuses.
+        """
+        self._refuse_unknown(state, entries)
+        self._state = state
+        view = state.view
+        assert view is not None
+        camera = self._camera(view, "outlines")
+        array = np.zeros((view["pixel_height"], view["pixel_width"], 4), dtype=np.uint8)
+        camera.pixel_array = array
+        ctx = _context(camera, array)
+        self._seed_images(camera, state)
+        self._orient(camera, state)
+        out: dict[tuple[int, int], tuple[Outline, ...]] = {}
+        for _, slot, part in entries:
+            record = state.records[slot]
+            if not _THROUGH_CONTEXT.get(record.kind):
+                continue
+            if isinstance(camera, ThreeDCamera):
+                camera.reset_rotation_matrix()
+            taken = _Taken(ctx)
+            camera.display_vectorized(self._proxy(slot, part, record), taken)
+            out[(slot, part)] = tuple(taken.ops)
+        return out
+
     def _draw_order(
         self,
         state: StreamState,
@@ -1027,6 +1062,112 @@ class CairoDrawer:
             sub_camera = self._camera(sub_view, ("display", slot))
             sub_camera.pixel_array = sub_array
             self._draw_entries(sub_camera, sub_order, sub_array)
+
+
+class _Taken:
+    """A Cairo context that keeps, at each fill and stroke made on it, what
+    it was handed (:class:`~.contributors.Outline`), and makes every call on
+    the context it stands for.
+    """
+
+    def __init__(self, context: Any) -> None:
+        self._context = context
+        self.ops: list[Outline] = []
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._context, name)
+
+    def fill(self) -> None:
+        self._take("fill")
+        self._context.fill()
+
+    def fill_preserve(self) -> None:
+        self._take("fill")
+        self._context.fill_preserve()
+
+    def stroke(self) -> None:
+        self._take("stroke")
+        self._context.stroke()
+
+    def stroke_preserve(self) -> None:
+        self._take("stroke")
+        self._context.stroke_preserve()
+
+    def _take(self, op: str) -> None:
+        import cairo
+
+        ctx = self._context
+        matrix = ctx.get_matrix()
+        source = ctx.get_source()
+        if isinstance(source, cairo.SolidPattern):
+            stops = [source.get_rgba()]
+        elif isinstance(source, cairo.Gradient):
+            stops = [stop[1:] for stop in source.get_color_stops_rgba()]
+        else:  # pragma: no cover - the camera paints solids and gradients
+            stops = []
+        # The camera hands Cairo its colours' channels reversed (the surface
+        # holds them in that order): the frame's order is the reverse.
+        colours = tuple((b, g, r, a) for r, g, b, a in stops)
+        width = 0.0
+        join = cap = ""
+        if op == "stroke":
+            dx, dy = ctx.user_to_device_distance(ctx.get_line_width(), 0.0)
+            width = float(np.hypot(dx, dy))
+            # pycairo's enums name themselves only in their repr ("cairo.LineJoin.MITER").
+            join = repr(ctx.get_line_join()).rsplit(".", 1)[-1].lower()
+            cap = repr(ctx.get_line_cap()).rsplit(".", 1)[-1].lower()
+        subpaths: list[Subpath] = []
+        start: tuple[float, float] | None = None
+        at: tuple[float, float] = (0.0, 0.0)
+        rows: list[list[tuple[float, float]]] = []
+
+        def close(closed: bool) -> None:
+            # Cairo begins a new subpath at a closed one's start (a lone move draws nothing).
+            if start is not None and rows:
+                segments = np.array(rows, dtype=float).reshape(-1, 3, 2)
+                subpaths.append(Subpath(start, segments, closed))
+
+        for kind, points in ctx.copy_path():
+            placed = [
+                matrix.transform_point(points[i], points[i + 1])
+                for i in range(0, len(points), 2)
+            ]
+            if kind == cairo.PATH_MOVE_TO:
+                close(False)
+                start = at = placed[0]
+                rows = []
+            elif kind == cairo.PATH_LINE_TO:
+                end = placed[0]
+                rows.append(
+                    [
+                        (at[0] + (end[0] - at[0]) / 3, at[1] + (end[1] - at[1]) / 3),
+                        (
+                            at[0] + 2 * (end[0] - at[0]) / 3,
+                            at[1] + 2 * (end[1] - at[1]) / 3,
+                        ),
+                        end,
+                    ]
+                )
+                at = end
+            elif kind == cairo.PATH_CURVE_TO:
+                rows.append(placed)
+                at = placed[2]
+            elif kind == cairo.PATH_CLOSE_PATH:
+                close(True)
+                at = start if start is not None else at
+                start = None
+                rows = []
+        close(False)
+        self.ops.append(
+            Outline(
+                op=op,
+                colours=colours,
+                width=width,
+                subpaths=tuple(subpaths),
+                join=join,
+                cap=cap,
+            )
+        )
 
 
 def _pre(f: dict[str, Any], state: StreamState) -> dict[str, Any] | None:

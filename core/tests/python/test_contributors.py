@@ -373,3 +373,30 @@ def test_a_flat_frame_reports_its_leaves_in_draw_order():
     delta.set_order([("moving", 1, 0), ("moving", 2, 0)])
     leaves, _, _ = at(stream_of(delta), 80, 40)
     assert ids(leaves) == [(11, 0), (12, 0)]
+
+
+def test_newell_corners_name_the_corners_whose_writer_decided_them_degenerate():
+    def faces_stream(**view) -> ac.Stream:
+        delta = view_delta(**{"should_apply_shading": True, **view})
+        faces = delta.upload_path(
+            np.concatenate([square(z=0.0), square(z=1.0, half=0.8)])
+        )
+        fills = delta.upload_paint(np.array([[1, 0, 0, 1], [0, 1, 0, 1]], dtype=float))
+        delta.set_record(
+            "face_group",
+            1,
+            21,
+            shape=faces,
+            uv=[(0, 0), (1, 0)],
+            grid=(2, 1),
+            face_fill=fills,
+            space="world",
+            shade_in_3d=True,
+            normals=[(0, 0, 1), (0, 0, 1), (0, 0, 0), (0, 0, 1)],
+        )
+        delta.set_order([("moving", 1, 0), ("moving", 1, 1)])
+        return stream_of(delta)
+
+    assert faces_stream().newell_corners([1]) == {1: [(False, False), (True, False)]}
+    # Unshaded, nothing is lit by a normal.
+    assert faces_stream(should_apply_shading=False).newell_corners([1]) == {}

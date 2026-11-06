@@ -51,7 +51,7 @@ import numpy as np
 
 from .cairo_painter import CairoDrawer
 from .canonical import Canonical
-from .contributors import Box, LiveFrame, PixelContributors
+from .contributors import Box, LiveFrame, Outline, PixelContributors
 from .extract import FrameStream, Term, Unable
 from .lint import raise_finding
 from .xf import Delta, StreamState
@@ -691,6 +691,19 @@ class IrCairoPainter:
         if self.keep:
             self.deltas.append(delta)
         return self.drawer.draw(self.state).copy()
+
+    def outlines(self) -> dict[tuple[int, int], tuple[Outline, ...]]:
+        """What Cairo is handed for each leaf of the last frame drawn through
+        the camera's context, by ``(slot, part)`` (:meth:`.cairo_painter.
+        CairoDrawer.outlines`): the geometry its edges are measured against.
+        """
+        if self.live:
+            raise LiveFrame(
+                "outlines: this painter draws captures as the scene runs, each"
+                " over the ones before it; take them from the frame's state"
+                " extracted whole"
+            )
+        return self.drawer.outlines(self.state, self.state.order)
 
     def contributors(self, box: Box) -> dict[tuple[int, int], PixelContributors]:
         """The leaves the last frame paints at each pixel of ``box``, in
