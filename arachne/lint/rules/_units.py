@@ -141,6 +141,17 @@ class Measured:
         )
 
     @cached_property
+    def depth(self) -> tuple[float, float] | None:
+        """The least and greatest depth of its leaves toward a ThreeDCamera
+        (the greater the nearer), when the camera projects every one of
+        them; ``None`` otherwise (:attr:`~arachne.lint.parts.Leaf.depth`).
+        """
+        spans = [leaf.depth for leaf in self.leaves if leaf.depth is not None]
+        if len(spans) < len(self.leaves):
+            return None
+        return min(low for low, _ in spans), max(high for _, high in spans)
+
+    @cached_property
     def top(self) -> int:
         """Where its last ink is drawn."""
         return max(self.copy_top, *(leaf.order for leaf in self.leaves))

@@ -98,12 +98,15 @@ class Lays:
 @dataclass(frozen=True)
 class Placed:
     """Where the camera puts a leaf: the box of what its draw paints, its
-    points on the screen (read-only, as reads share them), and their box.
+    points on the screen (read-only, as reads share them), their box, and
+    its depth toward the camera where it has one
+    (:func:`~.projection.member_place`).
     """
 
     ink: Box
     screen: np.ndarray
     box: Box
+    depth: tuple[float, float] | None = None
 
 
 class LeafMemo:

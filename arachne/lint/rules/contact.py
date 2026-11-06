@@ -5,6 +5,10 @@ than a declared gap.
 ``gap.text`` when two texts sit apart but closer than the scene's declared
 ``text_gap``. What is measured, and the contacts that are let pass, is in
 :mod:`._pairs`; a text something is drawn over is the occlusion rule's.
+Under a ThreeDCamera two things that are not text, one wholly in front of
+the other in depth and painted after it, are layered, not in contact
+(:mod:`._pairs` says what wholly in front means); a pair with a text in it
+is measured on screen as in a flat picture.
 """
 
 from __future__ import annotations
