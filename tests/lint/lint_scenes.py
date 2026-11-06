@@ -17,18 +17,24 @@ from arachne import (
     Axes,
     Circle,
     Dot,
+    FadeIn,
     ImageMobject,
     Line,
     MappingCamera,
+    ParametricFunction,
     PMobject,
+    Polygon,
     Scene,
     Square,
     Text,
     Transform,
+    ValueTracker,
     VGroup,
+    always_redraw,
     config,
     linear,
 )
+from arachne.lint.bridge import sweep
 
 
 class Instants(Scene):
@@ -227,3 +233,102 @@ class Lattices(Scene):
         short = VGroup(lines(3, 0, short=0.3), lines(0, 3)).shift(RIGHT * 4.5)
         self.add(lattice, parallel, sparse, short)
         self.wait(0.25)
+
+
+class FillGrownOverLattice(Scene):
+    """A lattice of 31 lines each way, faint, played in; then a translucent
+    fill redrawn every frame, empty at first (a group padded with a point),
+    grown into a square over the lattice; then a sweep as the scene closes.
+    """
+
+    def construct(self):
+        lattice = lines(31, 31, side=3.0).set_stroke(opacity=0.35)
+        self.play(FadeIn(lattice), run_time=0.25)
+        grown = ValueTracker(0.0)
+
+        def fill():
+            size = 3.0 * grown.get_value()
+            if size <= 0:
+                return VGroup()
+            corner = np.array([-1.5, -1.5, 0.0])
+            return Polygon(
+                corner,
+                corner + [size, 0, 0],
+                corner + [size, size, 0],
+                corner + [0, size, 0],
+            ).set_style(fill_opacity=0.55, stroke_width=0)
+
+        self.add(always_redraw(fill))
+        self.play(grown.animate.set_value(1.0), run_time=0.25)
+        self.found = sweep()
+        self.wait(0.25)
+
+
+class OverLattice(Scene):
+    """A group of lines drawn first, then something drawn over it that
+    crosses its lines, swept as the scene closes.
+    """
+
+    def grid(self) -> VGroup:
+        return lines(5, 5)
+
+    def over(self):
+        return ParametricFunction(
+            lambda t: np.array([t, 0.6 * np.sin(3 * t), 0.0]), t_range=(-1.0, 1.0)
+        )
+
+    def construct(self):
+        self.add(self.grid())
+        self.add(self.over())
+        self.wait(0.25)
+        self.found = sweep()
+        self.wait(0.25)
+
+
+class FilledOverLattice(OverLattice):
+    """A filled square drawn over the lattice."""
+
+    def over(self):
+        return Square(side_length=1.2).set_style(fill_opacity=0.5, stroke_width=0)
+
+
+class TextOverLattice(OverLattice):
+    """A word laid across one of the lattice's lines."""
+
+    def over(self):
+        return Text("on a line", font_size=30)
+
+
+class LatticeOverFill(OverLattice):
+    """A filled square drawn first, the lattice drawn over it."""
+
+    def construct(self):
+        self.add(self.over_first())
+        self.add(self.grid())
+        self.wait(0.25)
+        self.found = sweep()
+        self.wait(0.25)
+
+    def over_first(self):
+        return FilledOverLattice.over(self)
+
+
+class FillOverParallelLines(FilledOverLattice):
+    """Five lines one way only: no grid."""
+
+    def grid(self) -> VGroup:
+        return lines(5, 0)
+
+
+class FillOverSparseLattice(FilledOverLattice):
+    """Two lines one way and five the other: no grid."""
+
+    def grid(self) -> VGroup:
+        return lines(2, 5)
+
+
+class FillOverShortLattice(FilledOverLattice):
+    """Lines one way stop short of the box the group spans: no grid."""
+
+    def grid(self) -> VGroup:
+        return VGroup(lines(5, 0, short=0.3), lines(0, 5))

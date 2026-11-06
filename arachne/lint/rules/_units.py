@@ -54,6 +54,11 @@ class Measured:
         return self.unit.furniture is not None
 
     @property
+    def grid(self) -> bool:
+        """Part of a grid: a plane, a vector field, a lattice of lines."""
+        return self.unit.grid
+
+    @property
     def structural(self) -> bool:
         """An axis's line or ticks: what content rides by construction."""
         return self.unit.furniture in ("line", "ticks")
