@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from arachne import Square
 from arachne.camera import three_d_camera
 from arachne.camera.projection import _rotate
 from arachne.camera.three_d_camera import ThreeDCamera
@@ -175,3 +176,64 @@ def test_another_instant_or_state_is_never_served_parts_built_for_one(session_of
     )
     assert _boxes(other) == _boxes(fresh) != _boxes(first)
     assert built(Fraction(9, 15), held[0]) is first
+
+
+def _closed_curve_by_curve(points: np.ndarray, n: int = 4) -> bool:
+    """Whether every subpath ends where it starts, a curve at a time."""
+    curves = points[: len(points) // n * n].reshape(-1, n, points.shape[1])
+    start = 0
+    for index in range(len(curves)):
+        last = index == len(curves) - 1
+        if last or not np.allclose(curves[index, -1], curves[index + 1, 0], atol=1e-6):
+            if not np.allclose(curves[start, 0], curves[index, -1], atol=1e-6):
+                return False
+            start = index + 1
+    return True
+
+
+def _ring(centre, radius: float, curves: int, *, gap: float = 0.0) -> np.ndarray:
+    """A closed polygonal subpath of ``curves`` straight cubic curves, its
+    last point ``gap`` short of its first.
+    """
+    angles = np.linspace(0, 2 * np.pi, curves + 1)
+    corners = np.array(
+        [[np.cos(a) * radius, np.sin(a) * radius, 0.0] for a in angles]
+    ) + np.asarray(centre)
+    corners[-1, 0] += gap
+    return np.concatenate(
+        [np.linspace(corners[i], corners[i + 1], 4) for i in range(curves)]
+    )
+
+
+SUBPATHS = {
+    "one ring": [_ring((0, 0, 0), 1, 200)],
+    "two rings": [_ring((0, 0, 0), 1, 100), _ring((3, 0, 0), 1, 100)],
+    "a ring then an open one": [
+        _ring((0, 0, 0), 1, 100),
+        _ring((3, 0, 0), 1, 100, gap=0.1),
+    ],
+    "a gap within tolerance": [_ring((0, 0, 0), 1, 200, gap=5e-7)],
+    "a gap past tolerance": [_ring((0, 0, 0), 1, 200, gap=5e-5)],
+    "far from the origin": [_ring((1e3, 0, 0), 1, 200, gap=5e-3)],
+    "an undefined point": [_ring((0, 0, 0), 1, 200, gap=np.nan)],
+}
+
+
+@pytest.mark.parametrize("name", SUBPATHS)
+def test_a_path_s_closure_is_read_in_one_pass_over_its_curves(monkeypatch, name):
+    """As closed or open as read a curve at a time, without a comparison per
+    curve.
+    """
+    points = np.concatenate(SUBPATHS[name])
+    expected = _closed_curve_by_curve(points)
+    compared = []
+    for function in ("allclose", "isclose"):
+        real = getattr(np, function)
+
+        def counted(*args, _real=real, **kwargs):
+            compared.append(1)
+            return _real(*args, **kwargs)
+
+        monkeypatch.setattr(np, function, counted)
+    assert parts_module._closed(Square(), points) is expected
+    assert len(compared) <= 2
