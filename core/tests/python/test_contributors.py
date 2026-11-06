@@ -74,8 +74,16 @@ def at(stream: ac.Stream, x: int, y: int):
     return stream.contributors(x, y, x + 1, y + 1)[(x, y)]
 
 
+FIELDS = ("object", "part", "coverage", "colour", "drawn", "shown", "covers")
+
+
 def ids(leaves) -> list[tuple[int, int]]:
     return [(obj, part) for obj, part, *_ in leaves]
+
+
+def field(leaves, name: str) -> list:
+    """One field of each leaf, by name."""
+    return [leaf[FIELDS.index(name)] for leaf in leaves]
 
 
 def test_leaves_come_bottom_first_in_depth_order_whatever_the_draw_order():
@@ -89,8 +97,8 @@ def test_leaves_come_bottom_first_in_depth_order_whatever_the_draw_order():
     delta.set_order([("moving", 1, 0), ("moving", 2, 0), ("moving", 3, 0)])
     leaves, orders, crossing = at(stream_of(delta), *INSIDE)
     assert ids(leaves) == [(13, 0), (12, 0), (11, 0)]
-    assert [shown for *_, shown in leaves] == [True, True, True]
-    assert [coverage for _, _, coverage, _, _ in leaves] == [255, 255, 255]
+    assert field(leaves, "shown") == [True, True, True]
+    assert field(leaves, "coverage") == [255, 255, 255]
     # One sequence: every sub-sample sees the three in one order, each covering it whole.
     assert orders == [[(0, 255), (1, 255), (2, 255)]]
     assert crossing is False
@@ -127,15 +135,18 @@ def test_a_leaf_behind_an_opaque_front_is_reported_and_not_shown():
     delta.set_order([("moving", 2, 0), ("moving", 1, 0)])
     stream = stream_of(delta)
     leaves, orders, _ = at(stream, *INSIDE)
-    assert [(o, p, shown) for o, p, _, _, shown in leaves] == [
-        (12, 0, False),
-        (11, 0, True),
+    assert list(zip(ids(leaves), field(leaves, "shown"), strict=True)) == [
+        ((12, 0), False),
+        ((11, 0), True),
     ]
+    assert field(leaves, "covers") == [True, True]
     assert leaves[1][3] == (255, 0, 0, 255)
     assert orders == [[(0, 255), (1, 255)]]
     # Outside the front, the rear is shown and alone.
     alone, _, _ = at(stream, 62, 45)
-    assert [(o, shown) for o, _, _, _, shown in alone] == [(12, True)]
+    assert list(zip(ids(alone), field(alone, "shown"), strict=True)) == [
+        ((12, 0), True)
+    ]
 
 
 def test_the_report_matches_what_the_core_draws_under_an_opaque_top():
@@ -202,26 +213,116 @@ def test_overlapping_translucent_instances_report_their_own_objects():
     assert ids(at(stream, 72, 40)[0]) == [(31, 0)]
 
 
-def test_two_surfaces_crossing_inside_a_pixel_report_each_order():
-    # Planes through the line x = 0.05 (pixel column 80's centre), sloped apart: left of it the
-    # falling one is nearer, right of it the rising one.
+def crossing_planes(line: float) -> ac.Stream:
+    """Two planes through the line x = ``line``, sloped apart: left of it the falling one
+    (object 12, drawn second) is nearer, right of it the rising one (object 11).
+    """
     delta = view_delta()
-    rising = plane(delta, lambda x: 0.5 * (x - 0.05))
-    falling = plane(delta, lambda x: -0.5 * (x - 0.05))
+    rising = plane(delta, lambda x: 0.5 * (x - line))
+    falling = plane(delta, lambda x: -0.5 * (x - line))
     delta.set_record("mesh", 1, 11, shape=rising, fill=(1, 0, 0, 1), space="world")
     delta.set_record("mesh", 2, 12, shape=falling, fill=(0, 0, 1, 1), space="world")
     delta.set_order([("moving", 1, 0), ("moving", 2, 0)])
-    stream = stream_of(delta)
+    return stream_of(delta)
+
+
+def test_two_surfaces_crossing_inside_a_pixel_report_each_order():
+    # Pixel column 80 spans world x 0 to 0.1; the line at x = 0.03 leaves its centre (x = 0.05)
+    # on the rising plane's near side.
+    stream = crossing_planes(0.03)
     leaves, orders, crossing = at(stream, 80, 40)
     assert crossing is True
-    assert sorted(ids(leaves)) == [(11, 0), (12, 0)]
-    sequences = {tuple(leaves[i][0] for i, _ in order) for order in orders}
-    assert sequences == {(11, 12), (12, 11)}
-    # Away from the line, one order and no crossing, the falling plane on top on the left.
+    # Bottom first, by depth at the pixel's centre: the rising plane on top.
+    assert ids(leaves) == [(12, 0), (11, 0)]
+    sequences = sorted(tuple(leaves[i][0] for i, _ in order) for order in orders)
+    assert sequences == [(11, 12), (12, 11)]
+    # Away from the line, one order and no crossing: the falling plane on top on the left.
     leaves, orders, crossing = at(stream, 72, 40)
     assert crossing is False
     assert ids(leaves) == [(11, 0), (12, 0)]
-    assert len(orders) == 1
+    assert orders == [[(0, 255), (1, 255)]]
+
+
+def test_at_a_crossing_whose_planes_tie_at_the_centre_the_later_drawn_is_on_top():
+    leaves, _, crossing = at(crossing_planes(0.05), 80, 40)
+    assert crossing is True
+    assert ids(leaves) == [(11, 0), (12, 0)]
+
+
+def test_a_box_may_reach_past_the_frame_s_top_left_corner():
+    delta = view_delta()
+    corner = delta.upload_path(square(half=0.1, centre=(-7.95, 4.45)))
+    delta.set_record("path", 1, 11, shape=corner, fill=(1, 1, 1, 1), space="world")
+    delta.set_order([("moving", 1, 0)])
+    found = stream_of(delta).contributors(-2, -2, 10, 10)
+    assert (0, 0) in found
+    assert all(0 <= x < 10 and 0 <= y < 10 for x, y in found)
+
+
+def alone(**record) -> tuple[ac.Stream, np.ndarray]:
+    """One path over a transparent background, and the frame the core draws of it: what that
+    leaf draws alone.
+    """
+    delta = ac.FrameDelta()
+    delta.set_view(background=(0, 0, 0, 0), **FRAME, **DOWN)
+    shape = delta.upload_path(square())
+    delta.set_record("path", 1, 11, shape=shape, space="world", **record)
+    delta.set_order([("moving", 1, 0)])
+    stream = stream_of(delta)
+    return stream, stream.draw(160, 90)
+
+
+def test_what_a_leaf_draws_alone_is_what_the_core_draws_of_it_over_nothing():
+    # An opaque red fill under a half-transparent blue stroke 4 pixels wide, its edge at
+    # x = -1 (pixel column 70): column 71 lies inside both.
+    stream, frame = alone(fill=(1, 0, 0, 1), stroke=(0, 0, 1, 0.5), stroke_width=40.0)
+    for x in (68, 69, 70, 71, 75):
+        (leaf,) = at(stream, x, 45)[0]
+        drawn = leaf[FIELDS.index("drawn")]
+        assert np.abs(np.subtract(drawn, frame[45, x], dtype=int)).max() <= 1, (
+            x,
+            drawn,
+        )
+    (leaf,) = at(stream, 71, 45)[0]
+    assert (
+        np.abs(np.subtract(leaf[FIELDS.index("drawn")], (127, 0, 128, 255))).max() <= 1
+    )
+
+
+def test_a_mesh_s_triangles_lit_apart_draw_their_mix():
+    delta = ac.FrameDelta()
+    delta.set_view(
+        background=(0, 0, 0, 0), **FRAME, **{**DOWN, "should_apply_shading": True}
+    )
+    # A square folded along its diagonal: its two triangles face apart and are lit apart.
+    positions = np.array(
+        [[-1, -1, 0.0], [1, -1, 0.5], [1, 1, 0.0], [-1, 1, -0.5]], dtype=float
+    )
+    triangles = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.uint32)
+    mesh = delta.upload_mesh(positions, triangles)
+    delta.set_record(
+        "mesh",
+        1,
+        11,
+        shape=mesh,
+        fill=(0.6, 0.6, 0.6, 1),
+        space="world",
+        shade_in_3d=True,
+    )
+    delta.set_order([("moving", 1, 0)])
+    stream = stream_of(delta)
+    frame = stream.draw(160, 90)
+    # The triangles' insides differ: the fold is lit.
+    assert (frame[52, 87] != frame[38, 73]).any()
+    # On the fold (the diagonal through the centre), each pixel is the triangles' mix.
+    for x, y in ((80, 45), (76, 41), (84, 49)):
+        (leaf,) = at(stream, x, y)[0]
+        drawn = leaf[FIELDS.index("drawn")]
+        assert np.abs(np.subtract(drawn, frame[y, x], dtype=int)).max() <= 1, (
+            x,
+            y,
+            drawn,
+        )
 
 
 def test_an_edge_pixel_reports_its_share_and_each_sub_sample_s_sequence():
@@ -231,9 +332,10 @@ def test_an_edge_pixel_reports_its_share_and_each_sub_sample_s_sequence():
     delta.set_record("path", 1, 11, shape=edge, fill=(1, 1, 1, 1), space="world")
     delta.set_order([("moving", 1, 0)])
     leaves, orders, _ = at(stream_of(delta), 70, 45)
-    ((_, _, coverage, _, shown),) = leaves
+    (coverage,) = field(leaves, "coverage")
     assert 96 <= coverage <= 160
-    assert shown is True
+    assert field(leaves, "shown") == [True]
+    assert field(leaves, "covers") == [False]
     assert all(index == 0 for order in orders for index, _ in order)
 
 
