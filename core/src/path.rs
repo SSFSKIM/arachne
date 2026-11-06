@@ -725,6 +725,29 @@ impl<'v> Lowering<'v> {
         Some(crate::shade::decided_normals(&world, grid))
     }
 
+    /// Which of `draw`'s two lit corners the drawer lights by its face's Newell normal: those whose
+    /// normal the record's writer decided degenerate (the zero vector) where the Newell normal does
+    /// not cancel ([`crate::shade::ce_face_stops_decided`]). `None` for a path CE's lighting does
+    /// not shade; both `false` for one whose record carries no normals.
+    pub fn newell_corners(&self, draw: &PathDraw<'_>) -> Option<[bool; 2]> {
+        let shades = matches!(&self.view.camera, Camera::ThreeD(c) if c.should_apply_shading);
+        if draw.pre_projected || !shades || !draw.record.depth.shade_in_3d {
+            return None;
+        }
+        let Some(decided) = draw.decided_normals() else {
+            return Some([false; 2]);
+        };
+        let world: Vec<[f64; 3]> = draw.points.iter().map(|p| place(&draw.place, *p)).collect();
+        let cancels = match world.first() {
+            Some(first) => {
+                let n = crate::depth::newell(&world, *first);
+                n[0] * n[0] + n[1] * n[1] + n[2] * n[2] == 0.0
+            }
+            None => true,
+        };
+        Some(decided.map(|n| n == [0.0; 3] && !cancels))
+    }
+
     /// The points `draw`'s depth is keyed from, and whether they are placed in the world by the
     /// 3D camera's projection (not fixed in frame, fixed in orientation, or pre-projected);
     /// `None` for a path [`Lowering::path`] does not draw or keys whole.

@@ -919,6 +919,25 @@ impl PyStream {
             .map_err(|e| draw_error(py, e))
     }
 
+    /// Per slot of ``slots`` holding a record the camera shades, which lit corners of each path it
+    /// draws the drawer lights by the face's Newell normal (its writer decided the corner
+    /// degenerate): a list of ``(start, end)`` booleans, one per path in the order of the record's
+    /// ``planes`` (``core/XF.md``). Nothing is drawn.
+    fn newell_corners(
+        &self,
+        py: Python<'_>,
+        slots: Vec<u32>,
+    ) -> PyResult<BTreeMap<u32, Vec<(bool, bool)>>> {
+        let found = self
+            .stream
+            .newell_corners(&slots)
+            .map_err(|e| draw_error(py, e))?;
+        Ok(found
+            .into_iter()
+            .map(|(slot, corners)| (slot, corners.into_iter().map(|[a, b]| (a, b)).collect()))
+            .collect())
+    }
+
     /// Per slot the order draws, the pixel box ``(x_min, y_min, x_max, y_max)`` (x right, y down)
     /// of its record's points as the camera places them and maps them to pixels: paths, faces
     /// and meshes around the view's mapping centre, point clouds and images around its frame

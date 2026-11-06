@@ -350,3 +350,47 @@ def test_a_box_s_report_is_the_same_cut_from_a_larger_box():
     assert small
     assert small == {at: found for at, found in large.items() if at in small}
     assert set(small) == {(x, y) for x, y in large if 70 <= x < 90 and 30 <= y < 50}
+
+
+def test_outlines_are_what_cairo_is_handed_in_pixels():
+    from arachne import Camera, Square, tempconfig
+
+    with tempconfig(MEDIUM):
+        painter = IrCairoPainter()
+        square = Square(side_length=2, fill_color="#FF0000", fill_opacity=1.0)
+        square.set_stroke("#0000FF", width=4, opacity=0.5)
+        painter.paint(Camera(), [("moving", [square])], t=Fraction(0))
+        (ops,) = painter.outlines().values()
+        frame_height = painter.state.view["frame_height"]
+    fill, stroke = (op for op in ops if op.op in ("fill", "stroke"))
+    assert fill.op == "fill"
+    assert stroke.op == "stroke"
+    # Colours in the frame's channel order, not premultiplied.
+    assert fill.colours == (pytest.approx((1.0, 0.0, 0.0, 1.0)),)
+    assert stroke.colours == (pytest.approx((0.0, 0.0, 1.0, 0.5)),)
+    # A square of side 2 about the origin, in pixels about (96, 54).
+    per_unit = 108 / frame_height
+    (subpath,) = fill.subpaths
+    corners = np.vstack([subpath.start, subpath.segments[:, 2]])
+    assert corners[:, 0].min() == pytest.approx(96 - per_unit, abs=1e-6)
+    assert corners[:, 1].max() == pytest.approx(54 + per_unit, abs=1e-6)
+    assert subpath.closed is True
+    # CE's stroke width 4 is 0.04 frame units.
+    assert stroke.width == pytest.approx(0.04 * per_unit, rel=1e-6)
+    assert stroke.join
+
+
+def test_a_live_painter_refuses_outlines_too():
+    from arachne.frame_ir.live import live_painter
+
+    from ..timeline.conftest import render
+    from . import core_scenes
+
+    scene, _ = render(
+        core_scenes.LiveStrokeUnderSquare, 15, draw_path="ir_cairo", **MEDIUM
+    )
+    camera = scene.renderer.camera  # type: ignore[attr-defined]
+    found = live_painter(camera)
+    assert found is not None
+    with pytest.raises(LiveFrame):
+        found.painter(camera).outlines()

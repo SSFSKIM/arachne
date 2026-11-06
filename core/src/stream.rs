@@ -879,6 +879,23 @@ impl Stream {
         })
     }
 
+    /// Per slot of `slots` holding a record the camera shades, which of the two lit corners of each
+    /// path it draws the drawer lights by the face's Newell normal ([`path::Lowering::newell_corners`]):
+    /// two per path, in the order of the record's `planes`. Other slots have no entry. Nothing is
+    /// drawn.
+    pub fn newell_corners(
+        &self,
+        slots: &[u32],
+    ) -> Result<BTreeMap<u32, Vec<[bool; 2]>>, DrawError> {
+        self.each_paths(slots, |lowering, paths| {
+            let mut found = Vec::new();
+            for draw in paths {
+                found.push(lowering.newell_corners(draw)?);
+            }
+            Some(found)
+        })
+    }
+
     /// `answer(lowering, paths)` per slot of `slots` holding a record that draws paths the drawer
     /// would not refuse, `paths` those it draws, in order; a `None` answer has no entry.
     fn each_paths<T>(
