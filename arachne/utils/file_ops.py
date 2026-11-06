@@ -10,6 +10,12 @@ __all__ = [
     "modify_atime",
     "open_file",
     "ensure_executable",
+    "write_to_movie",
+    "is_mp4_format",
+    "is_gif_format",
+    "is_png_format",
+    "is_webm_format",
+    "is_mov_format",
 ]
 
 import os
@@ -29,6 +35,51 @@ if TYPE_CHECKING:
 from arachne import __version__, config, logger
 
 from .. import console
+
+if TYPE_CHECKING:
+    from .._config.output import OutputFormat
+
+
+def _formats(*formats: str) -> bool:
+    """Whether the output the configuration resolves to is in ``formats``."""
+    from .._config.render_session import resolve_output
+
+    found: OutputFormat = resolve_output(config).format
+    return found.value in formats
+
+
+def write_to_movie() -> bool:
+    """Whether the configuration's render writes a movie (mp4, webm, mov or
+    gif): ``False`` for a still, a PNG sequence, a dry run or no output.
+    """
+    return _formats("mp4", "webm", "mov", "gif")
+
+
+def is_mp4_format() -> bool:
+    """Whether the configuration's render writes an mp4."""
+    return _formats("mp4")
+
+
+def is_gif_format() -> bool:
+    """Whether the configuration's render writes a gif."""
+    return _formats("gif")
+
+
+def is_png_format() -> bool:
+    """Whether the configuration's render writes PNGs: the last frame, or
+    every frame as a sequence.
+    """
+    return _formats("png", "png-sequence")
+
+
+def is_webm_format() -> bool:
+    """Whether the configuration's render writes a webm."""
+    return _formats("webm")
+
+
+def is_mov_format() -> bool:
+    """Whether the configuration's render writes a mov."""
+    return _formats("mov")
 
 
 def ensure_executable(path_to_exe: Path) -> bool:
