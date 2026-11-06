@@ -1085,10 +1085,11 @@ class LiveFrames:
         if play.held and play.static and self.static_layer:
             from arachne.frame_ir.live import keep_static_picture, live
 
-            # Reset within, as every frame's picture is set: the capture is
-            # then known to begin on the camera's background.
-            with live(self.camera, play.start, play=("static", play.index)):
-                self.camera.reset()
+            # Reset before the frame's route is read off the camera, as its
+            # code has always seen it; the live scope is told of the reset,
+            # so the capture is known to begin on the camera's background.
+            self.camera.reset()
+            with live(self.camera, play.start, play=("static", play.index), reset=True):
                 self.camera.capture_mobjects(list(play.static))
             self._static = self.camera.pixel_array.copy()
             keep_static_picture(self.camera, self._static)

@@ -48,8 +48,8 @@ class CorePainter:
     #: background with nothing of an earlier picture composited into it.
     #: A frame drawn from the record is. A live painter's frame is not,
     #: unless its live painter records that the capture began on the
-    #: camera's background as its reset left it (:mod:`.live`); never
-    #: decided from the pixels.
+    #: camera's background as its reset left it, nothing written into the
+    #: array since (:mod:`.live`); never made whole by the pixels.
     whole = True
     #: Frames drawn by the core in this process.
     drawn_total = 0
