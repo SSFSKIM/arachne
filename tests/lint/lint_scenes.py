@@ -14,6 +14,7 @@ from arachne import (
     RED,
     RIGHT,
     UP,
+    Arrow,
     Axes,
     Circle,
     Dot,
@@ -24,6 +25,7 @@ from arachne import (
     ParametricFunction,
     PMobject,
     Polygon,
+    Rectangle,
     Scene,
     Square,
     Text,
@@ -332,3 +334,47 @@ class FillOverShortLattice(FilledOverLattice):
 
     def grid(self) -> VGroup:
         return VGroup(lines(5, 0, short=0.3), lines(0, 5))
+
+
+#: One pixel of a picture 1080 pixels tall, in scene units.
+REFERENCE_PIXEL = config.frame_height / 1080
+
+
+class ArrowFromProbe(Scene):
+    """An arrow drawn out from a probe dot, the dot drawn over its tail; the
+    arrow at opacity 0.8, which fills its straight shaft too.
+    """
+
+    def construct(self):
+        arrow = Arrow(LEFT, RIGHT, buff=0).set_opacity(0.8)
+        probe = Dot(LEFT).set_z_index(4)
+        self.add(arrow, probe)
+        self.wait(0.25)
+        self.found = sweep()
+        self.wait(0.25)
+
+
+class BarOverText(Scene):
+    """A filled bar two reference pixels tall laid across a word."""
+
+    def construct(self):
+        word = Text("under a bar", font_size=36)
+        bar = Rectangle(width=3.0, height=2 * REFERENCE_PIXEL)
+        self.add(word, bar.set_style(fill_opacity=1.0, stroke_width=0))
+        self.wait(0.25)
+        self.found = sweep()
+        self.wait(0.25)
+
+
+class ProbeOnSliver(Scene):
+    """A probe dot on a filled sliver whose area is a few reference pixels:
+    a fill at 1080 pixels tall, and under one pixel of a preview's.
+    """
+
+    def construct(self):
+        sliver = Polygon([-1.5, 0, 0], [1.5, 0, 0], [0, 0.002, 0])
+        probe = Dot().set_z_index(4)
+        self.add(sliver.set_style(fill_opacity=1.0, stroke_width=0), probe)
+        self.wait(0.25)
+        self.found = sweep()
+        self.wait(0.25)

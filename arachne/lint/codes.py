@@ -22,7 +22,15 @@ otherwise.
 
 from __future__ import annotations
 
-__all__ = ["CODES", "RESERVED", "SEVERITIES", "THRESHOLD_HEIGHT", "Code", "code"]
+__all__ = [
+    "CODES",
+    "REFERENCE_RESOLUTION",
+    "RESERVED",
+    "SEVERITIES",
+    "THRESHOLD_HEIGHT",
+    "Code",
+    "code",
+]
 
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -37,6 +45,12 @@ RESERVED = ("image.",)
 #: The picture height, in pixels, the table's pixel thresholds are stated
 #: at; a rule scales them to the home frame.
 THRESHOLD_HEIGHT = 1080
+#: The picture every pixel threshold is measured on: production's delivery
+#: size, 1080 pixels on its shorter side, so one reference pixel is the
+#: home frame's shorter side over :data:`THRESHOLD_HEIGHT`. Deliberately not
+#: the session's render size: a threshold must not move with the quality a
+#: scene is rendered or linted at.
+REFERENCE_RESOLUTION = (1920, THRESHOLD_HEIGHT)
 
 
 @dataclass(frozen=True)

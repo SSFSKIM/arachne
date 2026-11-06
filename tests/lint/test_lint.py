@@ -437,3 +437,34 @@ def test_a_grid_drawn_over_a_shape_or_lines_that_are_no_grid_still_touch(
     """
     session = session_of(scene, frame_rate=15)
     assert "contact.held" in _swept(session)
+
+
+# A fill with no area
+
+
+def test_a_probe_on_an_arrow_s_filled_shaft_touches_it_by_design(session_of):
+    """Opacity fills an arrow's straight shaft, a fill that covers no area:
+    it draws a stroke, and a marker on a stroke touches it by design.
+    """
+    session = session_of("ArrowFromProbe", frame_rate=15)
+    assert _swept(session) == []
+
+
+def test_a_real_fill_over_text_is_still_checked(session_of):
+    session = session_of("BarOverText", frame_rate=15)
+    assert {"overlap.text", "occlusion.glyph"} & set(_swept(session))
+
+
+@pytest.mark.parametrize("size", [(96, 54), (1920, 1080)])
+def test_a_fill_s_area_is_measured_in_reference_pixels_whatever_the_render(
+    session_of, size
+):
+    """A sliver a few pixels in area at 1080 pixels tall is a fill at a
+    preview's size too: the measure is the reference picture's, not the
+    session's.
+    """
+    width, height = size
+    session = session_of(
+        "ProbeOnSliver", frame_rate=15, pixel_width=width, pixel_height=height
+    )
+    assert _swept(session) == ["contact.held"]
