@@ -324,3 +324,34 @@ def test_objects_made_by_no_known_line_fold_by_kind_group_and_name():
     assert fold(named, timeline=[Fraction(0)]) == named
     same = [_finding(_object(f"o{i}", name="dot")) for i in range(4)]
     assert len(fold(same, timeline=[Fraction(0)])) == 1
+
+
+def test_a_folded_finding_gives_back_each_member_with_its_own_times():
+    """The kept finding holds over the union of its members' times; its
+    members, itself first, each come back with their own, held findings of
+    different spans among them.
+    """
+    spans = [(1, 3), (Fraction(3, 2), 2), (2, 5), (4, Fraction(9, 2))]
+    held = [
+        Finding(
+            "contact.held",
+            Fraction(start),
+            Fraction(end),
+            (_member("upper", i, 7), _member("lower", i, 8)),
+            message="planted",
+            held=True,
+        )
+        for i, (start, end) in enumerate(spans)
+    ]
+    (kept,) = fold(held, timeline=[Fraction(0)])
+    assert (kept.t_start, kept.t_end) == (Fraction(1), Fraction(5))
+    assert [(m.t_start, m.t_end) for m in kept.members] == [
+        (Fraction(a), Fraction(b)) for a, b in spans
+    ]
+    assert kept.members == tuple(held)
+    assert all(m.folded == () for m in kept.members)
+
+
+def test_a_finding_that_folded_nothing_is_its_one_member():
+    alone = _finding(_label(0), _planet(0))
+    assert alone.members == (alone,)
