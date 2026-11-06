@@ -789,7 +789,8 @@ impl Producer for Stack {
 fn the_coverage_resolve_is_within_its_stated_bound_of_the_sample_resolve() {
     // A pixel with one partial mask takes the coverage resolve: its 8-bit coverage, rounded from
     // the mask's count, blended once. The sample resolve would blend at each sub-sample and
-    // average. They differ by rounding only, within COVERAGE_TO_SAMPLE_LSB.
+    // average. They differ by rounding only, within COVERAGE_TO_SAMPLE_LSB: one partial mask of
+    // one colour over a full layer and under at most one, inside the constant's scope.
     let mut rng = Lcg(5);
     let mut colour = |opaque: bool| {
         let a = if opaque { 1.0 } else { rng.unit() };
@@ -864,7 +865,8 @@ fn a_paths_exact_area_lands_within_the_bound_on_either_resolve() {
     // A path's edge in a pixel: the coverage resolve blends its exact area once; the sample
     // resolve blends, at each sub-sample, its exact area inside that sub-sample's cell, and
     // averages. Alone, over an opaque wall and under a translucent layer, every edge angle and
-    // offset lands within COVERAGE_TO_SAMPLE_LSB of the other resolve.
+    // offset lands within the bound `coverage_to_sample_bound` derives for a path under that many
+    // layers.
     let (w, h) = (24, 24);
     let mut rng = Lcg(11);
     let (mut pixels, mut widest) = (0, 0);
@@ -884,8 +886,13 @@ fn a_paths_exact_area_lands_within_the_bound_on_either_resolve() {
         };
         let front = premultiply([rng.unit(), rng.unit(), rng.unit(), 0.5]);
         let over = Veil(front);
-        let stacks: [Vec<&dyn Producer>; 3] = [vec![&path], vec![&wall, &path], vec![&path, &over]];
-        for stack in stacks {
+        let stacks: [(Vec<&dyn Producer>, u32); 3] = [
+            (vec![&path], 0),
+            (vec![&wall, &path], 0),
+            (vec![&path, &over], 1),
+        ];
+        for (stack, fronts) in stacks {
+            let bound = coverage_to_sample_bound(Partial::Path, fronts) as i64;
             let drawn = tiles::render(Frame::filled(w, h, GREY), &stack, 1).unwrap();
             let mut with = stack.clone();
             with.push(&EverySample);
@@ -903,7 +910,7 @@ fn a_paths_exact_area_lands_within_the_bound_on_either_resolve() {
                         let gap = (drawn.rgba[i + k] as i64 - sampled.rgba[i + k] as i64).abs();
                         widest = widest.max(gap);
                         assert!(
-                            gap <= COVERAGE_TO_SAMPLE_LSB as i64,
+                            gap <= bound,
                             "pixel {x},{y}, line {:?}: coverage {:?}, sample {:?}",
                             path.line,
                             &drawn.rgba[i..i + 4],

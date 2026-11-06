@@ -1,5 +1,5 @@
 {
-  "about": "Per resolve class, the largest difference in any channel (0-255) a backend's pixel may show against the reference pixel of that class. All are placeholders until the cross-architecture measurement sets them. Coverage starts at the core's COVERAGE_TO_SAMPLE_LSB, which bounds the coverage resolve against the sample resolve for a pixel with one partial mask or one path edge; a surface's silhouette under a path's edge takes the sample resolve. Measured where pixels switch resolves: worst 1 as a path crosses a moving surface, within 2 where a silhouette, a path edge and a crossing meet.",
+  "about": "Per resolve class, the largest difference in any channel (0-255) a backend's pixel may show against the reference pixel of that class (the core's own CPU frames). All are placeholders until the cross-architecture measurement sets them. Coverage is a placeholder of 2, not derived: the CPU path's own coverage resolve lands within 3 of its sample resolve for a pixel with one partial mask of one colour under at most one translucent layer (COVERAGE_TO_SAMPLE_LSB), and within the larger bound coverage_to_sample_bound derives for wider stacks (a path's partial area, a surface's masks in several colours, more layers in front), so a backend that resolves coverage-class pixels by sampling needs at least that.",
   "bounds": {
     "background": 0,
     "fast": 0,
