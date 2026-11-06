@@ -68,6 +68,9 @@ pub struct PixelContributors {
     /// Each distinct sequence the sub-samples see, bottom first: `(index into leaves, coverage
     /// at the sub-sample)`, a leaf once per run of its fragments.
     pub orders: Vec<Vec<(usize, u8)>>,
+    /// Each sub-sample's own sequence, in sample order (`SAMPLES` of them, a sub-sample no
+    /// fragment covers empty), as `orders` gives them: `orders` is their distinct ones.
+    pub samples: Vec<Vec<(usize, u8)>>,
     pub crossing: bool,
 }
 
@@ -106,6 +109,7 @@ pub(crate) fn of_pixel(
     // before[a][b]: some sub-sample composites a run of a in front of a run of b.
     let mut before = vec![vec![false; n]; n];
     let mut sequences: Vec<Vec<(usize, u8)>> = Vec::new();
+    let mut per_sample: Vec<Vec<(usize, u8)>> = vec![Vec::new(); SAMPLES];
     let mut at_k: Vec<usize> = Vec::new();
     for k in 0..SAMPLES {
         let [px, py] = sample_point(x, y, k);
@@ -167,6 +171,7 @@ pub(crate) fn of_pixel(
         }
         if !seq.is_empty() {
             seq.reverse();
+            per_sample[k] = seq.clone();
             if !sequences.contains(&seq) {
                 sequences.push(seq);
             }
@@ -260,17 +265,17 @@ pub(crate) fn of_pixel(
             covers: covers[l],
         })
         .collect();
-    let orders = sequences
-        .into_iter()
-        .map(|s| {
-            s.into_iter()
-                .filter_map(|(l, c)| index[l].map(|i| (i, c)))
-                .collect()
-        })
-        .collect();
+    let reindexed = |s: Vec<(usize, u8)>| -> Vec<(usize, u8)> {
+        s.into_iter()
+            .filter_map(|(l, c)| index[l].map(|i| (i, c)))
+            .collect()
+    };
+    let orders = sequences.into_iter().map(reindexed).collect();
+    let samples = per_sample.into_iter().map(reindexed).collect();
     PixelContributors {
         leaves,
         orders,
+        samples,
         crossing,
     }
 }
@@ -402,5 +407,38 @@ mod tests {
         seen.sort();
         // Bottom first: the far leaf of each pair first.
         assert_eq!(seen, vec![vec![1, 3], vec![2, 1], vec![3, 2]]);
+    }
+
+    #[test]
+    fn each_sub_sample_keeps_its_own_sequence_and_the_orders_are_their_distinct_ones() {
+        // The cycle above, with leaf 1's coverage partial at sub-sample 2: each sub-sample's
+        // sequence in sample order, each leaf's coverage there, and nothing at the rest.
+        let frags = [
+            fragment(0.0, 1.0, [255, 0, 0, 255], 0, 1),
+            fragment(0.5, 0.0, [0, 255, 0, 255], 1, 2),
+            fragment(1.0, -1.0, [0, 0, 255, 255], 2, 3),
+        ];
+        let mut one = only(&[0]);
+        one[2] = 40;
+        let rows = [one, only(&[0, 1]), only(&[1, 2])];
+        let p = of_pixel(0, 0, &frags, &rows, &by_sub);
+        assert_eq!(p.samples.len(), SAMPLES);
+        let at = |k: usize| -> Vec<(u32, u8)> {
+            p.samples[k]
+                .iter()
+                .map(|(i, c)| (p.leaves[*i].object, *c))
+                .collect()
+        };
+        assert_eq!(at(0), vec![(2, 255), (1, 255)]);
+        assert_eq!(at(1), vec![(3, 255), (2, 255)]);
+        assert_eq!(at(2), vec![(1, 40), (3, 255)]);
+        assert!((3..SAMPLES).all(|k| p.samples[k].is_empty()));
+        let mut distinct: Vec<Vec<(usize, u8)>> = Vec::new();
+        for s in p.samples.iter().filter(|s| !s.is_empty()) {
+            if !distinct.contains(s) {
+                distinct.push(s.clone());
+            }
+        }
+        assert_eq!(distinct, p.orders);
     }
 }

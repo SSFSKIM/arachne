@@ -1287,4 +1287,7 @@ impl Producer for Paths {
             cells[row][column] as f32
         })
     }
+    fn edges(&self, id: u32) -> Option<&[Edge]> {
+        Some(&self.layers[id as usize].edges)
+    }
 }

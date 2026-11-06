@@ -210,6 +210,11 @@ pub struct Fragment {
 }
 
 impl Fragment {
+    /// The producer that added it, as an index into the pass's producers.
+    pub(crate) fn source(&self) -> u16 {
+        self.source
+    }
+
     pub fn new(depth: Plane, colour: [u8; 4], coverage: Coverage, order: u32, sub: u32) -> Self {
         Fragment {
             depth,
@@ -390,6 +395,13 @@ pub trait Producer: Sync {
     /// what it composites with at each sub-sample of the sample resolve. Their mean is its area.
     fn cell_areas(&self, id: u32, x: u32, y: u32) -> [f32; SAMPLES] {
         unreachable!("a producer that adds exact areas gives their cells' areas ({id} at {x}, {y})")
+    }
+
+    /// The edges the rasterizer reads for the fragment this producer added with exact area and
+    /// this `id` (the ones [`Self::mask`] and [`Self::cell_areas`] read), in device pixels; None
+    /// from a producer of masks.
+    fn edges(&self, _id: u32) -> Option<&[crate::scanline::Edge]> {
+        None
     }
 }
 
