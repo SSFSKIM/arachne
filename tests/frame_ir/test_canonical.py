@@ -128,16 +128,74 @@ def _jittering(seed: int):
     return jittered
 
 
-@pytest.mark.parametrize("seed", [1, 2, 3])
+def _witnessing(seen: list, draw):
+    """``draw`` (a ``CorePainter.draw``) keeping in ``seen``, for each frame
+    it draws: the frame; the pixels a leaf Cairo paints touches (from the
+    painter's contributors); and that overlay drawn by CE's Cairo from the
+    same input, the delta as handed, through XF unsnapped (``ir_cairo``),
+    over the core's own frame.
+    """
+    from arachne.frame_ir.cairo_painter import CairoDrawer
+    from arachne.frame_ir.painter import IrCairoPainter
+
+    def witnessed(self, delta):
+        frame = draw(self, delta)
+        twin = vars(self).setdefault("_twin", IrCairoPainter())
+        twin.draw(delta)
+        width, height = self.state.view["pixel_width"], self.state.view["pixel_height"]
+        ce = np.array(self.core.draw(width, height, threads=1, overlay=False))
+        overlay = self.core.overlay_entries()
+        if overlay:
+            CairoDrawer().draw_over(twin.state, ce, overlay)
+        painted = np.zeros((height, width), dtype=bool)
+        for (x, y), pixel in self.contributors((0, 0, width, height)).items():
+            painted[y, x] = any(leaf.painter == "cairo" for leaf in pixel.leaves)
+        seen.append((frame.copy(), painted, ce))
+        return frame
+
+    return witnessed
+
+
+@pytest.mark.parametrize(
+    ("scene_class", "size"),
+    [
+        (ParallelLines, MEDIUM),
+        (core_scenes.FixedLabelOverSquare, MEDIUM),
+        (core_scenes.CornerLabel, {"pixel_width": 854, "pixel_height": 480}),
+    ],
+    ids=["lines", "overlay", "tie"],
+)
+@pytest.mark.parametrize("seed", [1, 2, 3, 4, 5])
 def test_the_core_s_frames_do_not_move_with_the_last_bits_of_its_inputs(
-    seed, monkeypatch
+    seed, scene_class, size, monkeypatch
 ):
-    _, made = render(ParallelLines, FPS, draw_path="core", **MEDIUM)
+    """What the core rasterizes does not move at all. What Cairo paints over
+    it, drawn from the scene's own values, moves only as CE's Cairo moves
+    with the same input: its pixels are the overlay CE's Cairo draws from
+    the nudged values, byte for byte, a tie in Cairo's own rounding
+    (:class:`~.core_scenes.CornerLabel`) included.
+    """
+    draw = CorePainter.draw
+    made: list = []
+    monkeypatch.setattr(CorePainter, "draw", _witnessing(made, draw))
+    render(scene_class, FPS, draw_path="core", **size)
+    nudged: list = []
+    monkeypatch.setattr(CorePainter, "draw", _witnessing(nudged, draw))
+    # Nudged as the core path's painter is handed each delta, before both.
     monkeypatch.setattr(CorePainter, "draw", _jittering(seed))
-    _, nudged = render(ParallelLines, FPS, draw_path="core", **MEDIUM)
+    render(scene_class, FPS, draw_path="core", **size)
     assert len(made) == len(nudged) > 0
-    for index, (a, b) in enumerate(zip(made, nudged, strict=True)):
-        np.testing.assert_array_equal(a, b, err_msg=f"frame {index}")
+    for index, ((a, _, _), (b, painted, ce)) in enumerate(
+        zip(made, nudged, strict=True)
+    ):
+        core = ~painted
+        assert np.array_equal(a[core], b[core]), (
+            f"frame {index}: {int((a[core] != b[core]).any(-1).sum())} core pixels moved"
+        )
+        assert np.array_equal(b[painted], ce[painted]), (
+            f"frame {index}: {int((b[painted] != ce[painted]).any(-1).sum())}"
+            " pixels Cairo paints differ from CE's Cairo on the same input"
+        )
 
 
 class ZoomOutAndBack(ThreeDScene):
