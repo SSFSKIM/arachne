@@ -69,6 +69,12 @@ class CornerLabel(ThreeDScene):
     """A white label fixed in the frame's top right corner, over the
     background alone, the camera tilted: the core draws nothing but the
     background, Cairo the whole label.
+
+    At 854 x 480 it is a tie in Cairo's own rounding: two points of a
+    glyph's flat edge lie at y = 3.375 exactly, which CE's matrix puts at
+    9559.5 / 256 of a pixel exactly, and Cairo's 24.8 conversion rounds a
+    half to even. A last bit either way of 3.375 rounds it otherwise, on
+    CE's Cairo as on the core path's overlay.
     """
 
     def construct(self):
