@@ -421,7 +421,8 @@ def test_face_stops_are_each_paths_lit_stops_per_layer():
     assert len(found[1]) == 2
     for face, row, layers in zip(FACES, FACE_FILLS, found[1], strict=True):
         background, fill, stroke = layers
-        assert background is None and stroke is None
+        assert background is None
+        assert stroke is None
         want = [lit(row, face[0]), lit(row, face[(len(face) - 1) // 6 * 3])]
         assert len(fill) == 2
         for got, expected in zip(fill, want, strict=True):
