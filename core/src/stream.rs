@@ -896,6 +896,21 @@ impl Stream {
         })
     }
 
+    /// Per slot of `slots` holding a record the camera shades, the two stops each layer of each
+    /// path it draws is painted with ([`path::Lowering::face_stops`]: background stroke, fill and
+    /// stroke, lit at the path's lit corners, with the record's group opacity), one entry per path
+    /// in the order of the record's `planes`, `None` for a path the drawer draws nothing of. Other
+    /// slots (unshaded, pre-projected, refused) have no entry. Nothing is drawn.
+    pub fn face_stops(
+        &self,
+        slots: &[u32],
+    ) -> Result<BTreeMap<u32, Vec<Option<path::FaceStops>>>, DrawError> {
+        self.each_paths(slots, |lowering, paths| {
+            let found: Vec<_> = paths.iter().map(|d| lowering.face_stops(d)).collect();
+            found.iter().any(Option::is_some).then_some(found)
+        })
+    }
+
     /// `answer(lowering, paths)` per slot of `slots` holding a record that draws paths the drawer
     /// would not refuse, `paths` those it draws, in order; a `None` answer has no entry.
     fn each_paths<T>(

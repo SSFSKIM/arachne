@@ -118,6 +118,22 @@ impl PathDraw<'_> {
     }
 }
 
+/// A shaded path's two stops per layer (background stroke, fill, stroke), `None` for a layer
+/// without paint ([`Lowering::face_stops`]).
+pub type FaceStops = [Option<[[f64; 4]; 2]>; 3];
+
+/// `draw`'s points placed in the world, or `None` when the drawer draws nothing of it: fewer than
+/// four points, or one not finite (CE draws a mobject with a non-finite point as one point:
+/// nothing). A pre-projected path's points are its camera's placed points already (placed by the
+/// identity).
+fn drawn_world(draw: &PathDraw<'_>) -> Option<Vec<[f64; 3]>> {
+    let world: Vec<[f64; 3]> = draw.points.iter().map(|p| place(&draw.place, *p)).collect();
+    if world.len() < 4 || world.iter().flatten().any(|v| !v.is_finite()) {
+        return None;
+    }
+    Some(world)
+}
+
 /// Where a layer's fragments sit in depth.
 #[derive(Clone, Copy, Debug)]
 enum LayerDepth {
@@ -748,6 +764,18 @@ impl<'v> Lowering<'v> {
         Some(decided.map(|n| n == [0.0; 3] && !cancels))
     }
 
+    /// The two stops each layer of `draw` (background stroke, fill, stroke) is painted with, as
+    /// [`Lowering::path`] paints them ([`Lowering::layer_rows`]): lit at its start and end
+    /// corners, straight RGBA, the record's group opacity applied, unclamped; `None` for a layer
+    /// without paint. `None` for a path CE's lighting does not shade (not `shade_in_3d`, a camera
+    /// that does not shade, or pre-projected) and for one the drawer draws nothing of.
+    pub fn face_stops(&self, draw: &PathDraw<'_>) -> Option<FaceStops> {
+        let light = self.light(draw)?;
+        let world = drawn_world(draw)?;
+        let layers = self.layer_rows(draw, &world, Some(light));
+        Some(layers.map(|rows| rows.and_then(|r| r.try_into().ok())))
+    }
+
     /// The points `draw`'s depth is keyed from, and whether they are placed in the world by the
     /// 3D camera's projection (not fixed in frame, fixed in orientation, or pre-projected);
     /// `None` for a path [`Lowering::path`] does not draw or keys whole.
@@ -822,12 +850,9 @@ impl<'v> Lowering<'v> {
     /// ([`Lowering::coplanar`]), or `None` for its curve's depth.
     pub fn path(&mut self, draw: &PathDraw<'_>, plane: Option<WorldPlane>) {
         let rec = draw.record;
-        // A pre-projected path's points are its camera's placed points already (placed by
-        // the identity).
-        let world: Vec<[f64; 3]> = draw.points.iter().map(|p| place(&draw.place, *p)).collect();
-        if world.len() < 4 || world.iter().flatten().any(|v| !v.is_finite()) {
-            return; // CE draws a mobject with a non-finite point as one point: nothing.
-        }
+        let Some(world) = drawn_world(draw) else {
+            return;
+        };
         let (placement, keyed) = if draw.pre_projected {
             let key = produced_key(self.axes.as_ref(), &self.map, rec.depth.space, draw.pivot);
             (Placement::Flat, key)
@@ -867,7 +892,6 @@ impl<'v> Lowering<'v> {
                 }
             }
         };
-        let alpha = |c: [f64; 4]| [c[0], c[1], c[2], c[3] * rec.opacity];
         let scale = self.map.xx.abs().max(self.map.yy.abs());
         let area = self.guard(&user, draw.stroke_width.max(draw.background_stroke_width));
         let guarded = match area {
@@ -877,11 +901,7 @@ impl<'v> Lowering<'v> {
         // CE's lighting (`ThreeDCamera.modified_rgbas`): a shaded path's paint becomes two stops,
         // lit at its start and end corners, between which its gradient runs.
         let corners = [0, (world.len() - 1) / 6 * 3];
-        let lit = match (&self.view.camera, rec.depth.shade_in_3d) {
-            _ if draw.pre_projected => None,
-            (Camera::ThreeD(c), true) if c.should_apply_shading => Some(c.light_source),
-            _ => None,
-        };
+        let lit = self.light(draw);
         let ends = match (lit, draw.ends) {
             (Some(_), _) => Some(corners.map(|i| shown[i])),
             (None, Some(ends)) if draw.pre_projected => Some(ends),
@@ -891,28 +911,18 @@ impl<'v> Lowering<'v> {
             }
             (None, None) => None,
         };
-        for (k, paint, width) in [
-            (0, &draw.background_stroke, draw.background_stroke_width),
-            (1, &draw.fill, 0.0),
-            (2, &draw.stroke, draw.stroke_width),
+        let [background_rows, fill_rows, stroke_rows] = self.layer_rows(draw, &world, lit);
+        for (k, rows, width) in [
+            (0, background_rows, draw.background_stroke_width),
+            (1, fill_rows, 0.0),
+            (2, stroke_rows, draw.stroke_width),
         ] {
-            let Some(rows) = paint else { continue };
-            let rows = match lit {
-                Some(light) => match draw.decided_normals() {
-                    Some(normals) => {
-                        crate::shade::ce_face_stops_decided(&world, rows, light, normals).to_vec()
-                    }
-                    None => crate::shade::ce_face_stops(&world, rows, light).to_vec(),
-                },
-                None => rows.clone(),
-            };
+            let Some(rows) = rows else { continue };
             let spec = match (rows.as_slice(), ends) {
-                ([one], _) => PaintSpec::Solid(premultiply(alpha(*one))),
-                (stops, Some([p1, p2])) if stops.len() > 1 => PaintSpec::Gradient(
-                    stops.iter().map(|c| alpha(*c)).collect(),
-                    [p1[0], p1[1]],
-                    [p2[0], p2[1]],
-                ),
+                ([one], _) => PaintSpec::Solid(premultiply(*one)),
+                (stops, Some([p1, p2])) if stops.len() > 1 => {
+                    PaintSpec::Gradient(stops.to_vec(), [p1[0], p1[1]], [p2[0], p2[1]])
+                }
                 // Rows without ends are refused before drawing.
                 _ => continue,
             };
@@ -958,6 +968,50 @@ impl<'v> Lowering<'v> {
                 draw.sub + k,
             );
         }
+    }
+
+    /// The light CE's lighting (`ThreeDCamera.modified_rgbas`) shades `draw` from: its 3D
+    /// camera's light source, when the path is `shade_in_3d` and the camera shades; `None` for
+    /// any other path, and for a pre-projected one, whose camera lit its paints already.
+    fn light(&self, draw: &PathDraw<'_>) -> Option<[f64; 3]> {
+        match (&self.view.camera, draw.record.depth.shade_in_3d) {
+            _ if draw.pre_projected => None,
+            (Camera::ThreeD(c), true) if c.should_apply_shading => Some(c.light_source),
+            _ => None,
+        }
+    }
+
+    /// The rows each layer of `draw` (background stroke, fill, stroke) is painted with, straight
+    /// RGBA with the record's group opacity applied; `None` for a layer without paint. Lit from
+    /// `light` ([`Lowering::light`]), a layer's rows are CE's two stops, lit at the start and end
+    /// corners of `world` (its placed points) by the normals its writer decided when it carries
+    /// them ([`crate::shade::ce_face_stops_decided`]), else by CE's own
+    /// ([`crate::shade::ce_face_stops`]). The drawer ([`Lowering::path`]) and
+    /// [`Lowering::face_stops`] both take a path's paint from here.
+    fn layer_rows(
+        &self,
+        draw: &PathDraw<'_>,
+        world: &[[f64; 3]],
+        light: Option<[f64; 3]>,
+    ) -> [Option<Vec<[f64; 4]>>; 3] {
+        let opacity = draw.record.opacity;
+        [&draw.background_stroke, &draw.fill, &draw.stroke].map(|paint| {
+            let rows = paint.as_ref()?;
+            let rows = match light {
+                Some(light) => match draw.decided_normals() {
+                    Some(normals) => {
+                        crate::shade::ce_face_stops_decided(world, rows, light, normals).to_vec()
+                    }
+                    None => crate::shade::ce_face_stops(world, rows, light).to_vec(),
+                },
+                None => rows.clone(),
+            };
+            Some(
+                rows.into_iter()
+                    .map(|c| [c[0], c[1], c[2], c[3] * opacity])
+                    .collect(),
+            )
+        })
     }
 
     /// When the outline reaches beyond the frame's guard band, the area its curves outside may be

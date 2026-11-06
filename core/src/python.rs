@@ -827,6 +827,11 @@ impl PyApplyStats {
 /// What a drawer holds across frames. Make it in the process that draws (after any fork).
 /// An 8-bit RGBA colour as the binding hands it to Python.
 type Rgba8 = (u8, u8, u8, u8);
+/// A layer's two stops (straight RGBA) as the binding hands them to Python.
+type StopPair = ((f64, f64, f64, f64), (f64, f64, f64, f64));
+/// `Stream.face_stops`: per slot, per path, its layers' stops (background stroke, fill, stroke).
+type FaceStopsBySlot =
+    BTreeMap<u32, Vec<Option<(Option<StopPair>, Option<StopPair>, Option<StopPair>)>>>;
 
 #[pyclass(name = "Stream", module = "arachne_core")]
 struct PyStream {
@@ -935,6 +940,31 @@ impl PyStream {
         Ok(found
             .into_iter()
             .map(|(slot, corners)| (slot, corners.into_iter().map(|[a, b]| (a, b)).collect()))
+            .collect())
+    }
+
+    /// Per slot of ``slots`` holding a record the camera shades, the stops each path it draws is
+    /// painted with: a list, one entry per path in the order of the record's ``planes``, of
+    /// ``(background_stroke, fill, stroke)``, each layer its two stops ``((r, g, b, a), (r, g, b,
+    /// a))`` lit at the path's start and end corners, straight, with the record's group opacity,
+    /// unclamped, or ``None`` for a layer without paint; ``None`` for a path the drawer draws
+    /// nothing of. Unshaded and pre-projected records have no entry. Nothing is drawn.
+    fn face_stops(&self, py: Python<'_>, slots: Vec<u32>) -> PyResult<FaceStopsBySlot> {
+        let found = self
+            .stream
+            .face_stops(&slots)
+            .map_err(|e| draw_error(py, e))?;
+        let rgba = |c: [f64; 4]| (c[0], c[1], c[2], c[3]);
+        let layer = |stops: Option<[[f64; 4]; 2]>| stops.map(|[a, b]| (rgba(a), rgba(b)));
+        Ok(found
+            .into_iter()
+            .map(|(slot, paths)| {
+                let paths = paths
+                    .into_iter()
+                    .map(|p| p.map(|[bg, fill, stroke]| (layer(bg), layer(fill), layer(stroke))))
+                    .collect();
+                (slot, paths)
+            })
             .collect())
     }
 
