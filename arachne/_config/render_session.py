@@ -5,6 +5,7 @@ from __future__ import annotations
 __all__ = [
     "PresentationSpec",
     "RenderSessionSpec",
+    "resolve_output",
     "resolve_render_session",
 ]
 
@@ -52,6 +53,41 @@ class _SessionConfigSource(Protocol):
     video_encoder_options: dict[str, str]
 
 
+class _OutputConfigSource(Protocol):
+    format: str | OutputFormat | None
+    save_sections: bool
+    transparent: bool
+    live_preview: bool
+    dry_run: bool
+
+
+def resolve_output(config: _OutputConfigSource) -> OutputSpec:
+    """The artifact ``config`` asks a render to write: its format resolved
+    (``auto`` to a movie, none for a dry run or a live preview alone).
+    """
+    requested_format = OutputFormat.parse(config.format)
+    fallback_to_still = False
+    if config.dry_run:
+        requested_format = OutputFormat.NONE
+        save_sections = False
+    else:
+        save_sections = config.save_sections
+        if requested_format is OutputFormat.AUTO:
+            if config.live_preview:
+                requested_format = OutputFormat.NONE
+            else:
+                requested_format = (
+                    OutputFormat.MOV if config.transparent else OutputFormat.MP4
+                )
+                fallback_to_still = True
+    return OutputSpec(
+        format=requested_format,
+        transparent=config.transparent,
+        save_sections=save_sections,
+        fallback_to_still=fallback_to_still,
+    )
+
+
 def resolve_render_session(
     config: _SessionConfigSource,
     capabilities: RendererCapabilities,
@@ -61,28 +97,7 @@ def resolve_render_session(
     """Resolve and validate one renderer-independent session request."""
     live_preview = config.live_preview
     dry_run = config.dry_run
-    requested_format = OutputFormat.parse(config.format)
-    fallback_to_still = False
-    if dry_run:
-        requested_format = OutputFormat.NONE
-        save_sections = False
-    else:
-        save_sections = config.save_sections
-        if requested_format is OutputFormat.AUTO:
-            if live_preview:
-                requested_format = OutputFormat.NONE
-            else:
-                requested_format = (
-                    OutputFormat.MOV if config.transparent else OutputFormat.MP4
-                )
-                fallback_to_still = True
-
-    output = OutputSpec(
-        format=requested_format,
-        transparent=config.transparent,
-        save_sections=save_sections,
-        fallback_to_still=fallback_to_still,
-    )
+    output = resolve_output(config)
     presentation = PresentationSpec(
         open_after_render=config.preview,
         live_preview=live_preview,
