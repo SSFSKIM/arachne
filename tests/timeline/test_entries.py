@@ -117,3 +117,21 @@ def test_reading_an_entry_leaves_every_node_and_the_camera_s_inputs_as_they_were
     # Under a 3D camera a body stands at the scene's own x and y: reading
     # one projects nothing, so the camera's rotation is not made again.
     assert remade == [False] * 3
+
+
+@pytest.mark.parametrize("name", ["ArmedOffGridStarts", "ArmedTurningCamera"])
+def test_a_render_keeps_no_entries_and_reads_no_body(monkeypatch, name):
+    """A recorder keeping no exits (a render's, a gate's) keeps no entries
+    either and reads no body at a play's start, armed or not: nothing a
+    render draws can move for them.
+    """
+
+    def refused(*args, **kwargs):
+        raise AssertionError("a render read where its bodies stand")
+
+    monkeypatch.setattr(recorder_module, "bodies", refused)
+    scene, frames = render(getattr(entry_scenes, name), 15)
+    assert frames
+    record = scene._arachne_timeline.record
+    assert record.exits is None
+    assert record.entries is None
