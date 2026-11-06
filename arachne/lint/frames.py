@@ -46,6 +46,7 @@ from arachne.timeline.restore import Unrestorable
 from arachne.timeline.routes import RecordRefused, _resolve
 
 from .instants import render_grid
+from .parts import PartsCache
 
 if TYPE_CHECKING:
     from arachne._config.utils import ManimConfig
@@ -85,6 +86,8 @@ class Frames:
         self._states_since: Fraction | None = None
         #: The forward run's record, once one has run.
         self.forward: Record | None = None
+        #: The parts this lint's readers built, shared between them.
+        self.parts = PartsCache()
 
     def request(
         self,
