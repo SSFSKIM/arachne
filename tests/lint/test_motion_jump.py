@@ -406,3 +406,21 @@ def test_a_live_camera_picture_that_turned_visible_jumps(session_of):
     assert jump.detail["distance"] == pytest.approx(3.0, abs=1e-6)
     assert jump.detail["from"] == pytest.approx([0.0, 0.0], abs=1e-6)
     assert jump.detail["to"] == pytest.approx([3.0, 0.0], abs=1e-6)
+
+
+@pytest.mark.parametrize("name", ["SwapsAfterAnOffGridStart", "SwingsAfterASlowSlide"])
+def test_a_play_starting_between_frames_is_seen_at_its_start(jumps_of, name):
+    """Across a cut a body is compared where the next play begins, its
+    parts begun and its updaters run once, as the first frame of a play
+    shows it in CE, not at the next frame of the grid: what the play
+    itself does in the sliver before that frame is no jump.
+    """
+    assert jumps_of(name) == []
+
+
+def test_a_body_set_down_before_a_play_starting_between_frames_still_jumped(jumps_of):
+    (jump,) = jumps_of("TeleportBeforeAnOffGridStart")
+    assert jump.detail["from"] == pytest.approx([-1.0, 0.0], abs=1e-6)
+    # Where the next play began, before it moved the puck at all.
+    assert jump.detail["to"] == pytest.approx([3.0, 0.0], abs=1e-6)
+    assert jump.t_start == Fraction(2, 5)

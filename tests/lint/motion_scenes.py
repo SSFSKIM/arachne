@@ -10,8 +10,11 @@ from arachne import (
     DEGREES,
     DOWN,
     LEFT,
+    ORIGIN,
+    PI,
     RIGHT,
     UP,
+    Arrow,
     Circle,
     Create,
     Dot,
@@ -22,10 +25,13 @@ from arachne import (
     MappingCamera,
     MovingCamera,
     MovingCameraScene,
+    Rotate,
     Scene,
     Square,
     ThreeDScene,
+    ValueTracker,
     VGroup,
+    always_redraw,
     linear,
 )
 from tests.lint import run_counter
@@ -506,3 +512,54 @@ class LongerByTheCount(_CountsFrames):
         puck.shift(RIGHT * 3)
         run_time = 1 if self.on_render_grid() else 0.5
         self.play(puck.animate.shift(UP), run_time=run_time)
+
+
+class SwapsAfterAnOffGridStart(Scene):
+    """An arrow slides for 0.37 s, so the next play starts between two
+    frames at 15 fps; that play's tracker leaves 0 at once, and the arrow,
+    redrawn from it, points the other way for any value above 0. At the
+    play's start the tracker is still 0: the arrow stands where the slide
+    left it, and turns within the play.
+    """
+
+    def construct(self):
+        base = ValueTracker(0)
+        s = ValueTracker(0)
+
+        def arrow():
+            way = RIGHT if s.get_value() <= 0 else LEFT
+            start = RIGHT * base.get_value()
+            return Arrow(start, start + way * 2, buff=0)
+
+        self.add(always_redraw(arrow))
+        self.play(base.animate.set_value(1), run_time=0.37, rate_func=linear)
+        self.play(s.animate.set_value(1), run_time=1, rate_func=linear)
+
+
+class SwingsAfterASlowSlide(Scene):
+    """A dot slides slowly for 0.36 s, so the next play starts 0.6 of a
+    frame before the next frame at 15 fps; that play swings it half a turn
+    about the origin in 0.4 s. At the play's start it stands where the
+    slide left it.
+    """
+
+    def construct(self):
+        dot = Dot(RIGHT * 2)
+        self.add(dot)
+        self.play(dot.animate.shift(UP * 0.1), run_time=0.36, rate_func=linear)
+        self.play(
+            Rotate(dot, angle=PI, about_point=ORIGIN), run_time=0.4, rate_func=linear
+        )
+
+
+class TeleportBeforeAnOffGridStart(Scene):
+    """The puck slides for 0.37 s and is set down 4 units on before the
+    next play, which starts between two frames at 15 fps.
+    """
+
+    def construct(self):
+        puck = Dot(LEFT * 3, radius=0.2)
+        self.add(puck)
+        self.play(puck.animate.shift(RIGHT * 2), run_time=0.37, rate_func=linear)
+        puck.move_to(RIGHT * 3)
+        self.play(puck.animate.shift(UP), run_time=1, rate_func=linear)

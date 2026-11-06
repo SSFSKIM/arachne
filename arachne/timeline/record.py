@@ -575,6 +575,11 @@ class Record:
     #: play index), given by the recorder that makes the record; ``None`` on
     #: a record made without them.
     exits: dict[int, Exit] | None = None
+    #: Where each body stood as each play began (:class:`.bodies.Exit`, by
+    #: play index): evaluated at its exact start, its parts begun and its
+    #: updaters handed ``dt == 0``, as CE's first frame of a play shows it.
+    #: Kept beside :attr:`exits`, for every play that starts while they are.
+    entries: dict[int, Exit] | None = None
     #: The first play to end once the scene armed the motion rule
     #: (:meth:`.Recorder.arm_motion`), by index; ``None`` if it never did.
     armed_at: int | None = None

@@ -6,8 +6,10 @@ play's first frame passes every check of a single instant. This rule reads
 every frame the render shows (asked of the lint's frames, :mod:`.frames`)
 and, at each cut, compares where each body stood as the play ended (the
 record's exit of the play, :mod:`arachne.timeline.bodies`: its animations
-finished and cleaned up, the script not yet run on) with the next play's
-first frame.
+finished and cleaned up, the script not yet run on) with where it stood as
+the next play began (its entry: evaluated at its exact start, its parts
+begun and its updaters run once, as CE's first frame of a play shows it,
+wherever the next frame of the grid falls).
 
 **Bodies** are as :mod:`arachne.timeline.bodies` reads them: every
 top-level mobject that paints something and every direct child of one (but
@@ -21,8 +23,8 @@ three-dimensional one too, the scene's x and y).
 steps that keep its box's size within :data:`RIGID` (drawing, growth and
 reshaping move a centre too, and are not travel).
 
-**The cut.** A body visible (some member lays ink) as the play ended and at
-the next play's first frame, which moves during either play, jumps when its
+**The cut.** A body visible (some member lays ink) as the play ended and as
+the next play began, which moves during either play, jumps when its
 centre stands more than the tolerance apart across the cut: the scene's
 displacement scaled by the later frame's zoom, so a camera cut moves the
 picture and no body. A body that moved during the play before the cut has
@@ -140,6 +142,9 @@ class _Play:
     record: PlayRecord
     frames: list[_Frame]
     exit: Exit
+    #: Where its bodies stood as it began; ``None`` for the first play
+    #: measured, which may have begun before the scene armed the rule.
+    entry: Exit | None
     travel: dict[str, float] = field(default_factory=dict)
     largest: dict[str, float] = field(default_factory=dict)
     last: dict[str, Body] = field(default_factory=dict)
@@ -197,12 +202,14 @@ class MotionJump:
         # which keeps every play's exit.
         execution = frames.execution
         exits = execution.exits or {}
+        entries = execution.entries or {}
         plays: list[_Play | None] = []
         unread: PlayRecord | None = None
         for play, shown in _wanted(execution):
             if play.index in exits and all(t in seen for t in shown):
                 read = [_Frame(t, *seen[t]) for t in shown]
-                plays.append(_measure(_Play(play, read, exits[play.index])))
+                entry = entries.get(play.index)
+                plays.append(_measure(_Play(play, read, exits[play.index], entry)))
             else:
                 # A play other than those the frames were asked for: the
                 # two executions differ.
@@ -211,7 +218,7 @@ class MotionJump:
         names = _Names(execution)
         found: list[Finding] = []
         for before, after in zip(plays, plays[1:], strict=False):
-            if before is not None and after is not None:
+            if before is not None and after is not None and after.entry is not None:
                 found.extend(_Cut(self.jump_tol, before, after, names).findings())
         if unread is not None:
             found.extend(_unmeasured(context.session, execution, unread))
@@ -287,9 +294,16 @@ def _unmeasured(session: Session, execution: Record, play: PlayRecord) -> list[F
 
 
 def _has_exits(record: Record, wanted: list[tuple[PlayRecord, list[Fraction]]]) -> bool:
-    """Whether ``record`` keeps the exit of every play it shows."""
-    exits = record.exits
-    return exits is not None and all(play.index in exits for play, _ in wanted)
+    """Whether ``record`` keeps the exit of every play it shows, and the
+    entry of every one but the first.
+    """
+    exits, entries = record.exits, record.entries
+    return (
+        exits is not None
+        and entries is not None
+        and all(play.index in exits for play, _ in wanted)
+        and all(play.index in entries for play, _ in wanted[1:])
+    )
 
 
 def _read(
@@ -422,9 +436,12 @@ class _Cut:
         self.tol = tol
         self.before, self.after = before, after
         self.names = names
+        assert after.entry is not None
         self.left = before.exit.bodies
-        self.came = after.first_frame.bodies
-        self.zoom = after.first_frame.zoom
+        # As the next play began, CE's first frame of it: not the next frame
+        # of the grid, which may be well into the play.
+        self.came = after.entry.bodies
+        self.zoom = after.entry.zoom
 
     def shift(self, key: str) -> np.ndarray:
         return (self.came[key].centre - self.left[key].centre) * self.zoom
