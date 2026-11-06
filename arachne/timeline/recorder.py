@@ -29,6 +29,7 @@ import numpy as np
 from arachne._config import config, logger
 from arachne.camera.projection import configured_home
 
+from . import rebuilds
 from .admission import (
     PlayIdentity,
     admit,
@@ -397,6 +398,7 @@ class PlayRun:
         stands as it began): keep where each body stands there, if the
         record keeps entries.
         """
+        self.play.rebuilds_entered = rebuilds.count()
         record = self.recorder.ensure_record()
         if record.entries is not None:
             record.entries[self.play.index] = self.recorder._bodies_now()
@@ -951,6 +953,7 @@ class Recorder:
             names=names_from_frames(frames, scene),
             random_state=(random.getstate(), np.random.get_state()),  # noqa: NPY002
             cache_key=cache_key,
+            rebuilds_called=rebuilds.count(),
             _record=record,
             _animations=tuple(animations),
         )
