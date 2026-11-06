@@ -1010,6 +1010,68 @@ impl PyStream {
             .collect())
     }
 
+    /// Each sub-sample's own sequence at each pixel of the box ``contributors`` reports, from
+    /// the same pass: ``{(x, y): samples}``, ``samples`` one per sub-sample in ``sample_point``
+    /// order, each ``(index into contributors' leaves, coverage)`` bottom first, a sub-sample no
+    /// fragment covers empty. ``contributors``' ``orders`` are their distinct ones.
+    #[allow(clippy::type_complexity)]
+    fn contributor_samples(
+        &self,
+        py: Python<'_>,
+        x0: i64,
+        y0: i64,
+        x1: i64,
+        y1: i64,
+    ) -> PyResult<BTreeMap<(u32, u32), Vec<Vec<(usize, u8)>>>> {
+        let side = |v: i64| v.clamp(0, u32::MAX as i64) as u32;
+        let (x0, y0, x1, y1) = (side(x0), side(y0), side(x1), side(y1));
+        let stream = &self.stream;
+        let found = py
+            .detach(|| stream.contributors(x0, y0, x1, y1))
+            .map_err(|e| draw_error(py, e))?;
+        Ok(found
+            .into_iter()
+            .map(|(at, pixel)| (at, pixel.samples))
+            .collect())
+    }
+
+    /// The edges the rasterizer reads for every leaf ``contributors`` reports with an exact area
+    /// in the box, from the same pass: ``{(object, part): layers}``, each of the leaf's layers once
+    /// (a fill, a stroke's outline after the stroker) as a list of ``(x0, y0, x1, y1, dir)`` in
+    /// device pixels, each edge oriented downward (``y0 < y1``) with ``dir`` the winding it adds
+    /// (+1 where the outline walks down it). A leaf drawn by masks (a mesh) has none.
+    #[allow(clippy::type_complexity)]
+    fn contributor_edges(
+        &self,
+        py: Python<'_>,
+        x0: i64,
+        y0: i64,
+        x1: i64,
+        y1: i64,
+    ) -> PyResult<BTreeMap<(u32, u32), Vec<Vec<(f64, f64, f64, f64, i32)>>>> {
+        let side = |v: i64| v.clamp(0, u32::MAX as i64) as u32;
+        let (x0, y0, x1, y1) = (side(x0), side(y0), side(x1), side(y1));
+        let stream = &self.stream;
+        let found = py
+            .detach(|| stream.contributor_edges(x0, y0, x1, y1))
+            .map_err(|e| draw_error(py, e))?;
+        Ok(found
+            .into_iter()
+            .map(|(leaf, layers)| {
+                let layers = layers
+                    .into_iter()
+                    .map(|edges| {
+                        edges
+                            .into_iter()
+                            .map(|[a, b, c, d, dir]| (a, b, c, d, dir as i32))
+                            .collect()
+                    })
+                    .collect();
+                (leaf, layers)
+            })
+            .collect())
+    }
+
     /// Draws the frame as ``draw`` does, and returns it with each pixel's resolve: a uint8 array
     /// (height, width) indexing ``RESOLVES`` (background, fast, coverage, sample).
     #[pyo3(signature = (width, height, *, threads=1))]

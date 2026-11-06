@@ -629,6 +629,69 @@ impl Stream {
         x1: u32,
         y1: u32,
     ) -> Result<BTreeMap<(u32, u32), crate::contributors::PixelContributors>, DrawError> {
+        let mut out = BTreeMap::new();
+        let leaf = |f: &composite::Fragment| self.leaf_of(f);
+        self.visit_contributors(x0, y0, x1, y1, |x, y, frags, coverage, _| {
+            out.insert(
+                (x, y),
+                crate::contributors::of_pixel(x, y, frags, coverage, &leaf),
+            );
+        })?;
+        Ok(out)
+    }
+
+    /// The edges the rasterizer consumes for every leaf [`Stream::contributors`] reports with
+    /// an exact area in the same box, from the same pass: per leaf `(object, part)`, each of its
+    /// layers once (a fill, a stroke's outline after the stroker), as `[x0, y0, x1, y1, dir]` in
+    /// device pixels (`scanline::Edge`: oriented downward, `dir` the winding it adds). A leaf
+    /// drawn by masks (a mesh's triangles, a cloud's blocks) has none.
+    #[allow(clippy::type_complexity)]
+    pub fn contributor_edges(
+        &self,
+        x0: u32,
+        y0: u32,
+        x1: u32,
+        y1: u32,
+    ) -> Result<BTreeMap<(u32, u32), Vec<Vec<[f64; 5]>>>, DrawError> {
+        let mut out: BTreeMap<(u32, u32), Vec<Vec<[f64; 5]>>> = BTreeMap::new();
+        let mut seen = std::collections::BTreeSet::new();
+        self.visit_contributors(x0, y0, x1, y1, |_, _, frags, _, producers| {
+            for f in frags {
+                if let composite::Coverage::Area { id, .. } = f.coverage
+                    && seen.insert((f.source(), id))
+                    && let Some(edges) = producers[f.source() as usize].edges(id)
+                {
+                    out.entry(self.leaf_of(f)).or_default().push(
+                        edges
+                            .iter()
+                            .map(|e| [e.x0, e.y0, e.x1, e.y1, e.dir as f64])
+                            .collect(),
+                    );
+                }
+            }
+        })?;
+        Ok(out)
+    }
+
+    /// Visits each pixel of `x0..x1` by `y0..y1` (clipped to the view's frame) that holds a
+    /// fragment, with its fragments, their coverage at each sub-sample and the producers that
+    /// added them, from the frame [`Stream::render_under_overlay`] draws: the one pass the
+    /// contributor reports read.
+    #[allow(clippy::type_complexity)]
+    fn visit_contributors(
+        &self,
+        x0: u32,
+        y0: u32,
+        x1: u32,
+        y1: u32,
+        mut visit: impl FnMut(
+            u32,
+            u32,
+            &[composite::Fragment],
+            &[[u8; composite::SAMPLES]],
+            &[&dyn Producer],
+        ),
+    ) -> Result<(), DrawError> {
         let view = self.view.as_ref().ok_or(DrawError::NoView)?;
         let (width, height) = (view.pixel_width, view.pixel_height);
         let keep = composite::Rect {
@@ -638,11 +701,9 @@ impl Stream {
             y1: y1.min(height),
         };
         self.with_producers(width, height, &[], true, |_, producers| {
-            let mut out = BTreeMap::new();
             if keep.x0 >= keep.x1 || keep.y0 >= keep.y1 {
-                return out;
+                return;
             }
-            let leaf = |f: &composite::Fragment| self.leaf_of(f);
             for rect in tiles::tile_rects(width, height) {
                 if rect.x1 <= keep.x0
                     || rect.x0 >= keep.x1
@@ -652,13 +713,9 @@ impl Stream {
                     continue;
                 }
                 tiles::passes(rect, producers).visit_pixels(keep, |x, y, frags, coverage| {
-                    out.insert(
-                        (x, y),
-                        crate::contributors::of_pixel(x, y, frags, coverage, &leaf),
-                    );
+                    visit(x, y, frags, coverage, producers)
                 });
             }
-            out
         })
     }
 
