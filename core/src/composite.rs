@@ -513,6 +513,73 @@ pub trait Producer: Sync {
     fn edges(&self, _id: u32) -> Option<&[crate::scanline::Edge]> {
         None
     }
+
+    /// The depth at each of `points` (into `out`) of the fragment this producer added to pixel
+    /// `(x, y)` with exact area and this `id`, where its depth runs along a curve, so no one plane
+    /// gives it (`depth::Centreline::key_under`), and how far any of them may stand from the exact
+    /// depth of the curve's inputs; `None`, and `out` untouched, where its plane gives it.
+    fn curve_depths(
+        &self,
+        _id: u32,
+        _x: u32,
+        _y: u32,
+        _points: &[[f64; 2]],
+        _out: &mut [f64],
+    ) -> Option<f64> {
+        None
+    }
+}
+
+/// A fragment's depth at each sub-sample of a pixel and at its centre, where the resolve and the
+/// contributor report read it (`-0.0` read as `0.0`, as [`Plane::at`] reads it), and how far any
+/// of them may stand from the exact depth of the fragment's inputs ([`crate::order`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Depths {
+    pub(crate) samples: [f64; SAMPLES],
+    pub(crate) centre: f64,
+    pub(crate) err: f64,
+}
+
+impl Depths {
+    /// Fragment `f`'s at pixel `(x, y)`: along its curve where its producer keys it along one,
+    /// else on its plane.
+    pub(crate) fn of(producers: &[&dyn Producer], f: &Fragment, x: u32, y: u32) -> Depths {
+        if let Coverage::Area { id, .. } = f.coverage {
+            let mut points = [[x as f64 + 0.5, y as f64 + 0.5]; SAMPLES + 1];
+            for (k, p) in points.iter_mut().take(SAMPLES).enumerate() {
+                *p = sample_point(x, y, k);
+            }
+            let mut out = [0.0; SAMPLES + 1];
+            if let Some(err) =
+                producers[f.source as usize].curve_depths(id, x, y, &points, &mut out)
+            {
+                return Depths {
+                    samples: std::array::from_fn(|k| out[k] + 0.0),
+                    centre: out[SAMPLES] + 0.0,
+                    err,
+                };
+            }
+        }
+        Depths::of_plane(f, x, y)
+    }
+
+    /// Fragment `f`'s at pixel `(x, y)` on its plane.
+    pub(crate) fn of_plane(f: &Fragment, x: u32, y: u32) -> Depths {
+        let samples = if f.depth.b == 0.0 && f.depth.c == 0.0 {
+            [f.depth.a + 0.0; SAMPLES]
+        } else {
+            std::array::from_fn(|k| {
+                let [px, py] = sample_point(x, y, k);
+                f.depth.at(px, py)
+            })
+        };
+        Depths {
+            samples,
+            centre: f.depth.at(x as f64 + 0.5, y as f64 + 0.5),
+            // The plane's own error and the rounding of reading it anywhere in the pixel.
+            err: f.depth.err + f.depth.read_error(x as f64 + 1.0, y as f64 + 1.0),
+        }
+    }
 }
 
 /// A rectangle of pixels, `x0..x1` by `y0..y1`.
@@ -711,10 +778,10 @@ impl TransparentPass<'_> {
                 continue;
             }
             let mask = self.mask_of(f, x, y);
+            let at = Depths::of(self.producers, f, x, y).samples;
             for (s, d) in depth.iter_mut().enumerate() {
                 if mask & (1 << s) != 0 {
-                    let [px, py] = sample_point(x, y, s);
-                    *d = d.min(f.depth.at(px, py));
+                    *d = d.min(at[s]);
                 }
             }
         }
@@ -754,18 +821,20 @@ impl TransparentPass<'_> {
 
     /// Hands `visit` each pixel of the rectangle inside `keep` that holds a fragment, with its
     /// fragments (the opaque pass's, then the transparent pass's, as [`Self::resolve`] takes
-    /// them) and each one's 8-bit coverage at every sub-sample, as the sample resolve composites
-    /// it: the contributor report's read of the passes (`contributors.rs`). Nothing is resolved.
+    /// them), each one's 8-bit coverage at every sub-sample, as the sample resolve composites
+    /// it, and its depths, as the resolve orders it: the contributor report's read of the passes
+    /// (`contributors.rs`). Nothing is resolved.
     pub(crate) fn visit_pixels(
         mut self,
         keep: Rect,
-        mut visit: impl FnMut(u32, u32, &[Fragment], &[[u8; SAMPLES]]),
+        mut visit: impl FnMut(u32, u32, &[Fragment], &[[u8; SAMPLES]], &[Depths]),
     ) {
         let pixels = self.rect.pixels();
         let transparent = ByPixel::new(std::mem::take(&mut self.fragments), pixels);
         let w = self.rect.width();
         let mut fragments = Vec::new();
         let mut coverage = Vec::new();
+        let mut depths = Vec::new();
         for i in 0..pixels {
             let (x, y) = (self.rect.x0 + i as u32 % w, self.rect.y0 + i as u32 / w);
             if x < keep.x0 || x >= keep.x1 || y < keep.y0 || y >= keep.y1 {
@@ -779,7 +848,13 @@ impl TransparentPass<'_> {
             }
             coverage.clear();
             coverage.extend(fragments.iter().map(|f| self.sample_coverage(f, x, y)));
-            visit(x, y, &fragments, &coverage);
+            depths.clear();
+            depths.extend(
+                fragments
+                    .iter()
+                    .map(|f| Depths::of(self.producers, f, x, y)),
+            );
+            visit(x, y, &fragments, &coverage, &depths);
         }
     }
 
@@ -805,7 +880,12 @@ impl TransparentPass<'_> {
             let (class, mut pixel) = if scratch.fragments.is_empty() {
                 (Resolve::Background, bg)
             } else {
-                resolve_pixel(&mut scratch, bg, x, y, |_, f| self.sample_coverage(f, x, y))
+                resolve_pixel(
+                    &mut scratch,
+                    bg,
+                    |_, f| self.sample_coverage(f, x, y),
+                    |_, f| Depths::of(self.producers, f, x, y),
+                )
             };
             match self.emission.get(i) {
                 Some(e) if *e != [0.0; 3] => pixel = add_emission(pixel, *e),
@@ -816,25 +896,6 @@ impl TransparentPass<'_> {
             out.counts.count(class);
         }
         out
-    }
-}
-
-/// How far fragment `f`'s depth at any of pixel `(x, y)`'s sub-samples may stand from the exact
-/// depth of its inputs: its plane's own error and the rounding of reading it anywhere in the pixel.
-pub(crate) fn depth_error(f: &Fragment, x: u32, y: u32) -> f64 {
-    f.depth.err + f.depth.read_error(x as f64 + 1.0, y as f64 + 1.0)
-}
-
-/// Fragment `f`'s depth at pixel `(x, y)`'s sub-samples: what the resolve and the contributor
-/// report order it by.
-pub(crate) fn sample_depths(f: &Fragment, x: u32, y: u32) -> [f64; SAMPLES] {
-    if f.depth.b == 0.0 && f.depth.c == 0.0 {
-        [f.depth.a + 0.0; SAMPLES]
-    } else {
-        std::array::from_fn(|k| {
-            let [px, py] = sample_point(x, y, k);
-            f.depth.at(px, py)
-        })
     }
 }
 
@@ -955,10 +1016,10 @@ impl SampleRanks {
     }
 }
 
-/// The pixel `(x, y)` that `s.fragments` composite over `bg`, and the resolve that made it.
-/// `sample_coverage(i, f)` is fragment `i`'s coverage at each sub-sample. The fragments composite
-/// in the order [`crate::order`] gives them: by depth only where two cover one sub-sample, by
-/// paint order everywhere else.
+/// The pixel that `s.fragments` composite over `bg`, and the resolve that made it.
+/// `sample_coverage(i, f)` is fragment `i`'s coverage at each sub-sample, `sample_depth(i, f)` its
+/// depths there with their error bound. The fragments composite in the order [`crate::order`]
+/// gives them: by depth only where two cover one sub-sample, by paint order everywhere else.
 /// The contributor report calls it on one leaf's fragments alone, so what a leaf draws is what
 /// this resolve makes of it.
 // The sub-sample `k` indexes each fragment's coverage and depth rows.
@@ -966,9 +1027,8 @@ impl SampleRanks {
 pub(crate) fn resolve_pixel(
     s: &mut Scratch,
     bg: [u8; 4],
-    x: u32,
-    y: u32,
     sample_coverage: impl Fn(usize, &Fragment) -> [u8; SAMPLES],
+    sample_depth: impl Fn(usize, &Fragment) -> Depths,
 ) -> (Resolve, [u8; 4]) {
     use crate::order;
     let frags = &s.fragments;
@@ -979,10 +1039,12 @@ pub(crate) fn resolve_pixel(
         return (Resolve::Coverage, blend(f.colour, f.coverage8(), bg));
     }
     s.depths.clear();
-    s.depths
-        .extend(frags.iter().map(|f| sample_depths(f, x, y)));
     s.errors.clear();
-    s.errors.extend(frags.iter().map(|f| depth_error(f, x, y)));
+    for (i, f) in frags.iter().enumerate() {
+        let d = sample_depth(i, f);
+        s.depths.push(d.samples);
+        s.errors.push(d.err);
+    }
     // One depth row for all (a flat scene): paint order decides every pair whatever they cover,
     // so the coverage rows wait for the sample resolve.
     let flat = s.depths.iter().all(|d| *d == s.depths[0]);
