@@ -101,7 +101,7 @@ class InstantRule:
         from ..instants import lint_instants
 
         times = [i.t for i in lint_instants(frames.session.record, at=self.at)]
-        frames.request(self._owner, times, parts_reader(frames.session))
+        frames.request(self._owner, times, parts_reader(frames.session, frames.parts))
 
     @property
     def _owner(self) -> tuple[str, int]:

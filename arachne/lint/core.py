@@ -39,7 +39,7 @@ from .exempt import Exemptions
 from .findings import Finding, fold, in_range
 from .frames import FrameReader, Frames
 from .instants import LintInstant, lint_instants
-from .parts import Parts, build_parts
+from .parts import Parts, PartsCache, build_parts
 
 if TYPE_CHECKING:
     from arachne.session import Session
@@ -181,15 +181,21 @@ def _request_parts(frames: Frames, instants: tuple[LintInstant, ...]) -> None:
     can't answer from the lint's forward run, read from its live scene.
     """
     frames.request(
-        _PARTS, [instant.t for instant in instants], parts_reader(frames.session)
+        _PARTS,
+        [instant.t for instant in instants],
+        parts_reader(frames.session, frames.parts),
     )
 
 
-def parts_reader(session: Session) -> FrameReader[Parts]:
+def parts_reader(
+    session: Session, cache: PartsCache | None = None
+) -> FrameReader[Parts]:
     """The reader of the parts a frame of ``session`` draws, as the lint reads
-    them (:mod:`.frames`): from the record, or a forward run's live scene.
+    them (:mod:`.frames`): from the record, or a forward run's live scene;
+    built once for every reader of a lint sharing its ``cache``.
     """
     target = target_resolution(session)
+    build = cache.build if cache is not None else build_parts
 
     def read(
         record: Record,
@@ -198,7 +204,7 @@ def parts_reader(session: Session) -> FrameReader[Parts]:
         capture: Capture,
         live: bool,
     ) -> Parts:
-        return build_parts(
+        return build(
             record,
             t,
             play,

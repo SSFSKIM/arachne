@@ -44,7 +44,7 @@ from .exempt import Exemptions
 from .rules._rule import DEFAULT_PAD, Terms
 
 if TYPE_CHECKING:
-    from arachne.timeline.record import Capture, PlayRecord, Record, States
+    from arachne.timeline.record import Capture, Record, States
 
     from .core import LintContext
     from .findings import Finding
@@ -137,28 +137,13 @@ class ArmedRule:
         frames.complete(self._owner)
         if self.reads is None:
             return
-        target = _target(frames)
+        from .core import parts_reader
 
-        def read(
-            record: Record,
-            t: Fraction,
-            play: PlayRecord | None,
-            capture: Capture,
-            live: bool,
-        ) -> Parts:
-            from .parts import build_parts
-
-            return build_parts(
-                record,
-                t,
-                play,
-                capture,
-                answer="forward" if live else "recorded",
-                target=target,
-                live=live,
-            )
-
-        frames.request(self._owner, self.reads(frames.session.record, self), read)
+        frames.request(
+            self._owner,
+            self.reads(frames.session.record, self),
+            parts_reader(frames.session, frames.parts),
+        )
 
     def frames(self, context: LintContext) -> dict[Fraction, Parts]:
         """The parts of each frame :attr:`reads` named, by its time."""
@@ -176,11 +161,9 @@ class ArmedRule:
 
     def state(self, context: LintContext, capture: Capture) -> Parts:
         """The parts of a state the execution keeps (``Record.states``)."""
-        from .parts import build_parts
-
         execution = context.frames.execution
         answer = "recorded" if execution is context.record else "forward"
-        return build_parts(
+        return context.frames.parts.build(
             execution,
             capture.instant,
             None,

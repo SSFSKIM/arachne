@@ -28,7 +28,7 @@ diagnostics, credited in ``NOTICE.md``.
 
 from __future__ import annotations
 
-__all__ = ["Leaf", "Part", "Parts", "Unit", "build_parts"]
+__all__ = ["Leaf", "Part", "Parts", "PartsCache", "Unit", "build_parts"]
 
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
@@ -293,6 +293,46 @@ def build_parts(
     with Drawing(record) as drawing:
         drawing.show(capture, [*capture.draw_list(), *static, *moving])
         return _read(record, t, play, capture, answer, record_view(record), target)
+
+
+class PartsCache:
+    """The parts one lint built, each by everything :func:`build_parts`
+    reads: the execution, the instant, its play, the capture shown, the
+    answer, the target, and whether a live scene was read. A reader asking
+    again for what another built is handed that; any other state is built.
+
+    A live read is of a forward run's scene as the run holds the capture at
+    ``t``: the run reaches each instant once, and every reader of it is
+    shown the scene there before the run moves on.
+    """
+
+    def __init__(self) -> None:
+        self._built: dict[
+            tuple[Any, ...], tuple[Record, PlayRecord | None, Capture, Parts]
+        ] = {}
+
+    def build(
+        self,
+        record: Record,
+        t: Fraction,
+        play: PlayRecord | None,
+        capture: Capture,
+        *,
+        answer: str,
+        target: tuple[int, int],
+        live: bool = False,
+    ) -> Parts:
+        """:func:`build_parts` of these, built once for the lint."""
+        key = (id(record), t, id(play), id(capture), answer, target, live)
+        found = self._built.get(key)
+        if found is None:
+            built = build_parts(
+                record, t, play, capture, answer=answer, target=target, live=live
+            )
+            # What the key names by id is held, so no id in it is reused.
+            found = (record, play, capture, built)
+            self._built[key] = found
+        return found[-1]
 
 
 def _lists(
