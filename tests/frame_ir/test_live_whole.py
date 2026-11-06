@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 
 from arachne.frame_ir.contributors import LiveFrame
+from arachne.frame_ir.extract import Unable
 from arachne.frame_ir.live import live, live_painter
 
 from ..timeline.conftest import render
@@ -209,16 +210,14 @@ def test_a_picture_composited_after_the_reset_refuses(name):
 
 
 def test_a_picture_composited_between_captures_refuses():
-    """The capture after it continues the frame's capture before it, but
-    what was composited between them is no capture's: not whole.
+    """The capture after it would continue the frame's capture before it,
+    but what was composited between them is no capture's: the core's
+    picture would drop it, and the core drew the capture under it, so the
+    frame is not drawn (``test_live_sole_writer``).
     """
     under, top = _squares()
-    painter, _ = _frame(
-        _reset, _capture(under), _composite("overlay_rgba_array"), _capture(top)
-    )
-    assert not painter.whole
-    with pytest.raises(LiveFrame):
-        painter.contributors((*CENTRE, CENTRE[0] + 1, CENTRE[1] + 1))
+    with pytest.raises(Unable, match="render.unable: .*between"):
+        _frame(_reset, _capture(under), _composite("overlay_rgba_array"), _capture(top))
 
 
 def test_a_reset_after_compositing_begins_a_whole_capture():
@@ -257,24 +256,6 @@ def test_a_write_of_the_background_s_own_values_keeps_whole():
     patch = _written(lambda camera: np.asarray(camera.background)[10:20, 10:20])
     painter, _ = _frame(_reset, patch, _capture(top))
     assert painter.whole
-
-
-def test_a_write_between_captures_never_reaches_the_frame():
-    """A capture continuing the frame's capture before it is described
-    from that capture's record, over the reset's background: a write into
-    the array between them is not drawn under it, so the frame stays whole
-    as drawn.
-    """
-    under, top = _squares()
-    painter, written = _frame(
-        _reset,
-        _capture(under),
-        _written(lambda _: (0, 255, 0, 255)),
-        _capture(top),
-    )
-    _, plain = _frame(_reset, _capture(under), _capture(top))
-    assert painter.whole
-    assert np.array_equal(written, plain)
 
 
 def test_a_camera_whose_display_code_paints_has_no_core_painter():
