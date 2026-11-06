@@ -3,8 +3,10 @@
 A still frame can't show a teleport: a body that slides during one play,
 is set down somewhere else by the script, and is seen there at the next
 play's first frame passes every check of a single instant. This rule reads
-every frame the render shows (asked of the lint's frames, :mod:`.frames`)
-and, at each cut, compares where each body stood as the play ended (the
+the frames the render shows at each instant of a fixed reference clock
+(:data:`~arachne.lint.codes.MOTION_REFERENCE_FPS`, asked of the lint's
+frames, :mod:`.frames`), so its verdict is one whatever rate the scene is
+rendered at, and, at each cut, compares where each body stood as the play ended (the
 record's exit of the play, :mod:`arachne.timeline.bodies`: its animations
 finished and cleaned up, the script not yet run on) with where it stood as
 the next play began (its entry: evaluated at its exact start, its parts
@@ -60,8 +62,8 @@ measured from the first play to end after the arming on
 the cuts before are not seen. The plays, their exits and the arming are
 those of the execution the lint reads: a forward run that armed later than
 the session's record measures only the cuts after its own arming, and one
-that armed earlier the cuts from its own (every frame of the scene the
-record's plays leave out is asked for from a forward run, should the lint
+that armed earlier the cuts from its own (every frame of the reference
+clock the record's plays leave out is asked for from a forward run, should the lint
 make one: one whose plays are split or frozen otherwise is read whole). A
 scene that never armed it has every cut measured. A record that keeps no
 exit of a play it measures (the scene never armed the rule) is read
@@ -85,6 +87,7 @@ __all__ = [
     "motion_jump",
 ]
 
+from bisect import bisect_left
 from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import TYPE_CHECKING
@@ -95,6 +98,7 @@ from arachne.timeline.bodies import Body, Exit, bodies
 from arachne.timeline.clock import frames_in
 from arachne.timeline.draw import Drawing
 
+from .codes import MOTION_REFERENCE_FPS
 from .findings import Finding, FindingObject, Holder
 from .instants import render_grid
 
@@ -164,8 +168,8 @@ class MotionJump:
     jump_tol: float = JUMP_TOL
 
     def request_frames(self, frames: Frames) -> None:
-        """Ask the lint for every frame the render shows of each play from
-        the record's arming on; for every other frame of the scene too, from
+        """Ask the lint for the reference clock's frames of each play from
+        the record's arming on; for every other one of the scene too, from
         a forward run if the lint makes one (whose own plays and arming are
         known only once it has run); and for that run, when the record keeps
         no exit of one of them.
@@ -247,7 +251,7 @@ def _wanted(record: Record) -> list[tuple[PlayRecord, list[Fraction]]]:
     for play in record.plays:
         if play.index < first:
             continue
-        shown = frames_in(play.start, play.end, grid)
+        shown = _reference_frames(play.start, play.end, grid)
         if shown:
             # A frozen play shows one picture all along.
             wanted.append((play, shown[:1] if play.held else shown))
@@ -262,13 +266,29 @@ def _times(wanted: list[tuple[PlayRecord, list[Fraction]]]) -> list[Fraction]:
 def _others(
     record: Record, wanted: list[tuple[PlayRecord, list[Fraction]]]
 ) -> list[Fraction]:
-    """Every frame of the render's grid over ``record``'s scene but those
-    ``wanted`` shows: what a forward execution may play otherwise (armed
+    """Every reference frame over ``record``'s scene but those ``wanted``
+    shows: what a forward execution may play otherwise (armed
     earlier, its plays split or frozen otherwise) over the same span.
     """
     shown = set(_times(wanted))
-    every = frames_in(Fraction(0), record.duration, render_grid(record))
+    every = _reference_frames(Fraction(0), record.duration, render_grid(record))
     return [t for t in every if t not in shown]
+
+
+def _reference_frames(start: Fraction, end: Fraction, grid: Fraction) -> list[Fraction]:
+    """The frames of the render's ``grid`` in ``[start, end)`` the rule
+    reads: at each instant of the reference clock
+    (:data:`~arachne.lint.codes.MOTION_REFERENCE_FPS`) there, the frame the
+    render shows from then on (the first of the grid at or after it), each
+    once. On a grid that holds the reference clock's, those instants.
+    """
+    shown = frames_in(start, end, grid)
+    picked: dict[Fraction, None] = {}
+    for instant in frames_in(start, end, Fraction(MOTION_REFERENCE_FPS)):
+        at = bisect_left(shown, instant)
+        if at < len(shown):
+            picked[shown[at]] = None
+    return list(picked)
 
 
 def _unmeasured(session: Session, execution: Record, play: PlayRecord) -> list[Finding]:

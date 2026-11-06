@@ -563,3 +563,17 @@ class TeleportBeforeAnOffGridStart(Scene):
         self.play(puck.animate.shift(RIGHT * 2), run_time=0.37, rate_func=linear)
         puck.move_to(RIGHT * 3)
         self.play(puck.animate.shift(UP), run_time=1, rate_func=linear)
+
+
+class SetDownWithinAStride(Scene):
+    """A puck slides 3 units a second for a second, then is set down 0.3
+    units on: within two of its steps between frames of the 15 fps
+    reference clock, beyond two of a 30 fps render's.
+    """
+
+    def construct(self):
+        puck = Dot(LEFT * 2, radius=0.2)
+        self.add(puck)
+        self.play(puck.animate.shift(RIGHT * 3), run_time=1, rate_func=linear)
+        puck.shift(RIGHT * 0.3)
+        self.play(puck.animate.shift(UP), run_time=1, rate_func=linear)

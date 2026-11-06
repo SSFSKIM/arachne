@@ -24,6 +24,7 @@ from __future__ import annotations
 
 __all__ = [
     "CODES",
+    "MOTION_REFERENCE_FPS",
     "REFERENCE_RESOLUTION",
     "RESERVED",
     "SEVERITIES",
@@ -51,6 +52,13 @@ THRESHOLD_HEIGHT = 1080
 #: the session's render size: a threshold must not move with the quality a
 #: scene is rendered or linted at.
 REFERENCE_RESOLUTION = (1920, THRESHOLD_HEIGHT)
+#: The clock motion is measured on, in frames a second: a body's steps, its
+#: travel and what a step across a cut may be within, read at the frames a
+#: render shows at each of its instants. A 15 fps render shows every one, a
+#: faster one is read at the frames it shows at them. Deliberately not the
+#: render's rate: a verdict must not move with the rate a scene is rendered
+#: or linted at.
+MOTION_REFERENCE_FPS = 15
 
 
 @dataclass(frozen=True)
