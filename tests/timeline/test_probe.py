@@ -16,12 +16,14 @@ import pytest
 from arachne import LEFT, RIGHT, Dot, Group
 from arachne.session import Session
 from arachne.timeline import admission
+from arachne.timeline import probe as probe_module
 from arachne.timeline.execution import Divergence
 from arachne.timeline.probe import (
     PlayProbe,
     Probe,
     _paint_name,
     _tree_difference,
+    _Walk,
     _walk,
 )
 from arachne.timeline.purity import Proof, Refused
@@ -252,12 +254,32 @@ def test_a_re_pointed_shared_child_is_a_tree_difference():
     second = Group(a)
     root = Group(Group(a, b), second)
     kept = {id(mob): state for mob, state in _walk([root], NodeState.of)}
-    theirs = list(_walk([root], lambda mob: kept[id(mob)]))
+    theirs = _Walk(_walk([root], lambda mob: kept[id(mob)]))
     second.submobjects[:] = [b]
-    mine = list(_walk([root], NodeState.of))
+    mine = _Walk(_walk([root], NodeState.of))
     lists = ([root], [], [])
     assert len(mine) == len(theirs)
     assert _tree_difference(mine, lists, theirs, lists) is not None
+
+
+def test_each_walk_is_indexed_once_per_probed_instant(session_of, monkeypatch):
+    """Where each mobject sits in a walk is read once for the instant, not
+    once per node it is compared at: a scene of N mobjects costs the probe
+    O(N) per instant, not O(N²).
+    """
+    indexed = []
+    places = probe_module._places
+
+    def counted(walk):
+        indexed.append(len(walk))
+        return places(walk)
+
+    monkeypatch.setattr(probe_module, "_places", counted)
+    session = session_of("SuccessionReadout", RESTORE_SCENES, frame_rate=15)
+    probed = sum(len(found.instants) for found in session.probe.plays)
+    assert probed == 2
+    # The restored scene's walk and the kept capture's, once each.
+    assert len(indexed) == 2 * probed
 
 
 def test_a_hook_re_pointing_a_shared_child_is_demoted(session_of):

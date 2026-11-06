@@ -221,8 +221,10 @@ def _difference(
         camera = scene.renderer.camera
         extra = [*play.moving, *camera_nodes(camera)]
         lists = (scene.mobjects, scene.foreground_mobjects, scene.moving_mobjects)
-        mine = list(_walk([*(m for each in lists for m in each), *extra], NodeState.of))
-        theirs = list(
+        mine = _Walk(
+            _walk([*(m for each in lists for m in each), *extra], NodeState.of)
+        )
+        theirs = _Walk(
             _walk(
                 [*kept.roots, *kept.foreground, *kept.moving, *extra],
                 lambda mob: record.node_state(mob, kept),
@@ -262,20 +264,32 @@ def _walk(
         stack.extend(reversed(state.submobjects))
 
 
-def _positions(
-    walk: Sequence[tuple[Mobject, NodeState]], members: Iterable[Mobject]
-) -> tuple[int, ...]:
-    where = {id(mob): index for index, (mob, _) in enumerate(walk)}
-    return tuple(where.get(id(mob), -1) for mob in members)
+def _places(walk: Sequence[tuple[Mobject, NodeState]]) -> dict[int, int]:
+    """Each walked mobject's place in ``walk``, by its id."""
+    return {id(mob): index for index, (mob, _) in enumerate(walk)}
+
+
+class _Walk(list["tuple[Mobject, NodeState]"]):
+    """A walk's nodes in order, with each mobject's place in it indexed once
+    for every comparison that reads it.
+    """
+
+    def __init__(self, nodes: Iterable[tuple[Mobject, NodeState]]) -> None:
+        super().__init__(nodes)
+        self.places = _places(self)
+
+
+def _positions(walk: _Walk, members: Iterable[Mobject]) -> tuple[int, ...]:
+    return tuple(walk.places.get(id(mob), -1) for mob in members)
 
 
 _LISTS = ("scene's mobjects", "foreground", "moving mobjects")
 
 
 def _tree_difference(
-    mine: Sequence[tuple[Mobject, NodeState]],
+    mine: _Walk,
     my_lists: Sequence[Sequence[Mobject]],
-    theirs: Sequence[tuple[Mobject, NodeState]],
+    theirs: _Walk,
     their_lists: Sequence[Sequence[Mobject]],
 ) -> str | None:
     """How the restored draw lists, tree and nodes differ from the kept."""
@@ -423,9 +437,9 @@ def _same(a: Any, b: Any) -> bool:
 
 
 def _camera_difference(
-    mine: Sequence[tuple[Mobject, NodeState]],
+    mine: _Walk,
     extras: CameraExtras | None,
-    theirs: Sequence[tuple[Mobject, NodeState]],
+    theirs: _Walk,
     kept: CameraExtras | None,
     which: str,
 ) -> str | None:
@@ -467,9 +481,9 @@ def _camera_difference(
 
 
 def _centre_difference(
-    mine: Sequence[tuple[Mobject, NodeState]],
+    mine: _Walk,
     centers: Sequence[tuple[Mobject, np.ndarray]],
-    theirs: Sequence[tuple[Mobject, NodeState]],
+    theirs: _Walk,
     kept: Sequence[tuple[Mobject, np.ndarray]],
 ) -> str | None:
     """How the camera's restored fixed-orientation centres differ from the
