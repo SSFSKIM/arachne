@@ -75,8 +75,12 @@ class Leaf:
     is whether nothing beneath it reaches the pixel (what it leaves there
     does not depend on what was there). The core also knows coverage and
     colour apart: ``coverage`` is its share of the pixel's 16 sub-samples (0
-    to 255) and ``colour`` its nearest fragment's premultiplied colour;
-    Cairo's leaves carry ``None`` for both. ``painter`` is ``"core"`` or
+    to 255) and ``colour`` its nearest fragment's premultiplied colour, the
+    paint of that one fragment (a path's stroke where it lies over its own
+    fill), not the leaf's drawn colour; Cairo's leaves carry ``None`` for
+    both. Neither ``colour`` nor ``drawn`` is what the pixel shows of the
+    leaf: one behind an opaque front, or seen through a sliver of the pixel,
+    keeps its whole colour in both while the pixel barely moves. ``painter`` is ``"core"`` or
     ``"cairo"``: on the core path, the overlay's leaves are Cairo's.
     """
 
