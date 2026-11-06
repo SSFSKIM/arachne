@@ -771,8 +771,12 @@ class Camera:
         if len(split_indices) == 0:
             return self
 
-        # Precompute flat xy array for fast indexing
-        pts_xy = points[:, :2].ravel()  # [x0, y0, x1, y1, ...]
+        # Precompute flat xy array for fast indexing: [x0, y0, x1, y1, ...],
+        # as Python floats when they are doubles (the same values, read
+        # without NumPy's per-element cost).
+        pts_xy = points[:, :2].ravel()
+        if pts_xy.dtype == np.float64:
+            pts_xy = pts_xy.tolist()
 
         # Local references for speed (avoid attribute lookups in loop)
         _move_to = ctx.move_to
@@ -806,8 +810,9 @@ class Camera:
                 )
 
             # Close if first and last points are equal.
+            last = (end_idx - 1) * 2
             if vmobject.consider_points_equals_2d(
-                points[start_idx], points[end_idx - 1]
+                pts_xy[base : base + 2], pts_xy[last : last + 2]
             ):
                 _close_path()
 
@@ -1256,7 +1261,7 @@ class Camera:
 
         # Subclasses (like ThreeDCamera) may want to
         # adjust points further before they're shown
-        if not np.all(np.isfinite(points)):
+        if not np.isfinite(points).all():
             # TODO, print some kind of warning about
             # mobject having invalid points?
             points = np.zeros((1, 3))

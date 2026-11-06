@@ -135,6 +135,75 @@ def _interpolable(start: Paint, end: Paint) -> bool:
 _NUMBERS = (int, float, np.number)
 
 
+#: Up to how many curve boundaries a path's subpaths are split by comparing
+#: its anchors one by one (:func:`_split_few`) rather than as arrays.
+_FEW_BOUNDARIES = 16
+#: The relative tolerance of :func:`numpy.isclose`, which the split follows.
+_SPLIT_RTOL = 1.0e-5
+
+
+def _split_many(
+    points: npt.NDArray[np.floating],
+    boundary_indices: npt.NDArray[np.int_],
+    n_dims: int,
+    atol: float,
+) -> npt.NDArray[np.int_]:
+    """The subpaths of ``points`` (see
+    :meth:`VMobject.get_subpath_split_indices_from_points`), as arrays: a
+    boundary is a split where the previous curve's end anchor is not close
+    to the next curve's start anchor. This is an allocation-light
+    vectorization of np.isclose semantics: NaN is never close, while
+    infinities compare equal only when they have the same sign.
+    """
+    n_pts = len(points)
+    ends = points[boundary_indices - 1, :n_dims]  # end of previous curve
+    starts = points[boundary_indices, :n_dims]  # start of next curve
+    with np.errstate(invalid="ignore"):
+        diffs = np.abs(ends - starts)
+        thresholds = atol + _SPLIT_RTOL * np.abs(starts)
+        is_close = diffs <= thresholds
+        finite_diffs = np.isfinite(diffs)
+        if not finite_diffs.all():
+            is_close &= finite_diffs
+            is_close |= ends == starts
+    is_split = ~np.all(is_close, axis=1)
+
+    split_points = np.concatenate([[0], boundary_indices[is_split], [n_pts]])
+    return np.stack([split_points[:-1], split_points[1:]], axis=1)
+
+
+def _split_few(
+    points: npt.NDArray[np.float64],
+    boundary_indices: npt.NDArray[np.int_],
+    n_dims: int,
+    atol: float,
+) -> npt.NDArray[np.int_]:
+    """:func:`_split_many`, anchor by anchor, for a path of few curves: the
+    same comparisons in the same double-precision operations (Python's
+    floats round as NumPy's float64 does), without NumPy's per-call cost on
+    small arrays. Its result is the same array, value for value and of the
+    same type.
+    """
+    n_pts = len(points)
+    rows = points[:, :n_dims].tolist()
+    atol = float(atol)
+    splits = [0]
+    for boundary in boundary_indices.tolist():
+        for end, start in zip(rows[boundary - 1], rows[boundary], strict=True):
+            diff = abs(end - start)
+            if math.isfinite(diff):
+                close = diff <= atol + _SPLIT_RTOL * abs(start)
+            else:
+                close = end == start
+            if not close:
+                splits.append(boundary)
+                break
+    splits.append(n_pts)
+    return np.array(
+        list(zip(splits[:-1], splits[1:], strict=True)), dtype=boundary_indices.dtype
+    )
+
+
 class VMobject(Mobject):
     """A vectorized mobject.
 
@@ -1519,26 +1588,10 @@ class VMobject(Mobject):
             # A single cubic curve: no internal boundaries to split on.
             return np.array([[0, n_pts]])
 
-        # A boundary is a split where the previous curve's end anchor is not
-        # close to the next curve's start anchor. This is an allocation-light
-        # vectorization of np.isclose semantics: NaN is never close, while
-        # infinities compare equal only when they have the same sign.
-        rtol = 1.0e-5  # default from np.isclose()
         atol = self.tolerance_for_point_equality
-        ends = points[boundary_indices - 1, :n_dims]  # end of previous curve
-        starts = points[boundary_indices, :n_dims]  # start of next curve
-        with np.errstate(invalid="ignore"):
-            diffs = np.abs(ends - starts)
-            thresholds = atol + rtol * np.abs(starts)
-            is_close = diffs <= thresholds
-            finite_diffs = np.isfinite(diffs)
-            if not finite_diffs.all():
-                is_close &= finite_diffs
-                is_close |= ends == starts
-        is_split = ~np.all(is_close, axis=1)
-
-        split_points = np.concatenate([[0], boundary_indices[is_split], [n_pts]])
-        return np.stack([split_points[:-1], split_points[1:]], axis=1)
+        if points.dtype == np.float64 and len(boundary_indices) <= _FEW_BOUNDARIES:
+            return _split_few(points, boundary_indices, n_dims, atol)
+        return _split_many(points, boundary_indices, n_dims, atol)
 
     def get_subpaths(self) -> list[CubicSpline]:
         """Returns subpaths formed by the curves of the VMobject.

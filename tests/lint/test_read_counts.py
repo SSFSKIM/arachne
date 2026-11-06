@@ -12,8 +12,8 @@ import numpy as np
 import pytest
 
 from arachne import Square
-from arachne.camera import three_d_camera
-from arachne.camera.projection import _rotate
+from arachne.camera import projection, three_d_camera
+from arachne.camera.projection import _rotate, engine_trace, held_still
 from arachne.camera.three_d_camera import ThreeDCamera
 from arachne.lint import RULES, core, lint
 from arachne.lint import parts as parts_module
@@ -95,6 +95,69 @@ def test_a_projection_s_rotation_is_made_again_when_anything_it_reads_moved(
     _rotate(own)
     _rotate(own)
     assert len(made) == 4
+
+
+def test_a_camera_held_still_makes_its_rotation_once_and_not_before_it_is_asked(
+    monkeypatch,
+):
+    """Held still, the engine's rotation is made at the first projection
+    that makes it and not again; nothing is made on entry, so a read that
+    projects nothing leaves the matrix as it was. A camera that makes its
+    matrix its own way makes it at every projection still.
+    """
+    camera = ThreeDCamera()
+    made = _rotations_made(monkeypatch)
+    read: list[object] = []
+    get_phi = ThreeDCamera.get_phi
+
+    def counted_phi(self):
+        read.append(self)
+        return get_phi(self)
+
+    monkeypatch.setattr(ThreeDCamera, "get_phi", counted_phi)
+    camera.set_phi(0.4)
+    with held_still(camera):
+        assert made == []
+        _rotate(camera)
+        first = len(read)
+        _rotate(camera)
+        assert len(made) == 2
+        # The second projection asks the camera nothing.
+        assert len(read) == first
+    camera.set_phi(0.9)
+    _rotate(camera)
+    assert len(made) == 4
+    assert np.array_equal(camera.rotation_matrix, camera.generate_rotation_matrix())
+
+    class OwnRotation(ThreeDCamera):
+        def generate_rotation_matrix(self):
+            return super().generate_rotation_matrix()
+
+    own = OwnRotation()
+    made.clear()
+    with held_still(own):
+        _rotate(own)
+        _rotate(own)
+    assert len(made) == 4
+
+
+def test_a_camera_held_still_is_asked_once_whether_it_traces_with_the_engine(
+    monkeypatch,
+):
+    camera = ThreeDCamera()
+    asked: list[object] = []
+
+    def ask(of):
+        asked.append(of)
+        return True
+
+    monkeypatch.setattr(projection, "_engine_trace", ask)
+    with held_still(camera):
+        assert engine_trace(camera)
+        assert engine_trace(camera)
+    assert len(asked) == 1
+    assert engine_trace(camera)
+    assert len(asked) == 2
 
 
 def _parts_built(monkeypatch) -> list[tuple]:
