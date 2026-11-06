@@ -12,12 +12,14 @@ itself so far (the scene's first frame of a camera the scene's code
 changed, or its first capture after a reset), the whole scene falls back to
 its camera's own draw, which is Cairo's. A capture begun on a reset in a
 later frame, or on a picture the scene set, draws over what was written as
-its pixels, as Cairo draws over it: each shown equal to Cairo's frame. Where
-the core's own pixels are under the write, the frame is ``render.unable``
-(and the render draws the scene again on Cairo). In a changed camera's
-first frame, which it draws itself, its draw is compared once with Cairo's
-draw of the frame's description, which catches a write no call of the
-camera's own made. The write is never dropped.
+its pixels, as Cairo draws over it: each shown equal to Cairo's frame, and
+the later frame's, on content off the pixel grid, equal to the core's own
+draw of it from a clean start. Where the core's own pixels are under the
+write, the frame is ``render.unable`` (and the render draws the scene again
+on Cairo). In a changed camera's first frame, which it draws itself, its
+draw is compared once with Cairo's draw of the frame's description, which
+catches a write no call of the camera's own made. The write is never
+dropped.
 
 Frames here are 192 x 108 pixels over CE's 8-unit frame height: 13.5 pixels a
 unit, the origin at pixel (96, 54).
@@ -363,6 +365,110 @@ def test_a_picture_set_as_the_array_is_drawn_under_its_capture(
     if frame == 1:
         _layered(_core_painter(camera))
     assert not _fallbacks(findings)
+
+
+# Drawn over as pixels against the core's own draw, on content off the pixel
+# grid, where the core's antialiasing is its own and Cairo's frame is no
+# measure of it.
+
+
+def _off_grid():
+    """A fill under a stroked curve and a label: edges at fractions of a pixel
+    everywhere, antialiased as the core antialiases them.
+    """
+    from arachne import (
+        BLUE,
+        LEFT,
+        RIGHT,
+        UP,
+        WHITE,
+        YELLOW,
+        Circle,
+        ParametricFunction,
+        Text,
+    )
+
+    fill = Circle(radius=2.2, fill_color=BLUE, fill_opacity=0.8, stroke_width=0)
+    curve = ParametricFunction(
+        lambda t: np.array([t, 0.8 * np.sin(2 * t), 0.0]),
+        t_range=[-3.3, 3.3],
+        color=YELLOW,
+        stroke_width=5,
+    )
+    label = Text("ax", font_size=40, color=WHITE)
+    fill.shift(0.37 * RIGHT)
+    label.move_to(0.21 * LEFT + 0.63 * UP)
+    return fill, curve, label
+
+
+def _ramp(camera):
+    """A write of many values across the fill's, the curve's and the label's
+    edges and the background around them.
+    """
+    ramp = np.linspace(0, 255, 152).astype(np.uint8)
+    patch = camera.pixel_array[40:70, 20:172]
+    patch[:, :, 0] = ramp
+    patch[:, :, 1] = ramp[::-1]
+    patch[:, :, 2] = 90
+    patch[:, :, 3] = 255
+
+
+def _moved(*mobjects):
+    """A step moving ``mobjects`` by a distance off the pixel grid."""
+
+    def step(camera):
+        from arachne import DOWN, RIGHT
+
+        for mobject in mobjects:
+            mobject.shift(0.29 * RIGHT + 0.11 * DOWN)
+
+    return step
+
+
+@CAMERAS
+@pytest.mark.parametrize("moved", [False, True], ids=["still", "moved"])
+def test_a_write_after_a_reset_on_a_later_frame_is_the_core_s_own_fresh_draw(
+    camera_class, moved, findings
+):
+    """The capture begun on a later frame's reset draws over what was written
+    byte for byte as the core draws the same scene state from a clean start:
+    a fresh camera whose background is what the array held as the capture
+    began, which its reset installs and nothing writes over (a whole frame).
+    """
+    content = _off_grid()
+    held = []
+
+    def keep(camera):
+        held.append(np.array(camera.pixel_array))
+
+    moving = [_moved(*content)] if moved else []
+    camera, (first, drawn) = _frames(
+        camera_class,
+        [_reset, _capture(*content)],
+        [_reset, *moving, _ramp, keep, _capture(*content)],
+    )
+    _layered(_core_painter(camera))
+
+    fresh = _off_grid()
+    [picture] = held
+
+    def install(camera):
+        camera.background = picture
+
+    moving = [_moved(*fresh)] if moved else []
+    again, (expected,) = _frames(
+        camera_class, [install, _reset, *moving, _capture(*fresh)]
+    )
+    assert _core_painter(again).whole
+    assert not _fallbacks(findings)
+    assert np.any(first != drawn), "the write shows"
+    assert np.any(drawn[40:70, 20:172] != picture[40:70, 20:172]), "drawn over it"
+    differs = np.argwhere(np.any(drawn != expected, axis=-1))
+    assert not len(differs), (
+        f"{len(differs)} pixels differ, first at {differs[:5].tolist()}:"
+        f" {drawn[tuple(differs[:5].T)].tolist()} drawn,"
+        f" {expected[tuple(differs[:5].T)].tolist()} fresh"
+    )
 
 
 # A write in the hedged camera's first frame that no producer call makes.
