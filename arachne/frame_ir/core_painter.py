@@ -22,7 +22,7 @@ from typing import Any
 import numpy as np
 
 from .cairo_painter import CairoDrawer
-from .canonical import Canonical, canonical_order, frame_grid, shades
+from .canonical import _PATH_KINDS, Canonical, canonical_order, frame_grid, shades
 from .extract import FrameStream, Term, Unable
 from .replay import Replays
 from .xf import Delta, StreamState
@@ -166,7 +166,16 @@ class CorePainter:
                 continue
             record = self.state.records[slot]
             fields = record.fields
-            if record.kind not in ("path", "face_group") or not fields.get("shape"):
+            # A record that draws paths: its own, or instances of a path (an
+            # instances record of a mesh, which the Python stream does not
+            # hold, draws none).
+            key = fields.get("shape")
+            prototype = None if key is None else self.state.shapes.get(key)
+            if (
+                record.kind not in _PATH_KINDS
+                or prototype is None
+                or prototype.kind != "path"
+            ):
                 continue
             if "planes" not in fields:
                 raise Unable(
