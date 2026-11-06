@@ -20,6 +20,11 @@ front is evidence that something lies behind it, where a leaf the painter did
 not draw is absent. A leaf's ``id`` is the stable id its stream gives its
 object (``StreamState.objects``), which matches a leaf across two streams that
 number their objects apart.
+
+What Cairo is handed for each leaf is kept too (:class:`Outline`,
+:meth:`.cairo_painter.CairoDrawer.outlines`): each fill and stroke the
+camera makes, its path in pixels as Bézier segments, its width and its
+colours. It is the geometry a difference at an edge is measured against.
 """
 
 from __future__ import annotations
@@ -28,13 +33,17 @@ __all__ = [
     "Box",
     "Leaf",
     "LiveFrame",
+    "Outline",
     "PixelContributors",
+    "Subpath",
     "from_core",
     "over",
 ]
 
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
+
+import numpy as np
 
 #: A pixel box, ``(x0, y0, x1, y1)``: the pixels ``x0 <= x < x1``,
 #: ``y0 <= y < y1``.
@@ -112,6 +121,37 @@ class PixelContributors:
     def shown(self) -> tuple[Leaf, ...]:
         """The leaves not hidden behind an opaque front."""
         return tuple(leaf for leaf in self.leaves if leaf.shown)
+
+
+@dataclass(frozen=True)
+class Subpath:
+    """One subpath of an outline, in pixels (x right, y down): its start and
+    its Bézier segments, each row ``(control 1, control 2, end)`` (``(k, 3,
+    2)``; a straight segment's controls on its chord), and whether it was
+    closed.
+    """
+
+    start: tuple[float, float]
+    segments: np.ndarray
+    closed: bool
+
+
+@dataclass(frozen=True)
+class Outline:
+    """One paint operation of a leaf as Cairo is handed it: ``op`` is
+    ``"fill"`` or ``"stroke"``; ``colours`` the source's colours in the
+    frame's channel order, ``0`` to ``1`` and not premultiplied (one for a
+    solid source, a gradient's stops otherwise); ``width`` a stroke's width in
+    pixels (``0`` for a fill); ``join`` and ``cap`` Cairo's names for a
+    stroke's (``""`` for a fill).
+    """
+
+    op: str
+    colours: tuple[tuple[float, float, float, float], ...]
+    width: float
+    subpaths: tuple[Subpath, ...]
+    join: str = ""
+    cap: str = ""
 
 
 def from_core(
