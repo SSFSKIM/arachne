@@ -394,3 +394,96 @@ def test_a_live_painter_refuses_outlines_too():
     assert found is not None
     with pytest.raises(LiveFrame):
         found.painter(camera).outlines()
+
+
+def test_a_near_opaque_leaf_over_another_hides_nothing():
+    """Source over hides what lies beneath only where the top is opaque: a
+    leaf drawn (0, 0, 250, 250) over an opaque one leaves (5, 0, 250, 255),
+    so the leaf beneath contributes, and is shown.
+    """
+    from arachne import Square
+
+    def top():
+        return [
+            Square(
+                side_length=1,
+                fill_color="#0000FF",
+                fill_opacity=250 / 255,
+                stroke_width=0,
+            )
+        ]
+
+    frame, pixel = _square_under_coloured("#FF0000")(top)
+    assert tuple(int(v) for v in frame[CENTRE[1], CENTRE[0]]) == (5, 0, 250, 255)
+    assert pixel.leaves[1].drawn == (0, 0, 250, 250)
+    assert pixel.leaves[1].covers is False
+    assert [leaf.shown for leaf in pixel.leaves] == [True, True]
+
+
+def test_a_core_leaf_under_a_near_opaque_overlay_stays_shown():
+    from arachne import BLUE, Rectangle, Square, tempconfig
+    from arachne.camera.three_d_camera import ThreeDCamera
+
+    with tempconfig(MEDIUM):
+        camera = ThreeDCamera()
+        square = Square(side_length=2, fill_color=BLUE, fill_opacity=1.0)
+        bar = Rectangle(
+            width=3,
+            height=0.4,
+            fill_color="#FF0000",
+            fill_opacity=250 / 255,
+            stroke_width=0,
+        )
+        camera.add_fixed_in_frame_mobjects(bar)
+        painter = CorePainter()
+        painter.paint(camera, [("moving", [square, bar])], t=Fraction(0))
+        under_bar = painter.contributors(_box(*CENTRE))[CENTRE]
+    assert [leaf.painter for leaf in under_bar.leaves] == ["core", "cairo"]
+    assert under_bar.leaves[1].drawn[3] == 250
+    assert [leaf.shown for leaf in under_bar.leaves] == [True, True]
+
+
+def test_faint_paths_filled_through_one_image_each_touch_the_pixel():
+    """128 paths of opacity 1/255 filled through one image of alpha 128: each
+    one's mask is 1, which the image multiplies to nothing alone, but the
+    camera draws the batch as one mask, 128, and paints alpha 64. Each leaf
+    touches the pixel, and draws what the batch draws.
+    """
+    from PIL import Image
+
+    from arachne import Square
+
+    picture = Image.new("RGBA", (192, 108), (40, 200, 120, 128))
+
+    def faint():
+        return [
+            Square(side_length=2, fill_opacity=1 / 255, stroke_width=0)
+            .shift([0.001 * k, 0, 0])
+            .color_using_background_image(picture)
+            for k in range(128)
+        ]
+
+    frame, pixel = _square_under(faint, side=4.0)
+    assert len(pixel.leaves) == 129
+    batch = pixel.leaves[1:]
+    assert {leaf.drawn[3] for leaf in batch} == {64}
+    assert all(leaf.shown for leaf in pixel.leaves)
+
+
+def _square_under_coloured(colour: str):
+    """:func:`_square_under` with the square beneath in ``colour``."""
+
+    def made(top, *, side: float = 2.0):
+        from arachne import Camera, Square, tempconfig
+
+        with tempconfig(MEDIUM):
+            under = Square(
+                side_length=side, fill_color=colour, fill_opacity=1.0, stroke_width=0
+            )
+            painter = IrCairoPainter()
+            frame = painter.paint(
+                Camera(), [("moving", [under, *top()])], t=Fraction(0)
+            )
+            return frame, painter.contributors(_box(*CENTRE))[CENTRE]
+
+    return made

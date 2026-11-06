@@ -27,9 +27,9 @@
 //!   - its **coverage**: its sub-sample coverages summed over the 16 and scaled to 0..=255,
 //!     `(sum + 8) / 16`;
 //!   - its **colour**: premultiplied, its nearest fragment's at the first sub-sample it covers;
-//!   - what it **draws** alone: premultiplied, each sub-sample's composite of its own fragments
-//!     there (back to front, each at its coverage), averaged over the 16, as the sample resolve
-//!     composites it over a transparent pixel;
+//!   - what it **draws** alone: premultiplied, the pixel the resolve itself makes of its
+//!     fragments alone over a transparent pixel (`composite::resolve_pixel`: the same selection,
+//!     the coverage or sample resolve as it would choose, the same integer blending);
 //!   - whether it is **shown**: at one sub-sample at least it covers, no fragment of another
 //!     leaf in front of it there is opaque and covers that sub-sample whole. A leaf that is not
 //!     shown is hidden behind an opaque front, and is still reported: it is the evidence that
@@ -37,7 +37,7 @@
 //!   - whether it **covers** the pixel: at every sub-sample one of its fragments is opaque and
 //!     covers it whole, so nothing beneath it reaches the pixel.
 
-use crate::composite::{Fragment, SAMPLES, front_to_back, sample_point};
+use crate::composite::{Fragment, SAMPLES, Scratch, front_to_back, resolve_pixel, sample_point};
 use std::cmp::Ordering;
 
 /// One leaf of a pixel ([`PixelContributors::leaves`]).
@@ -98,7 +98,6 @@ pub(crate) fn of_pixel(
     let mut shown = vec![false; n];
     let mut covers = vec![true; n];
     let mut colour: Vec<Option<[u8; 4]>> = vec![None; n];
-    let mut drawn = vec![[0.0f64; 4]; n];
     // before[a][b]: some sub-sample composites a run of a in front of a run of b.
     let mut before = vec![vec![false; n]; n];
     let mut sequences: Vec<Vec<(usize, u8)>> = Vec::new();
@@ -147,21 +146,6 @@ pub(crate) fn of_pixel(
                 covers[l] = false;
             }
         }
-        // What each leaf draws alone here: its own fragments, back to front.
-        let mut alone = vec![[0.0f64; 4]; n];
-        for &i in at_k.iter().rev() {
-            let a = coverage[i][k] as f64 / 255.0;
-            let src = frags[i].colour.map(|v| v as f64 / 255.0 * a);
-            let acc = &mut alone[of[i]];
-            for ch in 0..4 {
-                acc[ch] = src[ch] + acc[ch] * (1.0 - src[3]);
-            }
-        }
-        for l in 0..n {
-            for ch in 0..4 {
-                drawn[l][ch] += alone[l][ch];
-            }
-        }
         let mut counted = vec![false; n];
         for (pos, &(a, c)) in seq.iter().enumerate() {
             covered[a] = true;
@@ -184,6 +168,23 @@ pub(crate) fn of_pixel(
         }
     }
     let mut crossing = (0..n).any(|a| (a + 1..n).any(|b| before[a][b] && before[b][a]));
+    // What each leaf draws alone: the resolve's own pixel from its fragments alone over a
+    // transparent pixel, with the coverage the resolve reads.
+    let mut scratch = Scratch::default();
+    let mut rows: Vec<[u8; SAMPLES]> = Vec::new();
+    let drawn: Vec<[u8; 4]> = (0..n)
+        .map(|l| {
+            scratch.fragments.clear();
+            rows.clear();
+            for (i, f) in frags.iter().enumerate() {
+                if of[i] == l {
+                    scratch.fragments.push(*f);
+                    rows.push(coverage[i]);
+                }
+            }
+            resolve_pixel(&mut scratch, [0; 4], x, y, |i, _| rows[i]).1
+        })
+        .collect();
     // Each leaf's nearest fragment at the pixel's centre: the tie-break, and a crossing's order.
     let (cx, cy) = (x as f64 + 0.5, y as f64 + 0.5);
     let nearest: Vec<Option<usize>> = (0..n)
@@ -249,7 +250,7 @@ pub(crate) fn of_pixel(
             part: ids[l].1,
             coverage: ((sums[l] + SAMPLES as u32 / 2) / SAMPLES as u32) as u8,
             colour: colour[l].unwrap_or([0; 4]),
-            drawn: drawn[l].map(|v| (v / SAMPLES as f64 * 255.0).round().clamp(0.0, 255.0) as u8),
+            drawn: drawn[l],
             shown: shown[l],
             covers: covers[l],
         })
@@ -290,6 +291,16 @@ mod tests {
         (f.sub, 0)
     }
 
+    /// `f` with the mask its full-coverage sub-samples in `row` make, as a producer gives it.
+    fn masked(mut f: Fragment, row: &[u8; SAMPLES]) -> Fragment {
+        f.coverage = Coverage::Mask(
+            (0..SAMPLES)
+                .filter(|k| row[*k] == 255)
+                .fold(0, |m, k| m | 1 << k),
+        );
+        f
+    }
+
     fn only(samples: &[usize]) -> [u8; SAMPLES] {
         let mut row = [0; SAMPLES];
         for &s in samples {
@@ -323,27 +334,50 @@ mod tests {
     #[test]
     fn a_leaf_draws_all_its_fragments_composited() {
         // An opaque red fill under its half-transparent blue stroke: one leaf, two layers.
-        let fill = fragment(1.0, 0.0, [255, 0, 0, 255], 0, 0);
-        let stroke = fragment(1.0, 0.0, [0, 0, 128, 128], 0, 1);
+        let full = [255; SAMPLES];
+        let fill = masked(fragment(1.0, 0.0, [255, 0, 0, 255], 0, 0), &full);
+        let stroke = masked(fragment(1.0, 0.0, [0, 0, 128, 128], 0, 1), &full);
         let one_leaf = |_: &Fragment| (1, 0);
-        let p = of_pixel(0, 0, &[fill, stroke], &[[255; SAMPLES]; 2], &one_leaf);
+        let p = of_pixel(0, 0, &[fill, stroke], &[full; 2], &one_leaf);
         assert_eq!(p.leaves.len(), 1);
         assert_eq!(p.leaves[0].drawn, [127, 0, 128, 255]);
         assert!(p.leaves[0].covers);
         // Two triangles of one mesh tiling the pixel, coloured apart: their average.
-        let tiles = [
-            fragment(1.0, 0.0, [200, 0, 0, 255], 0, 0),
-            fragment(1.0, 0.0, [0, 100, 0, 255], 0, 0),
-        ];
         let halves = [
             only(&(0..8).collect::<Vec<_>>()),
             only(&(8..16).collect::<Vec<_>>()),
+        ];
+        let tiles = [
+            masked(fragment(1.0, 0.0, [200, 0, 0, 255], 0, 0), &halves[0]),
+            masked(fragment(1.0, 0.0, [0, 100, 0, 255], 0, 0), &halves[1]),
         ];
         let p = of_pixel(0, 0, &tiles, &halves, &one_leaf);
         assert_eq!(p.leaves[0].drawn, [100, 50, 0, 255]);
         assert_eq!(p.leaves[0].coverage, 255);
         // Opaque at every sub-sample between them: nothing beneath reaches the pixel.
         assert!(p.leaves[0].covers);
+    }
+
+    #[test]
+    fn a_leaf_draws_what_the_resolve_makes_of_its_coincident_partial_layers() {
+        // One path's opaque red background stroke under its opaque blue stroke of the same width,
+        // their shared outer edge halfway through the pixel: two area fragments over the same
+        // sub-samples. The resolve takes its coverage resolve (red at 128, then blue at 128):
+        // (64, 0, 128, 192), where compositing per sub-sample would give (0, 0, 128, 128).
+        let half = only(&[0, 2, 4, 6, 8, 10, 12, 14]);
+        let area = |colour, sub| {
+            let mut f = fragment(1.0, 0.0, colour, 0, sub);
+            f.coverage = Coverage::Area { area: 0.5, id: 0 };
+            f
+        };
+        let frags = [area([255, 0, 0, 255], 0), area([0, 0, 255, 255], 1)];
+        let one_leaf = |_: &Fragment| (1, 0);
+        let p = of_pixel(0, 0, &frags, &[half, half], &one_leaf);
+        assert_eq!(p.leaves[0].drawn, [64, 0, 128, 192]);
+        let mut scratch = Scratch::default();
+        scratch.fragments.extend_from_slice(&frags);
+        let resolved = resolve_pixel(&mut scratch, [0; 4], 0, 0, |_, _| half).1;
+        assert_eq!(p.leaves[0].drawn, resolved);
     }
 
     #[test]

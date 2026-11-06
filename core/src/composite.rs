@@ -683,7 +683,7 @@ impl TransparentPass<'_> {
             let (class, mut pixel) = if scratch.fragments.is_empty() {
                 (Resolve::Background, bg)
             } else {
-                resolve_pixel(&mut scratch, bg, x, y, |f| self.sample_coverage(f, x, y))
+                resolve_pixel(&mut scratch, bg, x, y, |_, f| self.sample_coverage(f, x, y))
             };
             match self.emission.get(i) {
                 Some(e) if *e != [0.0; 3] => pixel = add_emission(pixel, *e),
@@ -699,8 +699,8 @@ impl TransparentPass<'_> {
 
 /// Buffers reused from pixel to pixel.
 #[derive(Default)]
-struct Scratch {
-    fragments: Vec<Fragment>,
+pub(crate) struct Scratch {
+    pub(crate) fragments: Vec<Fragment>,
     depths: Vec<[f64; SAMPLES]>,
     order: Vec<usize>,
     /// Runs `start..end` of `order` that composite as one fragment.
@@ -718,12 +718,16 @@ pub(crate) fn front_to_back(a: &Fragment, da: f64, b: &Fragment, db: f64) -> Ord
         .then(b.sub.cmp(&a.sub))
 }
 
-fn resolve_pixel(
+/// The pixel `(x, y)` that `s.fragments` composite over `bg`, and the resolve that made it.
+/// `sample_coverage(i, f)` is fragment `i`'s coverage at each sub-sample, for the sample resolve.
+/// The contributor report calls it on one leaf's fragments alone, so what a leaf draws is what
+/// this resolve makes of it.
+pub(crate) fn resolve_pixel(
     s: &mut Scratch,
     bg: [u8; 4],
     x: u32,
     y: u32,
-    sample_coverage: impl Fn(&Fragment) -> [u8; SAMPLES],
+    sample_coverage: impl Fn(usize, &Fragment) -> [u8; SAMPLES],
 ) -> (Resolve, [u8; 4]) {
     let frags = &s.fragments;
     if let [f] = frags.as_slice() {
@@ -884,7 +888,7 @@ fn resolve_pixel(
     s.coverage.clear();
     s.coverage.resize(frags.len(), [0; SAMPLES]);
     for i in &s.order {
-        s.coverage[*i] = sample_coverage(&frags[*i]);
+        s.coverage[*i] = sample_coverage(*i, &frags[*i]);
     }
     let mut sum = [0u32; 4];
     for k in 0..SAMPLES {
