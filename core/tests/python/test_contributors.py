@@ -375,28 +375,57 @@ def test_a_flat_frame_reports_its_leaves_in_draw_order():
     assert ids(leaves) == [(11, 0), (12, 0)]
 
 
-def test_newell_corners_name_the_corners_whose_writer_decided_them_degenerate():
-    def faces_stream(**view) -> ac.Stream:
-        delta = view_delta(**{"should_apply_shading": True, **view})
-        faces = delta.upload_path(
-            np.concatenate([square(z=0.0), square(z=1.0, half=0.8)])
-        )
-        fills = delta.upload_paint(np.array([[1, 0, 0, 1], [0, 1, 0, 1]], dtype=float))
-        delta.set_record(
-            "face_group",
-            1,
-            21,
-            shape=faces,
-            uv=[(0, 0), (1, 0)],
-            grid=(2, 1),
-            face_fill=fills,
-            space="world",
-            shade_in_3d=True,
-            normals=[(0, 0, 1), (0, 0, 1), (0, 0, 0), (0, 0, 1)],
-        )
-        delta.set_order([("moving", 1, 0), ("moving", 1, 1)])
-        return stream_of(delta)
+FACES = (square(z=0.0), square(z=1.0, half=0.8))
+FACE_FILLS = np.array([[1, 0, 0, 1], [0, 1, 0, 1]], dtype=float)
 
+
+def faces_stream(**view) -> ac.Stream:
+    """Two shaded faces of one face group, the second's start corner decided degenerate."""
+    delta = view_delta(**{"should_apply_shading": True, **view})
+    faces = delta.upload_path(np.concatenate(FACES))
+    fills = delta.upload_paint(FACE_FILLS)
+    delta.set_record(
+        "face_group",
+        1,
+        21,
+        shape=faces,
+        uv=[(0, 0), (1, 0)],
+        grid=(2, 1),
+        face_fill=fills,
+        space="world",
+        shade_in_3d=True,
+        normals=[(0, 0, 1), (0, 0, 1), (0, 0, 0), (0, 0, 1)],
+    )
+    delta.set_order([("moving", 1, 0), ("moving", 1, 1)])
+    return stream_of(delta)
+
+
+def test_newell_corners_name_the_corners_whose_writer_decided_them_degenerate():
     assert faces_stream().newell_corners([1]) == {1: [(False, False), (True, False)]}
     # Unshaded, nothing is lit by a normal.
     assert faces_stream(should_apply_shading=False).newell_corners([1]) == {}
+
+
+def test_face_stops_are_each_paths_lit_stops_per_layer():
+    light = np.array([-7.0, -9.0, 10.0])
+
+    def lit(rgba, point):
+        # CE's get_shaded_rgb facing +z, the faces' normal (the second face's degenerate corner is
+        # lit by its Newell normal, +z too).
+        to_sun = (light - point) / np.linalg.norm(light - point)
+        add = 0.5 * to_sun[2] ** 3
+        return (rgba[0] + add, rgba[1] + add, rgba[2] + add, rgba[3])
+
+    found = faces_stream().face_stops([1, 2])
+    assert list(found) == [1]
+    assert len(found[1]) == 2
+    for face, row, layers in zip(FACES, FACE_FILLS, found[1], strict=True):
+        background, fill, stroke = layers
+        assert background is None and stroke is None
+        want = [lit(row, face[0]), lit(row, face[(len(face) - 1) // 6 * 3])]
+        assert len(fill) == 2
+        for got, expected in zip(fill, want, strict=True):
+            assert len(got) == 4
+            assert np.allclose(got, expected, rtol=0, atol=1e-12), (got, expected)
+    # Unshaded, nothing is lit.
+    assert faces_stream(should_apply_shading=False).face_stops([1]) == {}
