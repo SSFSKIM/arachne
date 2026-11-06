@@ -655,14 +655,17 @@ class CairoDrawer:
         MultiCamera captures them), Cairo clipped to the box: once over a
         transparent pixel, what it leaves there its ``drawn`` (premultiplied,
         whether the camera drew it through Cairo or wrote it as an image or a
-        point cloud does), and once over a pixel of other bytes, so that a
-        leaf whose pixel does not depend on what was beneath ``covers`` it (an
-        opaque fill, a point cloud's block whatever its alpha: the camera
-        writes those over what is there). A leaf is hidden where a later one
-        covers the pixel, or, among paths filled through one background image
-        one after another (which the camera draws as one mask, multiplied by
-        the image once), where a later one's mask is opaque. A record's object
-        is its slot, as the Python stream writes it
+        point cloud does), and once over a pixel of other bytes, so that the
+        pixels it touches are known whatever it leaves there. A leaf drawn
+        source over ``covers`` a pixel only where its alpha is 255, however
+        near opaque it is; a point cloud's block covers where the camera wrote
+        it, whatever its alpha (the camera writes blocks over what is there).
+        A leaf is hidden where a later one covers the pixel, or, among paths
+        filled through one background image one after another (which the
+        camera draws as one mask, multiplied by the image once), where a later
+        one's mask is opaque: such a leaf touches the pixels its own mask
+        reaches, and draws there what the batch draws. A record's object is
+        its slot, as the Python stream writes it
         (:meth:`.xf.Delta.to_core`). Refused as :meth:`draw` refuses.
         """
         self._refuse_unknown(state, entries)
@@ -702,34 +705,65 @@ class CairoDrawer:
             self._draw_entries(camera, [entry], array)
             return inside.astype(np.int32)
 
-        by_pixel: dict[tuple[int, int], list[tuple[Leaf, Any, bool]]] = {}
-        batch: Any = None
-        for number, entry in enumerate(entries):
-            layer, slot, part = entry
-            record = state.records[slot]
-            fields = record.fields
+        def premultiplied(pixels: np.ndarray) -> np.ndarray:
+            # Written as straight RGBA (an image's composite, a point cloud's
+            # colours): premultiplied as Cairo's are.
+            alpha = pixels[..., 3:4]
+            pixels[..., :3] = (pixels[..., :3] * alpha + 127) // 255
+            return pixels
+
+        # Paths filled through one background image one after another: the
+        # camera draws them as one mask, multiplied by the image once.
+        batches: list[tuple[Any, int]] = []
+        for number, (layer, slot, _) in enumerate(entries):
+            fields = state.records[slot].fields
             filled = bool(int(fields.get("features", 0)) & FEATURE_BACKGROUND_IMAGE)
             key = (layer, fields.get("fill_image")) if filled else None
             if key is None:
-                batch = None
-            elif batch is None or batch[0] != key:
-                batch = (key, number)
+                batches.append((None, number))
+            elif number and batches[-1][0] == key:
+                batches.append(batches[-1])
+            else:
+                batches.append((key, number))
+        together: dict[int, np.ndarray] = {}
+
+        by_pixel: dict[tuple[int, int], list[tuple[Leaf, Any, bool]]] = {}
+        for number, entry in enumerate(entries):
+            layer, slot, part = entry
+            record = state.records[slot]
+            batch = batches[number] if batches[number][0] is not None else None
             alone = drawn_over((0, 0, 0, 0), entry)
             over = drawn_over(_SENTINEL, entry)
             touched = alone.any(axis=-1) | (over != _SENTINEL).any(axis=-1)
-            covers = (alone == over).all(axis=-1) & touched
-            if filled or not _THROUGH_CONTEXT.get(record.kind):
-                # Written as straight RGBA (an image's composite, a point
-                # cloud's colours): premultiplied as Cairo's are.
-                alpha = alone[..., 3:4]
-                alone[..., :3] = (alone[..., :3] * alpha + 127) // 255
+            if record.kind == "points":
+                # The camera writes a block over what is there: it covers
+                # where it was written, whatever its alpha.
+                covers = (alone == over).all(axis=-1) & touched
+            else:
+                # Source over: a leaf hides what is beneath only where it is
+                # opaque.
+                covers = (alone[..., 3] == 255) & touched
+            if batch is not None or not _THROUGH_CONTEXT.get(record.kind):
+                alone = premultiplied(alone)
             mask = None
             if batch is not None:
                 inside[...] = 0
                 camera.display_multiple_non_background_colored_vmobjects(
                     [self._proxy(slot, part, record)], array
                 )
-                mask = inside[..., 3] == 255
+                own = inside[..., 3].astype(np.int32)
+                mask = own == 255
+                # Whether the leaf touches a pixel is its own mask's, before
+                # the image multiplies it; what it paints is the batch's, as
+                # the camera composites the batch.
+                if batch[1] not in together:
+                    inside[...] = 0
+                    members = [e for n, e in enumerate(entries) if batches[n] == batch]
+                    self._draw_entries(camera, members, array)
+                    together[batch[1]] = premultiplied(inside.astype(np.int32))
+                touched = own > 0
+                alone = np.where(touched[..., None], together[batch[1]], 0)
+                covers = mask & (alone[..., 3] == 255)
             stable = state.objects.get(slot, (None,))[0]
             for y, x in zip(*np.nonzero(touched), strict=True):
                 r, g, b, a = (int(v) for v in alone[y, x])
@@ -742,7 +776,11 @@ class CairoDrawer:
                     painter="cairo",
                     covers=bool(covers[y, x]),
                 )
-                masked = (batch[1], bool(mask[y, x])) if mask is not None else None
+                masked = (
+                    (batch[1], bool(mask[y, x]))
+                    if batch is not None and mask is not None
+                    else None
+                )
                 by_pixel.setdefault((int(x) + x0, int(y) + y0), []).append(
                     (leaf, masked, bool(covers[y, x]))
                 )
