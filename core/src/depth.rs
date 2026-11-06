@@ -581,27 +581,34 @@ impl Centreline {
         })
     }
 
-    /// The depth plane at pixel `(x, y)`, among the segments `candidates` (indices into the
-    /// segments; all segments when empty): along the front-most of the segments within `reach` of
-    /// the pixel's centre (the part of the curve the pixel shows, where parts of it overlap on
-    /// screen), else along the nearest; the key interpolated along the segment.
-    pub fn plane_at(&self, x: u32, y: u32, candidates: &[u32], reach: f64) -> Plane {
-        let c = [x as f64 + 0.5, y as f64 + 0.5];
-        let reach2 = reach * reach;
-        // (outside reach, then the key there inside it or the distance outside it): least wins.
-        let mut best: Option<(bool, f64, usize)> = None;
+    /// The key at point `p` of the part of the curve that covers it, among the segments
+    /// `candidates` (indices into the segments; all segments when empty), with how far it may
+    /// stand from the exact key of the curve's inputs (its points' keys, within their errors): the
+    /// front-most of the segments whose footprint holds `p` (its projection falls between the
+    /// segment's ends) and whose stroke body holds it (`p` within `body` of the projection), keyed
+    /// at the projection; where no segment's body holds it (a cap, a join, the antialiasing fringe
+    /// beyond the body, a fill), the key of the curve's nearest point. Either way a key between the
+    /// two ends' keys of the segment it is read on, so no point takes a key the curve's part there
+    /// does not. The front-most of several is their least key, which moves by no more than the
+    /// largest of their errors.
+    pub fn key_under(&self, p: [f64; 2], candidates: &[u32], body: f64) -> (f64, f64) {
+        let body2 = body * body;
+        // The front-most key among the segments holding p with the largest error among them; the
+        // nearest segment's (distance, key, error).
+        let mut front: Option<(f64, f64)> = None;
+        let mut nearest: Option<(f64, f64, f64)> = None;
         let mut consider = |i: usize| {
             let (a, ka, b, kb) = self.segments[i];
-            let (t, _) = project(a, b, c);
-            let p = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
-            let d = (p[0] - c[0]) * (p[0] - c[0]) + (p[1] - c[1]) * (p[1] - c[1]);
-            let this = if d <= reach2 {
-                (false, ka + (kb - ka) * t, i)
-            } else {
-                (true, d, i)
-            };
-            if best.is_none_or(|(out, v, _)| (this.0, this.1) < (out, v)) {
-                best = Some(this);
+            let (raw, d2) = foot(a, b, p);
+            let (key, err) = key_on((a, ka), (b, kb), self.errors[i], p, raw);
+            if (0.0..=1.0).contains(&raw) && d2 <= body2 {
+                front = Some(match front {
+                    Some((f, e)) => (f.min(key), e.max(err)),
+                    None => (key, err),
+                });
+            }
+            if nearest.is_none_or(|(n, _, _)| d2 < n) {
+                nearest = Some((d2, key, err));
             }
         };
         if candidates.is_empty() {
@@ -609,47 +616,63 @@ impl Centreline {
         } else {
             candidates.iter().for_each(|i| consider(*i as usize));
         }
-        let (_, _, i) = best.expect("a centreline has a segment");
-        let (a, ka, b, kb) = self.segments[i];
-        let ends = self.errors[i];
-        let (_, len2) = project(a, b, c);
-        if len2 == 0.0 || ka == kb {
-            return Plane {
-                err: ends + (ka - kb).abs(),
-                ..Plane::constant(ka.min(kb))
-            };
-        }
-        // key(p) = ka + (kb - ka) * ((p - a) . (b - a)) / |b - a|^2, an affine function of p.
-        let g = (kb - ka) / len2;
-        let (bx, by) = (g * (b[0] - a[0]), g * (b[1] - a[1]));
-        // Read at the pixel's sub-samples, within `far` of `a` (a pixel from its centre): there the
-        // parameter along the segment is within `far / len` of the ends, so the ends' errors carry
-        // over at most `1 + 2 far / len` times; the gradient rounds by about `4u` of the change
-        // along it, and `a` by `3u` of its terms.
-        let far = libm::hypot(c[0] - a[0], c[1] - a[1]) + 1.0;
-        let reach = far / len2.sqrt();
-        let a0 = ka - bx * a[0] - by * a[1];
-        let rounding = 4.0 * U * (kb - ka).abs() * (1.0 + reach)
-            + 3.0 * U * (ka.abs() + (bx * a[0]).abs() + (by * a[1]).abs());
-        Plane {
-            a: a0,
-            b: bx,
-            c: by,
-            err: ends * (1.0 + 2.0 * reach) + rounding,
-        }
+        front
+            .or(nearest.map(|(_, key, err)| (key, err)))
+            .expect("a centreline has a segment")
     }
 }
 
-/// The parameter in `0..=1` of the point of segment `a`-`b` nearest `p`, and the segment's squared
-/// length.
-fn project(a: [f64; 2], b: [f64; 2], p: [f64; 2]) -> (f64, f64) {
+/// The key at `p` of the segment from `a` to `b` (each a point and its key, the keys within `ends`
+/// of their exact values), `raw` the parameter of `p`'s projection onto it, and how far that key
+/// may stand from the exact key there: where `p` projects inside the segment, as the plane the key
+/// runs along through the segment reads it at `p` (`ka + g (p - a) . (b - a)`, summed as
+/// [`Plane::at`] sums it); past an end, that end's key; held within the two keys either way.
+/// Inside, the key is a convex combination of the ends', so their errors carry over at most once;
+/// the gradient rounds by about `4u` of the change along it, times how far along the segment `p`
+/// lies, the plane's `a` by `3u` of its terms, and reading it at `p` by `4u` of its terms. A
+/// segment of no length, or of one key, is its lesser key, which may stand from the exact key
+/// anywhere along it by the keys' spread.
+fn key_on(
+    (a, ka): ([f64; 2], f64),
+    (b, kb): ([f64; 2], f64),
+    ends: f64,
+    p: [f64; 2],
+    raw: f64,
+) -> (f64, f64) {
     let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
     let len2 = dx * dx + dy * dy;
-    if len2 == 0.0 {
-        return (0.0, 0.0);
+    if len2 == 0.0 || ka == kb {
+        return (ka.min(kb), ends + (ka - kb).abs());
     }
-    (
-        (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2).clamp(0.0, 1.0),
-        len2,
-    )
+    if raw < 0.0 {
+        return (ka, ends);
+    }
+    if raw > 1.0 {
+        return (kb, ends);
+    }
+    let g = (kb - ka) / len2;
+    let (bx, by) = (g * dx, g * dy);
+    let plane = Plane::new(ka - bx * a[0] - by * a[1], bx, by);
+    let along = libm::hypot(p[0] - a[0], p[1] - a[1]) / len2.sqrt();
+    let err = ends
+        + 4.0 * U * (kb - ka).abs() * (1.0 + along)
+        + 3.0 * U * (ka.abs() + (bx * a[0]).abs() + (by * a[1]).abs())
+        + plane.read_error(p[0], p[1]);
+    (plane.at(p[0], p[1]).clamp(ka.min(kb), ka.max(kb)), err)
+}
+
+/// Point `p` against segment `a`-`b`: the raw parameter of its projection onto the segment's line
+/// (`0` for a segment of no length), and the squared distance from `p` to the segment's nearest
+/// point.
+fn foot(a: [f64; 2], b: [f64; 2], p: [f64; 2]) -> (f64, f64) {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let len2 = dx * dx + dy * dy;
+    let raw = if len2 == 0.0 {
+        0.0
+    } else {
+        ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2
+    };
+    let t = raw.clamp(0.0, 1.0);
+    let (ex, ey) = (a[0] + dx * t - p[0], a[1] + dy * t - p[1]);
+    (raw, ex * ex + ey * ey)
 }

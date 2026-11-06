@@ -22,10 +22,11 @@
 //!   between those corners.
 //! - Depth: a path in world space under a 3D camera lies on its plane when it has one seen clearly
 //!   (`depth::WorldPlane`, made canonical, so text and axes on one plane, and a mesh on it, tie
-//!   exactly); otherwise (a curve in space, a plane seen nearly edge-on) each pixel takes the depth
-//!   of the path's own curve (`depth::Centreline`: the front-most part that reaches the pixel, else
-//!   the nearest). A fixed-orientation path is a camera-facing
-//!   plane at its centre's depth; anything else is in front of the scene, tying by draw order.
+//!   exactly); otherwise (a curve in space, a plane seen nearly edge-on) each sub-sample takes the
+//!   depth of the part of the path's own curve that covers it (`depth::Centreline::key_under`: the
+//!   front-most part whose stroke body holds it, else the nearest point). A fixed-orientation path
+//!   is a camera-facing plane at its centre's depth; anything else is in front of the scene, tying
+//!   by draw order.
 //! - Pre-projected (XF 1.1's tail): the points, paints and gradient ends a camera of the scene's
 //!   own produced, drawn as they are, never projected or lit again. Depth follows the rules above
 //!   in that camera's axes, the points put back where its projection took them from
@@ -138,8 +139,9 @@ fn drawn_world(draw: &PathDraw<'_>) -> Option<Vec<[f64; 3]>> {
 #[derive(Clone, Copy, Debug)]
 enum LayerDepth {
     Plane(Plane),
-    /// The depth along a curve: an index into `Paths::centrelines`.
-    Curve(u32),
+    /// The depth along a curve: an index into `Paths::centrelines`, and the half width in pixels of
+    /// the layer's stroke (`0` for a fill): how far from the curve the layer's body reaches.
+    Curve(u32, f64),
 }
 
 /// What a layer paints its pixels with.
@@ -278,12 +280,10 @@ impl Layer {
     }
 }
 
-/// A curve's depth, the bounds of its segments widened by how far its pixels may reach from it,
-/// and how far a pixel takes the front-most segment that reaches it.
+/// A curve's depth, and the bounds of its segments widened by how far its pixels may reach from it.
 struct CurveDepth {
     line: Centreline,
     bounds: Vec<[f64; 4]>,
-    reach: f64,
 }
 
 /// Paths lowered to coverage layers, binned by tile: a producer of area fragments.
@@ -969,6 +969,14 @@ impl<'v> Lowering<'v> {
                 );
                 mapped(&stroked, &self.map)
             };
+            // A stroke's body reaches half its width from the curve; a fill has none.
+            let depth = match depth {
+                LayerDepth::Curve(i, _) => LayerDepth::Curve(
+                    i,
+                    width * self.view.cairo_line_width_multiple * self.map.xx.abs() / 2.0,
+                ),
+                plane => plane,
+            };
             self.push(
                 scanline::edges_of(&rings(&outline_px)),
                 spec,
@@ -1088,12 +1096,8 @@ impl<'v> Lowering<'v> {
             return LayerDepth::Plane(Plane::constant(f64::NEG_INFINITY));
         }
         let bounds = line.segment_bounds(bins).collect();
-        self.paths.centrelines.push(CurveDepth {
-            line,
-            bounds,
-            reach,
-        });
-        LayerDepth::Curve(self.paths.centrelines.len() as u32 - 1)
+        self.paths.centrelines.push(CurveDepth { line, bounds });
+        LayerDepth::Curve(self.paths.centrelines.len() as u32 - 1, 0.0)
     }
 
     /// The screen box the path at `shown` paints in, a stroke reaching `reach` past it, and the
@@ -1232,19 +1236,16 @@ impl Paths {
     fn depth_at(&self, depth: LayerDepth, x: u32, y: u32, near: &mut Vec<u32>) -> Plane {
         match depth {
             LayerDepth::Plane(p) => p,
-            LayerDepth::Curve(i) => {
+            LayerDepth::Curve(i, body) => {
                 let curve = &self.centrelines[i as usize];
-                let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
-                near.clear();
-                near.extend(
-                    curve
-                        .bounds
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, b)| px >= b[0] && px <= b[2] && py >= b[1] && py <= b[3])
-                        .map(|(k, _)| k as u32),
-                );
-                curve.line.plane_at(x, y, near, curve.reach)
+                curve.near(x, y, near);
+                let (key, err) = curve
+                    .line
+                    .key_under([x as f64 + 0.5, y as f64 + 0.5], near, body);
+                Plane {
+                    err,
+                    ..Plane::constant(key)
+                }
             }
         }
     }
@@ -1297,6 +1298,21 @@ impl Paths {
     }
 }
 
+impl CurveDepth {
+    /// The segments whose bounds hold pixel `(x, y)`'s centre, into `near`.
+    fn near(&self, x: u32, y: u32, near: &mut Vec<u32>) {
+        let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
+        near.clear();
+        near.extend(
+            self.bounds
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| px >= b[0] && px <= b[2] && py >= b[1] && py <= b[3])
+                .map(|(k, _)| k as u32),
+        );
+    }
+}
+
 impl Producer for Paths {
     fn opaque(&self, pass: &mut OpaquePass<'_>) {
         self.raster(pass.rect(), true, |x, y, f| pass.add(x, y, f));
@@ -1321,5 +1337,29 @@ impl Producer for Paths {
     }
     fn edges(&self, id: u32) -> Option<&[Edge]> {
         Some(&self.layers[id as usize].edges)
+    }
+
+    fn curve_depths(
+        &self,
+        id: u32,
+        x: u32,
+        y: u32,
+        points: &[[f64; 2]],
+        out: &mut [f64],
+    ) -> Option<f64> {
+        let LayerDepth::Curve(i, body) = self.layers[id as usize].depth else {
+            return None;
+        };
+        let curve = &self.centrelines[i as usize];
+        let mut near = Vec::new();
+        curve.near(x, y, &mut near);
+        // One bound for every point, as a plane's is: the largest of theirs.
+        let mut err = 0.0f64;
+        for (p, d) in points.iter().zip(out.iter_mut()) {
+            let (key, e) = curve.line.key_under(*p, &near, body);
+            *d = key;
+            err = err.max(e);
+        }
+        Some(err)
     }
 }
