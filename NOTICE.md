@@ -32,7 +32,7 @@ These ideas came from other projects; no code was taken from them.
   (`arachne/timeline/source.py`): ManimGX's `cli/diagnostics.py`, as above.
 - In the lint (`arachne/lint/`): reading a text whole, as the ink of its glyphs, and two copies of one text with the
   same ink in one place as one text; marking the parts of grids (number planes, vector fields) apart; a `note`
-  severity for findings that are likely meant; folding a run of more than three look-alike findings into the first,
+  severity for findings that are likely meant; folding more than three look-alike findings into the first,
   which counts the rest; and 20 px at 1080 px tall as the bound for small text: ManimGX's `cli/diagnostics.py`, as
   above.
 - Finding the scene's own line by walking the stack out of the library, and refusing `play()` while another play

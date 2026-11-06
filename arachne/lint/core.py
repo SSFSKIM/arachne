@@ -159,7 +159,7 @@ def lint(
         Span(play.index, play.kind, play.start, play.end) for play in record.plays
     )
     return LintResult(
-        tuple(fold(kept)),
+        tuple(fold(kept, timeline=[span.t_start for span in timeline])),
         instants,
         timeline,
         session.stale,

@@ -10,6 +10,7 @@ import pytest
 
 from arachne.lint.exempt import Exemptions
 from arachne.lint.findings import Finding, FindingObject, Holder, fold, in_range
+from arachne.timeline.source import SourceLine
 
 
 def _object(
@@ -88,10 +89,17 @@ def test_folding_keeps_the_first_of_more_than_three_look_alikes():
     assert kept.folded == tuple(alike[1:])
 
 
-def test_a_code_that_never_folds_keeps_every_look_alike():
-    """Each jump is its own event at its own cut: none folds into another."""
+@pytest.mark.parametrize("line", [None, 3])
+def test_a_code_that_never_folds_keeps_every_look_alike(line):
+    """Each jump is its own event at its own cut: none folds into another,
+    of one creating line or none.
+    """
     alike = [
-        _finding(_object("s.py:3#0", kind="Dot"), code="motion.jump", t=Fraction(i))
+        _finding(
+            _object("s.py:3#0", kind="Dot", line=line),
+            code="motion.jump",
+            t=Fraction(i),
+        )
         for i in range(5)
     ]
     assert fold(alike) == alike
@@ -102,12 +110,16 @@ def test_three_look_alikes_are_all_kept():
     assert fold(alike) == alike
 
 
-def test_only_a_run_of_look_alikes_folds():
-    """Findings of another code, or between other kinds, break the run."""
+def test_look_alikes_fold_across_the_findings_between_them():
+    """A finding of another code among them does not keep them apart: the
+    fold stands where the first of them stood.
+    """
     alike = [_finding(_label(i), _planet(i), t=Fraction(i)) for i in range(4)]
     other = _finding(_label(9), code="gap.text", t=Fraction(2, 3))
-    found = fold([*alike[:2], other, *alike[2:]])
-    assert found == [*alike[:2], other, *alike[2:]]
+    kept, rest = fold([*alike[:2], other, *alike[2:]])
+    assert kept.objects == alike[0].objects
+    assert kept.folded == tuple(alike[1:])
+    assert rest is other
 
 
 def test_objects_the_scene_names_apart_do_not_fold():
@@ -211,3 +223,104 @@ def test_named_parts_of_one_group_do_not_fold():
         for i in range(4)
     ]
     assert fold(named) == named
+
+
+# Folding by the lines that made the objects, within an event
+
+
+def _member(name: str, i: int, line: int) -> FindingObject:
+    return _object(f"s.py:{line}#{i}", line=line, name=f"{name}[{i}]", kind="Square")
+
+
+def test_members_made_by_one_line_fold_by_line_pair_whatever_their_names():
+    """A row made by one line over a row made by another: each pair named
+    apart (``upper[i]``, ``lower[i]``), found at one instant with another
+    pair among them, folds into one per line pair, counted.
+    """
+    rows = [
+        _finding(_member("upper", i, 7), _member("lower", i, 8), code="contact.held")
+        for i in range(5)
+    ]
+    rings = _finding(
+        _object("s.py:9#0", line=9, name="ring"),
+        _object("s.py:10#0", line=10, name="other"),
+        code="contact.held",
+    )
+    kept, other = fold([*rows[:2], rings, *rows[2:]], timeline=[Fraction(0)])
+    assert kept.objects == rows[0].objects
+    assert kept.folded == tuple(rows[1:])
+    assert other is rings
+
+
+def test_objects_made_by_lines_of_their_own_stay_apart():
+    pairs = [
+        _finding(
+            _object(f"s.py:{i}#0", line=i, name="dot"),
+            _object("s.py:20#0", line=20, name="ring"),
+        )
+        for i in range(4)
+    ]
+    assert fold(pairs, timeline=[Fraction(0)]) == pairs
+
+
+def test_look_alikes_fold_only_within_one_event():
+    """Two of them in each of two plays are two and two: none folds."""
+    alike = [
+        _finding(_member("upper", i, 7), _member("lower", i, 8), t=Fraction(i))
+        for i in range(4)
+    ]
+    timeline = [Fraction(0), Fraction(2)]
+    assert fold(alike, timeline=timeline) == alike
+    assert len(fold(alike, timeline=[Fraction(0)])) == 1
+
+
+def test_a_folded_finding_holds_over_its_members_times():
+    """The kept finding spans the earliest start and the latest end of the
+    look-alikes it folds; each folded one keeps its own.
+    """
+    alike = [
+        Finding(
+            "contact.held",
+            Fraction(i),
+            Fraction(i) + Fraction(1, 2),
+            (_member("upper", i, 7), _member("lower", i, 8)),
+            message="planted",
+        )
+        for i in range(1, 5)
+    ]
+    (kept,) = fold(alike, timeline=[Fraction(0)])
+    assert (kept.t_start, kept.t_end) == (Fraction(1), Fraction(9, 2))
+    assert kept.objects == alike[0].objects
+    assert kept.folded == tuple(alike[1:])
+    latest = alike[-1]
+    assert kept.t_start <= latest.t_start <= latest.t_end <= kept.t_end
+
+
+def test_an_objectless_finding_folds_by_the_line_that_raised_it():
+    """A check of points, objectless, folds with those its own line raised
+    in the event, never with another line's; one raised at no line of the
+    scene never folds.
+    """
+
+    def raised(line: int | None, t: Fraction) -> Finding:
+        at = SourceLine("s.py", line) if line is not None else None
+        return Finding("axes.outside", t, t, (), message="planted", line=at)
+
+    found = [raised(12 + i % 2, Fraction(i, 10)) for i in range(8)]
+    first, second = fold(found, timeline=[Fraction(0)])
+    assert first.line == SourceLine("s.py", 12)
+    assert first.folded == tuple(found[2::2])
+    assert second.line == SourceLine("s.py", 13)
+    assert second.folded == tuple(found[3::2])
+    nowhere = [raised(None, Fraction(i, 10)) for i in range(4)]
+    assert fold(nowhere, timeline=[Fraction(0)]) == nowhere
+
+
+def test_objects_made_by_no_known_line_fold_by_kind_group_and_name():
+    """With no creating line to go by, an object is told apart as before:
+    by its kind, its outermost group and its own name.
+    """
+    named = [_finding(_object(f"o{i}", name=f"dot{i}")) for i in range(4)]
+    assert fold(named, timeline=[Fraction(0)]) == named
+    same = [_finding(_object(f"o{i}", name="dot")) for i in range(4)]
+    assert len(fold(same, timeline=[Fraction(0)])) == 1

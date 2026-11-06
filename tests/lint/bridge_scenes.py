@@ -967,3 +967,21 @@ class ExemptHeldThroughAWait(Scene):
         holder = VGroup(*[Dot(LEFT * 3) for _ in range(200)])
         declare(exempt=holder)
         self.wait(2)
+
+
+class SweptMembers(Scene):
+    """Two rows of squares, each made by one line, each square on the one
+    below it; and two rings that touch, added between the squares of the
+    upper row, so the sweep's pairs of the rows come either side of theirs.
+    """
+
+    def construct(self):
+        step, below = RIGHT * 0.6, DOWN * 0.3
+        uppers = [Square(0.4).shift(step * i) for i in range(5)]  # @uppers
+        lowers = [Square(0.4).shift(step * i + below) for i in range(5)]  # @lowers
+        ring = Circle(radius=0.3).shift(LEFT * 3)
+        other = Circle(radius=0.3).shift(LEFT * 2.6)
+        self.add(*uppers[:2], ring, *uppers[2:], *lowers, other)
+        self.wait(0.5)
+        self.found = sweep()  # @swept-members
+        self.wait(0.5)
