@@ -234,3 +234,97 @@ class ReplacedPathTrace(ThreeDScene):
         self.set_camera_orientation(phi=60 * DEGREES, theta=-45 * DEGREES)
         self.add(probe())
         self.wait(2 * HOLD)
+
+
+# ── a camera that moves, with leaves fixed in its frame ────────────────────
+
+
+class _TurningFixed3D(ThreeDScene):
+    """A probe fixed in the frame and a dot that is not, the camera turning
+    across every hold; ``change`` runs between two turns.
+    """
+
+    def construct(self):
+        self.set_camera_orientation(phi=60 * DEGREES, theta=-45 * DEGREES)
+        self.probe = probe()
+        self.dot = Dot(RIGHT)
+        self.add(self.dot)
+        self.add_fixed_in_frame_mobjects(self.probe)
+        self.move_camera(theta=-15 * DEGREES, run_time=HOLD)
+        self.change()
+        self.move_camera(theta=15 * DEGREES, run_time=HOLD)
+
+    def change(self):
+        pass
+
+
+class TurningFixedProbe3D(_TurningFixed3D):
+    """Nothing but the camera changes."""
+
+
+class FixedProbeChangesWhileTurning(_TurningFixed3D):
+    """While the camera turns, the fixed probe and the dot each change their
+    points, their style, and are rebuilt.
+    """
+
+    def change(self):
+        self.probe.shift(LEFT * 0.5)
+        self.dot.shift(UP * 0.5)
+        self.move_camera(theta=0, run_time=HOLD)
+        self.probe.set_fill(opacity=0.6).set_stroke(width=8)
+        self.dot.set_color("#ff0000")
+        self.move_camera(theta=5 * DEGREES, run_time=HOLD)
+        self.probe.become(probe().scale(0.5).shift(UP))
+        self.dot.become(Dot(LEFT))
+
+
+class FixedProbeUnderFrameCentreAndZoom(_TurningFixed3D):
+    """The camera moves its frame's centre and zooms as it turns."""
+
+    def change(self):
+        self.move_camera(theta=0, frame_center=(0.5, 0.2, 0.0), zoom=1.3, run_time=HOLD)
+
+
+class ProbeFixedMidTurn(ThreeDScene):
+    """The probe is drawn unfixed while the camera turns, then fixed in the
+    frame while it turns on.
+    """
+
+    def construct(self):
+        self.set_camera_orientation(phi=60 * DEGREES, theta=-45 * DEGREES)
+        self.probe = probe()
+        self.add(self.probe)
+        self.move_camera(theta=-15 * DEGREES, run_time=HOLD)
+        self.add_fixed_in_frame_mobjects(self.probe)
+        self.move_camera(theta=15 * DEGREES, run_time=HOLD)
+
+
+class ProbeUnfixedMidTurn(_TurningFixed3D):
+    """The fixed probe is let go of the frame while the camera turns on."""
+
+    def change(self):
+        self.remove_fixed_in_frame_mobjects(self.probe)
+
+
+class FixedGroupWhileTurning(ThreeDScene):
+    """A group fixed in the frame: its children, the probe among them, are
+    fixed with it.
+    """
+
+    def construct(self):
+        self.set_camera_orientation(phi=60 * DEGREES, theta=-45 * DEGREES)
+        group = VGroup(probe(), Dot(UP))
+        self.add_fixed_in_frame_mobjects(group)
+        self.move_camera(theta=15 * DEGREES, run_time=2 * HOLD)
+
+
+class FixedOrientationWhileTurning(ThreeDScene):
+    """A probe off the origin that keeps its orientation, not fixed in the
+    frame, as the camera turns: its centre is projected, so it moves.
+    """
+
+    def construct(self):
+        self.set_camera_orientation(phi=60 * DEGREES, theta=-45 * DEGREES)
+        label = probe().shift(RIGHT * 2 + UP * 0.5)
+        self.add_fixed_orientation_mobjects(label)
+        self.move_camera(theta=15 * DEGREES, run_time=2 * HOLD)

@@ -19,6 +19,14 @@ another version, so one version is one key. The camera's key is made of:
 - the versions of its own mobjects (its frame, trackers and light);
 - the view a read maps through (:class:`~.projection.View`), by value.
 
+A path fixed in a ThreeDCamera's frame is drawn unprojected: the engine's
+pre-display gives its points back as they are (``fixed_in_frame``), so its
+place follows from its version and the flat view alone, the view less its
+projection's settings (:func:`_frame_key`). It is kept under that key while
+the camera turns, moves its frame's centre or zooms, for as long as it is
+fixed in the frame as it is read; a leaf fixed only later, or let go, is
+placed under the key its read stands in.
+
 A read is kept only where that key sees everything it depends on. These are
 read every time:
 
@@ -40,12 +48,13 @@ from __future__ import annotations
 
 __all__ = ["CAMERAS_KEPT", "LeafMemo", "Lays", "Placed", "Viewing"]
 
+import dataclasses
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from arachne.camera.projection import Box, View, hold_rotation
+from arachne.camera.projection import Box, View, draw_kind, engine_trace, hold_rotation
 from arachne.timeline.draw import camera_nodes
 
 if TYPE_CHECKING:
@@ -111,6 +120,9 @@ class LeafMemo:
         self._placed: OrderedDict[
             tuple[Any, ...], tuple[Any, dict[_Key, Placed | None]]
         ] = OrderedDict()
+        #: By flat view, latest last: each version's place, of the paths
+        #: fixed in a ThreeDCamera's frame (:func:`_frame_key`).
+        self._fixed: OrderedDict[View, dict[_Key, Placed | None]] = OrderedDict()
         #: The camera inputs the latest read was keyed by: inputs observed
         #: anew but the same (:meth:`~.CameraExtras.same`) are keyed as these.
         self._extras: CameraExtras | None = None
@@ -155,7 +167,50 @@ class LeafMemo:
                 self._placed.popitem(last=False)
         else:
             self._placed.move_to_end(key)
-        return Viewing(self, record, capture, camera, found[1])
+        fixed = None
+        flat = _frame_key(camera, view)
+        if flat is not None:
+            fixed = self._fixed.get(flat)
+            if fixed is None:
+                fixed = self._fixed[flat] = {}
+                while len(self._fixed) > CAMERAS_KEPT:
+                    self._fixed.popitem(last=False)
+            else:
+                self._fixed.move_to_end(flat)
+        return Viewing(self, record, capture, camera, found[1], fixed)
+
+
+def _frame_key(camera: Any, view: View) -> View | None:
+    """The key a path fixed in ``camera``'s frame is placed under: ``view``
+    less its projection's settings, which the engine's pre-display reads for
+    no such path (it gives the points back before projecting them). ``None``
+    when ``camera`` is no ThreeDCamera, or when its pre-display or its path
+    trace is not the engine's.
+
+    What a fixed path's place reads, beyond its own version, is the view's
+    flat fields: the Cairo matrix and the map to the screen take the mapping
+    centre, the frame's and the picture's sizes and the line width multiple
+    (:func:`~.projection.member_place`); the projection's own inputs (the
+    frame's centre, the angles, the focal distance and the zoom) are read
+    only past the point a fixed path leaves the pre-display.
+    """
+    from arachne.camera.camera import Camera
+    from arachne.camera.three_d_camera import ThreeDCamera
+    from arachne.timeline.frozen import class_members
+
+    if not isinstance(camera, ThreeDCamera) or not engine_trace(camera):
+        return None
+    name = "transform_points_pre_display"
+    if name in vars(camera):
+        return None
+    # The pre-display the camera runs, and the one it calls on: ThreeDCamera's
+    # and then Camera's, each as the engine defined it.
+    owners = [k for k in type(camera).__mro__ if name in vars(k)]
+    if owners[:2] != [ThreeDCamera, Camera] or any(
+        vars(k)[name] is not class_members(k).get(name) for k in owners[:2]
+    ):
+        return None
+    return dataclasses.replace(view, three_d=None)
 
 
 class Viewing:
@@ -170,12 +225,14 @@ class Viewing:
         capture: Capture,
         camera: Any,
         placed: dict[_Key, Placed | None],
+        fixed: dict[_Key, Placed | None] | None = None,
     ) -> None:
         self._memo = memo
         self._record = record
         self._capture = capture
         self._camera = camera
         self._placed = placed
+        self._fixed = fixed
         self._rotated = False
 
     def node(self, mob: Mobject, chain: tuple[Mobject, ...]) -> Node | None:
@@ -215,10 +272,17 @@ class Viewing:
         mob, state = node
         key = (id(mob), id(state))
         assert key in self._memo._lays, "a place kept before its lays"
-        found = self._placed.get(key, _ABSENT)
+        places = self._placed
+        if (
+            self._fixed is not None
+            and draw_kind(mob) == "path"
+            and mob in self._camera.fixed_in_frame_mobjects
+        ):
+            places = self._fixed
+        found = places.get(key, _ABSENT)
         if found is _ABSENT:
             found = read()
-            self._placed[key] = found
+            places[key] = found
         elif not self._rotated:
             hold_rotation(self._camera)
         self._rotated = True

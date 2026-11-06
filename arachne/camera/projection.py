@@ -37,6 +37,7 @@ __all__ = [
     "ThreeDView",
     "View",
     "draw_kind",
+    "engine_trace",
     "hold_rotation",
     "home_box",
     "member_box",
@@ -287,7 +288,7 @@ def member_place(
     """
     if not len(member.points):
         return None
-    if draw_kind(member) == "path" and _engine_trace(camera):
+    if draw_kind(member) == "path" and engine_trace(camera):
         _rotate(camera)
         shown = camera.transform_points_pre_display(member, member.points)
         ink = _ink_box(camera, view, member, home=True, shown=shown)
@@ -302,7 +303,7 @@ def member_place(
     return ink, pixel_points(camera, view, member, points)
 
 
-def _engine_trace(camera: Camera) -> bool:
+def engine_trace(camera: Camera) -> bool:
     """Whether ``camera`` traces a path with the engine's own code:
     ``Camera.set_cairo_context_path`` and the trace it ends in as the engine
     defined them, neither overridden by its class nor replaced, on the class
