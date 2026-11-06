@@ -392,3 +392,48 @@ def test_a_lattice_of_lines_is_a_grid_by_its_geometry(session_of, name, grid):
     """
     session = session_of("Lattices", frame_rate=15)
     assert _grid_flags(session, name) == {grid}
+
+
+def _swept(session) -> list[str]:
+    """The codes of what the lint finds of the scene's closing sweep."""
+    return sorted(
+        f.code
+        for f in lint(session).findings
+        if f.code in ("contact.held", "overlap.text", "occlusion.glyph")
+    )
+
+
+@pytest.mark.parametrize(
+    "scene", ["FillGrownOverLattice", "OverLattice", "FilledOverLattice"]
+)
+def test_what_is_drawn_over_a_grid_touches_it_by_design(session_of, scene):
+    """A plot or a fill drawn over a grid drawn first is content on its
+    background: it touches the grid's lines by design.
+    """
+    session = session_of(scene, frame_rate=15)
+    assert _swept(session) == []
+
+
+def test_a_text_over_a_grid_line_is_still_checked(session_of):
+    session = session_of("TextOverLattice", frame_rate=15)
+    assert "overlap.text" in _swept(session)
+
+
+@pytest.mark.parametrize(
+    "scene",
+    [
+        "LatticeOverFill",
+        "FillOverParallelLines",
+        "FillOverSparseLattice",
+        "FillOverShortLattice",
+    ],
+)
+def test_a_grid_drawn_over_a_shape_or_lines_that_are_no_grid_still_touch(
+    session_of, scene
+):
+    """A grid drawn after the shape, or lines that are no grid (one way only,
+    two lines one way, lines stopping short of their group's own box) under
+    a fill: the touch is held.
+    """
+    session = session_of(scene, frame_rate=15)
+    assert "contact.held" in _swept(session)

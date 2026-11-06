@@ -17,7 +17,8 @@ touching. A pair is measured as the two are drawn:
   boxes; two strokes, point against point.
 
 Pairs built to touch are let pass: two pieces of one top-level mobject;
-an axis's line or ticks against anything but text; a point-sized marker
+an axis's line or ticks against anything but text; a grid against anything
+but text drawn after it (content on its background); a point-sized marker
 against a stroke, or another marker; a stroke touching only at its own
 ends (unless the other is text or axis furniture); two strokes drawn along
 each other, or a stroke along a filled shape's own outline.
@@ -260,6 +261,8 @@ def _built_to_touch(a: Measured, b: Measured) -> bool:
         return True
     for x, y in ((a, b), (b, a)):
         if x.structural and not y.text:
+            return True
+        if x.grid and not y.text and y.leaves[0].order > x.top:
             return True
         if x.marker and not y.region and not y.furniture:
             return True
