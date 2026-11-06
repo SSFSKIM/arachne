@@ -104,6 +104,7 @@ def _held(run: PlayRun) -> bool:
         # A frozen frame: CE runs nothing during it. Its one state is kept
         # whether a frame reads it or not: one between two instants of the
         # grid is still the scene's state over its span.
+        run.entered()
         run.sample(run.start, until=run.requested_end, keep=True)
         run.end = run.requested_end
         return True
@@ -124,6 +125,7 @@ class TickedRoute:
         ticks = list(ticks_in(start, end))
         run.set_clock(start)
         _evaluate(run, plan, start, 0.0, ticks[0] if ticks else end)
+        run.entered()
         run.started()
         run.sample(start, until=ticks[0] if ticks else end)
         ended = start if stop is not None and stop() else None
@@ -223,6 +225,8 @@ class _SampledRoute:
                 run.set_clock(instant)
                 following = instants[index + 1] if index + 1 < len(instants) else end
                 _evaluate(run, plan, instant, float(instant - previous), following)
+                if index == 0:
+                    run.entered()
                 run.sample(instant, until=following, keep=True)
                 previous = instant
         finally:

@@ -392,6 +392,15 @@ class PlayRun:
             plan if self.recorder.stepping else replace(plan, applied=False), first
         )
 
+    def entered(self) -> None:
+        """The play has been evaluated at its exact start (a frozen one
+        stands as it began): keep where each body stands there, if the
+        record keeps entries.
+        """
+        record = self.recorder.ensure_record()
+        if record.entries is not None:
+            record.entries[self.play.index] = self.recorder._bodies_now()
+
     def started(self) -> None:
         """The play has been evaluated at its start: show that state to the
         recorder's ``on_start`` hook, then plan which of its ticks only step
@@ -481,7 +490,8 @@ class Recorder:
 
     ``exits`` says which plays' ends the record keeps where each body stands
     at (``Record.exits``, :mod:`.bodies`), which the lint's motion rule
-    measures cuts from: ``"all"`` every play's (a forward run's record);
+    measures cuts from, and, alike, which plays' starts (``Record.entries``),
+    which it measures them to: ``"all"`` every play's (a forward run's record);
     ``"armed"`` each play ending after the scene arms the rule
     (:meth:`arm_motion`; a session's record); ``"none"`` none, armed or not
     (a render's, which no lint reads).
@@ -580,6 +590,7 @@ class Recorder:
             self.record.execution = self.execution
             if self.exits == "all":
                 self.record.exits = {}
+                self.record.entries = {}
             if self.states == "all":
                 self.record.states = States(since=0, armed=Fraction(0))
             self.record.bridge = Bridge()
@@ -620,6 +631,7 @@ class Recorder:
             record.armed_at = len(record.plays) - (1 if self._playing else 0)
         if self.exits == "armed" and record.exits is None:
             record.exits = {}
+            record.entries = {}
 
     def arm_states(self) -> None:
         """Keep, keeping armed states (``states="armed"``), the scene as the
@@ -997,12 +1009,17 @@ class Recorder:
         """Keep where each body stands as ``play`` ends: its animations
         finished and cleaned up, the script not yet run on.
         """
+        assert record.exits is not None
+        record.exits[play.index] = self._bodies_now()
+
+    def _bodies_now(self) -> Exit:
+        """Where each body of the scene's mobjects and foreground stands now."""
         scene = self.scene
+        record = self.ensure_record()
         shown = list(scene.mobjects)
         on = set(map(id, shown))
         shown += [m for m in scene.foreground_mobjects if id(m) not in on]
-        assert record.exits is not None
-        record.exits[play.index] = Exit(
+        return Exit(
             *bodies(
                 shown,
                 scene.renderer.camera,

@@ -14,7 +14,9 @@ padding, a tracker) is no body.
 shown from a record, or a live scene. The recorder also keeps them as each
 play ends (:class:`Exit`, in ``Record.exits``): after its animations have
 finished and cleaned up and before the script runs on, a state no capture
-holds, and the one the lint's motion rule measures a cut from.
+holds, and the one the lint's motion rule measures a cut from; and as each
+play begins (``Record.entries``): evaluated at its exact start, where the
+rule measures the cut to.
 
 Most bodies hold still across most plays, so the recorder reads each exit
 against the last (:class:`Kept`): a body whose members are the ones read

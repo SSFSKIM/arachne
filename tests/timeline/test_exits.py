@@ -26,8 +26,9 @@ def _key_of(exit, type_name):
 
 
 def test_each_exit_reads_as_a_fresh_reading_would(session_of, monkeypatch):
-    """What the recorder keeps from one play's end to the next is only a
-    shortcut: every exit is what reading the scene afresh finds.
+    """What the recorder keeps from one reading to the next (each play's
+    entry, then its exit) is only a shortcut: every one is what reading the
+    scene afresh finds.
     """
     readings = []
     read = recorder.bodies
@@ -40,7 +41,7 @@ def test_each_exit_reads_as_a_fresh_reading_would(session_of, monkeypatch):
 
     monkeypatch.setattr(recorder, "bodies", compared)
     session = session_of("Changes", EXITS, probe=False)
-    assert len(readings) == len(session.record.plays) == 5
+    assert len(readings) == 2 * len(session.record.plays) == 10
     for (zoom, kept), (fresh_zoom, fresh) in readings:
         assert zoom == fresh_zoom
         assert list(kept) == list(fresh)
@@ -72,7 +73,8 @@ def test_a_live_camera_picture_is_read_again_at_every_exit(session_of, monkeypat
         (kept[1][display].visible, again[1][display].visible)
         for kept, again in readings
     ]
-    assert seen == [(False, False), (True, True)]
+    # Each wait's entry, then its exit.
+    assert seen == [(False, False), (False, False), (True, True), (True, True)]
     # An image that owns its pixels is still read once.
     still = _key_of(exits[0], "ImageMobject")
     assert exits[1].bodies[still] is exits[0].bodies[still]
