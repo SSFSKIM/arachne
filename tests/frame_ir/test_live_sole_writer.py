@@ -14,8 +14,10 @@ its camera's own draw, which is Cairo's. A capture begun on a reset in a
 later frame, or on a picture the scene set, draws over what was written as
 its pixels, as Cairo draws over it: each shown equal to Cairo's frame. Where
 the core's own pixels are under the write, the frame is ``render.unable``
-(and the render draws the scene again on Cairo). The write is never
-dropped.
+(and the render draws the scene again on Cairo). In a changed camera's
+first frame, which it draws itself, its draw is compared once with Cairo's
+draw of the frame's description, which catches a write no call of the
+camera's own made. The write is never dropped.
 
 Frames here are 192 x 108 pixels over CE's 8-unit frame height: 13.5 pixels a
 unit, the origin at pixel (96, 54).
@@ -28,7 +30,7 @@ from fractions import Fraction
 import numpy as np
 import pytest
 
-from arachne import ThreeDCamera
+from arachne import Square, ThreeDCamera
 from arachne.frame_ir.contributors import LiveFrame
 from arachne.frame_ir.core_painter import CorePainter
 from arachne.frame_ir.extract import Unable
@@ -236,6 +238,33 @@ def test_a_write_between_captures_the_core_drew_is_unable():
         )
 
 
+def test_a_write_after_a_continued_capture_of_a_fixed_orientation_mobject_is_seen():
+    """A capture continuing the frame's picture with a mobject of fixed
+    orientation (whose centres the capture keeps): what the next capture
+    must begin on is still known, so a write before it is seen.
+    """
+    from arachne import Dot
+
+    under, top = _squares()
+    tag = Dot([1.0, 1.0, 0.0])
+
+    def fixed(camera):
+        camera.add_fixed_orientation_mobjects(tag)
+
+    with pytest.raises(Unable, match="render.unable: .*between"):
+        _frames(
+            ThreeDCamera,
+            [
+                fixed,
+                _reset,
+                _capture(under),
+                _capture(tag),
+                _written(_green),
+                _capture(top),
+            ],
+        )
+
+
 # What the core draws over as pixels: a capture begun on a reset or on a
 # picture the scene set holds nothing of the core's, so what the array holds
 # is drawn under the capture, as Cairo draws it.
@@ -334,6 +363,53 @@ def test_a_picture_set_as_the_array_is_drawn_under_its_capture(
     if frame == 1:
         _layered(_core_painter(camera))
     assert not _fallbacks(findings)
+
+
+# A write in the hedged camera's first frame that no producer call makes.
+
+#: What :class:`InkingSquare` reads: the scene drawing it.
+INK: dict = {}
+
+
+class InkingSquare(Square):
+    """A square of the scene's own whose stroke width, read as the camera
+    draws it, writes a patch of the camera's array in the scene's first frame:
+    code of the scene's that runs within a capture, outside every call of the
+    camera's own code.
+    """
+
+    def get_stroke_width(self, background=False):
+        scene = INK.get("scene")
+        if scene is not None and scene.renderer.time == 0:
+            scene.renderer.camera.pixel_array[0:3, 0:3] = WHITE
+        return super().get_stroke_width(background)
+
+
+class InkedSolids(camera_scenes.ShiftedSolids):
+    """:class:`camera_scenes.ShiftedSolids` with an :class:`InkingSquare`."""
+
+    def construct(self):
+        INK["scene"] = self
+        self.add(InkingSquare(side_length=1, fill_opacity=0.6, stroke_width=0))
+        super().construct()
+
+
+def test_a_write_in_the_first_frame_outside_the_camera_s_code_falls_back(findings):
+    """The hedged camera's first frame is its own draw, compared once with
+    Cairo's draw of the frame's description before the description replaces
+    it: a write the description lacks leaves the camera's own draw standing,
+    and the whole scene is drawn as on Cairo, byte for byte.
+    """
+    _, cairo = render(InkedSolids, FPS, **MEDIUM)
+    _, core = render(InkedSolids, FPS, draw_path="core", **MEDIUM)
+    assert np.all(cairo[0][1, 1, :3] == 255), "Cairo shows the write"
+    assert not np.all(cairo[1][1, 1, :3] == 255), "in the first frame only"
+    assert len(cairo) == len(core) > 0
+    for index, (a, b) in enumerate(zip(cairo, core, strict=True)):
+        np.testing.assert_array_equal(a, b, err_msg=f"frame {index}")
+    [finding] = _fallbacks(findings)
+    assert "whole scene" in finding.message
+    assert "first frame" in finding.message
 
 
 # What changes nothing.
