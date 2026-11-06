@@ -41,8 +41,16 @@ class CorePainter:
 
     keep_all = False
     #: Whether it draws captures as the scene runs (:mod:`.live`), each
-    #: over the ones before: it then reports no contributors.
+    #: over the picture its camera's array holds: it then reports the
+    #: contributors of a capture only where that capture is :attr:`whole`.
     live = False
+    #: Whether the last frame drawn is whole: drawn over its camera's own
+    #: background with nothing of an earlier picture composited into it.
+    #: A frame drawn from the record is. A live painter's frame is not,
+    #: unless its live painter records that the capture began on the
+    #: camera's background as its reset left it (:mod:`.live`); never
+    #: decided from the pixels.
+    whole = True
     #: Frames drawn by the core in this process.
     drawn_total = 0
     #: Whether the overlay's runs the camera draws through its context are
@@ -114,6 +122,7 @@ class CorePainter:
         """
         import arachne_core
 
+        self.whole = not self.live
         sent = self.canonical(delta)
         read = arachne_core.FrameDelta.from_bytes(sent.to_core().to_bytes())
         self.core.apply(read)
@@ -152,12 +161,12 @@ class CorePainter:
         """What Cairo is handed for each leaf of the last frame drawn through
         the camera's context, by ``(slot, part)`` (:meth:`.cairo_painter.
         CairoDrawer.outlines`): the geometry its edges are measured against.
+        Refused (``LiveFrame``) unless the last frame is :attr:`whole`.
         """
-        if self.live:
+        if not self.whole:
             raise LiveFrame(
-                "outlines: this painter draws captures as the scene runs, each"
-                " over the ones before it; take them from the frame's state"
-                " extracted whole"
+                "outlines: the last capture was drawn over an earlier picture;"
+                " take them from the frame's state extracted whole"
             )
         return self.drawer.outlines(self.state, self.state.order)
 
@@ -166,13 +175,13 @@ class CorePainter:
         bottom first (:mod:`.contributors`): the core's, in depth order per
         sub-sample, under the overlay's, which Cairo paints over them in CE's
         order (each overlay leaf drawn again alone). Nothing the painter
-        draws next changes.
+        draws next changes. Refused (``LiveFrame``) unless the last frame is
+        :attr:`whole`.
         """
-        if self.live:
+        if not self.whole:
             raise LiveFrame(
-                "contributors: this painter draws captures as the scene runs,"
-                " each over the ones before it; attribute the frame from its"
-                " state extracted whole"
+                "contributors: the last capture was drawn over an earlier"
+                " picture; attribute the frame from its state extracted whole"
             )
         found = contributors.from_core(self.core.contributors(*box), self.state.objects)
         overlay = self.core.overlay_entries()

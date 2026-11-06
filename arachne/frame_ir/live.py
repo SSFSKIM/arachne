@@ -44,6 +44,7 @@ from arachne.mobject.values import FrozenArray
 
 from .cairo_painter import CairoDrawer
 from .canonical import canonical_order, frame_grid
+from .core_painter import CorePainter
 from .extract import (
     FrameStream,
     Unable,
@@ -129,7 +130,9 @@ class _Described:
     """What a camera's pixels are on the core, described: the pixels the
     description drew, the background it drew over, and the captures' draws
     it was made of (each a leaf's kind and recording, in order) with the
-    fixed-orientation centres they asked for.
+    fixed-orientation centres they asked for. ``whole`` is whether that
+    background is the camera's own as its reset left it, nothing of an
+    earlier picture composited into it.
     """
 
     camera: Any
@@ -137,6 +140,7 @@ class _Described:
     background: np.ndarray
     drawn: list[tuple[type, _Recording]]
     centres: dict[int, list[Any]]
+    whole: bool = False
 
 
 #: An array the camera holds is compared element by element up to this size,
@@ -453,6 +457,10 @@ class LivePainter:
         #: array), or ``None``. A capture that starts on one describes the
         #: frame from it (:meth:`_under`).
         self._holding: dict[int, _Described | None] = {}
+        #: On the core, per camera (by id), within :meth:`around`: whether
+        #: its array holds its own background as its last reset left it,
+        #: no capture drawn into it since.
+        self._reset: dict[int, bool] = {}
         #: Per camera (by id), within :meth:`around`: the painter whose pixels
         #: its array holds (``painter.painter_kind``).
         self._drawn_by: dict[int, str] = {}
@@ -517,6 +525,7 @@ class LivePainter:
         self._frames += 1
         self._last.clear()
         self._holding.clear()
+        self._reset.clear()
         self._drawn_by.clear()
         self._opening = not delivered(camera, asked)
         displays = vars(camera).get("image_mobjects_from_cameras", ())
@@ -690,6 +699,7 @@ class LivePainter:
                 # A reset, a static picture the renderer kept, or the scene's own.
                 found = set_array(pixel_array, *args, **kwargs)
                 self._holding[id(camera)] = self._installed(camera, pixel_array)
+                self._reset[id(camera)] = pixel_array is camera.background
                 return found
 
             if "set_pixel_array" in own:
@@ -764,6 +774,8 @@ class LivePainter:
         """
         frames = vars(camera)["_xf_live"]
         background = np.array(camera.pixel_array)
+        # Begun on the camera's reset, or continuing a picture that was.
+        whole = self._reset.pop(id(camera), False)
         if self._real and not self.draw:
             background = self._behind(camera, background)
         drawn: list[tuple[type, _Recording]] = []
@@ -784,14 +796,19 @@ class LivePainter:
             return
         under = self._under(camera, drawn)
         if under is not None:
-            background = under.background
+            background, whole = under.background, under.whole
             merged = dict(under.centres)
             for key, values in centres.items():
                 merged[key] = [*merged.get(key, []), *values]
             drawn, centres = [*under.drawn, *drawn], merged
         pixels = self._describe(camera, drawn, centres, background)
+        painter = self.painter(camera)
+        if isinstance(painter, CorePainter):
+            # The core painter's frame is this capture's: whole or not, as
+            # recorded here, never as its pixels look.
+            painter.whole = whole
         if not self.draw:
-            described = _Described(camera, pixels, background, drawn, centres)
+            described = _Described(camera, pixels, background, drawn, centres, whole)
             self._last[id(camera)] = described
             self._holding[id(camera)] = described
         if self.draw and not np.array_equal(camera.pixel_array, pixels):

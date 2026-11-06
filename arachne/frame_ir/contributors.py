@@ -52,13 +52,16 @@ RGBA = tuple[int, int, int, int]
 
 
 class LiveFrame(RuntimeError):
-    """Contributors asked of a painter of captures drawn as the scene runs.
+    """Contributors asked of a painter of captures drawn as the scene runs,
+    of a capture drawn over an earlier picture.
 
-    Each such capture is drawn over the pixels of the captures before it, so
+    Such a capture is drawn over the pixels of the pictures before it, so
     their leaves are flattened into its background and no report of it can
-    name them: a live frame is attributed from the frame's state extracted
-    whole, through both painters (``FrameStream.frame``), never from the
-    live painter.
+    name them: the frame is attributed from its state extracted whole,
+    through both painters (``FrameStream.frame``). A capture its live
+    painter records as whole (begun on its camera's background as the
+    camera's reset left it, or continuing a picture that was) is reported
+    as any frame is (``CorePainter.whole``).
     """
 
 
