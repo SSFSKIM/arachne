@@ -900,16 +900,41 @@ impl SampleRanks {
             self.covering.clear();
             self.covering
                 .extend(items.iter().copied().filter(|i| cov[*i][k] != 0));
-            crate::order::rank(
+            let how = crate::order::rank(
                 &self.covering,
                 |a, b| front(a, b, k),
                 |a, b| strong(a, b, k),
                 &painted,
                 &mut self.ranked,
             );
+            assert_ne!(
+                how,
+                crate::order::Ranked::Strong,
+                "{}",
+                crate::order::ONE_SAMPLE
+            );
             self.ranks.extend_from_slice(&self.ranked);
             self.ends.push(self.ranks.len());
         }
+    }
+
+    /// The pixel the sub-samples make over `bg`, each compositing the fragments covering it in its
+    /// own order, as ranked: their mean.
+    // The sub-sample `k` indexes each fragment's coverage row.
+    #[allow(clippy::needless_range_loop)]
+    fn composite(&self, frags: &[Fragment], cov: &[[u8; SAMPLES]], bg: [u8; 4]) -> [u8; 4] {
+        let mut sum = [0u32; 4];
+        for k in 0..SAMPLES {
+            let mut px = bg;
+            for i in self.at(k).iter().rev() {
+                px = blend(frags[*i].colour, cov[*i][k], px);
+            }
+            for (s, c) in sum.iter_mut().zip(px) {
+                *s += c as u32;
+            }
+        }
+        let n = SAMPLES as u32;
+        sum.map(|v| ((v + n / 2) / n) as u8)
     }
 
     /// Which of `n` fragments some sub-sample shows: those its rank puts in front of every
@@ -1020,13 +1045,20 @@ pub(crate) fn resolve_pixel(
     let (fronts, strong) = (&s.fronts, &s.strong);
     s.covering.clear();
     s.covering.extend(0..n);
-    order::rank(
+    let how = order::rank(
         &s.covering,
         |a, b| fronts[a * n + b],
         |a, b| strong[a * n + b],
         painted,
         &mut s.order,
     );
+    // Where the strong orders cycle the pixel has no order: each sub-sample composites in its own,
+    // where a layer covering the pixel whole hides what that order puts behind it.
+    if how == order::Ranked::Strong {
+        s.samples
+            .rank(cov, &s.covering, front_at, strong_at, painted);
+        return (Resolve::Sample, s.samples.composite(frags, cov, bg));
+    }
 
     // Where an opaque fragment covers the pixel whole, drop what the sub-samples' ranks hide: a
     // fragment that no sub-sample's rank puts in front of every such fragment. One that covers no
@@ -1198,18 +1230,7 @@ pub(crate) fn resolve_pixel(
     if !s.samples.is_ranked() {
         s.samples.rank(cov, &s.order, front_at, strong_at, painted);
     }
-    let mut sum = [0u32; 4];
-    for k in 0..SAMPLES {
-        let mut px = bg;
-        for i in s.samples.at(k).iter().rev() {
-            px = blend(frags[*i].colour, cov[*i][k], px);
-        }
-        for c in 0..4 {
-            sum[c] += px[c] as u32;
-        }
-    }
-    let n = SAMPLES as u32;
-    (Resolve::Sample, sum.map(|v| ((v + n / 2) / n) as u8))
+    (Resolve::Sample, s.samples.composite(frags, cov, bg))
 }
 
 /// A frame being drawn.

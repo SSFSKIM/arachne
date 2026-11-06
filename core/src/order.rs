@@ -91,6 +91,11 @@ pub fn at_sample(a: &Fragment, da: f64, ea: f64, b: &Fragment, db: f64, eb: f64)
     }
 }
 
+/// Why a sub-sample's rank always finds an order: its strong orders are depth's at one point,
+/// each pair's depths farther apart than their two bounds, which no cycle can be.
+pub const ONE_SAMPLE: &str =
+    "a sub-sample's strong orders are depth's at one point, which do not cycle";
+
 /// Whether [`at_sample`]'s order of `a` and `b` is strong, depth deciding it (see [`rank`]); the
 /// sub-sample's counterpart of [`Decided::is_strong`]. A rule that keeps paint order and is to hold
 /// against depth joins here and there.
@@ -139,7 +144,8 @@ pub enum Ranked {
     One = 0,
     /// They formed a cycle through a weak order, which yielded.
     Weak = 1,
-    /// The strong orders alone formed a cycle, broken by wins.
+    /// The strong orders alone formed a cycle: no one order keeps them ([`rank`] stops there,
+    /// [`rank_through_cycles`] breaks it by wins).
     Strong = 2,
 }
 
@@ -150,16 +156,41 @@ pub enum Ranked {
 /// one order, that order. Where they are not, the weak orders yield first: every strong order is
 /// kept, and among the items no strong order left puts behind another, the later painted
 /// (`painted`) goes first, which keeps every weak order it can, a weak order being paint order.
-/// Only where the strong orders alone form a cycle does the item in front of the most of those left
-/// go first, the later painted where as many. So the rank is a function of the pairwise orders,
-/// their strength and paint order alone. (A leaf's fill and its own stroke, kept in self-order,
-/// are to join the strong orders, through those two.)
+/// So the rank is a function of the pairwise orders, their strength and paint order alone. Where
+/// the strong orders alone form a cycle there is no such order: [`Ranked::Strong`], with `out`
+/// holding only the front ranked before the cycle. (A leaf's fill and its own stroke, kept in
+/// self-order, are to join the strong orders, through those two.)
 pub fn rank(
     items: &[usize],
     front: impl Fn(usize, usize) -> bool,
     strong: impl Fn(usize, usize) -> bool,
     painted: impl Fn(usize, usize) -> Ordering,
     out: &mut Vec<usize>,
+) -> Ranked {
+    ranked(items, front, strong, painted, out, false)
+}
+
+/// [`rank`], and where the strong orders alone form a cycle, the item in front of the most of those
+/// left goes first, the later painted where as many. Only the contributor report reads this, to
+/// list a pixel's leaves in one order; no draw path may read it. The resolve composites such a
+/// pixel at each sub-sample, in that sub-sample's own order, and reads no order of the pixel.
+pub fn rank_through_cycles(
+    items: &[usize],
+    front: impl Fn(usize, usize) -> bool,
+    strong: impl Fn(usize, usize) -> bool,
+    painted: impl Fn(usize, usize) -> Ordering,
+    out: &mut Vec<usize>,
+) -> Ranked {
+    ranked(items, front, strong, painted, out, true)
+}
+
+fn ranked(
+    items: &[usize],
+    front: impl Fn(usize, usize) -> bool,
+    strong: impl Fn(usize, usize) -> bool,
+    painted: impl Fn(usize, usize) -> Ordering,
+    out: &mut Vec<usize>,
+    through_cycles: bool,
 ) -> Ranked {
     // One order: then each is in front of all after it, and it is the only order that keeps every
     // pair, so inserting each item before the first it is in front of finds it. Checked, since the
@@ -183,13 +214,17 @@ pub fn rank(
             .iter()
             .copied()
             .filter(|&i| !left.iter().any(|&j| j != i && strong(j, i) && front(j, i)));
-        let pick = free.min_by(|&a, &b| painted(a, b)).unwrap_or_else(|| {
-            how = Ranked::Strong;
-            left.iter()
-                .copied()
-                .min_by(|&a, &b| wins(b, &left).cmp(&wins(a, &left)).then(painted(a, b)))
-                .expect("something is left")
-        });
+        let pick = match free.min_by(|&a, &b| painted(a, b)) {
+            Some(i) => i,
+            None if through_cycles => {
+                how = Ranked::Strong;
+                left.iter()
+                    .copied()
+                    .min_by(|&a, &b| wins(b, &left).cmp(&wins(a, &left)).then(painted(a, b)))
+                    .expect("something is left")
+            }
+            None => return Ranked::Strong,
+        };
         out.push(pick);
         left.retain(|&i| i != pick);
     }
@@ -200,7 +235,8 @@ pub fn rank(
 mod tests {
     use super::*;
     use crate::composite::{
-        Coverage, Plane, Resolve, Scratch, blend, depth_error, resolve_pixel, sample_point,
+        Coverage, Plane, Resolve, SAMPLE_OFFSETS, Scratch, blend, depth_error, resolve_pixel,
+        sample_point,
     };
 
     fn at_depth(depth: Plane, colour: [u8; 4], coverage: Coverage, order: u32) -> Fragment {
@@ -359,20 +395,26 @@ mod tests {
     }
 
     #[test]
-    fn a_cycle_of_strong_orders_is_broken_by_wins_then_paint_order() {
+    fn the_report_breaks_a_cycle_of_strong_orders_by_wins_then_paint_order() {
         // 0 over 1, 1 over 2, 2 over 0, each by depth: one win each, so paint order (2 drawn last)
-        // places the first, and the rest follow the pairs.
+        // places the first, and the rest follow the pairs. The rank itself takes no order.
         let front = |a: usize, b: usize| matches!((a, b), (0, 1) | (1, 2) | (2, 0));
         let painted = |a: usize, b: usize| b.cmp(&a);
         let mut out = Vec::new();
         assert_eq!(
-            rank(&[0, 1, 2], front, |_, _| true, painted, &mut out),
+            rank_through_cycles(&[0, 1, 2], front, |_, _| true, painted, &mut out),
             Ranked::Strong
         );
         assert_eq!(out, vec![2, 0, 1]);
         // Whatever order the items come in.
-        rank(&[1, 2, 0], front, |_, _| true, painted, &mut out);
+        rank_through_cycles(&[1, 2, 0], front, |_, _| true, painted, &mut out);
         assert_eq!(out, vec![2, 0, 1]);
+        // `rank` takes no order there.
+        assert_eq!(
+            rank(&[0, 1, 2], front, |_, _| true, painted, &mut out),
+            Ranked::Strong
+        );
+        assert!(out.is_empty());
     }
 
     #[test]
@@ -452,6 +494,48 @@ mod tests {
                 Resolve::Coverage,
                 blend(BLUE, 128, blend([0, 200, 0, 128], 128, RED))
             )
+        );
+    }
+
+    #[test]
+    fn a_pixel_whose_strong_orders_cycle_composites_each_sub_sample_in_its_own_order() {
+        // As at a polyhedron's vertex (DodecahedronScene, pixel 357,191): three faces whose pairs
+        // are decided over different sub-samples, `a` over `b` by depth where they share the middle
+        // third, `c` over `a` by depth on the left, `b` over `c` by the majority of the right and
+        // one sub-sample left of centre, so no order keeps them; behind an opaque wall and a
+        // translucent layer, both over the whole pixel. No order of the pixel is taken: each
+        // sub-sample composites in its own, the wall hiding the faces there.
+        let u = |k: usize| SAMPLE_OFFSETS[k][0] as f64 + 0.5;
+        let left: Vec<usize> = (0..SAMPLES).filter(|k| u(*k) <= -2.5).collect();
+        let middle: Vec<usize> = (0..SAMPLES).filter(|k| u(*k).abs() <= 1.5).collect();
+        let right: Vec<usize> = (0..SAMPLES).filter(|k| u(*k) >= 2.5).collect();
+        let at = |ks: &[&[usize]]| only(&ks.concat());
+        let lean = SAMPLE_OFFSETS.iter().position(|o| o[0] == -2).unwrap(); // u = -1.5
+        let (ra, rb, rc) = (
+            at(&[&left, &middle]),
+            at(&[&middle, &right]),
+            at(&[&right, &left, &[lean]]),
+        );
+        let face = |plane, order| at_depth(plane, RED, Coverage::Mask(0), order);
+        // `c` at 10.5 + u / 2: nearer than `a` (10) left of u = -1, farther than `b` (11) right
+        // of u = 1.
+        let (a, b, c) = (
+            face(Plane::constant(10.0), 1),
+            face(Plane::constant(11.0), 2),
+            face(Plane::new(6.5, 8.0, 0.0), 3),
+        );
+        assert_eq!(ordered(&a, &ra, &b, &rb), (Ordering::Less, Decided::Depth));
+        assert_eq!(
+            ordered(&b, &rb, &c, &rc),
+            (Ordering::Less, Decided::Majority)
+        );
+        assert_eq!(ordered(&c, &rc, &a, &ra), (Ordering::Less, Decided::Depth));
+        let wall = at_depth(Plane::constant(5.0), BLUE, Coverage::Mask(u16::MAX), 4);
+        let glass = [0, 200, 0, 128];
+        let front = at_depth(Plane::constant(0.0), glass, Coverage::Mask(u16::MAX), 5);
+        assert_eq!(
+            resolve(&[a, b, c, wall, front], &[ra, rb, rc, FULL, FULL]),
+            (Resolve::Sample, blend(glass, 255, BLUE))
         );
     }
 }
