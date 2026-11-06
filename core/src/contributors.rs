@@ -26,7 +26,11 @@
 //!   depth of their nearest fragment at the pixel's centre. Each with:
 //!   - its **coverage**: its sub-sample coverages summed over the 16 and scaled to 0..=255,
 //!     `(sum + 8) / 16`;
-//!   - its **colour**: premultiplied, its nearest fragment's at the first sub-sample it covers;
+//!   - its **colour**: premultiplied, its nearest fragment's at the first sub-sample it covers:
+//!     the paint of that one fragment (a path's stroke, where it lies over the path's own fill),
+//!     not what the leaf draws and not what the pixel shows. Neither this nor `drawn` is the
+//!     leaf's part of the frame: a leaf behind an opaque front, or seen through a sliver of the
+//!     pixel, keeps its whole colour in both while the pixel barely moves;
 //!   - what it **draws** alone: premultiplied, the pixel the resolve itself makes of its
 //!     fragments alone over a transparent pixel (`composite::resolve_pixel`: the same selection,
 //!     the coverage or sample resolve as it would choose, the same integer blending);
@@ -47,7 +51,8 @@ pub struct Leaf {
     pub part: u32,
     /// Its share of the pixel's sub-samples, `0..=255`.
     pub coverage: u8,
-    /// Its nearest fragment's colour, premultiplied RGBA.
+    /// Its nearest fragment's paint, premultiplied RGBA: one fragment's colour, not the leaf's
+    /// drawn colour ([`Leaf::drawn`]) nor the pixel's (the module's **colour**).
     pub colour: [u8; 4],
     /// What it draws alone over a transparent pixel, premultiplied RGBA.
     pub drawn: [u8; 4],
