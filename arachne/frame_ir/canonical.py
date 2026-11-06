@@ -55,9 +55,12 @@ to about ``g`` that CE leaves open can be closed). Content keeps far from it
 pixels apart), and :data:`point_equality_disagreements` records every
 boundary decided otherwise, so the test suite finds any that does not.
 
-Only the core's inputs are snapped (:class:`~.core_painter.CorePainter`,
-and the display pictures drawn alongside them on the core path): frames
-drawn on ``ir_cairo`` stay what Cairo draws from the scene's own values.
+Only the core's inputs are snapped (:class:`~.core_painter.CorePainter`'s
+records as the core reads them). What Cairo draws stays what it draws from
+the scene's own values: the overlay over the core's frame, display pictures
+included, and frames on ``ir_cairo``. Cairo needs no snap (its 24.8 fixed
+point is its own grid), and a snapped input would move its pixels: its scan
+conversion is not continuous in its input.
 """
 
 from __future__ import annotations
@@ -521,12 +524,6 @@ class Canonical:
         path shape of the stream.
         """
         return self._snapped.get(key, key)
-
-    def snapped_view(self, view: Mapping[str, Any]) -> dict[str, Any]:
-        """``view`` as the last frame handed the core its views: a display's
-        sub-frame view as the display's record carries it.
-        """
-        return self._view_of(view)
 
     def _view_of(self, view: Mapping[str, Any]) -> dict[str, Any]:
         assert self.grid is not None
