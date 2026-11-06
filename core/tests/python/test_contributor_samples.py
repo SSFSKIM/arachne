@@ -118,7 +118,7 @@ def check_cells(stream: ac.Stream, box=(0, 0, 160, 90)) -> int:
     edges = stream.contributor_edges(*box)
     assert set(samples) == set(report)
     read = 0
-    for (x, y), (leaves, _orders, _crossing) in report.items():
+    for (x, y), (leaves, _orders, _crossing, _decided) in report.items():
         keys = [(obj, part) for obj, part, *_ in leaves]
         for s, sequence in enumerate(samples[(x, y)]):
             dx, dy = ((o + 8) // 4 for o in SAMPLE_OFFSETS[s])

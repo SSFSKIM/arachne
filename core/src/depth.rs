@@ -22,7 +22,7 @@
 //!   (a circle seen edge-on puts its near and far arcs on one line, and the pixel shows the near
 //!   one), else the nearest.
 
-use crate::composite::Plane;
+use crate::composite::{Plane, U};
 
 /// The grid world planes are rounded to: 2^-20, in scene units for offsets and in unit-normal
 /// components.
@@ -99,11 +99,31 @@ impl Planarity {
     }
 }
 
-/// A plane in world space, canonical: `normal . p = offset`.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// A plane in world space, canonical: `normal . p = offset`, and the plane it was rounded from.
+/// Two planes are equal when their rounded numbers are, however each was found.
+#[derive(Clone, Copy, Debug)]
 pub struct WorldPlane {
     pub normal: [f64; 3],
     pub offset: f64,
+    /// The plane before its rounding to the grid: a depth key across this plane is held to the
+    /// key across that one (`Projection::key_plane`).
+    pub unrounded: Unrounded,
+}
+
+impl PartialEq for WorldPlane {
+    fn eq(&self, other: &WorldPlane) -> bool {
+        self.normal == other.normal && self.offset == other.offset
+    }
+}
+
+/// A world plane before its rounding to the grid: the normal it was found with, the offset found
+/// from it, and how far that offset may lie from the exact offset, along that normal, of the point
+/// it was found through.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Unrounded {
+    pub normal: [f64; 3],
+    pub offset: f64,
+    pub offset_err: f64,
 }
 
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
@@ -147,20 +167,52 @@ impl Direction {
         self.normal
     }
 
-    /// The canonical plane in this direction through `p`.
+    /// The unit normal before its rounding.
+    pub(crate) fn unit(&self) -> [f64; 3] {
+        self.unit
+    }
+
+    /// The canonical plane in this direction through `p`: its offset is `unit . p`, which three
+    /// products and two sums round by at most `3u` of `|unit| . |p|` (taken as `4u`).
     pub(crate) fn through(&self, p: [f64; 3]) -> Option<WorldPlane> {
         let offset = dot(self.unit, p);
         if !offset.is_finite() {
             return None;
         }
-        Some(WorldPlane {
-            normal: self.normal,
-            offset: round_to_grid(offset),
-        })
+        let size = dot(self.unit.map(f64::abs), p.map(f64::abs));
+        Some(WorldPlane::rounded(self.unit, offset, 4.0 * U * size))
     }
 }
 
 impl WorldPlane {
+    /// The plane `normal . p = offset` with its normal and offset rounded to [`PLANE_GRID`];
+    /// `offset_err` bounds how far `offset` lies from the exact offset.
+    pub fn rounded(normal: [f64; 3], offset: f64, offset_err: f64) -> WorldPlane {
+        WorldPlane {
+            normal: normal.map(round_to_grid),
+            offset: round_to_grid(offset),
+            unrounded: Unrounded {
+                normal,
+                offset,
+                offset_err,
+            },
+        }
+    }
+
+    /// The same plane facing the other way.
+    fn turned(&self) -> WorldPlane {
+        let u = self.unrounded;
+        WorldPlane {
+            normal: self.normal.map(|v| -v),
+            offset: -self.offset,
+            unrounded: Unrounded {
+                normal: u.normal.map(|v| -v),
+                offset: -u.offset,
+                ..u
+            },
+        }
+    }
+
     /// The canonical plane with normal `n` (any length but zero) through `p`.
     pub(crate) fn canonical(n: [f64; 3], p: [f64; 3]) -> Option<WorldPlane> {
         Direction::of(n)?.through(p)
@@ -330,11 +382,7 @@ impl Registry {
     /// registered.
     pub(crate) fn merge(&mut self, own: WorldPlane, points: &[[f64; 3]]) -> WorldPlane {
         let mut first: Option<usize> = None;
-        let turned = WorldPlane {
-            normal: own.normal.map(|v| -v),
-            offset: -own.offset,
-        };
-        for near in [own, turned] {
+        for near in [own, own.turned()] {
             let key = Registry::bucket(&near);
             for d in 0..81i64 {
                 let step = [d % 3 - 1, d / 3 % 3 - 1, d / 9 % 3 - 1, d / 27 - 1];
@@ -372,14 +420,12 @@ impl Registry {
     }
 }
 
-/// The axis plane of coordinate `k` through `p`, its offset rounded to the grid.
+/// The axis plane of coordinate `k` through `p`, its offset rounded to the grid (the axis and the
+/// coordinate exact before it).
 fn axis_plane(k: u8, p: [f64; 3]) -> WorldPlane {
     let mut normal = [0.0; 3];
     normal[k as usize] = 1.0;
-    WorldPlane {
-        normal,
-        offset: round_to_grid(p[k as usize]),
-    }
+    WorldPlane::rounded(normal, p[k as usize], 0.0)
 }
 
 /// The widest of the points' extents along the three axes.
@@ -474,13 +520,22 @@ fn shared_axis(points: &[[f64; 3]], grid: f64) -> Option<u8> {
 #[derive(Clone, Debug, Default)]
 pub struct Centreline {
     segments: Vec<([f64; 2], f64, [f64; 2], f64)>,
+    /// Each segment's ends' keys' greater error.
+    errors: Vec<f64>,
 }
 
 impl Centreline {
     /// A centreline through screen points `(point, key)`, in order. Runs of points are joined;
     /// `breaks` lists the indices where a new run starts.
     pub fn new(points: &[([f64; 2], f64)], breaks: &[usize]) -> Centreline {
+        Centreline::with_errors(points, &[], breaks)
+    }
+
+    /// [`Centreline::new`] with each point's key known within `errors[i]` (none given: exact).
+    pub fn with_errors(points: &[([f64; 2], f64)], errors: &[f64], breaks: &[usize]) -> Centreline {
+        let err = |i: usize| errors.get(i).copied().unwrap_or(0.0);
         let mut segments = Vec::new();
+        let mut errs = Vec::new();
         for i in 1..points.len() {
             if breaks.contains(&i) {
                 continue;
@@ -492,16 +547,22 @@ impl Centreline {
                 .all(|v| v.is_finite())
             {
                 segments.push((a, ka, b, kb));
+                errs.push(err(i - 1).max(err(i)));
             }
         }
         if segments.is_empty()
-            && let Some(&(p, k)) = points
+            && let Some(i) = points
                 .iter()
-                .find(|(p, k)| p[0].is_finite() && p[1].is_finite() && k.is_finite())
+                .position(|(p, k)| p[0].is_finite() && p[1].is_finite() && k.is_finite())
         {
+            let (p, k) = points[i];
             segments.push((p, k, p, k));
+            errs.push(err(i));
         }
-        Centreline { segments }
+        Centreline {
+            segments,
+            errors: errs,
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -550,17 +611,31 @@ impl Centreline {
         }
         let (_, _, i) = best.expect("a centreline has a segment");
         let (a, ka, b, kb) = self.segments[i];
+        let ends = self.errors[i];
         let (_, len2) = project(a, b, c);
         if len2 == 0.0 || ka == kb {
-            return Plane::constant(ka.min(kb));
+            return Plane {
+                err: ends + (ka - kb).abs(),
+                ..Plane::constant(ka.min(kb))
+            };
         }
         // key(p) = ka + (kb - ka) * ((p - a) . (b - a)) / |b - a|^2, an affine function of p.
         let g = (kb - ka) / len2;
         let (bx, by) = (g * (b[0] - a[0]), g * (b[1] - a[1]));
+        // Read at the pixel's sub-samples, within `far` of `a` (a pixel from its centre): there the
+        // parameter along the segment is within `far / len` of the ends, so the ends' errors carry
+        // over at most `1 + 2 far / len` times; the gradient rounds by about `4u` of the change
+        // along it, and `a` by `3u` of its terms.
+        let far = libm::hypot(c[0] - a[0], c[1] - a[1]) + 1.0;
+        let reach = far / len2.sqrt();
+        let a0 = ka - bx * a[0] - by * a[1];
+        let rounding = 4.0 * U * (kb - ka).abs() * (1.0 + reach)
+            + 3.0 * U * (ka.abs() + (bx * a[0]).abs() + (by * a[1]).abs());
         Plane {
-            a: ka - bx * a[0] - by * a[1],
+            a: a0,
             b: bx,
             c: by,
+            err: ends * (1.0 + 2.0 * reach) + rounding,
         }
     }
 }

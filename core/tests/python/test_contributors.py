@@ -70,7 +70,7 @@ def stream_of(delta: ac.FrameDelta) -> ac.Stream:
 
 
 def at(stream: ac.Stream, x: int, y: int):
-    """The report of one pixel: (leaves, orders, crossing)."""
+    """The report of one pixel: (leaves, orders, crossing, decided)."""
     return stream.contributors(x, y, x + 1, y + 1)[(x, y)]
 
 
@@ -95,8 +95,10 @@ def test_leaves_come_bottom_first_in_depth_order_whatever_the_draw_order():
     delta.set_record("mesh", 2, 12, shape=middle, fill=(0, 1, 0, 0.5), space="world")
     delta.set_record("mesh", 3, 13, shape=far, fill=(0, 0, 1, 1), space="world")
     delta.set_order([("moving", 1, 0), ("moving", 2, 0), ("moving", 3, 0)])
-    leaves, orders, crossing = at(stream_of(delta), *INSIDE)
+    leaves, orders, crossing, decided = at(stream_of(delta), *INSIDE)
     assert ids(leaves) == [(13, 0), (12, 0), (11, 0)]
+    # Every pair covers the pixel's sub-samples together: depth orders each.
+    assert decided == [(0, 1, "depth"), (0, 2, "depth"), (1, 2, "depth")]
     assert field(leaves, "shown") == [True, True, True]
     assert field(leaves, "coverage") == [255, 255, 255]
     # One sequence: every sub-sample sees the three in one order, each covering it whole.
@@ -134,7 +136,7 @@ def test_a_leaf_behind_an_opaque_front_is_reported_and_not_shown():
     delta.set_record("mesh", 2, 12, shape=rear, fill=(0, 0, 1, 1), space="world")
     delta.set_order([("moving", 2, 0), ("moving", 1, 0)])
     stream = stream_of(delta)
-    leaves, orders, _ = at(stream, *INSIDE)
+    leaves, orders, _, _ = at(stream, *INSIDE)
     assert list(zip(ids(leaves), field(leaves, "shown"), strict=True)) == [
         ((12, 0), False),
         ((11, 0), True),
@@ -143,7 +145,7 @@ def test_a_leaf_behind_an_opaque_front_is_reported_and_not_shown():
     assert leaves[1][3] == (255, 0, 0, 255)
     assert orders == [[(0, 255), (1, 255)]]
     # Outside the front, the rear is shown and alone.
-    alone, _, _ = at(stream, 62, 45)
+    alone, _, _, _ = at(stream, 62, 45)
     assert list(zip(ids(alone), field(alone, "shown"), strict=True)) == [
         ((12, 0), True)
     ]
@@ -157,7 +159,7 @@ def test_the_report_matches_what_the_core_draws_under_an_opaque_top():
     delta.set_record("mesh", 2, 12, shape=under, fill=(1, 1, 1, 1), space="world")
     delta.set_order([("moving", 1, 0), ("moving", 2, 0)])
     stream = stream_of(delta)
-    leaves, _, _ = at(stream, *INSIDE)
+    leaves, _, _, _ = at(stream, *INSIDE)
     drawn = stream.draw(160, 90)[INSIDE[1], INSIDE[0]]
     assert tuple(int(v) for v in drawn) == leaves[-1][3]
 
@@ -179,7 +181,7 @@ def test_a_surface_overlapping_itself_reports_each_face_by_its_part():
         shade_in_3d=True,
     )
     delta.set_order([("moving", 1, 1), ("moving", 1, 0)])
-    leaves, _, crossing = at(stream_of(delta), *INSIDE)
+    leaves, _, crossing, _ = at(stream_of(delta), *INSIDE)
     assert ids(leaves) == [(21, 0), (21, 1)]
     assert crossing is False
 
@@ -230,21 +232,21 @@ def test_two_surfaces_crossing_inside_a_pixel_report_each_order():
     # Pixel column 80 spans world x 0 to 0.1; the line at x = 0.03 leaves its centre (x = 0.05)
     # on the rising plane's near side.
     stream = crossing_planes(0.03)
-    leaves, orders, crossing = at(stream, 80, 40)
+    leaves, orders, crossing, _ = at(stream, 80, 40)
     assert crossing is True
     # Bottom first, by depth at the pixel's centre: the rising plane on top.
     assert ids(leaves) == [(12, 0), (11, 0)]
     sequences = sorted(tuple(leaves[i][0] for i, _ in order) for order in orders)
     assert sequences == [(11, 12), (12, 11)]
     # Away from the line, one order and no crossing: the falling plane on top on the left.
-    leaves, orders, crossing = at(stream, 72, 40)
+    leaves, orders, crossing, _ = at(stream, 72, 40)
     assert crossing is False
     assert ids(leaves) == [(11, 0), (12, 0)]
     assert orders == [[(0, 255), (1, 255)]]
 
 
 def test_at_a_crossing_whose_planes_tie_at_the_centre_the_later_drawn_is_on_top():
-    leaves, _, crossing = at(crossing_planes(0.05), 80, 40)
+    leaves, _, crossing, _ = at(crossing_planes(0.05), 80, 40)
     assert crossing is True
     assert ids(leaves) == [(11, 0), (12, 0)]
 
@@ -331,7 +333,7 @@ def test_an_edge_pixel_reports_its_share_and_each_sub_sample_s_sequence():
     edge = delta.upload_path(square(half=0.95))
     delta.set_record("path", 1, 11, shape=edge, fill=(1, 1, 1, 1), space="world")
     delta.set_order([("moving", 1, 0)])
-    leaves, orders, _ = at(stream_of(delta), 70, 45)
+    leaves, orders, _, _ = at(stream_of(delta), 70, 45)
     (coverage,) = field(leaves, "coverage")
     assert 96 <= coverage <= 160
     assert field(leaves, "shown") == [True]
@@ -359,7 +361,7 @@ def test_the_overlay_is_not_reported():
     delta.set_record("mesh", 1, 11, shape=rear, fill=(0, 0, 1, 1), space="world")
     delta.set_record("path", 2, 12, shape=label, fill=(1, 1, 1, 1), space="overlay")
     delta.set_order([("moving", 1, 0), ("moving", 2, 0)])
-    leaves, _, _ = at(stream_of(delta), *INSIDE)
+    leaves, _, _, _ = at(stream_of(delta), *INSIDE)
     assert ids(leaves) == [(11, 0)]
 
 
@@ -371,7 +373,7 @@ def test_a_flat_frame_reports_its_leaves_in_draw_order():
     delta.set_record("path", 1, 11, shape=first, fill=(1, 0, 0, 1))
     delta.set_record("path", 2, 12, shape=second, fill=(0, 0, 1, 0.5))
     delta.set_order([("moving", 1, 0), ("moving", 2, 0)])
-    leaves, _, _ = at(stream_of(delta), 80, 40)
+    leaves, _, _, _ = at(stream_of(delta), 80, 40)
     assert ids(leaves) == [(11, 0), (12, 0)]
 
 
