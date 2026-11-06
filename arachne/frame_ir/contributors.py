@@ -24,7 +24,14 @@ number their objects apart.
 
 from __future__ import annotations
 
-__all__ = ["Box", "Leaf", "PixelContributors", "from_core", "over"]
+__all__ = [
+    "Box",
+    "Leaf",
+    "LiveFrame",
+    "PixelContributors",
+    "from_core",
+    "over",
+]
 
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
@@ -35,17 +42,30 @@ Box = tuple[int, int, int, int]
 RGBA = tuple[int, int, int, int]
 
 
+class LiveFrame(RuntimeError):
+    """Contributors asked of a painter of captures drawn as the scene runs.
+
+    Each such capture is drawn over the pixels of the captures before it, so
+    their leaves are flattened into its background and no report of it can
+    name them: a live frame is attributed from the frame's state extracted
+    whole, through both painters (``FrameStream.frame``), never from the
+    live painter.
+    """
+
+
 @dataclass(frozen=True)
 class Leaf:
     """One leaf of a pixel.
 
-    ``drawn`` is what the leaf alone adds to the pixel over a transparent
-    one, premultiplied RGBA: its alpha is the leaf's coverage of the pixel
-    times its opacity. The core also knows the two apart: ``coverage`` is its
-    share of the pixel's 16 sub-samples (0 to 255) and ``colour`` its
-    premultiplied colour where it covers; Cairo's leaves carry ``None`` for
-    both. ``painter`` is ``"core"`` or ``"cairo"``: on the core path, the
-    overlay's leaves are Cairo's.
+    ``drawn`` is what the leaf alone draws over a transparent pixel, all its
+    paint (a path's fill and strokes) composited, premultiplied RGBA: its
+    alpha is the leaf's coverage of the pixel times its opacity. ``covers``
+    is whether nothing beneath it reaches the pixel (what it leaves there
+    does not depend on what was there). The core also knows coverage and
+    colour apart: ``coverage`` is its share of the pixel's 16 sub-samples (0
+    to 255) and ``colour`` its nearest fragment's premultiplied colour;
+    Cairo's leaves carry ``None`` for both. ``painter`` is ``"core"`` or
+    ``"cairo"``: on the core path, the overlay's leaves are Cairo's.
     """
 
     object: int
@@ -56,6 +76,7 @@ class Leaf:
     painter: str
     coverage: int | None = None
     colour: RGBA | None = None
+    covers: bool = False
 
     @property
     def key(self) -> tuple[str | int, int]:
@@ -69,11 +90,13 @@ class Leaf:
 class PixelContributors:
     """The leaves of one pixel, bottom first.
 
-    ``orders`` are the distinct sequences of leaves the pixel's sub-samples
-    see, bottom first, each leaf as ``(index into leaves, coverage there)``
-    (Cairo: one sequence, each leaf's drawn alpha). ``crossing`` is whether
-    two leaves come in one order at one sub-sample and the other at another;
-    the leaves are then in their depth order at the pixel's centre.
+    ``leaves`` holds each leaf once. ``orders`` are the distinct sequences of
+    leaves the pixel's sub-samples see, bottom first, each entry ``(index
+    into leaves, coverage there)``, a leaf once per run of its fragments, so a
+    leaf another lies between comes twice (Cairo: one sequence, each leaf's
+    drawn alpha). ``crossing`` is whether the sequences order two leaves both
+    ways, or admit no one order; the leaves are then in their depth order at
+    the pixel's centre.
     """
 
     leaves: tuple[Leaf, ...]
@@ -91,16 +114,6 @@ class PixelContributors:
         return tuple(leaf for leaf in self.leaves if leaf.shown)
 
 
-def _drawn(colour: RGBA, coverage: int) -> RGBA:
-    r, g, b, a = colour
-    return (
-        (r * coverage + 127) // 255,
-        (g * coverage + 127) // 255,
-        (b * coverage + 127) // 255,
-        (a * coverage + 127) // 255,
-    )
-
-
 def from_core(
     found: Mapping[tuple[int, int], tuple],
     objects: Mapping[int, tuple[str, str]],
@@ -116,13 +129,14 @@ def from_core(
                     object=obj,
                     part=part,
                     id=objects.get(obj, (None,))[0],
-                    drawn=_drawn(tuple(colour), coverage),
+                    drawn=tuple(drawn),
                     shown=shown,
                     painter="core",
                     coverage=coverage,
                     colour=tuple(colour),
+                    covers=covers,
                 )
-                for obj, part, coverage, colour, shown in leaves
+                for obj, part, coverage, colour, drawn, shown, covers in leaves
             ),
             orders=tuple(tuple(tuple(e) for e in order) for order in orders),
             crossing=bool(crossing),
@@ -136,7 +150,7 @@ def over(
 ) -> dict[tuple[int, int], PixelContributors]:
     """``top``'s leaves composited over ``under``'s, pixel by pixel: the core
     path's frame, the core's leaves under Cairo's overlay. A leaf of
-    ``under`` an opaque leaf of ``top`` covers whole is hidden; every
+    ``under`` is hidden where a leaf of ``top`` covers the pixel; every
     sequence of ``under`` continues with ``top``'s.
     """
     out = dict(under)
@@ -145,7 +159,7 @@ def over(
         if below is None:
             out[at] = above
             continue
-        covered = any(leaf.drawn[3] == 255 for leaf in above.leaves)
+        covered = any(leaf.covers for leaf in above.leaves)
         shift = len(below.leaves)
         lifted = tuple(
             tuple((i + shift, c) for i, c in order) for order in above.orders

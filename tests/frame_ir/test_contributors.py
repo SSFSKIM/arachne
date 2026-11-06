@@ -12,7 +12,13 @@ from fractions import Fraction
 import numpy as np
 import pytest
 
-from arachne.frame_ir.contributors import Leaf, PixelContributors, from_core, over
+from arachne.frame_ir.contributors import (
+    Leaf,
+    LiveFrame,
+    PixelContributors,
+    from_core,
+    over,
+)
 from arachne.frame_ir.core_painter import CorePainter
 from arachne.frame_ir.painter import IrCairoPainter
 
@@ -34,6 +40,7 @@ def _leaf(obj: int, alpha: int, shown: bool = True) -> Leaf:
         drawn=(0, 0, alpha, alpha),
         shown=shown,
         painter="cairo",
+        covers=alpha == 255,
     )
 
 
@@ -115,7 +122,10 @@ def test_on_the_core_path_the_overlay_s_leaves_lie_over_the_core_s():
 def test_from_core_names_stable_ids_and_what_each_leaf_draws_alone():
     found = {
         (3, 4): (
-            [(7, 0, 255, (0, 0, 200, 255), False), (8, 2, 128, (100, 0, 0, 128), True)],
+            [
+                (7, 0, 255, (0, 0, 200, 255), (0, 0, 200, 255), False, True),
+                (8, 2, 128, (100, 0, 0, 128), (50, 0, 0, 64), True, False),
+            ],
             [[(0, 255), (1, 255)], [(0, 255)]],
             False,
         )
@@ -126,6 +136,7 @@ def test_from_core_names_stable_ids_and_what_each_leaf_draws_alone():
     assert pixel.leaves[0].drawn == (0, 0, 200, 255)
     assert pixel.orders == (((0, 255), (1, 255)), ((0, 255),))
     assert pixel.shown == (pixel.leaves[1],)
+    assert [leaf.covers for leaf in pixel.leaves] == [True, False]
 
 
 def test_over_hides_what_an_opaque_top_leaf_covers_and_continues_each_order():
@@ -169,3 +180,173 @@ def test_a_box_off_the_frame_reports_nothing():
     assert found
     assert xs.min() >= 0
     assert xs.max() < 192
+
+
+def _square_under(top, *, side: float = 2.0):
+    """A frame of an opaque red square under ``top``, on Cairo from XF, and
+    its report at the centre: the frame and the pixel's contributors.
+    """
+    from arachne import RED, Camera, Square, tempconfig
+
+    with tempconfig(MEDIUM):
+        under = Square(
+            side_length=side, fill_color=RED, fill_opacity=1.0, stroke_width=0
+        )
+        painter = IrCairoPainter()
+        frame = painter.paint(Camera(), [("moving", [under, *top()])], t=Fraction(0))
+        return frame, painter.contributors(_box(*CENTRE))[CENTRE]
+
+
+def test_a_translucent_image_s_leaf_is_premultiplied_as_a_path_s_is():
+    from arachne import ImageMobject
+
+    def picture():
+        pixels = np.zeros((4, 4, 4), dtype=np.uint8)
+        pixels[...] = (200, 100, 50, 128)
+        return [ImageMobject(pixels).scale_to_fit_width(3.0)]
+
+    frame, pixel = _square_under(picture)
+    image = pixel.leaves[-1]
+    r, g, b, a = image.drawn
+    assert a == 128
+    assert max(r, g, b) <= a
+    assert (r, g, b) == pytest.approx((100, 50, 25), abs=1)
+    # Neither leaf hides the other: the image is translucent.
+    assert [leaf.shown for leaf in pixel.leaves] == [True, True]
+    assert image.covers is False
+
+
+def test_a_point_cloud_s_block_covers_what_it_is_written_over_whatever_its_alpha():
+    from arachne.mobject.types.point_cloud_mobject import PMobject
+
+    def points(alpha: float, rgb=(0.0, 0.0, 1.0)):
+        def made():
+            cloud = PMobject(stroke_width=12)
+            cloud.add_points([[0.0, 0.0, 0.0]], rgbas=np.array([[*rgb, alpha]]))
+            return [cloud]
+
+        return made
+
+    frame, pixel = _square_under(points(0.5))
+    assert [leaf.shown for leaf in pixel.leaves] == [False, True]
+    assert pixel.leaves[1].covers is True
+    # The camera wrote the block's colour over the square: the frame is the block's.
+    assert (
+        tuple(int(v) for v in frame[CENTRE[1], CENTRE[0]])[3]
+        == pixel.leaves[1].drawn[3]
+    )
+    # A transparent black block clears the pixel: reported, and hiding the square.
+    frame, pixel = _square_under(points(0.0, (0.0, 0.0, 0.0)))
+    assert len(pixel.leaves) == 2
+    assert pixel.leaves[1].drawn == (0, 0, 0, 0)
+    assert [leaf.shown for leaf in pixel.leaves] == [False, True]
+
+
+def test_paths_filled_through_one_image_hide_each_other_as_one_mask_does():
+    from PIL import Image
+
+    from arachne import Square
+
+    picture = Image.new("RGBA", (192, 108), (40, 200, 120, 128))
+
+    def filled():
+        first = Square(side_length=2, fill_opacity=1.0, stroke_width=0)
+        second = Square(side_length=2, fill_opacity=1.0, stroke_width=0).shift(
+            [0.5, 0, 0]
+        )
+        return [
+            first.color_using_background_image(picture),
+            second.color_using_background_image(picture),
+        ]
+
+    frame, pixel = _square_under(filled, side=4.0)
+    # The red square, then the two image-filled squares: the image's alpha is 128, so the
+    # red square shows through, but the second fill's opaque mask hides the first.
+    assert [leaf.shown for leaf in pixel.leaves] == [True, False, True]
+    assert [leaf.covers for leaf in pixel.leaves] == [True, False, False]
+
+
+def test_a_box_past_the_top_left_corner_is_clipped_on_cairo_as_on_the_core():
+    from arachne import Camera, Square, tempconfig
+
+    with tempconfig(MEDIUM):
+        corner = Square(side_length=2, fill_opacity=1.0).move_to([-7.1, 4.0, 0.0])
+        for painter in (IrCairoPainter(), CorePainter()):
+            painter.paint(Camera(), [("moving", [corner])], t=Fraction(0))
+            found = painter.contributors((-2, -2, 10, 10))
+            assert (0, 0) in found, type(painter).__name__
+            assert all(0 <= x < 10 and 0 <= y < 10 for x, y in found)
+
+
+def test_contributors_change_nothing_the_painter_draws_next():
+    """A frame with a display among other leaves, drawn, reported on, and
+    drawn again: the second draw is the first, byte for byte, on both
+    painters.
+    """
+    from arachne import (
+        RED,
+        Circle,
+        ImageMobjectFromCamera,
+        MovingCamera,
+        MultiCamera,
+        Square,
+        tempconfig,
+    )
+
+    with tempconfig(MEDIUM):
+        for kind in (IrCairoPainter, CorePainter):
+            camera = MultiCamera()
+            display = ImageMobjectFromCamera(MovingCamera())
+            display.stretch_to_fit_width(camera.frame_width / 2)
+            display.stretch_to_fit_height(camera.frame_height / 2)
+            camera.add_image_mobject_from_camera(display)
+            shapes = [Circle(radius=1.0, color=RED), Square(fill_opacity=0.5)]
+            groups = [("moving", [*shapes, display])]
+            painter = kind()
+            first = np.array(painter.paint(camera, groups, t=Fraction(0)))
+            found = painter.contributors((0, 0, 192, 108))
+            assert found
+            again = painter.paint(camera, groups, t=Fraction(0))
+            assert np.array_equal(first, again), kind.__name__
+
+
+def test_a_live_painter_refuses_to_report_contributors():
+    """Drawn as the scene runs, a capture is drawn over the captures before
+    it, flattened into its background: a square drawn static, then a
+    translucent one moving over it, would be reported without the first.
+    The live painter refuses; a live frame is attributed from its state
+    extracted whole.
+    """
+    from arachne.frame_ir.live import live_painter
+
+    from ..timeline.conftest import render
+    from . import core_scenes
+
+    scene, _ = render(
+        core_scenes.LiveStrokeUnderSquare, 15, draw_path="ir_cairo", **MEDIUM
+    )
+    camera = scene.renderer.camera  # type: ignore[attr-defined]
+    found = live_painter(camera)
+    assert found is not None
+    assert found.captures > 0
+    painter = found.painter(camera)
+    with pytest.raises(LiveFrame):
+        painter.contributors(_box(*CENTRE))
+
+
+def test_a_box_s_report_is_the_same_cut_from_a_larger_box():
+    """Cairo draws each leaf clipped to the box asked about: inside it,
+    every pixel is what the leaf draws unclipped.
+    """
+    from arachne import BLUE, RED, Camera, Circle, Square, tempconfig
+
+    with tempconfig(MEDIUM):
+        painter = IrCairoPainter()
+        under = Square(side_length=2, fill_color=RED, fill_opacity=0.7)
+        ring = Circle(radius=1.2, color=BLUE, stroke_width=6)
+        painter.paint(Camera(), [("moving", [under, ring])], t=Fraction(0))
+        small = painter.contributors((70, 30, 90, 50))
+        large = painter.contributors((0, 0, 192, 108))
+    assert small
+    assert small == {at: found for at, found in large.items() if at in small}
+    assert set(small) == {(x, y) for x, y in large if 70 <= x < 90 and 30 <= y < 50}

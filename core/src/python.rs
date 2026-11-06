@@ -825,6 +825,9 @@ impl PyApplyStats {
 }
 
 /// What a drawer holds across frames. Make it in the process that draws (after any fork).
+/// An 8-bit RGBA colour as the binding hands it to Python.
+type Rgba8 = (u8, u8, u8, u8);
+
 #[pyclass(name = "Stream", module = "arachne_core")]
 struct PyStream {
     stream: Stream,
@@ -930,36 +933,41 @@ impl PyStream {
     }
 
     /// What the core composites at each pixel of the box ``x0 <= x < x1``, ``y0 <= y < y1``
-    /// (clipped to the frame) that holds a fragment, the overlay's entries left out as
-    /// ``draw(overlay=False)`` leaves them: ``{(x, y): (leaves, orders, crossing)}``. ``leaves``
-    /// are ``(object, part, coverage, (r, g, b, a), shown)``, bottom first: each drawn leaf
-    /// covering one of the pixel's sub-samples, hidden ones included (``shown`` false), with its
-    /// share of the sub-samples (0 to 255) and its premultiplied colour. ``orders`` are the
-    /// distinct sequences the sub-samples see, bottom first, as ``(index into leaves,
-    /// coverage)``; ``crossing`` is whether two leaves come in both orders (``contributors.rs``).
-    /// Nothing is drawn.
+    /// (any integers, clipped to the frame) that holds a fragment, the overlay's entries left out
+    /// as ``draw(overlay=False)`` leaves them: ``{(x, y): (leaves, orders, crossing)}``.
+    /// ``leaves`` are ``(object, part, coverage, colour, drawn, shown, covers)``, bottom first,
+    /// each leaf once: each drawn leaf covering one of the pixel's sub-samples, hidden ones
+    /// included (``shown`` false), with its share of the sub-samples (0 to 255), its nearest
+    /// fragment's colour and what it draws alone over a transparent pixel (premultiplied
+    /// ``(r, g, b, a)`` both), and whether it hides everything beneath it (``covers``).
+    /// ``orders`` are the distinct sequences the sub-samples see, bottom first, as ``(index into
+    /// leaves, coverage)``, a leaf once per run of its fragments; ``crossing`` is whether they
+    /// order two leaves both ways or admit no one order (``contributors.rs``). Nothing is drawn.
     #[allow(clippy::type_complexity)]
     fn contributors(
         &self,
         py: Python<'_>,
-        x0: u32,
-        y0: u32,
-        x1: u32,
-        y1: u32,
+        x0: i64,
+        y0: i64,
+        x1: i64,
+        y1: i64,
     ) -> PyResult<
         BTreeMap<
             (u32, u32),
             (
-                Vec<(u32, u32, u8, (u8, u8, u8, u8), bool)>,
+                Vec<(u32, u32, u8, Rgba8, Rgba8, bool, bool)>,
                 Vec<Vec<(usize, u8)>>,
                 bool,
             ),
         >,
     > {
+        let side = |v: i64| v.clamp(0, u32::MAX as i64) as u32;
+        let (x0, y0, x1, y1) = (side(x0), side(y0), side(x1), side(y1));
         let stream = &self.stream;
         let found = py
             .detach(|| stream.contributors(x0, y0, x1, y1))
             .map_err(|e| draw_error(py, e))?;
+        let rgba = |[r, g, b, a]: [u8; 4]| (r, g, b, a);
         Ok(found
             .into_iter()
             .map(|(at, pixel)| {
@@ -967,8 +975,15 @@ impl PyStream {
                     .leaves
                     .into_iter()
                     .map(|l| {
-                        let [r, g, b, a] = l.colour;
-                        (l.object, l.part, l.coverage, (r, g, b, a), l.shown)
+                        (
+                            l.object,
+                            l.part,
+                            l.coverage,
+                            rgba(l.colour),
+                            rgba(l.drawn),
+                            l.shown,
+                            l.covers,
+                        )
                     })
                     .collect();
                 (at, (leaves, pixel.orders, pixel.crossing))
