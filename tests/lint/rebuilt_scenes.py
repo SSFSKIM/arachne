@@ -10,6 +10,7 @@ look alike. A particle spawned between plays is a newcomer at the source.
 from __future__ import annotations
 
 from arachne import (
+    PI,
     RIGHT,
     Arrow,
     Circle,
@@ -161,12 +162,34 @@ class RebuiltGroupTeleports(Scene):
 RIG_ANGLES = (0.0, 2.0, 4.0)
 
 
-def rig(theta: float) -> VGroup:
-    """A rig of three outer atoms turned by ``theta`` about a centre atom, in
-    a ring that holds the group's box.
+def rig(theta: float, angles: tuple[float, ...] = RIG_ANGLES) -> VGroup:
+    """A rig of outer atoms at ``angles`` on the unit circle, turned by
+    ``theta`` about a centre atom, in a ring that holds the group's box.
     """
-    atoms = [Dot(rotate_vector(RIGHT, a + theta), radius=0.12) for a in RIG_ANGLES]
+    atoms = [Dot(rotate_vector(RIGHT, a + theta), radius=0.12) for a in angles]
     return VGroup(Circle(radius=1.6), Dot([0, 0, 0], radius=0.2), *atoms)
+
+
+#: An evenly spaced rig's outer atoms, and the spacing between them.
+SPACING = 2 * PI / 3
+EVEN_ANGLES = (0.0, SPACING, 2 * SPACING)
+
+
+class RigTurnsByItsSpacing(Scene):
+    """Known limit (a permutation coincidence): an evenly spaced rig turns by
+    exactly its spacing, snaps back at the cut, and turns again. Each atom set
+    back lands where a sibling stood, and a sibling stands where it left, so
+    the picture is the same rig and no atom is read as jumping. Telling the
+    snap from a relabelling needs where each atom's item came from: a
+    source-aware rule is the open fix.
+    """
+
+    def construct(self):
+        theta = ValueTracker(0.0)
+        self.add(always_redraw(lambda: rig(theta.get_value(), EVEN_ANGLES)))
+        self.play(theta.animate.set_value(SPACING), rate_func=linear, run_time=1.0)
+        theta.set_value(0.0)
+        self.play(theta.animate.set_value(SPACING), rate_func=linear, run_time=1.0)
 
 
 class RigSnapsBack(Scene):
@@ -232,6 +255,40 @@ class GrowsAsOneSnapsBack(Scene):
         x.set_value(-1.0)
         extra.append(NEWCOMER)
         self.play(x.animate.set_value(0.6), rate_func=linear, run_time=1.0)
+
+
+#: Where :class:`TieBrokenByFirstSight`'s items stand, before their drift.
+LEFT_PLACE, RIGHT_PLACE = (-1.0, 0.0), (1.0, 0.0)
+FAR_BELOW, FAR_ABOVE = (0.0, -3.0), (0.0, 3.0)
+
+
+class TieBrokenByFirstSight(Scene):
+    """A drifting group of dots, rebuilt twice. The first cut grows it from
+    two items to three, so ``become`` pads it by repeating its first child:
+    the padded child is first seen after the second, though it stands before
+    it in the list. The second cut grows it to four with its padded child
+    and its second both landing on one place far from where any child stood,
+    as far as each other from every place, and room for one birth only.
+    """
+
+    def construct(self):
+        clock = _clock(self)
+        items = [LEFT_PLACE, RIGHT_PLACE]
+        self.add(
+            always_redraw(
+                lambda: VGroup(
+                    *(
+                        Dot((x + 0.1 * clock["t"], y, 0.0), radius=0.12)
+                        for x, y in items
+                    )
+                )
+            )
+        )
+        self.wait(1.0)
+        items[:] = [LEFT_PLACE, RIGHT_PLACE, LEFT_PLACE]
+        self.wait(1.0)
+        items[:] = [LEFT_PLACE, FAR_BELOW, FAR_ABOVE, FAR_ABOVE]
+        self.wait(1.0)
 
 
 class PlainGroupPutBack(Scene):

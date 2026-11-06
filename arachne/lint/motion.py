@@ -41,7 +41,8 @@ elsewhere, then thrown) ``"after"``.
   the group's visible children stood as the play ended, whatever its size,
   or one born at the cut. The born are those landing where none stood, at
   most as many as the group's count of children rose by (``become``'s
-  padding counted), the farthest from every such place first; a group that
+  padding counted), the farthest from every such place first and, among
+  those as far, the one first seen first; a group that
   gained no child has none born, so a child set back (a rig snapped back)
   is still judged. A child that left the list within the play keeps its
   padded slot, so a newcomer refilling it at the cut is no birth;
@@ -428,12 +429,34 @@ def _nearest(centre: np.ndarray, places: list[np.ndarray]) -> float:
 
 class _Rebuilt:
     """Which of an execution's groups ``become`` rebuilt across a cut
-    (:mod:`arachne.timeline.rebuilds`), by stable id.
+    (:mod:`arachne.timeline.rebuilds`), and in what order its mobjects were
+    first seen, by stable id.
     """
 
     def __init__(self, record: Record) -> None:
         self._record = record
         self._mobjects: dict[str, Mobject] | None = None
+        self._seen: dict[str, int] = {}
+
+    def first_seen(self, key: str) -> int:
+        """Where ``key`` stands in the order the execution first saw its
+        mobjects (the record's first captures, in the order each walks the
+        scene): a mobject ``become``'s padding made between plays comes after
+        every one seen before it, wherever in its group's list it stands.
+        """
+        self._read()
+        return self._seen.get(key, len(self._seen))
+
+    def _read(self) -> None:
+        if self._mobjects is not None:
+            return
+        record = self._record
+        self._mobjects = {}
+        for mob in record.mobjects():
+            key = record.origin(mob).id
+            if key not in self._mobjects:
+                self._mobjects[key] = mob
+                self._seen[key] = len(self._seen)
 
     def across(self, group: str, before: _Play, after: _Play) -> bool:
         """Whether ``become`` rebuilt ``group`` from the scene's call of
@@ -443,11 +466,8 @@ class _Rebuilt:
         start, end = before.record.rebuilds_called, after.record.rebuilds_entered
         if end <= start:
             return False
-        if self._mobjects is None:
-            record = self._record
-            self._mobjects = {}
-            for mob in record.mobjects():
-                self._mobjects.setdefault(record.origin(mob).id, mob)
+        self._read()
+        assert self._mobjects is not None
         held = self._mobjects.get(group)
         return held is not None and rebuilds.rebuilt_between(held, start, end)
 
@@ -631,8 +651,8 @@ class _Cut:
         snapped back, one or all. When more stand so than the count rose by,
         the ones farthest from every place a child stood are the born (a
         newcomer appears at its source, away from the rest; a jumper is
-        caught nearer its old place), the group's order of its children
-        breaking a tie.
+        caught nearer its old place), the one first seen first breaking a
+        tie (:meth:`_Rebuilt.first_seen`).
         """
         found = self._born.get(group)
         if found is not None:
@@ -649,7 +669,12 @@ class _Cut:
                 and self.seen_across(key)
                 and not self.lands_on(body.centre, places)
             ]
-            unmatched.sort(key=lambda key: -_nearest(self.came[key].centre, places))
+            unmatched.sort(
+                key=lambda key: (
+                    -_nearest(self.came[key].centre, places),
+                    self.groups.first_seen(key),
+                )
+            )
             found = set(unmatched[:grew])
         self._born[group] = found
         return found
