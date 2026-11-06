@@ -30,6 +30,21 @@ bare exemption does. Any other contact is ``overlap.text`` when a text is
 in it (``gap.text`` when two texts merely sit closer than the declared gap)
 and ``contact.held`` when none is.
 
+Under a ThreeDCamera a pair is measured as projected, and a projected
+overlap is a contact only where neither lies wholly in front of the other.
+One lies wholly in front of the other when, at the instant sampled, the two
+depth ranges along the camera's view direction (each the least and
+greatest depth of all its points, every leaf of both projected) are
+disjoint by more than :data:`DEPTH_APART`, and the nearer one is painted
+after the farther one. It is then layered over the other, as a 3D picture
+layers what is nearer, and the pair is no ``contact.held``. A pair whose
+depth ranges overlap or come closer than that, or whose paint order puts
+the farther one over the nearer one, is measured as any other. A pair with
+a text in it never layers, on either side: a text touching a shape, or
+another text, crowds it on screen whatever lies in front, as in a flat
+picture, so it is still ``overlap.text`` or ``gap.text``, and a text drawn
+under something in front of it still ``occlusion.glyph``.
+
 A sweep at the frame a scene closes on asks every contact. In a frame the
 scene moves on from (``Terms.mid_scene``) three contacts a viewer reads
 clean are let pass: a text laid on a filled shape; a text over a stroke
@@ -84,6 +99,10 @@ HALO_OPACITY = 0.9
 #: A filled shape this opaque (by its fill's first row) in every leaf
 #: hides a stroke drawn under it.
 HIDING_OPACITY = 1.0
+#: How much nearer the camera (scene units along a ThreeDCamera's axis) all
+#: of one thing lies than all of another for it to lie wholly in front: past
+#: rounding, so two things in one plane never do.
+DEPTH_APART = NOISE
 
 
 def pair_findings(
@@ -153,7 +172,7 @@ def _pair(
             f" {_called(over)}, which lies over its glyphs by {depth:.3f} units.",
             {"covered": round(depth, 4)},
         )
-    if excused or _reads_clean(parts, units, terms, a, b, required):
+    if excused or _layered(a, b) or _reads_clean(parts, units, terms, a, b, required):
         return None
     shown = f"{_called(a)} and {_called(b)}"
     if not (a.text or b.text):
@@ -327,6 +346,28 @@ def _inked_stroke(a: Measured, b: Measured) -> Measured | None:
         if not path.region and text.text:
             return path
     return None
+
+
+def _layered(a: Measured, b: Measured) -> bool:
+    """Whether one lies wholly in front of the other: at the instant
+    sampled, their depth ranges along the camera's view direction are
+    disjoint by more than :data:`DEPTH_APART` (the farther one's nearest
+    point lies further back than the nearer one's farthest point by more
+    than that), and the nearer one is painted after the farther one, every
+    leaf of it after every leaf of the other. It is then layered over the
+    other, as a 3D picture layers what is nearer. Never a pair with a text
+    in it, on either side: a text touching a shape crowds it on screen
+    whatever lies in front. Never a pair with a leaf the camera does not
+    project (no depth).
+    """
+    depth_a, depth_b = a.depth, b.depth
+    if a.text or b.text or depth_a is None or depth_b is None:
+        return False
+    if depth_a[0] - depth_b[1] > DEPTH_APART:
+        return a.leaves[0].order > b.top
+    if depth_b[0] - depth_a[1] > DEPTH_APART:
+        return b.leaves[0].order > a.top
+    return False
 
 
 def _covering(a: Measured, b: Measured) -> tuple[Measured, Measured] | None:

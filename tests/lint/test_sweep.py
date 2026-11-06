@@ -314,6 +314,40 @@ def test_under_a_three_d_camera_the_whole_scene_is_linted_projected(run):
     assert _codes(run("NearWordInDepth")) == []
 
 
+def test_depth_is_read_only_where_a_three_d_camera_projects(session_of):
+    words = {u.said: u for u in _units_at_end(session_of, "FarWordInDepth")}
+    # A word in the plane z = 0, seen from straight above.
+    low, high = words["far"].depth
+    assert abs(low) < 1e-9
+    assert abs(high) < 1e-9
+    assert words["fixed"].depth is None
+    assert all(u.depth is None for u in _units_at_end(session_of, "WordsOnWords"))
+
+
+def test_a_solid_wholly_in_front_of_another_is_layered_over_it_not_touching(run):
+    assert _codes(run("ArrowBeforeARod")) == []
+
+
+def test_solids_at_one_depth_nearer_on_screen_than_the_pad_touch(run):
+    assert set(_codes(run("RodsAtOneDepth"))) == {"contact.held"}
+
+
+def test_a_solid_wholly_in_front_of_a_text_still_covers_it(run):
+    assert set(_codes(run("RodBeforeAWord"))) == {"occlusion.glyph"}
+
+
+def test_a_text_wholly_in_front_of_a_solid_still_overlaps_it(run):
+    assert set(_codes(run("WordBeforeARod"))) == {"overlap.text"}
+
+
+def test_two_texts_one_before_the_other_in_depth_still_overlap(run):
+    assert set(_codes(run("WordsInDepth"))) == {"overlap.text"}
+
+
+def test_a_shape_drawn_over_a_solid_it_lies_behind_still_touches_it(run):
+    assert set(_codes(run("DiscBehindARodDrawnOver"))) == {"contact.held"}
+
+
 # Small text ------------------------------------------------------------------
 
 

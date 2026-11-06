@@ -128,6 +128,9 @@ class Leaf:
     ``None`` for a leaf no sweep measures: a point cloud, an image, or what
     is mounted on axes beside their furniture. ``plate`` says whether it is
     in its unit's background rectangle: under a text, not one of its glyphs.
+    ``depth`` is the least and greatest depth of its points toward a
+    ThreeDCamera that projects it (the greater the nearer, in scene units),
+    ``None`` where none does (:func:`~arachne.camera.projection.member_place`).
     """
 
     id: str
@@ -149,6 +152,7 @@ class Leaf:
     unit: Unit | None = None
     first_fill_opacity: float = 0.0
     plate: bool = False
+    depth: tuple[float, float] | None = None
 
     def outline(self, samples: int = 17) -> np.ndarray | None:
         """A path's curves as polylines, ``(curves, samples, 2)``; ``None``
@@ -685,6 +689,7 @@ class _Reader:
             unit=unit,
             first_fill_opacity=lays.first_fill,
             plate=unit is not None and id(mob) in self._plates.get(unit.id, ()),
+            depth=placed.depth,
         )
 
     def _place(self, mob: Mobject) -> Placed | None:
@@ -694,11 +699,11 @@ class _Reader:
         found = member_place(self.camera, self.view, mob)
         if found is None:
             return None
-        ink, pixels = found
+        ink, pixels, depth = found
         screen = _screen(self.view, pixels)
         # Read-only on every read, kept or not: kept reads share it.
         screen.setflags(write=False)
-        return Placed(ink=ink, screen=screen, box=_box(screen))
+        return Placed(ink=ink, screen=screen, box=_box(screen), depth=depth)
 
     def unit(self, mob: Mobject, chain: tuple[Mobject, ...]) -> Unit | None:
         """What a sweep measures ``mob`` (held by ``chain``) as part of:

@@ -13,6 +13,7 @@ from arachne import (
     DOWN,
     LEFT,
     ORIGIN,
+    OUT,
     RIGHT,
     UP,
     WHITE,
@@ -515,6 +516,54 @@ class WordAheadOfAFineRod(_SideView):
 
     def beside(self):
         return [_facing(Text("ahead", font_size=36), -0.6, as_group=True)]
+
+
+class RodsAtOneDepth(_SideView):
+    """A second rod above the first at the same depth, nearer to it on
+    screen than the pad.
+    """
+
+    def beside(self):
+        return [_rod(0.14).shift(0.3 * OUT)]
+
+
+class RodBeforeAWord(_SideView):
+    """A thick rod wholly in front of a word, drawn over its glyphs."""
+
+    radius = 0.3
+
+    def beside(self):
+        return [_facing(Text("hidden", font_size=36), 0.6)]
+
+
+class WordBeforeARod(_SideView):
+    """A word wholly in front of a thick rod, drawn over it."""
+
+    radius = 0.3
+
+    def beside(self):
+        return [_facing(Text("ahead", font_size=36), -0.6)]
+
+
+class WordsInDepth(_SideView):
+    """Two words one before the other in depth, the nearer drawn over the
+    farther on screen; the rod off below them.
+    """
+
+    def beside(self):
+        far = _facing(Text("far", font_size=36), 0.6).shift(OUT)
+        near = _facing(Text("near", font_size=36), -0.6).shift(OUT)
+        return [far, near]
+
+
+class DiscBehindARodDrawnOver(_SideView):
+    """A flat disc behind the rod in depth and facing the camera, which the
+    camera draws over the rod all the same: it is not sorted by depth.
+    """
+
+    def beside(self):
+        disc = Circle(radius=0.3, fill_opacity=1).rotate(90 * DEGREES, axis=RIGHT)
+        return [disc.shift(0.6 * UP)]
 
 
 # Small text ------------------------------------------------------------------

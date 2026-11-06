@@ -292,12 +292,21 @@ def member_box(
 
 def member_place(
     camera: Camera, view: View, member: Mobject
-) -> tuple[Box, np.ndarray] | None:
+) -> tuple[Box, np.ndarray, tuple[float, float] | None] | None:
     """What :func:`member_box` (with ``ink`` and ``home``) and
-    :func:`pixel_points` of its points give for one member, together:
-    ``None`` when its draw paints nothing. A path the camera traces with
-    the engine's own code is projected once for both, as that trace
-    projects its points once and traces those.
+    :func:`pixel_points` of its points give for one member, together, with
+    its depth: ``None`` when its draw paints nothing. A path the camera
+    traces with the engine's own code is projected once for both, as that
+    trace projects its points once and traces those.
+
+    The depth is the least and greatest of a path's points' depths toward
+    the camera (the greater the nearer), in scene units along a
+    ThreeDCamera's axis: the third coordinate its projection leaves, which
+    its depth sort reads too. Its points' depths bound its curves'. It is
+    read off the one projection, so only for a path the camera projects and
+    traces with the engine's own code, and is ``None`` for anything else: a
+    point cloud or an image, a path fixed in the frame, a path under any
+    other camera.
     """
     if not len(member.points):
         return None
@@ -307,13 +316,19 @@ def member_place(
         ink = _ink_box(camera, view, member, home=True, shown=shown)
         if ink is None:
             return None
-        flat = np.asarray(shown, dtype=float)[:, :2]
-        return ink, _placed(view, flat, _mapped_around(view, member), home=False)
+        shown = np.asarray(shown, dtype=float)
+        depth: tuple[float, float] | None = None
+        fixed = getattr(camera, "fixed_in_frame_mobjects", ())
+        if view.three_d is not None and member not in fixed:
+            depth = (float(shown[:, 2].min()), float(shown[:, 2].max()))
+        flat = shown[:, :2]
+        placed = _placed(view, flat, _mapped_around(view, member), home=False)
+        return ink, placed, depth
     ink = member_box(camera, view, member, ink=True, home=True)
     if ink is None:
         return None
     points = np.asarray(member.points, dtype=float)
-    return ink, pixel_points(camera, view, member, points)
+    return ink, pixel_points(camera, view, member, points), None
 
 
 def engine_trace(camera: Camera) -> bool:

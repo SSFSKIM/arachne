@@ -114,7 +114,7 @@ def test_a_leaf_is_placed_as_reading_its_ink_and_points_apart_places_it(
                         assert placed is None
                         continue
                     assert placed is not None
-                    ink, pixels = placed
+                    ink, pixels, _ = placed
                     assert ink == apart
                     expected = pixel_points(camera, view, mob, points)
                     assert pixels.dtype == expected.dtype
