@@ -103,6 +103,25 @@ def test_a_group_that_gains_one_child_as_another_snaps_back(jumps_of):
     assert jump.detail["to"] == pytest.approx([-1.0, -0.8], abs=1e-6)
 
 
+def test_a_rig_turned_by_its_spacing_is_a_known_miss(jumps_of):
+    """Known limit (a permutation coincidence): every atom set back lands
+    where a sibling stood. A source-aware rule is the open fix.
+    """
+    assert jumps_of("RigTurnsByItsSpacing") == []
+
+
+def test_a_tie_among_births_goes_to_the_child_first_seen(jumps_of):
+    """The second and the padded child land on one place, as far from every
+    place: the second, seen first, is the birth, though the padded child
+    stands before it in the list, and the padded child is the jump, from the
+    place it took at the first cut.
+    """
+    (jump,) = jumps_of("TieBrokenByFirstSight")
+    assert jump.detail["boundary"] == {"from_play": 1, "to_play": 2}
+    assert jump.detail["from"][0] == pytest.approx(1.2, abs=0.01)
+    assert jump.detail["to"] == pytest.approx([0.2, 3.0], abs=0.01)
+
+
 def test_a_group_nothing_rebuilds_is_judged_as_before(jumps_of):
     (jump,) = jumps_of("PlainGroupPutBack")
     assert jump.objects[0].kind == "Arrow"
