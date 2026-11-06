@@ -30,7 +30,10 @@ back to the camera's own draw where nothing of the core's is under it, or is
 ``render.unable``; it is never dropped (:meth:`LivePainter._sole_writer`).
 A capture begun on a reset after the scene's first frame, or on a picture the
 scene set, holds nothing of the core's either: it draws over what the array
-holds as its pixels, as Cairo draws over it.
+holds as its pixels, as Cairo draws over it. A hedged camera's own draw of
+the scene's first frame is compared once with Cairo's draw of the frame's
+description before the description replaces it, so a write in it that no
+producer call made is not dropped either (:meth:`LivePainter._settle_opening`).
 """
 
 from __future__ import annotations
@@ -482,6 +485,10 @@ class LivePainter:
         #: Per hedged camera (by id), within the scene's first frame: the
         #: camera, its own draw so far and the description of it.
         self._chain: dict[int, tuple[Any, Any, Any]] = {}
+        #: Per camera in :attr:`_chain`: its own draw of the picture the
+        #: description of its last capture draws over, which Cairo draws that
+        #: description over to compare (:meth:`_settle_opening`).
+        self._unders: dict[int, Any] = {}
         #: Per hedged camera (by id): its own draw of the static picture under
         #: the scene's first frame, and the description that replaced it.
         self._statics: dict[int, tuple[Any, Any]] = {}
@@ -656,13 +663,38 @@ class LivePainter:
         camera changed nothing, the description replaces its picture, so the
         frame is the core's as every later one is; a static picture keeps
         its own draw beside it, for a fallback to draw over (:meth:`_behind`).
+
+        Before it does, the camera's array, as its draw of the frame left it,
+        is compared once with Cairo's draw of the frame's description: code
+        the producer calls do not run (a mobject's of the scene's own, as the
+        camera draws it) can have written the array as it drew, and the
+        description would drop that. On any difference the camera's own draw
+        stands, and the whole scene falls back to it (:meth:`_fall_back`):
+        no frame of the scene has been delivered yet.
         """
+        unders, self._unders = self._unders, {}
         for key, (camera, real, described) in self._chain.items():
-            if camera not in _UNSETTLED:
-                np.copyto(camera.pixel_array, described)
-                self._drawn_by[key] = self._kind(camera)
-                if static:
-                    self._statics[key] = (real, described)
+            if camera in _UNSETTLED:
+                continue
+            drawn = self.painter(camera).drawn_by_cairo(unders[key])
+            if not np.array_equal(camera.pixel_array, drawn):
+                _UNSETTLED[camera] = (
+                    "something other than the camera's own draw wrote its array"
+                    " while it drew the scene's first frame, which the frame's"
+                    " description lacks"
+                )
+                self._layered(camera)
+                self._drawn_by[key] = "cairo"
+                held, self._real = self._real, True
+                try:
+                    self._fall_back(camera)
+                finally:
+                    self._real = held
+                continue
+            np.copyto(camera.pixel_array, described)
+            self._drawn_by[key] = self._kind(camera)
+            if static:
+                self._statics[key] = (real, described)
         self._chain.clear()
 
     def _hedged(self, camera: Any) -> bool:
@@ -694,6 +726,17 @@ class LivePainter:
                 np.copyto(camera.pixel_array, real)
                 return described
         return now
+
+    def _drawn_under(self, key: int, background: Any) -> Any:
+        """The camera's own draw of the picture a description of its capture
+        draws over (``background``): the draw a description of the scene's
+        first frame stands for (:meth:`_behind`), or the picture itself.
+        """
+        chain = self._chain.get(key)
+        for pair in (chain[1:] if chain else None, self._statics.get(key)):
+            if pair is not None and background is pair[1]:
+                return pair[0]
+        return background
 
     def _under(
         self, camera: Any, drawn: list[tuple[type, _Recording]]
@@ -1007,9 +1050,11 @@ class LivePainter:
         if under is not None:
             background, whole = under.background, under.whole and not composited
             merged = dict(under.centres)
-            for key, values in centres.items():
-                merged[key] = [*merged.get(key, []), *values]
+            for leaf, values in centres.items():
+                merged[leaf] = [*merged.get(leaf, []), *values]
             drawn, centres = [*under.drawn, *drawn], merged
+        if self._real and not self.draw:
+            self._unders[key] = self._drawn_under(key, background)
         pixels = self._describe(camera, drawn, centres, background)
         painter = self.painter(camera)
         if isinstance(painter, CorePainter):

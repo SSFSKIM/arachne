@@ -593,14 +593,22 @@ class CairoDrawer:
         self._draw_entries(camera, order, array)
         return array
 
-    def draw(self, state: StreamState) -> np.ndarray:
+    def draw(
+        self, state: StreamState, background: np.ndarray | None = None
+    ) -> np.ndarray:
         """The frame ``state`` describes, as the camera's pixel array (the
-        drawer's own: copy it to keep it).
+        drawer's own: copy it to keep it); with ``background``, drawn over
+        that picture instead of the view's.
         """
         self._refuse_unknown(state, state.order)
         self._state = state
         assert state.view is not None
-        return self._draw_order(state, state.order, self._array(state.view, "main"))
+        array = (
+            self._array(state.view, "main")
+            if background is None
+            else np.array(background)
+        )
+        return self._draw_order(state, state.order, array)
 
     def draw_over(
         self,

@@ -165,6 +165,15 @@ class CorePainter:
             self.drawer.draw_over(self.made, frame, overlay, self.replays)
         return frame
 
+    def drawn_by_cairo(self, background: np.ndarray) -> np.ndarray:
+        """The last frame as Cairo draws it over ``background``, every leaf
+        from the scene's values (:attr:`made`), as ``ir_cairo`` draws it: what
+        a camera's own draw of the frame over that picture is, where nothing
+        but that draw wrote its array (the live route's first-frame compare).
+        A drawer of its own, so the overlay's kept runs are untouched.
+        """
+        return CairoDrawer().draw(self.made, background).copy()
+
     def outlines(self) -> dict[tuple[int, int], tuple[Outline, ...]]:
         """What Cairo is handed for each leaf of the last frame drawn through
         the camera's context, by ``(slot, part)`` (:meth:`.cairo_painter.

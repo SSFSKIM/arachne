@@ -684,6 +684,12 @@ class IrCairoPainter:
             self.deltas.append(delta)
         return self.drawer.draw(self.state).copy()
 
+    def drawn_by_cairo(self, background: np.ndarray) -> np.ndarray:
+        """The last frame drawn again over ``background``
+        (:meth:`.CorePainter.drawn_by_cairo`).
+        """
+        return CairoDrawer().draw(self.state, background).copy()
+
     def outlines(self) -> dict[tuple[int, int], tuple[Outline, ...]]:
         """What Cairo is handed for each leaf of the last frame drawn through
         the camera's context, by ``(slot, part)`` (:meth:`.cairo_painter.
