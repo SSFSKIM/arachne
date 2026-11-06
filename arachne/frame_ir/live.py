@@ -23,7 +23,11 @@ With ``draw`` (the ``ir_cairo`` path) the capture is the real draw, which
 the description is compared with (:attr:`LivePainter.differing`); without,
 Cairo's calls go to a context that draws nothing (the core path's capture),
 but for the captures the core keeps as the camera drew them
-(:meth:`LivePainter._sample`).
+(:meth:`LivePainter._sample`). On the core the camera's array then has one
+writer within a frame, the core, checked at each capture's start and end: a
+write by anything else leaves the frame layered for attribution, and falls
+back to the camera's own draw where nothing of the core's is under it, or is
+``render.unable``; it is never dropped (:meth:`LivePainter._sole_writer`).
 """
 
 from __future__ import annotations
@@ -140,10 +144,28 @@ _COMPOSITING = (
 )
 
 
+#: Of :data:`_COMPOSITING`, the methods CE's capture writes the camera's
+#: array through by numbers rather than through its Cairo context (a point
+#: cloud's points; an image, or a path filled through a background image,
+#: composited), with the position of the array among their arguments.
+_BY_NUMBERS = {"overlay_PIL_image": 0, "display_point_cloud": 4}
+
+
 #: Cameras whose captures are their own draw from now on
 #: (``render.fallback``), with why: what their code changed while producing
-#: a record's values, or the capture their draw first differed at.
+#: a record's values, the capture their draw first differed at, or what
+#: wrote their array beside the core (``LivePainter._sole_writer``).
 _UNSETTLED: weakref.WeakKeyDictionary[Any, str] = weakref.WeakKeyDictionary()
+
+#: Why a camera's state, changed as it draws, sends it to its own draw.
+_BEYOND = (
+    "its draw reads state beyond the points, colours and order XF carries of"
+    " the camera's capture"
+)
+
+#: What a camera's array holds after its reset, as an expected picture
+#: (``LivePainter._expected``): its background, read when compared.
+_BACKGROUND = object()
 
 
 @dataclass
@@ -251,13 +273,22 @@ def _changed(before: _State, after: _State) -> str | None:
     return None
 
 
-def _producing(name: str, method: Any, camera: Any, watched: Callable[[], bool]) -> Any:
+def _producing(
+    name: str,
+    method: Any,
+    camera: Any,
+    watched: Callable[[], bool],
+    guarded: Callable[[], bool],
+) -> Any:
     """``method`` (``camera``'s ``name``, whatever the scene made it), keeping
     what it returns for each recorded mobject in that mobject's log. While
     ``watched()``, a call that changes what the camera holds
     (:func:`_camera_state`) is kept in :data:`_UNSETTLED`: the frame reads
     that state beyond the values XF
-    carries of the capture, so the camera's own draw stands.
+    carries of the capture, so the camera's own draw stands. While
+    ``guarded()`` (the camera drawing a capture itself that the core will
+    draw over), so is a call that writes the camera's array: the camera's
+    code is then a writer of it beside the core.
     """
     from arachne.camera.three_d_camera import ThreeDCamera
 
@@ -269,12 +300,21 @@ def _producing(name: str, method: Any, camera: Any, watched: Callable[[], bool])
         log = mobject._xf_log
         start = len(log)
         before = _camera_state(camera, kind) if watched() else None
+        pixels = np.array(camera.pixel_array) if guarded() else None
         result = method(mobject, *args, **kwargs)
         changed = (
             None if before is None else _changed(before, _camera_state(camera, kind))
         )
         if changed is not None and camera not in _UNSETTLED:
-            _UNSETTLED[camera] = f"{name} changed the camera's {changed} while it drew"
+            _UNSETTLED[camera] = (
+                f"{name} changed the camera's {changed} while it drew; {_BEYOND}"
+            )
+        if (
+            pixels is not None
+            and camera not in _UNSETTLED
+            and not np.array_equal(pixels, camera.pixel_array)
+        ):
+            _UNSETTLED[camera] = f"{name} wrote the camera's array while it drew"
         # What the camera's code read off the mobject while it produced is
         # its own: the drawer is handed what it produced and never asks.
         mobject._xf_inside.update(range(start, len(log)))
@@ -486,6 +526,16 @@ class LivePainter:
         #: array one of their methods wrote outside a capture
         #: (:data:`_COMPOSITING`) since it was last set or captured.
         self._composited: set[int] = set()
+        #: On the core, per camera (by id), within :meth:`around`: what its
+        #: array must hold when its next capture begins (the core is its one
+        #: writer within a frame), and whether nothing of the core's is in
+        #: it: what the core or the camera itself last drew into it, or what
+        #: was set as it (its background, a static picture the renderer
+        #: kept); absent where a capture draws over whatever it holds.
+        self._expected: dict[int, tuple[Any, bool]] = {}
+        #: An array of each shape (and type) that CE's own draws by numbers
+        #: on the core go into, nothing reading it (:meth:`_compositing`).
+        self._scratches: dict[tuple[int, ...], np.ndarray] = {}
         #: Per camera (by id), within :meth:`around`: the painter whose pixels
         #: its array holds (``painter.painter_kind``).
         self._drawn_by: dict[int, str] = {}
@@ -560,8 +610,10 @@ class LivePainter:
         self._holding.clear()
         self._reset.clear()
         self._composited.clear()
+        self._expected.clear()
         if reset:
             self._reset[id(camera)] = True
+            self._expected[id(camera)] = (_BACKGROUND, True)
         self._drawn_by.clear()
         self._opening = not delivered(camera, asked)
         displays = vars(camera).get("image_mobjects_from_cameras", ())
@@ -734,9 +786,21 @@ class LivePainter:
             def installing(pixel_array: Any, *args: Any, **kwargs: Any) -> Any:
                 # A reset, a static picture the renderer kept, or the scene's own.
                 found = set_array(pixel_array, *args, **kwargs)
-                self._holding[id(camera)] = self._installed(camera, pixel_array)
-                self._reset[id(camera)] = pixel_array is camera.background
-                self._composited.discard(id(camera))
+                key = id(camera)
+                installed = self._installed(camera, pixel_array)
+                self._holding[key] = installed
+                self._reset[key] = pixel_array is camera.background
+                self._composited.discard(key)
+                # The next capture begins on what was set: the background
+                # (nothing of the core's in it), a picture the core drew and
+                # the renderer kept, or the scene's own, which the capture
+                # draws over as its pixels, so nothing is expected of it.
+                if self._reset[key]:
+                    self._expected[key] = (_BACKGROUND, True)
+                elif installed is not None:
+                    self._expected[key] = (pixel_array, False)
+                else:
+                    self._expected.pop(key, None)
                 return found
 
             if "set_pixel_array" in own:
@@ -746,7 +810,9 @@ class LivePainter:
             for name in _COMPOSITING:
                 if name in own:
                     held[name] = own[name]
-                own[name] = engine_own(self._compositing(camera, getattr(camera, name)))
+                own[name] = engine_own(
+                    self._compositing(camera, name, getattr(camera, name))
+                )
                 added.append(name)
         own_code = _own_code(camera)
         if own_code is not None:
@@ -765,7 +831,13 @@ class LivePainter:
                     held[name] = own[name]
                 method = getattr(camera, name)
                 own[name] = engine_own(
-                    _producing(name, method, camera, lambda: self._watching)
+                    _producing(
+                        name,
+                        method,
+                        camera,
+                        lambda: self._watching,
+                        lambda: self._guarding(camera),
+                    )
                 )
                 added.append(name)
             own["_xf_pre_projected"] = True
@@ -779,18 +851,45 @@ class LivePainter:
 
         return restore
 
-    def _compositing(self, camera: Any, method: Any) -> Any:
-        """``method``, a method of ``camera`` that writes the array it is
-        handed (:data:`_COMPOSITING`): called outside a capture, the picture
-        the camera's array holds is no capture's, nor its reset's.
+    def _compositing(self, camera: Any, name: str, method: Any) -> Any:
+        """``method``, ``camera``'s ``name``, a method that writes the array
+        it is handed (:data:`_COMPOSITING`): called outside a capture, the
+        picture the camera's array holds is no capture's, nor its reset's.
+        Called within a capture the core draws, one that writes the array by
+        numbers (:data:`_BY_NUMBERS`) is CE's own draw of a leaf the core
+        draws from its description: like a path drawn through the core's
+        context, it draws nowhere (into an array nothing reads).
         """
+        position = _BY_NUMBERS.get(name)
 
         def compositing(*args: Any, **kwargs: Any) -> Any:
             if not vars(camera)["_xf_live"]:
                 self._composited.add(id(camera))
+            elif position is not None and not self._real:
+                args, kwargs = self._nowhere(camera, position, args, kwargs)
             return method(*args, **kwargs)
 
         return compositing
+
+    def _nowhere(
+        self, camera: Any, position: int, args: tuple, kwargs: dict[str, Any]
+    ) -> tuple[tuple, dict[str, Any]]:
+        """``args`` and ``kwargs`` with the camera's array, where they hand it
+        (at ``position``, or as ``pixel_array``), replaced by an array of the
+        same shape that nothing reads.
+        """
+        array = camera.pixel_array
+        if len(args) > position and args[position] is array:
+            args = (*args[:position], self._scratch(array), *args[position + 1 :])
+        elif kwargs.get("pixel_array") is array:
+            kwargs = {**kwargs, "pixel_array": self._scratch(array)}
+        return args, kwargs
+
+    def _scratch(self, array: np.ndarray) -> np.ndarray:
+        found = self._scratches.get(array.shape)
+        if found is None or found.dtype != array.dtype:
+            found = self._scratches[array.shape] = np.zeros_like(array)
+        return found
 
     def _display(self, camera: Any, kind: type, func: Any) -> Any:
         from arachne.timeline.camera_code import engine_own
@@ -828,25 +927,38 @@ class LivePainter:
         back from it, as :meth:`_sample` decided for it.
         """
         frames = vars(camera)["_xf_live"]
-        background = np.array(camera.pixel_array)
+        key = id(camera)
+        background = start = np.array(camera.pixel_array)
+        # On the core, the camera's array has one writer within a frame:
+        # the core. The capture begins on what was last drawn into it in
+        # the frame, by the core or by the camera itself where it draws the
+        # scene's first frame, or on what was set as it (:attr:`_expected`).
+        # Anything else wrote it; a write that leaves it byte-equal wrote
+        # nothing. That compare only refuses (:meth:`_sole_writer`).
+        expected = self._expected.pop(key, None)
+        written = None
+        if (
+            not self.draw
+            and expected is not None
+            and camera not in _UNSETTLED
+            and not np.array_equal(start, self._picture(camera, expected[0]))
+        ):
+            written = (
+                "something other than the core wrote the camera's array before"
+                " its capture (after its reset, or between two captures of one"
+                " frame)"
+            )
+            self._sole_writer(camera, written, mine=expected[1])
         # Whole: begun on the camera's reset with nothing written into its
         # array since, or continuing a picture that was, nothing written
         # since that picture's capture. What wrote is the record's: set
         # (``set_pixel_array``), drawn by a capture, or composited by one of
-        # the camera's methods outside a capture (``_compositing``). A write
+        # the camera's methods outside a capture (``_compositing``); a write
         # no method hears (a scene's code assigning into the array) is
-        # refused by a capture begun on a reset where the array no longer
-        # holds the background that reset installed; that compare only
-        # refuses (a recorded whole), never makes a capture whole. A
-        # continuing capture is drawn from the picture's description, over
-        # its background, so no such write reaches it (:meth:`_under`).
-        composited = id(camera) in self._composited
-        self._composited.discard(id(camera))
-        whole = (
-            self._reset.pop(id(camera), False)
-            and not composited
-            and np.array_equal(background, camera.background)
-        )
+        # refused by the compare above, which never makes a capture whole.
+        composited = key in self._composited
+        self._composited.discard(key)
+        whole = self._reset.pop(key, False) and not composited and written is None
         if self._real and not self.draw:
             background = self._behind(camera, background)
         drawn: list[tuple[type, _Recording]] = []
@@ -860,11 +972,27 @@ class LivePainter:
             frames.pop()
         if camera in _UNSETTLED:
             # The camera's code changed what it holds while it produced
-            # what a record states: its draw reads that state beyond what
-            # XF carries, so its own draw stands, from then on.
-            self._drawn_by[id(camera)] = "cairo"
+            # what a record states (its draw reads that state beyond what
+            # XF carries), or something else wrote its array: its own draw
+            # stands, from then on.
+            self._layered(camera)
+            self._drawn_by[key] = "cairo"
             self._fall_back(camera)
             return
+        if (
+            not self.draw
+            and not self._real
+            and not np.array_equal(camera.pixel_array, start)
+        ):
+            # Before the core draws over it: what wrote the array as the
+            # camera captured is no draw of the capture's (which draws
+            # nowhere on the core), and the core's picture would drop it.
+            self._sole_writer(
+                camera,
+                "something other than the core wrote the camera's array while"
+                " it captured",
+                mine=False,
+            )
         under = self._under(camera, drawn)
         if under is not None:
             background, whole = under.background, under.whole and not composited
@@ -889,7 +1017,8 @@ class LivePainter:
                 # context's, held in place, outside the camera): its own
                 # draw stands, from then on.
                 _UNSETTLED[camera] = (
-                    f"its capture at t={self.instant} drew other than XF describes it"
+                    f"its capture at t={self.instant} drew other than XF describes"
+                    f" it; {_BEYOND}"
                 )
                 self._drawn_by[id(camera)] = "cairo"
                 self._fall_back(camera)
@@ -901,11 +1030,60 @@ class LivePainter:
             # is drawn, every capture in it: a change seen in any of them
             # then leaves nothing of the core's in it. Its description
             # replaces it once the frame is drawn (:meth:`_settle_opening`).
-            self._chain[id(camera)] = (camera, np.array(camera.pixel_array), pixels)
-            self._drawn_by[id(camera)] = "cairo"
+            real = np.array(camera.pixel_array)
+            self._chain[key] = (camera, real, pixels)
+            self._drawn_by[key] = "cairo"
+            if not self.draw:
+                self._expected[key] = (real, True)
         else:
             np.copyto(camera.pixel_array, pixels)
-            self._drawn_by[id(camera)] = self._kind(camera)
+            self._drawn_by[key] = self._kind(camera)
+            if not self.draw:
+                self._expected[key] = (pixels, False)
+
+    @staticmethod
+    def _picture(camera: Any, expected: Any) -> Any:
+        return camera.background if expected is _BACKGROUND else expected
+
+    def _guarding(self, camera: Any) -> bool:
+        """Whether ``camera``'s capture is drawn as the camera draws it, for
+        the core to draw over once the frame is drawn (the scene's first
+        frame of a hedged camera, :meth:`_hedged`): the camera's code writing
+        its array as it produces would be dropped then, so it is watched for
+        (:func:`_producing`).
+        """
+        return not self.draw and self._real and camera not in _UNSETTLED
+
+    def _layered(self, camera: Any) -> None:
+        """``camera``'s core painter, if it has one, holds no capture known
+        whole (:attr:`.CorePainter.whole`).
+        """
+        painter = self.painter(camera)
+        if isinstance(painter, CorePainter):
+            painter.whole = False
+
+    def _sole_writer(self, camera: Any, why: str, *, mine: bool) -> None:
+        """Something other than the core wrote ``camera``'s array within the
+        frame, ``why``, and the core's picture of the capture would drop it.
+        The frame is layered. Where the array holds nothing the core drew
+        (``mine``) and no frame of the scene has been delivered, the capture
+        is drawn as the camera draws it and the whole scene falls back to
+        the camera's own draw, which is Cairo's (:meth:`_fall_back`).
+        Otherwise the frame is ``render.unable``: the core keeps no draw of
+        the camera's own under its picture, and a scene's frames are drawn
+        by one painter (``painter.deliver``).
+        """
+        self._layered(camera)
+        if mine and self._opening:
+            _UNSETTLED[camera] = why
+            self._real = True
+            return
+        raise Unable(
+            f"render.unable: a {type(camera).__name__}: {why}, which a frame the"
+            " core draws would drop; the core keeps no draw of the camera's own to"
+            " fall back on in this frame, and a scene's frames are drawn by one"
+            " painter"
+        )
 
     def _sample(self, camera: Any) -> None:
         """Whether ``camera``'s capture about to run is watched call by call,
@@ -952,13 +1130,11 @@ class LivePainter:
             fall_back(*self._scene)
 
         own = self._own_codes.get(id(camera))
-        subject, why = own if own is not None else (type(camera).__name__, "")
+        name = type(camera).__name__
+        subject, why = own if own is not None else (name, f"a {name}")
         where = "" if self.draw else " for the whole scene"
         raise_finding(
-            "render.fallback",
-            subject,
-            f"{why} is drawn on Cairo{where}: {reason}; its draw reads state beyond the"
-            " points, colours and order XF carries of the camera's capture",
+            "render.fallback", subject, f"{why} is drawn on Cairo{where}: {reason}"
         )
 
     @staticmethod
