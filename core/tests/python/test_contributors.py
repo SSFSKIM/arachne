@@ -430,3 +430,38 @@ def test_face_stops_are_each_paths_lit_stops_per_layer():
             assert np.allclose(got, expected, rtol=0, atol=1e-12), (got, expected)
     # Unshaded, nothing is lit.
     assert faces_stream(should_apply_shading=False).face_stops([1]) == {}
+
+
+def test_a_new_fill_moves_the_drawn_pixel_and_the_contributor_colour_together():
+    # One shaded face held across two deltas, its shape the same and its fill changed: the frame drawn,
+    # the leaf's reported colour and its face stops all follow the second delta.
+    stream = ac.Stream()
+    seen = []
+    for fill in ((0.2, 0.4, 0.6, 1.0), (0.3, 0.4, 0.6, 1.0)):
+        delta = view_delta(should_apply_shading=True)
+        shape = delta.upload_path(square())
+        delta.set_record(
+            "path",
+            1,
+            11,
+            shape=shape,
+            fill=fill,
+            space="world",
+            shade_in_3d=True,
+            normals=[(0, 0, 1), (0, 0, 1)],
+        )
+        delta.set_order([("moving", 1, 0)])
+        stream.apply(delta)
+        frame = np.asarray(stream.draw(160, 90, threads=1, overlay=False)).reshape(
+            90, 160, 4
+        )
+        (leaf,) = [leaf for leaf in at(stream, *INSIDE)[0] if leaf[0] == 11]
+        pixel = tuple(int(v) for v in frame[INSIDE[1], INSIDE[0]])
+        seen.append((pixel, tuple(leaf[3]), stream.face_stops([1])[1][0][1]))
+    (first, first_leaf, first_stops), (second, second_leaf, second_stops) = seen
+    # An opaque face covering the whole pixel: the pixel is the leaf's colour, in both frames.
+    assert first == first_leaf
+    assert second == second_leaf
+    assert second[0] > first[0]
+    assert second[1:3] == first[1:3]
+    assert abs(second_stops[0][0] - first_stops[0][0] - 0.1) < 1e-12
