@@ -26,6 +26,7 @@ from arachne.data_structures import MethodWithArgs
 
 from .. import config, logger
 from ..constants import *
+from ..timeline import rebuilds
 from ..timeline.origins import ORIGINS
 from ..utils.color import (
     BLACK,
@@ -3751,7 +3752,10 @@ class Mobject:
             if match_center:
                 mobject.move_to(self.get_center())
 
-        return self._assign_values(mobject)
+        rebuilt = self._assign_values(mobject)
+        # The motion rule tells a rebuilt group's reindexed children from jumps.
+        rebuilds.note(self)
+        return rebuilt
 
     def _assign_values(self, mobject: Mobject) -> Self:
         """Give this family ``mobject``'s values, position by position, as CE's

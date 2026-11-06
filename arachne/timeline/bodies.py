@@ -49,9 +49,10 @@ _ONE_PLACE = 1e-3
 class Body:
     """One body as the scene holds it: ``parent`` is the stable id of the
     top-level holding it (``None`` for a top-level), ``members`` how many
-    members of its family have points, ``own`` whether its own points paint,
-    ``visible`` whether some member lays ink a viewer can see. ``type``,
-    ``text`` and ``scene_line`` name it.
+    members of its family have points, ``children`` how many submobjects it
+    holds (padding included, as ``become`` leaves it), ``own`` whether its
+    own points paint, ``visible`` whether some member lays ink a viewer can
+    see. ``type``, ``text`` and ``scene_line`` name it.
     """
 
     id: str
@@ -60,6 +61,7 @@ class Body:
     size: np.ndarray
     view: np.ndarray
     members: int
+    children: int
     own: bool
     visible: bool
     type: str
@@ -141,7 +143,11 @@ def bodies(
             looked = [unchanged(m) for m in members]
             steady = all(looked)
         before = then.bodies.get(where.id)
-        reused = steady and before is not None and before.holds(mob, parent_id, members)
+        reused = (
+            steady
+            and before is not None
+            and before.holds(mob, parent_id, members, len(mob.submobjects))
+        )
         body: Body | None
         if reused:
             assert before is not None
@@ -163,6 +169,7 @@ def bodies(
                     size=high - low,
                     view=placed(centre),
                     members=len(leaves),
+                    children=len(mob.submobjects),
                     own=bool(len(mob.points)) and facts(mob).lays,
                     visible=any(leaf.visible for leaf in leaves),
                     type=type(mob).__name__,
@@ -171,7 +178,9 @@ def bodies(
                 )
         if kept is not None:
             if before is None or not reused or before.body is not body:
-                before = _Reading(mob, parent_id, members, body, looking)
+                before = _Reading(
+                    mob, parent_id, members, len(mob.submobjects), body, looking
+                )
             now.bodies[where.id] = before
         if body is not None:
             found[where.id] = body
@@ -204,21 +213,27 @@ class Kept:
 @dataclass(frozen=True, eq=False)
 class _Reading:
     """One candidate as read: its mobject, its parent's stable id, its members
-    with points, the body read (``None``: it paints nothing) and the view it
-    was read under.
+    with points, how many submobjects it held, the body read (``None``: it
+    paints nothing) and the view it was read under.
     """
 
     mob: Mobject
     parent: str | None
     members: list[Mobject]
+    children: int
     body: Body | None
     looking: tuple[float, float, float, float]
 
-    def holds(self, mob: Mobject, parent: str | None, members: list[Mobject]) -> bool:
-        """Whether ``mob``, under ``parent``, has the members read."""
+    def holds(
+        self, mob: Mobject, parent: str | None, members: list[Mobject], children: int
+    ) -> bool:
+        """Whether ``mob``, under ``parent``, has the members and as many
+        submobjects as read (a submobject without points is no member).
+        """
         return (
             mob is self.mob
             and parent == self.parent
+            and children == self.children
             and len(members) == len(self.members)
             and all(m is was for m, was in zip(members, self.members, strict=True))
         )

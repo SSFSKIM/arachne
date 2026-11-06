@@ -322,6 +322,12 @@ class PlayRecord:
     #: How many of its ticks were full and how many only stepped.
     full_ticks: int = 0
     stepping_ticks: int = 0
+    #: How many ``become`` calls the process had made as the scene called it
+    #: and once it stood as it began (:func:`.rebuilds.count`): a group
+    #: rebuilt between the one of a play and the other of the next was
+    #: rebuilt across their cut.
+    rebuilds_called: int = 0
+    rebuilds_entered: int = 0
     #: The instants of its composition events (a Succession part ending and
     #: the next beginning), exact or found by bisection, in order.
     events: tuple[Fraction, ...] = ()

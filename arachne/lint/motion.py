@@ -35,6 +35,16 @@ elsewhere, then thrown) ``"after"``.
 
 **What a step across the cut may be instead.** None of these is reported:
 
+* *rebuilt*: a child of a group ``become`` rebuilt across the cut
+  (:mod:`arachne.timeline.rebuilds`), which takes whatever item the new list
+  puts at its place: one that lands within the tolerance of where one of
+  the group's visible children stood as the play ended, whatever its size,
+  or one born at the cut. The born are those landing where none stood, at
+  most as many as the group's count of children rose by (``become``'s
+  padding counted), the farthest from every such place first; a group that
+  gained no child has none born, so a child set back (a rig snapped back)
+  is still judged. A child that left the list within the play keeps its
+  padded slot, so a newcomer refilling it at the cut is no birth;
 * *reshaped*: a single shape at another size (an arc restarted), or a body
   whose number of drawn members changed: another shape, not the same one
   elsewhere;
@@ -94,6 +104,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from arachne.timeline import rebuilds
 from arachne.timeline.bodies import Body, Exit, bodies
 from arachne.timeline.clock import frames_in
 from arachne.timeline.draw import Drawing
@@ -103,6 +114,7 @@ from .findings import Finding, FindingObject, Holder
 from .instants import render_grid
 
 if TYPE_CHECKING:
+    from arachne.mobject.mobject import Mobject
     from arachne.session import Session
     from arachne.timeline.record import Capture, PlayRecord, Record
 
@@ -220,10 +232,12 @@ class MotionJump:
                 plays.append(None)
                 unread = unread or play
         names = _Names(execution)
+        groups = _Rebuilt(execution)
         found: list[Finding] = []
         for before, after in zip(plays, plays[1:], strict=False):
             if before is not None and after is not None and after.entry is not None:
-                found.extend(_Cut(self.jump_tol, before, after, names).findings())
+                cut = _Cut(self.jump_tol, before, after, names, groups)
+                found.extend(cut.findings())
         if unread is not None:
             found.extend(_unmeasured(context.session, execution, unread))
         return found
@@ -400,7 +414,42 @@ def _same_size(a: np.ndarray, b: np.ndarray) -> bool:
     )
 
 
+def _nearest(centre: np.ndarray, places: list[np.ndarray]) -> float:
+    """How far ``centre`` stands from the nearest of ``places``, in scene
+    units.
+    """
+    return min(
+        (float(np.hypot(*(centre - place))) for place in places), default=float("inf")
+    )
+
+
 # Judging a cut
+
+
+class _Rebuilt:
+    """Which of an execution's groups ``become`` rebuilt across a cut
+    (:mod:`arachne.timeline.rebuilds`), by stable id.
+    """
+
+    def __init__(self, record: Record) -> None:
+        self._record = record
+        self._mobjects: dict[str, Mobject] | None = None
+
+    def across(self, group: str, before: _Play, after: _Play) -> bool:
+        """Whether ``become`` rebuilt ``group`` from the scene's call of
+        the play ``before`` the cut to the state the play ``after`` it
+        began in.
+        """
+        start, end = before.record.rebuilds_called, after.record.rebuilds_entered
+        if end <= start:
+            return False
+        if self._mobjects is None:
+            record = self._record
+            self._mobjects = {}
+            for mob in record.mobjects():
+                self._mobjects.setdefault(record.origin(mob).id, mob)
+        held = self._mobjects.get(group)
+        return held is not None and rebuilds.rebuilt_between(held, start, end)
 
 
 class _Names:
@@ -452,10 +501,22 @@ class _Cut:
     bodies that moved on either side of it jumped.
     """
 
-    def __init__(self, tol: float, before: _Play, after: _Play, names: _Names) -> None:
+    def __init__(
+        self,
+        tol: float,
+        before: _Play,
+        after: _Play,
+        names: _Names,
+        groups: _Rebuilt,
+    ) -> None:
         self.tol = tol
         self.before, self.after = before, after
         self.names = names
+        self.groups = groups
+        #: Of each group rebuilt across the cut: where its children stood as
+        #: the play ended, and which of them were born at the cut.
+        self._places: dict[str, list[np.ndarray]] = {}
+        self._born: dict[str, set[str]] = {}
         assert after.entry is not None
         self.left = before.exit.bodies
         # As the next play began, CE's first frame of it: not the next frame
@@ -514,6 +575,8 @@ class _Cut:
 
     def passes(self, key: str, distance: float, mover: _Play) -> str | None:
         """Why a step beyond the tolerance is not a jump, or ``None``."""
+        if self.rebuilt(key):
+            return "rebuilt"
         was, now = self.left[key], self.came[key]
         if was.members != now.members or (
             now.members == 1 and not _same_size(was.size, now.size)
@@ -524,6 +587,72 @@ class _Cut:
         if self.relabelled(key):
             return "relabelled"
         return None
+
+    def rebuilt(self, key: str) -> bool:
+        """Whether its group's rebuilt list explains ``key``'s step: ``become``
+        rebuilt the group across the cut (from the call of the play before it
+        to the state the next play began in), and ``key`` now stands within
+        the tolerance of where one of the group's children stood as the play
+        ended (it took another child's item), or is one of the children born
+        at the cut (:meth:`born`).
+        """
+        parent = self.came[key].parent
+        if parent is None or not self.groups.across(parent, self.before, self.after):
+            return False
+        places = self.places(parent)
+        return self.lands_on(self.came[key].centre, places) or key in self.born(parent)
+
+    def places(self, group: str) -> list[np.ndarray]:
+        """Where ``group``'s children stood, seen, as the play ended."""
+        found = self._places.get(group)
+        if found is None:
+            found = self._places[group] = [
+                body.centre
+                for body in self.left.values()
+                if body.parent == group and body.visible
+            ]
+        return found
+
+    def lands_on(self, centre: np.ndarray, places: list[np.ndarray]) -> bool:
+        """Whether ``centre`` stands within the tolerance of one of
+        ``places``, measured as a cut's step is.
+        """
+        return any(
+            float(np.hypot(*(centre - place))) * self.zoom <= self.tol
+            for place in places
+        )
+
+    def born(self, group: str) -> set[str]:
+        """``group``'s children born at the cut: of those seen on both sides
+        that stand where none of its children stood, at most as many as its
+        count of children rose by across the cut (padding counted, as
+        ``become`` leaves it). A group that gained no child has none, so its
+        children that stand where none stood are bodies: a rig's atoms
+        snapped back, one or all. When more stand so than the count rose by,
+        the ones farthest from every place a child stood are the born (a
+        newcomer appears at its source, away from the rest; a jumper is
+        caught nearer its old place), the group's order of its children
+        breaking a tie.
+        """
+        found = self._born.get(group)
+        if found is not None:
+            return found
+        was, now = self.left.get(group), self.came.get(group)
+        grew = now.children - was.children if was is not None and now is not None else 0
+        found = set()
+        if grew > 0:
+            places = self.places(group)
+            unmatched = [
+                key
+                for key, body in self.came.items()
+                if body.parent == group
+                and self.seen_across(key)
+                and not self.lands_on(body.centre, places)
+            ]
+            unmatched.sort(key=lambda key: -_nearest(self.came[key].centre, places))
+            found = set(unmatched[:grew])
+        self._born[group] = found
+        return found
 
     def relabelled(self, key: str) -> bool:
         """Whether a look-alike sibling stood where ``key`` lands just

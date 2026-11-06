@@ -80,3 +80,34 @@ class LiveImage(Scene):
         self.wait(0.25)
         source.pixel_array[:, :, 3] = 255
         self.wait(0.25)
+
+
+class GainsAnEmptyChild(Scene):
+    """Between two waits a pair gains a child with no points: its members
+    hold, its children do not.
+    """
+
+    def construct(self):
+        self.timeline.arm_motion()
+        pair = VGroup(Dot(LEFT), Dot(RIGHT))
+        self.add(pair)
+        self.wait()
+        pair.add(VGroup())
+        self.wait()
+
+
+class Rebuilds(Scene):
+    """A pair ``become`` rebuilds between the first two plays, and an updater
+    that rebuilds a dot each frame from the third play on (time-based, so the
+    wait runs it); a square nothing rebuilds.
+    """
+
+    def construct(self):
+        pair = VGroup(Dot(LEFT), Dot(RIGHT))
+        dot, square = Dot(UP), Square()
+        self.add(pair, dot, square)
+        self.wait()
+        pair.become(VGroup(Dot(LEFT * 2), Dot(RIGHT * 2), Dot(DOWN)))
+        self.wait()
+        dot.add_updater(lambda m, dt: m.become(Dot(UP)))
+        self.wait()
