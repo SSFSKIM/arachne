@@ -33,7 +33,7 @@ __all__ = ["Leaf", "Part", "Parts", "PartsCache", "Unit", "build_parts"]
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from fractions import Fraction
-from functools import cached_property
+from functools import cache, cached_property
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -42,6 +42,7 @@ from arachne.camera.projection import (
     Box,
     View,
     draw_kind,
+    held_still,
     member_place,
     point_thickness,
     record_view,
@@ -395,20 +396,22 @@ def _read(
     texts: dict[int, list[Leaf]] = {}
     text_of: dict[int, Mobject] = {}
     parts: list[Part] = []
-    for mob in drawn:
-        reached = chains.get(id(mob))
-        if reached is None or draw_kind(mob) is None:
-            continue
-        chain = reached[1]
-        leaf = reader.leaf(mob, order[id(mob)], chain)
-        if leaf is None:
-            continue
-        text = next((m for m in (*chain, mob) if _is_text(m)), None)
-        if text is None or _is_backdrop(mob, chain):
-            parts.append(reader.part(mob, chain, (leaf,), kind=leaf.draw))
-        else:
-            texts.setdefault(id(text), []).append(leaf)
-            text_of[id(text)] = text
+    # Reading the leaves moves nothing the camera projects with.
+    with held_still(camera):
+        for mob in drawn:
+            reached = chains.get(id(mob))
+            if reached is None or draw_kind(mob) is None:
+                continue
+            chain = reached[1]
+            leaf = reader.leaf(mob, order[id(mob)], chain)
+            if leaf is None:
+                continue
+            text = next((m for m in (*chain, mob) if _is_text(m)), None)
+            if text is None or _is_backdrop(mob, chain):
+                parts.append(reader.part(mob, chain, (leaf,), kind=leaf.draw))
+            else:
+                texts.setdefault(id(text), []).append(leaf)
+                text_of[id(text)] = text
     seen_ink: dict[bytes, int] = {}
     for key, leaves in texts.items():
         text = text_of[key]
@@ -463,6 +466,7 @@ def _chains(
     return chains
 
 
+@cache
 def _text_types() -> tuple[type, ...]:
     from arachne.mobject.text.numbers import DecimalNumber
     from arachne.mobject.text.tex_mobject import SingleStringMathTex
@@ -480,9 +484,15 @@ def _is_backdrop(mob: Mobject, chain: tuple[Mobject, ...]) -> bool:
     """Whether ``mob`` is, or is in, a background rectangle: under a text,
     not its glyphs.
     """
+    backdrop = _backdrop_type()
+    return any(isinstance(m, backdrop) for m in (*chain, mob))
+
+
+@cache
+def _backdrop_type() -> type:
     from arachne.mobject.geometry.shape_matchers import BackgroundRectangle
 
-    return any(isinstance(m, BackgroundRectangle) for m in (*chain, mob))
+    return BackgroundRectangle
 
 
 def _grid_types() -> tuple[type, ...]:
@@ -594,6 +604,8 @@ class _Reader:
         #: The lint's memo as this read sees it; ``None`` keeps nothing.
         self._viewing = viewing
         self._units: dict[int, Unit] = {}
+        #: Each holder read, by id: what it is does not change in one read.
+        self._holders: dict[int, Holder] = {}
         #: Each source's family, and each unit's background rectangle (ids).
         self._families: dict[int, tuple[Holder, ...]] = {}
         self._plates: dict[str, set[int]] = {}
@@ -685,18 +697,14 @@ class _Reader:
         """What a sweep measures ``mob`` (held by ``chain``) as part of:
         :class:`Unit`. ``None`` when no sweep measures it.
         """
-        from arachne.mobject.graphing.coordinate_systems import Axes
-        from arachne.mobject.graphing.number_line import NumberLine
-        from arachne.mobject.types.vectorized_mobject import VGroup
-        from arachne.mobject.value_tracker import ValueTracker
-
+        tracker, furnished, group = _unit_types()
         path = (*chain, mob)
         for depth, held in enumerate(path):
-            if isinstance(held, ValueTracker):
+            if isinstance(held, tracker):
                 return None
-            if isinstance(held, (Axes, NumberLine)):
+            if isinstance(held, furnished):
                 return self._furniture_unit(held, path)
-            if isinstance(held, VGroup) and held.submobjects and not len(held.points):
+            if isinstance(held, group) and held.submobjects and not len(held.points):
                 continue
             return self._unit_of(held, path[:depth], furniture=None, source=held)
         return None
@@ -807,10 +815,17 @@ class _Reader:
         )
 
     def _holder(self, mob: Mobject) -> Holder:
-        origin = self.record.origin(mob)
-        return Holder(
-            origin.id, self.names.get(id(mob)), origin.scene_line, type(mob).__name__
-        )
+        found = self._holders.get(id(mob))
+        if found is None:
+            origin = self.record.origin(mob)
+            found = Holder(
+                origin.id,
+                self.names.get(id(mob)),
+                origin.scene_line,
+                type(mob).__name__,
+            )
+            self._holders[id(mob)] = found
+        return found
 
 
 def _lays(mob: Mobject, kind: str, points: np.ndarray) -> Lays:
@@ -883,20 +898,40 @@ def _has_tip(mob: Mobject) -> bool:
     return bool(callable(has_tip) and has_tip())
 
 
-def _text_like(mob: Mobject) -> bool:
-    """Whether a sweep holds ``mob`` as a text: a text type, or a vector
-    group of nothing but texts.
+@cache
+def _unit_types() -> tuple[type, tuple[type, ...], type]:
+    """What :meth:`_Reader.unit` tells apart: a value tracker, axes or a
+    number line, and a vector group.
     """
+    from arachne.mobject.graphing.coordinate_systems import Axes
+    from arachne.mobject.graphing.number_line import NumberLine
+    from arachne.mobject.types.vectorized_mobject import VGroup
+    from arachne.mobject.value_tracker import ValueTracker
+
+    return ValueTracker, (Axes, NumberLine), VGroup
+
+
+@cache
+def _text_like_types() -> tuple[tuple[type, ...], type]:
+    """The text types, and the vector group, :func:`_text_like` reads."""
     from arachne.mobject.text.numbers import DecimalNumber
     from arachne.mobject.text.tex_mobject import MathTex
     from arachne.mobject.text.text_mobject import MarkupText, Text
     from arachne.mobject.text.typst_mobject import Typst
     from arachne.mobject.types.vectorized_mobject import VGroup
 
-    if isinstance(mob, (Text, MarkupText, MathTex, DecimalNumber, Typst)):
+    return (Text, MarkupText, MathTex, DecimalNumber, Typst), VGroup
+
+
+def _text_like(mob: Mobject) -> bool:
+    """Whether a sweep holds ``mob`` as a text: a text type, or a vector
+    group of nothing but texts.
+    """
+    texts, group = _text_like_types()
+    if isinstance(mob, texts):
         return True
     return (
-        isinstance(mob, VGroup)
+        isinstance(mob, group)
         and bool(mob.submobjects)
         and all(_text_like(sub) for sub in mob.submobjects)
     )
@@ -906,7 +941,11 @@ def _screen(view: View, pixels: np.ndarray) -> np.ndarray:
     """Pixels of ``view`` in home-frame units, centred, y up."""
     x = (pixels[:, 0] - view.pixel_width / 2) * view.home_width / view.pixel_width
     y = (view.pixel_height / 2 - pixels[:, 1]) * view.home_height / view.pixel_height
-    return np.column_stack([x, y])
+    # Stacked as columns, without the general stacking's cost.
+    screen = np.empty((len(x), 2), dtype=np.result_type(x, y))
+    screen[:, 0] = x
+    screen[:, 1] = y
+    return screen
 
 
 def _box(points: np.ndarray) -> Box:
@@ -916,6 +955,9 @@ def _box(points: np.ndarray) -> Box:
 
 def _union(boxes: Any) -> Box:
     boxes = list(boxes)
+    if len(boxes) == 1:
+        x0, y0, x1, y1 = boxes[0]
+        return (x0, y0, x1, y1)
     return (
         min(b[0] for b in boxes),
         min(b[1] for b in boxes),

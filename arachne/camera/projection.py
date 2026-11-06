@@ -39,6 +39,7 @@ __all__ = [
     "draw_kind",
     "engine_trace",
     "hold_rotation",
+    "held_still",
     "home_box",
     "member_box",
     "member_place",
@@ -51,8 +52,10 @@ __all__ = [
     "view_of",
 ]
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import cache
 from typing import TYPE_CHECKING, Any, Literal
 from weakref import WeakKeyDictionary
 
@@ -64,6 +67,7 @@ from ..timeline.mapping import render_mapping_centre
 if TYPE_CHECKING:
     from arachne.camera.camera import Camera
     from arachne.mobject.mobject import Mobject
+    from arachne.mobject.types.vectorized_mobject import VMobject
     from arachne.timeline.record import Record
 
 #: ``(x_min, y_min, x_max, y_max)``: in pixels, y down, or in home-frame
@@ -207,17 +211,26 @@ def draw_kind(mob: Mobject) -> DrawKind | None:
     """How a camera draws ``mob`` itself: a path, a point cloud, an image,
     or nothing (``Camera.display_funcs``, in its order).
     """
-    from arachne.mobject.types.image_mobject import AbstractImageMobject
-    from arachne.mobject.types.point_cloud_mobject import PMobject
-    from arachne.mobject.types.vectorized_mobject import VMobject
-
-    if isinstance(mob, VMobject):
-        return "path"
-    if isinstance(mob, PMobject):
-        return "points"
-    if isinstance(mob, AbstractImageMobject):
-        return "image"
+    for kind_type, kind in _draw_kinds():
+        if isinstance(mob, kind_type):
+            return kind
     return None
+
+
+#: The types :func:`draw_kind` tells apart, in its order, once imported.
+_DRAW_KINDS: list[tuple[type, DrawKind]] = []
+
+
+def _draw_kinds() -> list[tuple[type, DrawKind]]:
+    if not _DRAW_KINDS:
+        from arachne.mobject.types.image_mobject import AbstractImageMobject
+        from arachne.mobject.types.point_cloud_mobject import PMobject
+        from arachne.mobject.types.vectorized_mobject import VMobject
+
+        _DRAW_KINDS.extend(
+            [(VMobject, "path"), (PMobject, "points"), (AbstractImageMobject, "image")]
+        )
+    return _DRAW_KINDS
 
 
 def pixel_points(
@@ -307,8 +320,17 @@ def engine_trace(camera: Camera) -> bool:
     """Whether ``camera`` traces a path with the engine's own code:
     ``Camera.set_cairo_context_path`` and the trace it ends in as the engine
     defined them, neither overridden by its class nor replaced, on the class
-    or the instance.
+    or the instance. Asked once while the camera is :func:`held_still`.
     """
+    hold = _hold_of(camera)
+    if hold is None:
+        return _engine_trace(camera)
+    if hold.engine_trace is None:
+        hold.engine_trace = _engine_trace(camera)
+    return hold.engine_trace
+
+
+def _engine_trace(camera: Camera) -> bool:
     from arachne.camera.camera import Camera
     from arachne.timeline.frozen import class_members
 
@@ -399,13 +421,58 @@ _ROTATION_CODE = (
 )
 
 
+class _Hold:
+    """What is asked of a camera once while it is :func:`held_still`."""
+
+    __slots__ = ("camera", "engine_trace", "rotated")
+
+    def __init__(self, camera: Camera) -> None:
+        self.camera = camera
+        #: :func:`engine_trace` of the camera, once asked.
+        self.engine_trace: bool | None = None
+        #: Whether :func:`_rotate` has made the engine's matrix for the
+        #: angles held.
+        self.rotated = False
+
+
+#: The cameras held still, innermost last.
+_HOLDS: list[_Hold] = []
+
+
+@contextmanager
+def held_still(camera: Camera) -> Iterator[None]:
+    """Hold ``camera`` still while what is inside places many members
+    through it and moves none of what a projection reads: its trackers, its
+    matrix, its code. :func:`engine_trace` is asked once, and the engine's
+    rotation (:func:`_rotate`) is made at most once, at the first projection
+    that makes it, as the first of many would; a rotation of the camera's
+    own code is made at every projection still. Nothing is made on entry,
+    so a read that projects nothing leaves the camera as it was.
+    """
+    _HOLDS.append(_Hold(camera))
+    try:
+        yield
+    finally:
+        _HOLDS.pop()
+
+
+def _hold_of(camera: Camera) -> _Hold | None:
+    if _HOLDS and _HOLDS[-1].camera is camera:
+        return _HOLDS[-1]
+    return None
+
+
 def _rotate(camera: Camera) -> None:
     """Have a ThreeDCamera project with the matrix of its trackers as they
     are. The engine's matrix is made from its three angles alone, so it is
     made again only when they moved since it was last made here, or when
     something else replaced it (the camera's own capture); a camera whose
-    class makes it in code of its own makes it again every time.
+    class makes it in code of its own makes it again every time. While the
+    camera is :func:`held_still`, neither moves after the first time.
     """
+    hold = _hold_of(camera)
+    if hold is not None and hold.rotated:
+        return
     from arachne.camera.three_d_camera import ThreeDCamera
 
     if not hasattr(camera, "reset_rotation_matrix"):
@@ -417,6 +484,8 @@ def _rotate(camera: Camera) -> None:
     ):
         camera.reset_rotation_matrix()
         return
+    if hold is not None:
+        hold.rotated = True
     angles = (camera.get_phi(), camera.get_theta(), camera.get_gamma())
     made = _ROTATIONS.get(camera)
     if made is not None and made[0] == angles and camera.rotation_matrix is made[1]:
@@ -445,21 +514,24 @@ def _mapped_around(view: View, mob: Mobject) -> Centre:
 
 
 def _placed(view: View, shown: np.ndarray, centre: Centre, *, home: bool) -> np.ndarray:
-    """Pre-display points less ``centre``, in home-frame units or pixels."""
+    """Pre-display points less ``centre``, in home-frame units or pixels:
+    each coordinate scaled, and for pixels moved, by its own factor and
+    offset, both columns at once.
+    """
     shifted = shown - np.asarray(centre[:2])
-    result = np.empty_like(shifted)
+    dtype = shifted.dtype
     if home:
-        result[:, 0] = shifted[:, 0] * (view.home_width / view.frame_width)
-        result[:, 1] = shifted[:, 1] * (view.home_height / view.frame_height)
-    else:
-        result[:, 0] = (
-            shifted[:, 0] * (view.pixel_width / view.frame_width) + view.pixel_width / 2
+        scale = (
+            view.home_width / view.frame_width,
+            view.home_height / view.frame_height,
         )
-        result[:, 1] = (
-            shifted[:, 1] * -(view.pixel_height / view.frame_height)
-            + view.pixel_height / 2
-        )
-    return result
+        return shifted * np.array(scale, dtype=dtype)
+    scale = (
+        view.pixel_width / view.frame_width,
+        -(view.pixel_height / view.frame_height),
+    )
+    offset = (view.pixel_width / 2, view.pixel_height / 2)
+    return shifted * np.array(scale, dtype=dtype) + np.array(offset, dtype=dtype)
 
 
 def _box(
@@ -535,12 +607,8 @@ def _path_ink(
     is traced through those points, as the engine's trace traces the points
     it projects.
     """
-    import cairo
-
-    from arachne.camera.camera import CAP_STYLE_MAP, LINE_JOIN_MAP
-    from arachne.mobject.types.vectorized_mobject import VMobject
-
-    assert isinstance(member, VMobject)
+    assert isinstance(member, _path_type())
+    cairo, caps, joins = _cairo()
     ctx = cairo.Context(_extents_surface())
     centre = view.mapping_centre
     x_scale = view.pixel_width / view.frame_width
@@ -568,24 +636,57 @@ def _path_ink(
         if width <= 0 or not _painted(member.get_stroke_opacities(background)):
             continue
         ctx.set_line_width(width * view.cairo_line_width_multiple)
-        ctx.set_line_join(LINE_JOIN_MAP[member.joint_type])
-        ctx.set_line_cap(CAP_STYLE_MAP[member.cap_style])
+        ctx.set_line_join(joins[member.joint_type])
+        ctx.set_line_cap(caps[member.cap_style])
         extents.append(ctx.stroke_extents())
     found = [e for e in extents if e[2] > e[0] and e[3] > e[1]]
     if not found:
         return None
-    box = np.array(found)
-    return np.array(
-        [
+    return np.array(_extents_box(found))
+
+
+def _extents_box(found: list[tuple[float, float, float, float]]) -> list[list[float]]:
+    """The corners of the box around Cairo's extents ``found``: the least
+    corner and the greatest. None is NaN (each passed a comparison), so
+    Python's ``min`` and ``max`` take NumPy's values, but for the sign of a
+    zero, which NumPy takes there.
+    """
+    if len(found) == 1:
+        x0, y0, x1, y1 = found[0]
+        return [[x0, y0], [x1, y1]]
+    if any(value == 0 for extent in found for value in extent):
+        box = np.array(found)
+        return [
             [box[:, 0].min(), box[:, 1].min()],
             [box[:, 2].max(), box[:, 3].max()],
         ]
-    )
+    columns = list(zip(*found, strict=True))
+    return [
+        [min(columns[0]), min(columns[1])],
+        [max(columns[2]), max(columns[3])],
+    ]
 
 
 def _painted(opacities: object) -> bool:
     values = np.asarray(opacities, dtype=float)
-    return bool(values.size and np.any(values > 0))
+    return bool(values.size) and bool((values > 0).any())
+
+
+@cache
+def _cairo() -> tuple[Any, dict[Any, Any], dict[Any, Any]]:
+    """Cairo, and the camera's maps of a path's cap and join styles to it."""
+    import cairo
+
+    from arachne.camera.camera import CAP_STYLE_MAP, LINE_JOIN_MAP
+
+    return cairo, CAP_STYLE_MAP, LINE_JOIN_MAP
+
+
+@cache
+def _path_type() -> type[VMobject]:
+    from arachne.mobject.types.vectorized_mobject import VMobject
+
+    return VMobject
 
 
 _SURFACE: list[Any] = []
