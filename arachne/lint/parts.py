@@ -868,13 +868,9 @@ def _closed(mob: Mobject, points: np.ndarray) -> bool:
     if len(points) < n:
         return False
     curves = points[: len(points) // n * n].reshape(-1, n, points.shape[1])
-    start = 0
-    for index in range(len(curves)):
-        last = index == len(curves) - 1
-        if last or not np.allclose(
-            curves[index, -1], curves[index + 1, 0], atol=_SAME_POINT
-        ):
-            if not np.allclose(curves[start, 0], curves[index, -1], atol=_SAME_POINT):
-                return False
-            start = index + 1
-    return True
+    # A subpath ends at each curve the next does not start where it ends,
+    # and at the last.
+    joined = np.isclose(curves[:-1, -1], curves[1:, 0], atol=_SAME_POINT).all(axis=1)
+    ends = np.append(np.flatnonzero(~joined), len(curves) - 1)
+    starts = np.insert(ends[:-1] + 1, 0, 0)
+    return bool(np.isclose(curves[starts, 0], curves[ends, -1], atol=_SAME_POINT).all())
