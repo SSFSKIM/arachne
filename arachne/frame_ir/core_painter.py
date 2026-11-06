@@ -24,7 +24,7 @@ import numpy as np
 from . import contributors
 from .cairo_painter import CairoDrawer
 from .canonical import _PATH_KINDS, Canonical, canonical_order, frame_grid, shades
-from .contributors import Box, PixelContributors
+from .contributors import Box, LiveFrame, PixelContributors
 from .extract import FrameStream, Term, Unable
 from .replay import Replays
 from .xf import Delta, StreamState
@@ -40,6 +40,9 @@ class CorePainter:
     """
 
     keep_all = False
+    #: Whether it draws captures as the scene runs (:mod:`.live`), each
+    #: over the ones before: it then reports no contributors.
+    live = False
     #: Frames drawn by the core in this process.
     drawn_total = 0
     #: Whether the overlay's runs the camera draws through its context are
@@ -152,6 +155,12 @@ class CorePainter:
         order (each overlay leaf drawn again alone). Nothing the painter
         draws next changes.
         """
+        if self.live:
+            raise LiveFrame(
+                "contributors: this painter draws captures as the scene runs,"
+                " each over the ones before it; attribute the frame from its"
+                " state extracted whole"
+            )
         found = contributors.from_core(self.core.contributors(*box), self.state.objects)
         overlay = self.core.overlay_entries()
         if not overlay:

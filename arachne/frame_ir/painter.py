@@ -51,7 +51,7 @@ import numpy as np
 
 from .cairo_painter import CairoDrawer
 from .canonical import Canonical
-from .contributors import Box, PixelContributors
+from .contributors import Box, LiveFrame, PixelContributors
 from .extract import FrameStream, Term, Unable
 from .lint import raise_finding
 from .xf import Delta, StreamState
@@ -628,6 +628,9 @@ class IrCairoPainter:
     """
 
     keep_all = False
+    #: Whether it draws captures as the scene runs (:mod:`.live`), each
+    #: over the ones before: it then reports no contributors.
+    live = False
     #: Frames drawn from XF by every painter in this process.
     drawn_total = 0
 
@@ -695,6 +698,12 @@ class IrCairoPainter:
         drawn again alone; the frame and the painter's next frame are
         unchanged.
         """
+        if self.live:
+            raise LiveFrame(
+                "contributors: this painter draws captures as the scene runs,"
+                " each over the ones before it; attribute the frame from its"
+                " state extracted whole"
+            )
         return self.drawer.contributors(self.state, self.state.order, box)
 
     def settle(self) -> None:

@@ -479,6 +479,7 @@ class LivePainter:
                 painter = painter_class("ir_cairo")(
                     stream=_LiveStream(), canonical=self.path == "core"
                 )
+            painter.live = True
             found = (camera, painter)
             self._painters[id(camera)] = found
             self._give_grid(painter)
