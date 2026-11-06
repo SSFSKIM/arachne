@@ -31,12 +31,12 @@ def _is_probe(mob) -> bool:
 
 def _counted(monkeypatch) -> dict[str, int]:
     """How often, from now on, the probe is read, its lay is worked out (its
-    closure stands for that) and its place under the camera (its ink box).
+    closure stands for that) and its place under the camera.
     """
     counts = {"reads": 0, "lays": 0, "placed": 0}
     leaf = parts_module._Reader.leaf
     closed = parts_module._closed
-    box = parts_module.member_box
+    place = parts_module.member_place
 
     def read(self, mob, order, chain=()):
         counts["reads"] += _is_probe(mob)
@@ -46,13 +46,13 @@ def _counted(monkeypatch) -> dict[str, int]:
         counts["lays"] += _is_probe(mob)
         return closed(mob, points)
 
-    def placed(camera, view, mob, **kwargs):
+    def placed(camera, view, mob):
         counts["placed"] += _is_probe(mob)
-        return box(camera, view, mob, **kwargs)
+        return place(camera, view, mob)
 
     monkeypatch.setattr(parts_module._Reader, "leaf", read)
     monkeypatch.setattr(parts_module, "_closed", lays)
-    monkeypatch.setattr(parts_module, "member_box", placed)
+    monkeypatch.setattr(parts_module, "member_place", placed)
     return counts
 
 

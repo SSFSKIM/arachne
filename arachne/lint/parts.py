@@ -42,8 +42,7 @@ from arachne.camera.projection import (
     Box,
     View,
     draw_kind,
-    member_box,
-    pixel_points,
+    member_place,
     point_thickness,
     record_view,
     view_of,
@@ -632,9 +631,9 @@ class _Reader:
         if kind == "points" and lays.stroke <= 0:
             return None
         if viewing is None or node is None or kind == "image":
-            placed = self._place(mob, points)
+            placed = self._place(mob)
         else:
-            placed = viewing.placed(node, lambda: self._place(mob, points))
+            placed = viewing.placed(node, lambda: self._place(mob))
         if placed is None:
             return None
         # Stroke widths as drawn: Cairo's units per width, on the home frame.
@@ -669,14 +668,15 @@ class _Reader:
             plate=unit is not None and id(mob) in self._plates.get(unit.id, ()),
         )
 
-    def _place(self, mob: Mobject, points: np.ndarray) -> Placed | None:
-        """Where the camera puts ``mob`` (its ``points``), or ``None`` when
-        its draw paints nothing.
+    def _place(self, mob: Mobject) -> Placed | None:
+        """Where the camera puts ``mob``, or ``None`` when its draw paints
+        nothing.
         """
-        ink = member_box(self.camera, self.view, mob, ink=True, home=True)
-        if ink is None:
+        found = member_place(self.camera, self.view, mob)
+        if found is None:
             return None
-        screen = _screen(self.view, pixel_points(self.camera, self.view, mob, points))
+        ink, pixels = found
+        screen = _screen(self.view, pixels)
         # Read-only on every read, kept or not: kept reads share it.
         screen.setflags(write=False)
         return Placed(ink=ink, screen=screen, box=_box(screen))

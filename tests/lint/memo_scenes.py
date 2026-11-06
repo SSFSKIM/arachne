@@ -218,3 +218,19 @@ class ReplacedProjection(ThreeDScene):
         self.set_camera_orientation(phi=60 * DEGREES, theta=-45 * DEGREES)
         self.add(probe())
         self.wait(2 * HOLD)
+
+
+class ReplacedPathTrace(ThreeDScene):
+    """The scene's code puts its own path trace on the camera instance."""
+
+    def construct(self):
+        camera = self.renderer.camera
+        engine = camera.set_cairo_context_path
+
+        def traced(ctx, vmobject):
+            return engine(ctx, vmobject)
+
+        camera.set_cairo_context_path = traced
+        self.set_camera_orientation(phi=60 * DEGREES, theta=-45 * DEGREES)
+        self.add(probe())
+        self.wait(2 * HOLD)

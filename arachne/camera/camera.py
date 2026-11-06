@@ -750,6 +750,14 @@ class Camera:
             Camera object after setting cairo_context_path
         """
         points = self.transform_points_pre_display(vmobject, vmobject.points)
+        return self._trace_path(ctx, vmobject, points)
+
+    def _trace_path(
+        self, ctx: cairo.Context, vmobject: VMobject, points: Point3D_Array
+    ) -> Self:
+        """Set ``ctx``'s path to ``vmobject``'s curves through ``points``: its
+        points as the camera's pre-display code gives them.
+        """
         if len(points) == 0:
             return self
 
