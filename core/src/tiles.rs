@@ -4,7 +4,9 @@
 //! A tile's pixels are a function of its own fragments only, and nothing is summed across tiles
 //! but integer counts, so the frame's bytes are the same whichever thread drew which tile.
 
-use crate::composite::{Frame, OpaquePass, Producer, Rect, Rendered, ResolveCounts};
+use crate::composite::{
+    Frame, OpaquePass, Producer, Rect, Rendered, ResolveCounts, TransparentPass,
+};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// A tile's side in pixels.
@@ -20,7 +22,7 @@ pub fn tile_index(width: u32, x0: u32, y0: u32) -> usize {
     (y0 / TILE * tiles_across(width) + x0 / TILE) as usize
 }
 
-fn tile_rects(width: u32, height: u32) -> Vec<Rect> {
+pub(crate) fn tile_rects(width: u32, height: u32) -> Vec<Rect> {
     let mut rects = Vec::new();
     for y0 in (0..height).step_by(TILE as usize) {
         for x0 in (0..width).step_by(TILE as usize) {
@@ -35,7 +37,8 @@ fn tile_rects(width: u32, height: u32) -> Vec<Rect> {
     rects
 }
 
-fn draw_tile(rect: Rect, frame: &Frame, producers: &[&dyn Producer]) -> Rendered {
+/// A tile's opaque and transparent passes, every producer's fragments added, not yet resolved.
+pub(crate) fn passes<'a>(rect: Rect, producers: &'a [&'a dyn Producer]) -> TransparentPass<'a> {
     let mut opaque = OpaquePass::new(rect, producers);
     for (i, p) in producers.iter().enumerate() {
         opaque.source = i as u16;
@@ -46,6 +49,11 @@ fn draw_tile(rect: Rect, frame: &Frame, producers: &[&dyn Producer]) -> Rendered
         pass.source = i as u16;
         p.transparent(&mut pass);
     }
+    pass
+}
+
+fn draw_tile(rect: Rect, frame: &Frame, producers: &[&dyn Producer]) -> Rendered {
+    let pass = passes(rect, producers);
     let stride = frame.width() as usize * 4;
     let mut background = Vec::with_capacity(rect.pixels() * 4);
     for y in rect.y0..rect.y1 {

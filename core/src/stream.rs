@@ -606,17 +606,98 @@ impl Stream {
         extra: &[&dyn Producer],
         without_overlay: bool,
     ) -> Result<Rendered, DrawError> {
-        let drawn = |e: &OrderEntry| !(without_overlay && is_overlay(&self.records[&e.slot]));
-        if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
-            return Err(DrawError::Invalid(format!(
-                "a frame of {width} x {height} pixels (each side 1 to {MAX_SIDE})"
-            )));
-        }
+        check_size(width, height)?;
         if threads == 0 {
             return Err(DrawError::Invalid(
                 "drawing needs at least one thread".into(),
             ));
         }
+        self.with_producers(width, height, extra, without_overlay, |frame, producers| {
+            tiles::render(frame, producers, threads).map_err(|e| DrawError::Threads(e.to_string()))
+        })?
+    }
+
+    /// The leaves the core composites at each pixel of `x0..x1` by `y0..y1` (clipped to the
+    /// view's frame) that holds a fragment, from the frame [`Stream::render_under_overlay`] draws:
+    /// what a pixel's colour is made of, read from the same passes the resolves read
+    /// (`contributors.rs`). The overlay's entries are Cairo's and are not reported. Refused as
+    /// drawing refuses.
+    pub fn contributors(
+        &self,
+        x0: u32,
+        y0: u32,
+        x1: u32,
+        y1: u32,
+    ) -> Result<BTreeMap<(u32, u32), crate::contributors::PixelContributors>, DrawError> {
+        let view = self.view.as_ref().ok_or(DrawError::NoView)?;
+        let (width, height) = (view.pixel_width, view.pixel_height);
+        let keep = composite::Rect {
+            x0: x0.min(width),
+            y0: y0.min(height),
+            x1: x1.min(width),
+            y1: y1.min(height),
+        };
+        self.with_producers(width, height, &[], true, |_, producers| {
+            let mut out = BTreeMap::new();
+            if keep.x0 >= keep.x1 || keep.y0 >= keep.y1 {
+                return out;
+            }
+            let leaf = |f: &composite::Fragment| self.leaf_of(f);
+            for rect in tiles::tile_rects(width, height) {
+                if rect.x1 <= keep.x0
+                    || rect.x0 >= keep.x1
+                    || rect.y1 <= keep.y0
+                    || rect.y0 >= keep.y1
+                {
+                    continue;
+                }
+                tiles::passes(rect, producers).visit_pixels(keep, |x, y, frags, coverage| {
+                    out.insert(
+                        (x, y),
+                        crate::contributors::of_pixel(x, y, frags, coverage, &leaf),
+                    );
+                });
+            }
+            out
+        })
+    }
+
+    /// The leaf a fragment drawn from this stream belongs to, as `(object, part)`: the object of
+    /// the record its order entry draws and the entry's part (a face of a face group), except
+    /// that an `instances` record's member reports its own object (instance `i` of a path
+    /// prototype draws sub-orders `3i..3i + 3`, of a mesh prototype `t * i..t * (i + 1)` for its
+    /// `t` triangles: `instance.rs`).
+    fn leaf_of(&self, f: &composite::Fragment) -> (u32, u32) {
+        let entry = &self.order[f.order as usize];
+        let record = &self.records[&entry.slot];
+        if let Body::Instances(body) = &record.body {
+            let per = match record
+                .geometry
+                .shape_a
+                .and_then(|k| self.shapes.get(&k))
+                .map(|s| s.data())
+            {
+                Some(ShapeData::Mesh { triangles, .. }) => triangles.len().max(1) as u32,
+                _ => 3,
+            };
+            let i = (f.sub / per) as usize;
+            return (body.objects[i], 0);
+        }
+        (record.object, entry.part)
+    }
+
+    /// The frame's background and its producers, lowered from the records the order draws (all,
+    /// or all but the overlay's), handed to `f`. Refused as [`Stream::render`] refuses.
+    fn with_producers<T>(
+        &self,
+        width: u32,
+        height: u32,
+        extra: &[&dyn Producer],
+        without_overlay: bool,
+        f: impl FnOnce(Frame, &[&dyn Producer]) -> T,
+    ) -> Result<T, DrawError> {
+        let drawn = |e: &OrderEntry| !(without_overlay && is_overlay(&self.records[&e.slot]));
+        check_size(width, height)?;
         let view = self.view.as_ref().ok_or(DrawError::NoView)?;
         if let LightModel::Other { code, .. } = &view.light {
             return Err(DrawError::Unsupported(Unsupported {
@@ -766,7 +847,7 @@ impl Stream {
         let blocks = points::lower(view, width, height, &clouds);
         let mut producers: Vec<&dyn Producer> = vec![&meshes, &paths, &blocks];
         producers.extend_from_slice(extra);
-        tiles::render(frame, &producers, threads).map_err(|e| DrawError::Threads(e.to_string()))
+        Ok(f(frame, &producers))
     }
 
     /// Per slot of `slots`, how each path its record draws lies, decided from the points the
@@ -908,6 +989,16 @@ impl Stream {
     pub fn has_shape(&self, key: &Key) -> bool {
         self.shapes.contains_key(key)
     }
+}
+
+/// Refuses a frame size the drawer does not draw.
+fn check_size(width: u32, height: u32) -> Result<(), DrawError> {
+    if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
+        return Err(DrawError::Invalid(format!(
+            "a frame of {width} x {height} pixels (each side 1 to {MAX_SIDE})"
+        )));
+    }
+    Ok(())
 }
 
 /// Whether a shape held under a key and one uploaded under it have one content. A key is computed

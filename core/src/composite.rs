@@ -630,6 +630,37 @@ impl TransparentPass<'_> {
         }
     }
 
+    /// Hands `visit` each pixel of the rectangle inside `keep` that holds a fragment, with its
+    /// fragments (the opaque pass's, then the transparent pass's, as [`Self::resolve`] takes
+    /// them) and each one's 8-bit coverage at every sub-sample, as the sample resolve composites
+    /// it: the contributor report's read of the passes (`contributors.rs`). Nothing is resolved.
+    pub(crate) fn visit_pixels(
+        mut self,
+        keep: Rect,
+        mut visit: impl FnMut(u32, u32, &[Fragment], &[[u8; SAMPLES]]),
+    ) {
+        let pixels = self.rect.pixels();
+        let transparent = ByPixel::new(std::mem::take(&mut self.fragments), pixels);
+        let w = self.rect.width();
+        let mut fragments = Vec::new();
+        let mut coverage = Vec::new();
+        for i in 0..pixels {
+            let (x, y) = (self.rect.x0 + i as u32 % w, self.rect.y0 + i as u32 / w);
+            if x < keep.x0 || x >= keep.x1 || y < keep.y0 || y >= keep.y1 {
+                continue;
+            }
+            fragments.clear();
+            fragments.extend_from_slice(self.opaque.at(i));
+            fragments.extend_from_slice(transparent.at(i));
+            if fragments.is_empty() {
+                continue;
+            }
+            coverage.clear();
+            coverage.extend(fragments.iter().map(|f| self.sample_coverage(f, x, y)));
+            visit(x, y, &fragments, &coverage);
+        }
+    }
+
     /// Resolves every pixel of the rectangle over its background (the rectangle's bytes, row by
     /// row), then tone-maps the emitted light onto it.
     pub(crate) fn resolve(mut self, background: &[u8]) -> Rendered {
@@ -681,7 +712,7 @@ struct Scratch {
 
 /// Whether fragment `a` (depth `da`) is in front of fragment `b` (depth `db`) at one sub-sample:
 /// nearer first, then later in the draw order, then the later part.
-fn front_to_back(a: &Fragment, da: f64, b: &Fragment, db: f64) -> Ordering {
+pub(crate) fn front_to_back(a: &Fragment, da: f64, b: &Fragment, db: f64) -> Ordering {
     da.total_cmp(&db)
         .then(b.order.cmp(&a.order))
         .then(b.sub.cmp(&a.sub))

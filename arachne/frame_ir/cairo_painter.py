@@ -19,6 +19,7 @@ __all__ = ["CairoDrawer", "Unsupported"]
 
 import itertools as it
 from collections.abc import Sequence
+from dataclasses import replace
 from typing import Any
 
 import numpy as np
@@ -37,6 +38,7 @@ from arachne.mobject.types.point_cloud_mobject import PMobject
 from arachne.mobject.types.vectorized_mobject import VMobject
 from arachne.utils.color import get_shaded_rgb
 
+from .contributors import Box, Leaf, PixelContributors
 from .extract import Unable
 from .geometry import blended, revealed
 from .replay import Recording, Replays, replay
@@ -634,6 +636,74 @@ class CairoDrawer:
         finally:
             if replays is not None:
                 replays.next_frame()
+
+    def contributors(
+        self,
+        state: StreamState,
+        entries: Sequence[tuple[str, int, int]],
+        box: Box,
+    ) -> dict[tuple[int, int], PixelContributors]:
+        """The leaves ``entries`` of ``state`` paint at each pixel of ``box``
+        (clipped to the frame) that one of them touches, in paint order,
+        bottom first (:mod:`.contributors`). Each entry is a leaf, drawn alone
+        by a camera of the view over a transparent frame as the camera's
+        capture draws it (the displays' pictures first, as a MultiCamera
+        captures them); what it leaves in a pixel is its ``drawn``. A leaf is
+        hidden where a later one leaves an opaque pixel. A record's object is
+        its slot, as the Python stream writes it (:meth:`.xf.Delta.to_core`).
+        Refused as :meth:`draw` refuses.
+        """
+        self._refuse_unknown(state, entries)
+        self._state = state
+        view = state.view
+        assert view is not None
+        height, width = view["pixel_height"], view["pixel_width"]
+        x0, y0, x1, y1 = box
+        x0, x1 = max(0, x0), min(width, x1)
+        y0, y1 = max(0, y0), min(height, y1)
+        if x0 >= x1 or y0 >= y1:
+            return {}
+        live = set(state.records)
+        for slot in [s for s in self._proxies if s not in live]:
+            del self._proxies[slot]
+        camera = self._camera(view, "contributors")
+        array = np.zeros((height, width, 4), dtype=np.uint8)
+        camera.pixel_array = array
+        self._seed_images(camera, state)
+        self._orient(camera, state)
+        self._draw_displays(entries)
+        by_pixel: dict[tuple[int, int], list[Leaf]] = {}
+        for entry in entries:
+            _, slot, part = entry
+            array[...] = 0
+            self._draw_entries(camera, [entry], array)
+            region = array[y0:y1, x0:x1]
+            stable = state.objects.get(slot, (None,))[0]
+            for y, x in zip(*np.nonzero(region.any(axis=-1)), strict=True):
+                r, g, b, a = (int(v) for v in region[y, x])
+                by_pixel.setdefault((int(x) + x0, int(y) + y0), []).append(
+                    Leaf(
+                        object=slot,
+                        part=part,
+                        id=stable,
+                        drawn=(r, g, b, a),
+                        shown=True,
+                        painter="cairo",
+                    )
+                )
+        out: dict[tuple[int, int], PixelContributors] = {}
+        for at, leaves in sorted(by_pixel.items()):
+            opaque = [i for i, leaf in enumerate(leaves) if leaf.drawn[3] == 255]
+            top = opaque[-1] if opaque else 0
+            painted = tuple(
+                leaf if i >= top else replace(leaf, shown=False)
+                for i, leaf in enumerate(leaves)
+            )
+            out[at] = PixelContributors(
+                leaves=painted,
+                orders=(tuple((i, leaf.drawn[3]) for i, leaf in enumerate(painted)),),
+            )
+        return out
 
     def _draw_order(
         self,
