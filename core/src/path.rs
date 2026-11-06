@@ -618,9 +618,11 @@ fn kurbo_cap(cap: Cap) -> kurbo::Cap {
 }
 
 /// The screen polyline of a path's cubics with the depth key carried along each (the cubic of its
-/// control points' keys, at the same parameter).
+/// control points' keys, at the same parameter), each key with its error: the greatest of its
+/// control points' ([`Projection::key_error`]) and the rounding of the cubic's weighted sum.
 fn curve_depth(shown: &[[f64; 3]], map: &FrameMap, projection: &Projection) -> Centreline {
     let mut points = Vec::new();
+    let mut errors = Vec::new();
     let mut breaks = Vec::new();
     let screen = |p: [f64; 3]| (map.apply(p), -projection.factor(p[2]));
     for (start, end) in subpaths(shown) {
@@ -629,8 +631,14 @@ fn curve_depth(shown: &[[f64; 3]], map: &FrameMap, projection: &Projection) -> C
         }
         breaks.push(points.len());
         points.push(screen(shown[start]));
+        errors.push(projection.key_error(shown[start]));
         for i in (start..=end - 4).step_by(4) {
             let c = [i, i + 1, i + 2, i + 3].map(|k| screen(shown[k]));
+            let err = [i, i + 1, i + 2, i + 3]
+                .iter()
+                .map(|k| projection.key_error(shown[*k]))
+                .fold(0.0, f64::max)
+                + 4.0 * crate::composite::U * c.iter().map(|p| p.1.abs()).fold(0.0, f64::max);
             let length: f64 = (0..3)
                 .map(|k| {
                     let (a, b) = (c[k].0, c[k + 1].0);
@@ -650,10 +658,11 @@ fn curve_depth(shown: &[[f64; 3]], map: &FrameMap, projection: &Projection) -> C
                     w[0] * f(0) + w[1] * f(1) + w[2] * f(2) + w[3] * f(3)
                 };
                 points.push(([at(&|k| c[k].0[0]), at(&|k| c[k].0[1])], at(&|k| c[k].1)));
+                errors.push(err);
             }
         }
     }
-    Centreline::new(&points, &breaks)
+    Centreline::with_errors(&points, &errors, &breaks)
 }
 
 /// Lowering state shared by every path of a frame.
@@ -1010,7 +1019,13 @@ impl<'v> Lowering<'v> {
     ) -> LayerDepth {
         if world.iter().all(|q| p.keys_planar_at(*q))
             && let Some(plane) = plane
-            && let Some(key) = p.key_plane(&plane, &self.map, world[0], MIN_PLANE_COS)
+            && let Some(key) = p.key_plane(
+                &plane,
+                &self.map,
+                world[0],
+                MIN_PLANE_COS,
+                self.region(shown, reach),
+            )
         {
             return LayerDepth::Plane(key);
         }
@@ -1025,6 +1040,23 @@ impl<'v> Lowering<'v> {
             reach,
         });
         LayerDepth::Curve(self.paths.centrelines.len() as u32 - 1)
+    }
+
+    /// The screen box the path at `shown` paints in, a stroke reaching `reach` past it, and the
+    /// pixel its sub-samples are read in around that.
+    fn region(&self, shown: &[[f64; 3]], reach: f64) -> [f64; 4] {
+        let mut b = [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ];
+        for q in shown {
+            let [x, y] = self.map.apply(*q);
+            b = [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)];
+        }
+        let m = reach + 1.0;
+        [b[0] - m, b[1] - m, b[2] + m, b[3] + m]
     }
 
     fn push(&mut self, edges: Vec<Edge>, spec: PaintSpec, depth: LayerDepth, order: u32, sub: u32) {

@@ -7,6 +7,8 @@
 //! - [`shade`]: the one place lighting lives (CE's per-face model, soft diffuse light).
 //! - [`composite`]: the one place blending lives: fragments, the opaque and transparent passes,
 //!   the two resolves, emission, and the frame buffer.
+//! - [`order`]: the order fragments composite in at a pixel: depth where two cover one
+//!   sub-sample, paint order elsewhere.
 //! - [`mesh`]: the triangle rasterizer, a producer of mask fragments with depth.
 //! - [`path`]: the path rasterizer (fills, strokes, dashes, glyphs), a producer of
 //!   exact-area fragments with depth, on [`scanline`]'s exact nonzero coverage.
@@ -33,6 +35,7 @@ pub mod geometry;
 pub mod gradient;
 pub mod instance;
 pub mod mesh;
+pub mod order;
 pub mod path;
 pub mod points;
 #[path = "../parity/probes.rs"]

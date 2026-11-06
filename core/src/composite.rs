@@ -31,7 +31,8 @@
 //! the sub-sample's cell ([`Producer::cell_areas`], [`sample_cell`]), so a path's edge lands where
 //! the coverage resolve puts it, up to rounding, whichever resolve its pixel takes. A pixel whose
 //! front fragment is opaque and covers it, with nothing in front, takes the **fast** path.
-//! Fragments hidden at every sub-sample behind an opaque covering fragment are dropped first. A
+//! Fragments that every sub-sample's order puts behind an opaque fragment covering the pixel are
+//! dropped first, read from those orders ([`crate::order::rank`]), not pair by pair. A
 //! mask is never made from an alpha: a fragment with exact area gives its cells' areas only when
 //! its pixel takes the sample resolve, and its point-sampled mask ([`Producer::mask`]) only when a
 //! producer reads the opaque depth.
@@ -140,39 +141,88 @@ pub struct Plane {
     pub a: f64,
     pub b: f64,
     pub c: f64,
+    /// For a depth, how far its coefficients may put it, anywhere its fragments are read, from the
+    /// exact depth of the inputs it was made from (the snapped points and the normals carried),
+    /// besides the rounding of reading it at a point ([`Plane::read_error`]): the representation
+    /// its constructor imposes and that constructor's own arithmetic ([`crate::order`]).
+    pub err: f64,
 }
 
+/// The unit roundoff of `f64`.
+pub(crate) const U: f64 = f64::EPSILON / 2.0;
+
 impl Plane {
+    /// `a + b * x + c * y`, exact.
+    pub const fn new(a: f64, b: f64, c: f64) -> Plane {
+        Plane { a, b, c, err: 0.0 }
+    }
+
     /// One depth everywhere.
     pub const fn constant(depth: f64) -> Plane {
-        Plane {
-            a: depth,
-            b: 0.0,
-            c: 0.0,
-        }
+        Plane::new(depth, 0.0, 0.0)
     }
 
     /// The plane through three `(x, y, depth)` points. It is constant where they share one depth
     /// (the mean where they are collinear, the nearest where a depth is not finite).
     pub fn through(points: [[f64; 3]; 3]) -> Plane {
+        Plane::through_with_errors(points, [0.0; 3])
+    }
+
+    /// [`Plane::through`] for depths known within `errors`, its [`Plane::err`] bounding it inside
+    /// the triangle (where a mask covers a sub-sample). Inside, the corners' own errors carry over
+    /// at most their largest (the plane there is a convex combination of the corners). The
+    /// determinant and the numerators cancel as the triangle thins: each rounds by about `4u` of
+    /// its two products' magnitudes, so the gradient errs by its numerators' error and its own
+    /// share of the determinant's over `|det|`, and moves the plane by at most that error times an
+    /// edge from the first corner, `u L / h` of the depth's change along the triangle for a
+    /// triangle `L` long and `h` high. `a` rounds once more, by `3u` of its terms.
+    pub fn through_with_errors(points: [[f64; 3]; 3], errors: [f64; 3]) -> Plane {
         let [[x0, y0, d0], [x1, y1, d1], [x2, y2, d2]] = points;
+        let input = errors[0].max(errors[1]).max(errors[2]);
         if d0 == d1 && d1 == d2 {
-            return Plane::constant(d0);
+            return Plane {
+                err: input,
+                ..Plane::constant(d0)
+            };
         }
         if !(d0.is_finite() && d1.is_finite() && d2.is_finite()) {
             return Plane::constant(d0.min(d1).min(d2));
         }
-        let det = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
+        let (e1x, e1y, e2x, e2y) = (x1 - x0, y1 - y0, x2 - x0, y2 - y0);
+        let det = e1x * e2y - e2x * e1y;
         if det == 0.0 || !det.is_finite() {
-            return Plane::constant((d0 + d1 + d2) / 3.0);
+            let mean = (d0 + d1 + d2) / 3.0;
+            let spread = [d0, d1, d2]
+                .iter()
+                .map(|d| (d - mean).abs())
+                .fold(0.0, f64::max);
+            return Plane {
+                err: spread + input + 4.0 * U * mean.abs(),
+                ..Plane::constant(mean)
+            };
         }
-        let b = ((d1 - d0) * (y2 - y0) - (d2 - d0) * (y1 - y0)) / det;
-        let c = ((x1 - x0) * (d2 - d0) - (x2 - x0) * (d1 - d0)) / det;
+        let (g1, g2) = (d1 - d0, d2 - d0);
+        let b = (g1 * e2y - g2 * e1y) / det;
+        let c = (e1x * g2 - e2x * g1) / det;
+        let a = d0 - b * x0 - c * y0;
+        let d_det = 4.0 * U * ((e1x * e2y).abs() + (e2x * e1y).abs());
+        let d_b = (4.0 * U * ((g1 * e2y).abs() + (g2 * e1y).abs()) + b.abs() * d_det) / det.abs()
+            + U * b.abs();
+        let d_c = (4.0 * U * ((e1x * g2).abs() + (e2x * g1).abs()) + c.abs() * d_det) / det.abs()
+            + U * c.abs();
+        let spread = (d_b * e1x.abs() + d_c * e1y.abs()).max(d_b * e2x.abs() + d_c * e2y.abs());
+        let rounding = 3.0 * U * (d0.abs() + (b * x0).abs() + (c * y0).abs());
         Plane {
-            a: d0 - b * x0 - c * y0,
+            a,
             b,
             c,
+            err: input + spread + rounding,
         }
+    }
+
+    /// How far reading the plane at `(x, y)` may round, `4u` of the magnitudes it sums.
+    pub fn read_error(&self, x: f64, y: f64) -> f64 {
+        4.0 * U * (self.a.abs() + (self.b * x).abs() + (self.c * y).abs())
     }
 
     /// The depth at a point (`-0.0` read as `0.0`, so equal depths compare equal).
@@ -769,31 +819,125 @@ impl TransparentPass<'_> {
     }
 }
 
+/// How far fragment `f`'s depth at any of pixel `(x, y)`'s sub-samples may stand from the exact
+/// depth of its inputs: its plane's own error and the rounding of reading it anywhere in the pixel.
+pub(crate) fn depth_error(f: &Fragment, x: u32, y: u32) -> f64 {
+    f.depth.err + f.depth.read_error(x as f64 + 1.0, y as f64 + 1.0)
+}
+
+/// Fragment `f`'s depth at pixel `(x, y)`'s sub-samples: what the resolve and the contributor
+/// report order it by.
+pub(crate) fn sample_depths(f: &Fragment, x: u32, y: u32) -> [f64; SAMPLES] {
+    if f.depth.b == 0.0 && f.depth.c == 0.0 {
+        [f.depth.a + 0.0; SAMPLES]
+    } else {
+        std::array::from_fn(|k| {
+            let [px, py] = sample_point(x, y, k);
+            f.depth.at(px, py)
+        })
+    }
+}
+
 /// Buffers reused from pixel to pixel.
 #[derive(Default)]
 pub(crate) struct Scratch {
     pub(crate) fragments: Vec<Fragment>,
     depths: Vec<[f64; SAMPLES]>,
+    errors: Vec<f64>,
     order: Vec<usize>,
     /// Runs `start..end` of `order` that composite as one fragment.
     units: Vec<(usize, usize)>,
     /// Each fragment's coverage at each sub-sample, for the sample resolve.
     coverage: Vec<[u8; SAMPLES]>,
     covering: Vec<usize>,
+    /// `fronts[a * n + b]`: fragment `a` is in front of fragment `b` at the pixel.
+    fronts: Vec<bool>,
+    /// `strong[a * n + b]`: depth decided that pair ([`crate::order::Decided::is_strong`]).
+    strong: Vec<bool>,
+    samples: SampleRanks,
 }
 
-/// Whether fragment `a` (depth `da`) is in front of fragment `b` (depth `db`) at one sub-sample:
-/// nearer first, then later in the draw order, then the later part.
-pub(crate) fn front_to_back(a: &Fragment, da: f64, b: &Fragment, db: f64) -> Ordering {
-    da.total_cmp(&db)
-        .then(b.order.cmp(&a.order))
-        .then(b.sub.cmp(&a.sub))
+/// Each sub-sample's fragments in the order the sample resolve composites them, and which of them
+/// show: what some sub-sample's rank puts in front of every fragment that hides the pixel. The
+/// culls read it, so what they drop is what the ranks hide, and the sample resolve composites from
+/// the same ranks.
+#[derive(Default)]
+struct SampleRanks {
+    /// `ranks[ends[k - 1]..ends[k]]`: sub-sample `k`'s fragments, front first.
+    ranks: Vec<usize>,
+    ends: Vec<usize>,
+    /// `shown[i]`: some sub-sample shows fragment `i`.
+    shown: Vec<bool>,
+    covering: Vec<usize>,
+    ranked: Vec<usize>,
+}
+
+impl SampleRanks {
+    fn is_ranked(&self) -> bool {
+        !self.ends.is_empty()
+    }
+
+    fn at(&self, k: usize) -> &[usize] {
+        let start = if k == 0 { 0 } else { self.ends[k - 1] };
+        &self.ranks[start..self.ends[k]]
+    }
+
+    /// Rank `items` at each sub-sample from `front(a, b, k)` and `strong(a, b, k)`, as
+    /// [`crate::order::rank`] does.
+    // The sub-sample `k` indexes each fragment's coverage row.
+    #[allow(clippy::needless_range_loop)]
+    fn rank(
+        &mut self,
+        cov: &[[u8; SAMPLES]],
+        items: &[usize],
+        front: impl Fn(usize, usize, usize) -> bool,
+        strong: impl Fn(usize, usize, usize) -> bool,
+        painted: impl Fn(usize, usize) -> Ordering,
+    ) {
+        self.ranks.clear();
+        self.ends.clear();
+        for k in 0..SAMPLES {
+            self.covering.clear();
+            self.covering
+                .extend(items.iter().copied().filter(|i| cov[*i][k] != 0));
+            crate::order::rank(
+                &self.covering,
+                |a, b| front(a, b, k),
+                |a, b| strong(a, b, k),
+                &painted,
+                &mut self.ranked,
+            );
+            self.ranks.extend_from_slice(&self.ranked);
+            self.ends.push(self.ranks.len());
+        }
+    }
+
+    /// Which of `n` fragments some sub-sample shows: those its rank puts in front of every
+    /// fragment `hides`, whose layer, being opaque and covering the pixel whole, leaves nothing
+    /// behind it to show in area as well as at the sub-sample.
+    fn show(&mut self, n: usize, hides: impl Fn(usize) -> bool) {
+        self.shown.clear();
+        self.shown.resize(n, false);
+        for k in 0..SAMPLES {
+            let start = if k == 0 { 0 } else { self.ends[k - 1] };
+            for &i in &self.ranks[start..self.ends[k]] {
+                self.shown[i] = true;
+                if hides(i) {
+                    break;
+                }
+            }
+        }
+    }
 }
 
 /// The pixel `(x, y)` that `s.fragments` composite over `bg`, and the resolve that made it.
-/// `sample_coverage(i, f)` is fragment `i`'s coverage at each sub-sample, for the sample resolve.
+/// `sample_coverage(i, f)` is fragment `i`'s coverage at each sub-sample. The fragments composite
+/// in the order [`crate::order`] gives them: by depth only where two cover one sub-sample, by
+/// paint order everywhere else.
 /// The contributor report calls it on one leaf's fragments alone, so what a leaf draws is what
 /// this resolve makes of it.
+// The sub-sample `k` indexes each fragment's coverage and depth rows.
+#[allow(clippy::needless_range_loop)]
 pub(crate) fn resolve_pixel(
     s: &mut Scratch,
     bg: [u8; 4],
@@ -801,6 +945,7 @@ pub(crate) fn resolve_pixel(
     y: u32,
     sample_coverage: impl Fn(usize, &Fragment) -> [u8; SAMPLES],
 ) -> (Resolve, [u8; 4]) {
+    use crate::order;
     let frags = &s.fragments;
     if let [f] = frags.as_slice() {
         if f.is_opaque() && f.is_full() {
@@ -808,40 +953,107 @@ pub(crate) fn resolve_pixel(
         }
         return (Resolve::Coverage, blend(f.colour, f.coverage8(), bg));
     }
-    let points: [[f64; 2]; SAMPLES] = std::array::from_fn(|k| sample_point(x, y, k));
     s.depths.clear();
-    s.depths.extend(frags.iter().map(|f| {
-        if f.depth.b == 0.0 && f.depth.c == 0.0 {
-            [f.depth.a + 0.0; SAMPLES]
-        } else {
-            points.map(|[px, py]| f.depth.at(px, py))
-        }
-    }));
-    let depths = &s.depths;
-    let cmp_at = |i: usize, j: usize, k: usize| {
-        front_to_back(&frags[i], depths[i][k], &frags[j], depths[j][k])
+    s.depths
+        .extend(frags.iter().map(|f| sample_depths(f, x, y)));
+    s.errors.clear();
+    s.errors.extend(frags.iter().map(|f| depth_error(f, x, y)));
+    // One depth row for all (a flat scene): paint order decides every pair whatever they cover,
+    // so the coverage rows wait for the sample resolve.
+    let flat = s.depths.iter().all(|d| *d == s.depths[0]);
+    s.coverage.clear();
+    if !flat {
+        s.coverage
+            .extend(frags.iter().enumerate().map(|(i, f)| sample_coverage(i, f)));
+    }
+    let (depths, errs, cov) = (&s.depths, &s.errors, &s.coverage);
+    let painted = |a: usize, b: usize| order::painted(&frags[a], &frags[b]);
+    // `a` against `b` at sub-sample `k`, where both cover it.
+    let at = |a: usize, b: usize, k: usize| {
+        order::at_sample(
+            &frags[a],
+            depths[a][k],
+            errs[a],
+            &frags[b],
+            depths[b][k],
+            errs[b],
+        )
     };
-    s.order.clear();
-    s.order.extend(0..frags.len());
-    s.order.sort_by(|i, j| cmp_at(*i, *j, 0));
-
-    // Drop what an opaque covering fragment hides at every sub-sample.
-    if let Some(p) = s
-        .order
-        .iter()
-        .position(|i| frags[*i].is_opaque() && frags[*i].is_full())
-    {
-        let o = s.order[p];
-        let mut kept = p + 1;
-        for q in p + 1..s.order.len() {
-            let f = s.order[q];
-            if (0..SAMPLES).any(|k| cmp_at(f, o, k) == Ordering::Less) {
-                s.order[kept] = f;
-                kept += 1;
-            }
+    // The sub-sample orders, as `SampleRanks::rank` reads them.
+    let front_at = |a: usize, b: usize, k: usize| a != b && at(a, b, k) == Ordering::Less;
+    let strong_at = |a: usize, b: usize, k: usize| {
+        order::strong_at(
+            &frags[a],
+            depths[a][k],
+            errs[a],
+            &frags[b],
+            depths[b][k],
+            errs[b],
+        )
+    };
+    s.samples.ends.clear();
+    let seen = |i: usize| order::Seen {
+        fragment: &frags[i],
+        coverage: &cov[i],
+        depth: &depths[i],
+        err: errs[i],
+    };
+    // Each pair's order, once: `order::pair` of `b` and `a` is that of `a` and `b` reversed.
+    let n = frags.len();
+    s.fronts.clear();
+    s.fronts.resize(n * n, false);
+    s.strong.clear();
+    s.strong.resize(n * n, false);
+    for a in 0..n {
+        for b in a + 1..n {
+            let (o, how) = if flat {
+                (painted(a, b), order::Decided::Paint)
+            } else {
+                order::pair(seen(a), seen(b))
+            };
+            s.fronts[a * n + b] = o == Ordering::Less;
+            s.fronts[b * n + a] = o == Ordering::Greater;
+            s.strong[a * n + b] = how.is_strong();
+            s.strong[b * n + a] = how.is_strong();
         }
-        s.order.truncate(kept);
-        if kept == 1 {
+    }
+    let (fronts, strong) = (&s.fronts, &s.strong);
+    s.covering.clear();
+    s.covering.extend(0..n);
+    order::rank(
+        &s.covering,
+        |a, b| fronts[a * n + b],
+        |a, b| strong[a * n + b],
+        painted,
+        &mut s.order,
+    );
+
+    // Where an opaque fragment covers the pixel whole, drop what the sub-samples' ranks hide: a
+    // fragment that no sub-sample's rank puts in front of every such fragment. One that covers no
+    // sub-sample is kept where the pixel's rank puts it in front of the first. Flat, every
+    // sub-sample's order is paint order, the pixel's: what that puts behind the first is hidden.
+    let covers_whole = |i: usize| frags[i].is_opaque() && frags[i].is_full();
+    if let Some(p) = s.order.iter().position(|i| covers_whole(*i)) {
+        if flat {
+            s.order.truncate(p + 1);
+        } else {
+            s.samples.rank(cov, &s.order, front_at, strong_at, painted);
+            s.samples.show(n, covers_whole);
+            let shown = &s.samples.shown;
+            let mut kept = 0;
+            for q in 0..s.order.len() {
+                let f = s.order[q];
+                let covers = cov[f].iter().any(|c| *c != 0);
+                if shown[f] || !covers && q < p {
+                    s.order[kept] = f;
+                    kept += 1;
+                }
+            }
+            s.order.truncate(kept);
+        }
+        if let &[o] = s.order.as_slice()
+            && covers_whole(o)
+        {
             return (Resolve::Fast, frags[o].colour);
         }
     }
@@ -877,12 +1089,13 @@ pub(crate) fn resolve_pixel(
         }
     }
     let order = &s.order;
-    // Whether every fragment of unit `u` is in front of every fragment of unit `v` at sub-sample k.
+    // Whether every fragment of unit `u` is in front of every fragment of unit `v` at sub-sample
+    // k, where both cover it.
     let before = |u: (usize, usize), v: (usize, usize), k: usize| {
         order[u.0..u.1].iter().all(|a| {
-            order[v.0..v.1]
-                .iter()
-                .all(|b| cmp_at(*a, *b, k) != Ordering::Greater)
+            order[v.0..v.1].iter().all(|b| {
+                !flat && (cov[*a][k] == 0 || cov[*b][k] == 0) || at(*a, *b, k) != Ordering::Greater
+            })
         })
     };
     let unit_mask = |u: (usize, usize)| {
@@ -896,14 +1109,25 @@ pub(crate) fn resolve_pixel(
     let opaque_full = |u: (usize, usize)| {
         order[u.0..u.1].iter().all(|i| frags[*i].is_opaque()) && unit_mask(u) == Some(FULL)
     };
-    // A merged opaque unit covering the pixel hides what lies behind it at every sub-sample.
+    // A merged opaque unit covering the pixel (a surface tiling it): the units after it go where the
+    // sub-samples' ranks hide every fragment of theirs behind it, or behind an opaque fragment
+    // covering the pixel whole (flat, paint order hides them all).
     let mut units: &[(usize, usize)] = &s.units;
-    if let Some(p) = units.iter().position(|u| u.1 - u.0 > 1 && opaque_full(*u))
-        && units[p + 1..]
-            .iter()
-            .all(|w| (0..SAMPLES).all(|k| before(units[p], *w, k)))
-    {
-        units = &units[..=p];
+    if let Some(p) = units.iter().position(|u| u.1 - u.0 > 1 && opaque_full(*u)) {
+        let hidden = flat || {
+            if !s.samples.is_ranked() {
+                s.samples.rank(cov, order, front_at, strong_at, painted);
+            }
+            let tile = &order[units[p].0..units[p].1];
+            s.samples.show(n, |i| covers_whole(i) || tile.contains(&i));
+            let shown = &s.samples.shown;
+            units[p + 1..]
+                .iter()
+                .all(|w| order[w.0..w.1].iter().all(|i| !shown[*i]))
+        };
+        if hidden {
+            units = &units[..=p];
+        }
     }
     let partial = |u: &(usize, usize)| unit_mask(*u).is_some_and(|m| m != FULL);
     let mut partial_masks = units.iter().filter(|u| partial(u)).count();
@@ -924,7 +1148,12 @@ pub(crate) fn resolve_pixel(
             .count();
     }
     let one_order = (partial_masks == 0 || partial_masks == 1 && !partial_area)
-        && (0..SAMPLES).all(|k| units.windows(2).all(|w| before(w[0], w[1], k)));
+        && (0..SAMPLES).all(|k| {
+            units
+                .iter()
+                .enumerate()
+                .all(|(p, u)| units[p + 1..].iter().all(|v| before(*u, *v, k)))
+        });
     if one_order {
         let mut px = bg;
         for u in units.iter().rev() {
@@ -957,20 +1186,23 @@ pub(crate) fn resolve_pixel(
         return (Resolve::Coverage, px);
     }
 
-    s.coverage.clear();
-    s.coverage.resize(frags.len(), [0; SAMPLES]);
-    for i in &s.order {
-        s.coverage[*i] = sample_coverage(*i, &frags[*i]);
+    if flat {
+        s.coverage.resize(frags.len(), [0; SAMPLES]);
+        for i in &s.order {
+            s.coverage[*i] = sample_coverage(*i, &frags[*i]);
+        }
+    }
+    let cov = &s.coverage;
+    // As the culls ranked them, which may hold what they dropped: behind a fragment opaque and
+    // covering the sub-sample whole, which blends over it exactly.
+    if !s.samples.is_ranked() {
+        s.samples.rank(cov, &s.order, front_at, strong_at, painted);
     }
     let mut sum = [0u32; 4];
     for k in 0..SAMPLES {
-        s.covering.clear();
-        s.covering
-            .extend(s.order.iter().copied().filter(|i| s.coverage[*i][k] != 0));
-        s.covering.sort_by(|i, j| cmp_at(*i, *j, k));
         let mut px = bg;
-        for i in s.covering.iter().rev() {
-            px = blend(frags[*i].colour, s.coverage[*i][k], px);
+        for i in s.samples.at(k).iter().rev() {
+            px = blend(frags[*i].colour, cov[*i][k], px);
         }
         for c in 0..4 {
             sum[c] += px[c] as u32;

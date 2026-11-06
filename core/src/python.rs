@@ -953,7 +953,7 @@ impl PyStream {
 
     /// What the core composites at each pixel of the box ``x0 <= x < x1``, ``y0 <= y < y1``
     /// (any integers, clipped to the frame) that holds a fragment, the overlay's entries left out
-    /// as ``draw(overlay=False)`` leaves them: ``{(x, y): (leaves, orders, crossing)}``.
+    /// as ``draw(overlay=False)`` leaves them: ``{(x, y): (leaves, orders, crossing, decided)}``.
     /// ``leaves`` are ``(object, part, coverage, colour, drawn, shown, covers)``, bottom first,
     /// each leaf once: each drawn leaf covering one of the pixel's sub-samples, hidden ones
     /// included (``shown`` false), with its share of the sub-samples (0 to 255), its nearest
@@ -961,7 +961,11 @@ impl PyStream {
     /// ``(r, g, b, a)`` both), and whether it hides everything beneath it (``covers``).
     /// ``orders`` are the distinct sequences the sub-samples see, bottom first, as ``(index into
     /// leaves, coverage)``, a leaf once per run of its fragments; ``crossing`` is whether they
-    /// order two leaves both ways or admit no one order (``contributors.rs``). Nothing is drawn.
+    /// order two leaves both ways or admit no one order (``contributors.rs``). ``decided`` is how
+    /// each pair of leaves was ordered, ``(a, b, rule)`` for indices ``a < b`` into ``leaves``,
+    /// ``rule`` one of ``"paint"`` (no sub-sample both cover), ``"tie"`` (their depths equal
+    /// within the key arithmetic's error wherever both cover), ``"depth"`` or ``"majority"``
+    /// (their depths cross inside the pixel) (``order.rs``). Nothing is drawn.
     #[allow(clippy::type_complexity)]
     fn contributors(
         &self,
@@ -977,12 +981,19 @@ impl PyStream {
                 Vec<(u32, u32, u8, Rgba8, Rgba8, bool, bool)>,
                 Vec<Vec<(usize, u8)>>,
                 bool,
+                Vec<(usize, usize, &'static str)>,
             ),
         >,
     > {
         let side = |v: i64| v.clamp(0, u32::MAX as i64) as u32;
         let (x0, y0, x1, y1) = (side(x0), side(y0), side(x1), side(y1));
         let stream = &self.stream;
+        let rule = |d: crate::order::Decided| match d {
+            crate::order::Decided::Paint => "paint",
+            crate::order::Decided::Tie => "tie",
+            crate::order::Decided::Depth => "depth",
+            crate::order::Decided::Majority => "majority",
+        };
         let found = py
             .detach(|| stream.contributors(x0, y0, x1, y1))
             .map_err(|e| draw_error(py, e))?;
@@ -1005,7 +1016,12 @@ impl PyStream {
                         )
                     })
                     .collect();
-                (at, (leaves, pixel.orders, pixel.crossing))
+                let decided = pixel
+                    .decided
+                    .into_iter()
+                    .map(|(a, b, d)| (a, b, rule(d)))
+                    .collect();
+                (at, (leaves, pixel.orders, pixel.crossing, decided))
             })
             .collect())
     }
