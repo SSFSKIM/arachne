@@ -329,8 +329,8 @@ def test_a_path_filled_from_a_background_image_is_drawn_past_the_guard():
 
 
 def _snapped_from_made(scene, monkeypatch) -> int:
-    """Pixels of ``scene``'s last frame more than 2 levels from the frame the
-    core draws from its values as made, past the guard.
+    """Pixels of ``scene``'s last frame that differ from the frame the core
+    draws from its values as made, past the guard.
     """
     _, snapped = render(scene, FPS, draw_path="core", **FULL)
     with monkeypatch.context() as patched:
@@ -341,21 +341,20 @@ def _snapped_from_made(scene, monkeypatch) -> int:
         )
         _, made = render(scene, FPS, draw_path="core", **FULL)
     differ = np.abs(snapped[-1].astype(int) - made[-1].astype(int)).max(-1)
-    return int((differ > 2).sum())
+    return int((differ > 0).sum())
 
 
-def test_a_shaded_curve_cairo_s_overlay_draws_is_lit_by_its_normals_as_made(
+def test_a_curve_cairo_s_overlay_draws_is_drawn_from_its_values_as_made(
     monkeypatch,
 ):
-    """Cairo's overlay lights the spring fixed in frame by the normals its
-    record carries, decided on its points as made, as it lights the spring
-    as made: the snap moves no more of its pixels than it moves of the spring
-    unshaded. Lit by normals found again from its snapped points, which the
-    snap's step turns by tens of degrees, thousands more move.
+    """Cairo's overlay draws the spring fixed in frame from its points as
+    made, shaded (lit as CE lights them) or not: the snap moves none of its
+    pixels, where drawn from its snapped points, the unshaded spring's edges
+    moved and the shaded one, lit by normals found again from them, moved
+    thousands more.
     """
-    shaded = _snapped_from_made(SpringFixedInFrame, monkeypatch)
-    unshaded = _snapped_from_made(UnshadedSpringFixedInFrame, monkeypatch)
-    assert shaded <= unshaded, (shaded, unshaded)
+    assert _snapped_from_made(SpringFixedInFrame, monkeypatch) == 0
+    assert _snapped_from_made(UnshadedSpringFixedInFrame, monkeypatch) == 0
 
 
 def _guarding(record_fields: dict, *, prototype_held: bool = True) -> None:
