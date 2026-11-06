@@ -1,11 +1,14 @@
 """The things a sweep measures at an instant: each :class:`~arachne.lint.parts.Unit`
 with its drawn leaves, read as a region (a text, or a shape filled in every
-leaf) held to boxes, or a path held to the points along its strokes.
+leaf) held to boxes, or a path held to the points along its strokes. A leaf
+whose fill covers less than one reference pixel's area
+(:data:`~arachne.lint.codes.REFERENCE_RESOLUTION`) draws no fill: a straight
+shaft its opacity fills is a stroke.
 """
 
 from __future__ import annotations
 
-__all__ = ["Measured", "measured_units"]
+__all__ = ["Measured", "fill_area", "measured_units"]
 
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -15,6 +18,7 @@ from weakref import WeakKeyDictionary
 
 import numpy as np
 
+from ..codes import REFERENCE_RESOLUTION
 from ..findings import FindingObject
 from ..parts import Box, Leaf, Parts, Unit, target_pixels
 from ._geometry import anchor_box, meets, stroke_samples, union
@@ -40,6 +44,9 @@ class Measured:
     #: Where the last copy of a text drawn more than once lays its glyphs:
     #: the frame shows that copy (0 when none is drawn after the first).
     copy_top: int = 0
+    #: One reference pixel's area, in home-frame units squared: a fill that
+    #: covers less draws none.
+    pixel_area: float = 0.0
 
     @property
     def id(self) -> str:
@@ -66,9 +73,14 @@ class Measured:
     @cached_property
     def region(self) -> bool:
         """Held to boxes: a text, or a shape filled in every leaf (by its
-        fill's first row).
+        fill's first row, over at least one reference pixel's area).
         """
-        return self.text or all(leaf.first_fill_opacity > 0 for leaf in self.leaves)
+        return self.text or all(self._filled(leaf) for leaf in self.leaves)
+
+    def _filled(self, leaf: Leaf) -> bool:
+        if leaf.first_fill_opacity <= 0:
+            return False
+        return leaf.draw != "path" or fill_area(leaf) >= self.pixel_area
 
     @cached_property
     def outer(self) -> Box:
@@ -172,6 +184,10 @@ def _gather(parts: Parts) -> list[Measured]:
                 # A text drawn again in place: its part's top is its last copy's.
                 entry["copy_top"] = max(entry["copy_top"], part.top)
     said = {part.id: part.text for part in parts.parts if part.kind == "text"}
+    view = parts.view
+    # One reference pixel: the home frame's shorter side over the reference
+    # picture's, never the session's render size.
+    pixel = min(view.home_width, view.home_height) / min(REFERENCE_RESOLUTION)
     units = []
     for entry in grouped.values():
         leaves = tuple(sorted(entry["leaves"], key=lambda leaf: leaf.order))
@@ -186,10 +202,35 @@ def _gather(parts: Parts) -> list[Measured]:
                 said.get(unit.id) if unit.text else None,
                 _object(parts, unit, leaves, said.get(unit.id)),
                 entry["copy_top"],
+                pixel * pixel,
             )
         )
     units.sort(key=lambda u: u.leaves[0].order)
     return units
+
+
+def fill_area(leaf: Leaf) -> float:
+    """The area a path's fill covers, in home-frame units squared: each of
+    its subpaths closed and measured by the shoelace formula along its
+    curves; 0 for a straight one.
+    """
+    curves = leaf.outline()
+    if curves is None:
+        return 0.0
+    total = 0.0
+    start = 0
+    for index in range(1, len(curves) + 1):
+        if (
+            index == len(curves)
+            or float(np.linalg.norm(curves[index - 1][-1] - curves[index][0])) > 1e-9
+        ):
+            ring = curves[start:index].reshape(-1, 2)
+            x, y = ring[:, 0], ring[:, 1]
+            total += (
+                abs(float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))) / 2
+            )
+            start = index
+    return total
 
 
 def _extended(leaves: Iterable[Leaf]) -> bool:
