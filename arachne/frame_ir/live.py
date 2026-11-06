@@ -28,6 +28,9 @@ writer within a frame, the core, checked at each capture's start and end: a
 write by anything else leaves the frame layered for attribution, and falls
 back to the camera's own draw where nothing of the core's is under it, or is
 ``render.unable``; it is never dropped (:meth:`LivePainter._sole_writer`).
+A capture begun on a reset after the scene's first frame, or on a picture the
+scene set, holds nothing of the core's either: it draws over what the array
+holds as its pixels, as Cairo draws over it.
 """
 
 from __future__ import annotations
@@ -947,7 +950,15 @@ class LivePainter:
                 " its capture (after its reset, or between two captures of one"
                 " frame)"
             )
-            self._sole_writer(camera, written, mine=expected[1])
+            if expected[0] is _BACKGROUND and not self._opening:
+                # After a reset, on a frame after the scene's first: the array
+                # holds nothing of the core's, so the capture draws over what
+                # was written as its pixels (``background``), as Cairo draws
+                # over it. In the scene's first frame the camera's own draw
+                # stands instead (``_sole_writer``).
+                self._layered(camera)
+            else:
+                self._sole_writer(camera, written, mine=expected[1])
         # Whole: begun on the camera's reset with nothing written into its
         # array since, or continuing a picture that was, nothing written
         # since that picture's capture. What wrote is the record's: set
