@@ -5,6 +5,8 @@ A comment ``# @name`` tags a line the tests look up by name.
 
 from __future__ import annotations
 
+import numpy as np
+
 from arachne import DEGREES, MovingCameraScene, Scene, Square, ThreeDScene
 from tests.lint.shapes import framed_square
 
@@ -33,6 +35,23 @@ class Tilted(ThreeDScene):
         self.set_camera_orientation(phi=60 * DEGREES, theta=-45 * DEGREES)
         square = Square(side_length=2, stroke_width=1).move_to((1, 0.5, 0))
         self.add(square)
+        self.wait(0.5)
+
+
+class WideMarks(Scene):
+    """A moment tag carrying NumPy values that hold no Python number:
+    extended-precision scalars, real and complex, and arrays of each.
+    """
+
+    def construct(self):
+        self.mark(
+            "wide",
+            real=np.longdouble(1.5),
+            complex=np.clongdouble(1 + 2j),
+            reals=np.array([1.5, 2.5], dtype=np.longdouble),
+            complexes=np.array([1 + 2j], dtype=np.clongdouble),
+            plain=np.float64(0.25),
+        )
         self.wait(0.5)
 
 

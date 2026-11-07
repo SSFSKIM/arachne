@@ -181,6 +181,26 @@ def test_the_probe_s_outcomes_are_in_the_record_s_form(sessions):
     }
 
 
+def test_a_marker_s_numpy_values_are_json_values(sessions):
+    """A value with no Python number to give is written by its ``repr``;
+    one that has one is that number.
+    """
+    session = sessions(SCENES, "WideMarks")
+    out = _valid("record", api_json.inspect(session))
+    (marker,) = [m for m in out["markers"] if m["kind"] == "mark"]
+    assert marker["data"] == {
+        "label": "wide",
+        "real": repr(np.longdouble(1.5)),
+        "complex": repr(np.clongdouble(1 + 2j)),
+        "reals": [repr(np.longdouble(1.5)), repr(np.longdouble(2.5))],
+        "complexes": [repr(np.clongdouble(1 + 2j))],
+        "plain": 0.25,
+    }
+    found = session.query(Fraction(1, 4))
+    queried = _valid("query", api_json.query(found, "markers"))
+    assert queried["markers"] == [marker]
+
+
 def test_a_divergence_is_in_the_record_s_form(sessions):
     session = sessions(QUERY_SCENES, "DotsOnALine")
     planted = Divergence(
