@@ -113,10 +113,11 @@ def test_three_sessions_under_a_budget_that_fits_two(host, tmp_path, monkeypatch
     # The newest server ends the least recently used, by itself, once it
     # has answered: the caller asks for nothing.
     assert gone(oldest.pid)
-    assert _wait_until(
-        lambda: {e.pid for e in registry.sessions(host.directory)}
-        == {kept.pid, newest.pid}
-    )
+
+    def left() -> set[int]:
+        return {entry.pid for entry in registry.sessions(host.directory)}
+
+    assert _wait_until(lambda: left() == {kept.pid, newest.pid})
     assert not (host.directory / f"{oldest.pid}.json").exists()
     assert not (host.directory / f"{oldest.pid}.sock").exists()
     assert alive(kept.pid)
@@ -165,6 +166,28 @@ def test_session_directories_never_see_each_other(host, tmp_path):
     finally:
         elsewhere.end()
         shutil.rmtree(elsewhere.directory, ignore_errors=True)
+
+
+def test_a_session_is_of_the_working_directory_it_was_asked_from(
+    host, tmp_path, monkeypatch
+):
+    # Relative paths in a config, and a folder's configuration file, are
+    # read from the server's working directory: the caller's.
+    path = write(tmp_path, "still.py", STILL)
+    here, there = tmp_path / "here", tmp_path / "there"
+    here.mkdir()
+    there.mkdir()
+    monkeypatch.chdir(here)
+    first = host.connect(path, "Still", SMALL)
+    assert host.connect(path, "Still", SMALL).pid == first.pid
+    monkeypatch.chdir(there)
+    elsewhere = host.connect(path, "Still", SMALL)
+    assert elsewhere.pid != first.pid
+    found = {entry.pid: entry.cwd for entry in registry.sessions(host.directory)}
+    assert found == {
+        first.pid: str(here.resolve()),
+        elsewhere.pid: str(there.resolve()),
+    }
 
 
 def test_a_directory_too_long_for_a_socket_is_refused_before_a_start(tmp_path):
