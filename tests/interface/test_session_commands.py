@@ -1038,6 +1038,56 @@ def test_session_render_once_past_its_deadline_exits_3_and_leaves_nothing(
     assert _left_beside(out) == []
 
 
+#: A request in this process that expires once its work is done, before its
+#: answer is claimed: the expiry's own output is slow, so a client that went
+#: on would answer, or raise, before the process ends.
+EXPIRES_BEFORE_ANSWERING = """\
+    import sys
+    import threading
+    import time
+
+    from arachne.cli import client
+    from arachne.server.protocol import INVALID_PARAMS, RpcError
+
+    def expired(error):
+        print("expired", error["code"], flush=True)
+        time.sleep(0.5)
+
+    here = client.InProcess(expired)
+
+    def handle(method, params):
+        ticket = here._watchdog._ticket
+        threading.Thread(target=here._watchdog.expire, args=(ticket,)).start()
+        while ticket.state != "expired":
+            time.sleep(0.01)
+        if sys.argv[1] == "error":
+            raise RpcError(INVALID_PARAMS, "raised after the deadline")
+        return {"generation": None}
+
+    here._dispatcher.handle = handle
+    try:
+        print("answered", here.call("ping", {"deadline_s": 60}), flush=True)
+    except client.Failed as failed:
+        print("failed", failed.error["code"], flush=True)
+"""
+
+
+@pytest.mark.parametrize("ending", ["answer", "error"])
+def test_a_request_expired_before_its_answer_answers_nothing_more(tmp_path, ending):
+    script = _write(tmp_path, "expires.py", EXPIRES_BEFORE_ANSWERING)
+    done = subprocess.run(
+        [sys.executable, str(script), ending],
+        capture_output=True,
+        text=True,
+        timeout=WAIT_S,
+        cwd=tmp_path,
+    )
+    # The deadline's error, once, and the process's end: no answer after it,
+    # and no other error.
+    assert done.returncode == protocol.EXIT_DEADLINE, (done.stdout, done.stderr)
+    assert done.stdout.splitlines() == [f"expired {protocol.DEADLINE_EXCEEDED}"]
+
+
 def test_session_render_takes_a_long_deadline_by_default():
     found = _invoke("session", "render", "--help")
     assert found.exit_code == 0, found.output
