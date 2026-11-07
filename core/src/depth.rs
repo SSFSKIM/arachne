@@ -610,6 +610,7 @@ impl Centreline {
     /// does not. The front-most of several is their least key, which moves by no more than the
     /// largest of their errors.
     pub fn key_under(&self, p: [f64; 2], candidates: &[u32], body: f64) -> (f64, f64) {
+        count!(KEY_UNDER);
         let body2 = body * body;
         // The front-most key among the segments holding p with the largest error among them; the
         // nearest segment's (distance, key, error).
@@ -617,6 +618,7 @@ impl Centreline {
         let mut nearest: Option<(f64, f64, f64)> = None;
         let mut consider = |i: usize| {
             let (a, ka, b, kb) = self.segments[i];
+            count!(FEET);
             let (raw, d2) = foot(a, b, p);
             let (key, err) = key_on((a, ka), (b, kb), self.errors[i], p, raw);
             if (0.0..=1.0).contains(&raw) && d2 <= body2 {
@@ -630,8 +632,10 @@ impl Centreline {
             }
         };
         if candidates.is_empty() {
+            count!(most MOST_FEET, self.segments.len());
             (0..self.segments.len()).for_each(&mut consider);
         } else {
+            count!(most MOST_FEET, candidates.len());
             candidates.iter().for_each(|i| consider(*i as usize));
         }
         front
@@ -657,6 +661,7 @@ fn key_on(
     p: [f64; 2],
     raw: f64,
 ) -> (f64, f64) {
+    count!(KEY_ON);
     let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
     let len2 = dx * dx + dy * dy;
     if len2 == 0.0 || ka == kb {

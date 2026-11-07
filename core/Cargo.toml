@@ -15,6 +15,9 @@ crate-type = ["cdylib", "rlib"]
 # The Python extension (built by maturin through pyproject.toml). Off for `cargo test`, which links
 # no Python.
 python = ["dep:pyo3", "dep:numpy", "pyo3/extension-module"]
+# Call counts of the depth read along curves (`counters`), for measuring its cost; never in a
+# release.
+counters = []
 
 [dependencies]
 # Transcendental functions in pure Rust, never the platform's libm (determinism across machines).

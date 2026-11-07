@@ -1190,6 +1190,13 @@ fn points_somewhere(newell: [f64; 3], extent: f64, perimeter: f64, grid: f64) ->
     crate::depth::points_somewhere(newell, extent, perimeter, grid)
 }
 
+/// Every call count by name since the last take, each set back to zero (`counters`).
+#[cfg(feature = "counters")]
+#[pyfunction(name = "_take_counts")]
+fn take_counts() -> Vec<(&'static str, u64)> {
+    crate::counters::take()
+}
+
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("XF_VERSION", XF_VERSION)?;
@@ -1209,5 +1216,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(read_xf, m)?)?;
     m.add_function(wrap_pyfunction!(write_xf, m)?)?;
     m.add_function(wrap_pyfunction!(points_somewhere, m)?)?;
+    #[cfg(feature = "counters")]
+    m.add_function(wrap_pyfunction!(take_counts, m)?)?;
     Ok(())
 }
