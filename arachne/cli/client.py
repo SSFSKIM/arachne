@@ -17,13 +17,17 @@ import functools
 import json
 import os
 import sys
+import threading
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any, NoReturn, Protocol
+from typing import TYPE_CHECKING, Any, NoReturn, Protocol
 
 from ..server import protocol, registry
 from ..server.protocol import RpcError
+
+if TYPE_CHECKING:
+    from ..server.watchdog import Ticket
 
 
 class Failed(Exception):
@@ -134,10 +138,9 @@ class InProcess:
         try:
             with contextlib.redirect_stdout(sys.stderr):
                 found = self._dispatcher.handle(method, given)
-            # Claimed: from here the deadline can't pass unanswered. Expired
-            # first, the process is ending.
-            self._watchdog.answering(ticket)
+            self._answering(ticket)
         except RpcError as error:
+            self._answering(ticket)
             raise Failed(protocol.error(None, error)["error"]) from None
         finally:
             self._dispatcher.publish = None
@@ -148,6 +151,15 @@ class InProcess:
         except (TypeError, ValueError, OverflowError, RecursionError) as error:
             raise Failed(protocol.error(None, internal_error(error))["error"]) from None
         return result
+
+    def _answering(self, ticket: Ticket) -> None:
+        """Claim ``ticket``'s answer, an error's as a result's: from here its
+        deadline can't pass unanswered. A request that expired first answers
+        nothing: the deadline's error is its answer, and the process is
+        ending, so this waits for that end.
+        """
+        if not self._watchdog.answering(ticket):
+            threading.Event().wait()
 
     def _end(self, method: str, limit: float, respond: bool) -> NoReturn:
         """End the process: ``method`` ran past its deadline, ``limit`` s.
