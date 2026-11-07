@@ -263,8 +263,8 @@ def frame(found: Answer, path: StrPath) -> dict[str, Any]:
 def render(found: Rendered) -> dict[str, Any]:
     """A render or a clip written (``found``): its media file, every play
     its execution played (those the file leaves out ``skipped``), whether it
-    was checked against a lint's summary, and the divergence its check
-    found, when it found one.
+    was checked against the session's execution summary, and the divergence
+    its check found, when it found one.
     """
     form: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,

@@ -395,7 +395,9 @@ class Dispatcher:
 
     def _executed(self, record: dict[str, Any] | None = None) -> None:
         """Keep the manifest of the execution the session now holds,
-        ``record`` its record's form if made already.
+        ``record`` its record's form if made already, and its summary: a
+        session opened from the store then checks a render against the
+        summary an executed one holds, whatever the server did before.
         """
         self._manifest = self._summarised = None
         if self.store is None or self._opened is None or self.session is None:
@@ -407,6 +409,8 @@ class Dispatcher:
             self._manifest = self.store.keep_manifest(
                 file, scene, self._config, self.session, record, self._loaded
             )
+        if self._manifest is not None:
+            self.keep_summary(self.session)
 
     def record(self) -> dict[str, Any]:
         """The record's form of the session held."""
@@ -451,8 +455,8 @@ class Dispatcher:
             self.store.keep_answer(manifest, method, given, forms, file)
 
     def keep_summary(self, session: Session) -> None:
-        """Keep the summary of the session's execution, which its lint was
-        of, as the latest lint's, once per execution.
+        """Keep the summary of the session's execution, which its lints are
+        of, once per key: as it executes, and as it is linted.
         """
         if self.store is None or self._opened is None or session.stale:
             return
@@ -485,8 +489,8 @@ class Dispatcher:
     ) -> rendering.Rendered:
         """Render the session's scene afresh, ``plays`` of it (first and
         last) or every play, at ``quality``, to ``out``, checked against the
-        summary of the latest lint of the session's execution at the
-        render's frame rate and pixel aspect: the store's, else the session's
+        summary of the session's execution at the render's frame rate and
+        pixel aspect: the store's, kept as it executed, else the session's
         own when it was executed so.
         """
         assert self._opened is not None

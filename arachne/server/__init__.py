@@ -184,10 +184,11 @@ describes it.
     divergence is a clean comparison only when it is checked.
     ``divergence`` (the ``replay.diverged`` the check found) is given only
     when it found one; a render is written all the same. The summary
-    checked against is that of the session's latest lint (the store's, else
-    the session's own), of an execution at the render's frame rate and
-    pixel aspect: a render at another frame rate or aspect is another
-    execution, and is unchecked. Another pixel aspect is another execution
+    checked against is that of the session's execution, which the store
+    keeps as the session executes (else the session's own), of an execution
+    at the render's frame rate and pixel aspect: so a session opened from
+    the store checks a render as an executed one does, and a render at
+    another frame rate or aspect is another execution, and is unchecked. Another pixel aspect is another execution
     because the camera keeps its configured frame width and derives its
     frame height from the aspect (854 by 480 gives 7.99375 against 16:9's
     8): the camera's frame differs while mobject geometry, placed by the

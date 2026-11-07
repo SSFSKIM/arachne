@@ -1,6 +1,6 @@
 """``clip`` and ``render``: the session's scene executed afresh through the
 render path, into the media file the caller names, and checked against the
-execution summary of the session's latest lint.
+execution summary the store keeps of the session's execution.
 
 The render writes into a directory of its own beside ``out``; its video is
 renamed onto ``out`` only once the render succeeded, and only once the
@@ -42,14 +42,14 @@ if TYPE_CHECKING:
 
 #: Why a render with no summary like its own execution was not checked.
 NO_REFERENCE = (
-    "No summary of a lint of this execution at the render's frame rate and "
-    "pixel aspect: lint the session at them to check its renders."
+    "No summary of this execution at the render's frame rate and pixel "
+    "aspect: open the session at them to check its renders."
 )
 
 
 @dataclass(frozen=True)
 class SelfCheck:
-    """Whether a render was checked against a lint's summary: ``status``,
+    """Whether a render was checked against an execution summary: ``status``,
     ``"checked"`` or ``"unchecked"``, and for an unchecked one, ``reason``.
     """
 
@@ -202,5 +202,5 @@ def _check(
     try:
         return SelfCheck("checked"), compare(summary, reference, before_play=before)
     except Incomparable as refused:
-        reason = f"The lint's summary can't be compared with the render's: {refused}"
+        reason = f"The summary can't be compared with the render's: {refused}"
         return SelfCheck("unchecked", reason), None
