@@ -272,16 +272,19 @@ def _alive(pid: int) -> bool:
 
 
 def _serving(directory: Path, pid: int) -> bool:
-    """Whether the server ``pid`` of ``directory`` lives: whether a process
-    holds its ``<pid>.alive`` lock, which the server holds from its start
-    to its end.
+    """Whether the server ``pid`` of ``directory`` lives: whether its
+    process does and holds its ``<pid>.alive`` lock, which the server holds
+    from its start to its end. The lock is looked at shared, so that two
+    lookers never take each other for the server.
     """
+    if not _alive(pid):
+        return False
     try:
         handle = os.open(directory / f"{pid}.alive", os.O_RDWR)
     except OSError:
         return False
     try:
-        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(handle, fcntl.LOCK_SH | fcntl.LOCK_NB)
     except BlockingIOError:
         return True
     finally:
@@ -480,10 +483,13 @@ class Connection:
                 f"The server {self.pid} answered a line that is not the protocol's:"
                 f" {answer[:200]!r}."
             ) from None
-        if code == protocol.DEADLINE_EXCEEDED:
-            # The server ends on its way out: once this returns, it has.
+        data = error.get("data")
+        ends = isinstance(data, dict) and data.get("ends") is True
+        if code == protocol.DEADLINE_EXCEEDED and ends:
+            # The server ends on its way out: once this returns, it has. One
+            # past its deadline before its turn goes on.
             _ended(self.pid, 4 * protocol.ENDING_S)
-        raise RemoteError(code, message, error.get("data"))
+        raise RemoteError(code, message, data)
 
     def _line(self, wait: float | None) -> bytes:
         until = None if wait is None else time.monotonic() + wait
