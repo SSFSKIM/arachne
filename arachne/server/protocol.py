@@ -9,11 +9,13 @@ from __future__ import annotations
 __all__ = [
     "DEADLINE_EXCEEDED",
     "DEADLINE_S",
-    "DEADLINE_WRITE_S",
+    "ENDING_S",
     "EXIT_DEADLINE",
     "INTERNAL_ERROR",
     "INVALID_PARAMS",
     "INVALID_REQUEST",
+    "MAX_DEADLINE_S",
+    "MAX_MESSAGE_BYTES",
     "METHOD_NOT_FOUND",
     "NO_SESSION",
     "OTHER_SESSION",
@@ -32,6 +34,7 @@ __all__ = [
 ]
 
 import json
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -62,7 +65,7 @@ SCENE_ERROR = -32000
 REFUSED = -32001
 #: The request ran past its deadline: ``data`` is ``{method, deadline_s}``.
 #: The server exits (:data:`EXIT_DEADLINE`) once it is sent, or once
-#: :data:`DEADLINE_WRITE_S` has passed trying to send it.
+#: :data:`ENDING_S` has passed trying to send it.
 DEADLINE_EXCEEDED = -32002
 #: The method asks about a session, and none is open.
 NO_SESSION = -32003
@@ -76,24 +79,42 @@ EXIT_DEADLINE = 3
 #: when neither it (``deadline_s``) nor the server's start says otherwise.
 DEADLINE_S = 600.0
 
-#: How long the server tries to send a deadline's error before it exits
-#: anyway, in seconds: a client that stopped reading can't hold it.
-DEADLINE_WRITE_S = 1.0
+#: The longest deadline, or idle time, a request or the server's start may
+#: give, in seconds: a week.
+MAX_DEADLINE_S = 7 * 24 * 3600.0
+
+#: How long each step of the server's way out may take, in seconds, before
+#: it exits anyway: sending a deadline's error, removing its socket, a last
+#: word on standard error, flushing its streams. A client that stopped
+#: reading, or a standard error nobody reads, can't hold it.
+ENDING_S = 1.0
+
+#: The longest message, in bytes, its line's end aside: a longer line is
+#: answered ``INVALID_REQUEST`` and dropped.
+MAX_MESSAGE_BYTES = 64 * 1024 * 1024
 
 
 class RpcError(Exception):
     """An error answer: its ``code``, ``message`` and ``data``; and, for a
-    line that is no request, the id it was read with, if any.
+    line that is no request, the id it was read with, if any, and whether
+    it is answered at all (``answered``: false for a notification's).
     """
 
     def __init__(
-        self, code: int, message: str, data: Any = None, *, request_id: Any = None
+        self,
+        code: int,
+        message: str,
+        data: Any = None,
+        *,
+        request_id: Any = None,
+        answered: bool = True,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.data = data
         self.request_id = request_id
+        self.answered = answered
 
 
 @dataclass(frozen=True)
@@ -108,13 +129,21 @@ class Request:
     has_id: bool = True
 
 
+def _no_constant(name: str) -> Any:
+    raise ValueError(f"{name} is no JSON number")
+
+
 def parse(line: bytes) -> Request:
     """The request ``line`` holds; raises :class:`RpcError` for a line that
-    is not one.
+    is not one: not JSON (``NaN`` and ``Infinity`` are not, nor is anything
+    nested too deep to read), not a request, or a request whose params are
+    no object. A line with a string ``method`` and no ``id`` is a
+    notification, whatever else is wrong with it: its error is never
+    answered.
     """
     try:
-        message = json.loads(line)
-    except ValueError as found:
+        message = json.loads(line, parse_constant=_no_constant)
+    except (ValueError, RecursionError) as found:
         raise RpcError(PARSE_ERROR, f"Not JSON: {found}") from None
     if not isinstance(message, dict):
         raise RpcError(
@@ -122,10 +151,14 @@ def parse(line: bytes) -> Request:
         )
     has_id = "id" in message
     request_id = message.get("id")
-    if isinstance(request_id, bool) or not isinstance(
-        request_id, (str, int, float, type(None))
+    if (
+        isinstance(request_id, bool)
+        or not isinstance(request_id, (str, int, float, type(None)))
+        or (isinstance(request_id, float) and not math.isfinite(request_id))
     ):
-        raise RpcError(INVALID_REQUEST, "A request's id is a string or a number.")
+        raise RpcError(
+            INVALID_REQUEST, "A request's id is a string or a finite number."
+        )
     method = message.get("method")
     params = message.get("params", {})
     if message.get("jsonrpc") != "2.0" or not isinstance(method, str):
@@ -139,6 +172,7 @@ def parse(line: bytes) -> Request:
             INVALID_PARAMS,
             "A request's params are named: an object.",
             request_id=request_id,
+            answered=has_id,
         )
     return Request(method, params, request_id, has_id)
 
