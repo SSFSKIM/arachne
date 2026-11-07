@@ -6,33 +6,21 @@ from __future__ import annotations
 
 __all__ = ["frame"]
 
-import math
 from pathlib import Path
 from typing import Any
 
 import click
 import cloup
 
-from ...constants import QUALITIES
-from ..asking import RESIDENT, ask, printed, seconds, session_options
-
-#: The quality keys, by their flag, as ``arachne render -q`` names them.
-FLAGS: dict[str, str] = {
-    flag: name for name, q in QUALITIES.items() if (flag := q["flag"]) is not None
-}
-
-
-def _instant(ctx: click.Context, param: click.Parameter, value: str) -> float | str:
-    """Seconds, as a finite number, else the text as given: an exact
-    instant, ``"n/d"``, or what the session refuses as no time.
-    """
-    try:
-        found = float(value)
-    except ValueError:
-        return value
-    if not math.isfinite(found):
-        raise click.BadParameter(f"{value!r} is not a finite time.")
-    return found
+from ..asking import (
+    QUALITY_FLAGS,
+    RESIDENT,
+    ask,
+    instant,
+    printed,
+    seconds,
+    session_options,
+)
 
 
 @cloup.command(epilog=RESIDENT)
@@ -41,13 +29,13 @@ def _instant(ctx: click.Context, param: click.Parameter, value: str) -> float | 
     "--t",
     "t",
     required=True,
-    callback=_instant,
+    callback=instant,
     help="The instant, in seconds or exactly as 'n/d'.",
 )
 @cloup.option(
     "-q",
     "--quality",
-    type=click.Choice(list(FLAGS)),
+    type=click.Choice(list(QUALITY_FLAGS)),
     default=None,
     help="Draw at this quality's size (as render's -q); else at the session's.",
 )
@@ -83,7 +71,7 @@ def frame(
         params={
             "t": t,
             "path": str(output.resolve()),
-            "quality": None if quality is None else FLAGS[quality],
+            "quality": None if quality is None else QUALITY_FLAGS[quality],
         },
     )
     printed(answer, as_json, lambda: formatted(answer["frame"]))
