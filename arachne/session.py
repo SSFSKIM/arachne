@@ -551,6 +551,7 @@ class Session:
         self._quality = quality
         self._static = None
 
+    @_under_its_settings
     def changed(self) -> bool:
         """Whether the files the session's execution came from hold anything
         else now: the scene's source (the scene file and the closure of its
@@ -620,6 +621,7 @@ class Session:
             raise RuntimeError(self._not_opened)
         return self._source
 
+    @_under_its_settings
     def close(self) -> None:
         """Let go of the scene, its record and its module: the scene's
         module is dropped from ``sys.modules`` (the modules it imported
