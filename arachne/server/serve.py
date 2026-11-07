@@ -317,8 +317,9 @@ class _Server:
         # The request read: its deadline, its own or the server's, from when
         # its line was read whole; already past, it ends here, unrun.
         self.watchdog.move(ticket, line.received + limit[0])
-        # What the request publishes (a render's file) is published under the
-        # claim of its answer, so a deadline that passes first leaves it unmade.
+        # What the request publishes (a render's file) is published once it
+        # has claimed its answer, so a deadline that passes first leaves it
+        # unmade.
         self.dispatcher.publish = functools.partial(self.watchdog.claim, ticket)
         try:
             value = protocol.result(

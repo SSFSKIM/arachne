@@ -88,23 +88,24 @@ class Watchdog:
         return False
 
     def claim(self, ticket: Ticket, action: Callable[[], object]) -> bool:
-        """Claim ``ticket``'s answer and run ``action`` under the claim, which
-        publishes what the request made (a render's file renamed onto the one
-        its caller named): false, running nothing, when the request expired
+        """Claim ``ticket``'s answer, then run ``action``, which publishes
+        what the request made (a render's file renamed onto the one its
+        caller named): false, running nothing, when the request expired
         first, so that what a request publishes and its deadline's error are
-        one or the other, never both. ``action`` runs while the deadline can't
-        pass, so it must be brief. From then on the request is answering, as
-        :meth:`answering` makes it.
+        one or the other, never both. Claimed, the request is answering, as
+        :meth:`answering` makes it: its deadline still holds while ``action``
+        runs, and ends the request there without the error.
         """
         with self._changed:
-            if ticket.state == "running" and ticket.at > time.monotonic():
-                action()
+            claimed = ticket.state == "running" and ticket.at > time.monotonic()
+            late = ticket.state == "running" and not claimed
+            if claimed:
                 ticket.state = "answering"
-                return True
-            late = ticket.state == "running"
         if late:
             self.expire(ticket)
-        return False
+        if claimed:
+            action()
+        return claimed
 
     def end(self, ticket: Ticket) -> None:
         """``ticket``'s request is over: once this returns, it can't expire."""
