@@ -847,7 +847,8 @@ def _execute(
 
     try:
         instance, module = execute(path, scene, settings, recorder)
-    except Exception as error:
+    except BaseException as error:
+        # A scene's exit too: a caller that serves on goes on with it.
         _explain_on(error, named, made[-1].scene.time if made else None)
         raise
     record = made[-1].record
@@ -855,7 +856,7 @@ def _execute(
     return instance, record, module, made[-1]
 
 
-def _explain_on(error: Exception, named: StrPath, t: Fraction | None) -> None:
+def _explain_on(error: BaseException, named: StrPath, t: Fraction | None) -> None:
     """Put ``error``'s explanation on it (:func:`~arachne.errors.explain`),
     as ``scene_error``, and its time and hints as a note, which a printed
     traceback shows: the error is otherwise as the scene raised it, so that
