@@ -205,14 +205,15 @@ describes it.
     ``-32602``, saying so.
   - ``out`` is the file the caller binds, whatever it holds: it is written
     as a temporary file beside it, renamed onto ``out`` only once the render
-    succeeded, and only while the request is still live: the rename and the
-    deadline are one or the other, under the claim the deadline's watchdog
-    takes. So a deadline's exit (whenever it comes, the moment before the
-    rename included), a refusal or an error leaves ``out`` as it was, a file
-    there before untouched. Once renamed, the request has claimed its
-    answer: its deadline still bounds the answer's writing, and a deadline
-    passing then ends the server without the error. ``out`` naming a
-    directory is refused.
+    succeeded, and only once the request, still live, has claimed its
+    answer from the deadline's watchdog: the rename and the deadline's error
+    are one or the other. So a deadline's error (whenever it comes, the
+    moment before the rename included), a refusal or an error leaves
+    ``out`` as it was, a file there before untouched. Claimed, the request's
+    deadline still bounds the rename and the answer's writing: a deadline
+    passing then ends the server without the error, and since the rename is
+    atomic, ``out`` is the file before or the render, never a part of one.
+    ``out`` naming a directory is refused.
   - Each sets its own ``deadline_s`` from what it expects to cost: the
     server's default does not fit a render. A caller gives what is left of
     its own monotonic deadline, less a small margin, so that the server ends

@@ -3,13 +3,14 @@ render path, into the media file the caller names, and checked against the
 execution summary of the session's latest lint.
 
 The render writes into a directory of its own beside ``out``; its video is
-renamed onto ``out`` only once the render succeeded, and only under the
-request's claim of its answer, which its deadline can't take from it: a
-render that ends any other way (an error, a refusal, the request's deadline
-ending the process, at any point up to the rename) leaves ``out`` as it was. A render is a render as the
-command line makes it: the scene's own recorder, at the quality's pixel size
-and frame rate, the plays it leaves out executed all the same, as
-``-n first,last`` executes them.
+renamed onto ``out`` only once the render succeeded, and only once the
+request has claimed its answer, which its deadline's error then can't take
+from it: a render that ends any other way (an error, a refusal, the
+request's deadline ending the process before the claim) leaves ``out`` as
+it was, and the rename is atomic, so ``out`` is only ever the file before
+or the render. A render is a render as the command line makes it: the
+scene's own recorder, at the quality's pixel size and frame rate, the plays
+it leaves out executed all the same, as ``-n first,last`` executes them.
 """
 
 from __future__ import annotations
@@ -120,7 +121,7 @@ def render(
     ``reference``: the plays it rendered, up to its last, and with every
     play its end too. ``scratch`` is told the directory the render writes
     in while it does, and ``None`` once it is gone. ``publish`` runs the
-    rename onto ``out`` under the request's claim of its answer, false
+    rename onto ``out`` once the request has claimed its answer, false
     when the request's deadline passed first and the rename never ran.
     """
     out.parent.mkdir(parents=True, exist_ok=True)
