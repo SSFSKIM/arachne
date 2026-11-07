@@ -13,6 +13,7 @@ import cloup
 
 from ...server import protocol
 from .. import client
+from ..asking import finite
 
 
 @cloup.group()
@@ -21,33 +22,29 @@ def session() -> None:
 
 
 @session.command()
-@cloup.option(
-    "--stdio",
-    "transport",
-    flag_value="stdio",
-    help="On standard input and output.",
-)
+@cloup.option("--stdio", is_flag=True, help="On standard input and output.")
 @cloup.option(
     "--socket",
-    "transport",
-    flag_value="socket",
+    is_flag=True,
     help="On a Unix socket in ARACHNE_SESSION_DIR, else a private directory.",
 )
 @cloup.option(
     "--deadline-s",
     type=click.FloatRange(min=0, min_open=True, max=protocol.MAX_DEADLINE_S),
     default=None,
+    callback=finite,
     help="How long a request that gives no deadline may run, in seconds:"
     f" else ARACHNE_SESSION_DEADLINE_S, else {protocol.DEADLINE_S:g}.",
 )
-def serve(transport: str | None, deadline_s: float | None) -> None:
+def serve(stdio: bool, socket: bool, deadline_s: float | None) -> None:
     """Serve one session over JSON-RPC 2.0, one message a line, until it is
     shut down or idle: on --stdio or --socket.
     """
     from ...server.serve import main
 
-    if transport is None:
-        raise click.UsageError("Serve on --stdio or on --socket.")
+    if stdio == socket:
+        raise click.UsageError("Serve on exactly one of --stdio and --socket.")
+    transport = "stdio" if stdio else "socket"
 
     main(
         [
