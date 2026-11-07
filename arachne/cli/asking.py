@@ -17,13 +17,17 @@ from __future__ import annotations
 
 __all__ = [
     "EXIT_FAILED",
+    "QUALITY_FLAGS",
+    "RENDER_DEADLINE_S",
     "RESIDENT",
     "EXIT_SCENE_ERROR",
     "EXIT_STRICT",
     "ask",
     "finite",
+    "instant",
     "json_value",
     "printed",
+    "render_options",
     "seconds",
     "session_options",
 ]
@@ -37,12 +41,22 @@ from typing import Any, NoReturn, TypeVar
 import click
 import cloup
 
+from ..constants import QUALITIES
 from ..server import protocol
 from . import client
 
 EXIT_STRICT = 1
 EXIT_SCENE_ERROR = 2
 EXIT_FAILED = 3
+
+#: How long each request of a render or a clip may run by default, in
+#: seconds: a long render's, not a lint's.
+RENDER_DEADLINE_S = 6 * 3600.0
+
+#: The quality keys, by their flag, as ``arachne render -q`` names them.
+QUALITY_FLAGS: dict[str, str] = {
+    flag: name for name, q in QUALITIES.items() if (flag := q["flag"]) is not None
+}
 
 #: Where a session asked of a server lives, for the commands' help.
 RESIDENT = (
@@ -88,6 +102,19 @@ def json_value(text: str) -> Any:
         raise click.BadParameter(f"not JSON: {error}") from None
 
 
+def instant(ctx: click.Context, param: click.Parameter, value: str) -> float | str:
+    """Seconds, as a finite number, else the text as given: an exact
+    instant, ``"n/d"``, or what the session refuses as no time.
+    """
+    try:
+        found = float(value)
+    except ValueError:
+        return value
+    if not math.isfinite(found):
+        raise click.BadParameter(f"{value!r} is not a finite time.")
+    return found
+
+
 def _json_object(ctx: click.Context, param: click.Parameter, value: str | None) -> Any:
     if value is None:
         return {}
@@ -97,11 +124,22 @@ def _json_object(ctx: click.Context, param: click.Parameter, value: str | None) 
     return found
 
 
-def session_options(command: F) -> F:
+def _options(deadline_s: float) -> Callable[[F], F]:
     """The session's file and scene, the configuration it executes under,
-    how it is reached, the deadline of each request, and ``--json``.
+    how it is reached, the deadline of each request (``deadline_s`` by
+    default), and ``--json``.
     """
-    decorators = [
+
+    def decorated(command: F) -> F:
+        for decorator in reversed(_decorators(deadline_s)):
+            command = decorator(command)
+        return command
+
+    return decorated
+
+
+def _decorators(deadline_s: float) -> list[Callable[[Any], Any]]:
+    return [
         cloup.argument(
             "file",
             type=click.Path(exists=True, dir_okay=False, path_type=Path),
@@ -123,7 +161,7 @@ def session_options(command: F) -> F:
         cloup.option(
             "--deadline-s",
             type=click.FloatRange(min=0, min_open=True, max=protocol.MAX_DEADLINE_S),
-            default=protocol.DEADLINE_S,
+            default=deadline_s,
             show_default=True,
             callback=finite,
             help="How long each request may run, in seconds; a server ends past it.",
@@ -132,9 +170,12 @@ def session_options(command: F) -> F:
             "--json", "as_json", is_flag=True, help="Print the answer as JSON."
         ),
     ]
-    for decorator in reversed(decorators):
-        command = decorator(command)
-    return command
+
+
+#: The options of a command asking a session one request.
+session_options = _options(protocol.DEADLINE_S)
+#: The same, for a render or a clip: a long deadline by default.
+render_options = _options(RENDER_DEADLINE_S)
 
 
 def ask(
@@ -146,11 +187,11 @@ def ask(
     deadline_s: float,
     as_json: bool,
     method: str | None = None,
-    params: dict[str, Any] | None = None,
+    params: dict[str, Any] | Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Open the session of ``scene`` in ``file`` under ``config``, then ask
-    it ``method`` with ``params`` (given ones only; none: the open's
-    answer): the answer. An error answer ends the command with its status,
+    it ``method`` with ``params`` (given ones only; or as a function of the
+    open's answer makes them; none: the open's answer): the answer. An error answer ends the command with its status,
     printed as ``as_json`` says.
     """
     try:
@@ -159,7 +200,8 @@ def ask(
             answer,
         ):
             if method is not None:
-                given = {k: v for k, v in (params or {}).items() if v is not None}
+                asked = params(answer) if callable(params) else params or {}
+                given = {k: v for k, v in asked.items() if v is not None}
                 answer = session.call(method, {**given, "deadline_s": deadline_s})
     except client.Failed as failed:
         _failed(failed, as_json)

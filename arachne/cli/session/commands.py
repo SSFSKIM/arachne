@@ -1,6 +1,6 @@
-"""``arachne session``: serve a session, and list and stop the session
-servers of this host's registry (:mod:`arachne.server.registry`,
-``ARACHNE_SESSION_DIR``).
+"""``arachne session``: serve a session, render it or a clip of it, and
+list and stop the session servers of this host's registry
+(:mod:`arachne.server.registry`, ``ARACHNE_SESSION_DIR``).
 """
 
 from __future__ import annotations
@@ -17,11 +17,18 @@ import cloup
 
 from ...server import protocol, registry
 from ..asking import EXIT_FAILED, RESIDENT, finite
+from .render import clip, render
 
 
 @cloup.group(epilog=RESIDENT)
 def session() -> None:
-    """Serve a scene's session, and list and stop the servers running."""
+    """Serve a scene's session, render it or a clip of it, and list and stop
+    the servers running.
+    """
+
+
+session.add_command(render)
+session.add_command(clip)
 
 
 @session.command()
