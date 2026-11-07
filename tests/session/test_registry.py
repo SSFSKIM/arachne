@@ -356,41 +356,64 @@ def test_a_caller_waits_its_turn_at_a_session_no_longer_than_its_deadline(
     assert registry.sessions(host.directory) == []
 
 
-#: A scene whose execution takes longer than its caller allows.
-NAPPING = """\
-    import time
+def _opens_sent(monkeypatch) -> list[float]:
+    """The ``deadline_s`` of every ``open`` a client sends from now on."""
+    sent: list[float] = []
+    call = registry.Connection.call
 
-    from arachne import Dot, Scene
+    def spied(self, method, **params):
+        if method == "open":
+            sent.append(params["deadline_s"])
+        return call(self, method, **params)
+
+    monkeypatch.setattr(registry.Connection, "call", spied)
+    return sent
 
 
-    class Napping(Scene):
-        def construct(self):
-            time.sleep(30)
-            self.add(Dot())
-            self.wait(0.5)
-"""
-
-
-def test_a_caller_s_deadline_bounds_its_turn_and_its_open_together(host, tmp_path):
-    path = write(tmp_path, "napping.py", NAPPING)
-    key = registry.session_key(str(path.resolve()), "Napping", SMALL, registry._cwd())
+def test_a_caller_s_deadline_bounds_its_turn_and_its_open_together(
+    host, tmp_path, monkeypatch
+):
+    path = write(tmp_path, "still.py", STILL)
+    key = registry.session_key(str(path.resolve()), "Still", SMALL, registry._cwd())
     turn = host.directory / "locks" / f"{key}.lock"
-    deadline = 4.0
+    sent = _opens_sent(monkeypatch)
+    deadline, waited = 6.0, 3.0
+    opened: list[registry.Connection] = []
     caller = threading.Thread(
-        target=_ignored,
-        args=(host.connect, path, "Napping", SMALL),
-        kwargs={"deadline_s": deadline},
-        daemon=True,
+        target=lambda: opened.append(
+            host.connect(path, "Still", SMALL, deadline_s=deadline)
+        )
     )
     with registry._locked(turn, 0) as held:
         assert held
-        sent = time.monotonic()
         caller.start()
         # The turn comes after half the deadline: the open has what is left.
-        time.sleep(deadline / 2)
-    caller.join(4 * deadline)
-    assert not caller.is_alive()
-    assert time.monotonic() - sent <= deadline + 1.5
+        time.sleep(waited)
+    caller.join(2 * deadline)
+    assert opened, "the caller was not answered"
+    (given,) = sent
+    assert 0 < given <= deadline - waited
+
+
+def test_a_caller_with_no_deadline_left_sends_no_open(host, tmp_path, monkeypatch):
+    sent = _opens_sent(monkeypatch)
+    start = registry._start
+    deadline = 1.0
+
+    def slow(*args):
+        # A start slower than the caller's whole deadline.
+        found = start(*args)
+        time.sleep(deadline)
+        return found
+
+    monkeypatch.setattr(registry, "_start", slow)
+    with pytest.raises(registry.ClientTimeout, match="passed before"):
+        host.connect(
+            write(tmp_path, "still.py", STILL), "Still", SMALL, deadline_s=deadline
+        )
+    assert sent == []
+    # The server started for it is not left behind.
+    assert registry.sessions(host.directory) == []
 
 
 def test_what_a_client_raises_is_one_kind_of_error():
