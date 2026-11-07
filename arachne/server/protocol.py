@@ -166,6 +166,8 @@ def parse(line: bytes) -> Request:
             INVALID_REQUEST,
             'A request has "jsonrpc": "2.0" and a method.',
             request_id=request_id,
+            # A string method with no id is a notification, never answered.
+            answered=has_id or not isinstance(method, str),
         )
     if not isinstance(params, dict):
         raise RpcError(

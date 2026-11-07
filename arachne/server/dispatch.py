@@ -83,7 +83,8 @@ class Params:
     def __init__(
         self, given: dict[str, Any], then: Callable[[], object] | None = None
     ) -> None:
-        self._given = given
+        # A param given as null is not given, known to the method or not.
+        self._given = {name: value for name, value in given.items() if value is not None}
         self._read: set[str] = set()
         self._then = then
 
