@@ -440,16 +440,16 @@ class Dispatcher:
         """Render the session's scene afresh, ``plays`` of it (first and
         last) or every play, at ``quality``, to ``out``, checked against the
         summary of the latest lint of the session's execution at the
-        render's frame rate: the store's, else the session's own when it was
-        executed at that rate.
+        render's frame rate and pixel aspect: the store's, else the session's
+        own when it was executed so.
         """
         assert self._opened is not None
         file, scene, _ = self._opened
-        identity = (
-            identity_form(self.session.record.identity)
-            if self.session is not None
-            else self.stored.identity  # type: ignore[union-attr]
-        )
+        if self.session is not None:
+            identity = identity_form(self.session.record.identity)
+        else:
+            assert self.stored is not None
+            identity = self.stored.identity
         config = {**self._config, **rendering.quality_options(quality)}
         key = summary_key(file, scene, identity, config)
         reference = None if self.store is None else self.store.summary(key)
