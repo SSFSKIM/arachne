@@ -598,34 +598,42 @@ def execute(
     scene: str,
     settings: ManimConfig | dict[str, Any],
     recorder: Callable[[Scene], Recorder],
+    then: Callable[[Scene], object] | None = None,
 ) -> tuple[Scene, ModuleType]:
     """Import ``path`` under a module of its own and execute its scene class
     ``scene`` under ``settings``, recorded by ``recorder(scene)``: the scene
     and its module. The modules of the scene's directory it imports are its
     own, loaded from their source, and gone from ``sys.modules`` afterwards
-    (:func:`.loader.imports`). An execution that raises leaves its module
-    unimported.
+    (:func:`.loader.imports`). ``then`` is called with the scene once its
+    script ended, before they go, so that the scene's code it calls (a
+    forward run's visits after the end) imports what the execution did. An
+    execution that raises leaves its module unimported.
     """
     base_dir = str(path.parent)
     # Each execution starts as a fresh process does: another execution of
     # the source in this process left its construction caches filled.
     forget_construction_caches()
-    with tempconfig(settings), imports(path):
-        ORIGINS.start(base_dir, str(path))
-        try:
-            module = _import(path)
+    with imports(path):
+        with tempconfig(settings):
+            ORIGINS.start(base_dir, str(path))
             try:
-                scene_class = getattr(module, scene, None)
-                if not isinstance(scene_class, type):
-                    raise LookupError(f"{path.name} defines no scene named {scene!r}.")
-                instance: Scene = scene_class()
-                instance._arachne_timeline = recorder(instance)
-                instance.render()
-            except BaseException:
-                sys.modules.pop(module.__name__, None)
-                raise
-        finally:
-            ORIGINS.stop()
+                module = _import(path)
+                try:
+                    scene_class = getattr(module, scene, None)
+                    if not isinstance(scene_class, type):
+                        raise LookupError(
+                            f"{path.name} defines no scene named {scene!r}."
+                        )
+                    instance: Scene = scene_class()
+                    instance._arachne_timeline = recorder(instance)
+                    instance.render()
+                except BaseException:
+                    sys.modules.pop(module.__name__, None)
+                    raise
+            finally:
+                ORIGINS.stop()
+        if then is not None:
+            then(instance)
     return instance, module
 
 
