@@ -11,7 +11,11 @@ Available commands
 
    cfg
    checkhealth
+   frame
    init
+   inspect
+   lint
    plugins
    render
+   session
 """
