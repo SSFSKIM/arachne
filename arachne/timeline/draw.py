@@ -700,7 +700,7 @@ class Drawing:
             camera.set_pixel_array(pixels)
             return pixels
         camera.reset()
-        with self._captures(capture.instant, ("static", play.index)):
+        with self._captures(capture.instant, ("static", play.index), reset=True):
             camera.capture_mobjects(list(play.static))
         self._pictures[play.index] = self._painted(play, capture)
         kept = camera.pixel_array.copy()
@@ -711,19 +711,19 @@ class Drawing:
         return kept
 
     def _captures(
-        self, t: Fraction, play: Any
+        self, t: Fraction, play: Any, *, reset: bool = False
     ) -> contextlib.AbstractContextManager[Any]:
         """Within: the camera's captures are frames at the scene's instant
         ``t`` of the play ``play`` (its index; ``("static", index)`` for its
         static picture; ``"final"``) described from what the camera produced,
         where this drawing's frames are (:attr:`captured`); else nothing
-        changes.
+        changes. ``reset``: the camera was reset just before (``live``).
         """
         if not self.captured:
             return contextlib.nullcontext()
         from arachne.frame_ir.live import live
 
-        return live(self.camera, t, self.draw_path, play)
+        return live(self.camera, t, self.draw_path, play, reset=reset)
 
     def _painted(self, play: PlayRecord, capture: Capture) -> _Picture:
         """What the play's static picture paints, its static mobjects shown at
@@ -1029,7 +1029,7 @@ class Drawing:
             self.camera.set_pixel_array(pixels)
         else:
             self.camera.reset()
-            with self._captures(capture.instant, "final"):
+            with self._captures(capture.instant, "final", reset=True):
                 self.camera.capture_mobjects(targets)
             pixels = self.camera.pixel_array.copy()
         self._deliver()

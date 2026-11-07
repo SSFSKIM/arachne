@@ -122,6 +122,64 @@ def test_a_camera_of_the_scene_s_own_reports_its_last_whole_frame():
     assert painter.outlines()
 
 
+def test_a_camera_patched_on_its_instance_draws_its_record_s_final_frame_whole(monkeypatch):
+    """A camera whose projection the scene replaced on the instance is drawn
+    from its record by captures of its own: the record's final frame, its
+    camera reset before the capture's live scope, which is told of it, is
+    whole, and it neither falls back nor is refused.
+    """
+    from arachne import tempconfig
+    from arachne.frame_ir import lint
+    from arachne.timeline.draw import Drawing
+
+    scene, _ = render(camera_scenes.PatchedSolids, 15, draw_path="core", **MEDIUM)
+    record = scene._arachne_timeline.record  # type: ignore[attr-defined]
+    assert record is not None and record.final is not None and record.refusal is None
+    camera = scene.renderer.camera  # type: ignore[attr-defined]
+    monkeypatch.setattr(lint, "raised", [])
+    with tempconfig({**MEDIUM, "draw_path": "core"}), Drawing(record) as drawing:
+        drawing.final()
+    assert not [f for f in lint.raised if f.code == "render.fallback"], lint.raised
+    found = live_painter(camera)
+    assert found is not None
+    painter = found.painter(camera)
+    assert painter.live
+    assert painter.whole
+    records = painter.state.records
+    assert records
+    assert all("pre_projected" in r.fields for r in records.values())
+    assert painter.contributors((0, 0, 192, 108))
+    assert painter.outlines()
+
+
+def test_a_camera_patched_on_its_instance_holds_every_frame_whole(monkeypatch):
+    """Each frame of a record drawn by its camera's own captures is whole:
+    its plays' static pictures, as its final frame, begin on the camera's
+    reset before their live scope, which is told of it, and the frames drawn
+    over them continue them. The scope finds nothing written since the
+    reset, so no frame falls back or is refused.
+    """
+    from arachne import tempconfig
+    from arachne.frame_ir import lint
+
+    monkeypatch.setattr(lint, "raised", [])
+    wholes: list[bool] = []
+    settings = {**MEDIUM, "frame_rate": 15, "dry_run": True, "disable_caching": True}
+    with tempconfig({**settings, "draw_path": "core"}):
+        scene = camera_scenes.PatchedSolids()
+
+        def write_frame(pixels, *, repeat=1):
+            camera = scene.renderer.camera
+            found = live_painter(camera)
+            wholes.extend([found is not None and found.painter(camera).whole] * repeat)
+
+        scene.renderer.file_writer.write_frame = write_frame
+        scene.render()
+    assert wholes
+    assert all(wholes), wholes
+    assert not [f for f in lint.raised if f.code == "render.fallback"], lint.raised
+
+
 # What writes the camera's array outside a capture.
 
 
