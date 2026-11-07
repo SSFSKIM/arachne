@@ -12,6 +12,14 @@ forward run does: the scene executed once more, for the whole batch
 (:mod:`.timeline.fallback`). :meth:`Session.compare` compares the session's
 execution with another of the same source, perhaps from another process,
 and keeps where they differ in :attr:`Session.divergences`.
+
+A session's life: :meth:`Session.changed` says whether the files its
+execution came from (the scene's source, and the files it read) hold
+anything else now, by their content; :meth:`Session.reload` executes the
+scene again from them, as :meth:`Session.open` does, as the session's next
+:attr:`Session.generation`; a scene that raises raises its error explained
+(:class:`~arachne.errors.SceneError`); :meth:`Session.close` lets go of the
+scene, its record and its module.
 """
 
 from __future__ import annotations
@@ -33,6 +41,7 @@ from typing import TYPE_CHECKING, Any, Literal, TypeVar
 from ._config import config as global_config
 from ._config import tempconfig
 from .constants import QUALITIES
+from .errors import SceneError, explain
 from .mobject.construction_caches import forget_construction_caches
 from .timeline import admission
 from .timeline.admission import (
@@ -161,9 +170,16 @@ class Session:
         #: The forward runs that answered what the record could not, in order.
         self.forward_runs: list[ForwardRun] = []
         #: Whether the scene's source was found changed since the record was
-        #: made (by a forward run, or by the probe recording it again): the
-        #: record is of a program the file no longer is.
+        #: made (by a forward run, by the probe recording it again, or by a
+        #: reload that raised): the record is of a program the file no
+        #: longer is.
         self.stale = False
+        #: Which of the session's executions it holds: 1 as opened, and one
+        #: more for each :meth:`reload` that executed the scene again.
+        self.generation = 1
+        #: What :meth:`open` was asked, which :meth:`reload` asks again.
+        self._opened: dict[str, Any] | None = None
+        self._closed = False
 
     @classmethod
     @_enters_its_settings
@@ -242,9 +258,16 @@ class Session:
             # found (``None`` for a line demoted whole).
             demotions: dict[PlayIdentity, tuple[str, ...] | None] = {}
             session = cls(
-                *_execute(path, scene, effective, options, demotions),
+                *_execute(path, scene, effective, options, demotions, file),
                 draw_path=effective.draw_path,
             )
+            session._opened = {
+                "file": file,
+                "scene": scene,
+                "config": dict(config) if config is not None else None,
+                **options,
+                "probe": probe,
+            }
             if not probe:
                 session._source = _source(session, path, scene, effective, stepping)
                 return session
@@ -294,7 +317,7 @@ class Session:
                 if first is None:
                     first = session.summary()
                 session._executed_again(
-                    *_execute(path, scene, effective, options, demotions)
+                    *_execute(path, scene, effective, options, demotions, file)
                 )
                 executions += 1
                 with contextlib.suppress(Incomparable):
@@ -397,7 +420,9 @@ class Session:
 
     @_under_its_settings
     def lint(self, **options: Any) -> LintResult:
-        """Lint the session (:func:`arachne.lint.lint`, given ``options``)."""
+        """Lint the session (:func:`arachne.lint.lint`, given ``options``):
+        with ``rules="armed"``, the temporal rules its scene armed.
+        """
         from .lint import lint
 
         return lint(self, **options)
@@ -526,13 +551,88 @@ class Session:
         self._quality = quality
         self._static = None
 
-    @_under_its_settings
-    def close(self) -> None:
-        """Let go of the scene and its record, and drop the scene's module
-        from ``sys.modules``: the modules it imported from its directory
-        were dropped as each execution ended (:func:`.loader.imports`).
+    def changed(self) -> bool:
+        """Whether the files the session's execution came from hold anything
+        else now: the scene's source (the scene file and the closure of its
+        imports, as the files name them now: a file edited or gone, or a
+        module newly imported) or a file the execution read, edited or gone.
+        Each is digested every time asked, whatever its size and
+        modification time say. A source the session can't show its record
+        was made from counts as changed. Asking changes nothing: the session
+        is not :attr:`stale` for it.
         """
+        source = self._opened_source()
+        if source.files is None:
+            return True
+        scene_file = os.fspath(source.path)
+        scene_dir = os.path.dirname(scene_file)
+        try:
+            if file_digests(source_files(scene_file), scene_dir) != source.files:
+                return True
+            return any(
+                file_digests([os.path.join(scene_dir, read.path)], scene_dir)[0][1]
+                != read.digest
+                for read in source.reads
+            )
+        except OSError:
+            return True
+
+    @_under_its_settings
+    def reload(self, force: bool = False) -> bool:
+        """Execute the scene again when its files changed (:meth:`changed`),
+        or whatever they hold with ``force``, as :meth:`open` does, under
+        the configuration it was opened with: whether it did. The session
+        then holds that execution as its next :attr:`generation`, probed
+        afresh, with no divergence, forward run or staleness of the one
+        before: an edit and then a reload is a new program, not two
+        executions of one differing.
+
+        An execution that raises raises its :class:`~arachne.errors.SceneError`,
+        and the session keeps the generation it held, :attr:`stale` when its
+        files had changed.
+        """
+        if self._opened is None:
+            raise RuntimeError(self._not_opened)
+        changed = self.changed()
+        if not (changed or force):
+            return False
+        try:
+            executed = type(self).open(**self._opened)
+        except SceneError:
+            if changed:
+                self.stale = True
+            raise
         sys.modules.pop(self.module.__name__, None)
+        generation, settled = self.generation + 1, self._settled
+        # Every attribute is the execution's, as opening it made them, but
+        # the generation and whether an operation runs now.
+        vars(self).update(vars(executed))
+        self.generation, self._settled = generation, settled
+        return True
+
+    _not_opened = (
+        "This session was not opened from its file, so its scene can't be"
+        " executed again."
+    )
+
+    def _opened_source(self) -> Source:
+        if self._source is None:
+            raise RuntimeError(self._not_opened)
+        return self._source
+
+    def close(self) -> None:
+        """Let go of the scene, its record and its module: the scene's
+        module is dropped from ``sys.modules`` (the modules it imported
+        from its directory were dropped as each execution ended,
+        :func:`.loader.imports`), and the session holds neither. A closed
+        session answers nothing; closing it again does nothing.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        sys.modules.pop(self.module.__name__, None)
+        del self.scene, self.record, self.module, self._recorder
+        self._summary = self._static = None
 
 
 def resize(camera: Any, height: int, width: int) -> None:
@@ -667,12 +767,15 @@ def _execute(
     settings: ManimConfig,
     options: dict[str, Any],
     demotions: dict[PlayIdentity, tuple[str, ...] | None],
+    named: StrPath,
 ) -> tuple[Scene, Record, ModuleType, Recorder]:
     """Execute ``path``'s scene ``scene`` under ``settings`` (:func:`execute`),
     recorded by a ``Recorder`` given ``options`` that ticks the plays of
     ``demotions`` and those the probe demoted in an earlier session of the
     source (:func:`.admission.demoted`), which join ``demotions``. The record
     is the recorder's: a scene class may name an attribute ``record`` too.
+    What the execution raises is raised explained, the scene file as the
+    caller ``named`` it, at the scene clock's time once the scene exists.
     """
     made: list[Recorder] = []
 
@@ -697,7 +800,11 @@ def _execute(
         )
         return made[-1]
 
-    instance, module = execute(path, scene, settings, recorder)
+    try:
+        instance, module = execute(path, scene, settings, recorder)
+    except Exception as error:
+        t = made[-1].scene.time if made else None
+        raise explain(error, named, t=t) from error
     record = made[-1].record
     assert record is not None
     return instance, record, module, made[-1]

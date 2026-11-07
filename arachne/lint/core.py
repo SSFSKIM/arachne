@@ -30,7 +30,7 @@ import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from arachne.timeline.clock import exact
 
@@ -122,17 +122,34 @@ def lint(
     t_range: Sequence[float] | None = None,
     exempt: Iterable[Any] = (),
     at: str | Iterable[Fraction | float] | None = None,
-    rules: Iterable[Rule] = RULES,
+    rules: Iterable[Rule] | Literal["armed"] = RULES,
+    sample_fps: Fraction | float | None = None,
 ) -> LintResult:
     """Lint ``session``: its ``rules`` read at its lint instants, at ``fps``
     (``at`` ``"held+sampled"``, the default) or at the frames on screen at
     the times ``at`` lists; then its divergences and staleness. Findings
     that hold at no time in ``t_range`` are left out, and so are those the
     selectors and pairs of ``exempt`` exempt (:mod:`.exempt`).
+
+    ``rules="armed"`` runs the temporal rules the scene armed
+    (:func:`.armed.armed`), the hold watch sampling at ``sample_fps``,
+    which is theirs alone: raises :class:`ValueError` for a ``sample_fps``
+    given with any other rules.
     """
     started = time.perf_counter()
     exemptions = Exemptions.parse(exempt)
     record = session.record
+    if isinstance(rules, str):
+        if rules != "armed":
+            raise ValueError(f"rules are rules or 'armed', not {rules!r}")
+        from .armed import armed
+
+        rules = armed(record, sample_fps=sample_fps)
+    elif sample_fps is not None:
+        raise ValueError(
+            "sample_fps is the rate of the rules a scene armed: pass it with"
+            " rules='armed'"
+        )
     instants = lint_instants(record, fps, at=at)
     rules = tuple(rules)
     frames = Frames(session)

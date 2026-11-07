@@ -19,6 +19,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from arachne.errors import SceneError
 from arachne.timeline.clock import frames_in
 from arachne.timeline.reference import BRUTE_FORCE
 from arachne.timeline.ticking import UNGOVERNED, loads_dt
@@ -254,8 +255,9 @@ def test_approved_break_a_dt_check_sees_a_dt_free_output_a_frame_old(session_of)
     stepping and brute force alike, while ticking everything it holds.
     """
     for mode in (True, BRUTE_FORCE):
-        with pytest.raises(AssertionError):
+        with pytest.raises(SceneError) as info:
             session_of("GetterGuard", STEPPING_SCENES, frame_rate=4, stepping=mode)
+        assert info.value.cls == "AssertionError"
     full = session_of("GetterGuard", STEPPING_SCENES, frame_rate=4, stepping=False)
     assert full.record.plays[-1].full_ticks == 60
 

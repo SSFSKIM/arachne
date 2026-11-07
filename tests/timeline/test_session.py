@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from arachne import BLUE, RED, Camera
+from arachne.errors import SceneError
 
 from .conftest import render
 from .scenes import (
@@ -204,8 +205,9 @@ def test_open_names_a_missing_scene():
 
     from .conftest import SCENES
 
-    with pytest.raises(LookupError, match="no scene named"):
+    with pytest.raises(SceneError, match="no scene named") as info:
         Session.open(SCENES, "Missing")
+    assert info.value.cls == "LookupError"
 
 
 def test_a_frozen_frame_no_frame_reads_is_answered_through_its_span(session_of):

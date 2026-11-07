@@ -125,8 +125,7 @@ def inspect(session: Session) -> dict[str, Any]:
             ],
             "seed": record.identity.seed,
         },
-        # A session holds its first execution until it can execute again.
-        "generation": getattr(session, "generation", 1),
+        "generation": session.generation,
         "stale": session.stale,
         "plays": [_play(play) for play in record.plays],
         "markers": [_marker(marker) for marker in record.markers],
