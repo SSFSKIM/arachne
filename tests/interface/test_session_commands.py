@@ -17,6 +17,7 @@ returns.
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import json
 import os
 import shutil
@@ -415,6 +416,60 @@ def test_a_raising_scene_exits_2_with_its_trimmed_report(tmp_path, mode):
     assert plain.exit_code == 2
     assert plain.stdout == ""
     assert scene_error["report"] in plain.stderr
+
+
+def test_no_turn_at_a_busy_session_by_the_deadline_exits_3(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    path = _write(tmp_path, "shown.py", SHOWN)
+    config = {**SMALL, "media_dir": str(tmp_path / "media")}
+    key = registry.session_key(
+        os.path.realpath(path), "Shown", config, os.path.realpath(tmp_path)
+    )
+    lock = registry.session_dir() / "locks" / f"{key}.lock"
+    lock.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # Another caller holds the session's turn, and keeps it.
+    handle = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        found = _invoke(
+            "inspect",
+            str(path),
+            "Shown",
+            "--deadline-s",
+            "1",
+            "--config",
+            json.dumps(config),
+        )
+    finally:
+        os.close(handle)
+    assert found.exit_code == 3, found.output
+    assert found.stderr.startswith("arachne: ")
+    assert "Traceback" not in found.output
+
+
+@pytest.mark.parametrize("command", [["inspect"], ["session", "list"]])
+def test_a_registry_no_server_can_serve_in_is_a_usage_error(
+    tmp_path, monkeypatch, command
+):
+    # A socket's whole path there would not fit a Unix socket's address.
+    monkeypatch.setenv("ARACHNE_SESSION_DIR", "/tmp/" + "d" * 120)
+    path = _write(tmp_path, "shown.py", SHOWN)
+    args = [str(path), "Shown", *_session_args("server", tmp_path)]
+    found = _invoke(*command, *(args if command == ["inspect"] else []), "--json")
+    assert found.exit_code == 2, found.output
+    assert "ARACHNE_SESSION_DIR" in found.stderr
+    if command == ["inspect"]:
+        assert json.loads(found.stdout)["code"] == protocol.INVALID_PARAMS
+
+
+@pytest.mark.parametrize("command", ["inspect", "frame", "lint", "session"])
+def test_the_help_says_where_a_session_lives(command):
+    found = _invoke(command, "--help")
+    assert found.exit_code == 0, found.output
+    text = " ".join(found.stdout.split())
+    # A session outlives its command, and its scene prints to its log.
+    assert "session stop-all" in text
+    assert "<pid>.log" in text
 
 
 def test_a_request_past_its_deadline_exits_3(tmp_path):
