@@ -40,8 +40,10 @@ read for (:class:`.inputs.Read`), never with what the file holds now.
 
 A forward run leaves the session as it found it: its record and answers,
 its scene's module and the process's origin table and random generators.
-The modules the scene imports beside it stay those already imported, so a
-helper edited since the session opened runs as it was.
+It imports the modules beside the scene afresh, as every execution does
+(:func:`.loader.imports`), so a helper edited since the session opened runs
+as it is now, and its visits, those after the script ended too, see the
+modules that execution imported.
 """
 
 from __future__ import annotations
@@ -445,9 +447,26 @@ def _forward(
         made.append(forward)
         return forward
 
+    def after_the_end(scene: Scene) -> None:
+        """The visits after the script ended, of the scene as it left it,
+        while the execution's imports are still its own.
+        """
+        (forward,) = made
+        executed = forward.ensure_record()
+        for t in instants:
+            if executed.play_at(t) is None and t >= executed.duration:
+                assert executed.final is not None
+                forward.visited(t, None, executed.final)
+
     with _kept():
         try:
-            _, module = execute(source.path, source.scene, source.settings, recorder)
+            _, module = execute(
+                source.path,
+                source.scene,
+                source.settings,
+                recorder,
+                then=after_the_end if visit is not None else None,
+            )
         except _Stopped:
             (forward,) = made
             forward.stopped()
@@ -465,12 +484,6 @@ def _forward(
         executed = forward.ensure_record()
         if runs is not None:
             runs.append(executed)
-        if visit is not None and whole:
-            # After the script ended, the scene as it left it.
-            for t in instants:
-                if executed.play_at(t) is None and t >= executed.duration:
-                    assert executed.final is not None
-                    forward.visited(t, None, executed.final)
         if forward.visit_error is not None:
             raise forward.visit_error
         until = None if whole else instants[-1]
