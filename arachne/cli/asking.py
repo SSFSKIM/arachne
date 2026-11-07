@@ -17,6 +17,7 @@ from __future__ import annotations
 
 __all__ = [
     "EXIT_FAILED",
+    "RESIDENT",
     "EXIT_SCENE_ERROR",
     "EXIT_STRICT",
     "ask",
@@ -42,6 +43,18 @@ from . import client
 EXIT_STRICT = 1
 EXIT_SCENE_ERROR = 2
 EXIT_FAILED = 3
+
+#: Where a session asked of a server lives, for the commands' help.
+RESIDENT = (
+    "A session is held by a server of this host's registry"
+    " (ARACHNE_SESSION_DIR), started for it when none holds it, which"
+    " outlives the command: the next command for the same file, scene,"
+    " config and working directory is answered by it. It ends once idle"
+    " (ARACHNE_SESSION_IDLE_S, 600 s by default), or at"
+    " 'arachne session stop-all'. What the scene prints, and the engine's"
+    " logging, go to the server's log, <pid>.log in the registry. --once"
+    " holds the session in this process instead, and prints there."
+)
 
 F = TypeVar("F", bound=Callable[..., Any])
 

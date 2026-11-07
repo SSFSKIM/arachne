@@ -3,8 +3,9 @@ server of the host's registry (:mod:`arachne.server.registry`), found there
 or started; or, with ``--once``, one held in the command's own process,
 answered by the same dispatcher a server answers with. Either way an
 answer is the server's result, a JSON object; an error answer is raised as
-:class:`Failed`, carrying the protocol's error object, and a server that
-could not be reached, or ended without answering, as :class:`Gone`.
+:class:`Failed`, carrying the protocol's error object (a request that can't
+be sent is the caller's mistake, ``-32602``), and a server that could not
+be reached, or did not answer, as :class:`Gone`.
 """
 
 from __future__ import annotations
@@ -51,7 +52,9 @@ class Client(Protocol):
 
 def _checked(method: str, params: dict[str, Any]) -> None:
     """Raise :class:`Failed`, the caller's mistake (``-32602``), for params
-    that are no JSON, a number that is not finite among them.
+    that are no JSON, a number that is not finite among them: what a
+    registry's client refuses to send (:class:`~.registry.BadRequest`),
+    refused here too.
     """
     request = {"jsonrpc": "2.0", "id": 0, "method": method, "params": params}
     try:
@@ -67,8 +70,11 @@ def _checked(method: str, params: dict[str, Any]) -> None:
 
 @contextlib.contextmanager
 def _reaching() -> Iterator[None]:
-    """A server's error answer as :class:`Failed`; a server out of reach, or
-    gone, as :class:`Gone`.
+    """What a registry's client raises: an error answer as :class:`Failed`;
+    a request it can't send (its params, or a registry directory no server
+    can serve in) as :class:`Failed`, the caller's mistake (``-32602``);
+    and a server gone, silent past the deadline, never come to serve, or
+    answering outside the protocol as :class:`Gone`.
     """
     try:
         yield
@@ -77,9 +83,9 @@ def _reaching() -> Iterator[None]:
         if error.data is not None:
             found["data"] = error.data
         raise Failed(found) from None
-    except (OSError, RuntimeError, ValueError) as error:
-        # Gone, timed out, refused, no socket to be had, a server that did
-        # not start, or a line that is no JSON.
+    except registry.BadRequest as error:
+        raise Failed({"code": protocol.INVALID_PARAMS, "message": str(error)}) from None
+    except registry.ClientError as error:
         raise Gone(str(error)) from None
 
 
@@ -120,7 +126,6 @@ class Resident:
         self._connection = connection
 
     def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
-        _checked(method, params)
         with _reaching():
             result = self._connection.call(method, **params)
         return result
@@ -143,7 +148,6 @@ def reached(
     """
     named = str(file.resolve())
     opening: dict[str, Any] = {"file": named, "scene": scene, "config": config}
-    _checked("open", {**opening, "deadline_s": deadline_s})
     if once:
         here = InProcess()
         try:
