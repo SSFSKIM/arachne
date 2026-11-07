@@ -322,3 +322,21 @@ lifted.
   finds the construction caches (`arachne/mobject/construction_caches.py`: this one and a number's glyph
   cache, which fills it) as a fresh process (a session) or as the scene's first execution (a render executed again)
   found it, so two executions of one source agree. Direction: none while CE's behaviour is the reference.
+
+## The session server (`arachne/server/`)
+
+- **A render at another pixel aspect than the lint's is not checked.** The camera keeps its configured
+  `frame_width` and derives `frame_height` from the pixel aspect (`Camera.resize_frame_shape`, fixed dimension
+  0): at 854x480 the frame is 7.99375 high against 16:9's 8, so the execution summaries differ in
+  `camera.frame_height` (by 0.00625) while mobject geometry, placed by the configuration's frame, does not. A
+  render or clip at a quality whose aspect differs from every lint's answers `self_check: unchecked`
+  (`tests/session/test_render.py::test_a_render_with_nothing_like_it_to_check_against_says_so`). Direction:
+  compare mobject states in scene units, leaving the camera's frame out, so one lint checks every quality.
+- **The store has no disk budget.** `arachne/server/store.py` keeps every manifest, answer and summary it
+  writes, under each engine fingerprint it has seen, and never prunes; an engine upgraded leaves the old
+  fingerprint's directory behind whole. Direction: a size budget with least-recently-read eviction, and old
+  fingerprints removed.
+- **One unexplained failure of the unread-answers test under load.**
+  `tests/session/test_server.py::test_a_client_that_stops_reading_cannot_hold_the_server` (100 `inspect`s
+  sent, none read, on stdio) failed once on a heavily loaded machine and has not failed since; the cause is
+  not known. Direction: if it recurs, keep the server's standard error and the exit timing of that run.
