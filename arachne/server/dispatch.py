@@ -10,11 +10,12 @@ entry.
 
 from __future__ import annotations
 
-__all__ = ["METHODS", "Dispatcher", "Method", "Params", "deadline"]
+__all__ = ["METHODS", "REFUSALS", "Dispatcher", "Method", "Params", "deadline"]
 
 import json
 import math
 import os
+import traceback
 from collections.abc import Callable
 from dataclasses import dataclass
 from fractions import Fraction
@@ -22,14 +23,24 @@ from pathlib import Path
 from typing import Any
 
 from .. import api_json
+from ..constants import QUALITIES
+from ..errors import explain
+from ..frame_ir.cairo_painter import Unsupported
+from ..lint.exempt import Exemptions
+from ..lint.instants import DEFAULT as LINT_AT
 from ..session import Session
+from ..timeline.execution import Incomparable
+from ..timeline.hooks import SceneHookRefused
+from ..timeline.routes import RecordRefused, Unavailable
 from .protocol import (
+    INTERNAL_ERROR,
     INVALID_PARAMS,
     METHOD_NOT_FOUND,
     NO_SESSION,
     OTHER_SESSION,
     REFUSED,
     SCENE_ERROR,
+    TRACEBACK_FRAMES,
     RpcError,
 )
 
@@ -215,8 +226,15 @@ class Dispatcher:
             return found.run(self, Params(params, then))
         except RpcError:
             raise
-        except Exception as error:
-            raise _error_answer(error) from error
+        except BaseException as error:
+            # Whatever the scene's code raised, its exit too, is an answer:
+            # the session it ran in is resident. What the server itself
+            # raised unforeseen is an answer too; anything else ends it.
+            scene_file = None if self._opened is None else self._opened[0]
+            answer = _error_answer(error, scene_file)
+            if answer is None:
+                raise
+            raise answer from error
 
     def answer(self, **forms: Any) -> dict[str, Any]:
         """A result: ``forms``, with the generation of the session they are
@@ -231,9 +249,44 @@ class Dispatcher:
         return self.session
 
 
-def _error_answer(error: Exception) -> RpcError:
-    """``error``'s answer: a scene's, explained, or the engine's refusal."""
+#: The engine's deliberate refusals, answered as ``-32001`` with their type:
+#: a scene hook a play can't honour (``SceneHookRefused``), a record that
+#: answers no instant (``RecordRefused``), an instant it can't answer
+#: (``Unavailable``, ``Unrestorable`` among them), a frame the drawer does
+#: not draw (``Unsupported``, ``render.unsupported``) and two executions that
+#: can't be compared (``Incomparable``).
+REFUSALS: tuple[type[Exception], ...] = (
+    SceneHookRefused,
+    RecordRefused,
+    Unavailable,
+    Unsupported,
+    Incomparable,
+)
+
+
+def _error_answer(error: BaseException, scene_file: str | None) -> RpcError | None:
+    """``error``'s answer: the engine's refusal; else what the scene's code
+    raised, explained, as the session explained it or, for an execution it
+    did not explain (a forward run's), by the frames of the scene's own
+    code ``error`` went through (of ``scene_file``, the session's); else,
+    for an :class:`Exception`, an internal error. ``None``: none of these, so
+    not the server's to answer.
+    """
+    if isinstance(error, REFUSALS):
+        reason = getattr(error, "reason", None) or getattr(error, "code", None)
+        return RpcError(
+            REFUSED,
+            f"{type(error).__name__}: {error}",
+            {
+                "type": type(error).__name__,
+                "message": str(error),
+                "reason": reason if isinstance(reason, str) else None,
+            },
+        )
     explained = getattr(error, "scene_error", None)
+    if explained is None and scene_file is not None:
+        found = explain(error, scene_file)
+        explained = found if found.frames else None
     if explained is not None:
         message = (
             f"{explained.cls}: {explained.message}"
@@ -241,10 +294,19 @@ def _error_answer(error: Exception) -> RpcError:
             else explained.cls
         )
         return RpcError(SCENE_ERROR, message, api_json.scene_error(explained))
+    if not isinstance(error, Exception):
+        return None
+    trace = traceback.format_exception(
+        type(error), error, error.__traceback__, limit=-TRACEBACK_FRAMES, chain=False
+    )
     return RpcError(
-        REFUSED,
+        INTERNAL_ERROR,
         f"{type(error).__name__}: {error}",
-        {"type": type(error).__name__, "message": str(error)},
+        {
+            "type": type(error).__name__,
+            "message": str(error),
+            "traceback": "".join(trace),
+        },
     )
 
 
@@ -290,11 +352,13 @@ def _lint(server: Dispatcher, params: Params) -> dict[str, Any]:
     options: dict[str, Any] = {
         "fps": params.get("fps", positive, 4),
         "t_range": params.get("t_range", span, None),
-        "exempt": params.get("exempt", array, ()),
+        "exempt": params.get("exempt", _exempt, ()),
         "at": params.get("at", _at, None),
         "rules": params.get("rules", _rules, "armed"),
         "sample_fps": params.get("sample_fps", positive, None),
     }
+    if options["sample_fps"] is not None and options["rules"] != "armed":
+        raise _invalid("sample_fps is the rate of the armed rules: rules='armed'.")
     out_dir = params.get("key_frames_dir", text, None)
     params.done()
     session = server.opened
@@ -305,13 +369,34 @@ def _lint(server: Dispatcher, params: Params) -> dict[str, Any]:
 
 
 def _at(name: str, value: Any) -> str | list[Fraction | float]:
-    return value if isinstance(value, str) else instants(name, value)
+    if isinstance(value, str):
+        if value != LINT_AT:
+            raise _invalid(f"{name} is {LINT_AT!r} or a list of times.")
+        return value
+    return instants(name, value)
+
+
+def _exempt(name: str, value: Any) -> list[Any]:
+    """Exemptions as the lint reads them: selectors, and pairs of two."""
+    try:
+        Exemptions.parse(array(name, value))
+    except ValueError as found:
+        raise _invalid(f"{name}: {found}") from None
+    return list(value)
+
+
+def _quality(name: str, value: Any) -> str:
+    if not isinstance(value, str) or value not in QUALITIES:
+        raise _invalid(f"{name} is one of {', '.join(QUALITIES)}.")
+    return value
 
 
 def _query(server: Dispatcher, params: Params) -> dict[str, Any]:
     t = params.get("t", instant)
     what = params.get("what", _answers)
     ids = params.get("ids", _ids, [])
+    if "bbox" in what and not ids:
+        raise _invalid("A query's bbox needs ids, the mobjects to box.")
     params.done()
     found = server.opened.query(t)
     return server.answer(query=api_json.query(found, what, ids=ids))
@@ -320,7 +405,7 @@ def _query(server: Dispatcher, params: Params) -> dict[str, Any]:
 def _frame(server: Dispatcher, params: Params) -> dict[str, Any]:
     t = params.get("t", instant)
     path = Path(params.get("path", text))
-    quality = params.get("quality", text, None)
+    quality = params.get("quality", _quality, None)
     params.done()
     (found,) = server.opened.answers([t], quality)
     assert found.frame is not None
@@ -331,7 +416,7 @@ def _frame(server: Dispatcher, params: Params) -> dict[str, Any]:
 
 def _key_frames(server: Dispatcher, params: Params) -> dict[str, Any]:
     out_dir = params.get("out_dir", text)
-    quality = params.get("quality", text, None)
+    quality = params.get("quality", _quality, None)
     params.done()
     found = server.opened.key_frames(out_dir, quality)
     return server.answer(key_frames=api_json.key_frames(found))

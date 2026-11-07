@@ -373,8 +373,11 @@ def test_a_reload_that_exits_still_leaves_the_session_stale(scene_dir, opened):
             "raise SystemExit(3)  # @last",
         )
     )
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as info:
         session.reload()
+    # Explained as any error is: what serves the session goes on with it.
+    assert info.value.scene_error.cls == "SystemExit"
+    assert info.value.scene_error.line == _line(scene, "last")
     assert session.record is record
     assert session.generation == 1
     assert session.stale

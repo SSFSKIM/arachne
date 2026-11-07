@@ -14,6 +14,7 @@ __all__ = ["IDLE_S", "main", "serve"]
 
 import argparse
 import contextlib
+import math
 import os
 import selectors
 import shutil
@@ -92,8 +93,11 @@ def _write_all(fd: int) -> Callable[[bytes], None]:
 
 
 class _Server:
-    def __init__(self, idle_s: float, cleanup: Callable[[], None]) -> None:
+    def __init__(
+        self, idle_s: float, deadline_s: float, cleanup: Callable[[], None]
+    ) -> None:
         self.idle_s = idle_s
+        self.deadline_s = deadline_s
         self.dispatcher = Dispatcher()
         self.watchdog = Watchdog()
         self._cleanup = cleanup
@@ -127,42 +131,59 @@ class _Server:
                         return 0
 
     def answer(self, channel: _Channel, line: bytes) -> None:
+        """Answer ``line`` within a deadline, writing the answer included:
+        the server's until the request's own is read, then the request's.
+        """
+        limit = self.deadline_s
+        self.watchdog.arm(limit, lambda: self._overran(channel, None, limit))
+        try:
+            self._answer(channel, line)
+        finally:
+            self.watchdog.disarm()
+
+    def _answer(self, channel: _Channel, line: bytes) -> None:
         try:
             request = protocol.parse(line)
         except RpcError as found:
             channel.send(protocol.encode(protocol.error(found.request_id, found)))
             return
         try:
-            limit, params = deadline(request.params)
+            given, params = deadline(request.params)
         except RpcError as found:
             if request.has_id:
                 channel.send(protocol.encode(protocol.error(request.id, found)))
             return
-        if limit is not None:
-            self.watchdog.arm(limit, lambda: self._overran(channel, request, limit))
+        limit = self.deadline_s if given is None else given
+        self.watchdog.arm(limit, lambda: self._overran(channel, request, limit))
         try:
             reply = protocol.result(
                 request.id, self.dispatcher.handle(request.method, params)
             )
         except RpcError as found:
             reply = protocol.error(request.id, found)
-        finally:
-            self.watchdog.disarm()
         if request.has_id:
             channel.send(_encoded(reply))
 
     def _overran(
-        self, channel: _Channel, request: protocol.Request, limit: float
+        self, channel: _Channel, request: protocol.Request | None, limit: float
     ) -> None:
-        """End the server: ``request`` ran past its deadline, ``limit`` s."""
-        if request.has_id:
+        """End the server: ``request`` (or a line not yet read as one) ran
+        past its deadline, ``limit`` s. Its error is sent for at most
+        :data:`~.protocol.DEADLINE_WRITE_S`: a client that stopped reading,
+        or a write of the request's own answer that stalled, can't hold the
+        server.
+        """
+        if request is not None and request.has_id:
             found = RpcError(
                 protocol.DEADLINE_EXCEEDED,
                 f"{request.method} ran past its deadline of {limit:g} s:"
                 " the server ends.",
                 {"method": request.method, "deadline_s": limit},
             )
-            channel.send(protocol.encode(protocol.error(request.id, found)))
+            data = protocol.encode(protocol.error(request.id, found))
+            writer = threading.Thread(target=channel.send, args=(data,), daemon=True)
+            writer.start()
+            writer.join(protocol.DEADLINE_WRITE_S)
         self._cleanup()
         os._exit(protocol.EXIT_DEADLINE)
 
@@ -198,10 +219,16 @@ def _socket_dir() -> tuple[str, bool]:
     return tempfile.mkdtemp(prefix="arachne-"), True
 
 
-def serve(transport: str, *, idle_s: float = IDLE_S) -> int:
+def serve(
+    transport: str,
+    *,
+    idle_s: float = IDLE_S,
+    deadline_s: float = protocol.DEADLINE_S,
+) -> int:
     """Serve requests on ``transport`` (``"stdio"`` or ``"socket"``) until a
     ``shutdown`` request, the end of standard input (``stdio``), or
-    ``idle_s`` seconds without one: the exit status.
+    ``idle_s`` seconds without one: the exit status. A request that gives
+    no ``deadline_s`` has ``deadline_s``.
     """
     # The protocol's stream is the original standard output; whatever else
     # writes there now writes to standard error.
@@ -212,7 +239,7 @@ def serve(transport: str, *, idle_s: float = IDLE_S) -> int:
     if transport == "stdio":
         channel = _Channel(0, lambda: os.read(0, 65536), _write_all(out), lambda: None)
         selector.register(0, selectors.EVENT_READ, channel)
-        server = _Server(idle_s, lambda: None)
+        server = _Server(idle_s, deadline_s, lambda: None)
         channel.send(protocol.encode(protocol.ready("stdio", os.getpid())))
         return server.run(selector, ends_with=channel)
     directory, own = _socket_dir()
@@ -229,7 +256,7 @@ def serve(transport: str, *, idle_s: float = IDLE_S) -> int:
         listener.bind(path)
         listener.listen()
         selector.register(listener, selectors.EVENT_READ, None)
-        server = _Server(idle_s, cleanup)
+        server = _Server(idle_s, deadline_s, cleanup)
         _write_all(out)(protocol.encode(protocol.ready("socket", os.getpid(), path)))
         os.close(out)
         return server.run(selector, ends_with=None)
@@ -258,6 +285,32 @@ def main(argv: list[str] | None = None) -> int:
         const="socket",
         help="on a Unix socket in ARACHNE_SESSION_DIR, else a private directory",
     )
+    parser.add_argument(
+        "--deadline-s",
+        type=_seconds,
+        default=None,
+        help=(
+            "how long a request that gives no deadline_s may run, in seconds:"
+            f" else ARACHNE_SESSION_DEADLINE_S, else {protocol.DEADLINE_S:g}"
+        ),
+    )
     args = parser.parse_args(argv)
-    idle_s = float(os.environ.get("ARACHNE_SESSION_IDLE_S") or IDLE_S)
-    return serve(args.transport, idle_s=idle_s)
+    try:
+        idle_s = _seconds(os.environ.get("ARACHNE_SESSION_IDLE_S") or str(IDLE_S))
+        deadline_s = args.deadline_s or _seconds(
+            os.environ.get("ARACHNE_SESSION_DEADLINE_S") or str(protocol.DEADLINE_S)
+        )
+    except argparse.ArgumentTypeError as found:
+        parser.error(str(found))
+    return serve(args.transport, idle_s=idle_s, deadline_s=deadline_s)
+
+
+def _seconds(text: str) -> float:
+    """``text`` as seconds, a finite number above 0."""
+    try:
+        found = float(text)
+    except ValueError:
+        found = math.nan
+    if not (math.isfinite(found) and found > 0):
+        raise argparse.ArgumentTypeError(f"{text!r} is no number of seconds above 0")
+    return found

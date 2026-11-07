@@ -2,7 +2,8 @@
 to clients outside the process.
 
 A server is one process holding at most one session. It is started as
-``python -m arachne.server --stdio`` or ``--socket`` and speaks JSON-RPC 2.0,
+``python -m arachne.server --stdio`` or ``--socket`` (with ``--deadline-s``
+optionally, see Deadlines) and speaks JSON-RPC 2.0,
 one JSON message per line, UTF-8, on its standard input and output
 (``--stdio``) or on any number of connections to a Unix socket
 (``--socket``). Requests are answered one at a time, in the order read.
@@ -30,8 +31,9 @@ output (a scene's prints, the engine's logging) goes to standard error.
 Requests
 --------
 
-Params are named (an object). Times are seconds, or exact instants as the
-string ``"n/d"``. Every method takes ``deadline_s`` too: see Deadlines.
+Params are named (an object); a param given as null is not given. Times
+are seconds, or exact instants as the string ``"n/d"``. Every method takes
+``deadline_s`` too: see Deadlines.
 
 ======================  ========================================  =========================
 method                  params                                    result, beside generation
@@ -70,7 +72,8 @@ describes it.
   (the temporal rules the scene armed) or a list of ``"hold_watch"`` and
   ``"departures"``, each armed from the scene's start; ``[]`` runs the
   scene's own checks only. ``sample_fps`` is the rate the armed hold watch
-  samples at. A finding is an answer, never an error.
+  samples at. ``at`` is ``"held+sampled"`` (the default) or a list of times.
+  A finding is an answer, never an error.
 - ``query``'s ``what`` is one or more of
   :data:`~arachne.api_json.QUERY_ANSWERS`, ``ids`` the stable ids ``bbox``
   boxes.
@@ -97,13 +100,26 @@ code       meaning, and ``data``
 ``-32700`` the line is not JSON
 ``-32600`` the line is not a request (a batch is not served)
 ``-32601`` no such method
-``-32602`` a param is missing, unknown, or not of its kind
-``-32603`` the answer could not be written as JSON
-``-32000`` executing the scene raised: ``data`` is the ``scene_error`` form
+``-32602`` a param is missing, unknown, or not of its kind (a quality
+           :data:`~arachne.constants.QUALITIES` lacks, an exemption the lint
+           can't read, ``sample_fps`` beside rules other than ``"armed"``,
+           ``bbox`` asked without ``ids``)
+``-32603`` the server failed unforeseen: ``data`` is ``{type, message,
+           traceback}``, its traceback trimmed to its last 8 frames; or the
+           answer could not be written as JSON, with no ``data``
+``-32000`` the scene's code raised, whatever it raised, an exit
+           (``SystemExit``) too, while opening, reloading or answering:
+           ``data`` is the ``scene_error`` form
            (:class:`~arachne.errors.SceneError`), its ``report`` the error as
-           it went through the scene's code
-``-32001`` the engine refused the request, or failed it: ``data`` is
-           ``{type, message}``, the class and message of what it raised
+           it went through the scene's code. The server goes on.
+``-32001`` the engine refused the request, by one of its refusals: a scene
+           hook a play can't honour (``SceneHookRefused``), a record that
+           answers no instant (``RecordRefused``), an instant it can't answer
+           (``Unavailable``, ``Unrestorable`` among them), a frame the drawer
+           does not draw (``Unsupported``, ``render.unsupported``), two
+           executions that can't be compared (``Incomparable``). ``data`` is
+           ``{type, message, reason}``: the refusal's class name, its message
+           and its stable code, or null
 ``-32002`` the request ran past its deadline: ``data`` is ``{method,
            deadline_s}``; the server ends once it is sent
 ``-32003`` no session is open
@@ -114,11 +130,16 @@ code       meaning, and ``data``
 Deadlines and the server's end
 ------------------------------
 
-A request's ``deadline_s`` (seconds; none by default) is kept by a thread
-of its own (:mod:`.watchdog`): a request still running at its deadline is
-answered with ``-32002`` and the process exits with status 3, whatever the
-scene's code is doing. A client that gives up on a request needs nothing
-else to stop the work it asked for.
+Every request has a deadline: its ``deadline_s`` (seconds above 0) when it
+gives one, longer or shorter, else the server's: ``--deadline-s`` when
+started with it, else ``ARACHNE_SESSION_DEADLINE_S``, else 600 s. It counts
+from the line's reading to its answer's writing, so a client that stopped
+reading holds the server no longer than a scene that never ends. A thread of
+its own keeps it (:mod:`.watchdog`): a request still running at its
+deadline is answered with ``-32002``, for at most 1 s of trying to send
+it, and the process exits with status 3, whatever the scene's code is
+doing. A client that gives up on a request needs nothing else to stop the
+work it asked for.
 
 The server ends by itself when no request has come for
 ``ARACHNE_SESSION_IDLE_S`` seconds (600 by default), on ``shutdown``, and,

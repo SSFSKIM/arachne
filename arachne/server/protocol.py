@@ -8,6 +8,8 @@ from __future__ import annotations
 
 __all__ = [
     "DEADLINE_EXCEEDED",
+    "DEADLINE_S",
+    "DEADLINE_WRITE_S",
     "EXIT_DEADLINE",
     "INTERNAL_ERROR",
     "INVALID_PARAMS",
@@ -19,6 +21,7 @@ __all__ = [
     "PROTOCOL_VERSION",
     "REFUSED",
     "SCENE_ERROR",
+    "TRACEBACK_FRAMES",
     "Request",
     "RpcError",
     "encode",
@@ -43,14 +46,23 @@ METHOD_NOT_FOUND = -32601
 INVALID_PARAMS = -32602
 INTERNAL_ERROR = -32603
 
+#: ``INTERNAL_ERROR``'s ``data`` is ``{type, message, traceback}``: what the
+#: server raised unforeseen, its traceback trimmed to the last
+#: :data:`TRACEBACK_FRAMES` frames.
+TRACEBACK_FRAMES = 8
+
 # The server's.
-#: Executing the scene raised: ``data`` is the ``scene_error`` form.
+#: The scene's code raised, whatever it raised (an exit too): ``data`` is
+#: the ``scene_error`` form.
 SCENE_ERROR = -32000
-#: The engine refused the request, or failed it: ``data`` is ``{type,
-#: message}``, the class name and message of what it raised.
+#: The engine refused the request, by one of its refusals
+#: (:data:`arachne.server.dispatch.REFUSALS`): ``data`` is ``{type, message,
+#: reason}``, the refusal's class name, its message and its stable code, or
+#: null.
 REFUSED = -32001
-#: The request ran past its ``deadline_s``: ``data`` is ``{method,
-#: deadline_s}``. The server exits (:data:`EXIT_DEADLINE`) once it is sent.
+#: The request ran past its deadline: ``data`` is ``{method, deadline_s}``.
+#: The server exits (:data:`EXIT_DEADLINE`) once it is sent, or once
+#: :data:`DEADLINE_WRITE_S` has passed trying to send it.
 DEADLINE_EXCEEDED = -32002
 #: The method asks about a session, and none is open.
 NO_SESSION = -32003
@@ -59,6 +71,14 @@ OTHER_SESSION = -32004
 
 #: The exit status of a server ended by a request past its deadline.
 EXIT_DEADLINE = 3
+
+#: How long a request may run, writing its answer included, in seconds,
+#: when neither it (``deadline_s``) nor the server's start says otherwise.
+DEADLINE_S = 600.0
+
+#: How long the server tries to send a deadline's error before it exits
+#: anyway, in seconds: a client that stopped reading can't hold it.
+DEADLINE_WRITE_S = 1.0
 
 
 class RpcError(Exception):
