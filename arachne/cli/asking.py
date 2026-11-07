@@ -27,10 +27,9 @@ __all__ = [
     "session_options",
 ]
 
-import contextlib
 import json
 import math
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NoReturn, TypeVar
 
@@ -125,22 +124,6 @@ def session_options(command: F) -> F:
     return command
 
 
-@contextlib.contextmanager
-def _reached(
-    file: str, scene: str, config: dict[str, Any], once: bool, deadline_s: float
-) -> Iterator[client.Client]:
-    if not once:
-        with client.connect_or_start(file, scene, config) as remote:
-            yield remote
-        return
-    here = client.InProcess()
-    try:
-        yield here
-    finally:
-        with contextlib.suppress(client.Failed):
-            here.call("close", {"deadline_s": deadline_s})
-
-
 def ask(
     file: Path,
     scene: str,
@@ -158,16 +141,10 @@ def ask(
     printed as ``as_json`` says.
     """
     try:
-        with _reached(str(file.resolve()), scene, config, once, deadline_s) as session:
-            answer = session.call(
-                "open",
-                {
-                    "file": str(file.resolve()),
-                    "scene": scene,
-                    "config": config,
-                    "deadline_s": deadline_s,
-                },
-            )
+        with client.reached(file, scene, config, once=once, deadline_s=deadline_s) as (
+            session,
+            answer,
+        ):
             if method is not None:
                 given = {k: v for k, v in (params or {}).items() if v is not None}
                 answer = session.call(method, {**given, "deadline_s": deadline_s})
