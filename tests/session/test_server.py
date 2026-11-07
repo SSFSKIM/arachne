@@ -885,10 +885,16 @@ def test_malformed_lines_are_answered_and_the_server_goes_on(serve, transport):
         {"jsonrpc": "2.0", "method": "ping", "params": {"deadline_s": "soon"}},
         {"jsonrpc": "2.0", "method": "state_at", "params": {}},
         {"jsonrpc": "2.0", "method": "nothing"},
+        # A bad or missing jsonrpc member: still a notification, unanswered
+        # and unrun.
+        {"method": "ping"},
+        {"jsonrpc": "1.0", "method": "shutdown"},
     ]:
         server.send(notification)
     assert server.result("ping") == {"generation": None}
     assert server.process.poll() is None
+    # A param given as null is not given, whether the method knows it or not.
+    assert server.result("ping", when=None) == {"generation": None}
 
 
 def test_a_line_past_the_largest_message_is_refused_and_dropped(serve):
