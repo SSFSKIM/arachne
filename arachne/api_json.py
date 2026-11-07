@@ -14,6 +14,8 @@ Each form is a dict of JSON values, described by the schema of its name in
 - ``lint_result``, :func:`lint`: a lint's report and its notes
   (:mod:`arachne.lint.serialise`);
 - ``frame``, :func:`frame`: a frame drawn and written as a PNG;
+- ``render``, :func:`render`: a render or a clip written, its timeline and
+  what checking it found;
 - ``scene_error``, :func:`scene_error`: what executing a scene raised,
   explained (:class:`~arachne.errors.SceneError`).
 
@@ -45,6 +47,7 @@ __all__ = [
     "key_frames",
     "lint",
     "query",
+    "render",
     "scene_error",
     "schema",
     "state",
@@ -69,6 +72,7 @@ if TYPE_CHECKING:
     from .lint.core import LintResult
     from .lint.keyframes import KeyFrames
     from .lint.query import CameraReplaced, Query, Thing
+    from .server.render import Rendered
     from .session import Session
     from .timeline.execution import Divergence
     from .timeline.fallback import Answer
@@ -89,6 +93,7 @@ FORMS = (
     "key_frames",
     "lint_result",
     "frame",
+    "render",
     "scene_error",
 )
 
@@ -253,6 +258,21 @@ def frame(found: Answer, path: StrPath) -> dict[str, Any]:
         "answer": found.state.answer,
         "path": os.fspath(path),
     }
+
+
+def render(found: Rendered) -> dict[str, Any]:
+    """A render or a clip written (``found``): its media file, every play
+    its execution played (those the file leaves out ``skipped``), and the
+    divergence its check found, when it found one.
+    """
+    form: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION,
+        "path": os.fspath(found.path),
+        "timeline": [_play(play) for play in found.record.plays],
+    }
+    if found.divergence is not None:
+        form["divergence"] = _divergence(found.divergence)
+    return form
 
 
 def scene_error(error: SceneError) -> dict[str, Any]:

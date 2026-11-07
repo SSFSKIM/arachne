@@ -6,6 +6,11 @@ answered as :mod:`arachne.api_json`'s forms.
 whether the session is brought up to date with its files first, once its
 params are read (:meth:`Params.done`). A method is added by adding its
 entry.
+
+With a :class:`~.store.Store`, a dispatcher keeps the answers it gives, and
+opens a session the store holds, its files unchanged, without executing
+it: it answers from the store until a request needs what the store does
+not hold, and executes the scene then (:class:`Dispatcher`).
 """
 
 from __future__ import annotations
@@ -20,9 +25,11 @@ __all__ = [
     "internal_error",
 ]
 
+import contextlib
 import json
 import math
 import os
+import shutil
 import traceback
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -40,6 +47,7 @@ from ..session import Session
 from ..timeline.execution import Incomparable
 from ..timeline.hooks import SceneHookRefused
 from ..timeline.routes import RecordRefused, Unavailable
+from . import render as rendering
 from .protocol import (
     INTERNAL_ERROR,
     INVALID_PARAMS,
@@ -52,6 +60,7 @@ from .protocol import (
     TRACEBACK_FRAMES,
     RpcError,
 )
+from .store import Manifest, Store, identity_form, summary_key
 
 _REQUIRED: Any = object()
 
@@ -83,6 +92,11 @@ class Params:
                 raise _invalid(f"{name} is required.")
             return default
         return read(name, value)
+
+    @property
+    def given(self) -> dict[str, Any]:
+        """The params as given, ``deadline_s`` aside."""
+        return dict(self._given)
 
     def done(self) -> None:
         unknown = sorted(set(self._given) - self._read)
@@ -228,12 +242,37 @@ class Method:
 
 
 class Dispatcher:
-    """The session a server holds, and what each request asks of it."""
+    """The session a server holds, and what each request asks of it.
 
-    def __init__(self) -> None:
+    With a ``store``, the session is held one of two ways. Executed, as
+    :attr:`session`: each answer it gives that the store can keep is kept,
+    by the request and the execution it is of, and its manifest with it
+    (:class:`~.store.Manifest`), with the execution summary of its latest
+    lint. Or, opened from the store, as :attr:`stored`, the manifest of a
+    session the store holds whose files are unchanged: each request the
+    store holds the answer of is answered from it, and the first that it
+    does not hold (or a file changed) executes the scene, as the session's
+    next generation when its files changed.
+    """
+
+    def __init__(self, store: Store | None = None) -> None:
         self.session: Session | None = None
-        #: What the open session was opened as: its file, scene and config.
+        #: The session opened from the store and not executed, if it is.
+        self.stored: Manifest | None = None
+        self.store = store
+        #: What the open session was opened as: its file, scene and config;
+        #: the file as ``open`` named it, and its config.
         self._opened: tuple[str, str, str] | None = None
+        self._named = ""
+        self._config: dict[str, Any] = {}
+        #: The manifest the store keeps of the session's execution, if any.
+        self._manifest: Manifest | None = None
+        #: The generation of the session opened from the store.
+        self._stored_generation = 1
+        #: The key of the summary kept of the session's execution, if any.
+        self._summarised: str | None = None
+        #: The directory a render writes into while it runs.
+        self._scratch: Path | None = None
         #: Whether a request asked the server to end, once it answered.
         self.ending = False
 
@@ -244,11 +283,11 @@ class Dispatcher:
         found = METHODS.get(method)
         if found is None:
             raise RpcError(METHOD_NOT_FOUND, f"No method {method!r}.")
-        session = self.session
-        if found.session and session is None:
+        holding = self.session is not None or self.stored is not None
+        if found.session and not holding:
             raise RpcError(NO_SESSION, "No session is open: open one first.")
         # The params read and checked, the session catches up with its files.
-        then = session.reload if found.fresh and session is not None else None
+        then = self._catch_up if found.fresh and holding else None
         try:
             return found.run(self, Params(params, then))
         except RpcError:
@@ -267,13 +306,178 @@ class Dispatcher:
         """A result: ``forms``, with the generation of the session they are
         of (null with none open).
         """
-        session = self.session
-        return {"generation": None if session is None else session.generation, **forms}
+        return {"generation": self.generation, **forms}
 
     @property
-    def opened(self) -> Session:
+    def generation(self) -> int | None:
+        """The generation of the session held, ``None`` with none."""
+        if self.session is not None:
+            return self.session.generation
+        return self._stored_generation if self.stored is not None else None
+
+    @property
+    def held(self) -> tuple[str, str, dict[str, Any]] | None:
+        """The session held: its file (a real path), scene and config."""
+        if self._opened is None:
+            return None
+        return self._opened[0], self._opened[1], dict(self._config)
+
+    def live(self) -> Session:
+        """The session, executed: a session opened from the store is
+        executed now, as the generation it is.
+        """
+        if self.session is None:
+            self._execute(next_generation=False)
         assert self.session is not None
         return self.session
+
+    def _execute(self, *, next_generation: bool) -> None:
+        """Execute the session opened from the store, as its next generation
+        when ``next_generation``.
+        """
+        assert self.stored is not None
+        session = Session.open(
+            self._named, self.stored.scene, config=self._config or None
+        )
+        session.generation = self._stored_generation + int(next_generation)
+        self.session, self.stored = session, None
+        self._executed()
+
+    def _catch_up(self) -> None:
+        """Execute the session again when its files changed."""
+        if self.session is not None:
+            if self.session.reload():
+                self._executed()
+        elif self.stored is not None and not self.stored.fresh():
+            self._execute(next_generation=True)
+
+    def _executed(self, record: dict[str, Any] | None = None) -> None:
+        """Keep the manifest of the execution the session now holds,
+        ``record`` its record's form if made already.
+        """
+        self._manifest = self._summarised = None
+        if self.store is None or self._opened is None or self.session is None:
+            return
+        file, scene, _ = self._opened
+        if record is None:
+            record = api_json.inspect(self.session)
+        with contextlib.suppress(OSError):
+            self._manifest = self.store.keep_manifest(
+                file, scene, self._config, self.session, record
+            )
+
+    def record(self) -> dict[str, Any]:
+        """The record's form of the session held."""
+        if self.session is not None:
+            return api_json.inspect(self.session)
+        assert self.stored is not None
+        return {**self.stored.record, "generation": self.generation}
+
+    def kept(
+        self,
+        method: str,
+        given: dict[str, Any],
+        answer: Callable[[Session], dict[str, Any]],
+    ) -> dict[str, Any]:
+        """The result of ``method`` asked with ``given``: from the store while
+        the session is opened from it and the store holds the answer; else
+        ``answer(session)``'s forms, kept in the store.
+        """
+        if self.session is None and self.store is not None:
+            assert self.stored is not None
+            found = self.store.answer(self.stored, method, given)
+            if found is not None:
+                return self.answer(**found)
+        forms = answer(self.live())
+        self.keep(method, given, forms)
+        return self.answer(**forms)
+
+    def keep(
+        self,
+        method: str,
+        given: dict[str, Any],
+        forms: dict[str, Any],
+        file: bytes | None = None,
+    ) -> None:
+        """Keep the answer ``forms`` to ``method`` asked with ``given`` (and
+        ``file``, written with it) as of the execution the session holds.
+        """
+        manifest, session = self._manifest, self.session
+        if self.store is None or manifest is None or session is None or session.stale:
+            return
+        with contextlib.suppress(OSError):
+            self.store.keep_answer(manifest, method, given, forms, file)
+
+    def keep_summary(self, session: Session) -> None:
+        """Keep the summary of the session's execution, which its lint was
+        of, as the latest lint's, once per execution.
+        """
+        if self.store is None or self._opened is None or session.stale:
+            return
+        file, scene, _ = self._opened
+        key = summary_key(
+            file, scene, identity_form(session.record.identity), self._config
+        )
+        if key == self._summarised:
+            return
+        with contextlib.suppress(OSError):
+            self.store.keep_summary(key, session.summary())
+            self._summarised = key
+
+    def spans(self) -> list[tuple[Fraction, Fraction]]:
+        """Each play's span, by index, of the session held."""
+        if self.session is not None:
+            return [(play.start, play.end) for play in self.session.record.plays]
+        assert self.stored is not None
+        return [
+            (Fraction(play["start_exact"]), Fraction(play["end_exact"]))
+            for play in self.stored.record["plays"]
+        ]
+
+    def render(
+        self, quality: str | None, plays: tuple[int, int] | None, out: Path
+    ) -> rendering.Rendered:
+        """Render the session's scene afresh, ``plays`` of it (first and
+        last) or every play, at ``quality``, to ``out``, checked against the
+        summary of the latest lint of the session's execution at the
+        render's frame rate: the store's, else the session's own when it was
+        executed at that rate.
+        """
+        assert self._opened is not None
+        file, scene, _ = self._opened
+        identity = (
+            identity_form(self.session.record.identity)
+            if self.session is not None
+            else self.stored.identity  # type: ignore[union-attr]
+        )
+        config = {**self._config, **rendering.quality_options(quality)}
+        key = summary_key(file, scene, identity, config)
+        reference = None if self.store is None else self.store.summary(key)
+        if (
+            reference is None
+            and self.session is not None
+            and key == summary_key(file, scene, identity, self._config)
+        ):
+            reference = self.session.summary()
+        return rendering.render(
+            file,
+            scene,
+            self._config,
+            named=self._named,
+            quality=quality,
+            plays=plays,
+            out=out,
+            reference=reference,
+            scratch=self._scratching,
+        )
+
+    def _scratching(self, directory: Path | None) -> None:
+        self._scratch = directory
+
+    def abandon(self) -> None:
+        """Remove what a render running now has written: the server ends."""
+        if self._scratch is not None:
+            shutil.rmtree(self._scratch, ignore_errors=True)
 
 
 #: The engine's deliberate refusals, answered as ``-32001`` with their type:
@@ -361,11 +565,25 @@ def _open(server: Dispatcher, params: Params) -> dict[str, Any]:
     scene = params.get("scene", text)
     config = params.get("config", mapping, {})
     params.done()
-    opened = (os.path.realpath(file), scene, json.dumps(config, sort_keys=True))
-    if server.session is None:
-        server.session = Session.open(file, scene, config=config or None)
-        server._opened = opened
-    elif opened != server._opened:
+    real = os.path.realpath(file)
+    opened = (real, scene, json.dumps(config, sort_keys=True))
+    if server.session is None and server.stored is None:
+        manifest = None
+        if server.store is not None:
+            with contextlib.suppress(OSError):
+                manifest = server.store.manifest(real, scene, config)
+        if manifest is not None and manifest.fresh():
+            server.stored = manifest
+            server._stored_generation = 1
+        else:
+            server.session = Session.open(file, scene, config=config or None)
+        server._opened, server._named, server._config = opened, file, config
+        if server.session is None:
+            return server.answer(record=server.record())
+        record = api_json.inspect(server.session)
+        server._executed(record)
+        return server.answer(record=record)
+    if opened != server._opened:
         assert server._opened is not None
         held_file, held_scene, held_config = server._opened
         raise RpcError(
@@ -373,22 +591,24 @@ def _open(server: Dispatcher, params: Params) -> dict[str, Any]:
             f"This server holds {held_scene} of {held_file}, config"
             f" {held_config}: close it before opening another.",
         )
-    else:
-        server.opened.reload()
-    return server.answer(record=api_json.inspect(server.opened))
+    server._catch_up()
+    return server.answer(record=server.record())
 
 
 def _inspect(server: Dispatcher, params: Params) -> dict[str, Any]:
     params.done()
-    return server.answer(record=api_json.inspect(server.opened))
+    return server.answer(record=server.record())
 
 
 def _state_at(server: Dispatcher, params: Params) -> dict[str, Any]:
     t = params.get("t", instant)
     params.done()
-    session = server.opened
-    (found,) = session.answers([t], frames=False)
-    return server.answer(state=api_json.state(found.state, session))
+
+    def answer(session: Session) -> dict[str, Any]:
+        (found,) = session.answers([t], frames=False)
+        return {"state": api_json.state(found.state, session)}
+
+    return server.kept("state_at", params.given, answer)
 
 
 def _lint(server: Dispatcher, params: Params) -> dict[str, Any]:
@@ -404,10 +624,18 @@ def _lint(server: Dispatcher, params: Params) -> dict[str, Any]:
         raise _invalid("sample_fps is the rate of the armed rules: rules='armed'.")
     out_dir = params.get("key_frames_dir", text, None)
     params.done()
-    session = server.opened
-    forms = {"lint_result": api_json.lint(session.lint(**options))}
-    if out_dir is not None:
-        forms["key_frames"] = api_json.key_frames(session.key_frames(out_dir))
+
+    def answer(session: Session) -> dict[str, Any]:
+        result = session.lint(**options)
+        server.keep_summary(session)
+        return {"lint_result": api_json.lint(result)}
+
+    if out_dir is None:
+        return server.kept("lint", params.given, answer)
+    # Key frames are files the store does not keep.
+    session = server.live()
+    forms = answer(session)
+    forms["key_frames"] = api_json.key_frames(session.key_frames(out_dir))
     return server.answer(**forms)
 
 
@@ -441,8 +669,11 @@ def _query(server: Dispatcher, params: Params) -> dict[str, Any]:
     if "bbox" in what and not ids:
         raise _invalid("A query's bbox needs ids, the mobjects to box.")
     params.done()
-    found = server.opened.query(t)
-    return server.answer(query=api_json.query(found, what, ids=ids))
+    return server.kept(
+        "query",
+        params.given,
+        lambda session: {"query": api_json.query(session.query(t), what, ids=ids)},
+    )
 
 
 def _frame(server: Dispatcher, params: Params) -> dict[str, Any]:
@@ -450,25 +681,45 @@ def _frame(server: Dispatcher, params: Params) -> dict[str, Any]:
     path = Path(params.get("path", text))
     quality = params.get("quality", _quality, None)
     params.done()
-    (found,) = server.opened.answers([t], quality)
+    # The answer is the same picture wherever it is written.
+    asked = {name: value for name, value in params.given.items() if name != "path"}
+    store, stored = server.store, server.stored
+    if server.session is None and store is not None and stored is not None:
+        found_form = store.answer(stored, "frame", asked)
+        picture = store.answer_file(stored, "frame", asked)
+        if found_form is not None and picture is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(picture)
+            return server.answer(frame={**found_form["frame"], "path": os.fspath(path)})
+    (found,) = server.live().answers([t], quality)
     assert found.frame is not None
     path.parent.mkdir(parents=True, exist_ok=True)
     found.frame.save(path, format="PNG")
-    return server.answer(frame=api_json.frame(found, path))
+    form = api_json.frame(found, path)
+    server.keep("frame", asked, {"frame": form}, path.read_bytes())
+    return server.answer(frame=form)
 
 
 def _key_frames(server: Dispatcher, params: Params) -> dict[str, Any]:
     out_dir = params.get("out_dir", text)
     quality = params.get("quality", _quality, None)
     params.done()
-    found = server.opened.key_frames(out_dir, quality)
+    found = server.live().key_frames(out_dir, quality)
     return server.answer(key_frames=api_json.key_frames(found))
 
 
 def _reload(server: Dispatcher, params: Params) -> dict[str, Any]:
     force = params.get("force", flag, False)
     params.done()
-    reloaded = server.opened.reload(force)
+    if server.session is None:
+        assert server.stored is not None
+        changed = not server.stored.fresh()
+        if changed or force:
+            server._execute(next_generation=True)
+        return server.answer(reloaded=changed or force)
+    reloaded = server.session.reload(force)
+    if reloaded:
+        server._executed()
     return server.answer(reloaded=reloaded)
 
 
@@ -476,8 +727,63 @@ def _close(server: Dispatcher, params: Params) -> dict[str, Any]:
     params.done()
     if server.session is not None:
         server.session.close()
-        server.session = server._opened = None
+    server.session = server.stored = server._opened = server._manifest = None
     return server.answer()
+
+
+def _out(name: str, value: Any) -> Path:
+    """A media file to write: a path naming no directory."""
+    found = Path(text(name, value))
+    if found.is_dir():
+        raise _invalid(f"{name} names a directory: name the media file to write.")
+    return found
+
+
+def _plays(name: str, value: Any) -> tuple[int, int]:
+    """Plays by index, in order, one after another: the first and last."""
+    if (
+        not isinstance(value, list)
+        or not value
+        or not all(isinstance(i, int) and not isinstance(i, bool) for i in value)
+    ):
+        raise _invalid(f"{name} is a list of play indices.")
+    first = value[0]
+    if first < 0 or value != list(range(first, first + len(value))):
+        raise _invalid(
+            f"{name} is plays one after another, in order, as a render takes"
+            f" them: {value} is not."
+        )
+    return first, value[-1]
+
+
+def _clip(server: Dispatcher, params: Params) -> dict[str, Any]:
+    t0 = params.get("t0", instant)
+    t1 = params.get("t1", instant)
+    if t0 > t1:
+        raise _invalid("A clip's t0 is not after its t1.")
+    quality = params.get("quality", _quality, None)
+    out = params.get("out", _out)
+    params.done()
+    spans = server.spans()
+    plays = rendering.plays_meeting(spans, t0, t1)
+    if plays is None:
+        end = float(spans[-1][1]) if spans else 0.0
+        raise _invalid(
+            f"No play meets [{float(t0):g}, {float(t1):g}] s: the scene runs {end:g} s."
+        )
+    return server.answer(clip=api_json.render(server.render(quality, plays, out)))
+
+
+def _render(server: Dispatcher, params: Params) -> dict[str, Any]:
+    plays = params.get("plays", _plays, None)
+    quality = params.get("quality", _quality, None)
+    out = params.get("out", _out)
+    params.done()
+    if plays is not None:
+        count = len(server.spans())
+        if plays[1] >= count:
+            raise _invalid(f"The scene has {count} plays, 0 to {count - 1}.")
+    return server.answer(render=api_json.render(server.render(quality, plays, out)))
 
 
 def _ping(server: Dispatcher, params: Params) -> dict[str, Any]:
@@ -500,6 +806,8 @@ METHODS: dict[str, Method] = {
     "query": Method(_query),
     "frame": Method(_frame),
     "key_frames": Method(_key_frames),
+    "clip": Method(_clip),
+    "render": Method(_render),
     "reload": Method(_reload, fresh=False),
     "close": Method(_close, session=False, fresh=False),
     "ping": Method(_ping, session=False, fresh=False),
