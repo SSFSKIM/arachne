@@ -23,6 +23,7 @@ import contextlib
 import functools
 import math
 import os
+import queue
 import selectors
 import shutil
 import socket
@@ -184,6 +185,9 @@ class _Server:
         self.watchdog = Watchdog()
         self._cleanup = cleanup
         self.registration = registration
+        #: Whether the host is over its memory budget with no other server to
+        #: end: the server ends once no connection to it is open.
+        self.over_budget = False
 
     def _registered(self, *, busy: bool, if_changed: bool = False) -> None:
         """Keep the server's entry in the registry, if it has one (with
@@ -204,53 +208,72 @@ class _Server:
 
     def _keep_budget(self) -> None:
         """Keep the host's memory budget, once a request is answered: still
-        over it with no other server to end, the server ends. It can't fail
-        the server.
+        over it with no other server to end, the server is to end once no
+        connection to it is open (:attr:`over_budget`). It can't fail the
+        server.
         """
         registration = self.registration
         if registration is None or self.dispatcher.ending:
             return
         with contextlib.suppress(Exception):
-            if registration.enforce():
-                _say(
-                    "over the host's memory budget, no other server to end: the server ends"
-                )
-                self.dispatcher.ending = True
+            self.over_budget = registration.enforce()
 
     def run(self, selector: selectors.BaseSelector, ends_with: _Channel | None) -> int:
         """Answer what the selector's channels send until a request ends the
-        server, ``ends_with`` ends, or nothing came for ``idle_s``.
+        server, ``ends_with`` ends, nothing came for ``idle_s``, or the
+        server is over the host's budget and no connection to it is open.
+
+        The channels are read on a thread of their own as lines arrive,
+        whatever request is being answered, so each line's deadline counts
+        from when it was sent, its wait behind another included, and a
+        connection is accepted at once; the requests are answered one at a
+        time, in the order read.
         """
+        arrivals: queue.SimpleQueue[tuple[_Channel | None, Any]] = queue.SimpleQueue()
+        threading.Thread(
+            target=_reading, args=(selector, arrivals), name="reading", daemon=True
+        ).start()
+        connected: set[_Channel] = set()
         last = time.monotonic()
         while True:
             left = self.idle_s - (time.monotonic() - last)
             if left <= 0:
                 _say(f"idle for {self.idle_s:g} s: the server ends")
                 return 0
-            for key, _ in selector.select(left):
-                if isinstance(key.fileobj, socket.socket) and key.data is None:
-                    selector.register(*_accept(key.fileobj))
-                    continue
-                channel: _Channel = key.data
-                lines = channel.lines()
-                if lines is None:
-                    selector.unregister(channel.fd)
-                    channel.close()
-                    if channel is ends_with:
-                        return 0
-                    continue
-                for line in lines:
-                    self.answer(channel, line)
-                    last = time.monotonic()
-                    if self.dispatcher.ending:
-                        return 0
+            try:
+                channel, arrived = arrivals.get(timeout=left)
+            except queue.Empty:
+                continue
+            if channel is None:
+                _say(f"reading the server's connections failed: {arrived}")
+                return 1
+            if arrived is _CONNECTED:
+                connected.add(channel)
+                continue
+            if arrived is _ENDED:
+                channel.close()
+                connected.discard(channel)
+                if channel is ends_with:
+                    return 0
+            else:
+                self.answer(channel, arrived)
+                last = time.monotonic()
+                if self.dispatcher.ending:
+                    return 0
+            if self.over_budget and not connected:
+                _say(
+                    "over the host's memory budget, no other server to end and no"
+                    " connection open: the server ends"
+                )
+                return 0
 
     def answer(self, channel: _Channel, line: _Line) -> None:
         """Answer ``line`` by its deadline, counted from when it was read
-        whole, writing the answer included: the server's until the request
-        gives its own. A request answered and its deadline's error are one
-        or the other, never both (:class:`~.watchdog.Ticket`). A server
-        reserved for its end (:mod:`.registry`) answers nothing: it ends.
+        whole, writing the answer included: its own from the start when it
+        gives one, else the server's. A request answered and its deadline's
+        error are one or the other, never both
+        (:class:`~.watchdog.Ticket`). A server reserved for its end
+        (:mod:`.registry`) answers nothing: it ends.
         """
         registration = self.registration
         if registration is not None and not registration.admit():
@@ -260,13 +283,16 @@ class _Server:
         try:
             read: list[protocol.Request] = []
             limit = [self.deadline_s]
+            request, params, refused = self._request(line, read, limit)
             self._registered(busy=True)
             ticket = self.watchdog.arm(
-                line.received + self.deadline_s,
+                line.received + limit[0],
                 lambda respond: self._expired(channel, read, limit[0], respond),
             )
             try:
-                reply = self._reply(line, ticket, read, limit)
+                reply = refused
+                if request is not None:
+                    reply = self._reply(request, params, ticket)
                 # The entry names the session held before its answer is sent:
                 # a caller that read the answer finds the session in the
                 # registry.
@@ -281,16 +307,12 @@ class _Server:
                 registration.release()
         self._keep_budget()
 
-    def _reply(
-        self,
-        line: _Line,
-        ticket: Ticket,
-        read: list[protocol.Request],
-        limit: list[float],
-    ) -> bytes | None:
-        """``line``'s answer as it is sent, or ``None`` for none (a
-        notification's); ``read`` gets the request once it is read, and
-        ``limit`` its deadline.
+    def _request(
+        self, line: _Line, read: list[protocol.Request], limit: list[float]
+    ) -> tuple[protocol.Request | None, dict[str, Any], bytes | None]:
+        """The request ``line`` holds and its params, ``read`` given it and
+        ``limit`` its deadline; for a line that holds none, ``None`` and the
+        answer to send (``None`` for none: a notification's).
         """
         if line.data is None:
             too_long = RpcError(
@@ -298,25 +320,35 @@ class _Server:
                 f"A message is at most {protocol.MAX_MESSAGE_BYTES} bytes:"
                 " this line was dropped.",
             )
-            return protocol.encode(protocol.error(None, too_long))
+            return None, {}, protocol.encode(protocol.error(None, too_long))
         try:
             request = protocol.parse(line.data)
         except RpcError as found:
             if not found.answered:
-                return None
-            return protocol.encode(protocol.error(found.request_id, found))
+                return None, {}, None
+            return None, {}, protocol.encode(protocol.error(found.request_id, found))
         read.append(request)
         try:
             given, params = deadline(request.params)
         except RpcError as found:
             if not request.has_id:
-                return None
-            return protocol.encode(protocol.error(request.id, found))
+                return None, {}, None
+            return None, {}, protocol.encode(protocol.error(request.id, found))
         if given is not None:
             limit[0] = given
-        # The request read: its deadline, its own or the server's, from when
-        # its line was read whole; already past, it ends here, unrun.
-        self.watchdog.move(ticket, line.received + limit[0])
+        return request, params, None
+
+    def _reply(
+        self, request: protocol.Request, params: dict[str, Any], ticket: Ticket
+    ) -> bytes | None:
+        """``request``'s answer as it is sent, or ``None`` for none (a
+        notification's), by its deadline, ``ticket``.
+        """
+        # Already past its deadline as its turn comes, it ends here, unrun.
+        self.watchdog.move(ticket, ticket.at)
+        if ticket.state == "expired":
+            # The watchdog's thread is ending the process.
+            threading.Event().wait()
         # What the request publishes (a render's file) is published once it
         # has claimed its answer, so a deadline that passes first leaves it
         # unmade.
@@ -378,6 +410,44 @@ def _encoded(reply: dict[str, Any]) -> bytes:
             return protocol.encode(protocol.error(request_id, failed))
     plain = RpcError(protocol.INTERNAL_ERROR, "The answer is no JSON.")
     return protocol.encode(protocol.error(None, plain))
+
+
+#: What the reading thread hands the server beside a channel: a connection
+#: accepted, or its end, read after every line it sent.
+_CONNECTED = object()
+_ENDED = object()
+
+
+def _reading(
+    selector: selectors.BaseSelector,
+    arrivals: queue.SimpleQueue[tuple[_Channel | None, Any]],
+) -> None:
+    """Read the selector's channels as lines arrive, accepting connections
+    on its listening socket, into ``arrivals``: each line read whole with
+    when it was, and each channel's acceptance and end; ``(None, error)``
+    if reading fails.
+    """
+    try:
+        while True:
+            for key, _ in selector.select():
+                if isinstance(key.fileobj, socket.socket) and key.data is None:
+                    try:
+                        fd, events, channel = _accept(key.fileobj)
+                    except OSError:
+                        continue
+                    selector.register(fd, events, channel)
+                    arrivals.put((channel, _CONNECTED))
+                    continue
+                channel = key.data
+                lines = channel.lines()
+                if lines is None:
+                    selector.unregister(channel.fd)
+                    arrivals.put((channel, _ENDED))
+                    continue
+                for line in lines:
+                    arrivals.put((channel, line))
+    except BaseException as found:
+        arrivals.put((None, found))
 
 
 def _accept(listener: socket.socket) -> tuple[int, int, _Channel]:
