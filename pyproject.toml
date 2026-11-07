@@ -69,6 +69,7 @@ core = [
 [dependency-groups]
 dev = [
     "furo>=2024.8.6",
+    "jsonschema>=4.23",
     "matplotlib>=3.9.4",
     "myst-parser>=3.0.1",
     "pre-commit>=4.1.0",

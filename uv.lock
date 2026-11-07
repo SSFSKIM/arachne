@@ -104,6 +104,7 @@ typst = [
 [package.dev-dependencies]
 dev = [
     { name = "furo" },
+    { name = "jsonschema" },
     { name = "matplotlib" },
     { name = "myst-parser" },
     { name = "pre-commit" },
@@ -159,6 +160,7 @@ provides-extras = ["jupyterlab", "typst", "core"]
 [package.metadata.requires-dev]
 dev = [
     { name = "furo", specifier = ">=2024.8.6" },
+    { name = "jsonschema", specifier = ">=4.23" },
     { name = "matplotlib", specifier = ">=3.9.4" },
     { name = "myst-parser", specifier = ">=3.0.1" },
     { name = "pre-commit", specifier = ">=4.1.0" },
