@@ -30,8 +30,11 @@ from .conftest import gone, write
 #: second, as is the store's summary of its lint.
 SMALL = {"pixel_width": 96, "pixel_height": 54, "frame_rate": 15}
 
-#: What a render checked against a summary like its own says of its check.
-CHECKED = {"status": "checked", "reason": None}
+#: What a render checked against a summary like its own says of its check:
+#: against its session's own execution, or against the execution a lint in
+#: the session judged.
+CHECKED = {"status": "checked", "reason": None, "reference": "own"}
+LINTED = {"status": "checked", "reason": None, "reference": "lint"}
 
 CLIPPED = """\
     from arachne import RIGHT, Dot, Scene
@@ -142,6 +145,7 @@ def test_a_render_with_nothing_like_it_to_check_against_says_so(host, tmp_path):
     clip = _valid("render", found["clip"])
     assert clip["self_check"]["status"] == "unchecked"
     assert "frame rate and pixel aspect" in clip["self_check"]["reason"]
+    assert clip["self_check"]["reference"] is None
     assert "divergence" not in clip
 
 
@@ -152,7 +156,7 @@ def test_a_render_checks_itself_against_its_session_s_execution(host, tmp_path):
     out = tmp_path / "render.mp4"
     honest = session.call("render", out=str(out), deadline_s=120)
     assert "divergence" not in _valid("render", honest["render"])
-    assert honest["render"]["self_check"] == CHECKED
+    assert honest["render"]["self_check"] == LINTED
     assert _frames(out) == (15, 96, 54)
 
     # Plant, as the session's kept summary, an execution under another seed.
@@ -169,9 +173,27 @@ def test_a_render_checks_itself_against_its_session_s_execution(host, tmp_path):
     assert divergence["code"] == "replay.diverged"
     assert divergence["kind"] == "execution"
     assert divergence["play"] == 0
-    assert checked["render"]["self_check"] == CHECKED
+    assert checked["render"]["self_check"] == LINTED
     # A finding is an answer: the render was written all the same.
     assert _frames(out) == (15, 96, 54)
+
+
+def test_a_render_says_which_execution_it_was_checked_against(host, tmp_path):
+    path = write(tmp_path, "clipped.py", CLIPPED)
+    session = host.connect(path, "Clipped", SMALL)
+    out = str(tmp_path / "render.mp4")
+    # No lint: checked against the session's own execution.
+    assert session.call("render", out=out)["render"]["self_check"] == CHECKED
+    # A lint judged this very execution, at the render's frame rate and
+    # pixel aspect.
+    session.call("lint")
+    assert session.call("render", out=out)["render"]["self_check"] == LINTED
+    # The source changed and reloaded: the lint judged an earlier generation.
+    path.write_text(path.read_text().replace("run_time=1", "run_time=0.5"))
+    assert session.call("reload")["reloaded"]
+    rendered = session.call("render", out=out)
+    assert rendered["generation"] == 2
+    assert rendered["render"]["self_check"] == CHECKED
 
 
 def test_a_render_past_its_deadline_leaves_nothing_at_out_and_ends_the_server(
