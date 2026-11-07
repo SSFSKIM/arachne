@@ -440,6 +440,23 @@ def test_a_parameter_the_wire_cant_carry_is_refused_unsent(host, tmp_path):
     assert session.call("ping") == {"generation": 1}
 
 
+def test_a_config_the_wire_cant_carry_starts_no_server(host, tmp_path, monkeypatch):
+    started: list[object] = []
+    start = registry._start
+
+    def counted(*args):
+        started.append(args)
+        return start(*args)
+
+    monkeypatch.setattr(registry, "_start", counted)
+    path = write(tmp_path, "still.py", STILL)
+    for bad in (float("nan"), float("-inf"), object()):
+        with pytest.raises(registry.BadRequest, match="open"):
+            host.connect(path, "Still", {**SMALL, "frame_rate": bad})
+    assert started == []
+    assert registry.sessions(host.directory) == []
+
+
 def test_a_server_that_never_comes_to_serve_is_a_failed_start(
     host, tmp_path, monkeypatch
 ):
