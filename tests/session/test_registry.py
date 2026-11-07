@@ -351,6 +351,9 @@ def test_a_busy_server_is_never_ended_for_the_budget(host, tmp_path, monkeypatch
     # Over the budget beside a busy server: the only server it may end is itself.
     monkeypatch.setenv("ARACHNE_SESSION_MEMORY_MB", "1")
     newest = host.connect(write(tmp_path, "still.py", STILL), "Still", SMALL)
+    # It ends once its caller is done with it.
+    assert newest.call("ping") == {"generation": 1}
+    newest.close()
     assert gone(newest.pid)
     assert alive(slow.pid)
     with registry._reserved(host.directory, slow.pid, wait=0) as reserved:
@@ -360,11 +363,80 @@ def test_a_busy_server_is_never_ended_for_the_budget(host, tmp_path, monkeypatch
 def test_a_server_alone_over_the_budget_answers_then_ends(host, tmp_path, monkeypatch):
     monkeypatch.setenv("ARACHNE_SESSION_MEMORY_MB", "1")
     session = host.connect(write(tmp_path, "still.py", STILL), "Still", SMALL)
-    # It answered its open first, then ended, cleanly.
     assert session.opened["generation"] == 1
+    # The request its caller sent after the open is answered too: the server
+    # ends once no connection to it is open, and cleanly.
+    assert session.call("ping") == {"generation": 1}
+    assert alive(session.pid)
+    session.close()
     assert gone(session.pid)
     assert registry.sessions(host.directory) == []
     assert not list(host.directory.glob(f"{session.pid}.*"))
+
+
+#: A scene whose first render stalls, while a flag file beside it is there.
+STALLED_ONCE = """\
+    import time
+    from pathlib import Path
+
+    from arachne import Dot, Scene, config
+
+
+    class StalledOnce(Scene):
+        def construct(self):
+            self.add(Dot())
+            self.wait(0.5)
+            flag = Path(__file__).with_name("stall")
+            if not config.dry_run and flag.exists():
+                flag.unlink()
+                time.sleep(8)
+"""
+
+
+def test_a_request_queued_behind_another_counts_its_wait(host, tmp_path):
+    path = write(tmp_path, "stalled.py", STALLED_ONCE)
+    first = host.connect(path, "StalledOnce", SMALL)
+    second = registry.Connection(first.socket, first.pid, first.key)
+    flag = tmp_path / "stall"
+    flag.write_text("")
+    answered: list[dict] = []
+    rendering = threading.Thread(
+        target=lambda: answered.append(
+            first.call("render", out=str(tmp_path / "first.mp4"), deadline_s=60)
+        )
+    )
+    rendering.start()
+    assert _wait_until(lambda: not flag.exists())
+    # The second caller gives up behind the first render, and nothing it asked
+    # for is made after it did: its request ran past its deadline as it queued.
+    late = tmp_path / "late.mp4"
+    with pytest.raises(registry.ClientTimeout):
+        second.call("render", out=str(late), deadline_s=2)
+    second.close()
+    rendering.join(WAIT_S)
+    (first_answer,) = answered
+    assert first_answer["render"]["self_check"]["status"] == "checked"
+    assert gone(first.pid)
+    assert not late.exists()
+
+
+def test_a_busy_server_is_never_forgotten_by_those_who_look_for_it(host, tmp_path):
+    path = write(tmp_path, "stalled.py", STALLED_ONCE)
+    busy = host.connect(path, "StalledOnce", SMALL)
+    flag = tmp_path / "stall"
+    flag.write_text("")
+    rendering = threading.Thread(
+        target=_ignored,
+        args=(busy.call, "render"),
+        kwargs={"out": str(tmp_path / "busy.mp4"), "deadline_s": 60},
+        daemon=True,
+    )
+    rendering.start()
+    assert _wait_until(lambda: not flag.exists())
+    # More looks than a listening socket's backlog holds, all during one request.
+    for _ in range(300):
+        assert [entry.pid for entry in registry.sessions(host.directory)] == [busy.pid]
+    assert (host.directory / f"{busy.pid}.sock").exists()
 
 
 def test_a_caller_waits_its_turn_at_a_session_no_longer_than_its_deadline(

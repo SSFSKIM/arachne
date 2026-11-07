@@ -697,6 +697,36 @@ def test_a_request_ends_answered_or_expired_never_both():
     assert calls == [False, True]
 
 
+def test_a_request_is_kept_by_its_own_deadline_from_the_start():
+    from types import SimpleNamespace
+
+    from arachne.server.serve import _Server
+
+    # The server's own deadline is the shorter: a request giving its own is
+    # never kept by the server's, not even while its line is read.
+    server = _Server(600, 1.0, lambda: None)
+    armed: list[float] = []
+    arm = server.watchdog.arm
+
+    def recorded(at: float, expired: Any) -> Any:
+        armed.append(at)
+        return arm(at, expired)
+
+    server.watchdog.arm = recorded  # type: ignore[method-assign]
+    received = time.monotonic()
+    request = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "ping",
+        "params": {"deadline_s": 30},
+    }
+    sent: list[bytes] = []
+    line = SimpleNamespace(data=protocol.encode(request), received=received)
+    server.answer(SimpleNamespace(send=sent.append), line)  # type: ignore[arg-type]
+    assert armed == [received + 30]
+    assert json.loads(sent[0])["result"] == {"generation": None}
+
+
 def test_what_a_request_publishes_never_holds_its_deadline_back():
     watchdog = Watchdog()
     fired: list[bool] = []
