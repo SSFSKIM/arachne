@@ -95,6 +95,46 @@ def test_a_file_read_as_the_module_loaded_is_digested_for_freshness(tmp_path):
     assert kept == fresh
 
 
+def _opened_and_closed(params: dict) -> None:
+    """Open the session from the store and close it: its manifest kept anew."""
+    server = Dispatcher(Store())
+    server.handle("open", params)
+    server.handle("close", {})
+
+
+def test_an_answer_kept_before_a_load_time_file_changed_is_never_given_after(
+    tmp_path,
+):
+    path = _write(tmp_path, "scene.py", READS_AT_LOAD)
+    size = tmp_path / "size.txt"
+    size.write_text("1")
+    params = {"file": str(path), "scene": "Input", "config": SMALL}
+    _answered(params, "state_at", {"t": 0}, kept=True)
+
+    size.write_text("2")
+    # An open executes the edit and keeps its manifest; its execution's
+    # identity is the first one's, since load-time reads are not in it.
+    _opened_and_closed(params)
+    kept = _answered(params, "state_at", {"t": 0}, kept=True)
+    fresh = _answered(params, "state_at", {"t": 0}, kept=False)
+    assert kept == fresh
+
+
+def test_a_render_is_never_checked_against_a_lint_of_other_load_time_data(tmp_path):
+    path = _write(tmp_path, "scene.py", READS_AT_LOAD)
+    size = tmp_path / "size.txt"
+    size.write_text("1")
+    params = {"file": str(path), "scene": "Input", "config": SMALL}
+    _answered(params, "lint", {}, kept=True)
+
+    size.write_text("2")
+    _opened_and_closed(params)
+    out = tmp_path / "render.mp4"
+    rendered = _answered(params, "render", {"out": str(out)}, kept=True)["render"]
+    assert "divergence" not in rendered
+    assert rendered["self_check"]["status"] == "unchecked"
+
+
 def test_a_session_held_executes_again_when_a_file_read_at_load_changes(tmp_path):
     path = _write(tmp_path, "scene.py", READS_AT_LOAD)
     size = tmp_path / "size.txt"
