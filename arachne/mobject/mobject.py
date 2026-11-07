@@ -998,12 +998,18 @@ class Mobject:
         get and set generic attributes. For instance::
 
             >>> mob = Mobject()
+            >>> mob.foo = 1
             >>> mob.set_foo(0)
             Mobject
             >>> mob.get_foo()
             0
             >>> mob.foo
             0
+
+        A ``set_*`` method is made only for an attribute the mobject has, a
+        property included: ``mob.set_fo(0)`` raises :class:`AttributeError`
+        naming the nearest setters (deliberate break 9, a misspelt
+        synthesised setter raises, approved 2026-11-07).
 
         This compatibility layer does not interfere with any
         ``get_*`` or ``set_*`` methods that are explicitly
