@@ -184,17 +184,23 @@ class _Server:
         self._cleanup = cleanup
         self.registration = registration
 
-    def _registered(self, *, busy: bool) -> None:
-        """Keep the server's entry in the registry, if it has one, and, once
-        a request is answered, the host's memory budget. Neither can fail
-        the server.
+    def _registered(self, *, busy: bool, if_changed: bool = False) -> None:
+        """Keep the server's entry in the registry, if it has one (with
+        ``if_changed``, only when the session held or its generation changed
+        since it was last written), and, once a request is answered, the
+        host's memory budget. Neither can fail the server.
         """
         registration = self.registration
         if registration is None:
             return
         dispatcher = self.dispatcher
         with contextlib.suppress(Exception):
-            registration.write(dispatcher.held, dispatcher.generation, busy=busy)
+            registration.write(
+                dispatcher.held,
+                dispatcher.generation,
+                busy=busy,
+                if_changed=if_changed,
+            )
         if not busy and not dispatcher.ending:
             with contextlib.suppress(Exception):
                 registration.enforce()
@@ -242,6 +248,9 @@ class _Server:
         )
         try:
             reply = self._reply(line, ticket, read, limit)
+            # The entry names the session held before its answer is sent: a
+            # caller that read the answer finds the session in the registry.
+            self._registered(busy=True, if_changed=True)
             if reply is not None and self.watchdog.answering(ticket):
                 channel.send(reply)
         finally:

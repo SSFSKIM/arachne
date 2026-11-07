@@ -553,6 +553,8 @@ class Registration:
         # Where it started: a scene's code changing directory moves no key.
         self.cwd = _cwd()
         self._path = directory / f"{pid}.json"
+        #: The session's key and generation last written.
+        self._written: tuple[str | None, int | None] | None = None
 
     def write(
         self,
@@ -560,15 +562,21 @@ class Registration:
         generation: int | None,
         *,
         busy: bool,
+        if_changed: bool = False,
     ) -> None:
         """Write the entry: ``held``, the session's file, scene and config,
         at ``generation``; ``busy``, whether a request is being answered.
+        With ``if_changed``, only when the session's key or generation
+        changed since the entry was last written.
         """
         file, scene, config = held if held is not None else (None, None, None)
+        key = None if held is None else session_key(*held, self.cwd)
+        if if_changed and self._written == (key, generation):
+            return
         entry = Entry(
             pid=self.pid,
             socket=self.socket,
-            key=None if held is None else session_key(*held, self.cwd),
+            key=key,
             file=file,
             scene=scene,
             config=config,
@@ -587,6 +595,7 @@ class Registration:
             with contextlib.suppress(OSError):
                 os.unlink(temporary)
             raise
+        self._written = (key, generation)
 
     def remove(self) -> None:
         """Remove the entry, and the server's log."""
