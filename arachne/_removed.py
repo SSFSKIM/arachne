@@ -146,7 +146,8 @@ def no_setter(owner: str, method: str, nearest: Sequence[str]) -> str:
         f"{owner} has no method {method!r}, and no attribute {name!r} for it to set"
     )
     message += f": did you mean {' or '.join(nearest)}?" if nearest else "."
+    # No closing stop: Python's traceback appends its own suggestion.
     return (
         f"{message} To give the mobject an attribute of its own, assign it: "
-        f"mob.{name} = value."
+        f"mob.{name} = value"
     )
