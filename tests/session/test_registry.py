@@ -8,10 +8,13 @@ the store of answers, without executing its scene.
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import os
 import shutil
 import signal
+import socket
 import stat
+import subprocess
 import sys
 import threading
 import time
@@ -408,7 +411,8 @@ def test_a_request_queued_behind_another_counts_its_wait(host, tmp_path):
     rendering.start()
     assert _wait_until(lambda: not flag.exists())
     # The second caller gives up behind the first render, and nothing it asked
-    # for is made after it did: its request ran past its deadline as it queued.
+    # for is made after it did: its request ran past its deadline as it queued,
+    # unrun, and the server goes on.
     late = tmp_path / "late.mp4"
     with pytest.raises(registry.ClientTimeout):
         second.call("render", out=str(late), deadline_s=2)
@@ -416,8 +420,70 @@ def test_a_request_queued_behind_another_counts_its_wait(host, tmp_path):
     rendering.join(WAIT_S)
     (first_answer,) = answered
     assert first_answer["render"]["self_check"]["status"] == "checked"
-    assert gone(first.pid)
+    assert first.call("ping") == {"generation": 1}
     assert not late.exists()
+    # Still registered, and warm: the next caller finds the same server.
+    assert [entry.pid for entry in registry.sessions(host.directory)] == [first.pid]
+    assert host.connect(path, "StalledOnce", SMALL).pid == first.pid
+
+
+def test_a_request_expired_unrun_is_an_error_its_server_outlives(host):
+    # The server answers -32002 for a request that never ran, and says it goes
+    # on: its client raises at once rather than wait for it to end.
+    path = str(host.directory / "fake.sock")
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(path)
+    listener.listen()
+    expired = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "error": {
+            "code": protocol.DEADLINE_EXCEEDED,
+            "message": "ping ran past its deadline before its turn: it did not run.",
+            "data": {"method": "ping", "deadline_s": 1.0, "ends": False},
+        },
+    }
+
+    def answer() -> None:
+        connection, _ = listener.accept()
+        with connection:
+            connection.recv(65536)
+            connection.sendall(protocol.encode(expired))
+
+    answering = threading.Thread(target=answer, daemon=True)
+    answering.start()
+    connection = registry.Connection(path, os.getpid(), "")
+    try:
+        sent = time.monotonic()
+        with pytest.raises(registry.RemoteError) as raised:
+            connection.call("ping", deadline_s=1)
+        assert time.monotonic() - sent < protocol.ENDING_S
+    finally:
+        connection.close()
+        answering.join(WAIT_S)
+        listener.close()
+    assert raised.value.code == protocol.DEADLINE_EXCEEDED
+    assert raised.value.data["ends"] is False
+
+
+def test_a_server_is_told_alive_by_its_process_and_its_lock(tmp_path):
+    # A pid that has ended, though a process holds a lock at its name.
+    ended = subprocess.Popen([sys.executable, "-c", "pass"])
+    ended.wait()
+    held = os.open(tmp_path / f"{ended.pid}.alive", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        assert not registry._serving(tmp_path, ended.pid)
+    finally:
+        os.close(held)
+    # A reader looking at a live server's lock is no holder of it: two lookers
+    # at once both see what the server holds, not each other.
+    looking = os.open(tmp_path / f"{os.getpid()}.alive", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(looking, fcntl.LOCK_SH)
+        assert not registry._serving(tmp_path, os.getpid())
+    finally:
+        os.close(looking)
 
 
 def test_a_busy_server_is_never_forgotten_by_those_who_look_for_it(host, tmp_path):

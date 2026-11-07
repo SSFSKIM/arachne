@@ -488,6 +488,53 @@ def test_a_request_past_its_deadline_exits_3(tmp_path):
     assert "deadline" in found.stderr
 
 
+@pytest.mark.parametrize("asked", ["open", "lint"])
+def test_a_request_expired_unrun_exits_3_and_asks_no_server_again(
+    tmp_path, monkeypatch, asked
+):
+    # A server that answers -32002 for a request it never ran goes on: the
+    # command reports the deadline and exits 3, reaching for no other server.
+    expired = registry.RemoteError(
+        protocol.DEADLINE_EXCEEDED,
+        f"{asked} ran past its deadline of 1 s before its turn: it did not run.",
+        {"method": asked, "deadline_s": 1.0, "ends": False},
+    )
+    asks: list[str] = []
+
+    class Queued:
+        opened = {"generation": 1}
+
+        def __enter__(self) -> Queued:
+            return self
+
+        def __exit__(self, *found: object) -> None:
+            pass
+
+        def call(self, method: str, **params: Any) -> dict[str, Any]:
+            asks.append(method)
+            raise expired
+
+    def reached(*args: Any, **kwargs: Any) -> Queued:
+        asks.append("open")
+        if asked == "open":
+            raise expired
+        return Queued()
+
+    monkeypatch.setattr(registry, "connect_or_start", reached)
+    path = _write(tmp_path, "shown.py", SHOWN)
+    found = _invoke(
+        "lint",
+        str(path),
+        "Shown",
+        "--deadline-s",
+        "1",
+        *_session_args("server", tmp_path),
+    )
+    assert found.exit_code == 3, found.output
+    assert "before its turn" in found.stderr
+    assert asks == (["open"] if asked == "open" else ["open", "lint"])
+
+
 # frame
 
 
@@ -1040,7 +1087,7 @@ def test_session_render_once_past_its_deadline_exits_3_and_leaves_nothing(
     assert done.returncode == 3, (done.stdout, done.stderr)
     error = json.loads(done.stdout)
     assert error["code"] == protocol.DEADLINE_EXCEEDED
-    assert error["data"] == {"method": "render", "deadline_s": 5}
+    assert error["data"] == {"method": "render", "deadline_s": 5, "ends": True}
     assert "deadline" in done.stderr
     assert not out.exists()
     assert _left_beside(out) == []
