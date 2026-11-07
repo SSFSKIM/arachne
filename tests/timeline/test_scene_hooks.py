@@ -21,7 +21,6 @@ from pathlib import Path
 
 import pytest
 
-from arachne.errors import SceneError
 from arachne.timeline.clock import frames_in
 from arachne.timeline.reference import BRUTE_FORCE
 
@@ -154,10 +153,10 @@ def test_an_event_between_frames_calls_no_hook(session_of):
 def test_an_override_that_cannot_be_dispatched_is_refused_by_name(
     session_of, name, reason
 ):
-    with pytest.raises(SceneError) as caught:
+    with pytest.raises(Exception) as caught:
         session_of(name, HOOK_SCENES, frame_rate=FPS)
-    assert caught.value.cls == "SceneHookRefused", caught.value
-    assert caught.value.__cause__.reason == reason
+    assert type(caught.value).__name__ == "SceneHookRefused", caught.value
+    assert caught.value.reason == reason
 
 
 # (g) a run time the scene decides

@@ -1,16 +1,18 @@
 """A session's life in process: it notices an edit to its source or to a
 file its scene read, executes again as a new generation when reloaded,
-raises what its scene raised explained, lints what its scene armed, and
+raises what its scene raised as it was, its explanation on it, lints what its scene armed, and
 lets go of everything when closed.
 """
 
 from __future__ import annotations
 
+import builtins
 import gc
 import hashlib
 import os
 import sys
 import textwrap
+import traceback
 import weakref
 from fractions import Fraction
 from pathlib import Path
@@ -25,10 +27,15 @@ from arachne.lint.serialise import violation
 from arachne.lint.watch import hold_watch
 from arachne.session import Session
 from arachne.timeline import admission
+from arachne.timeline.hooks import SceneHookRefused
+from arachne.timeline.routes import RecordRefused
 from tests.lint import armed_scenes
+from tests.timeline import camera_scenes, hook_scenes
 
 SMALL = {"pixel_width": 96, "pixel_height": 54, "frame_rate": 4}
 ARMED = Path(armed_scenes.__file__)
+HOOK_SCENES = Path(hook_scenes.__file__)
+CAMERA_SCENES = Path(camera_scenes.__file__)
 
 
 @pytest.fixture
@@ -271,30 +278,66 @@ class RaisesAtOne(Scene):
         dot = Dot()
         self.add(dot)
         self.play(dot.animate.shift(RIGHT), run_time=1)
-        raise RuntimeError("raised at one second")  # @raise
+        dot.shfit(RIGHT)  # @raise
 """
 
 
-def test_a_scene_raising_at_one_second_raises_its_error_explained(scene_dir):
+def _innermost_line(error: BaseException, path: Path) -> int:
+    """The innermost line of ``path`` the error's traceback went through."""
+    found = [
+        frame.lineno
+        for frame in traceback.extract_tb(error.__traceback__)
+        if os.path.realpath(frame.filename) == os.path.realpath(path)
+    ]
+    return found[-1]
+
+
+def test_a_scene_s_error_is_raised_as_it_was_and_carries_its_explanation(scene_dir):
+    """The error is the scene's own, its type, message and traceback as
+    executing it gave them; its explanation rides on it, at the scene
+    clock's time, and its hint is a note a printed traceback shows.
+    """
     scene = _write(scene_dir, "scene.py", RAISES)
-    with pytest.raises(SceneError, match="raised at one second") as info:
+    with pytest.raises(AttributeError) as info:
         Session.open(scene, "RaisesAtOne", config=SMALL)
     error = info.value
-    assert error.cls == "RuntimeError"
-    assert error.message == "raised at one second"
-    assert error.t == 1
-    assert error.line == _line(scene, "raise")
-    assert error.path == str(scene)
-    assert isinstance(error.__cause__, RuntimeError)
+    assert type(error) is AttributeError
+    assert str(error) == "Dot object has no attribute 'shfit'"
+    assert _innermost_line(error, scene) == _line(scene, "raise")
+    explained = error.scene_error
+    assert isinstance(explained, SceneError)
+    assert explained.cls == "AttributeError"
+    assert explained.message == str(error)
+    assert explained.t == 1
+    assert explained.line == _line(scene, "raise")
+    assert explained.path == str(scene)
+    [hint] = [hint for hint in explained.hints if "shift" in hint]
+    printed = "".join(traceback.format_exception(error))
+    assert hint in printed
+    assert "t = 1 s" in printed
 
 
 def test_a_scene_that_raises_before_it_starts_has_no_time(scene_dir):
     scene = _write(scene_dir, "scene.py", "from arachne import Nothing  # @import\n")
-    with pytest.raises(SceneError) as info:
+    with pytest.raises(ImportError) as info:
         Session.open(scene, "S", config=SMALL)
-    assert info.value.cls == "ImportError"
-    assert info.value.t is None
-    assert info.value.line == _line(scene, "import")
+    assert info.value.scene_error.cls == "ImportError"
+    assert info.value.scene_error.t is None
+    assert info.value.scene_error.line == _line(scene, "import")
+
+
+def test_an_engine_refusal_raises_as_itself_with_its_reason():
+    with pytest.raises(SceneHookRefused) as info:
+        Session.open(HOOK_SCENES, "UpdateMobjectsTwice", config=SMALL)
+    assert info.value.reason == "hook.update_mobjects.twice"
+    assert info.value.scene_error.cls == "SceneHookRefused"
+
+
+def test_a_record_s_refusal_is_raised_as_itself(opened):
+    session = Session.open(CAMERA_SCENES, "Mapped", config=SMALL)
+    opened.append(session)
+    with pytest.raises(RecordRefused, match="mapping_func"):
+        session.frame(Fraction(1, 2))
 
 
 def test_a_reload_that_raises_keeps_the_generation_and_is_stale(scene_dir, opened):
@@ -307,13 +350,98 @@ def test_a_reload_that_raises_keeps_the_generation_and_is_stale(scene_dir, opene
             'raise RuntimeError("edited to raise")  # @last',
         )
     )
-    with pytest.raises(SceneError, match="edited to raise") as info:
+    with pytest.raises(RuntimeError) as info:
         session.reload()
-    assert info.value.t == 1
-    assert info.value.line == _line(scene, "last")
+    assert str(info.value) == "edited to raise"
+    assert info.value.scene_error.t == 1
+    assert info.value.scene_error.line == _line(scene, "last")
     assert session.record is record
     assert session.generation == 1
     assert session.stale
+
+
+def test_a_reload_that_exits_still_leaves_the_session_stale(scene_dir, opened):
+    """Whatever ends the new execution, the source changed: the record held
+    is of a program the file no longer is.
+    """
+    scene = _write(scene_dir, "scene.py", TWO_PLAYS)
+    session = _open(opened, scene, "TwoPlays")
+    record = session.record
+    scene.write_text(
+        TWO_PLAYS.replace(
+            "self.play(dot.animate.shift(LEFT), run_time=1)  # @last",
+            "raise SystemExit(3)  # @last",
+        )
+    )
+    with pytest.raises(SystemExit):
+        session.reload()
+    assert session.record is record
+    assert session.generation == 1
+    assert session.stale
+
+
+SECOND_RUN_RAISES = """\
+import builtins
+
+from arachne import *
+
+
+class SecondRunRaises(Scene):
+    def construct(self):
+        runs = builtins.__dict__.setdefault("_second_run_raises", [])
+        runs.append(1)
+        self.add(Dot())
+        self.wait(1)
+        if len(runs) > 1:
+            raise RuntimeError("raised the second time")
+"""
+
+
+def test_a_forced_reload_of_an_unchanged_source_that_raises_is_not_stale(
+    scene_dir, opened
+):
+    """A scene that raises on its second execution only: its source is
+    still what the record was made from.
+    """
+    scene = _write(scene_dir, "scene.py", SECOND_RUN_RAISES)
+    try:
+        session = _open(opened, scene, "SecondRunRaises")
+        with pytest.raises(RuntimeError, match="the second time"):
+            session.reload(force=True)
+        assert not session.stale
+        assert session.generation == 1
+    finally:
+        builtins.__dict__.pop("_second_run_raises", None)
+
+
+def test_a_reload_executes_the_file_opened_whatever_the_working_directory(
+    scene_dir, opened, monkeypatch
+):
+    """A file opened by a relative path is that file: a reload after the
+    working directory moved executes it, and names it as it was given.
+    """
+    scene = _write(scene_dir, "scene.py", TWO_PLAYS)
+    elsewhere = scene_dir.parent / "elsewhere"
+    elsewhere.mkdir()
+    # A file of the same name where the working directory moves to, which
+    # the reload must not execute.
+    _write(elsewhere, "scene.py", TWO_PLAYS.replace("TwoPlays", "Other"))
+    monkeypatch.chdir(scene_dir)
+    session = _open(opened, Path("scene.py"), "TwoPlays")
+    monkeypatch.chdir(elsewhere)
+    scene.write_text(TWO_PLAYS.replace("run_time=1)  # @last", "run_time=2)  # @last"))
+    assert session.changed()
+    assert session.reload()
+    assert session.record.duration == 3
+    scene.write_text(
+        TWO_PLAYS.replace(
+            "self.play(dot.animate.shift(LEFT), run_time=1)  # @last",
+            'raise RuntimeError("edited to raise")  # @last',
+        )
+    )
+    with pytest.raises(RuntimeError) as info:
+        session.reload()
+    assert info.value.scene_error.path == "scene.py"
 
 
 # What the scene armed -----------------------------------------------------------
@@ -441,3 +569,15 @@ def test_closing_lets_go_of_the_scene_its_record_and_its_module(scene_dir):
     assert record() is None
     # Closing again is nothing.
     session.close()
+
+
+def test_the_armed_rules_function_is_no_module_s_name():
+    """``arachne.lint.armed`` is the function: no submodule of that name
+    stands behind it for an import to find.
+    """
+    import importlib.util
+
+    import arachne.lint
+
+    assert callable(arachne.lint.armed)
+    assert importlib.util.find_spec("arachne.lint.armed") is None

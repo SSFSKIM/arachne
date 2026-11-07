@@ -13,7 +13,6 @@ from pathlib import Path
 
 import pytest
 
-from arachne.errors import SceneError
 from arachne.scene.scene import Scene
 from arachne.timeline import recorder, reference, routes, ticking
 from arachne.timeline.reference import (
@@ -85,9 +84,8 @@ def test_brute_force_is_not_ticking_everything(session_of):
 
 
 def test_a_recorder_takes_only_the_three_modes(session_of):
-    with pytest.raises(SceneError, match="brute_force") as info:
+    with pytest.raises(ValueError, match="brute_force"):
         session_of("Unchanged", Path(stepping_scenes.__file__), stepping="brute")
-    assert info.value.cls == "ValueError"
 
 
 # Independence

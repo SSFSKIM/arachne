@@ -18,7 +18,6 @@ import numpy as np
 import pytest
 
 from arachne import smooth
-from arachne.errors import SceneError
 from arachne.session import Session
 from arachne.timeline.fallback import visit_frames
 
@@ -248,9 +247,8 @@ def test_an_execution_that_raised_leaves_the_modules_and_path_as_they_were(
     # Whatever the engine imports the first time a scene runs, imported.
     _open(scene, "Passes").close()
     modules, path, meta_path = dict(sys.modules), list(sys.path), list(sys.meta_path)
-    with pytest.raises(SceneError, match="raised on purpose") as info:
+    with pytest.raises(ValueError, match="raised on purpose"):
         _open(scene, "Raises")
-    assert info.value.cls == "ValueError"
     assert sys.path == path
     assert sys.meta_path == meta_path
     assert set(sys.modules) == set(modules)
