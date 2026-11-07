@@ -115,7 +115,8 @@ class PixelContributors:
     the pixel's centre. ``decided`` is how the core ordered each pair of
     leaves, ``(a, b, rule)`` for indices ``a < b`` into ``leaves``: ``"paint"``
     (no sub-sample both cover: paint order), ``"tie"`` (one depth within the
-    key arithmetic's error wherever both cover: paint order), ``"depth"``, or
+    key arithmetic's error wherever both cover, or one registered plane: paint
+    order), ``"depth"``, or
     ``"majority"`` (their depths cross inside the pixel: the one in front at
     more of the sub-samples both cover). Cairo paints in paint order and
     reports none.

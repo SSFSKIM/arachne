@@ -738,7 +738,9 @@ pub fn depth_rule_both_ways() -> Probe {
 }
 
 /// A thick straight stroke rising through an opaque level sheet. CE draws all of it on top; the
-/// core hides the part below, the edge across the stroke antialiased.
+/// core hides the part below, the edge across the stroke antialiased. The core's stroke is a
+/// wire: each sample takes the depth of the centreline's point under it, so the cut follows the
+/// sheet's line at the centreline's depth, not where a strip of the stroke's plane would cross.
 pub fn stroke_crossing_surface() -> Probe {
     let view = view(WIDTH, HEIGHT, 60.0 * DEG, -35.0 * DEG);
     let lev = level(0.0, 4.0, 3.0);

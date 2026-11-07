@@ -549,6 +549,7 @@ fn a_meshs_opaque_depth_is_its_plane_at_each_sub_sample() {
             order: 0,
             sub: 0,
         }],
+        &mut arachne_core::depth::Registry::new(&view),
     );
     let fog = Fog::new(-1e9, 0.0, [1.0; 3], 1);
     render(w, h, &[&meshes, &fog], 2);
