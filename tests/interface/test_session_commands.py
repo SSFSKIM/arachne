@@ -31,8 +31,9 @@ from click.testing import CliRunner, Result
 from jsonschema import Draft202012Validator
 from PIL import Image
 
-from arachne import api_json
+from arachne import __version__, api_json
 from arachne.__main__ import main
+from arachne.cli import client
 from arachne.server import protocol
 
 #: How long a test waits for a server, in seconds.
@@ -201,7 +202,11 @@ def test_lint_formats_each_finding_for_reading(tmp_path):
     answer = json.loads(_invoke(*args, "--json").stdout)
     found = _invoke(*args)
     assert found.exit_code == 0, found.output
-    assert "FAIL" in found.stdout
+    header = found.stdout.splitlines()[0]
+    assert header.startswith("FAIL")
+    # duration_s is how long the lint took, not a span of the scene.
+    assert "completed in" in header
+    assert " over " not in header
     for violation in answer["lint_result"]["report"]["violations"]:
         assert violation["code"] in found.stdout
         assert violation["message"] in found.stdout
@@ -243,6 +248,103 @@ def test_a_caller_s_mistake_is_a_usage_error(tmp_path):
     not_json = _invoke(*args, "--exempt", "[nope")
     assert not_json.exit_code == 2
     assert "--exempt" in not_json.stderr
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_a_caller_s_mistake_under_json_prints_the_error_too(tmp_path, mode):
+    path = _write(tmp_path, "shown.py", SHOWN)
+    found = _invoke(
+        "lint",
+        str(path),
+        "Shown",
+        "--json",
+        "--t-range",
+        "1,0",
+        *_session_args(mode, tmp_path),
+    )
+    assert found.exit_code == 2, found.output
+    error = json.loads(found.stdout)
+    assert error["code"] == protocol.INVALID_PARAMS
+    assert "t_range" in error["message"]
+    assert "t_range" in found.stderr
+
+
+#: Command lines no session can be asked: a number that is not finite,
+#: as text or as JSON, each refused before any session is reached.
+NOT_FINITE = {
+    "t-range nan": ["lint", "--t-range", "nan,1"],
+    "t-range overflow": ["lint", "--t-range", "0,1e999"],
+    "fps nan": ["lint", "--fps", "nan"],
+    "fps overflow": ["lint", "--fps", "1e999"],
+    "deadline nan": ["lint", "--deadline-s", "nan"],
+    "config NaN": ["lint", "--config", '{"frame_rate": NaN}'],
+    "config overflow": ["lint", "--config", '{"frame_rate": 1e999}'],
+    "config Infinity": ["inspect", "--config", '{"frame_rate": -Infinity}'],
+    "exempt NaN": ["lint", "--exempt", "[NaN]"],
+    "exempt overflow": ["lint", "--exempt", "[[1e999, 2]]"],
+    "t nan": ["frame", "--t", "nan"],
+    "t overflow": ["frame", "--t", "1e999"],
+}
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("case", list(NOT_FINITE))
+def test_a_number_that_is_not_finite_is_a_usage_error(tmp_path, mode, case):
+    path = _write(tmp_path, "shown.py", SHOWN)
+    command, *options = NOT_FINITE[case]
+    once = ["--once"] if mode == "once" else []
+    small = ["--config", _config(tmp_path)]
+    found = _invoke(command, str(path), "Shown", *small, *options, *once, "--json")
+    assert found.exit_code == 2, found.output
+    assert found.exception is None or isinstance(found.exception, SystemExit)
+    assert "Error" in found.stderr
+    assert "Traceback" not in found.output
+
+
+@pytest.mark.parametrize("kind", ["remote", "in-process"])
+def test_a_request_that_is_no_json_is_the_caller_s_mistake(kind):
+    if kind == "in-process":
+        asked: client.Client = client.InProcess()
+        sent: list[bytes] = []
+    else:
+        read, write = os.pipe()
+        sent = []
+        asked = client.Remote(read, sent.append)
+    try:
+        for value in (float("nan"), float("inf")):
+            with pytest.raises(client.Failed) as failed:
+                asked.call("ping", {"value": value})
+            assert failed.value.code == protocol.INVALID_PARAMS
+            assert "JSON" in failed.value.error["message"]
+        # Nothing was sent.
+        assert sent == []
+    finally:
+        if kind == "remote":
+            os.close(read)
+            os.close(write)
+
+
+def test_once_closes_its_session_by_the_deadline_asked(tmp_path, monkeypatch):
+    calls: list[tuple[str, dict[str, Any]]] = []
+    call = client.InProcess.call
+
+    def recorded(self, method, params):
+        calls.append((method, dict(params)))
+        return call(self, method, params)
+
+    monkeypatch.setattr(client.InProcess, "call", recorded)
+    path = _write(tmp_path, "shown.py", SHOWN)
+    found = _invoke(
+        "inspect",
+        str(path),
+        "Shown",
+        "--deadline-s",
+        "42",
+        *_session_args("once", tmp_path),
+    )
+    assert found.exit_code == 0, found.output
+    assert [method for method, _ in calls] == ["open", "close"]
+    assert all(params["deadline_s"] == 42 for _, params in calls)
 
 
 @pytest.mark.parametrize("mode", MODES)
@@ -420,6 +522,23 @@ def test_session_serve_speaks_the_protocol_on_its_standard_streams():
         assert process.wait(WAIT_S) == 0
 
 
+@pytest.mark.parametrize(
+    "transports", [[], ["--stdio", "--socket"], ["--socket", "--stdio"]]
+)
+def test_session_serve_takes_exactly_one_transport(transports):
+    # In a process of its own: a serve that took one would serve.
+    found = subprocess.run(
+        [sys.executable, "-m", "arachne", "session", "serve", *transports],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=WAIT_S,
+        env={**os.environ, "ARACHNE_SESSION_IDLE_S": "2"},
+    )
+    assert found.returncode == 2, found.stderr
+    assert "exactly one of --stdio and --socket" in found.stderr
+
+
 def test_session_list_stop_and_stop_all(socket_dir):
     env = {"ARACHNE_SESSION_DIR": str(socket_dir)}
     with _started("-m", "arachne.server", "--socket", env=env) as start:
@@ -448,6 +567,37 @@ def test_session_list_stop_and_stop_all(socket_dir):
         assert second.wait(WAIT_S) == 0
         assert json.loads(_invoke("session", "list", "--json", env=env).stdout) == []
         assert "no sessions" in _invoke("session", "list", env=env).stdout
+
+
+# the splash
+
+
+def _splash() -> str:
+    return f"Arachne v{__version__}"
+
+
+def test_the_splash_still_comes_before_an_eager_exit():
+    found = _invoke("--show-splash", "--help")
+    assert found.exit_code == 0, found.output
+    assert found.stdout.startswith(_splash())
+    assert "Usage: arachne" in found.stdout
+    # Asked after --help, it comes too late, as it always has.
+    late = _invoke("--help", "--show-splash")
+    assert not late.stdout.startswith(_splash())
+    assert "Usage: arachne" in late.stdout
+
+
+@pytest.mark.parametrize("command", ["inspect", "frame", "lint", "session"])
+def test_no_splash_comes_before_the_session_commands(command):
+    found = _invoke("--show-splash", command, "--help")
+    assert found.exit_code == 0, found.output
+    assert _splash() not in found.stdout
+    assert f"Usage: arachne {command}" in found.stdout
+
+
+def test_the_splash_still_comes_before_the_other_commands():
+    found = _invoke("cfg", "--help")
+    assert found.stdout.startswith(_splash())
 
 
 # rendering
