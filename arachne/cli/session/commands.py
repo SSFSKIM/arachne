@@ -16,10 +16,10 @@ import click
 import cloup
 
 from ...server import protocol, registry
-from ..asking import EXIT_FAILED, finite
+from ..asking import EXIT_FAILED, RESIDENT, finite
 
 
-@cloup.group()
+@cloup.group(epilog=RESIDENT)
 def session() -> None:
     """Serve a scene's session, and list and stop the servers running."""
 
@@ -59,12 +59,15 @@ def serve(stdio: bool, socket: bool, deadline_s: float | None) -> None:
 
 @contextlib.contextmanager
 def _registry() -> Iterator[None]:
-    """A registry that can't be had (its directory too long for a socket,
-    another user's, or not to be made) ends the command, status 3.
+    """A registry no server can serve in (its directory too long for a
+    socket, another user's, or not to be made) is a usage error, status 2;
+    a server that could not be reached ends the command, status 3.
     """
     try:
         yield
-    except (OSError, ValueError) as error:
+    except registry.BadRequest as error:
+        raise click.UsageError(str(error)) from None
+    except registry.ClientError as error:
         click.echo(f"arachne: {error}", err=True)
         raise click.exceptions.Exit(EXIT_FAILED) from None
 
