@@ -72,15 +72,38 @@ class Watchdog:
         first, and the request must answer nothing. A request whose deadline
         passed before it claimed its answer expired, whether or not the
         watchdog's thread has seen it yet: it is expired now, on the calling
-        thread. Its deadline still holds while the answer is written.
+        thread. Its deadline still holds while the answer is written. A
+        request that claimed its answer already, to publish what it made
+        (:meth:`claim`), has it.
         """
         with self._changed:
+            if ticket.state == "answering":
+                return True
             if ticket.state != "running":
                 return False
             if ticket.at > time.monotonic():
                 ticket.state = "answering"
                 return True
         self.expire(ticket)
+        return False
+
+    def claim(self, ticket: Ticket, action: Callable[[], object]) -> bool:
+        """Claim ``ticket``'s answer and run ``action`` under the claim, which
+        publishes what the request made (a render's file renamed onto the one
+        its caller named): false, running nothing, when the request expired
+        first, so that what a request publishes and its deadline's error are
+        one or the other, never both. ``action`` runs while the deadline can't
+        pass, so it must be brief. From then on the request is answering, as
+        :meth:`answering` makes it.
+        """
+        with self._changed:
+            if ticket.state == "running" and ticket.at > time.monotonic():
+                action()
+                ticket.state = "answering"
+                return True
+            late = ticket.state == "running"
+        if late:
+            self.expire(ticket)
         return False
 
     def end(self, ticket: Ticket) -> None:

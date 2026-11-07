@@ -35,7 +35,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from .. import api_json
 from ..constants import QUALITIES
@@ -46,6 +46,7 @@ from ..lint.instants import DEFAULT as LINT_AT
 from ..session import Session
 from ..timeline.execution import Incomparable
 from ..timeline.hooks import SceneHookRefused
+from ..timeline.inputs import Inputs, engine_dirs, file_digests, source_files
 from ..timeline.routes import RecordRefused, Unavailable
 from . import render as rendering
 from .protocol import (
@@ -60,7 +61,7 @@ from .protocol import (
     TRACEBACK_FRAMES,
     RpcError,
 )
-from .store import Manifest, Store, identity_form, summary_key
+from .store import Manifest, Store, identity_form, settings_of, summary_key
 
 _REQUIRED: Any = object()
 
@@ -273,6 +274,16 @@ class Dispatcher:
         self._summarised: str | None = None
         #: The directory a render writes into while it runs.
         self._scratch: Path | None = None
+        #: The files the session's code read as its execution ran, as its
+        #: modules loaded too: ``(path relative to the scene's directory,
+        #: sha256)``. A file read only as a module loads is no input of the
+        #: record's identity, but answers depend on it all the same.
+        self._loaded: tuple[tuple[str, str], ...] = ()
+        #: Claims the answer of the request being answered for ``action``,
+        #: which publishes what it made (a render's file), and runs it under
+        #: the claim: false when the request's deadline passed first, and
+        #: nothing ran. ``None`` outside a server, where nothing expires.
+        self.publish: Callable[[Callable[[], None]], bool] | None = None
         #: Whether a request asked the server to end, once it answered.
         self.ending = False
 
@@ -335,21 +346,45 @@ class Dispatcher:
         """Execute the session opened from the store, as its next generation
         when ``next_generation``.
         """
-        assert self.stored is not None
-        session = Session.open(
-            self._named, self.stored.scene, config=self._config or None
+        stored = self.stored
+        assert stored is not None
+        session, self._loaded = _watched(
+            stored.file,
+            self._config,
+            lambda: Session.open(
+                self._named, stored.scene, config=self._config or None
+            ),
         )
         session.generation = self._stored_generation + int(next_generation)
         self.session, self.stored = session, None
         self._executed()
 
     def _catch_up(self) -> None:
-        """Execute the session again when its files changed."""
+        """Execute the session again when its files changed: its source,
+        the files its execution read, or a file its code read as its modules
+        loaded.
+        """
         if self.session is not None:
-            if self.session.reload():
-                self._executed()
+            self.reload(force=False)
         elif self.stored is not None and not self.stored.fresh():
             self._execute(next_generation=True)
+
+    def reload(self, *, force: bool) -> bool:
+        """Execute the executed session again when its files changed, or
+        with ``force`` (:meth:`Session.reload`), a file its code read as its
+        modules loaded among them: whether it did.
+        """
+        session = self.session
+        assert session is not None
+        assert self._opened is not None
+        force = force or _changed(self._opened[0], self._loaded)
+        reloaded, loaded = _watched(
+            self._opened[0], self._config, lambda: session.reload(force)
+        )
+        if reloaded:
+            self._loaded = loaded
+            self._executed()
+        return reloaded
 
     def _executed(self, record: dict[str, Any] | None = None) -> None:
         """Keep the manifest of the execution the session now holds,
@@ -363,7 +398,7 @@ class Dispatcher:
             record = api_json.inspect(self.session)
         with contextlib.suppress(OSError):
             self._manifest = self.store.keep_manifest(
-                file, scene, self._config, self.session, record
+                file, scene, self._config, self.session, record, self._loaded
             )
 
     def record(self) -> dict[str, Any]:
@@ -469,6 +504,7 @@ class Dispatcher:
             out=out,
             reference=reference,
             scratch=self._scratching,
+            publish=self._published,
         )
 
     def _scratching(self, directory: Path | None) -> None:
@@ -478,6 +514,50 @@ class Dispatcher:
         """Remove what a render running now has written: the server ends."""
         if self._scratch is not None:
             shutil.rmtree(self._scratch, ignore_errors=True)
+
+    def _published(self, action: Callable[[], None]) -> bool:
+        """Run ``action``, which publishes a render, under the request's
+        claim of its answer (:attr:`publish`): false, running nothing, when
+        its deadline passed first.
+        """
+        if self.publish is None:
+            action()
+            return True
+        return self.publish(action)
+
+
+_T = TypeVar("_T")
+
+
+def _watched(
+    file: str, config: dict[str, Any], run: Callable[[], _T]
+) -> tuple[_T, tuple[tuple[str, str], ...]]:
+    """``run()``, an execution of the scene file ``file`` (a real path) under
+    ``config``, and every file the scene's code read meanwhile, as its
+    modules loaded too, its source aside: ``(path relative to the scene's
+    directory, sha256)``, by path (:class:`~arachne.timeline.inputs.Inputs`).
+    """
+    watcher = Inputs(os.path.dirname(file), engine_dirs(settings_of(config)))
+    watcher.start()
+    try:
+        found = run()
+    finally:
+        watcher.stop()
+    return found, watcher.input_digests(frozenset(source_files(file)))
+
+
+def _changed(file: str, read: tuple[tuple[str, str], ...]) -> bool:
+    """Whether a file of ``read`` (as :func:`_watched` gives them, of the
+    scene file ``file``) holds anything else now, or is gone.
+    """
+    scene_dir = os.path.dirname(file)
+    try:
+        return any(
+            file_digests([os.path.join(scene_dir, path)], scene_dir)[0][1] != digest
+            for path, digest in read
+        )
+    except OSError:
+        return True
 
 
 #: The engine's deliberate refusals, answered as ``-32001`` with their type:
@@ -576,7 +656,9 @@ def _open(server: Dispatcher, params: Params) -> dict[str, Any]:
             server.stored = manifest
             server._stored_generation = 1
         else:
-            server.session = Session.open(file, scene, config=config or None)
+            server.session, server._loaded = _watched(
+                real, config, lambda: Session.open(file, scene, config=config or None)
+            )
         server._opened, server._named, server._config = opened, file, config
         if server.session is None:
             return server.answer(record=server.record())
@@ -717,10 +799,7 @@ def _reload(server: Dispatcher, params: Params) -> dict[str, Any]:
         if changed or force:
             server._execute(next_generation=True)
         return server.answer(reloaded=changed or force)
-    reloaded = server.session.reload(force)
-    if reloaded:
-        server._executed()
-    return server.answer(reloaded=reloaded)
+    return server.answer(reloaded=server.reload(force=force))
 
 
 def _close(server: Dispatcher, params: Params) -> dict[str, Any]:
@@ -740,7 +819,7 @@ def _out(name: str, value: Any) -> Path:
 
 
 def _plays(name: str, value: Any) -> tuple[int, int]:
-    """Plays by index, in order, one after another: the first and last."""
+    """Plays by index, a contiguous ascending run: the first and last."""
     if (
         not isinstance(value, list)
         or not value
@@ -750,8 +829,8 @@ def _plays(name: str, value: Any) -> tuple[int, int]:
     first = value[0]
     if first < 0 or value != list(range(first, first + len(value))):
         raise _invalid(
-            f"{name} is plays one after another, in order, as a render takes"
-            f" them: {value} is not."
+            f"{name} is a contiguous ascending run of play indices, as a render"
+            f" takes them: {value} is not."
         )
     return first, value[-1]
 
