@@ -13,7 +13,9 @@ A server is one process holding at most one session::
 
 It speaks JSON-RPC 2.0 on its standard input and output (``--stdio``), or
 on any number of connections to a Unix socket (``--socket``). Requests are
-answered one at a time, in the order read, whichever connection sent them.
+answered one at a time, in the order read, whichever connection sent them;
+lines are read as they arrive, and connections accepted, while a request is
+answered.
 What it reads from its environment:
 
 - ``ARACHNE_SESSION_DIR``: where the socket goes, as ``<pid>.sock``; made,
@@ -282,8 +284,10 @@ Deadlines
 Every request has a deadline: its ``deadline_s`` (seconds above 0, at most
 a week) when it gives one, longer or shorter than the server's; else the
 server's, ``--deadline-s``, else ``ARACHNE_SESSION_DEADLINE_S``, else 600.
-Its clock starts when the request's line has been read whole, so a request
-queued behind another counts its wait, and it runs to its answer's
+Its clock starts when the request's line has been read whole, which the
+server does as the line arrives, whatever it is answering, so a request
+queued behind another counts its wait from when it was sent, and it runs to
+its answer's
 writing, so a client that stopped reading holds the server no longer than a
 scene that never ends. A thread of its own keeps it (:mod:`.watchdog`):
 whatever the scene's code is doing, a request past its deadline is answered
@@ -318,8 +322,10 @@ Under ``ARACHNE_SESSION_MEMORY_MB``, such a server, once it has answered,
 ends the least recently used of the directory's other servers it can reserve
 while together they hold more than that: it asks each to ``shutdown``, then
 kills it if it has not ended within a few seconds (:mod:`.registry`). Still
-over the budget with no other server to end, it ends itself, its answer
-sent, with status 0. Neither this nor the idle end waits on a client.
+over the budget with no other server to end, it ends itself, with status 0,
+once no connection to it is open: every request a caller sends on a
+connection it holds is answered first. Neither this nor the idle end waits
+on a client that has closed its connection.
 """
 
 from __future__ import annotations

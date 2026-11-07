@@ -9,9 +9,12 @@ runs in, and their key), its generation,
 the memory it has held at most (``rss_mb``), when it last answered, and
 whether it is answering now. A server writes its entry as it starts
 serving, keeps it as it answers, and removes it, with its socket, as it
-ends. An entry whose process is gone, or whose socket no longer listens (a
-server killed, its pid since reused), is swept by whoever reads the
-registry next, with its socket; so is a socket left with no entry.
+ends. Whether a server lives is told by ``<pid>.alive``, a lock it holds
+from its start to its end, which no process holds after its own end: an
+entry whose server no longer holds it (a server killed, its pid since
+reused) is swept by whoever reads the registry next, with its socket; so
+is a socket left with no entry. Reading the registry never connects to a
+server, so no number of readers fills a busy server's backlog.
 
 :func:`connect_or_start` finds the server holding a session, or starts one
 (detached, so that no caller's end ends it), and opens the session there:
@@ -37,8 +40,8 @@ Under ``ARACHNE_SESSION_MEMORY_MB``, every server, once it has answered,
 ends the least recently used of the other servers of its directory it can
 reserve, while together they hold more than that many megabytes: it asks
 each to shut down, and kills it if it has not ended within a second or two.
-Still over the budget once no other server is left to end, it ends itself,
-its answer sent. Neither this nor a server's idle end waits for a caller.
+Still over the budget once no other server is left to end, it ends itself
+once no connection to it is open, every request sent on one answered. Neither this nor a server's idle end waits for a caller.
 Servers of two directories never see each other.
 
 What a client here raises is a :class:`ClientError`.
@@ -268,24 +271,50 @@ def _alive(pid: int) -> bool:
     return True
 
 
-def _listening(path: str) -> bool:
-    """Whether a server listens on the socket ``path``."""
-    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    probe.settimeout(1.0)
+def _serving(directory: Path, pid: int) -> bool:
+    """Whether the server ``pid`` of ``directory`` lives: whether a process
+    holds its ``<pid>.alive`` lock, which the server holds from its start
+    to its end.
+    """
     try:
-        probe.connect(path)
+        handle = os.open(directory / f"{pid}.alive", os.O_RDWR)
     except OSError:
         return False
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
     finally:
-        probe.close()
-    return True
+        os.close(handle)
+    return False
+
+
+def _hold_alive(directory: Path, pid: int) -> int:
+    """Take the server ``pid``'s ``<pid>.alive`` lock, held as long as the
+    process lives: made locked, then named, so that no reader finds it
+    unheld while it serves.
+    """
+    handle, made = tempfile.mkstemp(prefix=".alive-", dir=directory)
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        os.replace(made, directory / f"{pid}.alive")
+    except BaseException:
+        os.close(handle)
+        with contextlib.suppress(OSError):
+            os.unlink(made)
+        raise
+    return handle
+
+
+#: What a server leaves in the registry's directory, beside its pid.
+_LEFT = (".json", ".sock", ".log", ".lock", ".alive")
 
 
 def _forget(directory: Path, pid: int) -> None:
     """Remove what a server left in ``directory``: its entry, socket, log
-    and lock.
+    and locks.
     """
-    for suffix in (".json", ".sock", ".log", ".lock"):
+    for suffix in _LEFT:
         with contextlib.suppress(OSError):
             (directory / f"{pid}{suffix}").unlink()
 
@@ -314,19 +343,18 @@ def _swept(directory: Path) -> list[Entry]:
         pid = _pid_of(path)
         if pid is None:
             continue
-        entry = _read(path)
-        if entry is None or not _alive(pid) or not _listening(entry.socket):
+        if not _serving(directory, pid):
             _forget(directory, pid)
             continue
-        entries.append(entry)
-    left = [
-        path
-        for suffix in (".sock", ".log", ".lock")
-        for path in directory.glob(f"*{suffix}")
-    ]
+        entry = _read(path)
+        if entry is not None:
+            entries.append(entry)
+    left = [path for suffix in _LEFT[1:] for path in directory.glob(f"*{suffix}")]
     for path in left:
         pid = _pid_of(path)
-        if pid is None or (directory / f"{pid}.json").exists() or _alive(pid):
+        if pid is None or (directory / f"{pid}.json").exists():
+            continue
+        if _serving(directory, pid):
             continue
         with contextlib.suppress(OSError):
             path.unlink()
@@ -753,6 +781,8 @@ class Registration:
         self._path = directory / f"{pid}.json"
         #: The session's key and generation last written.
         self._written: tuple[str | None, int | None] | None = None
+        # That the server lives, to whoever reads the registry, till it ends.
+        self._alive = _hold_alive(directory, pid)
         # The server's reservation for its end: its own while it answers.
         self._lock_path = directory / f"{pid}.lock"
         self._lock = os.open(self._lock_path, os.O_RDWR | os.O_CREAT, 0o600)
@@ -814,8 +844,15 @@ class Registration:
         self._written = (key, generation)
 
     def remove(self) -> None:
-        """Remove the entry, the server's log and its lock."""
-        for path in (self._path, self.directory / f"{self.pid}.log", self._lock_path):
+        """Remove the entry, the server's log and its locks (the process
+        holds its ``.alive`` lock to its exit all the same).
+        """
+        for path in (
+            self._path,
+            self.directory / f"{self.pid}.log",
+            self._lock_path,
+            self.directory / f"{self.pid}.alive",
+        ):
             with contextlib.suppress(OSError):
                 path.unlink()
 
