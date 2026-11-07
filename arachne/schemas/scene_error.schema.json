@@ -14,6 +14,7 @@
     "t_exact",
     "frames",
     "raised_in",
+    "raised_by",
     "hints",
     "report"
   ],
@@ -39,6 +40,10 @@
     "raised_in": {
       "description": "The innermost engine frame, when the engine raised it.",
       "anyOf": [{"$ref": "#/$defs/trace_frame"}, {"type": "null"}]
+    },
+    "raised_by": {
+      "description": "Whose code the innermost frame of the traceback is: the scene's own, or the engine's (Arachne, the standard library or an installed package). Either way the error went through the scene's code; that is not by itself the scene's fault.",
+      "enum": ["scene", "engine"]
     },
     "hints": {
       "description": "What to write instead.",

@@ -269,6 +269,7 @@ def scene_error(error: SceneError) -> dict[str, Any]:
         **_timed("t", None if error.t is None else Fraction(error.t)),
         "frames": [_trace_frame(each) for each in error.frames],
         "raised_in": None if raised_in is None else _trace_frame(raised_in),
+        "raised_by": error.raised_by,
         "hints": list(error.hints),
         "report": error.report(),
     }

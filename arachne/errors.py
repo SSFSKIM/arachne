@@ -7,8 +7,9 @@ line, the last frames of the scene's own code, where inside the engine it
 was raised, and hints for a name the scene got wrong: a name from earlier
 Manim, one Arachne removed, ``manim`` itself, or a misspelling, with the
 nearest names. A session raises what its scene raised as it was, and puts
-its explanation on it as ``scene_error``
-(:meth:`arachne.session.Session.open`).
+its explanation on it as ``scene_error`` (:func:`explain_on`, at every
+execution's boundary: :meth:`arachne.session.Session.open`, its reloads and
+its forward runs), whatever the error does when read.
 
 Which frames are the scene's follows :mod:`arachne.timeline.source`:
 anything outside this package, the standard library and installed
@@ -18,9 +19,10 @@ hints follow ManimGX's ``cli/scenes.py``, credited in ``NOTICE.md``.
 
 from __future__ import annotations
 
-__all__ = ["Frame", "SceneError", "explain"]
+__all__ = ["Frame", "SceneError", "explain", "explain_on", "message_of"]
 
 import builtins
+import contextlib
 import difflib
 import linecache
 import os
@@ -31,7 +33,7 @@ from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
 from types import FrameType, ModuleType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import arachne
 from arachne._removed import OPENGL, OPENGL_PREFIX, REMOVED, RENAMED, Removal
@@ -74,7 +76,10 @@ class SceneError(Exception):
     ``t`` is the scene clock's time when it was raised, when known.
     ``frames`` are the last :data:`FRAMES` frames of the scene's own code,
     innermost last; ``raised_in`` is the innermost engine frame when the
-    error was raised inside the engine. ``hints`` say what to write instead.
+    error was raised inside the engine. ``raised_by`` says whose code the
+    innermost frame of the traceback is: ``"scene"``'s own, or ``"engine"``
+    (Arachne, the standard library or an installed package, all that is
+    not the scene's). ``hints`` say what to write instead.
     """
 
     cls: str
@@ -84,6 +89,7 @@ class SceneError(Exception):
     t: Fraction | float | None
     frames: tuple[Frame, ...]
     raised_in: Frame | None
+    raised_by: Literal["scene", "engine"]
     hints: tuple[str, ...]
 
     def report(self) -> str:
@@ -139,23 +145,82 @@ def explain(
         None,
     )
     raised_in = _raised_in(trace)
+    raised_by: Literal["scene", "engine"] = (
+        "scene" if trace and not _internal(_file(trace[-1][0])) else "engine"
+    )
     if isinstance(error, SyntaxError):
         # Compiling the source raised it: its place is the error's own.
         raised_in = None
         if error.filename and error.lineno and not _internal(error.filename):
             frames.append(_frame(error.filename, error.lineno, "<module>", base_dir))
+            raised_by = "scene"
             if _is(error.filename, scene_path):
                 line = error.lineno
+    try:
+        hints = tuple(_hints(error, trace))
+    except BaseException:
+        # An error whose message or attributes can't be read gets none.
+        hints = ()
     return SceneError(
         cls=type(error).__name__,
-        message=str(error),
+        message=message_of(error),
         line=line,
         path=os.fspath(scene_file),
         t=t,
         frames=tuple(frames[-FRAMES:]),
         raised_in=raised_in,
-        hints=tuple(_hints(error, trace)),
+        raised_by=raised_by,
+        hints=hints,
     )
+
+
+def message_of(error: BaseException) -> str:
+    """``error``'s message, ``str(error)``; for an error whose ``__str__``
+    raises (whatever it raises, an exit too) or gives no string, a message
+    saying so.
+    """
+    try:
+        message = str(error)
+    except BaseException:
+        message = None
+    if not isinstance(message, str):
+        return f"(the {type(error).__name__}'s message could not be read)"
+    return message
+
+
+def explain_on(
+    error: BaseException, scene_file: StrPath, t: Fraction | float | None
+) -> None:
+    """Put ``error``'s explanation on it, as ``scene_error`` (:func:`explain`,
+    ``scene_file`` as the caller named it, at the scene clock's ``t``), and
+    its time and hints as a note, which a printed traceback shows: the error
+    is otherwise as the scene raised it, so that what reads its type,
+    message or traceback reads the scene's own. Whatever the error does when
+    read, it is explained: an explanation that fails is the error's class
+    and its message as far as it can be read, and a note it refuses is left
+    off.
+    """
+    try:
+        explained = explain(error, scene_file, t=t)
+    except BaseException:
+        explained = SceneError(
+            cls=type(error).__name__,
+            message=message_of(error),
+            line=None,
+            path=os.fspath(scene_file),
+            t=t,
+            frames=(),
+            raised_in=None,
+            raised_by="engine",
+            hints=(),
+        )
+    # Past any __setattr__ the error's class defines.
+    vars(error)["scene_error"] = explained
+    note = [f"at t = {float(t):g} s on the scene's clock"] if t is not None else []
+    note.extend(f"hint: {hint}" for hint in explained.hints)
+    if note:
+        with contextlib.suppress(BaseException):
+            error.add_note("\n".join(note))
 
 
 def _file(frame: FrameType) -> str:
