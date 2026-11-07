@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Arachne render",
-  "description": "A render or a clip written: the media file, the plays its execution played, whether that execution was checked against the execution summary of the session's latest lint, and where it differs from it, when it does. A field added is a minor version, a field changed or removed a major one.",
+  "description": "A render or a clip written: the media file, the plays its execution played, whether that execution was checked against the summary of the session's execution, and where it differs from it, when it does. A field added is a minor version, a field changed or removed a major one.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -26,7 +26,7 @@
       }
     },
     "self_check": {
-      "description": "Whether the render's execution was checked against the summary of a lint of the same execution at its frame rate and pixel aspect: unchecked, with why, when there was none, so that no divergence then is no finding.",
+      "description": "Whether the render's execution was checked against the summary of the session's execution at its frame rate and pixel aspect: unchecked, with why, when there was none, so that no divergence then is no finding.",
       "type": "object",
       "additionalProperties": false,
       "required": [

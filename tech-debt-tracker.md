@@ -325,13 +325,13 @@ lifted.
 
 ## The session server (`arachne/server/`)
 
-- **A render at another pixel aspect than the lint's is not checked.** The camera keeps its configured
+- **A render at another pixel aspect than its session's execution is not checked.** The camera keeps its configured
   `frame_width` and derives `frame_height` from the pixel aspect (`Camera.resize_frame_shape`, fixed dimension
   0): at 854x480 the frame is 7.99375 high against 16:9's 8, so the execution summaries differ in
   `camera.frame_height` (by 0.00625) while mobject geometry, placed by the configuration's frame, does not. A
-  render or clip at a quality whose aspect differs from every lint's answers `self_check: unchecked`
+  render or clip at a quality whose aspect differs from every execution kept answers `self_check: unchecked`
   (`tests/session/test_render.py::test_a_render_with_nothing_like_it_to_check_against_says_so`). Direction:
-  compare mobject states in scene units, leaving the camera's frame out, so one lint checks every quality.
+  compare mobject states in scene units, leaving the camera's frame out, so one execution checks every quality.
 - **The store has no disk budget.** `arachne/server/store.py` keeps every manifest, answer and summary it
   writes, under each engine fingerprint it has seen, and never prunes; an engine upgraded leaves the old
   fingerprint's directory behind whole. Direction: a size budget with least-recently-read eviction, and old
@@ -340,7 +340,7 @@ lifted.
   `tests/session/test_server.py::test_a_client_that_stops_reading_cannot_hold_the_server` (100 `inspect`s
   sent, none read, on stdio) failed once on a heavily loaded machine and has not failed since; the cause is
   not known. Direction: if it recurs, keep the server's standard error and the exit timing of that run.
-- **A lint summary can go unfound when a forward run read new files.** A summary's key takes every file the
+- **An execution summary can go unfound when a forward run read new files.** A summary's key takes every file the
   execution has read (`store.dependency_reads`), which grows when a forward run reads a file the first execution
   did not; a session opened from a manifest kept before then looks under the shorter list, and its render answers
   `self_check: unchecked` (the safe direction). Direction: key summaries by the reads as the manifest keeps them.
