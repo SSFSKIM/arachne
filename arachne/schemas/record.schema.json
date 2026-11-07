@@ -1,0 +1,230 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Arachne record",
+  "description": "A session's record: its timeline, the identity of the execution that made it, where each mobject was made, and the divergences found. It holds no samples, values or content keys. A field added is a minor version, a field changed or removed a major one.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "engine_version",
+    "scene_file",
+    "scene_class",
+    "grid",
+    "grid_exact",
+    "target_resolution",
+    "duration",
+    "duration_exact",
+    "identity",
+    "generation",
+    "stale",
+    "plays",
+    "markers",
+    "mobjects",
+    "divergences",
+    "probe"
+  ],
+  "properties": {
+    "schema_version": {"$ref": "#/$defs/schema_version"},
+    "engine_version": {"type": "string"},
+    "scene_file": {"type": ["string", "null"]},
+    "scene_class": {"type": "string"},
+    "grid": {
+      "description": "The frame rate whose instants the record keeps; null when it keeps every evaluated instant.",
+      "type": ["number", "null"]
+    },
+    "grid_exact": {"$ref": "#/$defs/exact_or_null"},
+    "target_resolution": {"$ref": "#/$defs/resolution"},
+    "duration": {"$ref": "#/$defs/time"},
+    "duration_exact": {"$ref": "#/$defs/exact"},
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_digest", "input_digests", "seed"],
+      "properties": {
+        "source_digest": {"type": ["string", "null"]},
+        "input_digests": {
+          "description": "The files the execution read, by path relative to the scene's directory.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "digest"],
+            "properties": {
+              "path": {"type": "string"},
+              "digest": {"type": "string"}
+            }
+          }
+        },
+        "seed": {"type": ["integer", "null"]}
+      }
+    },
+    "generation": {
+      "description": "Which execution of its source the session holds: 1 for the first.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "stale": {
+      "description": "Whether the scene's source was found changed since the record was made.",
+      "type": "boolean"
+    },
+    "plays": {"type": "array", "items": {"$ref": "#/$defs/play"}},
+    "markers": {
+      "description": "Every marker the script placed, in the order placed.",
+      "type": "array",
+      "items": {"$ref": "#/$defs/marker"}
+    },
+    "mobjects": {
+      "description": "Where each mobject the record holds was made, by stable id.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "name", "source_line", "source"],
+        "properties": {
+          "type": {"type": "string"},
+          "name": {"type": ["string", "null"]},
+          "source_line": {
+            "description": "The line of the scene file that made it: the call that led to a helper module, when one did.",
+            "$ref": "#/$defs/line"
+          },
+          "source": {"$ref": "#/$defs/source"}
+        }
+      }
+    },
+    "divergences": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "code",
+          "kind",
+          "play",
+          "source_line",
+          "source",
+          "reason",
+          "changed_inputs"
+        ],
+        "properties": {
+          "code": {"type": "string"},
+          "kind": {"enum": ["execution", "probe"]},
+          "play": {"type": ["integer", "null"]},
+          "source_line": {"$ref": "#/$defs/line"},
+          "source": {"$ref": "#/$defs/source"},
+          "reason": {"type": "string"},
+          "changed_inputs": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "probe": {
+      "description": "What the probe found for the state-function plays; null when the session was opened without it.",
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["settled", "plays"],
+      "properties": {
+        "settled": {"type": "boolean"},
+        "plays": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["play", "outcome", "reason"],
+            "properties": {
+              "play": {"type": "integer"},
+              "outcome": {"enum": ["agreed", "demoted", "unprobed", "unrestorable"]},
+              "reason": {"type": ["string", "null"]}
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "schema_version": {"const": "1.0"},
+    "time": {"description": "Seconds of scene time.", "type": "number"},
+    "exact": {
+      "description": "An exact instant or rate, the rational \"n/d\".",
+      "type": "string",
+      "pattern": "^-?[0-9]+/[0-9]+$"
+    },
+    "exact_or_null": {
+      "type": ["string", "null"],
+      "pattern": "^-?[0-9]+/[0-9]+$"
+    },
+    "line": {"type": ["integer", "null"], "minimum": 1},
+    "source": {
+      "description": "The path:line of the scene's code, its path relative to the scene file's directory when inside it.",
+      "type": ["string", "null"]
+    },
+    "resolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width", "height"],
+      "properties": {
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1}
+      }
+    },
+    "marker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "t", "t_exact", "data", "source_line", "source"],
+      "properties": {
+        "kind": {"enum": ["section", "subcaption", "sound", "mark", "wait_until"]},
+        "t": {"$ref": "#/$defs/time"},
+        "t_exact": {"$ref": "#/$defs/exact"},
+        "data": {"type": "object"},
+        "source_line": {"$ref": "#/$defs/line"},
+        "source": {"$ref": "#/$defs/source"}
+      }
+    },
+    "play": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "index",
+        "kind",
+        "route",
+        "start",
+        "start_exact",
+        "end",
+        "end_exact",
+        "requested_end",
+        "requested_end_exact",
+        "held",
+        "skipped",
+        "source_line",
+        "source",
+        "animations",
+        "markers"
+      ],
+      "properties": {
+        "index": {"type": "integer", "minimum": 0},
+        "kind": {"enum": ["play", "wait"]},
+        "route": {"type": "string"},
+        "start": {"$ref": "#/$defs/time"},
+        "start_exact": {"$ref": "#/$defs/exact"},
+        "end": {"$ref": "#/$defs/time"},
+        "end_exact": {"$ref": "#/$defs/exact"},
+        "requested_end": {
+          "description": "Where it would have ended had no stop condition ended it first.",
+          "$ref": "#/$defs/time"
+        },
+        "requested_end_exact": {"$ref": "#/$defs/exact"},
+        "held": {"type": "boolean"},
+        "skipped": {
+          "description": "Whether its frames were left out of the render; it was executed all the same.",
+          "type": "boolean"
+        },
+        "source_line": {"$ref": "#/$defs/line"},
+        "source": {"$ref": "#/$defs/source"},
+        "animations": {"type": "array", "items": {"type": "string"}},
+        "markers": {
+          "description": "The markers placed in [start, end).",
+          "type": "array",
+          "items": {"$ref": "#/$defs/marker"}
+        }
+      }
+    }
+  }
+}

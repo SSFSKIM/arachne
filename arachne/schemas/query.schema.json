@@ -1,0 +1,237 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Arachne query",
+  "description": "Numbers about the frame on screen at an instant, measured as the lint measures it: the answers asked for, each under its name. Boxes of the picture (frame, a thing's box, bbox) are in home-frame units: scene units of the frame the configuration describes, centred, y up. A finding's boxes are a report's. A field added is a minor version, a field changed or removed a major one.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "t", "t_exact", "play", "answer", "frame"],
+  "properties": {
+    "schema_version": {"$ref": "#/$defs/schema_version"},
+    "t": {"$ref": "#/$defs/time"},
+    "t_exact": {"$ref": "#/$defs/exact"},
+    "play": {"type": ["integer", "null"]},
+    "answer": {"enum": ["recorded", "forward"]},
+    "frame": {"description": "The picture's box.", "$ref": "#/$defs/box"},
+    "bbox": {
+      "description": "The box of each mobject asked for, by stable id; null for one whose family has no points.",
+      "oneOf": [
+        {"type": "object", "additionalProperties": {"$ref": "#/$defs/box_or_null"}},
+        {"$ref": "#/$defs/camera_replaced"}
+      ]
+    },
+    "overlaps": {
+      "description": "The pairs that touch.",
+      "oneOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["code", "a", "b", "gap", "required", "finding"],
+            "properties": {
+              "code": {"type": "string"},
+              "a": {"$ref": "#/$defs/thing"},
+              "b": {"$ref": "#/$defs/thing"},
+              "gap": {
+                "description": "How far apart they are; below zero, how deep they overlap.",
+                "type": "number"
+              },
+              "required": {"type": ["number", "null"]},
+              "finding": {"$ref": "#/$defs/violation"}
+            }
+          }
+        },
+        {"$ref": "#/$defs/camera_replaced"}
+      ]
+    },
+    "occlusions": {
+      "description": "The texts something drawn after them lies over.",
+      "oneOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["text", "over", "depth", "finding"],
+            "properties": {
+              "text": {"$ref": "#/$defs/thing"},
+              "over": {"$ref": "#/$defs/thing"},
+              "depth": {"type": "number"},
+              "finding": {"$ref": "#/$defs/violation"}
+            }
+          }
+        },
+        {"$ref": "#/$defs/camera_replaced"}
+      ]
+    },
+    "offscreen": {
+      "description": "The texts the picture's edge cuts, or that lie wholly outside it.",
+      "oneOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["thing", "edge", "past", "finding"],
+            "properties": {
+              "thing": {"$ref": "#/$defs/thing"},
+              "edge": {"type": "string"},
+              "past": {"type": "number"},
+              "finding": {"$ref": "#/$defs/violation"}
+            }
+          }
+        },
+        {"$ref": "#/$defs/camera_replaced"}
+      ]
+    },
+    "text_heights": {
+      "description": "Every text on the picture, with its ink height in home-frame units and in pixels of a picture 1080 pixels on its shorter side.",
+      "oneOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["thing", "units", "pixels"],
+            "properties": {
+              "thing": {"$ref": "#/$defs/thing"},
+              "units": {"type": "number"},
+              "pixels": {"type": "number"}
+            }
+          }
+        },
+        {"$ref": "#/$defs/camera_replaced"}
+      ]
+    },
+    "markers": {
+      "description": "The named markers in force at the frame, in the order they were placed.",
+      "type": "array",
+      "items": {"$ref": "#/$defs/marker"}
+    }
+  },
+  "$defs": {
+    "schema_version": {"const": "1.0"},
+    "time": {"description": "Seconds of scene time.", "type": "number"},
+    "exact": {
+      "description": "An exact instant or rate, the rational \"n/d\".",
+      "type": "string",
+      "pattern": "^-?[0-9]+/[0-9]+$"
+    },
+    "line": {"type": ["integer", "null"], "minimum": 1},
+    "source": {
+      "description": "The path:line of the scene's code, its path relative to the scene file's directory when inside it.",
+      "type": ["string", "null"]
+    },
+    "box": {
+      "description": "[x_min, y_min, x_max, y_max].",
+      "type": "array",
+      "items": {"type": "number"},
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "box_or_null": {
+      "description": "[x_min, y_min, x_max, y_max], or null.",
+      "type": ["array", "null"],
+      "items": {"type": "number"},
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "marker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "t", "t_exact", "data", "source_line", "source"],
+      "properties": {
+        "kind": {"enum": ["section", "subcaption", "sound", "mark", "wait_until"]},
+        "t": {"$ref": "#/$defs/time"},
+        "t_exact": {"$ref": "#/$defs/exact"},
+        "data": {"type": "object"},
+        "source_line": {"$ref": "#/$defs/line"},
+        "source": {"$ref": "#/$defs/source"}
+      }
+    },
+    "thing": {
+      "description": "A thing a query names; source_line is the line of the scene file that made it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "name", "source_line", "text", "box"],
+      "properties": {
+        "id": {"type": "string"},
+        "type": {"type": "string"},
+        "name": {"type": ["string", "null"]},
+        "source_line": {"$ref": "#/$defs/line"},
+        "text": {"type": ["string", "null"]},
+        "box": {"$ref": "#/$defs/box"}
+      }
+    },
+    "camera_replaced": {
+      "description": "In place of a measure of the picture: the scene replaced camera methods that place what it draws.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "replaced", "message"],
+      "properties": {
+        "code": {"const": "query.camera_replaced"},
+        "replaced": {"type": "array", "items": {"type": "string"}},
+        "message": {"type": "string"}
+      }
+    },
+    "finding_object": {
+      "description": "An object a finding is about: bbox in scene units, screen_bbox in pixels of the session's resolution from the top-left corner, y down.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "source_line",
+        "kind",
+        "label_or_text",
+        "name",
+        "bbox",
+        "screen_bbox"
+      ],
+      "properties": {
+        "id": {"type": "string"},
+        "source_line": {"$ref": "#/$defs/line"},
+        "kind": {"type": "string"},
+        "label_or_text": {"type": ["string", "null"]},
+        "name": {"type": ["string", "null"]},
+        "bbox": {"$ref": "#/$defs/box_or_null"},
+        "screen_bbox": {"$ref": "#/$defs/box_or_null"}
+      }
+    },
+    "violation": {
+      "description": "A finding, as a report gives it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "class",
+        "severity",
+        "held",
+        "t_start",
+        "t_end",
+        "objects",
+        "message",
+        "fix",
+        "line"
+      ],
+      "properties": {
+        "code": {"type": "string"},
+        "class": {"type": "string"},
+        "severity": {"enum": ["error", "warning", "note"]},
+        "held": {"type": "boolean"},
+        "t_start": {"type": ["number", "null"]},
+        "t_end": {"type": ["number", "null"]},
+        "objects": {"type": "array", "items": {"$ref": "#/$defs/finding_object"}},
+        "message": {"type": "string"},
+        "fix": {"type": "string"},
+        "line": {
+          "description": "The scene line running when it was found.",
+          "$ref": "#/$defs/line"
+        },
+        "detail": {
+          "description": "The code's own fields; folded counts the look-alikes folded into it.",
+          "type": "object"
+        }
+      }
+    }
+  }
+}

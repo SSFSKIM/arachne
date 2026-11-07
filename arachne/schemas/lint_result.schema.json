@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Arachne lint result",
+  "description": "A lint of a session: its report (the errors and warnings, and the session's timeline) and its notes, kept apart from the report in the same violation shape. A field added is a minor version, a field changed or removed a major one.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "report", "notes"],
+  "properties": {
+    "schema_version": {"$ref": "#/$defs/schema_version"},
+    "report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pass", "duration_s", "target_resolution", "violations", "timeline"],
+      "properties": {
+        "pass": {"description": "Whether no violation is an error.", "type": "boolean"},
+        "duration_s": {"description": "How long the lint took.", "type": "number"},
+        "target_resolution": {"$ref": "#/$defs/resolution"},
+        "violations": {
+          "type": "array",
+          "items": {
+            "allOf": [
+              {"$ref": "#/$defs/violation"},
+              {"properties": {"severity": {"enum": ["error", "warning"]}}}
+            ]
+          }
+        },
+        "timeline": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["index", "kind", "t_start", "t_end"],
+            "properties": {
+              "index": {"type": "integer", "minimum": 0},
+              "kind": {"enum": ["play", "wait"]},
+              "t_start": {"$ref": "#/$defs/time"},
+              "t_end": {"$ref": "#/$defs/time"}
+            }
+          }
+        }
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "allOf": [
+          {"$ref": "#/$defs/violation"},
+          {"properties": {"severity": {"const": "note"}}}
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "schema_version": {"const": "1.0"},
+    "time": {"description": "Seconds of scene time.", "type": "number"},
+    "line": {"type": ["integer", "null"], "minimum": 1},
+    "resolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width", "height"],
+      "properties": {
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1}
+      }
+    },
+    "box_or_null": {
+      "description": "[x_min, y_min, x_max, y_max], or null.",
+      "type": ["array", "null"],
+      "items": {"type": "number"},
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "finding_object": {
+      "description": "An object a finding is about: bbox in scene units, screen_bbox in pixels of the session's resolution from the top-left corner, y down.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "source_line",
+        "kind",
+        "label_or_text",
+        "name",
+        "bbox",
+        "screen_bbox"
+      ],
+      "properties": {
+        "id": {"type": "string"},
+        "source_line": {"$ref": "#/$defs/line"},
+        "kind": {"type": "string"},
+        "label_or_text": {"type": ["string", "null"]},
+        "name": {"type": ["string", "null"]},
+        "bbox": {"$ref": "#/$defs/box_or_null"},
+        "screen_bbox": {"$ref": "#/$defs/box_or_null"}
+      }
+    },
+    "violation": {
+      "description": "A finding, as a report gives it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "class",
+        "severity",
+        "held",
+        "t_start",
+        "t_end",
+        "objects",
+        "message",
+        "fix",
+        "line"
+      ],
+      "properties": {
+        "code": {"type": "string"},
+        "class": {"type": "string"},
+        "severity": {"enum": ["error", "warning", "note"]},
+        "held": {"type": "boolean"},
+        "t_start": {"type": ["number", "null"]},
+        "t_end": {"type": ["number", "null"]},
+        "objects": {"type": "array", "items": {"$ref": "#/$defs/finding_object"}},
+        "message": {"type": "string"},
+        "fix": {"type": "string"},
+        "line": {
+          "description": "The scene line running when it was found.",
+          "$ref": "#/$defs/line"
+        },
+        "detail": {
+          "description": "The code's own fields; folded counts the look-alikes folded into it.",
+          "type": "object"
+        }
+      }
+    }
+  }
+}

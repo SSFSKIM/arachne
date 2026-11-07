@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Arachne state",
+  "description": "The scene at an instant, as state_at answers it: the play and route that answered, and each mobject on the picture, depth first from the top-level ones. A field added is a minor version, a field changed or removed a major one.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "t",
+    "t_exact",
+    "as_of",
+    "as_of_exact",
+    "play",
+    "route",
+    "answer",
+    "target_resolution",
+    "roots",
+    "nodes"
+  ],
+  "properties": {
+    "schema_version": {"$ref": "#/$defs/schema_version"},
+    "t": {"$ref": "#/$defs/time"},
+    "t_exact": {"$ref": "#/$defs/exact"},
+    "as_of": {
+      "description": "The instant whose state it is: the capture's a recorded answer reads, t for an evaluated one.",
+      "$ref": "#/$defs/time"
+    },
+    "as_of_exact": {"$ref": "#/$defs/exact"},
+    "play": {"type": ["integer", "null"]},
+    "route": {"type": ["string", "null"]},
+    "answer": {"enum": ["recorded", "analytic", "restored", "forward"]},
+    "target_resolution": {"$ref": "#/$defs/resolution"},
+    "roots": {
+      "description": "The top-level mobjects, by stable id, in draw order.",
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "source_line",
+          "source",
+          "name",
+          "kind",
+          "label_or_text",
+          "bbox",
+          "screen_bbox",
+          "z",
+          "color",
+          "children"
+        ],
+        "properties": {
+          "id": {"description": "The stable id, path:line#n.", "type": "string"},
+          "source_line": {
+            "description": "The line of the scene file that made it: the call that led to a helper module, when one did.",
+            "$ref": "#/$defs/line"
+          },
+          "source": {"$ref": "#/$defs/source"},
+          "name": {"type": ["string", "null"]},
+          "kind": {"description": "Its type.", "type": "string"},
+          "label_or_text": {
+            "description": "Its text when it is one, else the scene's name for it.",
+            "type": ["string", "null"]
+          },
+          "bbox": {
+            "description": "The box of its family's points in scene units, y up; null when they have none.",
+            "$ref": "#/$defs/box_or_null"
+          },
+          "screen_bbox": {
+            "description": "The same points where the picture shows them, in pixels of target_resolution from the top-left corner, y down.",
+            "$ref": "#/$defs/box_or_null"
+          },
+          "z": {"type": "number"},
+          "color": {"type": ["string", "null"]},
+          "children": {
+            "description": "Its submobjects on the picture, by stable id.",
+            "type": "array",
+            "items": {"type": "string"}
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "schema_version": {"const": "1.0"},
+    "time": {"description": "Seconds of scene time.", "type": "number"},
+    "exact": {
+      "description": "An exact instant or rate, the rational \"n/d\".",
+      "type": "string",
+      "pattern": "^-?[0-9]+/[0-9]+$"
+    },
+    "line": {"type": ["integer", "null"], "minimum": 1},
+    "source": {
+      "description": "The path:line of the scene's code, its path relative to the scene file's directory when inside it.",
+      "type": ["string", "null"]
+    },
+    "resolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width", "height"],
+      "properties": {
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1}
+      }
+    },
+    "box_or_null": {
+      "description": "[x_min, y_min, x_max, y_max], or null.",
+      "type": ["array", "null"],
+      "items": {"type": "number"},
+      "minItems": 4,
+      "maxItems": 4
+    }
+  }
+}
