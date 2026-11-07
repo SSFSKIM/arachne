@@ -10,9 +10,8 @@ which ends the process: with ``respond`` true when the answer is still the
 expiry's to give, false when the request had already begun writing its own
 (:meth:`Watchdog.answering`), so that a request is never answered twice.
 A deadline that has passed is expired by whichever thread sees it first:
-the watchdog's, or the request's own as it moves the deadline or claims
-its answer, so a request already past its deadline neither runs nor
-answers.
+the watchdog's, or the request's own as it claims its answer, so a request
+past its deadline answers nothing of its own.
 """
 
 from __future__ import annotations
@@ -56,16 +55,6 @@ class Watchdog:
             self._ticket = ticket
             self._changed.notify()
         return ticket
-
-    def move(self, ticket: Ticket, at: float) -> None:
-        """Move ``ticket``'s deadline to ``at``: a deadline already past
-        expires it now, on the calling thread, before the request runs.
-        """
-        with self._changed:
-            ticket.at = at
-            self._changed.notify()
-        if at <= time.monotonic():
-            self.expire(ticket)
 
     def answering(self, ticket: Ticket) -> bool:
         """Claim ``ticket``'s answer for the request: false when it expired

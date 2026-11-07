@@ -20,6 +20,7 @@ __all__ = ["IDLE_S", "main", "serve"]
 
 import argparse
 import contextlib
+import errno
 import functools
 import math
 import os
@@ -272,8 +273,12 @@ class _Server:
         whole, writing the answer included: its own from the start when it
         gives one, else the server's. A request answered and its deadline's
         error are one or the other, never both
-        (:class:`~.watchdog.Ticket`). A server reserved for its end
-        (:mod:`.registry`) answers nothing: it ends.
+        (:class:`~.watchdog.Ticket`); one past its deadline as it runs ends
+        the server. A request already past its deadline as its turn comes
+        is answered so, unrun, and a line that runs nothing (no request, or
+        one refused) is answered however long it waited: for these, the
+        deadline bounds only the answer's write. A server reserved for its
+        end (:mod:`.registry`) answers nothing: it ends.
         """
         registration = self.registration
         if registration is not None and not registration.admit():
@@ -283,14 +288,18 @@ class _Server:
         try:
             read: list[protocol.Request] = []
             limit = [self.deadline_s]
-            request, params, refused = self._request(line, read, limit)
+            request, params, reply = self._request(line, read, limit)
             self._registered(busy=True)
+            expires = line.received + limit[0]
+            if request is not None and expires <= time.monotonic():
+                reply, request = _unrun(request, limit[0]), None
+            if request is None:
+                expires = time.monotonic() + limit[0]
             ticket = self.watchdog.arm(
-                line.received + limit[0],
+                expires,
                 lambda respond: self._expired(channel, read, limit[0], respond),
             )
             try:
-                reply = refused
                 if request is not None:
                     reply = self._reply(request, params, ticket)
                 # The entry names the session held before its answer is sent:
@@ -301,6 +310,10 @@ class _Server:
                     channel.send(reply)
             finally:
                 self.watchdog.end(ticket)
+                if ticket.state == "expired":
+                    # The watchdog's thread is ending the process: no next
+                    # request is taken before it has.
+                    threading.Event().wait()
             self._registered(busy=False)
         finally:
             if registration is not None:
@@ -344,11 +357,6 @@ class _Server:
         """``request``'s answer as it is sent, or ``None`` for none (a
         notification's), by its deadline, ``ticket``.
         """
-        # Already past its deadline as its turn comes, it ends here, unrun.
-        self.watchdog.move(ticket, ticket.at)
-        if ticket.state == "expired":
-            # The watchdog's thread is ending the process.
-            threading.Event().wait()
         # What the request publishes (a render's file) is published once it
         # has claimed its answer, so a deadline that passes first leaves it
         # unmade.
@@ -386,7 +394,7 @@ class _Server:
                         protocol.DEADLINE_EXCEEDED,
                         f"{request.method} ran past its deadline of {limit:g} s:"
                         " the server ends.",
-                        {"method": request.method, "deadline_s": limit},
+                        {"method": request.method, "deadline_s": limit, "ends": True},
                     )
                     channel.send(protocol.encode(protocol.error(request.id, found)))
 
@@ -395,6 +403,22 @@ class _Server:
             _bounded(self._cleanup)
         finally:
             os._exit(protocol.EXIT_DEADLINE)
+
+
+def _unrun(request: protocol.Request, limit: float) -> bytes | None:
+    """The answer to ``request``, past its deadline, ``limit`` s, before its
+    turn came: the deadline's error, saying the server goes on; ``None``
+    for a notification's.
+    """
+    if not request.has_id:
+        return None
+    found = RpcError(
+        protocol.DEADLINE_EXCEEDED,
+        f"{request.method} ran past its deadline of {limit:g} s before its turn:"
+        " it did not run.",
+        {"method": request.method, "deadline_s": limit, "ends": False},
+    )
+    return protocol.encode(protocol.error(request.id, found))
 
 
 def _encoded(reply: dict[str, Any]) -> bytes:
@@ -417,6 +441,9 @@ def _encoded(reply: dict[str, Any]) -> bytes:
 _CONNECTED = object()
 _ENDED = object()
 
+#: How long the listener waits, out of descriptors, when no channel ends.
+_NO_DESCRIPTOR_S = 1.0
+
 
 def _reading(
     selector: selectors.BaseSelector,
@@ -425,15 +452,28 @@ def _reading(
     """Read the selector's channels as lines arrive, accepting connections
     on its listening socket, into ``arrivals``: each line read whole with
     when it was, and each channel's acceptance and end; ``(None, error)``
-    if reading fails.
+    if reading fails. Out of descriptors, the listener waits until a
+    channel ends, or for :data:`_NO_DESCRIPTOR_S` at most, before it
+    accepts again.
     """
+    # The listener set aside for want of a descriptor, and until when.
+    waiting: socket.socket | None = None
+    until = 0.0
     try:
         while True:
-            for key, _ in selector.select():
+            left = None if waiting is None else max(until - time.monotonic(), 0)
+            if waiting is not None and left == 0:
+                selector.register(waiting, selectors.EVENT_READ, None)
+                waiting, left = None, None
+            for key, _ in selector.select(left):
                 if isinstance(key.fileobj, socket.socket) and key.data is None:
                     try:
                         fd, events, channel = _accept(key.fileobj)
-                    except OSError:
+                    except OSError as found:
+                        if found.errno in (errno.EMFILE, errno.ENFILE):
+                            selector.unregister(key.fileobj)
+                            waiting = key.fileobj
+                            until = time.monotonic() + _NO_DESCRIPTOR_S
                         continue
                     selector.register(fd, events, channel)
                     arrivals.put((channel, _CONNECTED))
@@ -443,6 +483,8 @@ def _reading(
                 if lines is None:
                     selector.unregister(channel.fd)
                     arrivals.put((channel, _ENDED))
+                    # Its descriptor is free: the listener accepts again.
+                    until = 0.0
                     continue
                 for line in lines:
                     arrivals.put((channel, line))

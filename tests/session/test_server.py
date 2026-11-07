@@ -538,7 +538,7 @@ def test_a_request_past_its_deadline_ends_the_server(serve, tmp_path, transport)
         deadline_s=deadline,
     )
     assert error["code"] == protocol.DEADLINE_EXCEEDED
-    assert error["data"] == {"method": "open", "deadline_s": deadline}
+    assert error["data"] == {"method": "open", "deadline_s": deadline, "ends": True}
     assert server.exited(wait=deadline + 1) == protocol.EXIT_DEADLINE
     assert time.monotonic() - sent <= deadline + 1
     if transport == "socket":
@@ -656,11 +656,10 @@ def test_a_watchdog_ends_only_what_overran_its_deadline():
     far = watchdog.arm(time.monotonic() + 1e20, expired("far"))
     time.sleep(0.1)
     watchdog.end(far)
-    moved = watchdog.arm(time.monotonic() + WAIT_S, expired("moved"))
-    watchdog.move(moved, time.monotonic() + 0.05)
+    watchdog.arm(time.monotonic() + 0.05, expired("next"))
     assert done.wait(WAIT_S)
     time.sleep(0.2)
-    assert fired == [("moved", True)]
+    assert fired == [("next", True)]
 
 
 def test_a_request_ends_answered_or_expired_never_both():
@@ -1182,8 +1181,13 @@ def test_a_queued_request_s_clock_starts_when_it_arrives(serve, tmp_path, whose)
     assert second is not None, server.stderr()
     assert second["id"] == 2
     assert second["error"]["code"] == protocol.DEADLINE_EXCEEDED
-    assert second["error"]["data"] == {"method": "ping", "deadline_s": 1.0}
-    assert server.exited() == protocol.EXIT_DEADLINE
+    # Unrun, and the server goes on.
+    assert second["error"]["data"] == {
+        "method": "ping",
+        "deadline_s": 1.0,
+        "ends": False,
+    }
+    assert server.result("ping", deadline_s=30) == {"generation": 1}
 
 
 def test_a_deadline_exit_outlives_a_cleanup_that_fails(serve, tmp_path, socket_dir):
