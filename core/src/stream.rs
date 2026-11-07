@@ -2203,6 +2203,127 @@ mod tests {
         );
     }
 
+    /// A face 3 units across, facing the camera, drawn after a square 0.05 across near one of its
+    /// corners whose plane is tilted from the face's by 1e-4 (as a small record's fitted plane
+    /// tilts by the snap's noise over its size), then a line on the face near its far corner. The
+    /// square's points lie on the face's plane within the registry's tolerance, but the face's far
+    /// points lie off the square's plane by about 4e-4, far beyond it: the two share a plane only
+    /// because the square's points lie on the face's plane. The face shares the square's identity,
+    /// and its fill is keyed on its own plane: its key lies within its bound of every point of its
+    /// outline, and the line, on no registered plane, ties with it and is drawn over it at every
+    /// sub-sample both cover (keyed on the square's plane, the face came about 2e-5 nearer than
+    /// its own points at its far corner and hid the line).
+    #[test]
+    fn a_face_that_shares_a_smaller_record_s_plane_is_keyed_on_its_own() {
+        let view = crate::probes::view(854, 480, 70f64.to_radians(), -110f64.to_radians());
+        let (w, h) = (view.pixel_width, view.pixel_height);
+        let p = projection_of(&view);
+        let r = p.rotation();
+        // A point given in the camera's axes (larger z is nearer), in the world.
+        let world = |a: [f64; 3]| -> [f64; 3] {
+            std::array::from_fn(|j| {
+                view.frame_center[j] + r[0][j] * a[0] + r[1][j] * a[1] + r[2][j] * a[2]
+            })
+        };
+        let face = ring(&[
+            world([-1.5, -1.5, 0.0]),
+            world([1.5, -1.5, 0.0]),
+            world([1.5, 1.5, 0.0]),
+            world([-1.5, 1.5, 0.0]),
+        ]);
+        // The square's plane rises toward the eye along the diagonal toward the face's far corner.
+        let (tilt, centre) = (1e-4, [-1.3, -1.3]);
+        let corner = |dx: f64, dy: f64| {
+            let rise = tilt * (dx + dy) / 2f64.sqrt();
+            world([centre[0] + dx, centre[1] + dy, rise])
+        };
+        let square = ring(&[
+            corner(-0.025, -0.025),
+            corner(0.025, -0.025),
+            corner(0.025, 0.025),
+            corner(-0.025, 0.025),
+        ]);
+        let (a, b) = (world([0.7, 1.3, 0.0]), world([1.3, 0.7, 0.0]));
+        let line: Vec<[f64; 3]> = (0..4)
+            .map(|i| std::array::from_fn(|k| a[k] + (b[k] - a[k]) * i as f64 / 3.0))
+            .collect();
+        // The premise, against the registry's tolerance for points off the snap grid (its
+        // rounding term, `Registry::tolerance`): the square's points lie on the face's plane, the
+        // face's points lie far off the square's.
+        let off = |plane: &crate::depth::WorldPlane, points: &[[f64; 3]]| {
+            points
+                .iter()
+                .map(|q| (dot3(plane.normal, *q) - plane.offset).abs())
+                .fold(0.0, f64::max)
+        };
+        let fit = |points: &[[f64; 3]]| {
+            crate::depth::WorldPlane::fit(points, crate::depth::Planarity::Newell).expect("a plane")
+        };
+        let tolerance = |points: &[[f64; 3]]| {
+            let largest = points.iter().flatten().fold(0.0f64, |m, v| m.max(v.abs()));
+            crate::depth::PLANE_GRID * (1.0 + 3.0 * largest)
+        };
+        let (on, across) = (off(&fit(&face), &square), off(&fit(&square), &face));
+        assert!(
+            on < tolerance(&square),
+            "the square lies {on:e} off the face's plane"
+        );
+        assert!(
+            across > 10.0 * tolerance(&face),
+            "the face lies {across:e} off the square's plane"
+        );
+        let mut line_record = Record::new(RecordKind::Path, 3, 103);
+        line_record.paint.stroke = Paint::One([0.9, 0.9, 0.9, 1.0]);
+        line_record.paint.stroke_width = 2.0;
+        line_record.depth.space = Space::World;
+        let map = crate::project::FrameMap::of_kind(&view, RecordKind::Path, w, h);
+        let shown =
+            crate::project::pre_display(&face, Some(&p), crate::project::Placement::Projected);
+        let s = paths_stream(
+            view,
+            vec![
+                (square, face_record(1, [0.8, 0.2, 0.2, 1.0], None, None)),
+                (face, face_record(2, [0.2, 0.4, 0.8, 1.0], None, None)),
+                (line, line_record),
+            ],
+        );
+        let (mut planes, mut key) = ([0u32; 2], None);
+        s.visit_contributors(0, 0, w, h, |_, _, frags, _, _, _| {
+            for f in frags {
+                match s.leaf_of(f).0 {
+                    101 => planes[0] = f.plane,
+                    102 => {
+                        planes[1] = f.plane;
+                        key = Some(f.depth);
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .expect("the stream draws");
+        assert!(
+            planes[0] != 0 && planes[0] == planes[1],
+            "planes {planes:?}"
+        );
+        let key = key.expect("the face is drawn");
+        let (mut worst, mut bound) = (0.0f64, 0.0);
+        for q in &shown {
+            let [x, y] = map.apply(*q);
+            let gap = (key.at(x, y) + p.factor(q[2])).abs();
+            if gap > worst {
+                (worst, bound) = (gap, key.err + key.read_error(x, y) + p.key_error(*q));
+            }
+        }
+        // Paint order puts the line above the face: the face above it is depth's order.
+        let (wrong, both) = above(&s, 102, 103);
+        assert!(both > 50, "{both} sub-samples hold the face and the line");
+        assert!(
+            worst <= bound && wrong == 0,
+            "the face's key stands {worst:e} from its own points' keys, against a bound of \
+             {bound:e}; of {both} sub-samples, the face above the line drawn after it at {wrong}"
+        );
+    }
+
     /// Three wires along one line, drawn in turn: the first two the same, the third moved by
     /// 2^-51 in z, which moves its key by less than the keys' error bound. Over five frames whose
     /// camera angles step on the grid the engine keeps them to (2^-24), paint order decides them
