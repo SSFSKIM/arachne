@@ -358,3 +358,24 @@ lifted.
   (`serve._reading`) stamps each line as it reads it; a scene running a long C call that keeps the GIL delays that
   read, and the line's deadline starts that much late. Direction: read on a thread that never needs the GIL for
   the stamp (or in a helper process), if a scene's long native calls ever make the delay matter.
+- **A forked child of the scene's code keeps its server alive to the registry.** A server's `<pid>.alive` lock is
+  non-inheritable across exec (PEP 446) and the engine's subprocesses run with `close_fds`, but a child forked
+  without exec by the scene's own code (`os.fork`, `pty.fork`, multiprocessing's "fork" start method, Linux's
+  default through 3.13) shares the lock's open file and holds it after the server exits; the server's `os._exit`
+  also skips the cleanup that would end leaked multiprocessing workers. The registry then keeps a dead server's
+  entry until that child ends. Direction: check the entry's pid against the lock's holder (or take the lock in a
+  process the scene can't fork from) if a scene that forks long-lived children turns up.
+- **The reading thread's queue has no bound.** `serve._reading` queues every line read while a request runs, so a
+  client flooding lines grows the server's memory without limit. Direction: bound the queue and stop reading a
+  channel while it is full, so the flood waits in the socket instead.
+- **A server's configuration digest is taken as it registers, not as the engine read its files.**
+  `Registration` digests `config_file_paths()` after the engine's configuration was parsed at import, so a file
+  edited between the two leaves the server keyed by the edit while it runs under the earlier text. Direction:
+  digest the files where `arachne._config` reads them, and key the server by that digest.
+- **A server of an earlier version, with no `.alive` lock, is forgotten by a newer registry reader.** Liveness is
+  read from `<pid>.alive`, which servers before it never made, so after an upgrade a newer client sweeps a still
+  running older server's entry and starts a second server beside it; the older one idles out. Direction: none
+  while servers are short-lived; a version field in the entry if mixed versions ever share a registry for long.
+- **Polish.** `arachne/server/registry.py`'s module docstring wraps one sentence oddly near line 44, and a
+  `.alive-XXXX` temporary file a server left between making its lock and naming it (a crash in that instant) is
+  never swept. Direction: rewrap; sweep `.alive-*` files that are old and unlocked.
