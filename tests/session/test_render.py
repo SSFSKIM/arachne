@@ -7,7 +7,11 @@ Each render here is small: a second or so of a few pixels.
 
 from __future__ import annotations
 
+import json
 import os
+import subprocess
+import sys
+import textwrap
 import time
 from pathlib import Path
 
@@ -25,6 +29,9 @@ from .conftest import gone, write
 #: The session's configuration: a render at it is 96 by 54 at 15 frames a
 #: second, as is the store's summary of its lint.
 SMALL = {"pixel_width": 96, "pixel_height": 54, "frame_rate": 15}
+
+#: What a render checked against a summary like its own says of its check.
+CHECKED = {"status": "checked", "reason": None}
 
 CLIPPED = """\
     from arachne import RIGHT, Dot, Scene
@@ -108,6 +115,7 @@ def test_a_clip_takes_the_plays_meeting_its_span(host, tmp_path):
     assert _frames(out) == (15, 854, 480)
     shown = [play for play in clip["timeline"] if not play["skipped"]]
     assert [(p["index"], p["start"], p["end"]) for p in shown] == [(1, 1.0, 2.0)]
+    assert clip["self_check"] == CHECKED
     assert "divergence" not in clip
     assert _beside(out) == []
 
@@ -120,6 +128,21 @@ def test_a_span_touching_a_play_at_one_instant_takes_it_too(host, tmp_path):
     shown = [p["index"] for p in found["clip"]["timeline"] if not p["skipped"]]
     assert shown == [0, 1, 2]
     assert _frames(out) == (45, 96, 54)
+    assert found["clip"]["self_check"] == CHECKED
+
+
+def test_a_render_with_nothing_like_it_to_check_against_says_so(host, tmp_path):
+    path = write(tmp_path, "clipped.py", CLIPPED)
+    # 96 by 54 is 16:9; the low quality's 854 by 480 is not.
+    session = host.connect(path, "Clipped", SMALL)
+    out = tmp_path / "clip.mp4"
+    found = session.call(
+        "clip", t0=1.2, t1=1.8, quality="low_quality", out=str(out), deadline_s=120
+    )
+    clip = _valid("render", found["clip"])
+    assert clip["self_check"]["status"] == "unchecked"
+    assert "frame rate and pixel aspect" in clip["self_check"]["reason"]
+    assert "divergence" not in clip
 
 
 def test_a_render_checks_itself_against_the_latest_lint(host, tmp_path):
@@ -129,6 +152,7 @@ def test_a_render_checks_itself_against_the_latest_lint(host, tmp_path):
     out = tmp_path / "render.mp4"
     honest = session.call("render", out=str(out), deadline_s=120)
     assert "divergence" not in _valid("render", honest["render"])
+    assert honest["render"]["self_check"] == CHECKED
     assert _frames(out) == (15, 96, 54)
 
     # Plant, as the lint's summary, an execution under another seed.
@@ -145,6 +169,7 @@ def test_a_render_checks_itself_against_the_latest_lint(host, tmp_path):
     assert divergence["code"] == "replay.diverged"
     assert divergence["kind"] == "execution"
     assert divergence["play"] == 0
+    assert checked["render"]["self_check"] == CHECKED
     # A finding is an answer: the render was written all the same.
     assert _frames(out) == (15, 96, 54)
 
@@ -167,6 +192,84 @@ def test_a_render_past_its_deadline_leaves_nothing_at_out_and_ends_the_server(
     assert registry.sessions(host.directory) == []
 
 
+#: A server answering one render whose deadline passes once it has been
+#: checked and before it is written: the check is held until the deadline's
+#: error has been sent, as a render slow at that point would be.
+AT_PUBLICATION = """\
+    import json
+    import sys
+    import threading
+    import time
+    from types import SimpleNamespace
+
+    from arachne.server import protocol, render
+    from arachne.server.serve import _Server
+
+    scene, out, config = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])
+    server = _Server(600, 3, lambda: None)
+    server.dispatcher.handle("open", {"file": scene, "scene": "Still", "config": config})
+    expired = threading.Event()
+    checked = render._check
+
+
+    def held(*args):
+        found = checked(*args)
+        if not expired.wait(10):
+            raise RuntimeError("the deadline never came")
+        return found
+
+
+    render._check = held
+
+
+    class Channel:
+        def send(self, data):
+            if json.loads(data).get("error", {}).get("code") == protocol.DEADLINE_EXCEEDED:
+                expired.set()
+                # The render goes on while the server ends.
+                threading.Event().wait(0.8)
+
+
+    request = {"jsonrpc": "2.0", "id": 1, "method": "render",
+               "params": {"out": out, "deadline_s": 3}}
+    line = SimpleNamespace(data=protocol.encode(request), received=time.monotonic())
+    server.answer(Channel(), line)
+    threading.Event().wait(10)
+"""
+
+STILL = """\
+    from arachne import Dot, Scene
+
+
+    class Still(Scene):
+        def construct(self):
+            self.add(Dot())
+            self.wait(0.5)
+"""
+
+
+def test_a_render_past_its_deadline_as_it_is_written_leaves_out_as_it_was(tmp_path):
+    path = write(tmp_path, "still.py", STILL)
+    out = tmp_path / "still.mp4"
+    out.write_bytes(b"the render before")
+    done = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            textwrap.dedent(AT_PUBLICATION),
+            str(path),
+            str(out),
+            json.dumps(SMALL),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert done.returncode == protocol.EXIT_DEADLINE, done.stderr
+    assert out.read_bytes() == b"the render before"
+    assert _beside(out) == []
+
+
 def test_what_clip_and_render_refuse(host, tmp_path):
     path = write(tmp_path, "clipped.py", CLIPPED)
     session = host.connect(path, "Clipped", SMALL)
@@ -186,6 +289,8 @@ def test_what_clip_and_render_refuse(host, tmp_path):
         with pytest.raises(registry.RemoteError) as raised:
             session.call(method, **params)
         assert raised.value.code == protocol.INVALID_PARAMS, (method, params)
+    with pytest.raises(registry.RemoteError, match="contiguous ascending run"):
+        session.call("render", plays=[1, 0], out=out)
     assert not Path(out).exists()
     assert session.call("ping") == {"generation": 1}
 

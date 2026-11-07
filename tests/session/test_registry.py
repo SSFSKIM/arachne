@@ -7,16 +7,19 @@ the store of answers, without executing its scene.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import signal
 import stat
+import sys
+import threading
 import time
 from pathlib import Path
 
 import pytest
 
-from arachne.server import protocol, registry
+from arachne.server import protocol, registry, store
 
 from .conftest import WAIT_S, alive, gone, write
 
@@ -53,6 +56,24 @@ COUNTED = """\
             with open(Path(__file__).with_name("runs.log"), "a") as runs:
                 runs.write("run\\n")
             self.add(Square(side_length=1))
+            self.wait(0.5)
+"""
+
+
+SLOW = """\
+    import time
+
+    from arachne import Dot, Scene, config
+
+
+    class Slow(Scene):
+        \"\"\"A render that stalls; the session's own execution never does.\"\"\"
+
+        def construct(self):
+            self.add(Dot())
+            self.wait(0.5)
+            if not config.dry_run:
+                time.sleep(60)
             self.wait(0.5)
 """
 
@@ -197,7 +218,7 @@ def test_a_session_is_of_the_working_directory_it_was_asked_from(
 def test_a_directory_too_long_for_a_socket_is_refused_before_a_start(tmp_path):
     path = write(tmp_path, "still.py", STILL)
     deep = Path("/tmp") / ("d" * 120)
-    with pytest.raises(ValueError, match="socket"):
+    with pytest.raises(registry.BadRequest, match="socket"):
         registry.connect_or_start(path, "Still", SMALL, directory=deep)
     assert not deep.exists()
 
@@ -257,3 +278,117 @@ def test_an_error_answer_reaches_the_caller_and_a_failed_start_is_ended(host, tm
     with pytest.raises(registry.RemoteError) as raised:
         opened.call("state_at")
     assert raised.value.code == protocol.INVALID_PARAMS
+
+
+def test_a_caller_on_another_engine_never_reconnects(host, tmp_path, monkeypatch):
+    engine = registry._engine_identity()
+    assert os.path.realpath(sys.executable) in engine
+    assert sys.version in engine
+    assert store.engine_fingerprint() in engine
+    path = write(tmp_path, "still.py", STILL)
+    first = host.connect(path, "Still", SMALL)
+    monkeypatch.setattr(registry, "_engine_identity", lambda: "another engine")
+    other = host.connect(path, "Still", SMALL)
+    assert other.pid != first.pid
+
+
+def test_a_server_reserved_for_its_end_answers_nothing_more(host, tmp_path):
+    path = write(tmp_path, "still.py", STILL)
+    session = host.connect(path, "Still", SMALL)
+    # The server holds its own reservation until it is done with the open.
+    with registry._reserved(host.directory, session.pid, wait=WAIT_S) as reserved:
+        assert reserved
+        with pytest.raises(registry.ServerGone, match="without answering"):
+            session.call("ping", deadline_s=5)
+        assert gone(session.pid)
+    assert registry.sessions(host.directory) == []
+
+
+def test_a_busy_server_is_never_ended_for_the_budget(host, tmp_path, monkeypatch):
+    slow = host.connect(write(tmp_path, "slow.py", SLOW), "Slow", SMALL)
+    out = str(tmp_path / "slow.mp4")
+    rendering = threading.Thread(
+        target=_ignored,
+        args=(slow.call, "render"),
+        kwargs={"out": out, "deadline_s": 30},
+        daemon=True,
+    )
+    rendering.start()
+
+    def busy() -> bool:
+        return any(
+            e.busy for e in registry.sessions(host.directory) if e.pid == slow.pid
+        )
+
+    assert _wait_until(busy)
+    # Over the budget beside a busy server: the only server it may end is itself.
+    monkeypatch.setenv("ARACHNE_SESSION_MEMORY_MB", "1")
+    newest = host.connect(write(tmp_path, "still.py", STILL), "Still", SMALL)
+    assert gone(newest.pid)
+    assert alive(slow.pid)
+    with registry._reserved(host.directory, slow.pid, wait=0) as reserved:
+        assert not reserved
+
+
+def test_a_server_alone_over_the_budget_answers_then_ends(host, tmp_path, monkeypatch):
+    monkeypatch.setenv("ARACHNE_SESSION_MEMORY_MB", "1")
+    session = host.connect(write(tmp_path, "still.py", STILL), "Still", SMALL)
+    # It answered its open first, then ended, cleanly.
+    assert session.opened["generation"] == 1
+    assert gone(session.pid)
+    assert registry.sessions(host.directory) == []
+    assert not list(host.directory.glob(f"{session.pid}.*"))
+
+
+def test_a_caller_waits_its_turn_at_a_session_no_longer_than_its_deadline(
+    host, tmp_path
+):
+    path = write(tmp_path, "still.py", STILL)
+    key = registry.session_key(str(path.resolve()), "Still", SMALL, registry._cwd())
+    turn = host.directory / "locks" / f"{key}.lock"
+    # Another caller holds the session's turn, its open still running.
+    with registry._locked(turn, 0) as held:
+        assert held
+        sent = time.monotonic()
+        with pytest.raises(registry.ClientTimeout, match="0.5 s"):
+            host.connect(path, "Still", SMALL, deadline_s=0.5)
+        assert time.monotonic() - sent < 2
+    assert registry.sessions(host.directory) == []
+
+
+def test_what_a_client_raises_is_one_kind_of_error():
+    for kind, also in (
+        (registry.RemoteError, Exception),
+        (registry.ServerGone, ConnectionError),
+        (registry.ClientTimeout, TimeoutError),
+        (registry.StartFailed, RuntimeError),
+        (registry.BadRequest, ValueError),
+    ):
+        assert issubclass(kind, registry.ClientError)
+        assert issubclass(kind, also)
+
+
+def test_a_parameter_the_wire_cant_carry_is_refused_unsent(host, tmp_path):
+    path = write(tmp_path, "still.py", STILL)
+    with pytest.raises(registry.BadRequest, match="deadline_s"):
+        host.connect(path, "Still", SMALL, deadline_s=float("nan"))
+    assert registry.sessions(host.directory) == []
+    session = host.connect(path, "Still", SMALL)
+    for bad in (float("nan"), float("inf"), object()):
+        with pytest.raises(registry.BadRequest, match="state_at"):
+            session.call("state_at", t=bad)
+    assert session.call("ping") == {"generation": 1}
+
+
+def test_a_server_that_never_comes_to_serve_is_a_failed_start(
+    host, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("ARACHNE_SESSION_MEMORY_MB", "no number")
+    with pytest.raises(registry.StartFailed, match="ARACHNE_SESSION_MEMORY_MB"):
+        host.connect(write(tmp_path, "still.py", STILL), "Still", SMALL)
+    assert registry.sessions(host.directory) == []
+
+
+def _ignored(call, *args, **params) -> None:
+    with contextlib.suppress(registry.ClientError):
+        call(*args, **params)
