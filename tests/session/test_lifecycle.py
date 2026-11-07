@@ -278,7 +278,7 @@ class RaisesAtOne(Scene):
         dot = Dot()
         self.add(dot)
         self.play(dot.animate.shift(RIGHT), run_time=1)
-        dot.shfit(RIGHT)  # @raise
+        dot.shiftt(RIGHT)  # @raise
 """
 
 
@@ -302,7 +302,7 @@ def test_a_scene_s_error_is_raised_as_it_was_and_carries_its_explanation(scene_d
         Session.open(scene, "RaisesAtOne", config=SMALL)
     error = info.value
     assert type(error) is AttributeError
-    assert str(error) == "Dot object has no attribute 'shfit'"
+    assert str(error) == "Dot object has no attribute 'shiftt'"
     assert _innermost_line(error, scene) == _line(scene, "raise")
     explained = error.scene_error
     assert isinstance(explained, SceneError)
