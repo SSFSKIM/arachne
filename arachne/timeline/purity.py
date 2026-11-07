@@ -277,12 +277,39 @@ def _function_node(function: Callable[..., Any]) -> ast.Lambda | ast.FunctionDef
             candidates.append(node)
     if not candidates:
         raise Refused(f"the source of {code.co_name} does not match its code")
-    # Two candidates hold every located instruction: either one lies inside
-    # the other, which may hold it as its body (``lambda: lambda: 1``), or
-    # no instruction locates the code. Either could be its source.
-    if len(candidates) > 1:
+    if len(candidates) == 1:
+        return candidates[0]
+    # Nodes nest or are disjoint, so candidates holding a located instruction
+    # lie one inside another, and the narrowest is the source unless the code
+    # is a wider one's: then it makes the narrower's function, a code of its
+    # own name, first line and arguments (``lambda: lambda: 1``). With no
+    # located instruction, any candidate could be.
+    if not positions or _makes_its_like(code, code):
         raise Refused(f"the source of {code.co_name} is ambiguous")
-    return candidates[0]
+    return min(candidates, key=_span)
+
+
+def _makes_its_like(code: types.CodeType, like: types.CodeType) -> bool:
+    """Whether ``code`` makes, at any depth, a function a node alike to
+    ``like``'s could be the source of.
+    """
+    for const in code.co_consts:
+        if isinstance(const, types.CodeType) and (
+            _signature(const) == _signature(like) or _makes_its_like(const, like)
+        ):
+            return True
+    return False
+
+
+def _signature(code: types.CodeType) -> tuple[Any, ...]:
+    count = code.co_argcount + code.co_kwonlyargcount
+    return (code.co_name, code.co_firstlineno, code.co_varnames[:count])
+
+
+def _span(node: ast.AST) -> tuple[int, int]:
+    end_line = getattr(node, "end_lineno", node.lineno) or node.lineno  # type: ignore[attr-defined]
+    end_col = getattr(node, "end_col_offset", 0) or 0
+    return (end_line - node.lineno, end_col - node.col_offset)  # type: ignore[attr-defined]
 
 
 def _contains(node: ast.AST, line: int, column: int) -> bool:
