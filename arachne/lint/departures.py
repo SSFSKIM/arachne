@@ -48,7 +48,7 @@ from fractions import Fraction
 from typing import TYPE_CHECKING
 
 from ._scope import Animated, animated, asked, names
-from .armed import ArmedRule
+from .arming import ArmedRule
 from .findings import Finding
 from .instants import render_grid
 from .plays import family_at, played

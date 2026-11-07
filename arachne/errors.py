@@ -6,7 +6,9 @@ read-only write's or a removed option's does, keeps it), the scene file's
 line, the last frames of the scene's own code, where inside the engine it
 was raised, and hints for a name the scene got wrong: a name from earlier
 Manim, one Arachne removed, ``manim`` itself, or a misspelling, with the
-nearest names.
+nearest names. A session raises what its scene raised as it was, and puts
+its explanation on it as ``scene_error``
+(:meth:`arachne.session.Session.open`).
 
 Which frames are the scene's follows :mod:`arachne.timeline.source`:
 anything outside this package, the standard library and installed

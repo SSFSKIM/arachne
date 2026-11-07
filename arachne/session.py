@@ -17,8 +17,9 @@ A session's life: :meth:`Session.changed` says whether the files its
 execution came from (the scene's source, and the files it read) hold
 anything else now, by their content; :meth:`Session.reload` executes the
 scene again from them, as :meth:`Session.open` does, as the session's next
-:attr:`Session.generation`; a scene that raises raises its error explained
-(:class:`~arachne.errors.SceneError`); :meth:`Session.close` lets go of the
+:attr:`Session.generation`; a scene that raises raises its own error, as
+it was raised, its explanation on it (``scene_error``, a
+:class:`~arachne.errors.SceneError`); :meth:`Session.close` lets go of the
 scene, its record and its module.
 """
 
@@ -41,7 +42,7 @@ from typing import TYPE_CHECKING, Any, Literal, TypeVar
 from ._config import config as global_config
 from ._config import tempconfig
 from .constants import QUALITIES
-from .errors import SceneError, explain
+from .errors import explain
 from .mobject.construction_caches import forget_construction_caches
 from .timeline import admission
 from .timeline.admission import (
@@ -171,8 +172,8 @@ class Session:
         self.forward_runs: list[ForwardRun] = []
         #: Whether the scene's source was found changed since the record was
         #: made (by a forward run, by the probe recording it again, or by a
-        #: reload that raised): the record is of a program the file no
-        #: longer is.
+        #: reload of changed files that did not complete): the record is of
+        #: a program the file no longer is.
         self.stale = False
         #: Which of the session's executions it holds: 1 as opened, and one
         #: more for each :meth:`reload` that executed the scene again.
@@ -231,8 +232,48 @@ class Session:
         An execution of another source than the one before it (the file
         edited meanwhile) stops it too, with no divergence: the session is
         :attr:`stale`.
+
+        What an execution of the scene raises (importing the file, a scene
+        it does not define, the scene's code, the engine refusing it) is
+        raised as it was raised, its type, message and traceback unchanged;
+        its explanation rides on it as ``scene_error``
+        (:func:`~arachne.errors.explain`, at the scene clock's time once the
+        scene had started), and its time and hints as a note a printed
+        traceback shows.
         """
-        path = Path(file).resolve()
+        return cls._open(
+            Path(file).resolve(),
+            scene,
+            named=file,
+            grid=grid,
+            config=config,
+            stepping=stepping,
+            on_step=on_step,
+            on_tick=on_tick,
+            on_start=on_start,
+            instants=instants,
+            probe=probe,
+        )
+
+    @classmethod
+    def _open(
+        cls,
+        path: Path,
+        scene: str,
+        *,
+        named: StrPath,
+        grid: Fraction | float | None | Literal["render"],
+        config: dict[str, Any] | None,
+        stepping: bool | Literal["brute_force"],
+        on_step: Callable[[Scene, Fraction], object] | None,
+        on_tick: Callable[[Scene, Fraction, bool], object] | None,
+        on_start: Callable[[Scene, Fraction], object] | None,
+        instants: Iterable[Fraction | float],
+        probe: bool,
+    ) -> Session:
+        """:meth:`open`, of the file at ``path``, a resolved path, which
+        the caller ``named`` so: what its errors name it.
+        """
         settings = {
             **(config or {}),
             "dry_run": True,
@@ -258,12 +299,13 @@ class Session:
             # found (``None`` for a line demoted whole).
             demotions: dict[PlayIdentity, tuple[str, ...] | None] = {}
             session = cls(
-                *_execute(path, scene, effective, options, demotions, file),
+                *_execute(path, scene, effective, options, demotions, named),
                 draw_path=effective.draw_path,
             )
             session._opened = {
-                "file": file,
+                "path": path,
                 "scene": scene,
+                "named": named,
                 "config": dict(config) if config is not None else None,
                 **options,
                 "probe": probe,
@@ -317,7 +359,7 @@ class Session:
                 if first is None:
                     first = session.summary()
                 session._executed_again(
-                    *_execute(path, scene, effective, options, demotions, file)
+                    *_execute(path, scene, effective, options, demotions, named)
                 )
                 executions += 1
                 with contextlib.suppress(Incomparable):
@@ -588,21 +630,21 @@ class Session:
         before: an edit and then a reload is a new program, not two
         executions of one differing.
 
-        An execution that raises raises its :class:`~arachne.errors.SceneError`,
-        and the session keeps the generation it held, :attr:`stale` when its
-        files had changed.
+        It executes the file it was opened from, wherever the working
+        directory is now. An execution that raises, or ends otherwise,
+        raises as :meth:`open` does, and the session keeps the generation it
+        held: :attr:`stale` when its files had changed, since its record is
+        then of a program they no longer are.
         """
         if self._opened is None:
             raise RuntimeError(self._not_opened)
         changed = self.changed()
         if not (changed or force):
             return False
-        try:
-            executed = type(self).open(**self._opened)
-        except SceneError:
-            if changed:
-                self.stale = True
-            raise
+        if changed:
+            # Until the new execution is held, whatever ends it.
+            self.stale = True
+        executed = type(self)._open(**self._opened)
         sys.modules.pop(self.module.__name__, None)
         generation, settled = self.generation + 1, self._settled
         # Every attribute is the execution's, as opening it made them, but
@@ -776,8 +818,9 @@ def _execute(
     ``demotions`` and those the probe demoted in an earlier session of the
     source (:func:`.admission.demoted`), which join ``demotions``. The record
     is the recorder's: a scene class may name an attribute ``record`` too.
-    What the execution raises is raised explained, the scene file as the
-    caller ``named`` it, at the scene clock's time once the scene exists.
+    What the execution raises is raised as it was, its explanation on it
+    (:func:`_explain_on`): the scene file as the caller ``named`` it, at the
+    scene clock's time once the scene exists.
     """
     made: list[Recorder] = []
 
@@ -805,11 +848,26 @@ def _execute(
     try:
         instance, module = execute(path, scene, settings, recorder)
     except Exception as error:
-        t = made[-1].scene.time if made else None
-        raise explain(error, named, t=t) from error
+        _explain_on(error, named, made[-1].scene.time if made else None)
+        raise
     record = made[-1].record
     assert record is not None
     return instance, record, module, made[-1]
+
+
+def _explain_on(error: Exception, named: StrPath, t: Fraction | None) -> None:
+    """Put ``error``'s explanation on it (:func:`~arachne.errors.explain`),
+    as ``scene_error``, and its time and hints as a note, which a printed
+    traceback shows: the error is otherwise as the scene raised it, so that
+    what reads its type, message or traceback reads the scene's own.
+    """
+    explained = explain(error, named, t=t)
+    # Past any __setattr__ the error's class defines.
+    vars(error)["scene_error"] = explained
+    note = [f"at t = {float(t):g} s on the scene's clock"] if t is not None else []
+    note.extend(f"hint: {hint}" for hint in explained.hints)
+    if note:
+        error.add_note("\n".join(note))
 
 
 def _changed_lines(

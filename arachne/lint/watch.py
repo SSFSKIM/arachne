@@ -47,7 +47,7 @@ the script runs on), at the play's end, where what it carried off is
 judged. Both are states the execution keeps (``Record.states``), a play
 too short to show a frame included; the frames between are the render's.
 
-The armed rule's ``sample_fps`` (:mod:`.armed`) has the watch read a
+The armed rule's ``sample_fps`` (:mod:`.arming`) has the watch read a
 play's frames at another engine's sampling rate.
 
 Each sample is held to the ``pad`` and ``text_gap`` in force at it
@@ -88,7 +88,7 @@ import numpy as np
 from arachne.timeline.clock import frames_in
 
 from ._scope import Animated, animated, animated_by, asked, named_by
-from .armed import ArmedRule
+from .arming import ArmedRule
 from .departures import departed
 from .exempt import Exemptions
 from .findings import Finding
