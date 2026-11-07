@@ -706,6 +706,49 @@ fn kurbo_cap(cap: Cap) -> kurbo::Cap {
     }
 }
 
+/// How far `key`, the depth key across the plane nearest a path's points (they lie on no one
+/// plane: [`Planarity::Nearest`]), may stand from the depth keys of the path's drawn outline
+/// wherever its fill is read: inside its outline, and at the outline's points nearest its fringe.
+/// `shown` are the path's points as the camera placed them, under `p` and the frame mapping `map`.
+///
+/// Along each cubic the outline is keyed as its curve is ([`curve_depth`]): position and key are
+/// both the cubic through its control points' positions and keys. `key` is affine on the screen,
+/// so read along the cubic it is the cubic through its reads at the control points, and its
+/// departure from the outline's key is the cubic through the control points' departures: within
+/// their largest (a Bernstein polynomial lies within its coefficients), between the anchors as at
+/// them. A closed subpath's last control point is drawn at its first point's position
+/// ([`outline`]) and departs from there too. The fill's outline is that curve flattened to within
+/// [`TOLERANCE`] pixels, so each corner of its polygon lies that near a point of the curve, where
+/// `key` moves by at most its slope times that; and every point the fill is read at (a
+/// sub-sample inside the polygon, or the polygon's point nearest one outside it) lies in the
+/// polygon's hull, where an affine key lies between its values at the corners. So each read lies
+/// within this bound of the outline's range of keys. Each departure's own rounding (the key read
+/// at the point, the point's key, their difference) is added.
+fn nearest_plane_departure(key: &Plane, shown: &[[f64; 3]], map: &FrameMap, p: &Projection) -> f64 {
+    use crate::composite::U;
+    // The departure of `key` at the position of `at` from the key of `keyed`.
+    let departure = |at: [f64; 3], keyed: [f64; 3]| {
+        let [x, y] = map.apply(at);
+        let k = -p.factor(keyed[2]);
+        let gap = (key.at(x, y) - k).abs();
+        gap + key.read_error(x, y) + p.key_error(keyed) + 4.0 * U * k.abs() + U * gap
+    };
+    let mut worst = 0.0f64;
+    for (start, end) in subpaths(shown) {
+        if end - start < 4 {
+            continue;
+        }
+        for q in &shown[start..end] {
+            worst = worst.max(departure(*q, *q));
+        }
+        let (a, b) = (shown[start], shown[end - 1]);
+        if close(a[0], b[0]) && close(a[1], b[1]) {
+            worst = worst.max(departure(a, b));
+        }
+    }
+    worst + libm::hypot(key.b, key.c) * TOLERANCE
+}
+
 /// The screen polyline of a path's cubics with the depth key carried along each (the cubic of its
 /// control points' keys, at the same parameter), each key with its error: the greatest of its
 /// control points' ([`Projection::key_error`]) and the rounding of the cubic's weighted sum.
@@ -882,8 +925,9 @@ impl<'v> Lowering<'v> {
         (keyed.is_none() && matches!(placed, Placement::Projected)).then_some((world, true))
     }
 
-    /// The plane each of `draws` (in draw order) is keyed on and its identity in the frame's
-    /// `registry` (`0`: not registered), `None` for its curve's depth.
+    /// The plane each of `draws` (in draw order) is keyed on, its identity in the frame's
+    /// `registry` (`0`: not registered) and how the path's own points lie, `None` for its curve's
+    /// depth.
     ///
     /// A flat path (its record's `planes`, or decided from its points) is fitted its plane, then
     /// merged in the frame's [`Registry`] in draw order, after its meshes' triangles: a path whose
@@ -897,7 +941,7 @@ impl<'v> Lowering<'v> {
         &self,
         draws: &[PathDraw<'_>],
         registry: &mut Registry,
-    ) -> Vec<Option<(WorldPlane, u32)>> {
+    ) -> Vec<Option<(WorldPlane, u32, Planarity)>> {
         let mut found = vec![None; draws.len()];
         let mut curves = Vec::new();
         for (i, draw) in draws.iter().enumerate() {
@@ -918,24 +962,27 @@ impl<'v> Lowering<'v> {
             let own = WorldPlane::fit(&points, planarity);
             found[i] = match (own, planarity, in_world) {
                 (Some(own), Planarity::Newell | Planarity::Widest | Planarity::Axis(_), true) => {
-                    Some(registry.merge(own, &points))
+                    let (plane, id) = registry.merge(own, &points);
+                    Some((plane, id, planarity))
                 }
                 (None, Planarity::Curve, true) => {
                     curves.push((i, points));
                     None
                 }
-                (own, _, _) => own.map(|own| (own, 0)),
+                (own, _, _) => own.map(|own| (own, 0, planarity)),
             };
         }
         for (i, points) in curves {
-            found[i] = registry.containing(&points);
+            found[i] = registry
+                .containing(&points)
+                .map(|(plane, id)| (plane, id, Planarity::Curve));
         }
         found
     }
 
     /// Lowers one path into up to three layers, `plane` the plane it is keyed on
     /// ([`Lowering::coplanar`]), or `None` for its curve's depth.
-    pub fn path(&mut self, draw: &PathDraw<'_>, plane: Option<(WorldPlane, u32)>) {
+    pub fn path(&mut self, draw: &PathDraw<'_>, plane: Option<(WorldPlane, u32, Planarity)>) {
         let rec = draw.record;
         let Some(world) = drawn_world(draw) else {
             return;
@@ -1156,7 +1203,9 @@ impl<'v> Lowering<'v> {
     /// they lie on: the strokes along its curve; the fill on `plane` ([`Lowering::coplanar`])
     /// wherever the camera keys the plane finitely, however nearly edge-on, and then the plane's
     /// identity among the frame's registered planes ([`Fragment::plane`]), else along its curve
-    /// too, on no plane (`0`).
+    /// too, on no plane (`0`). A fill on the plane nearest points on no one plane
+    /// ([`Planarity::Nearest`]) carries in its key's bound how far its drawn outline's keys depart
+    /// from that plane's ([`nearest_plane_departure`]).
     fn world_depth(
         &mut self,
         p: &Projection,
@@ -1164,13 +1213,17 @@ impl<'v> Lowering<'v> {
         shown: &[[f64; 3]],
         reach: f64,
         bins: f64,
-        plane: Option<(WorldPlane, u32)>,
+        plane: Option<(WorldPlane, u32, Planarity)>,
     ) -> (LayerDepth, LayerDepth, u32) {
         let fill = plane
             .filter(|_| world.iter().all(|q| p.keys_planar_at(*q)))
-            .and_then(|(plane, id)| {
-                let key = p.key_plane(&plane, &self.map, world[0], 0.0, self.region(shown, reach));
-                key.map(|key| (key, id))
+            .and_then(|(plane, id, planarity)| {
+                let region = self.region(shown, reach);
+                let mut key = p.key_plane(&plane, &self.map, world[0], 0.0, region)?;
+                if planarity == Planarity::Nearest {
+                    key.err += nearest_plane_departure(&key, shown, &self.map, p);
+                }
+                Some((key, id))
             });
         let registered = fill.map_or(0, |(_, id)| id);
         let line = curve_depth(shown, &self.map, p);
