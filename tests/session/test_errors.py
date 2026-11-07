@@ -61,10 +61,13 @@ def line_of(path: Path, tag: str) -> int:
 
 
 def raised(path: Path, scene: str = "S") -> BaseException:
-    """What opening ``path``'s scene ``scene`` raised."""
-    with pytest.raises(Exception) as info:
+    """What executing ``path``'s scene ``scene`` raised, which opening it
+    raised explained.
+    """
+    with pytest.raises(SceneError) as info:
         Session.open(path, scene, config=SMALL, probe=False)
-    return info.value
+    assert info.value.__cause__ is not None
+    return info.value.__cause__
 
 
 def explained(path: Path, scene: str = "S", **options) -> SceneError:

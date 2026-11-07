@@ -59,7 +59,7 @@
       }
     },
     "generation": {
-      "description": "Which execution of its source the session holds: 1 for the first.",
+      "description": "Which of the session's executions it holds: 1 as opened, and one more for each reload that executed the scene again.",
       "type": "integer",
       "minimum": 1
     },

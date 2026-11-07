@@ -7,13 +7,15 @@ rather than asked at times::
 
     lint(session, rules=(hold_watch.where(since=0, text_gap=0.3),))
 
-Nothing arms them unasked. A rule that samples frames of its own says
-which (``reads``); they are read with the lint's other frames, from the
-record or the lint's one forward run (:mod:`.frames`). Between frames an
-armed rule reads the states its execution keeps (``Record.states``): the
-scene as the script called each play, as each play ended (finished and
-cleaned up) and as the script removed from it; it asks that the execution
-keep every one of them from its arming on.
+Nothing arms them unasked: a scene arms them by calling
+:func:`.bridge.arm`, and :func:`armed` gives the rules it armed, which
+``lint(session, rules="armed")`` runs. A rule that samples frames of its
+own says which (``reads``); they are read with the lint's other frames,
+from the record or the lint's one forward run (:mod:`.frames`). Between
+frames an armed rule reads the states its execution keeps
+(``Record.states``): the scene as the script called each play, as each
+play ended (finished and cleaned up) and as the script removed from it; it
+asks that the execution keep every one of them from its arming on.
 
 The terms a rule is held to at an instant are those of the scene's arming
 in force there (:func:`.bridge.arm`, as the scene armed it last by then):
@@ -30,7 +32,7 @@ engine's clock either way.
 
 from __future__ import annotations
 
-__all__ = ["ArmedRule"]
+__all__ = ["ArmedRule", "armed"]
 
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
@@ -46,7 +48,7 @@ from .rules._rule import DEFAULT_PAD, Terms
 if TYPE_CHECKING:
     from arachne.timeline.record import Capture, Record, States
 
-    from .core import LintContext
+    from .core import LintContext, Rule
     from .findings import Finding
     from .frames import Frames
     from .parts import Parts
@@ -192,3 +194,24 @@ def _target(frames: Frames) -> tuple[int, int]:
     from .core import target_resolution
 
     return target_resolution(frames.session)
+
+
+def armed(
+    record: Record, *, sample_fps: Fraction | float | None = None
+) -> tuple[Rule, ...]:
+    """The temporal rules ``record``'s scene armed: the hold watch, sampling
+    at ``sample_fps`` (:attr:`ArmedRule.sample_fps`), and the departure
+    sweep, each armed from the scene's first :func:`.bridge.arm` on; none
+    for a scene that never armed. The motion rule the scene armed is not
+    among them: the lint runs it unasked (:class:`.bridge.Checks`).
+    """
+    from .departures import departures
+    from .watch import hold_watch
+
+    since = next((call.t for call in record.bridge.calls if call.kind == "arm"), None)
+    if since is None:
+        return ()
+    return (
+        hold_watch.where(since=since, sample_fps=sample_fps),
+        departures.where(since=since),
+    )

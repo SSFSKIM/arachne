@@ -21,9 +21,11 @@ __all__ = [
     "LintResult",
     "Part",
     "Parts",
+    "armed",
     "lint",
 ]
 
+from .armed import armed
 from .codes import CODES, Code
 from .core import RULES, LintContext, LintResult, lint
 from .findings import Finding, FindingObject

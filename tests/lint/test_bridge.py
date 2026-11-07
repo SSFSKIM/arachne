@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 
 from arachne import Axes, Camera, Dot
+from arachne.errors import SceneError
 from arachne.lint import lint
 from arachne.lint.bridge import (
     Watch,
@@ -345,8 +346,9 @@ def test_declared_terms_are_stored_for_the_rules(session_of):
 
 
 def test_an_unknown_term_is_refused(session_of):
-    with pytest.raises(TypeError, match="text_spacing"):
+    with pytest.raises(SceneError, match="text_spacing") as info:
         session_of("BadTerm", BRIDGE, frame_rate=15)
+    assert info.value.cls == "TypeError"
 
 
 # Outside a recording
@@ -375,8 +377,9 @@ def test_a_bridge_call_outside_a_recording_is_refused(call):
     [("UnknownCode", "overlap.text"), ("NoReference", "reference")],
 )
 def test_an_unknown_code_or_a_missing_reference_is_refused(session_of, scene, error):
-    with pytest.raises(ValueError, match=error):
+    with pytest.raises(SceneError, match=error) as info:
         session_of(scene, BRIDGE, frame_rate=15)
+    assert info.value.cls == "ValueError"
 
 
 # A replaced camera method keeps the record and marks the picture's measures
@@ -826,8 +829,9 @@ def test_a_cleared_watch_is_read_at_no_frame_after_it(session_of):
 
 
 def test_clear_takes_a_watch(session_of):
-    with pytest.raises(TypeError, match="watch"):
+    with pytest.raises(SceneError, match="watch") as info:
         session_of("ClearsAPoint", BRIDGE, frame_rate=15)
+    assert info.value.cls == "TypeError"
 
 
 # arm
