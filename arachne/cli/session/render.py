@@ -116,10 +116,7 @@ def render(
     def params(opened: dict[str, Any]) -> dict[str, Any]:
         asked: dict[str, Any] = {"out": str(output.resolve()), **_quality(quality)}
         if plays is not None:
-            first, last = plays
-            if last is None:
-                last = max(first, len(opened["record"]["plays"]) - 1)
-            asked["plays"] = list(range(first, last + 1))
+            asked["plays"] = _run(plays, len(opened["record"]["plays"]))
         return asked
 
     answer = ask(
@@ -179,6 +176,22 @@ def clip(
         params={"t0": t0, "t1": t1, "out": str(output.resolve()), **_quality(quality)},
     )
     _done(answer, "clip", as_json, strict)
+
+
+def _run(plays: tuple[int, int | None], count: int) -> list[int]:
+    """The plays ``--plays`` names, of a scene of ``count`` plays: play A
+    through play B, or the last play when B is past it or not given, as
+    render's ``-n`` takes them. An A past the last play is a usage error.
+    """
+    first, last = plays
+    if first >= count:
+        where = (
+            "the scene has no plays" if count == 0 else f"the last play is {count - 1}"
+        )
+        raise click.UsageError(
+            f"Invalid value for '--plays': play {first} is past the end; {where}."
+        )
+    return list(range(first, count if last is None else min(last, count - 1) + 1))
 
 
 def _quality(flag: str | None) -> dict[str, Any]:
