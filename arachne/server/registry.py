@@ -577,21 +577,32 @@ def connect_or_start(
     asked from, where a server it starts runs. A caller asking while
     another asks for the same session waits its turn for as long as the
     deadline (the protocol's, :data:`~.protocol.DEADLINE_S`, unless
-    ``deadline_s``), then raises :class:`ClientTimeout`.
+    ``deadline_s``), then raises :class:`ClientTimeout`: the deadline bounds
+    the caller's whole wait, its turn, a start and the ``open`` together,
+    the ``open`` sent with what is left of it.
     """
     if deadline_s is not None and not _positive(deadline_s):
         raise BadRequest(
             f"deadline_s is a number of seconds above 0, not {deadline_s!r}."
         )
     wait = protocol.DEADLINE_S if deadline_s is None else deadline_s
+    until = time.monotonic() + wait
     found_dir = session_dir(directory)
     named = os.path.abspath(file)
     config = dict(config or {})
     cwd = _cwd()
     key = session_key(os.path.realpath(file), scene, config, cwd)
     params: dict[str, Any] = {"file": named, "scene": scene, "config": config}
-    if deadline_s is not None:
-        params["deadline_s"] = deadline_s
+
+    def opened(connection: Connection) -> dict[str, Any]:
+        # The open has what is left of the deadline, nothing when none is.
+        left = until - time.monotonic()
+        if left <= 0:
+            raise ClientTimeout(
+                f"The deadline, {wait:g} s, passed before the session could be opened."
+            )
+        return connection.call("open", **params, deadline_s=left)
+
     with _locked(found_dir / "locks" / f"{key}.lock", wait) as had:
         if not had:
             raise ClientTimeout(
@@ -606,7 +617,7 @@ def connect_or_start(
             except OSError:
                 continue
             try:
-                connection.opened = connection.call("open", **params)
+                connection.opened = opened(connection)
             except ServerGone:
                 connection.close()
                 continue
@@ -628,7 +639,7 @@ def connect_or_start(
                 raise StartFailed(f"A session server started, then {found}") from None
             raise
         try:
-            connection.opened = connection.call("open", **params)
+            connection.opened = opened(connection)
         except BaseException:
             connection.close()
             _end(found_dir, pid, path, SHUTDOWN_S)
