@@ -34,6 +34,7 @@ __all__ = [
 
 import json
 import math
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NoReturn, TypeVar
@@ -191,14 +192,22 @@ def ask(
 ) -> dict[str, Any]:
     """Open the session of ``scene`` in ``file`` under ``config``, then ask
     it ``method`` with ``params`` (given ones only; or as a function of the
-    open's answer makes them; none: the open's answer): the answer. An error answer ends the command with its status,
-    printed as ``as_json`` says.
+    open's answer makes them; none: the open's answer): the answer. An
+    error answer ends the command with its status, printed as ``as_json``
+    says.
     """
+    # A request past its deadline in this process ends it, from another
+    # thread, while the scene's prints go to standard error: its error is
+    # printed where this command prints.
+    stdout = sys.stdout
+
+    def expired(error: dict[str, Any]) -> None:
+        _report(error, as_json, stdout)
+
     try:
-        with client.reached(file, scene, config, once=once, deadline_s=deadline_s) as (
-            session,
-            answer,
-        ):
+        with client.reached(
+            file, scene, config, once=once, deadline_s=deadline_s, expired=expired
+        ) as (session, answer):
             if method is not None:
                 asked = params(answer) if callable(params) else params or {}
                 given = {k: v for k, v in asked.items() if v is not None}
@@ -213,18 +222,31 @@ def ask(
 
 def _failed(failed: client.Failed, as_json: bool) -> NoReturn:
     error, code = failed.error, failed.code
-    if as_json:
-        click.echo(json.dumps(error))
     if code == protocol.INVALID_PARAMS:
+        if as_json:
+            click.echo(json.dumps(error))
         raise click.UsageError(error["message"])
+    _report(error, as_json)
     data = error.get("data")
     if code == protocol.SCENE_ERROR and isinstance(data, dict):
-        click.echo(data["report"], err=True)
         raise click.exceptions.Exit(EXIT_SCENE_ERROR)
-    click.echo(f"arachne: {error['message']}", err=True)
-    if code == protocol.INTERNAL_ERROR and isinstance(data, dict):
-        click.echo(data.get("traceback", ""), err=True, nl=False)
     raise click.exceptions.Exit(EXIT_FAILED)
+
+
+def _report(error: dict[str, Any], as_json: bool, stdout: Any = None) -> None:
+    """Print the error object ``error``: as JSON on ``stdout`` (else the
+    standard output) with ``as_json``, and for reading on standard error,
+    a scene's error as its trimmed report.
+    """
+    if as_json:
+        click.echo(json.dumps(error), file=stdout)
+    data = error.get("data")
+    if error["code"] == protocol.SCENE_ERROR and isinstance(data, dict):
+        click.echo(data["report"], err=True)
+        return
+    click.echo(f"arachne: {error['message']}", err=True)
+    if error["code"] == protocol.INTERNAL_ERROR and isinstance(data, dict):
+        click.echo(data.get("traceback", ""), err=True, nl=False)
 
 
 def printed(

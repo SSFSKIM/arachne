@@ -13,11 +13,14 @@ from __future__ import annotations
 __all__ = ["Client", "Failed", "Gone", "InProcess", "Resident", "reached"]
 
 import contextlib
+import functools
 import json
+import os
 import sys
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, NoReturn, Protocol
 
 from ..server import protocol, registry
 from ..server.protocol import RpcError
@@ -91,32 +94,79 @@ def _reaching() -> Iterator[None]:
 
 class InProcess:
     """A session held in this process, answered by the server's own
-    dispatcher. ``deadline_s`` is read and checked as a server reads it,
-    but no watchdog keeps it: nothing ends this process for a request.
-    Whatever the scene prints goes to standard error, as a server's does.
+    dispatcher as a server answers: with the store of answers
+    (``ARACHNE_STORE``), so that a render checks itself against the latest
+    lint's summary there, and each request kept to its deadline by the
+    server's watchdog. A request past its deadline ends the process, as it
+    ends a server: ``expired`` is given the deadline's error object, unless
+    the answer had been claimed first; what a render running wrote is
+    removed, and the process exits with status 3. Whatever the scene prints
+    goes to standard error, as a server's does to its log.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self, expired: Callable[[dict[str, Any]], object] = lambda error: None
+    ) -> None:
         from ..server.dispatch import Dispatcher
+        from ..server.store import Store
+        from ..server.watchdog import Watchdog
 
-        self._dispatcher = Dispatcher()
+        self._dispatcher = Dispatcher(Store())
+        self._watchdog = Watchdog()
+        self._expired = expired
 
     def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         from ..server.dispatch import deadline, internal_error
 
         _checked(method, params)
         try:
-            _, given = deadline(params)
-            with contextlib.redirect_stdout(sys.stderr):
-                found = self._dispatcher.handle(method, given)
+            given_s, given = deadline(params)
         except RpcError as error:
             raise Failed(protocol.error(None, error)["error"]) from None
+        limit = protocol.DEADLINE_S if given_s is None else given_s
+        ticket = self._watchdog.arm(
+            time.monotonic() + limit,
+            lambda respond: self._end(method, limit, respond),
+        )
+        # What the request publishes (a render's file) is published under the
+        # claim of its answer, so a deadline that passes first leaves it unmade.
+        self._dispatcher.publish = functools.partial(self._watchdog.claim, ticket)
+        try:
+            with contextlib.redirect_stdout(sys.stderr):
+                found = self._dispatcher.handle(method, given)
+            # Claimed: from here the deadline can't pass unanswered. Expired
+            # first, the process is ending.
+            self._watchdog.answering(ticket)
+        except RpcError as error:
+            raise Failed(protocol.error(None, error)["error"]) from None
+        finally:
+            self._dispatcher.publish = None
+            self._watchdog.end(ticket)
         try:
             # The answer as a server would send it.
             result: dict[str, Any] = json.loads(json.dumps(found, allow_nan=False))
         except (TypeError, ValueError, OverflowError, RecursionError) as error:
             raise Failed(protocol.error(None, internal_error(error))["error"]) from None
         return result
+
+    def _end(self, method: str, limit: float, respond: bool) -> NoReturn:
+        """End the process: ``method`` ran past its deadline, ``limit`` s.
+        Each step is bounded as a server's end is.
+        """
+        from ..server.serve import _bounded, _flush
+
+        try:
+            if respond:
+                error = {
+                    "code": protocol.DEADLINE_EXCEEDED,
+                    "message": f"{method} ran past its deadline of {limit:g} s.",
+                    "data": {"method": method, "deadline_s": limit},
+                }
+                _bounded(lambda: self._expired(error))
+            _bounded(self._dispatcher.abandon)
+            _bounded(_flush)
+        finally:
+            os._exit(protocol.EXIT_DEADLINE)
 
 
 class Resident:
@@ -139,17 +189,19 @@ def reached(
     *,
     once: bool,
     deadline_s: float,
+    expired: Callable[[dict[str, Any]], object] = lambda error: None,
 ) -> Iterator[tuple[Client, dict[str, Any]]]:
     """The session of ``scene`` in ``file`` under ``config``, opened, and
     what its ``open`` answered, each request by ``deadline_s``. With
     ``once``, it is held in this process and let go at the end; else by the
     registry's server holding it, started when none does, which goes on
-    holding it.
+    holding it. ``expired`` is told of a request in this process past its
+    deadline, as it ends the process (:class:`InProcess`).
     """
     named = str(file.resolve())
     opening: dict[str, Any] = {"file": named, "scene": scene, "config": config}
     if once:
-        here = InProcess()
+        here = InProcess(expired)
         try:
             yield here, here.call("open", {**opening, "deadline_s": deadline_s})
         finally:
