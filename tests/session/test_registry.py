@@ -76,6 +76,10 @@ def test_a_session_is_found_again_never_started_twice(host, tmp_path):
     first = host.connect(path, "Still", SMALL)
     assert first.opened["generation"] == 1
     assert first.opened["record"]["scene_class"] == "Still"
+    # The entry names the session before its open is answered, so a caller
+    # asking again at once finds it.
+    (entry,) = registry.sessions(host.directory)
+    assert (entry.pid, entry.key) == (first.pid, first.key)
     again = host.connect(path, "Still", SMALL)
     assert again.pid == first.pid
     assert again.opened["generation"] == 1
