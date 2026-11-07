@@ -8,6 +8,7 @@ execution read, at any time, holds anything else.
 from __future__ import annotations
 
 import importlib.util
+import os
 import textwrap
 from pathlib import Path
 
@@ -131,8 +132,11 @@ def test_a_render_is_never_checked_against_a_lint_of_other_load_time_data(tmp_pa
     _opened_and_closed(params)
     out = tmp_path / "render.mp4"
     rendered = _answered(params, "render", {"out": str(out)}, kept=True)["render"]
+    # Checked against the summary of its own load-time data, kept apart from
+    # the first's: one summary for each.
+    assert rendered["self_check"]["status"] == "checked"
     assert "divergence" not in rendered
-    assert rendered["self_check"]["status"] == "unchecked"
+    assert len(list(Path(os.environ["ARACHNE_STORE"]).rglob("summaries/*.json"))) == 2
 
 
 def test_a_session_held_executes_again_when_a_file_read_at_load_changes(tmp_path):
@@ -149,6 +153,37 @@ def test_a_session_held_executes_again_when_a_file_read_at_load_changes(tmp_path
         server.handle("close", {})
     assert (before["generation"], after["generation"]) == (1, 2)
     assert before["state"] != after["state"]
+
+
+def _rendered(params: dict, out: Path) -> tuple[bool, dict]:
+    """A render of the session ``params`` opens, on a server with the store:
+    whether the server opened it from the store, and the render's answer,
+    its path aside.
+    """
+    server = Dispatcher(Store())
+    try:
+        server.handle("open", params)
+        from_store = server.session is None
+        rendered = server.handle("render", {"out": str(out)})
+    finally:
+        server.handle("close", {})
+    del rendered["render"]["path"]
+    return from_store, rendered
+
+
+def test_a_render_is_checked_alike_whether_its_session_executed_or_was_stored(
+    tmp_path,
+):
+    path = _write(tmp_path, "scene.py", READS_AT_LOAD)
+    (tmp_path / "size.txt").write_text("1")
+    params = {"file": str(path), "scene": "Input", "config": SMALL}
+    # No lint: the first server executes the session, the second opens it
+    # from the store; the render's check is of the files, not of the history.
+    executed = _rendered(params, tmp_path / "executed.mp4")
+    stored = _rendered(params, tmp_path / "stored.mp4")
+    assert (executed[0], stored[0]) == (False, True)
+    assert executed[1]["render"]["self_check"] == {"status": "checked", "reason": None}
+    assert stored[1] == executed[1]
 
 
 def test_the_store_is_kept_under_the_native_core_too(monkeypatch):
