@@ -8,7 +8,7 @@
 mod common;
 
 use arachne_core::composite::{SAMPLES, area_coverage, blend, premultiply, sample_point};
-use arachne_core::depth::{Planarity, WorldPlane};
+use arachne_core::depth::{self, Planarity, WorldPlane};
 use arachne_core::project::{FrameMap, Placement, Projection, pre_display, subpixel_coords};
 use arachne_core::scanline;
 use arachne_core::shade::ce_face_stops;
@@ -663,6 +663,37 @@ fn points_an_ulp_off_a_line_have_no_plane() {
             WorldPlane::of_triangle(line, 0.0),
             None,
             "triangle {line:?}"
+        );
+    }
+}
+
+/// Normals of length `L` along (0.6, 0, 0.8), against the bound that decides whether points have a
+/// plane: `(L, extent, perimeter, grid, points anywhere)`, unsnapped and at two grids. The binding's
+/// `_points_somewhere` is held to the same table (`tests/python/test_core_binding.py`).
+const SOMEWHERE: [(f64, f64, f64, f64, bool); 11] = [
+    (1e-3, 1.0, 4.0, 0.0, true),
+    (1e-3, 1.0, 4.0, 1.0 / 32768.0, true),
+    (1e-3, 1.0, 4.0, 1.0 / 16384.0, true),
+    (6e-4, 1.0, 4.0, 1.0 / 32768.0, true),
+    (6e-4, 1.0, 4.0, 1.0 / 16384.0, false),
+    (2e-4, 1.0, 4.0, 0.0, true),
+    (2e-4, 1.0, 4.0, 1.0 / 32768.0, false),
+    (2e-4, 1.0, 4.0, 1.0 / 16384.0, false),
+    (2e-4, 1000.0, 4.0, 0.0, false),
+    (5e-10, 1.0, 4.0, 0.0, false),
+    (5e-10, 1.0, 0.0, 1.0 / 16384.0, false),
+];
+
+#[test]
+fn a_normal_points_somewhere_only_beyond_its_rounding_and_its_snap() {
+    // Rounding's noise grows with the square of the points' extent; a snap's with the grid and the
+    // outline's perimeter. A normal no longer than both points nowhere.
+    for (length, extent, perimeter, grid, want) in SOMEWHERE {
+        let n = [0.6 * length, 0.0, 0.8 * length];
+        assert_eq!(
+            depth::points_somewhere(n, extent, perimeter, grid),
+            want,
+            "{length} over extent {extent}, perimeter {perimeter}, grid {grid}"
         );
     }
 }

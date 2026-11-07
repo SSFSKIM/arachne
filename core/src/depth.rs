@@ -484,8 +484,8 @@ pub(crate) fn newell(points: &[[f64; 3]], first: [f64; 3]) -> [f64; 3] {
 /// snapping, decides: none of their planes is theirs. Rounding's noise scales as the normal does,
 /// with the square of the points' size; snapping's is at most `2δP` for points each moved up to
 /// `δ` ([`snap_reach`]: Newell's sum, or a cross product, moved by each point's snap), and the
-/// bound is twice that.
-fn points_somewhere(n: [f64; 3], extent: f64, perimeter: f64, grid: f64) -> bool {
+/// bound is twice that. Public for the binding's `_points_somewhere` and its tests.
+pub fn points_somewhere(n: [f64; 3], extent: f64, perimeter: f64, grid: f64) -> bool {
     let rounding = PLANAR_TOLERANCE * extent * extent;
     let snapping = 4.0 * snap_reach(grid) * perimeter;
     dot(n, n).sqrt() > rounding.max(snapping)

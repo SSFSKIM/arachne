@@ -1180,6 +1180,16 @@ fn probe_fixtures() -> Vec<(&'static str, u32, u32, Vec<PyFrameDelta>)> {
         .collect()
 }
 
+/// Whether a normal `newell` (a Newell sum or a cross product, three floats) found from points
+/// spanning `extent` around an outline of `perimeter`, those points snapped to `grid` (`0.0`: not
+/// snapped), is long enough to point anywhere: the core's own test (`depth::points_somewhere`),
+/// which decides whether points have a plane. It exists for the depth verifier's contract test,
+/// which holds its own bound to the core's at the grids it sweeps; it draws nothing.
+#[pyfunction(name = "_points_somewhere")]
+fn points_somewhere(newell: [f64; 3], extent: f64, perimeter: f64, grid: f64) -> bool {
+    crate::depth::points_somewhere(newell, extent, perimeter, grid)
+}
+
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("XF_VERSION", XF_VERSION)?;
@@ -1198,5 +1208,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyApplyStats>()?;
     m.add_function(wrap_pyfunction!(read_xf, m)?)?;
     m.add_function(wrap_pyfunction!(write_xf, m)?)?;
+    m.add_function(wrap_pyfunction!(points_somewhere, m)?)?;
     Ok(())
 }

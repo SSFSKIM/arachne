@@ -774,3 +774,31 @@ def test_the_planes_of_a_record_are_found_as_the_drawer_finds_them():
     stream.apply(delta)
     # A flat square shares z: its axis plane (z, code 6); bent: a curve (0); a line too.
     assert stream.planes([1, 2, 3, 9]) == {1: [6], 2: [0], 3: [0]}
+
+
+#: Normals of length ``L`` along (0.6, 0, 0.8): ``(L, extent, perimeter, grid, points anywhere)``,
+#: unsnapped and at two grids, as the core's own test answers them (``core/tests/path.rs`` holds
+#: ``depth::points_somewhere`` to the same table).
+SOMEWHERE = [
+    (1e-3, 1.0, 4.0, 0.0, True),
+    (1e-3, 1.0, 4.0, 1 / 32768, True),
+    (1e-3, 1.0, 4.0, 1 / 16384, True),
+    (6e-4, 1.0, 4.0, 1 / 32768, True),
+    (6e-4, 1.0, 4.0, 1 / 16384, False),
+    (2e-4, 1.0, 4.0, 0.0, True),
+    (2e-4, 1.0, 4.0, 1 / 32768, False),
+    (2e-4, 1.0, 4.0, 1 / 16384, False),
+    (2e-4, 1000.0, 4.0, 0.0, False),
+    (5e-10, 1.0, 4.0, 0.0, False),
+    (5e-10, 1.0, 0.0, 1 / 16384, False),
+]
+
+
+@pytest.mark.parametrize(("length", "extent", "perimeter", "grid", "want"), SOMEWHERE)
+def test_points_somewhere_is_the_core_s_own_bound_at_the_grid_given(
+    length, extent, perimeter, grid, want
+):
+    from arachne_core._core import _points_somewhere
+
+    newell = (0.6 * length, 0.0, 0.8 * length)
+    assert _points_somewhere(newell, extent, perimeter, grid) is want
