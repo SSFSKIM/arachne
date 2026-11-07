@@ -955,16 +955,19 @@ def test_session_render_divergence_is_shown_and_strict_exits_1(tmp_path, mode):
     assert out.stat().st_size > 0
 
 
+@pytest.mark.parametrize("linted", [True, False], ids=["linted", "unlinted"])
 @pytest.mark.parametrize("command", ["render", "clip"])
-def test_session_render_once_and_the_server_answer_alike(tmp_path, command):
+def test_session_render_once_and_the_server_answer_alike(tmp_path, command, linted):
     path = _write(tmp_path, "clipped.py", CLIPPED)
     out = tmp_path / f"{command}.mp4"
     span = ["--t0", "1.2", "--t1", "1.8"] if command == "clip" else []
-    # The latest lint, in the store both modes share, is what each checks
-    # against: without one, the session the second mode opens from the store
-    # has no summary of its own, and its render is unchecked.
-    linted = _invoke("lint", str(path), "Clipped", *_session_args("server", tmp_path))
-    assert linted.exit_code == 0, linted.output
+    # Each mode checks against the summary in the store both share: the latest
+    # lint's, or, with none, the one the first mode's execution kept, which
+    # the second mode's session, opened from the store, is checked against.
+    if linted:
+        session = _session_args("server", tmp_path)
+        found = _invoke("lint", str(path), "Clipped", *session)
+        assert found.exit_code == 0, found.output
     answers = []
     for mode in MODES:
         found = _invoke(
