@@ -277,7 +277,9 @@ code       meaning, and ``data``
            ``{type, message, reason}``: the refusal's class name, its message
            and its stable code, or null
 ``-32002`` the request ran past its deadline: ``data`` is ``{method,
-           deadline_s}``; the server ends
+           deadline_s, ends}``. ``ends`` true: it ran past it, and the
+           server ends; false: it was past it before its turn came, did not
+           run, and the server goes on (see Deadlines)
 ``-32003`` no session is open: no ``data``
 ``-32004`` ``open`` asked for another scene, file or config than the session
            the server holds: no ``data``
@@ -292,22 +294,30 @@ server's, ``--deadline-s``, else ``ARACHNE_SESSION_DEADLINE_S``, else 600.
 Its clock starts when the request's line has been read whole, which the
 server does as the line arrives, whatever it is answering, so a request
 queued behind another counts its wait from when it was sent, and it runs to
-its answer's
-writing, so a client that stopped reading holds the server no longer than a
-scene that never ends. A thread of its own keeps it (:mod:`.watchdog`):
-whatever the scene's code is doing, a request past its deadline is answered
-``-32002`` (unless it had begun writing its own answer: a request is never
-answered twice), and the process exits with status 3. A request already
-past its deadline when its turn comes does not run. A client that gives up
-on a request needs nothing else to stop the work it asked for.
+its answer's writing, so a client that stopped reading holds the server no
+longer than a scene that never ends. A thread of its own keeps it
+(:mod:`.watchdog`).
+
+A request already past its deadline when its turn comes does not run: it
+is answered ``-32002``, ``ends`` false (a notification is dropped), and the
+server goes on to the next line. A request past its deadline as it runs,
+whatever the scene's code is doing, is answered ``-32002``, ``ends`` true
+(unless it had begun writing its own answer: a request is never answered
+twice), and the process exits with status 3, taking no other request
+before it does. A line that runs nothing (no JSON, past the longest
+message, no request, or a request whose ``deadline_s`` is refused) is
+answered however long it waited: its deadline bounds only its answer's
+writing. A client that gives up on a request needs nothing else to stop the
+work it asked for: still queued, it never runs; running, it ends the
+server.
 
 The server's end
 ----------------
 
 The server ends by itself when no request has been answered for
 ``ARACHNE_SESSION_IDLE_S`` seconds, on ``shutdown``, and, with ``--stdio``,
-at the end of its standard input, each with status 0; past a deadline with
-status 3; with status 1 if it fails. However it ends, each step on its way
+at the end of its standard input, each with status 0; past a running
+request's deadline with status 3; with status 1 if it fails. However it ends, each step on its way
 out (a deadline's error sent, what a render running wrote removed, its
 socket and registry entry removed, a word on standard error, its streams
 flushed) takes at most 1 s (:data:`~.protocol.ENDING_S`), and then the
@@ -330,7 +340,9 @@ kills it if it has not ended within a few seconds (:mod:`.registry`). Still
 over the budget with no other server to end, it ends itself, with status 0,
 once no connection to it is open: every request a caller sends on a
 connection it holds is answered first. Neither this nor the idle end waits
-on a client that has closed its connection.
+on a client that has closed its connection. An idle connection held open
+while other traffic arrives keeps an over-budget server resident;
+``ARACHNE_SESSION_IDLE_S`` still bounds a server with no traffic.
 """
 
 from __future__ import annotations

@@ -172,7 +172,7 @@ class InProcess:
                 error = {
                     "code": protocol.DEADLINE_EXCEEDED,
                     "message": f"{method} ran past its deadline of {limit:g} s.",
-                    "data": {"method": method, "deadline_s": limit},
+                    "data": {"method": method, "deadline_s": limit, "ends": True},
                 }
                 _bounded(lambda: self._expired(error))
             _bounded(self._dispatcher.abandon)
