@@ -23,7 +23,6 @@ from pathlib import Path
 import pytest
 
 import arachne
-from arachne.errors import SceneError
 from arachne.session import Session
 from arachne.timeline import inputs
 from arachne.timeline.execution import (
@@ -532,9 +531,8 @@ class Fails(Scene):
 """,
     )
     unwatched = (builtins.__import__, importlib.import_module)
-    with pytest.raises(SceneError, match="the scene's own error") as info:
+    with pytest.raises(RuntimeError, match="the scene's own error"):
         _open(scene, "Fails")
-    assert info.value.cls == "RuntimeError"
     assert not inputs.active()
     # The process's import functions are untouched.
     assert (builtins.__import__, importlib.import_module) == unwatched
