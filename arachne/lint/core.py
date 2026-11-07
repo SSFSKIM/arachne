@@ -132,7 +132,7 @@ def lint(
     selectors and pairs of ``exempt`` exempt (:mod:`.exempt`).
 
     ``rules="armed"`` runs the temporal rules the scene armed
-    (:func:`.armed.armed`), the hold watch sampling at ``sample_fps``,
+    (:func:`.arming.armed`), the hold watch sampling at ``sample_fps``,
     which is theirs alone: raises :class:`ValueError` for a ``sample_fps``
     given with any other rules.
     """
@@ -142,7 +142,7 @@ def lint(
     if isinstance(rules, str):
         if rules != "armed":
             raise ValueError(f"rules are rules or 'armed', not {rules!r}")
-        from .armed import armed
+        from .arming import armed
 
         rules = armed(record, sample_fps=sample_fps)
     elif sample_fps is not None:

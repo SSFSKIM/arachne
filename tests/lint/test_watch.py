@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 from arachne.lint import lint
-from arachne.lint.armed import ArmedRule
+from arachne.lint.arming import ArmedRule
 from arachne.lint.departures import departures
 from arachne.lint.plays import played
 from arachne.lint.serialise import report

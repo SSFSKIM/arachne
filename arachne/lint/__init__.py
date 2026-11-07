@@ -25,7 +25,7 @@ __all__ = [
     "lint",
 ]
 
-from .armed import armed
+from .arming import armed
 from .codes import CODES, Code
 from .core import RULES, LintContext, LintResult, lint
 from .findings import Finding, FindingObject
