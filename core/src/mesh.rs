@@ -9,8 +9,10 @@
 //!   across a projected triangle (for CE's default projection; under the exponential option, or
 //!   with a corner at or behind the eye, the plane through the corners approximates it), so a plane
 //!   per triangle is exact at every sub-sample. The plane comes from the triangle's canonical world
-//!   plane (`depth::WorldPlane`), so coplanar triangles of any triangulation, and paths on their
-//!   plane, get bit-identical depth and tie by draw order. A fixed orientation record is a
+//!   plane (`depth::WorldPlane`), so coplanar triangles of any triangulation get bit-identical
+//!   depth; registered in the frame's `depth::Registry`, before its paths, it gives the triangle
+//!   the identity of the plane it lies on, which paths and other meshes on that plane share, so
+//!   they tie by draw order (`order::one_plane`). A fixed orientation record is a
 //!   camera-facing plane at its centre's depth. Anything else is in front of the scene, and ties go
 //!   by draw order, as under a flat camera, where everything ties.
 //! - Colour: the fill, by the record's group opacity; lit when the record is `shade_in_3d` and the
@@ -25,7 +27,7 @@ use crate::composite::{
     Coverage, FULL, Fragment, OpaquePass, Plane, Producer, Rect, SAMPLES, SUBPIXEL,
     TransparentPass, premultiply, sample_fixed,
 };
-use crate::depth::WorldPlane;
+use crate::depth::{Registry, WorldPlane};
 use crate::project::{FrameMap, Projection, placement, pre_display};
 use crate::shade::{Light, TriangleColour};
 use crate::tiles::{TILE, tile_index, tiles_across};
@@ -68,6 +70,8 @@ struct Tri {
     /// Which mesh drawn it belongs to (from 1), so the compositor can merge one surface's
     /// fragments that tile a pixel.
     surface: u32,
+    /// The registered plane it lies on ([`Fragment::plane`]), `0` for none.
+    plane: u32,
 }
 
 /// Mesh records lowered to triangles, binned by tile: a producer of mask fragments.
@@ -93,8 +97,15 @@ fn transform_normal(m: &Affine, n: [f64; 3]) -> [f64; 3] {
     }
 }
 
-/// Lowers mesh records to triangles for a frame of `width x height` pixels.
-pub fn lower(view: &View, width: u32, height: u32, draws: &[MeshDraw<'_>]) -> Meshes {
+/// Lowers mesh records to triangles for a frame of `width x height` pixels, registering the plane
+/// of each triangle keyed on its world plane in the frame's `registry`, in draw order.
+pub fn lower(
+    view: &View,
+    width: u32,
+    height: u32,
+    draws: &[MeshDraw<'_>],
+    registry: &mut Registry,
+) -> Meshes {
     // A mesh is a surface's faces: CE paints them as paths, through its Cairo context.
     let map = FrameMap::of_kind(view, RecordKind::Mesh, width, height);
     let camera = match &view.camera {
@@ -174,17 +185,21 @@ pub fn lower(view: &View, width: u32, height: u32, draws: &[MeshDraw<'_>]) -> Me
                 px.iter().map(|p| p[1]).fold(f64::NEG_INFINITY, f64::max),
             ];
             // A projected triangle lies on its world plane, made canonical so coplanar meshes of
-            // any triangulation (and paths on the same plane) get the same depth plane.
-            let depth = match (keyed, projection.as_ref()) {
-                (Some(plane), _) => plane,
+            // any triangulation get the same depth plane, and registered, so what lies on it
+            // shares its identity.
+            let (depth, plane) = match (keyed, projection.as_ref()) {
+                (Some(plane), _) => (plane, 0),
                 (None, Some(p)) if idx.iter().all(|i| p.keys_planar_at(world[*i])) => {
-                    WorldPlane::of_triangle(idx.map(|i| world[i]), grid)
+                    let at = idx.map(|i| world[i]);
+                    WorldPlane::of_triangle(at, grid)
                         .and_then(|plane| {
-                            p.key_plane(&plane, &map, world[idx[0]], MIN_PLANE_COS, region)
+                            let (_, id) = registry.merge(plane, &at);
+                            let key = p.key_plane(&plane, &map, at[0], MIN_PLANE_COS, region);
+                            key.map(|key| (key, id))
                         })
-                        .unwrap_or_else(through)
+                        .unwrap_or_else(|| (through(), 0))
                 }
-                _ => through(),
+                _ => (through(), 0),
             };
             let colour = match &light {
                 None => TriangleColour::flat(rgb, alpha),
@@ -205,6 +220,7 @@ pub fn lower(view: &View, width: u32, height: u32, draws: &[MeshDraw<'_>]) -> Me
                 order: draw.order,
                 sub: draw.sub + sub as u32,
                 surface: surface as u32 + 1,
+                plane,
             };
             meshes.push(px, tri, height);
         }
@@ -366,12 +382,11 @@ impl Meshes {
                         continue;
                     }
                     let colour = t.colour.at(x, y, mask);
-                    add(
-                        x,
-                        y,
+                    let mut f =
                         Fragment::new(t.depth, colour, Coverage::Mask(mask), t.order, t.sub)
-                            .on_surface(t.surface),
-                    );
+                            .on_surface(t.surface);
+                    f.plane = t.plane;
+                    add(x, y, f);
                 }
             }
         }

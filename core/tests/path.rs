@@ -1635,3 +1635,448 @@ fn the_scanlines_masks_and_areas_follow_the_nonzero_winding() {
     // 128 samples a side resolve an edge to within about 1/128 of the pixel.
     assert!(worst < 0.02, "worst area error {worst}");
 }
+
+/// A view in which a regular octahedron's face is seen two degrees from edge-on: 854 by 480
+/// pixels, the camera at 75 degrees from the pole and 30 around it, unlit, on the grid the engine
+/// snaps that frame's geometry to.
+fn grazing_view() -> View {
+    View {
+        camera: Camera::ThreeD(ThreeDCamera {
+            phi: 1.3089969158172607,
+            theta: 0.5235987901687622,
+            gamma: 0.0,
+            focal_distance: 20.0,
+            zoom: 1.0,
+            exponential_projection: false,
+            light_source: [-7.0, -9.0, 10.0],
+            shading_factor: 0.2,
+            should_apply_shading: false,
+        }),
+        frame_width: 14.233333587646484,
+        input_grid: 6.103515625e-05,
+        ..flat_view(854, 480, [0.0, 0.0, 0.0, 1.0])
+    }
+}
+
+/// The octahedron's vertex distance from its centre, on that grid.
+const OCTA: f64 = 0.70709228515625;
+
+/// A face of the octahedron through `corners`, filled with `fill` and stroked with `stroke` at
+/// CE's width for its faces, as the engine hands it over.
+fn octahedron_face(
+    slot: u32,
+    corners: &[[f64; 3]],
+    fill: [f64; 4],
+    stroke_rgba: [f64; 4],
+) -> (Shape, Record) {
+    on_grid(
+        |s| {
+            let mut r = stroke(slot, s, stroke_rgba, 4.0);
+            r.paint.fill = Paint::One(fill);
+            r
+        },
+        &ring(corners),
+        6.103515625e-05,
+    )
+}
+
+/// The face seen within two degrees of edge-on (its normal 0.034 from square to the sight line), a
+/// sliver 1.6 to 3 pixels across, narrower than its stroke (2.4 pixels).
+fn grazing_face(fill: [f64; 4], stroke_rgba: [f64; 4]) -> (Shape, Record) {
+    octahedron_face(
+        7,
+        &[[0.0, -OCTA, 0.0], [0.0, 0.0, -OCTA], [OCTA, 0.0, 0.0]],
+        fill,
+        stroke_rgba,
+    )
+}
+
+#[test]
+fn a_grazing_face_s_stroke_is_over_its_own_fill_wherever_the_stroke_covers_a_pixel() {
+    // CE strokes a face over its fill. Where the stroke covers a pixel whole, the face's own fill
+    // never shows through it, however the fill's depth and the stroke's compare there.
+    let view = grazing_view();
+    let (fill_rgba, stroke_rgba) = ([0.9, 0.1, 0.1, 1.0], [0.1, 0.2, 0.9, 1.0]);
+    let none = [0.0; 4];
+    let frame = |fill, stroke| {
+        stream(view.clone(), &[grazing_face(fill, stroke)], Vec::new())
+            .draw(854, 480, 1)
+            .unwrap()
+    };
+    let (both, strokes, fills) = (
+        frame(fill_rgba, stroke_rgba),
+        frame(none, stroke_rgba),
+        frame(fill_rgba, none),
+    );
+    let stroked = premultiply(stroke_rgba);
+    let at = |f: &[u8], i: usize| -> [u8; 4] { f[i * 4..i * 4 + 4].try_into().unwrap() };
+    let mut seen = 0;
+    for i in 0..854 * 480 {
+        if at(&strokes, i) == stroked && at(&fills, i) != BLACK {
+            seen += 1;
+            assert_eq!(
+                at(&both, i),
+                stroked,
+                "pixel {},{}: the fill shows through its own stroke",
+                i % 854,
+                i / 854
+            );
+        }
+    }
+    assert!(
+        seen > 10,
+        "only {seen} pixels where the stroke covers the fill"
+    );
+}
+
+#[test]
+fn beside_a_grazing_sliver_the_later_face_s_stroke_on_their_shared_edge_is_on_top() {
+    // Sub-sample 3 of pixel (406, 254) lies 0.44 px inside the sliver, under its stroke's body
+    // along two of its edges, one the edge it shares with the face beside it, drawn later, whose
+    // fill stops 1.17 px away and whose stroke covers it. Both strokes are keyed on that one edge,
+    // where they tie, and the later is on top, as CE paints it; the sliver's fill, on its plane, is
+    // behind them. Keyed on its plane beyond its outline, the neighbour's stroke was behind the
+    // sliver's, keyed on the shared edge.
+    let view = grazing_view();
+    let (grey, white) = ([0.5, 0.5, 0.5, 1.0], [1.0, 1.0, 1.0, 1.0]);
+    let sliver = grazing_face(grey, white);
+    let beside = octahedron_face(
+        11,
+        &[[OCTA, 0.0, 0.0], [0.0, 0.0, -OCTA], [0.0, OCTA, 0.0]],
+        grey,
+        white,
+    );
+    let s = stream(view, &[sliver, beside], Vec::new());
+    let found = s.contributors(406, 254, 407, 255).unwrap();
+    let pixel = &found[&(406, 254)];
+    let order: Vec<u32> = pixel.samples[3]
+        .iter()
+        .map(|(l, _)| pixel.leaves[*l].object)
+        .collect();
+    assert!(
+        order.contains(&111),
+        "the neighbour covers sub-sample 3: {order:?}"
+    );
+    assert_eq!(order.last(), Some(&111), "bottom first: {order:?}");
+}
+
+#[test]
+fn beside_a_grazing_sliver_its_fill_beyond_its_outline_is_behind_the_nearer_face() {
+    // Sub-sample 5 of pixel (396, 240) lies outside the sliver's fill, in a cell its fill
+    // reaches into, and inside the face beside it, which shares an edge with it and is nearer
+    // there. Read on its plane at that point, beyond its outline, the sliver's fill was nearer
+    // than any point of the sliver, and in front of the face beside it; read at its outline's
+    // nearest point, it is behind it.
+    let view = grazing_view();
+    let (fill, stroke_rgba) = (
+        [0.34509804, 0.76862745, 0.86666667, 0.5],
+        [0.34509804, 0.76862745, 0.86666667, 1.0],
+    );
+    let sliver = grazing_face(fill, stroke_rgba);
+    let beside = octahedron_face(
+        9,
+        &[[0.0, 0.0, OCTA], [0.0, -OCTA, 0.0], [OCTA, 0.0, 0.0]],
+        fill,
+        stroke_rgba,
+    );
+    let s = stream(view, &[sliver, beside], Vec::new());
+    let found = s.contributors(396, 240, 397, 241).unwrap();
+    let pixel = &found[&(396, 240)];
+    let order: Vec<u32> = pixel.samples[5]
+        .iter()
+        .map(|(l, _)| pixel.leaves[*l].object)
+        .collect();
+    assert!(
+        order.contains(&107) && order.contains(&109),
+        "both faces cover sub-sample 5: {order:?}"
+    );
+    assert_eq!(order.last(), Some(&109), "bottom first: {order:?}");
+}
+
+/// Two triangles hinged on the edge from (-3, 0, 0) to (3, 0, 0), seen from straight above,
+/// unlit: face A reaching to (0, 2, `rise`), face B to (0, -2, `rise`), drawn A then B. On screen
+/// the edge is the line between pixel rows 44 (A's side) and 45 (B's side), and both faces'
+/// strokes (3.4 px wide) cover both rows whole. A `rise` toward the eye makes the edge a valley
+/// (both faces beside it nearer than it), away from it a ridge (both farther).
+fn hinge(rise: f64, fills: [[f64; 4]; 2], strokes: [[f64; 4]; 2]) -> Vec<u8> {
+    let mut view = arachne_core::probes::view(W, H, 0.0, -std::f64::consts::FRAC_PI_2);
+    if let Camera::ThreeD(c) = &mut view.camera {
+        c.should_apply_shading = false;
+    }
+    view.input_grid = camera_grid(&view);
+    let face = |slot: u32, apex: [f64; 3], fill: [f64; 4], stroke_rgba: [f64; 4]| {
+        on_grid(
+            |s| {
+                let mut r = stroke(slot, s, stroke_rgba, 30.0);
+                r.paint.fill = Paint::One(fill);
+                r
+            },
+            &ring(&[[-3.0, 0.0, 0.0], [3.0, 0.0, 0.0], apex]),
+            view.input_grid,
+        )
+    };
+    let items = [
+        face(1, [0.0, 2.0, rise], fills[0], strokes[0]),
+        face(2, [0.0, -2.0, rise], fills[1], strokes[1]),
+    ];
+    draw(view, &items)
+}
+
+const HINGE_FILLS: [[f64; 4]; 2] = [[0.8, 0.3, 0.3, 1.0], [0.3, 0.3, 0.8, 1.0]];
+const HINGE_STROKES: [[f64; 4]; 2] = [[1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]];
+
+/// What rows 44 (face A's side of the edge) and 45 (face B's) show along the middle of the edge,
+/// asserted one colour along each.
+fn hinge_rows(frame: &[u8]) -> [[u8; 4]; 2] {
+    [44, 45].map(|y| {
+        let c = px(frame, 70, y);
+        for x in 70..90 {
+            assert_eq!(px(frame, x, y), c, "row {y} varies along the edge, at {x}");
+        }
+        c
+    })
+}
+
+#[test]
+fn two_faces_strokes_on_their_shared_edge_tie_and_the_later_is_on_top_as_ce_paints_it() {
+    // Strokes alone, along an edge where the faces fold 45 degrees. Keyed on the edge, both
+    // strokes take one depth there within its error, and paint order puts B's on top on both
+    // sides, as CE paints it; keyed on their faces' planes beyond the outline, each would come in
+    // front on its own side.
+    let none = [0.0; 4];
+    let rows = hinge_rows(&hinge(2.0, [none; 2], HINGE_STROKES));
+    let b = premultiply(HINGE_STROKES[1]);
+    assert_eq!(rows, [b, b], "A's side, B's side");
+}
+
+#[test]
+fn along_a_valley_each_face_s_stroke_shows_on_its_own_side() {
+    // The edge farther than both faces beside it. On each side, that side's face's stroke is over
+    // its fill (a fill and its own stroke keep paint order), its fill is over the other face's
+    // stroke (the fill is nearer than the edge both strokes are keyed on), and the two strokes tie
+    // on the edge, the one order of the three that depth does not decide, which gives way: the
+    // line shows in A's stroke on A's side and in B's on B's, and no fill through it. (CE paints
+    // B's stroke over both sides.)
+    let rows = hinge_rows(&hinge(2.0, HINGE_FILLS, HINGE_STROKES));
+    let [a, b] = HINGE_STROKES.map(premultiply);
+    assert_eq!(rows, [a, b], "A's side, B's side");
+}
+
+#[test]
+fn along_a_ridge_the_later_drawn_stroke_is_on_top_on_both_sides_in_front_of_both_fills() {
+    // The edge nearer than both faces beside it, which fall away from it: both strokes, keyed on
+    // the edge, are in front of either fill, and of the two the later drawn is on top (they tie
+    // on the edge), so the line shows in B's stroke on both sides, as CE paints it.
+    let rows = hinge_rows(&hinge(-2.0, HINGE_FILLS, HINGE_STROKES));
+    let b = premultiply(HINGE_STROKES[1]);
+    assert_eq!(rows, [b, b], "A's side, B's side");
+}
+
+/// A line on face F's tilted plane, F, and face G on the plane parallel to it 0.3 units off, drawn
+/// G, F, then the line. The line's stroke is keyed on its curve, which F's plane holds only along
+/// the centreline: against F, on its own registered plane, it ties exactly (paint order, whatever
+/// its curve's key and F's plane part by off the centreline); against G it is ordered by depth.
+#[test]
+fn a_stroke_on_a_face_s_registered_plane_ties_it_exactly_and_meets_another_plane_by_depth() {
+    use arachne_core::order::Decided;
+    let view = looking_down_on_grid();
+    let grid = view.input_grid;
+    let (u, v) = tilted();
+    let n = [
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    ];
+    let centre = CENTRES[0];
+    let off: [f64; 3] = std::array::from_fn(|k| centre[k] + 0.3 * n[k]);
+    let (green, grey) = ([0.1, 0.6, 0.2, 1.0], [0.5, 0.5, 0.5, 1.0]);
+    let g = on_grid(
+        |s| fill(1, s, grey),
+        &ring(&tilted_square(off, 2.5, 0.4, [0.0, 0.0])),
+        grid,
+    );
+    let f = on_grid(
+        |s| fill(2, s, green),
+        &ring(&tilted_square(centre, 2.5, 0.4, [0.0, 0.0])),
+        grid,
+    );
+    let at = |q: [f64; 2]| -> [f64; 3] {
+        std::array::from_fn(|k| centre[k] + q[0] * u[k] + q[1] * v[k])
+    };
+    let line = on_grid(
+        |s| stroke(3, s, WHITE, 24.0),
+        &lines(&[at([-1.7, -0.9]), at([1.9, 0.6])]),
+        grid,
+    );
+    let s = stream(view.clone(), &[g, f, line], Vec::new());
+    let [x, y] = arachne_core::probes::screen_of(&view, W, H, at([0.1, -0.15]));
+    let (x, y) = (x as u32, y as u32);
+    let found = s.contributors(x - 1, y - 1, x + 2, y + 2).unwrap();
+    let mut seen = 0;
+    for pixel in found.values() {
+        let object = |i: usize| pixel.leaves[i].object;
+        let rule = |a: u32, b: u32| {
+            pixel
+                .decided
+                .iter()
+                .find(|(i, j, _)| {
+                    (object(*i), object(*j)) == (a, b) || (object(*i), object(*j)) == (b, a)
+                })
+                .map(|(_, _, d)| *d)
+        };
+        if let (Some(with_f), Some(with_g)) = (rule(103, 102), rule(103, 101)) {
+            seen += 1;
+            assert_eq!(
+                with_f,
+                Decided::Tie,
+                "the line against its own plane's face"
+            );
+            assert_eq!(
+                with_g,
+                Decided::Depth,
+                "the line against the other plane's face"
+            );
+        }
+    }
+    assert!(seen >= 4, "{seen} pixels where the line covers both faces");
+}
+
+/// A mesh's record drawing its shape in `rgba`, in world space.
+fn mesh_fill(slot: u32, shape: &Shape, rgba: [f64; 4]) -> Record {
+    let mut r = Record::new(RecordKind::Mesh, slot, 100 + slot);
+    r.geometry.shape_a = Some(shape.key());
+    r.paint.fill = Paint::One(rgba);
+    r.depth.space = Space::World;
+    r
+}
+
+/// A square drawn as a mesh of two triangles, its corners snapped to `grid` as the engine hands
+/// them to the core.
+fn mesh_square(slot: u32, corners: &[[f64; 3]], grid: f64, rgba: [f64; 4]) -> (Shape, Record) {
+    let shape = Shape::new(ShapeData::Mesh {
+        positions: corners.iter().map(|p| snapped_to(*p, grid)).collect(),
+        triangles: vec![[0, 1, 2], [0, 2, 3]],
+        normals: None,
+    });
+    let record = mesh_fill(slot, &shape, rgba);
+    (shape, record)
+}
+
+/// A line and a filled square drawn on a mesh's plane, each snapped to the camera's grid: the
+/// later on top in either order, whichever producer drew each. The plane is the plane's, not the
+/// producer's: a path on a mesh's triangle ties with it as it ties with a path on that plane.
+#[test]
+fn a_line_and_a_fill_on_a_mesh_s_plane_tie_with_it_by_draw_order() {
+    let view = looking_down_on_grid();
+    let grid = view.input_grid;
+    let (u, v) = tilted();
+    let (green, white) = ([0.1, 0.6, 0.2, 1.0], WHITE);
+    let mut wrong = Vec::new();
+    for centre in CENTRES {
+        let corners = tilted_square(centre, 2.5, 0.4, [0.0, 0.0]);
+        let inside = inside_on_screen(&view, &corners);
+        let mesh = mesh_square(1, &corners, grid, green);
+        let mesh_alone = draw(view.clone(), std::slice::from_ref(&mesh));
+        for (a, b) in [([-1.7, -0.9], [1.9, 0.6]), ([-0.4, 1.6], [0.5, -1.8])] {
+            let at = |q: [f64; 2]| -> [f64; 3] {
+                std::array::from_fn(|k| centre[k] + q[0] * u[k] + q[1] * v[k])
+            };
+            let line = on_grid(|s| stroke(2, s, white, 24.0), &lines(&[at(a), at(b)]), grid);
+            let line_alone = draw(view.clone(), std::slice::from_ref(&line));
+            let lit = inside
+                .iter()
+                .filter(|(x, y)| px(&line_alone, *x, *y)[0] > 128);
+            assert!(lit.count() > 10, "{centre:?} {a:?}: the line is drawn");
+            let on_top = draw(view.clone(), &[mesh.clone(), line.clone()]);
+            let beneath = draw(view.clone(), &[line.clone(), mesh.clone()]);
+            let (mut off_top, mut off_beneath) = (0, 0);
+            for (x, y) in &inside {
+                let cover = f64::from(px(&line_alone, *x, *y)[0]) / 255.0;
+                let under = px(&mesh_alone, *x, *y);
+                let got = px(&on_top, *x, *y);
+                let over = (0..3).any(|k| {
+                    let want = 255.0 * cover + f64::from(under[k]) * (1.0 - cover);
+                    (f64::from(got[k]) - want).abs() > 1.0
+                });
+                off_top += usize::from(over);
+                off_beneath += usize::from(px(&beneath, *x, *y) != under);
+            }
+            if off_top + off_beneath > 0 {
+                wrong.push(format!(
+                    "{centre:?} line {a:?}: {off_top} pixels off with the line on top, \
+                     {off_beneath} with the mesh on top, of {}",
+                    inside.len()
+                ));
+            }
+        }
+        for (half, at) in [(0.5, [0.7, -0.3]), (0.45, [-0.9, 0.6]), (1.0, [0.0, 0.0])] {
+            let small = tilted_square(centre, half, 1.1, at);
+            let inside = inside_on_screen(&view, &small);
+            assert!(
+                inside.len() > 10,
+                "{centre:?} {half}: {} pixels",
+                inside.len()
+            );
+            let square = on_grid(|s| fill(2, s, white), &ring(&small), grid);
+            for fill_on_top in [true, false] {
+                let mut items = vec![mesh.clone(), square.clone()];
+                if !fill_on_top {
+                    items.reverse();
+                }
+                let frame = draw(view.clone(), &items);
+                let want = premultiply(if fill_on_top { white } else { green });
+                let off = inside.iter().filter(|(x, y)| px(&frame, *x, *y) != want);
+                let off = off.count();
+                if off > 0 {
+                    wrong.push(format!(
+                        "{centre:?} fill half {half}, fill on top {fill_on_top}: {off} of {} \
+                         pixels",
+                        inside.len()
+                    ));
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// A small mesh square inside a larger one on one tilted plane, turned against it, each its own
+/// record and snapped to the camera's grid: the later on top wherever they overlap, in either
+/// order.
+#[test]
+fn two_meshes_on_one_plane_from_different_records_tie_by_draw_order() {
+    let view = looking_down_on_grid();
+    let grid = view.input_grid;
+    let (green, white) = ([0.1, 0.6, 0.2, 1.0], WHITE);
+    let mut wrong = Vec::new();
+    for centre in CENTRES {
+        let large = mesh_square(1, &tilted_square(centre, 2.5, 0.4, [0.0, 0.0]), grid, green);
+        for (half, at) in [(0.5, [0.7, -0.3]), (0.45, [-0.9, 0.6]), (1.0, [0.0, 0.0])] {
+            let corners = tilted_square(centre, half, 1.1, at);
+            let inside = inside_on_screen(&view, &corners);
+            assert!(
+                inside.len() > 10,
+                "{centre:?} {half}: {} pixels",
+                inside.len()
+            );
+            let small = mesh_square(2, &corners, grid, white);
+            for small_on_top in [true, false] {
+                let mut items = vec![large.clone(), small.clone()];
+                if !small_on_top {
+                    items.reverse();
+                }
+                let frame = draw(view.clone(), &items);
+                let want = premultiply(if small_on_top { white } else { green });
+                let off = inside.iter().filter(|(x, y)| px(&frame, *x, *y) != want);
+                let off = off.count();
+                if off > 0 {
+                    wrong.push(format!(
+                        "{centre:?} half {half}, small on top {small_on_top}: {off} of {} pixels",
+                        inside.len()
+                    ));
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}

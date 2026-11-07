@@ -255,6 +255,14 @@ pub struct Fragment {
     /// The surface it belongs to, when not 0: one mesh drawn, whose triangles share edges exactly
     /// and never cover one sub-sample twice where they tile the pixel (see [`Fragment::on_surface`]).
     pub surface: u32,
+    /// Whether a path's layer painted it: then `sub` is `3 i + k` for its record's `i`th path and
+    /// the layer `k` (0 its background stroke, 1 its fill, 2 its stroke), which the order reads
+    /// ([`crate::order::own_layers`]).
+    pub path_layer: bool,
+    /// The plane a path's layer or a mesh's triangle lies on, when not 0: one of its frame's
+    /// registered planes (`depth::Registry`), which the camera keys finitely. Two fragments on one
+    /// such plane, whichever producer drew each, keep paint order ([`crate::order::one_plane`]).
+    pub plane: u32,
     /// The producer that added it (set by the pass).
     source: u16,
 }
@@ -273,6 +281,8 @@ impl Fragment {
             order,
             sub,
             surface: 0,
+            path_layer: false,
+            plane: 0,
             source: 0,
         }
     }
@@ -514,11 +524,14 @@ pub trait Producer: Sync {
         None
     }
 
-    /// The depth at each of `points` (into `out`) of the fragment this producer added to pixel
-    /// `(x, y)` with exact area and this `id`, where its depth runs along a curve, so no one plane
-    /// gives it (`depth::Centreline::key_under`), and how far any of them may stand from the exact
-    /// depth of the curve's inputs; `None`, and `out` untouched, where its plane gives it.
-    fn curve_depths(
+    /// The depth at each of `points` (into `out`: the pixel's sub-samples in order, then its
+    /// centre) of the fragment this producer added to pixel `(x, y)` with exact area and this
+    /// `id`, where its plane read at each point does not give it, and how far any of them may
+    /// stand from the exact depth of its inputs: along a curve where its depth runs along one
+    /// (`depth::Centreline::key_under`), and for a sloped plane at its fringe, where a sub-sample's
+    /// point lies outside its outline, the plane at the outline's nearest point. `None`, and `out`
+    /// untouched, where its plane at each point gives it.
+    fn point_depths(
         &self,
         _id: u32,
         _x: u32,
@@ -541,8 +554,8 @@ pub(crate) struct Depths {
 }
 
 impl Depths {
-    /// Fragment `f`'s at pixel `(x, y)`: along its curve where its producer keys it along one,
-    /// else on its plane.
+    /// Fragment `f`'s at pixel `(x, y)`: as its producer keys it where its plane read at each
+    /// point does not give it ([`Producer::point_depths`]), else on its plane.
     pub(crate) fn of(producers: &[&dyn Producer], f: &Fragment, x: u32, y: u32) -> Depths {
         if let Coverage::Area { id, .. } = f.coverage {
             let mut points = [[x as f64 + 0.5, y as f64 + 0.5]; SAMPLES + 1];
@@ -551,7 +564,7 @@ impl Depths {
             }
             let mut out = [0.0; SAMPLES + 1];
             if let Some(err) =
-                producers[f.source as usize].curve_depths(id, x, y, &points, &mut out)
+                producers[f.source as usize].point_depths(id, x, y, &points, &mut out)
             {
                 return Depths {
                     samples: std::array::from_fn(|k| out[k] + 0.0),
@@ -578,6 +591,60 @@ impl Depths {
             centre: f.depth.at(x as f64 + 0.5, y as f64 + 0.5),
             // The plane's own error and the rounding of reading it anywhere in the pixel.
             err: f.depth.err + f.depth.read_error(x as f64 + 1.0, y as f64 + 1.0),
+        }
+    }
+}
+
+/// A path's strokes drawn on its own fill, at pixel depths `depths` of `frags`: at each sub-sample
+/// the stroke and the fill both cover (`coverage(i)`, fragment `i`'s coverage at each sub-sample),
+/// a stroke drawn after the fill takes the nearer of its own depth (the wire's, along its curve) and the fill's
+/// there, whatever the fill is keyed on, as CE draws a stroke over its fill: wherever the fill is,
+/// the stroke is at least as near. Elsewhere (its outer half, a path without a fill) it keeps its
+/// own. Its error bound is the largest of those of the depths it takes, both depths' where they
+/// lie within their bounds of each other (either may be the nearer); its centre keeps its own,
+/// which no order reads. A background stroke, drawn under its fill, keeps its own depth. What
+/// stands in front of the fill hides both still, and a depth taken is a finite key with its own
+/// bound, so the strong orders stay depth's strict ones and still never cycle at one sub-sample.
+/// With those bounds, whatever depth puts in front of the stroke where both cover it also puts in
+/// front of the fill, so no rank puts the fill in front of its stroke there.
+pub(crate) fn strokes_on_own_fills(
+    frags: &[Fragment],
+    depths: &mut [Depths],
+    coverage: impl Fn(usize) -> [u8; SAMPLES],
+) {
+    for (j, fill) in frags.iter().enumerate() {
+        if !fill.path_layer || fill.sub % 3 != 1 {
+            continue;
+        }
+        let mut filled = None;
+        for (i, stroke) in frags.iter().enumerate() {
+            if stroke.sub < fill.sub || !crate::order::own_layers(stroke, fill) {
+                continue;
+            }
+            let filled = *filled.get_or_insert_with(|| coverage(j));
+            let stroked = coverage(i);
+            let (on, own) = (depths[j], depths[i]);
+            let mut err = 0.0f64;
+            for k in 0..SAMPLES {
+                if filled[k] == 0 || stroked[k] == 0 {
+                    err = err.max(own.err);
+                    continue;
+                }
+                let (f, s) = (on.samples[k], own.samples[k]);
+                if f < s {
+                    depths[i].samples[k] = f;
+                }
+                // The bound of the nearer of two depths: the chosen one's where they part beyond
+                // their bounds, else either's, as either may be the nearer.
+                err = err.max(if crate::order::tied(f, on.err, s, own.err) {
+                    on.err.max(own.err)
+                } else if f < s {
+                    on.err
+                } else {
+                    own.err
+                });
+            }
+            depths[i].err = err;
         }
     }
 }
@@ -822,7 +889,8 @@ impl TransparentPass<'_> {
     /// Hands `visit` each pixel of the rectangle inside `keep` that holds a fragment, with its
     /// fragments (the opaque pass's, then the transparent pass's, as [`Self::resolve`] takes
     /// them), each one's 8-bit coverage at every sub-sample, as the sample resolve composites
-    /// it, and its depths, as the resolve orders it: the contributor report's read of the passes
+    /// it, and its depths as the passes give them (the resolve orders by them once a stroke takes
+    /// its own fill's depth: [`strokes_on_own_fills`]): the contributor report's read of the passes
     /// (`contributors.rs`). Nothing is resolved.
     pub(crate) fn visit_pixels(
         mut self,
@@ -903,6 +971,8 @@ impl TransparentPass<'_> {
 #[derive(Default)]
 pub(crate) struct Scratch {
     pub(crate) fragments: Vec<Fragment>,
+    /// Each fragment's depths, its strokes on its own fills ([`strokes_on_own_fills`]).
+    rows: Vec<Depths>,
     depths: Vec<[f64; SAMPLES]>,
     errors: Vec<f64>,
     order: Vec<usize>,
@@ -1018,7 +1088,8 @@ impl SampleRanks {
 
 /// The pixel that `s.fragments` composite over `bg`, and the resolve that made it.
 /// `sample_coverage(i, f)` is fragment `i`'s coverage at each sub-sample, `sample_depth(i, f)` its
-/// depths there with their error bound. The fragments composite in the order [`crate::order`]
+/// depths there with their error bound, before a stroke takes its own fill's depth where nearer
+/// ([`strokes_on_own_fills`]). The fragments composite in the order [`crate::order`]
 /// gives them: by depth only where two cover one sub-sample, by paint order everywhere else.
 /// The contributor report calls it on one leaf's fragments alone, so what a leaf draws is what
 /// this resolve makes of it.
@@ -1038,10 +1109,13 @@ pub(crate) fn resolve_pixel(
         }
         return (Resolve::Coverage, blend(f.colour, f.coverage8(), bg));
     }
+    s.rows.clear();
+    s.rows
+        .extend(frags.iter().enumerate().map(|(i, f)| sample_depth(i, f)));
+    strokes_on_own_fills(frags, &mut s.rows, |i| sample_coverage(i, &frags[i]));
     s.depths.clear();
     s.errors.clear();
-    for (i, f) in frags.iter().enumerate() {
-        let d = sample_depth(i, f);
+    for d in &s.rows {
         s.depths.push(d.samples);
         s.errors.push(d.err);
     }

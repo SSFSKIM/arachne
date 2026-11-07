@@ -896,9 +896,10 @@ impl Stream {
                 _ => unreachable!("drawing refused every other record"),
             }
         }
-        let meshes = mesh::lower(view, width, height, &meshes);
+        let mut registry = crate::depth::Registry::new(view);
+        let meshes = mesh::lower(view, width, height, &meshes, &mut registry);
         let mut lowering = path::Lowering::new(view, width, height);
-        let planes = lowering.coplanar(&paths);
+        let planes = lowering.coplanar(&paths, &mut registry);
         for (draw, plane) in paths.iter().zip(planes) {
             lowering.path(draw, plane);
         }
@@ -1407,4 +1408,349 @@ fn refusal(
         object: Some(rec.object),
         reason,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::order;
+
+    /// A closed polygon's outline through `corners` in CE's cubic layout.
+    fn ring(corners: &[[f64; 3]]) -> Vec<[f64; 3]> {
+        let mut out = Vec::new();
+        for (i, a) in corners.iter().enumerate() {
+            let b = corners[(i + 1) % corners.len()];
+            let at = |t: f64| std::array::from_fn(|k| a[k] + (b[k] - a[k]) * t);
+            out.extend([*a, at(1.0 / 3.0), at(2.0 / 3.0), b]);
+        }
+        out
+    }
+
+    /// How many times, over every sub-sample of the frame three or more fragments cover, a path's
+    /// fill ranks in front of its own stroke drawn after it, in the rank the sample resolve builds
+    /// there.
+    // The sub-sample `k` indexes each fragment's coverage and depth rows.
+    #[allow(clippy::needless_range_loop)]
+    fn own_cover(s: &Stream, width: u32, height: u32) -> usize {
+        let mut hits = 0;
+        let mut out = Vec::new();
+        s.visit_contributors(0, 0, width, height, |_, _, frags, cov, d, _| {
+            let mut d = d.to_vec();
+            composite::strokes_on_own_fills(frags, &mut d, |i| cov[i]);
+            for k in 0..composite::SAMPLES {
+                let items: Vec<usize> = (0..frags.len()).filter(|i| cov[*i][k] != 0).collect();
+                if items.len() < 3 {
+                    continue;
+                }
+                let at = |a: usize, b: usize| {
+                    (
+                        &frags[a],
+                        d[a].samples[k],
+                        d[a].err,
+                        &frags[b],
+                        d[b].samples[k],
+                        d[b].err,
+                    )
+                };
+                order::rank(
+                    &items,
+                    |a, b| {
+                        let (fa, da, ea, fb, db, eb) = at(a, b);
+                        a != b && order::at_sample(fa, da, ea, fb, db, eb).is_lt()
+                    },
+                    |a, b| {
+                        let (fa, da, ea, fb, db, eb) = at(a, b);
+                        order::strong_at(fa, da, ea, fb, db, eb)
+                    },
+                    |a, b| order::painted(&frags[a], &frags[b]),
+                    &mut out,
+                );
+                for (p, &f) in out.iter().enumerate() {
+                    let (fill, behind) = (&frags[f], &out[p + 1..]);
+                    hits += behind
+                        .iter()
+                        .filter(|&&s| {
+                            fill.sub % 3 == 1
+                                && frags[s].sub > fill.sub
+                                && order::own_layers(fill, &frags[s])
+                        })
+                        .count();
+                }
+            }
+        })
+        .expect("the stream draws");
+        hits
+    }
+
+    /// A small saddle surface of 16 x 16 faces, each a path with its fill and its mesh lines (a
+    /// stroke of CE's Surface width), seen from above at a slant: no mesh line ranks behind its
+    /// own face's fill at any sub-sample, as CE draws each face's stroke over its fill.
+    #[test]
+    fn a_dense_surface_s_mesh_lines_never_rank_behind_their_own_face() {
+        let (w, h) = (320, 180);
+        let view = crate::probes::view(w, h, 65f64.to_radians(), -40f64.to_radians());
+        let n = 16;
+        let at = |i: usize, j: usize| {
+            let (u, v) = (
+                2.0 * i as f64 / n as f64 - 1.0,
+                2.0 * j as f64 / n as f64 - 1.0,
+            );
+            [1.2 * u, 1.2 * v, 0.6 * (u * u - v * v)]
+        };
+        let mut items = Vec::new();
+        for j in 0..n {
+            for i in 0..n {
+                let slot = (j * n + i) as u32 + 1;
+                let corners = [at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1)];
+                let shape = Shape::new(ShapeData::Path {
+                    points: ring(&corners),
+                });
+                let mut r = Record::new(RecordKind::Path, slot, 1000 + slot);
+                r.geometry.shape_a = Some(shape.key());
+                r.paint.fill = Paint::One(if (i + j) % 2 == 0 {
+                    [0.16, 0.38, 0.75, 1.0]
+                } else {
+                    [0.36, 0.62, 0.95, 1.0]
+                });
+                r.paint.stroke = Paint::One([0.85, 0.85, 0.85, 1.0]);
+                r.paint.stroke_width = 0.5;
+                r.depth.space = Space::World;
+                items.push((shape, r));
+            }
+        }
+        let order: Vec<u32> = items.iter().map(|(_, r)| r.slot).collect();
+        let mut s = Stream::new();
+        s.apply(&crate::probes::first_delta(view, &items, &order))
+            .expect("the delta applies");
+        assert_eq!(own_cover(&s, w, h), 0);
+    }
+
+    /// A sub-sample of a fill's fringe: its cell reaches into the fill (coverage above 0) while
+    /// its point lies outside the fill's outline (the exact point-in-outline mask).
+    struct FringeSample {
+        point: [f64; 2],
+        /// The fill's key there, as the resolve reads it, and its error bound.
+        key: f64,
+        err: f64,
+        plane: composite::Plane,
+        /// The outline's point nearest `point`, and how far it is.
+        nearest: [f64; 2],
+        distance: f64,
+    }
+
+    /// The point of `edges` nearest `p`, and its distance.
+    fn nearest_on(edges: &[crate::scanline::Edge], p: [f64; 2]) -> ([f64; 2], f64) {
+        let mut best = ([f64::NAN; 2], f64::INFINITY);
+        for e in edges {
+            let (dx, dy) = (e.x1 - e.x0, e.y1 - e.y0);
+            let t =
+                (((p[0] - e.x0) * dx + (p[1] - e.y0) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+            let q = [e.x0 + t * dx, e.y0 + t * dy];
+            let d = libm::hypot(q[0] - p[0], q[1] - p[1]);
+            if d < best.1 {
+                best = (q, d);
+            }
+        }
+        best
+    }
+
+    /// A sub-sample inside a fill's outline: its point, the fill's key there and its plane.
+    type InsideSample = ([f64; 2], f64, composite::Plane);
+
+    /// A lone face through `corners`, filled and not stroked, in `view`: its fringe sub-samples
+    /// and its inside ones.
+    // The sub-sample `k` indexes each fragment's coverage and depth rows.
+    #[allow(clippy::needless_range_loop)]
+    fn fill_samples(view: View, corners: &[[f64; 3]]) -> (Vec<FringeSample>, Vec<InsideSample>) {
+        let (w, h) = (view.pixel_width, view.pixel_height);
+        let shape = Shape::new(ShapeData::Path {
+            points: ring(corners),
+        });
+        let r = crate::probes::fill_record(1, &shape, [0.5, 0.5, 0.5, 1.0], Space::World);
+        let mut s = Stream::new();
+        s.apply(&crate::probes::first_delta(view, &[(shape, r)], &[1]))
+            .expect("the delta applies");
+        let (mut fringe, mut inside) = (Vec::new(), Vec::new());
+        s.visit_contributors(0, 0, w, h, |x, y, frags, cov, d, producers| {
+            for (i, f) in frags.iter().enumerate() {
+                let composite::Coverage::Area { id, .. } = f.coverage else {
+                    continue;
+                };
+                let producer = producers[f.source() as usize];
+                let edges = producer.edges(id).expect("a path gives its edges");
+                // Each end of an edge is an end of another: no horizontal edge, which the
+                // rasterizer's edges leave out, is missing from the outline they give.
+                for e in edges {
+                    for end in [[e.x0, e.y0], [e.x1, e.y1]] {
+                        let ends = edges
+                            .iter()
+                            .filter(|o| [[o.x0, o.y0], [o.x1, o.y1]].contains(&end))
+                            .count();
+                        assert!(ends >= 2, "a horizontal edge at {end:?}");
+                    }
+                }
+                let mask = producer.mask(id, x, y);
+                for k in 0..composite::SAMPLES {
+                    let point = composite::sample_point(x, y, k);
+                    if mask & (1 << k) != 0 {
+                        inside.push((point, d[i].samples[k], f.depth));
+                    } else if cov[i][k] != 0 {
+                        let (nearest, distance) = nearest_on(edges, point);
+                        fringe.push(FringeSample {
+                            point,
+                            key: d[i].samples[k],
+                            err: d[i].err,
+                            plane: f.depth,
+                            nearest,
+                            distance,
+                        });
+                    }
+                }
+            }
+        })
+        .expect("the stream draws");
+        (fringe, inside)
+    }
+
+    /// A face of a regular octahedron seen two degrees from edge-on, a sliver 1.6 to 3 pixels
+    /// across: its depth runs steeply across the screen, so its plane read beyond its outline is
+    /// nearer or farther than any point of the face. Wherever a sub-sample's cell reaches into
+    /// its fill and its point lies outside the outline, the fill's key is its plane read at the
+    /// outline's point nearest it: the depth of the face's edge there. Inside, its plane at the
+    /// point.
+    #[test]
+    fn a_steep_fill_s_fringe_sub_samples_read_the_depth_of_its_edge() {
+        let view = crate::probes::view(854, 480, 1.3089969158172607, 0.5235987901687622);
+        let o = 0.70709228515625;
+        let (fringe, inside) = fill_samples(view, &[[0.0, -o, 0.0], [0.0, 0.0, -o], [o, 0.0, 0.0]]);
+        assert!(fringe.len() > 100, "{} fringe sub-samples", fringe.len());
+        let steep = fringe
+            .iter()
+            .filter(|f| {
+                (f.plane.at(f.point[0], f.point[1]) - f.plane.at(f.nearest[0], f.nearest[1])).abs()
+                    > 1e-6
+            })
+            .count();
+        assert!(
+            steep > fringe.len() / 2,
+            "{steep} sub-samples beyond the outline read the plane off its edge by 1e-6"
+        );
+        for f in &fringe {
+            let edge = f.plane.at(f.nearest[0], f.nearest[1]);
+            assert!(
+                (f.key - edge).abs() <= f.err,
+                "at {:?}, {:.3} px outside the outline: key {} against the edge's {} (err {:e})",
+                f.point,
+                f.distance,
+                f.key,
+                edge,
+                f.err
+            );
+        }
+        for (p, key, plane) in &inside {
+            assert_eq!(*key, plane.at(p[0], p[1]), "inside, at {p:?}");
+        }
+    }
+
+    /// A face seen at a slant: beyond its outline its fill's key moves from its plane at the point
+    /// by at most the plane's slope times the point's distance from the outline, and inside it
+    /// stays the plane.
+    #[test]
+    fn an_ordinary_fill_s_fringe_keys_move_by_at_most_slope_times_distance() {
+        let view = crate::probes::view(320, 180, 65f64.to_radians(), -40f64.to_radians());
+        let (fringe, inside) = fill_samples(
+            view,
+            &[[-1.0, -0.5, 0.2], [1.0, -0.8, -0.1], [0.2, 1.0, 0.3]],
+        );
+        assert!(fringe.len() > 100, "{} fringe sub-samples", fringe.len());
+        assert!(inside.len() > 1000, "{} inside sub-samples", inside.len());
+        for f in &fringe {
+            let slope = libm::hypot(f.plane.b, f.plane.c);
+            let moved = (f.key - f.plane.at(f.point[0], f.point[1])).abs();
+            assert!(
+                moved <= slope * f.distance + f.err,
+                "at {:?}, {:.3} px outside: moved {moved:e}, slope {slope:e}",
+                f.point,
+                f.distance
+            );
+        }
+        for (p, key, plane) in &inside {
+            assert_eq!(*key, plane.at(p[0], p[1]), "inside, at {p:?}");
+        }
+    }
+
+    /// Three wires along one line, drawn in turn: the first two the same, the third moved by
+    /// 2^-51 in z, which moves its key by less than the keys' error bound. Over five frames whose
+    /// camera angles step on the grid the engine keeps them to (2^-24), paint order decides them
+    /// at every sub-sample they cover: depth tells them apart nowhere.
+    #[test]
+    // The sub-sample `k` indexes each fragment's coverage and depth rows.
+    #[allow(clippy::needless_range_loop)]
+    fn coincident_wires_keep_paint_order_at_every_sub_sample_of_every_frame() {
+        let (w, h) = (320, 180);
+        let grid = (1u64 << 24) as f64;
+        let wire = |slot: u32, dz: f64, rgba: [f64; 4]| {
+            let shape = crate::probes::polyline(&[[-2.0, -1.0, 0.3 + dz], [2.0, 1.0, -0.2 + dz]]);
+            let r = crate::probes::stroke_record(slot, &shape, rgba, 10.0);
+            (shape, r)
+        };
+        let items = [
+            wire(1, 0.0, [1.0, 0.0, 0.0, 1.0]),
+            wire(2, 0.0, [0.0, 1.0, 0.0, 1.0]),
+            wire(3, 2.0 * f64::EPSILON, [0.0, 0.0, 1.0, 1.0]),
+        ];
+        for frame in 0..5 {
+            let phi = (1.1 * grid).round() / grid + f64::from(frame) * 37.0 / grid;
+            let theta = (-0.7 * grid).round() / grid + f64::from(frame) * 53.0 / grid;
+            let view = crate::probes::view(w, h, phi, theta);
+            let mut s = Stream::new();
+            s.apply(&crate::probes::first_delta(view, &items, &[1, 2, 3]))
+                .expect("the delta applies");
+            // The third wire's key stands from the first's by less than either's error bound.
+            let (mut apart, mut least_err, mut shared) = (0.0f64, f64::INFINITY, 0);
+            s.visit_contributors(0, 0, w, h, |_, _, frags, cov, d, _| {
+                if frags.len() != 3 {
+                    return;
+                }
+                for k in 0..composite::SAMPLES {
+                    if cov.iter().all(|c| c[k] != 0) {
+                        shared += 1;
+                        apart = apart.max((d[2].samples[k] - d[0].samples[k]).abs());
+                        least_err = least_err.min(d[0].err.min(d[2].err));
+                    }
+                }
+            })
+            .expect("the stream draws");
+            assert!(
+                shared > 1000,
+                "frame {frame}: {shared} sub-samples all three cover"
+            );
+            assert!(
+                apart < least_err,
+                "frame {frame}: keys apart by {apart:e}, error bound {least_err:e}"
+            );
+            let found = s.contributors(0, 0, w, h).expect("the stream draws");
+            let mut seen = 0;
+            for ((x, y), pixel) in &found {
+                for (k, sample) in pixel.samples.iter().enumerate() {
+                    let order: Vec<u32> = sample
+                        .iter()
+                        .map(|(l, _)| pixel.leaves[*l].object)
+                        .collect();
+                    if order.len() < 2 {
+                        continue;
+                    }
+                    seen += 1;
+                    assert!(
+                        order.windows(2).all(|p| p[0] < p[1]),
+                        "frame {frame}, pixel ({x}, {y}) sub-sample {k}: {order:?}, bottom first"
+                    );
+                }
+            }
+            assert!(
+                seen > 1000,
+                "frame {frame}: {seen} sub-samples two wires cover"
+            );
+        }
+    }
 }

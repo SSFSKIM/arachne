@@ -20,13 +20,19 @@
 //!   ([`composite_runs`]). A path CE's lighting shades (`shade_in_3d` under a camera that shades)
 //!   is lit into two stops at its start and end corners (`shade::ce_face_stops`), its gradient
 //!   between those corners.
-//! - Depth: a path in world space under a 3D camera lies on its plane when it has one seen clearly
-//!   (`depth::WorldPlane`, made canonical, so text and axes on one plane, and a mesh on it, tie
-//!   exactly); otherwise (a curve in space, a plane seen nearly edge-on) each sub-sample takes the
-//!   depth of the part of the path's own curve that covers it (`depth::Centreline::key_under`: the
-//!   front-most part whose stroke body holds it, else the nearest point). A fixed-orientation path
-//!   is a camera-facing plane at its centre's depth; anything else is in front of the scene, tying
-//!   by draw order.
+//! - Depth: a path in world space under a 3D camera fills at the depth of its plane when it has one
+//!   the camera keys finitely (`depth::WorldPlane`, made canonical, so text and axes on one plane,
+//!   and a mesh on it, tie exactly), however nearly edge-on; it strokes, and a path without such a
+//!   plane (a curve in space) fills too, at the depth of the part of its own curve under each
+//!   sub-sample (`depth::Centreline::key_under`: the front-most part whose stroke body covers it,
+//!   else the nearest point). A plane is the fill's depth only: outside the outline, where a stroke
+//!   reaches, it is not the face. Against what lies on its own registered plane, whichever
+//!   producer drew it, a path's layers keep paint order (`order::one_plane`), so things on one
+//!   plane tie exactly; and a path's fill
+//!   and its own strokes keep paint order between them (`order::own_layers`), so a stroke shows
+//!   over its fill wherever their depths part. A
+//!   fixed-orientation path is a camera-facing plane at its centre's depth; anything else is in
+//!   front of the scene, tying by draw order.
 //! - Pre-projected (XF 1.1's tail): the points, paints and gradient ends a camera of the scene's
 //!   own produced, drawn as they are, never projected or lit again. Depth follows the rules above
 //!   in that camera's axes, the points put back where its projection took them from
@@ -55,11 +61,6 @@ pub const MITER_LIMIT: f64 = 10.0;
 
 /// CE's default `tolerance_for_point_equality`, which XF does not carry.
 const POINT_EQUALITY: f64 = 1e-6;
-
-/// A path seen within this cosine of edge-on (about 3 degrees) takes its depth from its curve, not
-/// from its plane: a stroke's width is on screen, and across it a grazing plane's depth would run
-/// far in front of and behind the curve.
-const MIN_PLANE_COS: f64 = 0.05;
 
 /// How far outside the frame, in pixels, a path may reach before its curves outside the frame are
 /// replaced by their chords.
@@ -244,12 +245,18 @@ struct Layer {
     band0: u32,
     bands: Vec<(u32, u32)>,
     band_edges: Vec<u32>,
+    /// The outline's horizontal segments, which `edges` leaves out ([`scanline::edges_of`]), as
+    /// their height and their two ends' x: with `edges`, the whole outline, which a layer keyed on
+    /// a sloped plane reads its fringe's depth on ([`fringe_depths`]). Empty for others.
+    flats: Vec<[f64; 3]>,
     /// Pixels `x0..x1` by `y0..y1`, inside the frame.
     bbox: [u32; 4],
     paint: LayerPaint,
     /// Every pixel of its paint is opaque.
     opaque: bool,
     depth: LayerDepth,
+    /// The registered plane it lies on ([`Fragment::plane`]), `0` for none.
+    plane: u32,
     order: u32,
     sub: u32,
 }
@@ -269,7 +276,11 @@ impl Layer {
     }
 
     fn candidates(&self, y: u32) -> &[u32] {
-        let band = y / TILE;
+        self.band_candidates(y / TILE)
+    }
+
+    /// The edges overlapping tile row `band`.
+    fn band_candidates(&self, band: u32) -> &[u32] {
         match band.checked_sub(self.band0) {
             Some(b) if (b as usize) < self.bands.len() => {
                 let (lo, hi) = self.bands[b as usize];
@@ -278,6 +289,67 @@ impl Layer {
             _ => &[],
         }
     }
+
+    /// The point of the layer's outline nearest `p`, a point of pixel `(_, y)`, among its edges
+    /// overlapping the rows from `y - 2` to `y + 2` and its horizontal segments; `p` itself when
+    /// none is there. Where the outline crosses the pixel, no point of the pixel is farther from
+    /// it than the pixel's diagonal (1.42 px), so the nearest of the whole outline is among those.
+    fn nearest_on_outline(&self, p: [f64; 2], y: u32) -> [f64; 2] {
+        // The nearest point so far, its squared distance and its distance.
+        let mut best = (p, f64::INFINITY, f64::INFINITY);
+        let mut segment = |a: [f64; 2], b: [f64; 2]| {
+            let reach = best.2;
+            if a[1].max(b[1]) < p[1] - reach
+                || a[1].min(b[1]) > p[1] + reach
+                || a[0].max(b[0]) < p[0] - reach
+                || a[0].min(b[0]) > p[0] + reach
+            {
+                return;
+            }
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let length = dx * dx + dy * dy;
+            let t = if length > 0.0 {
+                (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / length).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let q = [a[0] + t * dx, a[1] + t * dy];
+            let (ex, ey) = (q[0] - p[0], q[1] - p[1]);
+            let d2 = ex * ex + ey * ey;
+            if d2 < best.1 {
+                best = (q, d2, d2.sqrt());
+            }
+        };
+        for band in y.saturating_sub(2) / TILE..=(y + 2) / TILE {
+            for &i in self.band_candidates(band) {
+                let e = &self.edges[i as usize];
+                segment([e.x0, e.y0], [e.x1, e.y1]);
+            }
+        }
+        for &[fy, x0, x1] in &self.flats {
+            segment([x0, fy], [x1, fy]);
+        }
+        best.0
+    }
+}
+
+/// The horizontal segments of closed polygons' outlines (each ring closes back to its first
+/// point), as their height and their two ends' x, least first: the ones [`scanline::edges_of`]
+/// leaves out of the same rings, which it leaves out whole as this does.
+fn flats_of(rings: &[Vec<[f64; 2]>]) -> Vec<[f64; 3]> {
+    let mut flats = Vec::new();
+    for ring in rings {
+        if ring.len() < 2 || ring.iter().flatten().any(|v| !v.is_finite()) {
+            continue;
+        }
+        for i in 0..ring.len() {
+            let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+            if a[1] == b[1] {
+                flats.push([a[1], a[0].min(b[0]), a[0].max(b[0])]);
+            }
+        }
+    }
+    flats
 }
 
 /// A curve's depth, and the bounds of its segments widened by how far its pixels may reach from it.
@@ -809,17 +881,22 @@ impl<'v> Lowering<'v> {
         (keyed.is_none() && matches!(placed, Placement::Projected)).then_some((world, true))
     }
 
-    /// The plane each of `draws` (in draw order) is keyed on, `None` for its curve's depth.
+    /// The plane each of `draws` (in draw order) is keyed on and its identity in the frame's
+    /// `registry` (`0`: not registered), `None` for its curve's depth.
     ///
     /// A flat path (its record's `planes`, or decided from its points) is fitted its plane, then
-    /// merged in the frame's [`Registry`] in draw order: a path whose points lie on a plane a path
-    /// before it registered takes that plane, else registers its own. Then a path with no plane of
+    /// merged in the frame's [`Registry`] in draw order, after its meshes' triangles: a path whose
+    /// points lie on a plane registered before it takes that plane, else registers its own. Then a
+    /// path with no plane of
     /// its own (a line, a curve) whose points all lie on a registered plane takes the first such
     /// plane, whatever the order. So things on one plane tie by draw order, though each plane fitted
     /// to snapped points differs by the snap's noise. A surface's face on no one plane, and a
     /// pre-projected path, keep the plane fitted to their own points.
-    pub fn coplanar(&self, draws: &[PathDraw<'_>]) -> Vec<Option<WorldPlane>> {
-        let mut registry = Registry::new(crate::depth::input_grid(self.view));
+    pub fn coplanar(
+        &self,
+        draws: &[PathDraw<'_>],
+        registry: &mut Registry,
+    ) -> Vec<Option<(WorldPlane, u32)>> {
         let mut found = vec![None; draws.len()];
         let mut curves = Vec::new();
         for (i, draw) in draws.iter().enumerate() {
@@ -846,7 +923,7 @@ impl<'v> Lowering<'v> {
                     curves.push((i, points));
                     None
                 }
-                (own, _, _) => own,
+                (own, _, _) => own.map(|own| (own, 0)),
             };
         }
         for (i, points) in curves {
@@ -857,7 +934,7 @@ impl<'v> Lowering<'v> {
 
     /// Lowers one path into up to three layers, `plane` the plane it is keyed on
     /// ([`Lowering::coplanar`]), or `None` for its curve's depth.
-    pub fn path(&mut self, draw: &PathDraw<'_>, plane: Option<WorldPlane>) {
+    pub fn path(&mut self, draw: &PathDraw<'_>, plane: Option<(WorldPlane, u32)>) {
         let rec = draw.record;
         let Some(world) = drawn_world(draw) else {
             return;
@@ -878,8 +955,9 @@ impl<'v> Lowering<'v> {
         if user.elements().is_empty() {
             return;
         }
-        let depth = match keyed {
-            Some(plane) => LayerDepth::Plane(plane),
+        // The strokes' depth and the fill's.
+        let (strokes, fill, plane) = match keyed {
+            Some(plane) => (LayerDepth::Plane(plane), LayerDepth::Plane(plane), 0),
             None => {
                 // How far the path's pixels reach from its curve: half the widest stroke and the
                 // pixel's antialiasing beyond it, a miter's length at most (for binning).
@@ -970,7 +1048,7 @@ impl<'v> Lowering<'v> {
                 mapped(&stroked, &self.map)
             };
             // A stroke's body reaches half its width from the curve; a fill has none.
-            let depth = match depth {
+            let depth = match if k == 1 { fill } else { strokes } {
                 LayerDepth::Curve(i, _) => LayerDepth::Curve(
                     i,
                     width * self.view.cairo_line_width_multiple * self.map.xx.abs() / 2.0,
@@ -978,9 +1056,10 @@ impl<'v> Lowering<'v> {
                 plane => plane,
             };
             self.push(
-                scanline::edges_of(&rings(&outline_px)),
+                &rings(&outline_px),
                 spec,
                 depth,
+                plane,
                 draw.order,
                 draw.sub + k,
             );
@@ -1067,9 +1146,12 @@ impl<'v> Lowering<'v> {
         ])
     }
 
-    /// The depth of a path placed in world space under a 3D camera's projection `p`, `world` its
-    /// points before `p` placed them at `shown`: on `plane` ([`Lowering::coplanar`]), or along its
-    /// curve.
+    /// The depths of a path placed in world space under a 3D camera's projection `p`, `world` its
+    /// points before `p` placed them at `shown`, for its strokes and for its fill, and the plane
+    /// they lie on: the strokes along its curve; the fill on `plane` ([`Lowering::coplanar`])
+    /// wherever the camera keys the plane finitely, however nearly edge-on, and then the plane's
+    /// identity among the frame's registered planes ([`Fragment::plane`]), else along its curve
+    /// too, on no plane (`0`).
     fn world_depth(
         &mut self,
         p: &Projection,
@@ -1077,27 +1159,28 @@ impl<'v> Lowering<'v> {
         shown: &[[f64; 3]],
         reach: f64,
         bins: f64,
-        plane: Option<WorldPlane>,
-    ) -> LayerDepth {
-        if world.iter().all(|q| p.keys_planar_at(*q))
-            && let Some(plane) = plane
-            && let Some(key) = p.key_plane(
-                &plane,
-                &self.map,
-                world[0],
-                MIN_PLANE_COS,
-                self.region(shown, reach),
-            )
-        {
-            return LayerDepth::Plane(key);
-        }
+        plane: Option<(WorldPlane, u32)>,
+    ) -> (LayerDepth, LayerDepth, u32) {
+        let fill = plane
+            .filter(|_| world.iter().all(|q| p.keys_planar_at(*q)))
+            .and_then(|(plane, id)| {
+                let key = p.key_plane(&plane, &self.map, world[0], 0.0, self.region(shown, reach));
+                key.map(|key| (key, id))
+            });
+        let registered = fill.map_or(0, |(_, id)| id);
         let line = curve_depth(shown, &self.map, p);
-        if line.is_empty() {
-            return LayerDepth::Plane(Plane::constant(f64::NEG_INFINITY));
-        }
-        let bounds = line.segment_bounds(bins).collect();
-        self.paths.centrelines.push(CurveDepth { line, bounds });
-        LayerDepth::Curve(self.paths.centrelines.len() as u32 - 1, 0.0)
+        let curve = if line.is_empty() {
+            LayerDepth::Plane(Plane::constant(f64::NEG_INFINITY))
+        } else {
+            let bounds = line.segment_bounds(bins).collect();
+            self.paths.centrelines.push(CurveDepth { line, bounds });
+            LayerDepth::Curve(self.paths.centrelines.len() as u32 - 1, 0.0)
+        };
+        (
+            curve,
+            fill.map_or(curve, |(key, _)| LayerDepth::Plane(key)),
+            registered,
+        )
     }
 
     /// The screen box the path at `shown` paints in, a stroke reaching `reach` past it, and the
@@ -1117,10 +1200,25 @@ impl<'v> Lowering<'v> {
         [b[0] - m, b[1] - m, b[2] + m, b[3] + m]
     }
 
-    fn push(&mut self, edges: Vec<Edge>, spec: PaintSpec, depth: LayerDepth, order: u32, sub: u32) {
+    /// Adds the layer whose outline is the closed polygons `rings`, on the pixel plane.
+    fn push(
+        &mut self,
+        rings: &[Vec<[f64; 2]>],
+        spec: PaintSpec,
+        depth: LayerDepth,
+        plane: u32,
+        order: u32,
+        sub: u32,
+    ) {
+        let edges = scanline::edges_of(rings);
         if edges.is_empty() {
             return;
         }
+        // A layer keyed on a sloped plane reads its fringe's depth on its whole outline.
+        let flats = match depth {
+            LayerDepth::Plane(p) if p.b != 0.0 || p.c != 0.0 => flats_of(rings),
+            _ => Vec::new(),
+        };
         let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
         for e in &edges {
             x0 = x0.min(e.x_min());
@@ -1160,10 +1258,12 @@ impl<'v> Lowering<'v> {
             band0,
             bands: Vec::new(),
             band_edges: Vec::new(),
+            flats: Vec::new(),
             bbox,
             paint: LayerPaint::Solid(colour),
             opaque: colour[3] == 255,
             depth,
+            plane,
             order,
             sub,
         };
@@ -1204,6 +1304,7 @@ impl<'v> Lowering<'v> {
             }
         };
         layer.edges = edges;
+        layer.flats = flats;
         layer.bands = bands;
         layer.band_edges = band_edges;
         if matches!(layer.paint, LayerPaint::Linear(..)) {
@@ -1277,20 +1378,19 @@ impl Paths {
                 |y, x0, x1, a| {
                     for x in x0..x1 {
                         let depth = self.depth_at(layer.depth, x, y, &mut near);
-                        add(
-                            x,
-                            y,
-                            Fragment::new(
-                                depth,
-                                layer.colour(x, y),
-                                Coverage::Area {
-                                    area: a as f32,
-                                    id: i,
-                                },
-                                layer.order,
-                                layer.sub,
-                            ),
+                        let mut f = Fragment::new(
+                            depth,
+                            layer.colour(x, y),
+                            Coverage::Area {
+                                area: a as f32,
+                                id: i,
+                            },
+                            layer.order,
+                            layer.sub,
                         );
+                        f.path_layer = true;
+                        f.plane = layer.plane;
+                        add(x, y, f);
                     }
                 },
             );
@@ -1339,7 +1439,7 @@ impl Producer for Paths {
         Some(&self.layers[id as usize].edges)
     }
 
-    fn curve_depths(
+    fn point_depths(
         &self,
         id: u32,
         x: u32,
@@ -1347,8 +1447,10 @@ impl Producer for Paths {
         points: &[[f64; 2]],
         out: &mut [f64],
     ) -> Option<f64> {
-        let LayerDepth::Curve(i, body) = self.layers[id as usize].depth else {
-            return None;
+        let layer = &self.layers[id as usize];
+        let (i, body) = match layer.depth {
+            LayerDepth::Curve(i, body) => (i, body),
+            LayerDepth::Plane(plane) => return fringe_depths(layer, plane, x, y, points, out),
         };
         let curve = &self.centrelines[i as usize];
         let mut near = Vec::new();
@@ -1362,4 +1464,41 @@ impl Producer for Paths {
         }
         Some(err)
     }
+}
+
+/// A layer keyed on `plane`, at pixel `(x, y)`'s sub-samples (the first [`SAMPLES`] of `points`,
+/// in order) and its centre: at a sub-sample whose point lies outside the layer's outline (the
+/// exact point-in-outline test of [`scanline::mask`], whatever area of its cell the layer covers),
+/// the plane read at the outline's point nearest it, the depth of the layer's edge there; at the
+/// others, the plane at the point. A plane read beyond its outline runs on past every depth of
+/// the layer, the farther the steeper it is: by a pixel's fraction on a face seen at a slant, past
+/// a neighbour sharing its edge on one seen nearly edge-on. The error bound is the plane's own and
+/// the rounding of reading it at any point read. `None`, the plane at every point, where it is flat
+/// or covers every sub-sample.
+fn fringe_depths(
+    layer: &Layer,
+    plane: Plane,
+    x: u32,
+    y: u32,
+    points: &[[f64; 2]],
+    out: &mut [f64],
+) -> Option<f64> {
+    if plane.b == 0.0 && plane.c == 0.0 {
+        return None;
+    }
+    let inside = scanline::mask(&layer.edges, layer.candidates(y), x, y);
+    if inside == u16::MAX {
+        return None;
+    }
+    let mut rounding = plane.read_error(x as f64 + 1.0, y as f64 + 1.0);
+    for (k, (p, d)) in points.iter().zip(out.iter_mut()).enumerate() {
+        let read = if k < SAMPLES && inside & (1 << k) == 0 {
+            layer.nearest_on_outline(*p, y)
+        } else {
+            *p
+        };
+        *d = plane.at(read[0], read[1]);
+        rounding = rounding.max(plane.read_error(read[0], read[1]));
+    }
+    Some(plane.err + rounding)
 }

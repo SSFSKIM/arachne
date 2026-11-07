@@ -105,6 +105,13 @@ pub(crate) fn of_pixel(
         })
         .collect();
     let n = ids.len();
+    // The depths the resolve orders by, a stroke on its own fill
+    // (`composite::strokes_on_own_fills`); each leaf's resolve below is handed the passes' own,
+    // as the frame's resolve is, and takes them so itself.
+    let passes = depths;
+    let mut on_fills = depths.to_vec();
+    crate::composite::strokes_on_own_fills(frags, &mut on_fills, |i| coverage[i]);
+    let depths = &on_fills[..];
     let seen = |i: usize| order::Seen {
         fragment: &frags[i],
         coverage: &coverage[i],
@@ -224,7 +231,7 @@ pub(crate) fn of_pixel(
                 if of[i] == l {
                     scratch.fragments.push(*f);
                     rows.push(coverage[i]);
-                    depth_rows.push(depths[i]);
+                    depth_rows.push(passes[i]);
                 }
             }
             resolve_pixel(&mut scratch, [0; 4], |i, _| rows[i], |i, _| depth_rows[i]).1

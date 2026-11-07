@@ -197,7 +197,10 @@ fn no_background_shows_through_a_surfaces_internal_edges_opaque_or_transparent()
 }
 
 /// Where the stroke meets the sheet, each pixel is what 64 x 64 samples of the two give it, within
-/// the 16-sample pattern's own error, and most pixels there are neither colour alone.
+/// the 16-sample pattern's own error, and most pixels there are neither colour alone. The oracle
+/// is the core's convention for a stroke's depth, a wire's: at each sample the depth of the
+/// centreline's point under it, so the cut across the stroke follows the sheet's line of that
+/// depth, exactly.
 #[test]
 fn a_stroke_crossing_a_surface_is_antialiased_where_they_meet() {
     let probe = probes::stroke_crossing_surface();
@@ -232,10 +235,16 @@ fn a_stroke_crossing_a_surface_is_antialiased_where_they_meet() {
         ],
         rgba: orange,
     };
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
     let on_stroke = |p: [f64; 2]| {
-        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
         let t = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / (dx * dx + dy * dy);
         (0.0..=1.0).contains(&t) && distance_to_segment(p, a, b) < half
+    };
+    let key = |flat: &Flat, q: [f64; 2]| probes::sight_key(&view, w, h, flat, q[0], q[1]);
+    // The centreline's point under `p`.
+    let under = |p: [f64; 2]| {
+        let t = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / (dx * dx + dy * dy);
+        [a[0] + dx * t, a[1] + dy * t]
     };
     let pure = [premultiply(orange), premultiply(navy)];
     let (mut crossing, mut mixed, mut worst, mut sum) = (0, 0, 0.0f64, 0.0);
@@ -248,9 +257,7 @@ fn a_stroke_crossing_a_surface_is_antialiased_where_they_meet() {
             let points = grid_points(x as f64, y as f64, x as f64 + 1.0, y as f64 + 1.0, 64);
             for p in &points {
                 let floor_key = probes::sight_key(&view, w, h, &floor, p[0], p[1]);
-                let stroke_key = on_stroke(*p)
-                    .then(|| probes::sight_key(&view, w, h, &plane, p[0], p[1]))
-                    .flatten();
+                let stroke_key = on_stroke(*p).then(|| key(&plane, under(*p))).flatten();
                 let c = match (floor_key, stroke_key) {
                     (Some(f), Some(s)) if s < f => premultiply(orange),
                     (Some(_), _) => premultiply(navy),

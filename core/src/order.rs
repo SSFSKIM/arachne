@@ -1,8 +1,10 @@
 //! The order fragments composite in at a pixel. Depth decides the order of two fragments only
 //! where both cover, and only where their depths are distinguishable within what the core knows
 //! of them: at a sub-sample both cover, the nearer is in front unless the two depths lie within
-//! their own error bounds of each other ([`tied`]); everywhere else, and at such a tie, they keep
-//! the stream's paint order (the later drawn in front), which is the order Cairo paints them in.
+//! their own error bounds of each other ([`tied`]); everywhere else, at such a tie, between
+//! fragments on one registered plane ([`one_plane`]) and between one path's fill and its own
+//! strokes ([`own_layers`]), they keep the stream's paint order (the later drawn in front), which
+//! is the order Cairo paints them in.
 //!
 //! A depth's error bound (a fragment's `Depths::err` at a pixel) is how far it may stand from the
 //! exact depth of the core's own inputs for it (the snapped points and the normals carried). On a
@@ -51,9 +53,11 @@ pub struct Seen<'a> {
 /// How a pair's order at a pixel was decided.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Decided {
-    /// No sub-sample both cover: paint order.
+    /// No sub-sample both cover, or one path's fill against its own stroke ([`own_layers`]):
+    /// paint order.
     Paint,
-    /// Every sub-sample both cover holds them at one depth within their errors: paint order.
+    /// Every sub-sample both cover holds them at one depth within their errors, or they lie on one
+    /// registered plane ([`one_plane`]): paint order.
     Tie,
     /// Every sub-sample both cover and that is not a tie puts the same one in front.
     Depth,
@@ -64,8 +68,10 @@ pub enum Decided {
 
 impl Decided {
     /// Whether depth decided the pair ([`Decided::Depth`], [`Decided::Majority`]): a strong
-    /// order, which [`rank`] keeps before any weak one (paint order, where no sub-sample is shared
-    /// or depth ties).
+    /// order, which [`rank`] keeps before any weak one. Paint order (where no sub-sample is shared,
+    /// depth ties, the two lie on one plane, or a path's fill meets its own stroke) is weak: a
+    /// convention for a pair whose inputs say nothing of the depth between them, which yields to
+    /// depth where they disagree.
     pub fn is_strong(self) -> bool {
         matches!(self, Decided::Depth | Decided::Majority)
     }
@@ -83,10 +89,39 @@ pub fn painted(a: &Fragment, b: &Fragment) -> Ordering {
     b.order.cmp(&a.order).then(b.sub.cmp(&a.sub))
 }
 
+/// Whether `a` and `b` are one path's fill and one of its own strokes (its stroke or its
+/// background stroke), which keep paint order whatever their depths, as CE paints them: a stroke's
+/// body runs across its fill's edge, and where the fill is keyed on a plane seen nearly edge-on and
+/// the stroke on the curve, the two depths part there, though the stroke always paints over its
+/// fill. Two strokes keep depth, of one path or of one leaf: a curve crossing itself in space must.
+pub fn own_layers(a: &Fragment, b: &Fragment) -> bool {
+    a.path_layer
+        && b.path_layer
+        && a.source() == b.source()
+        && a.order == b.order
+        && a.sub / 3 == b.sub / 3
+        && a.sub != b.sub
+        && (a.sub % 3 == 1 || b.sub % 3 == 1)
+}
+
+/// Whether `a` and `b` lie on one registered plane ([`Fragment::plane`]), whichever producer drew
+/// each: then they are one depth, exactly, wherever both cover, whatever each is keyed on. A
+/// stroke is keyed on its curve, which its plane holds only along the centreline; against what
+/// lies on its own plane (the face it outlines, a mesh it is drawn on, text and axes beside it)
+/// it takes the plane's key, so they tie bit for bit and keep paint order, and against anything
+/// else its curve's.
+///
+/// [`Fragment::plane`]: crate::composite::Fragment::plane
+pub fn one_plane(a: &Fragment, b: &Fragment) -> bool {
+    a.plane != 0 && a.plane == b.plane
+}
+
 /// `a` (depth `da` within `ea`) against `b` (depth `db` within `eb`) at a sub-sample both cover:
-/// [`Ordering::Less`] when `a` is in front. The nearer, unless they tie; then paint order.
+/// [`Ordering::Less`] when `a` is in front. The nearer, unless they tie, lie on one registered
+/// plane ([`one_plane`]) or are one path's fill and its own stroke ([`own_layers`]); then paint
+/// order.
 pub fn at_sample(a: &Fragment, da: f64, ea: f64, b: &Fragment, db: f64, eb: f64) -> Ordering {
-    if tied(da, ea, db, eb) {
+    if own_layers(a, b) || one_plane(a, b) || tied(da, ea, db, eb) {
         painted(a, b)
     } else {
         da.total_cmp(&db)
@@ -99,10 +134,11 @@ pub const ONE_SAMPLE: &str =
     "a sub-sample's strong orders are depth's at one point, which do not cycle";
 
 /// Whether [`at_sample`]'s order of `a` and `b` is strong, depth deciding it (see [`rank`]); the
-/// sub-sample's counterpart of [`Decided::is_strong`]. A rule that keeps paint order and is to hold
-/// against depth joins here and there.
-pub fn strong_at(_a: &Fragment, da: f64, ea: f64, _b: &Fragment, db: f64, eb: f64) -> bool {
-    !tied(da, ea, db, eb)
+/// sub-sample's counterpart of [`Decided::is_strong`]. Paint order at a tie, on one registered
+/// plane ([`one_plane`]) and between a path's fill and its own stroke ([`own_layers`]) is weak.
+/// So at one sub-sample the strong orders are strict orders of finite depths, which never cycle.
+pub fn strong_at(a: &Fragment, da: f64, ea: f64, b: &Fragment, db: f64, eb: f64) -> bool {
+    !own_layers(a, b) && !one_plane(a, b) && !tied(da, ea, db, eb)
 }
 
 /// `a` against `b` at the pixel, from their coverage and depth at each sub-sample, and how that was
@@ -126,6 +162,12 @@ pub fn pair(a: Seen, b: Seen) -> (Ordering, Decided) {
         }
     }
     let paint = painted(a.fragment, b.fragment);
+    if shared > 0 && own_layers(a.fragment, b.fragment) {
+        return (paint, Decided::Paint);
+    }
+    if shared > 0 && one_plane(a.fragment, b.fragment) {
+        return (paint, Decided::Tie);
+    }
     match (shared, a_front, b_front) {
         (0, _, _) => (paint, Decided::Paint),
         (_, 0, 0) => (paint, Decided::Tie),
@@ -160,8 +202,9 @@ pub enum Ranked {
 /// (`painted`) goes first, which keeps every weak order it can, a weak order being paint order.
 /// So the rank is a function of the pairwise orders, their strength and paint order alone. Where
 /// the strong orders alone form a cycle there is no such order: [`Ranked::Strong`], with `out`
-/// holding only the front ranked before the cycle. (A leaf's fill and its own stroke, kept in
-/// self-order, are to join the strong orders, through those two.)
+/// holding only the front ranked before the cycle. The strong orders are depth's
+/// ([`Decided::Depth`], [`Decided::Majority`]) alone; a path's fill against its own stroke
+/// ([`own_layers`]) is paint order, weak, and yields to depth in a cycle.
 pub fn rank(
     items: &[usize],
     front: impl Fn(usize, usize) -> bool,
@@ -546,5 +589,220 @@ mod tests {
             resolve(&[a, b, c, wall, front], &[ra, rb, rc, FULL, FULL]),
             (Resolve::Sample, blend(glass, 255, BLUE))
         );
+    }
+
+    #[test]
+    fn a_path_s_fill_and_its_own_strokes_keep_paint_order_and_two_strokes_keep_depth() {
+        // The layers of one path (record drawn 3rd, its path 0: sub-orders 0, 1, 2) and the stroke
+        // of the record's path 1 (sub-order 5), each at its own depth, nearer being smaller.
+        let layer = |depth: f64, colour: [u8; 4], sub: u32| {
+            let mut f = Fragment::new(
+                Plane::constant(depth),
+                colour,
+                Coverage::Mask(u16::MAX),
+                3,
+                sub,
+            );
+            f.path_layer = true;
+            f
+        };
+        let green = [0, 200, 0, 255];
+        let background = layer(-1.2, green, 0);
+        let fill = layer(-1.0, RED, 1);
+        let stroke = layer(-0.9, BLUE, 2);
+        let other_stroke = layer(-1.1, green, 5);
+        // The stroke over its fill, the fill over its background stroke, though each is the
+        // farther: paint order, as CE paints them.
+        assert_eq!(resolve(&[fill, stroke], &[FULL, FULL]).1, BLUE);
+        assert_eq!(resolve(&[stroke, fill], &[FULL, FULL]).1, BLUE);
+        assert_eq!(resolve(&[background, fill], &[FULL, FULL]).1, RED);
+        assert_eq!(
+            ordered(&fill, &FULL, &stroke, &FULL),
+            (Ordering::Greater, Decided::Paint)
+        );
+        // Two strokes, of one path or of two of the record's paths, and a fill against another
+        // path's stroke: depth.
+        assert_eq!(resolve(&[background, stroke], &[FULL, FULL]).1, green);
+        assert_eq!(resolve(&[stroke, other_stroke], &[FULL, FULL]).1, green);
+        assert_eq!(resolve(&[fill, other_stroke], &[FULL, FULL]).1, green);
+        // A mesh's triangles at those sub-orders are no path's layers: depth.
+        let triangle = |depth: f64, colour: [u8; 4], sub: u32| {
+            Fragment::new(
+                Plane::constant(depth),
+                colour,
+                Coverage::Mask(u16::MAX),
+                3,
+                sub,
+            )
+        };
+        assert_eq!(
+            resolve(
+                &[triangle(-1.0, RED, 1), triangle(-0.9, BLUE, 2)],
+                &[FULL, FULL]
+            )
+            .1,
+            RED
+        );
+    }
+
+    #[test]
+    fn inside_its_fill_a_stroke_is_at_least_as_near_as_its_fill() {
+        // A path's fill, and its stroke drawn after it whose own depth (the wire's) is behind `x`
+        // while the fill is in front of `x`. At every sub-sample the fill covers, the stroke takes
+        // the nearer of its own depth and the fill's: one depth with the fill, over it by paint
+        // order (weak), and in front of `x` by depth. So the stroke, the fill, `x`, front to back,
+        // whatever order they arrive in.
+        let layer = |depth: f64, colour: [u8; 4], sub: u32| {
+            let mut f = Fragment::new(
+                Plane::constant(depth),
+                colour,
+                Coverage::Mask(u16::MAX),
+                3,
+                sub,
+            );
+            f.path_layer = true;
+            f
+        };
+        let (fill_c, x_c, stroke_c) = ([100, 0, 0, 128], [0, 100, 0, 128], [0, 0, 100, 128]);
+        let fill = layer(-1.0, fill_c, 1);
+        let stroke = layer(-0.8, stroke_c, 2);
+        let x = at_depth(Plane::constant(-0.9), x_c, Coverage::Mask(u16::MAX), 2);
+        let want = blend(
+            stroke_c,
+            255,
+            blend(fill_c, 255, blend(x_c, 255, [0, 0, 0, 255])),
+        );
+        for frags in [[fill, stroke, x], [x, stroke, fill], [stroke, x, fill]] {
+            assert_eq!(resolve(&frags, &[FULL; 3]).1, want, "{frags:?}");
+        }
+    }
+
+    #[test]
+    fn outside_its_fill_a_stroke_keeps_the_wire_s_depth() {
+        // The stroke of `inside_its_fill_a_stroke_is_at_least_as_near_as_its_fill` where its fill
+        // does not reach (its outer half): the fill covers half the sub-samples, the stroke and `x`
+        // the other half. There the stroke keeps its own depth, behind `x`: `x`, then the stroke;
+        // its depth and bound are its own at every sub-sample.
+        let layer = |depth: f64, sub: u32| {
+            let mut f = Fragment::new(
+                Plane::constant(depth),
+                RED,
+                Coverage::Mask(u16::MAX),
+                3,
+                sub,
+            );
+            f.path_layer = true;
+            f
+        };
+        let (fill, stroke) = (layer(-1.0, 1), layer(-0.8, 2));
+        let x = at_depth(Plane::constant(-0.9), BLUE, Coverage::Mask(u16::MAX), 2);
+        let frags = [fill, stroke, x];
+        let (half, rest): (Vec<usize>, Vec<usize>) = (0..SAMPLES).partition(|k| k % 2 == 0);
+        let rows = [only(&half), only(&rest), only(&rest)];
+        let own: Vec<Depths> = frags.iter().map(|f| Depths::of_plane(f, 0, 0)).collect();
+        let mut depths = own.clone();
+        crate::composite::strokes_on_own_fills(&frags, &mut depths, |j| rows[j]);
+        assert_eq!(depths, own);
+        for &k in &rest {
+            let (s, x_at) = (depths[1], depths[2]);
+            assert_eq!(
+                at_sample(&stroke, s.samples[k], s.err, &x, x_at.samples[k], x_at.err),
+                Ordering::Greater
+            );
+        }
+        // Where the fill covers too, the stroke takes the fill's depth and bound there.
+        let rows = [FULL, FULL, FULL];
+        crate::composite::strokes_on_own_fills(&frags, &mut depths, |j| rows[j]);
+        assert_eq!(depths[1].samples, own[0].samples);
+        assert_eq!(depths[1].err, own[0].err);
+    }
+
+    #[test]
+    fn a_stroke_nearer_than_its_fill_within_their_bounds_is_not_behind_what_the_fill_is_not() {
+        // The stroke's own depth nearer than its fill's, but within their bounds of it, the fill's
+        // the wider (a plane seen nearly edge-on); `x` nearer than both, beyond the stroke's own
+        // bound but within the fill's. Which of the two depths is the nearer is not known, so the
+        // stroke on its fill carries both bounds: it ties with `x` as the fill does, and paint
+        // order puts it over its fill, as CE draws it.
+        let layer = |depth: f64, err: f64, colour: [u8; 4], sub: u32| {
+            let plane = Plane {
+                err,
+                ..Plane::constant(depth)
+            };
+            let mut f = Fragment::new(plane, colour, Coverage::Mask(u16::MAX), 3, sub);
+            f.path_layer = true;
+            f
+        };
+        let (fill_c, x_c, stroke_c) = ([100, 0, 0, 128], [0, 100, 0, 128], [0, 0, 100, 128]);
+        let fill = layer(0.52, 0.1, fill_c, 1);
+        let stroke = layer(0.5, 0.01, stroke_c, 2);
+        let x = at_depth(
+            Plane {
+                err: 0.01,
+                ..Plane::constant(0.45)
+            },
+            x_c,
+            Coverage::Mask(u16::MAX),
+            2,
+        );
+        let want = blend(
+            stroke_c,
+            255,
+            blend(fill_c, 255, blend(x_c, 255, [0, 0, 0, 255])),
+        );
+        for frags in [[fill, stroke, x], [x, stroke, fill], [stroke, x, fill]] {
+            assert_eq!(resolve(&frags, &[FULL; 3]).1, want, "{frags:?}");
+        }
+    }
+
+    #[test]
+    fn at_one_sub_sample_the_strong_orders_never_cycle() {
+        // Fragments of a few paths' layers and of meshes, on registered planes or none, at depths
+        // that tie, part within their errors, or part beyond them, ranked as one sub-sample ranks
+        // them: depth's strict orders alone are strong, so they never cycle.
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = |m: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % m
+        };
+        let mut out = Vec::new();
+        for _ in 0..20_000 {
+            let n = 3 + next(4) as usize;
+            let frags: Vec<(Fragment, f64, f64)> = (0..n)
+                .map(|_| {
+                    let mut f = Fragment::new(
+                        Plane::constant(0.0),
+                        RED,
+                        Coverage::Mask(u16::MAX),
+                        next(2) as u32,
+                        next(6) as u32,
+                    );
+                    f.path_layer = next(3) != 0;
+                    f.plane = next(3) as u32;
+                    (f, next(8) as f64 * 0.01, next(3) as f64 * 0.01)
+                })
+                .collect();
+            let items: Vec<usize> = (0..n).collect();
+            let at = |a: usize, b: usize| {
+                let ((fa, da, ea), (fb, db, eb)) = (&frags[a], &frags[b]);
+                (fa, *da, *ea, fb, *db, *eb)
+            };
+            let how = rank(
+                &items,
+                |a, b| {
+                    let (fa, da, ea, fb, db, eb) = at(a, b);
+                    a != b && at_sample(fa, da, ea, fb, db, eb) == Ordering::Less
+                },
+                |a, b| {
+                    let (fa, da, ea, fb, db, eb) = at(a, b);
+                    strong_at(fa, da, ea, fb, db, eb)
+                },
+                |a, b| painted(&frags[a].0, &frags[b].0),
+                &mut out,
+            );
+            assert_ne!(how, Ranked::Strong, "{frags:?}");
+        }
     }
 }
