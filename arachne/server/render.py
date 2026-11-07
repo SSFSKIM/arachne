@@ -3,9 +3,10 @@ render path, into the media file the caller names, and checked against the
 execution summary of the session's latest lint.
 
 The render writes into a directory of its own beside ``out``; its video is
-renamed onto ``out`` only once the render succeeded, so a render that ends
-any other way (an error, a refusal, the request's deadline ending the
-process) never leaves a partial file there. A render is a render as the
+renamed onto ``out`` only once the render succeeded, and only under the
+request's claim of its answer, which its deadline can't take from it: a
+render that ends any other way (an error, a refusal, the request's deadline
+ending the process, at any point up to the rename) leaves ``out`` as it was. A render is a render as the
 command line makes it: the scene's own recorder, at the quality's pixel size
 and frame rate, the plays it leaves out executed all the same, as
 ``-n first,last`` executes them.
@@ -13,9 +14,8 @@ and frame rate, the plays it leaves out executed all the same, as
 
 from __future__ import annotations
 
-__all__ = ["Rendered", "plays_meeting", "render"]
+__all__ = ["SelfCheck", "Rendered", "plays_meeting", "render"]
 
-import contextlib
 import os
 import shutil
 import sys
@@ -39,15 +39,33 @@ if TYPE_CHECKING:
     from ..timeline.record import Record
 
 
+#: Why a render with no summary like its own execution was not checked.
+NO_REFERENCE = (
+    "No summary of a lint of this execution at the render's frame rate and "
+    "pixel aspect: lint the session at them to check its renders."
+)
+
+
+@dataclass(frozen=True)
+class SelfCheck:
+    """Whether a render was checked against a lint's summary: ``status``,
+    ``"checked"`` or ``"unchecked"``, and for an unchecked one, ``reason``.
+    """
+
+    status: str
+    reason: str | None = None
+
+
 @dataclass(frozen=True)
 class Rendered:
     """A render written: ``path``, ``out``; ``record``, its execution's
-    record; ``divergence``, where it differs from the summary it was checked
-    against, if it does.
+    record; ``self_check``, whether it was checked; ``divergence``, where it
+    differs from the summary it was checked against, if it does.
     """
 
     path: Path
     record: Record
+    self_check: SelfCheck
     divergence: Divergence | None
 
 
@@ -93,6 +111,7 @@ def render(
     out: Path,
     reference: ExecutionSummary | None,
     scratch: Callable[[Path | None], None],
+    publish: Callable[[Callable[[], None]], bool],
 ) -> Rendered:
     """Render ``scene`` of ``file`` (a real path, ``named`` so by the
     caller) under ``config`` (the session's), at ``quality`` (else the
@@ -100,7 +119,9 @@ def render(
     last, by index; every play when ``None``), to ``out``, checked against
     ``reference``: the plays it rendered, up to its last, and with every
     play its end too. ``scratch`` is told the directory the render writes
-    in while it does, and ``None`` once it is gone.
+    in while it does, and ``None`` once it is gone. ``publish`` runs the
+    rename onto ``out`` under the request's claim of its answer, false
+    when the request's deadline passed first and the rename never ran.
     """
     out.parent.mkdir(parents=True, exist_ok=True)
     media = Path(tempfile.mkdtemp(prefix=f".{out.name}.", dir=out.parent))
@@ -129,9 +150,12 @@ def render(
             made, record = _execute(Path(file), scene, settings, named)
             summary = summarize(record)
         video = Path(made.renderer.file_writer.movie_file_path)
-        divergence = _check(summary, reference, plays)
-        os.replace(video, out)
-        return Rendered(out, record, divergence)
+        checked, divergence = _check(summary, reference, plays)
+        if not publish(lambda: os.replace(video, out)):
+            raise RuntimeError(
+                "The request's deadline passed before its render was written."
+            )
+        return Rendered(out, record, checked, divergence)
     finally:
         shutil.rmtree(media, ignore_errors=True)
         scratch(None)
@@ -163,16 +187,19 @@ def _check(
     summary: ExecutionSummary,
     reference: ExecutionSummary | None,
     plays: tuple[int, int] | None,
-) -> Divergence | None:
-    """Where ``summary``, the render's, differs from ``reference``: up to the
-    last play rendered, and where the scripts ended when every play was
-    executed; ``None`` with nothing to check against, or two sources.
+) -> tuple[SelfCheck, Divergence | None]:
+    """Whether ``summary``, the render's, was checked against ``reference``,
+    and where it differs from it: up to the last play rendered, and where
+    the scripts ended when every play was executed. Unchecked with nothing
+    to check against, or a reference :func:`compare` refuses.
     """
     if reference is None:
-        return None
+        return SelfCheck("unchecked", NO_REFERENCE), None
     before = None
     if plays is not None and plays[1] + 1 < len(reference.plays):
         before = plays[1] + 1
-    with contextlib.suppress(Incomparable):
-        return compare(summary, reference, before_play=before)
-    return None
+    try:
+        return SelfCheck("checked"), compare(summary, reference, before_play=before)
+    except Incomparable as refused:
+        reason = f"The lint's summary can't be compared with the render's: {refused}"
+        return SelfCheck("unchecked", reason), None

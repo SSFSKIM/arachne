@@ -20,24 +20,42 @@ asked again for the session it holds, a server answers it
 once start one server. A session is of the working directory it was asked
 from, where its server runs: a relative path in its config, and the
 configuration file of the directory, are read from there, so callers in two
-directories never share a server.
+directories never share a server. Nor do callers on two engines (two
+interpreters, two versions or builds of the engine or its native core): a
+session's key holds the engine it is asked on. A second caller for a
+session waits its turn behind the first for as long as its deadline.
+
+A server is ended only once it is reserved for its end: ``<pid>.lock``
+beside its entry, which the server itself holds while it answers a request,
+and whoever ends it takes while it does not. A reserved server answers
+nothing more: the next request it reads, it drops unanswered, and ends,
+its caller seeing :class:`ServerGone` (which :func:`connect_or_start` takes
+as a server to start afresh). So a server answering a request is never
+ended under it, and a server ended is never killed in the middle of one.
 
 Under ``ARACHNE_SESSION_MEMORY_MB``, every server, once it has answered,
-ends the least recently used of the other servers of its directory that are
-not answering, while together they hold more than that many megabytes: it
-asks each to shut down, and kills it if it has not ended within a second or
-two. Neither this nor a server's idle end waits for a caller. Servers of
-two directories never see each other.
+ends the least recently used of the other servers of its directory it can
+reserve, while together they hold more than that many megabytes: it asks
+each to shut down, and kills it if it has not ended within a second or two.
+Still over the budget once no other server is left to end, it ends itself,
+its answer sent. Neither this nor a server's idle end waits for a caller.
+Servers of two directories never see each other.
+
+What a client here raises is a :class:`ClientError`.
 """
 
 from __future__ import annotations
 
 __all__ = [
+    "BadRequest",
+    "ClientError",
+    "ClientTimeout",
     "Connection",
     "Entry",
     "Registration",
     "RemoteError",
     "ServerGone",
+    "StartFailed",
     "connect_or_start",
     "session_dir",
     "session_key",
@@ -50,6 +68,7 @@ import contextlib
 import fcntl
 import hashlib
 import json
+import math
 import os
 import resource
 import selectors
@@ -64,7 +83,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from . import protocol
+from . import protocol, store
 
 if TYPE_CHECKING:
     from ..typing import StrPath
@@ -93,7 +112,13 @@ _DETACH = (
 )
 
 
-class RemoteError(Exception):
+class ClientError(Exception):
+    """What a client of the registry raises: one of the kinds below, or,
+    for a server that answered a line that is not the protocol's, this.
+    """
+
+
+class RemoteError(ClientError):
     """An error answer: its JSON-RPC ``code``, ``message`` and ``data``."""
 
     def __init__(self, code: int, message: str, data: Any = None) -> None:
@@ -103,17 +128,43 @@ class RemoteError(Exception):
         self.data = data
 
 
-class ServerGone(ConnectionError):
+class ServerGone(ClientError, ConnectionError):
     """The server ended, or closed the connection, without answering."""
+
+
+class ClientTimeout(ClientError, TimeoutError):
+    """No answer, or no turn at the session's server, within the deadline."""
+
+
+class StartFailed(ClientError, RuntimeError):
+    """A server started for a session did not come to serve."""
+
+
+class BadRequest(ClientError, ValueError):
+    """What was asked can't be sent: a parameter the wire can't carry (a
+    value JSON doesn't hold, a number that isn't finite), or a registry
+    directory no server can serve in.
+    """
 
 
 def session_key(file: str, scene: str, config: Mapping[str, Any], cwd: str) -> str:
     """The registry's key of the session of ``scene`` of ``file`` (a real
     path) under ``config``, asked from the working directory ``cwd`` (a real
-    path).
+    path), on this engine (:func:`_engine_identity`).
     """
-    text = json.dumps([file, scene, dict(config), cwd], sort_keys=True)
+    text = json.dumps(
+        [file, scene, dict(config), cwd, _engine_identity()], sort_keys=True
+    )
     return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+def _engine_identity() -> str:
+    """The engine a session is asked on: the interpreter, by real path and
+    version, and the engine's fingerprint, its native core included
+    (:func:`.store.engine_fingerprint`).
+    """
+    executable = os.path.realpath(sys.executable)
+    return f"{executable}\n{sys.version}\n{store.engine_fingerprint()}"
 
 
 def _cwd() -> str:
@@ -141,7 +192,7 @@ def session_dir(directory: StrPath | None = None) -> Path:
     )
     longest = len(os.fsencode(found)) + len(_LONGEST_NAME) + 1
     if longest > SOCKET_PATH_MAX:
-        raise ValueError(
+        raise BadRequest(
             f"{found} is too long a directory for a session's socket: its socket"
             f" path would take {longest} bytes, and a Unix socket's address holds"
             f" {SOCKET_PATH_MAX}. Name a shorter ARACHNE_SESSION_DIR."
@@ -149,7 +200,7 @@ def session_dir(directory: StrPath | None = None) -> Path:
     found.mkdir(mode=0o700, parents=True, exist_ok=True)
     status = found.stat()
     if status.st_uid != os.getuid():
-        raise PermissionError(f"{found} belongs to another user.")
+        raise BadRequest(f"{found} belongs to another user.")
     if status.st_mode & 0o077:
         found.chmod(0o700)
     return found
@@ -202,8 +253,10 @@ def _listening(path: str) -> bool:
 
 
 def _forget(directory: Path, pid: int) -> None:
-    """Remove what a server left in ``directory``: its entry, socket, log."""
-    for suffix in (".json", ".sock", ".log"):
+    """Remove what a server left in ``directory``: its entry, socket, log
+    and lock.
+    """
+    for suffix in (".json", ".sock", ".log", ".lock"):
         with contextlib.suppress(OSError):
             (directory / f"{pid}{suffix}").unlink()
 
@@ -237,7 +290,12 @@ def _swept(directory: Path) -> list[Entry]:
             _forget(directory, pid)
             continue
         entries.append(entry)
-    for path in [*directory.glob("*.sock"), *directory.glob("*.log")]:
+    left = [
+        path
+        for suffix in (".sock", ".log", ".lock")
+        for path in directory.glob(f"*{suffix}")
+    ]
+    for path in left:
         pid = _pid_of(path)
         if pid is None or (directory / f"{pid}.json").exists() or _alive(pid):
             continue
@@ -251,30 +309,48 @@ def sessions(directory: StrPath | None = None) -> list[Entry]:
     return _swept(session_dir(directory))
 
 
+def _flock(handle: int, wait: float) -> bool:
+    """Take the lock of the open file ``handle``: whether it was had within
+    ``wait`` seconds.
+    """
+    until = time.monotonic() + wait
+    while True:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            if time.monotonic() >= until:
+                return False
+            time.sleep(0.05)
+
+
 @contextlib.contextmanager
-def _locked(path: Path, wait: float | None = None) -> Iterator[bool]:
+def _locked(path: Path, wait: float) -> Iterator[bool]:
     """Hold the lock ``path`` (made when missing): whether it was had within
-    ``wait`` seconds (forever with ``None``).
+    ``wait`` seconds.
     """
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     handle = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
     try:
-        if wait is None:
-            fcntl.flock(handle, fcntl.LOCK_EX)
-            had = True
-        else:
-            until = time.monotonic() + wait
-            while True:
-                try:
-                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    had = True
-                    break
-                except BlockingIOError:
-                    if time.monotonic() >= until:
-                        had = False
-                        break
-                    time.sleep(0.05)
-        yield had
+        yield _flock(handle, wait)
+    finally:
+        os.close(handle)
+
+
+@contextlib.contextmanager
+def _reserved(directory: Path, pid: int, wait: float = 0.0) -> Iterator[bool]:
+    """Reserve the server ``pid`` of ``directory`` for its end, as long as
+    this holds: whether it was reserved within ``wait`` seconds. A server
+    answering a request holds its own reservation, and a server with no
+    lock (gone, or never come to serve) is never reserved.
+    """
+    try:
+        handle = os.open(directory / f"{pid}.lock", os.O_RDWR)
+    except OSError:
+        yield False
+        return
+    try:
+        yield _flock(handle, wait)
     finally:
         os.close(handle)
 
@@ -296,6 +372,11 @@ class Connection:
         self._connection.settimeout(SHUTDOWN_S)
         try:
             self._connection.connect(socket_path)
+        except OSError as found:
+            self._connection.close()
+            raise ServerGone(
+                f"The server {pid} takes no connection: {found}."
+            ) from None
         except BaseException:
             self._connection.close()
             raise
@@ -303,30 +384,49 @@ class Connection:
 
     def call(self, method: str, **params: Any) -> dict[str, Any]:
         """The result of ``method`` asked with ``params`` (``deadline_s``
-        among them). Raises :class:`RemoteError` for an error answer, and
-        :class:`ServerGone` when the server ended without one.
+        among them). Raises :class:`RemoteError` for an error answer,
+        :class:`ServerGone` when the server ended without one,
+        :class:`ClientTimeout` when none came by the deadline and
+        :class:`BadRequest`, sending nothing, for parameters the wire can't
+        carry.
         """
         self._ids += 1
         request = {"jsonrpc": "2.0", "id": self._ids, "method": method}
         if params:
             request["params"] = params
-        deadline = params.get("deadline_s")
-        # The server answers by its deadline, or ends within its way out.
-        wait = None if deadline is None else deadline + 4 * protocol.ENDING_S
         try:
-            self._connection.sendall(protocol.encode(request))
-            line = self._line(wait)
-        except (BrokenPipeError, ConnectionResetError) as found:
+            line = protocol.encode(request)
+        except (TypeError, ValueError) as found:
+            raise BadRequest(f"{method}'s parameters can't be sent: {found}.") from None
+        deadline = params.get("deadline_s")
+        # The server answers by its deadline, or ends within its way out; a
+        # deadline it refuses is answered at once.
+        wait = None
+        if isinstance(deadline, (int, float)) and not isinstance(deadline, bool):
+            wait = max(deadline, 0) + 4 * protocol.ENDING_S
+        try:
+            self._connection.sendall(line)
+            answer = self._line(wait)
+        except ClientError:
+            raise
+        except OSError as found:
             raise ServerGone(f"The server {self.pid} ended: {found}.") from None
-        response = json.loads(line)
-        if "error" in response:
+        try:
+            response = json.loads(answer)
+            if "error" not in response:
+                result: dict[str, Any] = response["result"]
+                return result
             error = response["error"]
-            if error["code"] == protocol.DEADLINE_EXCEEDED:
-                # The server ends on its way out: once this returns, it has.
-                _ended(self.pid, 4 * protocol.ENDING_S)
-            raise RemoteError(error["code"], error["message"], error.get("data"))
-        result: dict[str, Any] = response["result"]
-        return result
+            code, message = error["code"], error["message"]
+        except (ValueError, TypeError, KeyError):
+            raise ClientError(
+                f"The server {self.pid} answered a line that is not the protocol's:"
+                f" {answer[:200]!r}."
+            ) from None
+        if code == protocol.DEADLINE_EXCEEDED:
+            # The server ends on its way out: once this returns, it has.
+            _ended(self.pid, 4 * protocol.ENDING_S)
+        raise RemoteError(code, message, error.get("data"))
 
     def _line(self, wait: float | None) -> bytes:
         until = None if wait is None else time.monotonic() + wait
@@ -334,14 +434,18 @@ class Connection:
             if until is not None:
                 left = until - time.monotonic()
                 if left <= 0:
-                    raise TimeoutError(f"The server {self.pid} gave no answer.")
+                    raise ClientTimeout(f"The server {self.pid} gave no answer.")
                 self._connection.settimeout(left)
             try:
                 chunk = self._connection.recv(65536)
             except TimeoutError:
                 continue
             if not chunk:
-                raise ServerGone(f"The server {self.pid} ended without answering.")
+                raise ServerGone(
+                    f"The server {self.pid} ended without answering: a server ends"
+                    " idle, stopped, or for the host's memory budget, and"
+                    " connect_or_start opens its session again."
+                )
             self._buffer += chunk
         line, self._buffer = self._buffer.split(b"\n", 1)
         return line
@@ -393,7 +497,7 @@ def _start(directory: Path, cwd: str) -> tuple[int, str]:
         tail = Path(log.name).read_text(errors="replace")[-2000:]
         with contextlib.suppress(OSError):
             os.unlink(log.name)
-        raise RuntimeError(f"A session server did not start:\n{tail}") from None
+        raise StartFailed(f"A session server did not start:\n{tail}") from None
     os.replace(log.name, directory / f"{pid}.log")
     return pid, path
 
@@ -417,20 +521,32 @@ def _ready_line(fd: int) -> bytes:
     return buffer.split(b"\n", 1)[0]
 
 
-def _end(directory: Path, pid: int, path: str) -> None:
-    """End the server ``pid``: ask it to shut down, then kill it if it has
-    not ended within :data:`SHUTDOWN_S`; what it left is removed.
+def _end(directory: Path, pid: int, path: str, wait: float) -> bool:
+    """End the server ``pid`` once it is reserved for its end, within
+    ``wait`` seconds: ask it to, then kill it if it has not ended within
+    :data:`SHUTDOWN_S`; what it left is removed. Whether it was reserved:
+    a server not reserved (answering a request all that time) is left as
+    it is.
     """
-    with (
-        contextlib.suppress(OSError, ValueError, RemoteError, TimeoutError),
-        Connection(path, pid, "") as connection,
-    ):
-        connection.call("shutdown", deadline_s=SHUTDOWN_S / 2)
-    if not _ended(pid, SHUTDOWN_S):
-        with contextlib.suppress(OSError):
-            os.kill(pid, signal.SIGKILL)
-        _ended(pid, KILLED_S)
+    with _reserved(directory, pid, wait) as reserved:
+        if not reserved:
+            return False
+        # Reserved, it ends at the next line it reads, answering nothing.
+        _ask_to_end(path)
+        if not _ended(pid, SHUTDOWN_S):
+            with contextlib.suppress(OSError):
+                os.kill(pid, signal.SIGKILL)
+            _ended(pid, KILLED_S)
     _forget(directory, pid)
+    return True
+
+
+def _ask_to_end(path: str) -> None:
+    """Send the server at ``path`` a ``shutdown``, waiting for no answer."""
+    with contextlib.suppress(OSError), socket.socket(socket.AF_UNIX) as connection:
+        connection.settimeout(SHUTDOWN_S)
+        connection.connect(path)
+        connection.sendall(protocol.encode({"jsonrpc": "2.0", "method": "shutdown"}))
 
 
 def _ended(pid: int, wait: float) -> bool:
@@ -458,8 +574,16 @@ def connect_or_start(
     the session it holds, caught up with its files. A server it started
     whose ``open`` failed is ended, and the error raised
     (:class:`RemoteError`). The session is of the working directory it is
-    asked from, where a server it starts runs.
+    asked from, where a server it starts runs. A caller asking while
+    another asks for the same session waits its turn for as long as the
+    deadline (the protocol's, :data:`~.protocol.DEADLINE_S`, unless
+    ``deadline_s``), then raises :class:`ClientTimeout`.
     """
+    if deadline_s is not None and not _positive(deadline_s):
+        raise BadRequest(
+            f"deadline_s is a number of seconds above 0, not {deadline_s!r}."
+        )
+    wait = protocol.DEADLINE_S if deadline_s is None else deadline_s
     found_dir = session_dir(directory)
     named = os.path.abspath(file)
     config = dict(config or {})
@@ -468,7 +592,12 @@ def connect_or_start(
     params: dict[str, Any] = {"file": named, "scene": scene, "config": config}
     if deadline_s is not None:
         params["deadline_s"] = deadline_s
-    with _locked(found_dir / "locks" / f"{key}.lock"):
+    with _locked(found_dir / "locks" / f"{key}.lock", wait) as had:
+        if not had:
+            raise ClientTimeout(
+                f"Another caller held the turn at this session for {wait:g} s,"
+                " its deadline."
+            )
         for entry in _swept(found_dir):
             if entry.key != key:
                 continue
@@ -493,20 +622,34 @@ def connect_or_start(
         pid, path = _start(found_dir, cwd)
         try:
             connection = Connection(path, pid, key)
-        except BaseException:
-            _end(found_dir, pid, path)
+        except BaseException as found:
+            _end(found_dir, pid, path, SHUTDOWN_S)
+            if isinstance(found, ServerGone):
+                raise StartFailed(f"A session server started, then {found}") from None
             raise
         try:
             connection.opened = connection.call("open", **params)
         except BaseException:
             connection.close()
-            _end(found_dir, pid, path)
+            _end(found_dir, pid, path, SHUTDOWN_S)
             raise
         return connection
 
 
+def _positive(seconds: object) -> bool:
+    return (
+        isinstance(seconds, (int, float))
+        and not isinstance(seconds, bool)
+        and math.isfinite(seconds)
+        and seconds > 0
+    )
+
+
 def stop(target: str | int, directory: StrPath | None = None) -> list[Entry]:
-    """End the servers whose key, or pid, is ``target``: the entries ended."""
+    """End the servers whose key, or pid, is ``target``: the entries ended.
+    A server answering a request past :data:`SHUTDOWN_S` is never killed in
+    the middle of it: asked to end, it ends once it has answered.
+    """
     found_dir = session_dir(directory)
     ended = [
         entry
@@ -514,17 +657,24 @@ def stop(target: str | int, directory: StrPath | None = None) -> list[Entry]:
         if entry.key == str(target) or str(entry.pid) == str(target)
     ]
     for entry in ended:
-        _end(found_dir, entry.pid, entry.socket)
+        _stop(found_dir, entry)
     return ended
 
 
 def stop_all(directory: StrPath | None = None) -> list[Entry]:
-    """End every server of the registry: the entries ended."""
+    """End every server of the registry: the entries ended, as :func:`stop`
+    ends them.
+    """
     found_dir = session_dir(directory)
     ended = _swept(found_dir)
     for entry in ended:
-        _end(found_dir, entry.pid, entry.socket)
+        _stop(found_dir, entry)
     return ended
+
+
+def _stop(directory: Path, entry: Entry) -> None:
+    if not _end(directory, entry.pid, entry.socket, SHUTDOWN_S):
+        _ask_to_end(entry.socket)
 
 
 # The server's side
@@ -555,6 +705,20 @@ class Registration:
         self._path = directory / f"{pid}.json"
         #: The session's key and generation last written.
         self._written: tuple[str | None, int | None] | None = None
+        # The server's reservation for its end: its own while it answers.
+        self._lock_path = directory / f"{pid}.lock"
+        self._lock = os.open(self._lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+
+    def admit(self) -> bool:
+        """Take the server's own reservation for a request it read: false
+        when it is reserved for its end, and must answer nothing more.
+        Held until :meth:`release`.
+        """
+        return _flock(self._lock, 0.0)
+
+    def release(self) -> None:
+        """Give the reservation back: the request is answered."""
+        fcntl.flock(self._lock, fcntl.LOCK_UN)
 
     def write(
         self,
@@ -598,20 +762,22 @@ class Registration:
         self._written = (key, generation)
 
     def remove(self) -> None:
-        """Remove the entry, and the server's log."""
-        for path in (self._path, self.directory / f"{self.pid}.log"):
+        """Remove the entry, the server's log and its lock."""
+        for path in (self._path, self.directory / f"{self.pid}.log", self._lock_path):
             with contextlib.suppress(OSError):
                 path.unlink()
 
-    def enforce(self) -> None:
-        """End the least recently used of the directory's other servers
-        that are not answering, while they all hold more than the budget.
+    def enforce(self) -> bool:
+        """End the least recently used of the directory's other servers it
+        can reserve at once (none answering a request), while they all hold
+        more than the budget: whether they still do, with no other server
+        left to end, and this one must end itself.
         """
         if self.budget_mb is None:
-            return
+            return False
         with _locked(self.directory / "registry.lock", wait=SHUTDOWN_S) as had:
             if not had:
-                return
+                return False
             entries = _swept(self.directory)
             held = sum(entry.rss_mb for entry in entries)
             others = sorted(
@@ -621,5 +787,6 @@ class Registration:
             for entry in others:
                 if held <= self.budget_mb:
                     break
-                _end(self.directory, entry.pid, entry.socket)
-                held -= entry.rss_mb
+                if _end(self.directory, entry.pid, entry.socket, 0.0):
+                    held -= entry.rss_mb
+            return held > self.budget_mb

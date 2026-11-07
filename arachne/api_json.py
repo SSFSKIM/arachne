@@ -262,13 +262,18 @@ def frame(found: Answer, path: StrPath) -> dict[str, Any]:
 
 def render(found: Rendered) -> dict[str, Any]:
     """A render or a clip written (``found``): its media file, every play
-    its execution played (those the file leaves out ``skipped``), and the
-    divergence its check found, when it found one.
+    its execution played (those the file leaves out ``skipped``), whether it
+    was checked against a lint's summary, and the divergence its check
+    found, when it found one.
     """
     form: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "path": os.fspath(found.path),
         "timeline": [_play(play) for play in found.record.plays],
+        "self_check": {
+            "status": found.self_check.status,
+            "reason": found.self_check.reason,
+        },
     }
     if found.divergence is not None:
         form["divergence"] = _divergence(found.divergence)

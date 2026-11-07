@@ -20,6 +20,7 @@ __all__ = ["IDLE_S", "main", "serve"]
 
 import argparse
 import contextlib
+import functools
 import math
 import os
 import selectors
@@ -187,8 +188,7 @@ class _Server:
     def _registered(self, *, busy: bool, if_changed: bool = False) -> None:
         """Keep the server's entry in the registry, if it has one (with
         ``if_changed``, only when the session held or its generation changed
-        since it was last written), and, once a request is answered, the
-        host's memory budget. Neither can fail the server.
+        since it was last written). It can't fail the server.
         """
         registration = self.registration
         if registration is None:
@@ -201,9 +201,21 @@ class _Server:
                 busy=busy,
                 if_changed=if_changed,
             )
-        if not busy and not dispatcher.ending:
-            with contextlib.suppress(Exception):
-                registration.enforce()
+
+    def _keep_budget(self) -> None:
+        """Keep the host's memory budget, once a request is answered: still
+        over it with no other server to end, the server ends. It can't fail
+        the server.
+        """
+        registration = self.registration
+        if registration is None or self.dispatcher.ending:
+            return
+        with contextlib.suppress(Exception):
+            if registration.enforce():
+                _say(
+                    "over the host's memory budget, no other server to end: the server ends"
+                )
+                self.dispatcher.ending = True
 
     def run(self, selector: selectors.BaseSelector, ends_with: _Channel | None) -> int:
         """Answer what the selector's channels send until a request ends the
@@ -237,25 +249,37 @@ class _Server:
         """Answer ``line`` by its deadline, counted from when it was read
         whole, writing the answer included: the server's until the request
         gives its own. A request answered and its deadline's error are one
-        or the other, never both (:class:`~.watchdog.Ticket`).
+        or the other, never both (:class:`~.watchdog.Ticket`). A server
+        reserved for its end (:mod:`.registry`) answers nothing: it ends.
         """
-        read: list[protocol.Request] = []
-        limit = [self.deadline_s]
-        self._registered(busy=True)
-        ticket = self.watchdog.arm(
-            line.received + self.deadline_s,
-            lambda respond: self._expired(channel, read, limit[0], respond),
-        )
+        registration = self.registration
+        if registration is not None and not registration.admit():
+            _say("reserved for its end: the server ends, the request unanswered")
+            self.dispatcher.ending = True
+            return
         try:
-            reply = self._reply(line, ticket, read, limit)
-            # The entry names the session held before its answer is sent: a
-            # caller that read the answer finds the session in the registry.
-            self._registered(busy=True, if_changed=True)
-            if reply is not None and self.watchdog.answering(ticket):
-                channel.send(reply)
+            read: list[protocol.Request] = []
+            limit = [self.deadline_s]
+            self._registered(busy=True)
+            ticket = self.watchdog.arm(
+                line.received + self.deadline_s,
+                lambda respond: self._expired(channel, read, limit[0], respond),
+            )
+            try:
+                reply = self._reply(line, ticket, read, limit)
+                # The entry names the session held before its answer is sent:
+                # a caller that read the answer finds the session in the
+                # registry.
+                self._registered(busy=True, if_changed=True)
+                if reply is not None and self.watchdog.answering(ticket):
+                    channel.send(reply)
+            finally:
+                self.watchdog.end(ticket)
+            self._registered(busy=False)
         finally:
-            self.watchdog.end(ticket)
-        self._registered(busy=False)
+            if registration is not None:
+                registration.release()
+        self._keep_budget()
 
     def _reply(
         self,
@@ -293,12 +317,17 @@ class _Server:
         # The request read: its deadline, its own or the server's, from when
         # its line was read whole; already past, it ends here, unrun.
         self.watchdog.move(ticket, line.received + limit[0])
+        # What the request publishes (a render's file) is published under the
+        # claim of its answer, so a deadline that passes first leaves it unmade.
+        self.dispatcher.publish = functools.partial(self.watchdog.claim, ticket)
         try:
             value = protocol.result(
                 request.id, self.dispatcher.handle(request.method, params)
             )
         except RpcError as found:
             value = protocol.error(request.id, found)
+        finally:
+            self.dispatcher.publish = None
         return _encoded(value) if request.has_id else None
 
     def _expired(
