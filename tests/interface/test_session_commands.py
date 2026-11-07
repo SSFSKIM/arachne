@@ -812,7 +812,14 @@ def test_session_render_plays_a_to_b_as_render_s_n(tmp_path):
         *_session_args("server", tmp_path),
     ]
     # From play a through play b, both included; a alone, through the last.
-    for plays, shown in (("1,2", [1, 2]), ("1,1", [1]), ("1", [1, 2])):
+    for plays, shown in (
+        ("1,2", [1, 2]),
+        ("1,1", [1]),
+        ("1", [1, 2]),
+        # Past the last play, through the last, as render's -n does.
+        ("1,99", [1, 2]),
+        ("0,999999999999999", [0, 1, 2]),
+    ):
         out = tmp_path / f"plays-{plays}.mp4"
         found = _invoke(*args, "--plays", plays, "-o", str(out))
         assert found.exit_code == 0, found.output
@@ -839,6 +846,27 @@ def test_session_render_plays_not_a_run_is_a_usage_error(tmp_path, plays):
     assert not out.exists()
 
 
+@pytest.mark.parametrize("plays", ["3", "5,9"])
+def test_session_render_plays_from_past_the_last_play_is_a_usage_error(tmp_path, plays):
+    path = _write(tmp_path, "clipped.py", CLIPPED)
+    out = tmp_path / "render.mp4"
+    found = _invoke(
+        "session",
+        "render",
+        str(path),
+        "Clipped",
+        "--plays",
+        plays,
+        "-o",
+        str(out),
+        *_session_args("server", tmp_path),
+    )
+    assert found.exit_code == 2, found.output
+    assert "--plays" in found.stderr
+    assert "last play is 2" in found.stderr
+    assert not out.exists()
+
+
 def test_session_clip_takes_the_plays_meeting_its_span(tmp_path):
     path = _write(tmp_path, "clipped.py", CLIPPED)
     out = tmp_path / "clip.mp4"
@@ -858,6 +886,8 @@ def test_session_clip_takes_the_plays_meeting_its_span(tmp_path):
     assert found.exit_code == 0, found.output
     lines = found.stdout.splitlines()
     assert str(out) in lines[0]
+    # The play of 1-2 s meets the span; the waits either side do not.
+    assert "plays 1-1 (1-2 s)" in lines[0]
     assert lines[-1] == "self_check: checked"
     assert out.stat().st_size > 0
 
@@ -895,9 +925,10 @@ def test_session_clip_unchecked_says_why_and_strict_exits_1(tmp_path):
     assert _invoke(*args, "--strict").exit_code == 1
 
 
-def test_session_render_divergence_is_shown_and_strict_exits_1(tmp_path):
+@pytest.mark.parametrize("mode", MODES)
+def test_session_render_divergence_is_shown_and_strict_exits_1(tmp_path, mode):
     path = _write(tmp_path, "scattered.py", SCATTERED)
-    session = _session_args("server", tmp_path)
+    session = _session_args(mode, tmp_path)
     assert _invoke("lint", str(path), "Scattered", *session).exit_code == 0
     # Plant, as the lint's summary, an execution under another seed.
     planted = Session.open(
@@ -966,6 +997,39 @@ def test_session_render_past_its_deadline_leaves_nothing_at_out(tmp_path):
     assert not out.exists()
     assert _left_beside(out) == []
     assert _listed() == []
+
+
+def test_session_render_once_past_its_deadline_exits_3_and_leaves_nothing(
+    tmp_path,
+):
+    # In a process of its own: the deadline ends the process it runs in.
+    path = _write(tmp_path, "slow.py", SLOW)
+    out = tmp_path / "slow.mp4"
+    command = [
+        sys.executable,
+        "-m",
+        "arachne",
+        "session",
+        "render",
+        str(path),
+        "Slow",
+        "-o",
+        str(out),
+        "--deadline-s",
+        "5",
+        "--json",
+        *_session_args("once", tmp_path),
+    ]
+    done = subprocess.run(
+        command, capture_output=True, text=True, timeout=WAIT_S, cwd=tmp_path
+    )
+    assert done.returncode == 3, (done.stdout, done.stderr)
+    error = json.loads(done.stdout)
+    assert error["code"] == protocol.DEADLINE_EXCEEDED
+    assert error["data"] == {"method": "render", "deadline_s": 5}
+    assert "deadline" in done.stderr
+    assert not out.exists()
+    assert _left_beside(out) == []
 
 
 def test_session_render_takes_a_long_deadline_by_default():
