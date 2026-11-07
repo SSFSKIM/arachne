@@ -394,23 +394,26 @@ class Dispatcher:
         return reloaded
 
     def _executed(self, record: dict[str, Any] | None = None) -> None:
-        """Keep the manifest of the execution the session now holds,
-        ``record`` its record's form if made already, and its summary: a
-        session opened from the store then checks a render against the
-        summary an executed one holds, whatever the server did before.
+        """Keep the summary of the execution the session now holds, then its
+        manifest, ``record`` its record's form if made already: a session
+        opened from the store checks a render against the summary an
+        executed one holds, whatever the server did before. The summary
+        goes first, as an answer's file goes before its answer, so a
+        manifest kept never lacks it.
         """
         self._manifest = self._summarised = None
         if self.store is None or self._opened is None or self.session is None:
             return
         file, scene, _ = self._opened
+        self.keep_summary(self.session)
+        if self._summarised is None:
+            return
         if record is None:
             record = api_json.inspect(self.session)
         with contextlib.suppress(OSError):
             self._manifest = self.store.keep_manifest(
                 file, scene, self._config, self.session, record, self._loaded
             )
-        if self._manifest is not None:
-            self.keep_summary(self.session)
 
     def record(self) -> dict[str, Any]:
         """The record's form of the session held."""

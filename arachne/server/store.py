@@ -1,5 +1,5 @@
 """What a session server keeps after it ends: the answers it gave, and the
-execution summary of each latest lint, keyed by the execution they are of.
+summary of each execution, keyed by the execution they are of.
 
 A record holds live mobjects and the scene's own callables, so no record is
 kept: the store keeps what can be written down. For each session opened (a
@@ -9,9 +9,9 @@ from) its **manifest**: the files its execution came from, by digest (its
 source and every file its code read, as its module loaded too), the
 identity of the execution, and the record's form as ``open`` answered it.
 For each execution, the **answers** given, each by its request (the method
-and its params); and the **summary** of the execution its latest lint was
-of (:class:`~arachne.timeline.execution.ExecutionSummary`), which a render
-checks itself against.
+and its params); and its **summary**
+(:class:`~arachne.timeline.execution.ExecutionSummary`), kept as it
+executes and before its manifest, which a render checks itself against.
 
 A server asked to open a session whose manifest's files still hold what
 they held, by digest, answers from the store until a request needs what the
@@ -183,8 +183,9 @@ def summary_key(
     pixel size, of which only the aspect, since the camera fits its frame
     to it; the frame rate among them, since a play's states depend on the
     instants it was evaluated at. A render at another frame rate or aspect
-    than a lint's is another execution, never checked against it. The
-    working directory is the process's, which a relative path is read from.
+    than an execution kept is another execution, never checked against it.
+    The working directory is the process's, which a relative path is read
+    from.
     """
     settings = _settings_digest(settings_of(config), pixels=False)
     return _digest(

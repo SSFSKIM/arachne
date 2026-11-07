@@ -188,12 +188,13 @@ describes it.
     keeps as the session executes (else the session's own), of an execution
     at the render's frame rate and pixel aspect: so a session opened from
     the store checks a render as an executed one does, and a render at
-    another frame rate or aspect is another execution, and is unchecked. Another pixel aspect is another execution
-    because the camera keeps its configured frame width and derives its
-    frame height from the aspect (854 by 480 gives 7.99375 against 16:9's
-    8): the camera's frame differs while mobject geometry, placed by the
-    configuration's frame, does not. Checking across aspects, by comparing
-    mobject states in scene units, is not done yet.
+    another frame rate or aspect is another execution, and is unchecked.
+    Another pixel aspect is another execution because the camera keeps its
+    configured frame width and derives its frame height from the aspect
+    (854 by 480 gives 7.99375 against 16:9's 8): the camera's frame differs
+    while mobject geometry, placed by the configuration's frame, does not.
+    Checking across aspects, by comparing mobject states in scene units, is
+    not done yet.
   - ``clip`` renders the plays that meet ``[t0, t1]``, ``t0`` not after
     ``t1``: from the first play whose span reaches ``t0`` (it ends at or
     after it) to the last whose span reaches back to ``t1`` (it starts at
