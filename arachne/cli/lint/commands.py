@@ -18,6 +18,7 @@ import cloup
 
 from ..asking import (
     EXIT_STRICT,
+    RESIDENT,
     ask,
     finite,
     json_value,
@@ -50,7 +51,7 @@ def _exemptions(ctx: click.Context, param: click.Parameter, value: str | None) -
     return found
 
 
-@cloup.command()
+@cloup.command(epilog=RESIDENT)
 @session_options
 @cloup.option(
     "--fps",

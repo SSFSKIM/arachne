@@ -14,7 +14,7 @@ import click
 import cloup
 
 from ...constants import QUALITIES
-from ..asking import ask, printed, seconds, session_options
+from ..asking import RESIDENT, ask, printed, seconds, session_options
 
 #: The quality keys, by their flag, as ``arachne render -q`` names them.
 FLAGS: dict[str, str] = {
@@ -35,7 +35,7 @@ def _instant(ctx: click.Context, param: click.Parameter, value: str) -> float | 
     return found
 
 
-@cloup.command()
+@cloup.command(epilog=RESIDENT)
 @session_options
 @cloup.option(
     "--t",
