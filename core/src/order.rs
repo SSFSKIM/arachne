@@ -30,7 +30,10 @@
 //! shared edge or face is made from the same snapped corners, so the snap is common input, and
 //! counting it would tie geometry that is really near-coincident. Nor does it count a model's
 //! departure from the geometry (a segment's plane is flat across the segment; a face's plane is
-//! the face's): two such depths that differ are two depths, and depth orders them.
+//! the face's), but for one: a face on no one plane is keyed on the plane nearest it, and its key
+//! carries its drawn outline's departure from that plane (`path::nearest_plane_departure`), so it
+//! ties with what that plane cannot tell it from. Two other depths that differ are two depths,
+//! and depth orders them.
 //! One order for the pixel (what the coverage composite and the contributor report's leaf order
 //! read) takes each pair's order from the sub-samples both cover ([`pair`]); one order per
 //! sub-sample (what the sample resolve composites) takes each pair's order there. Both are ranked

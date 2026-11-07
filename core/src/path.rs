@@ -1042,9 +1042,9 @@ impl<'v> Lowering<'v> {
     /// depth.
     ///
     /// A flat path (its record's `planes`, or decided from its points) is fitted its plane, then
-    /// merged in the frame's [`Registry`] in draw order, after its meshes' triangles: a path whose
-    /// points lie on a plane registered before it takes that plane, else registers its own. Then a
-    /// path with no plane of
+    /// merged in the frame's [`Registry`] in draw order, after its meshes' triangles: a path on a
+    /// plane registered before it takes that plane's identity, else registers its own, and is
+    /// keyed on its own plane either way. Then a path with no plane of
     /// its own (a line, a curve) whose points all lie on a registered plane takes the first such
     /// plane, whatever the order. So things on one plane tie by draw order, though each plane fitted
     /// to snapped points differs by the snap's noise. A surface's face on no one plane, and a
@@ -1074,8 +1074,7 @@ impl<'v> Lowering<'v> {
             let own = WorldPlane::fit(&points, planarity);
             found[i] = match (own, planarity, in_world) {
                 (Some(own), Planarity::Newell | Planarity::Widest | Planarity::Axis(_), true) => {
-                    let (plane, id) = registry.merge(own, &points);
-                    Some((plane, id, planarity))
+                    Some((own, registry.merge(own, &points), planarity))
                 }
                 (None, Planarity::Curve, true) => {
                     curves.push((i, points));

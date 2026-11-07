@@ -335,8 +335,9 @@ const ON_PLANE_REACHES: f64 = 6.0;
 /// (`path::Lowering::coplanar`), in draw order. One plane has one identity whichever producer drew
 /// what lies on it, and two fragments of one identity keep paint order (`order::one_plane`), so
 /// things on one plane tie by draw order: the planes fitted to their snapped points differ by the
-/// snap's noise, about the grid over their size, and would cross. A path on a plane registered
-/// before it also takes that plane, bit for bit; a triangle keeps its own.
+/// snap's noise, about the grid over their size, and would cross. A record takes a registered
+/// plane's identity only: a path, as a triangle, is keyed on the plane fitted to its own points,
+/// which a plane it shares may not hold (below).
 ///
 /// Two records are on one plane when either's points lie on the other's plane: each point within
 /// [`ON_PLANE_REACHES`] snap reaches of it (and the planes' rounding to [`PLANE_GRID`]). Either
@@ -391,11 +392,13 @@ impl Registry {
         Registry::within(plane, points, self.tolerance(points))
     }
 
-    /// The plane a flat record takes and its identity, `own` the plane fitted to its points: the
-    /// first plane registered near `own` (the same, or turned the other way: the canonical
-    /// normal's largest component can flip sign between two fits of one plane) that it is on,
-    /// else `own`, registered.
-    pub(crate) fn merge(&mut self, own: WorldPlane, points: &[[f64; 3]]) -> (WorldPlane, u32) {
+    /// The identity a flat record takes, `own` the plane fitted to its points: the first plane
+    /// registered near `own` (the same, or turned the other way: the canonical normal's largest
+    /// component can flip sign between two fits of one plane) that it is on, else `own`,
+    /// registered. The record is keyed on `own` either way: when it is on a plane registered
+    /// before it only because that record's points lie on `own`, its own points may lie off that
+    /// plane by far more than the tolerance.
+    pub(crate) fn merge(&mut self, own: WorldPlane, points: &[[f64; 3]]) -> u32 {
         let tolerance = self.tolerance(points);
         let mut first: Option<usize> = None;
         for near in [own, own.turned()] {
@@ -422,7 +425,7 @@ impl Registry {
             self.planes.push((own, points.to_vec()));
             self.planes.len() - 1
         });
-        (self.planes[i].0, i as u32 + 1)
+        i as u32 + 1
     }
 
     /// The first plane registered that every point lies on, and its identity: the plane a record

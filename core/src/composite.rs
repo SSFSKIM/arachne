@@ -144,7 +144,8 @@ pub struct Plane {
     /// For a depth, how far its coefficients may put it, anywhere its fragments are read, from the
     /// exact depth of the inputs it was made from (the snapped points and the normals carried),
     /// besides the rounding of reading it at a point ([`Plane::read_error`]): the representation
-    /// its constructor imposes and that constructor's own arithmetic ([`crate::order`]).
+    /// its constructor imposes and that constructor's own arithmetic, and for a face keyed on the
+    /// plane nearest it, its outline's departure from that plane ([`crate::order`]).
     pub err: f64,
 }
 
