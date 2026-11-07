@@ -14,16 +14,19 @@ pub static KEY_UNDER: AtomicU64 = AtomicU64::new(0);
 pub static FEET: AtomicU64 = AtomicU64::new(0);
 /// The most segments one of those reads projected the point onto.
 pub static MOST_FEET: AtomicU64 = AtomicU64::new(0);
+/// Box gaps measured (`Centreline::gap2`).
+pub static GAPS: AtomicU64 = AtomicU64::new(0);
 /// Keys read on one segment (`key_on`).
 pub static KEY_ON: AtomicU64 = AtomicU64::new(0);
 
-const ALL: [(&str, &AtomicU64); 6] = [
+const ALL: [(&str, &AtomicU64); 7] = [
     ("near", &NEAR),
     ("bounds_tested", &BOUNDS_TESTED),
     ("key_under", &KEY_UNDER),
     ("feet", &FEET),
     ("most_feet", &MOST_FEET),
     ("key_on", &KEY_ON),
+    ("gaps", &GAPS),
 ];
 
 /// Adds `n` to `counter`.

@@ -368,6 +368,107 @@ struct CurveDepth {
     tiled: Vec<u32>,
     /// The segments whose bounds meet no tile of the frame, in order.
     beyond: Vec<u32>,
+    /// The segments filed by the cells of a fine grid over their own bounds.
+    fine: Fine,
+}
+
+/// The cell size, in pixels, of a curve's fine grid ([`Fine`]).
+const FINE: f64 = 8.0;
+
+/// A curve's segments filed, in order, under the cells of a grid `FINE` pixels square over their
+/// own screen bounds (not widened), clipped to `region`, the frame widened by the margin and a
+/// pixel: where a pixel's read finds the few segments within its reach without testing every
+/// segment whose widened bounds hold it ([`CurveDepth::near_cut`]).
+#[derive(Default)]
+struct Fine {
+    origin: [f64; 2],
+    /// Cells across and down; none where no segment meets the region.
+    cols: i64,
+    rows: i64,
+    /// The segments filed under cell `(c, r)`, in order, are
+    /// `filed[starts[r * cols + c]..starts[r * cols + c + 1]]`.
+    starts: Vec<u32>,
+    filed: Vec<u32>,
+}
+
+impl Fine {
+    fn new(line: &Centreline, region: [f64; 4]) -> Fine {
+        let mut all = [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ];
+        for i in 0..line.len() {
+            let b = line.segment_box(i);
+            all = [
+                all[0].min(b[0]),
+                all[1].min(b[1]),
+                all[2].max(b[2]),
+                all[3].max(b[3]),
+            ];
+        }
+        let (lo, hi) = (
+            [all[0].max(region[0]), all[1].max(region[1])],
+            [all[2].min(region[2]), all[3].min(region[3])],
+        );
+        if !(lo[0] <= hi[0] && lo[1] <= hi[1]) {
+            return Fine::default();
+        }
+        let origin = [lo[0].floor(), lo[1].floor()];
+        let at = |v: f64, axis: usize| ((v - origin[axis]) / FINE).floor() as i64;
+        let (cols, rows) = (at(hi[0], 0) + 1, at(hi[1], 1) + 1);
+        // The cells a segment's bounds meet within the region, none for one beyond it.
+        let spans: Vec<Option<[i64; 4]>> = (0..line.len())
+            .map(|i| {
+                let b = line.segment_box(i);
+                (b[2] >= lo[0] && b[0] <= hi[0] && b[3] >= lo[1] && b[1] <= hi[1]).then(|| {
+                    [
+                        at(b[0].max(lo[0]), 0).clamp(0, cols - 1),
+                        at(b[2].min(hi[0]), 0).clamp(0, cols - 1),
+                        at(b[1].max(lo[1]), 1).clamp(0, rows - 1),
+                        at(b[3].min(hi[1]), 1).clamp(0, rows - 1),
+                    ]
+                })
+            })
+            .collect();
+        let cells = |s: [i64; 4]| {
+            (s[2]..=s[3]).flat_map(move |r| (s[0]..=s[1]).map(move |c| (r * cols + c) as usize))
+        };
+        let mut starts = vec![0u32; (cols * rows) as usize + 1];
+        for t in spans.iter().flatten().flat_map(|s| cells(*s)) {
+            starts[t + 1] += 1;
+        }
+        for t in 1..starts.len() {
+            starts[t] += starts[t - 1];
+        }
+        let mut next = starts.clone();
+        let mut filed = vec![0u32; starts[starts.len() - 1] as usize];
+        for (k, s) in spans.iter().enumerate() {
+            for t in s.iter().flat_map(|s| cells(*s)) {
+                filed[next[t] as usize] = k as u32;
+                next[t] += 1;
+            }
+        }
+        Fine {
+            origin,
+            cols,
+            rows,
+            starts,
+            filed,
+        }
+    }
+
+    /// The cell holding coordinate `v` along `axis`, unclamped.
+    fn at(&self, v: f64, axis: usize) -> i64 {
+        ((v - self.origin[axis]) / FINE).floor() as i64
+    }
+
+    /// The segments filed under cell `(c, r)`, which lies in the grid.
+    fn cell(&self, c: i64, r: i64) -> &[u32] {
+        let t = (r * self.cols + c) as usize;
+        &self.filed[self.starts[t] as usize..self.starts[t + 1] as usize]
+    }
 }
 
 /// Paths lowered to coverage layers, binned by tile: a producer of area fragments.
@@ -1408,9 +1509,11 @@ impl Paths {
             LayerDepth::Plane(p) => p,
             LayerDepth::Curve(i, body) => {
                 let curve = &self.centrelines[i as usize];
-                curve.candidates(x, y, body, near);
                 let centre = [x as f64 + 0.5, y as f64 + 0.5];
-                curve.line.cut(centre, &[centre], near, body);
+                if !curve.near_cut(centre, &[centre], body, near) {
+                    curve.candidates(x, y, body, near);
+                    curve.line.cut(centre, &[centre], near, body);
+                }
                 let (key, err) = curve.line.key_under(centre, near, body);
                 Plane {
                     err,
@@ -1511,6 +1614,9 @@ impl CurveDepth {
                 None => beyond.push(k as u32),
             }
         }
+        let reach = margin + 1.0;
+        let region = [-reach, -reach, width as f64 + reach, height as f64 + reach];
+        let fine = Fine::new(&line, region);
         CurveDepth {
             line,
             bounds,
@@ -1520,7 +1626,97 @@ impl CurveDepth {
             starts,
             tiled,
             beyond,
+            fine,
         }
+    }
+
+    /// The candidates [`Self::candidates`] then [`Centreline::cut`] leave for a read at pixel
+    /// `(x, y)` among `points` (all within the pixel, its centre `centre` among them) of a stroke
+    /// whose body reaches `body`, in order, found from the fine grid instead, into `kept`; false,
+    /// `kept` as it was, where the grid cannot show they are the same (the read takes that path).
+    ///
+    /// The centre's nearest segment is found ring by ring of cells around the centre's, a segment
+    /// projected onto only where its bounds lie within the nearest found so far
+    /// ([`Centreline::cut`]'s rule), until every segment not met lies further than the nearest
+    /// found: one filed only from ring `ring` out lies over `ring - 1` cells from the centre,
+    /// and a part beyond the region over the margin and a pixel. Two equalities make the grid's
+    /// answer the cut's, each holding with `room` for rounding ([`Centreline::rounding`]):
+    /// - The least distance found equals the least over the candidates where it lies under the
+    ///   margin less `room`: a segment that near the centre has widened bounds holding the centre,
+    ///   so it is a candidate, and every candidate is a segment, so none is nearer.
+    /// - The segments kept, those whose bounds lie within the cut's limit of the points' box, are
+    ///   all candidates where the limit and half a pixel lie under the margin less `room` (every
+    ///   point lies within half a pixel of the centre on each axis), and each lies within the
+    ///   region, so it is filed under a cell the box widened by the limit meets: those cells'
+    ///   segments, in order and cut by the same test, are the cut's.
+    fn near_cut(
+        &self,
+        centre: [f64; 2],
+        points: &[[f64; 2]],
+        body: f64,
+        kept: &mut Vec<u32>,
+    ) -> bool {
+        let fine = &self.fine;
+        if fine.cols == 0 {
+            return false;
+        }
+        let at = [centre[0], centre[1], centre[0], centre[1]];
+        let room = self
+            .line
+            .rounding(centre[0].abs().max(centre[1].abs()) + self.margin + 2.0);
+        let beyond = self.margin + 1.0;
+        let (kx, ky) = (fine.at(centre[0], 0), fine.at(centre[1], 1));
+        let mut nearest = f64::INFINITY;
+        for ring in 0i64.. {
+            // The rings met so far hold every point within `ring - 1` cells of the centre.
+            let met = ((ring - 1).max(0) as f64 * FINE).min(beyond);
+            if nearest.sqrt() + room < met {
+                break;
+            }
+            if (ring - 1) as f64 * FINE > beyond {
+                return false;
+            }
+            for r in (ky - ring).max(0)..=(ky + ring).min(fine.rows - 1) {
+                for c in (kx - ring).max(0)..=(kx + ring).min(fine.cols - 1) {
+                    if (r - ky).abs().max((c - kx).abs()) != ring {
+                        continue;
+                    }
+                    for &k in fine.cell(c, r) {
+                        let within = nearest.sqrt() + room;
+                        if self.line.gap2(k as usize, at) <= within * within {
+                            nearest = nearest.min(self.line.distance2(k as usize, centre));
+                        }
+                    }
+                }
+            }
+            if kx - ring <= 0
+                && ky - ring <= 0
+                && kx + ring >= fine.cols - 1
+                && ky + ring >= fine.rows - 1
+            {
+                break;
+            }
+        }
+        let (area, limit) = self.line.reach(centre, points, nearest, body);
+        // Answered only where it lies under the margin; never where it does not, or is not a number.
+        if (limit + 0.5 + room).partial_cmp(&self.margin) != Some(std::cmp::Ordering::Less) {
+            return false;
+        }
+        let wide = limit + room;
+        let rows =
+            fine.at(area[1] - wide, 1).max(0)..=fine.at(area[3] + wide, 1).min(fine.rows - 1);
+        let cols =
+            fine.at(area[0] - wide, 0).max(0)..=fine.at(area[2] + wide, 0).min(fine.cols - 1);
+        kept.clear();
+        for r in rows {
+            for c in cols.clone() {
+                kept.extend_from_slice(fine.cell(c, r));
+            }
+        }
+        kept.sort_unstable();
+        kept.dedup();
+        kept.retain(|&k| self.line.gap2(k as usize, area) <= limit * limit);
+        true
     }
 
     /// The segments whose bounds hold pixel `(x, y)`'s centre, in order, into `near`: of those
@@ -1654,8 +1850,11 @@ impl Producer for Paths {
         };
         let curve = &self.centrelines[i as usize];
         let mut near = Vec::new();
-        curve.candidates(x, y, body, &mut near);
         let centre = [x as f64 + 0.5, y as f64 + 0.5];
+        if curve.near_cut(centre, points, body, &mut near) {
+            return Some(curve.line.keys_among(points, &near, body, out));
+        }
+        curve.candidates(x, y, body, &mut near);
         Some(curve.line.keys_under(centre, points, &mut near, body, out))
     }
 }
@@ -1695,4 +1894,152 @@ fn fringe_depths(
         rounding = rounding.max(plane.read_error(read[0], read[1]));
     }
     Some(plane.err + rounding)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::composite::{SAMPLES, sample_point};
+
+    /// A small seeded generator (xorshift64*), so the cases are the same on every run.
+    struct Seeded(u64);
+
+    impl Seeded {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
+        }
+
+        fn below(&mut self, n: u64) -> u64 {
+            self.next() % n
+        }
+
+        fn pick<T: Copy>(&mut self, from: &[T]) -> T {
+            from[self.below(from.len() as u64) as usize]
+        }
+    }
+
+    /// The candidates a read at pixel `(x, y)` among `points` keeps without the fine grid.
+    fn by_cut(depth: &CurveDepth, x: u32, y: u32, points: &[[f64; 2]], body: f64) -> Vec<u32> {
+        let mut kept = Vec::new();
+        depth.candidates(x, y, body, &mut kept);
+        depth
+            .line
+            .cut([x as f64 + 0.5, y as f64 + 0.5], points, &mut kept, body);
+        kept
+    }
+
+    fn points(x: u32, y: u32, all: bool) -> Vec<[f64; 2]> {
+        let centre = [x as f64 + 0.5, y as f64 + 0.5];
+        if !all {
+            return vec![centre];
+        }
+        let mut points: Vec<[f64; 2]> = (0..SAMPLES).map(|k| sample_point(x, y, k)).collect();
+        points.push(centre);
+        points
+    }
+
+    #[test]
+    fn the_fine_grid_keeps_what_the_cut_keeps() {
+        let mut s = Seeded(0x00f1_2026_1107);
+        let (mut cases, mut found, mut fell) = (0u64, 0u64, 0u64);
+        while cases < 20_000 {
+            let (w, h) = s.pick(&[(64u32, 48u32), (130, 70), (200, 40), (9, 300)]);
+            let margin = s.pick(&[66.0, 70.5, 130.0, 12.0, 3.0, 0.75]);
+            let step = s.pick(&[0.5, 1.0, 3.0, 12.0, 40.0]);
+            let n = 1 + s.below(30) as usize;
+            let mut at = [
+                s.below(w as u64 + 160) as f64 - 80.0,
+                s.below(h as u64 + 160) as f64 - 80.0,
+            ];
+            let mut line: Vec<([f64; 2], f64)> = Vec::new();
+            for _ in 0..n {
+                if s.below(6) != 0 {
+                    at = [
+                        at[0] + step * (s.below(9) as f64 - 4.0) / 4.0,
+                        at[1] + step * (s.below(9) as f64 - 4.0) / 4.0,
+                    ];
+                }
+                line.push((at, s.pick(&[-0.5, 0.0, 0.25, 1.0])));
+            }
+            let breaks: Vec<usize> = (1..n).filter(|_| s.below(7) == 0).collect();
+            let line = Centreline::new(&line, &breaks);
+            if line.is_empty() {
+                continue;
+            }
+            cases += 1;
+            let depth = CurveDepth::new(line, margin, w, h);
+            let (x, y) = (s.below(w as u64) as u32, s.below(h as u64) as u32);
+            let body = s.pick(&[0.0, 0.1, 0.5, 1.0, 2.5]);
+            let points = points(x, y, s.below(2) == 0);
+            let centre = [x as f64 + 0.5, y as f64 + 0.5];
+            let mut kept = vec![u32::MAX];
+            if depth.near_cut(centre, &points, body, &mut kept) {
+                found += 1;
+                assert_eq!(kept, by_cut(&depth, x, y, &points, body), "case {cases}");
+            } else {
+                fell += 1;
+                assert_eq!(
+                    kept,
+                    vec![u32::MAX],
+                    "case {cases}: a fallback touched its candidates"
+                );
+            }
+        }
+        // Both ways are taken often (half the margins are too narrow for the grid to answer at all).
+        assert!(
+            found > cases / 8 && fell > cases / 50,
+            "{found} found, {fell} fell back"
+        );
+    }
+
+    #[test]
+    fn at_the_edge_of_the_grid_s_reach_its_answer_is_still_the_cut_s() {
+        // One segment level with the pixel's centre, a distance below it that runs from where the
+        // grid answers to where it cannot; at the last distance it answers and the first it does
+        // not, a bit apart, it keeps what the cut keeps (or leaves the read to the cut).
+        let (x, y, margin) = (100u32, 100u32, 66.0);
+        let centre = [100.5, 100.5];
+        let depth_at = |below: f64| {
+            let line = Centreline::new(
+                &[
+                    ([90.0, centre[1] + below], 0.5),
+                    ([111.0, centre[1] + below], 0.25),
+                    ([180.0, centre[1] + below], 1.0),
+                ],
+                &[],
+            );
+            CurveDepth::new(line, margin, 200, 260)
+        };
+        for all in [false, true] {
+            let points = points(x, y, all);
+            for body in [0.0, 1.0] {
+                let answers = |below: f64| {
+                    let mut kept = Vec::new();
+                    depth_at(below).near_cut(centre, &points, body, &mut kept)
+                };
+                let (mut yes, mut no) = (10.0f64, 80.0f64);
+                assert!(answers(yes) && !answers(no));
+                while no.to_bits() - yes.to_bits() > 1 {
+                    let mid = f64::from_bits((yes.to_bits() + no.to_bits()) / 2);
+                    if answers(mid) { yes = mid } else { no = mid }
+                }
+                assert!(yes > margin - 3.0 && yes < margin, "the edge at {yes}");
+                for below in [
+                    f64::from_bits(yes.to_bits() - 1),
+                    yes,
+                    no,
+                    f64::from_bits(no.to_bits() + 1),
+                ] {
+                    let depth = depth_at(below);
+                    let mut kept = Vec::new();
+                    if depth.near_cut(centre, &points, body, &mut kept) {
+                        assert_eq!(kept, by_cut(&depth, x, y, &points, body), "at {below}");
+                    }
+                }
+            }
+        }
+    }
 }

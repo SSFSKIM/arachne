@@ -616,6 +616,7 @@ impl Centreline {
     /// The squared distance from segment `i`'s screen bounds to the box `area` (`[x0, y0, x1,
     /// y1]`): nothing of the segment lies nearer any point of the box than its root.
     pub fn gap2(&self, i: usize, area: [f64; 4]) -> f64 {
+        count!(GAPS);
         let (a, _, b, _) = self.segments[i];
         let gx = (a[0].min(b[0]) - area[2])
             .max(area[0] - a[0].max(b[0]))
@@ -624,6 +625,22 @@ impl Centreline {
             .max(area[1] - a[1].max(b[1]))
             .max(0.0);
         gx * gx + gy * gy
+    }
+
+    /// Segment `i`'s screen bounds, `[x0, y0, x1, y1]`.
+    pub fn segment_box(&self, i: usize) -> [f64; 4] {
+        let (a, _, b, _) = self.segments[i];
+        [
+            a[0].min(b[0]),
+            a[1].min(b[1]),
+            a[0].max(b[0]),
+            a[1].max(b[1]),
+        ]
+    }
+
+    /// The number of segments.
+    pub fn len(&self) -> usize {
+        self.segments.len()
     }
 
     /// How far the distances [`Centreline::key_under`] compares may stand from the exact
@@ -713,10 +730,16 @@ impl Centreline {
         out: &mut [f64],
     ) -> f64 {
         self.cut(centre, points, candidates, body);
+        self.keys_among(points, candidates, body, out)
+    }
+
+    /// [`Centreline::key_under`] at each of `points` into `out`, among `kept`, and the largest of
+    /// their bounds: [`Centreline::keys_under`]'s reads, its candidates already cut.
+    pub fn keys_among(&self, points: &[[f64; 2]], kept: &[u32], body: f64, out: &mut [f64]) -> f64 {
         // One bound for every point, as a plane's is: the largest of theirs.
         let mut err = 0.0f64;
         for (p, d) in points.iter().zip(out.iter_mut()) {
-            let (key, e) = self.key_under(*p, candidates, body);
+            let (key, e) = self.key_under(*p, kept, body);
             *d = key;
             err = err.max(e);
         }
@@ -748,8 +771,23 @@ impl Centreline {
                 nearest = nearest.min(self.distance2(i as usize, centre));
             }
         }
-        let nearest = nearest.sqrt();
-        let mut area = at;
+        let (area, limit) = self.reach(centre, points, nearest, body);
+        candidates.retain(|&i| self.gap2(i as usize, area) <= limit * limit);
+    }
+
+    /// The box of `points` and `centre`, and how far from it [`Centreline::cut`] keeps a candidate's
+    /// bounds, given `nearest2`, the least squared distance from `centre` to a candidate: the
+    /// further of `body` and the centre's nearest distance plus how far the furthest point lies
+    /// from the centre, with room for rounding.
+    pub fn reach(
+        &self,
+        centre: [f64; 2],
+        points: &[[f64; 2]],
+        nearest2: f64,
+        body: f64,
+    ) -> ([f64; 4], f64) {
+        let nearest = nearest2.sqrt();
+        let mut area = [centre[0], centre[1], centre[0], centre[1]];
         let mut spread = 0.0f64;
         for p in points {
             area = [
@@ -762,8 +800,7 @@ impl Centreline {
         }
         let reach = (nearest + spread).max(body);
         let extent = area.iter().fold(reach, |m, v| m.max(v.abs()));
-        let limit = reach + self.rounding(extent);
-        candidates.retain(|&i| self.gap2(i as usize, area) <= limit * limit);
+        (area, reach + self.rounding(extent))
     }
 }
 
