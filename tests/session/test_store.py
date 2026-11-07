@@ -12,8 +12,11 @@ import os
 import textwrap
 from pathlib import Path
 
+import pytest
+
 from arachne.server import store
 from arachne.server.dispatch import Dispatcher
+from arachne.server.protocol import RpcError
 from arachne.server.store import Store
 
 SMALL = {"pixel_width": 96, "pixel_height": 54, "frame_rate": 4}
@@ -184,6 +187,31 @@ def test_a_render_is_checked_alike_whether_its_session_executed_or_was_stored(
     assert (executed[0], stored[0]) == (False, True)
     assert executed[1]["render"]["self_check"] == {"status": "checked", "reason": None}
     assert stored[1] == executed[1]
+
+
+class _Killed(BaseException):
+    """The process ended where it is raised, as a deadline's exit ends it."""
+
+
+def test_a_session_ended_before_its_summary_was_kept_leaves_no_manifest(
+    tmp_path, monkeypatch
+):
+    path = _write(tmp_path, "scene.py", READS_AT_LOAD)
+    (tmp_path / "size.txt").write_text("1")
+    params = {"file": str(path), "scene": "Input", "config": SMALL}
+
+    def killed(*args, **kwargs):
+        raise _Killed
+
+    with monkeypatch.context() as patched:
+        patched.setattr(Store, "keep_summary", killed)
+        with pytest.raises(RpcError, match="_Killed"):
+            Dispatcher(Store()).handle("open", params)
+    # Nothing a session opened from the store would trust without the summary.
+    assert Store().manifest(str(path.resolve()), "Input", SMALL) is None
+    executed, rendered = _rendered(params, tmp_path / "render.mp4")
+    assert not executed
+    assert rendered["render"]["self_check"]["status"] == "checked"
 
 
 def test_the_store_is_kept_under_the_native_core_too(monkeypatch):
