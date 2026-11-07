@@ -23,6 +23,20 @@ from arachne.constants import EPILOG, FORKED_FROM
 ANSWERING = ("frame", "inspect", "lint", "session")
 
 
+class _Main(DefaultGroup):
+    """The command group, which notes the command a command line names
+    before its options are processed, for :func:`show_splash`.
+    """
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        # The group's options are flags, so the first argument that is no
+        # option is the command (or a file, rendered).
+        ctx.meta["arachne.command"] = next(
+            (arg for arg in args if not arg.startswith("-")), None
+        )
+        return super().parse_args(ctx, args)
+
+
 def _print_splash() -> None:
     console.print(
         f"Arachne [green]v{__version__}[/green] (forked from {FORKED_FROM})\n"
@@ -32,9 +46,9 @@ def _print_splash() -> None:
 def show_splash(ctx: click.Context, param: click.Option, value: str | None) -> None:
     """When giving a value by console, show an initial message with the Manim
     version before executing any other command:
-    ``Arachne vA.B.C (forked from Manim Community vX.Y.Z)``. It is shown
-    once the command is known (:func:`main`), and not before the commands
-    that answer on their standard output (:data:`ANSWERING`).
+    ``Arachne vA.B.C (forked from Manim Community vX.Y.Z)``. It is not
+    shown before the commands that answer on their standard output
+    (:data:`ANSWERING`).
 
     Parameters
     ----------
@@ -45,7 +59,8 @@ def show_splash(ctx: click.Context, param: click.Option, value: str | None) -> N
     value
         A string value given by console, or None.
     """
-    ctx.meta["arachne.splash"] = bool(value)
+    if value and ctx.meta.get("arachne.command") not in ANSWERING:
+        _print_splash()
 
 
 def print_version_and_exit(
@@ -70,7 +85,7 @@ def print_version_and_exit(
 
 @cloup.group(
     context_settings=cli_ctx_settings,
-    cls=DefaultGroup,
+    cls=_Main,
     default="render",
     no_args_is_help=True,
     help="Animation engine for explanatory math videos.",
@@ -105,8 +120,7 @@ def main(ctx: click.Context) -> None:
     ctx
         The Click context.
     """
-    if ctx.meta.get("arachne.splash") and ctx.invoked_subcommand not in ANSWERING:
-        _print_splash()
+    pass
 
 
 main.add_command(checkhealth)

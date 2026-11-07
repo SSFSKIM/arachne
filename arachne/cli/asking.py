@@ -20,6 +20,8 @@ __all__ = [
     "EXIT_SCENE_ERROR",
     "EXIT_STRICT",
     "ask",
+    "finite",
+    "json_value",
     "printed",
     "seconds",
     "session_options",
@@ -27,6 +29,7 @@ __all__ = [
 
 import contextlib
 import json
+import math
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any, NoReturn, TypeVar
@@ -44,13 +47,39 @@ EXIT_FAILED = 3
 F = TypeVar("F", bound=Callable[..., Any])
 
 
+def finite(
+    ctx: click.Context, param: click.Parameter, value: float | None
+) -> float | None:
+    """A number option's ``value``, refused unless finite."""
+    if value is not None and not math.isfinite(value):
+        raise click.BadParameter(f"{value!r} is not a finite number.")
+    return value
+
+
+def json_value(text: str) -> Any:
+    """``text`` read as JSON, each number finite (``NaN``, ``Infinity`` and a
+    number too large for a float are not); raises :class:`click.BadParameter`.
+    """
+
+    def constant(name: str) -> Any:
+        raise ValueError(f"{name} is not a finite number")
+
+    def number(written: str) -> float:
+        found = float(written)
+        if not math.isfinite(found):
+            raise ValueError(f"{written} is not a finite number")
+        return found
+
+    try:
+        return json.loads(text, parse_constant=constant, parse_float=number)
+    except ValueError as error:
+        raise click.BadParameter(f"not JSON: {error}") from None
+
+
 def _json_object(ctx: click.Context, param: click.Parameter, value: str | None) -> Any:
     if value is None:
         return {}
-    try:
-        found = json.loads(value)
-    except ValueError as error:
-        raise click.BadParameter(f"not JSON: {error}") from None
+    found = json_value(value)
     if not isinstance(found, dict):
         raise click.BadParameter("a JSON object of configuration options")
     return found
@@ -84,6 +113,7 @@ def session_options(command: F) -> F:
             type=click.FloatRange(min=0, min_open=True, max=protocol.MAX_DEADLINE_S),
             default=protocol.DEADLINE_S,
             show_default=True,
+            callback=finite,
             help="How long each request may run, in seconds; a server ends past it.",
         ),
         cloup.option(
@@ -97,7 +127,7 @@ def session_options(command: F) -> F:
 
 @contextlib.contextmanager
 def _reached(
-    file: str, scene: str, config: dict[str, Any], once: bool
+    file: str, scene: str, config: dict[str, Any], once: bool, deadline_s: float
 ) -> Iterator[client.Client]:
     if not once:
         with client.connect_or_start(file, scene, config) as remote:
@@ -108,7 +138,7 @@ def _reached(
         yield here
     finally:
         with contextlib.suppress(client.Failed):
-            here.call("close", {})
+            here.call("close", {"deadline_s": deadline_s})
 
 
 def ask(
@@ -128,7 +158,7 @@ def ask(
     printed as ``as_json`` says.
     """
     try:
-        with _reached(str(file.resolve()), scene, config, once) as session:
+        with _reached(str(file.resolve()), scene, config, once, deadline_s) as session:
             answer = session.call(
                 "open",
                 {
@@ -151,10 +181,10 @@ def ask(
 
 def _failed(failed: client.Failed, as_json: bool) -> NoReturn:
     error, code = failed.error, failed.code
-    if code == protocol.INVALID_PARAMS:
-        raise click.UsageError(error["message"])
     if as_json:
         click.echo(json.dumps(error))
+    if code == protocol.INVALID_PARAMS:
+        raise click.UsageError(error["message"])
     data = error.get("data")
     if code == protocol.SCENE_ERROR and isinstance(data, dict):
         click.echo(data["report"], err=True)
