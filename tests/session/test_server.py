@@ -547,7 +547,7 @@ def test_a_request_past_its_deadline_ends_the_server(serve, tmp_path, transport)
 
 def test_errors_of_the_protocol_and_refusals_keep_their_codes(serve, tmp_path):
     server = serve()
-    assert server.error("render")["code"] == protocol.METHOD_NOT_FOUND
+    assert server.error("no_such_method")["code"] == protocol.METHOD_NOT_FOUND
     server.send("{not json")
     response = server.receive()
     assert response is not None
