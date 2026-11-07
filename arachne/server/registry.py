@@ -590,9 +590,14 @@ def connect_or_start(
     found_dir = session_dir(directory)
     named = os.path.abspath(file)
     config = dict(config or {})
+    params: dict[str, Any] = {"file": named, "scene": scene, "config": config}
+    # What the wire can't carry is refused here, before a turn or a start.
+    try:
+        protocol.encode({"jsonrpc": "2.0", "id": 0, "method": "open", "params": params})
+    except (TypeError, ValueError) as found:
+        raise BadRequest(f"open's parameters can't be sent: {found}.") from None
     cwd = _cwd()
     key = session_key(os.path.realpath(file), scene, config, cwd)
-    params: dict[str, Any] = {"file": named, "scene": scene, "config": config}
 
     def opened(connection: Connection) -> dict[str, Any]:
         # The open has what is left of the deadline, nothing when none is.
