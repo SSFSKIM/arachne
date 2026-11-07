@@ -31,6 +31,12 @@ gates:
     run: uv run python -m pytest --ignore=tests/test_docs_examples
     env: {UV_PYTHON: "3.12"}
     timeout: 45
+  # Ubuntu 24.04's system Python. Code positions differ between 3.12 patch releases (3.12.3
+  # places a lambda's implicit return at column 0), and the timeline reads them.
+  - name: tests-py3123
+    run: uv run python -m pytest --ignore=tests/test_docs_examples
+    env: {UV_PYTHON: "3.12.3"}
+    timeout: 45
   - name: tests-py314
     run: uv run python -m pytest --ignore=tests/test_docs_examples
     env: {UV_PYTHON: "3.14"}
