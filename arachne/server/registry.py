@@ -83,6 +83,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .._config.utils import config_file_paths
 from . import protocol, store
 
 if TYPE_CHECKING:
@@ -147,15 +148,43 @@ class BadRequest(ClientError, ValueError):
     """
 
 
-def session_key(file: str, scene: str, config: Mapping[str, Any], cwd: str) -> str:
+def session_key(
+    file: str,
+    scene: str,
+    config: Mapping[str, Any],
+    cwd: str,
+    *,
+    settings: str | None = None,
+) -> str:
     """The registry's key of the session of ``scene`` of ``file`` (a real
     path) under ``config``, asked from the working directory ``cwd`` (a real
-    path), on this engine (:func:`_engine_identity`).
+    path), on this engine (:func:`_engine_identity`), under the
+    configuration files ``settings`` digests (:func:`_settings_files`, as
+    they read now unless given).
     """
+    if settings is None:
+        settings = _settings_files(cwd)
     text = json.dumps(
-        [file, scene, dict(config), cwd, _engine_identity()], sort_keys=True
+        [file, scene, dict(config), cwd, _engine_identity(), settings], sort_keys=True
     )
     return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+def _settings_files(cwd: str) -> str:
+    """A digest of the configuration files in force from ``cwd``
+    (:func:`~arachne._config.utils.config_file_paths`, the folder's read
+    from there), by content: what a server read as it started, so that an
+    edit to one is another session.
+    """
+    digest = hashlib.sha256()
+    for path in config_file_paths():
+        found = path if path.is_absolute() else Path(cwd) / path
+        try:
+            content = found.read_bytes()
+        except OSError:
+            content = b"\0absent"
+        digest.update(os.fsencode(found) + b"\0" + hashlib.sha256(content).digest())
+    return digest.hexdigest()
 
 
 def _engine_identity() -> str:
@@ -718,6 +747,9 @@ class Registration:
         self.budget_mb = budget_mb
         # Where it started: a scene's code changing directory moves no key.
         self.cwd = _cwd()
+        # The configuration files as the engine read them when it loaded: an
+        # edit since is another session, which this server does not hold.
+        self._settings = _settings_files(self.cwd)
         self._path = directory / f"{pid}.json"
         #: The session's key and generation last written.
         self._written: tuple[str | None, int | None] | None = None
@@ -750,7 +782,11 @@ class Registration:
         changed since the entry was last written.
         """
         file, scene, config = held if held is not None else (None, None, None)
-        key = None if held is None else session_key(*held, self.cwd)
+        key = (
+            None
+            if held is None
+            else session_key(*held, self.cwd, settings=self._settings)
+        )
         if if_changed and self._written == (key, generation):
             return
         entry = Entry(
