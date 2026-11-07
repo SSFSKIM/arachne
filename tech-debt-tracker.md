@@ -348,3 +348,13 @@ lifted.
   any programmatic or multi-threaded caller uses the in-process path. Also, each `InProcess` starts a watchdog
   daemon thread that never ends, since the watchdog has no close; it is harmless for one command but leaves
   one idle thread per in-process use.
+- **A server's start is not bounded by its caller's deadline.** `connect_or_start` waits up to `START_S` (60 s)
+  for a started server's ready line (`registry._ready_line`), whatever is left of `deadline_s`; the open after it
+  then gets only what is left, or `ClientTimeout`. Bounding the wait itself would leave a server that comes ready
+  after its caller gave up, unreachable to end, since its pid is known only from its ready line. Direction: give
+  the server its caller's deadline at its start (an environment stamp on a clock both share) and have it exit
+  unregistered when it comes ready past it; then bound the wait by the deadline.
+- **A line's arrival is stamped late while the scene holds the interpreter.** The server's reading thread
+  (`serve._reading`) stamps each line as it reads it; a scene running a long C call that keeps the GIL delays that
+  read, and the line's deadline starts that much late. Direction: read on a thread that never needs the GIL for
+  the stamp (or in a helper process), if a scene's long native calls ever make the delay matter.
