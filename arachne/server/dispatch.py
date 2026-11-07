@@ -10,7 +10,15 @@ entry.
 
 from __future__ import annotations
 
-__all__ = ["METHODS", "REFUSALS", "Dispatcher", "Method", "Params", "deadline"]
+__all__ = [
+    "METHODS",
+    "REFUSALS",
+    "Dispatcher",
+    "Method",
+    "Params",
+    "deadline",
+    "internal_error",
+]
 
 import json
 import math
@@ -24,7 +32,7 @@ from typing import Any
 
 from .. import api_json
 from ..constants import QUALITIES
-from ..errors import explain
+from ..errors import SceneError, explain, message_of
 from ..frame_ir.cairo_painter import Unsupported
 from ..lint.exempt import Exemptions
 from ..lint.instants import DEFAULT as LINT_AT
@@ -35,6 +43,7 @@ from ..timeline.routes import RecordRefused, Unavailable
 from .protocol import (
     INTERNAL_ERROR,
     INVALID_PARAMS,
+    MAX_DEADLINE_S,
     METHOD_NOT_FOUND,
     NO_SESSION,
     OTHER_SESSION,
@@ -100,13 +109,16 @@ def flag(name: str, value: Any) -> bool:
 
 
 def number(name: str, value: Any) -> float:
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or not math.isfinite(value)
-    ):
+    """A finite number, as a float: an integer too large for one is none."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise _invalid(f"{name} is a number.")
-    return value
+    try:
+        found = float(value)
+    except OverflowError:
+        found = math.inf
+    if not math.isfinite(found):
+        raise _invalid(f"{name} is a finite number.")
+    return found
 
 
 def positive(name: str, value: Any) -> float:
@@ -117,13 +129,17 @@ def positive(name: str, value: Any) -> float:
 
 
 def instant(name: str, value: Any) -> Fraction | float:
-    """A time: seconds, or the exact instant as a string, ``"n/d"``."""
-    if isinstance(value, str):
-        try:
-            return Fraction(value)
-        except ValueError:
-            raise _invalid(f"{name} is seconds or an exact instant, 'n/d'.") from None
-    return number(name, value)
+    """A time: seconds, or the exact instant as a string, ``"n/d"`` (or any
+    rational :class:`~fractions.Fraction` reads), finite as a float.
+    """
+    if not isinstance(value, str):
+        return number(name, value)
+    try:
+        found = Fraction(value)
+        float(found)
+    except (ValueError, ZeroDivisionError, OverflowError):
+        raise _invalid(f"{name} is seconds or an exact instant, 'n/d'.") from None
+    return found
 
 
 def instants(name: str, value: Any) -> list[Fraction | float]:
@@ -136,6 +152,8 @@ def span(name: str, value: Any) -> tuple[float, float]:
     if not isinstance(value, list) or len(value) != 2:
         raise _invalid(f"{name} is [start, end], in seconds.")
     start, end = (number(name, each) for each in value)
+    if start > end:
+        raise _invalid(f"{name} is [start, end], start not after end.")
     return start, end
 
 
@@ -155,7 +173,12 @@ def deadline(params: dict[str, Any]) -> tuple[float | None, dict[str, Any]]:
     """A request's ``deadline_s``, in seconds, and its other params."""
     rest = dict(params)
     given = rest.pop("deadline_s", None)
-    return (None if given is None else positive("deadline_s", given)), rest
+    if given is None:
+        return None, rest
+    found = positive("deadline_s", given)
+    if found > MAX_DEADLINE_S:
+        raise _invalid(f"deadline_s is at most {MAX_DEADLINE_S:g} s.")
+    return found, rest
 
 
 def _rules(name: str, value: Any) -> Any:
@@ -166,7 +189,9 @@ def _rules(name: str, value: Any) -> Any:
     named = {"hold_watch": hold_watch, "departures": departures}
     if value == "armed":
         return value
-    if not isinstance(value, list) or any(each not in named for each in value):
+    if not isinstance(value, list) or not all(
+        isinstance(each, str) and each in named for each in value
+    ):
         raise _invalid(f"{name} is 'armed' or a list of {', '.join(map(repr, named))}.")
     return tuple(named[each] for each in value)
 
@@ -176,7 +201,9 @@ def _answers(name: str, value: Any) -> list[str]:
     if (
         not isinstance(asked, list)
         or not asked
-        or any(each not in api_json.QUERY_ANSWERS for each in asked)
+        or not all(
+            isinstance(each, str) and each in api_json.QUERY_ANSWERS for each in asked
+        )
     ):
         raise _invalid(f"{name} is one or more of {', '.join(api_json.QUERY_ANSWERS)}.")
     return asked
@@ -272,14 +299,16 @@ def _error_answer(error: BaseException, scene_file: str | None) -> RpcError | No
     for an :class:`Exception`, an internal error. ``None``: none of these, so
     not the server's to answer.
     """
+    kind = type(error).__name__
     if isinstance(error, REFUSALS):
         reason = getattr(error, "reason", None) or getattr(error, "code", None)
+        message = message_of(error)
         return RpcError(
             REFUSED,
-            f"{type(error).__name__}: {error}",
+            f"{kind}: {message}",
             {
-                "type": type(error).__name__,
-                "message": str(error),
+                "type": kind,
+                "message": message,
                 "reason": reason if isinstance(reason, str) else None,
             },
         )
@@ -287,7 +316,7 @@ def _error_answer(error: BaseException, scene_file: str | None) -> RpcError | No
     if explained is None and scene_file is not None:
         found = explain(error, scene_file)
         explained = found if found.frames else None
-    if explained is not None:
+    if isinstance(explained, SceneError):
         message = (
             f"{explained.cls}: {explained.message}"
             if explained.message
@@ -296,17 +325,31 @@ def _error_answer(error: BaseException, scene_file: str | None) -> RpcError | No
         return RpcError(SCENE_ERROR, message, api_json.scene_error(explained))
     if not isinstance(error, Exception):
         return None
-    trace = traceback.format_exception(
-        type(error), error, error.__traceback__, limit=-TRACEBACK_FRAMES, chain=False
-    )
+    return internal_error(error)
+
+
+def internal_error(error: BaseException) -> RpcError:
+    """The server's own failure, ``error``: ``INTERNAL_ERROR`` with its type,
+    message and traceback, trimmed to its last
+    :data:`~.protocol.TRACEBACK_FRAMES` frames.
+    """
+    kind, message = type(error).__name__, message_of(error)
+    try:
+        trace = "".join(
+            traceback.format_exception(
+                type(error),
+                error,
+                error.__traceback__,
+                limit=-TRACEBACK_FRAMES,
+                chain=False,
+            )
+        )
+    except BaseException:
+        trace = f"{kind}: {message}\n"
     return RpcError(
         INTERNAL_ERROR,
-        f"{type(error).__name__}: {error}",
-        {
-            "type": type(error).__name__,
-            "message": str(error),
-            "traceback": "".join(trace),
-        },
+        f"{kind}: {message}",
+        {"type": kind, "message": message, "traceback": trace},
     )
 
 
@@ -380,7 +423,7 @@ def _exempt(name: str, value: Any) -> list[Any]:
     """Exemptions as the lint reads them: selectors, and pairs of two."""
     try:
         Exemptions.parse(array(name, value))
-    except ValueError as found:
+    except (ValueError, TypeError) as found:
         raise _invalid(f"{name}: {found}") from None
     return list(value)
 

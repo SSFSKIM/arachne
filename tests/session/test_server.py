@@ -863,18 +863,27 @@ def test_a_line_past_the_largest_message_is_refused_and_dropped(serve):
     assert server.result("ping") == {"generation": None}
 
 
-def test_a_queued_request_s_clock_starts_when_it_arrives(serve, tmp_path):
-    server = serve()
+@pytest.mark.parametrize("whose", ["its own", "the server's"])
+def test_a_queued_request_s_clock_starts_when_it_arrives(serve, tmp_path, whose):
+    if whose == "its own":
+        server, params = serve(), {"deadline_s": 1}
+    else:
+        server, params = serve("stdio", "--deadline-s", "1"), {}
     naps = _write(tmp_path, "naps.py", NAPS)
     config = {**SMALL, "media_dir": str(tmp_path / "media")}
     opening = {
         "jsonrpc": "2.0",
         "id": 1,
         "method": "open",
-        "params": {"file": str(naps), "scene": "Naps", "config": config},
+        "params": {
+            "file": str(naps),
+            "scene": "Naps",
+            "config": config,
+            "deadline_s": 30,
+        },
     }
-    queued = {"jsonrpc": "2.0", "id": 2, "method": "ping", "params": {"deadline_s": 1}}
-    # One write: the ping waits out the open, past its own deadline.
+    queued = {"jsonrpc": "2.0", "id": 2, "method": "ping", "params": params}
+    # One write: the ping waits out the open, past its deadline.
     server.send(json.dumps(opening) + "\n" + json.dumps(queued))
     first = server.receive()
     assert first is not None
@@ -883,6 +892,7 @@ def test_a_queued_request_s_clock_starts_when_it_arrives(serve, tmp_path):
     assert second is not None, server.stderr()
     assert second["id"] == 2
     assert second["error"]["code"] == protocol.DEADLINE_EXCEEDED
+    assert second["error"]["data"] == {"method": "ping", "deadline_s": 1.0}
     assert server.exited() == protocol.EXIT_DEADLINE
 
 
@@ -899,7 +909,7 @@ def test_a_deadline_exit_outlives_a_cleanup_that_fails(serve, tmp_path, socket_d
     )
     sent = time.monotonic()
     assert server.exited(wait=WAIT_S) == protocol.EXIT_DEADLINE
-    assert time.monotonic() - sent <= 1 + protocol.DEADLINE_WRITE_S + 2
+    assert time.monotonic() - sent <= 1 + protocol.ENDING_S + 2
 
 
 @pytest.mark.parametrize("ending", ["idle", "eof"])
@@ -920,7 +930,7 @@ def test_an_ending_server_never_waits_on_its_standard_error(serve, tmp_path, end
         server.process.stdin.close()
     began = time.monotonic()
     assert server.exited(wait=WAIT_S) == 0
-    assert time.monotonic() - began <= 1 + 2 * protocol.DEADLINE_WRITE_S + 2
+    assert time.monotonic() - began <= 1 + 2 * protocol.ENDING_S + 2
 
 
 def test_a_forward_run_s_error_carries_its_clock(serve, tmp_path):
