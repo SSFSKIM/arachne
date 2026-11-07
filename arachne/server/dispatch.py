@@ -61,7 +61,14 @@ from .protocol import (
     TRACEBACK_FRAMES,
     RpcError,
 )
-from .store import Manifest, Store, identity_form, settings_of, summary_key
+from .store import (
+    Manifest,
+    Store,
+    dependency_reads,
+    identity_form,
+    settings_of,
+    summary_key,
+)
 
 _REQUIRED: Any = object()
 
@@ -280,8 +287,8 @@ class Dispatcher:
         #: record's identity, but answers depend on it all the same.
         self._loaded: tuple[tuple[str, str], ...] = ()
         #: Claims the answer of the request being answered for ``action``,
-        #: which publishes what it made (a render's file), and runs it under
-        #: the claim: false when the request's deadline passed first, and
+        #: which publishes what it made (a render's file), and runs it once
+        #: claimed: false when the request's deadline passed first, and
         #: nothing ran. ``None`` outside a server, where nothing expires.
         self.publish: Callable[[Callable[[], None]], bool] | None = None
         #: Whether a request asked the server to end, once it answered.
@@ -451,7 +458,11 @@ class Dispatcher:
             return
         file, scene, _ = self._opened
         key = summary_key(
-            file, scene, identity_form(session.record.identity), self._config
+            file,
+            scene,
+            identity_form(session.record.identity),
+            self._config,
+            dependency_reads(session, self._loaded),
         )
         if key == self._summarised:
             return
@@ -482,16 +493,17 @@ class Dispatcher:
         file, scene, _ = self._opened
         if self.session is not None:
             identity = identity_form(self.session.record.identity)
+            reads = dependency_reads(self.session, self._loaded)
         else:
             assert self.stored is not None
-            identity = self.stored.identity
+            identity, reads = self.stored.identity, self.stored.reads
         config = {**self._config, **rendering.quality_options(quality)}
-        key = summary_key(file, scene, identity, config)
+        key = summary_key(file, scene, identity, config, reads)
         reference = None if self.store is None else self.store.summary(key)
         if (
             reference is None
             and self.session is not None
-            and key == summary_key(file, scene, identity, self._config)
+            and key == summary_key(file, scene, identity, self._config, reads)
         ):
             reference = self.session.summary()
         return rendering.render(
@@ -516,8 +528,8 @@ class Dispatcher:
             shutil.rmtree(self._scratch, ignore_errors=True)
 
     def _published(self, action: Callable[[], None]) -> bool:
-        """Run ``action``, which publishes a render, under the request's
-        claim of its answer (:attr:`publish`): false, running nothing, when
+        """Run ``action``, which publishes a render, once the request has
+        claimed its answer (:attr:`publish`): false, running nothing, when
         its deadline passed first.
         """
         if self.publish is None:

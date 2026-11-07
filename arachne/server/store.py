@@ -31,6 +31,7 @@ from __future__ import annotations
 __all__ = [
     "Manifest",
     "Store",
+    "dependency_reads",
     "engine_fingerprint",
     "identity_form",
     "settings_of",
@@ -49,7 +50,7 @@ import json
 import os
 import sys
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
@@ -170,19 +171,47 @@ def identity_form(identity: Identity) -> dict[str, Any]:
 
 
 def summary_key(
-    file: str, scene: str, identity: Mapping[str, Any], config: Mapping[str, Any]
+    file: str,
+    scene: str,
+    identity: Mapping[str, Any],
+    config: Mapping[str, Any],
+    reads: Sequence[tuple[str, str]] = (),
 ) -> str:
     """The key of the summary of ``identity``'s execution of ``scene`` of
-    ``file`` (a real path) under ``config``: every option of the
-    configuration but the pixel size, of which only the aspect, since the
-    camera fits its frame to it; the frame rate among them, since a play's
-    states depend on the instants it was evaluated at. A render at another
-    frame rate or aspect than a lint's is another execution, never checked
-    against it. The working directory is the process's, which a relative
-    path is read from.
+    ``file`` (a real path) under ``config``, having read ``reads``
+    (:func:`dependency_reads`): every option of the configuration but the
+    pixel size, of which only the aspect, since the camera fits its frame
+    to it; the frame rate among them, since a play's states depend on the
+    instants it was evaluated at. A render at another frame rate or aspect
+    than a lint's is another execution, never checked against it. The
+    working directory is the process's, which a relative path is read from.
     """
     settings = _settings_digest(settings_of(config), pixels=False)
-    return _digest("summary", file, scene, dict(identity), settings, working_dir())
+    return _digest(
+        "summary",
+        file,
+        scene,
+        dict(identity),
+        [list(read) for read in reads],
+        settings,
+        working_dir(),
+    )
+
+
+def dependency_reads(
+    session: Session, loaded: Sequence[tuple[str, str]] = ()
+) -> tuple[tuple[str, str], ...]:
+    """Every file ``session``'s execution read, by ``(path relative to the
+    scene's directory, sha256)``: those its code read as it ran, and
+    ``loaded``, those read as its modules loaded, which its identity leaves
+    out.
+    """
+    reads = dict(loaded)
+    source = session._source
+    if source is not None:
+        for read in source.reads:
+            reads.setdefault(read.path, read.digest)
+    return tuple(sorted(reads.items()))
 
 
 def working_dir() -> str:
@@ -212,8 +241,13 @@ class Manifest:
 
     @property
     def answers_key(self) -> str:
-        """The key of the answers given of this execution."""
-        return _digest("answers", self.key, self.identity)
+        """The key of the answers given of this execution: of its identity
+        and every file it came from, those read as its modules loaded among
+        them, so an answer is never given of other files.
+        """
+        files = [list(pair) for pair in self.files]
+        reads = [list(pair) for pair in self.reads]
+        return _digest("answers", self.key, self.identity, files, reads)
 
     def fresh(self) -> bool:
         """Whether the files the session came from hold what they held, by
@@ -306,16 +340,13 @@ class Store:
         source = session._source
         if source is None or source.files is None or session.stale:
             return None
-        reads = dict(loaded)
-        for read in source.reads:
-            reads.setdefault(read.path, read.digest)
         manifest = Manifest(
             key=self.manifest_key(file, scene, config),
             file=file,
             scene=scene,
             config=dict(config),
             files=source.files,
-            reads=tuple(sorted(reads.items())),
+            reads=dependency_reads(session, loaded),
             identity=identity_form(session.record.identity),
             record=record,
         )
