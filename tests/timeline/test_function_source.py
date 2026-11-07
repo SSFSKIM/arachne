@@ -82,7 +82,7 @@ def test_a_lambda_whose_body_is_a_lambda_on_its_line_is_refused(placement, reque
     # so either could be its source.
     if placement == "column 0":
         request.getfixturevalue("as_on_3_12_3")
-    outer = lambda: (lambda: 1)  # noqa: E731
+    outer = lambda: lambda: 1  # noqa: E731
     with pytest.raises(Refused, match="ambiguous"):
         _function_node(outer)
     with contextlib.suppress(Refused):

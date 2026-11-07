@@ -278,7 +278,7 @@ def _function_node(function: Callable[..., Any]) -> ast.Lambda | ast.FunctionDef
     if not candidates:
         raise Refused(f"the source of {code.co_name} does not match its code")
     # Two candidates hold every located instruction: either one lies inside
-    # the other, which may hold it as its body (``lambda: (lambda: 1)``), or
+    # the other, which may hold it as its body (``lambda: lambda: 1``), or
     # no instruction locates the code. Either could be its source.
     if len(candidates) > 1:
         raise Refused(f"the source of {code.co_name} is ambiguous")
