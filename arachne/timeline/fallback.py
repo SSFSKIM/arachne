@@ -390,6 +390,7 @@ def _forward(
     session's record need not be ones the run kept, where it plays
     otherwise.
     """
+    from arachne.errors import explain_on
     from arachne.session import _reads, execute
 
     source = session._source
@@ -458,6 +459,8 @@ def _forward(
                 assert executed.final is not None
                 forward.visited(t, None, executed.final)
 
+    # The scene file as the session's caller named it, known before the run.
+    named = source.path if session._opened is None else session._opened["named"]
     with _kept():
         try:
             _, module = execute(
@@ -477,6 +480,11 @@ def _forward(
                 " execution did not, so it is another execution, whose frames"
                 " from there on are drawn only by executing it again"
             ) from None
+        except BaseException as error:
+            # What the scene's code raised in this run is explained as an
+            # opening's is, at this run's clock.
+            explain_on(error, named, made[-1].scene.time if made else None)
+            raise
         else:
             (forward,) = made
             sys.modules.pop(module.__name__, None)

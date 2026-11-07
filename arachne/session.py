@@ -42,7 +42,7 @@ from typing import TYPE_CHECKING, Any, Literal, TypeVar
 from ._config import config as global_config
 from ._config import tempconfig
 from .constants import QUALITIES
-from .errors import explain
+from .errors import explain_on
 from .mobject.construction_caches import forget_construction_caches
 from .timeline import admission
 from .timeline.admission import (
@@ -819,7 +819,7 @@ def _execute(
     source (:func:`.admission.demoted`), which join ``demotions``. The record
     is the recorder's: a scene class may name an attribute ``record`` too.
     What the execution raises is raised as it was, its explanation on it
-    (:func:`_explain_on`): the scene file as the caller ``named`` it, at the
+    (:func:`~.errors.explain_on`): the scene file as the caller ``named`` it, at the
     scene clock's time once the scene exists.
     """
     made: list[Recorder] = []
@@ -849,26 +849,11 @@ def _execute(
         instance, module = execute(path, scene, settings, recorder)
     except BaseException as error:
         # A scene's exit too: a caller that serves on goes on with it.
-        _explain_on(error, named, made[-1].scene.time if made else None)
+        explain_on(error, named, made[-1].scene.time if made else None)
         raise
     record = made[-1].record
     assert record is not None
     return instance, record, module, made[-1]
-
-
-def _explain_on(error: BaseException, named: StrPath, t: Fraction | None) -> None:
-    """Put ``error``'s explanation on it (:func:`~arachne.errors.explain`),
-    as ``scene_error``, and its time and hints as a note, which a printed
-    traceback shows: the error is otherwise as the scene raised it, so that
-    what reads its type, message or traceback reads the scene's own.
-    """
-    explained = explain(error, named, t=t)
-    # Past any __setattr__ the error's class defines.
-    vars(error)["scene_error"] = explained
-    note = [f"at t = {float(t):g} s on the scene's clock"] if t is not None else []
-    note.extend(f"hint: {hint}" for hint in explained.hints)
-    if note:
-        error.add_note("\n".join(note))
 
 
 def _changed_lines(
