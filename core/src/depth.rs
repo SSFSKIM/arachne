@@ -613,9 +613,9 @@ impl Centreline {
         foot(a, b, p).1
     }
 
-    /// The distance from segment `i`'s screen bounds to the box `area` (`[x0, y0, x1, y1]`):
-    /// nothing of the segment lies nearer any point of the box.
-    pub fn gap(&self, i: usize, area: [f64; 4]) -> f64 {
+    /// The squared distance from segment `i`'s screen bounds to the box `area` (`[x0, y0, x1,
+    /// y1]`): nothing of the segment lies nearer any point of the box than its root.
+    pub fn gap2(&self, i: usize, area: [f64; 4]) -> f64 {
         let (a, _, b, _) = self.segments[i];
         let gx = (a[0].min(b[0]) - area[2])
             .max(area[0] - a[0].max(b[0]))
@@ -623,7 +623,7 @@ impl Centreline {
         let gy = (a[1].min(b[1]) - area[3])
             .max(area[1] - a[1].max(b[1]))
             .max(0.0);
-        libm::hypot(gx, gy)
+        gx * gx + gy * gy
     }
 
     /// How far the distances [`Centreline::key_under`] compares may stand from the exact
@@ -632,8 +632,8 @@ impl Centreline {
     /// A projection rounds within `17u` of the largest magnitude `S` of its coordinates (its
     /// direction, step and offset, each a rounding of a sum within `3S`), its squared length and
     /// root within `1.5u` of their size, a parameter moved by rounding within `12uS` of the
-    /// nearest point: a read's distance lies within `34uS` of the exact one, a box's gap within
-    /// `9uS`, a root and the sums compared within `6uS` more; a decision that holds by `128uS` holds
+    /// nearest point: a read's distance lies within `34uS` of the exact one, a box's gap (the
+    /// root of its square) within `9uS`, a root and the sums compared within `6uS` more; a decision that holds by `128uS` holds
     /// for the rounded distances as for the exact ones.
     pub fn rounding(&self, extent: f64) -> f64 {
         128.0 * U * self.scale.max(extent).max(1.0)
@@ -650,6 +650,17 @@ impl Centreline {
     /// does not. The front-most of several is their least key, which moves by no more than the
     /// largest of their errors.
     pub fn key_under(&self, p: [f64; 2], candidates: &[u32], body: f64) -> (f64, f64) {
+        let found = self.find(p, candidates, body);
+        found.front.unwrap_or_else(|| {
+            let (_, i, raw) = found.nearest.expect("a centreline has a segment");
+            let (a, ka, b, kb) = self.segments[i];
+            key_on((a, ka), (b, kb), self.errors[i], p, raw)
+        })
+    }
+
+    /// What [`Centreline::key_under`] finds at `p` among `candidates`, before it keys the
+    /// nearest segment.
+    fn find(&self, p: [f64; 2], candidates: &[u32], body: f64) -> Found {
         count!(KEY_UNDER);
         let body2 = body * body;
         // The front-most key among the segments holding p with the largest error among them; the
@@ -678,12 +689,91 @@ impl Centreline {
             count!(most MOST_FEET, candidates.len());
             candidates.iter().for_each(|i| consider(*i as usize));
         }
-        front.unwrap_or_else(|| {
-            let (_, i, raw) = nearest.expect("a centreline has a segment");
-            let (a, ka, b, kb) = self.segments[i];
-            key_on((a, ka), (b, kb), self.errors[i], p, raw)
-        })
+        Found { front, nearest }
     }
+
+    /// [`Centreline::key_under`] at each of `points` into `out`, among `candidates` (all
+    /// segments when empty), and the largest of their bounds; `centre` is one of the points. The
+    /// reads are made among the candidates `candidates` is cut down to: those whose bounds lie
+    /// within `reach` of the points' box, the further of `body` and the distance of the centre's
+    /// nearest candidate plus how far the furthest point lies from the centre. A point's nearest
+    /// segment lies no further from it than the centre's nearest does, so within `reach`; a
+    /// segment holding it in its body lies within `body`; a segment further than `reach` from
+    /// every point is neither for any point, and dropping it changes no read: each point's front
+    /// key and bound fold over the same segments in the same order, and its nearest is the same
+    /// (a dropped segment lies strictly further than it, so it would not have displaced it,
+    /// whatever its place in the order). Each comparison holds with room for its rounding
+    /// ([`Centreline::rounding`]).
+    pub fn keys_under(
+        &self,
+        centre: [f64; 2],
+        points: &[[f64; 2]],
+        candidates: &mut Vec<u32>,
+        body: f64,
+        out: &mut [f64],
+    ) -> f64 {
+        self.cut(centre, points, candidates, body);
+        // One bound for every point, as a plane's is: the largest of theirs.
+        let mut err = 0.0f64;
+        for (p, d) in points.iter().zip(out.iter_mut()) {
+            let (key, e) = self.key_under(*p, candidates, body);
+            *d = key;
+            err = err.max(e);
+        }
+        err
+    }
+
+    /// Cuts `candidates` (all segments when empty) down to the ones [`Centreline::keys_under`]
+    /// reads `points` among, `centre` among them. The centre's nearest candidate is found among
+    /// those whose bounds lie within the nearest distance found so far, the candidate whose bounds
+    /// lie nearest it found first: one whose bounds lie further cannot be nearer, so the least
+    /// distance is the least of all the candidates'.
+    pub fn cut(&self, centre: [f64; 2], points: &[[f64; 2]], candidates: &mut Vec<u32>, body: f64) {
+        if candidates.is_empty() {
+            candidates.extend(0..self.segments.len() as u32);
+        }
+        let at = [centre[0], centre[1], centre[0], centre[1]];
+        let room = self.rounding(centre[0].abs().max(centre[1].abs()));
+        let first = candidates
+            .iter()
+            .map(|&i| (self.gap2(i as usize, at), i))
+            .fold((f64::INFINITY, candidates[0]), |m, g| {
+                if g.0 < m.0 { g } else { m }
+            })
+            .1;
+        let mut nearest = self.distance2(first as usize, centre);
+        for &i in candidates.iter() {
+            let within = nearest.sqrt() + room;
+            if self.gap2(i as usize, at) <= within * within {
+                nearest = nearest.min(self.distance2(i as usize, centre));
+            }
+        }
+        let nearest = nearest.sqrt();
+        let mut area = at;
+        let mut spread = 0.0f64;
+        for p in points {
+            area = [
+                area[0].min(p[0]),
+                area[1].min(p[1]),
+                area[2].max(p[0]),
+                area[3].max(p[1]),
+            ];
+            spread = spread.max(libm::hypot(p[0] - centre[0], p[1] - centre[1]));
+        }
+        let reach = (nearest + spread).max(body);
+        let extent = area.iter().fold(reach, |m, v| m.max(v.abs()));
+        let limit = reach + self.rounding(extent);
+        candidates.retain(|&i| self.gap2(i as usize, area) <= limit * limit);
+    }
+}
+
+/// What a read along a curve finds at a point: the front-most key among the segments holding the
+/// point in their bodies with the largest error among them, and the nearest segment's squared
+/// distance, index and projection.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Found {
+    front: Option<(f64, f64)>,
+    nearest: Option<(f64, usize, f64)>,
 }
 
 /// The key at `p` of the segment from `a` to `b` (each a point and its key, the keys within `ends`
@@ -740,4 +830,118 @@ fn foot(a: [f64; 2], b: [f64; 2], p: [f64; 2]) -> (f64, f64) {
     let t = raw.clamp(0.0, 1.0);
     let (ex, ey) = (a[0] + dx * t - p[0], a[1] + dy * t - p[1]);
     (raw, ex * ex + ey * ey)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::composite::{SAMPLES, sample_point};
+
+    /// A small seeded generator (xorshift64*), so the cases are the same on every run.
+    struct Seeded(u64);
+
+    impl Seeded {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
+        }
+
+        fn below(&mut self, n: u64) -> u64 {
+            self.next() % n
+        }
+
+        fn pick<T: Copy>(&mut self, from: &[T]) -> T {
+            from[self.below(from.len() as u64) as usize]
+        }
+    }
+
+    type Bits = (Option<(u64, u64)>, Option<(u64, usize, u64)>);
+
+    fn bits(f: &Found) -> Bits {
+        (
+            f.front.map(|(k, e)| (k.to_bits(), e.to_bits())),
+            f.nearest.map(|(d, i, r)| (d.to_bits(), i, r.to_bits())),
+        )
+    }
+
+    /// A curve of a few runs of points on a coarse grid (so distances tie exactly and segments
+    /// repeat, cross and shrink to points), some far from the origin, some keys equal.
+    fn curve(s: &mut Seeded) -> Centreline {
+        let offset = s.pick(&[0.0, 0.0, 1000.0, 4096.5, 65536.0]);
+        let step = s.pick(&[1.0, 0.5, 0.25, 0.1, 3.0]);
+        let n = 1 + s.below(14) as usize;
+        let mut points: Vec<([f64; 2], f64)> = Vec::new();
+        for i in 0..n {
+            let at = if i > 0 && s.below(5) == 0 {
+                points[i - 1]
+            } else {
+                let x = offset + step * (s.below(17) as f64 - 4.0);
+                let y = offset + step * (s.below(17) as f64 - 4.0);
+                let key = s.pick(&[-0.5, -0.5, 0.25, 0.0, 1.0]) + s.below(3) as f64 * 0.125;
+                ([x, y], key)
+            };
+            points.push(at);
+        }
+        let breaks: Vec<usize> = (1..n).filter(|_| s.below(6) == 0).collect();
+        let errors: Vec<f64> = (0..n).map(|_| s.pick(&[0.0, 1e-9, 0.5])).collect();
+        Centreline::with_errors(&points, &errors, &breaks)
+    }
+
+    #[test]
+    fn cutting_the_candidates_down_changes_no_read() {
+        let mut s = Seeded(0x5eed_2026_1107);
+        let (mut cases, mut cut) = (0u64, 0u64);
+        while cases < 20_000 {
+            let line = curve(&mut s);
+            if line.is_empty() {
+                continue;
+            }
+            cases += 1;
+            let segments = line.segments.len() as u32;
+            let all: Vec<u32> = (0..segments).collect();
+            let given: Vec<u32> = if s.below(3) == 0 {
+                Vec::new()
+            } else {
+                let some: Vec<u32> = all.iter().copied().filter(|_| s.below(3) != 0).collect();
+                if some.is_empty() { all.clone() } else { some }
+            };
+            let among = if given.is_empty() { &all } else { &given };
+            let base = line.segments[s.below(segments as u64) as usize].0;
+            let x = (base[0] + s.below(9) as f64 - 4.0).floor().max(0.0) as u32;
+            let y = (base[1] + s.below(9) as f64 - 4.0).floor().max(0.0) as u32;
+            let body = s.pick(&[0.0, 0.1, 0.5, 1.0, 2.5]);
+            let mut points = [[x as f64 + 0.5, y as f64 + 0.5]; SAMPLES + 1];
+            for (k, p) in points.iter_mut().take(SAMPLES).enumerate() {
+                *p = sample_point(x, y, k);
+            }
+            let mut kept = given.clone();
+            let mut out = [0.0; SAMPLES + 1];
+            let err = line.keys_under(points[SAMPLES], &points, &mut kept, body, &mut out);
+            assert!(!kept.is_empty() && kept.windows(2).all(|w| w[0] < w[1]));
+            cut += (among.len() - kept.len()) as u64;
+            let mut whole = 0.0f64;
+            for (k, p) in points.iter().enumerate() {
+                let (a, b) = (line.find(*p, among, body), line.find(*p, &kept, body));
+                assert_eq!(bits(&a), bits(&b), "case {cases}, point {k}");
+                let (key, e) = line.key_under(*p, among, body);
+                assert_eq!(key.to_bits(), out[k].to_bits(), "case {cases}, point {k}");
+                whole = whole.max(e);
+            }
+            assert_eq!(whole.to_bits(), err.to_bits(), "case {cases}");
+            // The centre alone, as a pixel's raster reads it.
+            let centre = points[SAMPLES];
+            let mut alone = given.clone();
+            line.cut(centre, &[centre], &mut alone, body);
+            let (a, b) = (
+                line.find(centre, among, body),
+                line.find(centre, &alone, body),
+            );
+            assert_eq!(bits(&a), bits(&b), "case {cases}, the centre alone");
+            cut += (among.len() - alone.len()) as u64;
+        }
+        // The cases exercise the cut: it drops candidates in them.
+        assert!(cut > cases, "{cut} candidates cut over {cases} cases");
+    }
 }

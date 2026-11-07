@@ -1409,9 +1409,9 @@ impl Paths {
             LayerDepth::Curve(i, body) => {
                 let curve = &self.centrelines[i as usize];
                 curve.candidates(x, y, body, near);
-                let (key, err) = curve
-                    .line
-                    .key_under([x as f64 + 0.5, y as f64 + 0.5], near, body);
+                let centre = [x as f64 + 0.5, y as f64 + 0.5];
+                curve.line.cut(centre, &[centre], near, body);
+                let (key, err) = curve.line.key_under(centre, near, body);
                 Plane {
                     err,
                     ..Plane::constant(key)
@@ -1563,9 +1563,19 @@ impl CurveDepth {
     /// holds with room for its rounding ([`Centreline::rounding`]).
     fn around(&self, x: u32, y: u32, body: f64, out: &mut Vec<u32>) {
         let centre = [x as f64 + 0.5, y as f64 + 0.5];
+        let at = [centre[0], centre[1], centre[0], centre[1]];
+        let room = self.line.rounding(centre[0].max(centre[1]));
         let mut nearest = f64::INFINITY;
+        // A segment whose bounds lie further from the centre than the nearest found cannot be
+        // nearer ([`Centreline::cut`]).
+        let find = |k: u32, nearest: &mut f64| {
+            let within = nearest.sqrt() + room;
+            if self.line.gap2(k as usize, at) <= within * within {
+                *nearest = nearest.min(self.line.distance2(k as usize, centre));
+            }
+        };
         for &k in &self.beyond {
-            nearest = nearest.min(self.line.distance2(k as usize, centre));
+            find(k, &mut nearest);
             out.push(k);
         }
         let (tx, ty) = ((x / TILE) as i64, (y / TILE) as i64);
@@ -1579,7 +1589,7 @@ impl CurveDepth {
                     }
                     let t = (row * across + column) as usize;
                     for &k in &self.tiled[self.starts[t] as usize..self.starts[t + 1] as usize] {
-                        nearest = nearest.min(self.line.distance2(k as usize, centre));
+                        find(k, &mut nearest);
                         out.push(k);
                     }
                 }
@@ -1599,7 +1609,7 @@ impl CurveDepth {
         let reach = reach(nearest);
         let pixel = [x as f64, y as f64, x as f64 + 1.0, y as f64 + 1.0];
         let limit = reach + self.line.rounding(reach + pixel[2].max(pixel[3]));
-        out.retain(|&k| self.line.gap(k as usize, pixel) <= limit);
+        out.retain(|&k| self.line.gap2(k as usize, pixel) <= limit * limit);
     }
 }
 
@@ -1645,14 +1655,8 @@ impl Producer for Paths {
         let curve = &self.centrelines[i as usize];
         let mut near = Vec::new();
         curve.candidates(x, y, body, &mut near);
-        // One bound for every point, as a plane's is: the largest of theirs.
-        let mut err = 0.0f64;
-        for (p, d) in points.iter().zip(out.iter_mut()) {
-            let (key, e) = curve.line.key_under(*p, &near, body);
-            *d = key;
-            err = err.max(e);
-        }
-        Some(err)
+        let centre = [x as f64 + 0.5, y as f64 + 0.5];
+        Some(curve.line.keys_under(centre, points, &mut near, body, out))
     }
 }
 
