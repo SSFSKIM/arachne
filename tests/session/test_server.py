@@ -94,6 +94,42 @@ SLEEPS = """\
             time.sleep(60)
 """
 
+NAPS = """\
+    import time
+
+    from arachne import Scene
+
+
+    class Naps(Scene):
+        def construct(self):
+            time.sleep(1.5)
+            self.wait(0.5)
+"""
+
+EXITS = """\
+    import sys
+
+    from arachne import Scene
+
+
+    class Exits(Scene):
+        def construct(self):
+            self.wait(0.5)
+            sys.exit(4)  # @exit
+"""
+
+MANY = """\
+    from arachne import Dot, Scene, VGroup
+
+
+    class Many(Scene):
+        def construct(self):
+            self.add(VGroup(*(Dot() for _ in range(400))))
+            self.wait(0.5)
+"""
+
+HOOK_SCENES = ROOT / "tests" / "timeline" / "hook_scenes.py"
+
 
 class _Lines:
     """Lines read from a file descriptor, waited for at most ``WAIT_S``."""
@@ -124,12 +160,14 @@ class _Lines:
 class Server:
     """A server process under test, and one connection to it."""
 
-    def __init__(self, transport: str, cwd: Path, env: dict[str, str]) -> None:
+    def __init__(
+        self, transport: str, cwd: Path, env: dict[str, str], args: tuple[str, ...]
+    ) -> None:
         self.transport = transport
         # Closed by end(), which every test's fixture calls.
         self._stderr = tempfile.TemporaryFile()  # noqa: SIM115
         self.process = subprocess.Popen(
-            [sys.executable, "-m", "arachne.server", f"--{transport}"],
+            [sys.executable, "-m", "arachne.server", f"--{transport}", *args],
             cwd=cwd,
             env={**os.environ, "PYTHONPATH": str(ROOT), **env},
             stdin=subprocess.PIPE,
@@ -167,12 +205,17 @@ class Server:
         line = self._in.next(wait)
         return None if line is None else json.loads(line)
 
-    def call(self, method: str, **params: Any) -> dict[str, Any]:
-        """The response to ``method`` asked with ``params``."""
+    def ask(self, method: str, **params: Any) -> int:
+        """Send a request for ``method`` with ``params``: its id."""
         self._ids += 1
         self.send(
             {"jsonrpc": "2.0", "id": self._ids, "method": method, "params": params}
         )
+        return self._ids
+
+    def call(self, method: str, **params: Any) -> dict[str, Any]:
+        """The response to ``method`` asked with ``params``."""
+        self.ask(method, **params)
         response = self.receive()
         assert response is not None, self.stderr()
         assert response["jsonrpc"] == "2.0"
@@ -224,10 +267,10 @@ def serve(tmp_path: Path, socket_dir: Path) -> Iterator[Any]:
     """Start servers, each ended after the test."""
     started: list[Server] = []
 
-    def start(transport: str = "stdio", **env: str) -> Server:
+    def start(transport: str = "stdio", *args: str, **env: str) -> Server:
         env = {"ARACHNE_SESSION_DIR": str(socket_dir), **env}
         env = {name: value for name, value in env.items() if value != ""}
-        found = Server(transport, tmp_path, env)
+        found = Server(transport, tmp_path, env, args)
         started.append(found)
         return found
 
@@ -422,10 +465,16 @@ def test_errors_of_the_protocol_and_refusals_keep_their_codes(serve, tmp_path):
     assert other["code"] == protocol.OTHER_SESSION
     # The same scene again is the session the server holds.
     assert _open(server, path, "Shown")["generation"] == 1
-    refused = server.error("frame", t=0.5, path=str(tmp_path / "f.png"), quality="x")
-    assert refused["code"] == protocol.REFUSED
-    assert refused["data"]["type"] == "ValueError"
-    assert "Unknown quality" in refused["data"]["message"]
+    png = str(tmp_path / "f.png")
+    for method, params in [
+        ("frame", {"t": 0.5, "path": png, "quality": "x"}),
+        ("key_frames", {"out_dir": str(tmp_path / "k"), "quality": "x"}),
+        ("lint", {"exempt": [""]}),
+        ("lint", {"at": "sometimes"}),
+        ("lint", {"rules": [], "sample_fps": 8}),
+        ("query", {"t": 0.5, "what": "bbox"}),
+    ]:
+        assert server.error(method, **params)["code"] == protocol.INVALID_PARAMS
     assert server.result("ping") == {"generation": 1}
 
 
@@ -480,3 +529,95 @@ def test_a_watchdog_ends_only_what_overran_its_deadline():
     assert done.wait(WAIT_S)
     time.sleep(0.2)
     assert fired == ["overran"]
+
+
+@pytest.mark.parametrize("transport", TRANSPORTS)
+def test_a_scene_that_exits_never_ends_the_server(serve, tmp_path, transport):
+    server = serve(transport)
+    path = _write(tmp_path, "exits.py", EXITS)
+    response = server.call(
+        "open",
+        file=str(path),
+        scene="Exits",
+        config={**SMALL, "media_dir": str(tmp_path / "media")},
+    )
+    error = response["error"]
+    assert error["code"] == protocol.SCENE_ERROR
+    found = _valid("scene_error", error["data"])
+    assert (found["cls"], found["line"]) == ("SystemExit", _line(path, "exit"))
+    assert found["t_exact"] == "1/2"
+    assert server.result("ping") == {"generation": None}
+
+    # Reloaded into an exit: answered, and the server goes on.
+    shown = _write(tmp_path, "shown.py", SHOWN)
+    _open(server, shown, "Shown")
+    shown.write_text(
+        shown.read_text().replace("self.wait(0.5)", "raise SystemExit(5)  # @exit")
+    )
+    error = server.error("lint")
+    assert error["code"] == protocol.SCENE_ERROR
+    assert error["data"]["cls"] == "SystemExit"
+    assert error["data"]["line"] == _line(shown, "exit")
+    assert server.result("ping") == {"generation": 1}
+    assert server.result("close") == {"generation": None}
+    again = _write(tmp_path, "again.py", SHOWN)
+    assert _open(server, again, "Shown")["generation"] == 1
+    assert server.process.poll() is None
+
+
+@pytest.mark.parametrize("transport", TRANSPORTS)
+def test_a_client_that_stops_reading_cannot_hold_the_server(serve, tmp_path, transport):
+    server = serve(transport)
+    _open(server, _write(tmp_path, "many.py", MANY), "Many")
+    deadline = 2.0
+    # Answers far past what the stream holds, none of them read.
+    for _ in range(100):
+        server.ask("inspect", deadline_s=deadline)
+    sent = time.monotonic()
+    assert server.exited(wait=deadline + 3) == protocol.EXIT_DEADLINE
+    assert time.monotonic() - sent <= deadline + 2
+
+
+@pytest.mark.parametrize("how", ["env", "flag"])
+def test_a_request_without_a_deadline_has_the_server_s(serve, tmp_path, how):
+    if how == "env":
+        server = serve("stdio", ARACHNE_SESSION_DEADLINE_S="1")
+    else:
+        server = serve("stdio", "--deadline-s", "1")
+    config = {**SMALL, "media_dir": str(tmp_path / "media")}
+    # A deadline the request gives is its own, longer or shorter.
+    naps = _write(tmp_path, "naps.py", NAPS)
+    opened = server.result(
+        "open", file=str(naps), scene="Naps", config=config, deadline_s=30
+    )
+    assert opened["generation"] == 1
+    assert server.result("close") == {"generation": None}
+    sleeps = _write(tmp_path, "sleeps.py", SLEEPS)
+    error = server.error("open", file=str(sleeps), scene="Sleeps", config=config)
+    assert error["code"] == protocol.DEADLINE_EXCEEDED
+    assert error["data"] == {"method": "open", "deadline_s": 1.0}
+    assert server.exited(wait=2) == protocol.EXIT_DEADLINE
+
+
+def test_a_refusal_keeps_its_type_and_a_failure_is_internal(serve, tmp_path):
+    server = serve()
+    refused = server.error(
+        "open", file=str(HOOK_SCENES), scene="UpdateMobjectsTwice", config=SMALL
+    )
+    assert refused["code"] == protocol.REFUSED
+    assert refused["data"]["type"] == "SceneHookRefused"
+    assert refused["data"]["reason"] == "hook.update_mobjects.twice"
+    assert refused["data"]["message"]
+
+    _open(server, _write(tmp_path, "shown.py", SHOWN), "Shown")
+    taken = tmp_path / "taken"
+    taken.write_text("a file, not a directory")
+    failed = server.error("frame", t=0.5, path=str(taken / "frame.png"))
+    assert failed["code"] == protocol.INTERNAL_ERROR
+    data = failed["data"]
+    assert data["type"] in {"FileExistsError", "NotADirectoryError"}
+    assert data["message"]
+    assert data["traceback"].startswith("Traceback")
+    assert data["traceback"].rstrip().endswith(f"{data['type']}: {data['message']}")
+    assert data["traceback"].count('  File "') <= protocol.TRACEBACK_FRAMES
+    assert server.result("ping") == {"generation": 1}
