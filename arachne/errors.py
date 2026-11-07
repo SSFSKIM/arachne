@@ -117,12 +117,19 @@ def explain(
     scene_path = os.path.realpath(scene_file)
     base_dir = os.path.dirname(scene_path)
     trace = list(traceback.walk_tb(error.__traceback__))
-    # Frames before the first engine frame are the code that called the
-    # engine to execute the scene, not the scene's.
-    engine = next((i for i, (f, _) in enumerate(trace) if _internal(_file(f))), 0)
+    # The scene's frames begin at the scene file's first: those before it
+    # are the code that called the scene, whether the engine or not.
+    start = next(
+        (i for i, (f, _) in enumerate(trace) if _is(_file(f), scene_path)), None
+    )
+    if start is None:
+        # No frame of the scene file: compiling the source raised it, or a
+        # helper the engine called. The frames before the engine's first are
+        # the caller's; with no engine frame, every frame is kept.
+        start = next((i for i, (f, _) in enumerate(trace) if _internal(_file(f))), 0)
     frames = [
         _frame(_file(frame), line, frame.f_code.co_name, base_dir)
-        for frame, line in trace[engine:]
+        for frame, line in trace[start:]
         if not _internal(_file(frame))
     ]
     line = next(
