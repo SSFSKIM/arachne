@@ -215,6 +215,33 @@ def test_a_session_is_of_the_working_directory_it_was_asked_from(
     }
 
 
+def _corner(session: registry.Connection, out: Path) -> tuple[int, ...]:
+    """The colour of the top left pixel of the session's frame at 0 s."""
+    from PIL import Image
+
+    session.call("frame", t=0, path=str(out))
+    with Image.open(out) as picture:
+        return picture.convert("RGB").getpixel((0, 0))
+
+
+def test_a_configuration_file_edited_is_another_session(host, tmp_path, monkeypatch):
+    path = write(tmp_path, "still.py", STILL)
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    settings = folder / "arachne.cfg"
+    settings.write_text("[CLI]\nbackground_color = #FF0000\n")
+    monkeypatch.chdir(folder)
+    red = host.connect(path, "Still", SMALL)
+    assert _corner(red, tmp_path / "red.png") == (255, 0, 0)
+
+    # The server holding the session read the file as it started: an edit
+    # is another execution, in another server.
+    settings.write_text("[CLI]\nbackground_color = #0000FF\n")
+    blue = host.connect(path, "Still", SMALL)
+    assert blue.pid != red.pid
+    assert _corner(blue, tmp_path / "blue.png") == (0, 0, 255)
+
+
 def test_a_directory_too_long_for_a_socket_is_refused_before_a_start(tmp_path):
     path = write(tmp_path, "still.py", STILL)
     deep = Path("/tmp") / ("d" * 120)
