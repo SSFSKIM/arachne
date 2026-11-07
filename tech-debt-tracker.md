@@ -340,3 +340,11 @@ lifted.
   `tests/session/test_server.py::test_a_client_that_stops_reading_cannot_hold_the_server` (100 `inspect`s
   sent, none read, on stdio) failed once on a heavily loaded machine and has not failed since; the cause is
   not known. Direction: if it recurs, keep the server's standard error and the exit timing of that run.
+- **An in-process session call swaps standard output for the whole process.** `arachne/cli/client.py`'s
+  `InProcess.call` runs a request under `contextlib.redirect_stdout(sys.stderr)`, so the scene's prints stay off
+  the command's output. That swap is process-wide: another thread printing during the call writes to standard
+  error. The CLI is safe, because `asking.ask` captures standard output before it calls, and nothing else calls
+  `InProcess`. Direction: route the scene's output through the session's own stream, not `sys.stdout`, before
+  any programmatic or multi-threaded caller uses the in-process path. Also, each `InProcess` starts a watchdog
+  daemon thread that never ends, since the watchdog has no close; it is harmless for one command but leaves
+  one idle thread per in-process use.
