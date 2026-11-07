@@ -32,11 +32,14 @@ import time
 import traceback
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, NoReturn
 
 from . import protocol
 from .dispatch import Dispatcher, deadline, internal_error
 from .protocol import RpcError
+from .registry import Registration
+from .store import Store
 from .watchdog import Ticket, Watchdog
 
 #: How long a server waits for a request before it ends itself, in seconds,
@@ -166,13 +169,35 @@ def _write_all(fd: int) -> Callable[[bytes], None]:
 
 class _Server:
     def __init__(
-        self, idle_s: float, deadline_s: float, cleanup: Callable[[], None]
+        self,
+        idle_s: float,
+        deadline_s: float,
+        cleanup: Callable[[], None],
+        *,
+        store: Store | None = None,
+        registration: Registration | None = None,
     ) -> None:
         self.idle_s = idle_s
         self.deadline_s = deadline_s
-        self.dispatcher = Dispatcher()
+        self.dispatcher = Dispatcher(store)
         self.watchdog = Watchdog()
         self._cleanup = cleanup
+        self.registration = registration
+
+    def _registered(self, *, busy: bool) -> None:
+        """Keep the server's entry in the registry, if it has one, and, once
+        a request is answered, the host's memory budget. Neither can fail
+        the server.
+        """
+        registration = self.registration
+        if registration is None:
+            return
+        dispatcher = self.dispatcher
+        with contextlib.suppress(Exception):
+            registration.write(dispatcher.held, dispatcher.generation, busy=busy)
+        if not busy and not dispatcher.ending:
+            with contextlib.suppress(Exception):
+                registration.enforce()
 
     def run(self, selector: selectors.BaseSelector, ends_with: _Channel | None) -> int:
         """Answer what the selector's channels send until a request ends the
@@ -210,6 +235,7 @@ class _Server:
         """
         read: list[protocol.Request] = []
         limit = [self.deadline_s]
+        self._registered(busy=True)
         ticket = self.watchdog.arm(
             line.received + self.deadline_s,
             lambda respond: self._expired(channel, read, limit[0], respond),
@@ -220,6 +246,7 @@ class _Server:
                 channel.send(reply)
         finally:
             self.watchdog.end(ticket)
+        self._registered(busy=False)
 
     def _reply(
         self,
@@ -275,8 +302,9 @@ class _Server:
         """End the server: the request ``read`` holds (or a line not yet read
         as one) ran past its deadline, ``limit`` s. Its error is sent when
         the answer is still the deadline's (``respond``), for at most
-        :data:`~.protocol.ENDING_S`; the socket is removed within as long;
-        then the process exits, whatever either did.
+        :data:`~.protocol.ENDING_S`; what a render running wrote is removed
+        within as long, and the socket and the server's entry too; then the
+        process exits, whatever each did.
         """
         try:
             if respond and read and read[0].has_id:
@@ -292,6 +320,7 @@ class _Server:
                     channel.send(protocol.encode(protocol.error(request.id, found)))
 
                 _bounded(send)
+            _bounded(self.dispatcher.abandon)
             _bounded(self._cleanup)
         finally:
             os._exit(protocol.EXIT_DEADLINE)
@@ -340,11 +369,16 @@ def serve(
     *,
     idle_s: float = IDLE_S,
     deadline_s: float = protocol.DEADLINE_S,
+    memory_mb: float | None = None,
 ) -> int:
     """Serve requests on ``transport`` (``"stdio"`` or ``"socket"``) until a
     ``shutdown`` request, the end of standard input (``stdio``), or
     ``idle_s`` seconds without one: the exit status. A request that gives
-    no ``deadline_s`` has ``deadline_s``.
+    no ``deadline_s`` has ``deadline_s``. Its answers are kept in the store
+    (:class:`~.store.Store`, ``ARACHNE_STORE``). On a socket in
+    ``ARACHNE_SESSION_DIR``, the server keeps its entry in the registry
+    there, and the host's memory budget of ``memory_mb`` megabytes, if any
+    (:mod:`.registry`).
     """
     # The protocol's stream is the original standard output; whatever else
     # writes there now writes to standard error.
@@ -352,16 +386,22 @@ def serve(
     out = os.dup(1)
     os.dup2(2, 1)
     selector = selectors.DefaultSelector()
+    store = Store()
     if transport == "stdio":
         channel = _Channel(0, lambda: os.read(0, 65536), _write_all(out), lambda: None)
         selector.register(0, selectors.EVENT_READ, channel)
-        server = _Server(idle_s, deadline_s, lambda: None)
+        server = _Server(idle_s, deadline_s, lambda: None, store=store)
         channel.send(protocol.encode(protocol.ready("stdio", os.getpid())))
         return server.run(selector, ends_with=channel)
     directory, own = _socket_dir()
     path = os.path.join(directory, f"{os.getpid()}.sock")
+    registration = (
+        None if own else Registration(Path(directory), os.getpid(), path, memory_mb)
+    )
 
     def cleanup() -> None:
+        if registration is not None:
+            registration.remove()
         with contextlib.suppress(OSError):
             os.unlink(path)
         if own:
@@ -372,7 +412,11 @@ def serve(
         listener.bind(path)
         listener.listen()
         selector.register(listener, selectors.EVENT_READ, None)
-        server = _Server(idle_s, deadline_s, cleanup)
+        server = _Server(
+            idle_s, deadline_s, cleanup, store=store, registration=registration
+        )
+        if registration is not None:
+            registration.write(None, None, busy=False)
         _write_all(out)(protocol.encode(protocol.ready("socket", os.getpid(), path)))
         os.close(out)
         return server.run(selector, ends_with=None)
@@ -421,10 +465,14 @@ def main(argv: list[str] | None = None) -> NoReturn:
         deadline_s = args.deadline_s or _seconds(
             os.environ.get("ARACHNE_SESSION_DEADLINE_S") or str(protocol.DEADLINE_S)
         )
+        budget = os.environ.get("ARACHNE_SESSION_MEMORY_MB")
+        memory_mb = _megabytes(budget) if budget else None
     except argparse.ArgumentTypeError as found:
         parser.error(str(found))
     try:
-        status = serve(args.transport, idle_s=idle_s, deadline_s=deadline_s)
+        status = serve(
+            args.transport, idle_s=idle_s, deadline_s=deadline_s, memory_mb=memory_mb
+        )
     except BaseException:
         _bounded(traceback.print_exc)
         status = 1
@@ -443,5 +491,18 @@ def _seconds(text: str) -> float:
         raise argparse.ArgumentTypeError(
             f"{text!r} is no number of seconds above 0 and at most"
             f" {protocol.MAX_DEADLINE_S:g}"
+        )
+    return found
+
+
+def _megabytes(text: str) -> float:
+    """``text`` as megabytes: a finite number above 0."""
+    try:
+        found = float(text)
+    except ValueError:
+        found = math.nan
+    if not (math.isfinite(found) and found > 0):
+        raise argparse.ArgumentTypeError(
+            f"ARACHNE_SESSION_MEMORY_MB {text!r} is no number of megabytes above 0"
         )
     return found

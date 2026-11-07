@@ -22,13 +22,23 @@ What it reads from its environment:
   path must fit a Unix socket's address (104 bytes on macOS, 108 on Linux,
   its terminating NUL included), so a directory named here is best kept
   under about 90 bytes: a path too long ends the server at its start, with
-  status 1 and no ready line.
+  status 1 and no ready line. A server on a socket there keeps its entry in
+  the host's registry beside it, ``<pid>.json`` (:mod:`.registry`).
 - ``ARACHNE_SESSION_IDLE_S``: see The server's end (600 by default).
 - ``ARACHNE_SESSION_DEADLINE_S``: see Deadlines (600 by default;
   ``--deadline-s`` comes first).
+- ``ARACHNE_SESSION_MEMORY_MB``: the memory the servers of its
+  ``ARACHNE_SESSION_DIR`` may hold together, in megabytes; see The server's
+  end (no limit by default).
+- ``ARACHNE_STORE``: the store of answers (:mod:`.store`), else the user's
+  cache directory's ``arachne/store``.
 
 The two times, and ``--deadline-s``, are seconds above 0 and at most a week
-(604800); the server refuses any other value at its start, with status 2.
+(604800), and the memory megabytes above 0; the server refuses any other
+value at its start, with status 2.
+
+A client finds the server holding a session in the registry, or starts one
+there, with :func:`.registry.connect_or_start`.
 
 Lines
 -----
@@ -95,10 +105,10 @@ method          params, (default) when optional           result, beside generat
 ``close``
 ``ping``
 ``shutdown``
-``clip``        reserved: ``t0``, ``t1``,                 ``clip``
-                ``quality`` (none), ``out``
-``render``      reserved: ``plays`` (all), ``quality``    ``render``
-                (none), ``out``
+``clip``        ``t0``, ``t1``, ``quality`` (none),       ``clip``
+                ``out``
+``render``      ``plays`` (all), ``quality`` (none),      ``render``
+                ``out``
 ==============  ========================================  ===========================
 
 A param with no default is required.
@@ -114,6 +124,11 @@ describes it.
   (:meth:`~arachne.session.Session.open`). Asked again for the session it
   holds (the same file, by its real path, scene and config), it answers
   that session; for another it refuses (``-32004``): ``close`` it first.
+  A session the store holds (:mod:`.store`), its files unchanged by digest,
+  is opened without executing its scene: every answer the store holds of it
+  is given from there, and the first request whose answer it does not hold
+  executes the scene, as the generation it is (the next one when its files
+  changed). Answers so given are the answers the session gave.
 - ``state_at`` and ``frame`` answer as
   :meth:`~arachne.session.Session.answers` does: from the record, else from a
   forward run. ``frame`` writes the PNG ``path`` (its directory made when
@@ -146,21 +161,30 @@ describes it.
 - ``close`` lets go of the session; the server goes on, and can open
   another. With none open it does nothing.
 - ``ping`` answers; ``shutdown`` answers, then the server ends.
-- ``clip`` and ``render`` are **reserved**: answered ``-32601`` until they are
-  implemented, and frozen here as they will be.
+- ``clip`` and ``render`` render the session's scene. Renders are serial,
+  as every request is.
 
   - Each executes the scene afresh through Arachne's render path, at
-    ``quality`` (else the session's), into the media file ``out``, and
-    checks itself against the execution summary the session holds of its
-    source: ``{generation, clip | render: {path, timeline, divergence?}}``,
-    ``divergence`` (the ``replay.diverged`` the check found) only when it
-    found one.
-  - ``clip`` renders the plays that meet ``[t0, t1]``: from the first play
-    whose span reaches ``t0`` (it ends at or after it) to the last whose
-    span reaches back to ``t1`` (it starts at or before it), both included,
-    so a play that touches the span at one instant is in it; the clip runs
-    from the first one's start through the last one's end. ``render``
-    renders the plays ``plays`` lists, by index, else every play.
+    ``quality`` (its pixel size and frame rate; else the session's), into
+    the media file ``out`` (an MP4 unless ``config`` names another format),
+    and checks itself against the execution summary the session holds of
+    its source: ``{generation, clip | render: {path, timeline,
+    divergence?}}``, the ``render`` form. ``timeline`` is every play the
+    render's execution played, in the record's form, those ``out`` leaves
+    out ``skipped``. ``divergence`` (the ``replay.diverged`` the check
+    found) is given only when it found one; a render is written all the
+    same. The summary checked against is that of the session's latest lint
+    (the store's, else the session's own), of an execution at the render's
+    frame rate and pixel aspect: a render at another frame rate or aspect
+    is another execution, and is not checked.
+  - ``clip`` renders the plays that meet ``[t0, t1]``, ``t0`` not after
+    ``t1``: from the first play whose span reaches ``t0`` (it ends at or
+    after it) to the last whose span reaches back to ``t1`` (it starts at
+    or before it), both included, so a play that touches the span at one
+    instant is in it; the clip runs from the first one's start through the
+    last one's end. A span no play meets is refused. ``render`` renders the
+    plays ``plays`` lists, by index, one after another in order (the render
+    path takes a first and a last play), else every play.
   - ``out`` is the file the caller binds, whatever it holds: it is written
     as a temporary file beside it, renamed onto ``out`` only once the render
     succeeded, so a deadline's exit, a refusal or an error never leaves a
@@ -189,7 +213,7 @@ code       meaning, and ``data``
 ``-32700`` the line is not JSON: no ``data``
 ``-32600`` the line is not a request, or past the longest message (a batch
            is not served): no ``data``
-``-32601`` no such method (a reserved one included): no ``data``
+``-32601`` no such method: no ``data``
 ``-32602`` a param is missing, unknown, or not of its kind (a time that is
            not one, ``1/0`` among them; a quality
            :data:`~arachne.constants.QUALITIES` lacks; a rule, answer or
@@ -247,10 +271,18 @@ The server ends by itself when no request has been answered for
 ``ARACHNE_SESSION_IDLE_S`` seconds, on ``shutdown``, and, with ``--stdio``,
 at the end of its standard input, each with status 0; past a deadline with
 status 3; with status 1 if it fails. However it ends, each step on its way
-out (a deadline's error sent, its socket removed, a word on standard error,
-its streams flushed) takes at most 1 s (:data:`~.protocol.ENDING_S`), and
-then the process exits whatever that step did: no client, full pipe or
-file system can keep it alive.
+out (a deadline's error sent, what a render running wrote removed, its
+socket and registry entry removed, a word on standard error, its streams
+flushed) takes at most 1 s (:data:`~.protocol.ENDING_S`), and then the
+process exits whatever that step did: no client, full pipe or file system
+can keep it alive.
+
+Under ``ARACHNE_SESSION_MEMORY_MB``, a server on a socket in
+``ARACHNE_SESSION_DIR``, once it has answered, ends the least recently used
+of the directory's other servers not answering a request while together
+they hold more than that: it asks each to ``shutdown``, then kills it if it
+has not ended within a few seconds (:mod:`.registry`). Neither this nor
+the idle end waits on a client.
 """
 
 from __future__ import annotations
