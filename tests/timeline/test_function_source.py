@@ -77,6 +77,33 @@ def test_each_of_two_constant_lambdas_on_one_line_is_itself_or_refused(
 
 
 @pytest.mark.parametrize("placement", ["interpreter", "column 0"])
+def test_a_lambda_whose_body_is_a_lambda_on_its_line_is_refused(placement, request):
+    # Every located instruction of the outer lambda lies inside the inner one,
+    # so either could be its source.
+    if placement == "column 0":
+        request.getfixturevalue("as_on_3_12_3")
+    outer = lambda: (lambda: 1)  # noqa: E731
+    with pytest.raises(Refused, match="ambiguous"):
+        _function_node(outer)
+    with contextlib.suppress(Refused):
+        assert _body(outer()) == "1"
+
+
+@pytest.mark.parametrize("placement", ["interpreter", "column 0"])
+def test_a_lambda_located_outside_a_lambda_it_holds_is_found(placement, request):
+    if placement == "column 0":
+        request.getfixturevalue("as_on_3_12_3")
+
+    def keep(function):
+        return function
+
+    outer = lambda: keep(lambda: 1)  # noqa: E731
+    assert _body(outer) == "keep(lambda: 1)"
+    with contextlib.suppress(Refused):
+        assert _body(outer()) == "1"
+
+
+@pytest.mark.parametrize("placement", ["interpreter", "column 0"])
 def test_code_compiled_from_other_source_is_refused(placement, request):
     if placement == "column 0":
         request.getfixturevalue("as_on_3_12_3")
