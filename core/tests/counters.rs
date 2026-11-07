@@ -63,13 +63,15 @@ fn lines(points: &[[f64; 3]]) -> Vec<[f64; 3]> {
     out
 }
 
-#[test]
-fn a_long_curve_is_searched_only_near_the_pixel_read() {
-    let _one = COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+/// Segments in the loop [`loop_counts`] draws.
+const N: usize = 2000;
+
+/// The counts of one draw of a closed, filled and stroked loop of [`N`] segments across a
+/// production-sized frame.
+fn loop_counts() -> Vec<(&'static str, u64)> {
     // A closed, filled and stroked loop of 2000 segments across a production-sized frame, upright
     // before the camera, its points on no one plane (a wave in depth around it), so its stroke
     // and fill are keyed along it, its fill far inside from every segment.
-    const N: usize = 2000;
     let (w, h) = (854, 480);
     let mut points: Vec<[f64; 3]> = (0..N)
         .map(|i| {
@@ -96,7 +98,13 @@ fn a_long_curve_is_searched_only_near_the_pixel_read() {
     s.apply(&d).expect("the delta applies");
     counters::take();
     s.draw(w, h, 1).unwrap();
-    let counts = counters::take();
+    counters::take()
+}
+
+#[test]
+fn a_long_curve_is_searched_only_near_the_pixel_read() {
+    let _one = COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let counts = loop_counts();
     let (near, tested) = (count("near", &counts), count("bounds_tested", &counts));
     assert!(near > 0 && count("key_under", &counts) > 0, "{counts:?}");
     // A search tests the bounds near the pixel, and a read projects onto the segments near it,
@@ -110,5 +118,20 @@ fn a_long_curve_is_searched_only_near_the_pixel_read() {
         count("most_feet", &counts) < N as u64 / 4,
         "a read projected onto {} segments: {counts:?}",
         count("most_feet", &counts)
+    );
+}
+
+#[test]
+fn a_pixel_s_reads_project_only_onto_the_segments_that_may_reach_it() {
+    let _one = COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let counts = loop_counts();
+    let (reads, feet) = (count("key_under", &counts), count("feet", &counts));
+    assert!(reads > 0, "{counts:?}");
+    // A pixel's points are read among the few segments within reach of them, not among every
+    // segment whose bounds hold its centre.
+    assert!(
+        feet / reads < N as u64 / 64,
+        "{} segments projected onto a read: {counts:?}",
+        feet / reads
     );
 }
