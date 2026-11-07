@@ -1,6 +1,6 @@
 """``clip`` and ``render``: a fresh execution of the session's scene through
 the render path, written to the file the caller names only once it is whole,
-and checked against the execution summary of the session's latest lint.
+and checked against the summary the store keeps of the session's execution.
 
 Each render here is small: a second or so of a few pixels.
 """
@@ -145,7 +145,7 @@ def test_a_render_with_nothing_like_it_to_check_against_says_so(host, tmp_path):
     assert "divergence" not in clip
 
 
-def test_a_render_checks_itself_against_the_latest_lint(host, tmp_path):
+def test_a_render_checks_itself_against_its_session_s_execution(host, tmp_path):
     path = write(tmp_path, "scattered.py", SCATTERED)
     session = host.connect(path, "Scattered", SMALL)
     session.call("lint")
@@ -155,7 +155,7 @@ def test_a_render_checks_itself_against_the_latest_lint(host, tmp_path):
     assert honest["render"]["self_check"] == CHECKED
     assert _frames(out) == (15, 96, 54)
 
-    # Plant, as the lint's summary, an execution under another seed.
+    # Plant, as the session's kept summary, an execution under another seed.
     planted = Session.open(path, "Scattered", config={**SMALL, "seed": 7})
     try:
         other = planted.summary().to_json()

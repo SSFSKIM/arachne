@@ -340,7 +340,3 @@ lifted.
   `tests/session/test_server.py::test_a_client_that_stops_reading_cannot_hold_the_server` (100 `inspect`s
   sent, none read, on stdio) failed once on a heavily loaded machine and has not failed since; the cause is
   not known. Direction: if it recurs, keep the server's standard error and the exit timing of that run.
-- **An execution summary can go unfound when a forward run read new files.** A summary's key takes every file the
-  execution has read (`store.dependency_reads`), which grows when a forward run reads a file the first execution
-  did not; a session opened from a manifest kept before then looks under the shorter list, and its render answers
-  `self_check: unchecked` (the safe direction). Direction: key summaries by the reads as the manifest keeps them.
