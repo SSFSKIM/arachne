@@ -35,6 +35,10 @@ These ideas came from other projects; no code was taken from them.
   severity for findings that are likely meant; folding more than three look-alike findings into the first,
   which counts the rest; and 20 px at 1080 px tall as the bound for small text: ManimGX's `cli/diagnostics.py`, as
   above.
+- Errors that carry their fix (`arachne/errors.py`, `arachne/_removed.py`): a scene's error reported through the
+  last three frames of the scene's own code and where inside the engine it was raised, nearest-name suggestions for
+  a misspelt name, and a table of names from earlier Manim with what replaced them, whose old names follow ManimGX's
+  list: ManimGX's `cli/scenes.py`, as above.
 - Finding the scene's own line by walking the stack out of the library, and refusing `play()` while another play
   runs, as from an updater (`arachne/timeline/source.py`, `arachne/manager.py`): Manim Community Edition
   [pull request #5006](https://github.com/ManimCommunity/manim/pull/5006).
