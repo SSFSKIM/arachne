@@ -8,7 +8,10 @@ with ``pass`` false, and 1 only with ``--strict``. A scene's error exits 2
 with its trimmed report; a failure of the engine or the session exits 3.
 ``arachne SCENE_FILE`` still renders.
 
-Every server a test starts is ended before it returns.
+A session asked of a server stays resident in the host's registry
+(``ARACHNE_SESSION_DIR``), found again by the next command. Each test has a
+registry of its own, and every server in it is ended before the test
+returns.
 """
 
 from __future__ import annotations
@@ -34,7 +37,7 @@ from PIL import Image
 from arachne import __version__, api_json
 from arachne.__main__ import main
 from arachne.cli import client
-from arachne.server import protocol
+from arachne.server import protocol, registry
 
 #: How long a test waits for a server, in seconds.
 WAIT_S = float(os.environ.get("ARACHNE_TEST_SERVER_WAIT_S", "60"))
@@ -99,6 +102,35 @@ STILL = """\
             self.add(Square())
             self.wait(0.5)
 """
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+@pytest.fixture(autouse=True)
+def session_dir(monkeypatch) -> Iterator[Path]:
+    """A registry of the test's own, under /tmp (a socket's whole path must
+    fit a Unix socket's address); every server in it ends with the test.
+    """
+    found = Path(tempfile.mkdtemp(prefix="ac-", dir="/tmp"))
+    monkeypatch.setenv("ARACHNE_SESSION_DIR", str(found))
+    try:
+        yield found
+    finally:
+        pids = {entry.pid for entry in registry.stop_all(found)}
+        pids |= {int(p.stem) for p in found.glob("*.json") if p.stem.isdigit()}
+        for pid in pids:
+            with contextlib.suppress(OSError):
+                os.kill(pid, signal.SIGKILL)
+        shutil.rmtree(found, ignore_errors=True)
+        assert not [pid for pid in pids if _alive(pid)], "a server outlived its test"
 
 
 def _write(directory: Path, name: str, text: str) -> Path:
@@ -301,27 +333,24 @@ def test_a_number_that_is_not_finite_is_a_usage_error(tmp_path, mode, case):
     assert "Traceback" not in found.output
 
 
-@pytest.mark.parametrize("kind", ["remote", "in-process"])
-def test_a_request_that_is_no_json_is_the_caller_s_mistake(kind):
-    if kind == "in-process":
-        asked: client.Client = client.InProcess()
-        sent: list[bytes] = []
-    else:
-        read, write = os.pipe()
-        sent = []
-        asked = client.Remote(read, sent.append)
-    try:
+@pytest.mark.parametrize("mode", MODES)
+def test_a_request_that_is_no_json_is_the_caller_s_mistake(tmp_path, mode):
+    path = _write(tmp_path, "shown.py", SHOWN)
+    with client.reached(
+        path,
+        "Shown",
+        {**SMALL, "media_dir": str(tmp_path / "media")},
+        once=mode == "once",
+        deadline_s=60,
+    ) as (asked, opened):
+        assert opened["record"]["scene_class"] == "Shown"
         for value in (float("nan"), float("inf")):
             with pytest.raises(client.Failed) as failed:
-                asked.call("ping", {"value": value})
+                asked.call("state_at", {"t": value, "deadline_s": 60})
             assert failed.value.code == protocol.INVALID_PARAMS
             assert "JSON" in failed.value.error["message"]
-        # Nothing was sent.
-        assert sent == []
-    finally:
-        if kind == "remote":
-            os.close(read)
-            os.close(write)
+        # The session took nothing from it.
+        assert asked.call("ping", {"deadline_s": 60})["generation"] == 1
 
 
 def test_once_closes_its_session_by_the_deadline_asked(tmp_path, monkeypatch):
@@ -452,14 +481,6 @@ def test_frame_draws_at_the_quality_asked_for(tmp_path, monkeypatch):
 # session
 
 
-@pytest.fixture
-def socket_dir() -> Iterator[Path]:
-    """A directory for sockets, short enough for a socket's path."""
-    found = Path(tempfile.mkdtemp(prefix="as-", dir="/tmp"))
-    yield found
-    shutil.rmtree(found, ignore_errors=True)
-
-
 @contextlib.contextmanager
 def _started(
     *args: str, env: dict[str, str]
@@ -539,34 +560,72 @@ def test_session_serve_takes_exactly_one_transport(transports):
     assert "exactly one of --stdio and --socket" in found.stderr
 
 
-def test_session_list_stop_and_stop_all(socket_dir):
-    env = {"ARACHNE_SESSION_DIR": str(socket_dir)}
-    with _started("-m", "arachne.server", "--socket", env=env) as start:
-        first, second = start(), start()
-        pids = {_ready(first)["params"]["pid"], _ready(second)["params"]["pid"]}
+def _listed() -> list[dict[str, Any]]:
+    found = _invoke("session", "list", "--json")
+    assert found.exit_code == 0, found.output
+    listed: list[dict[str, Any]] = json.loads(found.stdout)
+    return listed
 
-        listed = _invoke("session", "list", "--json", env=env)
-        assert listed.exit_code == 0, listed.output
-        sessions = json.loads(listed.stdout)
-        assert {entry["pid"] for entry in sessions} == pids
-        human = _invoke("session", "list", env=env)
-        for entry in sessions:
-            assert str(entry["key"]) in human.stdout
 
-        key = next(e["key"] for e in sessions if e["pid"] == first.pid)
-        stopped = _invoke("session", "stop", str(key), env=env)
-        assert stopped.exit_code == 0, stopped.output
-        assert first.wait(WAIT_S) == 0
-        left = json.loads(_invoke("session", "list", "--json", env=env).stdout)
-        assert [entry["pid"] for entry in left] == [second.pid]
+def test_a_session_stays_resident_and_is_found_again(tmp_path):
+    path = _write(tmp_path, "edge.py", EDGE)
+    args = [str(path), "Edge", "--json", *_session_args("server", tmp_path)]
+    first = _invoke("inspect", *args)
+    assert first.exit_code == 0, first.output
+    (entry,) = _listed()
+    assert entry["scene"] == "Edge"
+    assert entry["file"] == os.path.realpath(path)
+    assert entry["generation"] == 1
+    assert _alive(entry["pid"])
+    # The next command, a lint, is answered by the same server.
+    linted = _invoke("lint", *args)
+    assert linted.exit_code == 0, linted.output
+    assert json.loads(linted.stdout)["generation"] == 1
+    assert [found["pid"] for found in _listed()] == [entry["pid"]]
 
-        assert _invoke("session", "stop", str(key), env=env).exit_code == 1
 
-        all_stopped = _invoke("session", "stop-all", env=env)
-        assert all_stopped.exit_code == 0, all_stopped.output
-        assert second.wait(WAIT_S) == 0
-        assert json.loads(_invoke("session", "list", "--json", env=env).stdout) == []
-        assert "no sessions" in _invoke("session", "list", env=env).stdout
+def test_session_list_stop_and_stop_all(tmp_path):
+    path = _write(
+        tmp_path,
+        "scenes.py",
+        SHOWN + "\n\n" + textwrap.indent("class Again(Shown):\n    pass\n", "    "),
+    )
+    for scene in ("Shown", "Again"):
+        opened = _invoke(
+            "inspect", str(path), scene, *_session_args("server", tmp_path)
+        )
+        assert opened.exit_code == 0, opened.output
+    sessions = _listed()
+    assert sorted(entry["scene"] for entry in sessions) == ["Again", "Shown"]
+    human = _invoke("session", "list")
+    for entry in sessions:
+        assert entry["key"] in human.stdout
+        assert str(entry["pid"]) in human.stdout
+
+    # By key; then by pid.
+    first, second = sorted(sessions, key=lambda entry: entry["scene"])
+    stopped = _invoke("session", "stop", first["key"])
+    assert stopped.exit_code == 0, stopped.output
+    assert str(first["pid"]) in stopped.stdout
+    assert not _alive(first["pid"])
+    assert [entry["pid"] for entry in _listed()] == [second["pid"]]
+    assert _invoke("session", "stop", first["key"]).exit_code == 1
+
+    all_stopped = _invoke("session", "stop-all")
+    assert all_stopped.exit_code == 0, all_stopped.output
+    assert str(second["pid"]) in all_stopped.stdout
+    assert not _alive(second["pid"])
+    assert _listed() == []
+    assert "no sessions" in _invoke("session", "list").stdout
+
+
+def test_a_session_stopped_by_its_pid(tmp_path):
+    path = _write(tmp_path, "shown.py", SHOWN)
+    opened = _invoke("inspect", str(path), "Shown", *_session_args("server", tmp_path))
+    assert opened.exit_code == 0, opened.output
+    (entry,) = _listed()
+    assert _invoke("session", "stop", str(entry["pid"])).exit_code == 0
+    assert not _alive(entry["pid"])
 
 
 # the splash
