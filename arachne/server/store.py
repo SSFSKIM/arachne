@@ -3,8 +3,10 @@ execution summary of each latest lint, keyed by the execution they are of.
 
 A record holds live mobjects and the scene's own callables, so no record is
 kept: the store keeps what can be written down. For each session opened (a
-scene class of a file, under a configuration) its **manifest**: the files its
-execution came from, by digest (its source and the files it read), the
+scene class of a file, under a configuration, from a working directory,
+which a relative path the scene reads or its configuration names is read
+from) its **manifest**: the files its execution came from, by digest (its
+source and every file its code read, as its module loaded too), the
 identity of the execution, and the record's form as ``open`` answered it.
 For each execution, the **answers** given, each by its request (the method
 and its params); and the **summary** of the execution its latest lint was
@@ -14,8 +16,9 @@ checks itself against.
 A server asked to open a session whose manifest's files still hold what
 they held, by digest, answers from the store until a request needs what the
 store does not hold, and only then executes the scene. Everything is kept
-under the engine that made it (:func:`engine_fingerprint`): another engine,
-or this one edited, reads none of it.
+under the engine that made it (:func:`engine_fingerprint`, its native core
+included): another engine, or this one edited or built again, reads none of
+it.
 
 The store is the directory ``ARACHNE_STORE`` names, else the user's cache
 directory's ``arachne/store``. Each file is written whole, under another
@@ -33,11 +36,15 @@ __all__ = [
     "settings_of",
     "store_dir",
     "summary_key",
+    "working_dir",
 ]
 
 import contextlib
 import functools
 import hashlib
+import importlib.machinery
+import importlib.metadata
+import importlib.util
 import json
 import os
 import sys
@@ -79,13 +86,41 @@ def store_dir() -> Path:
     return cache / "arachne" / "store"
 
 
+def _core_identity() -> str:
+    """The native core this process would load: ``arachne_core``'s version
+    and the sha256 of each of its compiled extensions, by name; ``"absent"``
+    when it is not installed. Read without importing it.
+    """
+    spec = importlib.util.find_spec("arachne_core")
+    if spec is None or not spec.submodule_search_locations:
+        return "absent"
+    try:
+        version = importlib.metadata.version("arachne-core")
+    except importlib.metadata.PackageNotFoundError:
+        version = "unknown"
+    built = tuple(importlib.machinery.EXTENSION_SUFFIXES)
+    extensions = [
+        path
+        for location in spec.submodule_search_locations
+        for path in sorted(Path(location).iterdir())
+        if path.name.endswith(built)
+    ]
+    found = [f"arachne-core {version}"]
+    found += [
+        f"{p.name} {hashlib.sha256(p.read_bytes()).hexdigest()}" for p in extensions
+    ]
+    return "\n".join(found)
+
+
 @functools.cache
 def engine_fingerprint() -> str:
-    """The digest of the engine answering: the interpreter's version and
-    every source file of the ``arachne`` package, by path and content.
+    """The digest of the engine answering: the interpreter's version, every
+    source file of the ``arachne`` package, by path and content, and its
+    native core (:func:`_core_identity`).
     """
     root = Path(__file__).resolve().parent.parent
     digest = hashlib.sha256(sys.version.encode())
+    digest.update(_core_identity().encode() + b"\0")
     for directory, names, files in os.walk(root):
         names[:] = sorted(n for n in names if n != "__pycache__")
         for name in sorted(files):
@@ -143,10 +178,18 @@ def summary_key(
     camera fits its frame to it; the frame rate among them, since a play's
     states depend on the instants it was evaluated at. A render at another
     frame rate or aspect than a lint's is another execution, never checked
-    against it.
+    against it. The working directory is the process's, which a relative
+    path is read from.
     """
     settings = _settings_digest(settings_of(config), pixels=False)
-    return _digest("summary", file, scene, dict(identity), settings)
+    return _digest("summary", file, scene, dict(identity), settings, working_dir())
+
+
+def working_dir() -> str:
+    """The process's working directory, a real path: what a relative path the
+    scene opens, or its configuration names, is read from.
+    """
+    return os.path.realpath(os.getcwd())
 
 
 @dataclass(frozen=True)
@@ -232,9 +275,11 @@ class Store:
     @staticmethod
     def manifest_key(file: str, scene: str, config: Mapping[str, Any]) -> str:
         """The key of the session of ``scene`` of ``file`` (a real path)
-        opened with ``config``: the whole configuration it executes under.
+        opened with ``config`` from the process's working directory: the whole
+        configuration it executes under, and where relative paths are read.
         """
-        return _digest("manifest", file, scene, _settings_digest(settings_of(config)))
+        settings = _settings_digest(settings_of(config))
+        return _digest("manifest", file, scene, settings, working_dir())
 
     def manifest(
         self, file: str, scene: str, config: Mapping[str, Any]
@@ -250,20 +295,27 @@ class Store:
         config: Mapping[str, Any],
         session: Session,
         record: dict[str, Any],
+        loaded: tuple[tuple[str, str], ...] = (),
     ) -> Manifest | None:
-        """Keep ``session``'s manifest, ``record`` its record's form; ``None``
-        when its files can't be shown to be what it executed.
+        """Keep ``session``'s manifest, ``record`` its record's form, and
+        ``loaded`` among the files it read: those its code read whenever it
+        ran, as its modules loaded too, as ``(path relative to the scene's
+        directory, sha256)``. ``None`` when its files can't be shown to be
+        what it executed.
         """
         source = session._source
         if source is None or source.files is None or session.stale:
             return None
+        reads = dict(loaded)
+        for read in source.reads:
+            reads.setdefault(read.path, read.digest)
         manifest = Manifest(
             key=self.manifest_key(file, scene, config),
             file=file,
             scene=scene,
             config=dict(config),
             files=source.files,
-            reads=tuple((read.path, read.digest) for read in source.reads),
+            reads=tuple(sorted(reads.items())),
             identity=identity_form(session.record.identity),
             record=record,
         )
