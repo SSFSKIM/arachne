@@ -99,9 +99,9 @@ def _reaching() -> Iterator[None]:
 class InProcess:
     """A session held in this process, answered by the server's own
     dispatcher as a server answers: with the store of answers
-    (``ARACHNE_STORE``), so that a render checks itself against the latest
-    lint's summary there, and each request kept to its deadline by the
-    server's watchdog. A request past its deadline ends the process, as it
+    (``ARACHNE_STORE``), so that a render checks itself against the summary
+    of the session's execution kept there, as a server's does, and each
+    request kept to its deadline by the server's watchdog. A request past its deadline ends the process, as it
     ends a server: ``expired`` is given the deadline's error object, unless
     the answer had been claimed first; what a render running wrote is
     removed, and the process exits with status 3. Whatever the scene prints
