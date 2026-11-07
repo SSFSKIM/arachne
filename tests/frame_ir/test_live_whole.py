@@ -122,7 +122,9 @@ def test_a_camera_of_the_scene_s_own_reports_its_last_whole_frame():
     assert painter.outlines()
 
 
-def test_a_camera_patched_on_its_instance_draws_its_record_s_final_frame_whole(monkeypatch):
+def test_a_camera_patched_on_its_instance_draws_its_record_s_final_frame_whole(
+    monkeypatch,
+):
     """A camera whose projection the scene replaced on the instance is drawn
     from its record by captures of its own: the record's final frame, its
     camera reset before the capture's live scope, which is told of it, is
@@ -134,7 +136,9 @@ def test_a_camera_patched_on_its_instance_draws_its_record_s_final_frame_whole(m
 
     scene, _ = render(camera_scenes.PatchedSolids, 15, draw_path="core", **MEDIUM)
     record = scene._arachne_timeline.record  # type: ignore[attr-defined]
-    assert record is not None and record.final is not None and record.refusal is None
+    assert record is not None
+    assert record.final is not None
+    assert record.refusal is None
     camera = scene.renderer.camera  # type: ignore[attr-defined]
     monkeypatch.setattr(lint, "raised", [])
     with tempconfig({**MEDIUM, "draw_path": "core"}), Drawing(record) as drawing:
