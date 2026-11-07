@@ -306,8 +306,11 @@ whatever the scene's code is doing, is answered ``-32002``, ``ends`` true
 twice), and the process exits with status 3, taking no other request
 before it does. A line that runs nothing (no JSON, past the longest
 message, no request, or a request whose ``deadline_s`` is refused) is
-answered however long it waited: its deadline bounds only its answer's
-writing. A client that gives up on a request needs nothing else to stop the
+answered however long it waited. For these, and a request answered unrun,
+the deadline (at least :data:`~.protocol.ENDING_S`, so that one unrun is
+never answered ``ends`` true) bounds only the answer's writing, as it
+bounds a request's: a write that overruns it ends the server with status 3,
+sending nothing more. A client that gives up on a request needs nothing else to stop the
 work it asked for: still queued, it never runs; running, it ends the
 server.
 
@@ -317,10 +320,11 @@ The server's end
 The server ends by itself when no request has been answered for
 ``ARACHNE_SESSION_IDLE_S`` seconds, on ``shutdown``, and, with ``--stdio``,
 at the end of its standard input, each with status 0; past a running
-request's deadline with status 3; with status 1 if it fails. However it ends, each step on its way
-out (a deadline's error sent, what a render running wrote removed, its
-socket and registry entry removed, a word on standard error, its streams
-flushed) takes at most 1 s (:data:`~.protocol.ENDING_S`), and then the
+request's deadline, or an answer's writing past its own, with status 3;
+with status 1 if it fails. However it ends, each step on its way out (a
+deadline's error sent, what a render running wrote removed, its socket and
+registry entry removed, a word on standard error, its streams flushed)
+takes at most 1 s (:data:`~.protocol.ENDING_S`), and then the
 process exits whatever that step did: no client, full pipe or file system
 can keep it alive.
 

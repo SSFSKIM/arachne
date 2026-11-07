@@ -358,13 +358,16 @@ lifted.
   (`serve._reading`) stamps each line as it reads it; a scene running a long C call that keeps the GIL delays that
   read, and the line's deadline starts that much late. Direction: read on a thread that never needs the GIL for
   the stamp (or in a helper process), if a scene's long native calls ever make the delay matter.
-- **A forked child of the scene's code keeps its server alive to the registry.** A server's `<pid>.alive` lock is
+- **A forked child of the scene's code outlives its server, holding its lock.** A server's `<pid>.alive` lock is
   non-inheritable across exec (PEP 446) and the engine's subprocesses run with `close_fds`, but a child forked
   without exec by the scene's own code (`os.fork`, `pty.fork`, multiprocessing's "fork" start method, Linux's
   default through 3.13) shares the lock's open file and holds it after the server exits; the server's `os._exit`
-  also skips the cleanup that would end leaked multiprocessing workers. The registry then keeps a dead server's
-  entry until that child ends. Direction: check the entry's pid against the lock's holder (or take the lock in a
-  process the scene can't fork from) if a scene that forks long-lived children turns up.
+  also skips the cleanup that would end leaked multiprocessing workers. Since liveness checks the server's own pid
+  first (`registry._serving`), a dead server's entry is forgotten at once all the same; what remains is the leaked
+  workers themselves, and a pid reused by another process while the child still holds the lock, which keeps the
+  entry until the child ends. Direction: end the scene's children on the way out, and check the entry's pid against
+  the lock's holder (or take the lock in a process the scene can't fork from), if a scene that forks long-lived
+  children turns up.
 - **The reading thread's queue has no bound.** `serve._reading` queues every line read while a request runs, so a
   client flooding lines grows the server's memory without limit. Direction: bound the queue and stop reading a
   channel while it is full, so the flood waits in the socket instead.

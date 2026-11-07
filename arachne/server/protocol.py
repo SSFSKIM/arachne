@@ -63,9 +63,11 @@ SCENE_ERROR = -32000
 #: reason}``, the refusal's class name, its message and its stable code, or
 #: null.
 REFUSED = -32001
-#: The request ran past its deadline: ``data`` is ``{method, deadline_s}``.
-#: The server exits (:data:`EXIT_DEADLINE`) once it is sent, or once
-#: :data:`ENDING_S` has passed trying to send it.
+#: The request ran past its deadline: ``data`` is ``{method, deadline_s,
+#: ends}``. With ``ends`` true it ran past it, and the server exits
+#: (:data:`EXIT_DEADLINE`) once this is sent, or once :data:`ENDING_S` has
+#: passed trying to send it; with ``ends`` false it was past it before its
+#: turn, did not run, and the server goes on.
 DEADLINE_EXCEEDED = -32002
 #: The method asks about a session, and none is open.
 NO_SESSION = -32003
