@@ -19,6 +19,7 @@ import pytest
 
 from arachne import smooth
 from arachne.session import Session
+from arachne.timeline.fallback import visit_frames
 
 SMALL = {"pixel_width": 96, "pixel_height": 54, "frame_rate": 4}
 
@@ -307,3 +308,60 @@ def test_two_sessions_of_one_file_share_no_module(scene_dir):
     first.close()
     second.close()
     assert not any(name in sys.modules for name in names)
+
+
+VISITED = """\
+from arachne import *
+
+
+class Visited(Scene):
+    def construct(self):
+        dot = Dot()
+        self.add(dot)
+        self.play(dot.animate.shift(RIGHT), run_time=0.5)
+
+    def helper_value(self):
+        import visit_helper
+
+        return visit_helper.VALUE
+"""
+
+
+def _visit_past_the_end(session: Session) -> list[int]:
+    """Execute the session's scene once more and visit it past its end:
+    what its ``helper_value`` gave at each visit after the script ended.
+    """
+    seen: list[int] = []
+
+    def visit(t, record, play, capture):
+        if play is None:
+            seen.append(record._scene.helper_value())
+
+    visit_frames(session, [session.record.duration + 1], visit, to_end=True)
+    return seen
+
+
+def test_a_visit_past_the_end_imports_the_scene_s_helpers(scene_dir):
+    """A forward run's visits after the scene's end still belong to that
+    execution: the scene's code they call imports the scene's helpers.
+    """
+    _write(scene_dir, "visit_helper.py", "VALUE = 1\n")
+    scene = _write(scene_dir, "scene.py", VISITED)
+    session = _open(scene, "Visited")
+    try:
+        assert _visit_past_the_end(session) == [1]
+        assert "visit_helper" not in sys.modules
+    finally:
+        session.close()
+
+
+def test_each_execution_s_visits_past_the_end_see_its_own_helper(scene_dir):
+    helper = _write(scene_dir, "visit_helper.py", "VALUE = 1\n")
+    scene = _write(scene_dir, "scene.py", VISITED)
+    session = _open(scene, "Visited")
+    try:
+        assert _visit_past_the_end(session) == [1]
+        helper.write_text("VALUE = 2\n")
+        assert _visit_past_the_end(session) == [2]
+    finally:
+        session.close()
