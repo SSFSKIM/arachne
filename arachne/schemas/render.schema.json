@@ -31,7 +31,8 @@
       "additionalProperties": false,
       "required": [
         "status",
-        "reason"
+        "reason",
+        "reference"
       ],
       "properties": {
         "status": {
@@ -45,6 +46,14 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "reference": {
+          "description": "The execution a checked render was checked against: lint, the one a lint in the session judged (the same generation, frame rate and pixel aspect), else own, the session's own; null for an unchecked one.",
+          "enum": [
+            "lint",
+            "own",
+            null
           ]
         }
       }

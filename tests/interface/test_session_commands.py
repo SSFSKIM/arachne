@@ -763,7 +763,7 @@ SLOW = """\
             self.wait(0.5)
 """
 
-CHECKED = {"status": "checked", "reason": None}
+CHECKED = {"status": "checked", "reason": None, "reference": "own"}
 
 
 def _shown(form: dict[str, Any]) -> list[int]:
@@ -984,8 +984,12 @@ def test_session_render_once_and_the_server_answer_alike(tmp_path, command, lint
         )
         assert found.exit_code == 0, found.output
         answers.append(json.loads(found.stdout))
+    # Which execution judged the check is the session's history: the lint
+    # was in the server's session, never in the in-process one.
+    checks = [answer[command].pop("self_check") for answer in answers]
     assert answers[0] == answers[1]
-    assert answers[0][command]["self_check"] == CHECKED
+    by_lint = {**CHECKED, "reference": "lint"}
+    assert checks == [by_lint if linted else CHECKED, CHECKED]
 
 
 def test_session_render_past_its_deadline_leaves_nothing_at_out(tmp_path):

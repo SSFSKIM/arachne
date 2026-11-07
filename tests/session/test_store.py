@@ -185,7 +185,11 @@ def test_a_render_is_checked_alike_whether_its_session_executed_or_was_stored(
     executed = _rendered(params, tmp_path / "executed.mp4")
     stored = _rendered(params, tmp_path / "stored.mp4")
     assert (executed[0], stored[0]) == (False, True)
-    assert executed[1]["render"]["self_check"] == {"status": "checked", "reason": None}
+    assert executed[1]["render"]["self_check"] == {
+        "status": "checked",
+        "reason": None,
+        "reference": "own",
+    }
     assert stored[1] == executed[1]
 
 

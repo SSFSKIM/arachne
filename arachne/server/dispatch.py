@@ -282,6 +282,9 @@ class Dispatcher:
         self._stored_generation = 1
         #: The key of the summary kept of the session's execution, if any.
         self._summarised: str | None = None
+        #: The generation and summary key of the execution the session's
+        #: latest lint judged.
+        self._linted: tuple[int | None, str] | None = None
         #: The directory a render writes into while it runs.
         self._scratch: Path | None = None
         #: The files the session's code read as its execution ran, as its
@@ -501,19 +504,13 @@ class Dispatcher:
         """
         assert self._opened is not None
         file, scene, _ = self._opened
-        if self.session is not None:
-            identity = identity_form(self.session.record.identity)
-            reads = dependency_reads(self.session, self._loaded)
-        else:
-            assert self.stored is not None
-            identity, reads = self.stored.identity, self.stored.reads
         config = {**self._config, **rendering.quality_options(quality)}
-        key = summary_key(file, scene, identity, config, reads)
+        key = self._execution_key(config)
         reference = None if self.store is None else self.store.summary(key)
         if (
             reference is None
             and self.session is not None
-            and key == summary_key(file, scene, identity, self._config, reads)
+            and key == self._execution_key(self._config)
         ):
             reference = self.session.summary()
         return rendering.render(
@@ -527,7 +524,26 @@ class Dispatcher:
             reference=reference,
             scratch=self._scratching,
             publish=self._published,
+            linted=self._linted == (self.generation, key),
         )
+
+    def _execution_key(self, config: dict[str, Any]) -> str:
+        """The summary key of the session's execution as one under
+        ``config`` would be: at its frame rate and pixel aspect.
+        """
+        assert self._opened is not None
+        file, scene, _ = self._opened
+        if self.session is not None:
+            identity = identity_form(self.session.record.identity)
+            reads = dependency_reads(self.session, self._loaded)
+        else:
+            assert self.stored is not None
+            identity, reads = self.stored.identity, self.stored.reads
+        return summary_key(file, scene, identity, config, reads)
+
+    def linted(self) -> None:
+        """A lint judged the execution the session holds now."""
+        self._linted = (self.generation, self._execution_key(self._config))
 
     def _scratching(self, directory: Path | None) -> None:
         self._scratch = directory
@@ -682,6 +698,7 @@ def _open(server: Dispatcher, params: Params) -> dict[str, Any]:
                 real, config, lambda: Session.open(file, scene, config=config or None)
             )
         server._opened, server._named, server._config = opened, file, config
+        server._linted = None
         if server.session is None:
             return server.answer(record=server.record())
         record = api_json.inspect(server.session)
@@ -735,11 +752,14 @@ def _lint(server: Dispatcher, params: Params) -> dict[str, Any]:
         return {"lint_result": api_json.lint(result)}
 
     if out_dir is None:
-        return server.kept("lint", params.given, answer)
+        found = server.kept("lint", params.given, answer)
+        server.linted()
+        return found
     # Key frames are files the store does not keep.
     session = server.live()
     forms = answer(session)
     forms["key_frames"] = api_json.key_frames(session.key_frames(out_dir))
+    server.linted()
     return server.answer(**forms)
 
 
@@ -829,6 +849,7 @@ def _close(server: Dispatcher, params: Params) -> dict[str, Any]:
     if server.session is not None:
         server.session.close()
     server.session = server.stored = server._opened = server._manifest = None
+    server._linted = None
     return server.answer()
 
 

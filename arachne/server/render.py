@@ -17,6 +17,7 @@ from __future__ import annotations
 
 __all__ = ["SelfCheck", "Rendered", "plays_meeting", "render"]
 
+import dataclasses
 import os
 import shutil
 import sys
@@ -50,11 +51,15 @@ NO_REFERENCE = (
 @dataclass(frozen=True)
 class SelfCheck:
     """Whether a render was checked against an execution summary: ``status``,
-    ``"checked"`` or ``"unchecked"``, and for an unchecked one, ``reason``.
+    ``"checked"`` or ``"unchecked"``; for an unchecked one, ``reason``; for a
+    checked one, ``reference``, the execution it was checked against:
+    ``"lint"``, the one a lint in the session judged, else ``"own"``, the
+    session's own.
     """
 
     status: str
     reason: str | None = None
+    reference: str | None = None
 
 
 @dataclass(frozen=True)
@@ -113,6 +118,7 @@ def render(
     reference: ExecutionSummary | None,
     scratch: Callable[[Path | None], None],
     publish: Callable[[Callable[[], None]], bool],
+    linted: bool = False,
 ) -> Rendered:
     """Render ``scene`` of ``file`` (a real path, ``named`` so by the
     caller) under ``config`` (the session's), at ``quality`` (else the
@@ -123,6 +129,8 @@ def render(
     in while it does, and ``None`` once it is gone. ``publish`` runs the
     rename onto ``out`` once the request has claimed its answer, false
     when the request's deadline passed first and the rename never ran.
+    ``linted``: whether ``reference`` is the execution a lint in the
+    session judged.
     """
     out.parent.mkdir(parents=True, exist_ok=True)
     media = Path(tempfile.mkdtemp(prefix=f".{out.name}.", dir=out.parent))
@@ -152,6 +160,9 @@ def render(
             summary = summarize(record)
         video = Path(made.renderer.file_writer.movie_file_path)
         checked, divergence = _check(summary, reference, plays)
+        if checked.status == "checked":
+            judged = "lint" if linted else "own"
+            checked = dataclasses.replace(checked, reference=judged)
         if not publish(lambda: os.replace(video, out)):
             raise RuntimeError(
                 "The request's deadline passed before its render was written."

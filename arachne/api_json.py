@@ -273,6 +273,7 @@ def render(found: Rendered) -> dict[str, Any]:
         "self_check": {
             "status": found.self_check.status,
             "reason": found.self_check.reason,
+            "reference": found.self_check.reference,
         },
     }
     if found.divergence is not None:

@@ -181,9 +181,14 @@ describes it.
     its source: ``{generation, clip | render: {path, timeline, self_check,
     divergence?}}``, the ``render`` form. ``timeline`` is every play the
     render's execution played, in the record's form, those ``out`` leaves
-    out ``skipped``. ``self_check`` is ``{status, reason}``: ``"checked"``
-    (reason null), or ``"unchecked"`` with why, so that a render with no
-    divergence is a clean comparison only when it is checked.
+    out ``skipped``. ``self_check`` is ``{status, reason, reference}``:
+    ``"checked"`` (reason null), or ``"unchecked"`` with why, so that a
+    render with no divergence is a clean comparison only when it is checked.
+    A checked render was compared with the session's execution at its frame
+    rate and pixel aspect, and ``reference`` says which judged it:
+    ``"lint"`` when a lint request in the session judged that very
+    execution (the same generation, frame rate and pixel aspect), ``"own"``
+    otherwise, and null when the render is unchecked.
     ``divergence`` (the ``replay.diverged`` the check found) is given only
     when it found one; a render is written all the same. The summary
     checked against is that of the session's execution, which the store
