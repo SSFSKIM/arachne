@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Arachne frame",
+  "description": "A frame drawn and written as a PNG: the instant asked, the instant whose state it shows, the play holding it and how the session answered it. A field added is a minor version, a field changed or removed a major one.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "t",
+    "t_exact",
+    "as_of",
+    "as_of_exact",
+    "play",
+    "answer",
+    "path"
+  ],
+  "properties": {
+    "schema_version": {"$ref": "#/$defs/schema_version"},
+    "t": {"$ref": "#/$defs/time"},
+    "t_exact": {"$ref": "#/$defs/exact"},
+    "as_of": {
+      "description": "The instant whose state the frame shows.",
+      "$ref": "#/$defs/time"
+    },
+    "as_of_exact": {"$ref": "#/$defs/exact"},
+    "play": {"type": ["integer", "null"]},
+    "answer": {"enum": ["recorded", "analytic", "restored", "forward"]},
+    "path": {"description": "The PNG written.", "type": "string"}
+  },
+  "$defs": {
+    "schema_version": {"const": "1.0"},
+    "time": {"description": "Seconds of scene time.", "type": "number"},
+    "exact": {
+      "description": "An exact instant or rate, the rational \"n/d\".",
+      "type": "string",
+      "pattern": "^-?[0-9]+/[0-9]+$"
+    }
+  }
+}

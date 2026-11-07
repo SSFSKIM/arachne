@@ -12,7 +12,10 @@ Each form is a dict of JSON values, described by the schema of its name in
   :class:`~arachne.lint.query.Query`;
 - ``key_frames``, :func:`key_frames`: the key frames written;
 - ``lint_result``, :func:`lint`: a lint's report and its notes
-  (:mod:`arachne.lint.serialise`).
+  (:mod:`arachne.lint.serialise`);
+- ``frame``, :func:`frame`: a frame drawn and written as a PNG;
+- ``scene_error``, :func:`scene_error`: what executing a scene raised,
+  explained (:class:`~arachne.errors.SceneError`).
 
 Every form carries ``schema_version``, ``"major.minor"``: a field added is a
 minor version, a field changed or removed a major one. The record's form
@@ -37,10 +40,12 @@ __all__ = [
     "FORMS",
     "QUERY_ANSWERS",
     "SCHEMA_VERSION",
+    "frame",
     "inspect",
     "key_frames",
     "lint",
     "query",
+    "scene_error",
     "schema",
     "state",
 ]
@@ -60,21 +65,32 @@ from .lint.serialise import notes, report, violation
 
 if TYPE_CHECKING:
     from .camera.projection import Box
+    from .errors import Frame, SceneError
     from .lint.core import LintResult
     from .lint.keyframes import KeyFrames
     from .lint.query import CameraReplaced, Query, Thing
     from .session import Session
     from .timeline.execution import Divergence
+    from .timeline.fallback import Answer
     from .timeline.probe import Probe
     from .timeline.record import Marker, PlayRecord, Record
     from .timeline.source import SourceLine
     from .timeline.state import NodeView, State
+    from .typing import StrPath
 
 #: The version of every form.
 SCHEMA_VERSION = "1.0"
 
 #: The forms, by the name of their schema.
-FORMS = ("record", "state", "query", "key_frames", "lint_result")
+FORMS = (
+    "record",
+    "state",
+    "query",
+    "key_frames",
+    "lint_result",
+    "frame",
+    "scene_error",
+)
 
 #: What :func:`query` can be asked for, as :class:`~arachne.lint.query.Query`
 #: names its answers.
@@ -220,6 +236,41 @@ def lint(result: LintResult) -> dict[str, Any]:
         "schema_version": SCHEMA_VERSION,
         "report": report(result),
         "notes": notes(result),
+    }
+
+
+def frame(found: Answer, path: StrPath) -> dict[str, Any]:
+    """The frame of ``found``, an answer of
+    :meth:`~arachne.session.Session.answers`, written as the PNG ``path``:
+    the instant asked, the instant whose state it shows, the play holding
+    it and how it was answered.
+    """
+    return {
+        "schema_version": SCHEMA_VERSION,
+        **_timed("t", found.state.t),
+        **_timed("as_of", found.state.as_of),
+        "play": found.state.play,
+        "answer": found.state.answer,
+        "path": os.fspath(path),
+    }
+
+
+def scene_error(error: SceneError) -> dict[str, Any]:
+    """What executing a scene raised, explained (``error``), with the report
+    that says it all (:meth:`~arachne.errors.SceneError.report`).
+    """
+    raised_in = error.raised_in
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "cls": error.cls,
+        "message": error.message,
+        "path": error.path,
+        "line": error.line,
+        **_timed("t", None if error.t is None else Fraction(error.t)),
+        "frames": [_trace_frame(each) for each in error.frames],
+        "raised_in": None if raised_in is None else _trace_frame(raised_in),
+        "hints": list(error.hints),
+        "report": error.report(),
     }
 
 
@@ -420,6 +471,18 @@ def _replaced(found: CameraReplaced) -> dict[str, Any]:
         "code": found.code,
         "replaced": list(found.replaced),
         "message": found.message,
+    }
+
+
+# The scene's error
+
+
+def _trace_frame(found: Frame) -> dict[str, Any]:
+    return {
+        "path": found.path,
+        "line": found.line,
+        "function": found.function,
+        "code": found.code,
     }
 
 

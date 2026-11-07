@@ -126,7 +126,8 @@ class Server:
 
     def __init__(self, transport: str, cwd: Path, env: dict[str, str]) -> None:
         self.transport = transport
-        self._stderr = tempfile.TemporaryFile()
+        # Closed by end(), which every test's fixture calls.
+        self._stderr = tempfile.TemporaryFile()  # noqa: SIM115
         self.process = subprocess.Popen(
             [sys.executable, "-m", "arachne.server", f"--{transport}"],
             cwd=cwd,
