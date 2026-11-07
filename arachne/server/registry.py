@@ -4,7 +4,8 @@ find or start a server there, and the memory budget the servers keep.
 The directory is ``ARACHNE_SESSION_DIR``, else a per-user one
 (:func:`session_dir`), mode 0700. Each server serving on a socket there
 keeps an entry beside its socket, ``<pid>.json``: the session it holds
-(its file, by real path, scene and config, and their key), its generation,
+(its file, by real path, scene and config, the working directory the server
+runs in, and their key), its generation,
 the memory it has held at most (``rss_mb``), when it last answered, and
 whether it is answering now. A server writes its entry as it starts
 serving, keeps it as it answers, and removes it, with its socket, as it
@@ -16,7 +17,10 @@ registry next, with its socket; so is a socket left with no entry.
 (detached, so that no caller's end ends it), and opens the session there:
 asked again for the session it holds, a server answers it
 (:mod:`arachne.server`'s ``open``). Two callers asking for one session at
-once start one server.
+once start one server. A session is of the working directory it was asked
+from, where its server runs: a relative path in its config, and the
+configuration file of the directory, are read from there, so callers in two
+directories never share a server.
 
 Under ``ARACHNE_SESSION_MEMORY_MB``, every server, once it has answered,
 ends the least recently used of the other servers of its directory that are
@@ -103,12 +107,17 @@ class ServerGone(ConnectionError):
     """The server ended, or closed the connection, without answering."""
 
 
-def session_key(file: str, scene: str, config: Mapping[str, Any]) -> str:
+def session_key(file: str, scene: str, config: Mapping[str, Any], cwd: str) -> str:
     """The registry's key of the session of ``scene`` of ``file`` (a real
-    path) under ``config``.
+    path) under ``config``, asked from the working directory ``cwd`` (a real
+    path).
     """
-    text = json.dumps([file, scene, dict(config)], sort_keys=True)
+    text = json.dumps([file, scene, dict(config), cwd], sort_keys=True)
     return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+def _cwd() -> str:
+    return os.path.realpath(os.getcwd())
 
 
 def _default_dir() -> Path:
@@ -150,7 +159,8 @@ def session_dir(directory: StrPath | None = None) -> Path:
 class Entry:
     """A server's entry in the registry. ``key``, ``file`` (a real path),
     ``scene``, ``config`` and ``generation`` are ``None`` while it holds no
-    session. ``rss_mb``: the most memory it has held, in megabytes;
+    session. ``cwd``: the working directory the server runs in, a real
+    path. ``rss_mb``: the most memory it has held, in megabytes;
     ``last_used``: when it last began or ended answering
     (:func:`time.time`); ``busy``: whether it is answering now.
     """
@@ -161,6 +171,7 @@ class Entry:
     file: str | None
     scene: str | None
     config: dict[str, Any] | None
+    cwd: str
     generation: int | None
     rss_mb: float
     last_used: float
@@ -345,9 +356,9 @@ class Connection:
         self.close()
 
 
-def _start(directory: Path) -> tuple[int, str]:
-    """Start a server on a socket in ``directory``, detached: its pid and
-    socket, once it is ready.
+def _start(directory: Path, cwd: str) -> tuple[int, str]:
+    """Start a server on a socket in ``directory``, detached, in the working
+    directory ``cwd``: its pid and socket, once it is ready.
     """
     log = tempfile.NamedTemporaryFile(  # noqa: SIM115 (renamed, never closed here)
         dir=directory, prefix=".start-", suffix=".log", delete=False
@@ -366,6 +377,7 @@ def _start(directory: Path) -> tuple[int, str]:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=log,
+            cwd=cwd,
             env={**os.environ, "ARACHNE_SESSION_DIR": os.fspath(directory)},
         )
         launcher.wait()
@@ -445,12 +457,14 @@ def connect_or_start(
     ``deadline_s``. Asked again, it finds the same server, which answers
     the session it holds, caught up with its files. A server it started
     whose ``open`` failed is ended, and the error raised
-    (:class:`RemoteError`).
+    (:class:`RemoteError`). The session is of the working directory it is
+    asked from, where a server it starts runs.
     """
     found_dir = session_dir(directory)
     named = os.path.abspath(file)
     config = dict(config or {})
-    key = session_key(os.path.realpath(file), scene, config)
+    cwd = _cwd()
+    key = session_key(os.path.realpath(file), scene, config, cwd)
     params: dict[str, Any] = {"file": named, "scene": scene, "config": config}
     if deadline_s is not None:
         params["deadline_s"] = deadline_s
@@ -476,7 +490,7 @@ def connect_or_start(
                     continue
                 raise
             return connection
-        pid, path = _start(found_dir)
+        pid, path = _start(found_dir, cwd)
         try:
             connection = Connection(path, pid, key)
         except BaseException:
@@ -525,8 +539,8 @@ def _rss_mb() -> float:
 
 class Registration:
     """A server's entry in the registry ``directory``: the server ``pid``,
-    serving on ``socket``, keeping the host's ``budget_mb`` (none when
-    ``None``).
+    serving on ``socket`` from the working directory it started in, keeping
+    the host's ``budget_mb`` (none when ``None``).
     """
 
     def __init__(
@@ -536,6 +550,8 @@ class Registration:
         self.pid = pid
         self.socket = socket_path
         self.budget_mb = budget_mb
+        # Where it started: a scene's code changing directory moves no key.
+        self.cwd = _cwd()
         self._path = directory / f"{pid}.json"
 
     def write(
@@ -552,10 +568,11 @@ class Registration:
         entry = Entry(
             pid=self.pid,
             socket=self.socket,
-            key=None if held is None else session_key(*held),
+            key=None if held is None else session_key(*held, self.cwd),
             file=file,
             scene=scene,
             config=config,
+            cwd=self.cwd,
             generation=generation,
             rss_mb=_rss_mb(),
             last_used=time.time(),
