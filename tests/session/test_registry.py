@@ -374,6 +374,9 @@ def test_a_caller_s_deadline_bounds_its_turn_and_its_open_together(
     host, tmp_path, monkeypatch
 ):
     path = write(tmp_path, "still.py", STILL)
+    # The session's server is running already: the second caller's open
+    # waits on its turn only, never on a start.
+    resident = host.connect(path, "Still", SMALL)
     key = registry.session_key(str(path.resolve()), "Still", SMALL, registry._cwd())
     turn = host.directory / "locks" / f"{key}.lock"
     sent = _opens_sent(monkeypatch)
@@ -391,6 +394,7 @@ def test_a_caller_s_deadline_bounds_its_turn_and_its_open_together(
         time.sleep(waited)
     caller.join(2 * deadline)
     assert opened, "the caller was not answered"
+    assert opened[0].pid == resident.pid
     (given,) = sent
     assert 0 < given <= deadline - waited
 
