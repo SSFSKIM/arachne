@@ -38,7 +38,10 @@ The two times, and ``--deadline-s``, are seconds above 0 and at most a week
 value at its start, with status 2.
 
 A client finds the server holding a session in the registry, or starts one
-there, with :func:`.registry.connect_or_start`.
+there, with :func:`.registry.connect_or_start`. A server it starts writes its
+standard error, the scene's prints and the engine's logging among them, to
+``<pid>.log`` beside its entry, never to the caller's; it outlives the
+command that started it until its idle end, a ``stop`` or ``stop_all``.
 
 Lines
 -----
@@ -128,7 +131,12 @@ describes it.
   is opened without executing its scene: every answer the store holds of it
   is given from there, and the first request whose answer it does not hold
   executes the scene, as the generation it is (the next one when its files
-  changed). Answers so given are the answers the session gave.
+  changed). Answers so given are the answers the session gave. The store
+  keeps a session under all its execution was asked with (the file's real
+  path, the scene, the config, the working directory's real path) and the
+  engine that executed it (the interpreter's version, the engine's source
+  and its native core's build); its files are every file the execution
+  read, as its module loaded included.
 - ``state_at`` and ``frame`` answer as
   :meth:`~arachne.session.Session.answers` does: from the record, else from a
   forward run. ``frame`` writes the PNG ``path`` (its directory made when
@@ -168,27 +176,43 @@ describes it.
     ``quality`` (its pixel size and frame rate; else the session's), into
     the media file ``out`` (an MP4 unless ``config`` names another format),
     and checks itself against the execution summary the session holds of
-    its source: ``{generation, clip | render: {path, timeline,
+    its source: ``{generation, clip | render: {path, timeline, self_check,
     divergence?}}``, the ``render`` form. ``timeline`` is every play the
     render's execution played, in the record's form, those ``out`` leaves
-    out ``skipped``. ``divergence`` (the ``replay.diverged`` the check
-    found) is given only when it found one; a render is written all the
-    same. The summary checked against is that of the session's latest lint
-    (the store's, else the session's own), of an execution at the render's
-    frame rate and pixel aspect: a render at another frame rate or aspect
-    is another execution, and is not checked.
+    out ``skipped``. ``self_check`` is ``{status, reason}``: ``"checked"``
+    (reason null), or ``"unchecked"`` with why, so that a render with no
+    divergence is a clean comparison only when it is checked.
+    ``divergence`` (the ``replay.diverged`` the check found) is given only
+    when it found one; a render is written all the same. The summary
+    checked against is that of the session's latest lint (the store's, else
+    the session's own), of an execution at the render's frame rate and
+    pixel aspect: a render at another frame rate or aspect is another
+    execution, and is unchecked. Another pixel aspect is another execution
+    because the camera keeps its configured frame width and derives its
+    frame height from the aspect (854 by 480 gives 7.99375 against 16:9's
+    8): the camera's frame differs while mobject geometry, placed by the
+    configuration's frame, does not. Checking across aspects, by comparing
+    mobject states in scene units, is not done yet.
   - ``clip`` renders the plays that meet ``[t0, t1]``, ``t0`` not after
     ``t1``: from the first play whose span reaches ``t0`` (it ends at or
     after it) to the last whose span reaches back to ``t1`` (it starts at
     or before it), both included, so a play that touches the span at one
     instant is in it; the clip runs from the first one's start through the
     last one's end. A span no play meets is refused. ``render`` renders the
-    plays ``plays`` lists, by index, one after another in order (the render
-    path takes a first and a last play), else every play.
+    plays ``plays`` lists, by index, which must be a contiguous ascending
+    run (``[2, 3, 4]``; the render path takes a first and a last play), else
+    every play; any other list, gaps, repeats or descents, is refused
+    ``-32602``, saying so.
   - ``out`` is the file the caller binds, whatever it holds: it is written
     as a temporary file beside it, renamed onto ``out`` only once the render
-    succeeded, so a deadline's exit, a refusal or an error never leaves a
-    partial file there. ``out`` naming a directory is refused.
+    succeeded, and only while the request is still live: the rename and the
+    deadline are one or the other, under the claim the deadline's watchdog
+    takes. So a deadline's exit (whenever it comes, the moment before the
+    rename included), a refusal or an error leaves ``out`` as it was, a file
+    there before untouched. Once renamed, the request has claimed its
+    answer: its deadline still bounds the answer's writing, and a deadline
+    passing then ends the server without the error. ``out`` naming a
+    directory is refused.
   - Each sets its own ``deadline_s`` from what it expects to cost: the
     server's default does not fit a render. A caller gives what is left of
     its own monotonic deadline, less a small margin, so that the server ends
@@ -219,7 +243,8 @@ code       meaning, and ``data``
            :data:`~arachne.constants.QUALITIES` lacks; a rule, answer or
            exemption the method does not know; ``t_range`` backwards;
            ``sample_fps`` beside rules other than ``"armed"``; ``bbox``
-           asked without ``ids``; a ``deadline_s`` past a week): no ``data``
+           asked without ``ids``; a ``deadline_s`` past a week; ``plays``
+           not a contiguous ascending run): no ``data``
 ``-32603`` the server failed unforeseen, or its answer could not be
            written as JSON: ``data`` is ``{type, message, traceback}``, the
            traceback trimmed to its last 8 frames
@@ -277,12 +302,21 @@ flushed) takes at most 1 s (:data:`~.protocol.ENDING_S`), and then the
 process exits whatever that step did: no client, full pipe or file system
 can keep it alive.
 
-Under ``ARACHNE_SESSION_MEMORY_MB``, a server on a socket in
-``ARACHNE_SESSION_DIR``, once it has answered, ends the least recently used
-of the directory's other servers not answering a request while together
-they hold more than that: it asks each to ``shutdown``, then kills it if it
-has not ended within a few seconds (:mod:`.registry`). Neither this nor
-the idle end waits on a client.
+A server on a socket in ``ARACHNE_SESSION_DIR`` is ended by another
+process only once it is reserved for its end, ``<pid>.lock`` beside its
+entry: the server holds that itself while it answers a request, so a server
+answering is never ended under it, nor killed. A reserved server answers
+nothing more: the next request it reads it drops, unanswered, and it ends
+with status 0; its caller sees the connection end (a client of
+:mod:`.registry` raises ``ServerGone``, and ``connect_or_start`` starts the
+session afresh).
+
+Under ``ARACHNE_SESSION_MEMORY_MB``, such a server, once it has answered,
+ends the least recently used of the directory's other servers it can reserve
+while together they hold more than that: it asks each to ``shutdown``, then
+kills it if it has not ended within a few seconds (:mod:`.registry`). Still
+over the budget with no other server to end, it ends itself, its answer
+sent, with status 0. Neither this nor the idle end waits on a client.
 """
 
 from __future__ import annotations
