@@ -21,15 +21,35 @@
 //! - [`tiles`]: a frame cut into tiles, drawn on threads scoped to the draw call.
 //! - [`contributors`]: per pixel, the drawn leaves its colour is made of, read from the passes the
 //!   resolves read (`Stream::contributors`).
+//! - `counters`: call counts of the depth read along curves, in a build with the `counters`
+//!   feature only.
 //! - [`probes`]: the class probes, the parity kit's fixtures (`parity/probes.rs`).
 //!
 //! The core's output may not depend on the machine: no runtime CPU-feature dispatch, no fused
 //! multiply-add, transcendental functions from the pure-Rust `libm` crate (`clippy.toml` enforces
 //! the last two), and every pixel's result a function of its own fragments only.
 
+/// Adds `n` (one if not given) to the count `counters::$name`, or with `most` raises it to `n`, in
+/// a build with the `counters` feature; nothing otherwise.
+macro_rules! count {
+    ($name:ident) => {
+        count!($name, 1)
+    };
+    ($name:ident, $n:expr) => {
+        #[cfg(feature = "counters")]
+        crate::counters::add(&crate::counters::$name, $n);
+    };
+    (most $name:ident, $n:expr) => {
+        #[cfg(feature = "counters")]
+        crate::counters::most(&crate::counters::$name, $n);
+    };
+}
+
 pub mod boxes;
 pub mod composite;
 pub mod contributors;
+#[cfg(feature = "counters")]
+pub mod counters;
 pub mod depth;
 pub mod geometry;
 pub mod gradient;

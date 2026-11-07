@@ -1459,6 +1459,8 @@ impl Paths {
 impl CurveDepth {
     /// The segments whose bounds hold pixel `(x, y)`'s centre, into `near`.
     fn near(&self, x: u32, y: u32, near: &mut Vec<u32>) {
+        count!(NEAR);
+        count!(BOUNDS_TESTED, self.bounds.len());
         let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
         near.clear();
         near.extend(
