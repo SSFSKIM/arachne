@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Arachne scene error",
+  "description": "What executing a scene raised, explained: the error's class and message as raised, the scene file's line, the scene clock's time, the last frames of the scene's own code, where inside the engine it was raised, what to write instead, and the report that says it all. A field added is a minor version, a field changed or removed a major one.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "cls",
+    "message",
+    "path",
+    "line",
+    "t",
+    "t_exact",
+    "frames",
+    "raised_in",
+    "hints",
+    "report"
+  ],
+  "properties": {
+    "schema_version": {"$ref": "#/$defs/schema_version"},
+    "cls": {"description": "The error's class name.", "type": "string"},
+    "message": {"description": "The error's message.", "type": "string"},
+    "path": {"description": "The scene file, as it was opened.", "type": "string"},
+    "line": {
+      "description": "The innermost line of the scene file the error went through.",
+      "$ref": "#/$defs/line"
+    },
+    "t": {
+      "description": "The scene clock's time when it was raised; null before the scene started.",
+      "type": ["number", "null"]
+    },
+    "t_exact": {"$ref": "#/$defs/exact_or_null"},
+    "frames": {
+      "description": "The last frames of the scene's own code, innermost last.",
+      "type": "array",
+      "items": {"$ref": "#/$defs/trace_frame"}
+    },
+    "raised_in": {
+      "description": "The innermost engine frame, when the engine raised it.",
+      "anyOf": [{"$ref": "#/$defs/trace_frame"}, {"type": "null"}]
+    },
+    "hints": {
+      "description": "What to write instead.",
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "report": {
+      "description": "The error as it went through the scene's code: its time, its frames there, where the engine raised it, the error and the hints, as text.",
+      "type": "string"
+    }
+  },
+  "$defs": {
+    "schema_version": {"const": "1.0"},
+    "exact_or_null": {
+      "type": ["string", "null"],
+      "pattern": "^-?[0-9]+/[0-9]+$"
+    },
+    "line": {"type": ["integer", "null"], "minimum": 1},
+    "trace_frame": {
+      "description": "A frame of the traceback: its file (relative to the scene file's directory when inside it; arachne/... inside the engine), line, function and the line's code.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "line", "function", "code"],
+      "properties": {
+        "path": {"type": "string"},
+        "line": {"type": "integer", "minimum": 1},
+        "function": {"type": "string"},
+        "code": {"type": ["string", "null"]}
+      }
+    }
+  }
+}
