@@ -1,0 +1,224 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Arachne render",
+  "description": "A render or a clip written: the media file, the plays its execution played, and where that execution differs from the execution summary of the session's latest lint, when it does. A field added is a minor version, a field changed or removed a major one.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "path",
+    "timeline"
+  ],
+  "properties": {
+    "schema_version": {
+      "$ref": "#/$defs/schema_version"
+    },
+    "path": {
+      "description": "The media file written.",
+      "type": "string"
+    },
+    "timeline": {
+      "description": "Every play and wait the render's execution played, by index: those its media file leaves out are skipped.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/play"
+      }
+    },
+    "divergence": {
+      "$ref": "#/$defs/divergence"
+    }
+  },
+  "$defs": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "time": {
+      "description": "Seconds of scene time.",
+      "type": "number"
+    },
+    "exact": {
+      "description": "An exact instant or rate, the rational \"n/d\".",
+      "type": "string",
+      "pattern": "^-?[0-9]+/[0-9]+$"
+    },
+    "line": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1
+    },
+    "source": {
+      "description": "The path:line of the scene's code, its path relative to the scene file's directory when inside it.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "marker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "t",
+        "t_exact",
+        "data",
+        "source_line",
+        "source"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "section",
+            "subcaption",
+            "sound",
+            "mark",
+            "wait_until"
+          ]
+        },
+        "t": {
+          "$ref": "#/$defs/time"
+        },
+        "t_exact": {
+          "$ref": "#/$defs/exact"
+        },
+        "data": {
+          "type": "object"
+        },
+        "source_line": {
+          "$ref": "#/$defs/line"
+        },
+        "source": {
+          "$ref": "#/$defs/source"
+        }
+      }
+    },
+    "play": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "index",
+        "kind",
+        "route",
+        "start",
+        "start_exact",
+        "end",
+        "end_exact",
+        "requested_end",
+        "requested_end_exact",
+        "held",
+        "skipped",
+        "source_line",
+        "source",
+        "animations",
+        "markers"
+      ],
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "kind": {
+          "enum": [
+            "play",
+            "wait"
+          ]
+        },
+        "route": {
+          "type": "string"
+        },
+        "start": {
+          "$ref": "#/$defs/time"
+        },
+        "start_exact": {
+          "$ref": "#/$defs/exact"
+        },
+        "end": {
+          "$ref": "#/$defs/time"
+        },
+        "end_exact": {
+          "$ref": "#/$defs/exact"
+        },
+        "requested_end": {
+          "description": "Where it would have ended had no stop condition ended it first.",
+          "$ref": "#/$defs/time"
+        },
+        "requested_end_exact": {
+          "$ref": "#/$defs/exact"
+        },
+        "held": {
+          "type": "boolean"
+        },
+        "skipped": {
+          "description": "Whether its frames were left out of the render; it was executed all the same.",
+          "type": "boolean"
+        },
+        "source_line": {
+          "$ref": "#/$defs/line"
+        },
+        "source": {
+          "$ref": "#/$defs/source"
+        },
+        "animations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "markers": {
+          "description": "The markers placed in [start, end).",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/marker"
+          }
+        }
+      }
+    },
+    "divergence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "kind",
+        "play",
+        "source_line",
+        "source",
+        "reason",
+        "changed_inputs"
+      ],
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "execution",
+            "probe"
+          ]
+        },
+        "play": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "source_line": {
+          "$ref": "#/$defs/line"
+        },
+        "source": {
+          "$ref": "#/$defs/source"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "changed_inputs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "description": "Where the render's execution differs from the execution summary it was checked against."
+    }
+  }
+}
