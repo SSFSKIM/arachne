@@ -1,6 +1,6 @@
 """``arachne session render`` and ``arachne session clip``: a scene's
-plays rendered through its session, checked against the session's latest
-lint.
+plays rendered through its session, checked against the summary of the
+session's execution.
 
 A written file is an answer, whether its render was checked or not: the
 command exits 0, and with ``--strict`` 1 when the render was unchecked or
@@ -110,7 +110,7 @@ def render(
     strict: bool,
 ) -> None:
     """Render SCENE of FILE through its session, every play or those
-    --plays names, checked against the session's latest lint.
+    --plays names, checked against the summary of the session's execution.
     """
 
     def params(opened: dict[str, Any]) -> dict[str, Any]:
@@ -163,7 +163,7 @@ def clip(
     strict: bool,
 ) -> None:
     """Render the plays of SCENE in FILE that meet T0 to T1, through its
-    session, checked against the session's latest lint.
+    session, checked against the summary of the session's execution.
     """
     answer = ask(
         file,
