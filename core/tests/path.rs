@@ -11,6 +11,7 @@ use arachne_core::composite::{SAMPLES, area_coverage, blend, premultiply, sample
 use arachne_core::depth::{Planarity, WorldPlane};
 use arachne_core::project::{FrameMap, Placement, Projection, pre_display, subpixel_coords};
 use arachne_core::scanline;
+use arachne_core::shade::ce_face_stops;
 use arachne_core::stream::{DrawError, Stream};
 use arachne_core::xf::*;
 use common::meshes::{area_in_pixel, pixels_inside};
@@ -2079,4 +2080,84 @@ fn two_meshes_on_one_plane_from_different_records_tie_by_draw_order() {
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// A straight line from `a` to `b` of `n` cubics, in CE's layout.
+fn segmented(a: [f64; 3], b: [f64; 3], n: usize) -> Vec<[f64; 3]> {
+    let at = |t: f64| std::array::from_fn(|k| a[k] + (b[k] - a[k]) * t);
+    let knots: Vec<[f64; 3]> = (0..=n).map(|i| at(i as f64 / n as f64)).collect();
+    lines(&knots)
+}
+
+/// A shaded line in space through `points`, stroked with two rows (as a sheen gives them), its
+/// gradient's ends `ends` as its mobject gave them, if it did.
+fn shaded_line(
+    points: &[[f64; 3]],
+    ends: Option<[[f64; 3]; 2]>,
+    rows: [[f64; 4]; 2],
+) -> (Shape, Record) {
+    let shape = path(points.to_vec());
+    let mut r = stroke(1, &shape, rows[0], 12.0);
+    r.depth.space = Space::World;
+    r.depth.shade_in_3d = true;
+    r.paint.stroke = Paint::Two(rows);
+    r.paint.gradient = ends;
+    (shape, r)
+}
+
+/// The same line unshaded, stroked with the two stops CE's lighting makes of `rows` under `view`,
+/// its gradient between `ends`.
+fn lit_by_hand(
+    view: &View,
+    points: &[[f64; 3]],
+    ends: [[f64; 3]; 2],
+    rows: [[f64; 4]; 2],
+) -> (Shape, Record) {
+    let Camera::ThreeD(c) = &view.camera else {
+        unreachable!("a 3D view")
+    };
+    let (shape, mut r) = shaded_line(points, Some(ends), rows);
+    r.depth.shade_in_3d = false;
+    r.paint.stroke = Paint::Two(ce_face_stops(points, &rows, c.light_source));
+    (shape, r)
+}
+
+#[test]
+fn a_shaded_path_s_gradient_runs_between_its_recorded_ends_else_between_its_corners() {
+    // CE lays a shaded path's two lit stops as a gradient between the ends its mobject gives
+    // (`get_gradient_start_and_end_points`): its start and end corners, unless it gives others,
+    // as ThreeDAxes gives every piece of an axis the axis's own ends.
+    let view = three_d_view(W, H);
+    let rows = [[0.2, 0.5, 0.9, 1.0], [0.9, 0.95, 1.0, 1.0]];
+    let (a, b) = ([-2.0, -1.0, -0.5], [2.0, 1.0, 0.5]);
+
+    // One cubic: both its lit corners are its first point, so only ends of its own lay a ramp.
+    let piece = segmented(a, b, 1);
+    let given = draw(view.clone(), &[shaded_line(&piece, Some([a, b]), rows)]);
+    assert_eq!(
+        given,
+        draw(view.clone(), &[lit_by_hand(&view, &piece, [a, b], rows)]),
+        "a shaded path is not drawn between the ends its mobject gives"
+    );
+    assert_ne!(
+        given,
+        draw(view.clone(), &[shaded_line(&piece, None, rows)]),
+        "the ends given made no difference to the drawing"
+    );
+
+    // Twenty cubics and no ends recorded: its gradient runs between its lit corners, as it does
+    // when they are recorded as its ends (a shaded mobject's own).
+    let line = segmented(a, b, 20);
+    let corners = [line[0], line[(line.len() - 1) / 6 * 3]];
+    let unrecorded = draw(view.clone(), &[shaded_line(&line, None, rows)]);
+    assert_eq!(
+        unrecorded,
+        draw(view.clone(), &[lit_by_hand(&view, &line, corners, rows)]),
+        "a shaded path with no ends recorded is not drawn between its corners"
+    );
+    assert_eq!(
+        unrecorded,
+        draw(view.clone(), &[shaded_line(&line, Some(corners), rows)]),
+        "a shaded path's own corners recorded as its ends draw otherwise than none"
+    );
 }
