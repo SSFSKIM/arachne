@@ -10,6 +10,9 @@ reads both to say what a scene should write.
 
 Removed configuration options are not here: setting one raises with its
 replacement already (``arachne._config.utils.REMOVED_OPTIONS``).
+
+:func:`no_setter` is the message of a call CE accepted and Arachne refuses:
+a ``set_<x>`` that names no method, for an ``x`` the mobject lacks.
 """
 
 from __future__ import annotations
@@ -22,8 +25,10 @@ __all__ = [
     "Break",
     "Removal",
     "Renamed",
+    "no_setter",
 ]
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 
@@ -125,3 +130,23 @@ RENAMED: dict[str, Renamed] = {
         "an updater: mobject.add_updater(function)", ("Mobject.add_updater",)
     ),
 }
+
+
+def no_setter(owner: str, method: str, nearest: Sequence[str]) -> str:
+    """The error for ``method``, a ``set_<x>`` that a mobject of class
+    ``owner`` has no method of and no attribute ``x`` for; ``nearest`` are
+    the setters nearest it that work.
+
+    Deliberate break 9 (a misspelt synthesised setter raises), approved
+    2026-11-07: CE's compatibility setter set a new attribute ``x``, so a
+    typo changed nothing on screen and raised nothing.
+    """
+    name = method[len("set_") :]
+    message = (
+        f"{owner} has no method {method!r}, and no attribute {name!r} for it to set"
+    )
+    message += f": did you mean {' or '.join(nearest)}?" if nearest else "."
+    return (
+        f"{message} To give the mobject an attribute of its own, assign it: "
+        f"mob.{name} = value."
+    )

@@ -127,6 +127,25 @@ def test_a_misspelt_method_names_the_nearest(tmp_path):
     assert error.hints == ("did you mean shift?",)
 
 
+def test_a_misspelt_setter_names_the_nearest(tmp_path):
+    path = write(
+        tmp_path,
+        """
+        from arachne import *
+
+        class S(Scene):
+            def construct(self):
+                Circle().set_colr(RED)  # @typo
+        """,
+    )
+    error = explained(path)
+    assert error.cls == "AttributeError"
+    assert error.line == line_of(path, "typo")
+    # Deliberate break 9: the error itself names the fix, so no hint repeats it.
+    assert "did you mean set_color" in error.message
+    assert error.hints == ()
+
+
 def test_a_misspelt_name_names_the_nearest_in_the_scene_s_namespace(tmp_path):
     path = write(
         tmp_path,
