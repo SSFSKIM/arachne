@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Arachne key frames",
+  "description": "The picture each play or wait ends on: the key frames written, in play order, the plays with none and why, and the findings of frames the painter refused. A field added is a minor version, a field changed or removed a major one.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "frames", "unshown", "findings"],
+  "properties": {
+    "schema_version": {"$ref": "#/$defs/schema_version"},
+    "frames": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "play",
+          "kind",
+          "t",
+          "t_exact",
+          "source_line",
+          "source",
+          "answer",
+          "path"
+        ],
+        "properties": {
+          "play": {"type": "integer", "minimum": 0},
+          "kind": {"enum": ["play", "wait"]},
+          "t": {"description": "The frame's time.", "$ref": "#/$defs/time"},
+          "t_exact": {"$ref": "#/$defs/exact"},
+          "source_line": {"$ref": "#/$defs/line"},
+          "source": {"$ref": "#/$defs/source"},
+          "answer": {"enum": ["recorded", "forward"]},
+          "path": {"description": "The PNG written.", "type": ["string", "null"]}
+        }
+      }
+    },
+    "unshown": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["play", "kind", "source_line", "source", "reason"],
+        "properties": {
+          "play": {"type": "integer", "minimum": 0},
+          "kind": {"enum": ["play", "wait"]},
+          "source_line": {"$ref": "#/$defs/line"},
+          "source": {"$ref": "#/$defs/source"},
+          "reason": {"type": "string"}
+        }
+      }
+    },
+    "findings": {"type": "array", "items": {"$ref": "#/$defs/violation"}}
+  },
+  "$defs": {
+    "schema_version": {"const": "1.0"},
+    "time": {"description": "Seconds of scene time.", "type": "number"},
+    "exact": {
+      "description": "An exact instant or rate, the rational \"n/d\".",
+      "type": "string",
+      "pattern": "^-?[0-9]+/[0-9]+$"
+    },
+    "line": {"type": ["integer", "null"], "minimum": 1},
+    "source": {
+      "description": "The path:line of the scene's code, its path relative to the scene file's directory when inside it.",
+      "type": ["string", "null"]
+    },
+    "box_or_null": {
+      "description": "[x_min, y_min, x_max, y_max], or null.",
+      "type": ["array", "null"],
+      "items": {"type": "number"},
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "finding_object": {
+      "description": "An object a finding is about: bbox in scene units, screen_bbox in pixels of the session's resolution from the top-left corner, y down.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "source_line",
+        "kind",
+        "label_or_text",
+        "name",
+        "bbox",
+        "screen_bbox"
+      ],
+      "properties": {
+        "id": {"type": "string"},
+        "source_line": {"$ref": "#/$defs/line"},
+        "kind": {"type": "string"},
+        "label_or_text": {"type": ["string", "null"]},
+        "name": {"type": ["string", "null"]},
+        "bbox": {"$ref": "#/$defs/box_or_null"},
+        "screen_bbox": {"$ref": "#/$defs/box_or_null"}
+      }
+    },
+    "violation": {
+      "description": "A finding, as a report gives it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "class",
+        "severity",
+        "held",
+        "t_start",
+        "t_end",
+        "objects",
+        "message",
+        "fix",
+        "line"
+      ],
+      "properties": {
+        "code": {"type": "string"},
+        "class": {"type": "string"},
+        "severity": {"enum": ["error", "warning", "note"]},
+        "held": {"type": "boolean"},
+        "t_start": {"type": ["number", "null"]},
+        "t_end": {"type": ["number", "null"]},
+        "objects": {"type": "array", "items": {"$ref": "#/$defs/finding_object"}},
+        "message": {"type": "string"},
+        "fix": {"type": "string"},
+        "line": {
+          "description": "The scene line running when it was found.",
+          "$ref": "#/$defs/line"
+        },
+        "detail": {
+          "description": "The code's own fields; folded counts the look-alikes folded into it.",
+          "type": "object"
+        }
+      }
+    }
+  }
+}

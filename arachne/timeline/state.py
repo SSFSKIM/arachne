@@ -5,13 +5,18 @@ from __future__ import annotations
 __all__ = ["NodeView", "State", "build_state"]
 
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from fractions import Fraction
 from typing import TYPE_CHECKING
 
 import numpy as np
 
-from arachne.camera.projection import home_box, render_mapping_centre, view_of
+from arachne.camera.projection import (
+    home_box,
+    pixel_box,
+    render_mapping_centre,
+    view_of,
+)
 
 from .draw import Drawing, camera_nodes
 from .record import NodeState
@@ -33,6 +38,12 @@ class NodeView:
     y up (:mod:`arachne.camera.projection`). They are scene units under a
     camera that never moves, follow the view under a MovingCamera, and are
     projected under a ThreeDCamera. ``None`` when the family has no points.
+
+    The same points give ``scene_box``, in scene units whatever the camera
+    does, and ``screen_box``, in pixels of the picture the scene was
+    executed at (from the top-left corner, y down) whatever size the camera
+    last drew at. ``scene_line`` is the line of the scene file that made it
+    (:attr:`.Origin.scene_line`).
     """
 
     id: str
@@ -44,6 +55,9 @@ class NodeView:
     color: str | None
     text: str | None
     children: tuple[str, ...]
+    scene_line: int | None = None
+    scene_box: tuple[float, float, float, float] | None = None
+    screen_box: tuple[float, float, float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -118,12 +132,17 @@ def build_state(
             prepare(drawing)
         # Paths map around the centre the render froze; where it froze none,
         # a first draw here would freeze the centre the capture holds.
+        timeline = record._scene._arachne_timeline
         view = view_of(
             camera,
             mapping_centre=frozen if frozen is not None else camera.frame_center,
-            home=record._scene._arachne_timeline.home,
-            configured_pixels=record._scene._arachne_timeline.configured_pixels,
+            home=timeline.home,
+            configured_pixels=timeline.configured_pixels,
         )
+        # Pixel boxes at the size the scene was executed at: a frame drawn at
+        # another quality resizes the camera, not the session's picture.
+        width, height = timeline.configured_pixels
+        screen = replace(view, pixel_width=width, pixel_height=height)
         if prepare is None:
 
             def state_of(mob: Mobject) -> NodeState | None:
@@ -155,6 +174,9 @@ def build_state(
                     color=_color(mob),
                     text=_text(mob),
                     children=children,
+                    scene_line=origin.scene_line,
+                    scene_box=_scene_box(mob),
+                    screen_box=pixel_box(camera, screen, mob),
                 )
             )
         roots = tuple(
@@ -220,6 +242,18 @@ def _visible_ids(
         if state is not None:
             keep(mob, state, seen)
     return visible
+
+
+def _scene_box(mob: Mobject) -> tuple[float, float, float, float] | None:
+    """The box of ``mob``'s family's points in scene units, unprojected;
+    ``None`` when they have none.
+    """
+    members = mob.family_members_with_points()
+    if not members:
+        return None
+    points = np.concatenate([member.points[:, :2] for member in members])
+    low, high = points.min(axis=0), points.max(axis=0)
+    return (float(low[0]), float(low[1]), float(high[0]), float(high[1]))
 
 
 def _transparent(mob: Mobject) -> bool:
