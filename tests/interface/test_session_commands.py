@@ -930,7 +930,8 @@ def test_session_render_divergence_is_shown_and_strict_exits_1(tmp_path, mode):
     path = _write(tmp_path, "scattered.py", SCATTERED)
     session = _session_args(mode, tmp_path)
     assert _invoke("lint", str(path), "Scattered", *session).exit_code == 0
-    # Plant, as the lint's summary, an execution under another seed.
+    # Plant, as the summary kept of the session's execution, one under
+    # another seed.
     planted = Session.open(
         path,
         "Scattered",
@@ -961,9 +962,9 @@ def test_session_render_once_and_the_server_answer_alike(tmp_path, command, lint
     path = _write(tmp_path, "clipped.py", CLIPPED)
     out = tmp_path / f"{command}.mp4"
     span = ["--t0", "1.2", "--t1", "1.8"] if command == "clip" else []
-    # Each mode checks against the summary in the store both share: the latest
-    # lint's, or, with none, the one the first mode's execution kept, which
-    # the second mode's session, opened from the store, is checked against.
+    # Each mode checks against the summary of the session's execution, kept
+    # in the store both share: linted or not, the second mode's session,
+    # opened from the store, is checked as the first's executed one is.
     if linted:
         session = _session_args("server", tmp_path)
         found = _invoke("lint", str(path), "Clipped", *session)
@@ -1052,8 +1053,12 @@ EXPIRES_BEFORE_ANSWERING = """\
     from arachne.cli import client
     from arachne.server.protocol import INVALID_PARAMS, RpcError
 
+    # The standard output the request is asked from: the request itself runs
+    # with it redirected, so the expiry prints to it as the command's does.
+    stdout = sys.stdout
+
     def expired(error):
-        print("expired", error["code"], flush=True)
+        print("expired", error["code"], file=stdout, flush=True)
         time.sleep(0.5)
 
     here = client.InProcess(expired)
