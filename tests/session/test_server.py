@@ -804,24 +804,35 @@ def test_an_answer_that_is_no_json_is_an_internal_error_with_no_bad_id():
     assert sent["error"]["data"]["type"] == "ValueError"
 
 
+def test_a_line_too_deep_to_read_is_no_json(monkeypatch):
+    def too_deep(*args: Any, **kwargs: Any) -> Any:
+        raise RecursionError("maximum recursion depth exceeded while decoding")
+
+    monkeypatch.setattr(protocol.json, "loads", too_deep)
+    with pytest.raises(protocol.RpcError) as info:
+        protocol.parse(b'{"jsonrpc": "2.0", "id": 1, "method": "ping"}')
+    assert info.value.code == protocol.PARSE_ERROR
+
+
 @pytest.mark.parametrize("transport", TRANSPORTS)
 def test_malformed_lines_are_answered_and_the_server_goes_on(serve, transport):
     server = serve(transport)
     depth = 100_000
-    for line, code in [
-        ("[" * depth + "]" * depth, protocol.PARSE_ERROR),
-        (
-            '{"jsonrpc": "2.0", "id": 1, "method": "ping", "x": NaN}',
-            protocol.PARSE_ERROR,
-        ),
-        ('{"jsonrpc": "2.0", "id": Infinity, "method": "ping"}', protocol.PARSE_ERROR),
-        ('{"jsonrpc": "2.0", "id": 1e999, "method": "ping"}', protocol.INVALID_REQUEST),
-        (b'{"jsonrpc": "2.0", "id": 1, "method": "\xff"}', protocol.PARSE_ERROR),
+    parse, invalid = protocol.PARSE_ERROR, protocol.INVALID_REQUEST
+    for line, codes in [
+        # Too deep for the decoder on some interpreters (3.12, 3.13), a list
+        # that is no request on others (3.14): an error either way.
+        ("[" * depth + "]" * depth, {parse, invalid}),
+        ('{"jsonrpc": "2.0", "id": 1, "method": "ping", "x": NaN}', {parse}),
+        ('{"jsonrpc": "2.0", "id": Infinity, "method": "ping"}', {parse}),
+        ('{"jsonrpc": "2.0", "id": 1e999, "method": "ping"}', {invalid}),
+        (b'{"jsonrpc": "2.0", "id": 1, "method": "\xff"}', {parse}),
     ]:
         server.send(line)
         response = server.receive()
         assert response is not None, server.stderr()
-        assert (response["id"], response["error"]["code"]) == (None, code), line[:40]
+        assert response["id"] is None, line[:40]
+        assert response["error"]["code"] in codes, line[:40]
         assert server.result("ping") == {"generation": None}
     huge = "1" + "0" * 400
     for deadline in (huge, "1e20", "-0.0"):
