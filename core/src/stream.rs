@@ -1679,6 +1679,530 @@ mod tests {
         }
     }
 
+    fn dot3(u: [f64; 3], v: [f64; 3]) -> f64 {
+        u[0] * v[0] + u[1] * v[1] + u[2] * v[2]
+    }
+
+    fn cross3(u: [f64; 3], v: [f64; 3]) -> [f64; 3] {
+        [
+            u[1] * v[2] - u[2] * v[1],
+            u[2] * v[0] - u[0] * v[2],
+            u[0] * v[1] - u[1] * v[0],
+        ]
+    }
+
+    /// The projection of a probe view's 3D camera.
+    fn projection_of(view: &View) -> crate::project::Projection {
+        let Camera::ThreeD(c) = &view.camera else {
+            unreachable!("a probe view is 3D")
+        };
+        crate::project::Projection::new(c, view.frame_center)
+    }
+
+    /// The cubic arc of the circle about `centre` from `a` to `b` (both on it, less than half a
+    /// turn apart), its handles along the tangents, `4/3 tan(angle / 4)` of the radius long.
+    fn arc(centre: [f64; 3], a: [f64; 3], b: [f64; 3]) -> [[f64; 3]; 4] {
+        let (ra, rb): ([f64; 3], [f64; 3]) = (
+            std::array::from_fn(|k| a[k] - centre[k]),
+            std::array::from_fn(|k| b[k] - centre[k]),
+        );
+        let r2 = dot3(ra, ra);
+        let m = cross3(ra, rb);
+        let m = m.map(|v| v / dot3(m, m).sqrt());
+        let angle = libm::acos((dot3(ra, rb) / r2).clamp(-1.0, 1.0));
+        let k = 4.0 / 3.0 * libm::tan(angle / 4.0);
+        // The tangents, as long as the radius, in the direction of travel.
+        let (ta, tb) = (cross3(m, ra), cross3(m, rb));
+        [
+            a,
+            std::array::from_fn(|i| a[i] + k * ta[i]),
+            std::array::from_fn(|i| b[i] - k * tb[i]),
+            b,
+        ]
+    }
+
+    /// The point of the unit sphere at longitude `lon` and latitude `lat` (radians).
+    fn on_sphere(lon: f64, lat: f64) -> [f64; 3] {
+        [
+            libm::cos(lat) * libm::cos(lon),
+            libm::cos(lat) * libm::sin(lon),
+            libm::sin(lat),
+        ]
+    }
+
+    /// The patch of the unit sphere `half_lon` either side of longitude `lon` and `half_lat`
+    /// either side of latitude `lat` (radians), as a surface's face is drawn: its outline as four
+    /// cubic arcs, along a parallel, a meridian, a parallel and a meridian.
+    fn sphere_patch(lon: f64, lat: f64, half_lon: f64, half_lat: f64) -> Vec<[f64; 3]> {
+        let (w, e, s, n) = (
+            lon - half_lon,
+            lon + half_lon,
+            lat - half_lat,
+            lat + half_lat,
+        );
+        let parallel = |la: f64| [0.0, 0.0, libm::sin(la)];
+        [
+            arc(parallel(s), on_sphere(w, s), on_sphere(e, s)),
+            arc([0.0; 3], on_sphere(e, s), on_sphere(e, n)),
+            arc(parallel(n), on_sphere(e, n), on_sphere(w, n)),
+            arc([0.0; 3], on_sphere(w, n), on_sphere(w, s)),
+        ]
+        .concat()
+    }
+
+    /// The exact range over `0..=1` of the cubic Bernstein polynomial with coefficients `c`.
+    fn cubic_range(c: [f64; 4]) -> (f64, f64) {
+        let at = |t: f64| {
+            let u = 1.0 - t;
+            u * u * u * c[0] + 3.0 * u * u * t * c[1] + 3.0 * u * t * t * c[2] + t * t * t * c[3]
+        };
+        // Its derivative over 3: (d0 - 2 d1 + d2) t^2 + 2 (d1 - d0) t + d0.
+        let (d0, d1, d2) = (c[1] - c[0], c[2] - c[1], c[3] - c[2]);
+        let (qa, qb, qc) = (d0 - 2.0 * d1 + d2, 2.0 * (d1 - d0), d0);
+        let mut ts = vec![0.0, 1.0];
+        if qa != 0.0 {
+            let disc = qb * qb - 4.0 * qa * qc;
+            if disc >= 0.0 {
+                ts.extend([
+                    (-qb + disc.sqrt()) / (2.0 * qa),
+                    (-qb - disc.sqrt()) / (2.0 * qa),
+                ]);
+            }
+        } else if qb != 0.0 {
+            ts.push(-qc / qb);
+        }
+        ts.into_iter()
+            .filter(|t| (0.0..=1.0).contains(t))
+            .map(at)
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
+                (lo.min(v), hi.max(v))
+            })
+    }
+
+    /// The range of `value` along an outline of cubics, each taken as the cubic through its
+    /// control points' values: exact for a value affine in the point (a depth in the camera's
+    /// axes), and the depth key along the outline as the core keys a curve (`path::curve_depth`).
+    fn outline_range(outline: &[[f64; 3]], value: impl Fn([f64; 3]) -> f64) -> (f64, f64) {
+        outline
+            .chunks(4)
+            .map(|c| cubic_range(std::array::from_fn(|k| value(c[k]))))
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), (a, b)| {
+                (lo.min(a), hi.max(b))
+            })
+    }
+
+    /// The range of depth keys along `outline` in `view`.
+    fn outline_keys(view: &View, outline: &[[f64; 3]]) -> (f64, f64) {
+        let p = projection_of(view);
+        outline_range(outline, |q| -p.factor(p.project(q)[2]))
+    }
+
+    /// The range of depths in the camera's axes (larger is nearer) along `outline` in `view`.
+    fn outline_depths(view: &View, outline: &[[f64; 3]]) -> (f64, f64) {
+        let p = projection_of(view);
+        outline_range(outline, |q| p.project(q)[2])
+    }
+
+    /// A square facing the camera at depth `z` in its axes, `half` across each way of its centre
+    /// on the sight line through world point `through`.
+    fn facing_square(view: &View, through: [f64; 3], z: f64, half: f64) -> Vec<[f64; 3]> {
+        let p = projection_of(view);
+        let Camera::ThreeD(c) = &view.camera else {
+            unreachable!("a probe view is 3D")
+        };
+        let d = c.focal_distance;
+        let q = p.unproject(p.project(through));
+        let scale = (d - z) / (d - q[2]);
+        let r = p.rotation();
+        let world = |a: [f64; 3]| -> [f64; 3] {
+            std::array::from_fn(|j| {
+                view.frame_center[j] + r[0][j] * a[0] + r[1][j] * a[1] + r[2][j] * a[2]
+            })
+        };
+        let (cx, cy) = (q[0] * scale, q[1] * scale);
+        ring(&[
+            world([cx - half, cy - half, z]),
+            world([cx + half, cy - half, z]),
+            world([cx + half, cy + half, z]),
+            world([cx - half, cy + half, z]),
+        ])
+    }
+
+    /// The angle between the unit sphere's normal at `n` and the sight line from `n` to the eye.
+    fn sight_angle(view: &View, n: [f64; 3]) -> f64 {
+        let p = projection_of(view);
+        let Camera::ThreeD(c) = &view.camera else {
+            unreachable!("a probe view is 3D")
+        };
+        let r = p.rotation();
+        let eye: [f64; 3] =
+            std::array::from_fn(|j| view.frame_center[j] + c.focal_distance * r[2][j]);
+        let s: [f64; 3] = std::array::from_fn(|j| eye[j] - n[j]);
+        libm::acos(dot3(n, s) / (dot3(n, n) * dot3(s, s)).sqrt())
+    }
+
+    /// The camera's direction (from the frame's centre toward the eye) as a longitude and latitude.
+    fn toward_camera(view: &View) -> (f64, f64) {
+        let v = projection_of(view).rotation()[2];
+        (libm::atan2(v[1], v[0]), libm::asin(v[2]))
+    }
+
+    /// The longitude at latitude `lat` where the unit sphere's normal stands `angle` from the
+    /// sight line, on the far side of the meridian facing the camera.
+    fn longitude_at_sight_angle(view: &View, lat: f64, angle: f64) -> f64 {
+        let (facing, _) = toward_camera(view);
+        let (mut lo, mut hi) = (facing, facing + std::f64::consts::PI);
+        for _ in 0..100 {
+            let mid = 0.5 * (lo + hi);
+            if sight_angle(view, on_sphere(mid, lat)) < angle {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        0.5 * (lo + hi)
+    }
+
+    /// A path record in world space of object `100 + slot`, filled with `rgba`, stroked `stroke`
+    /// wide when given, with the planarity `planes` decided for it when given.
+    fn face_record(
+        slot: u32,
+        rgba: [f64; 4],
+        stroke: Option<f64>,
+        planes: Option<crate::depth::Planarity>,
+    ) -> Record {
+        let mut r = Record::new(RecordKind::Path, slot, 100 + slot);
+        r.paint.fill = Paint::One(rgba);
+        r.depth.space = Space::World;
+        if let Some(width) = stroke {
+            r.paint.stroke = Paint::One([0.9, 0.9, 0.9, 1.0]);
+            r.paint.stroke_width = width;
+        }
+        r.planes = planes.map(|p| vec![p.code()]);
+        r
+    }
+
+    /// A stream of paths, each an outline and its record, drawn in their order.
+    fn paths_stream(view: View, items: Vec<(Vec<[f64; 3]>, Record)>) -> Stream {
+        let items: Vec<(Shape, Record)> = items
+            .into_iter()
+            .map(|(points, r)| {
+                let shape = Shape::new(ShapeData::Path { points });
+                let mut r = r;
+                r.geometry.shape_a = Some(shape.key());
+                (shape, r)
+            })
+            .collect();
+        let order: Vec<u32> = items.iter().map(|(_, r)| r.slot).collect();
+        let mut s = Stream::new();
+        s.apply(&crate::probes::first_delta(view, &items, &order))
+            .expect("the delta applies");
+        s
+    }
+
+    /// A key read beyond a range by more than its error bound: `(x, y, sub-sample, key, err)`.
+    type Beyond = (u32, u32, usize, f64, f64);
+
+    /// The keys of `object`'s fragments at the sub-samples they cover, its strokes on its own fill
+    /// as the resolve orders them: those beyond `(lo, hi)` by more than their error bound, and how
+    /// many keys were read.
+    // The sub-sample `k` indexes each fragment's coverage and depth rows.
+    #[allow(clippy::needless_range_loop)]
+    fn keys_beyond(s: &Stream, object: u32, (lo, hi): (f64, f64)) -> (Vec<Beyond>, usize) {
+        let (w, h) = {
+            let view = s.view.as_ref().expect("a view");
+            (view.pixel_width, view.pixel_height)
+        };
+        let (mut beyond, mut read) = (Vec::new(), 0);
+        s.visit_contributors(0, 0, w, h, |x, y, frags, cov, d, _| {
+            let mut d = d.to_vec();
+            composite::strokes_on_own_fills(frags, &mut d, |i| cov[i]);
+            for (i, f) in frags.iter().enumerate() {
+                if s.leaf_of(f).0 != object {
+                    continue;
+                }
+                for k in 0..composite::SAMPLES {
+                    if cov[i][k] == 0 {
+                        continue;
+                    }
+                    read += 1;
+                    let (key, err) = (d[i].samples[k], d[i].err);
+                    if key < lo - err || key > hi + err {
+                        beyond.push((x, y, k, key, err));
+                    }
+                }
+            }
+        })
+        .expect("the stream draws");
+        (beyond, read)
+    }
+
+    /// The worst of `beyond` (from [`keys_beyond`]) against `(lo, hi)`: how far past the range,
+    /// and its error bound.
+    fn worst_beyond(beyond: &[Beyond], (lo, hi): (f64, f64)) -> String {
+        beyond
+            .iter()
+            .max_by(|a, b| {
+                let past = |e: &Beyond| (lo - e.3).max(e.3 - hi);
+                past(a).total_cmp(&past(b))
+            })
+            .map(|(x, y, k, key, err)| {
+                format!(
+                    "{} keys beyond [{lo}, {hi}], the worst at ({x}, {y}) sub-sample {k}: key \
+                     {key}, {:e} past, err {err:e}",
+                    beyond.len(),
+                    (lo - key).max(key - hi)
+                )
+            })
+            .unwrap_or_default()
+    }
+
+    /// Of the sub-samples where leaves of objects `front` and `back` both lie, in the order the
+    /// resolve composites them: how many put a run of `back` above a run of `front`, and how many
+    /// there are.
+    fn above(s: &Stream, back: u32, front: u32) -> (usize, usize) {
+        let (w, h) = {
+            let view = s.view.as_ref().expect("a view");
+            (view.pixel_width, view.pixel_height)
+        };
+        let (mut wrong, mut both) = (0, 0);
+        for c in s
+            .contributors(0, 0, w, h)
+            .expect("the stream draws")
+            .values()
+        {
+            let leaf = |object: u32| c.leaves.iter().position(|l| l.object == object);
+            let (Some(f), Some(b)) = (leaf(front), leaf(back)) else {
+                continue;
+            };
+            for seq in &c.samples {
+                let runs = |leaf: usize| {
+                    seq.iter()
+                        .enumerate()
+                        .filter(move |(_, e)| e.0 == leaf)
+                        .map(|(at, _)| at)
+                };
+                let (Some(lowest_front), Some(highest_back)) = (runs(f).min(), runs(b).max())
+                else {
+                    continue;
+                };
+                both += 1;
+                if highest_back > lowest_front {
+                    wrong += 1;
+                }
+            }
+        }
+        (wrong, both)
+    }
+
+    /// A patch of the unit sphere 18 by 9 degrees, filled and stroked, whose normal stands 88.5
+    /// degrees from the sight line: a sliver whose plane nearest it (it lies on none) runs steeply
+    /// across the screen, so read off its middle the plane leaves the depths its outline spans.
+    /// Its key's bound holds that departure: every key of its fill and of its stroke on that fill
+    /// lies within its bound of its outline's keys, and an opaque square drawn after it, nearer
+    /// than every point of its outline by 0.1, is in front of it at every sub-sample (read as its
+    /// plane alone, its fill came 0.18 nearer than its outline).
+    #[test]
+    fn a_grazing_curved_face_keys_within_its_outline_s_depths() {
+        let view = crate::probes::view(854, 480, 80f64.to_radians(), 30f64.to_radians());
+        let lat = 0.0;
+        let lon = longitude_at_sight_angle(&view, lat, 88.5f64.to_radians());
+        let patch = sphere_patch(lon, lat, 9f64.to_radians(), 4.5f64.to_radians());
+        let (_, nearest) = outline_depths(&view, &patch);
+        let square = facing_square(&view, on_sphere(lon, lat), nearest + 0.1, 0.5);
+        let keys = outline_keys(&view, &patch);
+        let s = paths_stream(
+            view,
+            vec![
+                (
+                    patch,
+                    face_record(
+                        1,
+                        [0.2, 0.4, 0.8, 1.0],
+                        Some(0.5),
+                        Some(crate::depth::Planarity::Nearest),
+                    ),
+                ),
+                (square, face_record(2, [0.8, 0.2, 0.2, 1.0], None, None)),
+            ],
+        );
+        let (beyond, read) = keys_beyond(&s, 101, keys);
+        let (wrong, both) = above(&s, 101, 102);
+        assert!(read > 20, "{read} keys read");
+        assert!(
+            both > 20,
+            "{both} sub-samples hold the patch and the square"
+        );
+        assert!(
+            beyond.is_empty() && wrong == 0,
+            "{}; of {both} sub-samples, the patch above the square at {wrong}",
+            worst_beyond(&beyond, keys)
+        );
+    }
+
+    /// A face whose corners lie on the plane nearest it and whose sides bow out of that plane
+    /// between them, up and down in turn, seen at a slant: the far side bows toward the eye, so the
+    /// plane read under it lies beyond every depth of the outline. A bound found at the corners
+    /// alone is the plane's rounding; the key's bound holds the sides' departure between them, and
+    /// every key of the fill lies within it of the outline's keys.
+    #[test]
+    fn a_face_bowed_between_its_corners_keys_within_its_outline_s_depths() {
+        let view = crate::probes::view(320, 180, 60f64.to_radians(), -80f64.to_radians());
+        let corners = [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]];
+        let mut outline = Vec::new();
+        for i in 0..4 {
+            let (a, b) = (corners[i], corners[(i + 1) % 4]);
+            let z = if i % 2 == 0 { 0.5 } else { -0.5 };
+            let at = |t: f64| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+            let (h1, h2) = (at(0.25), at(0.75));
+            outline.extend([
+                [a[0], a[1], 0.0],
+                [h1[0], h1[1], z],
+                [h2[0], h2[1], z],
+                [b[0], b[1], 0.0],
+            ]);
+        }
+        let plane = crate::depth::WorldPlane::fit(&outline, crate::depth::Planarity::Nearest)
+            .expect("the nearest plane");
+        let off = |p: &[f64; 3]| (dot3(plane.normal, *p) - plane.offset).abs();
+        for (i, p) in outline.iter().enumerate() {
+            if i % 4 == 0 || i % 4 == 3 {
+                assert!(
+                    off(p) <= 1e-12,
+                    "corner {p:?} lies {:e} off the plane",
+                    off(p)
+                );
+            } else {
+                assert!(
+                    off(p) >= 0.4,
+                    "handle {p:?} lies {:e} off the plane",
+                    off(p)
+                );
+            }
+        }
+        let keys = outline_keys(&view, &outline);
+        let s = paths_stream(
+            view,
+            vec![(
+                outline,
+                face_record(
+                    1,
+                    [0.2, 0.4, 0.8, 1.0],
+                    None,
+                    Some(crate::depth::Planarity::Nearest),
+                ),
+            )],
+        );
+        let (beyond, read) = keys_beyond(&s, 101, keys);
+        assert!(read > 1000, "{read} keys read");
+        assert!(beyond.is_empty(), "{}", worst_beyond(&beyond, keys));
+    }
+
+    /// A face on one plane exactly, at a slant: its fill is keyed on its plane with the bound the
+    /// camera's key across that plane carries, bit for bit, wherever it is read.
+    #[test]
+    fn an_exactly_planar_face_keeps_its_plane_s_key_and_bound() {
+        let view = crate::probes::view(320, 180, 65f64.to_radians(), -40f64.to_radians());
+        let (w, h) = (view.pixel_width, view.pixel_height);
+        let outline = ring(&[[-1.0, -0.5, 0.2], [1.0, -0.8, -0.1], [0.2, 1.0, 0.3]]);
+        let p = projection_of(&view);
+        let map = crate::project::FrameMap::of_kind(&view, RecordKind::Path, w, h);
+        let plane = crate::depth::WorldPlane::fit(&outline, crate::depth::Planarity::Newell)
+            .expect("a plane");
+        // Where the lowering reads it: the outline's box on screen, a pixel's reach and a pixel
+        // beyond (a fill reaches no further than its antialiasing).
+        let shown =
+            crate::project::pre_display(&outline, Some(&p), crate::project::Placement::Projected);
+        let mut region = [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ];
+        for q in &shown {
+            let [x, y] = map.apply(*q);
+            region = [
+                region[0].min(x - 2.0),
+                region[1].min(y - 2.0),
+                region[2].max(x + 2.0),
+                region[3].max(y + 2.0),
+            ];
+        }
+        let expected = p
+            .key_plane(&plane, &map, outline[0], 0.0, region)
+            .expect("the plane keys");
+        let s = paths_stream(
+            view,
+            vec![(
+                outline,
+                face_record(
+                    1,
+                    [0.2, 0.4, 0.8, 1.0],
+                    None,
+                    Some(crate::depth::Planarity::Newell),
+                ),
+            )],
+        );
+        let mut read = 0;
+        s.visit_contributors(0, 0, w, h, |_, _, frags, _, _, _| {
+            for f in frags {
+                assert_eq!(f.depth, expected);
+                read += 1;
+            }
+        })
+        .expect("the stream draws");
+        assert!(read > 100, "{read} fragments");
+    }
+
+    /// A patch of the unit sphere 18 by 9 degrees, filled and stroked, seen face on, between an
+    /// opaque square drawn before it and 0.3 nearer than every point of its outline and one drawn
+    /// after it and 0.3 farther than every point: its departure from the plane nearest it is a
+    /// fraction of that, so depth orders the three at every sub-sample, against their draw order.
+    #[test]
+    fn a_curved_face_seen_face_on_keeps_a_strict_order_against_faces_clearly_before_and_behind() {
+        let view = crate::probes::view(854, 480, 70f64.to_radians(), -110f64.to_radians());
+        let (lon, lat) = toward_camera(&view);
+        let patch = sphere_patch(lon, lat, 9f64.to_radians(), 4.5f64.to_radians());
+        let (farthest, nearest) = outline_depths(&view, &patch);
+        let middle = on_sphere(lon, lat);
+        let front = facing_square(&view, middle, nearest + 0.3, 0.5);
+        let back = facing_square(&view, middle, farthest - 0.3, 0.5);
+        let s = paths_stream(
+            view,
+            vec![
+                (front, face_record(1, [0.8, 0.2, 0.2, 1.0], None, None)),
+                (
+                    patch,
+                    face_record(
+                        2,
+                        [0.2, 0.4, 0.8, 1.0],
+                        Some(0.5),
+                        Some(crate::depth::Planarity::Nearest),
+                    ),
+                ),
+                (back, face_record(3, [0.2, 0.8, 0.2, 1.0], None, None)),
+            ],
+        );
+        let (wrong, both) = above(&s, 102, 101);
+        assert!(
+            both > 1000,
+            "{both} sub-samples hold the patch and the square before it"
+        );
+        assert_eq!(
+            wrong, 0,
+            "of {both} sub-samples, the patch above the square before it at {wrong}"
+        );
+        let (wrong, both) = above(&s, 103, 102);
+        assert!(
+            both > 1000,
+            "{both} sub-samples hold the patch and the square behind it"
+        );
+        assert_eq!(
+            wrong, 0,
+            "of {both} sub-samples, the square behind the patch above it at {wrong}"
+        );
+    }
+
     /// Three wires along one line, drawn in turn: the first two the same, the third moved by
     /// 2^-51 in z, which moves its key by less than the keys' error bound. Over five frames whose
     /// camera angles step on the grid the engine keeps them to (2^-24), paint order decides them
