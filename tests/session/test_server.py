@@ -12,7 +12,9 @@ an answer is ``ARACHNE_TEST_SERVER_WAIT_S`` (60 s by default).
 
 from __future__ import annotations
 
+import contextlib
 import json
+import math
 import os
 import select
 import shutil
@@ -130,6 +132,79 @@ MANY = """\
 
 HOOK_SCENES = ROOT / "tests" / "timeline" / "hook_scenes.py"
 
+FORWARD_RAISES = """\
+    from pathlib import Path
+
+    from arachne import RIGHT, Dot, MappingCamera, Scene
+
+
+    class ForwardRaises(Scene):
+        \"\"\"A record that draws nothing, so each frame is a forward run's,
+        and a run that raises once a file beside it says so.\"\"\"
+
+        def __init__(self, **kwargs):
+            super().__init__(camera_class=MappingCamera, **kwargs)
+            self.renderer.camera.mapping_func = lambda p: p + 2 * RIGHT
+
+        def construct(self):
+            self.add(Dot())
+            self.wait(0.5)
+            if Path(__file__).with_name("raise-now").exists():
+                raise RuntimeError("raised in a forward run")  # @raise
+            self.wait(0.5)
+"""
+
+HOSTILE = """\
+    from arachne import Scene
+
+
+    class Hostile(Exception):
+        def __str__(self):
+            raise SystemExit("no message")
+
+        def add_note(self, note):
+            raise RuntimeError("no notes")
+
+
+    class RaisesHostile(Scene):
+        def construct(self):
+            self.wait(0.5)
+            raise Hostile()  # @raise
+"""
+
+ENGINE_RAISES = """\
+    from arachne import Scene
+
+
+    class PlaysNothing(Scene):
+        def construct(self):
+            self.play()  # @play
+"""
+
+FLOODS = """\
+    import os
+    import threading
+    import time
+
+    from arachne import Scene
+
+
+    def _flood():
+        time.sleep(2)
+        while True:
+            os.write(2, b"x" * 65536)
+
+
+    class Floods(Scene):
+        \"\"\"Output kept in the standard output's buffer until the process
+        ends, and, from 2 s on, a standard error that never empties.\"\"\"
+
+        def construct(self):
+            print("kept until the end")
+            threading.Thread(target=_flood, daemon=True).start()
+            self.wait(0.5)
+"""
+
 
 class _Lines:
     """Lines read from a file descriptor, waited for at most ``WAIT_S``."""
@@ -161,19 +236,37 @@ class Server:
     """A server process under test, and one connection to it."""
 
     def __init__(
-        self, transport: str, cwd: Path, env: dict[str, str], args: tuple[str, ...]
+        self,
+        transport: str,
+        cwd: Path,
+        env: dict[str, str],
+        args: tuple[str, ...],
+        *,
+        unread_stderr: bool = False,
     ) -> None:
         self.transport = transport
-        # Closed by end(), which every test's fixture calls.
-        self._stderr = tempfile.TemporaryFile()  # noqa: SIM115
+        self._socket: socket.socket | None = None
+        # Closed by end(), which every test's fixture calls. An unread pipe
+        # fills, as a parent that never reads it lets it.
+        self._stderr: Any = (
+            None if unread_stderr else tempfile.TemporaryFile()  # noqa: SIM115
+        )
         self.process = subprocess.Popen(
             [sys.executable, "-m", "arachne.server", f"--{transport}", *args],
             cwd=cwd,
             env={**os.environ, "PYTHONPATH": str(ROOT), **env},
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=self._stderr,
+            stderr=subprocess.PIPE if unread_stderr else self._stderr,
         )
+        try:
+            self._start()
+        except BaseException:
+            # Never a process left behind by a start that failed.
+            self.end()
+            raise
+
+    def _start(self) -> None:
         assert self.process.stdout is not None
         out = self.process.stdout.fileno()
         self._out = _Lines(out, lambda: os.read(out, 65536))
@@ -181,8 +274,7 @@ class Server:
         assert line is not None, self.stderr()
         self.ready = json.loads(line)
         self._ids = 0
-        self._socket: socket.socket | None = None
-        if transport == "socket":
+        if self.transport == "socket":
             self._socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             self._socket.connect(self.ready["params"]["socket"])
             connection = self._socket
@@ -191,9 +283,14 @@ class Server:
             self._in = self._out
 
     def send(self, message: Any) -> None:
-        """Send ``message``: a JSON value, or text sent as it is."""
-        text = message if isinstance(message, str) else json.dumps(message)
-        data = text.encode() + b"\n"
+        """Send ``message``: a JSON value, or text or bytes sent as they are,
+        each as a line.
+        """
+        if isinstance(message, bytes):
+            data = message + b"\n"
+        else:
+            text = message if isinstance(message, str) else json.dumps(message)
+            data = text.encode() + b"\n"
         if self._socket is not None:
             self._socket.sendall(data)
         else:
@@ -239,19 +336,26 @@ class Server:
         return self.process.wait(wait)
 
     def stderr(self) -> str:
+        if self._stderr is None:
+            return ""
         self._stderr.seek(0)
         return self._stderr.read().decode(errors="replace")
 
     def end(self) -> None:
+        """Kill the process if it still runs, reap it and close its streams;
+        once is enough.
+        """
         if self._socket is not None:
             self._socket.close()
         if self.process.poll() is None:
             self.process.send_signal(signal.SIGKILL)
         self.process.wait(WAIT_S)
-        for stream in (self.process.stdin, self.process.stdout):
+        for stream in (self.process.stdin, self.process.stdout, self.process.stderr):
             if stream is not None:
-                stream.close()
-        self._stderr.close()
+                with contextlib.suppress(OSError):
+                    stream.close()
+        if self._stderr is not None:
+            self._stderr.close()
 
 
 @pytest.fixture
@@ -259,6 +363,7 @@ def socket_dir() -> Iterator[Path]:
     """A directory for sockets, short enough for a socket's path."""
     found = Path(tempfile.mkdtemp(prefix="as-", dir="/tmp"))
     yield found
+    found.chmod(0o700)
     shutil.rmtree(found, ignore_errors=True)
 
 
@@ -267,10 +372,15 @@ def serve(tmp_path: Path, socket_dir: Path) -> Iterator[Any]:
     """Start servers, each ended after the test."""
     started: list[Server] = []
 
-    def start(transport: str = "stdio", *args: str, **env: str) -> Server:
+    def start(
+        transport: str = "stdio",
+        *args: str,
+        unread_stderr: bool = False,
+        **env: str,
+    ) -> Server:
         env = {"ARACHNE_SESSION_DIR": str(socket_dir), **env}
         env = {name: value for name, value in env.items() if value != ""}
-        found = Server(transport, tmp_path, env, args)
+        found = Server(transport, tmp_path, env, args, unread_stderr=unread_stderr)
         started.append(found)
         return found
 
@@ -473,8 +583,16 @@ def test_errors_of_the_protocol_and_refusals_keep_their_codes(serve, tmp_path):
         ("lint", {"at": "sometimes"}),
         ("lint", {"rules": [], "sample_fps": 8}),
         ("query", {"t": 0.5, "what": "bbox"}),
+        # Neither a ZeroDivisionError nor an unhashable rule is the server's.
+        ("state_at", {"t": "1/0"}),
+        ("state_at", {"t": "1e999"}),
+        ("lint", {"rules": [{}]}),
+        ("query", {"t": 0.5, "what": [{}]}),
+        ("lint", {"t_range": [1, 0.5]}),
+        ("lint", {"exempt": [{}]}),
     ]:
-        assert server.error(method, **params)["code"] == protocol.INVALID_PARAMS
+        error = server.error(method, **params)
+        assert error["code"] == protocol.INVALID_PARAMS, (method, params, error)
     assert server.result("ping") == {"generation": 1}
 
 
@@ -496,8 +614,18 @@ def test_a_raising_scene_answers_its_explained_error(serve, tmp_path):
     assert 'raise ValueError("no such value")' in found["report"]
     assert "ValueError: no such value" in found["report"]
     assert error["message"] == "ValueError: no such value"
+    assert (found["raised_by"], found["raised_in"]) == ("scene", None)
     # Nothing opened, and the server goes on.
     assert server.result("ping") == {"generation": None}
+
+    # Raised inside the engine, through the scene's code.
+    path = _write(tmp_path, "nothing.py", ENGINE_RAISES)
+    found = server.error("open", file=str(path), scene="PlaysNothing", config=SMALL)[
+        "data"
+    ]
+    assert (found["cls"], found["line"]) == ("ValueError", _line(path, "play"))
+    assert found["raised_by"] == "engine"
+    assert found["raised_in"]["path"].startswith("arachne/")
 
 
 def test_an_idle_server_ends_itself(serve):
@@ -510,25 +638,63 @@ def test_an_idle_server_ends_itself(serve):
 
 
 def test_a_watchdog_ends_only_what_overran_its_deadline():
-    fired: list[str] = []
+    fired: list[tuple[str, bool]] = []
     done = threading.Event()
 
-    def overran(name: str) -> Any:
-        def end() -> None:
-            fired.append(name)
+    def expired(name: str) -> Any:
+        def end(respond: bool) -> None:
+            fired.append((name, respond))
             done.set()
 
         return end
 
     watchdog = Watchdog()
-    watchdog.arm(0.05, overran("disarmed"))
-    watchdog.disarm()
-    watchdog.arm(5, overran("rearmed"))
-    watchdog.disarm()
-    watchdog.arm(0.05, overran("overran"))
+    ended = watchdog.arm(time.monotonic() + 0.05, expired("ended"))
+    watchdog.end(ended)
+    # Far past the longest wait a thread can make: waited out in parts, and
+    # the watchdog keeps the next deadline.
+    far = watchdog.arm(time.monotonic() + 1e20, expired("far"))
+    time.sleep(0.1)
+    watchdog.end(far)
+    moved = watchdog.arm(time.monotonic() + WAIT_S, expired("moved"))
+    watchdog.move(moved, time.monotonic() + 0.05)
     assert done.wait(WAIT_S)
     time.sleep(0.2)
-    assert fired == ["overran"]
+    assert fired == [("moved", True)]
+
+
+def test_a_request_ends_answered_or_expired_never_both():
+    watchdog = Watchdog()
+    calls: list[bool] = []
+    # Answered first: the expiry that comes after sends nothing.
+    ticket = watchdog.arm(time.monotonic() + WAIT_S, calls.append)
+    assert watchdog.answering(ticket)
+    watchdog.expire(ticket)
+    assert calls == [False]
+
+    # Expired first: the answer is the expiry's, and the request's is not.
+    inside, release = threading.Event(), threading.Event()
+
+    def expired(respond: bool) -> None:
+        calls.append(respond)
+        inside.set()
+        release.wait(WAIT_S)
+
+    ticket = watchdog.arm(time.monotonic() + WAIT_S, expired)
+    expiring = threading.Thread(target=watchdog.expire, args=(ticket,))
+    expiring.start()
+    assert inside.wait(WAIT_S)
+    assert not watchdog.answering(ticket)
+    release.set()
+    expiring.join(WAIT_S)
+    assert calls == [False, True]
+
+    # Ended: nothing expires it.
+    ticket = watchdog.arm(time.monotonic() + WAIT_S, calls.append)
+    assert watchdog.answering(ticket)
+    watchdog.end(ticket)
+    watchdog.expire(ticket)
+    assert calls == [False, True]
 
 
 @pytest.mark.parametrize("transport", TRANSPORTS)
@@ -621,3 +787,176 @@ def test_a_refusal_keeps_its_type_and_a_failure_is_internal(serve, tmp_path):
     assert data["traceback"].rstrip().endswith(f"{data['type']}: {data['message']}")
     assert data["traceback"].count('  File "') <= protocol.TRACEBACK_FRAMES
     assert server.result("ping") == {"generation": 1}
+
+
+def test_an_answer_that_is_no_json_is_an_internal_error_with_no_bad_id():
+    from arachne.server.serve import _encoded
+
+    sent = json.loads(_encoded({"jsonrpc": "2.0", "id": object(), "result": {}}))
+    assert sent["id"] is None
+    error = sent["error"]
+    assert error["code"] == protocol.INTERNAL_ERROR
+    assert error["data"]["type"] == "TypeError"
+    assert error["data"]["message"]
+    assert error["data"]["traceback"].startswith("Traceback")
+    sent = json.loads(_encoded({"jsonrpc": "2.0", "id": 4, "result": {"t": math.nan}}))
+    assert (sent["id"], sent["error"]["code"]) == (4, protocol.INTERNAL_ERROR)
+    assert sent["error"]["data"]["type"] == "ValueError"
+
+
+@pytest.mark.parametrize("transport", TRANSPORTS)
+def test_malformed_lines_are_answered_and_the_server_goes_on(serve, transport):
+    server = serve(transport)
+    depth = 100_000
+    for line, code in [
+        ("[" * depth + "]" * depth, protocol.PARSE_ERROR),
+        (
+            '{"jsonrpc": "2.0", "id": 1, "method": "ping", "x": NaN}',
+            protocol.PARSE_ERROR,
+        ),
+        ('{"jsonrpc": "2.0", "id": Infinity, "method": "ping"}', protocol.PARSE_ERROR),
+        ('{"jsonrpc": "2.0", "id": 1e999, "method": "ping"}', protocol.INVALID_REQUEST),
+        (b'{"jsonrpc": "2.0", "id": 1, "method": "\xff"}', protocol.PARSE_ERROR),
+    ]:
+        server.send(line)
+        response = server.receive()
+        assert response is not None, server.stderr()
+        assert (response["id"], response["error"]["code"]) == (None, code), line[:40]
+        assert server.result("ping") == {"generation": None}
+    huge = "1" + "0" * 400
+    for deadline in (huge, "1e20", "-0.0"):
+        server.send(
+            f'{{"jsonrpc": "2.0", "id": "d", "method": "ping",'
+            f' "params": {{"deadline_s": {deadline}}}}}'
+        )
+        response = server.receive()
+        assert response is not None, server.stderr()
+        assert response["id"] == "d"
+        assert response["error"]["code"] == protocol.INVALID_PARAMS, deadline
+        assert server.result("ping") == {"generation": None}
+    # A notification is never answered, whatever is wrong with it.
+    for notification in [
+        {"jsonrpc": "2.0", "method": "ping", "params": [1]},
+        {"jsonrpc": "2.0", "method": "ping", "params": {"deadline_s": "soon"}},
+        {"jsonrpc": "2.0", "method": "state_at", "params": {}},
+        {"jsonrpc": "2.0", "method": "nothing"},
+    ]:
+        server.send(notification)
+    assert server.result("ping") == {"generation": None}
+    assert server.process.poll() is None
+
+
+def test_a_line_past_the_largest_message_is_refused_and_dropped(serve):
+    server = serve()
+    server.send(
+        b'{"jsonrpc": "2.0", "id": 1, "method": "ping", "params": {"x": "'
+        + b"x" * protocol.MAX_MESSAGE_BYTES
+        + b'"}}'
+    )
+    response = server.receive()
+    assert response is not None, server.stderr()
+    assert (response["id"], response["error"]["code"]) == (
+        None,
+        protocol.INVALID_REQUEST,
+    )
+    assert str(protocol.MAX_MESSAGE_BYTES) in response["error"]["message"]
+    assert server.result("ping") == {"generation": None}
+
+
+def test_a_queued_request_s_clock_starts_when_it_arrives(serve, tmp_path):
+    server = serve()
+    naps = _write(tmp_path, "naps.py", NAPS)
+    config = {**SMALL, "media_dir": str(tmp_path / "media")}
+    opening = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "open",
+        "params": {"file": str(naps), "scene": "Naps", "config": config},
+    }
+    queued = {"jsonrpc": "2.0", "id": 2, "method": "ping", "params": {"deadline_s": 1}}
+    # One write: the ping waits out the open, past its own deadline.
+    server.send(json.dumps(opening) + "\n" + json.dumps(queued))
+    first = server.receive()
+    assert first is not None
+    assert (first["id"], "result" in first) == (1, True)
+    second = server.receive()
+    assert second is not None, server.stderr()
+    assert second["id"] == 2
+    assert second["error"]["code"] == protocol.DEADLINE_EXCEEDED
+    assert server.exited() == protocol.EXIT_DEADLINE
+
+
+def test_a_deadline_exit_outlives_a_cleanup_that_fails(serve, tmp_path, socket_dir):
+    server = serve("socket")
+    socket_dir.chmod(0o500)
+    path = _write(tmp_path, "sleeps.py", SLEEPS)
+    server.ask(
+        "open",
+        file=str(path),
+        scene="Sleeps",
+        config={**SMALL, "media_dir": str(tmp_path / "media")},
+        deadline_s=1,
+    )
+    sent = time.monotonic()
+    assert server.exited(wait=WAIT_S) == protocol.EXIT_DEADLINE
+    assert time.monotonic() - sent <= 1 + protocol.DEADLINE_WRITE_S + 2
+
+
+@pytest.mark.parametrize("ending", ["idle", "eof"])
+def test_an_ending_server_never_waits_on_its_standard_error(serve, tmp_path, ending):
+    server = serve("stdio", unread_stderr=True, ARACHNE_SESSION_IDLE_S="4")
+    path = _write(tmp_path, "floods.py", FLOODS)
+    opened = server.result(
+        "open",
+        file=str(path),
+        scene="Floods",
+        config={**SMALL, "media_dir": str(tmp_path / "media"), "verbosity": "ERROR"},
+    )
+    assert opened["generation"] == 1
+    # Past the flood's start: standard error is full from here on.
+    time.sleep(3)
+    if ending == "eof":
+        assert server.process.stdin is not None
+        server.process.stdin.close()
+    began = time.monotonic()
+    assert server.exited(wait=WAIT_S) == 0
+    assert time.monotonic() - began <= 1 + 2 * protocol.DEADLINE_WRITE_S + 2
+
+
+def test_a_forward_run_s_error_carries_its_clock(serve, tmp_path):
+    server = serve()
+    path = _write(tmp_path, "forward.py", FORWARD_RAISES)
+    _open(server, path, "ForwardRaises")
+    (tmp_path / "raise-now").write_text("")
+    error = server.error("frame", t=0.75, path=str(tmp_path / "f.png"))
+    assert error["code"] == protocol.SCENE_ERROR
+    found = _valid("scene_error", error["data"])
+    assert (found["cls"], found["line"]) == ("RuntimeError", _line(path, "raise"))
+    assert found["t_exact"] == "1/2"
+    assert found["raised_by"] == "scene"
+    # It was the forward run's: the session is what it was.
+    record = server.result("inspect")["record"]
+    assert (record["generation"], record["stale"]) == (1, False)
+
+
+def test_a_hostile_exception_is_still_explained(serve, tmp_path):
+    server = serve()
+    path = _write(tmp_path, "hostile.py", HOSTILE)
+    error = server.error(
+        "open",
+        file=str(path),
+        scene="RaisesHostile",
+        config={**SMALL, "media_dir": str(tmp_path / "media")},
+    )
+    assert error["code"] == protocol.SCENE_ERROR
+    found = _valid("scene_error", error["data"])
+    assert (found["cls"], found["line"]) == ("Hostile", _line(path, "raise"))
+    assert found["t_exact"] == "1/2"
+    assert found["message"]
+    assert "Hostile" in found["report"]
+    assert server.result("ping") == {"generation": None}
+
+
+def test_a_deadline_past_the_longest_is_refused_at_start(serve):
+    with pytest.raises(AssertionError, match="deadline"):
+        serve("stdio", "--deadline-s", "1e20")
