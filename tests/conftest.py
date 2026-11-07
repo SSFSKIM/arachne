@@ -52,6 +52,14 @@ def pytest_collection_modifyitems(config, items):
 
 
 @pytest.fixture(autouse=True)
+def answer_store(tmp_path_factory, monkeypatch):
+    """A store of answers of the test's own (``ARACHNE_STORE``), which every
+    session server it starts inherits: no test reads or fills the user's.
+    """
+    monkeypatch.setenv("ARACHNE_STORE", str(tmp_path_factory.mktemp("store")))
+
+
+@pytest.fixture(autouse=True)
 def temp_media_dir(tmpdir, monkeypatch, request):
     if isinstance(request.node, pytest.DoctestItem):
         monkeypatch.chdir(tmpdir)
