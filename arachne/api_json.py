@@ -467,7 +467,10 @@ def _plain(value: Any) -> Any:
     if isinstance(value, Fraction):
         return float(value)
     if isinstance(value, np.generic):
-        return _plain(value.item())
+        item = value.item()
+        # An extended-precision scalar gives itself back: no Python number
+        # holds it.
+        return repr(value) if isinstance(item, np.generic) else _plain(item)
     if isinstance(value, np.ndarray):
         return _plain(value.tolist())
     if isinstance(value, Mapping):
