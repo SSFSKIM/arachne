@@ -17,7 +17,8 @@ from pathlib import Path
 import pytest
 
 import arachne
-from arachne import UP, FadeIn, FadeOut, Square
+from arachne import UP, FadeIn, FadeOut, Square, tempconfig
+from arachne._config.utils import RENDERER_REMOVED
 from arachne._removed import RENAMED
 from arachne.animation.fading import _Fade
 from arachne.errors import SceneError, explain
@@ -250,6 +251,106 @@ def test_a_report_shows_the_scene_s_last_frames_and_where_the_engine_raised(tmp_
     assert str(error) == report
 
 
+def _module(path: Path):
+    """``path`` imported by hand, as code outside the engine would."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("hand_imported_scene", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _called_directly(path: Path) -> SceneError:
+    """The error of the scene's ``construct()``, called by this test rather
+    than by the engine, explained.
+    """
+    module = _module(path)
+    with tempconfig({**SMALL, "dry_run": True}):
+        scene = module.S()
+        with pytest.raises(Exception) as info:
+            scene.construct()
+    return explain(info.value, path)
+
+
+def test_a_scene_called_directly_that_raises_keeps_its_frame_not_the_caller_s(
+    tmp_path,
+):
+    path = write(
+        tmp_path,
+        """
+        from arachne import *
+
+        class S(Scene):
+            def construct(self):
+                self.add(ShowCreation(Circle()))  # @raise
+        """,
+    )
+    error = _called_directly(path)
+    assert [(frame.path, frame.line) for frame in error.frames] == [
+        ("scene.py", line_of(path, "raise"))
+    ]
+    assert error.line == line_of(path, "raise")
+    assert error.raised_in is None
+    assert error.hints == ("ShowCreation is Create",)
+
+
+def test_a_scene_called_directly_whose_engine_call_raises_keeps_its_frame(
+    tmp_path,
+):
+    path = write(
+        tmp_path,
+        """
+        from arachne import *
+
+        class S(Scene):
+            def construct(self):
+                Square().points[0] = ORIGIN  # @write
+        """,
+    )
+    error = _called_directly(path)
+    assert [(frame.path, frame.line) for frame in error.frames] == [
+        ("scene.py", line_of(path, "write"))
+    ]
+    assert error.line == line_of(path, "write")
+    assert error.raised_in is not None
+    assert error.raised_in.path == "arachne/mobject/values.py"
+    assert "test_errors.py" not in error.report()
+
+
+def test_an_updater_in_a_helper_module_keeps_the_helper_s_frame(tmp_path):
+    write(
+        tmp_path,
+        """
+        def follow(mobject, dt):
+            mobject.shiftt(dt)  # @helper
+        """,
+        name="updaters.py",
+    )
+    path = write(
+        tmp_path,
+        """
+        from arachne import *
+        from updaters import follow
+
+        class S(Scene):
+            def construct(self):
+                dot = Dot()
+                dot.add_updater(follow)
+                self.add(dot)
+                self.wait(0.5)  # @wait
+        """,
+    )
+    error = explained(path)
+    # The scene's wait, then the helper the engine called from it.
+    assert [(frame.path, frame.line) for frame in error.frames] == [
+        ("scene.py", line_of(path, "wait")),
+        ("updaters.py", line_of(tmp_path / "updaters.py", "helper")),
+    ]
+    assert error.line == line_of(path, "wait")
+    assert error.hints == ("did you mean shift?",)
+
+
 def test_a_read_only_points_write_keeps_its_setter_message(tmp_path):
     path = write(
         tmp_path,
@@ -279,8 +380,9 @@ def test_a_read_only_points_write_keeps_its_setter_message(tmp_path):
         ),
         # Deliberate break 7: a removed configuration option.
         ("config.save_as_gif = True", 'format = "gif"'),
-        # The renderer setting.
-        ('config.renderer = "opengl"', "Cairo is the renderer"),
+        # The renderer setting, set and read.
+        ('config.renderer = "opengl"', RENDERER_REMOVED),
+        ("config.renderer", RENDERER_REMOVED),
     ],
 )
 def test_a_message_that_names_its_fix_is_kept_without_hints(tmp_path, body, words):
