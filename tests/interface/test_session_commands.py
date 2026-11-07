@@ -20,6 +20,7 @@ import contextlib
 import fcntl
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -39,6 +40,7 @@ from arachne import __version__, api_json
 from arachne.__main__ import main
 from arachne.cli import client
 from arachne.server import protocol, registry
+from arachne.session import Session
 
 #: How long a test waits for a server, in seconds.
 WAIT_S = float(os.environ.get("ARACHNE_TEST_SERVER_WAIT_S", "60"))
@@ -712,6 +714,267 @@ def test_no_splash_comes_before_the_session_commands(command):
 def test_the_splash_still_comes_before_the_other_commands():
     found = _invoke("cfg", "--help")
     assert found.stdout.startswith(_splash())
+
+
+# session render and clip
+
+CLIPPED = """\
+    from arachne import RIGHT, Dot, Scene
+
+
+    class Clipped(Scene):
+        def construct(self):
+            dot = Dot()
+            self.add(dot)
+            self.wait(1)
+            self.play(dot.animate.shift(RIGHT), run_time=1)
+            self.wait(1)
+"""
+
+SCATTERED = """\
+    import numpy as np
+
+    from arachne import Dot, Scene
+
+
+    class Scattered(Scene):
+        \"\"\"A dot wherever the scene's seed puts it.\"\"\"
+
+        def construct(self):
+            self.add(Dot().move_to([*np.random.uniform(-2, 2, 2), 0]))
+            self.wait(1)
+"""
+
+SLOW = """\
+    import time
+
+    from arachne import Dot, Scene, config
+
+
+    class Slow(Scene):
+        \"\"\"A render that stalls once its first half second is written;
+        the session's own execution, which writes nothing, never does.\"\"\"
+
+        def construct(self):
+            self.add(Dot())
+            self.wait(0.5)
+            if not config.dry_run:
+                time.sleep(60)
+            self.wait(0.5)
+"""
+
+CHECKED = {"status": "checked", "reason": None}
+
+
+def _shown(form: dict[str, Any]) -> list[int]:
+    return [play["index"] for play in form["timeline"] if not play["skipped"]]
+
+
+def _left_beside(out: Path) -> list[Path]:
+    """What a render left beside ``out``: its temporary files."""
+    return sorted(p for p in out.parent.iterdir() if p.name.startswith(f".{out.name}"))
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_session_render_json_is_the_answer_verbatim(tmp_path, mode):
+    path = _write(tmp_path, "clipped.py", CLIPPED)
+    out = tmp_path / "out" / "render.mp4"
+    found = _invoke(
+        "session",
+        "render",
+        str(path),
+        "Clipped",
+        "-o",
+        str(out),
+        "--json",
+        *_session_args(mode, tmp_path),
+    )
+    assert found.exit_code == 0, found.output
+    answer = json.loads(found.stdout)
+    assert set(answer) == {"generation", "render"}
+    assert answer["generation"] == 1
+    render = _valid("render", answer["render"])
+    assert render["path"] == str(out)
+    assert render["self_check"] == CHECKED
+    assert _shown(render) == [0, 1, 2]
+    assert out.stat().st_size > 0
+    assert _left_beside(out) == []
+
+
+def test_session_render_plays_a_to_b_as_render_s_n(tmp_path):
+    path = _write(tmp_path, "clipped.py", CLIPPED)
+    args = [
+        "session",
+        "render",
+        str(path),
+        "Clipped",
+        "--json",
+        *_session_args("server", tmp_path),
+    ]
+    # From play a through play b, both included; a alone, through the last.
+    for plays, shown in (("1,2", [1, 2]), ("1,1", [1]), ("1", [1, 2])):
+        out = tmp_path / f"plays-{plays}.mp4"
+        found = _invoke(*args, "--plays", plays, "-o", str(out))
+        assert found.exit_code == 0, found.output
+        assert _shown(json.loads(found.stdout)["render"]) == shown
+
+
+@pytest.mark.parametrize("plays", ["2,0", "0,1,2", "one", "-1"])
+def test_session_render_plays_not_a_run_is_a_usage_error(tmp_path, plays):
+    path = _write(tmp_path, "clipped.py", CLIPPED)
+    out = tmp_path / "render.mp4"
+    found = _invoke(
+        "session",
+        "render",
+        str(path),
+        "Clipped",
+        "--plays",
+        plays,
+        "-o",
+        str(out),
+        *_session_args("server", tmp_path),
+    )
+    assert found.exit_code == 2, found.output
+    assert "--plays" in found.stderr
+    assert not out.exists()
+
+
+def test_session_clip_takes_the_plays_meeting_its_span(tmp_path):
+    path = _write(tmp_path, "clipped.py", CLIPPED)
+    out = tmp_path / "clip.mp4"
+    found = _invoke(
+        "session",
+        "clip",
+        str(path),
+        "Clipped",
+        "--t0",
+        "1.2",
+        "--t1",
+        "1.8",
+        "-o",
+        str(out),
+        *_session_args("server", tmp_path),
+    )
+    assert found.exit_code == 0, found.output
+    lines = found.stdout.splitlines()
+    assert str(out) in lines[0]
+    assert lines[-1] == "self_check: checked"
+    assert out.stat().st_size > 0
+
+
+def test_session_clip_unchecked_says_why_and_strict_exits_1(tmp_path):
+    path = _write(tmp_path, "clipped.py", CLIPPED)
+    out = tmp_path / "clip.mp4"
+    # The session is 16:9; the low quality's 854 by 480 is not, so the clip
+    # is another execution, with nothing like it to check against.
+    args = [
+        "session",
+        "clip",
+        str(path),
+        "Clipped",
+        "--t0",
+        "1.2",
+        "--t1",
+        "1.8",
+        "-q",
+        "l",
+        "-o",
+        str(out),
+        *_session_args("server", tmp_path),
+    ]
+    answer = json.loads(_invoke(*args, "--json").stdout)
+    self_check = answer["clip"]["self_check"]
+    assert self_check["status"] == "unchecked"
+    assert self_check["reason"]
+    # A written file is an answer, checked or not.
+    found = _invoke(*args)
+    assert found.exit_code == 0, found.output
+    assert found.stdout.splitlines()[-1] == (
+        f"self_check: unchecked ({self_check['reason']})"
+    )
+    assert _invoke(*args, "--strict").exit_code == 1
+
+
+def test_session_render_divergence_is_shown_and_strict_exits_1(tmp_path):
+    path = _write(tmp_path, "scattered.py", SCATTERED)
+    session = _session_args("server", tmp_path)
+    assert _invoke("lint", str(path), "Scattered", *session).exit_code == 0
+    # Plant, as the lint's summary, an execution under another seed.
+    planted = Session.open(
+        path,
+        "Scattered",
+        config={**SMALL, "media_dir": str(tmp_path / "media"), "seed": 7},
+    )
+    try:
+        other = planted.summary().to_json()
+    finally:
+        planted.close()
+    (kept,) = Path(os.environ["ARACHNE_STORE"]).rglob("summaries/*.json")
+    kept.write_text(other)
+
+    out = tmp_path / "render.mp4"
+    args = ["session", "render", str(path), "Scattered", "-o", str(out), *session]
+    found = _invoke(*args)
+    assert found.exit_code == 0, found.output
+    assert "replay.diverged" in found.stdout
+    assert found.stdout.splitlines()[-1] == "self_check: checked"
+    strict = _invoke(*args, "--strict")
+    assert strict.exit_code == 1, strict.output
+    # The render was written all the same.
+    assert out.stat().st_size > 0
+
+
+@pytest.mark.parametrize("command", ["render", "clip"])
+def test_session_render_once_and_the_server_answer_alike(tmp_path, command):
+    path = _write(tmp_path, "clipped.py", CLIPPED)
+    out = tmp_path / f"{command}.mp4"
+    span = ["--t0", "1.2", "--t1", "1.8"] if command == "clip" else []
+    answers = []
+    for mode in MODES:
+        found = _invoke(
+            "session",
+            command,
+            str(path),
+            "Clipped",
+            *span,
+            "-o",
+            str(out),
+            "--json",
+            *_session_args(mode, tmp_path),
+        )
+        assert found.exit_code == 0, found.output
+        answers.append(json.loads(found.stdout))
+    assert answers[0] == answers[1]
+
+
+def test_session_render_past_its_deadline_leaves_nothing_at_out(tmp_path):
+    path = _write(tmp_path, "slow.py", SLOW)
+    out = tmp_path / "slow.mp4"
+    found = _invoke(
+        "session",
+        "render",
+        str(path),
+        "Slow",
+        "-o",
+        str(out),
+        "--deadline-s",
+        "5",
+        *_session_args("server", tmp_path),
+    )
+    assert found.exit_code == 3, found.output
+    assert "deadline" in found.stderr
+    assert not out.exists()
+    assert _left_beside(out) == []
+    assert _listed() == []
+
+
+def test_session_render_takes_a_long_deadline_by_default():
+    found = _invoke("session", "render", "--help")
+    assert found.exit_code == 0, found.output
+    text = " ".join(found.stdout.split())
+    default = re.search(r"--deadline-s .*?default: ([0-9.]+)", text)
+    assert default is not None, text
+    assert float(default.group(1)) >= 3600
 
 
 # rendering
