@@ -727,6 +727,167 @@ def test_a_request_is_kept_by_its_own_deadline_from_the_start():
     assert json.loads(sent[0])["result"] == {"generation": None}
 
 
+def _answered_aside(server: Any, data: bytes | None, received: float) -> list[bytes]:
+    """What ``server`` sends for the line ``data``, read at ``received``,
+    answered on a thread of its own: one that may wait for an end that a
+    test stands in for.
+    """
+    from types import SimpleNamespace
+
+    sent: list[bytes] = []
+    channel = SimpleNamespace(send=sent.append)
+    line = SimpleNamespace(data=data, received=received)
+    answering = threading.Thread(
+        target=server.answer, args=(channel, line), daemon=True
+    )
+    answering.start()
+    answering.join(WAIT_S)
+    assert not answering.is_alive(), "the line was held for the server's end"
+    return sent
+
+
+def test_a_line_that_runs_nothing_is_answered_however_long_it_waited():
+    from arachne.server.serve import _Server
+
+    server = _Server(600, 1.0, lambda: None)
+    ended: list[bool] = []
+    server._expired = lambda channel, read, limit, respond: ended.append(respond)  # type: ignore[method-assign]
+    # Every line waited past the server's deadline of 1 s behind another.
+    waited = time.monotonic() - 10
+    lines = [
+        None,  # past the longest message
+        b"{not json",
+        protocol.encode(
+            {
+                "jsonrpc": "2.0",
+                "id": "p",
+                "method": "ping",
+                "params": {"deadline_s": "soon"},
+            }
+        ),
+        protocol.encode({"jsonrpc": "2.0", "method": "shutdown"}),
+        protocol.encode({"jsonrpc": "2.0", "id": 7, "method": "ping"}),
+    ]
+    answers = [
+        json.loads(data)
+        for line in lines
+        for data in _answered_aside(server, line, waited)
+    ]
+    assert ended == []
+    assert [(answer["id"], answer["error"]["code"]) for answer in answers] == [
+        (None, protocol.INVALID_REQUEST),
+        (None, protocol.PARSE_ERROR),
+        ("p", protocol.INVALID_PARAMS),
+        (7, protocol.DEADLINE_EXCEEDED),
+    ]
+    # Past its deadline before its turn: answered so, and never run, nor the
+    # notification before it.
+    assert answers[-1]["error"]["data"] == {
+        "method": "ping",
+        "deadline_s": 1.0,
+        "ends": False,
+    }
+    assert not server.dispatcher.ending
+
+
+def test_a_request_expired_as_it_ran_holds_the_server_for_its_end():
+    from types import SimpleNamespace
+
+    from arachne.server.serve import _Server
+
+    server = _Server(600, 60.0, lambda: None)
+    expired = threading.Event()
+    # The server's end, stood in for: it would exit the process.
+    server._expired = lambda channel, read, limit, respond: expired.set()  # type: ignore[method-assign]
+
+    def handle(method: str, params: dict[str, Any]) -> dict[str, Any]:
+        time.sleep(0.3)
+        return {"generation": None}
+
+    server.dispatcher.handle = handle  # type: ignore[method-assign]
+    request = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "ping",
+        "params": {"deadline_s": 0.1},
+    }
+    line = SimpleNamespace(data=protocol.encode(request), received=time.monotonic())
+    sent: list[bytes] = []
+    channel = SimpleNamespace(send=sent.append)
+    answering = threading.Thread(
+        target=server.answer, args=(channel, line), daemon=True
+    )
+    answering.start()
+    assert expired.wait(WAIT_S)
+    # Its answer is the deadline's, and the thread that answers requests takes
+    # no next one before the process ends.
+    answering.join(1.0)
+    assert answering.is_alive()
+    assert sent == []
+
+
+def test_a_listener_out_of_descriptors_waits_rather_than_spins(monkeypatch):
+    import errno
+    import queue
+    import selectors
+
+    from arachne.server import serve
+
+    directory = tempfile.mkdtemp(prefix="al-", dir="/tmp")
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(os.path.join(directory, "s"))
+    listener.listen()
+    # A connection waiting to be accepted, which the process has no descriptor
+    # left for.
+    waiting = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    waiting.connect(os.path.join(directory, "s"))
+    accepts: list[float] = []
+
+    def refused(found: socket.socket) -> Any:
+        accepts.append(time.monotonic())
+        raise OSError(errno.EMFILE, "Too many open files")
+
+    monkeypatch.setattr(serve, "_accept", refused)
+    mine, theirs = socket.socketpair()
+    channel = serve._Channel(
+        mine.fileno(), lambda: mine.recv(65536), mine.sendall, mine.close
+    )
+    selector = selectors.DefaultSelector()
+    selector.register(listener, selectors.EVENT_READ, None)
+    selector.register(mine.fileno(), selectors.EVENT_READ, channel)
+    arrivals: queue.SimpleQueue[tuple[Any, Any]] = queue.SimpleQueue()
+    reading = threading.Thread(
+        target=serve._reading, args=(selector, arrivals), daemon=True
+    )
+    reading.start()
+    try:
+        time.sleep(0.3)
+        assert 1 <= len(accepts) <= 2
+        # A channel's end frees a descriptor: the listener is tried again at
+        # once, its wait cut short.
+        tried = len(accepts)
+        ended = time.monotonic()
+        theirs.close()
+        assert arrivals.get(timeout=WAIT_S) == (channel, serve._ENDED)
+        assert _wait_for(lambda: len(accepts) > tried, 0.5)
+        assert accepts[tried] - ended < 0.5
+    finally:
+        with contextlib.suppress(KeyError, ValueError):
+            selector.unregister(listener)
+        for each in (waiting, listener, theirs):
+            each.close()
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def _wait_for(condition: Any, wait: float) -> bool:
+    until = time.monotonic() + wait
+    while not condition():
+        if time.monotonic() >= until:
+            return False
+        time.sleep(0.01)
+    return True
+
+
 def test_what_a_request_publishes_never_holds_its_deadline_back():
     watchdog = Watchdog()
     fired: list[bool] = []
@@ -825,8 +986,56 @@ def test_a_request_without_a_deadline_has_the_server_s(serve, tmp_path, how):
     sleeps = _write(tmp_path, "sleeps.py", SLEEPS)
     error = server.error("open", file=str(sleeps), scene="Sleeps", config=config)
     assert error["code"] == protocol.DEADLINE_EXCEEDED
-    assert error["data"] == {"method": "open", "deadline_s": 1.0}
+    # It ran past its deadline: the server ends.
+    assert error["data"] == {"method": "open", "deadline_s": 1.0, "ends": True}
     assert server.exited(wait=2) == protocol.EXIT_DEADLINE
+
+
+def test_lines_queued_past_their_deadline_are_answered_and_the_server_goes_on(
+    serve, tmp_path
+):
+    server = serve("stdio", "--deadline-s", "1")
+    config = {**SMALL, "media_dir": str(tmp_path / "media")}
+    naps = _write(tmp_path, "naps.py", NAPS)
+    # The open naps past the server's deadline of every line queued behind it.
+    opening = server.ask(
+        "open", file=str(naps), scene="Naps", config=config, deadline_s=30
+    )
+    server.send(b"{not json")
+    server.send(
+        {
+            "jsonrpc": "2.0",
+            "id": "p",
+            "method": "ping",
+            "params": {"deadline_s": "soon"},
+        }
+    )
+    server.send({"jsonrpc": "2.0", "method": "shutdown"})
+    expired = server.ask("ping")
+    then = server.ask("ping", deadline_s=30)
+    answers = [server.receive() for _ in range(5)]
+    assert answers[0]["id"] == opening
+    assert answers[0]["result"]["generation"] == 1
+    # Lines that run nothing are answered as ever, never ended for their wait.
+    assert (answers[1]["id"], answers[1]["error"]["code"]) == (
+        None,
+        protocol.PARSE_ERROR,
+    )
+    assert (answers[2]["id"], answers[2]["error"]["code"]) == (
+        "p",
+        protocol.INVALID_PARAMS,
+    )
+    # A request past its deadline before its turn is answered so, unrun, and
+    # the server goes on; the notification behind it never ran either.
+    assert answers[3]["id"] == expired
+    assert answers[3]["error"]["code"] == protocol.DEADLINE_EXCEEDED
+    assert answers[3]["error"]["data"] == {
+        "method": "ping",
+        "deadline_s": 1.0,
+        "ends": False,
+    }
+    assert answers[4] == {"jsonrpc": "2.0", "id": then, "result": {"generation": 1}}
+    assert server.process.poll() is None
 
 
 def test_a_refusal_keeps_its_type_and_a_failure_is_internal(serve, tmp_path):

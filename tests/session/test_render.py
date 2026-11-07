@@ -207,6 +207,8 @@ def test_a_render_past_its_deadline_leaves_nothing_at_out_and_ends_the_server(
     with pytest.raises(registry.RemoteError) as raised:
         session.call("render", out=str(out), deadline_s=deadline)
     assert raised.value.code == protocol.DEADLINE_EXCEEDED
+    # It expired as it ran, and says the server ends.
+    assert raised.value.data["ends"] is True
     assert gone(session.pid, wait=deadline + 1)
     assert time.monotonic() - sent <= deadline + 1.5
     assert not out.exists()
