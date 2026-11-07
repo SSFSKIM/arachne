@@ -960,6 +960,11 @@ def test_session_render_once_and_the_server_answer_alike(tmp_path, command):
     path = _write(tmp_path, "clipped.py", CLIPPED)
     out = tmp_path / f"{command}.mp4"
     span = ["--t0", "1.2", "--t1", "1.8"] if command == "clip" else []
+    # The latest lint, in the store both modes share, is what each checks
+    # against: without one, the session the second mode opens from the store
+    # has no summary of its own, and its render is unchecked.
+    linted = _invoke("lint", str(path), "Clipped", *_session_args("server", tmp_path))
+    assert linted.exit_code == 0, linted.output
     answers = []
     for mode in MODES:
         found = _invoke(
@@ -976,6 +981,7 @@ def test_session_render_once_and_the_server_answer_alike(tmp_path, command):
         assert found.exit_code == 0, found.output
         answers.append(json.loads(found.stdout))
     assert answers[0] == answers[1]
+    assert answers[0][command]["self_check"] == CHECKED
 
 
 def test_session_render_past_its_deadline_leaves_nothing_at_out(tmp_path):
