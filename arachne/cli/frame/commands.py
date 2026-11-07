@@ -23,14 +23,16 @@ FLAGS: dict[str, str] = {
 
 
 def _instant(ctx: click.Context, param: click.Parameter, value: str) -> float | str:
-    """Seconds, as a number, else the text as given: an exact instant,
-    ``"n/d"``, or what the session refuses as no time.
+    """Seconds, as a finite number, else the text as given: an exact
+    instant, ``"n/d"``, or what the session refuses as no time.
     """
     try:
         found = float(value)
     except ValueError:
         return value
-    return found if math.isfinite(found) else value
+    if not math.isfinite(found):
+        raise click.BadParameter(f"{value!r} is not a finite time.")
+    return found
 
 
 @cloup.command()

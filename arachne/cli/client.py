@@ -78,6 +78,23 @@ class Client(Protocol):
         ...
 
 
+def _encoded(request_id: int, method: str, params: dict[str, Any]) -> bytes:
+    """The request as a line of the wire; raises :class:`Failed`, the
+    caller's mistake (``-32602``), for params that are no JSON, a number
+    that is not finite among them.
+    """
+    request = {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
+    try:
+        return protocol.encode(request)
+    except (TypeError, ValueError, OverflowError, RecursionError) as error:
+        raise Failed(
+            {
+                "code": protocol.INVALID_PARAMS,
+                "message": f"The request is no JSON: {error}.",
+            }
+        ) from None
+
+
 class InProcess:
     """A session held in this process, answered by the server's own
     dispatcher. ``deadline_s`` is read and checked as a server reads it,
@@ -93,6 +110,8 @@ class InProcess:
     def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         from ..server.dispatch import deadline, internal_error
 
+        # Refused as a server's client refuses it, before anything is asked.
+        _encoded(1, method, params)
         try:
             _, given = deadline(params)
             with contextlib.redirect_stdout(sys.stderr):
@@ -134,14 +153,9 @@ class Remote:
 
     def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         self._ids += 1
-        request = {
-            "jsonrpc": "2.0",
-            "id": self._ids,
-            "method": method,
-            "params": params,
-        }
+        line = _encoded(self._ids, method, params)
         try:
-            self._send(protocol.encode(request))
+            self._send(line)
         except OSError as error:
             raise Gone(f"The server took no request: {error}.") from None
         given = params.get("deadline_s")
