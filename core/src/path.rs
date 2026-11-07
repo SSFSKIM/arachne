@@ -19,7 +19,8 @@
 //!   ([`crate::gradient`]), each pixel from the start of the composite run Cairo would paint it in
 //!   ([`composite_runs`]). A path CE's lighting shades (`shade_in_3d` under a camera that shades)
 //!   is lit into two stops at its start and end corners (`shade::ce_face_stops`), its gradient
-//!   between those corners.
+//!   between the record's ends (CE's: its corners, unless its mobject gives others), or its
+//!   corners when it has none.
 //! - Depth: a path in world space under a 3D camera fills at the depth of its plane when it has one
 //!   the camera keys finitely (`depth::WorldPlane`, made canonical, so text and axes on one plane,
 //!   and a mesh on it, tie exactly), however nearly edge-on; it strokes, and a path without such a
@@ -79,8 +80,8 @@ pub struct PathDraw<'a> {
     pub stroke: Option<Vec<[f64; 4]>>,
     pub background_stroke: Option<Vec<[f64; 4]>>,
     /// A gradient's ends in world space, as `get_gradient_start_and_end_points` gives them: where
-    /// a paint of two or more rows runs between, unless CE's lighting shades the path (whose
-    /// gradient runs between its start and end corners).
+    /// a paint of two or more rows runs between, and the two stops CE's lighting makes of a shaded
+    /// path's paint (which, without them, run between its start and end corners).
     pub ends: Option<[[f64; 3]; 2]>,
     /// A face of a surface (a face group's): an outline on no one plane takes the plane nearest it
     /// ([`WorldPlane::nearest`]), not its curve's depth.
@@ -986,16 +987,20 @@ impl<'v> Lowering<'v> {
             None => user.clone(),
         };
         // CE's lighting (`ThreeDCamera.modified_rgbas`): a shaded path's paint becomes two stops,
-        // lit at its start and end corners, between which its gradient runs.
+        // lit at its start and end corners. Its gradient runs, as any path's does, between the
+        // ends the mobject gives (`get_gradient_start_and_end_points`, the record's): for a shaded
+        // path its corners, unless it gives others, as `ThreeDAxes` gives every piece of an axis
+        // the axis's own ends. A shaded path with no ends recorded (a face of a surface, an
+        // instance) runs between its corners.
         let corners = [0, (world.len() - 1) / 6 * 3];
         let lit = self.light(draw);
-        let ends = match (lit, draw.ends) {
-            (Some(_), _) => Some(corners.map(|i| shown[i])),
-            (None, Some(ends)) if draw.pre_projected => Some(ends),
-            (None, Some(ends)) => {
+        let ends = match (draw.ends, lit) {
+            (Some(ends), _) if draw.pre_projected => Some(ends),
+            (Some(ends), _) => {
                 let shown_ends = pre_display(&ends, self.projection.as_ref(), placement);
                 Some([shown_ends[0], shown_ends[1]])
             }
+            (None, Some(_)) => Some(corners.map(|i| shown[i])),
             (None, None) => None,
         };
         let [background_rows, fill_rows, stroke_rows] = self.layer_rows(draw, &world, lit);

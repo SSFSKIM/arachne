@@ -2,8 +2,9 @@
 //!
 //! - CE's model, as `ThreeDCamera.modified_rgbas` applies it: each shaded face gets two colour
 //!   stops, `get_shaded_rgb` at its start and end corners, which Cairo then interpolates as a
-//!   linear gradient between those corners. It adds light to the encoded colour, unclamped (Cairo
-//!   clamps each stop), and ignores the camera's `shading_factor`, as CE does.
+//!   linear gradient between the face's gradient ends (those corners, unless its mobject gives
+//!   others). It adds light to the encoded colour, unclamped (Cairo clamps each stop), and ignores
+//!   the camera's `shading_factor`, as CE does.
 //! - Soft diffuse light, in linear light: diffuse light that wraps past the terminator, over an
 //!   ambient floor, lit on the side the eye sees. Its parameters are the view's.
 //! - A lit mesh triangle ([`Light::triangle`]): each corner lit by the view's model, then the
