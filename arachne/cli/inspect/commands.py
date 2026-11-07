@@ -11,10 +11,10 @@ from typing import Any
 
 import cloup
 
-from ..asking import ask, printed, seconds, session_options
+from ..asking import RESIDENT, ask, printed, seconds, session_options
 
 
-@cloup.command()
+@cloup.command(epilog=RESIDENT)
 @session_options
 def inspect(
     file: Path,
