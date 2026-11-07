@@ -277,21 +277,12 @@ def _function_node(function: Callable[..., Any]) -> ast.Lambda | ast.FunctionDef
             candidates.append(node)
     if not candidates:
         raise Refused(f"the source of {code.co_name} does not match its code")
-    candidates.sort(key=_span)
-    # A function nested in another on its line lies inside it, so of the
-    # candidates its instructions locate, the narrowest is its source. With
-    # no instruction to locate it, any candidate could be.
-    if len(candidates) > 1 and (
-        not positions or _span(candidates[0]) == _span(candidates[1])
-    ):
+    # Two candidates hold every located instruction: either one lies inside
+    # the other, which may hold it as its body (``lambda: (lambda: 1)``), or
+    # no instruction locates the code. Either could be its source.
+    if len(candidates) > 1:
         raise Refused(f"the source of {code.co_name} is ambiguous")
     return candidates[0]
-
-
-def _span(node: ast.AST) -> tuple[int, int]:
-    end_line = getattr(node, "end_lineno", node.lineno) or node.lineno  # type: ignore[attr-defined]
-    end_col = getattr(node, "end_col_offset", 0) or 0
-    return (end_line - node.lineno, end_col - node.col_offset)  # type: ignore[attr-defined]
 
 
 def _contains(node: ast.AST, line: int, column: int) -> bool:
