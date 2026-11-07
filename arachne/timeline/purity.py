@@ -228,6 +228,7 @@ _TREES: dict[tuple[str, int], ast.Module] = {}
 _PROLOGUE = frozenset(
     {"RESUME", "COPY_FREE_VARS", "MAKE_CELL", "RETURN_GENERATOR", "NOP"}
 )
+_RETURNS = frozenset({"RETURN_VALUE", "RETURN_CONST"})
 
 
 def _function_node(function: Callable[..., Any]) -> ast.Lambda | ast.FunctionDef:
@@ -249,6 +250,10 @@ def _function_node(function: Callable[..., Any]) -> ast.Lambda | ast.FunctionDef
         _TREES[key] = tree
     # The prologue (RESUME, the closure's cells) sits at column 0 of the
     # first line, outside a lambda: only the body's instructions locate it.
+    # So, on CPython 3.11 and some 3.12 releases (3.12.3 among them), does a
+    # lambda's implicit return; later releases place it on the body.
+    line = code.co_firstlineno
+    unplaced_return = (line, line, 0, 0) if code.co_name == "<lambda>" else None
     positions = [
         (pos.lineno, pos.col_offset)
         for instruction in dis.get_instructions(code)
@@ -256,6 +261,7 @@ def _function_node(function: Callable[..., Any]) -> ast.Lambda | ast.FunctionDef
         and (pos := instruction.positions) is not None
         and pos.lineno is not None
         and pos.col_offset is not None
+        and not (instruction.opname in _RETURNS and tuple(pos) == unplaced_return)
     ]
     candidates: list[ast.Lambda | ast.FunctionDef] = []
     for node in ast.walk(tree):
@@ -272,7 +278,12 @@ def _function_node(function: Callable[..., Any]) -> ast.Lambda | ast.FunctionDef
     if not candidates:
         raise Refused(f"the source of {code.co_name} does not match its code")
     candidates.sort(key=_span)
-    if len(candidates) > 1 and _span(candidates[0]) == _span(candidates[1]):
+    # A function nested in another on its line lies inside it, so of the
+    # candidates its instructions locate, the narrowest is its source. With
+    # no instruction to locate it, any candidate could be.
+    if len(candidates) > 1 and (
+        not positions or _span(candidates[0]) == _span(candidates[1])
+    ):
         raise Refused(f"the source of {code.co_name} is ambiguous")
     return candidates[0]
 
