@@ -353,10 +353,21 @@ fn flats_of(rings: &[Vec<[f64; 2]>]) -> Vec<[f64; 3]> {
     flats
 }
 
-/// A curve's depth, and the bounds of its segments widened by how far its pixels may reach from it.
+/// A curve's depth, the bounds of its segments widened by `margin`, how far its pixels may reach
+/// from it, and which segments' bounds meet each tile of the frame.
 struct CurveDepth {
     line: Centreline,
     bounds: Vec<[f64; 4]>,
+    margin: f64,
+    /// The frame's tiles across and down.
+    across: u32,
+    down: u32,
+    /// The segments whose bounds meet tile `t` ([`tile_index`]), in order, are
+    /// `tiled[starts[t]..starts[t + 1]]`.
+    starts: Vec<u32>,
+    tiled: Vec<u32>,
+    /// The segments whose bounds meet no tile of the frame, in order.
+    beyond: Vec<u32>,
 }
 
 /// Paths lowered to coverage layers, binned by tile: a producer of area fragments.
@@ -1230,8 +1241,8 @@ impl<'v> Lowering<'v> {
         let curve = if line.is_empty() {
             LayerDepth::Plane(Plane::constant(f64::NEG_INFINITY))
         } else {
-            let bounds = line.segment_bounds(bins).collect();
-            self.paths.centrelines.push(CurveDepth { line, bounds });
+            let depth = CurveDepth::new(line, bins, self.width, self.height);
+            self.paths.centrelines.push(depth);
             LayerDepth::Curve(self.paths.centrelines.len() as u32 - 1, 0.0)
         };
         (
@@ -1397,7 +1408,7 @@ impl Paths {
             LayerDepth::Plane(p) => p,
             LayerDepth::Curve(i, body) => {
                 let curve = &self.centrelines[i as usize];
-                curve.near(x, y, near);
+                curve.candidates(x, y, body, near);
                 let (key, err) = curve
                     .line
                     .key_under([x as f64 + 0.5, y as f64 + 0.5], near, body);
@@ -1457,19 +1468,138 @@ impl Paths {
 }
 
 impl CurveDepth {
-    /// The segments whose bounds hold pixel `(x, y)`'s centre, into `near`.
+    /// `line`'s depth on a frame of `width` by `height` pixels, its segments' bounds widened by
+    /// `margin` and filed, in order, under every tile holding a pixel centre they may hold.
+    fn new(line: Centreline, margin: f64, width: u32, height: u32) -> CurveDepth {
+        let bounds: Vec<[f64; 4]> = line.segment_bounds(margin).collect();
+        let (across, down) = (tiles_across(width), height.div_ceil(TILE));
+        // The first and last of `n` tiles along an axis meeting `lo..=hi` there, none beyond them.
+        let span = |lo: f64, hi: f64, n: u32| {
+            let first = (lo.max(0.0) / TILE as f64).floor() as u32;
+            let last = ((hi / TILE as f64).floor() as u32).min(n.saturating_sub(1));
+            (hi >= 0.0 && first <= last && n > 0).then_some((first, last))
+        };
+        let spans: Vec<Option<[u32; 4]>> = bounds
+            .iter()
+            .map(|b| {
+                let (c0, c1) = span(b[0], b[2], across)?;
+                let (r0, r1) = span(b[1], b[3], down)?;
+                Some([c0, c1, r0, r1])
+            })
+            .collect();
+        let tiles = |s: [u32; 4]| {
+            (s[2]..=s[3]).flat_map(move |r| (s[0]..=s[1]).map(move |c| (r * across + c) as usize))
+        };
+        let mut starts = vec![0u32; (across * down) as usize + 1];
+        for t in spans.iter().flatten().flat_map(|s| tiles(*s)) {
+            starts[t + 1] += 1;
+        }
+        for t in 1..starts.len() {
+            starts[t] += starts[t - 1];
+        }
+        let mut next = starts.clone();
+        let mut tiled = vec![0u32; starts[starts.len() - 1] as usize];
+        let mut beyond = Vec::new();
+        for (k, s) in spans.iter().enumerate() {
+            match s {
+                Some(s) => {
+                    for t in tiles(*s) {
+                        tiled[next[t] as usize] = k as u32;
+                        next[t] += 1;
+                    }
+                }
+                None => beyond.push(k as u32),
+            }
+        }
+        CurveDepth {
+            line,
+            bounds,
+            margin,
+            across,
+            down,
+            starts,
+            tiled,
+            beyond,
+        }
+    }
+
+    /// The segments whose bounds hold pixel `(x, y)`'s centre, in order, into `near`: of those
+    /// filed under its tile, as every other's bounds miss the tile.
     fn near(&self, x: u32, y: u32, near: &mut Vec<u32>) {
         count!(NEAR);
-        count!(BOUNDS_TESTED, self.bounds.len());
+        let t = (y / TILE * self.across + x / TILE) as usize;
+        let filed = &self.tiled[self.starts[t] as usize..self.starts[t + 1] as usize];
+        count!(BOUNDS_TESTED, filed.len());
         let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
         near.clear();
-        near.extend(
-            self.bounds
-                .iter()
-                .enumerate()
-                .filter(|(_, b)| px >= b[0] && px <= b[2] && py >= b[1] && py <= b[3])
-                .map(|(k, _)| k as u32),
-        );
+        near.extend(filed.iter().copied().filter(|&k| {
+            let b = &self.bounds[k as usize];
+            px >= b[0] && px <= b[2] && py >= b[1] && py <= b[3]
+        }));
+    }
+
+    /// The segments a read at pixel `(x, y)` (at its centre or its sub-samples) of a stroke whose
+    /// body reaches `body` picks among, in order, into `near`: those whose bounds hold the pixel's
+    /// centre ([`Self::near`]); where none does, enough of the others that a read among them
+    /// picks as a read among every segment does ([`Self::around`]).
+    fn candidates(&self, x: u32, y: u32, body: f64, near: &mut Vec<u32>) {
+        self.near(x, y, near);
+        if near.is_empty() {
+            self.around(x, y, body, near);
+        }
+    }
+
+    /// The segments that may lie nearest a point of pixel `(x, y)` or hold one within `body` of
+    /// them, in order, into `out` (empty), where no segment's bounds hold the pixel's centre: those
+    /// beyond the frame's tiles and those filed under the tiles ring by ring around the pixel's,
+    /// until every segment not found lies further from every point of the pixel than `reach`, the
+    /// further of `body` and the centre's nearest found and how far a point of the pixel lies from
+    /// the centre (under `0.75`); then of those, the ones whose bounds lie within `reach` of the
+    /// pixel. A segment not found has bounds widened by the margin that meet no tile within `ring`
+    /// tiles of the pixel's, so it lies over `ring` tiles and the margin, less half a pixel, from
+    /// every point of the pixel. A segment beyond `reach` of every point is neither the nearest of
+    /// any (the centre's nearest lies within `reach`) nor holds one in its body, whatever the order
+    /// of the rest, so a read among these picks as one among every segment does; each comparison
+    /// holds with room for its rounding ([`Centreline::rounding`]).
+    fn around(&self, x: u32, y: u32, body: f64, out: &mut Vec<u32>) {
+        let centre = [x as f64 + 0.5, y as f64 + 0.5];
+        let mut nearest = f64::INFINITY;
+        for &k in &self.beyond {
+            nearest = nearest.min(self.line.distance2(k as usize, centre));
+            out.push(k);
+        }
+        let (tx, ty) = ((x / TILE) as i64, (y / TILE) as i64);
+        let (across, down) = (self.across as i64, self.down as i64);
+        let reach = |nearest: f64| (nearest.sqrt() + 0.75).max(body);
+        for ring in 0i64.. {
+            for row in (ty - ring).max(0)..=(ty + ring).min(down - 1) {
+                for column in (tx - ring).max(0)..=(tx + ring).min(across - 1) {
+                    if (row - ty).abs().max((column - tx).abs()) != ring {
+                        continue;
+                    }
+                    let t = (row * across + column) as usize;
+                    for &k in &self.tiled[self.starts[t] as usize..self.starts[t + 1] as usize] {
+                        nearest = nearest.min(self.line.distance2(k as usize, centre));
+                        out.push(k);
+                    }
+                }
+            }
+            let every = tx - ring <= 0
+                && ty - ring <= 0
+                && tx + ring >= across - 1
+                && ty + ring >= down - 1;
+            let clear = (ring * TILE as i64) as f64 + self.margin - 0.5;
+            let reach = reach(nearest);
+            if every || clear > reach + self.line.rounding(clear + reach) {
+                break;
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        let reach = reach(nearest);
+        let pixel = [x as f64, y as f64, x as f64 + 1.0, y as f64 + 1.0];
+        let limit = reach + self.line.rounding(reach + pixel[2].max(pixel[3]));
+        out.retain(|&k| self.line.gap(k as usize, pixel) <= limit);
     }
 }
 
@@ -1514,7 +1644,7 @@ impl Producer for Paths {
         };
         let curve = &self.centrelines[i as usize];
         let mut near = Vec::new();
-        curve.near(x, y, &mut near);
+        curve.candidates(x, y, body, &mut near);
         // One bound for every point, as a plane's is: the largest of theirs.
         let mut err = 0.0f64;
         for (p, d) in points.iter().zip(out.iter_mut()) {

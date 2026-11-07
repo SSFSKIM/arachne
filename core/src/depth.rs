@@ -540,6 +540,8 @@ pub struct Centreline {
     segments: Vec<([f64; 2], f64, [f64; 2], f64)>,
     /// Each segment's ends' keys' greater error.
     errors: Vec<f64>,
+    /// The largest magnitude of a coordinate of a segment's end.
+    scale: f64,
 }
 
 impl Centreline {
@@ -577,9 +579,14 @@ impl Centreline {
             segments.push((p, k, p, k));
             errs.push(err(i));
         }
+        let scale = segments
+            .iter()
+            .flat_map(|(a, _, b, _)| [a[0], a[1], b[0], b[1]])
+            .fold(0.0, |m: f64, v| m.max(v.abs()));
         Centreline {
             segments,
             errors: errs,
+            scale,
         }
     }
 
@@ -597,6 +604,39 @@ impl Centreline {
                 a[1].max(b[1]) + margin,
             ]
         })
+    }
+
+    /// The squared distance from `p` to segment `i`, as [`Centreline::key_under`] measures it.
+    pub fn distance2(&self, i: usize, p: [f64; 2]) -> f64 {
+        count!(FEET);
+        let (a, _, b, _) = self.segments[i];
+        foot(a, b, p).1
+    }
+
+    /// The distance from segment `i`'s screen bounds to the box `area` (`[x0, y0, x1, y1]`):
+    /// nothing of the segment lies nearer any point of the box.
+    pub fn gap(&self, i: usize, area: [f64; 4]) -> f64 {
+        let (a, _, b, _) = self.segments[i];
+        let gx = (a[0].min(b[0]) - area[2])
+            .max(area[0] - a[0].max(b[0]))
+            .max(0.0);
+        let gy = (a[1].min(b[1]) - area[3])
+            .max(area[1] - a[1].max(b[1]))
+            .max(0.0);
+        libm::hypot(gx, gy)
+    }
+
+    /// How far the distances [`Centreline::key_under`] compares may stand from the exact
+    /// distances they round, where every coordinate, distance and body compared is at most
+    /// `extent` (the segments' own coordinates are taken in): `2^-46` of the largest magnitude.
+    /// A projection rounds within `17u` of the largest magnitude `S` of its coordinates (its
+    /// direction, step and offset, each a rounding of a sum within `3S`), its squared length and
+    /// root within `1.5u` of their size, a parameter moved by rounding within `12uS` of the
+    /// nearest point: a read's distance lies within `34uS` of the exact one, a box's gap within
+    /// `9uS`, a root and the sums compared within `6uS` more; a decision that holds by `128uS` holds
+    /// for the rounded distances as for the exact ones.
+    pub fn rounding(&self, extent: f64) -> f64 {
+        128.0 * U * self.scale.max(extent).max(1.0)
     }
 
     /// The key at point `p` of the part of the curve that covers it, among the segments
