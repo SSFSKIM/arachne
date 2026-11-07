@@ -697,6 +697,40 @@ def test_a_request_ends_answered_or_expired_never_both():
     assert calls == [False, True]
 
 
+def test_what_a_request_publishes_never_holds_its_deadline_back():
+    watchdog = Watchdog()
+    fired: list[bool] = []
+    expired, publishing, release = (
+        threading.Event(),
+        threading.Event(),
+        threading.Event(),
+    )
+
+    def end(respond: bool) -> None:
+        fired.append(respond)
+        expired.set()
+
+    ticket = watchdog.arm(time.monotonic() + 0.2, end)
+
+    def publish() -> None:
+        publishing.set()
+        release.wait(WAIT_S)
+
+    claiming = threading.Thread(target=watchdog.claim, args=(ticket, publish))
+    claiming.start()
+    try:
+        assert publishing.wait(WAIT_S)
+        # A publication that overruns the deadline: the watchdog ends the
+        # request all the same, and without the deadline's error, the
+        # request having claimed its answer.
+        assert expired.wait(1.0)
+        assert fired == [False]
+    finally:
+        release.set()
+        claiming.join(WAIT_S)
+        watchdog.end(ticket)
+
+
 @pytest.mark.parametrize("transport", TRANSPORTS)
 def test_a_scene_that_exits_never_ends_the_server(serve, tmp_path, transport):
     server = serve(transport)
