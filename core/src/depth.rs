@@ -613,22 +613,22 @@ impl Centreline {
         count!(KEY_UNDER);
         let body2 = body * body;
         // The front-most key among the segments holding p with the largest error among them; the
-        // nearest segment's (distance, key, error).
+        // nearest segment's (distance, index, projection), keyed only if no segment holds p.
         let mut front: Option<(f64, f64)> = None;
-        let mut nearest: Option<(f64, f64, f64)> = None;
+        let mut nearest: Option<(f64, usize, f64)> = None;
         let mut consider = |i: usize| {
             let (a, ka, b, kb) = self.segments[i];
             count!(FEET);
             let (raw, d2) = foot(a, b, p);
-            let (key, err) = key_on((a, ka), (b, kb), self.errors[i], p, raw);
             if (0.0..=1.0).contains(&raw) && d2 <= body2 {
+                let (key, err) = key_on((a, ka), (b, kb), self.errors[i], p, raw);
                 front = Some(match front {
                     Some((f, e)) => (f.min(key), e.max(err)),
                     None => (key, err),
                 });
             }
             if nearest.is_none_or(|(n, _, _)| d2 < n) {
-                nearest = Some((d2, key, err));
+                nearest = Some((d2, i, raw));
             }
         };
         if candidates.is_empty() {
@@ -638,9 +638,11 @@ impl Centreline {
             count!(most MOST_FEET, candidates.len());
             candidates.iter().for_each(|i| consider(*i as usize));
         }
-        front
-            .or(nearest.map(|(_, key, err)| (key, err)))
-            .expect("a centreline has a segment")
+        front.unwrap_or_else(|| {
+            let (_, i, raw) = nearest.expect("a centreline has a segment");
+            let (a, ka, b, kb) = self.segments[i];
+            key_on((a, ka), (b, kb), self.errors[i], p, raw)
+        })
     }
 }
 
