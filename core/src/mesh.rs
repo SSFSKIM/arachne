@@ -193,7 +193,7 @@ pub fn lower(
                     let at = idx.map(|i| world[i]);
                     WorldPlane::of_triangle(at, grid)
                         .and_then(|plane| {
-                            let (_, id) = registry.merge(plane, &at);
+                            let id = registry.merge(plane, &at);
                             let key = p.key_plane(&plane, &map, at[0], MIN_PLANE_COS, region);
                             key.map(|key| (key, id))
                         })
