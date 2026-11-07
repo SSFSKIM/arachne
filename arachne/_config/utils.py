@@ -430,7 +430,10 @@ class ManimConfig(MutableMapping):
         each of the 17 removed options names its replacement), approved
         2026-11-02.
         """
-        # Only for a name found nowhere else.
+        # Only for a name found nowhere else, and for ``renderer``, whose
+        # property raised: Python then asks here, and its message would be lost.
+        if name == "renderer":
+            raise AttributeError(RENDERER_REMOVED)
         if name in REMOVED_OPTIONS:
             raise AttributeError(no_option(name))
         raise AttributeError(
