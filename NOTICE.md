@@ -39,6 +39,10 @@ These ideas came from other projects; no code was taken from them.
   last three frames of the scene's own code and where inside the engine it was raised, nearest-name suggestions for
   a misspelt name, and a table of names from earlier Manim with what replaced them, whose old names follow ManimGX's
   list: ManimGX's `cli/scenes.py`, as above.
+- Giving each execution of a scene its own imports of the modules beside it, found by a finder placed before the
+  import path's own, compiled from their source with no cached bytecode trusted or written, and taken out of
+  `sys.modules` again with `sys.path` put back once the execution ends (`arachne/timeline/loader.py`): ManimGX's
+  `cli/preview.py` (`Sources`, `imports`) and the source loader it uses, as above.
 - Finding the scene's own line by walking the stack out of the library, and refusing `play()` while another play
   runs, as from an updater (`arachne/timeline/source.py`, `arachne/manager.py`): Manim Community Edition
   [pull request #5006](https://github.com/ManimCommunity/manim/pull/5006).

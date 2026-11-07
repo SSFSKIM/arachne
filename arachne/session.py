@@ -26,6 +26,7 @@ import os
 import sys
 from dataclasses import dataclass, replace
 from fractions import Fraction
+from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
@@ -52,6 +53,7 @@ from .timeline.execution import (
 )
 from .timeline.fallback import Answer, ForwardRun, answer_instants
 from .timeline.inputs import Read, file_digests, source_digest, source_files
+from .timeline.loader import FromSource, imports
 from .timeline.mapping import freeze_mapping_centre
 from .timeline.origins import ORIGINS
 from .timeline.probe import Probe
@@ -526,7 +528,10 @@ class Session:
 
     @_under_its_settings
     def close(self) -> None:
-        """Let go of the scene and its record."""
+        """Let go of the scene and its record, and drop the scene's module
+        from ``sys.modules``: the modules it imported from its directory
+        were dropped as each execution ended (:func:`.loader.imports`).
+        """
         sys.modules.pop(self.module.__name__, None)
 
 
@@ -596,17 +601,17 @@ def execute(
 ) -> tuple[Scene, ModuleType]:
     """Import ``path`` under a module of its own and execute its scene class
     ``scene`` under ``settings``, recorded by ``recorder(scene)``: the scene
-    and its module. An execution that raises leaves its module unimported.
+    and its module. The modules of the scene's directory it imports are its
+    own, loaded from their source, and gone from ``sys.modules`` afterwards
+    (:func:`.loader.imports`). An execution that raises leaves its module
+    unimported.
     """
     base_dir = str(path.parent)
     # Each execution starts as a fresh process does: another execution of
     # the source in this process left its construction caches filled.
     forget_construction_caches()
-    with tempconfig(settings):
+    with tempconfig(settings), imports(path):
         ORIGINS.start(base_dir, str(path))
-        added_path = base_dir not in sys.path
-        if added_path:
-            sys.path.insert(0, base_dir)
         try:
             module = _import(path)
             try:
@@ -621,8 +626,6 @@ def execute(
                 raise
         finally:
             ORIGINS.stop()
-            if added_path and base_dir in sys.path:
-                sys.path.remove(base_dir)
     return instance, module
 
 
@@ -777,12 +780,14 @@ def _source_digest(scene: Scene) -> str | None:
 
 def _import(path: Path) -> ModuleType:
     """Import ``path`` under a name of its own, so two sessions of one file
-    never share a module.
+    never share a module, compiled from what the file holds now.
     """
     name = f"arachne_session_{next(_MODULE_NUMBERS)}_{path.stem}"
     spec = importlib.util.spec_from_file_location(name, os.fspath(path))
     if spec is None or spec.loader is None:
         raise FileNotFoundError(f"{path} is not a Python file.")
+    if isinstance(spec.loader, SourceFileLoader):
+        spec.loader = FromSource(name, spec.loader.path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     try:

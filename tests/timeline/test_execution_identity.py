@@ -358,8 +358,8 @@ def test_the_source_digest_covers_the_helper_modules_the_scene_imported(scene_di
 
 def test_the_same_source_in_another_directory_has_the_same_digest(scene_dir, tmp_path):
     first = _open(_helped(scene_dir), "Helped").record.identity
-    # The first directory's helpers stay imported under their names, as
-    # they would in a long-lived process: the copy's digest is its own.
+    # The copy's helpers have the first directory's names: its digest is of
+    # its own files.
     elsewhere = tmp_path / "elsewhere"
     shutil.copytree(scene_dir, elsewhere)
     second = _open(elsewhere / "scene.py", "Helped").record.identity
