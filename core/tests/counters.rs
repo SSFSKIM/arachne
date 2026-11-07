@@ -66,9 +66,9 @@ fn lines(points: &[[f64; 3]]) -> Vec<[f64; 3]> {
 /// Segments in the loop [`loop_counts`] draws.
 const N: usize = 2000;
 
-/// The counts of one draw of a closed, filled and stroked loop of [`N`] segments across a
-/// production-sized frame.
-fn loop_counts() -> Vec<(&'static str, u64)> {
+/// The counts of one draw of a closed, stroked loop of [`N`] segments across a production-sized
+/// frame, filled where `fill`.
+fn loop_counts(fill: bool) -> Vec<(&'static str, u64)> {
     // A closed, filled and stroked loop of 2000 segments across a production-sized frame, upright
     // before the camera, its points on no one plane (a wave in depth around it), so its stroke
     // and fill are keyed along it, its fill far inside from every segment.
@@ -89,7 +89,11 @@ fn loop_counts() -> Vec<(&'static str, u64)> {
     });
     let mut r = Record::new(RecordKind::Path, 1, 101);
     r.geometry.shape_a = Some(shape.key());
-    r.paint.fill = Paint::One([0.2, 0.4, 0.9, 0.6]);
+    r.paint.fill = if fill {
+        Paint::One([0.2, 0.4, 0.9, 0.6])
+    } else {
+        Paint::None
+    };
     r.paint.stroke = Paint::One([1.0, 1.0, 1.0, 1.0]);
     r.paint.stroke_width = 4.0;
     r.depth.space = Space::World;
@@ -104,7 +108,7 @@ fn loop_counts() -> Vec<(&'static str, u64)> {
 #[test]
 fn a_long_curve_is_searched_only_near_the_pixel_read() {
     let _one = COUNTS.lock().unwrap_or_else(|e| e.into_inner());
-    let counts = loop_counts();
+    let counts = loop_counts(true);
     let (near, tested) = (count("near", &counts), count("bounds_tested", &counts));
     assert!(near > 0 && count("key_under", &counts) > 0, "{counts:?}");
     // A search tests the bounds near the pixel, and a read projects onto the segments near it,
@@ -124,7 +128,7 @@ fn a_long_curve_is_searched_only_near_the_pixel_read() {
 #[test]
 fn a_pixel_s_reads_project_only_onto_the_segments_that_may_reach_it() {
     let _one = COUNTS.lock().unwrap_or_else(|e| e.into_inner());
-    let counts = loop_counts();
+    let counts = loop_counts(true);
     let (reads, feet) = (count("key_under", &counts), count("feet", &counts));
     assert!(reads > 0, "{counts:?}");
     // A pixel's points are read among the few segments within reach of them, not among every
@@ -133,5 +137,21 @@ fn a_pixel_s_reads_project_only_onto_the_segments_that_may_reach_it() {
         feet / reads < N as u64 / 64,
         "{} segments projected onto a read: {counts:?}",
         feet / reads
+    );
+}
+
+#[test]
+fn a_pixel_s_candidates_are_found_near_it_not_among_every_segment_whose_bounds_hold_it() {
+    let _one = COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    // A stroke alone: every pixel read lies on it, within a few pixels of its nearest segment.
+    let counts = loop_counts(false);
+    let (reads, gaps) = (count("key_under", &counts), count("gaps", &counts));
+    assert!(reads > 0, "{counts:?}");
+    // The segments a pixel's reads are made among are found from the few near it: the bounds
+    // measured stay few, not the hundreds whose widened bounds hold the pixel's centre.
+    assert!(
+        gaps / reads < N as u64 / 16,
+        "{} bounds measured a read: {counts:?}",
+        gaps / reads
     );
 }
