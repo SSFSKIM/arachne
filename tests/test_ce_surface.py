@@ -1,7 +1,8 @@
 """Every public name of Manim CE 0.20.1 is where a scene written for it looks:
 ``manim.<path>.<name>`` at ``arachne.<path>.<name>``, and every name
 ``from manim import *`` binds in ``from arachne import *``, but for the
-deliberate breaks listed here, each of which must really be gone.
+deliberate breaks ``arachne._removed`` lists, each of which must really be
+gone.
 
 CE is never imported: its names are the committed list
 ``tests/data/ce_0_20_1_surface.json``, which ``scripts/ce_surface.py`` writes
@@ -16,42 +17,14 @@ from pathlib import Path
 
 import pytest
 
+import arachne
+from arachne._removed import OPENGL_PREFIX, REMOVED
+
 SURFACE = json.loads(
     (Path(__file__).parent / "data" / "ce_0_20_1_surface.json").read_text()
 )
 MODULES: dict[str, list[str]] = SURFACE["modules"]
 STAR: list[str] = SURFACE["star"]
-
-#: Deliberate break 1: the OpenGL renderer and its mobject hierarchy removed
-#: (7de40353).
-OPENGL = (1, "the OpenGL renderer and its mobject hierarchy removed, 7de40353")
-
-#: What CE 0.20.1 has that Arachne deliberately does not, with the break
-#: that removed it: a module (with every module under it), ``module:name``,
-#: or ``*:name`` for a name ``from manim import *`` binds.
-APPROVED_BREAKS: dict[str, tuple[int, str]] = {
-    "manim.mobject.opengl": OPENGL,
-    "manim.opengl": OPENGL,
-    "manim.renderer.opengl_renderer": OPENGL,
-    "manim.renderer.opengl_renderer_window": OPENGL,
-    "manim.renderer.shader": OPENGL,
-    "manim.renderer.shader_wrapper": OPENGL,
-    "manim.renderer.vectorized_mobject_rendering": OPENGL,
-    "manim.utils.opengl": OPENGL,
-    # The renderer option's values.
-    "manim.constants:RendererType": OPENGL,
-    # The OpenGL window's rerun on a changed file.
-    "manim.utils.exceptions:RerunSceneException": OPENGL,
-    # It wraps the OpenGL renderer's plays alone.
-    "manim.utils.caching:handle_caching_play": OPENGL,
-    "*:DotCloud": OPENGL,
-    "*:TrueDot": OPENGL,
-    "*:OpenGLPGroup": OPENGL,
-    "*:OpenGLPMPoint": OPENGL,
-    "*:OpenGLPMobject": OPENGL,
-    "*:RendererType": OPENGL,
-    "*:opengl": OPENGL,
-}
 
 
 def _arachne(path: str) -> str:
@@ -61,7 +34,7 @@ def _arachne(path: str) -> str:
 def _module_broken(path: str) -> bool:
     return any(
         path == broken or path.startswith(broken + ".")
-        for broken in APPROVED_BREAKS
+        for broken in REMOVED
         if ":" not in broken
     )
 
@@ -76,7 +49,7 @@ def test_every_ce_name_is_at_its_path(path):
     missing = [
         f"{_arachne(path)}.{name}"
         for name in MODULES[path]
-        if f"{path}:{name}" not in APPROVED_BREAKS and not hasattr(module, name)
+        if f"{path}:{name}" not in REMOVED and not hasattr(module, name)
     ]
     assert missing == []
 
@@ -84,13 +57,11 @@ def test_every_ce_name_is_at_its_path(path):
 def test_every_ce_star_name_is_in_arachne_s_star():
     star: dict[str, object] = {}
     exec("from arachne import *", star)
-    missing = [
-        name for name in STAR if f"*:{name}" not in APPROVED_BREAKS and name not in star
-    ]
+    missing = [name for name in STAR if f"*:{name}" not in REMOVED and name not in star]
     assert missing == []
 
 
-@pytest.mark.parametrize("broken", APPROVED_BREAKS)
+@pytest.mark.parametrize("broken", REMOVED)
 def test_every_approved_break_is_of_a_ce_name_arachne_lacks(broken):
     where, _, name = broken.rpartition(":")
     if not where:
@@ -105,3 +76,21 @@ def test_every_approved_break_is_of_a_ce_name_arachne_lacks(broken):
     else:
         assert name in MODULES[where]
         assert not hasattr(importlib.import_module(_arachne(where)), name)
+
+
+def test_every_replacement_a_removal_names_is_arachne_s():
+    for removal in REMOVED.values():
+        if removal.instead is not None and "`" not in removal.instead:
+            assert hasattr(arachne, removal.instead)
+
+
+def test_every_ce_name_of_the_opengl_prefix_was_removed_with_its_hierarchy():
+    """The errors read a name with the prefix as removed with the OpenGL
+    renderer: every CE name that has it is in a removed module or is a
+    removed name, and Arachne has none.
+    """
+    for path, names in MODULES.items():
+        for name in names:
+            if name.startswith(OPENGL_PREFIX):
+                assert _module_broken(path) or f"*:{name}" in REMOVED, (path, name)
+    assert [name for name in dir(arachne) if name.startswith(OPENGL_PREFIX)] == []
