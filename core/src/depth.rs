@@ -41,6 +41,94 @@ fn snap_reach(grid: f64) -> f64 {
     grid * 0.75f64.sqrt()
 }
 
+/// The grid a writer that snaps positions to the input grid snaps a placement's linear part to,
+/// as it snaps every ratio: 2^-24. The placement's translation is a position.
+const RATIO_GRID: f64 = 1.0 / 16_777_216.0;
+
+/// How far, along the unit normal `n`, the snap of a record's inputs to `grid` may have moved its
+/// placed points from where content put them: `place(outer, place(inner, p))` for each `p` of
+/// `points` (its shape's), `places` its placements outer first (the identity where there is none;
+/// one placement exactly the identity is taken as none, as the snap makes the identity of nothing
+/// else that matters). In a frame whose points were not snapped (`grid` `0`) no snap moved them,
+/// and only the core's own placing rounds them.
+///
+/// The snap rounds each coordinate of a point and of a placement's translation to a multiple of
+/// `grid`, so within half a step, and each entry of a placement's linear part to a multiple of
+/// [`RATIO_GRID`], within half of that. A placement `x -> L x + t`, seen through the linear parts
+/// of those outside it (their product `C`: the identity for the outer one), so moves a point along
+/// `n` by at most `(grid / 2) |C^T n|_1` for its translation and `2^-25 |C^T n|_1 |x|_1` for its
+/// linear part, `x` the point it places; the shape's own points move by at most
+/// `(grid / 2) |(L_outer L_inner)^T n|_1`. For an unplaced record the snap's part is
+/// `(grid / 2) |n|_1`: half a step for a plane facing an axis, `sqrt(3) / 2` steps for one facing
+/// a diagonal.
+///
+/// The core's own placing rounds the points besides, snapped or not: it composes the two
+/// placements (`xf::compose`, each entry a sum of at most four products and terms, so within
+/// `gamma_4` of their magnitudes, `gamma_k = k u / (1 - k u)`) and places each point by the
+/// product (`xf::place`, four terms again). Each placed coordinate so lies within
+/// `2 gamma_4 (1 + gamma_4)` of the magnitudes `A = |outer| (|inner| |p| + |t_inner|) +
+/// |t_outer|` of the exact placing, and the point within that times `|n| . A` along `n`: `8u` of
+/// it to the first order, the rest (`64u^2` of it) far below any key's own rounding.
+pub(crate) fn snap_departure(
+    grid: f64,
+    n: [f64; 3],
+    places: &[crate::xf::Affine; 2],
+    points: &[[f64; 3]],
+) -> f64 {
+    use crate::xf::{IDENTITY, place};
+    let snapped = grid > 0.0;
+    let l1 = |v: [f64; 3]| v[0].abs() + v[1].abs() + v[2].abs();
+    let [outer, inner] = places;
+    // The largest `|x|_1` of the points a placement places: the inner one's are the shape's, the
+    // outer one's those the inner placed.
+    let largest = |by: Option<&crate::xf::Affine>| {
+        points
+            .iter()
+            .map(|p| l1(by.map_or(*p, |m| place(m, *p))))
+            .fold(0.0, f64::max)
+    };
+    let mut seen = n; // C^T n
+    let mut moved = 0.0;
+    for (m, by) in [(outer, Some(inner)), (inner, None)] {
+        if !snapped || *m == IDENTITY {
+            continue;
+        }
+        moved += l1(seen) * (grid / 2.0 + RATIO_GRID / 2.0 * largest(by));
+        seen = std::array::from_fn(|j| m[0][j] * seen[0] + m[1][j] * seen[1] + m[2][j] * seen[2]);
+    }
+    if snapped {
+        moved += grid / 2.0 * l1(seen);
+    }
+    let abs = |m: &crate::xf::Affine| m.map(|row| row.map(f64::abs));
+    let (outer_abs, inner_abs) = (abs(outer), abs(inner));
+    let size = points
+        .iter()
+        .map(|p| {
+            let placed = place(&outer_abs, place(&inner_abs, p.map(f64::abs)));
+            dot(n.map(f64::abs), placed)
+        })
+        .fold(0.0, f64::max);
+    moved + 8.0 * U * size
+}
+
+/// How far the points lie off `plane` along its normal, from the plane its key is held to: its
+/// unrounded normal through the exact offset (`Projection::key_plane`), which lies within its
+/// `offset_err` of the offset found; with the rounding of reading each point, `4u` of its terms.
+/// Zero, but for rounding, for the corners of the triangle it was found through, or a path on the
+/// axis plane all its points share; for a face of more points, the snap's noise tilts the plane
+/// fitted through its first point (Newell's normal), and its other points stand off it.
+pub(crate) fn departure(plane: &WorldPlane, points: &[[f64; 3]]) -> f64 {
+    let u = plane.unrounded;
+    points
+        .iter()
+        .map(|p| {
+            let terms = dot(u.normal.map(f64::abs), p.map(f64::abs)) + u.offset.abs();
+            (dot(u.normal, *p) - u.offset).abs() + 4.0 * U * terms
+        })
+        .fold(0.0, f64::max)
+        + u.offset_err
+}
+
 /// The outline's perimeter, closed.
 fn perimeter(points: &[[f64; 3]]) -> f64 {
     (0..points.len())

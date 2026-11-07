@@ -995,7 +995,8 @@ impl PyStream {
     /// order two leaves both ways or admit no one order (``contributors.rs``). ``decided`` is how
     /// each pair of leaves was ordered, ``(a, b, rule)`` for indices ``a < b`` into ``leaves``,
     /// ``rule`` one of ``"paint"`` (no sub-sample both cover), ``"tie"`` (their depths equal
-    /// within the key arithmetic's error wherever both cover, or one registered plane),
+    /// within the key arithmetic's error wherever both cover, or, on one registered plane, within
+    /// that and what the input grid's snap can move each from one plane),
     /// ``"depth"`` or ``"majority"``
     /// (their depths cross inside the pixel) (``order.rs``). Nothing is drawn.
     #[allow(clippy::type_complexity)]

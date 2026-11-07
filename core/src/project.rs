@@ -217,6 +217,28 @@ impl Projection {
         )
     }
 
+    /// How far, as a share of itself, the depth key across `plane` ([`Projection::key_plane`]) may
+    /// move at any pixel where the plane stands up to `distance` off it along its normal: what a
+    /// world departure moves the key by. On the plane the key is `f = N / D`, `D` the plane's
+    /// distance from the eye along its unit normal and `N` fixed by the pixel and the normal; moved
+    /// by `distance` along the normal, `D` moves by as much and `f` by at most
+    /// `|f| distance / (|D| - distance)`: the share returned is `distance / (|D| - distance)`. (In
+    /// view depth that is `distance / |n . r|` for the sight line `r` with a unit z: the key moves
+    /// by `f^2 / d` per unit of depth.) A plane tilted off it
+    /// by no more than `distance` moves each pixel's key by as much, but for the tilt's change of
+    /// the sight line's angle to the plane, of the order of the departure over the plane's size.
+    /// Infinite where the moved plane may reach the eye.
+    pub fn key_reach(&self, plane: &WorldPlane, map: &FrameMap, distance: f64) -> f64 {
+        let exact = plane.unrounded;
+        let basis = self.key_basis(exact.normal, map);
+        let away =
+            (exact.offset - basis.n_dot_centre - basis.m[2] * self.focal_distance).abs() - distance;
+        if away.is_nan() || away <= 0.0 || !distance.is_finite() {
+            return f64::INFINITY;
+        }
+        distance / away
+    }
+
     /// The part of [`Projection::key_plane`] that depends on the plane's normal alone.
     fn key_basis(&self, n: [f64; 3], map: &FrameMap) -> KeyBasis {
         let (c, r) = (self.frame_center, &self.rotation);

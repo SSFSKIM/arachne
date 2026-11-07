@@ -12,7 +12,8 @@
 //!   plane (`depth::WorldPlane`), so coplanar triangles of any triangulation get bit-identical
 //!   depth; registered in the frame's `depth::Registry`, before its paths, it gives the triangle
 //!   the identity of the plane it lies on, which paths and other meshes on that plane share, so
-//!   they tie by draw order (`order::one_plane`). A fixed orientation record is a
+//!   they tie by draw order where their keys lie within the snap's departure of one plane
+//!   (`order::coplanar_tied`). A fixed orientation record is a
 //!   camera-facing plane at its centre's depth. Anything else is in front of the scene, and ties go
 //!   by draw order, as under a flat camera, where everything ties.
 //! - Colour: the fill, by the record's group opacity; lit when the record is `shade_in_3d` and the
@@ -45,6 +46,9 @@ pub struct MeshDraw<'a> {
     pub triangles: &'a [[u32; 3]],
     pub normals: Option<&'a [[f64; 3]]>,
     pub place: Affine,
+    /// The placements `place` is made of, outer first (the identity for none): an instance's
+    /// placement and its record's ([`crate::path::PathDraw::places`]).
+    pub places: [Affine; 2],
     pub fill: [f64; 4],
     pub order: u32,
     pub sub: u32,
@@ -72,6 +76,8 @@ struct Tri {
     surface: u32,
     /// The registered plane it lies on ([`Fragment::plane`]), `0` for none.
     plane: u32,
+    /// The snap's departure of its key ([`Fragment::snap`]), finite on a registered plane.
+    snap: f64,
 }
 
 /// Mesh records lowered to triangles, binned by tile: a producer of mask fragments.
@@ -186,20 +192,29 @@ pub fn lower(
             ];
             // A projected triangle lies on its world plane, made canonical so coplanar meshes of
             // any triangulation get the same depth plane, and registered, so what lies on it
-            // shares its identity.
-            let (depth, plane) = match (keyed, projection.as_ref()) {
-                (Some(plane), _) => (plane, 0),
+            // shares its identity. Its key carries the snap's departure of its corners, placed
+            // (`depth::snap_departure`) and theirs off its plane (`depth::departure`: nothing but
+            // rounding, unless the plane is the axis plane its corners share within the grid). The
+            // rounding of its plane's coefficients is in its key's own bound, as it happened
+            // (`Projection::key_plane`).
+            let (depth, plane, snap) = match (keyed, projection.as_ref()) {
+                (Some(plane), _) => (plane, 0, f64::INFINITY),
                 (None, Some(p)) if idx.iter().all(|i| p.keys_planar_at(world[*i])) => {
                     let at = idx.map(|i| world[i]);
                     WorldPlane::of_triangle(at, grid)
                         .and_then(|plane| {
                             let id = registry.merge(plane, &at);
-                            let key = p.key_plane(&plane, &map, at[0], MIN_PLANE_COS, region);
-                            key.map(|key| (key, id))
+                            let key = p.key_plane(&plane, &map, at[0], MIN_PLANE_COS, region)?;
+                            let own = idx.map(|i| draw.positions[i]);
+                            let normal = plane.unrounded.normal;
+                            let off =
+                                crate::depth::snap_departure(grid, normal, &draw.places, &own)
+                                    + crate::depth::departure(&plane, &at);
+                            Some((key, id, p.key_reach(&plane, &map, off)))
                         })
-                        .unwrap_or_else(|| (through(), 0))
+                        .unwrap_or_else(|| (through(), 0, f64::INFINITY))
                 }
-                _ => (through(), 0),
+                _ => (through(), 0, f64::INFINITY),
             };
             let colour = match &light {
                 None => TriangleColour::flat(rgb, alpha),
@@ -221,6 +236,7 @@ pub fn lower(
                 sub: draw.sub + sub as u32,
                 surface: surface as u32 + 1,
                 plane,
+                snap,
             };
             meshes.push(px, tri, height);
         }
@@ -386,6 +402,7 @@ impl Meshes {
                         Fragment::new(t.depth, colour, Coverage::Mask(mask), t.order, t.sub)
                             .on_surface(t.surface);
                     f.plane = t.plane;
+                    f.snap = t.snap;
                     add(x, y, f);
                 }
             }

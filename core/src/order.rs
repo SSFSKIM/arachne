@@ -1,10 +1,11 @@
 //! The order fragments composite in at a pixel. Depth decides the order of two fragments only
 //! where both cover, and only where their depths are distinguishable within what the core knows
 //! of them: at a sub-sample both cover, the nearer is in front unless the two depths lie within
-//! their own error bounds of each other ([`tied`]); everywhere else, at such a tie, between
-//! fragments on one registered plane ([`one_plane`]) and between one path's fill and its own
-//! strokes ([`own_layers`]), they keep the stream's paint order (the later drawn in front), which
-//! is the order Cairo paints them in.
+//! their own error bounds of each other ([`tied`]), or, for two fragments on one registered plane
+//! ([`one_plane`]), within those bounds and the snap's departure of each ([`coplanar_tied`]);
+//! everywhere else, at such a tie and between one path's fill and its own strokes
+//! ([`own_layers`]), they keep the stream's paint order (the later drawn in front), which is the
+//! order Cairo paints them in.
 //!
 //! A depth's error bound (a fragment's `Depths::err` at a pixel) is how far it may stand from the
 //! exact depth of the core's own inputs for it (the snapped points and the normals carried). On a
@@ -34,6 +35,17 @@
 //! carries its drawn outline's departure from that plane (`path::nearest_plane_departure`), so it
 //! ties with what that plane cannot tell it from. Two other depths that differ are two depths,
 //! and depth orders them.
+//!
+//! But for two fragments on one registered plane: there the snap is not common input. Each is
+//! keyed on the plane fitted to its own snapped points, which stand off the plane content put them
+//! on by up to the snap's reach, so two faces content made coplanar part by that much, and two
+//! parallel faces a few grid steps apart can part by no more. Their identity says they may be one
+//! plane; their keys say whether they are within what the snap can do to one plane. Each such
+//! fragment carries the snap's departure for its own key ([`Fragment::snap`]), and the two tie
+//! where their depths lie within their error bounds and those departures of each other
+//! ([`coplanar_tied`]); elsewhere depth orders them.
+//!
+//! [`Fragment::snap`]: crate::composite::Fragment::snap
 //! One order for the pixel (what the coverage composite and the contributor report's leaf order
 //! read) takes each pair's order from the sub-samples both cover ([`pair`]); one order per
 //! sub-sample (what the sample resolve composites) takes each pair's order there. Both are ranked
@@ -59,8 +71,9 @@ pub enum Decided {
     /// No sub-sample both cover, or one path's fill against its own stroke ([`own_layers`]):
     /// paint order.
     Paint,
-    /// Every sub-sample both cover holds them at one depth within their errors, or they lie on one
-    /// registered plane ([`one_plane`]): paint order.
+    /// Every sub-sample both cover holds them at one depth within their errors, or, on one
+    /// registered plane, within their errors and the snap's departures ([`coplanar_tied`]): paint
+    /// order.
     Tie,
     /// Every sub-sample both cover and that is not a tie puts the same one in front.
     Depth,
@@ -108,40 +121,74 @@ pub fn own_layers(a: &Fragment, b: &Fragment) -> bool {
 }
 
 /// Whether `a` and `b` lie on one registered plane ([`Fragment::plane`]), whichever producer drew
-/// each: then they are one depth, exactly, wherever both cover, whatever each is keyed on. A
-/// stroke is keyed on its curve, which its plane holds only along the centreline; against what
-/// lies on its own plane (the face it outlines, a mesh it is drawn on, text and axes beside it)
-/// it takes the plane's key, so they tie bit for bit and keep paint order, and against anything
-/// else its curve's.
+/// each: the registry found either's points on the other's plane, so they may be one plane.
+/// Whether they are, where both cover, their keys decide ([`coplanar_tied`]).
 ///
 /// [`Fragment::plane`]: crate::composite::Fragment::plane
 pub fn one_plane(a: &Fragment, b: &Fragment) -> bool {
     a.plane != 0 && a.plane == b.plane
 }
 
+/// Whether `a` (depth `da` within `ea`) and `b` (depth `db` within `eb`), at a sub-sample both
+/// cover, lie on one registered plane ([`one_plane`]) and are one depth there: within their error
+/// bounds and the snap's departure of each of each other, a share ([`Fragment::snap`]) of each one's
+/// key there (with its bound: the key moves by its own share of itself). Two faces content made
+/// coplanar always are; two parallel faces farther apart than the snap can move one plane are not,
+/// and depth orders them, though the registry gave them one identity.
+///
+/// A fragment whose key nothing bounds (an infinite `snap`: a path whose points reached the core
+/// already projected, so no world plane bounds its key) ties with anything on its plane, whatever
+/// the depths: its key cannot tell it from that plane. A layer of a path on a registered plane (a
+/// stroke, or a fill beyond its outline) is read here on its path's plane at the sub-sample, with
+/// its path's share, against what shares that plane ([`crate::composite::Depths::against`]).
+///
+/// [`Fragment::snap`]: crate::composite::Fragment::snap
+pub fn coplanar_tied(a: &Fragment, da: f64, ea: f64, b: &Fragment, db: f64, eb: f64) -> bool {
+    let reach = |d: f64, e: f64, share: f64| e + (d.abs() + e) * share;
+    one_plane(a, b)
+        && (!(a.snap.is_finite() && b.snap.is_finite())
+            || tied(da, reach(da, ea, a.snap), db, reach(db, eb, b.snap)))
+}
+
 /// `a` (depth `da` within `ea`) against `b` (depth `db` within `eb`) at a sub-sample both cover:
-/// [`Ordering::Less`] when `a` is in front. The nearer, unless they tie, lie on one registered
-/// plane ([`one_plane`]) or are one path's fill and its own stroke ([`own_layers`]); then paint
-/// order.
+/// [`Ordering::Less`] when `a` is in front. The nearer, unless they tie, are one depth on one
+/// registered plane ([`coplanar_tied`]) or are one path's fill and its own stroke
+/// ([`own_layers`]); then paint order.
 pub fn at_sample(a: &Fragment, da: f64, ea: f64, b: &Fragment, db: f64, eb: f64) -> Ordering {
-    if own_layers(a, b) || one_plane(a, b) || tied(da, ea, db, eb) {
+    if own_layers(a, b) || coplanar_tied(a, da, ea, b, db, eb) || tied(da, ea, db, eb) {
         painted(a, b)
     } else {
         da.total_cmp(&db)
     }
 }
 
-/// Why a sub-sample's rank always finds an order: its strong orders are depth's at one point,
-/// each pair's depths farther apart than their two bounds, which no cycle can be.
-pub const ONE_SAMPLE: &str =
-    "a sub-sample's strong orders are depth's at one point, which do not cycle";
+/// `items` ranked front first into `out` at one sub-sample, from [`at_sample`]'s orders
+/// (`front`) and their strength (`strong`, [`strong_at`]), as [`rank`] ranks them. A fragment is
+/// read at one depth against all others but one: a stroke of a path on a registered plane is read
+/// on its path's plane against what shares that plane, on its curve against the rest
+/// ([`crate::composite::Depths::against`]). So its strong orders at one point need not be one
+/// depth's, and can cycle: a stroke `s` behind a fill `f` of its plane by the plane's key, `f`
+/// behind a fill `g` of another, and `g` behind `s` by the curve's. Such a cycle is broken as
+/// [`rank_through_cycles`] breaks one, the fragment in front of the most of those left first, the
+/// later painted where as many: a function of the pairwise orders, their strength and paint order
+/// alone, so every sub-sample of every frame ranks one way. Its [`Ranked`] says which happened.
+pub fn rank_sample(
+    items: &[usize],
+    front: impl Fn(usize, usize) -> bool,
+    strong: impl Fn(usize, usize) -> bool,
+    painted: impl Fn(usize, usize) -> Ordering,
+    out: &mut Vec<usize>,
+) -> Ranked {
+    ranked(items, front, strong, painted, out, true)
+}
 
 /// Whether [`at_sample`]'s order of `a` and `b` is strong, depth deciding it (see [`rank`]); the
-/// sub-sample's counterpart of [`Decided::is_strong`]. Paint order at a tie, on one registered
-/// plane ([`one_plane`]) and between a path's fill and its own stroke ([`own_layers`]) is weak.
-/// So at one sub-sample the strong orders are strict orders of finite depths, which never cycle.
+/// sub-sample's counterpart of [`Decided::is_strong`]. Paint order at a tie, at one depth on one
+/// registered plane ([`coplanar_tied`]) and between a path's fill and its own stroke
+/// ([`own_layers`]) is weak. So at one sub-sample the strong orders are strict orders of finite
+/// depths, which never cycle.
 pub fn strong_at(a: &Fragment, da: f64, ea: f64, b: &Fragment, db: f64, eb: f64) -> bool {
-    !own_layers(a, b) && !one_plane(a, b) && !tied(da, ea, db, eb)
+    !own_layers(a, b) && !coplanar_tied(a, da, ea, b, db, eb) && !tied(da, ea, db, eb)
 }
 
 /// `a` against `b` at the pixel, from their coverage and depth at each sub-sample, and how that was
@@ -156,7 +203,8 @@ pub fn pair(a: Seen, b: Seen) -> (Ordering, Decided) {
             continue;
         }
         shared += 1;
-        if !tied(da[k], a.err, db[k], b.err) {
+        let (fa, fb) = (a.fragment, b.fragment);
+        if !tied(da[k], a.err, db[k], b.err) && !coplanar_tied(fa, da[k], a.err, fb, db[k], b.err) {
             if da[k] < db[k] {
                 a_front += 1;
             } else {
@@ -167,9 +215,6 @@ pub fn pair(a: Seen, b: Seen) -> (Ordering, Decided) {
     let paint = painted(a.fragment, b.fragment);
     if shared > 0 && own_layers(a.fragment, b.fragment) {
         return (paint, Decided::Paint);
-    }
-    if shared > 0 && one_plane(a.fragment, b.fragment) {
-        return (paint, Decided::Tie);
     }
     match (shared, a_front, b_front) {
         (0, _, _) => (paint, Decided::Paint),
@@ -334,6 +379,99 @@ mod tests {
     const RED: [u8; 4] = [200, 0, 0, 255];
     const BLUE: [u8; 4] = [0, 0, 200, 255];
     const FULL: [u8; SAMPLES] = [255; SAMPLES];
+
+    #[test]
+    fn on_one_plane_a_zero_share_parts_beyond_the_errors_and_an_unbounded_one_ties() {
+        // In a frame whose points were not snapped (`grid` 0) the snap moved nothing: only the
+        // core's own placing rounds them. One formula at every grid: half a step times `|n|_1`
+        // at the writer's.
+        let n = [0.0, 0.6, 0.8];
+        let points = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let none = [crate::xf::IDENTITY, crate::xf::IDENTITY];
+        let unsnapped = crate::depth::snap_departure(0.0, n, &none, &points);
+        assert!((0.0..1e-14).contains(&unsnapped), "{unsnapped}");
+        let g = 1.0 / 16384.0;
+        let snapped = crate::depth::snap_departure(g, n, &none, &points);
+        assert!((snapped - g / 2.0 * 1.4).abs() < 1e-14, "{snapped}");
+        // A fill drawn first, 1e-9 nearer than one drawn later, both keyed within 1e-12, on one
+        // registered plane with a zero share.
+        let on_plane = |key: f64, order: u32| {
+            let depth = Plane {
+                err: 1e-12,
+                ..Plane::constant(key)
+            };
+            let mut f = at_depth(depth, RED, Coverage::Mask(u16::MAX), order);
+            (f.plane, f.snap) = (7, 0.0);
+            f
+        };
+        let first = on_plane(-1.0, 1);
+        let mut later = on_plane(-1.0 + 1e-9, 2);
+        assert_eq!(
+            ordered(&first, &FULL, &later, &FULL),
+            (Ordering::Less, Decided::Depth)
+        );
+        // The later one unbounded (a path the camera placed itself): paint order.
+        later.snap = f64::INFINITY;
+        assert_eq!(
+            ordered(&first, &FULL, &later, &FULL),
+            (Ordering::Greater, Decided::Tie)
+        );
+    }
+
+    /// A stroke `s` read on its path's plane against a fill `f1` of that plane, and on its curve
+    /// against a fill `g` of another, at one sub-sample: by the plane's key `f1` is in front of `s`,
+    /// `g` in front of `f1`, and by the curve's `s` in front of `g`, each beyond their bounds. The
+    /// strong orders cycle at one point; the sub-sample's rank settles it as `rank_through_cycles`
+    /// does (each in front of one: the later painted first, `s`), then keeps every order it can
+    /// (`g` before `f1`): one order for every sub-sample, whatever order the fragments come in.
+    #[test]
+    fn a_stroke_read_two_ways_settles_a_cycle_at_one_sub_sample_by_wins_then_paint_order() {
+        let fill = |key: f64, order: u32, plane: u32, colour: [u8; 4]| {
+            let mut f = at_depth(
+                Plane::constant(key),
+                colour,
+                Coverage::Mask(u16::MAX),
+                order,
+            );
+            (f.plane, f.snap, f.path_layer, f.sub) = (plane, 0.0, true, 1);
+            f
+        };
+        let f1 = fill(-1.0, 1, 7, RED);
+        let g = fill(-1.2, 2, 9, RED);
+        let mut s = fill(-1.4, 3, 7, BLUE);
+        s.sub = 2;
+        let own = |f: &Fragment| Depths::of_plane(f, 0, 0);
+        let mut on = own(&s);
+        on.on_plane = Some(([-0.8; SAMPLES], 0.0));
+        let frags = [f1, g, s];
+        let depths = [own(&f1), own(&g), on];
+        let read = |a: usize, b: usize| depths[a].against(&frags[a], &frags[b]);
+        let front = |a: usize, b: usize| {
+            let ((da, ea), (db, eb)) = (read(a, b), read(b, a));
+            a != b && at_sample(&frags[a], da[0], ea, &frags[b], db[0], eb).is_lt()
+        };
+        let strong = |a: usize, b: usize| {
+            let ((da, ea), (db, eb)) = (read(a, b), read(b, a));
+            strong_at(&frags[a], da[0], ea, &frags[b], db[0], eb)
+        };
+        assert!(front(0, 2) && front(1, 0) && front(2, 1), "the cycle");
+        assert!(strong(0, 2) && strong(1, 0) && strong(2, 1));
+        let painted = |a: usize, b: usize| painted(&frags[a], &frags[b]);
+        let mut out = Vec::new();
+        for items in [[0, 1, 2], [2, 1, 0], [1, 2, 0]] {
+            let how = rank_sample(&items, front, strong, painted, &mut out);
+            assert_eq!(
+                (how, &out[..]),
+                (Ranked::Strong, &[2, 1, 0][..]),
+                "{items:?}"
+            );
+        }
+        // The resolve composites it so: the stroke in front over the whole pixel.
+        let mut scratch = crate::composite::Scratch::default();
+        scratch.fragments.extend_from_slice(&frags);
+        let (_, pixel) = resolve_pixel(&mut scratch, [0, 0, 0, 255], |_, _| FULL, |i, _| depths[i]);
+        assert_eq!(pixel, BLUE);
+    }
 
     #[test]
     fn depths_that_are_not_finite_tie_only_with_themselves_before_any_subtraction() {

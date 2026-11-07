@@ -828,6 +828,7 @@ impl Stream {
                             triangles,
                             normals: normals.as_deref(),
                             place: record.geometry.place_a,
+                            places: [crate::xf::IDENTITY, record.geometry.place_a],
                             fill,
                             order,
                             sub: 0,
@@ -1443,16 +1444,13 @@ mod tests {
                     continue;
                 }
                 let at = |a: usize, b: usize| {
-                    (
-                        &frags[a],
-                        d[a].samples[k],
-                        d[a].err,
-                        &frags[b],
-                        d[b].samples[k],
-                        d[b].err,
-                    )
+                    let ((da, ea), (db, eb)) = (
+                        d[a].against(&frags[a], &frags[b]),
+                        d[b].against(&frags[b], &frags[a]),
+                    );
+                    (&frags[a], da[k], ea, &frags[b], db[k], eb)
                 };
-                order::rank(
+                order::rank_sample(
                     &items,
                     |a, b| {
                         let (fa, da, ea, fb, db, eb) = at(a, b);
@@ -2201,6 +2199,499 @@ mod tests {
             wrong, 0,
             "of {both} sub-samples, the square behind the patch above it at {wrong}"
         );
+    }
+
+    /// The input grid of the views below: 2^-14, the writer's grid for a 14.2-unit frame 854
+    /// pixels wide.
+    const GRID: f64 = 1.0 / 16384.0;
+
+    /// A view of `phi` and `theta` (in degrees) on geometry snapped to [`GRID`].
+    fn snapped_view(phi: f64, theta: f64) -> View {
+        let mut view = crate::probes::view(854, 480, phi.to_radians(), theta.to_radians());
+        view.input_grid = GRID;
+        view
+    }
+
+    /// The polygon through `corners`, given in the camera's axes of `view` (larger z is nearer), as
+    /// a closed outline in the world.
+    fn camera_ring(view: &View, corners: &[[f64; 3]]) -> Vec<[f64; 3]> {
+        let r = projection_of(view).rotation();
+        let world = |a: &[f64; 3]| -> [f64; 3] {
+            std::array::from_fn(|j| {
+                view.frame_center[j] + r[0][j] * a[0] + r[1][j] * a[1] + r[2][j] * a[2]
+            })
+        };
+        ring(&corners.iter().map(world).collect::<Vec<_>>())
+    }
+
+    /// A square `side` across, centred at `(cx, cy)` at depth `z` in the camera's axes of `view`,
+    /// as a closed outline in the world.
+    fn camera_square(view: &View, side: f64, (cx, cy): (f64, f64), z: f64) -> Vec<[f64; 3]> {
+        let h = side / 2.0;
+        camera_ring(
+            view,
+            &[
+                [cx - h, cy - h, z],
+                [cx + h, cy - h, z],
+                [cx + h, cy + h, z],
+                [cx - h, cy + h, z],
+            ],
+        )
+    }
+
+    /// `points` snapped to `grid`, as the writer snaps positions.
+    fn snapped(points: &[[f64; 3]], grid: f64) -> Vec<[f64; 3]> {
+        points
+            .iter()
+            .map(|p| p.map(|v| (v / grid).round() * grid + 0.0))
+            .collect()
+    }
+
+    /// Of the sub-samples objects 101 and 102 both cover: how many there are, and at how many their
+    /// own keys part by more than their error bounds (101 nearer: `near`, or 102 nearer: `far`);
+    /// with the plane identities of the two.
+    // The sub-sample `k` indexes both fragments' coverage and depth rows.
+    #[allow(clippy::needless_range_loop)]
+    fn two_faces(s: &Stream) -> ([u32; 2], usize, [usize; 2]) {
+        let (w, h) = {
+            let view = s.view.as_ref().expect("a view");
+            (view.pixel_width, view.pixel_height)
+        };
+        let mut planes = [0u32; 2];
+        let (mut shared, mut apart) = (0usize, [0usize; 2]);
+        s.visit_contributors(0, 0, w, h, |_, _, frags, cov, depths, _| {
+            let find = |id: u32| frags.iter().position(|f| s.leaf_of(f).0 == id);
+            let (Some(i), Some(j)) = (find(101), find(102)) else {
+                return;
+            };
+            planes = [frags[i].plane, frags[j].plane];
+            for k in 0..composite::SAMPLES {
+                if cov[i][k] != 0 && cov[j][k] != 0 {
+                    shared += 1;
+                    let (a, b) = (depths[i].samples[k], depths[j].samples[k]);
+                    if !order::tied(a, depths[i].err, b, depths[j].err) {
+                        apart[usize::from(b < a)] += 1;
+                    }
+                }
+            }
+        })
+        .expect("the stream draws");
+        (planes, shared, apart)
+    }
+
+    /// Two parallel squares 1 across facing the camera of `view`, `steps` grid steps apart in
+    /// depth (the nearer, object 101, drawn first and offset a little), their points as given.
+    fn parallel_faces(view: &View, steps: f64) -> Stream {
+        let near = camera_square(view, 1.0, (0.0, 0.0), steps * GRID);
+        let far = camera_square(view, 1.0, (0.3, 0.2), 0.0);
+        paths_stream(
+            view.clone(),
+            vec![
+                (near, face_record(1, [0.8, 0.2, 0.2, 1.0], None, None)),
+                (far, face_record(2, [0.2, 0.4, 0.8, 1.0], None, None)),
+            ],
+        )
+    }
+
+    /// How far apart, in grid steps along their normal, the two faces [`parallel_faces`] makes may
+    /// lie and still be one plane content made: the snap's departure of each
+    /// (`depth::snap_departure`, half a step times `|n|_1`), their points' departure from their
+    /// planes being rounding alone; and, besides, the most the two keys' own error bounds may
+    /// hold, the rounding of each plane's coefficients to [`crate::depth::PLANE_GRID`] at its
+    /// largest (half a step of it times `1 + |p|_1`), which each key's bound carries as it happened.
+    fn parallel_reach(view: &View, steps: f64) -> (f64, f64) {
+        let n = projection_of(view).rotation()[2];
+        let none = [IDENTITY, IDENTITY];
+        let near = camera_square(view, 1.0, (0.0, 0.0), steps * GRID);
+        let far = camera_square(view, 1.0, (0.3, 0.2), 0.0);
+        let faces = [near, far];
+        let term = faces
+            .iter()
+            .map(|p| crate::depth::snap_departure(GRID, n, &none, p))
+            .sum::<f64>();
+        let keys = faces
+            .iter()
+            .map(|p| {
+                let largest = p.iter().map(|q| q.iter().map(|v| v.abs()).sum::<f64>());
+                crate::depth::PLANE_GRID / 2.0 * (1.0 + largest.fold(0.0, f64::max))
+            })
+            .sum::<f64>();
+        (term / GRID, keys / GRID)
+    }
+
+    /// Two parallel faces facing the camera, on a view whose normal is far from every axis
+    /// (`|n|_1` about 1.55), at the edge of what the snap can part one plane by ([`parallel_reach`])
+    /// and beyond: the registry gives them one identity (its tolerance, six snap reaches, holds up
+    /// to five steps), and just inside the reach they tie, the farther, drawn later, above the
+    /// nearer wherever both cover; just beyond it and the keys' own bounds, and at four and five
+    /// steps, their keys part by more than both, so depth orders them: the nearer, drawn first,
+    /// above the farther.
+    #[test]
+    fn parallel_faces_tie_within_the_reach_and_keep_depth_order_beyond_it() {
+        let view = snapped_view(70.0, -110.0);
+        let (reach, keys) = parallel_reach(&view, 0.0);
+        assert!((reach - 1.55).abs() < 0.1, "{reach} steps: |n|_1");
+        assert!(keys < 0.1, "{keys} steps: the keys' bounds");
+        // Per gap: the sub-samples holding both, and at how many the farther is above.
+        let mut found = Vec::new();
+        for steps in [reach - 0.01, reach + keys + 0.01] {
+            let s = parallel_faces(&view, steps);
+            let (planes, shared, apart) = two_faces(&s);
+            assert!(
+                planes[0] != 0 && planes[0] == planes[1],
+                "{steps} steps: identities {planes:?}"
+            );
+            assert_eq!(apart, [shared, 0], "{steps} steps: the own keys part");
+            found.push(above(&s, 102, 101));
+        }
+        let [(inside, both_inside), (beyond, both_beyond)] = found[..] else {
+            unreachable!()
+        };
+        assert!(both_inside > 50 && both_beyond > 50, "{found:?}");
+        assert_eq!(
+            (inside, beyond),
+            (both_inside, 0),
+            "{reach:.4} steps: the farther above, just inside, at {inside} of {both_inside}; \
+             just beyond at {beyond} of {both_beyond}"
+        );
+        let mut found = Vec::new();
+        for steps in [4.0, 5.0] {
+            let s = parallel_faces(&view, steps);
+            let (planes, shared, apart) = two_faces(&s);
+            assert!(shared > 50, "{steps} steps: {shared} sub-samples hold both");
+            assert!(
+                planes[0] != 0 && planes[0] == planes[1],
+                "{steps} steps: identities {planes:?}"
+            );
+            assert_eq!(
+                apart,
+                [shared, 0],
+                "{steps} steps: the own keys put the nearer in front beyond their bounds"
+            );
+            let (wrong, both) = above(&s, 102, 101);
+            found.push((steps, both, wrong));
+        }
+        let want: Vec<_> = found
+            .iter()
+            .map(|&(steps, both, _)| (steps, both, 0))
+            .collect();
+        assert_eq!(
+            found, want,
+            "(steps, sub-samples holding both, the farther above at)"
+        );
+    }
+
+    /// The same faces one grid step apart: within what the snap can do to one plane (two faces
+    /// content made coplanar can part by up to `|n|_1` steps), so they tie and keep paint order,
+    /// the farther, drawn later, above the nearer wherever both cover.
+    #[test]
+    fn parallel_faces_one_grid_step_apart_tie_by_paint_order() {
+        let view = snapped_view(70.0, -110.0);
+        let s = parallel_faces(&view, 1.0);
+        let (planes, shared, apart) = two_faces(&s);
+        assert!(
+            planes[0] != 0 && planes[0] == planes[1],
+            "identities {planes:?}"
+        );
+        assert_eq!(apart, [shared, 0], "the own keys part beyond their bounds");
+        let (wrong, both) = above(&s, 102, 101);
+        assert!(both > 50, "{both} sub-samples hold both");
+        assert_eq!(
+            wrong, both,
+            "the farther, drawn later, is above at {wrong} of {both}"
+        );
+    }
+
+    /// Faces facing the diagonal, `(1, 1, 1) / sqrt(3)` (`|n|_1 = sqrt(3)`, the largest): the
+    /// snap's departure of the two is `sqrt(3)` steps ([`parallel_reach`]), so just inside that
+    /// they tie and keep paint order, and just beyond it and the keys' own bounds depth orders
+    /// them.
+    #[test]
+    fn diagonal_faces_tie_within_the_snap_s_reach_and_part_beyond_it() {
+        let view = snapped_view(54.735_610_317_245_35, 45.0);
+        let r = projection_of(&view).rotation();
+        let third = 1.0 / 3f64.sqrt();
+        for v in r[2] {
+            assert!((v - third).abs() < 1e-12, "the camera faces {:?}", r[2]);
+        }
+        let (reach, keys) = parallel_reach(&view, 0.0);
+        assert!(
+            reach > 3f64.sqrt() && reach < 3f64.sqrt() + 0.1,
+            "{reach} steps"
+        );
+        assert!(keys < 0.1, "{keys} steps: the keys' bounds");
+        for (steps, tie) in [(reach - 0.01, true), (reach + keys + 0.01, false)] {
+            let s = parallel_faces(&view, steps);
+            let (planes, shared, apart) = two_faces(&s);
+            assert!(shared > 50, "{steps} steps: {shared} sub-samples hold both");
+            assert!(
+                planes[0] != 0 && planes[0] == planes[1],
+                "{steps} steps: identities {planes:?}"
+            );
+            assert_eq!(apart, [shared, 0], "{steps} steps: the own keys part");
+            let (wrong, both) = above(&s, 102, 101);
+            let expected = if tie { both } else { 0 };
+            assert_eq!(
+                wrong, expected,
+                "{steps} steps: the farther, drawn later, is above at {wrong} of {both}"
+            );
+        }
+    }
+
+    /// The farther of two parallel faces four grid steps apart, on one registered identity, drawn
+    /// later with a stroke 4 wide: its fill is behind the nearer face, and so is its stroke, read on
+    /// its own face's plane against the nearer face, which shares it; keyed on its curve, the stroke
+    /// would tie with that face, no term bounding a curve's key, and paint over it in draw order,
+    /// the farther face's outline showing through the nearer one.
+    #[test]
+    fn a_stroke_of_a_face_behind_another_on_its_plane_stays_behind_it() {
+        let view = snapped_view(70.0, -110.0);
+        let near = camera_square(&view, 1.0, (0.0, 0.0), 4.0 * GRID);
+        let far = camera_square(&view, 1.0, (0.3, 0.2), 0.0);
+        let s = paths_stream(
+            view.clone(),
+            vec![
+                (near, face_record(1, [0.8, 0.2, 0.2, 1.0], None, None)),
+                (far, face_record(2, [0.2, 0.4, 0.8, 1.0], Some(4.0), None)),
+            ],
+        );
+        let (planes, shared, _) = two_faces(&s);
+        assert!(
+            planes[0] != 0 && planes[0] == planes[1],
+            "identities {planes:?}"
+        );
+        assert!(shared > 50, "{shared} sub-samples hold both");
+        let (wrong, both) = above(&s, 102, 101);
+        assert!(
+            both > shared,
+            "{both} sub-samples hold the two, strokes included"
+        );
+        assert_eq!(
+            wrong, 0,
+            "the farther face, its stroke included, is above the nearer at {wrong} of {both}"
+        );
+    }
+
+    /// A face inside another on one slanted plane, snapped as the writer snaps, drawn after it or
+    /// before it in space but always later: the later is above wherever both cover, along its edge
+    /// too. There a sub-sample it covers in part can lie outside its outline, where its own key is
+    /// its plane's at the outline's nearest point; against the face it lies on it is read on its
+    /// plane at the sub-sample, as that face is, else the slope between the two points parts them.
+    #[test]
+    fn a_face_on_a_slanted_plane_keeps_paint_order_with_the_face_it_lies_on_along_its_edge() {
+        let view = snapped_view(70.0, -110.0);
+        let slanted = |corners: &[[f64; 2]]| -> Vec<[f64; 3]> {
+            let at: Vec<[f64; 3]> = corners.iter().map(|&[x, y]| [x, y, 0.6 * x]).collect();
+            snapped(&camera_ring(&view, &at), GRID)
+        };
+        let big = slanted(&[[-0.6, -0.5], [0.6, -0.5], [0.6, 0.5], [-0.6, 0.5]]);
+        let small = slanted(&[[-0.23, -0.17], [0.31, -0.21], [0.27, 0.19], [-0.19, 0.23]]);
+        let flat = Some(crate::depth::Planarity::Newell);
+        for (first, second) in [(&big, &small), (&small, &big)] {
+            let s = paths_stream(
+                view.clone(),
+                vec![
+                    (
+                        first.clone(),
+                        face_record(1, [0.8, 0.2, 0.2, 1.0], None, flat),
+                    ),
+                    (
+                        second.clone(),
+                        face_record(2, [0.2, 0.4, 0.8, 1.0], None, flat),
+                    ),
+                ],
+            );
+            let (planes, shared, _) = two_faces(&s);
+            assert!(
+                planes[0] != 0 && planes[0] == planes[1],
+                "identities {planes:?}"
+            );
+            assert!(shared > 50, "{shared} sub-samples hold both");
+            let (wrong, both) = above(&s, 101, 102);
+            assert_eq!(
+                wrong, 0,
+                "the earlier drawn is above the later at {wrong} of {both}"
+            );
+        }
+    }
+
+    /// Two outlines content made flat on one plane, each with its placement (`None`: unplaced),
+    /// drawn in both orders: in each, they share an identity, their own keys part beyond their
+    /// error bounds, and they tie, the later drawn above the earlier wherever both cover. (Depth
+    /// would put one of the two above the other in one order or the other.)
+    fn ties_either_way(view: &View, faces: [(&[[f64; 3]], Option<Affine>); 2]) {
+        let flat = Some(crate::depth::Planarity::Newell);
+        for (first, second) in [(0, 1), (1, 0)] {
+            let record = |slot: u32, (points, place): (&[[f64; 3]], Option<Affine>)| {
+                let mut r = face_record(slot, [0.3 * slot as f64, 0.4, 0.5, 1.0], None, flat);
+                if let Some(place) = place {
+                    r.geometry.place_a = place;
+                }
+                (points.to_vec(), r)
+            };
+            let s = paths_stream(
+                view.clone(),
+                vec![record(1, faces[first]), record(2, faces[second])],
+            );
+            let (planes, shared, apart) = two_faces(&s);
+            assert!(
+                planes[0] != 0 && planes[0] == planes[1],
+                "face {first} first: identities {planes:?}"
+            );
+            assert!(
+                shared > 50,
+                "face {first} first: {shared} sub-samples hold both"
+            );
+            assert!(
+                apart != [0, 0],
+                "face {first} first: the keys part beyond their bounds: {apart:?}"
+            );
+            let (wrong, both) = above(&s, 101, 102);
+            assert_eq!(
+                wrong, 0,
+                "face {first} first: the earlier is above at {wrong} of {both}"
+            );
+        }
+    }
+
+    /// Two faces content made coplanar on a plane far from every axis, a square 0.6 across over one
+    /// 1.4 across, each snapped to the grid as the writer snaps them, at a snap found by search to
+    /// part them far: each record's own plane, fitted to its snapped points through the first
+    /// (Newell's normal over the outline's corners and thirds), stands off the plane content put
+    /// them on by more than the snap's reach, and over their overlap the two own planes part by
+    /// about 1.07 times the two reaches together (1.65 steps). The points' departure from their own
+    /// plane is what bounds that; within it they are one plane, and tie.
+    #[test]
+    fn an_oblique_coplanar_stack_at_its_worst_snap_still_ties() {
+        let view = snapped_view(70.0, -110.0);
+        let small = snapped(
+            &camera_square(&view, 0.6, (0.1719096441633351, 0.2368793305480134), 0.0),
+            GRID,
+        );
+        let large = snapped(
+            &camera_square(&view, 1.4, (-0.1106199564085423, -0.158344315617575), 0.0),
+            GRID,
+        );
+        ties_either_way(&view, [(&small, None), (&large, None)]);
+    }
+
+    /// A thin triangle 0.9 long and 0.09 wide, content made flat on the plane of a square 1.4 across
+    /// it lies inside, both snapped, at a snap found by search to part them far: Newell's normal of
+    /// a sliver's snapped outline tilts by the snap's noise over its small area, so its points stand
+    /// off its own plane by about twice the snap's reach, and over the sliver the two own planes
+    /// part by about 1.23 times the two reaches together (1.9 steps). They still tie.
+    #[test]
+    fn an_oblique_sliver_at_its_worst_snap_still_ties_with_its_plane() {
+        let view = snapped_view(70.0, -110.0);
+        let (x0, y0) = (-0.5393181618522839, -0.4399545868458875);
+        let (length, width) = (0.9052188008988994, 0.09220802858741078);
+        let sliver = snapped(
+            &camera_ring(
+                &view,
+                &[
+                    [x0, y0, 0.0],
+                    [x0 + length, y0 + width / 2.0, 0.0],
+                    [x0, y0 + width, 0.0],
+                ],
+            ),
+            GRID,
+        );
+        let square = snapped(&camera_square(&view, 1.4, (0.0, 0.0), 0.0), GRID);
+        ties_either_way(&view, [(&sliver, None), (&square, None)]);
+    }
+
+    /// A quad content did not make flat (one corner raised a third of a grid step off the plane of
+    /// the others: the writer decided it on no plane), lying on a registered plane within the
+    /// registry's tolerance, is keyed on that plane and shares its identity, as does a flat face
+    /// one grid step nearer. The bent quad has no plane content put it on, so nothing widens its
+    /// tie: the two keys part by more than their error bounds, and depth orders them, the nearer
+    /// face above the bent quad, drawn after it, wherever both cover.
+    #[test]
+    fn a_bent_quad_on_a_registered_plane_is_ordered_on_its_keys() {
+        let view = snapped_view(70.0, -110.0);
+        let base = camera_square(&view, 1.6, (0.0, 0.0), 0.0);
+        let near = camera_square(&view, 1.0, (0.2, 0.1), GRID);
+        let bent = camera_ring(
+            &view,
+            &[
+                [-0.6, -0.5, 0.0],
+                [0.5, -0.6, 0.0],
+                [0.6, 0.5, GRID / 3.0],
+                [-0.5, 0.6, 0.0],
+            ],
+        );
+        let curve = Some(crate::depth::Planarity::Curve);
+        let s = paths_stream(
+            view.clone(),
+            vec![
+                (base, face_record(3, [0.5, 0.5, 0.5, 1.0], None, None)),
+                (near, face_record(1, [0.8, 0.2, 0.2, 1.0], None, None)),
+                (bent, face_record(2, [0.2, 0.4, 0.8, 1.0], None, curve)),
+            ],
+        );
+        let (planes, shared, apart) = two_faces(&s);
+        assert!(
+            planes[0] != 0 && planes[0] == planes[1],
+            "identities {planes:?}"
+        );
+        assert!(shared > 50, "{shared} sub-samples hold both");
+        assert_eq!(
+            apart,
+            [shared, 0],
+            "the own keys put the flat face in front"
+        );
+        let (wrong, both) = above(&s, 102, 101);
+        assert_eq!(wrong, 0, "the bent quad is above at {wrong} of {both}");
+    }
+
+    /// A face placed through a placement that scales coordinates in the thousands down to the
+    /// scene's, turned a little in its plane (its linear part snapped to 2^-24, its translation and
+    /// its shape's points to the grid, as the writer snaps them), and a face content put on the
+    /// same plane in world coordinates, snapped: the placement's snapped linear part may move its
+    /// points by 2^-25 times the coordinates it places, here up to 7.6 grid steps, and at this
+    /// placement (found by search, among those the registry still finds on one plane) the two own
+    /// planes part by about 4 steps over their overlap, 1.8 times every other term together. The
+    /// two still tie.
+    #[test]
+    fn a_placed_face_coplanar_with_a_plain_one_still_ties() {
+        let view = snapped_view(70.0, -110.0);
+        let r = projection_of(&view).rotation();
+        let (scale, turn) = (1.0 / 8499.149353149618, 0.004126534451789704f64);
+        let origin = [0.31, -0.17, 0.05];
+        let (c, s) = (libm::cos(turn), libm::sin(turn));
+        let spin = [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]];
+        // The placement: local x, y turned in the camera's x, y, scaled, about `origin` (in the
+        // camera's axes).
+        let mut place = crate::xf::IDENTITY;
+        for i in 0..3 {
+            for j in 0..3 {
+                place[i][j] = scale * (0..3).map(|k| r[k][i] * spin[k][j]).sum::<f64>();
+            }
+            place[i][3] = view.frame_center[i] + (0..3).map(|j| r[j][i] * origin[j]).sum::<f64>();
+        }
+        let ratio = 1.0 / 16_777_216.0;
+        for row in place.iter_mut() {
+            for v in row.iter_mut().take(3) {
+                *v = (*v / ratio).round() * ratio + 0.0;
+            }
+            row[3] = (row[3] / GRID).round() * GRID + 0.0;
+        }
+        // The placed face: a square 10000 across in local units (1.18 in the scene) at local z 0.
+        let local = |x: f64, y: f64| [x, y, 0.0];
+        let shape = snapped(
+            &ring(&[
+                local(-5000.0, -5000.0),
+                local(5000.0, -5000.0),
+                local(5000.0, 5000.0),
+                local(-5000.0, 5000.0),
+            ]),
+            GRID,
+        );
+        let plain = snapped(
+            &camera_square(&view, 1.4, (origin[0] + 0.1, origin[1] - 0.05), origin[2]),
+            GRID,
+        );
+        ties_either_way(&view, [(&shape, Some(place)), (&plain, None)]);
     }
 
     /// A face 3 units across, facing the camera, drawn after a square 0.05 across near one of its

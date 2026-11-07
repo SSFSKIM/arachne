@@ -112,13 +112,18 @@ pub(crate) fn of_pixel(
     let mut on_fills = depths.to_vec();
     crate::composite::strokes_on_own_fills(frags, &mut on_fills, |i| coverage[i]);
     let depths = &on_fills[..];
-    let seen = |i: usize| order::Seen {
-        fragment: &frags[i],
-        coverage: &coverage[i],
-        depth: &depths[i].samples,
-        err: depths[i].err,
+    // `a`'s depths and their bound against `b` (`composite::Depths::against`).
+    let read = |a: usize, b: usize| depths[a].against(&frags[a], &frags[b]);
+    let seen = |i: usize, against: usize| {
+        let (depth, err) = read(i, against);
+        order::Seen {
+            fragment: &frags[i],
+            coverage: &coverage[i],
+            depth,
+            err,
+        }
     };
-    let pair = |a: usize, b: usize| order::pair(seen(a), seen(b));
+    let pair = |a: usize, b: usize| order::pair(seen(a, b), seen(b, a));
     let painted = |a: usize, b: usize| order::painted(&frags[a], &frags[b]);
     let mut covered = vec![false; n];
     let mut sums = vec![0u32; n];
@@ -135,33 +140,19 @@ pub(crate) fn of_pixel(
         // The sub-sample's fragments as the sample resolve ranks them.
         ranked.clear();
         ranked.extend((0..frags.len()).filter(|i| coverage[*i][k] != 0));
-        let how = order::rank(
+        order::rank_sample(
             &ranked,
             |a, b| {
-                a != b
-                    && order::at_sample(
-                        &frags[a],
-                        depths[a].samples[k],
-                        depths[a].err,
-                        &frags[b],
-                        depths[b].samples[k],
-                        depths[b].err,
-                    ) == Ordering::Less
+                let ((da, ea), (db, eb)) = (read(a, b), read(b, a));
+                a != b && order::at_sample(&frags[a], da[k], ea, &frags[b], db[k], eb).is_lt()
             },
             |a, b| {
-                order::strong_at(
-                    &frags[a],
-                    depths[a].samples[k],
-                    depths[a].err,
-                    &frags[b],
-                    depths[b].samples[k],
-                    depths[b].err,
-                )
+                let ((da, ea), (db, eb)) = (read(a, b), read(b, a));
+                order::strong_at(&frags[a], da[k], ea, &frags[b], db[k], eb)
             },
             painted,
             &mut at_k,
         );
-        assert_ne!(how, order::Ranked::Strong, "{}", order::ONE_SAMPLE);
         // Front to back: runs of one leaf's fragments, each with its greatest coverage here.
         let mut seq: Vec<(usize, u8)> = Vec::new();
         let mut seen = vec![false; n];

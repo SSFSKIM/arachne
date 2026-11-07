@@ -28,8 +28,12 @@
 //!   sub-sample (`depth::Centreline::key_under`: the front-most part whose stroke body covers it,
 //!   else the nearest point). A plane is the fill's depth only: outside the outline, where a stroke
 //!   reaches, it is not the face. Against what lies on its own registered plane, whichever
-//!   producer drew it, a path's layers keep paint order (`order::one_plane`), so things on one
-//!   plane tie exactly; and a path's fill
+//!   producer drew it, a path's layers keep paint order where their keys lie within the snap's
+//!   departure of one plane (`order::coplanar_tied`), so things on one plane tie; there each layer
+//!   is read on its path's plane at the sub-sample (`Producer::plane_depths`,
+//!   `composite::Depths::against`), so a stroke is where its face is, its body off the curve on
+//!   that plane, and a fill beyond its outline where the sub-sample lies, and against all else a
+//!   stroke on its curve and a fill at its outline (`fringe_depths`); and a path's fill
 //!   and its own strokes keep paint order between them (`order::own_layers`), so a stroke shows
 //!   over its fill wherever their depths part. A
 //!   fixed-orientation path is a camera-facing plane at its centre's depth; anything else is in
@@ -44,7 +48,7 @@
 
 use crate::composite::{
     Coverage, Fragment, OpaquePass, Plane, Producer, Rect, SAMPLES, TransparentPass, premultiply,
-    sample_cell,
+    sample_cell, sample_point,
 };
 use crate::depth::{Centreline, Planarity, Registry, WorldPlane};
 use crate::gradient::{self, Linear};
@@ -76,6 +80,11 @@ pub struct PathDraw<'a> {
     /// ([`crate::geometry::path_points`], placed already).
     pub points: std::borrow::Cow<'a, [[f64; 3]]>,
     pub place: Affine,
+    /// The placements `place` is made of, outer first, as the stream carries them (the identity
+    /// for none): an instance's placement and its record's. What the snap of each may have moved
+    /// the points by bounds how far a path content made coplanar with another may key apart from it
+    /// ([`crate::depth::snap_departure`]).
+    pub places: [Affine; 2],
     pub fill: Option<Vec<[f64; 4]>>,
     pub stroke: Option<Vec<[f64; 4]>>,
     pub background_stroke: Option<Vec<[f64; 4]>>,
@@ -258,6 +267,12 @@ struct Layer {
     depth: LayerDepth,
     /// The registered plane it lies on ([`Fragment::plane`]), `0` for none.
     plane: u32,
+    /// How far its key may stand from the plane content put it on ([`Fragment::snap`]): finite
+    /// for a layer of a path on a registered plane.
+    snap: f64,
+    /// For a stroke of a path keyed on a registered plane, its path's key there: what it is read on
+    /// against a fragment on that plane ([`Producer::plane_depths`]).
+    on_plane: Option<Plane>,
     order: u32,
     sub: u32,
 }
@@ -1115,8 +1130,13 @@ impl<'v> Lowering<'v> {
             return;
         }
         // The strokes' depth and the fill's.
-        let (strokes, fill, plane) = match keyed {
-            Some(plane) => (LayerDepth::Plane(plane), LayerDepth::Plane(plane), 0),
+        let (strokes, fill, plane, fill_snap) = match keyed {
+            Some(plane) => (
+                LayerDepth::Plane(plane),
+                LayerDepth::Plane(plane),
+                0,
+                f64::INFINITY,
+            ),
             None => {
                 // How far the path's pixels reach from its curve: half the widest stroke and the
                 // pixel's antialiasing beyond it, a miter's length at most (for binning).
@@ -1128,13 +1148,14 @@ impl<'v> Lowering<'v> {
                     // Placed by the camera already: keyed where it puts the points back in its axes.
                     let axes = self.axes.clone().expect("a pre-projected path keyed in 3D");
                     let back: Vec<[f64; 3]> = shown.iter().map(|q| axes.unproject(*q)).collect();
-                    self.world_depth(&axes, &back, &shown, reach, bins, plane)
+                    self.world_depth(&axes, &back, &shown, reach, bins, plane, None)
                 } else {
                     let p = self
                         .projection
                         .clone()
                         .expect("world depth needs the 3D camera");
-                    self.world_depth(&p, &world, &shown, reach, bins, plane)
+                    let placed = (&draw.places, &draw.points[..]);
+                    self.world_depth(&p, &world, &shown, reach, bins, plane, Some(placed))
                 }
             }
         };
@@ -1218,11 +1239,24 @@ impl<'v> Lowering<'v> {
                 ),
                 plane => plane,
             };
+            // A layer of a path on a registered plane is read on its path's plane at each
+            // sub-sample, with its path's term, against what shares that plane
+            // ([`Producer::plane_depths`]): a stroke, keyed on its curve, and the fill, whose own key
+            // beyond its outline is the plane's at the outline's nearest point ([`fringe_depths`]).
+            let on_plane = match fill {
+                LayerDepth::Plane(key) if plane != 0 => Some(key),
+                _ => None,
+            };
+            let snap = if k == 1 || on_plane.is_some() {
+                fill_snap
+            } else {
+                f64::INFINITY
+            };
             self.push(
                 &rings(&outline_px),
                 spec,
                 depth,
-                plane,
+                (plane, snap, on_plane),
                 draw.order,
                 draw.sub + k,
             );
@@ -1316,7 +1350,19 @@ impl<'v> Lowering<'v> {
     /// identity among the frame's registered planes ([`Fragment::plane`]), else along its curve
     /// too, on no plane (`0`). A fill on the plane nearest points on no one plane
     /// ([`Planarity::Nearest`]) carries in its key's bound how far its drawn outline's keys depart
-    /// from that plane's ([`nearest_plane_departure`]).
+    /// from that plane's ([`nearest_plane_departure`]). A fill with an identity carries how far its
+    /// key may stand from the plane content put it on ([`Fragment::snap`]): for a path content made
+    /// flat (its planarity, as the writer decided it before the snap: Newell's, the widest
+    /// triangle's or an axis plane) the snap's departure, from `placed` (its placements and its
+    /// shape's points: [`crate::depth::snap_departure`]; in a frame not snapped, the rounding of the
+    /// core's own placing alone), and its points' departure from its plane
+    /// ([`crate::depth::departure`]): within its points' hull its plane stands off the plane content
+    /// put them on by no more than their sum, as the gap between two planes is affine there. The
+    /// rounding of its plane's coefficients is in its key's own bound, as it happened
+    /// ([`Projection::key_plane`]). A path content did not make flat (keyed on a plane its points
+    /// lie near) has no plane content put it on: zero. A path the camera placed itself (`placed`
+    /// none) has no bound.
+    #[allow(clippy::too_many_arguments)]
     fn world_depth(
         &mut self,
         p: &Projection,
@@ -1325,7 +1371,9 @@ impl<'v> Lowering<'v> {
         reach: f64,
         bins: f64,
         plane: Option<(WorldPlane, u32, Planarity)>,
-    ) -> (LayerDepth, LayerDepth, u32) {
+        placed: Option<(&[Affine; 2], &[[f64; 3]])>,
+    ) -> (LayerDepth, LayerDepth, u32, f64) {
+        let grid = crate::depth::input_grid(self.view);
         let fill = plane
             .filter(|_| world.iter().all(|q| p.keys_planar_at(*q)))
             .and_then(|(plane, id, planarity)| {
@@ -1334,9 +1382,24 @@ impl<'v> Lowering<'v> {
                 if planarity == Planarity::Nearest {
                     key.err += nearest_plane_departure(&key, shown, &self.map, p);
                 }
-                Some((key, id))
+                let snap = match placed {
+                    Some((places, points)) if id != 0 => {
+                        let off = match planarity {
+                            Planarity::Newell | Planarity::Widest | Planarity::Axis(_) => {
+                                let normal = plane.unrounded.normal;
+                                crate::depth::snap_departure(grid, normal, places, points)
+                                    + crate::depth::departure(&plane, world)
+                            }
+                            _ => 0.0,
+                        };
+                        p.key_reach(&plane, &self.map, off)
+                    }
+                    _ => f64::INFINITY,
+                };
+                Some((key, id, snap))
             });
-        let registered = fill.map_or(0, |(_, id)| id);
+        let registered = fill.map_or(0, |(_, id, _)| id);
+        let snap = fill.map_or(f64::INFINITY, |(_, _, snap)| snap);
         let line = curve_depth(shown, &self.map, p);
         let curve = if line.is_empty() {
             LayerDepth::Plane(Plane::constant(f64::NEG_INFINITY))
@@ -1347,8 +1410,9 @@ impl<'v> Lowering<'v> {
         };
         (
             curve,
-            fill.map_or(curve, |(key, _)| LayerDepth::Plane(key)),
+            fill.map_or(curve, |(key, _, _)| LayerDepth::Plane(key)),
             registered,
+            snap,
         )
     }
 
@@ -1369,16 +1433,18 @@ impl<'v> Lowering<'v> {
         [b[0] - m, b[1] - m, b[2] + m, b[3] + m]
     }
 
-    /// Adds the layer whose outline is the closed polygons `rings`, on the pixel plane.
+    /// Adds the layer whose outline is the closed polygons `rings`, on the pixel plane, on the
+    /// registered plane `on.0` with its key's snap departure `on.1` ([`Fragment::snap`]).
     fn push(
         &mut self,
         rings: &[Vec<[f64; 2]>],
         spec: PaintSpec,
         depth: LayerDepth,
-        plane: u32,
+        on: (u32, f64, Option<Plane>),
         order: u32,
         sub: u32,
     ) {
+        let (plane, snap, on_plane) = on;
         let edges = scanline::edges_of(rings);
         if edges.is_empty() {
             return;
@@ -1433,6 +1499,8 @@ impl<'v> Lowering<'v> {
             opaque: colour[3] == 255,
             depth,
             plane,
+            snap,
+            on_plane,
             order,
             sub,
         };
@@ -1561,6 +1629,7 @@ impl Paths {
                         );
                         f.path_layer = true;
                         f.plane = layer.plane;
+                        f.snap = layer.snap;
                         add(x, y, f);
                     }
                 },
@@ -1855,6 +1924,15 @@ impl Producer for Paths {
         }
         curve.candidates(x, y, body, &mut near);
         Some(curve.line.keys_under(centre, points, &mut near, body, out))
+    }
+
+    fn plane_depths(&self, id: u32, x: u32, y: u32, out: &mut [f64; SAMPLES]) -> Option<f64> {
+        let plane = self.layers[id as usize].on_plane?;
+        for (k, d) in out.iter_mut().enumerate() {
+            let [px, py] = sample_point(x, y, k);
+            *d = plane.at(px, py);
+        }
+        Some(plane.err + plane.read_error(x as f64 + 1.0, y as f64 + 1.0))
     }
 }
 

@@ -545,6 +545,7 @@ fn a_meshs_opaque_depth_is_its_plane_at_each_sub_sample() {
             triangles,
             normals: None,
             place: IDENTITY,
+            places: [IDENTITY, IDENTITY],
             fill: [0.5, 0.5, 0.5, 1.0],
             order: 0,
             sub: 0,
