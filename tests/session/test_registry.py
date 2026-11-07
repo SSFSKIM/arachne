@@ -356,6 +356,43 @@ def test_a_caller_waits_its_turn_at_a_session_no_longer_than_its_deadline(
     assert registry.sessions(host.directory) == []
 
 
+#: A scene whose execution takes longer than its caller allows.
+NAPPING = """\
+    import time
+
+    from arachne import Dot, Scene
+
+
+    class Napping(Scene):
+        def construct(self):
+            time.sleep(30)
+            self.add(Dot())
+            self.wait(0.5)
+"""
+
+
+def test_a_caller_s_deadline_bounds_its_turn_and_its_open_together(host, tmp_path):
+    path = write(tmp_path, "napping.py", NAPPING)
+    key = registry.session_key(str(path.resolve()), "Napping", SMALL, registry._cwd())
+    turn = host.directory / "locks" / f"{key}.lock"
+    deadline = 4.0
+    caller = threading.Thread(
+        target=_ignored,
+        args=(host.connect, path, "Napping", SMALL),
+        kwargs={"deadline_s": deadline},
+        daemon=True,
+    )
+    with registry._locked(turn, 0) as held:
+        assert held
+        sent = time.monotonic()
+        caller.start()
+        # The turn comes after half the deadline: the open has what is left.
+        time.sleep(deadline / 2)
+    caller.join(4 * deadline)
+    assert not caller.is_alive()
+    assert time.monotonic() - sent <= deadline + 1.5
+
+
 def test_what_a_client_raises_is_one_kind_of_error():
     for kind, also in (
         (registry.RemoteError, Exception),
