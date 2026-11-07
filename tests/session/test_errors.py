@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import inspect
 import json
+import os
+import sys
 import textwrap
 from fractions import Fraction
 from pathlib import Path
@@ -27,6 +29,20 @@ SURFACE = json.loads(
 
 #: A small frame, so executing costs little.
 SMALL = {"pixel_width": 96, "pixel_height": 54}
+
+
+@pytest.fixture(autouse=True)
+def forget_modules(tmp_path):
+    """Forget the modules a test's scenes loaded: a helper stays in
+    ``sys.modules`` under its plain name, where another test's helper of
+    that name would find it.
+    """
+    yield
+    root = os.path.realpath(tmp_path) + os.sep
+    for name, module in list(sys.modules.items()):
+        file = getattr(module, "__file__", None)
+        if file and os.path.realpath(file).startswith(root):
+            del sys.modules[name]
 
 
 def write(tmp_path: Path, source: str, name: str = "scene.py") -> Path:
