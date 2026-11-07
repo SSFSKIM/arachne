@@ -277,8 +277,9 @@ class _Server:
         the server. A request already past its deadline as its turn comes
         is answered so, unrun, and a line that runs nothing (no request, or
         one refused) is answered however long it waited: for these, the
-        deadline bounds only the answer's write. A server reserved for its
-        end (:mod:`.registry`) answers nothing: it ends.
+        deadline, at least :data:`~.protocol.ENDING_S`, bounds only the
+        answer's write, and a write past it ends the server. A server
+        reserved for its end (:mod:`.registry`) answers nothing: it ends.
         """
         registration = self.registration
         if registration is not None and not registration.admit():
@@ -294,7 +295,9 @@ class _Server:
             if request is not None and expires <= time.monotonic():
                 reply, request = _unrun(request, limit[0]), None
             if request is None:
-                expires = time.monotonic() + limit[0]
+                # Its answer claimed before any deadline passes: one unrun is
+                # never answered as if it ran.
+                expires = time.monotonic() + max(limit[0], protocol.ENDING_S)
             ticket = self.watchdog.arm(
                 expires,
                 lambda respond: self._expired(channel, read, limit[0], respond),
@@ -483,7 +486,8 @@ def _reading(
                 if lines is None:
                     selector.unregister(channel.fd)
                     arrivals.put((channel, _ENDED))
-                    # Its descriptor is free: the listener accepts again.
+                    # Its descriptor is freed as the main thread closes the
+                    # channel: the listener accepts again.
                     until = 0.0
                     continue
                 for line in lines:

@@ -789,6 +789,26 @@ def test_a_line_that_runs_nothing_is_answered_however_long_it_waited():
     assert not server.dispatcher.ending
 
 
+def test_an_unrun_request_with_a_tiny_deadline_is_answered_that_it_did_not_run():
+    from arachne.server.serve import _Server
+
+    server = _Server(600, 1.0, lambda: None)
+    ended: list[bool] = []
+    server._expired = lambda channel, read, limit, respond: ended.append(respond)  # type: ignore[method-assign]
+    # Under a millisecond: gone before its answer could be written in it.
+    request = {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "ping",
+        "params": {"deadline_s": 1e-9},
+    }
+    (sent,) = _answered_aside(server, protocol.encode(request), time.monotonic() - 1)
+    assert ended == []
+    error = json.loads(sent)["error"]
+    assert error["code"] == protocol.DEADLINE_EXCEEDED
+    assert error["data"]["ends"] is False
+
+
 def test_a_request_expired_as_it_ran_holds_the_server_for_its_end():
     from types import SimpleNamespace
 
@@ -873,7 +893,8 @@ def test_a_listener_out_of_descriptors_waits_rather_than_spins(monkeypatch):
     finally:
         with contextlib.suppress(KeyError, ValueError):
             selector.unregister(listener)
-        for each in (waiting, listener, theirs):
+        selector.close()
+        for each in (waiting, listener, mine, theirs):
             each.close()
         shutil.rmtree(directory, ignore_errors=True)
 
