@@ -376,6 +376,30 @@ class EarlyReader(Scene):
         self.play(t.animate.set_value(2))
 
 
+class LambdaUpdater(Scene):
+    """A one-line lambda updater that reads a tracker: admitted."""
+
+    def construct(self):
+        t = ValueTracker(0)
+        dot = Dot().add_updater(lambda m: m.set_x(t.get_value()))
+        self.add(dot)
+        self.play(t.animate.set_value(2))
+
+
+class DefUpdater(Scene):
+    """The same updater written as a ``def``."""
+
+    def construct(self):
+        t = ValueTracker(0)
+
+        def follow(m):
+            m.set_x(t.get_value())
+
+        dot = Dot().add_updater(follow)
+        self.add(dot)
+        self.play(t.animate.set_value(2))
+
+
 class AnimationAsUpdater(Scene):
     """``turn_animation_into_updater`` keeps its own clock."""
 
