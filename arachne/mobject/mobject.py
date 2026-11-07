@@ -6,6 +6,7 @@ __all__ = ["Mobject", "Group", "override_animate"]
 
 
 import copy
+import difflib
 import inspect
 import itertools as it
 import math
@@ -22,6 +23,7 @@ from typing import TYPE_CHECKING, Any, cast, overload
 
 import numpy as np
 
+from arachne._removed import no_setter
 from arachne.data_structures import MethodWithArgs
 
 from .. import config, logger
@@ -196,6 +198,29 @@ def _family_extent(family: Iterable[Mobject], anchors: bool) -> Any:
     if least is None:
         return None
     return least, greatest
+
+
+def _has_attribute(mob: Mobject, name: str) -> bool:
+    """Whether ``mob`` has an attribute ``name`` of its own or of its class
+    (a property included), found without reading it.
+    """
+    return name in vars(mob) or any(name in vars(klass) for klass in type(mob).__mro__)
+
+
+def _setters(mob: Mobject) -> list[str]:
+    """The public setters that work on ``mob``: its ``set_`` methods, and
+    ``set_<x>`` for each of its public attributes and properties ``x``.
+    """
+    names = {name for name in dir(type(mob)) if name.startswith("set_")}
+    attributes = {name for name in vars(mob) if not name.startswith("_")}
+    for klass in type(mob).__mro__:
+        attributes.update(
+            name
+            for name, value in vars(klass).items()
+            if isinstance(value, property) and not name.startswith("_")
+        )
+    names.update(f"set_{name}" for name in attributes)
+    return sorted(names)
 
 
 class Mobject:
@@ -1044,6 +1069,14 @@ class Mobject:
         if attr.startswith("set_"):
             # Remove the "set_" prefix
             to_set = attr[4:]
+            # Deliberate break 9 (a misspelt synthesised setter raises),
+            # approved 2026-11-07: a setter only for an attribute the mobject
+            # has, a property among them.
+            if not _has_attribute(self, to_set):
+                nearest = difflib.get_close_matches(
+                    attr, _setters(self), n=3, cutoff=0.6
+                )
+                raise AttributeError(no_setter(type(self).__name__, attr, nearest))
 
             def setter(self: Mobject, value: Any) -> Mobject:
                 warnings.warn(
