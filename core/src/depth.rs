@@ -610,7 +610,7 @@ impl Pass {
 /// tolerance along its normal and `gap` (that and the corner's bound along every normal: how far
 /// another plane holding the members may stand from its plane there), the corners' doubled signed
 /// area, and `tilt`, how far the normals of two such planes may part ([`Registry::surely_apart`]).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Corners {
     plane: WorldPlane,
     axes: [usize; 2],
@@ -621,9 +621,11 @@ struct Corners {
     tilt: f64,
 }
 
-/// What the attach pass of [`Registry::settle`] reads of a settled flat identity, found once: its
-/// corners' bounds, and the parts of the bound within which a record with no plane of its own that
-/// lies on it stands off its plane ([`Reach::bound`]).
+/// What the attach pass of [`Registry::settle`] reads of a settled flat identity, found once from
+/// its flat members alone before any record attaches (an attached record changes none of it): its
+/// corners' bounds, its members' points' hull, and the parts of the bound within which a record
+/// with no plane of its own that lies on it stands off its plane ([`Reach::bound`]).
+#[derive(Debug)]
 struct Reach {
     corners: Corners,
     /// The largest over its members of their tolerance and their snap's departure
@@ -635,28 +637,71 @@ struct Reach {
     /// members within their tolerances' bounds along every normal: twice its corners' tilt, and
     /// at most 4 (two unit normals stand at most 2 apart).
     turn: f64,
+    /// Its members' points on the plane of its corners' two coordinates (`Corners::axes`): their
+    /// convex hull, counterclockwise ([`convex_hull`]).
+    hull: Vec<[f64; 2]>,
+    /// How fast, per unit of those coordinates away from the hull, the difference of its plane and
+    /// content's through its members may grow ([`Reach::bound`]).
+    slope: f64,
 }
 
 impl Reach {
+    /// `p` on the corners' two coordinates.
+    fn flat(&self, p: [f64; 3]) -> [f64; 2] {
+        let [i, j] = self.corners.axes;
+        [p[i], p[j]]
+    }
+
+    /// How far `p` lies from the hull on those coordinates, 0 inside it.
+    fn distance(&self, p: [f64; 3]) -> f64 {
+        hull_distance(&self.hull, self.flat(p))
+    }
+
+    /// Whether a point `distance` from the hull, of a record whose bound along every normal is
+    /// `widest`, lies within the snap's reach of it, the record's bound and the members' along
+    /// every normal: as near as the snap can tell, in the hull.
+    fn inside(&self, widest: f64, distance: f64) -> bool {
+        distance <= widest + self.widest
+    }
+
     /// How far off the identity's plane a record with no plane of its own may stand where content
-    /// put it on one plane with the identity's members, within their points' hull:
-    /// `tolerance + members + turn (widest + Reach::widest)`, `tolerance` its tolerance along the
-    /// plane's normal and `widest` its bound along every normal.
+    /// put it on one plane with the identity's members, at a point `distance` from their points'
+    /// hull: `tolerance + members + (turn + slope) (widest + Reach::widest) + slope distance`,
+    /// `tolerance` its tolerance along the plane's normal and `widest` its bound along every
+    /// normal.
     ///
     /// The identity's plane `n . x = d` holds each member's points within its tolerance `t_m` along
     /// `n`; the content's plane `v . x = e` holds them within their snap's departure along `v`,
     /// `s_m(v)`, each moved from where content put it by at most its bound `w_m` along every
     /// normal. The two planes' difference is affine, its gradient `n - v`, of length `a`: at a
-    /// member's point as content put it, at most `t_m(n) + s_m(v) + a w_m`, so within their hull
-    /// at most the largest of those. A point of the record, moved from content's point on `v` in
-    /// that hull by at most `w`, so stands off `n . x = d` by at most that, `a w`, and `s(v)`. The
-    /// snap's departure is a seminorm of the normal, at most `w` on unit normals, so `s(v)` is at
-    /// most `s(n) + a w`: in all, `t(n) + max_m (t_m(n) + s_m(n)) + 2 a (w + max_m w_m)`, and the
-    /// corners bound `a` by their tilt ([`Registry::surely_apart`]). Outside the hull the
-    /// difference grows with the distance, by up to the tilt: a record there may stand farther
-    /// off, and is not read on the identity's plane.
-    fn bound(&self, tolerance: f64, widest: f64) -> f64 {
-        tolerance + self.members + self.turn * (widest + self.widest)
+    /// member's point as content put it, at most `t_m(n) + s_m(v) + a w_m`. The snap's departure
+    /// is a seminorm of the normal, at most `w` on unit normals, so `s(v)` is at most
+    /// `s(n) + a w`: at those points the difference is at most
+    /// `g = max_m (t_m(n) + s_m(n)) + 2 a max_m w_m`, and so within their hull. A point of the
+    /// record, moved from content's point on `v` by at most `w`, stands off `n . x = d` by at most
+    /// the difference there, `a w`, and `s(v)`: within the hull,
+    /// `t(n) + max_m (t_m(n) + s_m(n)) + 2 a (w + max_m w_m)`. The corners bound `a` by their tilt
+    /// ([`Registry::surely_apart`]), and twice it is `turn`.
+    ///
+    /// Outside the hull: on content's plane, read on the corners' two coordinates, the
+    /// difference is affine, at most `g` on the hull of the members' points as content put them,
+    /// so across that hull it changes by its gradient's length times the hull's width along the
+    /// gradient: the gradient is at most `2 g` over the hull's least width. Those points stand
+    /// within `max_m w_m` of the drawn ones, so that hull's least width is at least this hull's
+    /// less twice that: the correction only narrows the hull, and only steepens the slope. On
+    /// content's plane the coordinate left out, `k` (`n`'s largest component, at least
+    /// `1 / sqrt(3)`), is `x_k = (e - v_i x_i - v_j x_j) / v_k`, so there the difference's gradient
+    /// on the two coordinates is `(n_i v_k - n_k v_i, n_j v_k - n_k v_j) / v_k`: two components of
+    /// `n x v`, of length at most `a`, over `v_k`, at least `1 / sqrt(3) - a`. So the gradient is
+    /// also at most `sqrt(3) a / (1 - sqrt(3) a)`, unbounded where `sqrt(3) a` reaches 1
+    /// ([`turned_slope`]); `slope` is the lesser. A point of the record `distance` from this hull
+    /// lies, as content put it, within `distance + w + max_m w_m` of that hull, where the
+    /// difference is at most `g` and `slope` times that more.
+    fn bound(&self, tolerance: f64, widest: f64, distance: f64) -> f64 {
+        tolerance
+            + self.members
+            + (self.turn + self.slope) * (widest + self.widest)
+            + self.slope * distance
     }
 }
 
@@ -683,10 +728,12 @@ impl Reach {
 /// - A record with **no plane of its own** ([`Registry::offer_planeless`]: points on a line,
 ///   however the writer coded them, or a curve) neither founds an identity nor joins one: once the
 ///   partition settles, it attaches to every identity on which one plane holds the members' points
-///   and its own within their tolerances (a line along a cube's edge, to both faces') and whose
+///   and its own within their tolerances (a line along a cube's edge, to both faces'), whose
 ///   plane its points stand off by no more than content's plane through the members would
-///   leave them ([`Reach::bound`]), the first [`MOST_IDENTITIES`] of them: a record far outside a
-///   small identity's members, which a plane turned within their tolerances holds, does not. One
+///   leave them ([`Reach::bound`]: within the members' hull, and growing with the distance from it
+///   as fast as that plane may part from the identity's), and whose members' hull it enters
+///   ([`Registry::enters`]), the first [`MOST_IDENTITIES`] of them: a record that passes beside an
+///   identity's members, or far off its plane past them, does not. One
 ///   that attaches to none and lies on an axis plane shares an identity with the others on exactly
 ///   that axis plane, its axis and offset.
 ///
@@ -706,6 +753,9 @@ pub struct Registry {
     attached: Vec<bool>,
     /// Once settled: each identity's plane, identity `i` at `i - 1`.
     planes: Vec<WorldPlane>,
+    /// Once settled: what each identity the partition made gives the attach pass, identity `i` at
+    /// `i - 1` ([`Reach`]); none where no record with no plane of its own was offered.
+    reaches: Vec<Reach>,
     /// Records that lay on more than [`MOST_IDENTITIES`] identities.
     capped: usize,
     settled: bool,
@@ -884,6 +934,22 @@ impl Registry {
         self.tolerance(offer, plane.unrounded.normal) + departure(&plane, &offer.points)
     }
 
+    /// [`Registry::off_identity`] where the record offered as `handle` meets `identity`'s flat
+    /// members: for a record with no plane of its own on an identity the partition made, at most
+    /// the bound within the members' hull ([`Reach::bound`] there), within which content's plane
+    /// through it and the members holds it there, where they lie.
+    pub(crate) fn off_members(&self, handle: u32, identity: u32) -> f64 {
+        let off = self.off_identity(handle, identity);
+        let offer = &self.offers[handle as usize];
+        match self.reaches.get(identity as usize - 1) {
+            Some(reach) if !offer.flat => {
+                let tolerance = self.tolerance(offer, self.plane(identity).unrounded.normal);
+                off.min(reach.bound(tolerance, offer.widest, 0.0))
+            }
+            _ => off,
+        }
+    }
+
     /// Whether `plane` holds every point of offer `o` within its tolerance along its normal.
     fn holds(&self, plane: &WorldPlane, o: usize) -> bool {
         let offer = &self.offers[o];
@@ -947,25 +1013,44 @@ impl Registry {
         crate::counters::since(&crate::counters::PARTITION_NS, settling);
         #[cfg(feature = "counters")]
         let attaching = std::time::Instant::now();
-        let reach: Vec<Reach> = ids.iter().map(|id| self.reach(id)).collect();
         let mut alone = Vec::new();
         let planeless: Vec<usize> = (0..offers).filter(|&o| !self.offers[o].flat).collect();
+        let reach: Vec<Reach> = if planeless.is_empty() {
+            Vec::new()
+        } else {
+            ids.iter().map(|id| self.reach(id)).collect()
+        };
         count!(FLAT_IDENTITIES, flats);
         count!(ATTACH_RECORDS, planeless.len());
         count!(ATTACH_PAIRS, planeless.len() * flats);
         for o in planeless {
-            // Its first point first, against its bound along every normal: one product a pair.
+            // Its first point first, against its bound along every normal at no less than its
+            // distance from the hull (its distance from the hull's first corner): one product and
+            // one root a pair.
             let (first, widest) = (
                 self.offers[o].points.first().copied(),
                 self.offers[o].widest,
             );
+            let mut through = false;
             let on: Vec<usize> = (0..flats)
                 .filter(|&i| {
-                    let bound = reach[i].bound(widest, widest);
-                    first.is_none_or(|p| within(&ids[i].plane, p) <= bound)
-                        && self.contains(&ids[i], &reach[i], o)
+                    let r = &reach[i];
+                    first.is_none_or(|p| {
+                        let [a, b] = r.flat(p);
+                        let far = r
+                            .hull
+                            .first()
+                            .map_or(f64::INFINITY, |c| libm::hypot(a - c[0], b - c[1]));
+                        within(&ids[i].plane, p) <= r.bound(widest, widest, far)
+                    }) && self.contains(&ids[i], r, o).is_some_and(|outside| {
+                        through |= outside;
+                        true
+                    })
                 })
                 .collect();
+            if through {
+                count!(ATTACH_THROUGH_ALLOWANCE);
+            }
             if on.len() > MOST_IDENTITIES {
                 self.capped += 1;
                 count!(CAPPED_SETS);
@@ -978,6 +1063,7 @@ impl Registry {
                 alone.push(o);
             }
         }
+        self.reaches = reach;
         #[cfg(feature = "counters")]
         crate::counters::since(&crate::counters::ATTACH_NS, attaching);
         // What attaches to no flat identity and lies on an axis plane shares an identity only with
@@ -1070,9 +1156,11 @@ impl Registry {
         self.fit(id, o, Pass::Partition).map(Some)
     }
 
-    /// What settled flat identity `id` gives the attach pass ([`Reach`]): its corners' bounds, and
-    /// its members' tolerances and snap's departures along its plane's normal, and their bounds
-    /// along every normal, at their largest.
+    /// What settled flat identity `id` gives the attach pass ([`Reach`]), from its members alone:
+    /// its corners' bounds; its members' tolerances and snap's departures along its plane's
+    /// normal, and their bounds along every normal, at their largest; their points' hull; and the
+    /// slope the bound grows by outside it ([`Reach::bound`]), widened by `1e-12` for the hull's
+    /// own arithmetic.
     fn reach(&self, id: &Identity) -> Reach {
         let n = id.plane.unrounded.normal;
         let (mut members, mut widest) = (0.0f64, 0.0f64);
@@ -1084,29 +1172,126 @@ impl Registry {
         }
         let corners = self.corners(id);
         let turn = 2.0 * corners.tilt.min(2.0);
+        let [i, j] = corners.axes;
+        let hull = convex_hull(
+            id.members
+                .iter()
+                .flat_map(|&m| self.offers[m].points.iter().map(|p| [p[i], p[j]]))
+                .collect(),
+        );
+        let narrowed = least_width(&hull) - 2.0 * widest;
+        let across = if narrowed > 0.0 {
+            2.0 * (members + turn * widest) / narrowed
+        } else {
+            f64::INFINITY
+        };
+        let slope = across.min(turned_slope(turn)) * (1.0 + 1e-12);
         Reach {
             corners,
             members,
             widest,
             turn,
+            hull,
+            slope,
         }
     }
 
     /// Whether offer `o`, with no plane of its own, lies on settled identity `id`, `reach` what
-    /// `id` gives the attach pass: one plane holds its points and every member's within their
-    /// tolerances, and its points stand off `id`'s plane within the bound content's plane through
-    /// the members leaves them ([`Reach::bound`]), so a key read on `id`'s plane stands within that
-    /// of theirs.
-    fn contains(&self, id: &Identity, reach: &Reach, o: usize) -> bool {
+    /// `id` gives the attach pass, and if so whether a point of it lies outside the members' hull
+    /// (beyond the snap's reach of it, [`Reach::inside`]). It lies on `id` where:
+    ///
+    /// - every point stands off `id`'s plane within the bound content's plane through the members
+    ///   leaves it there ([`Reach::bound`]);
+    /// - it enters the members' hull ([`Registry::enters`]): a record that never does is read on
+    ///   no part of the members' plane they bound, and stands off it, along a sight line, by at
+    ///   least its distance from them, which depth tells apart (and an identity whose plane its
+    ///   members leave unbounded, their hull thinner than the snap, would hold any record);
+    /// - one plane holds its points and every member's, each within its own tolerance: `id`'s
+    ///   plane, or the plane fitted to them all ([`Registry::fit`]).
+    fn contains(&self, id: &Identity, reach: &Reach, o: usize) -> Option<bool> {
         count!(ATTACH_NEAR);
         let offer = &self.offers[o];
         let tolerance = self.tolerance(offer, id.plane.unrounded.normal);
-        let bound = reach.bound(tolerance, offer.widest);
-        if offer.points.iter().any(|p| within(&id.plane, *p) > bound) {
-            return false;
+        let mut outside = false;
+        for p in &offer.points {
+            let distance = reach.distance(*p);
+            if within(&id.plane, *p) > reach.bound(tolerance, offer.widest, distance) {
+                return None;
+            }
+            outside |= !reach.inside(offer.widest, distance);
         }
-        offer.points.iter().all(|p| off(&id.plane, *p) <= tolerance)
-            || !self.surely_apart(&reach.corners, o) && self.fit(id, o, Pass::Attach).is_some()
+        let held = || {
+            offer.points.iter().all(|p| off(&id.plane, *p) <= tolerance)
+                || !self.surely_apart(&reach.corners, o) && self.fit(id, o, Pass::Attach).is_some()
+        };
+        if !self.enters(id, reach, o, tolerance) {
+            #[cfg(feature = "counters")]
+            {
+                let flat = tolerance + reach.members + reach.turn * (offer.widest + reach.widest);
+                if offer.points.iter().all(|p| within(&id.plane, *p) <= flat) && held() {
+                    crate::counters::add(&crate::counters::ATTACH_UNENTERED, 1);
+                }
+            }
+            return None;
+        }
+        held().then_some(outside)
+    }
+
+    /// Whether offer `o` enters `id`'s members' hull (`reach` what `id` gives the attach pass,
+    /// `tolerance` its tolerance along `id`'s normal): a point of it lies within the snap's reach
+    /// of the hull ([`Reach::inside`]), or a segment between two of its points, taken in turn
+    /// and closed, does at a point standing off `id`'s plane within the bound there
+    /// ([`Reach::bound`]). A segment crossing the hull is tested where it is in the hull: its
+    /// distance from the plane is affine along it, so its least over that part is at an end of
+    /// the part, or nought where it crosses the plane. A segment missing the hull is tested at its
+    /// point nearest the hull, which lies over one of the hull's corners (its ends lie beyond the
+    /// snap's reach, as every point does here), at its distance from the hull.
+    fn enters(&self, id: &Identity, reach: &Reach, o: usize, tolerance: f64) -> bool {
+        let offer = &self.offers[o];
+        let points = &offer.points;
+        if points
+            .iter()
+            .any(|p| reach.inside(offer.widest, reach.distance(*p)))
+        {
+            return true;
+        }
+        let (n, d) = (id.plane.unrounded.normal, id.plane.unrounded.offset);
+        let bound = reach.bound(tolerance, offer.widest, 0.0);
+        (0..points.len()).any(|k| {
+            let (a, b) = (points[k], points[(k + 1) % points.len()]);
+            let at = |t: f64| -> [f64; 3] { std::array::from_fn(|c| a[c] + (b[c] - a[c]) * t) };
+            let (fa, fb) = (reach.flat(a), reach.flat(b));
+            let Some((t0, t1)) = clip(&reach.hull, fa, fb) else {
+                let u = [fb[0] - fa[0], fb[1] - fa[1]];
+                let along = u[0] * u[0] + u[1] * u[1];
+                let nearest = reach
+                    .hull
+                    .iter()
+                    .map(|c| {
+                        let w = [c[0] - fa[0], c[1] - fa[1]];
+                        let t = if along > 0.0 {
+                            ((u[0] * w[0] + u[1] * w[1]) / along).clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        };
+                        (reach.distance(at(t)), at(t))
+                    })
+                    .min_by(|x, y| x.0.total_cmp(&y.0));
+                return nearest.is_some_and(|(distance, q)| {
+                    reach.inside(offer.widest, distance)
+                        && within(&id.plane, q) <= reach.bound(tolerance, offer.widest, distance)
+                });
+            };
+            let (f0, f1) = (dot(n, at(t0)) - d, dot(n, at(t1)) - d);
+            let t = if f0.signum() != f1.signum() && f0 != f1 {
+                t0 + (t1 - t0) * f0 / (f0 - f1)
+            } else if f0.abs() <= f1.abs() {
+                t0
+            } else {
+                t1
+            };
+            within(&id.plane, at(t)) <= bound
+        })
     }
 
     /// The plane holding every member of `id` and offer `o` with the most room ([`minimax`]),
@@ -1598,6 +1783,126 @@ fn solve4(m: [[f64; 4]; 4], rhs: [f64; 4]) -> Option<[f64; 4]> {
 /// Twice the signed area of the triangle `p, q, r` on a plane.
 fn twice(p: [f64; 2], q: [f64; 2], r: [f64; 2]) -> f64 {
     (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+}
+
+/// How fast the difference of a plane of unit normal `n` and one of unit normal `v`, `turn / 2`
+/// apart at most, may grow on `v`'s plane per unit of the two coordinates other than `n`'s
+/// largest component ([`Reach::bound`]): `sqrt(3) a / (1 - sqrt(3) a)` for `a = turn / 2`, its
+/// denominator taken less its rounding, and infinite where that is not positive.
+fn turned_slope(turn: f64) -> f64 {
+    let steep = 3f64.sqrt() * turn / 2.0;
+    let room = 1.0 - steep - 4.0 * f64::EPSILON;
+    if room > 0.0 {
+        steep / room
+    } else {
+        f64::INFINITY
+    }
+}
+
+/// The convex hull of `points` on a plane, counterclockwise from the least by x then y, without
+/// points on its edges (Andrew's monotone chain); its one or two points where they lie on a point
+/// or a line, none for none.
+fn convex_hull(mut points: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
+    points.retain(|p| p[0].is_finite() && p[1].is_finite());
+    points.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
+    points.dedup();
+    if points.len() < 3 {
+        return points;
+    }
+    let mut hull: Vec<[f64; 2]> = Vec::with_capacity(2 * points.len());
+    let turns = |hull: &[[f64; 2]], p: [f64; 2]| {
+        twice(hull[hull.len() - 2], hull[hull.len() - 1], p) <= 0.0
+    };
+    for p in &points {
+        while hull.len() >= 2 && turns(&hull, *p) {
+            hull.pop();
+        }
+        hull.push(*p);
+    }
+    let lower = hull.len() + 1;
+    for p in points.iter().rev().skip(1) {
+        while hull.len() >= lower && turns(&hull, *p) {
+            hull.pop();
+        }
+        hull.push(*p);
+    }
+    hull.pop();
+    hull
+}
+
+/// The least width of the convex polygon `hull` (counterclockwise): the least, over its edges, of
+/// the farthest of its corners from the edge's line (rotating calipers); nought for fewer than three
+/// corners.
+fn least_width(hull: &[[f64; 2]]) -> f64 {
+    let n = hull.len();
+    if n < 3 {
+        return 0.0;
+    }
+    let (mut far, mut least) = (1, f64::INFINITY);
+    for i in 0..n {
+        let (a, b) = (hull[i], hull[(i + 1) % n]);
+        for _ in 0..n {
+            if twice(a, b, hull[(far + 1) % n]) > twice(a, b, hull[far]) {
+                far = (far + 1) % n;
+            } else {
+                break;
+            }
+        }
+        let length = libm::hypot(b[0] - a[0], b[1] - a[1]);
+        least = least.min(twice(a, b, hull[far]) / length);
+    }
+    least
+}
+
+/// How far `p` lies from the convex polygon `hull` (counterclockwise; one or two corners for a
+/// point or a segment), nought in it; infinite for no corners.
+fn hull_distance(hull: &[[f64; 2]], p: [f64; 2]) -> f64 {
+    let n = hull.len();
+    let to_segment = |a: [f64; 2], b: [f64; 2]| {
+        let (u, w) = ([b[0] - a[0], b[1] - a[1]], [p[0] - a[0], p[1] - a[1]]);
+        let along = u[0] * u[0] + u[1] * u[1];
+        let t = if along > 0.0 {
+            ((u[0] * w[0] + u[1] * w[1]) / along).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        libm::hypot(w[0] - t * u[0], w[1] - t * u[1])
+    };
+    match n {
+        0 => f64::INFINITY,
+        1 => to_segment(hull[0], hull[0]),
+        _ if n >= 3 && (0..n).all(|i| twice(hull[i], hull[(i + 1) % n], p) >= 0.0) => 0.0,
+        _ => (0..n)
+            .map(|i| to_segment(hull[i], hull[(i + 1) % n]))
+            .fold(f64::INFINITY, f64::min),
+    }
+}
+
+/// The part of the segment from `a` to `b` in the convex polygon `hull` (counterclockwise, three
+/// corners or more), as its least and greatest parameters along it (Cyrus and Beck); `None` where
+/// it misses the polygon.
+fn clip(hull: &[[f64; 2]], a: [f64; 2], b: [f64; 2]) -> Option<(f64, f64)> {
+    let n = hull.len();
+    if n < 3 {
+        return None;
+    }
+    let (mut lo, mut hi) = (0.0f64, 1.0f64);
+    for i in 0..n {
+        let (p, q) = (hull[i], hull[(i + 1) % n]);
+        let (g0, g1) = (twice(p, q, a), twice(p, q, b));
+        if g0 < 0.0 && g1 < 0.0 {
+            return None;
+        }
+        if g0 < 0.0 {
+            lo = lo.max(g0 / (g0 - g1));
+        } else if g1 < 0.0 {
+            hi = hi.min(g0 / (g0 - g1));
+        }
+        if lo > hi {
+            return None;
+        }
+    }
+    Some((lo, hi))
 }
 
 /// The index of `n`'s largest component in magnitude, the first of equals.
@@ -2696,10 +3001,10 @@ mod tests {
 
     /// A square 0.1 across facing z, and a tick 0.3 long along y five units off along x, raised 20
     /// grid steps: the plane rising from the square's centre to the tick holds the square within
-    /// half its tolerance and the tick on it, so one plane holds both; but the tick stands 20
-    /// steps off the square's plane, past the bound content's plane through the square leaves a
-    /// record near it (about 2.5 steps, [`Reach::bound`]), so it does not lie on the square's
-    /// identity, whose plane would key it.
+    /// half its tolerance and the tick on it, so one plane holds both, and five units out the bound
+    /// content's plane through the square leaves a record ([`Reach::bound`]) has grown past 20
+    /// steps; but the tick never enters the square's hull ([`Registry::enters`]), so it does not
+    /// lie on the square's identity, whose plane would key it.
     #[test]
     fn a_record_far_off_a_small_identity_s_plane_does_not_lie_on_it() {
         let s = 0.05;
@@ -2717,7 +3022,14 @@ mod tests {
         let face = flat(&mut r, &square);
         let line = r.offer_planeless(None, &tick, &NONE, &tick);
         r.settle();
-        assert!(r.identities(face)[0] != 0);
+        let id = r.identities(face)[0];
+        assert!(id != 0);
+        let (reach, offer) = (&r.reaches[id as usize - 1], &r.offers[line as usize]);
+        let tolerance = r.tolerance(offer, r.plane(id).unrounded.normal);
+        for p in &tick {
+            let bound = reach.bound(tolerance, offer.widest, reach.distance(*p));
+            assert!(bound > h, "the bound at the tick is {} steps", bound / GRID);
+        }
         assert!(
             !r.attached(line) && r.identities(line) == [0; 4],
             "the tick lies on {:?}",
@@ -2796,10 +3108,12 @@ mod tests {
         }
     }
 
-    /// Lines coded on the axis plane of z on a square on that plane and beside it, past its edges:
-    /// the square's plane holds them, so they attach to its identity and form none of their own.
+    /// Lines coded on the axis plane of z across a square on that plane, past its edges: the
+    /// square's plane holds them, so they attach to its identity and form none of their own. A
+    /// third beside it, 0.2 past its edge, which that plane holds as well, never enters the
+    /// square's hull: it does not attach, and forms its axis plane's identity.
     #[test]
-    fn lines_on_an_axis_plane_a_face_holds_join_its_identity_and_form_none() {
+    fn lines_across_a_face_on_its_axis_plane_join_its_identity_and_one_beside_it_does_not() {
         let z = 0.25;
         let mut r = registry();
         let square = ring(&[
@@ -2809,16 +3123,19 @@ mod tests {
             [-1.0, 1.0, z],
         ]);
         let face = flat(&mut r, &square);
-        let lines = [0.0, 0.9, 1.2].map(|y| {
+        let [across, near, beside] = [0.0, 0.9, 1.2].map(|y| {
             let points = [[-1.5, y, z], [0.0, y, z], [1.5, y, z]];
             r.offer_path(&points, Planarity::Axis(2), &NONE, &points).0
         });
         r.settle();
-        for line in lines {
+        for line in [across, near] {
             assert!(r.attached(line));
             assert_eq!(r.identities(line), r.identities(face));
         }
-        assert_eq!(r.planes.len(), 1);
+        assert!(!r.attached(beside));
+        let own = r.identities(beside);
+        assert!(own[0] != 0 && own != r.identities(face), "{own:?}");
+        assert_eq!(r.planes.len(), 2);
     }
 
     /// Two squares 0.01 across facing z, 0.01 apart along x, the second raised by 4.002 times
@@ -3080,5 +3397,325 @@ mod tests {
             assert!(r.flat_record(h).is_none(), "record {h}");
         }
         assert!(r.flat_record(face).is_some());
+    }
+
+    /// A square 0.2 across facing z and a line through its centre along x, rising at three
+    /// quarters of the slope the bound grows by outside the square's hull: every point of the line
+    /// stands within the bound ([`Reach::bound`]), past what it is within the hull, and the line
+    /// crosses the square's plane within the hull, so it enters it; but no plane holds the
+    /// square's corners within their tolerances and the line within its own, rising that steeply
+    /// across the square, so it does not attach.
+    #[test]
+    fn a_line_piercing_a_face_s_plane_within_the_bound_s_growth_does_not_lie_on_it() {
+        let s = 0.1;
+        let square = ring(&[[-s, -s, 0.0], [s, -s, 0.0], [s, s, 0.0], [-s, s, 0.0]]);
+        let slope = {
+            let mut r = registry();
+            flat(&mut r, &square);
+            let far = [[9.0, 9.0, 9.0], [9.5, 9.0, 9.0]];
+            r.offer_planeless(None, &far, &NONE, &far);
+            r.settle();
+            r.reaches[0].slope
+        };
+        let rise = 0.75 * slope;
+        let line = [-3.0, -1.0, 1.0, 3.0].map(|x| [x, 0.0, rise * x]);
+        let mut r = registry();
+        let face = flat(&mut r, &square);
+        let on = r.offer_planeless(None, &line, &NONE, &line);
+        r.settle();
+        let id = r.identities(face)[0];
+        let (plane, reach, offer) = (
+            r.plane(id),
+            &r.reaches[id as usize - 1],
+            &r.offers[on as usize],
+        );
+        let tolerance = r.tolerance(offer, plane.unrounded.normal);
+        let in_hull = reach.bound(tolerance, offer.widest, 0.0);
+        for p in &line {
+            let off = within(&plane, *p);
+            assert!(off <= reach.bound(tolerance, offer.widest, reach.distance(*p)));
+            assert!(
+                off > in_hull,
+                "{} steps off, {} in the hull",
+                off / GRID,
+                in_hull / GRID
+            );
+        }
+        assert!(!r.attached(on), "the line lies on {:?}", r.identities(on));
+    }
+
+    /// A face 0.08 across on the plane `z = 0.3 x` and a line 5 long along x through it, content's
+    /// both, snapped, at the position of a search where the line's points stand farthest off the
+    /// face's own plane: the snap tilts that plane, the identity's, so the line's ends stand off it
+    /// by more than twice the bound within the face's hull, and the line attaches through the
+    /// bound's growth outside it. Where it meets the face ([`Registry::off_members`]) its points
+    /// stand off the plane by at most the bound within the hull, not their whole departure from
+    /// it ([`Registry::off_identity`]).
+    #[test]
+    fn a_line_attached_past_a_small_face_s_hull_carries_the_bound_within_it_as_its_share() {
+        let at = |x: f64, y: f64| [x, y, 0.3 * x];
+        let snapped = |p: &[[f64; 3]]| -> Vec<[f64; 3]> {
+            p.iter()
+                .map(|q| q.map(|v| (v / GRID).round() * GRID + 0.0))
+                .collect()
+        };
+        let h = 0.04;
+        let placed = |k: usize| {
+            let (cx, cy) = (-0.6 + 0.000713 * k as f64, -0.3 + 0.000419 * k as f64);
+            let face = snapped(&ring(&[
+                at(cx - h, cy - h),
+                at(cx + h, cy - h),
+                at(cx + h, cy + h),
+                at(cx - h, cy + h),
+            ]));
+            let line = snapped(&[0.0, 1.0, 2.0, 3.0].map(|t| at(cx - 2.5 + 5.0 * t / 3.0, cy)));
+            let own = WorldPlane::fit(&face, Planarity::Newell).expect("a plane");
+            (departure(&own, &line), face, line)
+        };
+        let (_, face, line) = (0..4000)
+            .map(placed)
+            .max_by(|a, b| a.0.total_cmp(&b.0))
+            .expect("positions");
+        let mut r = registry();
+        let id = flat(&mut r, &face);
+        let on = r.offer_path(&line, Planarity::Axis(1), &NONE, &line).0;
+        r.settle();
+        assert!(r.attached(on) && r.identities(on) == r.identities(id));
+        let id = r.identities(id)[0];
+        let (plane, reach, offer) = (
+            r.plane(id),
+            &r.reaches[id as usize - 1],
+            &r.offers[on as usize],
+        );
+        let tolerance = r.tolerance(offer, plane.unrounded.normal);
+        let whole = tolerance + departure(&plane, &line);
+        let in_hull = reach.bound(tolerance, offer.widest, 0.0);
+        assert!(
+            whole > 2.0 * in_hull,
+            "the line stands {} steps off, {} in the hull",
+            whole / GRID,
+            in_hull / GRID
+        );
+        assert_eq!(r.off_members(on, id), in_hull);
+        assert_eq!(r.off_identity(on, id), whole);
+    }
+
+    /// The five triangles turning about one edge and the line along it, offered in shuffled
+    /// orders: the line keeps the same four of the five faces' identities in every order.
+    #[test]
+    fn a_line_on_more_planes_than_a_fragment_carries_keeps_the_same_four_in_any_order() {
+        let faces: Vec<Vec<[f64; 3]>> = (0..5)
+            .map(|k| {
+                let a = 0.3 * k as f64;
+                ring(&[
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    [0.5, libm::cos(a), libm::sin(a)],
+                ])
+            })
+            .collect();
+        let line = [
+            [0.0, 0.0, 0.0],
+            [1.0 / 3.0, 0.0, 0.0],
+            [2.0 / 3.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+        ];
+        // The faces (by index) whose identities the line keeps, its record offered at `5`.
+        let kept = |order: &[usize]| -> Vec<usize> {
+            let mut r = registry();
+            let mut handles = [0u32; 6];
+            for &k in order {
+                handles[k] = match faces.get(k) {
+                    Some(face) => flat(&mut r, face),
+                    None => r.offer_planeless(None, &line, &NONE, &line),
+                };
+            }
+            r.settle();
+            assert!(r.attached(handles[5]) && r.capped() == 1, "order {order:?}");
+            let on = r.identities(handles[5]);
+            (0..5)
+                .filter(|&f| on.contains(&r.identities(handles[f])[0]))
+                .collect()
+        };
+        let base = kept(&[0, 1, 2, 3, 4, 5]);
+        assert_eq!(base.len(), 4);
+        let mut s = Seeded(0x5eed_f00d);
+        for _ in 0..8 {
+            let mut order: Vec<usize> = (0..6).collect();
+            for i in (1..6).rev() {
+                order.swap(i, s.below(i as u64 + 1) as usize);
+            }
+            assert_eq!(kept(&order), base, "order {order:?}");
+        }
+    }
+
+    /// Unit normals `n` and `v` at most `a` apart: on `v`'s plane, read on the two coordinates
+    /// other than `n`'s largest component, `n . x` grows by at most `sqrt(3) a / (1 - sqrt(3) a)`
+    /// per unit, [`turned_slope`] of the turn `2 a`; by more than `sqrt(3) a` where `n` faces a
+    /// diagonal and `v` turns from it so its component there falls fastest. Where `sqrt(3) a`
+    /// reaches 1, to within rounding, the slope has no bound.
+    #[test]
+    fn the_slope_of_a_turn_holds_every_plane_turned_within_it() {
+        let gradient = |n: [f64; 3], v: [f64; 3]| {
+            let k = largest_component(n);
+            let (i, j) = ((k + 1) % 3, (k + 2) % 3);
+            libm::hypot(n[i] - n[k] * v[i] / v[k], n[j] - n[k] * v[j] / v[k])
+        };
+        let unit = |p: [f64; 3]| p.map(|c| c / length(p));
+        // `n` turned toward `d`, a unit normal to it, until the two stand `a` apart.
+        let turned = |n: [f64; 3], d: [f64; 3], a: f64| -> [f64; 3] {
+            let phi = 2.0 * libm::asin(a / 2.0);
+            std::array::from_fn(|c| libm::cos(phi) * n[c] + libm::sin(phi) * d[c])
+        };
+        let diagonal = unit([1.0, 1.0, 1.0]);
+        let mut s = Seeded(0x0007_5106_e5ab);
+        let mut uniform = move || s.below(1 << 40) as f64 / (1u64 << 39) as f64 - 1.0;
+        for a in [1e-4, 1e-3, 1e-2, 1.0 / 16.0, 0.2, 0.5] {
+            let bound = turned_slope(2.0 * a);
+            let k = largest_component(diagonal);
+            let mut fall = [1.0; 3];
+            fall[k] = -2.0;
+            let steepest = gradient(diagonal, turned(diagonal, unit(fall), a));
+            assert!(
+                steepest > 3f64.sqrt() * a * (1.0 + a / 2.0) && steepest <= bound,
+                "a {a}: {steepest} against {bound}"
+            );
+            for case in 0..20_000 {
+                let r = [uniform(), uniform(), uniform()];
+                let n = if case % 2 == 0 {
+                    unit(r.map(|c| c.signum() + 0.02 * c))
+                } else {
+                    unit(r)
+                };
+                let q = [uniform(), uniform(), uniform()];
+                let d = unit(sub(q, n.map(|c| c * dot(q, n))));
+                let g = gradient(n, turned(n, d, a));
+                assert!(
+                    g <= bound,
+                    "a {a}: {g} against {bound} for {n:?} turned to {d:?}"
+                );
+            }
+        }
+        let edge = 2.0 / 3f64.sqrt();
+        assert_eq!(turned_slope(edge), f64::INFINITY);
+        assert_eq!(
+            turned_slope(edge * (1.0 - 2.0 * f64::EPSILON)),
+            f64::INFINITY
+        );
+        assert!(turned_slope(edge * (1.0 - 1e-9)) > 1e8);
+        assert!(turned_slope(edge * (1.0 - 1e-9)).is_finite());
+    }
+
+    /// A square 0.2 across facing z, its points moved toward its centre line along x by the
+    /// members' bound along every normal, as content may have put them (the snap moved each by no
+    /// more): their hull is narrower than the drawn one by twice that bound. A difference of two
+    /// planes within `g` of each of those points ([`Reach::bound`]: the members' part, and the
+    /// turn's of their bound), `g` along one side and `-g` along the other, grows by `2 g` across
+    /// that narrower width, where the turn admits so steep a difference ([`turned_slope`]); the
+    /// slope the bound grows by outside the hull holds it. Read on the bound's own terms: whether
+    /// a record attaches cannot show the narrowing's direction, as the fit (one plane holding the
+    /// members and the record within their tolerances) refuses a record before the bound does
+    /// wherever the bound's slope is at least the fit's, which the members' part and the turn's
+    /// make it, about twice over.
+    #[test]
+    fn the_bound_s_slope_holds_a_difference_across_the_narrowest_hull_content_may_have_made() {
+        let s = 0.1;
+        let square = ring(&[[-s, -s, 0.0], [s, -s, 0.0], [s, s, 0.0], [-s, s, 0.0]]);
+        let mut r = registry();
+        flat(&mut r, &square);
+        let far = [[9.0, 9.0, 9.0], [9.5, 9.0, 9.0]];
+        r.offer_planeless(None, &far, &NONE, &far);
+        r.settle();
+        let reach = &r.reaches[0];
+        let w = reach.widest;
+        let content: Vec<[f64; 2]> = square
+            .iter()
+            .map(|p| {
+                let [x, y] = reach.flat(*p);
+                [x, y - w * y.signum()]
+            })
+            .collect();
+        let narrowest = least_width(&convex_hull(content));
+        assert!(narrowest < least_width(&reach.hull) - 1.99 * w);
+        let steepest = 2.0 * (reach.members + reach.turn * w) / narrowest;
+        assert!(steepest <= turned_slope(reach.turn));
+        assert!(
+            reach.slope >= steepest,
+            "the slope {:e} against {steepest:e}",
+            reach.slope
+        );
+    }
+
+    /// A square 0.2 across facing z, a line along x through it to 3 either way, and a short line
+    /// across the first at `x = 2`, all on `z = 0`: the first line enters the square's hull and
+    /// lies on its identity; the second lies only where the first does, outside the members' hull
+    /// and beyond the snap's reach of it, and lies on nothing, whichever is offered first. The hull
+    /// is the flat members' alone: what attaches does not widen it.
+    #[test]
+    fn a_line_crossing_only_an_attached_line_outside_the_members_hull_does_not_lie_on_it() {
+        let s = 0.1;
+        let square = ring(&[[-s, -s, 0.0], [s, -s, 0.0], [s, s, 0.0], [-s, s, 0.0]]);
+        let long = [-3.0, -1.0, 1.0, 3.0].map(|x| [x, 0.0, 0.0]);
+        let short = [-0.02, -0.02 / 3.0, 0.02 / 3.0, 0.02].map(|y| [2.0, y, 0.0]);
+        for long_first in [true, false] {
+            let mut r = registry();
+            let face = flat(&mut r, &square);
+            let (a, b) = if long_first {
+                let a = r.offer_planeless(None, &long, &NONE, &long);
+                (a, r.offer_planeless(None, &short, &NONE, &short))
+            } else {
+                let b = r.offer_planeless(None, &short, &NONE, &short);
+                (r.offer_planeless(None, &long, &NONE, &long), b)
+            };
+            r.settle();
+            assert!(r.attached(a) && r.identities(a) == r.identities(face));
+            assert!(
+                !r.attached(b),
+                "long first {long_first}: the short line lies on {:?}",
+                r.identities(b)
+            );
+        }
+    }
+
+    /// A square 0.2 across facing z and a line along its edge `y = -0.1`, placed by a translation
+    /// (so its tolerance is a step, twice the square's), raised 1.25 steps: its first point, at
+    /// the hull's first corner, stands off the square's plane by more than the bound less the
+    /// line's tolerance, and within the bound; `z = 0.4` steps holds the square within its
+    /// tolerance and the line within its own, so the line lies on the square's identity. The
+    /// first-point test that passes every pair on to the attach test ([`Registry::settle`]) takes
+    /// the record's bound along every normal for its tolerance there, and lets it through.
+    #[test]
+    fn a_placed_line_within_its_own_tolerance_of_a_plane_through_a_face_lies_on_it() {
+        let s = 0.1;
+        let square = ring(&[[-s, -s, 0.0], [s, -s, 0.0], [s, s, 0.0], [-s, s, 0.0]]);
+        let h = 1.25 * GRID;
+        let line = [0.0, 1.0, 2.0, 3.0].map(|t| [-s + 2.0 * s * t / 3.0, -s, h]);
+        let shift = [
+            [1.0, 0.0, 0.0, 0.5],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+        ];
+        let shape = line.map(|p| [p[0] - 0.5, p[1], p[2]]);
+        let mut r = registry();
+        let face = flat(&mut r, &square);
+        let on = r.offer_planeless(None, &line, &[crate::xf::IDENTITY, shift], &shape);
+        r.settle();
+        let id = r.identities(face)[0];
+        let (plane, reach, offer) = (
+            r.plane(id),
+            &r.reaches[id as usize - 1],
+            &r.offers[on as usize],
+        );
+        let tolerance = r.tolerance(offer, plane.unrounded.normal);
+        assert_eq!(reach.flat(line[0]), reach.hull[0]);
+        assert!(
+            tolerance > 1.9 * r.tolerance_along(face, plane.unrounded.normal)
+                && within(&plane, line[0]) > reach.bound(0.0, offer.widest, 0.0)
+                && within(&plane, line[0]) <= reach.bound(tolerance, offer.widest, 0.0),
+            "{} steps off, its tolerance {} steps",
+            within(&plane, line[0]) / GRID,
+            tolerance / GRID
+        );
+        assert!(r.attached(on) && r.identities(on) == r.identities(face));
     }
 }

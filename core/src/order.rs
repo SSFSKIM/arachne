@@ -175,13 +175,17 @@ pub fn near_parallel(a: &Fragment, b: &Fragment) -> bool {
 /// already projected, so no world plane bounds its key) ties with anything on its plane, whatever
 /// the depths: its key cannot tell it from that plane. A layer of a path on a registered plane (a
 /// stroke, or a fill beyond its outline) is read here on its path's plane at the sub-sample, with
-/// its path's share, against what shares that plane ([`crate::composite::Depths::against`]).
+/// its path's share, against what shares that plane ([`crate::composite::Depths::against`]). Two
+/// records with no plane of their own on flat records' identities, which may meet beyond the flat
+/// records' hull, take against each other the shares their whole departures give
+/// ([`Fragment::wide`]).
 ///
 /// It is `(one_plane(a, b) || near_parallel(a, b)) && within_term(..)`, the near-parallel test,
 /// the only one that reads more than the two fragments' own numbers, run last: only where the two
 /// share no identity, are both fragments of flat records, and their keys lie within the term.
 ///
 /// [`Fragment::snap`]: crate::composite::Fragment::snap
+/// [`Fragment::wide`]: crate::composite::Fragment::wide
 pub fn coplanar_tied(a: &Fragment, da: f64, ea: f64, b: &Fragment, db: f64, eb: f64) -> bool {
     if one_plane(a, b) {
         within_term(a, da, ea, b, db, eb)
@@ -194,14 +198,23 @@ pub fn coplanar_tied(a: &Fragment, da: f64, ea: f64, b: &Fragment, db: f64, eb: 
 }
 
 /// Whether `a`'s key `da` (within `ea`) and `b`'s `db` (within `eb`) lie within their error bounds
-/// and each one's share of its key ([`Fragment::snap`]) of each other, or either key is unbounded
-/// (an infinite share): [`coplanar_tied`]'s term.
+/// and each one's share of its key of each other, or either key is unbounded (an infinite share):
+/// [`coplanar_tied`]'s term. The share is [`Fragment::snap`], or [`Fragment::wide`] where both
+/// carry one (two records with no plane of their own on flat records' identities).
 ///
 /// [`Fragment::snap`]: crate::composite::Fragment::snap
+/// [`Fragment::wide`]: crate::composite::Fragment::wide
 pub(crate) fn within_term(a: &Fragment, da: f64, ea: f64, b: &Fragment, db: f64, eb: f64) -> bool {
     let reach = |d: f64, e: f64, share: f64| e + (d.abs() + e) * share;
-    !(a.snap.is_finite() && b.snap.is_finite())
-        || tied(da, reach(da, ea, a.snap), db, reach(db, eb, b.snap))
+    let share = |f: &Fragment, other: &Fragment| {
+        if f.wide >= 0.0 && other.wide >= 0.0 {
+            f.wide
+        } else {
+            f.snap
+        }
+    };
+    let (sa, sb) = (share(a, b), share(b, a));
+    !(sa.is_finite() && sb.is_finite()) || tied(da, reach(da, ea, sa), db, reach(db, eb, sb))
 }
 
 /// `a` (depth `da` within `ea`) against `b` (depth `db` within `eb`) at a sub-sample both cover:
@@ -474,6 +487,37 @@ mod tests {
         assert_eq!(
             ordered(&first, &FULL, &later, &FULL),
             (Ordering::Greater, Decided::Tie)
+        );
+    }
+
+    /// A line on a registered plane drawn first, 1e-10 of the key nearer than a degenerate triangle
+    /// and a flat face drawn after it on that plane at one sub-sample: the line, with no plane of
+    /// its own, may stand 1e-9 of its key off the plane wherever it lies but 1e-11 where it meets
+    /// the flat records on it; the triangle, with none either, 1e-12 both ways. Against the
+    /// triangle, which may meet it beyond the flat records' hull, the line takes its whole share
+    /// and they tie in paint order; against the face, the share within the hull, and depth orders
+    /// them.
+    #[test]
+    fn a_record_with_no_plane_of_its_own_takes_its_whole_share_only_against_another() {
+        let on_plane = |key: f64, order: u32, snap: f64, wide: f64| {
+            let depth = Plane {
+                err: 1e-15,
+                ..Plane::constant(key)
+            };
+            let mut f = at_depth(depth, RED, Coverage::Mask(u16::MAX), order);
+            (f.plane, f.snap, f.wide) = ([7, 0, 0, 0], snap, wide);
+            f
+        };
+        let line = on_plane(-1.0 - 1e-10, 1, 1e-11, 1e-9);
+        let triangle = on_plane(-1.0, 2, 1e-12, 1e-12);
+        let face = on_plane(-1.0, 2, 1e-12, f64::NEG_INFINITY);
+        assert_eq!(
+            ordered(&line, &FULL, &triangle, &FULL),
+            (Ordering::Greater, Decided::Tie)
+        );
+        assert_eq!(
+            ordered(&line, &FULL, &face, &FULL),
+            (Ordering::Less, Decided::Depth)
         );
     }
 

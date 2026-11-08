@@ -85,6 +85,8 @@ struct Tri {
     /// Whether it is a flat record of the registry, which its fragments carry
     /// ([`Fragment::record`]): set once the registry settles ([`Meshes::identify`]).
     flat: bool,
+    /// Its share against what else has no plane of its own ([`Fragment::wide`]).
+    wide: f64,
 }
 
 /// Mesh records lowered to triangles, binned by tile: a producer of mask fragments.
@@ -106,8 +108,11 @@ impl Meshes {
     /// on, and its fragments the record it is where it is flat ([`Fragment::record`]). A triangle
     /// with no plane of its own (`Registry::offer_triangle`) carries, as any record with no plane
     /// of its own does, the largest share its identities give it: for each, how far its corners
-    /// may stand off that identity's plane (`Registry::off_identity`), which bounds how far its
-    /// key, read on its corners within their hull, stands from that plane's.
+    /// may stand off that identity's plane where it meets the flat records on it
+    /// (`Registry::off_members`), which bounds how far its key, read on its corners within their
+    /// hull, stands from that plane's there; and, attached to flat records' identities, the
+    /// largest their whole departure gives (`Registry::off_identity`), against what else has no
+    /// plane of its own ([`Fragment::wide`]).
     pub fn identify(&mut self, registry: &Arc<Registry>) {
         self.records = Some(Arc::clone(registry));
         for t in &mut self.tris {
@@ -127,15 +132,21 @@ impl Meshes {
             if let Some(p) = &self.projection
                 && t.plane[0] != 0
             {
-                t.snap = t
-                    .plane
-                    .iter()
-                    .take_while(|id| **id != 0)
-                    .map(|id| {
-                        let off = registry.off_identity(handle, *id);
-                        p.key_reach(&registry.plane(*id), &self.map, off)
-                    })
-                    .fold(0.0, f64::max);
+                let most = |off: fn(&Registry, u32, u32) -> f64| {
+                    t.plane
+                        .iter()
+                        .take_while(|id| **id != 0)
+                        .map(|id| {
+                            let off = off(registry, handle, *id);
+                            p.key_reach(&registry.plane(*id), &self.map, off)
+                        })
+                        .fold(0.0, f64::max)
+                };
+                let (snap, wide) = (most(Registry::off_members), most(Registry::off_identity));
+                t.snap = snap;
+                if registry.attached(handle) {
+                    t.wide = wide;
+                }
             }
         }
     }
@@ -303,6 +314,7 @@ pub fn lower(
                 handle,
                 snap,
                 flat: false,
+                wide: f64::NEG_INFINITY,
             };
             meshes.push(px, tri, height);
         }
@@ -474,6 +486,7 @@ impl Meshes {
                     f.plane = t.plane;
                     f.snap = t.snap;
                     f.record = record.map(FlatRecord);
+                    f.wide = t.wide;
                     add(x, y, f);
                 }
             }

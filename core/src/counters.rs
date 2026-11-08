@@ -44,6 +44,13 @@ pub static ATTACH_NEAR: AtomicU64 = AtomicU64::new(0);
 pub static ATTACH_PROGRAMS: AtomicU64 = AtomicU64::new(0);
 /// Its fits that ran over every member of an identity and found no plane holding them.
 pub static ATTACH_FAILED_FITS: AtomicU64 = AtomicU64::new(0);
+/// Records it attached with a point outside an identity's members' hull, through the bound's
+/// growth beyond it (`depth::Reach::bound`).
+pub static ATTACH_THROUGH_ALLOWANCE: AtomicU64 = AtomicU64::new(0);
+/// Pairs it refused because the record does not enter the identity's members' hull
+/// (`depth::Registry::enters`) where the bound without its growth outside the hull and one plane
+/// holding the record and the members within their tolerances would have attached it.
+pub static ATTACH_UNENTERED: AtomicU64 = AtomicU64::new(0);
 /// Identities of records with no plane of their own that attached to none and share an axis
 /// plane (`depth::Registry::settle`).
 pub static AXIS_RUN_IDENTITIES: AtomicU64 = AtomicU64::new(0);
@@ -72,7 +79,7 @@ pub static NEAR_PARALLEL_PX: AtomicU64 = AtomicU64::new(0);
 /// Of those, the ones where a pair tied so has a dihedral beyond 1e-2 radians.
 pub static NEAR_PARALLEL_WIDE_PX: AtomicU64 = AtomicU64::new(0);
 
-const ALL: [(&str, &AtomicU64); 30] = [
+const ALL: [(&str, &AtomicU64); 32] = [
     ("near", &NEAR),
     ("bounds_tested", &BOUNDS_TESTED),
     ("key_under", &KEY_UNDER),
@@ -91,6 +98,8 @@ const ALL: [(&str, &AtomicU64); 30] = [
     ("attach_near", &ATTACH_NEAR),
     ("attach_programs", &ATTACH_PROGRAMS),
     ("attach_failed_fits", &ATTACH_FAILED_FITS),
+    ("attach_through_allowance", &ATTACH_THROUGH_ALLOWANCE),
+    ("attach_unentered", &ATTACH_UNENTERED),
     ("axis_run_identities", &AXIS_RUN_IDENTITIES),
     ("settle_ns", &SETTLE_NS),
     ("partition_ns", &PARTITION_NS),

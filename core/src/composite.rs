@@ -275,12 +275,13 @@ pub struct Fragment<'f> {
     /// `depth::departure`; in a frame not snapped, the rounding of the core's own placing of them
     /// alone): what two fragments on one registered plane may part by and still be one plane
     /// ([`crate::order::coplanar_tied`]). For a record with no plane of its own read on the planes
-    /// of the identities it lies on, the most of its snap's departure along each one's normal and
-    /// its points' departure from it. Zero for a flat path content did not make flat (its
-    /// planarity as the writer decided it): no plane content put it on. A stroke on a registered
-    /// plane carries its path's; each layer of such a path is read on its plane against what
-    /// shares it ([`Depths::against`]). Infinite where nothing bounds it (a path whose points
-    /// reached the core already projected), and then it ties with anything on its plane.
+    /// of the identities it lies on, the most over them of how far its points may stand off each
+    /// one's plane where it meets the flat records on it (`depth::Registry::off_members`). Zero
+    /// for a flat path content did not make flat (its planarity as the writer decided it): no
+    /// plane content put it on. A stroke on a registered plane carries its path's; each layer of
+    /// such a path is read on its plane against what shares it ([`Depths::against`]). Infinite
+    /// where nothing bounds it (a path whose points reached the core already projected), and then
+    /// it ties with anything on its plane.
     pub snap: f64,
     /// The flat record it is a fragment of, as its frame's registry holds it (`depth::Registry`):
     /// a path content made flat, or a mesh triangle, offered on its own plane and keyed with a
@@ -289,6 +290,12 @@ pub struct Fragment<'f> {
     /// one identity, whose own planes the snapped input cannot tell apart in orientation, tie
     /// within the same term as two on one identity ([`crate::order::near_parallel`]).
     pub record: Option<FlatRecord<'f>>,
+    /// For a record with no plane of its own on flat records' identities, its share against
+    /// another such record ([`crate::order::coplanar_tied`]), which may meet it beyond the flat
+    /// records' hull: the most over its identities of its snap's departure along each one's
+    /// normal and its points' departure from it (`depth::Registry::off_identity`). Negative (minus
+    /// infinity) for any other.
+    pub wide: f64,
     /// The producer that added it (set by the pass).
     source: u16,
 }
@@ -322,6 +329,7 @@ impl Fragment<'_> {
             plane: [0; 4],
             snap: f64::INFINITY,
             record: None,
+            wide: f64::NEG_INFINITY,
             source: 0,
         }
     }

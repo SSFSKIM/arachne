@@ -901,8 +901,8 @@ def test_attaches_is_the_registry_s_attach_pass_on_the_identity_its_members_sett
     up_10 = 10 * snap
     assert not attaches([(1.0, -1.0, up_10), (1.0, 0.0, up_10), (1.0, 1.0, up_10)], [member(face)])
     # A tick five units from a square 0.1 across, raised 20 grid steps: a plane rising from the
-    # square to the tick holds both, but the tick stands past the bound the square leaves a record
-    # near it.
+    # square to the tick holds both, and the bound grows enough outside the square's hull to reach
+    # it, but the tick never enters that hull.
     s = 0.05
     small = outline([(-s, -s, 0.0), (s, -s, 0.0), (s, s, 0.0), (-s, s, 0.0)])
     h = 20 * grid

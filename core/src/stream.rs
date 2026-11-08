@@ -3241,45 +3241,101 @@ mod tests {
         );
     }
 
-    /// What the attach bound gives up: a face 0.08 across on the world plane `z = 0.3 x`, and a
-    /// line along x through it and 2.46 past it either way, its points sharing y (so coded on the
-    /// axis plane of y), both snapped, at the spot of those searched where the snap tilts the
-    /// face's own plane most, the line's ends standing more than 8 grid steps off it (the bound
-    /// there is under 3). Content put both on one plane, which holds each within its snap's
-    /// departure, but the line runs far outside the face's points, where its key read on the
-    /// face's plane is held to nothing: it does not lie on the face's identity (it has its axis
-    /// plane's), and depth orders the two where both cover, the line keyed on that axis plane
-    /// through its centre, the face above it on part of its width.
-    #[test]
-    fn a_line_far_past_a_small_face_does_not_share_its_identity_and_depth_orders_them() {
-        let view = snapped_view(70.0, -110.0);
+    /// How far `points` stand off `plane` at most.
+    fn off_of(plane: &crate::depth::WorldPlane, points: &[[f64; 3]]) -> f64 {
+        let (n, d) = (plane.unrounded.normal, plane.unrounded.offset);
+        points
+            .iter()
+            .map(|q| (dot3(n, *q) - d).abs())
+            .fold(0.0, f64::max)
+    }
+
+    /// The centre of the `k`th of the spots [`small_face_and_line`] is searched at.
+    fn spot(k: usize) -> (f64, f64) {
+        (-0.6 + 0.000713 * k as f64, -0.3 + 0.000419 * k as f64)
+    }
+
+    /// A face 0.08 across on the world plane `z = 0.3 x` centred at spot `k`, and a line along x
+    /// through it and 2.46 past it either way, `dy` off its centre, both snapped; with how far the
+    /// line's points stand off the face's own plane (fitted as the core fits it) at most.
+    fn small_face_and_line(k: usize, dy: f64) -> (f64, Vec<[f64; 3]>, Vec<[f64; 3]>) {
         let at = |x: f64, y: f64| [x, y, 0.3 * x];
-        let off = |own: &crate::depth::WorldPlane, points: &[[f64; 3]]| {
-            let (n, d) = (own.unrounded.normal, own.unrounded.offset);
-            points
-                .iter()
-                .map(|q| (dot3(n, *q) - d).abs())
-                .fold(0.0, f64::max)
-        };
-        let (most, face, line) = (0..4000)
-            .filter_map(|k| {
-                let (cx, cy) = (-0.6 + 0.000713 * k as f64, -0.3 + 0.000419 * k as f64);
-                let h = 0.04;
-                let face = snapped(
-                    &ring(&[
-                        at(cx - h, cy - h),
-                        at(cx + h, cy - h),
-                        at(cx + h, cy + h),
-                        at(cx - h, cy + h),
-                    ]),
-                    GRID,
-                );
-                let line = snapped_line(at(cx - 2.5, cy), at(cx + 2.5, cy));
-                let own = crate::depth::WorldPlane::fit(&face, crate::depth::Planarity::Newell)?;
-                Some((off(&own, &line), face, line))
-            })
+        let ((cx, cy), h) = (spot(k), 0.04);
+        let face = snapped(
+            &ring(&[
+                at(cx - h, cy - h),
+                at(cx + h, cy - h),
+                at(cx + h, cy + h),
+                at(cx - h, cy + h),
+            ]),
+            GRID,
+        );
+        let line = snapped_line(at(cx - 2.5, cy + dy), at(cx + 2.5, cy + dy));
+        let own =
+            crate::depth::WorldPlane::fit(&face, crate::depth::Planarity::Newell).expect("a plane");
+        (off_of(&own, &line), face, line)
+    }
+
+    /// The spot, of 4000 searched, where the snap tilts the small face's own plane most: the line
+    /// through its centre stands farthest off it ([`small_face_and_line`]).
+    fn tilted_most() -> usize {
+        (0..4000)
+            .map(|k| (small_face_and_line(k, 0.0).0, k))
             .max_by(|a, b| a.0.total_cmp(&b.0))
-            .expect("faces");
+            .expect("spots")
+            .1
+    }
+
+    /// Where leaves of objects `a` and `b` both lie: each fragment of `a`'s keys and their bound as
+    /// read against each of `b`'s ([`composite::Depths::against`]), its strokes on its own fill as
+    /// the resolve orders them, at each sub-sample both cover, as bits, by pixel, the two layers'
+    /// sub-orders and the sub-sample.
+    #[allow(clippy::type_complexity)]
+    fn read_against(
+        s: &Stream,
+        a: u32,
+        b: u32,
+    ) -> BTreeMap<(u32, u32, u32, u32, usize), (u64, u64)> {
+        let (w, h) = {
+            let view = s.view.as_ref().expect("a view");
+            (view.pixel_width, view.pixel_height)
+        };
+        let mut out = BTreeMap::new();
+        s.visit_contributors(0, 0, w, h, |x, y, frags, cov, d, _| {
+            let mut d = d.to_vec();
+            composite::strokes_on_own_fills(frags, &mut d, |i| cov[i]);
+            let of =
+                |object: u32| (0..frags.len()).filter(move |i| s.leaf_of(&frags[*i]).0 == object);
+            for i in of(a) {
+                for j in of(b) {
+                    let (keys, err) = d[i].against(&frags[i], &frags[j]);
+                    for k in 0..composite::SAMPLES {
+                        if cov[i][k] != 0 && cov[j][k] != 0 {
+                            let at = (x, y, frags[i].sub, frags[j].sub, k);
+                            out.insert(at, (keys[k].to_bits(), err.to_bits()));
+                        }
+                    }
+                }
+            }
+        })
+        .expect("the stream draws");
+        out
+    }
+
+    /// The small face and the line through it ([`small_face_and_line`]), its points sharing y (so
+    /// coded on the axis plane of y), at the spot where the snap tilts the face's own plane most,
+    /// the line's ends standing more than 8 grid steps off it. Content put both on one plane,
+    /// which holds each within its snap's departure, and the bound grows outside the face's hull
+    /// as fast as that plane may part from the face's own, so the line lies on the face's identity
+    /// and ties with it: drawn after it, above it wherever both cover. So at every 500th spot too,
+    /// the order not shimmering as the snap's tilt moves. Its share against the face is the bound
+    /// within the face's hull ([`crate::depth::Registry::off_members`]), under half its ends'
+    /// departure from the identity's plane, which gives its share against what else has no plane
+    /// of its own ([`composite::Fragment::wide`]).
+    #[test]
+    fn a_line_far_past_a_small_face_ties_with_it_wherever_both_cover() {
+        let k = tilted_most();
+        let (most, face, line) = small_face_and_line(k, 0.0);
         assert!(
             most > 8.0 * GRID,
             "the line's ends stand at most {} steps off the face's plane",
@@ -3291,27 +3347,294 @@ mod tests {
         for points in [&face, &line] {
             let n = content.unrounded.normal;
             let snap = crate::depth::snap_departure(GRID, n, &[IDENTITY, IDENTITY], points);
-            assert!(off(&content, points) <= snap, "content's plane holds each");
+            assert!(
+                off_of(&content, points) <= snap,
+                "content's plane holds each"
+            );
         }
         let flat = Some(crate::depth::Planarity::Newell);
+        let drawn = |face: Vec<[f64; 3]>, line: Vec<[f64; 3]>| {
+            paths_stream(
+                snapped_view(70.0, -110.0),
+                vec![
+                    (face, face_record(1, [0.2, 0.4, 0.8, 1.0], None, flat)),
+                    (line, line_record(2, 6.0, axis)),
+                ],
+            )
+        };
+        for at in std::iter::once(k).chain((0..4000).step_by(500)) {
+            let (_, face, line) = small_face_and_line(at, 0.0);
+            let s = drawn(face, line);
+            let ids = identities(&s);
+            assert!(
+                !ids[&101].is_empty() && ids[&102] == ids[&101],
+                "at spot {at} the face lies on {:?}, the line on {:?}",
+                ids[&101],
+                ids[&102]
+            );
+            let (wrong, both) = above(&s, 101, 102);
+            assert!(
+                both > 20 && wrong == 0,
+                "at spot {at} the face is above the line drawn after it at {wrong} of {both}"
+            );
+        }
+        let view = snapped_view(70.0, -110.0);
+        let (w, h) = (view.pixel_width, view.pixel_height);
+        let mut r = crate::depth::Registry::new(&view);
+        let places = [IDENTITY, IDENTITY];
+        let newell = crate::depth::Planarity::Newell;
+        let (f, ..) = r.offer_path(&face, newell, &places, &face);
+        let (l, ..) = r.offer_path(&line, axis, &places, &line);
+        r.settle();
+        let id = r.identities(f)[0];
+        let plane = r.plane(id);
+        let whole =
+            r.tolerance_along(l, plane.unrounded.normal) + crate::depth::departure(&plane, &line);
+        let off = r.off_members(l, id);
+        assert!(
+            whole > 2.0 * off && r.off_identity(l, id) == whole,
+            "{} steps against {}",
+            whole / GRID,
+            off / GRID
+        );
+        let p = projection_of(&view);
+        let map = crate::project::FrameMap::of_kind(&view, RecordKind::Path, w, h);
+        let share = [off, whole].map(|d| p.key_reach(&plane, &map, d));
+        let s = drawn(face, line);
+        let mut shares = Vec::new();
+        s.visit_contributors(0, 0, w, h, |_, _, frags, _, _, _| {
+            shares.extend(
+                frags
+                    .iter()
+                    .filter(|f| s.leaf_of(f).0 == 102)
+                    .map(|f| [f.snap, f.wide]),
+            );
+        })
+        .expect("the stream draws");
+        assert!(
+            !shares.is_empty() && shares.iter().all(|v| *v == share),
+            "the line's shares {:?}, against {share:?}",
+            shares.first()
+        );
+    }
+
+    /// The small face and the line through it at the spot where the snap tilts the face's plane
+    /// most ([`a_line_far_past_a_small_face_ties_with_it_wherever_both_cover`]), and a wall the line
+    /// pierces just past the face's hull, on the axis plane of x 0.01 past the face's edge, all
+    /// snapped: the line lies on the face's identity, not the wall's, and against the wall it is read
+    /// as it is with the face not drawn, on its curve, key and bound bit for bit, so attaching moves
+    /// no order there.
+    #[test]
+    fn an_attached_line_is_read_as_unattached_against_what_shares_none_of_its_identities() {
+        let k = tilted_most();
+        let (_, face, line) = small_face_and_line(k, 0.0);
+        let (cx, cy) = spot(k);
+        let x = cx + 0.05;
+        let wall = snapped(
+            &ring(&[
+                [x, cy - 0.2, 0.3 * x - 0.2],
+                [x, cy + 0.2, 0.3 * x - 0.2],
+                [x, cy + 0.2, 0.3 * x + 0.2],
+                [x, cy - 0.2, 0.3 * x + 0.2],
+            ]),
+            GRID,
+        );
+        let flat = Some(crate::depth::Planarity::Newell);
+        let axis = crate::depth::Planarity::Axis(1);
+        let drawn = |with_face: bool| {
+            let mut items = Vec::new();
+            if with_face {
+                items.push((
+                    face.clone(),
+                    face_record(1, [0.2, 0.4, 0.8, 1.0], None, flat),
+                ));
+            }
+            items.push((line.clone(), line_record(2, 6.0, axis)));
+            let on_x = Some(crate::depth::Planarity::Axis(0));
+            items.push((
+                wall.clone(),
+                face_record(3, [0.8, 0.3, 0.2, 1.0], None, on_x),
+            ));
+            paths_stream(snapped_view(70.0, -110.0), items)
+        };
+        let (with, without) = (drawn(true), drawn(false));
+        let ids = identities(&with);
+        assert!(
+            !ids[&101].is_empty() && ids[&102] == ids[&101] && ids[&103].is_disjoint(&ids[&102]),
+            "the face lies on {:?}, the line on {:?}, the wall on {:?}",
+            ids[&101],
+            ids[&102],
+            ids[&103]
+        );
+        let read = read_against(&with, 102, 103);
+        assert!(read.len() > 20, "{} sub-samples", read.len());
+        assert_eq!(read, read_against(&without, 102, 103));
+    }
+
+    /// A face 0.2 across on the world plane `z = 0.3 x`, its corners as given, and a line along
+    /// its edge at `x = 0.1` running 2.9 past it either way, three ulps of x outside that edge and
+    /// a quarter grid step behind the face's plane. No point of the line comes within the snap's
+    /// reach of the face's hull and no segment of it crosses the hull, but the segment along the
+    /// edge passes within that reach, standing off the plane within the bound there: the line lies
+    /// on the face's identity and ties with it, drawn after it, above it wherever both cover.
+    #[test]
+    fn a_line_along_a_face_s_edge_just_outside_its_hull_lies_on_its_identity() {
+        let view = snapped_view(70.0, -110.0);
+        let eye = eye_of(&view);
+        let (h, at) = (0.1, |x: f64, y: f64| [x, y, 0.3 * x]);
+        let face = ring(&[at(-h, -h), at(h, -h), at(h, h), at(-h, h)]);
+        let x = f64::from_bits(h.to_bits() + 3);
+        let back = if eye[2] > 0.3 * eye[0] { -1.0 } else { 1.0 } * GRID / 4.0;
+        let line = [-3.0, -1.0, 1.0, 3.0].map(|y| [x, y, 0.3 * x + back]);
+        assert!(
+            behind(&face, &line, eye) > GRID / 8.0,
+            "the line stands {} steps behind the face",
+            behind(&face, &line, eye) / GRID
+        );
+        assert!(line.iter().all(|p| p[1].abs() - h >= 0.9));
+        let flat = Some(crate::depth::Planarity::Newell);
+        let coded = crate::depth::WorldPlane::decide(&line, false);
         let s = paths_stream(
             view,
             vec![
                 (face, face_record(1, [0.2, 0.4, 0.8, 1.0], None, flat)),
-                (line, line_record(2, 6.0, axis)),
+                (line.to_vec(), line_record(2, 6.0, coded)),
             ],
         );
         let ids = identities(&s);
-        let (on_face, on_line) = (&ids[&101], &ids[&102]);
         assert!(
-            !on_face.is_empty() && !on_line.is_empty() && on_face.is_disjoint(on_line),
-            "the face lies on {on_face:?}, the line on {on_line:?}"
+            !ids[&101].is_empty() && ids[&102] == ids[&101],
+            "the face lies on {:?}, the line on {:?}",
+            ids[&101],
+            ids[&102]
         );
         let (wrong, both) = above(&s, 101, 102);
         assert!(
-            both > 20 && wrong > 0 && wrong < both,
+            both > 50 && wrong == 0,
             "the face is above the line drawn after it at {wrong} of {both}"
         );
+    }
+
+    /// A face 0.6 across on the world plane `z = 0.3 x`, a square 0.2 across inside it coded as a
+    /// curve (so with no plane of its own) and filled, and a third face crossing both on a plane
+    /// tilted about x, all snapped: the curve lies on the face's identity, and against the third
+    /// face its fill is read as it is with the face not drawn, along its curve, key and bound bit
+    /// for bit.
+    #[test]
+    fn an_attached_fill_is_read_as_unattached_against_what_shares_none_of_its_identities() {
+        let at = |x: f64, y: f64| [x, y, 0.3 * x];
+        let square = |h: f64| snapped(&ring(&[at(-h, -h), at(h, -h), at(h, h), at(-h, h)]), GRID);
+        let tilted = |x: f64, y: f64| [x, y, 0.3 * x + 0.5 * y];
+        let third = snapped(
+            &ring(&[
+                tilted(-0.15, -0.3),
+                tilted(0.15, -0.3),
+                tilted(0.15, 0.3),
+                tilted(-0.15, 0.3),
+            ]),
+            GRID,
+        );
+        let flat = Some(crate::depth::Planarity::Newell);
+        let curve = Some(crate::depth::Planarity::Curve);
+        let drawn = |with_face: bool| {
+            let mut items = Vec::new();
+            if with_face {
+                items.push((
+                    square(0.3),
+                    face_record(1, [0.2, 0.4, 0.8, 1.0], None, flat),
+                ));
+            }
+            items.push((
+                square(0.1),
+                face_record(2, [0.9, 0.8, 0.1, 1.0], None, curve),
+            ));
+            items.push((
+                third.clone(),
+                face_record(3, [0.8, 0.3, 0.2, 1.0], None, flat),
+            ));
+            paths_stream(snapped_view(70.0, -110.0), items)
+        };
+        let (with, without) = (drawn(true), drawn(false));
+        let ids = identities(&with);
+        assert!(
+            !ids[&101].is_empty() && ids[&102] == ids[&101] && ids[&103].is_disjoint(&ids[&102]),
+            "the face lies on {:?}, the curve on {:?}, the third on {:?}",
+            ids[&101],
+            ids[&102],
+            ids[&103]
+        );
+        assert!(identities(&without)[&102].is_empty());
+        let read = read_against(&with, 102, 103);
+        assert!(read.len() > 20, "{} sub-samples", read.len());
+        assert_eq!(read, read_against(&without, 102, 103));
+        // Against the face it shares an identity with, the fill is read on that identity's plane.
+        let mut rows = 0;
+        with.visit_contributors(0, 0, 854, 480, |_, _, frags, _, d, _| {
+            let of = |object: u32| frags.iter().position(|f| with.leaf_of(f).0 == object);
+            if let (Some(i), Some(j)) = (of(102), of(101)) {
+                let row = d[i].on_plane.as_ref().expect("a row on the face's plane");
+                assert_eq!(d[i].against(&frags[i], &frags[j]), (&row.0, row.1));
+                rows += 1;
+            }
+        })
+        .expect("the stream draws");
+        assert!(rows > 20, "{rows} pixels");
+    }
+
+    /// Two lines through the small face at the spot where the snap tilts its plane most
+    /// ([`small_face_and_line`]), content's plane holding all three: one along x a quarter of the
+    /// face's width off its centre (coded on the axis plane of y), one through the other side
+    /// turned 0.1 from it (coded a curve), crossing 0.4 past the face's hull. Both lie on the
+    /// face's identity, and where they cross each is read on its plane against the other: they
+    /// tie, the later drawn above the other wherever both cover.
+    #[test]
+    fn two_lines_on_a_small_face_s_identity_crossing_outside_its_hull_tie() {
+        let k = tilted_most();
+        let (_, face, first) = small_face_and_line(k, 0.02);
+        let (cx, cy) = spot(k);
+        let at = |x: f64, y: f64| [x, y, 0.3 * x];
+        let (along, across) = (libm::cos(0.1), libm::sin(0.1));
+        let second = snapped_line(
+            at(cx - 2.5 * along, cy - 0.02 - 2.5 * across),
+            at(cx + 2.5 * along, cy - 0.02 + 2.5 * across),
+        );
+        let flat = Some(crate::depth::Planarity::Newell);
+        let s = paths_stream(
+            snapped_view(70.0, -110.0),
+            vec![
+                (face, face_record(1, [0.2, 0.4, 0.8, 1.0], None, flat)),
+                (first, line_record(2, 6.0, crate::depth::Planarity::Axis(1))),
+                (second, line_record(3, 6.0, crate::depth::Planarity::Curve)),
+            ],
+        );
+        let ids = identities(&s);
+        assert!(
+            !ids[&101].is_empty() && ids[&102] == ids[&101] && ids[&103] == ids[&101],
+            "the face lies on {:?}, the lines on {:?} and {:?}",
+            ids[&101],
+            ids[&102],
+            ids[&103]
+        );
+        let (wrong, both) = above(&s, 102, 103);
+        assert!(
+            both > 20 && wrong == 0,
+            "the first line is above the second at {wrong} of {both}"
+        );
+        let (w, h) = (854, 480);
+        let mut rows = 0;
+        s.visit_contributors(0, 0, w, h, |_, _, frags, _, d, _| {
+            let of = |object: u32| frags.iter().position(|f| s.leaf_of(f).0 == object);
+            let (Some(i), Some(j)) = (of(102), of(103)) else {
+                return;
+            };
+            for (m, o) in [(i, j), (j, i)] {
+                let row = d[m].on_plane.as_ref().expect("a row on the face's plane");
+                assert_eq!(d[m].against(&frags[m], &frags[o]), (&row.0, row.1));
+                rows += 1;
+            }
+        })
+        .expect("the stream draws");
+        assert!(rows > 0);
     }
 
     /// A cube turned off every axis, two of its faces drawn, then the edge they share as a line,
@@ -3962,5 +4285,237 @@ mod tests {
             }
             eprintln!("hinge {rise:e}, B drawn first: {flips} flips of {compared} compared");
         }
+    }
+
+    /// [`sheared_pair`]'s two faces hinged off A's edge at 0.8 of the turn their snaps allow, B
+    /// drawn first and A, when `with_a`, after it; and, drawn last when `with_line`, object 103: a
+    /// line along y at `x = 1.4`, across both faces and on to 8 either way, rising off z = 0 by
+    /// 1.7e-5 per unit of y, coded on the axis plane of x. A plane through the line and A, rising
+    /// so, holds A within its tolerances, so the line lies on A's identity; across B it stands
+    /// 1.2e-4 or more off B's plane, which no plane holding B within its own tolerances comes near.
+    fn hinged_faces_and_line(view: &View, with_a: bool, with_line: bool) -> Stream {
+        let mut steps = 1000.0;
+        for _ in 0..4 {
+            let (room, _) = sheared_turns(toward_eye(view, steps), -1.5);
+            steps = (0.8 * room / RATIO_STEP).round();
+        }
+        let flat = Some(crate::depth::Planarity::Newell);
+        let mut placed = face_record(2, [0.2, 0.4, 0.8, 1.0], None, flat);
+        placed.geometry.place_a = sheared(toward_eye(view, steps), -1.5);
+        let mut items = vec![(flat_square(0.0, 3.0), placed)];
+        if with_a {
+            items.push((
+                flat_square(-1.5, 3.0),
+                face_record(1, [0.8, 0.3, 0.2, 1.0], None, flat),
+            ));
+        }
+        if with_line {
+            let line = [-8.0, -8.0 / 3.0, 8.0 / 3.0, 8.0].map(|y| [1.4, y, 1.7e-5 * y]);
+            items.push((
+                line.to_vec(),
+                line_record(3, 6.0, crate::depth::Planarity::Axis(0)),
+            ));
+        }
+        paths_stream(view.clone(), items)
+    }
+
+    /// One sub-sample objects `a` and `b` both cover, each one's key read against the other
+    /// ([`composite::Depths::against`]) with its bound, each fragment's shares, and whether the
+    /// resolve composites `a` above `b` there.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    struct Met {
+        at: (u32, u32, usize),
+        a: (f64, f64, f64, f64),
+        b: (f64, f64, f64, f64),
+        a_above: bool,
+    }
+
+    /// The sub-samples objects `a` and `b` both cover in `s`, as [`Met`] reads each.
+    // The sub-sample `k` indexes both fragments' coverage and depth rows.
+    #[allow(clippy::needless_range_loop)]
+    fn met(s: &Stream, a: u32, b: u32) -> Vec<Met> {
+        let (w, h) = {
+            let view = s.view.as_ref().expect("a view");
+            (view.pixel_width, view.pixel_height)
+        };
+        let mut keys = BTreeMap::new();
+        s.visit_contributors(0, 0, w, h, |x, y, frags, cov, d, _| {
+            let mut d = d.to_vec();
+            composite::strokes_on_own_fills(frags, &mut d, |i| cov[i]);
+            let find = |id: u32| frags.iter().position(|f| s.leaf_of(f).0 == id);
+            let (Some(i), Some(j)) = (find(a), find(b)) else {
+                return;
+            };
+            let (fa, fb) = (&frags[i], &frags[j]);
+            let ((ka, ea), (kb, eb)) = (d[i].against(fa, fb), d[j].against(fb, fa));
+            for k in 0..composite::SAMPLES {
+                if cov[i][k] != 0 && cov[j][k] != 0 {
+                    let read =
+                        |key: f64, err: f64, f: &composite::Fragment| (key, err, f.snap, f.wide);
+                    keys.insert((x, y, k), (read(ka[k], ea, fa), read(kb[k], eb, fb)));
+                }
+            }
+        })
+        .expect("the stream draws");
+        let mut out = Vec::new();
+        for ((x, y), pixel) in &s.contributors(0, 0, w, h).expect("the stream draws") {
+            let leaf = |object: u32| pixel.leaves.iter().position(|l| l.object == object);
+            let (Some(la), Some(lb)) = (leaf(a), leaf(b)) else {
+                continue;
+            };
+            for (k, seq) in pixel.samples.iter().enumerate() {
+                let at = |l: usize| seq.iter().rposition(|(m, _)| *m == l);
+                let (Some(pa), Some(pb)) = (at(la), at(lb)) else {
+                    continue;
+                };
+                if let Some(&(ka, kb)) = keys.get(&(*x, *y, k)) {
+                    out.push(Met {
+                        at: (*x, *y, k),
+                        a: ka,
+                        b: kb,
+                        a_above: pa > pb,
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    /// Whether `m`'s two keys lie within the term each one's `share` of its key and their bounds
+    /// make ([`order::coplanar_tied`]'s term).
+    fn within_shares(m: &Met, share: impl Fn((f64, f64, f64, f64)) -> f64) -> bool {
+        let reach = |(d, e, ..): (f64, f64, f64, f64), share: f64| e + (d.abs() + e) * share;
+        let (sa, sb) = (share(m.a), share(m.b));
+        !(sa.is_finite() && sb.is_finite())
+            || order::tied(m.a.0, reach(m.a, sa), m.b.0, reach(m.b, sb))
+    }
+
+    /// The hinged faces of [`hinged_faces_and_line`], with and without the line on A's identity,
+    /// whose whole share past A's hull is more than its share against A: the faces' fragments carry
+    /// no whole share, and at every sub-sample both faces cover the two are read, tie and are
+    /// ordered as without the line, near-parallel, within their own shares: tied, A, drawn later,
+    /// above B; beyond the term, the nearer above.
+    #[test]
+    fn near_parallel_faces_off_a_line_s_identity_tie_as_without_it() {
+        let view = snapped_view(30.0, -60.0);
+        let (with, without) = (
+            hinged_faces_and_line(&view, true, true),
+            hinged_faces_and_line(&view, true, false),
+        );
+        let ids = identities(&with);
+        assert!(
+            ids[&101] != ids[&102] && ids[&103] == ids[&101],
+            "A lies on {:?}, B on {:?}, the line on {:?}",
+            ids[&101],
+            ids[&102],
+            ids[&103]
+        );
+        let (mut faces, mut lines) = (0, 0);
+        with.visit_contributors(0, 0, 854, 480, |_, _, frags, _, _, _| {
+            for f in frags {
+                match with.leaf_of(f).0 {
+                    103 => {
+                        assert!(
+                            f.wide > f.snap && f.snap > 0.0,
+                            "the line's shares {} and {}",
+                            f.snap,
+                            f.wide
+                        );
+                        lines += 1;
+                    }
+                    _ => {
+                        assert_eq!(f.wide, f64::NEG_INFINITY);
+                        faces += 1;
+                    }
+                }
+            }
+        })
+        .expect("the stream draws");
+        assert!(
+            faces > 1000 && lines > 100,
+            "{faces} face and {lines} line fragments"
+        );
+        let shared = shared_samples(&with);
+        assert_eq!(shared, shared_samples(&without));
+        let (within, beyond) = by_term(&shared);
+        assert!(
+            within.len() > shared.len() / 4 && beyond.len() > shared.len() / 20,
+            "of {}, {} within the term and apart, {} beyond it",
+            shared.len(),
+            within.len(),
+            beyond.len()
+        );
+        assert!(within.iter().all(|x| x.a_above));
+        assert!(
+            beyond
+                .iter()
+                .filter(|x| x.apart)
+                .all(|x| x.a_above == x.a_nearer)
+        );
+    }
+
+    /// The hinged faces of [`hinged_faces_and_line`] and the line on A's identity, drawn last:
+    /// each pair is ordered by its own rule at every sub-sample both cover. The faces, on two
+    /// identities and near-parallel, by their own shares ([`order::near_parallel`]); the line and
+    /// A, on one identity, by the line's share against A's members, the bound within A's hull,
+    /// though its whole share is more: tied, the line above; and the line and B, on no identity in
+    /// common, by their keys' bounds alone, the line read as it is with A not drawn.
+    #[test]
+    fn a_line_on_one_of_two_near_parallel_faces_is_ordered_by_each_pair_s_own_rule() {
+        let view = snapped_view(30.0, -60.0);
+        let s = hinged_faces_and_line(&view, true, true);
+        let ordered = |m: &Met, tie: bool, a_later: bool| {
+            if tie {
+                m.a_above == a_later
+            } else {
+                m.a_above == (m.a.0 < m.b.0)
+            }
+        };
+        let faces = met(&s, 101, 102);
+        let apart_faces = faces.iter().filter(|m| !within_shares(m, |a| a.2)).count();
+        assert!(faces.len() > 100_000 && apart_faces > faces.len() / 20);
+        let broken = faces
+            .iter()
+            .filter(|m| !ordered(m, within_shares(m, |a| a.2), true))
+            .count();
+        assert_eq!(broken, 0, "of {} sub-samples of the faces", faces.len());
+        let on_a = met(&s, 103, 101);
+        let snap_tied = on_a.iter().filter(|m| within_shares(m, |a| a.2)).count();
+        let wide_only = on_a
+            .iter()
+            .filter(|m| !within_shares(m, |a| a.2) && within_shares(m, |a| a.3.max(a.2)))
+            .count();
+        assert!(
+            on_a.len() > 100,
+            "{} sub-samples of the line and A",
+            on_a.len()
+        );
+        assert!(
+            on_a.iter()
+                .all(|m| m.a.3 > m.a.2 && m.b.3 == f64::NEG_INFINITY)
+        );
+        let broken = on_a
+            .iter()
+            .filter(|m| !ordered(m, within_shares(m, |a| a.2), true))
+            .count();
+        assert_eq!(
+            broken,
+            0,
+            "of {} sub-samples of the line and A ({snap_tied} tied, {wide_only} tied by the whole share alone)",
+            on_a.len()
+        );
+        let on_b = met(&s, 103, 102);
+        assert!(
+            on_b.len() > 100,
+            "{} sub-samples of the line and B",
+            on_b.len()
+        );
+        let broken = on_b
+            .iter()
+            .filter(|m| !ordered(m, order::tied(m.a.0, m.a.1, m.b.0, m.b.1), true))
+            .count();
+        assert_eq!(broken, 0, "of {} sub-samples of the line and B", on_b.len());
+        let alone = hinged_faces_and_line(&view, false, true);
+        assert_eq!(read_against(&s, 103, 102), read_against(&alone, 103, 102));
     }
 }
