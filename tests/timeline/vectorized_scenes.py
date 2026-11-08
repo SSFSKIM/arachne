@@ -5,6 +5,8 @@ functions, and trusted plays that stay scalar.
 
 from __future__ import annotations
 
+from fractions import Fraction
+
 import numpy as np
 
 from arachne import (
@@ -262,6 +264,18 @@ class CountedProportion(Scene):
         sq = Square()
         self.add(sq)
         rate = not_quite_there(linear, Counted(0.7))
+        self.play(Transform(sq, Square().shift(UP)), rate_func=rate, run_time=1)
+
+
+class FractionProportion(Scene):
+    """A blend whose rate is ``not_quite_there`` over an exact fraction: a
+    rate function of CE's, with a number the arrays do not compute with.
+    """
+
+    def construct(self):
+        sq = Square()
+        self.add(sq)
+        rate = not_quite_there(linear, Fraction(7, 10))
         self.play(Transform(sq, Square().shift(UP)), rate_func=rate, run_time=1)
 
 

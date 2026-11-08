@@ -283,7 +283,13 @@ COUNTED = [
 ]
 
 
-@pytest.mark.parametrize("name", COUNTED)
+#: Of those, the scenes whose rate function is a factory's closure over a
+#: counted number: admission refuses such a rate (``rates.engine_rate`` takes
+#: only plain numbers), so the play never reaches the plan.
+COUNTED_RATES = {"CountedProportion", "CountedSquish", "CountedInert"}
+
+
+@pytest.mark.parametrize("name", [n for n in COUNTED if n not in COUNTED_RATES])
 def test_a_number_of_the_scenes_own_type_keeps_the_whole_play_scalar(name):
     """A number whose class defines its own arithmetic runs the scene's code
     each time it is computed with: the play stays scalar, so that code runs
@@ -294,6 +300,32 @@ def test_a_number_of_the_scenes_own_type_keeps_the_whole_play_scalar(name):
     assert play.route == "trusted"
     assert not play.vectorized
     assert "Counted" in vectorized.refusal(play._animations)
+
+
+@pytest.mark.parametrize("name", sorted(COUNTED_RATES))
+def test_a_rate_closed_over_a_number_of_the_scenes_own_type_is_not_trusted(name):
+    """A rate function that is a factory's closure over a number of the
+    scene's own type is not one of CE's: the play is not trusted, and so the
+    scene's arithmetic runs when, and as often as, the stepping path runs it.
+    """
+    scene = assert_same_as_scalar(getattr(vectorized_scenes, name))
+    play = scene.timeline.ensure_record().plays[0]
+    assert play.route != "trusted"
+    assert not play.vectorized
+
+
+def test_a_rate_closed_over_an_exact_fraction_is_trusted_and_stays_scalar():
+    """CE's own factory with a number of a type the arrays do not compute
+    with (admission takes exact fractions): trusted, and the plan refuses it
+    by that number.
+    """
+    scene = assert_same_as_scalar(vectorized_scenes.FractionProportion)
+    play = scene.timeline.ensure_record().plays[0]
+    assert play.route == "trusted"
+    assert not play.vectorized
+    assert vectorized.refusal(play._animations) == (
+        "Transform's rate function computes with a Fraction"
+    )
 
 
 def test_a_groups_timings_the_scene_assigned_keep_the_play_scalar():

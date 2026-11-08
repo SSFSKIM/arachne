@@ -68,9 +68,7 @@ __all__ = [
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from fractions import Fraction
-from functools import cache
 from operator import is_
-from types import FunctionType
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -272,37 +270,22 @@ def _twin(function: Any) -> Any:
         return None
 
 
-@cache
-def _engine_rates() -> dict[int, Callable[..., Any]]:
-    """CE's rate functions, by identity."""
-    from .rates import RATE_FUNCTIONS
-
-    return {id(function): function for function in RATE_FUNCTIONS}
-
-
 def _rate_refusal(name: str, function: Any) -> str | None:
     """Why ``name``'s rate function is not one the plan may call ahead of
-    the play. It must be one of CE's rate functions itself, or the closure a
-    rate factory returned (a function whose code is the factory's own) over
-    one, at any depth, with numbers that are exact (:data:`_EXACT`): a
-    callable that only compares equal to one of CE's runs its own call.
+    the play. It must be one of CE's rate functions, or a closure a rate
+    factory returned over one, at any depth (:func:`.rates.engine_rate`: a
+    callable that only compares equal to one of CE's runs its own call), with
+    numbers that are exact (:data:`_EXACT`).
     """
-    from .rates import _factory_parts
+    from .rates import engine_rate
 
-    rates = _engine_rates()
-    while rates.get(id(function)) is not function:
-        parts = None
-        if type(function) is FunctionType:
-            parts = _factory_parts(function)
-        if parts is None:
-            return f"{name}'s rate function is not one of CE's"
-        kind, cells = parts
-        numbers = ("a", "b") if kind == "squish" else ("proportion",)
-        for number in numbers:
+    rate = engine_rate(function)
+    if rate is None:
+        return f"{name}'s rate function is not one of CE's"
+    for kind, cells in rate.layers:
+        for number in ("a", "b") if kind == "squish" else ("proportion",):
             if not _exact(cells[number]):
-                held = _number(cells[number])
-                return f"{name}'s rate function computes with {held}"
-        function = cells["func"]
+                return f"{name}'s rate function computes with {_number(cells[number])}"
     return None
 
 
