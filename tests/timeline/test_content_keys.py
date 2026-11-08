@@ -163,7 +163,9 @@ def test_containers_key_by_what_they_hold():
     assert _value_key((1, 2.5)) == _value_key((1, 2.5))
     assert _value_key((1, 2.5)) != _value_key([1, 2.5])
     assert _value_key((1, 2.5)) != _value_key((1, 2.25))
-    assert _value_key({"a": 1, "b": 2}) == _value_key({"b": 2, "a": 1})
+    # A dict by its order too; a set by its parts alone.
+    assert _value_key({"a": 1, "b": 2}) != _value_key({"b": 2, "a": 1})
+    assert _value_key({"a", "b"}) == _value_key({"b", "a"})
     assert _value_key({"a": 1}) != _value_key({"a": 2})
     assert _value_key(np.array([1.0, 2.0])) != _value_key(np.array([1.0, 3.0]))
     assert _value_key(np.int64(3)) != _value_key(np.int32(3))
@@ -399,9 +401,15 @@ def test_the_probe_demotes_a_hook_writing_an_enum_by_history_as_it_does_a_number
 #: A line holding a value the key cannot key (``NOTE``), through a state
 #: play.
 NOTED = """
+import functools
 import threading
 
 from arachne import *
+
+
+@functools.lru_cache(maxsize=None)
+def squared(x):
+    return x * x
 
 
 class Note:
@@ -441,8 +449,14 @@ class Noted(Scene):
             "a builtins.list of more than 100000 parts, too large to key",
         ),
         ("chain(1000)", "Link nested deeper than"),
+        ("squared", "a cache whose entries the key cannot read (squared)"),
     ],
-    ids=["of-a-type-the-key-does-not-know", "over-the-budget", "nested-too-deep"],
+    ids=[
+        "of-a-type-the-key-does-not-know",
+        "over-the-budget",
+        "nested-too-deep",
+        "a-scene-s-own-cache",
+    ],
 )
 def test_a_value_the_key_cannot_key_is_a_difference_wherever_it_is_compared(
     scene_dir, note, why
@@ -596,6 +610,75 @@ STALE = {
 }
 
 
+def _on_a_class(text: str) -> str:
+    """``text`` with the scene's ``k`` kept on a class of the scene's file
+    instead (``Holder.k``): a class keys as its name, so what its attribute
+    does must reach a frame through keyed state, or the restore must see
+    it rebound.
+    """
+    return text.replace("self.k", "Holder.k").replace(
+        "hasattr(self, 'k')", "hasattr(self, 'tracker')"
+    )
+
+
+ON_A_CLASS = _on_a_class(LATER).replace(
+    "class Later(Scene):", "class Holder:\n    k = 0.0\n\n\nclass Later(Scene):"
+)
+
+
+@pytest.mark.parametrize("read", list(READS_LATER.values()), ids=list(READS_LATER))
+@pytest.mark.parametrize(("first", "second"), [("1.0", "2.0"), ("2.0", "2.0")])
+def test_a_class_attribute_read_during_a_play_diverges_at_that_play(
+    scene_dir, read, first, second
+):
+    """A class keys as its name, not its attributes: two executions whose
+    class attribute differs diverge at the play that reads it, and each
+    answers as a forward render draws.
+    """
+    source = ON_A_CLASS.replace("READ", _on_a_class(read)).replace("CHANGE", "pass")
+    before, after = _two_executions(
+        scene_dir, source, "Later", "k.txt", first, second, frame_rate=15
+    )
+    try:
+        found = before.compare(_across(after.summary()))
+        if first == second:
+            assert found is None
+        else:
+            assert found is not None
+            assert found.play == 1, found.reason
+        _answers_as_forward(
+            after, _forward_frames(scene_dir / "scene.py", "Later", 15), 15
+        )
+    finally:
+        before.close()
+        after.close()
+
+
+@pytest.mark.parametrize("read", list(READS_LATER.values()), ids=list(READS_LATER))
+@pytest.mark.parametrize("stale", list(STALE.values()), ids=list(STALE))
+def test_a_class_attribute_changed_where_no_restore_sees_it_is_answered_as_forward(
+    scene_dir, read, stale
+):
+    """The class attribute changed after play 1, or during it by a frame
+    hook: every frame is the forward render's, and the probe agrees with
+    each state play or demotes it. (Admission ticks a play whose callbacks
+    read a class's attribute, so no restore meets one.)
+    """
+    old, new = (_on_a_class(part) for part in stale)
+    source = (
+        ON_A_CLASS.replace("READ", _on_a_class(read))
+        .replace(old, new)
+        .replace("CHANGE", "pass")
+    )
+    path = _write(scene_dir, "scene.py", source)
+    _write(scene_dir, "k.txt", "1.0")
+    session = _open(path, "Later", frame_rate=15)
+    try:
+        _answers_as_forward(session, _forward_frames(path, "Later", 15), 15)
+    finally:
+        session.close()
+
+
 @pytest.mark.parametrize("read", list(READS_LATER.values()), ids=list(READS_LATER))
 @pytest.mark.parametrize("stale", list(STALE.values()), ids=list(STALE))
 def test_a_scene_attribute_changed_where_no_restore_sees_it_is_answered_as_forward(
@@ -614,9 +697,10 @@ def test_a_scene_attribute_changed_where_no_restore_sees_it_is_answered_as_forwa
 
 # Ordinary ways of handing a mobject a function
 
-#: Graphs of a method of the scene, a lambda over the scene, a cached
-#: function, a wrapped one and a vectorized one, and a dot holding an
-#: object of the scene's own class, through a state play.
+#: Graphs of a method of the scene, a lambda over the scene, a wrapped
+#: function and a vectorized one, and a dot holding an object of the
+#: scene's own class, through a state play. (A scene's own cache is a
+#: marker: ``NOTED``.)
 IDIOMS = (
     HEADER
     + """
@@ -629,11 +713,6 @@ class Gain:
     def __init__(self, k):
         self.k = k
         self.label = "gain"
-
-
-@functools.lru_cache(maxsize=None)
-def cached(x):
-    return x * x
 
 
 def logged(function):
@@ -659,7 +738,6 @@ class Idioms(Scene):
         graphs = VGroup(
             axes.plot(self.f),
             axes.plot(lambda x: self.f(x)),
-            axes.plot(cached),
             axes.plot(wrapped),
             axes.plot(np.vectorize(lambda x: x / 3)),
         )
@@ -970,16 +1048,32 @@ def test_values_that_differ_anywhere_key_apart():
     held, other_held = Slotted(), Slotted()
     held.slot, other_held.slot = 1, 2
     apart(held, other_held)
-    # A function's cache by its options too.
-    apart(functools.lru_cache(maxsize=1)(abs), functools.lru_cache(maxsize=2)(abs))
+    # An engine function's cache by its options too.
+    from arachne.utils.simple_functions import choose
+
+    apart(
+        functools.lru_cache(maxsize=1)(choose.__wrapped__),
+        functools.lru_cache(maxsize=2)(choose.__wrapped__),
+    )
+    # A dict's order: its items are read in it (a colour map applied in order).
+    apart({"x": 1, "xy": 2}, {"xy": 2, "x": 1})
 
 
 def test_an_object_keys_by_all_of_its_state_or_is_a_marker():
     # A callable object wrapping a function keys by its own state too.
     assert _value_key(Scaled(abs, 1)) != _value_key(Scaled(abs, 5))
     assert _value_key(Scaled(abs, 1)) == _value_key(Scaled(abs, 1))
-    # A function's cache keys as the function it caches.
-    assert _value_key(functools.lru_cache(abs)) == _value_key(functools.lru_cache(abs))
+    # A cache of the engine's keys as the function it caches.
+    from arachne.utils.simple_functions import choose
+
+    assert _value_key(choose) == _value_key(choose)
+    # One of a function of anyone else's is a marker: its entries can't be
+    # read, and they are what a call returns.
+    for value in (functools.lru_cache(abs), functools.cache(Scaled(abs, 1))):
+        assert unkeyable(value) is not None
+        assert marker_reason(_value_key(value)).startswith(
+            "a cache whose entries the key cannot read"
+        ), value
     # State a builtin base holds is not in the attributes: the marker.
     for value in (Seeded(1), io.StringIO("a")):
         assert unkeyable(value) == _qualified(type(value)), value
@@ -990,6 +1084,119 @@ def test_an_object_keys_by_all_of_its_state_or_is_a_marker():
     assert _value_key(first) != _value_key(second)
     second.tag = "a"
     assert _value_key(first) == _value_key(second)
+
+
+#: Every cache the engine makes of a function, by its function's qualified
+#: name, whose result is a function of its arguments alone: each keys as
+#: the function it caches. The engine's others read more than their
+#: arguments (the fonts installed, files) and are keyed as anyone's cache.
+PURE_ENGINE_CACHES = {
+    "arachne.camera.projection._cairo",
+    "arachne.camera.projection._path_type",
+    "arachne.lint.parts._text_types",
+    "arachne.lint.parts._backdrop_type",
+    "arachne.lint.parts._unit_types",
+    "arachne.lint.parts._text_like_types",
+    "arachne.mobject.types.vectorized_mobject._bezier_parameters",
+    "arachne.timeline.dispatch._all_engine_classes",
+    "arachne.timeline.dispatch.draw_methods",
+    "arachne.timeline.dispatch.camera_draw_methods",
+    "arachne.timeline.dispatch._mobject_definitions",
+    "arachne.timeline.dispatch._reads",
+    "arachne.timeline.dispatch.draw_protocols",
+    "arachne.timeline.dispatch._protocols",
+    "arachne.timeline.library._table",
+    "arachne.timeline.setters._setter_functions",
+    "arachne.timeline.setters.engine_classes",
+    "arachne.timeline.setters._functions_named",
+    "arachne.timeline.setters._constructors",
+    "arachne.timeline.ticking._slot_loaded",
+    "arachne.utils.simple_functions.choose",
+}
+
+
+def _engine_caches() -> dict[str, object]:
+    """Every function the engine's source decorates with a ``functools``
+    cache, by its qualified name, with the cache.
+    """
+    import ast
+    import importlib
+
+    import arachne
+
+    root = Path(arachne.__file__).parent
+    found: dict[str, object] = {}
+    for path in sorted(root.rglob("*.py")):
+        module = ".".join(("arachne", *path.relative_to(root).with_suffix("").parts))
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        scopes = [(node, "") for node in tree.body]
+        while scopes:
+            node, outer = scopes.pop()
+            if isinstance(node, ast.ClassDef):
+                scopes.extend((child, f"{outer}{node.name}.") for child in node.body)
+                continue
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            names = {
+                ast.unparse(d.func if isinstance(d, ast.Call) else d)
+                for d in node.decorator_list
+            }
+            if names & {"cache", "lru_cache", "functools.cache", "functools.lru_cache"}:
+                value: object = importlib.import_module(module)
+                for part in f"{outer}{node.name}".split("."):
+                    value = getattr(value, part)
+                found[f"{module}.{outer}{node.name}"] = value
+    return found
+
+
+def test_every_engine_cache_is_known_pure_or_keyed_as_anyone_s():
+    """A cache the engine adds is either a function of its arguments
+    (listed here, and keyed as the function it caches) or one that reads
+    more (the key's own list, and a marker); a cache of a function a scene
+    defines, under a module whose name begins as the engine's does, is a
+    marker too.
+    """
+    from arachne.timeline.keys import READING_ENGINE_CACHES
+
+    caches = _engine_caches()
+    assert set(caches) == PURE_ENGINE_CACHES | READING_ENGINE_CACHES
+    assert not PURE_ENGINE_CACHES & READING_ENGINE_CACHES
+    for name, cache in caches.items():
+        if name in PURE_ENGINE_CACHES:
+            assert unkeyable(cache) is None, name
+            assert _value_key(cache) == _value_key(cache), name
+        else:
+            why = marker_reason(_value_key(cache))
+            assert why == f"a cache whose entries the key cannot read ({name})"
+
+    def scene_function(x):
+        return x
+
+    scene_function.__module__ = "arachne_session_1_scene"
+    assert unkeyable(functools.cache(scene_function)) is not None
+
+
+def test_a_dict_keys_by_its_order_alike_in_every_process():
+    """A dict keys its items in the order it holds them, which is the
+    program's and no hash seed's: one built alike keys alike in processes
+    under other string hash seeds.
+    """
+    value = {"zeta": 1, "alpha": {"y": 2.5, "b": [1, "x"]}, "mid": None}
+    script = (
+        "from arachne.timeline.keys import value_key\n"
+        "value = {'zeta': 1, 'alpha': {'y': 2.5, 'b': [1, 'x']}, 'mid': None}\n"
+        "print(value_key(value)[0].hex())\n"
+    )
+    mine = _value_key(value).hex()
+    for seed in ("0", "1", "12345"):
+        theirs = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            check=True,
+            env={**os.environ, "PYTHONHASHSEED": seed},
+        ).stdout.strip()
+        assert theirs == mine, seed
 
 
 # Every mobject the engine exports

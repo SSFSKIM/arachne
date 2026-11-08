@@ -197,18 +197,22 @@ lifted.
   comparison, so its scene diverges from itself and its state plays are
   demoted: conservative, at the cost of speed. The fix, if a scene needs
   it: key long runs of numbers as one array, and name the deepest type met.
-- **A dict keys by its items in sorted order, not in the order it holds
-  them.** Two dicts with the same items in another order key alike, though
-  code iterating them reads the order. Sorted so that a dict built from a
-  set's iteration keys alike in processes under other string hash seeds;
-  keying the order instead trades that for a divergence across processes
-  (a render's self-check against a kept summary). Open: which one wins.
-- **A function's cache keys as the function and its options, not its
-  contents.** CPython's `functools.lru_cache` exposes no entries. A cache of
-  a function whose result depends on its arguments alone is the function's;
-  one whose function reads other state can hold results from before that
-  state changed. The alternative: a marker, demoting every play that holds
-  a cache.
+- **A dict built from a set's iteration keys apart across processes.** A
+  dict keys its items in the order it holds them, since code iterating it
+  reads that order (a colour map applied in order, where substrings
+  overlap). Where the order comes from iterating a set of strings, it
+  follows the process's string hash seed, so such a dict keys apart in two
+  processes, and a render checked against a kept summary diverges. That
+  is honest: the scene can draw differently in the two. It only costs a
+  demotion or a divergence, never a stale answer. The fix, if a scene
+  needs it: build the dict from a sorted sequence.
+- **A scene's own cache is a marker.** CPython's `functools` caches expose
+  no entries, and a call returns them. A cache of an engine function of its
+  arguments alone keys as that function; every other cache (a scene's own,
+  and the engine's few that read the fonts installed or files) is a marker
+  naming it, so a play holding one is demoted and its scene diverges from
+  itself. The fix, if a scene needs it: key a cache whose function the
+  admission proves reads its arguments alone as that function.
 
 ## Convex hulls (`arachne/utils/qhull.py`)
 

@@ -9,9 +9,11 @@ walk), as it keys a parent's children.
 
 A value the key cannot key is a *marker* that never equals another key,
 its own included, so that every comparison that meets it finds a
-difference rather than agreement. There are two: a value of a type the key
-does not know (:data:`UNKEYABLE`), and a value holding more parts than one
-key walks (:data:`BUDGET` parts, :data:`OVER_BUDGET`).
+difference rather than agreement: a value of a type the key does not know
+(:data:`UNKEYABLE`), a cache whose entries it cannot read
+(:data:`UNREAD_CACHE`), a value holding more parts than one key walks
+(:data:`BUDGET` parts, :data:`OVER_BUDGET`) and one nested deeper than it
+follows (:data:`DEPTH`, :data:`OVER_DEPTH`).
 
 A class (an enum member's included) and a function are named by their
 qualified names, not their modules': a scene's module is named for the load
@@ -33,7 +35,9 @@ __all__ = [
     "BUDGET",
     "OVER_BUDGET",
     "OVER_BUDGET_KIND",
+    "READING_ENGINE_CACHES",
     "UNKEYABLE",
+    "UNREAD_CACHE",
     "marker_reason",
     "unkeyable",
     "value_key",
@@ -67,6 +71,8 @@ DEPTH = 100
 
 #: The head of the marker of a value of a type the key does not know.
 UNKEYABLE = b"\0unkeyable "
+#: The head of the marker of a cache whose entries the key cannot read.
+UNREAD_CACHE = b"\0unread cache "
 #: The head of the marker of a value holding more than :data:`BUDGET` parts.
 OVER_BUDGET = b"\0over budget "
 #: The head of the marker of a value nested deeper than :data:`DEPTH`.
@@ -78,13 +84,15 @@ OVER_DEPTH_KIND = "over the key depth"
 
 class _Unkeyable(Exception):  # noqa: N818 (a finding, named as one)
     """A value the key cannot key: of a type it does not know, by the type's
-    name, over the budget (:data:`OVER_BUDGET_KIND`) or too deep
-    (:data:`OVER_DEPTH_KIND`).
+    name; a cache it cannot read, by its function's name (``head``
+    :data:`UNREAD_CACHE`); over the budget (:data:`OVER_BUDGET_KIND`) or
+    too deep (:data:`OVER_DEPTH_KIND`).
     """
 
-    def __init__(self, kind: str) -> None:
+    def __init__(self, kind: str, head: bytes = UNKEYABLE) -> None:
         super().__init__(kind)
         self.kind = kind
+        self.head = head
 
 
 class _Keying:
@@ -123,14 +131,14 @@ def value_key(
         elif kind == OVER_DEPTH_KIND:
             head, kind = OVER_DEPTH, _qualified(type(value))
         else:
-            head = UNKEYABLE
+            head = found.head if isinstance(found, _Unkeyable) else UNKEYABLE
         return head + kind.encode() + b"\0" + os.urandom(16), ()
 
 
 def unkeyable(value: Any) -> str | None:
     """What in ``value`` the key cannot key, the first it meets: a type's
-    qualified name, :data:`OVER_BUDGET_KIND` or :data:`OVER_DEPTH_KIND`;
-    ``None`` when it keys all of ``value``.
+    qualified name, a cache's function's name, :data:`OVER_BUDGET_KIND` or
+    :data:`OVER_DEPTH_KIND`; ``None`` when it keys all of ``value``.
     """
     try:
         _key(value, _Keying(None))
@@ -147,11 +155,13 @@ def marker_reason(key: bytes) -> str | None:
     """Why ``key`` is a marker, in words, naming the type it is a marker
     for, or ``None`` for a key of content.
     """
-    for head in (UNKEYABLE, OVER_BUDGET, OVER_DEPTH):
+    for head in (UNKEYABLE, UNREAD_CACHE, OVER_BUDGET, OVER_DEPTH):
         if key.startswith(head):
             kind = key[len(head) :].split(b"\0", 1)[0].decode()
             if head == UNKEYABLE:
                 return f"a value of a type the key does not know ({kind})"
+            if head == UNREAD_CACHE:
+                return f"a cache whose entries the key cannot read ({kind})"
             if head == OVER_BUDGET:
                 return f"a {kind} of more than {BUDGET} parts, too large to key"
             return f"a {kind} nested deeper than {DEPTH} levels, too deep to key"
@@ -291,9 +301,12 @@ def _content_key(value: Any, keying: _Keying) -> bytes:
     if isinstance(value, (tuple, list)):
         return each(value)
     if isinstance(value, (dict, set, frozenset)):
-        # Unordered: its parts in the order of their keys, each with the
-        # mobjects it refers to.
-        if isinstance(value, dict):
+        # A dict in the order it holds its items, which code iterating it
+        # reads (a colour map applied in order); a set, which has no order a
+        # program can rely on, in the order of its parts' keys. Each part
+        # with the mobjects it refers to.
+        ordered = isinstance(value, dict)
+        if ordered:
             pairs: Any = value.items()
         else:
             pairs = ((part,) for part in value)
@@ -304,7 +317,8 @@ def _content_key(value: Any, keying: _Keying) -> bytes:
             part_key = b"".join(_framed(_key(part, keying)) for part in pair)
             keyed.append((part_key, keying.refers))
         keying.refers = held
-        keyed.sort(key=lambda item: item[0])
+        if not ordered:
+            keyed.sort(key=lambda item: item[0])
         for _, own in keyed:
             held.extend(own)
         found = len(keyed).to_bytes(4, "big") + b"".join(
@@ -356,9 +370,19 @@ def _content_key(value: Any, keying: _Keying) -> bytes:
             (value.pyfunc, value.otypes, value.excluded, value.signature, value.cache)
         )
     if isinstance(value, functools._lru_cache_wrapper):
-        # The function it caches and how: what it returns is what the
-        # function returned for those arguments.
-        return each((value.__wrapped__, sorted(value.cache_parameters().items())))
+        # What a call returns is its entries, which can't be read. A cache of
+        # an engine function of its arguments alone holds that function's
+        # values: it keys as the function and how it caches. Any other is a
+        # marker naming the function, a scene's by its qualified name only.
+        cached = value.__wrapped__
+        module = getattr(cached, "__module__", None) or ""
+        qualname = getattr(cached, "__qualname__", None) or _qualified(type(cached))
+        name = f"{module}.{qualname}"
+        if not _engine_module(module):
+            raise _Unkeyable(qualname, UNREAD_CACHE)
+        if name in READING_ENGINE_CACHES:
+            raise _Unkeyable(name, UNREAD_CACHE)
+        return each((cached, sorted(value.cache_parameters().items())))
     if isinstance(value, pathlib.PurePath):
         # Where a file was written differs between executions (their media
         # directories); what it holds is keyed where it was read.
@@ -398,6 +422,26 @@ def _state_in_python(cls: type) -> bool:
 
 
 _POINTER = np.dtype(np.intp).itemsize
+
+#: The engine's caches of functions that read more than their arguments (the
+#: fonts installed, the engine's files, the file system), by the qualified
+#: name of the function each caches: keyed as anyone's cache, a marker.
+READING_ENGINE_CACHES = frozenset(
+    {
+        "arachne.mobject.text.text_mobject.Text.font_list",
+        "arachne.mobject.text.text_mobject.MarkupText.font_list",
+        "arachne.server.store.engine_fingerprint",
+        "arachne.timeline.source._is_file",
+        "arachne.timeline.source._relative_path",
+    }
+)
+
+
+def _engine_module(module: str) -> bool:
+    """Whether ``module`` is the engine's own: ``arachne`` or one inside
+    it, never a scene's (each loaded as ``arachne_session_…``).
+    """
+    return module == "arachne" or module.startswith("arachne.")
 
 
 def _slot_items(value: Any) -> list[tuple[str, Any]]:
