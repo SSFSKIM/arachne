@@ -22,9 +22,10 @@ __all__ = ["text_fonts"]
 import ctypes
 import functools
 import hashlib
-import socket
 from collections.abc import Sequence
 from typing import Any
+
+from . import typeset_cache
 
 P = ctypes.c_void_p
 U = ctypes.c_uint
@@ -35,9 +36,20 @@ _HEAD = int.from_bytes(b"head", "big")
 
 
 class _Analysis(ctypes.Structure):
-    # The start of the public ``PangoAnalysis``: two engine pointers, kept
-    # for the ABI, then the font the run is shaped with.
-    _fields_ = [("shape_engine", P), ("lang_engine", P), ("font", P)]
+    # The public ``PangoAnalysis``: two engine pointers, kept for the ABI,
+    # the font the run is shaped with, four small fields, and the run's
+    # language, which Pango interns (one pointer for one language).
+    _fields_ = [
+        ("shape_engine", P),
+        ("lang_engine", P),
+        ("font", P),
+        ("level", ctypes.c_uint8),
+        ("gravity", ctypes.c_uint8),
+        ("flags", ctypes.c_uint8),
+        ("script", ctypes.c_uint8),
+        ("language", P),
+        ("extra_attrs", P),
+    ]
 
 
 class _Item(ctypes.Structure):
@@ -66,6 +78,9 @@ class _Pango:
     is not as this module reads it.
     """
 
+    #: How a layout's run is read.
+    runs: type[ctypes.Structure] = _GlyphItem
+
     def __init__(self) -> None:
         from manimpango import cmanimpango
 
@@ -83,6 +98,10 @@ class _Pango:
         self.font_map = bind("pango_cairo_font_map_get_default", P)
         self.context = bind("pango_font_map_create_context", P, P)
         self.layout = bind("pango_layout_new", P, P)
+        self.language = bind("pango_language_from_string", P, ctypes.c_char_p)
+        self.set_language = bind("pango_context_set_language", None, P, P)
+        self.context_language = bind("pango_context_get_language", P, P)
+        self.ref = bind("g_object_ref", P, P)
         self.unref = bind("g_object_unref", None, P)
         self.free = bind("g_free", None, P)
         self.new = bind("pango_font_description_new", P)
@@ -102,9 +121,7 @@ class _Pango:
         )
         self.iterate = bind("pango_layout_get_iter", P, P)
         self.free_iterator = bind("pango_layout_iter_free", None, P)
-        self.run = bind(
-            "pango_layout_iter_get_run_readonly", ctypes.POINTER(_GlyphItem), P
-        )
+        self.run = bind("pango_layout_iter_get_run_readonly", P, P)
         self.next_run = bind("pango_layout_iter_next_run", ctypes.c_int, P)
         self.is_a = bind("g_type_check_instance_is_a", ctypes.c_int, P, ctypes.c_size_t)
         self.font_type = bind("pango_font_get_type", ctypes.c_size_t)()
@@ -131,8 +148,9 @@ class _Pango:
             P,
             ctypes.POINTER(U),
         )
-        # One character in the default font: one run of one item, whose
-        # font is a Pango font; else the runs are not read as they are laid.
+        # One Latin character, in English, in the default font: one run of
+        # one item, in the layout's language, whose font is a Pango font;
+        # else the runs are not read as they are laid.
         self.fonts([("a", "", 0, 400)], 10 * 1024, markup=False, check=True)
 
     def fonts(
@@ -145,11 +163,18 @@ class _Pango:
     ) -> set[tuple[str, str]]:
         """Each font a run is shaped with, laying out each of ``spans`` (its
         text or markup, family, Pango style and weight) at ``size`` Pango
-        units, by :meth:`named`. Read while the layout holds them.
+        units, by :meth:`named`. Read while the layout holds them, and each
+        held until all are read, so that no address names two fonts.
+
+        ``check``: the layout is in English, and each run's language is
+        checked to be the layout's, without following a pointer, before its
+        font is read.
         """
         found: dict[int, tuple[str, str]] = {}
         items = []
         context = self.context(self.font_map())
+        if check:
+            self.set_language(context, self.language(b"en"))
         layout = self.layout(context)
         try:
             for text, family, style, weight in spans:
@@ -167,9 +192,14 @@ class _Pango:
                     while True:
                         run = self.run(iterator)
                         if run:
-                            item = run.contents.item.contents
+                            read = ctypes.cast(run, ctypes.POINTER(self.runs))
+                            item = read.contents.item.contents
                             items.append((item.offset, item.length, item.num_chars))
-                            if check and items != [(0, 1, 1)]:
+                            if check and (
+                                items != [(0, 1, 1)]
+                                or item.analysis.language
+                                != self.context_language(context)
+                            ):
                                 raise OSError(
                                     "A Pango layout's runs are not as this module reads them."
                                 )
@@ -177,7 +207,8 @@ class _Pango:
                             if not font or not self.is_a(font, self.font_type):
                                 raise OSError("A layout's run has no Pango font.")
                             if font not in found:
-                                found[font] = self.named(font)
+                                name = self.named(font)
+                                found[self.ref(font)] = name
                         if not self.next_run(iterator):
                             break
                 finally:
@@ -185,6 +216,8 @@ class _Pango:
         finally:
             self.unref(layout)
             self.unref(context)
+            for font in found:
+                self.unref(font)
         if check and len(items) != 1:
             raise OSError("A Pango layout's runs are not as this module reads them.")
         return set(found.values())
@@ -282,5 +315,5 @@ def text_fonts(
     try:
         fonts = _pango().fonts(laid, int(size * 1024 + 0.5), markup=markup)
     except OSError:
-        return [["host", socket.gethostname()]]
+        return [typeset_cache.host()]
     return sorted(["font", name, digest] for name, digest in fonts)

@@ -8,20 +8,22 @@ A file's name is a digest of everything its bytes depend on.
   expression), the compilers and their output format; the versions of the
   compilers and of ``dvisvgm`` with the libraries it reports (and, for PDF
   output, of the converters it reads PDF through); the TeX distribution's
-  package database, by digest; the environment's TeX search path; and,
-  where the compile can read files beside the process (files TeX finds by
-  name in the working directory, or a source that reads a file by name),
-  the working directory and those files.
+  package database, by digest; the environment's TeX search path; for
+  XeLaTeX and LuaLaTeX, the system fonts they can load (fontconfig's list,
+  by digest, and ``OSFONTDIR``); and, where the compile can read files
+  beside the process (a package or class the source loads, found in the
+  working directory, or a file the source reads by name), the working
+  directory and those files.
 - For Text and MarkupText: every argument Pango typesets with (the text, its
   spans' fonts, slants, weights and colours, the size, the line spacing and
   the layout's width); the versions of ManimPango, Pango, HarfBuzz and
   Cairo; and the fonts the text is shaped with, by content
   (:mod:`.typeset_fonts`).
 
-Where what a key needs cannot be found (no package database, no answer from
-Pango), the key names the host instead, so the file is never shared with
-another host. So two processes share a file only when they would have
-typeset the same bytes.
+Where what a key needs cannot be found (no package database, no font list
+the compiler reads, no answer from Pango), the key names the host instead
+(:func:`host`), so the file is never shared with another host. So two
+processes share a file only when they would have typeset the same bytes.
 
 A file there is made in a scratch directory of the process's own (under
 ``scratch/``), checked to be a whole SVG, and renamed into place, and is
@@ -47,7 +49,14 @@ and Text files, in ``tex_dir`` and ``text_dir``, as CE does.
 
 from __future__ import annotations
 
-__all__ = ["DIR_ENV", "directory", "made", "tex_toolchain", "text_toolchain"]
+__all__ = [
+    "DIR_ENV",
+    "directory",
+    "host",
+    "made",
+    "tex_toolchain",
+    "text_toolchain",
+]
 
 import contextlib
 import ctypes
@@ -59,9 +68,11 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
+from stat import S_ISREG
 from xml.etree import ElementTree
 
 from .. import config
@@ -139,42 +150,49 @@ def _publish(made: Path, target: Path) -> Path:
 
 # What Tex depends on beside its source
 
-#: Suffixes of the files TeX finds by name (a package, a class, a font, a
-#: configuration), so that one beside the process takes the place of the
-#: distribution's.
-TEX_FINDS = frozenset(
-    {
-        ".tex",
-        ".sty",
-        ".cls",
-        ".clo",
-        ".def",
-        ".fd",
-        ".cfg",
-        ".ltx",
-        ".bib",
-        ".bst",
-        ".tfm",
-        ".vf",
-        ".pfb",
-        ".pfa",
-        ".afm",
-        ".otf",
-        ".ttf",
-        ".map",
-        ".enc",
-    }
+#: Packages and classes the source loads by name, which TeX finds in the
+#: working directory before the distribution.
+_LOADS = re.compile(
+    r"\\(?:usepackage|RequirePackage|documentclass|LoadClass)\s*"
+    r"(?:\[[^\]]*\])?\s*\{([^{}]*)\}"
 )
 
-#: The engine's own configuration files, which TeX never asks for.
-_ENGINE_FILES = frozenset({"arachne.cfg", "manim.cfg"})
+#: The files a loaded package or class ``name`` is read from by that name:
+#: itself, and the configuration and option files it reads by its own name.
+_LOADED_AS = (".sty", ".cls", ".cfg", ".clo", ".def")
 
-#: Commands that read a file by the name they are given.
+#: Commands that read a file by the name they are given: the file is the
+#: first argument, or the second for the commands named here; the suffixes
+#: TeX tries where the name has none.
 _READS = re.compile(
-    r"\\(?:input|include|InputIfFileExists|IfFileExists|includegraphics|includesvg"
-    r"|includepdf|includestandalone|lstinputlisting|verbatiminput|import|subimport)"
-    r"\b\*?(?:\[[^\]]*\])?(?:\{([^{}]*)\})?"
+    r"\\(input|include|InputIfFileExists|IfFileExists|includegraphics|includesvg"
+    r"|includepdf|includestandalone|lstinputlisting|verbatiminput|inputminted"
+    r"|import|subimport)"
+    r"\b\*?(?:\[[^\]]*\])?(?:\{([^{}]*)\})?(?:\{([^{}]*)\})?"
 )
+_SECOND_ARGUMENT = frozenset({"inputminted", "import", "subimport"})
+_TRIED = {
+    "includegraphics": (".pdf", ".png", ".jpg", ".jpeg", ".eps", ".ps", ".mps"),
+    "includesvg": (".svg",),
+    "includepdf": (".pdf",),
+    "lstinputlisting": (),
+    "verbatiminput": (),
+    "inputminted": (),
+}
+
+#: Compilers that load system fonts by name (``fontspec``), outside the TeX
+#: tree.
+_SYSTEM_FONT_COMPILERS = frozenset({"xelatex", "lualatex", "xetex", "luatex"})
+
+#: Whether fontconfig's list is what those compilers load fonts from: not on
+#: macOS, where XeTeX asks CoreText and LuaTeX scans the system's font
+#: directories itself.
+_FONTS_BY_FONTCONFIG = sys.platform != "darwin"
+
+#: What names a machine beside its hostname, which containers from one image
+#: can share: its machine id and the id of its current boot (Linux).
+_MACHINE_ID = Path("/etc/machine-id")
+_BOOT_ID = Path("/proc/sys/kernel/random/boot_id")
 
 
 def tex_toolchain(
@@ -182,8 +200,9 @@ def tex_toolchain(
 ) -> list[object]:
     """What a Tex file's bytes depend on beside ``source`` (the ``.tex``
     text) compiled by ``compilers`` to ``output_format``: the tools'
-    versions, the distribution's packages, the search path and the files
-    beside the process the compile can read.
+    versions, the distribution's packages, the search path, the system fonts
+    the compilers can load and the files beside the process the compile can
+    read.
     """
     tools = [[tool, _version(tool, "--version")] for tool in compilers]
     tools.append(["dvisvgm", _version("dvisvgm", "--version=yes", "--version")])
@@ -192,7 +211,73 @@ def tex_toolchain(
             ["mutool", _version("mutool", "-v")],
             ["gs", _version("gs", "--version")],
         ]
-    return [tools, _packages(), _search_path(), _beside(source)]
+    found = [tools, _packages(), _search_path(), _beside(source)]
+    if _SYSTEM_FONT_COMPILERS.intersection(compilers):
+        found.append(_system_fonts())
+    return found
+
+
+def host() -> list[str]:
+    """What a key names where it cannot name what a file depends on: this
+    machine, by its hostname, machine id and boot id (each that it has).
+    """
+    return ["host", socket.gethostname(), _read_id(_MACHINE_ID), _read_id(_BOOT_ID)]
+
+
+def _read_id(path: Path) -> str:
+    try:
+        return path.read_text().strip()
+    except OSError:
+        return ""
+
+
+def _system_fonts() -> list[str]:
+    """The system fonts XeLaTeX and LuaLaTeX can load: fontconfig's list
+    (each font's file, index and version), by digest, and ``OSFONTDIR``;
+    else, where fontconfig cannot be asked or is not what they load fonts
+    through, the host.
+    """
+    found = shutil.which("fc-list")
+    if found is None or not _FONTS_BY_FONTCONFIG:
+        return host()
+    status = os.stat(found)
+    listed = _font_list(found, status.st_ino, status.st_mtime_ns, _fontconfig_env())
+    if listed is None:
+        return host()
+    return ["system fonts", listed, os.environ.get("OSFONTDIR", "")]
+
+
+def _fontconfig_env() -> tuple[tuple[str, str], ...]:
+    return tuple(
+        sorted(
+            (name, value)
+            for name, value in os.environ.items()
+            if name.startswith("FONTCONFIG")
+        )
+    )
+
+
+@functools.cache
+def _font_list(
+    path: str, inode: int, mtime_ns: int, env: tuple[tuple[str, str], ...]
+) -> str | None:
+    """The digest of the font list ``path`` (``fc-list``) prints, sorted:
+    asked once in a process for each build of it and fontconfig
+    environment ``env``; ``None`` when it fails.
+    """
+    try:
+        ran = subprocess.run(
+            [path, "--format", r"%{file}\t%{index}\t%{fontversion}\n"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if ran.returncode != 0:
+        return None
+    lines = sorted(ran.stdout.splitlines())
+    return hashlib.sha256("\n".join(lines).encode()).hexdigest()
 
 
 def _search_path() -> list[list[str]]:
@@ -219,7 +304,7 @@ def _packages() -> list[str]:
                 "packages",
                 _file_digest(str(database), stat.st_size, stat.st_mtime_ns),
             ]
-    return ["host", socket.gethostname()]
+    return host()
 
 
 @functools.cache
@@ -236,32 +321,60 @@ def _file_digest(path: str, size: int, mtime_ns: int) -> str:
 
 def _beside(source: str) -> list[object]:
     """The files beside the process a compile of ``source`` can read: none
-    to name when the working directory holds no file TeX finds by name and
-    ``source`` reads no file by name; else the directory, those files, and
-    each file ``source`` names, by size and time of change.
+    to name when the working directory holds none of the packages and
+    classes ``source`` loads and ``source`` reads no file by name; else the
+    directory and each of those files there, by size and time of change.
     """
     here = os.getcwd()
-    found = []
-    with os.scandir(here) as entries:
-        for entry in entries:
-            if (
-                Path(entry.name).suffix.lower() in TEX_FINDS
-                and entry.name not in _ENGINE_FILES
-                and entry.is_file()
-            ):
-                stat = entry.stat()
-                found.append([entry.name, stat.st_size, stat.st_mtime_ns])
+    listed = _listing(here, os.stat(here).st_mtime_ns)
+    loaded = {
+        name.strip() + suffix
+        for loads in _LOADS.finditer(source)
+        for name in loads.group(1).split(",")
+        for suffix in _LOADED_AS
+    }
     reads = list(_READS.finditer(source))
-    if not found and not reads:
+    candidates = (loaded & listed) | {
+        name for read in reads for name in _read_names(read)
+    }
+    if not candidates and not reads:
         return ["nothing beside"]
-    named = []
-    for name in sorted({read.group(1).strip() for read in reads if read.group(1)}):
-        for candidate in (name, name + ".tex"):
-            path = Path(here, candidate)
-            if path.is_file():
-                stat = path.stat()
-                named.append([candidate, stat.st_size, stat.st_mtime_ns])
-    return ["beside", here, sorted(found), named]
+    files = []
+    for name in sorted(candidates):
+        try:
+            status = os.stat(os.path.join(here, name))
+        except OSError:
+            continue
+        if S_ISREG(status.st_mode):
+            files.append([name, status.st_size, status.st_mtime_ns])
+    return ["beside", here, files]
+
+
+@functools.lru_cache(maxsize=64)
+def _listing(here: str, mtime_ns: int) -> frozenset[str]:
+    """The names in directory ``here``, listed once for each version of its
+    entries (by its time of change, which a file added, removed or renamed
+    there moves).
+    """
+    return frozenset(os.listdir(here))
+
+
+def _read_names(read: re.Match[str]) -> list[str]:
+    """The names TeX tries for the file one command of :data:`_READS` reads."""
+    command, first, second = read.groups()
+    if command in _SECOND_ARGUMENT:
+        if not second:
+            return []
+        # ``\import{directory}{file}``; ``\inputminted{language}{file}``.
+        name = second if command == "inputminted" else os.path.join(first, second)
+    elif first:
+        name = first
+    else:
+        return []
+    name = name.strip()
+    if Path(name).suffix:
+        return [name]
+    return [name] + [name + suffix for suffix in _TRIED.get(command, (".tex",))]
 
 
 def _version(tool: str, *asks: str) -> str:

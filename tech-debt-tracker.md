@@ -331,25 +331,43 @@ lifted.
   - the digest of the distribution's package database (`tlpkg/texlive.tlpdb` under `kpsewhich`'s
     `TEXMFROOT`);
   - the environment's TeX search variables (`TEXINPUTS` and the other `TEX*`, `*INPUTS` and `*FONTS` names);
-  - the working directory, with its files, whenever it holds a file TeX finds by name (`.sty`, `.cls`, `.cfg`
-    and the like, the engine's own `arachne.cfg` aside), or the source names a file through `\input`,
-    `\includegraphics` and their kin.
+  - for XeLaTeX and LuaLaTeX, the system fonts `fontspec` can load: the digest of fontconfig's list (`fc-list`,
+    each font's file, index and version, sorted, asked once per process) and `OSFONTDIR`;
+  - the working directory, with the files there the source names literally: the `.sty`, `.cls`, `.cfg`, `.clo`
+    and `.def` of each package and class it loads (`\usepackage`, `\RequirePackage`, `\documentclass`,
+    `\LoadClass`), and each file it reads through `\input`, `\include`, `\import`/`\subimport` (directory and
+    file), `\inputminted` (its file argument), `\includegraphics` (an extensionless name with the usual
+    graphics suffixes), `\includesvg`, `\includepdf`, `\includestandalone`, `\lstinputlisting`,
+    `\verbatiminput`, `\InputIfFileExists` and `\IfFileExists`.
 
-  Not covered:
-  - a file reached through a directory those variables name;
-  - the trees `TEXMFHOME` and `TEXMFLOCAL` (packages installed outside the distribution's database);
-  - a file named through a macro rather than a literal argument.
+  Known misses, each a file the compile reads that the key does not cover:
+  - a file reached through a directory those variables name, or in the trees `TEXMFHOME` and `TEXMFLOCAL`
+    (packages installed outside the distribution's database);
+  - a file a package or class loads in turn (a local `amsbsy.sty` that `amsmath` requires), and a font file,
+    `.fd`, `.map` or `.enc` beside the process that a font package finds;
+  - `\usepackage`, `\documentclass` and `\RequirePackage` naming a path in a subdirectory;
+  - a stream opened for `\read`, and the packages that read data files that way (`datatool`, `pgfplotstable`,
+    `csvsimple`);
+  - fontspec's `Path=` option, and fonts a process installs after its first XeLaTeX or LuaLaTeX key;
+  - `\special{psfile=…}` and other driver specials naming a file;
+  - `\graphicspath`, which moves where `\includegraphics` and `\includesvg` look;
+  - a brace-less `\input file`, and any file named through a macro rather than a literal argument.
 
-  A distribution that keeps no `texlive.tlpdb` keys by the host instead, so its files are not shared across hosts.
-  Direction: compile with `-recorder` and key each file by the files its `.fls` lists, read on the next lookup
-  (a file is kept with the list of what it read). That is the sturdier option, if hosts with local TeX trees
-  ever share one directory.
+  Where the key cannot see what a compile reads, it names the host (its hostname, `/etc/machine-id` and boot id,
+  where it has them; on macOS only the hostname): a distribution with no `texlive.tlpdb`, and XeLaTeX or LuaLaTeX
+  where `fc-list` is missing or, on macOS, is not what they load fonts through (XeTeX asks CoreText there).
+  Direction: compile with `-recorder` and key each file by the files its `.fls` lists, read on the next lookup (a
+  file is kept with the list of what it read). That removes every miss above at once, and is the fix if hosts with
+  local TeX trees, or sources that read files beside the process, ever share one directory.
 - **The fonts a Text is shaped with are read through Pango's public structs by `ctypes`.** Each span is laid out
   as ManimPango lays it out, and each run's font is read from `PangoItem.analysis.font`. The digest covers the
   font's data as HarfBuzz holds it (the font file, else its tables), cached by description, `head` table and
   size.
-  - The field offsets are Pango's public ABI, checked at load on a one-character layout. Where that check fails,
-    or ManimPango exports none of the symbols, Text keys by the host and is not shared across hosts.
+  - The field offsets are Pango's public ABI, checked at load on a one-character English layout: its one run's
+    item, then its language (an interned pointer, compared with the layout's without following it), before its
+    font is followed. Where that check fails, or ManimPango exports none of the symbols, Text keys by the host and
+    is not shared across hosts. Each font is held by a reference while its layout is read, so a freed font's
+    address never names another.
   - The first Text in a process pays for loading and for hashing each font it uses: about 0.8 s on macOS for
     Latin plus a CJK fallback font, then about 0.1 ms per Text.
 - **Contended strings are typeset more than once, and failed compiles leave scratch.**
@@ -358,7 +376,7 @@ lifted.
     (`tests/utils/test_typeset_cache.py::test_a_process_never_reads_an_svg_another_is_still_writing`).
   - A compile that fails keeps its scratch directory, with its log, under `scratch/`, and nothing removes it.
 
-  Owner: the cache's maintainer, before a shared directory is used in production. Direction: remove scratch
+  Owner: the cache's maintainer, before a shared directory is relied on. Direction: remove scratch
   directories older than a day as a directory is opened, and take a lock file per key around a miss if contended
   starts ever cost.
 - **Without a typesetting directory, SVGs are parsed as CE parses them, racing.** `SVGMobject.generate_mobject`

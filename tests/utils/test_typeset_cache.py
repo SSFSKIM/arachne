@@ -41,7 +41,8 @@ WAIT_S = 60
 # the file ``resume`` appears in ``FAKE_SIGNAL``, having made ``paused``
 # there; ``FAKE_FAIL`` names the step that fails (``latex`` exits 1;
 # ``dvisvgm`` writes half its SVG and exits 137, as a killed one does).
-# ``kpsewhich`` names ``FAKE_TEXMFROOT`` as the TeX tree.
+# ``kpsewhich`` names ``FAKE_TEXMFROOT`` as the TeX tree; ``fc-list``
+# prints the font list ``FAKE_FONTS`` holds.
 _PAUSE = f"""\
 def pause(step):
     if os.environ.get("FAKE_PAUSE") != step:
@@ -114,6 +115,15 @@ if sys.argv[1:] in (["-var-value=TEXMFROOT"], ["-var-value=SELFAUTOPARENT"]):
     print(os.environ.get("FAKE_TEXMFROOT", ""))
 """
 
+FAKE_FC_LIST = """\
+import os, sys
+if any(a.startswith("--format") for a in sys.argv[1:]):
+    sys.stdout.write(open(os.environ["FAKE_FONTS"]).read())
+"""
+
+#: The font list ``fc-list`` prints by default: file, index, version.
+FONTS = "/fonts/serif.otf\t0\t65536\n/fonts/sans.ttc\t1\t131072\n"
+
 
 class Tools:
     """The stand-in tools on ``PATH``, their compile log and their signals."""
@@ -127,16 +137,20 @@ class Tools:
         self.tree = root / "texlive"
         (self.tree / "tlpkg").mkdir(parents=True)
         self.packages("one release")
-        for name in ("latex", "xelatex", "dvisvgm", "kpsewhich"):
+        self.font_list = root / "fonts.txt"
+        self.fonts(FONTS)
+        for name in ("latex", "xelatex", "dvisvgm", "kpsewhich", "fc-list"):
             self.install(name, "1")
 
     def install(self, name: str, version: str, extra: str = "freetype 1") -> None:
         """Install the stand-in ``name``, reporting ``version`` (and dvisvgm,
         ``extra`` among its libraries).
         """
-        body = {"dvisvgm": FAKE_DVISVGM, "kpsewhich": FAKE_KPSEWHICH}.get(
-            name, FAKE_LATEX
-        )
+        body = {
+            "dvisvgm": FAKE_DVISVGM,
+            "kpsewhich": FAKE_KPSEWHICH,
+            "fc-list": FAKE_FC_LIST,
+        }.get(name, FAKE_LATEX)
         made = self.bin / f".{name}"
         made.write_text(
             f"#!{sys.executable}\nVERSION = {version!r}\nEXTRA = {extra!r}\n"
@@ -148,6 +162,12 @@ class Tools:
     def packages(self, text: str) -> None:
         """The TeX tree's package database holds ``text``."""
         (self.tree / "tlpkg" / "texlive.tlpdb").write_text(text)
+
+    def fonts(self, text: str) -> None:
+        """fontconfig lists ``text``, to a process that asks it from now on
+        (a process asks it once).
+        """
+        self.font_list.write_text(text)
 
     def compiles(self) -> list[str]:
         return self.log.read_text().splitlines() if self.log.exists() else []
@@ -169,6 +189,8 @@ def tools(tmp_path, monkeypatch) -> Tools:
     monkeypatch.setenv("FAKE_TEX_LOG", str(found.log))
     monkeypatch.setenv("FAKE_SIGNAL", str(found.signals))
     monkeypatch.setenv("FAKE_TEXMFROOT", str(found.tree))
+    monkeypatch.setenv("FAKE_FONTS", str(found.font_list))
+    monkeypatch.delenv("OSFONTDIR", raising=False)
     monkeypatch.delenv("FAKE_PAUSE", raising=False)
     monkeypatch.delenv("FAKE_FAIL", raising=False)
     monkeypatch.delenv("TEXINPUTS", raising=False)
@@ -543,6 +565,15 @@ def test_a_working_directory_tex_can_read_from_keys_apart(tools, tmp_path, monke
         assert _typeset() != local
         (work / "amsmath.sty").unlink()
         assert _typeset() == bare
+        # Files TeX would not find by a name the source uses.
+        (work / "setup.cfg").write_text("[tool]\n")
+        (work / "notes.tex").write_text("notes\n")
+        (work / "font.otf").write_bytes(b"OTTO")
+        assert _typeset() == bare
+        # A configuration the source's class reads by its name.
+        (work / "standalone.cfg").write_text("% the class's options\n")
+        assert _typeset() != bare
+        (work / "standalone.cfg").unlink()
         # A source that reads a file by name reads it from here.
         reads = _typeset(preamble=r"\input{macros}")
         other = tmp_path / "other"
@@ -550,6 +581,118 @@ def test_a_working_directory_tex_can_read_from_keys_apart(tools, tmp_path, monke
         monkeypatch.chdir(other)
         assert _typeset(preamble=r"\input{macros}") != reads
         assert _typeset() == bare
+
+
+@pytest.mark.parametrize(
+    ("preamble", "read"),
+    [
+        (r"\input{macros}", "macros.tex"),
+        (r"\import{parts/}{macros}", "parts/macros.tex"),
+        (r"\inputminted[fontsize=\small]{python}{code.py}", "code.py"),
+        (r"\includegraphics[width=1cm]{figure}", "figure.png"),
+    ],
+)
+def test_an_edit_to_a_file_the_source_reads_by_name_keys_apart(
+    tools, tmp_path, monkeypatch, preamble, read
+):
+    work = tmp_path / "work"
+    (work / read).parent.mkdir(parents=True)
+    monkeypatch.chdir(work)
+    (work / read).write_text("one\n")
+    with tempconfig({"typeset_dir": str(tmp_path / "shared")}):
+        first = _typeset(preamble=preamble)
+        (work / read).write_text("one, edited\n")
+        assert _typeset(preamble=preamble) != first
+
+
+def test_xelatex_and_lualatex_key_apart_on_the_system_fonts_they_can_load(
+    tools, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(typeset_cache, "_FONTS_BY_FONTCONFIG", True)
+
+    def lualatex() -> object:
+        return typeset_cache.tex_toolchain(["lualatex"], ".pdf", "")
+
+    def another_process_where_fontconfig_lists(fonts: str) -> None:
+        tools.fonts(fonts)
+        typeset_cache._font_list.cache_clear()
+
+    with tempconfig({"typeset_dir": str(tmp_path / "shared")}):
+        latex = _typeset()
+        xelatex = _typeset(tex_compiler="xelatex", output_format=".xdv")
+        lua = lualatex()
+        another_process_where_fontconfig_lists(FONTS + "/fonts/added.otf\t0\t65536\n")
+        assert _typeset(tex_compiler="xelatex", output_format=".xdv") != xelatex
+        assert lualatex() != lua
+        assert _typeset() == latex
+        # The same fonts, listed in another order.
+        another_process_where_fontconfig_lists(
+            "".join(reversed(FONTS.splitlines(keepends=True)))
+        )
+        assert _typeset(tex_compiler="xelatex", output_format=".xdv") == xelatex
+        # Fonts the compilers find by the directories OSFONTDIR names.
+        monkeypatch.setenv("OSFONTDIR", str(tmp_path / "fonts"))
+        assert _typeset(tex_compiler="xelatex", output_format=".xdv") != xelatex
+        assert lualatex() != lua
+        assert _typeset() == latex
+
+
+@pytest.mark.parametrize("fontconfig", ["missing", "not what XeTeX reads"])
+def test_where_fontconfig_does_not_list_the_system_fonts_they_key_by_host(
+    tools, tmp_path, monkeypatch, fontconfig
+):
+    import socket
+
+    if fontconfig == "missing":
+        (tools.bin / "fc-list").unlink()
+        monkeypatch.setenv("PATH", str(tools.bin))
+        monkeypatch.setattr(typeset_cache, "_FONTS_BY_FONTCONFIG", True)
+    else:
+        # XeTeX on macOS finds fonts through CoreText.
+        monkeypatch.setattr(typeset_cache, "_FONTS_BY_FONTCONFIG", False)
+    with tempconfig({"typeset_dir": str(tmp_path / "shared")}):
+        here = _typeset(tex_compiler="xelatex", output_format=".xdv")
+        latex = _typeset()
+        monkeypatch.setattr(socket, "gethostname", lambda: "another-host")
+        assert _typeset(tex_compiler="xelatex", output_format=".xdv") != here
+        assert _typeset() == latex
+
+
+def test_a_host_key_tells_apart_machines_that_share_a_hostname(
+    tools, tmp_path, monkeypatch
+):
+    """Containers built from one image often share a hostname; their
+    machine ids and boot ids tell them apart, wherever a key names the host.
+    """
+    import socket
+
+    monkeypatch.setattr(socket, "gethostname", lambda: "container")
+    machine, boot = tmp_path / "machine-id", tmp_path / "boot_id"
+    monkeypatch.setattr(typeset_cache, "_MACHINE_ID", machine)
+    monkeypatch.setattr(typeset_cache, "_BOOT_ID", boot)
+    machine.write_text("one\n")
+    boot.write_text("first boot\n")
+    one = typeset_cache.host()
+    machine.write_text("two\n")
+    assert typeset_cache.host() != one
+    machine.write_text("one\n")
+    boot.write_text("second boot\n")
+    assert typeset_cache.host() != one
+    # An empty machine id (an image's placeholder) names nothing.
+    machine.write_text("")
+    empty = typeset_cache.host()
+    machine.unlink()
+    assert typeset_cache.host() == empty
+    # Each place a key falls back to the host.
+    monkeypatch.setenv("FAKE_TEXMFROOT", str(tmp_path / "nowhere"))
+    assert typeset_cache.tex_toolchain(["latex"], ".dvi", "")[1] == empty
+
+    def unavailable():
+        raise OSError("no Pango to ask")
+
+    monkeypatch.setattr(typeset_fonts, "_pango", unavailable)
+    fonts = typeset_fonts.text_fonts([("text", "", "NORMAL", "NORMAL")], 10.0)
+    assert fonts == [empty]
 
 
 def test_two_media_directories_naming_one_typesetting_directory_share_it(
@@ -638,6 +781,49 @@ def test_without_pango_s_resolution_text_is_never_shared_across_hosts(
         monkeypatch.setattr(socket, "gethostname", lambda: "another-host")
         Text("hosts")
     assert len(list((tmp_path / "shared" / "text").glob("*.svg"))) == 2
+
+
+#: Read the layout's runs one pointer later than Pango lays them out.
+MISREAD = """\
+import ctypes
+from arachne.utils import typeset_fonts as fonts
+
+
+class Shifted(ctypes.Structure):
+    _fields_ = [("before", ctypes.c_void_p), *fonts._Analysis._fields_[:-1]]
+
+
+class Item(ctypes.Structure):
+    _fields_ = [*fonts._Item._fields_[:3], ("analysis", Shifted)]
+
+
+class Run(ctypes.Structure):
+    _fields_ = [("item", ctypes.POINTER(Item)), ("glyphs", ctypes.c_void_p)]
+
+
+class Misread(fonts._Pango):
+    runs = Run
+
+
+try:
+    Misread()
+except OSError:
+    print("refused")
+"""
+
+
+def test_a_layout_read_at_the_wrong_offsets_is_refused_before_its_font_is_used():
+    """A run's language, which needs no dereference, is checked before its
+    font is: the font field of a misread run is no pointer at all.
+    """
+    ran = subprocess.run(
+        [sys.executable, "-c", MISREAD],
+        capture_output=True,
+        text=True,
+        timeout=WAIT_S,
+        check=False,
+    )
+    assert (ran.returncode, ran.stdout.strip()) == (0, "refused"), ran.stderr
 
 
 def test_the_text_toolchain_names_pango_harfbuzz_and_cairo():
