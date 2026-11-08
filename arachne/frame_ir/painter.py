@@ -155,17 +155,24 @@ def _replaced_displays(camera: Any) -> str:
     changed = []
     for name, method in _DISPLAY_METHODS.items():
         func = funcs[kinds[name]]
+        # A plain function or bound method first, by its exact type: any
+        # other object can answer the reads below as the engine's does and
+        # still run its own code when called.
         if method is None:
             # The do-nothing lambda Camera.__init__ makes, by its code: a
             # wrapper can copy its name and module, not its code.
-            engine = getattr(func, "__code__", None) is _nothing_code()
+            engine = (
+                type(func) is types.FunctionType and func.__code__ is _nothing_code()
+            )
         else:
             # Bound to this camera, as its class has it: one bound to another
             # camera (a shallow copy shares the original's dictionary) draws
             # with that camera's settings.
-            engine = getattr(func, "__self__", None) is camera and getattr(
-                func, "__func__", None
-            ) is getattr(kind, method, None)
+            engine = (
+                type(func) is types.MethodType
+                and func.__self__ is camera
+                and func.__func__ is getattr(kind, method, None)
+            )
         if not engine:
             changed.append(f"display_funcs[{name}]")
     return ", ".join(changed)

@@ -3,8 +3,8 @@ repeats (a wait whose updater changes nothing, a frozen frame), one whose
 mobject changes only its line joint, a camera that moves over mobjects
 that stay still, a point drawn at a configured thickness, a camera whose
 drawing the scene's code replaced, cameras whose display functions it
-replaced (with its own, another camera's, or a wrapper of the engine's),
-a display showing another camera's live picture, and a depth sort that
+replaced (with its own, another camera's, a wrapper of the engine's, or an
+object that forwards attribute reads to the engine's), a display showing another camera's live picture, and a depth sort that
 reads a point outside the scene.
 """
 
@@ -224,3 +224,49 @@ class OutsideDepth(ThreeDScene):
         self.play(wait)
         reference.shift(OUT * 2)
         self.play(wait)
+
+
+class _ForwardedDisplay(Scene):
+    """A camera whose display function for ``kind`` the scene replaced with an
+    object that forwards every attribute read to the engine's function (its
+    ``__code__``, ``__self__``, ``__func__``) but runs its own code when
+    called: each call marks the frame with how many calls it has made.
+    """
+
+    kind: type = Mobject
+
+    def construct(self):
+        original = self.camera.display_funcs[self.kind]
+
+        class Forwarding:
+            calls = 0
+
+            def __getattr__(self, name):
+                return getattr(original, name)
+
+            def __call__(self, mobjects, pixel_array):
+                original(mobjects, pixel_array)
+                self.calls += 1
+                pixel_array[0, 0, :3] = self.calls
+
+        self.camera.display_funcs[self.kind] = Forwarding()
+        if self.kind is Mobject:
+            mob = Mobject()
+            mob.points = np.array([[0.0, 0.0, 0.0]])
+        else:
+            mob = Square(fill_opacity=0.5)
+        mob.add_updater(lambda m, dt: None)
+        self.add(mob)
+        self.wait(0.4)
+
+
+class ForwardedDisplay(_ForwardedDisplay):
+    """:class:`_ForwardedDisplay` for vectorized mobjects."""
+
+    kind = VMobject
+
+
+class ForwardedNothing(_ForwardedDisplay):
+    """:class:`_ForwardedDisplay` for the do-nothing function."""
+
+    kind = Mobject

@@ -232,6 +232,33 @@ def test_a_wrapped_do_nothing_display_function_is_the_scene_s_code():
     assert_same_writes(on, off)
 
 
+@pytest.mark.parametrize(
+    ("scene_class", "subject"),
+    [
+        (reuse_scenes.ForwardedDisplay, "display_funcs[VMobject]"),
+        (reuse_scenes.ForwardedNothing, "display_funcs[Mobject]"),
+    ],
+    ids=["method", "nothing"],
+)
+def test_an_object_forwarding_to_the_engine_s_display_function_is_the_scene_s_code(
+    scene_class, subject
+):
+    """An object that answers every attribute read as the engine's display
+    function does (its code, its camera, its function) still runs its own
+    code when called: only the engine's function or bound method itself is
+    the engine's.
+    """
+    from arachne.frame_ir.painter import user_camera
+
+    scene, on = render_writes(scene_class)
+    _, off = render_writes(scene_class, draw_reuse=False)
+    found, _ = user_camera(scene.renderer.camera)
+    assert found == subject
+    assert [int(pixels[0, 0, 0]) for pixels, _ in off] == list(range(1, len(off) + 1))
+    assert scene.renderer.draws.reused == 0
+    assert_same_writes(on, off)
+
+
 def test_a_shallow_copy_of_a_camera_draws_through_the_original_s_functions():
     """A copy shares the original's display functions, bound to the original:
     it draws with the original's settings, so it counts as the scene's code.
