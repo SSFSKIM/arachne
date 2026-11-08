@@ -48,11 +48,18 @@ gates:
     run: uv run python -m pytest --ignore=tests/test_docs_examples
     env: {UV_PYTHON: "3.14", ARACHNE_DRAW_READS: "1"}
     timeout: 60
+  # Traced as draw-reads is (its workers inherit the variable), in its own lane: the
+  # examples' frames are still compared with their control data, which tracing does not
+  # change.
   - name: docs-examples
     run: uv run python -m pytest tests/test_docs_examples --dist=load --no-cov
     # One BLAS kernel and one thread, whatever the runner's CPU: an eigenvector in a
     # degenerate eigenspace (a symmetric graph's spectral layout) follows the kernel.
-    env: {UV_PYTHON: "3.14", OPENBLAS_CORETYPE: Haswell, OPENBLAS_NUM_THREADS: "1"}
+    env:
+      UV_PYTHON: "3.14"
+      OPENBLAS_CORETYPE: Haswell
+      OPENBLAS_NUM_THREADS: "1"
+      ARACHNE_DRAW_READS: "1"
     timeout: 45
   - name: macos
     lane: hosted-macos
