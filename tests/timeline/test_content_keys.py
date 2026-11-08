@@ -26,6 +26,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from arachne import Dot
 from arachne.constants import CapStyleType, LineJointType
 from arachne.session import Session
 from arachne.timeline import admission
@@ -1731,3 +1732,41 @@ def test_a_palette_image_is_keyed_by_its_palettes_alpha_too():
 
     assert _value_key(palette_image(0)) != _value_key(palette_image(255))
     assert _value_key(palette_image(255)) == _value_key(palette_image(255))
+
+
+class _Colliding(Dot):
+    """A dot every instance of which hashes alike: a set of them iterates in
+    the order they were added.
+    """
+
+    __hash__ = lambda self: 1  # noqa: E731
+
+
+def _walk_places(*mobs):
+    """The places two walks of the same mobjects give them."""
+    places = {id(mob): place for place, mob in enumerate(mobs)}
+    return places, places
+
+
+def test_a_set_of_mobjects_is_one_value_whichever_order_it_iterates_in():
+    """Elements whose keys tie (each is a mobject of one type) are told apart
+    only by which mobject they are: the key of a set of them refers to them
+    the same whichever order the set holds them in.
+    """
+    from arachne.timeline.probe import _value_difference
+
+    a, b, c = _Colliding(), _Colliding(), _Colliding()
+    forward, backward = set(), set()
+    for mob in (a, b, c):
+        forward.add(mob)
+    for mob in (c, b, a):
+        backward.add(mob)
+    assert list(forward) != list(backward), "the sets iterate in opposite orders"
+    assert forward == backward
+    assert _value_difference(forward, backward, places=_walk_places(a, b, c)) is None
+    # Another membership is another value.
+    d = _Colliding()
+    assert (
+        _value_difference({a, b, d}, {a, b, c}, places=_walk_places(a, b, c, d))
+        is not None
+    )

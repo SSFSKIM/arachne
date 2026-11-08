@@ -42,7 +42,7 @@ from .clock import exact, frames_in
 from .dispatch import draw_member_refusal, draw_names
 from .execution import Execution
 from .identity import ByIdentity
-from .keys import value_key
+from .keys import referred_places, value_key
 from .origins import Origin, origin_of
 from .source import SourceLine
 
@@ -56,6 +56,7 @@ if TYPE_CHECKING:
     from .bodies import Exit
     from .camera_code import Replaced
     from .draw import CameraExtras
+    from .keys import Unordered
     from .recorder import Bridge
     from .state import State
     from .ticking import TickPlan
@@ -632,11 +633,12 @@ class RegisteredState:
         place = {id(mob): index for index, (mob, _) in enumerate(nodes)}
         digest = hashlib.blake2b(digest_size=16)
 
-        def held(mobs: Sequence[Mobject]) -> None:
-            digest.update(len(mobs).to_bytes(4, "big"))
-            for mob in mobs:
-                # A mobject with no state at this capture is no node: 0.
-                digest.update((place.get(id(mob), -1) + 1).to_bytes(4, "big"))
+        def held(mobs: Sequence[Mobject | Unordered]) -> None:
+            # A mobject with no state at this capture is no node: 0.
+            places = referred_places(mobs, lambda mob: place.get(id(mob), -1) + 1)
+            digest.update(len(places).to_bytes(4, "big"))
+            for found in places:
+                digest.update(found.to_bytes(4, "big"))
 
         held(self.capture.roots)
         for mob, state in nodes:
@@ -686,7 +688,7 @@ def content_fields(
     state: NodeState,
     decimals: int | None = None,
     omit: frozenset[str] = frozenset(),
-) -> Iterator[tuple[str, bytes, tuple[Mobject, ...]]]:
+) -> Iterator[tuple[str, bytes, tuple[Mobject | Unordered, ...]]]:
     """Each field a content key covers (:func:`covered_fields`) but those in
     ``omit``, with its value's key and the mobjects the value refers to
     (:func:`.keys.value_key`).

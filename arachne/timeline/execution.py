@@ -57,13 +57,14 @@ from typing import TYPE_CHECKING, Any, TypeAlias
 
 import numpy as np
 
-from .keys import marker_reason, value_key
+from .keys import marker_reason, referred_places, value_key
 from .source import SourceLine
 
 if TYPE_CHECKING:
     from arachne.mobject.mobject import Mobject
 
     from .draw import CameraExtras
+    from .keys import Unordered
     from .record import Capture, Identity, NodeState, Record
 
 
@@ -363,7 +364,7 @@ def summarize(record: Record) -> ExecutionSummary:
     node_keys: list[bytes] = []
     # Each node version once, by its mobject and version: its number in
     # ``nodes`` and the mobjects its fields refer to.
-    numbers: dict[tuple[int, int], tuple[int, tuple[Mobject, ...]]] = {}
+    numbers: dict[tuple[int, int], tuple[int, tuple[Mobject | Unordered, ...]]] = {}
     camera = record._scene.renderer.camera
     owned = tuple(camera_nodes(camera))
     # The states, as the summary is made, of mobjects only a field refers to.
@@ -425,7 +426,7 @@ def summarize(record: Record) -> ExecutionSummary:
                 children.append(
                     tuple(positions.get(id(m), -1) for m in node.submobjects)
                 )
-            references.append(tuple(_placed(m) for m in refers))
+            references.append(referred_places(refers, _placed))
 
         def at(members: Iterable[Mobject], *, ordered: bool = True) -> np.ndarray:
             found = [positions.get(id(mob), -1) for mob in members]
@@ -738,7 +739,7 @@ def _brief(value: Leaf) -> str:
 
 def _fields(
     node: NodeState,
-) -> tuple[tuple[tuple[str, Leaf], ...], tuple[Mobject, ...]]:
+) -> tuple[tuple[tuple[str, Leaf], ...], tuple[Mobject | Unordered, ...]]:
     """The raw values of the fields a content key covers
     (:func:`.covered_fields`), a paint's and a placement's spelled out (the
     paint's fields, its numbers as floats as its key takes them, and the
@@ -750,7 +751,7 @@ def _fields(
     from .record import covered_fields
 
     found: list[tuple[str, Leaf]] = []
-    refers: list[Mobject] = []
+    refers: list[Mobject | Unordered] = []
     for name, value in covered_fields(node):
         if isinstance(value, Paint):
             own = vars(value)
@@ -768,7 +769,7 @@ def _fields(
     return tuple(found), tuple(refers)
 
 
-def _field_leaf(value: Any) -> tuple[Leaf, tuple[Mobject, ...]]:
+def _field_leaf(value: Any) -> tuple[Leaf, tuple[Mobject | Unordered, ...]]:
     """A field's raw value, and the mobjects it refers to: a number, a string,
     an array of numbers compared within the tolerance, or a colour as itself
     (:func:`_leaf`); an enum by its class, member and value; any other value (an

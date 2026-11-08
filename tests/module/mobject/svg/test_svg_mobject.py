@@ -361,6 +361,28 @@ def test_the_cache_key_of_a_class_that_cannot_be_hashed_is_made():
     assert hash_obj(made.hash_seed) == hash_obj(made.hash_seed)
 
 
+def test_the_construction_cache_key_reaches_no_disk_cache():
+    """The key tells a class by its ``id()``, which means nothing in another
+    process: nothing that names the cache or its key (``SVG_HASH_TO_MOB_MAP``,
+    ``hash_seed``) may also serialize.
+    """
+    root = Path(__import__("arachne").__file__).parent
+    named = [
+        path
+        for path in root.rglob("*.py")
+        if "SVG_HASH_TO_MOB_MAP" in (text := path.read_text()) or "hash_seed" in text
+    ]
+    assert {path.name for path in named} == {
+        "svg_mobject.py",
+        "construction_caches.py",
+        "typst_mobject.py",
+    }
+    for path in named:
+        text = path.read_text()
+        for writer in ("pickle", "shelve", "marshal", "json.dump", "write_bytes"):
+            assert writer not in text, (path.name, writer)
+
+
 _HEARTS = """
 from arachne import Scene, SVGMobject
 

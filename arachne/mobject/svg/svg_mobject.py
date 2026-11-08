@@ -202,8 +202,15 @@ class SVGMobject(VMobject):
         so the class lives as long as the entry, and its identity is never
         another class's. The class itself is not hashed: its metaclass can
         make it unhashable.)
+
+        The class is told by ``id()``, which holds only inside one process:
+        ``SVG_HASH_TO_MOB_MAP`` is in memory alone, and each entry holds an
+        instance of the class that parsed it, so the class cannot be
+        collected, and its id reused, while the entry lives. A cache kept
+        beyond the process must not key by this seed.
         """
         return (
+            # In-memory only: see above. An id is no key to persist.
             id(type(self)),
             self.svg_default,
             self.path_string_config,

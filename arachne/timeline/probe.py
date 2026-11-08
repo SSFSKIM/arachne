@@ -54,13 +54,14 @@ import numpy as np
 from .clock import TICK_RATE
 from .draw import CameraExtras, camera_nodes
 from .execution import KEY_DECIMALS, TOLERANCE, Divergence
-from .keys import marker_reason, value_key
+from .keys import marker_reason, referred_places, value_key
 from .record import DepthReference, NodeState, covered_fields
 from .restore import Unrestorable, restored
 
 if TYPE_CHECKING:
     from arachne.mobject.mobject import Mobject
 
+    from .keys import Unordered
     from .record import Capture, PlayRecord, Record
 
 
@@ -475,14 +476,14 @@ def _value_difference(
 
 
 def _referred(
-    mobs: tuple[Mobject, ...], places: _Places | None, side: int
+    mobs: tuple[Mobject | Unordered, ...], places: _Places | None, side: int
 ) -> tuple[int, ...]:
     """Which mobjects ``mobs`` are: their places in the walk of ``side``,
     ``-1`` for one outside it; their identities without ``places``.
     """
     if places is None:
-        return tuple(map(id, mobs))
-    return tuple(places[side].get(id(mob), -1) for mob in mobs)
+        return referred_places(mobs, id)
+    return referred_places(mobs, lambda mob: places[side].get(id(mob), -1))
 
 
 def _same(a: Any, b: Any) -> bool:

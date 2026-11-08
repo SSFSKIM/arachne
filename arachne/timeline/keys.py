@@ -42,7 +42,9 @@ __all__ = [
     "READING_ENGINE_CACHES",
     "UNKEYABLE",
     "UNREAD_CACHE",
+    "Unordered",
     "marker_reason",
+    "referred_places",
     "unkeyable",
     "value_key",
 ]
@@ -57,6 +59,7 @@ import pathlib
 import random
 import sys
 import types
+from collections.abc import Callable, Iterable
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any
 
@@ -102,6 +105,33 @@ class _Unkeyable(Exception):  # noqa: N818 (a finding, named as one)
         self.head = head
 
 
+class Unordered(tuple[tuple["Mobject", ...], ...]):
+    """In a value's references, the mobjects of the elements of a set whose
+    keys tie: one tuple for each element, in no order a program can rely on.
+    Read by :func:`referred_places`, never in iteration order.
+    """
+
+    __slots__ = ()
+
+
+def referred_places(
+    refers: Iterable[Mobject | Unordered], place: Callable[[Mobject], int]
+) -> tuple[int, ...]:
+    """Which mobjects ``refers`` (a value's references, as
+    :func:`value_key` gives them) are, by ``place``: in the order they stand
+    in the value, but for the elements of a set that tie, whose places are
+    in order of place (each element's own, in the order it holds them).
+    """
+    found: list[int] = []
+    for item in refers:
+        if isinstance(item, Unordered):
+            for element in sorted(tuple(place(mob) for mob in each) for each in item):
+                found.extend(element)
+        else:
+            found.append(place(item))
+    return tuple(found)
+
+
 class _Keying:
     """One key being made: its rounding, the mobjects referred to so far,
     the ids of the values being keyed around the current one (so that a
@@ -112,16 +142,17 @@ class _Keying:
 
     def __init__(self, decimals: int | None) -> None:
         self.decimals = decimals
-        self.refers: list[Mobject] = []
+        self.refers: list[Mobject | Unordered] = []
         self.active: list[int] = []
         self.left = BUDGET
 
 
 def value_key(
     value: Any, decimals: int | None = None
-) -> tuple[bytes, tuple[Mobject, ...]]:
+) -> tuple[bytes, tuple[Mobject | Unordered, ...]]:
     """``value``'s content key, its floats rounded to ``decimals`` when
-    given, and the mobjects it refers to in the order they stand in it; for
+    given, and the mobjects it refers to in the order they stand in it (the
+    elements of a set whose keys tie as one :class:`Unordered`); for
     a value the key cannot key, a marker equal to no other key (and no
     mobject).
     """
@@ -381,7 +412,7 @@ def _content_key(value: Any, keying: _Keying) -> bytes:
             else:
                 parts = frozenset.__iter__(value)
             ordered, pairs = False, ((part,) for part in parts)
-        keyed = []
+        keyed: list[tuple[bytes, list[Any]]] = []
         held = keying.refers
         for pair in pairs:
             keying.refers = []
@@ -390,8 +421,20 @@ def _content_key(value: Any, keying: _Keying) -> bytes:
         keying.refers = held
         if not ordered:
             keyed.sort(key=lambda item: item[0])
-        for _, own in keyed:
-            held.extend(own)
+        index = 0
+        while index < len(keyed):
+            # Elements whose keys tie are told apart only by which mobjects
+            # they refer to, which their order in the set says nothing of.
+            end = index + 1
+            while end < len(keyed) and keyed[end][0] == keyed[index][0]:
+                end += 1
+            tied = keyed[index:end]
+            if len(tied) > 1 and any(own for _, own in tied):
+                held.append(Unordered(tuple(own) for _, own in tied))
+            else:
+                for _, own in tied:
+                    held.extend(own)
+            index = end
         found = len(keyed).to_bytes(4, "big") + b"".join(
             _framed(part_key) for part_key, _ in keyed
         )
