@@ -3,9 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
 import svgelements as se
 
 from arachne import *
+from arachne.mobject.construction_caches import forget_construction_caches
 from arachne.mobject.svg.svg_mobject import VMobjectFromSVGPath
 from tests.helpers.path_utils import get_svg_resource
 
@@ -265,3 +267,50 @@ def test_opengl_path_flags_leave_points_untouched():
         should_remove_null_curves=True,
     )
     assert np.array_equal(flagged.points, plain.points)
+
+
+# The image cache keys an image by the class that parsed it: a class of the
+# scene's own that shares an engine class's name, and parses otherwise, makes
+# another image than the engine class does.
+
+
+def _stretching(base: type) -> type:
+    """A class named as ``base`` is, whose parse stretches the image."""
+
+    def generate_mobject(self):
+        base.generate_mobject(self)
+        self.stretch(2, 0)
+        return self
+
+    return type(base.__name__, (base,), {"generate_mobject": generate_mobject})
+
+
+def _fresh_width(build) -> float:
+    forget_construction_caches()
+    return build().width
+
+
+def test_a_same_named_class_s_image_is_not_the_engine_class_s():
+    heart = get_svg_resource("heart.svg")
+    expected = _fresh_width(lambda: SVGMobject(heart, height=None))
+    stretched = _stretching(SVGMobject)
+    forget_construction_caches()
+    assert stretched(heart, height=None).width == pytest.approx(expected * 2)
+    assert SVGMobject(heart, height=None).width == pytest.approx(expected)
+
+
+def test_the_engine_class_s_image_is_not_a_same_named_class_s():
+    heart = get_svg_resource("heart.svg")
+    expected = _fresh_width(lambda: SVGMobject(heart, height=None))
+    stretched = _stretching(SVGMobject)
+    forget_construction_caches()
+    SVGMobject(heart, height=None)
+    assert stretched(heart, height=None).width == pytest.approx(expected * 2)
+
+
+def test_a_same_named_formula_class_s_image_is_not_the_engine_s():
+    expected = _fresh_width(lambda: MathTex("x"))
+    stretched = _stretching(MathTex)
+    forget_construction_caches()
+    stretched("x")
+    assert MathTex("x").width == pytest.approx(expected)

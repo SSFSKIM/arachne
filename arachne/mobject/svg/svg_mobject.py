@@ -184,10 +184,13 @@ class SVGMobject(VMobject):
         """A unique hash representing the result of the generated
         mobject points.
 
-        Used as keys in the ``SVG_HASH_TO_MOB_MAP`` caching dictionary.
+        Used as keys in the ``SVG_HASH_TO_MOB_MAP`` caching dictionary. The
+        class is the class itself, not its name: a class of the scene's own
+        named as an engine class is, which parses otherwise, makes another
+        image.
         """
         return (
-            self.__class__.__name__,
+            type(self),
             self.svg_default,
             self.path_string_config,
             self.file_name,
