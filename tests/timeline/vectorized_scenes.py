@@ -326,3 +326,21 @@ class CountedInert(Scene):
         self.play(AnimationGroup(quiet, sq.animate.shift(UP)), run_time=1)
         self.add(Dot().shift(RIGHT * (proportion.calls % 7) * 0.2))
         self.wait(0.2)
+
+
+class CountedTimings(Scene):
+    """A group whose timings the scene assigns: an object array whose part
+    ends at a counted time.
+    """
+
+    def construct(self):
+        blend = Transform(Square(), Square().shift(UP), rate_func=linear)
+        group = AnimationGroup(blend, rate_func=linear)
+        timings = np.empty(
+            1, dtype=[("anim", object), ("start", object), ("end", object)]
+        )
+        timings["anim"] = group.animations
+        timings["start"] = [0.0]
+        timings["end"] = [Counted(1.0)]
+        group.anims_with_timings = timings
+        self.play(group)

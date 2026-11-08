@@ -14,7 +14,17 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from arachne import Circle, ShowPassingFlash, Square, Transform, VGroup, linear
+from arachne import (
+    AnimationGroup,
+    Circle,
+    Create,
+    FadeIn,
+    ShowPassingFlash,
+    Square,
+    Transform,
+    VGroup,
+    linear,
+)
 from arachne.mobject.mobject import Mobject
 from arachne.mobject.placement import Placement
 from arachne.mobject.types.vectorized_mobject import VMobject
@@ -282,6 +292,82 @@ def test_a_number_of_the_scenes_own_type_keeps_the_whole_play_scalar(name):
     assert play.route == "trusted"
     assert not play.vectorized
     assert "Counted" in vectorized.refusal(play._animations)
+
+
+def test_a_groups_timings_the_scene_assigned_keep_the_play_scalar():
+    """A group computes its parts' alphas from its public timings; ones the
+    scene assigned (an object array whose part ends at a counted time) are
+    computed with by the scalar path alone.
+    """
+    scene = assert_same_as_scalar(vectorized_scenes.CountedTimings)
+    play = scene.timeline.ensure_record().plays[0]
+    assert play.route == "trusted"
+    assert not play.vectorized
+    assert "timings" in vectorized.refusal(play._animations)
+
+
+def _group(**changes):
+    group = AnimationGroup(Transform(Square(), Circle()), FadeIn(Square()))
+    group.begin()
+    for name, value in changes.items():
+        setattr(group, name, value)
+    return group
+
+
+@pytest.mark.parametrize(
+    ("change", "operand"),
+    [
+        ({"anims_begun": [False, False]}, "begun"),
+        ({"anims_finished": np.zeros(3, dtype=bool)}, "finished"),
+        ({"anims_begun": np.zeros(2)}, "begun"),
+    ],
+)
+def test_a_groups_masks_of_another_kind_keep_the_play_scalar(change, operand):
+    assert vectorized.refusal([_group()]) is None
+    assert operand in vectorized.refusal([_group(**change)])
+
+
+def test_a_groups_timings_naming_other_parts_keep_the_play_scalar():
+    group = _group()
+    group.anims_with_timings["anim"] = group.animations[::-1]
+    assert "timings" in vectorized.refusal([group])
+
+
+def _engine_function(obj, name):
+    """A function of the engine's own on ``obj`` under ``name``, as the
+    engine puts some on instances: what the scalar path calls there.
+    """
+    setattr(obj, name, getattr(type(obj), name).__get__(obj))
+    return obj
+
+
+def _own_partial():
+    return Create(_engine_function(Circle(), "pointwise_become_partial"))
+
+
+def _own_sub_alpha():
+    return _engine_function(Transform(Square(), Circle()), "get_sub_alpha")
+
+
+def _own_reveal():
+    return _engine_function(Create(Circle()), "interpolate_submobject")
+
+
+@pytest.mark.parametrize(
+    ("made", "method"),
+    [
+        (_own_partial, "pointwise_become_partial"),
+        (_own_sub_alpha, "get_sub_alpha"),
+        (_own_reveal, "interpolate_submobject"),
+    ],
+)
+def test_an_instance_holding_its_own_method_keeps_the_play_scalar(made, method):
+    """The vectorized path stands in for methods it checks on the class; an
+    instance's own attribute of that name is what the scalar path calls.
+    """
+    animation = made()
+    animation.begin()
+    assert method in vectorized.refusal([animation])
 
 
 def test_a_play_with_one_kept_instant_is_not_batched():

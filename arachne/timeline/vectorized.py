@@ -86,6 +86,37 @@ def _exact(*values: Any) -> bool:
     return all(type(value) in _EXACT for value in values)
 
 
+def _number(value: Any) -> str:
+    """A number the plan does not compute with, as a refusal names it."""
+    return f"a {type(value).__name__}"
+
+
+#: The methods the vectorized path stands in for, by the object whose class
+#: it checks them on: an instance's own attribute of one of these names would
+#: be what the scalar path calls.
+_ANIMATION_METHODS = (
+    "interpolate",
+    "interpolate_mobject",
+    "interpolate_submobject",
+    "get_sub_alpha",
+    "get_all_families_zipped",
+    "_get_bounds",
+)
+_MOBJECT_METHODS = (
+    "interpolate",
+    "interpolate_color",
+    "pointwise_become_partial",
+    "set_points",
+    "get_num_curves",
+)
+
+
+def _own_method(obj: Any, names: Sequence[str]) -> str | None:
+    """The first of ``names`` that ``obj`` holds as its own attribute."""
+    own = getattr(obj, "__dict__", {})
+    return next((name for name in names if name in own), None)
+
+
 # The arithmetic: CE's expressions over arrays of alphas.
 
 
@@ -232,8 +263,8 @@ def _rate_refusal(name: str, function: Any) -> str | None:
         numbers = ("a", "b") if kind == "squish" else ("proportion",)
         for number in numbers:
             if not _exact(cells[number]):
-                kind_name = type(cells[number]).__name__
-                return f"{name}'s rate function computes with a {kind_name}"
+                held = _number(cells[number])
+                return f"{name}'s rate function computes with {held}"
         function = cells["func"]
     return None
 
@@ -241,8 +272,8 @@ def _rate_refusal(name: str, function: Any) -> str | None:
 def _top(animation: Animation) -> _Group | _Leaf | str:
     """The plan of a play's animation: its node, its run time exact."""
     if not _exact(animation.run_time):
-        kind_name = type(animation.run_time).__name__
-        return f"{type(animation).__name__}'s run time is a {kind_name}"
+        held = _number(animation.run_time)
+        return f"{type(animation).__name__}'s run time is {held}"
     return _node(animation)
 
 
@@ -254,7 +285,7 @@ def _leaf_refusal(name: str, animation: Animation) -> str | None:
     if reason is not None:
         return reason
     if not _exact(animation.lag_ratio):
-        return f"{name}'s lag ratio is a {type(animation.lag_ratio).__name__}"
+        return f"{name}'s lag ratio is {_number(animation.lag_ratio)}"
     if type(animation.reverse_rate_function) is not bool:
         kind_name = type(animation.reverse_rate_function).__name__
         return f"{name}'s reverse_rate_function is a {kind_name}"
@@ -271,17 +302,19 @@ def _node(animation: Animation) -> _Group | _Leaf | str:
 
     cls = type(animation)
     name = cls.__name__
+    own = _own_method(animation, _ANIMATION_METHODS)
+    if own is not None:
+        return f"{name} has its own {own}"
     if isinstance(animation, Succession):
         return f"{name} begins its parts while the play runs"
     if isinstance(animation, AnimationGroup):
         if cls.interpolate is not AnimationGroup.interpolate:
             return f"{name} interpolates its parts its own way"
         reason = _rate_refusal(name, animation.rate_func)
+        if reason is None:
+            reason = _timing_refusal(name, animation)
         if reason is not None:
             return reason
-        for held in (animation.max_end_time, animation.anim_group_time):
-            if not _exact(held):
-                return f"{name}'s time is a {type(held).__name__}"
         parts: list[Any] = []
         for part in animation.animations:
             node = _node(part)
@@ -333,7 +366,7 @@ def _node(animation: Animation) -> _Group | _Leaf | str:
     ):
         width = getattr(animation, "time_width", None)
         if bounds is _flash_bounds and not _exact(width):
-            return f"{name}'s time width is a {type(width).__name__}"
+            return f"{name}'s time width is {_number(width)}"
         families = list(animation.get_all_families_zipped())
         for family in families:
             reason = _revealable(*family)
@@ -341,6 +374,38 @@ def _node(animation: Animation) -> _Group | _Leaf | str:
                 return f"{name} reveals {reason}"
         return _Leaf(animation, "reveal", families, flip, twin, bounds)
     return f"{name} is neither a straight-path blend nor a reveal"
+
+
+def _timing_refusal(name: str, group: Any) -> str | None:
+    """Why the timings and masks ``group`` holds are not CE's arrays of its
+    own parts, which the plan computes its part alphas from.
+    """
+    count = len(group.animations)
+    for held in (group.max_end_time, group.anim_group_time):
+        if not _exact(held):
+            return f"{name}'s time is {_number(held)}"
+    timings = group.anims_with_timings
+    fields = getattr(getattr(timings, "dtype", None), "fields", None) or {}
+    if (
+        type(timings) is not np.ndarray
+        or timings.shape != (count,)
+        or set(fields) != {"anim", "start", "end"}
+        or fields["start"][0] != np.float64
+        or fields["end"][0] != np.float64
+        or any(
+            a is not b for a, b in zip(timings["anim"], group.animations, strict=True)
+        )
+    ):
+        return f"{name}'s timings are not CE's float64 timings of its parts"
+    for mask in ("anims_begun", "anims_finished"):
+        held = getattr(group, mask)
+        if (
+            type(held) is not np.ndarray
+            or held.dtype != np.bool_
+            or held.shape != (count,)
+        ):
+            return f"{name}'s {mask} is not a bool array of its parts"
+    return None
 
 
 def _engine_points(mob: Any) -> bool:
@@ -368,6 +433,10 @@ def _blendable(leaf: Any, start: Any, end: Any) -> str | None:
 
     if not all(_engine_points(mob) for mob in (leaf, start, end)):
         return f"a {type(leaf).__name__} whose points are not a VMobject's"
+    for mob in (leaf, start, end):
+        own = _own_method(mob, _MOBJECT_METHODS)
+        if own is not None:
+            return f"a {type(mob).__name__} with its own {own}"
     cls = type(leaf)
     if (
         cls.interpolate is not Mobject.interpolate
@@ -388,7 +457,7 @@ def _blendable(leaf: Any, start: Any, end: Any) -> str | None:
             value = paint.__dict__[name]
             if kind is None:
                 if not _exact(value):
-                    return f"style numbers of type {type(value).__name__}"
+                    return f"a style number that is {_number(value)}"
             elif np.ndim(value) == 0:
                 return "styles CE's interpolation does not mix"
             elif value.dtype != np.float64:
@@ -405,6 +474,10 @@ def _revealable(leaf: Any, start: Any, *rest: Any) -> str | None:
 
     if rest or not (_engine_points(leaf) and _engine_points(start)):
         return f"a {type(leaf).__name__} whose points are not a VMobject's"
+    for mob in (leaf, start):
+        own = _own_method(mob, _MOBJECT_METHODS)
+        if own is not None:
+            return f"a {type(mob).__name__} with its own {own}"
     cls = type(leaf)
     if (
         cls.pointwise_become_partial is not VMobject.pointwise_become_partial
