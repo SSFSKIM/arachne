@@ -297,10 +297,14 @@ pub struct Fragment<'f> {
     /// infinity) for any other.
     pub wide: f64,
     /// For a stroke (or background stroke) of a path with no plane of its own, on identities or
-    /// not: how far, as a share of itself, its key may stand from the key along its curve through
-    /// its points as content put them, for their snap to the input grid
-    /// (`Projection::depth_share` of `depth::snap_departure_bound`). Two such strokes sharing no
-    /// identity tie within it ([`crate::order::lines`]). Negative (minus infinity) for any other.
+    /// not: how far, as a share of itself, its key at each of this pixel's sub-samples may stand
+    /// from the key read there along its curve through its points as content put them, for their
+    /// snap to the input grid: the snap's move of the key at fixed points of the curve (its
+    /// departure along the sight axis, `Projection::depth_share` of `depth::snap_departure`), and
+    /// how far the read may slide along the curve and between its pieces where the snap moves them
+    /// on screen (`depth::Centreline::slides_among`, over the least of the reads). Two such strokes
+    /// sharing no identity tie within it ([`crate::order::lines`]). Negative (minus infinity) for
+    /// any other.
     pub own: f64,
     /// The producer that added it (set by the pass).
     source: u16,

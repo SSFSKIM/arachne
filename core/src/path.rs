@@ -251,8 +251,15 @@ fn layer_runs(layer: &Layer) -> Vec<Vec<(u32, u32)>> {
 /// Where a layer lies ([`Lowering::push`]): the identities of the registered planes it lies on,
 /// its key's shares ([`Fragment::snap`] and [`Fragment::wide`]), its keys on those planes, the
 /// registry's handle of its flat record ([`Fragment::record`]), and its own share of its key
-/// ([`Fragment::own`]).
-type On = ([u32; 4], [f64; 2], [Option<Plane>; 4], Option<u32>, f64);
+/// with how far on screen the snap may move its curve's points ([`Fragment::own`],
+/// [`Layer::shift`]).
+type On = (
+    [u32; 4],
+    [f64; 2],
+    [Option<Plane>; 4],
+    Option<u32>,
+    [f64; 2],
+);
 
 /// One coverage layer: a fill or a stroke's outline, with its paint and place.
 struct Layer {
@@ -280,9 +287,13 @@ struct Layer {
     snap: f64,
     /// Its share against what else has no plane of its own ([`Fragment::wide`]).
     wide: f64,
-    /// For a stroke of a path with no plane of its own, its own share of its key
-    /// ([`Fragment::own`]).
+    /// For a stroke of a path with no plane of its own, its path's share of the snap's move of its
+    /// keys at fixed points of its curve ([`Fragment::own`] adds, pixel by pixel, how far its reads
+    /// may slide along it: [`Paths::own_at`]).
     own: f64,
+    /// For such a stroke, how far on screen, in pixels, the snap may move each point its curve is
+    /// drawn through ([`screen_shift`]); zero for any other layer.
+    shift: f64,
     /// For a layer of a path keyed on a registered plane, its path's key on each identity's plane,
     /// in the order of `plane`: what it is read on against a fragment sharing that identity
     /// ([`Producer::plane_depths`]).
@@ -902,6 +913,7 @@ fn nearest_plane_departure(key: &Plane, shown: &[[f64; 3]], map: &FrameMap, p: &
 fn curve_depth(shown: &[[f64; 3]], map: &FrameMap, projection: &Projection) -> Centreline {
     let mut points = Vec::new();
     let mut errors = Vec::new();
+    let mut turns = Vec::new();
     let mut breaks = Vec::new();
     let screen = |p: [f64; 3]| (map.apply(p), -projection.factor(p[2]));
     for (start, end) in subpaths(shown) {
@@ -911,6 +923,7 @@ fn curve_depth(shown: &[[f64; 3]], map: &FrameMap, projection: &Projection) -> C
         breaks.push(points.len());
         points.push(screen(shown[start]));
         errors.push(projection.key_error(shown[start]));
+        turns.push(2.0);
         for i in (start..=end - 4).step_by(4) {
             let c = [i, i + 1, i + 2, i + 3].map(|k| screen(shown[k]));
             let err = [i, i + 1, i + 2, i + 3]
@@ -929,19 +942,61 @@ fn curve_depth(shown: &[[f64; 3]], map: &FrameMap, projection: &Projection) -> C
             } else {
                 1
             };
+            let weights = |t: f64| {
+                let u = 1.0 - t;
+                [u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t]
+            };
             for s in 1..=n {
                 let t = s as f64 / n as f64;
-                let u = 1.0 - t;
-                let w = [u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t];
+                let w = weights(t);
                 let at = |f: &dyn Fn(usize) -> f64| {
                     w[0] * f(0) + w[1] * f(1) + w[2] * f(2) + w[3] * f(3)
                 };
                 points.push(([at(&|k| c[k].0[0]), at(&|k| c[k].0[1])], at(&|k| c[k].1)));
                 errors.push(err);
+                // The piece's two ends move apart by at most the sum of their weights' changes
+                // times how far a control point moves (at most `6 dt` of the parameter's `dt`).
+                let before = weights((s - 1) as f64 / n as f64);
+                let turn: f64 = (0..4).map(|k| (w[k] - before[k]).abs()).sum();
+                turns.push((turn * (1.0 + 16.0 * crate::composite::U)).min(2.0));
             }
         }
     }
-    Centreline::with_errors(&points, &errors, &breaks)
+    Centreline::with_turns(&points, &errors, &turns, &breaks)
+}
+
+/// How far on screen, in pixels, the snap may move any point a curve through `shown` (as the
+/// camera placed them, under `p` and the frame mapping `map`) is drawn through, where it moves
+/// each of its inputs by at most `across` along the axes that become the screen's (the camera's
+/// first two for a `projected` path, else the points' own x and y) and their factor by at most
+/// `share` of itself: a projected point shows at `q f zoom` for its position `q` before the
+/// perspective, which moves to `(q + e) f' zoom` with `|f' - f| <= share f`, so by at most
+/// `f zoom (1 + share) |e| + |shown| share` along each axis; any other point shows where it is.
+/// Each is mapped by `map`'s scale on each axis; the most of them.
+fn screen_shift(
+    shown: &[[f64; 3]],
+    p: &Projection,
+    map: &FrameMap,
+    projected: bool,
+    across: [f64; 2],
+    share: f64,
+) -> f64 {
+    if !share.is_finite() {
+        return f64::INFINITY;
+    }
+    shown
+        .iter()
+        .map(|q| {
+            let [x, y] = if projected {
+                let f = (p.factor(q[2]) * p.zoom()).abs();
+                [0, 1].map(|k| f * (1.0 + share) * across[k] + q[k].abs() * share)
+            } else {
+                across
+            };
+            libm::hypot(map.xx.abs() * x, map.yy.abs() * y)
+        })
+        .fold(0.0, f64::max)
+        * (1.0 + 64.0 * crate::composite::U)
 }
 
 /// Where a path's depth is keyed ([`Lowering::coplanar`]).
@@ -1256,15 +1311,34 @@ impl<'v> Lowering<'v> {
         };
         // A flat path's record, carried by each of its layers keyed with its term.
         let record = plane.as_ref().and_then(|on| on.record);
-        // A path with no plane of its own: how far its snap may move the keys along its curve, as
-        // a share of them, which its strokes carry ([`Fragment::own`]).
+        // A path with no plane of its own: how far its snap may move the keys at fixed points of
+        // its curve, as a share of them, and how far on screen it may move the points the curve
+        // is drawn through, which its strokes carry ([`Fragment::own`], [`Layer::shift`]). Its key
+        // is `-factor` of the depth before the perspective, which the snap moves by at most its
+        // departure along the axis that depth is read along (the camera's sight axis for a
+        // projected path; the points' own z for one a camera of the scene's own placed, or one at
+        // a fixed orientation, whose points are shifted, not turned); on screen it moves them by
+        // at most its departures along the other two.
         let own = match (&plane, self.projection.as_ref()) {
             (Some(on), Some(p)) if on.planeless => {
                 let grid = crate::depth::input_grid(self.view);
-                let moved = crate::depth::snap_departure_bound(grid, &draw.places, &draw.points);
-                p.depth_share(&shown, moved)
+                let projected = matches!(placement, Placement::Projected);
+                let axes = if projected {
+                    p.rotation()
+                } else {
+                    [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+                };
+                let along = |k: usize| {
+                    crate::depth::snap_departure(grid, axes[k], &draw.places, &draw.points)
+                };
+                let share = p.depth_share(&shown, along(2));
+                let across = [along(0), along(1)];
+                [
+                    share,
+                    screen_shift(&shown, p, &self.map, projected, across, share),
+                ]
             }
-            _ => f64::NEG_INFINITY,
+            _ => [f64::NEG_INFINITY, 0.0],
         };
         let scale = self.map.xx.abs().max(self.map.yy.abs());
         let area = self.guard(&user, draw.stroke_width.max(draw.background_stroke_width));
@@ -1359,7 +1433,11 @@ impl<'v> Lowering<'v> {
                 [f64::INFINITY, f64::NEG_INFINITY]
             };
             let record = record.filter(|_| snap[0].is_finite());
-            let own = if k == 1 { f64::NEG_INFINITY } else { own };
+            let own = if k == 1 {
+                [f64::NEG_INFINITY, 0.0]
+            } else {
+                own
+            };
             self.push(
                 &rings(&outline_px),
                 spec,
@@ -1620,8 +1698,8 @@ impl<'v> Lowering<'v> {
     /// Adds the layer whose outline is the closed polygons `rings`, on the pixel plane, on the
     /// registered planes `on.0` with its key's shares `on.1` ([`Fragment::snap`] and
     /// [`Fragment::wide`]), its keys on their planes `on.2`, the registry's handle of its flat
-    /// record `on.3` ([`Fragment::record`]) and its own share of its key `on.4`
-    /// ([`Fragment::own`]).
+    /// record `on.3` ([`Fragment::record`]) and its own share of its key with its curve's shift on
+    /// screen `on.4` ([`Fragment::own`], [`Layer::shift`]).
     fn push(
         &mut self,
         rings: &[Vec<[f64; 2]>],
@@ -1631,7 +1709,7 @@ impl<'v> Lowering<'v> {
         order: u32,
         sub: u32,
     ) {
-        let (plane, [snap, wide], on_plane, record, own) = on;
+        let (plane, [snap, wide], on_plane, record, [own, shift]) = on;
         let edges = scanline::edges_of(rings);
         if edges.is_empty() {
             return;
@@ -1689,6 +1767,7 @@ impl<'v> Lowering<'v> {
             snap,
             wide,
             own,
+            shift,
             on_plane,
             record,
             order,
@@ -1784,6 +1863,63 @@ impl Paths {
         }
     }
 
+    /// Layer `layer`'s own share of its key at pixel `(x, y)` ([`Fragment::own`]): for a stroke of
+    /// a path with no plane of its own keyed on its curve, its path's share of the snap's move of
+    /// its keys at fixed points of the curve, and how far, as a share of the least of them, any of
+    /// the pixel's reads may move beyond that where the snap moves the curve's points on screen
+    /// by its shift ([`Centreline::slides_among`]); the layer's own for any other.
+    fn own_at(&self, layer: &Layer, x: u32, y: u32) -> f64 {
+        let LayerDepth::Curve(i, body) = layer.depth else {
+            return layer.own;
+        };
+        if !(0.0..f64::INFINITY).contains(&layer.own) {
+            return layer.own;
+        }
+        let curve = &self.centrelines[i as usize];
+        let centre = [x as f64 + 0.5, y as f64 + 0.5];
+        // The pixel's reads: its sub-samples, then its centre, as `Depths::of` makes them.
+        let points: [[f64; 2]; SAMPLES + 1] = std::array::from_fn(|k| {
+            if k < SAMPLES {
+                sample_point(x, y, k)
+            } else {
+                centre
+            }
+        });
+        // The segments the pixel's reads are made among for a body `wide`, cut as `point_depths`
+        // cuts them: with `wide` past the body by the shift, every segment that may hold a point;
+        // past the centre's nearest by the spread and the shift twice, every one near a point's
+        // nearest.
+        let among = |wide: f64| {
+            let mut near = Vec::new();
+            if !curve.near_cut(centre, &points, wide, &mut near) {
+                curve.candidates(x, y, wide, &mut near);
+                curve.line.cut(centre, &points, &mut near, wide);
+            }
+            near
+        };
+        let room = curve.line.rounding(centre[0].max(centre[1]) + body + 2.0);
+        let reach = layer.shift + room;
+        let mut near = among(body + 2.0 * reach);
+        let nearest = near
+            .iter()
+            .map(|&s| curve.line.distance2(s as usize, centre))
+            .fold(f64::INFINITY, f64::min)
+            .sqrt();
+        let wide = nearest + 0.75 + 3.0 * reach;
+        if wide > body + 2.0 * reach {
+            near = among(wide);
+        }
+        let (most, least) =
+            curve
+                .line
+                .slides_among(&points, centre, &near, body, layer.shift, layer.own);
+        if least > 0.0 {
+            layer.own + most / least * (1.0 + 4.0 * crate::composite::U)
+        } else {
+            f64::INFINITY
+        }
+    }
+
     /// Rasterizes the opaque or the other layers of the tile at `rect`.
     fn raster<'a>(&'a self, rect: Rect, opaque: bool, mut add: impl FnMut(u32, u32, Fragment<'a>)) {
         let mut scratch = Scratch::default();
@@ -1828,7 +1964,7 @@ impl Paths {
                         f.snap = layer.snap;
                         f.record = record.map(FlatRecord);
                         f.wide = layer.wide;
-                        f.own = layer.own;
+                        f.own = self.own_at(layer, x, y);
                         add(x, y, f);
                     }
                 },

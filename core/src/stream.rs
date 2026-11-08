@@ -673,6 +673,29 @@ impl Stream {
         Ok(out)
     }
 
+    /// For each pixel of `x0..x1` by `y0..y1` [`Stream::contributors`] reports, from the same
+    /// pass, each fragment there of a stroke (or background stroke) of a path with no plane of its
+    /// own, by its leaf `(object, part)`, with its own share of its key at that pixel
+    /// ([`composite::Fragment::own`]): what [`order::lines`] reads.
+    #[allow(clippy::type_complexity)]
+    pub fn own_shares(
+        &self,
+        x0: u32,
+        y0: u32,
+        x1: u32,
+        y1: u32,
+    ) -> Result<BTreeMap<(u32, u32), Vec<((u32, u32), f64)>>, DrawError> {
+        let mut out: BTreeMap<(u32, u32), Vec<((u32, u32), f64)>> = BTreeMap::new();
+        self.visit_contributors(x0, y0, x1, y1, |x, y, frags, _, _, _| {
+            for f in frags.iter().filter(|f| f.own >= 0.0) {
+                out.entry((x, y))
+                    .or_default()
+                    .push((self.leaf_of(f), f.own));
+            }
+        })?;
+        Ok(out)
+    }
+
     /// Visits each pixel of `x0..x1` by `y0..y1` (clipped to the view's frame) that holds a
     /// fragment, with its fragments, their coverage at each sub-sample, their depths and the
     /// producers that added them, from the frame [`Stream::render_under_overlay`] draws: the one pass the
@@ -4637,8 +4660,8 @@ mod tests {
         assert_eq!(above, 0, "A above B at {above} of {}", both.len());
     }
 
-    /// A line on none of a flat face's identities a stroke's own share of its key reaches past it:
-    /// the face a square 2 across on z = 0, the line across it two grid steps above (the nearer),
+    /// A line on none of a flat face's identities, a few times a stroke's own share of its key from
+    /// it: the face a square 2 across on z = 0, the line across it two grid steps above (the nearer),
     /// no plane holding both within their tolerances (each half a step along z), coded on no plane
     /// (on the axis planes it holds exactly alone), drawn first. The face has no own share, so
     /// depth orders the two, the line above the face at every sub-sample both cover, though paint
@@ -4674,8 +4697,8 @@ mod tests {
             assert!(m.a.4 < 0.0 && m.b.4 > 0.0, "shares {} and {}", m.a.4, m.b.4);
             let reach = |(d, e, _, _, s): Read| e + (d.abs() + e) * s;
             assert!(
-                (m.a.0 - m.b.0).abs() <= reach(m.b) * 2.0,
-                "the keys {} and {} part by more than twice the line's own reach {}",
+                (m.a.0 - m.b.0).abs() <= reach(m.b) * 5.0,
+                "the keys {} and {} part by more than five times the line's own reach {}",
                 m.a.0,
                 m.b.0,
                 reach(m.b)
@@ -4691,11 +4714,12 @@ mod tests {
     }
 
     /// Two lines seen from straight above, crossing on screen at the origin: A level on z = 0,
-    /// along x; B along y, its points snapped to three and four grid steps above (so through 3.5
-    /// at the crossing, the nearer), both coded on no plane, so on no identity in common (A on
-    /// the axis planes it holds exactly, y = 0 and z = 0, B on x = 0), B drawn first. Where both
-    /// cover, their keys part by more than their own shares reach, by less than a quarter more, so
-    /// depth orders them, B above A at every sub-sample, though paint order would put A above.
+    /// along x; B along y, its control points one grid step above but the last, two steps above
+    /// (so through 1.125 steps at the crossing, the nearer), both coded on no plane, so on no
+    /// identity in common (A on the axis planes it holds exactly, y = 0 and z = 0, B on x = 0), B
+    /// drawn first. Where both cover, their keys part by more than their own shares reach (half a
+    /// step each along the sight axis), by less than a quarter more, so depth orders them, B above
+    /// A at every sub-sample, though paint order would put A above.
     /// Each share is the stroke's own, finite; the share of a key B carries otherwise
     /// ([`composite::Fragment::snap`]), on no plane the camera keys (the eye lies in x = 0), is
     /// unbounded.
@@ -4707,7 +4731,15 @@ mod tests {
             view,
             vec![
                 (
-                    snapped_line([0.0, -2.0, 3.0 * GRID], [0.0, 2.0, 4.0 * GRID]),
+                    snapped(
+                        &[
+                            [0.0, -2.0, GRID],
+                            [0.0, -2.0 / 3.0, GRID],
+                            [0.0, 2.0 / 3.0, GRID],
+                            [0.0, 2.0, 2.0 * GRID],
+                        ],
+                        GRID,
+                    ),
                     line_record(2, 6.0, curve),
                 ),
                 (
@@ -4854,5 +4886,187 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Each sub-sample object `a` covers in `s`: its key there read along its curve (its own
+    /// depths, whatever identities it lies on), the key's bound, and its fragment's own share at
+    /// that pixel.
+    // The sub-sample `k` indexes the fragment's coverage and depth rows.
+    #[allow(clippy::needless_range_loop)]
+    fn curve_keys(s: &Stream, a: u32) -> BTreeMap<(u32, u32, usize), (f64, f64, f64)> {
+        let (w, h) = {
+            let view = s.view.as_ref().expect("a view");
+            (view.pixel_width, view.pixel_height)
+        };
+        let mut keys = BTreeMap::new();
+        s.visit_contributors(0, 0, w, h, |x, y, frags, cov, d, _| {
+            let Some(i) = frags.iter().position(|f| s.leaf_of(f).0 == a) else {
+                return;
+            };
+            let f = &frags[i];
+            for k in 0..composite::SAMPLES {
+                if cov[i][k] != 0 {
+                    keys.insert((x, y, k), (d[i].samples[k], d[i].err, f.own));
+                }
+            }
+        })
+        .expect("the stream draws");
+        keys
+    }
+
+    /// A straight line of `view` through `centre`, `length` long, at `angle` degrees from the
+    /// camera's sight axis (turned from it toward the screen's x), in CE's cubic layout: its
+    /// control points at a third and two thirds, not snapped.
+    fn line_off_sight(view: &View, centre: [f64; 3], length: f64, angle: f64) -> Vec<[f64; 3]> {
+        let r = projection_of(view).rotation();
+        let (c, s) = (libm::cos(angle.to_radians()), libm::sin(angle.to_radians()));
+        let dir: [f64; 3] = std::array::from_fn(|j| c * r[2][j] + s * r[0][j]);
+        let at = |t: f64| std::array::from_fn(|j| centre[j] + (t - 0.5) * length * dir[j]);
+        vec![at(0.0), at(1.0 / 3.0), at(2.0 / 3.0), at(1.0)]
+    }
+
+    /// The snap's move of a stroke's key at fixed sub-samples, through the frame's own sampling
+    /// (the key along the curve under each sub-sample, [`Centreline::key_under`]): a line in
+    /// general position, at 90, 45, 20, 10 and 5 degrees from the sight axis, under a camera
+    /// looking down z and two turned ones, drawn where content put it and where a snap within
+    /// half a grid step of each of its control points' coordinates moved it (the corners of that
+    /// box, alike and opposed between the points, and random moves in it). At every sub-sample
+    /// both cover, the moved line's key lies within its reach of the line's own: its bound and
+    /// the content's, and its own share at that pixel of its key with its bound
+    /// ([`order::lines_term`]'s reach). Each row's tightness, the most the key moved over that
+    /// reach, is printed.
+    #[test]
+    fn a_snapped_line_s_key_at_each_sub_sample_lies_within_its_own_reach_of_the_content_s() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+        };
+        let corners: Vec<[f64; 3]> = (0..8)
+            .map(|c| [0, 1, 2].map(|k| if (c >> k) & 1 == 1 { 0.5 } else { -0.5 }))
+            .collect();
+        let mut moves: Vec<[[f64; 3]; 4]> = Vec::new();
+        for c in &corners {
+            let o = c.map(|v| -v);
+            moves.extend([
+                [*c, *c, *c, *c],
+                [*c, *c, o, o],
+                [*c, o, *c, o],
+                [o, *c, *c, o],
+            ]);
+        }
+        for _ in 0..32 {
+            moves.push(std::array::from_fn(|_| std::array::from_fn(|_| next())));
+        }
+        let curve = crate::depth::Planarity::Curve;
+        let mut rows = Vec::new();
+        for (phi, theta) in [(0.0, -90.0), (70.0, -110.0), (85.0, -100.0)] {
+            let view = snapped_view(phi, theta);
+            for angle in [90.0, 45.0, 20.0, 10.0, 5.0] {
+                let length = if angle < 15.0 { 4.0 } else { 2.0 };
+                let content = line_off_sight(&view, [0.31, -0.17, 0.23], length, angle);
+                let draw = |points: Vec<[f64; 3]>| {
+                    let s = paths_stream(view.clone(), vec![(points, line_record(1, 6.0, curve))]);
+                    curve_keys(&s, 101)
+                };
+                let exact = draw(content.clone());
+                let (mut worst, mut met_any) = (0.0f64, 0usize);
+                for m in &moves {
+                    let moved: Vec<[f64; 3]> = (0..4)
+                        .map(|i| std::array::from_fn(|j| content[i][j] + m[i][j] * GRID))
+                        .collect();
+                    for (at, (k, e, own)) in draw(moved) {
+                        let Some((k0, e0, _)) = exact.get(&at) else {
+                            continue;
+                        };
+                        met_any += 1;
+                        assert!(own.is_finite() && own > 0.0, "own share {own}");
+                        let reach = e + e0 + (k.abs() + e) * own;
+                        let moved_by = (k - k0).abs();
+                        assert!(
+                            moved_by <= reach,
+                            "({phi}, {theta}) at {angle} degrees, at {at:?}: the key moved by \
+                             {moved_by:e} against its reach {reach:e}"
+                        );
+                        worst = worst.max(moved_by / reach);
+                    }
+                }
+                assert!(
+                    met_any > 1000,
+                    "({phi}, {theta}) {angle}: {met_any} sub-samples"
+                );
+                rows.push((phi, theta, angle, worst, met_any));
+            }
+        }
+        for (phi, theta, angle, worst, n) in rows {
+            eprintln!(
+                "TIGHT phi {phi} theta {theta} angle {angle}: {worst:.3} over {n} sub-samples"
+            );
+        }
+    }
+
+    /// Two lines content put on one line, steep to the sight axis (5 degrees from it, under a
+    /// camera 70 degrees from z), one drawn as one cubic and the other as two halves, so the snap
+    /// moves their control points apart though it keeps their ends together; shifted along their
+    /// line frame by frame, so it moves them by a different fraction of a step each frame. On no
+    /// identity, each a stroke of a path with no plane of its own, they tie wherever both cover,
+    /// the one drawn later above at every sub-sample in every frame: the snap's move of their keys
+    /// there, along the curves and sliding where their pieces move on screen, lies within their
+    /// own shares.
+    #[test]
+    fn two_lines_on_one_steep_line_tie_in_every_frame_where_the_snap_slides_their_keys() {
+        let view = snapped_view(70.0, -110.0);
+        let curve = crate::depth::Planarity::Curve;
+        let r = projection_of(&view).rotation();
+        let (c, s) = (libm::cos(5f64.to_radians()), libm::sin(5f64.to_radians()));
+        let dir: [f64; 3] = std::array::from_fn(|j| c * r[2][j] + s * r[0][j]);
+        let mut frames = Vec::new();
+        for frame in 0..16u32 {
+            let shift = 0.0137 * f64::from(frame);
+            let at = |t: f64| -> [f64; 3] {
+                std::array::from_fn(|j| [0.31, -0.17, 0.23][j] + (t - 2.0 + shift) * dir[j])
+            };
+            let one = snapped(&[at(0.0), at(4.0 / 3.0), at(8.0 / 3.0), at(4.0)], GRID);
+            let halves = snapped(
+                &[
+                    at(0.0),
+                    at(2.0 / 3.0),
+                    at(4.0 / 3.0),
+                    at(2.0),
+                    at(2.0),
+                    at(8.0 / 3.0),
+                    at(10.0 / 3.0),
+                    at(4.0),
+                ],
+                GRID,
+            );
+            let s = paths_stream(
+                view.clone(),
+                vec![
+                    (one, line_record(1, 6.0, curve)),
+                    (halves, line_record(2, 6.0, curve)),
+                ],
+            );
+            let ids = identities(&s);
+            assert!(
+                ids[&101].is_empty() && ids[&102].is_empty(),
+                "frame {frame}: on {:?} and {:?}",
+                ids[&101],
+                ids[&102]
+            );
+            let both = met(&s, 101, 102);
+            assert!(
+                both.len() > 200,
+                "frame {frame}: {} sub-samples",
+                both.len()
+            );
+            frames.push((both.iter().filter(|m| m.a_above).count(), both.len()));
+        }
+        assert!(
+            frames.iter().all(|f| f.0 == 0),
+            "the line drawn first above, (at, of) a frame: {frames:?}"
+        );
     }
 }

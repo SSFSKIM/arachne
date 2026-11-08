@@ -108,6 +108,11 @@ impl Projection {
         self.rotation
     }
 
+    /// The camera's zoom, which scales every projected point's position after the perspective.
+    pub fn zoom(&self) -> f64 {
+        self.zoom
+    }
+
     /// This projection seen in the camera's own axes: no rotation and no centre, only the
     /// perspective and the zoom. A pre-projected record's points are already in those axes (as
     /// `project` leaves them), so their depth is keyed through this, never through the view's

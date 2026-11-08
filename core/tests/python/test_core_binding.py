@@ -969,23 +969,32 @@ def test_near_parallel_holds_up_to_the_turn_the_two_records_snaps_allow():
         _near_parallel(flat, record(turned(0.0), 3), grid)
 
 
-def test_line_share_is_the_snap_s_reach_over_each_point_s_room_from_the_eye():
+def test_line_share_is_the_snap_s_reach_along_the_sight_axis_over_each_point_s_room():
     from arachne_core._core import _line_share, _lines_tied
 
     grid, d = 1 / 16384, 20.0
     line = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.5), (2.0, 0.0, 1.0)]
     depths = [0.0, 0.5, 1.0]
+    square = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+    c, s3 = 0.6, 0.8
+    turned = ((c, 0.0, -s3), (0.0, 1.0, 0.0), (s3, 0.0, c))
 
-    def share(points=line, planes=0, depths=depths, exponential=False):
-        return _line_share(points, IDENTITY_PLACES, points, planes, grid, depths, d, exponential)
+    def share(points=line, planes=0, depths=depths, exponential=False, axes=square):
+        return _line_share(
+            points, IDENTITY_PLACES, points, planes, grid, depths, d, exponential, axes
+        )
 
-    # Unplaced, the snap moves a point by half a step along each axis: sqrt(3) times the
-    # identity's Frobenius norm of that, bound along every normal. The nearest point has the
-    # least room from the eye.
-    w, s = share()
-    assert w == pytest.approx(1.5 * grid, rel=1e-9)
+    # Unplaced, the snap moves a point by half a step along each axis: along a unit axis `n`,
+    # half a step times |n|_1. The nearest point has the least room from the eye.
+    w, s, across = share()
+    assert w == pytest.approx(0.5 * grid, rel=1e-9)
+    assert across == pytest.approx((0.5 * grid, 0.5 * grid), rel=1e-9)
     assert s == pytest.approx(w / (d - 1.0 - w), rel=1e-12)
-    assert share(exponential=True) == pytest.approx((w, w / (d - w)), rel=1e-12)
+    w2, s2, across2 = share(axes=turned)
+    assert w2 == pytest.approx(0.5 * grid * (s3 + c), rel=1e-9)
+    assert across2 == pytest.approx((0.5 * grid * (c + s3), 0.5 * grid), rel=1e-9)
+    assert s2 == pytest.approx(w2 / (d - 1.0 - w2), rel=1e-12)
+    assert share(exponential=True)[:2] == pytest.approx((w, w / (d - w)), rel=1e-12)
     assert share(depths=[d])[1] == float("inf")
     face = outline([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0)])
     with pytest.raises(ValueError, match="flat"):
@@ -994,6 +1003,40 @@ def test_line_share_is_the_snap_s_reach_over_each_point_s_room_from_the_eye():
         share(planes=None)
     with pytest.raises(ValueError, match="no depths"):
         share(depths=[])
+    # A stroke's own share at each pixel: its share at fixed points of its curve and how far its
+    # reads there may slide, never below that share.
+    grid, width, height = 1 / 16384, 96, 54
+    delta = ac.FrameDelta(t=(0, 1), seq=0)
+    delta.set_view(
+        pixel_width=width,
+        pixel_height=height,
+        camera="three_d",
+        phi=1.2,
+        theta=-1.9,
+        background=(0, 0, 0, 1),
+        input_grid=grid,
+        **FRAME,
+    )
+    thirds = (0, 1 / 3, 2 / 3, 1)
+    steep = np.array([[0.31 + 2.7 * t, -0.17 - 1.2 * t, 0.23 + 3.1 * t] for t in thirds])
+    steep = np.round(steep / grid) * grid
+    delta.set_record(
+        "path",
+        1,
+        11,
+        shape=delta.upload_path(steep),
+        stroke=(1, 1, 1, 1),
+        stroke_width=30.0,
+        space="world",
+    )
+    delta.set_order([("moving", 1, 0)])
+    stream = ac.Stream()
+    stream.apply(delta)
+    shares = stream.own_shares(0, 0, width, height)
+    held = [s for leaves in shares.values() for (obj, _, s) in leaves if obj == 11]
+    assert len(held) > 20
+    assert all(0.0 < s < float("inf") for s in held)
+    assert max(held) > min(held)
     # The term: two keys within each one's bound and own share of itself of each other.
     k, e = -1.0, 1e-15
     reach = e + (abs(k) + e) * s

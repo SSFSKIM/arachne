@@ -1084,6 +1084,35 @@ impl PyStream {
             .collect())
     }
 
+    /// The own share of its key each stroke of a path with no plane of its own holds at each
+    /// pixel of the box ``contributors`` reports, from the same pass: ``{(x, y): [(object, part,
+    /// share)]}``, ``share`` the snap's move of the key at fixed points of its curve and how far
+    /// the pixel's reads along it may slide, as a share of the least of them: what the core ties
+    /// two such strokes on no shared identity within (``_lines_tied``'s ``s``).
+    #[allow(clippy::type_complexity)]
+    fn own_shares(
+        &self,
+        py: Python<'_>,
+        x0: i64,
+        y0: i64,
+        x1: i64,
+        y1: i64,
+    ) -> PyResult<BTreeMap<(u32, u32), Vec<(u32, u32, f64)>>> {
+        let side = |v: i64| v.clamp(0, u32::MAX as i64) as u32;
+        let (x0, y0, x1, y1) = (side(x0), side(y0), side(x1), side(y1));
+        let stream = &self.stream;
+        let found = py
+            .detach(|| stream.own_shares(x0, y0, x1, y1))
+            .map_err(|e| draw_error(py, e))?;
+        Ok(found
+            .into_iter()
+            .map(|(at, leaves)| {
+                let leaves = leaves.into_iter().map(|((o, p), s)| (o, p, s)).collect();
+                (at, leaves)
+            })
+            .collect())
+    }
+
     /// The edges the rasterizer reads for every leaf ``contributors`` reports with an exact area
     /// in the box, from the same pass: ``{(object, part): layers}``, each of the leaf's layers once
     /// (a fill, a stroke's outline after the stroker) as a list of ``(x0, y0, x1, y1, dir)`` in
@@ -1335,18 +1364,22 @@ fn near_parallel(a: Offered, b: Offered, grid: f64) -> PyResult<(bool, f64)> {
     })
 }
 
-/// A stroke's own share of its key, as the core sets it on a path with no plane of its own
-/// (`Fragment::own`): offered as `_registry_tolerance` takes a record (a path's planarity code;
-/// a frame offers it with no plane of its own), its points at projected depths `depths` (the
-/// third coordinate `project` gives them, before the perspective) under a camera at
-/// `focal_distance`, exponential or not. `(w, s)`: `w` the snap's bound on how far it moved any
-/// point along any unit normal (`depth::snap_departure_bound`), `s` the share
-/// (`project::depth_share`). A `ValueError` for a record a frame does not offer, a mesh
-/// triangle, a flat record, or no depths.
+/// A stroke's share of its key at fixed points of its curve, as the core sets it on a path with
+/// no plane of its own (the part of `Fragment::own` its pixels' slides add to): offered as
+/// `_registry_tolerance` takes a record (a path's planarity code; a frame offers it with no plane
+/// of its own), its points at projected depths `depths` (the third coordinate `project` gives
+/// them, before the perspective) under a camera at `focal_distance`, exponential or not, whose
+/// axes are `axes` (rows: the screen's x and y and the sight axis the depth is read along, unit
+/// vectors in the placed points' coordinates; `Projection::rotation`'s rows for a projected path).
+/// `(w, s, across)`: `w` the snap's bound on how far it moved any point along the sight axis
+/// (`depth::snap_departure` along `axes[2]`), `s` the share (`project::depth_share`), and
+/// `across` its bounds along the other two, from which the core finds how far on screen the snap
+/// moved the curve's points. A `ValueError` for a record a frame does not offer, a mesh triangle,
+/// a flat record, or no depths.
 #[allow(clippy::too_many_arguments)]
 #[pyfunction(
     name = "_line_share",
-    signature = (points, places, shape, planes, grid, depths, focal_distance, exponential)
+    signature = (points, places, shape, planes, grid, depths, focal_distance, exponential, axes)
 )]
 fn line_share(
     points: Vec<[f64; 3]>,
@@ -1357,7 +1390,8 @@ fn line_share(
     depths: Vec<f64>,
     focal_distance: f64,
     exponential: bool,
-) -> PyResult<(f64, f64)> {
+    axes: [[f64; 3]; 3],
+) -> PyResult<(f64, f64, (f64, f64))> {
     if planes.is_none() {
         return Err(PyValueError::new_err("a stroke is a path's"));
     }
@@ -1369,9 +1403,10 @@ fn line_share(
     if depths.is_empty() {
         return Err(PyValueError::new_err("no depths"));
     }
-    let w = crate::depth::snap_departure_bound(grid, &places, &shape);
+    let along = |k: usize| crate::depth::snap_departure(grid, axes[k], &places, &shape);
+    let w = along(2);
     let s = crate::project::depth_share(focal_distance, exponential, depths, w);
-    Ok((w, s))
+    Ok((w, s, (along(0), along(1))))
 }
 
 /// Whether two keys of strokes of paths with no plane of their own on no one identity, each

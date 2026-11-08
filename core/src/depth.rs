@@ -2129,6 +2129,10 @@ pub struct Centreline {
     segments: Vec<([f64; 2], f64, [f64; 2], f64)>,
     /// Each segment's ends' keys' greater error.
     errors: Vec<f64>,
+    /// For each segment, how far its two ends may move apart on screen, as a share of how far the
+    /// points the curve is drawn through may move ([`Centreline::slide_under`]): `2` for ends
+    /// moving on their own, less for the ends of a cubic's piece, which move together.
+    turns: Vec<f64>,
     /// The largest magnitude of a coordinate of a segment's end.
     scale: f64,
 }
@@ -2142,9 +2146,22 @@ impl Centreline {
 
     /// [`Centreline::new`] with each point's key known within `errors[i]` (none given: exact).
     pub fn with_errors(points: &[([f64; 2], f64)], errors: &[f64], breaks: &[usize]) -> Centreline {
+        Centreline::with_turns(points, errors, &[], breaks)
+    }
+
+    /// [`Centreline::with_errors`] with the segment ending at point `i` turning by at most
+    /// `turns[i]` ([`Centreline::turns`]; none given: `2`).
+    pub fn with_turns(
+        points: &[([f64; 2], f64)],
+        errors: &[f64],
+        turns: &[f64],
+        breaks: &[usize],
+    ) -> Centreline {
         let err = |i: usize| errors.get(i).copied().unwrap_or(0.0);
+        let turn = |i: usize| turns.get(i).copied().unwrap_or(2.0);
         let mut segments = Vec::new();
         let mut errs = Vec::new();
+        let mut turned = Vec::new();
         for i in 1..points.len() {
             if breaks.contains(&i) {
                 continue;
@@ -2157,6 +2174,7 @@ impl Centreline {
             {
                 segments.push((a, ka, b, kb));
                 errs.push(err(i - 1).max(err(i)));
+                turned.push(turn(i));
             }
         }
         if segments.is_empty()
@@ -2167,6 +2185,7 @@ impl Centreline {
             let (p, k) = points[i];
             segments.push((p, k, p, k));
             errs.push(err(i));
+            turned.push(2.0);
         }
         let scale = segments
             .iter()
@@ -2175,6 +2194,7 @@ impl Centreline {
         Centreline {
             segments,
             errors: errs,
+            turns: turned,
             scale,
         }
     }
@@ -2333,6 +2353,203 @@ impl Centreline {
             err = err.max(e);
         }
         err
+    }
+
+    /// How far the snap may move the key [`Centreline::key_under`] reads at `p` among
+    /// `candidates` (all segments when empty, which must hold every segment that may hold `p` or
+    /// lie nearest it), beyond `share` of the read's magnitude, where it moves each point the
+    /// curve is drawn through by at most `shift` pixels on screen and each key there by at most
+    /// `share` of itself; and that magnitude.
+    ///
+    /// The read is the front-most key among the segments whose footprint and body hold `p`, each
+    /// keyed at `p`'s foot by [`key_on`], linear in the key along the segment on screen; where none
+    /// holds it, the nearest segment's. A segment's ends are its curve's points or, for a cubic's
+    /// pieces, the cubic's weights (summing to one, none negative) of its control points, keys
+    /// alike: each end moves by at most `shift` on screen, the two apart by at most
+    /// `turn = shift * turns[i]` (a cubic piece over `dt` of its parameter, at most `6 dt` of it),
+    /// and each end's key by at most `share` of itself. Write `p - a = t v + q`, `v = b - a`, `q`
+    /// square to `v` (`|q|` the distance from `p` to the segment's line), `a` and `b` moved by `α`
+    /// and `β`, `L = |v|`. The foot's parameter `t` moves to `t'` with
+    /// `(t' - t) |v'|^2 = -((1 - t) α + t β) . v + q . (β - α) - α . (β - α) - t |β - α|^2`, so
+    /// `|t' - t| <= dt = ((|1 - t| + |t|) shift L + (|q| + shift + |t| turn) turn) / (L - turn)^2`
+    /// for `L > turn`; the clamp to the ends moves it no further. The key at the foot,
+    /// `ka (1 - t) + kb t`, then moves by at most `share` of the key at `t'` (the ends' keys move
+    /// by that share of themselves, all of one sign) and `|kb - ka| dt` along the segment, and the
+    /// key at `t'` lies within that of the key at `t`: `share |k| + (1 + share) |kb - ka| dt` in
+    /// all. A segment shorter than `turn` is keyed between its ends' keys before and after: within
+    /// `(1 + share) |kb - ka| + share max(|ka|, |kb|)`.
+    ///
+    /// A segment holds `p` where the foot's raw parameter lies within `0..=1` and `p` within `body`
+    /// of the segment; the segment moves by at most `shift` (its ends do), so one holding `p` with
+    /// its parameter `dt` inside the ends and its distance `shift` inside the body still holds it,
+    /// and one with its parameter `dt` beyond them or its distance `shift` beyond the body still does
+    /// not; the nearest stays among those within `2 shift` of the nearest distance. So the read
+    /// after the move is the front-most of the moved keys of a set holding every segment surely
+    /// holding `p` and only segments that may, or, where none surely holds it, that or the moved
+    /// key of one of the near-nearest: within `jump` of the read before, the most the read may be
+    /// above or below the keys of those segments that may take it, plus the most any of them may
+    /// move. This holds where the foot slides across a joint into the next segment (the next one
+    /// may then hold `p`), at a stroke's end (where a key past the end is the end's) and where `p`
+    /// leaves the stroke's body (the nearest segment then keys it). So the read moves by at most
+    /// `share (|read| + jump) + jump + most`: this returns `(1 + share) jump + most`, each
+    /// comparison and parameter with room for its rounding ([`Centreline::rounding`]).
+    ///
+    /// Two moves lie outside this bound, stated limits gated on exposure. The flattening of a
+    /// curved cubic into pieces changes where the snap changes how many pieces it is cut into (the
+    /// count follows its control polygon's length on screen); that moves no read of a straight
+    /// cubic, whose flattened pieces lie on its line with its key there, and this does not cover
+    /// it for a curved one. The core never sees unsnapped geometry, so the fix is that the writer
+    /// records the flattening count (or what fixes it) as a canonical record field, or the reach
+    /// bounds the chord change. And the key is linear along a segment on screen only where the
+    /// projection maps a straight line in the world to one keyed linearly on screen, as the default
+    /// projection does; under the exponential option the flattened pieces' keys depart from the
+    /// curve's own by the flattening error, which this does not cover either.
+    pub fn slide_under(
+        &self,
+        p: [f64; 2],
+        candidates: &[u32],
+        body: f64,
+        shift: f64,
+        share: f64,
+    ) -> (f64, f64) {
+        let room = self.rounding(p[0].abs().max(p[1].abs()));
+        let reach = shift + room;
+        let body2 = body * body;
+        // Each segment's key at `p`, how far it may move, whether it holds `p` now, may hold it
+        // after the move or surely does, and its distance.
+        struct Read {
+            key: f64,
+            moves: f64,
+            holds: bool,
+            may: bool,
+            surely: bool,
+            d: f64,
+            d2: f64,
+        }
+        let read_of = |i: usize| {
+            let (a, ka, b, kb) = self.segments[i];
+            let (raw, d2) = foot(a, b, p);
+            let key = key_on((a, ka), (b, kb), 0.0, p, raw).0;
+            let len = libm::hypot(b[0] - a[0], b[1] - a[1]);
+            let turn = shift * self.turns[i];
+            let spread = (kb - ka).abs();
+            let (dt, moves) = if len > turn {
+                let q = ((p[0] - a[0]) * (b[1] - a[1]) - (p[1] - a[1]) * (b[0] - a[0])).abs() / len;
+                let along = ((1.0 - raw).abs() + raw.abs()) * shift * len;
+                let dt = (along + (q + shift + raw.abs() * turn) * turn)
+                    / ((len - turn) * (len - turn))
+                    + room / len;
+                (dt, (1.0 + share) * spread * dt)
+            } else {
+                let most = ka.abs().max(kb.abs());
+                (f64::INFINITY, (1.0 + share) * spread + share * most)
+            };
+            let d = d2.sqrt();
+            Read {
+                key,
+                moves,
+                holds: (0.0..=1.0).contains(&raw) && d2 <= body2,
+                may: raw >= -dt && raw <= 1.0 + dt && d <= body + reach,
+                surely: raw >= dt && raw <= 1.0 - dt && d + reach <= body,
+                d,
+                d2,
+            }
+        };
+        let reads: Vec<Read> = if candidates.is_empty() {
+            (0..self.segments.len()).map(read_of).collect()
+        } else {
+            candidates.iter().map(|i| read_of(*i as usize)).collect()
+        };
+        // The read as `find` makes it: the front-most holder's key, else the first nearest's.
+        let mut nearest: Option<&Read> = None;
+        for r in &reads {
+            if nearest.is_none_or(|n| r.d2 < n.d2) {
+                nearest = Some(r);
+            }
+        }
+        let Some(nearest) = nearest else {
+            return (0.0, f64::INFINITY);
+        };
+        let read = reads
+            .iter()
+            .filter(|r| r.holds)
+            .map(|r| r.key)
+            .reduce(f64::min)
+            .unwrap_or(nearest.key);
+        let sure = reads
+            .iter()
+            .filter(|r| r.surely)
+            .map(|r| r.key)
+            .reduce(f64::min);
+        let (mut low, mut high, mut most) = (read, read, 0.0f64);
+        for r in &reads {
+            let near = sure.is_none() && r.d <= nearest.d + 2.0 * reach;
+            if r.may || near {
+                most = most.max(r.moves);
+                low = low.min(r.key);
+                if sure.is_none() {
+                    high = high.max(r.key);
+                }
+            }
+        }
+        if let Some(k) = sure {
+            high = high.max(k);
+        }
+        let jump = (read - low).max(high - read);
+        (((1.0 + share) * jump + most) * (1.0 + 64.0 * U), read.abs())
+    }
+
+    /// [`Centreline::slide_under`] at each of `points` (a pixel's reads, `centre` its centre)
+    /// among `candidates` (all segments when empty, holding every segment a read among every
+    /// segment at one of the points may take), cut down to those that may hold one of the points
+    /// or lie near its nearest: the most any read may move and the least magnitude of the reads.
+    pub fn slides_among(
+        &self,
+        points: &[[f64; 2]],
+        centre: [f64; 2],
+        candidates: &[u32],
+        body: f64,
+        shift: f64,
+        share: f64,
+    ) -> (f64, f64) {
+        let all: Vec<u32> = if candidates.is_empty() {
+            (0..self.segments.len() as u32).collect()
+        } else {
+            candidates.to_vec()
+        };
+        let mut area = [centre[0], centre[1], centre[0], centre[1]];
+        let mut spread = 0.0f64;
+        for p in points {
+            area = [
+                area[0].min(p[0]),
+                area[1].min(p[1]),
+                area[2].max(p[0]),
+                area[3].max(p[1]),
+            ];
+            spread = spread.max(libm::hypot(p[0] - centre[0], p[1] - centre[1]));
+        }
+        let extent = area.iter().fold(body + spread, |m, v| m.max(v.abs()));
+        let room = self.rounding(extent);
+        let reach = shift + room;
+        let nearest = all
+            .iter()
+            .map(|&i| self.distance2(i as usize, centre))
+            .fold(f64::INFINITY, f64::min)
+            .sqrt();
+        // A segment further from the points' box than this neither may hold a point nor lies
+        // within `2 reach` of a point's nearest (within `spread` of the centre's).
+        let limit = (body + reach).max(nearest + spread + 2.0 * reach) + room;
+        let kept: Vec<u32> = all
+            .into_iter()
+            .filter(|&i| self.gap2(i as usize, area) <= limit * limit)
+            .collect();
+        let (mut most, mut least) = (0.0f64, f64::INFINITY);
+        for p in points {
+            let (m, k) = self.slide_under(*p, &kept, body, shift, share);
+            most = most.max(m);
+            least = least.min(k);
+        }
+        (most, least)
     }
 
     /// Cuts `candidates` (all segments when empty) down to the ones [`Centreline::keys_under`]
