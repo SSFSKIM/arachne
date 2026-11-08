@@ -14,11 +14,15 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from arachne import Circle, ShowPassingFlash, Square, Transform
+from arachne import Circle, ShowPassingFlash, Square, Transform, VGroup, linear
 from arachne.mobject.mobject import Mobject
+from arachne.mobject.placement import Placement
 from arachne.mobject.types.vectorized_mobject import VMobject
+from arachne.mobject.values import Paint
 from arachne.timeline import vectorized
-from arachne.timeline.record import RegisteredState
+from arachne.timeline.draw import Drawing
+from arachne.timeline.record import IDENTITY_FIELDS, RegisteredState
+from arachne.timeline.routes import _resolve
 from arachne.utils.bezier import integer_interpolate, interpolate, partial_bezier_points
 
 from . import route_scenes, vectorized_scenes
@@ -42,12 +46,17 @@ def keys(scene) -> list[tuple[Fraction, bytes]]:
 
 
 def same_value(a, b) -> bool:
-    """Whether two values an animation's state holds are the same, across two
-    executions: arrays and numbers by type and bytes, containers item by item,
+    """Whether two values a recorded state holds are the same, across two
+    executions: arrays by type, dtype and bytes, numbers by type and repr,
+    a paint field by field, a placement by its key, containers item by item,
     functions by their code, any other object by its type.
     """
     if type(a) is not type(b):
         return False
+    if isinstance(a, Paint):
+        return same_value(a.fields(), b.fields())
+    if isinstance(a, Placement):
+        return a.key == b.key
     if isinstance(a, np.ndarray):
         if a.dtype != b.dtype or a.shape != b.shape:
             return False
@@ -76,20 +85,80 @@ def animation_states(scene) -> list[tuple[int, list[tuple[str, dict]]]]:
     ]
 
 
+def node_values(record, capture) -> list[tuple[str, list[tuple[str, object]]]]:
+    """Every node a capture reaches, with each value its state holds (none
+    naming an object of this process).
+    """
+    return [
+        (
+            type(mob).__name__,
+            [
+                (key, value)
+                for key, value in zip(state.keys, state.values, strict=True)
+                if key not in IDENTITY_FIELDS
+            ],
+        )
+        for mob, state in RegisteredState(record, capture).nodes()
+    ]
+
+
+def recorded_values(scene) -> list:
+    """What every drawn capture of the scene's record, and its final state,
+    holds, value by value.
+    """
+    record = scene.timeline.ensure_record()
+    return [node_values(record, c) for c in [*record._captures, record.final]]
+
+
+def evaluated_values(session, t: Fraction) -> list:
+    """What every node the answer at ``t`` reaches holds once the record has
+    brought it there: for an instant between captures, the play evaluated
+    from its last capture.
+    """
+    record = session.record
+    resolved = _resolve(record, t)
+    capture = resolved.capture
+    with Drawing(record) as drawing:
+        drawing.show(capture, capture.draw_list())
+        if resolved.prepare is not None:
+            resolved.prepare(drawing)
+        seen: set[int] = set()
+        found = []
+        for root in capture.draw_list():
+            for mob in root.get_family():
+                if id(mob) in seen:
+                    continue
+                seen.add(id(mob))
+                found.append(
+                    (
+                        type(mob).__name__,
+                        [
+                            (key, value)
+                            for key, value in vars(mob).items()
+                            if key not in IDENTITY_FIELDS
+                        ],
+                    )
+                )
+    return found
+
+
 def vectorized_plays(scene) -> list[bool]:
     return [play.vectorized for play in scene.timeline.ensure_record().plays]
 
 
 def assert_same_as_scalar(scene_class, fps: int = 15, **settings):
     """Render ``scene_class`` with the levers on and with them off, and
-    require equal content keys at every capture, the same animation states
-    kept at each, and equal bytes at every frame. Returns the levers-on
-    scene.
+    require equal content keys at every capture, every recorded value the
+    same in type and bytes, the same animation states kept at each, and
+    equal bytes at every frame. Returns the levers-on scene.
     """
     on_scene, on = render(scene_class, fps, **settings)
     off_scene, off = render(scene_class, fps, speed_levers=False)
     assert not any(vectorized_plays(off_scene))
     assert keys(on_scene) == keys(off_scene)
+    on_values, off_values = recorded_values(on_scene), recorded_values(off_scene)
+    for index, (a, b) in enumerate(zip(on_values, off_values, strict=True)):
+        assert same_value(a, b), f"capture {index}"
     assert same_value(animation_states(on_scene), animation_states(off_scene))
     assert len(on) == len(off)
     for index, (a, b) in enumerate(zip(on, off, strict=True)):
@@ -270,6 +339,7 @@ def test_an_instant_between_captures_is_the_scalar_evaluation_there(session_of, 
         state_on, state_off = on.state_at(t), off.state_at(t)
         assert state_on.answer == "analytic"
         assert state_on.nodes == state_off.nodes, t
+        assert same_value(evaluated_values(on, t), evaluated_values(off, t)), t
         assert np.asarray(on.frame(t)).tobytes() == np.asarray(off.frame(t)).tobytes()
 
 
@@ -371,3 +441,35 @@ def test_at_alpha_one_a_blend_takes_the_end_style_itself():
         leaf, end = ended(levers)
         for name in ("fill_rgbas", "stroke_rgbas", "sheen_direction"):
             assert getattr(leaf, name) is getattr(end, name), (levers, name)
+
+
+def _blended(levers: bool, lag: bool, at: Fraction) -> list[Paint]:
+    """A Transform's leaves' paints at ``at``: from the plan, or interpolated."""
+    start, end = Square(), Circle()
+    for mob, width in ((start, 1.2), (end, 3.7)):
+        mob.stroke_width = mob.background_stroke_width = mob.sheen_factor = width
+    if lag:
+        start, end = VGroup(start, start.copy()), VGroup(end, end.copy())
+        for mob in (*start, *end):
+            mob.stroke_width = mob.background_stroke_width = mob.sheen_factor = 2
+    transform = Transform(start, end, rate_func=linear, lag_ratio=0.5 if lag else 0)
+    transform.begin()
+    if levers:
+        instants = [Fraction(0), Fraction(1, 4)]
+        vector = vectorized.plan([transform], instants, Fraction(0))
+        assert vector is not None
+        assert vector.install(transform, at)
+    else:
+        transform.interpolate(float(at))
+    return [leaf._paint for leaf in transform.mobject.family_members_with_points()]
+
+
+@pytest.mark.parametrize(
+    ("lag", "at"),
+    [(False, Fraction(1, 4)), (True, Fraction(0)), (True, Fraction(1, 4))],
+)
+def test_a_blends_style_numbers_have_the_scalar_paths_types(lag, at):
+    """A float mixed stays a float, and an int mixed at a clamped zero stays
+    an int, as CE's expression leaves them.
+    """
+    assert same_value(_blended(True, lag, at), _blended(False, lag, at))

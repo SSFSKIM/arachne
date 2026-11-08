@@ -6,10 +6,12 @@ A trusted play (route 1) is a known function of the instant
 partial reveal (the two terms :meth:`.PlayRecord.leaf_terms` describes), or
 writes nothing, and its leaves are composed by CE's group timing, the route
 computes every leaf's value at every instant it will keep before it
-evaluates the first: each animation's alphas through its rate function's
-array twin (:func:`.rates.array_twin`), the groups' part alphas and the
-leaves' sub-alphas by CE's own rules, and the points and style a leaf takes
-by CE's own formulas. Every expression is CE's, in CE's operation order, one
+evaluates the first: the alphas each animation and part receives, by CE's
+own rules (a group's time and a blend's sub-alphas by the animation's own
+calls, one instant at a time, so that each number of the record is CE's in
+type as well as value; a reveal's sub-alphas, which the record does not
+keep, through the rate function's array twin, :func:`.rates.array_twin`),
+and the points and style a leaf takes by CE's own formulas. Every expression is CE's, in CE's operation order, one
 element at a time (numpy fuses no multiply and add; the reveal's portion
 matrices are applied by numpy's matrix product over a stack of curves,
 which multiplies each curve as CE's call on it does), so each value is bit
@@ -146,12 +148,11 @@ def _flash_bounds(animation: Animation, alphas: np.ndarray) -> tuple[Any, Any]:
 class _Group:
     """A group whose interpolation is CE's ``AnimationGroup.interpolate``."""
 
-    __slots__ = ("animation", "parts", "twin")
+    __slots__ = ("animation", "parts")
 
-    def __init__(self, animation: Animation, parts: list[Any], twin: Any) -> None:
+    def __init__(self, animation: Animation, parts: list[Any]) -> None:
         self.animation = animation
         self.parts = parts
-        self.twin = twin
 
 
 class _Leaf:
@@ -214,8 +215,7 @@ def _node(animation: Animation) -> _Group | _Leaf | str:
     if isinstance(animation, AnimationGroup):
         if cls.interpolate is not AnimationGroup.interpolate:
             return f"{name} interpolates its parts its own way"
-        twin = _twin(animation.rate_func)
-        if twin is None:
+        if _twin(animation.rate_func) is None:
             return f"{name}'s rate function has no array twin"
         parts: list[Any] = []
         for part in animation.animations:
@@ -223,7 +223,7 @@ def _node(animation: Animation) -> _Group | _Leaf | str:
             if isinstance(node, str):
                 return node
             parts.append(node)
-        return _Group(animation, parts, twin)
+        return _Group(animation, parts)
     if cls.interpolate in (Wait.interpolate, Add.interpolate):
         return _Leaf(animation, None)
     flips = {Animation.interpolate: False, TransformFromCopy.interpolate: True}
@@ -389,9 +389,9 @@ class VectorPlan:
         positions = np.arange(count)
         for animation, node in zip(animations, nodes, strict=True):
             steps: list[list[tuple[Any, ...]]] = [[] for _ in range(count)]
-            alphas = np.array(
-                [_alpha(instant - start, animation.run_time) for instant in instants]
-            )
+            alphas = [
+                _alpha(instant - start, animation.run_time) for instant in instants
+            ]
             _evaluate(node, alphas, positions, steps)
             self._steps[id(animation)] = steps
         #: The last snapshot of each animation, with what its ``__dict__``
@@ -458,13 +458,14 @@ def _holds(held: tuple[Any, ...], own: dict[str, Any]) -> bool:
 
 def _evaluate(
     node: _Group | _Leaf,
-    alphas: np.ndarray,
+    alphas: Sequence[Any],
     positions: np.ndarray,
     steps: list[list[tuple[Any, ...]]],
 ) -> None:
     """Append to ``steps[position]`` what interpolating ``node``'s animation
-    at each alpha of ``alphas`` writes, the alpha it receives at the kept
-    instant ``position`` (both in order).
+    at each of ``alphas`` writes, the alpha it receives at the kept instant
+    ``position`` (both in order), each the very number CE's call receives:
+    its type as well as its value.
     """
     if isinstance(node, _Group):
         _evaluate_group(node, alphas, positions, steps)
@@ -473,34 +474,45 @@ def _evaluate(
         return
     animation = node.animation
     if node.flip:
-        alphas = 1 - alphas
+        alphas = [1 - alpha for alpha in alphas]
     count = len(node.families)
+    if node.kind == "blend":
+        # A blend's style numbers take the type of the sub-alpha that mixes
+        # them (a rate function returns a float, a numpy float, or the int
+        # its unit interval clamps to), so each is CE's own, at each instant.
+        sub_alpha = animation.get_sub_alpha
+        for index, family in enumerate(node.families):
+            subs = [sub_alpha(alpha, index, count) for alpha in alphas]
+            _blends(family, subs, positions, steps)
+        return
     lag = animation.lag_ratio
     full_length = (count - 1) * lag + 1
-    raw = (alphas * full_length)[:, None] - np.arange(count) * lag
+    values = np.array(alphas, dtype=float) * full_length
+    raw = values[:, None] - np.arange(count) * lag
     if animation.reverse_rate_function:
         raw = 1 - raw
-    subs = np.asarray(node.twin(raw.ravel()), dtype=float).reshape(raw.shape)
+    twins = np.asarray(node.twin(raw.ravel()), dtype=float).reshape(raw.shape)
     for index, family in enumerate(node.families):
-        if node.kind == "blend":
-            _blends(family, subs[:, index], positions, steps)
-        else:
-            lower, upper = node.bounds(animation, subs[:, index])  # type: ignore[misc]
-            _reveals(family, lower, upper, positions, steps)
+        lower, upper = node.bounds(animation, twins[:, index])  # type: ignore[misc]
+        _reveals(family, lower, upper, positions, steps)
 
 
 def _evaluate_group(
     node: _Group,
-    alphas: np.ndarray,
+    alphas: Sequence[Any],
     positions: np.ndarray,
     steps: list[list[tuple[Any, ...]]],
 ) -> None:
     """CE's ``AnimationGroup.interpolate`` at each alpha in turn: the group
-    time, which parts it interpolates, at what alpha each, and the state it
-    is left holding, from the state it holds now.
+    time (by its own rate function, once per instant: the time a group is
+    left holding is a number of the record), which parts it interpolates, at
+    what alpha each, and the state it is left holding, from the state it
+    holds now.
     """
     group = node.animation
-    times = node.twin(alphas) * group.max_end_time  # type: ignore[attr-defined]
+    rate, length = group.rate_func, group.max_end_time  # type: ignore[attr-defined]
+    held = [rate(alpha) * length for alpha in alphas]
+    times = np.array(held, dtype=float)
     timings = group.anims_with_timings  # type: ignore[attr-defined]
     starts, ends = timings["start"], timings["end"]
     before = np.empty(len(times))
@@ -521,26 +533,29 @@ def _evaluate_group(
     for j, part in enumerate(node.parts):
         mask = updated[:, j]
         if mask.any():
-            _evaluate(part, subs[mask, j], positions[mask], steps)
+            # CE hands each part an element of its numpy array of sub-alphas.
+            _evaluate(part, list(subs[mask, j]), positions[mask], steps)
     for m, position in enumerate(positions):
         steps[position].append(
-            (_GROUP, group, times[m], begun[m].copy(), finished[m].copy())
+            (_GROUP, group, held[m], begun[m].copy(), finished[m].copy())
         )
 
 
 def _blends(
     family: tuple[Any, ...],
-    subs: np.ndarray,
+    alphas: Sequence[Any],
     positions: np.ndarray,
     steps: list[list[tuple[Any, ...]]],
 ) -> None:
     """``leaf.interpolate(start, end, sub)`` on CE's straight path at each
-    sub-alpha: the points, then each style field as ``interpolate_color``
-    mixes it (``end``'s own value at alpha 1).
+    sub-alpha of ``alphas``: the points and style arrays for all at once,
+    then each style number by CE's expression at its own sub-alpha
+    (``end``'s own value at alpha 1).
     """
     from arachne.mobject.values import FrozenPoints, Paint, adopt
 
     leaf, start, end = family
+    subs = np.array(alphas, dtype=float)
     points = adopt(blend(start.points, end.points, subs), FrozenPoints)
     first, second = start._paint.__dict__, end._paint.__dict__
     columns: dict[str, Any] = {}
@@ -548,7 +563,7 @@ def _blends(
         if kind is not None:
             columns[name] = adopt(blend(first[name], second[name], subs), kind)
     for m, position in enumerate(positions):
-        alpha = subs[m]
+        alpha = alphas[m]
         fields = {}
         for name in Paint.FIELDS:
             if alpha == 1.0:
