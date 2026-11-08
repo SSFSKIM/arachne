@@ -218,6 +218,8 @@ def _fallback(x: Any, memo: dict[int, Any]) -> Any:
 
 def _copy(x: Any, memo: dict[int, Any]) -> Any:
     """``copy.deepcopy(x, memo)``."""
+    if type(x) in _ATOMIC:
+        return x
     d = id(x)
     y = memo.get(d, _nil)
     if y is not _nil:
@@ -271,22 +273,22 @@ def _copy_builtin(x: Any, cls: type, memo: dict[int, Any]) -> Any:
         memo[id(x)] = y
         append = y.append
         for a in x:
-            append(a if id(a) not in memo and type(a) in atomic else _copy(a, memo))
+            append(a if type(a) in atomic else _copy(a, memo))
         return y
     if cls is dict and copier is _COPY_DICT:
         y = {}
         memo[id(x)] = y
         for key, value in x.items():
             # The value first, as copy's ``y[deepcopy(key)] = deepcopy(value)``.
-            if id(value) in memo or type(value) not in atomic:
+            if type(value) not in atomic:
                 value = _copy(value, memo)
-            if id(key) in memo or type(key) not in atomic:
+            if type(key) not in atomic:
                 key = _copy(key, memo)
             y[key] = value
         return y
     if cls is tuple and copier is _COPY_TUPLE:
         items = [
-            a if id(a) not in memo and type(a) in atomic else _copy(a, memo) for a in x
+            a if type(a) in atomic else _copy(a, memo) for a in x
         ]
         try:
             return memo[id(x)]
@@ -308,7 +310,7 @@ def _copy_mobject(mob: _M, memo: dict[int, Any]) -> _M:
     memo[id(mob)] = result
     atomic = _ATOMIC
     for k, v in mob.__dict__.items():
-        if id(v) in memo or type(v) not in atomic:
+        if type(v) not in atomic:
             v = _copy(v, memo)
         setattr(result, k, v)
     result.original_id = str(id(mob))
