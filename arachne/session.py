@@ -52,7 +52,7 @@ from .timeline.admission import (
     whole_line,
 )
 from .timeline.clock import exact
-from .timeline.draw import Drawing
+from .timeline.draw import Drawing, DrawReuse
 from .timeline.execution import (
     Divergence,
     ExecutionSummary,
@@ -89,6 +89,8 @@ if TYPE_CHECKING:
 
 _MODULE_NUMBERS = itertools.count()
 _T = TypeVar("_T")
+#: How many drawn frames a session keeps for reuse.
+SESSION_DRAWS = 4
 
 
 def _under_its_settings(method: Callable[..., _T]) -> Callable[..., _T]:
@@ -153,6 +155,9 @@ class Session:
         self._recorder = recorder
         self._quality: str | None = None
         self._static: tuple[int, str | None, PixelArray | None] | None = None
+        #: The frames it drew last, which a frame drawn from the same
+        #: recorded state reuses (``draw_reuse``): of this execution only.
+        self.draws = DrawReuse(SESSION_DRAWS)
         camera = scene.renderer.camera
         self._executed_shape = (camera.pixel_height, camera.pixel_width)
         #: Where the session's execution was found to differ from another of
@@ -432,11 +437,19 @@ class Session:
         size), and what a restore's callbacks read, are the session's.
         """
         freeze_mapping_centre(record)
-        with Drawing(record, draw_path=self.draw_path) as drawing:
+        reuse = self.draws if global_config.draw_reuse else None
+        with Drawing(record, draw_path=self.draw_path, reuse=reuse) as drawing:
             return [
                 _draw(drawing, found, lambda play: static(drawing, play))
                 for found in answers
             ]
+
+    @_under_its_settings
+    def clear_draws(self) -> None:
+        """Keep none of the frames drawn so far: the next frame asked at any
+        instant is drawn, not reused (a timing that asks for drawing).
+        """
+        self.draws.clear()
 
     @_under_its_settings
     def answers(
@@ -566,6 +579,7 @@ class Session:
         self._executed_shape = (camera.pixel_height, camera.pixel_width)
         self._quality = None
         self._static = None
+        self.draws = DrawReuse(SESSION_DRAWS)
 
     def _static_picture(self, drawing: Drawing, play: Any) -> PixelArray | None:
         """The play's static picture, kept for the next frame of the same play."""
@@ -677,6 +691,7 @@ class Session:
         sys.modules.pop(self.module.__name__, None)
         del self.scene, self.record, self.module, self._recorder
         self._summary = self._static = None
+        self.draws.clear()
 
 
 def resize(camera: Any, height: int, width: int) -> None:

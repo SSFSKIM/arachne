@@ -323,6 +323,75 @@ lifted.
   cache, which fills it) as a fresh process (a session) or as the scene's first execution (a render executed again)
   found it, so two executions of one source agree. Direction: none while CE's behaviour is the reference.
 
+## The typesetting cache (`arachne/utils/typeset_cache.py`, `arachne/utils/typeset_fonts.py`)
+
+- **A Tex key knows the files a compile may read only from the outside.** It covers:
+  - the whole source, the compilers with their `--version` output, and `dvisvgm --version=yes` (its libraries);
+  - for PDF output, `mutool` and `gs`;
+  - the digest of the distribution's package database (`tlpkg/texlive.tlpdb` under `kpsewhich`'s
+    `TEXMFROOT`);
+  - the environment's TeX search variables (`TEXINPUTS` and the other `TEX*`, `*INPUTS` and `*FONTS` names);
+  - for XeLaTeX and LuaLaTeX, the system fonts `fontspec` can load: the digest of fontconfig's list (`fc-list`,
+    each font's file, index and version, sorted, asked once per process) and `OSFONTDIR`;
+  - the working directory, with these files there:
+    - every file of a suffix only TeX reads (`.sty .cls .clo .fd .def .ltx .tfm .vf .pfb .pfa .afm .enc .map`),
+      whatever its name, so a package loaded in turn (a local `amsbsy.sty` under `amsmath`) or a size option
+      file (`size12.clo`) counts;
+    - under XeLaTeX and LuaLaTeX, every `.otf`, `.ttf` and `.ttc` (fonts loaded by file name);
+    - the `.cfg` of each package and class the source loads (`\usepackage`, `\RequirePackage`,
+      `\documentclass`, `\LoadClass`), by name, since `.cfg` names are common outside TeX;
+    - each file the source reads through `\input`, `\include`, `\import`/`\subimport` (directory and file),
+      `\inputminted` (its file argument), `\includegraphics` (an extensionless name with the usual graphics
+      suffixes), `\includesvg`, `\includepdf`, `\includestandalone`, `\lstinputlisting`, `\verbatiminput`,
+      `\InputIfFileExists` and `\IfFileExists`.
+
+  Known misses, each a file the compile reads that the key does not cover:
+  - a file reached through a directory those variables name, or in the trees `TEXMFHOME` and `TEXMFLOCAL`
+    (packages installed outside the distribution's database);
+  - a `.cfg`, `.tex` or `.bib` beside the process that a package reads in turn under a name the source does not
+    use;
+  - `\usepackage`, `\documentclass` and `\RequirePackage` naming a path in a subdirectory;
+  - a stream opened for `\read`, and the packages that read data files that way (`datatool`, `pgfplotstable`,
+    `csvsimple`);
+  - fontspec's `Path=` option, and fonts a process installs after its first XeLaTeX or LuaLaTeX key;
+  - `\special{psfile=…}` and other driver specials naming a file;
+  - `\graphicspath`, which moves where `\includegraphics` and `\includesvg` look;
+  - a brace-less `\input file`, and any file named through a macro rather than a literal argument.
+
+  Where the key cannot see what a compile reads, it names the host (its hostname, `/etc/machine-id` and boot id,
+  where it has them; on macOS only the hostname): a distribution with no `texlive.tlpdb`, and XeLaTeX or LuaLaTeX
+  where `fc-list` is missing or, on macOS, is not what they load fonts through (XeTeX asks CoreText there).
+  Direction: compile with `-recorder` and key each file by the files its `.fls` lists, read on the next lookup (a
+  file is kept with the list of what it read). That removes every miss above at once, and is the fix if hosts with
+  local TeX trees, or sources that read files beside the process, ever share one directory.
+- **The fonts a Text is shaped with are read through Pango's public structs by `ctypes`.** Each span is laid out
+  as ManimPango lays it out, and each run's font is read from `PangoItem.analysis.font`. The digest covers the
+  font's data as HarfBuzz holds it (the font file, else its tables), cached by description, `head` table and
+  size.
+  - The field offsets are Pango's public ABI, checked at load on a one-character English layout: its one run's
+    item, then its language (an interned pointer, compared with the layout's without following it), before its
+    font is followed. Where that check fails, or ManimPango exports none of the symbols, Text keys by the host and
+    is not shared across hosts. Each font is held by a reference while its layout is read, so a freed font's
+    address never names another.
+  - The first Text in a process pays for loading and for hashing each font it uses: about 0.8 s on macOS for
+    Latin plus a CJK fallback font, then about 0.1 ms per Text.
+- **Contended strings are typeset more than once, and failed compiles leave scratch.**
+  - Writers take no lock. Two processes that miss one string at once both compile it, and the later rename
+    replaces the earlier file with the same bytes
+    (`tests/utils/test_typeset_cache.py::test_a_process_never_reads_an_svg_another_is_still_writing`).
+  - A compile that fails keeps its scratch directory, with its log, under `scratch/`, and nothing removes it.
+
+  Owner: the cache's maintainer, before a shared directory is relied on. Direction: remove scratch
+  directories older than a day as a directory is opened, and take a lock file per key around a miss if contended
+  starts ever cost.
+- **Without a typesetting directory, SVGs are parsed as CE parses them, racing.** `SVGMobject.generate_mobject`
+  writes the modified SVG to `<name>_.svg` beside the file, parses it and removes it. Two processes loading one
+  SVG (an asset shared by renders running at once) remove each other's copy, giving `FileNotFoundError`, or parse
+  it half written. A directory the process cannot write to fails too. With `typeset_dir` named, the same bytes
+  are parsed from memory
+  (`tests/utils/test_typeset_cache.py::test_an_svg_is_parsed_through_no_file_another_process_shares`).
+  Direction: parse from memory always, once CE's behaviour stops being the reference for this.
+
 ## The session server (`arachne/server/`)
 
 - **A render at another pixel aspect than its session's execution is not checked.** The camera keeps its configured

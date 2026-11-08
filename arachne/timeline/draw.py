@@ -27,9 +27,17 @@ runs, keeps CE's picture under it.
 
 from __future__ import annotations
 
-__all__ = ["CameraExtras", "Drawing", "LiveFrames", "camera_nodes", "static_list"]
+__all__ = [
+    "CameraExtras",
+    "DrawReuse",
+    "Drawing",
+    "LiveFrames",
+    "camera_nodes",
+    "static_list",
+]
 
 import operator
+from collections import deque
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
@@ -527,6 +535,108 @@ def _one_batch(camera: Camera, a: Mobject, b: Mobject) -> bool:
     return bool(image) and bool(image == b.get_background_image())
 
 
+@dataclass(frozen=True, eq=False)
+class _DrawKey:
+    """What a frame drawn from a capture is drawn from: the camera, its pixel
+    size and the configured one (which a stroke's thickness is drawn from,
+    ``Camera.adjusted_thickness``, and the scene's code can change between
+    plays), the draw path and static layer, the camera's recorded inputs, the
+    scene's roots, foreground and moving lists there, the play's static
+    list and whether its static picture holds, and the version of every
+    mobject the frame reaches (the camera's own included), in walk order.
+    Two keys match when each of these is the same object (the camera's
+    inputs: the same values, :meth:`CameraExtras.same`), never by content:
+    a mobject's version changes whenever anything it holds does.
+    """
+
+    camera: Camera
+    shape: tuple[int, int]
+    configured: tuple[int, int]
+    draw_path: str
+    static_layer: bool
+    extras: CameraExtras | None
+    roots: tuple[Mobject, ...]
+    foreground: tuple[Mobject, ...]
+    moving: tuple[Mobject, ...]
+    static: tuple[Mobject, ...]
+    holds: bool
+    states: tuple[NodeState, ...]
+
+    def matches(self, other: _DrawKey) -> bool:
+        return (
+            self.camera is other.camera
+            and self.shape == other.shape
+            and self.configured == other.configured
+            and self.draw_path == other.draw_path
+            and self.static_layer == other.static_layer
+            and self.holds == other.holds
+            and _same_items(self.states, other.states)
+            and _same_items(self.roots, other.roots)
+            and _same_items(self.foreground, other.foreground)
+            and _same_items(self.moving, other.moving)
+            and _same_items(self.static, other.static)
+            and (
+                self.extras is other.extras
+                or (
+                    self.extras is not None
+                    and other.extras is not None
+                    and self.extras.same(other.extras)
+                )
+            )
+        )
+
+
+class DrawReuse:
+    """The last frames drawn from captures, at most ``capacity`` of them,
+    each with what it was drawn from (:class:`_DrawKey`): a frame drawn
+    from the same takes those pixels instead of being drawn (the option
+    ``draw_reuse``). A render keeps one, the frame before; a session a
+    few, which :meth:`clear` empties.
+
+    It holds the versions it keys by, so none is let go while it is kept,
+    and a key made from one execution's record never matches another's.
+    ``drawn`` counts the frames drawn while reuse was on, ``reused`` those
+    that took a kept frame's pixels.
+    """
+
+    def __init__(self, capacity: int) -> None:
+        self.capacity = capacity
+        self._kept: deque[tuple[_DrawKey, PixelArray]] = deque()
+        self.drawn = 0
+        self.reused = 0
+
+    def __len__(self) -> int:
+        return len(self._kept)
+
+    def clear(self) -> None:
+        """Keep no frame: the next frame of every key is drawn."""
+        self._kept.clear()
+
+    def find(self, key: _DrawKey) -> PixelArray | None:
+        """The pixels kept for ``key``, if any, now the last let go."""
+        kept = self._kept
+        for index in range(len(kept) - 1, -1, -1):
+            found, pixels = kept[index]
+            if found.matches(key):
+                if index != len(kept) - 1:
+                    del kept[index]
+                    kept.append((found, pixels))
+                self.reused += 1
+                return pixels
+        return None
+
+    def keep(self, key: _DrawKey, pixels: PixelArray) -> None:
+        """Keep a copy of ``pixels``, drawn from ``key``, letting the oldest
+        frame go when full.
+        """
+        self.drawn += 1
+        kept = pixels.copy()
+        kept.flags.writeable = False
+        self._kept.append((key, kept))
+        while len(self._kept) > self.capacity:
+            self._kept.popleft()
+
+
 class Drawing:
     """Draws captures of a record with the scene's camera.
 
@@ -544,6 +654,17 @@ class Drawing:
     the frame in XF and draws it from that description alone. Its frames are
     the frame's static list then its moving list, as with the static layer
     off, from a stream kept per record and process across drawings.
+
+    ``reuse`` (a :class:`DrawReuse`) gives a frame drawn from a capture the
+    pixels of a kept frame drawn from the same recorded state, instead of
+    drawing it; :attr:`reused` says whether the last :meth:`sample` did. A
+    frame some evaluation brings to its instant (``prepare``) holds a state
+    the record does not, and is neither kept nor taken. Only the engine's
+    flat, moving and 3D cameras reuse, as the engine made them: a
+    MultiCamera's capture also draws into its displays' cameras, and a
+    camera class of the scene's own, or a camera method the scene's code
+    replaced (:func:`~arachne.frame_ir.painter.user_camera`), runs code that
+    can read what no recorded state holds at every draw.
     """
 
     def __init__(
@@ -552,6 +673,7 @@ class Drawing:
         *,
         static_layer: bool | None = None,
         draw_path: str | None = None,
+        reuse: DrawReuse | None = None,
     ) -> None:
         from arachne import config
 
@@ -559,7 +681,7 @@ class Drawing:
             static_layer = config.static_layer
         if draw_path is None:
             draw_path = config.draw_path
-        from arachne.frame_ir.painter import camera_path, painter_for
+        from arachne.frame_ir.painter import camera_path, painter_for, user_camera
 
         self.record = record
         self.static_layer = static_layer
@@ -583,6 +705,13 @@ class Drawing:
         self._cameras_saved: dict[int, tuple[Any, tuple[Any, Any, Any, Any]]] = {}
         #: Display cameras whose picture was replaced, with what they held.
         self._pictures_saved: dict[int, tuple[Any, PixelArray]] = {}
+        if reuse is not None and (
+            not _paints_its_list(self.camera) or user_camera(self.camera) is not None
+        ):
+            reuse = None
+        self.reuse = reuse
+        #: Whether the last frame :meth:`sample` gave took a kept frame's pixels.
+        self.reused = False
 
     def __enter__(self) -> Drawing:
         return self
@@ -721,6 +850,60 @@ class Drawing:
         captures); ``instant`` is the instant the frame shows then, which a
         described frame is labelled with (by default the capture's).
         """
+        self.reused = False
+        reuse = self.reuse if prepare is None else None
+        if reuse is None:
+            return self._sample(play, capture, static, prepare, instant)
+        key = self._reuse_key(play, capture)
+        found = reuse.find(key)
+        if found is not None:
+            # The camera holds the frame, as when it is drawn.
+            self.camera.set_pixel_array(found)
+            self.reused = True
+            return found.copy()
+        pixels = self._sample(play, capture, static, None, instant)
+        reuse.keep(key, pixels)
+        return pixels
+
+    def _reuse_key(self, play: PlayRecord, capture: Capture) -> _DrawKey:
+        """What the frame at ``capture`` is drawn from (:class:`_DrawKey`)."""
+        from arachne import config
+
+        camera = self.camera
+        reached = [
+            *capture.draw_list(),
+            *capture.moving,
+            *play.static,
+            *camera_nodes(camera),
+        ]
+        holds = (
+            self.painter is None
+            and self.static_layer
+            and self._picture_holds(play, capture)
+        )
+        return _DrawKey(
+            camera,
+            (camera.pixel_height, camera.pixel_width),
+            (config.pixel_height, config.pixel_width),
+            self.draw_path,
+            self.static_layer,
+            capture.camera,
+            capture.roots,
+            capture.foreground,
+            capture.moving,
+            play.static,
+            holds,
+            tuple(state for _, state in self.record._walk(capture, reached)),
+        )
+
+    def _sample(
+        self,
+        play: PlayRecord,
+        capture: Capture,
+        static: PixelArray | None,
+        prepare: Callable[[Drawing], None] | None,
+        instant: Fraction | None,
+    ) -> PixelArray:
         targets = list(capture.moving) or capture.draw_list()
         if self.painter is not None:
             return self._paint(play, capture, targets, prepare, instant)

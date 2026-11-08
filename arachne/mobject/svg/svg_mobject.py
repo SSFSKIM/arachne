@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import os
 from pathlib import Path
 from typing import Any, Self
@@ -14,6 +15,7 @@ from arachne import logger
 from arachne.utils.color import ManimColor, ParsableManimColor
 
 from ...constants import RIGHT
+from ...utils import typeset_cache
 from ...utils.images import get_full_vector_image_path
 from ...utils.iterables import hash_obj
 from ..geometry.arc import Circle
@@ -198,12 +200,22 @@ class SVGMobject(VMobject):
         file_path = self.get_file_path()
         element_tree = ET.parse(file_path)
         new_tree = self.modify_xml_tree(element_tree)  # type: ignore[arg-type]
-        # Create a temporary svg file to dump modified svg to be parsed
-        modified_file_path = file_path.with_name(f"{file_path.stem}_{file_path.suffix}")
-        new_tree.write(modified_file_path)
-
-        svg = se.SVG.parse(modified_file_path)
-        modified_file_path.unlink()
+        if typeset_cache.directory() is None:
+            # CE's: through a file beside the SVG, which two processes
+            # loading one SVG share (see the tech-debt tracker).
+            modified_file_path = file_path.with_name(
+                f"{file_path.stem}_{file_path.suffix}"
+            )
+            new_tree.write(modified_file_path)
+            svg = se.SVG.parse(modified_file_path)
+            modified_file_path.unlink()
+        else:
+            # With a typesetting directory, whose SVGs processes share, the
+            # same bytes are parsed from memory.
+            modified = io.BytesIO()
+            new_tree.write(modified)
+            modified.seek(0)
+            svg = se.SVG.parse(modified)
 
         mobjects, mobject_dict = self.get_mobjects_from(svg)
         self.add(*mobjects)
