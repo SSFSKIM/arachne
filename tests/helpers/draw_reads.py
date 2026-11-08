@@ -874,6 +874,12 @@ class Tracer:
             if key == name:
                 if name in own and _same_value(own[name], value):
                     return None
+                if _camera_code_is_the_scene_s(camera):
+                    # The scene's camera code runs at each draw, as CE runs
+                    # it, and may change what the camera holds as it draws:
+                    # the frame is that code's, which the record does not
+                    # vouch for (CAMERA_REPLACED) and reuses nothing.
+                    return None
                 return "a camera input that no longer holds its recorded value"
         if name in _INSTALLED_CAMERA_FIELDS:
             return None
