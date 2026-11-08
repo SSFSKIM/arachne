@@ -548,10 +548,11 @@ def keeping_families(animations: Iterable[Animation]) -> Iterator[None]:
     every :meth:`~.Animation.interpolate_mobject`.
 
     Sound only where nothing changes a family's members while the block
-    runs, which is what admits a trusted play: no updater or callback runs,
-    and no two parts that run at once write the same mobject. A part that
-    begins in the block (a ``Succession``'s next) zips again, since its
-    mobjects are new copies.
+    runs: nothing but the animations runs (no updater, callback or code of
+    the scene's own, which :class:`.TrustedRoute` checks before it keeps a
+    play's families), and no two parts that run at once write the same
+    mobject. A part that begins in the block (a ``Succession``'s next) zips
+    again, since its mobjects are new copies.
     """
     global _kept_families
     previous = _kept_families

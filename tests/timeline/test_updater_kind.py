@@ -1,6 +1,7 @@
-"""Two answers read once instead of at every call, under ``vectorize_trusted``:
-whether an updater takes ``dt``, and the families a trusted play's
-animations zip. Each must be the answer a read at that call would give.
+"""Two answers read once instead of at every call: whether an updater takes
+``dt`` (while the speed levers are on), and the families a trusted play's
+animations zip (under ``vectorize_trusted``). Each must be the answer a read
+at that call would give.
 """
 
 from __future__ import annotations
@@ -17,8 +18,11 @@ import pytest
 
 from arachne import (
     RIGHT,
+    AnimationGroup,
+    Axes,
     Circle,
     Create,
+    DecimalNumber,
     Dot,
     FadeIn,
     LaggedStart,
@@ -26,11 +30,15 @@ from arachne import (
     Square,
     Succession,
     Transform,
+    VGroup,
+    Wait,
+    linear,
     tempconfig,
 )
 from arachne.animation import animation as animation_module
 from arachne.animation.animation import keeping_families, zipped_families
 from arachne.animation.transform import Transform as TransformClass
+from arachne.lint.bridge import watch
 from arachne.mobject.mobject import Mobject
 from arachne.mobject.updater_kind import takes_dt
 
@@ -291,6 +299,15 @@ def test_across_a_sixty_frame_play_each_updater_is_read_once(reads):
     assert [reads[u] for u in scene.read_updaters] == [1, 1]
 
 
+def test_across_a_sixty_frame_play_with_only_vectorize_trusted_off_each_is_read_once(
+    reads,
+):
+    # The kind answers to the master switch alone.
+    scene, frames = render(Integrates, 60, vectorize_trusted=False)
+    assert len(frames) == 60
+    assert [reads[u] for u in scene.read_updaters] == [1, 1]
+
+
 def test_across_a_sixty_frame_play_with_the_levers_off_each_call_reads(reads):
     scene, frames = render(Integrates, 60, speed_levers=False)
     assert all(reads[u] >= 60 for u in scene.read_updaters)
@@ -346,6 +363,20 @@ def test_a_trusted_play_zips_its_families_once_while_it_runs():
     with zips_taken() as taken:
         render(Morphs, 60, speed_levers=False)
     assert taken[0] == 62
+    with zips_taken() as taken:
+        render(Morphs, 60, vectorize_trusted=False)
+    assert taken[0] == 62
+
+
+def test_a_trusted_play_that_runs_the_scenes_code_zips_at_every_frame():
+    for scene_class in SCENE_CODE_SCENES:
+        with zips_taken() as on:
+            scene, _ = render(scene_class, 15)
+        with zips_taken() as off:
+            render(scene_class, 15, speed_levers=False)
+        routes = [play.route for play in scene.timeline.ensure_record().plays]
+        assert "trusted" in routes, (scene_class.__name__, routes)
+        assert on[0] == off[0], scene_class.__name__
 
 
 def same(left: list[tuple], right: list[tuple]) -> bool:
@@ -389,10 +420,94 @@ class Staggered(Scene):
         self.play(LaggedStart(*(FadeIn(d) for d in dots), lag_ratio=0.5), run_time=1)
 
 
+class CounterMoves(Scene):
+    """A trusted play whose frame hook changes its mobject's members: a
+    number shifted while the scene's ``update_to_time`` counts into it.
+    """
+
+    def construct(self):
+        self.count = DecimalNumber(1, num_decimal_places=0)
+        self.add(self.count)
+        self.play(self.count.animate.shift(2 * RIGHT), run_time=0.5, rate_func=linear)
+
+    def update_to_time(self, t):
+        super().update_to_time(t)
+        if hasattr(self, "count") and self.count.number < 9:
+            self.count.set_value(self.count.number + 1)
+
+
+class GroupLoses(Scene):
+    """A trusted play whose frame hook takes a member out of the group it
+    creates.
+    """
+
+    def construct(self):
+        self.group = VGroup(Square().shift(2 * RIGHT), Square().shift(-2 * RIGHT))
+        self.play(Create(self.group), run_time=1, rate_func=linear)
+
+    def update_to_time(self, t):
+        super().update_to_time(t)
+        group = getattr(self, "group", None)
+        if group is not None and t > 0.3 and len(group) == 2:
+            group.remove(group[0])
+
+
+class WatchLoses(Scene):
+    """A trusted play beside a watched function that takes a member out of
+    the group the play creates.
+    """
+
+    def construct(self):
+        axes = Axes()
+        group = VGroup(Square().shift(2 * RIGHT), Square().shift(-2 * RIGHT))
+        reads = [0]
+
+        def point():
+            reads[0] += 1
+            if reads[0] == 6 and len(group) == 2:
+                group.remove(group[0])
+            return axes.c2p(0, 0)
+
+        watch("axes.outside", point, reference=axes)
+        self.play(Create(group), run_time=1, rate_func=linear)
+
+
+class AddLoses(Scene):
+    """A trusted play whose part begins mid-play and calls the scene's own
+    ``add``, which takes a member out of a group another part creates.
+    """
+
+    def construct(self):
+        self.group = VGroup(Square().shift(2 * RIGHT), Square().shift(-2 * RIGHT))
+        self.play(
+            AnimationGroup(Create(self.group), Succession(Wait(0.4), FadeIn(Dot()))),
+            run_time=1,
+            rate_func=linear,
+        )
+
+    def add(self, *mobjects):
+        group = getattr(self, "group", None)
+        if (
+            group is not None
+            and len(group) == 2
+            and self.animations
+            and any(type(m) is Dot for m in mobjects)
+        ):
+            group.remove(group[0])
+        return super().add(*mobjects)
+
+
+#: Scenes whose trusted plays run the scene's code while they run.
+SCENE_CODE_SCENES = (CounterMoves, GroupLoses, WatchLoses, AddLoses)
+
 FRAME_SCENES: list[Any] = [
     *(pytest.param(case.values[0], id=case.id) for case in CASES),
     pytest.param(Staggered, id="parts_begin_while_running"),
     pytest.param(Integrates, id="updaters"),
+    pytest.param(CounterMoves, id="frame_hook_sets_a_number"),
+    pytest.param(GroupLoses, id="frame_hook_removes_a_member"),
+    pytest.param(WatchLoses, id="watch_removes_a_member"),
+    pytest.param(AddLoses, id="scene_add_removes_a_member"),
 ]
 
 
@@ -402,9 +517,11 @@ def test_frames_are_the_same_with_the_lever_on_and_off(
 ):
     on_scene, on = render(scene_class, 15, vectorize_trusted=True)
     _, off = render(scene_class, 15, speed_levers=False)
+    routes = [play.route for play in on_scene.timeline.ensure_record().plays]
     if scene_class is Staggered:
-        record = on_scene.timeline.ensure_record()
-        assert [play.route for play in record.plays] == ["trusted", "trusted"]
+        assert routes == ["trusted", "trusted"]
+    if scene_class in SCENE_CODE_SCENES:
+        assert "trusted" in routes, routes
     assert len(on) == len(off)
     for index, (a, b) in enumerate(zip(on, off, strict=True)):
         assert np.array_equal(a, b), f"frame {index}"

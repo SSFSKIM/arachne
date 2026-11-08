@@ -1451,6 +1451,11 @@ class ManimConfig(MutableMapping):
         """Whether the speed levers are on (the default). Off, every lever
         reads as its scalar, Manim CE-style setting, whatever it is set to:
         the reference render each lever's frames are checked against.
+
+        It alone also gates what is exact and has nothing to tune, so needs
+        no lever of its own: on, whether each updater takes ``dt`` is read
+        once while the updater is unchanged (:mod:`.updater_kind`), not at
+        every call.
         """
         return self._d["speed_levers"]
 
@@ -1462,10 +1467,7 @@ class ManimConfig(MutableMapping):
     def vectorize_trusted(self) -> bool:
         """Whether a trusted play's values are computed for all of its
         instants at once (on by default) rather than one frame at a time:
-        the same values, bit for bit. With it, what a frame would read again
-        unchanged is read once: whether each updater takes ``dt``
-        (:mod:`.updater_kind`), and the families a trusted play's
-        animations zip.
+        the same values, bit for bit, its animations' families zipped once.
         """
         return self._lever("vectorize_trusted")
 

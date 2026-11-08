@@ -243,16 +243,39 @@ class TrustedRoute(_SampledRoute):
     def run(self, run: PlayRun, plan: EventPlan) -> None:
         from arachne import config
 
-        if not config.vectorize_trusted:
+        if not config.vectorize_trusted or _runs_scene_code(run):
             super().run(run, plan)
             return
         from arachne.animation.animation import keeping_families
 
         from .trusted import iter_animations
 
-        # Admission keeps every family's members as they are while it runs.
+        # Nothing but the play's own animations runs while it is evaluated,
+        # and they change no family's members: admission refuses updaters
+        # and callbacks, and parts that run at once and write one mobject.
         with keeping_families(iter_animations(run.play._animations)):
             super().run(run, plan)
+
+
+#: The scene's methods a play's parts call as they begin, which a part that
+#: begins while the play runs calls then (``Animation._setup_scene``).
+_SETUP_METHODS = ("add", "get_mobject_family_members")
+
+
+def _runs_scene_code(run: PlayRun) -> bool:
+    """Whether the scene's own code may run while a trusted play is
+    evaluated, where admission does not look: the scene's frame hooks, a
+    watch the record reads at every kept capture, or the scene's own
+    ``add`` called by a part that begins while the play runs. Any of them
+    may change a family's members.
+    """
+    from .dispatch import scene_hooks
+
+    return (
+        bool(run.play.frame_hooks)
+        or run.recorder.ensure_record().bridge.watching
+        or bool(scene_hooks(run.scene, _SETUP_METHODS))
+    )
 
 
 class StateRoute(_SampledRoute):

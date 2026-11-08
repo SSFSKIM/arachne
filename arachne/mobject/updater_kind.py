@@ -3,8 +3,9 @@ from its signature to decide how to call it, ``updater(mobject, dt)`` or
 ``updater(mobject)``.
 
 ``inspect.signature`` builds a whole signature to answer that one question,
-and the engine asks it of every updater at every frame and tick. Under the
-``vectorize_trusted`` speed lever, the answer for a function or a bound
+and the engine asks it of every updater at every frame and tick. While the
+speed levers are on (``speed_levers``; the kind is exact and has nothing to
+tune, so it has no lever of its own), the answer for a function or a bound
 method is kept beside what ``inspect.signature`` reads it from: the
 function's code and the ``__signature__`` it carries. Each call compares
 those by identity and reads the signature again when either was replaced,
@@ -52,7 +53,7 @@ def takes_dt(updater: Any) -> bool:
     ``"dt" in inspect.signature(updater).parameters``, raising what that
     raises.
     """
-    if not config.vectorize_trusted:
+    if not config.speed_levers:
         return _read(updater)
     function = updater.__func__ if type(updater) is types.MethodType else updater
     if type(function) is not types.FunctionType:
@@ -61,7 +62,7 @@ def takes_dt(updater: Any) -> bool:
     signature = attributes.get("__signature__")
     if attributes and (
         any(name in attributes for name in _ELSEWHERE)
-        or not (signature is None or isinstance(signature, inspect.Signature))
+        or not (signature is None or type(signature) is inspect.Signature)
     ):
         return _read(updater)
     code = function.__code__
