@@ -15,6 +15,7 @@ import inspect
 import pytest
 
 from arachne import Scene
+from arachne.frame_ir.extract import Unable
 
 from . import camera_scenes, reuse_scenes
 from .test_draw_reuse import assert_same_writes, render_writes
@@ -43,6 +44,18 @@ WITNESSES = list(
 )
 
 
+def _outcome(scene_class, **settings):
+    """The writes of a render, or why the draw path could not draw its frames
+    (``render.unable``, which the path names and never draws wrong).
+    """
+    try:
+        _, writes = render_writes(scene_class, **settings)
+    except Unable as error:
+        return str(error)
+    assert writes
+    return writes
+
+
 @pytest.mark.parametrize("draw_path", ["cairo", "ir_cairo"])
 @pytest.mark.parametrize(
     "scene_class", WITNESSES, ids=lambda scene_class: scene_class.__name__
@@ -50,7 +63,9 @@ WITNESSES = list(
 def test_every_write_is_the_same_with_and_without_reuse(scene_class, draw_path):
     if draw_path == "ir_cairo":
         pytest.importorskip("arachne_core")
-    _, on = render_writes(scene_class, draw_path=draw_path)
-    _, off = render_writes(scene_class, draw_path=draw_path, draw_reuse=False)
-    assert on
-    assert_same_writes(on, off)
+    on = _outcome(scene_class, draw_path=draw_path)
+    off = _outcome(scene_class, draw_path=draw_path, draw_reuse=False)
+    if isinstance(on, str) or isinstance(off, str):
+        assert on == off
+    else:
+        assert_same_writes(on, off)

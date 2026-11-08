@@ -922,7 +922,8 @@ class Drawing:
         since.
         """
         record = self.record
-        references = pictures = ()
+        references: tuple[tuple[Mobject, Any], ...] = ()
+        pictures: tuple[tuple[Mobject, PixelArray], ...] = ()
         if capture.references or capture.pictures:
             shown = {id(mob) for mob, _ in nodes}
             references = tuple(
