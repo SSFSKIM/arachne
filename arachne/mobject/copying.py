@@ -27,14 +27,22 @@ from __future__ import annotations
 import copy
 import copyreg
 import enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 if TYPE_CHECKING:
     from .mobject import Mobject
 
+_M = TypeVar("_M", bound="Mobject")
+
 __all__ = ["copy_mobject"]
 
 _nil: list[Any] = []
+
+# What copy.deepcopy reads, from copy and copyreg: private, so typeshed
+# doesn't declare them.
+_DISPATCH: dict[type, Any] = copy._deepcopy_dispatch  # type: ignore[attr-defined]
+_NEWOBJ: Any = copyreg.__newobj__  # type: ignore[attr-defined]
+_slotnames: Any = copyreg._slotnames  # type: ignore[attr-defined]
 
 # The types copy.deepcopy returns as they are, without a memo entry: its
 # atomic set where it has one (3.14), else the types its dispatch table sends
@@ -44,8 +52,8 @@ if hasattr(copy, "_atomic_types"):
 else:
     _ATOMIC = frozenset(
         cls
-        for cls, copier in copy._deepcopy_dispatch.items()
-        if copier is copy._deepcopy_atomic
+        for cls, copier in _DISPATCH.items()
+        if copier is copy._deepcopy_atomic  # type: ignore[attr-defined]
     )
 
 # How each class's instances are copied, found once per class.
@@ -60,7 +68,7 @@ _OBJECT_STATE = (object.__reduce_ex__, object.__reduce__, object.__getstate__)
 def _classify(cls: type, x: Any) -> int:
     from .mobject import Mobject
 
-    if cls in copy._deepcopy_dispatch:
+    if cls in _DISPATCH:
         # The dispatch table's other entries (bound methods) are left to it.
         kind = _GENERAL
     elif issubclass(cls, type):
@@ -104,7 +112,7 @@ def _plain(cls: type, x: Any) -> bool:
         )
         or not all(base is object or base.__flags__ & _HEAPTYPE for base in cls.__mro__)
         or not cls.__dictoffset__
-        or copyreg._slotnames(cls)
+        or _slotnames(cls)
     ):
         return False
     # And the instance at hand reduces that way.
@@ -112,7 +120,7 @@ def _plain(cls: type, x: Any) -> bool:
     state = x.__dict__ or None
     return (
         len(reduced) == 5
-        and reduced[0] is copyreg.__newobj__
+        and reduced[0] is _NEWOBJ
         and reduced[1] == (cls,)
         and reduced[2] is state
         and reduced[3] is None
@@ -124,7 +132,7 @@ def _copy(x: Any, memo: dict[int, Any], alive: list[Any]) -> Any:
     """``copy.deepcopy(x, memo)``, where ``alive`` is the memo's list of the
     originals it keeps alive (``memo[id(memo)]``).
     """
-    cls = type(x)
+    cls: Any = type(x)
     kinds = _KINDS
     kind = kinds.get(cls)
     if kind is _ATOM:
@@ -200,7 +208,7 @@ def _copy(x: Any, memo: dict[int, Any], alive: list[Any]) -> Any:
     return y
 
 
-def _copy_mobject(mob: Mobject, memo: dict[int, Any], alive: list[Any]) -> Mobject:
+def _copy_mobject(mob: _M, memo: dict[int, Any], alive: list[Any]) -> _M:
     """What :meth:`.Mobject.__deepcopy__` does, each value copied by
     :func:`_copy`.
     """
@@ -216,7 +224,7 @@ def _copy_mobject(mob: Mobject, memo: dict[int, Any], alive: list[Any]) -> Mobje
     return result
 
 
-def copy_mobject(mob: Mobject, memo: dict[int, Any]) -> Mobject:
+def copy_mobject(mob: _M, memo: dict[int, Any]) -> _M:
     """``mob``'s deep copy with ``memo``, as :meth:`.Mobject.__deepcopy__`
     makes it.
     """

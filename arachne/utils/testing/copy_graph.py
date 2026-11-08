@@ -58,7 +58,7 @@ def _edges(x: Any, opaque: Counter[str] | None = None) -> list[tuple[str, Any]]:
     own = getattr(x, "__dict__", None)
     if isinstance(own, dict):
         out.append(("<__dict__>", own))
-    slots = copyreg._slotnames(type(x))
+    slots = copyreg._slotnames(type(x))  # type: ignore[attr-defined]
     for name in slots:
         if hasattr(x, name):
             out.append((f".{name}", getattr(x, name)))
@@ -83,7 +83,7 @@ def reachable(x: Any) -> dict[int, Any]:
 
 def _same_leaf(a: Any, b: Any) -> bool:
     if isinstance(a, np.ndarray):
-        return (
+        return bool(
             a.dtype == b.dtype
             and a.shape == b.shape
             and a.flags.writeable == b.flags.writeable
