@@ -5070,6 +5070,160 @@ mod tests {
         );
     }
 
+    /// The snap's move of the key of a stroke cut into pieces 2 to 4 px long, as a line slanted
+    /// to the sight axis and longer on screen than 128 px is (a cubic is cut into at most 64
+    /// pieces), at fixed sub-samples, as for a bent stroke below: two such lines, each 4 long,
+    /// meeting at 30, 90 and 150 degrees, the first 40, 50 or 65 degrees from the sight axis (the
+    /// second turned from it toward the screen's y); and at each of those angles a thin shape seen
+    /// almost edge-on, two such lines 0.01 apart along the sight axis and 0.0001 apart on screen
+    /// joined at one end by a short piece, so a read past the stroke's body may change sides as
+    /// the snap moves them. Each 6 and 0.3 wide, under a camera looking down z and a turned one,
+    /// moved as below. At every sub-sample both cover the moved key lies within its reach of the
+    /// content's, and in each row within a tenth of it somewhere; each row's worst and median
+    /// move over reach are printed.
+    #[test]
+    fn a_snapped_stroke_of_short_slanted_pieces_keys_each_sub_sample_within_its_own_reach() {
+        let mut seed = 0x6a09_e667_f3bc_c909u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+        };
+        let corners: Vec<[f64; 3]> = (0..8)
+            .map(|c| [0, 1, 2].map(|k| if (c >> k) & 1 == 1 { 0.5 } else { -0.5 }))
+            .collect();
+        let curve = crate::depth::Planarity::Curve;
+        let centre = [0.31, -0.17, 0.23];
+        let mut rows = Vec::new();
+        for (phi, theta) in [(0.0, -90.0), (70.0, -110.0)] {
+            let view = snapped_view(phi, theta);
+            let r = projection_of(&view).rotation();
+            let third = |p: [f64; 3], q: [f64; 3], t: f64| -> [f64; 3] {
+                std::array::from_fn(|j| p[j] + (q[j] - p[j]) * t)
+            };
+            // Each shape: its name, its distinct points, and its points as indices into them.
+            let mut shapes: Vec<(String, Vec<[f64; 3]>, Vec<usize>)> = Vec::new();
+            for slant in [40.0f64, 50.0, 65.0] {
+                let (c, s) = (libm::cos(slant.to_radians()), libm::sin(slant.to_radians()));
+                let u: [f64; 3] = std::array::from_fn(|j| c * r[2][j] + s * r[0][j]);
+                for bend in [30.0f64, 90.0, 150.0] {
+                    let (c, s) = (libm::cos(bend.to_radians()), libm::sin(bend.to_radians()));
+                    let w: [f64; 3] = std::array::from_fn(|j| -c * u[j] + s * r[1][j]);
+                    let a: [f64; 3] = std::array::from_fn(|j| centre[j] - 4.0 * u[j]);
+                    let b: [f64; 3] = std::array::from_fn(|j| centre[j] + 4.0 * w[j]);
+                    let distinct = vec![
+                        a,
+                        third(a, centre, 1.0 / 3.0),
+                        third(a, centre, 2.0 / 3.0),
+                        centre,
+                        third(centre, b, 1.0 / 3.0),
+                        third(centre, b, 2.0 / 3.0),
+                        b,
+                    ];
+                    shapes.push((
+                        format!("slant {slant} bent {bend}"),
+                        distinct,
+                        vec![0, 1, 2, 3, 3, 4, 5, 6],
+                    ));
+                }
+                let a: [f64; 3] = std::array::from_fn(|j| centre[j] - 2.0 * u[j]);
+                let b: [f64; 3] = std::array::from_fn(|j| centre[j] + 2.0 * u[j]);
+                let apart: [f64; 3] = std::array::from_fn(|j| 0.01 * r[2][j] + 0.0001 * r[1][j]);
+                let (b2, a2): ([f64; 3], [f64; 3]) = (
+                    std::array::from_fn(|j| b[j] + apart[j]),
+                    std::array::from_fn(|j| a[j] + apart[j]),
+                );
+                let distinct = vec![
+                    a,
+                    third(a, b, 1.0 / 3.0),
+                    third(a, b, 2.0 / 3.0),
+                    b,
+                    third(b, b2, 1.0 / 3.0),
+                    third(b, b2, 2.0 / 3.0),
+                    b2,
+                    third(b2, a2, 1.0 / 3.0),
+                    third(b2, a2, 2.0 / 3.0),
+                    a2,
+                ];
+                shapes.push((
+                    format!("slant {slant} thin"),
+                    distinct,
+                    vec![0, 1, 2, 3, 3, 4, 5, 6, 6, 7, 8, 9],
+                ));
+            }
+            for (name, distinct, index) in &shapes {
+                let n = distinct.len();
+                let shared: Vec<bool> = (0..n)
+                    .map(|i| index.iter().filter(|&&k| k == i).count() > 1)
+                    .collect();
+                let mut moves: Vec<Vec<[f64; 3]>> = Vec::new();
+                for c in &corners {
+                    let o = c.map(|v| -v);
+                    moves.push(vec![*c; n]);
+                    moves.push((0..n).map(|i| if i % 2 == 0 { *c } else { o }).collect());
+                    moves.push((0..n).map(|i| if shared[i] { *c } else { o }).collect());
+                }
+                for _ in 0..16 {
+                    moves.push((0..n).map(|_| std::array::from_fn(|_| next())).collect());
+                }
+                for width in [6.0, 0.3] {
+                    let draw = |points: Vec<[f64; 3]>| {
+                        let s = paths_stream(
+                            view.clone(),
+                            vec![(points, line_record(1, width, curve))],
+                        );
+                        curve_keys(&s, 101)
+                    };
+                    let exact = draw(index.iter().map(|&k| distinct[k]).collect());
+                    let mut ratios: BTreeMap<(u32, u32, usize), f64> = BTreeMap::new();
+                    for m in &moves {
+                        let moved: Vec<[f64; 3]> = index
+                            .iter()
+                            .map(|&k| std::array::from_fn(|j| distinct[k][j] + m[k][j] * GRID))
+                            .collect();
+                        for (at, (k, e, own)) in draw(moved) {
+                            let Some((k0, e0, _)) = exact.get(&at) else {
+                                continue;
+                            };
+                            assert!(own.is_finite() && own > 0.0, "own share {own}");
+                            let reach = e + e0 + (k.abs() + e) * own;
+                            let moved_by = (k - k0).abs();
+                            assert!(
+                                moved_by <= reach,
+                                "({phi}, {theta}) {name}, {width} wide, at {at:?}: the key moved \
+                                 by {moved_by:e} against its reach {reach:e}"
+                            );
+                            let ratio = ratios.entry(at).or_insert(0.0);
+                            *ratio = ratio.max(moved_by / reach);
+                        }
+                    }
+                    let mut sorted: Vec<f64> = ratios.values().copied().collect();
+                    sorted.sort_by(f64::total_cmp);
+                    assert!(
+                        sorted.len() > 200,
+                        "({phi}, {theta}) {name}, {width} wide: {} sub-samples",
+                        sorted.len()
+                    );
+                    let (worst, median) = (sorted[sorted.len() - 1], sorted[sorted.len() / 2]);
+                    assert!(
+                        worst >= 0.1,
+                        "({phi}, {theta}) {name}, {width} wide: the reach is {:.1} times the \
+                         largest move found",
+                        1.0 / worst
+                    );
+                    rows.push((phi, theta, name.clone(), width, worst, median, sorted.len()));
+                }
+            }
+        }
+        for (phi, theta, name, width, worst, median, n) in rows {
+            eprintln!(
+                "TIGHT phi {phi} theta {theta} {name} width {width}: {worst:.3} at worst, \
+                 {median:.3} at the median, over {n} sub-samples"
+            );
+        }
+    }
+
     /// The snap's move of a bent stroke's key at fixed sub-samples, through the frame's own
     /// sampling, as for a straight line above: two straight cubics meeting at 30, 90 and 150
     /// degrees (the first 45 or 10 degrees from the sight axis, the second turned toward the

@@ -2372,11 +2372,14 @@ impl Centreline {
     /// and `β`, `L = |v|`. The foot's parameter `t` moves to `t'` with
     /// `(t' - t) |v'|^2 = -((1 - t) α + t β) . v + q . (β - α) - α . (β - α) - t |β - α|^2`, so
     /// `|t' - t| <= dt = ((|1 - t| + |t|) shift L + (|q| + shift + |t| turn) turn) / (L - turn)^2`
-    /// for `L > turn`; the clamp to the ends moves it no further. The key at the foot,
-    /// `ka (1 - t) + kb t`, then moves by at most `share` of the key at `t'` (the ends' keys move
-    /// by that share of themselves, all of one sign) and `|kb - ka| dt` along the segment, and the
-    /// key at `t'` lies within that of the key at `t`: `share |k| + (1 + share) |kb - ka| dt` in
-    /// all. A segment shorter than `turn` is keyed between its ends' keys before and after: within
+    /// for `L > turn`. The key is read at the foot clamped to the ends, whose parameter moves by
+    /// less: while the foot lies past an end it is the end's, so it moves only once the foot
+    /// re-enters the segment, and never by more than the whole segment: by at most
+    /// `dt' = min(1, max(0, dt - e))`, `e = max(-t, t - 1, 0)` how far `t` lies past the ends. The
+    /// key at the clamped foot, `ka (1 - t) + kb t`, then moves by at most `share` of the key at
+    /// `t'` (the ends' keys move by that share of themselves, all of one sign) and `|kb - ka| dt'`
+    /// along the segment, and the key at `t'` lies within that of the key at `t`:
+    /// `share |k| + (1 + share) |kb - ka| dt'` in all. A segment shorter than `turn` is keyed between its ends' keys before and after: within
     /// `(1 + share) |kb - ka| + share max(|ka|, |kb|)`.
     ///
     /// A segment holds `p` where the foot's raw parameter lies within `0..=1` and `p` within `body`
@@ -2439,7 +2442,10 @@ impl Centreline {
                 let dt = (along + (q + shift + raw.abs() * turn) * turn)
                     / ((len - turn) * (len - turn))
                     + room / len;
-                (dt, (1.0 + share) * spread * dt)
+                // The key is read at the foot clamped to the ends: a foot past an end stays the
+                // end's until it re-enters the segment, and none moves by more than the segment.
+                let past = (-raw).max(raw - 1.0).max(0.0);
+                (dt, (1.0 + share) * spread * (dt - past).clamp(0.0, 1.0))
             } else {
                 let most = ka.abs().max(kb.abs());
                 (f64::INFINITY, (1.0 + share) * spread + share * most)
@@ -2679,6 +2685,101 @@ fn foot(a: [f64; 2], b: [f64; 2], p: [f64; 2]) -> (f64, f64) {
 mod tests {
     use super::*;
     use crate::composite::{SAMPLES, sample_point};
+
+    /// A read past a short piece's end, as on a thin shape seen almost edge-on: two sides 3 px
+    /// long and 0.007 px apart, keyed along their length as a line 45 degrees from the sight axis
+    /// is and 2.2e-4 apart, joined at one end by a piece 0.1 px long, each piece's ends moving on
+    /// their own. Each point is moved within `shift` of where it was (the corners of the square
+    /// inside that disc, alike, opposed between alternate points and between the sides, and seeded
+    /// moves on its rim) and each key within `share` of itself. At a grid of points around the
+    /// shape the read ([`Centreline::key_under`]) moves within its reach: its errors, and its
+    /// magnitude times the share and the slide over it ([`Centreline::slide_under`]), as a
+    /// stroke's own share takes them. Beyond the short piece's end, where its far corner is the
+    /// curve's nearest point and the read that corner's key, which the snap moves by the share
+    /// alone, the reach lies within ten times the largest move found.
+    #[test]
+    fn a_read_past_a_short_piece_s_end_moves_by_the_share_alone_and_its_reach_says_so() {
+        let (shift, share, body) = (4.2e-3, 2.9e-6, 0.15);
+        let slope = 1.35e-3 / 3.06;
+        let k0 = -1.0317;
+        let points = [
+            ([10.0, 10.0], k0),
+            ([13.0, 10.0], k0 - 3.0 * slope),
+            ([13.1, 10.007], k0 - 3.1 * slope - 2.2e-4),
+            ([10.1, 10.007], k0 - 0.1 * slope - 2.2e-4),
+        ];
+        let rim = shift * (1.0 - 1e-9);
+        let c = rim / 2f64.sqrt();
+        let mut seeded = Seeded(0x9e37_79b9_7f4a_7c15);
+        let mut moves: Vec<[([f64; 2], f64); 4]> = Vec::new();
+        for (j, d) in [[c, c], [c, -c], [-c, c], [-c, -c]].into_iter().enumerate() {
+            let o = [-d[0], -d[1]];
+            let sign = |i: usize| if (i + j).is_multiple_of(2) { 1.0 } else { -1.0 };
+            moves.push(std::array::from_fn(|i| (d, sign(i))));
+            moves.push(std::array::from_fn(|i| {
+                (if i % 2 == 0 { d } else { o }, -sign(i))
+            }));
+            moves.push(std::array::from_fn(|i| {
+                (if i < 2 { d } else { o }, sign(i))
+            }));
+        }
+        for _ in 0..16 {
+            moves.push(std::array::from_fn(|_| {
+                let angle =
+                    (seeded.next() >> 11) as f64 / (1u64 << 53) as f64 * std::f64::consts::TAU;
+                let sign = if seeded.next() & 1 == 1 { 1.0 } else { -1.0 };
+                ([rim * libm::cos(angle), rim * libm::sin(angle)], sign)
+            }));
+        }
+        let content = Centreline::new(&points, &[]);
+        let shapes: Vec<Centreline> = moves
+            .iter()
+            .map(|m| {
+                let moved: Vec<([f64; 2], f64)> = points
+                    .iter()
+                    .zip(m)
+                    .map(|((p, k), (d, s))| {
+                        ([p[0] + d[0], p[1] + d[1]], k * (1.0 + s * share * 0.999))
+                    })
+                    .collect();
+                Centreline::new(&moved, &[])
+            })
+            .collect();
+        let (mut beyond, mut least, mut worst) = (0usize, f64::INFINITY, 0.0f64);
+        for i in 0..=86 {
+            for j in 0..=36 {
+                let p = [9.6 + 0.05 * i as f64, 9.6 + 0.025 * j as f64];
+                let (k0, e0) = content.key_under(p, &[], body);
+                let mut most = 0.0f64;
+                for line in &shapes {
+                    let (k1, e1) = line.key_under(p, &[], body);
+                    let (slide, magnitude) = line.slide_under(p, &[], body, shift, share);
+                    let own = share + slide / magnitude * (1.0 + 4.0 * U);
+                    let reach = e0 + e1 + (k1.abs() + e1) * own;
+                    let moved_by = (k1 - k0).abs();
+                    assert!(
+                        moved_by <= reach,
+                        "at {p:?}: the read moved by {moved_by:e} against its reach {reach:e}"
+                    );
+                    most = most.max(moved_by / reach);
+                }
+                worst = worst.max(most);
+                if p[0] >= 13.2 && p[1] >= 10.0 {
+                    beyond += 1;
+                    least = least.min(most);
+                }
+            }
+        }
+        eprintln!(
+            "TIGHT short piece: beyond its end {least:.3} at least over {beyond} points; {worst:.3} at worst"
+        );
+        assert!(beyond > 100, "{beyond} points beyond the end");
+        assert!(
+            least >= 0.1,
+            "beyond the end the reach is {:.1} times the largest move found",
+            1.0 / least
+        );
+    }
 
     /// A small seeded generator (xorshift64*), so the cases are the same on every run.
     struct Seeded(u64);
