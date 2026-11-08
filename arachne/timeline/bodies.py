@@ -36,6 +36,8 @@ import numpy as np
 
 from arachne.camera.projection import draw_kind, view_of
 
+from .identity import ByIdentity
+
 if TYPE_CHECKING:
     from arachne.mobject.mobject import Mobject
 
@@ -244,8 +246,8 @@ def _same(now: np.ndarray, then: np.ndarray) -> bool:
     return now is then or (now.shape == then.shape and np.array_equal(now, then))
 
 
-#: Each mobject type's draw kind, as :func:`draw_kind` finds it.
-_KINDS: dict[type, str | None] = {}
+#: Each mobject type's draw kind, as :func:`draw_kind` finds it, by identity.
+_KINDS: ByIdentity[type, str | None] = ByIdentity()
 
 
 def _look(mob: Mobject) -> tuple[object, ...]:

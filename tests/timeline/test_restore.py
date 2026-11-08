@@ -295,6 +295,24 @@ def test_extra_instants_are_non_frame_evaluations_of_trusted_and_state_plays(
     assert all(play.sample_at(t) is None for t in extra)
 
 
+def test_a_rate_only_equal_to_linear_is_not_trusted_and_sessions_agree(session_of):
+    """A callable whose hash and equality are ``linear``'s, but whose value
+    drifts with its own call history, is a user's rate: the play is not
+    trusted, and a session asked for an instant between frames agrees with
+    one that was not, there and at every frame.
+    """
+    between = Fraction(3, 8)
+    plain = session_of("DriftingReveal", RESTORE_SCENES, frame_rate=4)
+    asked = session_of(
+        "DriftingReveal", RESTORE_SCENES, frame_rate=4, instants=[between]
+    )
+    for session in (plain, asked):
+        assert session.record.plays[0].route != "trusted"
+    assert _canonical(plain.state_at(between)) == _canonical(asked.state_at(between))
+    for t in [between, *(Fraction(k, 4) for k in range(5))]:
+        assert np.array_equal(np.asarray(plain.frame(t)), np.asarray(asked.frame(t))), t
+
+
 def test_a_ticked_play_between_kept_ticks_answers_the_frame_on_screen(session_of):
     """At 15 fps the record keeps one tick in four; between them the answer
     is the last kept one, the frame a render shows there.

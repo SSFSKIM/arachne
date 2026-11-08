@@ -70,6 +70,7 @@ import numpy as np
 
 from .draw import CameraExtras, Drawing
 from .events import EventPlan
+from .identity import one_of
 from .origins import ORIGINS
 from .record import NodeState
 from .routes import Unavailable, _copied, evaluate_instant, snapshot_animations
@@ -451,7 +452,7 @@ def _same_contents(a: Any, b: Any) -> bool:
     """
     if a is b:
         return True
-    if type(a) is type(b) and type(a) in _PLAIN:
+    if type(a) is type(b) and one_of(type(a), _PLAIN):
         # repr tells -0.0 from 0.0, and a NaN equals itself.
         return bool(repr(a) == repr(b))
     if isinstance(a, np.ndarray) or isinstance(b, np.ndarray):

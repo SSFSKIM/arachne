@@ -37,8 +37,12 @@ import types
 from collections.abc import Mapping
 from typing import Any
 
+from .identity import ByIdentity
+
 _CODES: set[types.CodeType] = set()
-_CLASSES: dict[type, Mapping[str, Any]] = {}
+#: The engine's classes and what each held, by identity: a scene's class
+#: whose metaclass makes it equal to one of them is not one.
+_CLASSES: ByIdentity[type, Mapping[str, Any]] = ByIdentity()
 _FROZEN = False
 #: Where the engine's files are.
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + os.sep
@@ -59,10 +63,7 @@ def engine_class(cls: Any) -> bool:
     """
     if not _FROZEN:
         freeze()
-    try:
-        return cls in _CLASSES
-    except TypeError:  # unhashable
-        return False
+    return cls in _CLASSES
 
 
 def class_members(cls: type) -> Mapping[str, Any]:

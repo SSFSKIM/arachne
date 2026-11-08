@@ -39,6 +39,7 @@ from functools import cache
 from typing import Any
 
 from .frozen import class_members, engine_class, engine_code
+from .identity import ByIdentity
 
 #: What a scene's subclass of an engine class may define without taking its
 #: instances out of the algebra.
@@ -160,7 +161,7 @@ def family_refusal(mobjects: Iterable[Any]) -> str | None:
     """:func:`dispatch_refusal` of the first member of the mobjects'
     families that has one.
     """
-    classes: dict[type, tuple[str, ...]] = {}
+    classes: ByIdentity[type, tuple[str, ...]] = ByIdentity()
     for mobject in mobjects:
         for member in mobject.get_family():
             cls = type(member)
@@ -254,7 +255,7 @@ def draw_refusal(camera: Any, mobjects: Iterable[Any]) -> str | None:
     families that :func:`draw_member_refusal` refuses.
     """
     names = draw_names(camera)
-    classes: dict[type, str | None] = {}
+    classes: ByIdentity[type, str | None] = ByIdentity()
     for mobject in mobjects:
         for member in mobject.get_family():
             reason = draw_member_refusal(names, member, classes)
@@ -283,7 +284,7 @@ def draw_names(camera: Any) -> tuple[frozenset[str], frozenset[str]]:
 def draw_member_refusal(
     names: tuple[frozenset[str], frozenset[str]],
     member: Any,
-    classes: dict[type, str | None] | None = None,
+    classes: ByIdentity[type, str | None] | None = None,
 ) -> str | None:
     """Why drawing ``member`` runs the scene's code, or ``None``: its class
     overrides a draw method or defines a protocol method the draw invokes

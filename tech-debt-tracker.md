@@ -263,6 +263,18 @@ lifted.
   plays up to the refusal, or to know the refusal before the first run
   (the class's definitions are readable once the scene module is loaded).
 
+## Trusted admission (`arachne/timeline/rates.py`)
+
+- **An admitted closure is checked once, when its play begins.** `engine_rate`
+  and `admitted_path` read a factory closure's code and cells at admission;
+  the trusted snapshot then keeps `rate_func` by reference
+  (`routes.snapshot_animations`), so a scene that reassigns the closure's
+  `__code__` or a cell's `cell_contents` after admission is evaluated
+  through code admission never saw. That is surgery on an engine-made
+  object, outside what the proof covers. Direction, if it is ever wanted:
+  snapshot the validated code and cell contents at admission and check
+  them again when a trusted instant is evaluated.
+
 ## Execution summaries (`arachne/timeline/execution.py`)
 
 - **A supplied camera background is hashed again at every capture
