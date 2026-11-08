@@ -121,6 +121,11 @@ if any(a.startswith("--format") for a in sys.argv[1:]):
     sys.stdout.write(open(os.environ["FAKE_FONTS"]).read())
 """
 
+FAKE_FC_CONFLIST = """\
+import os, sys
+sys.stdout.write(open(os.environ["FAKE_CONFLIST"]).read())
+"""
+
 #: The font list ``fc-list`` prints by default: file, index, version.
 FONTS = "/fonts/serif.otf\t0\t65536\n/fonts/sans.ttc\t1\t131072\n"
 
@@ -139,6 +144,9 @@ class Tools:
         self.packages("one release")
         self.font_list = root / "fonts.txt"
         self.fonts(FONTS)
+        #: The configuration files ``fc-conflist`` prints as loaded.
+        self.config_list = root / "conflist.txt"
+        self.config_list.write_text("")
         for name in ("latex", "xelatex", "dvisvgm", "kpsewhich", "fc-list"):
             self.install(name, "1")
 
@@ -150,6 +158,7 @@ class Tools:
             "dvisvgm": FAKE_DVISVGM,
             "kpsewhich": FAKE_KPSEWHICH,
             "fc-list": FAKE_FC_LIST,
+            "fc-conflist": FAKE_FC_CONFLIST,
         }.get(name, FAKE_LATEX)
         made = self.bin / f".{name}"
         made.write_text(
@@ -190,6 +199,9 @@ def tools(tmp_path, monkeypatch) -> Tools:
     monkeypatch.setenv("FAKE_SIGNAL", str(found.signals))
     monkeypatch.setenv("FAKE_TEXMFROOT", str(found.tree))
     monkeypatch.setenv("FAKE_FONTS", str(found.font_list))
+    monkeypatch.setenv("FAKE_CONFLIST", str(found.config_list))
+    for name in ("FONTCONFIG_FILE", "FONTCONFIG_PATH"):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.delenv("OSFONTDIR", raising=False)
     monkeypatch.delenv("FAKE_PAUSE", raising=False)
     monkeypatch.delenv("FAKE_FAIL", raising=False)
@@ -678,6 +690,64 @@ def test_xelatex_and_lualatex_key_apart_on_the_system_fonts_they_can_load(
         assert _typeset(tex_compiler="xelatex", output_format=".xdv") != xelatex
         assert lualatex() != lua
         assert _typeset() == latex
+
+
+def test_a_font_file_changed_in_place_keys_apart_though_fontconfig_lists_it_alike(
+    tools, tmp_path, monkeypatch
+):
+    """``fc-list`` names a file, its index and its version, none of which an
+    update in place need change: the file's size and time of change are in
+    the key too.
+    """
+    monkeypatch.setattr(typeset_cache, "_FONTS_BY_FONTCONFIG", True)
+    font = tmp_path / "serif.otf"
+    font.write_bytes(b"glyphs one")
+    tools.fonts(f"{font}\t0\t65536\n")
+
+    def another_process() -> object:
+        typeset_cache._font_list.cache_clear()
+        return typeset_cache.tex_toolchain(["xelatex"], ".xdv", "")
+
+    with tempconfig({"typeset_dir": str(tmp_path / "shared")}):
+        before = another_process()
+        assert another_process() == before
+        os.utime(font, ns=(1_000_000_000_000, 2_000_000_000_000))
+        retimed = another_process()
+        assert retimed != before
+        font.write_bytes(b"glyphs two!")
+        os.utime(font, ns=(1_000_000_000_000, 2_000_000_000_000))
+        assert another_process() != retimed
+
+
+def test_the_fontconfig_that_matches_a_family_to_a_font_is_part_of_the_key(
+    tools, tmp_path, monkeypatch
+):
+    """Two configurations over the same fonts can resolve one family name to
+    different fonts: where fontconfig reads its configuration from, and what
+    the files it loads say, are in the key.
+    """
+    monkeypatch.setattr(typeset_cache, "_FONTS_BY_FONTCONFIG", True)
+    tools.install("fc-conflist", "1")
+    config_file = tmp_path / "99-alias.conf"
+    config_file.write_text("<alias>serif to one</alias>")
+    tools.config_list.write_text(f"+ {config_file}: an alias\n")
+
+    def another_process() -> object:
+        typeset_cache._font_list.cache_clear()
+        typeset_cache._loaded_configs.cache_clear()
+        return typeset_cache.tex_toolchain(["xelatex"], ".xdv", "")
+
+    with tempconfig({"typeset_dir": str(tmp_path / "shared")}):
+        before = another_process()
+        assert another_process() == before
+        config_file.write_text("<alias>serif to another one</alias>")
+        edited = another_process()
+        assert edited != before
+        monkeypatch.setenv("FONTCONFIG_FILE", str(tmp_path / "other.conf"))
+        assert another_process() != edited
+        monkeypatch.delenv("FONTCONFIG_FILE")
+        monkeypatch.setenv("FONTCONFIG_PATH", str(tmp_path))
+        assert another_process() != edited
 
 
 @pytest.mark.parametrize("fontconfig", ["missing", "not what XeTeX reads"])

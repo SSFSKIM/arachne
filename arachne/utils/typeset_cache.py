@@ -259,9 +259,10 @@ def _read_id(path: Path) -> str:
 
 def _system_fonts() -> list[str]:
     """The system fonts XeLaTeX and LuaLaTeX can load: fontconfig's list
-    (each font's file, index and version), by digest, and ``OSFONTDIR``;
-    else, where fontconfig cannot be asked or is not what they load fonts
-    through, the host.
+    (each font's file, index and version, and the file's size and time of
+    change), by digest, ``OSFONTDIR``, and the configuration that matches
+    a family name to a font (:func:`_font_config`); else, where fontconfig
+    cannot be asked or is not what they load fonts through, the host.
     """
     found = shutil.which("fc-list")
     if found is None or not _FONTS_BY_FONTCONFIG:
@@ -270,7 +271,7 @@ def _system_fonts() -> list[str]:
     listed = _font_list(found, status.st_ino, status.st_mtime_ns, _fontconfig_env())
     if listed is None:
         return host()
-    return ["system fonts", listed, os.environ.get("OSFONTDIR", "")]
+    return ["system fonts", listed, os.environ.get("OSFONTDIR", ""), _font_config()]
 
 
 def _fontconfig_env() -> tuple[tuple[str, str], ...]:
@@ -303,7 +304,66 @@ def _font_list(
     if ran.returncode != 0:
         return None
     lines = sorted(ran.stdout.splitlines())
-    return hashlib.sha256("\n".join(lines).encode()).hexdigest()
+    # A font replaced in place can keep its file name, index and version: the
+    # file's own size and time of change (a stat, never its contents, which
+    # are a system's fonts) tell it.
+    stamped = [f"{line}\t{_stamp(line.split(chr(9))[0])}" for line in lines]
+    return hashlib.sha256("\n".join(stamped).encode()).hexdigest()
+
+
+def _stamp(path: str) -> str:
+    """``path``'s size and time of change, as a key holds them."""
+    try:
+        status = os.stat(path)
+    except OSError:
+        return "-"
+    return f"{status.st_size}:{status.st_mtime_ns}"
+
+
+def _font_config() -> list[str]:
+    """What fontconfig matches a family name to a font by, beside the fonts:
+    where it reads its configuration from (its ``FONTCONFIG_*`` variables)
+    and the configuration files it loads (``fc-conflist``), by digest of
+    each file's contents.
+    """
+    env = _fontconfig_env()
+    found = shutil.which("fc-conflist")
+    loaded: tuple[str, ...] = ()
+    if found is not None:
+        status = os.stat(found)
+        loaded = _loaded_configs(found, status.st_ino, status.st_mtime_ns, env)
+    digests = []
+    for path in loaded:
+        try:
+            status = os.stat(path)
+            digests.append(
+                f"{path} {_file_digest(path, status.st_size, status.st_mtime_ns)}"
+            )
+        except OSError:
+            digests.append(f"{path} -")
+    joined = "\n".join([repr(env), *digests])
+    return ["fontconfig", hashlib.sha256(joined.encode()).hexdigest()]
+
+
+@functools.cache
+def _loaded_configs(
+    path: str, inode: int, mtime_ns: int, env: tuple[tuple[str, str], ...]
+) -> tuple[str, ...]:
+    """The configuration files ``path`` (``fc-conflist``) lists as loaded
+    (the lines it marks ``+``): asked once in a process for each build of it
+    and fontconfig environment ``env``; none when it fails.
+    """
+    try:
+        ran = subprocess.run([path], capture_output=True, text=True, check=False)
+    except OSError:
+        return ()
+    if ran.returncode != 0:
+        return ()
+    return tuple(
+        line[2:].split(": ")[0].strip()
+        for line in ran.stdout.splitlines()
+        if line.startswith("+ ")
+    )
 
 
 def _search_path() -> list[list[str]]:
