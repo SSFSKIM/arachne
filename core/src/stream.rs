@@ -3835,49 +3835,10 @@ mod tests {
     #[test]
     fn near_parallel_faces_turning_slowly_keep_paint_order_at_every_sub_sample_of_every_frame() {
         let view = snapped_view(30.0, -60.0);
-        let eye = eye_of(&view);
-        let flat = Some(crate::depth::Planarity::Newell);
         let mut s = Stream::new();
         let (mut apart_identities, mut noise_nearer) = (0, 0);
         for frame in 0..16u32 {
-            let phi = 0.3 + 0.0021 * f64::from(frame);
-            let (c, sn) = (libm::cos(phi), libm::sin(phi));
-            let turned = |p: [f64; 3]| [p[0], p[1] * c - p[2] * sn, p[1] * sn + p[2] * c];
-            let up = dot3(eye, [0.0, -sn, c]).signum();
-            let face = |rise: f64| -> Vec<[f64; 3]> {
-                let points: Vec<[f64; 3]> = flat_square(-1.5, 3.0)
-                    .into_iter()
-                    .map(|p| turned([p[0], p[1], up * rise * (p[0] + 1.5)]))
-                    .collect();
-                snapped(&points, GRID)
-            };
-            let items: Vec<(Shape, Record)> = [(face(0.0), 1u32), (face(3.5e-5), 2)]
-                .into_iter()
-                .map(|(points, slot)| {
-                    let shape = Shape::new(ShapeData::Path { points });
-                    let shade = [0.8 - 0.6 * f64::from(slot - 1), 0.3, 0.5, 1.0];
-                    let mut r = face_record(slot, shade, None, flat);
-                    r.geometry.shape_a = Some(shape.key());
-                    (shape, r)
-                })
-                .collect();
-            let delta = if frame == 0 {
-                crate::probes::first_delta(view.clone(), &items, &[1, 2])
-            } else {
-                let mut d = Delta::new(
-                    Time {
-                        num: i64::from(frame),
-                        den: 30,
-                    },
-                    u64::from(frame),
-                );
-                for (shape, r) in &items {
-                    d.upload.push(shape.clone());
-                    d.set.push(r.clone());
-                }
-                d
-            };
-            s.apply(&delta).expect("the delta applies");
+            turning_pair(&mut s, &view, frame, 3.5e-5, [1, 2]);
             let (planes, ..) = two_faces(&s);
             apart_identities += usize::from(planes[0] != planes[1]);
             let shared = shared_samples(&s);
@@ -3904,5 +3865,102 @@ mod tests {
             noise_nearer >= 4,
             "{noise_nearer} frames with A's key the nearer somewhere"
         );
+    }
+
+    /// Frame `frame` of the turning pair applied to `s`: two faces 3 across on the writer's grid,
+    /// B hinged off A's edge by `rise` rad toward the camera, the pair turned about the world x
+    /// axis by 0.3 + 0.0021 `frame` rad, each frame's points snapped as the writer snaps them,
+    /// drawn in `order` (of slots 1, A, and 2, B).
+    fn turning_pair(s: &mut Stream, view: &View, frame: u32, rise: f64, order: [u32; 2]) {
+        let eye = eye_of(view);
+        let flat = Some(crate::depth::Planarity::Newell);
+        let phi = 0.3 + 0.0021 * f64::from(frame);
+        let (c, sn) = (libm::cos(phi), libm::sin(phi));
+        let turned = |p: [f64; 3]| [p[0], p[1] * c - p[2] * sn, p[1] * sn + p[2] * c];
+        let up = dot3(eye, [0.0, -sn, c]).signum();
+        let face = |rise: f64| -> Vec<[f64; 3]> {
+            let points: Vec<[f64; 3]> = flat_square(-1.5, 3.0)
+                .into_iter()
+                .map(|p| turned([p[0], p[1], up * rise * (p[0] + 1.5)]))
+                .collect();
+            snapped(&points, GRID)
+        };
+        let items: Vec<(Shape, Record)> = [(face(0.0), 1u32), (face(rise), 2)]
+            .into_iter()
+            .map(|(points, slot)| {
+                let shape = Shape::new(ShapeData::Path { points });
+                let shade = [0.8 - 0.6 * f64::from(slot - 1), 0.3, 0.5, 1.0];
+                let mut r = face_record(slot, shade, None, flat);
+                r.geometry.shape_a = Some(shape.key());
+                (shape, r)
+            })
+            .collect();
+        let delta = if frame == 0 {
+            crate::probes::first_delta(view.clone(), &items, &order)
+        } else {
+            let mut d = Delta::new(
+                Time {
+                    num: i64::from(frame),
+                    den: 30,
+                },
+                u64::from(frame),
+            );
+            for (shape, r) in &items {
+                d.upload.push(shape.clone());
+                d.set.push(r.clone());
+            }
+            d
+        };
+        s.apply(&delta).expect("the delta applies");
+    }
+
+    /// A measured limit, recorded and not asserted: the turning pair drawn the other way round,
+    /// the nearer face (B) first, at the hinge above (3.5e-5 rad) and at one near the turn the
+    /// snaps allow (6e-5 rad). Where the pair ties, paint order puts A, the farther, above, and
+    /// where its keys leave the term depth puts B above, so the drawn order flips between frames
+    /// along the term's edge as the snap's noise moves it; and at 6e-5 the verdict itself is the
+    /// noise's (near-parallel in some frames and not in others), which flips the whole overlap.
+    /// Sub-samples whose order flips between consecutive frames, of about 7.5 million compared
+    /// over the sixteen frames, counted as here: at b4056338, before the near-parallel tie, and at
+    /// 4e316ffe, which adds it (03da4caf, which runs the test once per pair, draws the same bits):
+    ///
+    /// | hinge  | drawn first | b4056338  | 4e316ffe  |
+    /// |--------|-------------|-----------|-----------|
+    /// | 3.5e-5 | A (farther) | 287,864        | 0         |
+    /// | 3.5e-5 | B (nearer)  | 1,767,421      | 249,403   |
+    /// | 6e-5   | A (farther) | 118,616        | 31,207    |
+    /// | 6e-5   | B (nearer)  | 178,104        | 3,297,310 |
+    ///
+    /// The test prints its counts (`--nocapture`); it asserts only that each frame draws the two
+    /// over the overlap it measures.
+    #[test]
+    fn near_parallel_faces_drawn_nearer_first_flip_along_the_term_s_edge_measured() {
+        let view = snapped_view(30.0, -60.0);
+        for (rise, order) in [(3.5e-5, [2, 1]), (6e-5, [2, 1])] {
+            let mut s = Stream::new();
+            let mut last: Option<BTreeMap<(u32, u32, usize), bool>> = None;
+            let (mut flips, mut compared) = (0usize, 0usize);
+            for frame in 0..16u32 {
+                turning_pair(&mut s, &view, frame, rise, order);
+                let shared = shared_samples(&s);
+                assert!(
+                    shared.len() > 100_000,
+                    "frame {frame}: {} shared",
+                    shared.len()
+                );
+                let now: BTreeMap<(u32, u32, usize), bool> =
+                    shared.iter().map(|x| (x.at, x.a_above)).collect();
+                if let Some(before) = &last {
+                    for (k, above) in &now {
+                        if let Some(was) = before.get(k) {
+                            compared += 1;
+                            flips += usize::from(was != above);
+                        }
+                    }
+                }
+                last = Some(now);
+            }
+            eprintln!("hinge {rise:e}, B drawn first: {flips} flips of {compared} compared");
+        }
     }
 }
