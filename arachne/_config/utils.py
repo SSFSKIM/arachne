@@ -101,6 +101,7 @@ REMOVED_SECTIONS: dict[str, str] = {
 SPEED_LEVERS_OFF: dict[str, Any] = {
     "vectorize_trusted": False,
     "construction_memo": False,
+    "fast_copy": False,
     "draw_reuse": False,
     "hold_gaps": False,
     "render_workers": 1,
@@ -699,6 +700,7 @@ class ManimConfig(MutableMapping):
             "speed_levers",
             "vectorize_trusted",
             "construction_memo",
+            "fast_copy",
             "draw_reuse",
         ]:
             setattr(self, key, parser["CLI"].getboolean(key, fallback=True))
@@ -1489,6 +1491,19 @@ class ManimConfig(MutableMapping):
     @construction_memo.setter
     def construction_memo(self, value: bool) -> None:
         self._set_boolean("construction_memo", value)
+
+    @property
+    def fast_copy(self) -> bool:
+        """Whether a mobject's deep copy is made by Arachne's own copier (on by
+        default) rather than by :func:`copy.deepcopy`: the same copy, which
+        shares exactly what :func:`copy.deepcopy`'s shares
+        (:mod:`arachne.mobject.copying`).
+        """
+        return self._lever("fast_copy")
+
+    @fast_copy.setter
+    def fast_copy(self, value: bool) -> None:
+        self._set_boolean("fast_copy", value)
 
     @property
     def draw_reuse(self) -> bool:

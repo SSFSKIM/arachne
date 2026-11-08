@@ -53,6 +53,7 @@ from .placement import (
     anchor_bounds,
     point_bounds,
 )
+from .copying import copy_mobject
 from .updater_kind import takes_dt
 from .values import FrozenPoints, adopt, freeze
 
@@ -622,6 +623,8 @@ class Mobject:
         return _UpdaterBuilder(self)  # type: ignore[return-value]
 
     def __deepcopy__(self, clone_from_id: dict[int, Mobject]) -> Self:
+        if config.fast_copy:
+            return copy_mobject(self, clone_from_id)
         cls = self.__class__
         result = cls.__new__(cls)
         clone_from_id[id(self)] = result
