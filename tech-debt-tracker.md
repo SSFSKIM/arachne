@@ -334,6 +334,19 @@ lifted.
   position and point, and each picture's display position and a digest of its pixels (one per kept array, by
   identity, as the background's should be). A content key (`RegisteredState.content_key`,
   `PlayRecord.sample_keys`) is a state's, and neither is part of one.
+- **Not debt: an image painted in place at its size keeps showing the pixels first read.** A camera keeps its
+  read of a fill's image per name (`str(image)`, `BackgroundColoredVMobjectDisplayer.get_background_array`),
+  so a scene that paints into the image without changing its name (its mode, size or identity) goes on showing
+  the pixels that camera read first; drawing from the record does the same (`Record.image_read`). A renamed
+  image (shrunk in place) is read anew, and each camera keeps its own reads. Reproducers:
+  `tests/timeline/test_cameras.py::test_an_image_painted_in_place_is_drawn_as_the_camera_first_read_it`,
+  `::test_an_image_renamed_in_place_is_read_anew`, `::test_each_camera_keeps_its_own_first_read_of_an_image`.
+- **On `ir_cairo`, a path filled from an image can't be drawn inside a display.** A frame is one description,
+  one record per mobject, and a display's camera reads the image at its own pixel shape, so a path both cameras
+  draw is `render.unable` ("drawn two ways in one frame"); before, the display's drawer, which is given no
+  images, failed to open the image's name as a file. `cairo` draws it. Remedy: a record per camera for a path
+  with a fill image, or a display's images seeded as the main camera's are (`CairoDrawer._seed_images`).
+  Reproducer: `camera_scenes.ImageFillZoomedAfterPainting` rendered with `draw_path="ir_cairo"`.
 - **Replacing an engine module's function is not traced.** The draw-reads test sees reads of mobjects, cameras, the
   configuration, the camera's display functions and the files a drawing opens, not which module function a draw
   calls. A scene that replaces one (`camera.py`'s, `vectorized_mobject.py`'s helpers) runs its own code where the
