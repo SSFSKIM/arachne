@@ -5442,6 +5442,255 @@ mod tests {
         }
     }
 
+    /// A sub-sample's key as the resolve orders by it, the key's bound, the stroke's own share and
+    /// whether the object's fill covers it ([`resolved_on_fill`]).
+    type FillKeys = BTreeMap<(u32, u32, usize), (f64, f64, f64, bool)>;
+
+    /// [`resolved_keys`], with whether the object's fill covers each sub-sample.
+    // The sub-sample `k` indexes the fragments' coverage and depth rows.
+    #[allow(clippy::needless_range_loop)]
+    fn resolved_on_fill(s: &Stream, a: u32) -> FillKeys {
+        let (w, h) = {
+            let view = s.view.as_ref().expect("a view");
+            (view.pixel_width, view.pixel_height)
+        };
+        let mut keys = BTreeMap::new();
+        s.visit_contributors(0, 0, w, h, |x, y, frags, cov, d, _| {
+            let layer = |sub: u32| {
+                frags
+                    .iter()
+                    .position(|f| s.leaf_of(f).0 == a && f.path_layer && f.sub % 3 == sub)
+            };
+            let Some(i) = layer(2) else {
+                return;
+            };
+            let fill = layer(1);
+            let mut d = d.to_vec();
+            composite::strokes_on_own_fills(frags, &mut d, |j| cov[j]);
+            for k in 0..composite::SAMPLES {
+                if cov[i][k] != 0 {
+                    let filled = fill.is_some_and(|j| cov[j][k] != 0);
+                    keys.insert((x, y, k), (d[i].samples[k], d[i].err, frags[i].own, filled));
+                }
+            }
+        })
+        .expect("the stream draws");
+        keys
+    }
+
+    /// The snap's move of a stroke's key at fixed sub-samples where its path's points, coded flat,
+    /// lie near a line, as the resolve orders by it (the stroke takes its fill's key where nearer:
+    /// [`resolved_on_fill`]), on both sides of the test that decides whether they have a plane of
+    /// their own ([`crate::depth::on_a_line`]): slivers 4 long coded Newell, a grid step wide on
+    /// screen and rising toward the eye across it at 2 and 0.25 of that; slivers 0 (on a line),
+    /// 3, 8 and 12 grid steps wide in the world, rising at 1; and one 2 long and a grid step wide
+    /// coded on the axis plane of z. Under a camera looking down z and a turned one, 6 and 0.3
+    /// wide, moved as the filled strokes above (the axis-coded one's points along z as one, a
+    /// coordinate they share snapped alike). A sliver up to 3 steps wide has no plane of its own,
+    /// drawn or as content put it, and its fill is read along its curve: where its own share is
+    /// finite, the moved key lies within its reach of the content's, and the fill's cover flips
+    /// at some sub-sample. One 12 steps wide is flat in every frame, its stroke keyed on its plane
+    /// with no own share. One 8 steps wide is flat as content put it and lies on a line in some
+    /// frames: there the drawn stroke's share is read against the content's plane-keyed key, the
+    /// worst printed. Each row's worst and median move over reach, the sub-samples compared, those
+    /// whose fill's cover flips and those with an infinite share, the frames flat, and the median
+    /// of the content's own share over that of its stroke unfilled are printed.
+    #[test]
+    fn a_snapped_stroke_on_its_fill_near_a_line_lies_within_its_own_reach_of_the_content_s() {
+        let mut seed = 0x1319_8a2e_0370_7344u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+        };
+        let corners: Vec<[f64; 3]> = (0..8)
+            .map(|c| [0, 1, 2].map(|k| if (c >> k) & 1 == 1 { 0.5 } else { -0.5 }))
+            .collect();
+        let newell = crate::depth::Planarity::Newell;
+        let (mut flips, mut rows) = (0usize, Vec::new());
+        for (phi, theta) in [(0.0, -90.0), (70.0, -110.0)] {
+            let view = snapped_view(phi, theta);
+            // Each shape: its name, its outline in the world, its coding, whether its points' z
+            // moves as one, and whether it lies on a line in every frame (`Some(true)`), is flat
+            // in every one (`Some(false)`) or may be either.
+            let mut shapes = Vec::new();
+            let ends = |at: &dyn Fn(f64, f64) -> [f64; 3]| {
+                camera_ring(
+                    &view,
+                    &[at(-2.0, 0.0), at(2.0, 0.0), at(2.0, 1.0), at(-2.0, 1.0)],
+                )
+            };
+            for rise in [2.0f64, 0.25] {
+                let at = |x: f64, t: f64| [0.3 + x, -0.2 + t * GRID, 0.1 + t * GRID * rise];
+                shapes.push((
+                    format!("newell rise {rise}"),
+                    ends(&at),
+                    newell,
+                    false,
+                    Some(true),
+                ));
+            }
+            for (steps, line) in [
+                (0.0f64, Some(true)),
+                (3.0, Some(true)),
+                (8.0, None),
+                (12.0, Some(false)),
+            ] {
+                let w = steps * GRID / 2f64.sqrt();
+                let at = |x: f64, t: f64| [0.3 + x, -0.2 + t * w, 0.1 + t * w];
+                shapes.push((
+                    format!("newell {steps} steps"),
+                    ends(&at),
+                    newell,
+                    false,
+                    line,
+                ));
+            }
+            let at = |x: f64, y: f64| [x, 0.1 + y, 0.3];
+            shapes.push((
+                "axis".to_string(),
+                ring(&[at(-1.0, 0.0), at(1.0, 0.0), at(1.0, GRID), at(-1.0, GRID)]),
+                crate::depth::Planarity::Axis(2),
+                true,
+                Some(true),
+            ));
+            for (name, outline, planes, together, line) in &shapes {
+                let n = outline.len();
+                let mut moves: Vec<Vec<[f64; 3]>> = Vec::new();
+                for c in &corners {
+                    let o = c.map(|v| -v);
+                    moves.push(vec![*c; n]);
+                    moves.push((0..n).map(|i| if i % 2 == 0 { *c } else { o }).collect());
+                    moves.push((0..n).map(|i| if i < n / 2 { *c } else { o }).collect());
+                }
+                for _ in 0..16 {
+                    moves.push((0..n).map(|_| std::array::from_fn(|_| next())).collect());
+                }
+                if *together {
+                    for m in &mut moves {
+                        let z = m[0][2];
+                        for d in m.iter_mut() {
+                            d[2] = z;
+                        }
+                    }
+                }
+                for width in [6.0, 0.3] {
+                    let draw = |points: &[[f64; 3]], filled: bool| {
+                        let mut r = line_record(1, width, *planes);
+                        if filled {
+                            r.paint.fill = Paint::One([0.2, 0.4, 0.6, 1.0]);
+                        }
+                        let s = paths_stream(view.clone(), vec![(points.to_vec(), r)]);
+                        resolved_on_fill(&s, 101)
+                    };
+                    // A frame's stroke is a line's (no plane of its own) where it carries a share.
+                    let on_a_line = |keys: &FillKeys| keys.values().any(|v| v.2 >= 0.0);
+                    let exact = draw(outline, true);
+                    let content_line = on_a_line(&exact);
+                    assert!(
+                        line.is_none_or(|l| l == content_line),
+                        "({phi}, {theta}) {name}: content on a line {content_line}"
+                    );
+                    let bare = draw(outline, false);
+                    let mut costs: Vec<f64> = exact
+                        .iter()
+                        .filter_map(|(at, (_, _, own, _))| {
+                            let (_, _, alone, _) = bare.get(at)?;
+                            (own.is_finite() && *alone > 0.0).then_some(own / alone)
+                        })
+                        .collect();
+                    costs.sort_by(f64::total_cmp);
+                    let covered = exact.values().filter(|v| v.3).count();
+                    let mut ratios: BTreeMap<(u32, u32, usize), f64> = BTreeMap::new();
+                    let (mut row_flips, mut unbounded, mut flat) = (0usize, 0usize, 0usize);
+                    let (mut straddles, mut straddle_worst) = (0usize, 0.0f64);
+                    for m in &moves {
+                        let moved: Vec<[f64; 3]> = outline
+                            .iter()
+                            .zip(m)
+                            .map(|(p, d)| std::array::from_fn(|j| p[j] + d[j] * GRID))
+                            .collect();
+                        let drawn = draw(&moved, true);
+                        if !on_a_line(&drawn) {
+                            assert!(
+                                drawn.values().all(|v| v.2 == f64::NEG_INFINITY),
+                                "({phi}, {theta}) {name}: a flat frame's stroke reads a share"
+                            );
+                            flat += 1;
+                            continue;
+                        }
+                        // Drawn on a line, content flat: the drawn share against content's
+                        // plane-keyed key.
+                        let straddle = !content_line;
+                        straddles += usize::from(straddle);
+                        for (at, (k, e, own, filled)) in drawn {
+                            let Some(&(k0, e0, _, filled0)) = exact.get(&at) else {
+                                continue;
+                            };
+                            row_flips += usize::from(filled != filled0);
+                            assert!(own > 0.0, "own share {own}");
+                            if own.is_infinite() {
+                                unbounded += 1;
+                                continue;
+                            }
+                            let reach = e + e0 + (k.abs() + e) * own;
+                            let moved_by = (k - k0).abs();
+                            if straddle {
+                                straddle_worst = straddle_worst.max(moved_by / reach);
+                                continue;
+                            }
+                            assert!(
+                                moved_by <= reach,
+                                "({phi}, {theta}) {name}, {width} wide, at {at:?}: the key moved \
+                                 by {moved_by:e} against its reach {reach:e}"
+                            );
+                            let ratio = ratios.entry(at).or_insert(0.0);
+                            *ratio = ratio.max(moved_by / reach);
+                        }
+                    }
+                    assert!(
+                        line.is_none_or(|l| (flat == 0) == l && (flat == moves.len()) == !l),
+                        "({phi}, {theta}) {name}: flat in {flat} of {} frames",
+                        moves.len()
+                    );
+                    flips += row_flips;
+                    let mut sorted: Vec<f64> = ratios.values().copied().collect();
+                    sorted.sort_by(f64::total_cmp);
+                    assert!(
+                        *line != Some(true) || sorted.len() > 200,
+                        "({phi}, {theta}) {name}, {width} wide: {} sub-samples",
+                        sorted.len()
+                    );
+                    let (worst, median) = match sorted.len() {
+                        0 => (f64::NAN, f64::NAN),
+                        n => (sorted[n - 1], sorted[n / 2]),
+                    };
+                    let cost = costs.get(costs.len() / 2).copied().unwrap_or(f64::NAN);
+                    rows.push((
+                        phi,
+                        theta,
+                        name.clone(),
+                        width,
+                        [worst, median, cost, straddle_worst],
+                        [sorted.len(), covered, row_flips, unbounded, flat, straddles],
+                    ));
+                }
+            }
+        }
+        assert!(flips > 0, "no fill's cover flipped under the moves");
+        for (phi, theta, name, width, [worst, median, cost, straddle_worst], counts) in rows {
+            let [n, covered, flips, unbounded, flat, straddles] = counts;
+            eprintln!(
+                "TIGHT fill near a line phi {phi} theta {theta} {name} width {width}: {worst:.3} at \
+                 worst, {median:.3} at the median, over {n} sub-samples; the fill covers \
+                 {covered}, its cover flips at {flips}, {unbounded} unbounded; flat in {flat} \
+                 frames, {straddles} on a line against a flat content ({straddle_worst:.3} at \
+                 worst); own over the stroke's alone {cost:.3} at the median"
+            );
+        }
+    }
+
     /// The snap's move of a bent stroke's key at fixed sub-samples, through the frame's own
     /// sampling, as for a straight line above: two straight cubics meeting at 30, 90 and 150
     /// degrees (the first 45 or 10 degrees from the sight axis, the second turned toward the

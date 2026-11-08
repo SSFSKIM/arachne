@@ -2151,6 +2151,11 @@ pub struct Centreline {
     splits: Vec<(f64, f64)>,
     /// The largest magnitude of a coordinate of a segment's end.
     scale: f64,
+    /// For each segment, the cubic of `flats` it is a piece of, `u32::MAX` for none (none given:
+    /// empty).
+    cubics: Vec<u32>,
+    /// Each cubic's cut into pieces ([`Flat`]).
+    flats: Vec<Flat>,
 }
 
 /// How far past its tolerance, in shifts, a drawn split's gap may lie for the content to join the
@@ -2176,6 +2181,157 @@ pub struct Boundary {
     pub key: f64,
     /// Whether the drawn frame splits the two cubics.
     pub split: bool,
+}
+
+/// How far a cubic's length on screen may lie from a step of its piece count for [`Flat::of`] to
+/// measure the count a step away, in pixels: a window of `6 shift` within it is a shift under
+/// `1 / 96` px.
+const ADJACENT: f64 = 1.0 / 16.0;
+
+/// A cubic's cut into pieces, as a step of its count moves a read ([`Centreline::step`]). The count
+/// follows its control polygon's length on screen, `n = clamp(ceil(length / 2), 1, 64)`, so it
+/// steps where the length crosses `2k`, `k` in `1..=63`. Places along the chord are its shares of
+/// the chord, `u = (c - c0) . v / |v|^2` for the chord `v`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Flat {
+    /// The control polygon's length on screen, and how far it lies from the nearest step.
+    pub length: f64,
+    pub step: f64,
+    /// The chord's length on screen; how far the interior control points lie from the first one
+    /// on screen and from the chord's line, the farther of each.
+    pub chord: f64,
+    pub far: f64,
+    pub lateral: f64,
+    /// The interior control points' places along the chord.
+    pub along: [f64; 2],
+    /// The least and most of `0` and the interior control points' keys off the line through the
+    /// ends in place along the chord and key, `kj - k0 - (k3 - k0) uj`.
+    pub low: f64,
+    pub high: f64,
+    /// The control points' keys: the largest magnitude, the ends' difference and the most less the
+    /// least.
+    pub kmax: f64,
+    pub kends: f64,
+    pub span: f64,
+    /// For a cubic within [`ADJACENT`] of a step, its places along the chord in order (it does not
+    /// fold back on it): the most its cut into pieces departs in key, at one place along the chord,
+    /// from its cut into the count across that step, and the largest key slope along the chord, in
+    /// key per pixel, of a piece of either. NaN for any other.
+    pub adjacent: f64,
+    pub slope: f64,
+}
+
+impl Flat {
+    /// The cut of the cubic with control points `c` (screen point and key) and control polygon
+    /// `length` on screen, each cut's points the cubic's weights of them as the path's centreline
+    /// takes them.
+    pub fn of(c: [([f64; 2], f64); 4], length: f64) -> Flat {
+        let count = |len: f64| (len / 2.0).ceil().clamp(1.0, 64.0) as usize;
+        let near = (length / 2.0).round().clamp(1.0, 63.0);
+        let (p0, k0) = c[0];
+        let (p3, k3) = c[3];
+        let v = [p3[0] - p0[0], p3[1] - p0[1]];
+        let chord = libm::hypot(v[0], v[1]);
+        let keys = c.map(|q| q.1);
+        let (least, most) = keys
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, m), k| {
+                (l.min(*k), m.max(*k))
+            });
+        let mut flat = Flat {
+            length,
+            step: (length - 2.0 * near).abs(),
+            chord,
+            far: 0.0,
+            lateral: 0.0,
+            along: [0.0; 2],
+            low: 0.0,
+            high: 0.0,
+            kmax: keys.iter().fold(0.0f64, |m, k| m.max(k.abs())),
+            kends: (k3 - k0).abs(),
+            span: most - least,
+            adjacent: f64::NAN,
+            slope: f64::NAN,
+        };
+        for (j, &(q, k)) in c[1..3].iter().enumerate() {
+            let a = [q[0] - p0[0], q[1] - p0[1]];
+            flat.far = flat.far.max(libm::hypot(a[0], a[1]));
+            if chord > 0.0 {
+                let along = (a[0] * v[0] + a[1] * v[1]) / (chord * chord);
+                flat.along[j] = along;
+                flat.lateral = flat.lateral.max((a[0] * v[1] - a[1] * v[0]).abs() / chord);
+                let off = k - k0 - (k3 - k0) * along;
+                flat.low = flat.low.min(off);
+                flat.high = flat.high.max(off);
+            }
+        }
+        let [u1, u2] = flat.along;
+        let n = count(length);
+        let m = if length <= 2.0 * near {
+            n + 1
+        } else {
+            n.saturating_sub(1)
+        };
+        if chord > 0.0
+            && flat.step <= ADJACENT
+            && (0.0 <= u1 && u1 <= u2 && u2 <= 1.0)
+            && (1..=64).contains(&m)
+        {
+            // Each cut's points, as places along the chord in pixels and keys.
+            let cut = |m: usize| -> Vec<(f64, f64)> {
+                (0..=m)
+                    .map(|s| {
+                        let t = s as f64 / m as f64;
+                        let u = 1.0 - t;
+                        let w = [u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t];
+                        let at = |f: &dyn Fn(usize) -> f64| {
+                            w[0] * f(0) + w[1] * f(1) + w[2] * f(2) + w[3] * f(3)
+                        };
+                        let (x, y) = (at(&|k| c[k].0[0]), at(&|k| c[k].0[1]));
+                        (
+                            ((x - p0[0]) * v[0] + (y - p0[1]) * v[1]) / chord,
+                            at(&|k| c[k].1),
+                        )
+                    })
+                    .collect()
+            };
+            // The most `a`'s points depart from `b` read at their places (each of `b`'s pieces
+            // keyed linearly along the chord; one with no extent along it, at either end).
+            let departure = |a: &[(f64, f64)], b: &[(f64, f64)]| {
+                let mut j = 0;
+                let mut most = 0.0f64;
+                for &(u, k) in a {
+                    while j + 2 < b.len() && b[j + 1].0 < u {
+                        j += 1;
+                    }
+                    let ((ua, ka), (ub, kb)) = (b[j], b[j + 1]);
+                    most = if ub > ua {
+                        let s = ((u - ua) / (ub - ua)).clamp(0.0, 1.0);
+                        most.max((k - (ka + (kb - ka) * s)).abs())
+                    } else {
+                        most.max((k - ka).abs()).max((k - kb).abs())
+                    };
+                }
+                most
+            };
+            let slope = |a: &[(f64, f64)]| {
+                a.windows(2).fold(0.0f64, |s, w| {
+                    let (du, dk) = (w[1].0 - w[0].0, (w[1].1 - w[0].1).abs());
+                    s.max(if du > 0.0 {
+                        dk / du
+                    } else if dk > 0.0 {
+                        f64::INFINITY
+                    } else {
+                        0.0
+                    })
+                })
+            };
+            let (a, b) = (cut(n), cut(m));
+            flat.adjacent = departure(&a, &b).max(departure(&b, &a));
+            flat.slope = slope(&a).max(slope(&b));
+        }
+        flat
+    }
 }
 
 impl Centreline {
@@ -2210,6 +2366,20 @@ impl Centreline {
         breaks: &[usize],
         joints: &[Boundary],
     ) -> Centreline {
+        Centreline::with_flats(points, errors, turns, breaks, joints, &[], &[])
+    }
+
+    /// [`Centreline::with_joints`] with the segment ending at point `i` a piece of cubic
+    /// `pieces[i]` of `flats` ([`Flat`]; `u32::MAX`, or none given: of none).
+    pub fn with_flats(
+        points: &[([f64; 2], f64)],
+        errors: &[f64],
+        turns: &[f64],
+        breaks: &[usize],
+        joints: &[Boundary],
+        pieces: &[u32],
+        flats: &[Flat],
+    ) -> Centreline {
         debug_assert!(joints.windows(2).all(|w| w[0].end < w[1].end));
         let err = |i: usize| errors.get(i).copied().unwrap_or(0.0);
         let turn = |i: usize| turns.get(i).copied().unwrap_or(2.0);
@@ -2218,6 +2388,7 @@ impl Centreline {
         let mut turned = Vec::new();
         // The point of the list each segment ends at.
         let mut ends = Vec::new();
+        let mut cubics = Vec::new();
         for i in 1..points.len() {
             if breaks.contains(&i) {
                 continue;
@@ -2232,6 +2403,7 @@ impl Centreline {
                 errs.push(err(i - 1).max(err(i)));
                 turned.push(turn(i));
                 ends.push(i);
+                cubics.push(pieces.get(i).copied().unwrap_or(u32::MAX));
             }
         }
         if segments.is_empty()
@@ -2244,6 +2416,7 @@ impl Centreline {
             errs.push(err(i));
             turned.push(2.0);
             ends.push(i);
+            cubics.push(u32::MAX);
         }
         let n = segments.len();
         // Segment `s` ends at the point the next starts at, of one cubic.
@@ -2299,6 +2472,8 @@ impl Centreline {
             joined_most,
             splits,
             scale,
+            cubics: if flats.is_empty() { Vec::new() } else { cubics },
+            flats: flats.to_vec(),
         }
     }
 
@@ -2384,6 +2559,65 @@ impl Centreline {
             self.splits[k - 1].1 + 2e-5 * shift
         };
         self.joined_most.max(split)
+    }
+
+    /// How far a step of its cubic's piece count may move a read of segment `i`, a piece of that
+    /// cubic, at one place on screen, where the snap moves each point the curve is drawn through by
+    /// at most `shift` pixels on screen and each key by at most `share` of itself; `0` for a
+    /// segment of no cubic, where no step may be crossed, and for a cubic curved on screen
+    /// ([`Centreline::slide_under`] states that limit).
+    ///
+    /// Each leg of the control polygon moves by at most twice the shift, so its length by at most
+    /// `6 shift`: a step lies within that of the drawn length, or the counts agree. Where the
+    /// content's interior control points may lie on its chord's line (the drawn ones within
+    /// `(2 + 2 |u'|) shift` of the drawn chord's: the content's line passes within the shift of the
+    /// drawn ends, `|u'|` the most a content place along the chord may be), every cut of the
+    /// content lies on one line and is read at one place along it for both counts. A cut's points
+    /// are the cubic's weights of its control points, keyed linearly along each piece, so each key
+    /// lies within the least and most of `0`, `r1` and `r2` off the line through the ends in place
+    /// and key, `rj = kj - k0 - (k3 - k0) uj` (the band): two cuts' reads at one place differ by at
+    /// most its width. The content's band lies within `2 E (1 + |u'|) + |k3 - k0| du` of the drawn
+    /// one at each end, `E = share (1 + share) max |k|` and `du` the most a place along the chord
+    /// moves (its chord `v` and an interior point's offset `a` from the first each moving by at
+    /// most `2 shift`: `|du| <= (2 shift (|v| + |a|) + 4 shift^2) / |v'|^2 + |a| |v| (2 |v| +
+    /// 2 shift) 2 shift / (|v|^2 |v'|^2)`, `|v'| >= |v| - 2 shift`). Where the window holds one step
+    /// and the drawn cubic does not fold back on its chord, the drawn cut and the one across the
+    /// step ([`Flat::adjacent`]) depart by at most `adjacent` at one place, and each content cut
+    /// within `E + slope shift` of the drawn cut of its count (each content point lies within the
+    /// shift and `E` of the drawn one, and at weights alike between two of them, so within the
+    /// shift along the chord of a drawn point keyed within `E`): `adjacent + 2 (E + slope shift)`,
+    /// where that is the lesser. Where the chord may turn freely (it is shorter than `4 shift`),
+    /// each key lies within the control points' keys: the span and `2 E`.
+    fn step(&self, i: usize, shift: f64, share: f64) -> f64 {
+        let Some(f) = self.cubics.get(i).and_then(|c| self.flats.get(*c as usize)) else {
+            return 0.0;
+        };
+        let room = self.rounding(f.length);
+        let window = 6.0 * shift * (1.0 + 1e-9) + room;
+        if f.step.is_nan() || f.step > window {
+            return 0.0;
+        }
+        let keys = share * (1.0 + share) * f.kmax;
+        let lean = 2.0 * shift;
+        let rounding = 64.0 * U * (f.kmax + f.span);
+        if f.chord <= 2.0 * lean + room {
+            return (f.span + 2.0 * keys + rounding) * (1.0 + 16.0 * U);
+        }
+        let (v, a) = (f.chord, f.far);
+        let short = v - lean;
+        let du = (lean * (v + a) + lean * lean) / (short * short)
+            + a * v * (2.0 * v + lean) * lean / (v * v * short * short);
+        let wide = f.along[0].abs().max(f.along[1].abs()) + du;
+        if f.lateral > shift * (2.0 + 2.0 * wide) * (1.0 + 1e-9) + room {
+            return 0.0;
+        }
+        let band = f.high - f.low + 2.0 * (2.0 * keys * (1.0 + wide) + f.kends * du);
+        let adjacent = if window < 1.0 && f.adjacent.is_finite() && f.slope.is_finite() {
+            f.adjacent + 2.0 * (keys + f.slope * shift * (1.0 + 1e-9))
+        } else {
+            f64::INFINITY
+        };
+        (band.min(adjacent) + rounding) * (1.0 + 16.0 * U)
     }
 
     /// How far past `shift` the start of segment `i` may move, its key past `share` of itself, and
@@ -2569,16 +2803,24 @@ impl Centreline {
     /// the fill's read is never nearer than the stroke's, as on a convex outline with no other part
     /// holding the outer wedge of a corner, the bound is the stroke's own, away from a cubic's ends.
     ///
-    /// Two moves lie outside this bound, stated limits gated on exposure. The flattening of a
-    /// curved cubic into pieces changes where the snap changes how many pieces it is cut into (the
-    /// count follows its control polygon's length on screen); that moves no read of a straight
-    /// cubic, whose flattened pieces lie on its line with its key there, and this does not cover
-    /// it for a curved one. The core never sees unsnapped geometry, so the fix is that the writer
-    /// records the flattening count (or what fixes it) as a canonical record field, or the reach
-    /// bounds the chord change. And the key is linear along a segment on screen only where the
-    /// projection maps a straight line in the world to one keyed linearly on screen, as the default
-    /// projection does; under the exponential option the flattened pieces' keys depart from the
-    /// curve's own by the flattening error, which this does not cover either.
+    /// A cubic is cut into a number of pieces that follows its control polygon's length on screen,
+    /// and the snap may carry that length across a step of the count. Any cubic not collinear in
+    /// screen position and key (any other cubic, straight on screen or not) is exposed to the key's
+    /// change there: a cubic straight on screen keeps its pieces on its line, but a key that is not
+    /// linear along it departs from each cut by its own chord error. Where the step may be crossed,
+    /// each of the cubic's pieces' moves takes how far a read at one place may move between the two
+    /// counts ([`Centreline::step`]).
+    ///
+    /// Two moves lie outside this bound, stated limits gated on exposure. At a step a cubic curved
+    /// on screen also moves its pieces on screen, by up to its cut's chord error there, as the
+    /// content's own bend of a cubic drawn straight does (within the shift's reach of its chord, so
+    /// by a share of the shift); this does not cover those. The core never sees unsnapped geometry,
+    /// so the fix is that the writer records the piece count (or what fixes it) as a canonical
+    /// record field. And the key is linear along a segment on screen only where the projection maps
+    /// a straight line in the world to one keyed linearly on screen, as the default projection does
+    /// in front of the eye (where alone a plane's key is affine on screen); under the exponential
+    /// option the pieces' keys depart from the curve's own by the cut's error, which this does not
+    /// cover either.
     pub fn slide_under(
         &self,
         p: [f64; 2],
@@ -2616,6 +2858,8 @@ impl Centreline {
             // Where the segment begins a cubic after another, its start moves by `slack` more, its
             // key by `key_slack`, and its ends apart on their own ([`Centreline::slack`]).
             let (slack, key_slack, whole) = self.slack(i, shift, share);
+            // A step of its cubic's piece count moves its read at one place by up to `step`.
+            let step = self.step(i, shift, share);
             let moved = shift + slack;
             let turn = if whole {
                 2.0 * shift + slack
@@ -2634,13 +2878,13 @@ impl Centreline {
                 let past = (-raw).max(raw - 1.0).max(0.0);
                 (
                     dt,
-                    (1.0 + share) * spread * (dt - past).clamp(0.0, 1.0) + key_slack,
+                    (1.0 + share) * spread * (dt - past).clamp(0.0, 1.0) + key_slack + step,
                 )
             } else {
                 let most = ka.abs().max(kb.abs());
                 (
                     f64::INFINITY,
-                    (1.0 + share) * spread + share * most + key_slack,
+                    (1.0 + share) * spread + share * most + key_slack + step,
                 )
             };
             let d = d2.sqrt();

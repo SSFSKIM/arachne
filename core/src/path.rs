@@ -50,7 +50,7 @@ use crate::composite::{
     Coverage, FlatRecord, Fragment, OpaquePass, Plane, Producer, Rect, SAMPLES, TransparentPass,
     premultiply, sample_cell, sample_point,
 };
-use crate::depth::{Boundary, Centreline, Planarity, Registry, WorldPlane};
+use crate::depth::{Boundary, Centreline, Flat, Planarity, Registry, WorldPlane};
 use crate::gradient::{self, Linear};
 use crate::project::{FrameMap, Placement, Projection, placement, pre_display, produced_key};
 use crate::scanline::{self, Edge, Scratch};
@@ -914,13 +914,16 @@ fn nearest_plane_departure(key: &Plane, shown: &[[f64; 3]], map: &FrameMap, p: &
 /// The screen polyline of a path's cubics with the depth key carried along each (the cubic of its
 /// control points' keys, at the same parameter), each key with its error: the greatest of its
 /// control points' ([`Projection::key_error`]) and the rounding of the cubic's weighted sum. Each
-/// cubic's first piece after another of the list is a joint ([`Boundary`]).
+/// cubic's first piece after another of the list is a joint ([`Boundary`]), and each cubic's cut
+/// into pieces is recorded ([`Flat`]).
 fn curve_depth(shown: &[[f64; 3]], map: &FrameMap, projection: &Projection) -> Centreline {
     let mut points = Vec::new();
     let mut errors = Vec::new();
     let mut turns = Vec::new();
     let mut breaks = Vec::new();
     let mut joints = Vec::new();
+    let mut pieces = Vec::new();
+    let mut flats = Vec::new();
     let screen = |p: [f64; 3]| (map.apply(p), -projection.factor(p[2]));
     // The joint of the cubic at `i` after another, its first piece ending at point `end`: the
     // previous cubic's end and this one's first point as drawn, CE's tolerance at the latter through
@@ -944,6 +947,7 @@ fn curve_depth(shown: &[[f64; 3]], map: &FrameMap, projection: &Projection) -> C
         points.push(screen(shown[start]));
         errors.push(projection.key_error(shown[start]));
         turns.push(2.0);
+        pieces.push(u32::MAX);
         for i in (start..=end - 4).step_by(4) {
             let c = [i, i + 1, i + 2, i + 3].map(|k| screen(shown[k]));
             let err = [i, i + 1, i + 2, i + 3]
@@ -962,6 +966,7 @@ fn curve_depth(shown: &[[f64; 3]], map: &FrameMap, projection: &Projection) -> C
             } else {
                 1
             };
+            flats.push(Flat::of(c, length));
             let weights = |t: f64| {
                 let u = 1.0 - t;
                 [u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t]
@@ -974,6 +979,7 @@ fn curve_depth(shown: &[[f64; 3]], map: &FrameMap, projection: &Projection) -> C
                 };
                 points.push(([at(&|k| c[k].0[0]), at(&|k| c[k].0[1])], at(&|k| c[k].1)));
                 errors.push(err);
+                pieces.push(flats.len() as u32 - 1);
                 if s == 1 && i >= 4 {
                     joints.push(joint(i, points.len() - 1, i == start));
                 }
@@ -991,7 +997,7 @@ fn curve_depth(shown: &[[f64; 3]], map: &FrameMap, projection: &Projection) -> C
             }
         }
     }
-    Centreline::with_joints(&points, &errors, &turns, &breaks, &joints)
+    Centreline::with_flats(&points, &errors, &turns, &breaks, &joints, &pieces, &flats)
 }
 
 /// How far on screen, in pixels, the snap may move any point a curve through `shown` (as the
@@ -1032,8 +1038,8 @@ fn screen_shift(
 #[derive(Clone, Debug)]
 pub struct Keyed {
     /// The plane its fill is keyed on against what shares none of its identities: a flat path's
-    /// own; for a path with no plane of its own, the one it is keyed on on no identity (its plane
-    /// fitted, an axis-coded line's axis plane), `None` for its curve's depth.
+    /// own; `None` for its curve's depth, as for a path with no plane of its own, whose points lie
+    /// on a line ([`Lowering::coplanar`]).
     pub plane: Option<WorldPlane>,
     /// Its identities ([`Fragment::plane`]), all zero for none.
     pub ids: [u32; 4],
@@ -1209,12 +1215,14 @@ impl<'v> Lowering<'v> {
     /// not lie on a line, takes part in the partition and is keyed on its own plane; a path with
     /// no plane of its own (points on a line, however coded; a curve) attaches to every identity on
     /// whose plane it lies and is read on each one's plane against what shares it, and against
-    /// anything else as it is on none: on its own plane, or by its curve's depth (on no flat
-    /// record's identity, it shares one with the others on each axis plane it lies on, coded or
-    /// exactly, and is read on each such plane against them alike). So things on one plane
-    /// tie by draw order, though each plane fitted to snapped points differs by the snap's noise,
-    /// and attaching moves no key read against anything else. A surface's face on no one plane,
-    /// and a pre-projected path, keep the plane fitted to their own points.
+    /// anything else by its curve's depth, its fill as its strokes (on no flat record's identity,
+    /// it shares one with the others on each axis plane it lies on, coded or exactly, and is read
+    /// on each such plane against them alike). Its points have no area for a plane to be a face
+    /// on, so no plane fitted to them keys it: read at their outline, such a plane departs from
+    /// their depth by the fit's departure over the cosine of a near-grazing angle. So things on
+    /// one plane tie by draw order, though each plane fitted to snapped points differs by the
+    /// snap's noise, and attaching moves no key read against anything else. A surface's face on no
+    /// one plane, and a pre-projected path, keep the plane fitted to their own points.
     pub fn coplanar(&self, draws: &[PathDraw<'_>], registry: &mut Registry) -> Vec<Option<Keyed>> {
         let mut found = vec![None; draws.len()];
         let mut offered = Vec::new();
@@ -1248,7 +1256,7 @@ impl<'v> Lowering<'v> {
             found[i] = if !flat && registry.attached(handle) {
                 let on = ids.iter().take_while(|id| **id != 0);
                 Some(Keyed {
-                    plane: own,
+                    plane: None,
                     ids,
                     planarity,
                     shared: on.clone().map(|id| registry.plane(*id)).collect(),
@@ -1264,7 +1272,7 @@ impl<'v> Lowering<'v> {
             } else if !flat {
                 let on = ids.iter().take_while(|id| **id != 0);
                 Some(Keyed {
-                    plane: own,
+                    plane: None,
                     ids,
                     planarity,
                     shared: on.map(|id| registry.plane(*id)).collect(),
@@ -1456,7 +1464,7 @@ impl<'v> Lowering<'v> {
             // path's term, against what shares that plane ([`Producer::plane_depths`]): a stroke,
             // keyed on its curve, and the fill, whose own key beyond its outline is the plane's at
             // the outline's nearest point ([`fringe_depths`]), or for a path with no plane of its
-            // own, its key on its own plane or its curve.
+            // own, its key along its curve.
             let on_plane = if ids[0] != 0 { plane_rows } else { [None; 4] };
             let snap = if k == 1 || on_plane.iter().any(Option::is_some) {
                 fill_snap
@@ -1581,8 +1589,8 @@ impl<'v> Lowering<'v> {
     /// points lie near) has no plane content put it on: zero. A path with no plane of its own on
     /// identities ([`Keyed::shared`]) is read on each one's plane against what shares it: for
     /// each, how far its points may stand off that plane ([`Keyed::offs`]) bounds how far it may
-    /// stand from that plane, and it carries the most of those; its fill keyed as on none
-    /// ([`Keyed::plane`]), on its own plane or along its curve; on no identity, its fill keyed so,
+    /// stand from that plane, and it carries the most of those; its fill keyed as on none, along
+    /// its curve ([`Keyed::plane`]); on no identity, its fill keyed so,
     /// where the camera keys the first identity's plane nowhere (the eye in it). One on axis
     /// planes alone (no `offs`: on no flat record's identity) is read on each of those the camera
     /// keys, carrying the most of the snap's departures along them and its points' from them, and
@@ -1614,7 +1622,7 @@ impl<'v> Lowering<'v> {
             .and_then(|on| {
                 let region = self.region(shown, reach);
                 // Its own key, read against what shares none of its identities: on its own plane,
-                // or none (its curve's depth) for a path with no plane of its own keyed so on none.
+                // or none (its curve's depth), as for a path with no plane of its own.
                 let key = on.plane.and_then(|plane| {
                     let mut key = p.key_plane(&plane, &self.map, world[0], 0.0, region)?;
                     if on.planarity == Planarity::Nearest {
@@ -2535,10 +2543,10 @@ mod tests {
     /// the eye, so the camera keys that plane nowhere; and a sliver a quarter grid step wide lying
     /// on it, filled, its points on a line to within the grid and coded on the axis plane of z:
     /// the sliver, with no plane of its own, lies on the face's identity, and its fill is keyed
-    /// on its own plane and on no identity, as it is with the face not drawn (then on its axis
+    /// along its curve and on no identity, as it is with the face not drawn (then on its axis
     /// plane's identity alone).
     #[test]
-    fn a_fill_on_an_identity_whose_plane_holds_the_eye_keeps_its_own_key() {
+    fn a_planeless_sliver_on_an_identity_whose_plane_holds_the_eye_is_keyed_along_its_curve() {
         let grid = 1.0 / 16384.0;
         let mut view = crate::probes::view(854, 480, 0.0, -std::f64::consts::FRAC_PI_2);
         view.input_grid = grid;
@@ -2649,10 +2657,139 @@ mod tests {
             alone.ids
         );
         assert!(
-            key.is_some() && key == key_alone,
+            key.is_none() && key_alone.is_none(),
             "{key:?} against {key_alone:?}"
         );
         assert_eq!(ids, [0; 4]);
+    }
+
+    /// The camera of the row above, its face on the plane `x = 0`, which holds the eye, and a
+    /// smaller face, filled and coded Newell, turned off that plane about y by 5e-5 (its points
+    /// within a quarter grid step of it): a face with area, flat, on the first one's identity,
+    /// whose own plane the camera keys, nearly edge-on. The first face is the larger so that it
+    /// founds the identity on its plane (the registry founds identities from the least spread
+    /// first). The turned face's fill keeps its own key, its own plane's, on that identity, whose
+    /// plane the camera keys nowhere, and as it does with the first face not drawn.
+    #[test]
+    fn a_flat_fill_on_an_identity_whose_plane_holds_the_eye_keeps_its_own_key() {
+        let grid = 1.0 / 16384.0;
+        let mut view = crate::probes::view(854, 480, 0.0, -std::f64::consts::FRAC_PI_2);
+        view.input_grid = grid;
+        let ring = |c: &[[f64; 3]]| -> Vec<[f64; 3]> {
+            let mut out = Vec::new();
+            for (i, a) in c.iter().enumerate() {
+                let b = c[(i + 1) % c.len()];
+                let at = |t: f64| std::array::from_fn(|k| a[k] + (b[k] - a[k]) * t);
+                out.extend([*a, at(1.0 / 3.0), at(2.0 / 3.0), b]);
+            }
+            out
+        };
+        let face = ring(&[
+            [0.0, -0.4, -0.4],
+            [0.0, 0.4, -0.4],
+            [0.0, 0.4, 0.4],
+            [0.0, -0.4, 0.4],
+        ]);
+        let off = 0.3 * 5e-5;
+        let turned = ring(&[
+            [-off, -0.3, -0.3],
+            [-off, 0.3, -0.3],
+            [off, 0.3, 0.3],
+            [off, -0.3, 0.3],
+        ]);
+        let record = |slot: u32| {
+            let mut r = Record::new(RecordKind::Path, slot, 100 + slot);
+            r.paint.fill = Paint::One([0.2, 0.4, 0.8, 1.0]);
+            r.depth.space = Space::World;
+            r.planes = Some(vec![Planarity::Newell.code()]);
+            r
+        };
+        let (face_record, turned_record) = (record(1), record(2));
+        fn draw<'a>(record: &'a Record, points: &[[f64; 3]], order: u32) -> PathDraw<'a> {
+            PathDraw {
+                record,
+                points: std::borrow::Cow::Owned(points.to_vec()),
+                place: IDENTITY,
+                places: [IDENTITY, IDENTITY],
+                fill: Some(vec![[0.2, 0.4, 0.8, 1.0]]),
+                stroke: None,
+                background_stroke: None,
+                ends: None,
+                surface: false,
+                pre_projected: false,
+                pivot: None,
+                stroke_width: 0.0,
+                background_stroke_width: 0.0,
+                order,
+                sub: 0,
+                which: 0,
+            }
+        }
+        // Each face as keyed, the turned face's fill layer's key and identities, and whether the
+        // camera keys the plane of its first identity.
+        let lowered = |with_face: bool| {
+            let mut draws = Vec::new();
+            if with_face {
+                draws.push(draw(&face_record, &face, 0));
+            }
+            draws.push(draw(&turned_record, &turned, 1));
+            let mut registry = Registry::new(&view);
+            let mut lowering = Lowering::new(&view, 854, 480);
+            let keyed = lowering.coplanar(&draws, &mut registry);
+            let on: Vec<Keyed> = keyed.iter().cloned().map(|k| k.expect("keyed")).collect();
+            let p = lowering.projection.clone().expect("a 3D camera");
+            let region = [0.0, 0.0, 854.0, 480.0];
+            let last = on.last().expect("the turned face");
+            let keys = last.ids[0] != 0
+                && p.key_plane(
+                    &registry.plane(last.ids[0]),
+                    &lowering.map,
+                    turned[0],
+                    0.0,
+                    region,
+                )
+                .is_some();
+            let own = last
+                .plane
+                .and_then(|plane| p.key_plane(&plane, &lowering.map, turned[0], 0.0, region));
+            for (d, k) in draws.iter().zip(keyed) {
+                lowering.path(d, k);
+            }
+            let fill = lowering
+                .paths
+                .layers
+                .iter()
+                .find(|l| l.order == 1 && l.sub == 1)
+                .map(|l| match l.depth {
+                    LayerDepth::Plane(key) => (Some(key), l.plane),
+                    LayerDepth::Curve(..) => (None, l.plane),
+                })
+                .expect("the turned face's fill");
+            (on, fill, keys, own)
+        };
+        let (on, (key, ids), keys, own) = lowered(true);
+        assert!(
+            on.iter().all(|k| !k.planeless && k.record.is_some()),
+            "both faces flat"
+        );
+        assert!(
+            on[1].ids[0] != 0 && on[1].ids[0] == on[0].ids[0],
+            "the turned face lies on {:?}, the face on {:?}",
+            on[1].ids,
+            on[0].ids
+        );
+        assert!(!keys, "the camera keys the identity's plane");
+        assert!(
+            own.is_some(),
+            "the camera keys the turned face's own plane nowhere"
+        );
+        let (_, (key_alone, _), _, _) = lowered(false);
+        let terms = |k: Option<Plane>| k.map(|k| [k.a, k.b, k.c]);
+        assert!(
+            key.is_some() && terms(key) == terms(own) && key == key_alone,
+            "{key:?} against its own {own:?} and alone {key_alone:?}"
+        );
+        assert_eq!(ids[0], on[1].ids[0]);
     }
 
     /// The camera looking down z: a point at depth `z` keyed `-20 / (20 - z)`.
@@ -2753,47 +2890,135 @@ mod tests {
     /// piece from the first one's end, a point of its own, so the piece's ends move apart by up to
     /// twice the shift whatever its weights (its end moves with its cubic's points, its start with
     /// the other cubic's). The second cubic is long, so its first piece's weights hold its ends
-    /// together closely. Read across that piece, a stroke 6 px wide.
+    /// together closely: 36 px, its piece count on a step the content crosses, and 36.9 px, on
+    /// none. Read across that piece, a stroke 6 px wide.
     #[test]
     fn at_a_cubic_boundary_snapped_to_one_point_the_next_piece_s_ends_move_apart_on_their_own() {
         let map = FrameMap::cairo(1280, 720, 1280.0 / 90.0, 8.0, [0.0; 3]);
         let delta = 1.8e-5;
         let shift = delta * map.xx * (1.0 + 1e-6);
         let at = |y: f64| [6.0, y, 5.0 * (y + 0.3)];
-        let drawn = [straight(at(-0.3), at(0.0)), straight(at(0.0), at(0.41))].concat();
-        let moved = |e: [f64; 2], s: [f64; 2]| {
-            let mut c = drawn.clone();
-            c[3] = [c[3][0] + e[0], c[3][1] + e[1], c[3][2]];
-            c[4] = [c[4][0] + s[0], c[4][1] + s[1], c[4][2]];
-            c
-        };
-        let mut contents = vec![
-            moved([delta, 0.0], [-delta, 0.0]),
-            moved([-delta, 0.0], [delta, 0.0]),
-        ];
-        assert!(contents.iter().all(|c| subpaths(c).len() == 1));
-        let mut seeded = Seeded(0x6a09_e667_f3bc_c908);
-        for _ in 0..16 {
-            let mut turn =
-                || (seeded.next() >> 11) as f64 / (1u64 << 53) as f64 * std::f64::consts::TAU;
-            let a = turn();
-            let b = turn();
-            contents.push(moved(
-                [delta * libm::cos(a), delta * libm::sin(a)],
-                [delta * libm::cos(b), delta * libm::sin(b)],
-            ));
+        let mut failed = Vec::new();
+        for end in [0.4, 0.41] {
+            let drawn = [straight(at(-0.3), at(0.0)), straight(at(0.0), at(end))].concat();
+            let moved = |e: [f64; 2], s: [f64; 2]| {
+                let mut c = drawn.clone();
+                c[3] = [c[3][0] + e[0], c[3][1] + e[1], c[3][2]];
+                c[4] = [c[4][0] + s[0], c[4][1] + s[1], c[4][2]];
+                c
+            };
+            let mut contents = vec![
+                moved([delta, 0.0], [-delta, 0.0]),
+                moved([-delta, 0.0], [delta, 0.0]),
+            ];
+            assert!(contents.iter().all(|c| subpaths(c).len() == 1));
+            let mut seeded = Seeded(0x6a09_e667_f3bc_c908);
+            for _ in 0..16 {
+                let mut turn =
+                    || (seeded.next() >> 11) as f64 / (1u64 << 53) as f64 * std::f64::consts::TAU;
+                let a = turn();
+                let b = turn();
+                contents.push(moved(
+                    [delta * libm::cos(a), delta * libm::sin(a)],
+                    [delta * libm::cos(b), delta * libm::sin(b)],
+                ));
+            }
+            let v = map.apply(at(0.0));
+            let points = grid(v[0] - 3.0, v[0] + 3.0, v[1] - 2.5, v[1] + 0.5, 0.1);
+            let (ratio, p, moved_by, reach) =
+                worst_over_reach(&drawn, &contents, &map, &points, 3.0, shift, 0.0, false);
+            let px = end * 90.0;
+            eprintln!(
+                "TIGHT cubic boundary snapped to one point, {px:.1} px: {ratio:.3} at worst over {} \
+                 points, at {p:?}",
+                points.len()
+            );
+            if ratio > 1.0 {
+                failed.push(format!(
+                    "{px:.1} px, at {p:?}: the key moved by {moved_by:e} against its reach {reach:e}"
+                ));
+            }
         }
-        let v = map.apply(at(0.0));
-        let points = grid(v[0] - 3.0, v[0] + 3.0, v[1] - 2.5, v[1] + 0.5, 0.1);
-        let (ratio, p, moved_by, reach) =
-            worst_over_reach(&drawn, &contents, &map, &points, 3.0, shift, 0.0, false);
-        eprintln!(
-            "TIGHT cubic boundary snapped to one point: {ratio:.3} at worst over {} points, at {p:?}",
-            points.len()
-        );
+        assert!(failed.is_empty(), "snapped to one point: {failed:?}");
+    }
+
+    /// The worst move over reach, over a stroke 6 px wide read across the straight cubic `drawn`
+    /// (on screen along y), of the contents with its ends moved apart and together along it by
+    /// `delta` and of 16 seeded moves of every point by `delta`.
+    fn step_row(drawn: &[[f64; 3]], delta: f64, seed: u64) -> (f64, [f64; 2], f64, f64) {
+        let map = FrameMap::cairo(1280, 720, 1280.0 / 90.0, 8.0, [0.0; 3]);
+        let shift = delta * map.xx * (1.0 + 1e-6);
+        let mut contents = Vec::new();
+        for s in [-1.0, 1.0] {
+            let mut c = drawn.to_vec();
+            c[0][1] -= s * delta;
+            c[3][1] += s * delta;
+            contents.push(c);
+        }
+        let mut seeded = Seeded(seed);
+        for _ in 0..16 {
+            let mut c = drawn.to_vec();
+            for q in &mut c {
+                let a = (seeded.next() >> 11) as f64 / (1u64 << 53) as f64 * std::f64::consts::TAU;
+                q[0] += delta * libm::cos(a);
+                q[1] += delta * libm::sin(a);
+            }
+            contents.push(c);
+        }
+        let ys: Vec<f64> = drawn.iter().map(|q| map.apply(*q)[1]).collect();
+        let x = map.apply(drawn[0])[0];
+        let (y0, y1) = ys
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, m), y| {
+                (l.min(*y), m.max(*y))
+            });
+        let points = grid(x - 3.0, x + 3.0, y0 - 0.5, y1 + 0.5, 0.1);
+        worst_over_reach(drawn, &contents, &map, &points, 3.0, shift, 0.0, false)
+    }
+
+    /// A cubic straight on screen in a plane through the eye, 5 to 15 deep before a camera 20 away
+    /// (keyed `-4/3` to `-4`) over 36 px: its key bends far off its chord, and its piece count
+    /// sits on a step (at 36 px, and 1.5 shifts short of it) that the content crosses, cutting it
+    /// into one piece more or fewer. Within the reach its pieces take from the cut a step away.
+    #[test]
+    fn at_a_piece_count_step_a_depth_curved_cubic_s_read_moves_within_its_reach() {
+        let delta = 1.8e-5;
+        let mut failed = Vec::new();
+        for short in [0.0, 1.5] {
+            let drawn = straight([6.0, 0.0, 5.0], [6.0, 0.4 - short * delta, 15.0]);
+            let (ratio, p, moved_by, reach) = step_row(&drawn, delta, 0xbb67_ae85_84ca_a73b);
+            eprintln!(
+                "TIGHT piece-count step, depth-curved cubic {short} shifts short: {ratio:.3} at \
+                 worst, at {p:?}"
+            );
+            if ratio > 1.0 {
+                failed.push(format!(
+                    "{short} shifts short, at {p:?}: the key moved by {moved_by:e} against its \
+                     reach {reach:e}"
+                ));
+            }
+        }
+        assert!(failed.is_empty(), "{failed:?}");
+    }
+
+    /// The depth-curved cubic of the row above folding back on its chord, its control points 0,
+    /// 24, -4 and 20 px along it (76 px of control polygon, on a step): no single place along the
+    /// chord holds one point of each cut, so its pieces take the band.
+    #[test]
+    fn at_a_piece_count_step_a_cubic_folding_back_on_its_chord_takes_the_band() {
+        let delta = 1.8e-5;
+        let at = |px: f64, z: f64| [6.0, px / 90.0, z];
+        let drawn = [
+            at(0.0, 5.0),
+            at(24.0, 5.0 + 10.0 / 3.0),
+            at(-4.0, 5.0 + 20.0 / 3.0),
+            at(20.0, 15.0),
+        ];
+        let (ratio, p, moved_by, reach) = step_row(&drawn, delta, 0x3c6e_f372_fe94_f82b);
+        eprintln!("TIGHT piece-count step, folding back: {ratio:.3} at worst, at {p:?}");
         assert!(
             ratio <= 1.0,
-            "snapped to one point, at {p:?}: the key moved by {moved_by:e} against its reach {reach:e}"
+            "at {p:?}: the key moved by {moved_by:e} against its reach {reach:e}"
         );
     }
 
