@@ -934,9 +934,12 @@ class Record:
             )
         if filled:
             self._read_images(scene.renderer.camera, seq, [*roots, *foreground])
+        # A record that can't be drawn is drawn by nothing, and nothing of the
+        # scene runs to measure it: the depth reference points are read of a
+        # record that can be.
         references = (
             _references(grouped, previous.references if previous else ())
-            if grouped
+            if grouped and self._entry_refusal is None and self.refusal is None
             else ()
         )
         play = len(self.plays) if kind != "final" else -1

@@ -575,3 +575,30 @@ class PixelShapeChangedInSetup(Scene):
     def construct(self):
         self.add(_cloud())
         self.wait(0.2)
+
+
+class _ShiftsWhenAsked(Square):
+    """A shaded square whose own code answers the depth sort's question by
+    moving: asked, it counts and shifts.
+    """
+
+    def __init__(self):
+        super().__init__(shade_in_3d=True)
+        self.z_index_group = VectorizedPoint([0.0, 0.0, -1.0])
+        self.asked = 0
+
+    def get_z_index_reference_point(self):
+        self.asked += 1
+        self.shift(0.2 * RIGHT)
+        return super().get_z_index_reference_point()
+
+
+class RefusedDepthAnswer(ThreeDScene):
+    """A scene whose mobject overrides what a draw runs (so its record is
+    refused) and whose override of the depth sort's question moves it.
+    """
+
+    def construct(self):
+        self.mover = _ShiftsWhenAsked()
+        self.add(self.mover)
+        self.wait(0.25)

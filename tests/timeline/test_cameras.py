@@ -590,3 +590,17 @@ def test_a_pixel_shape_changed_as_the_file_is_imported_is_drawn_as_it_runs(
     expected = _cloud_as_ce_draws(2 * width, 2 * width)
     for frame in _answered(session, [Fraction(k, 15) for k in range(3)]):
         np.testing.assert_array_equal(frame, expected)
+
+
+def test_a_capture_that_finds_a_refusal_runs_no_depth_callback_of_the_scene(
+    session_of,
+):
+    """Once a mobject's own drawing code has refused the record, nothing is
+    drawn from it, and no code of the scene runs to measure it: the scene's
+    mobject is where its own script left it.
+    """
+    session = session_of("RefusedDepthAnswer", CAMERA_SCENES)
+    assert session.record.refusal is not None
+    mover = session.scene.mover
+    assert mover.asked == 0
+    assert mover.get_center()[0] == 0.0
