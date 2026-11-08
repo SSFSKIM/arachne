@@ -216,6 +216,22 @@ def test_a_display_function_of_another_camera_is_the_scene_s_code():
     assert_same_writes(on, off)
 
 
+def test_a_wrapped_do_nothing_display_function_is_the_scene_s_code():
+    """A wrapper of the engine's do-nothing display function keeps its name
+    and module (``functools.wraps``) but runs the scene's code: the camera
+    reuses nothing.
+    """
+    from arachne.frame_ir.painter import user_camera
+
+    scene, on = render_writes(reuse_scenes.WrappedNothing)
+    _, off = render_writes(reuse_scenes.WrappedNothing, draw_reuse=False)
+    subject, _ = user_camera(scene.renderer.camera)
+    assert subject == "display_funcs[Mobject]"
+    assert [int(pixels[0, 0, 0]) for pixels, _ in off] == list(range(1, len(off) + 1))
+    assert scene.renderer.draws.reused == 0
+    assert_same_writes(on, off)
+
+
 def test_a_shallow_copy_of_a_camera_draws_through_the_original_s_functions():
     """A copy shares the original's display functions, bound to the original:
     it draws with the original's settings, so it counts as the scene's code.

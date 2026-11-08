@@ -17,8 +17,10 @@ from __future__ import annotations
 
 __all__ = ["IrCairoPainter", "camera_path", "painter_for"]
 
+import functools
 import inspect
 import os
+import types
 import weakref
 from collections.abc import Mapping, Sequence
 from fractions import Fraction
@@ -112,6 +114,21 @@ _DISPLAY_METHODS = {
 }
 
 
+@functools.cache
+def _nothing_code() -> types.CodeType:
+    """The code of the do-nothing display function ``Camera.__init__``
+    makes: the one function it defines.
+    """
+    from arachne.camera.camera import Camera
+
+    (code,) = (
+        const
+        for const in Camera.__init__.__code__.co_consts
+        if isinstance(const, types.CodeType)
+    )
+    return code
+
+
 def _replaced_displays(camera: Any) -> str:
     """The entries of ``camera.display_funcs`` that are not the engine's own,
     named by kind (``display_funcs`` itself when its kinds are not the
@@ -119,7 +136,6 @@ def _replaced_displays(camera: Any) -> str:
     (:mod:`.live`), installed while it describes the camera's captures,
     stand over entries checked before it installed them.
     """
-    from arachne.camera.camera import Camera
     from arachne.mobject.mobject import Mobject
     from arachne.mobject.types.image_mobject import AbstractImageMobject
     from arachne.mobject.types.point_cloud_mobject import PMobject
@@ -140,12 +156,9 @@ def _replaced_displays(camera: Any) -> str:
     for name, method in _DISPLAY_METHODS.items():
         func = funcs[kinds[name]]
         if method is None:
-            # The do-nothing lambda Camera.__init__ makes.
-            engine = (
-                getattr(func, "__qualname__", None)
-                == "Camera.__init__.<locals>.<lambda>"
-                and getattr(func, "__module__", None) == Camera.__module__
-            )
+            # The do-nothing lambda Camera.__init__ makes, by its code: a
+            # wrapper can copy its name and module, not its code.
+            engine = getattr(func, "__code__", None) is _nothing_code()
         else:
             # Bound to this camera, as its class has it: one bound to another
             # camera (a shallow copy shares the original's dictionary) draws
