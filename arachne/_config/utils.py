@@ -94,6 +94,23 @@ REMOVED_SECTIONS: dict[str, str] = {
     "custom_folders": REMOVED_OPTIONS["custom_folders"],
 }
 
+#: Each speed lever, and what it reads while ``speed_levers`` is off: its
+#: scalar, Manim CE-style setting. A lever changes how fast a render is made,
+#: never what it shows; the levers-off render is the reference that claim is
+#: checked against.
+SPEED_LEVERS_OFF: dict[str, Any] = {
+    "vectorize_trusted": False,
+    "construction_memo": False,
+    "draw_reuse": False,
+    "hold_gaps": False,
+    "render_workers": 1,
+    "typeset_dir": None,
+}
+
+#: The environment variable that names ``typeset_dir``: it outranks a config
+#: file, and the command line outranks it.
+TYPESET_DIR_ENV = "ARACHNE_TYPESET_DIR"
+
 
 def no_option(name: str) -> str:
     """The error for ``name``, which is no configuration option.
@@ -365,6 +382,8 @@ class ManimConfig(MutableMapping):
         "show_in_file_browser",
         "static_layer",
         "draw_path",
+        "speed_levers",
+        *SPEED_LEVERS_OFF,
         "tex_dir",
         "tex_template",
         "tex_template_file",
@@ -675,6 +694,21 @@ class ManimConfig(MutableMapping):
         self.static_layer = parser["CLI"].getboolean("static_layer", fallback=True)
         self.draw_path = parser["CLI"].get("draw_path", fallback="cairo")
 
+        # the speed levers
+        for key in [
+            "speed_levers",
+            "vectorize_trusted",
+            "construction_memo",
+            "draw_reuse",
+        ]:
+            setattr(self, key, parser["CLI"].getboolean(key, fallback=True))
+        self.hold_gaps = parser["CLI"].getboolean("hold_gaps", fallback=False)
+        workers = parser["CLI"].get("render_workers", fallback="1").strip()
+        self.render_workers = int(workers) if workers.isdigit() else workers
+        self.typeset_dir = os.environ.get(TYPESET_DIR_ENV) or parser["CLI"].get(
+            "typeset_dir", fallback="", raw=True
+        )
+
         # int keys
         for key in [
             "from_animation_number",
@@ -832,6 +866,8 @@ class ManimConfig(MutableMapping):
             "video_codec",
             "pixel_format",
             "video_encoder_options",
+            "speed_levers",
+            *SPEED_LEVERS_OFF,
         ]:
             if hasattr(args, key):
                 attr = getattr(args, key)
@@ -1398,6 +1434,111 @@ class ManimConfig(MutableMapping):
     @draw_path.setter
     def draw_path(self, value: str) -> None:
         self._set_from_list("draw_path", value, ["cairo", "ir_cairo"])
+
+    # The speed levers. Each changes how fast a render is made, never what it
+    # shows. ``speed_levers`` off makes each read as its entry in
+    # ``SPEED_LEVERS_OFF`` while keeping what it was set to.
+
+    def _lever(self, key: str) -> Any:
+        if not self._d["speed_levers"]:
+            return SPEED_LEVERS_OFF[key]
+        return self._d[key]
+
+    @property
+    def speed_levers(self) -> bool:
+        """Whether the speed levers are on (the default). Off, every lever
+        reads as its scalar, Manim CE-style setting, whatever it is set to:
+        the reference render each lever's frames are checked against.
+        """
+        return self._d["speed_levers"]
+
+    @speed_levers.setter
+    def speed_levers(self, value: bool) -> None:
+        self._set_boolean("speed_levers", value)
+
+    @property
+    def vectorize_trusted(self) -> bool:
+        """Whether a trusted play's values are computed for all of its
+        instants at once (on by default) rather than one frame at a time:
+        the same values, bit for bit.
+        """
+        return self._lever("vectorize_trusted")
+
+    @vectorize_trusted.setter
+    def vectorize_trusted(self, value: bool) -> None:
+        self._set_boolean("vectorize_trusted", value)
+
+    @property
+    def construction_memo(self) -> bool:
+        """Whether text and number construction reuse what an equal
+        construction built (on by default): a reused mobject is built
+        exactly as a fresh one is.
+        """
+        return self._lever("construction_memo")
+
+    @construction_memo.setter
+    def construction_memo(self, value: bool) -> None:
+        self._set_boolean("construction_memo", value)
+
+    @property
+    def draw_reuse(self) -> bool:
+        """Whether a frame whose recorded state is the previous frame's
+        reuses its pixels instead of drawing them again (on by default).
+        """
+        return self._lever("draw_reuse")
+
+    @draw_reuse.setter
+    def draw_reuse(self, value: bool) -> None:
+        self._set_boolean("draw_reuse", value)
+
+    @property
+    def hold_gaps(self) -> bool:
+        """Whether a run of equal frames is written to a video as one frame
+        that lasts the run, a variable frame rate (off by default). Decoded
+        on the frame grid, the frames are the same.
+        """
+        return self._lever("hold_gaps")
+
+    @hold_gaps.setter
+    def hold_gaps(self, value: bool) -> None:
+        self._set_boolean("hold_gaps", value)
+
+    @property
+    def render_workers(self) -> int:
+        """How many processes draw and encode a render's frames (1, the
+        default). Set to ``"auto"``, it is the number of processors this
+        process may run on.
+        """
+        workers = self._lever("render_workers")
+        if workers != "auto":
+            return workers
+        if hasattr(os, "sched_getaffinity"):
+            return len(os.sched_getaffinity(0))
+        return os.cpu_count() or 1
+
+    @render_workers.setter
+    def render_workers(self, value: int | str) -> None:
+        if value == "auto" or (
+            isinstance(value, int) and not isinstance(value, bool) and value >= 1
+        ):
+            self._d["render_workers"] = value
+        else:
+            raise ValueError(
+                f"render_workers must be a positive integer or 'auto', not {value!r}"
+            )
+
+    @property
+    def typeset_dir(self) -> Path | None:
+        """The directory where typeset Tex and Text are kept and shared
+        across scenes, renders and processes, or ``None`` (the default):
+        then each is typeset into ``tex_dir`` and ``text_dir``, as Manim CE
+        does. ``ARACHNE_TYPESET_DIR`` names it too.
+        """
+        return self._lever("typeset_dir")
+
+    @typeset_dir.setter
+    def typeset_dir(self, value: StrPath | None) -> None:
+        self._d["typeset_dir"] = Path(value) if value else None
 
     @property
     def renderer(self) -> NoReturn:

@@ -34,6 +34,11 @@ SCENE_PARAMETER_NAME = "scene"
 #: ``ir_cairo`` draw path and requires each frame's bytes to equal the direct
 #: path's (the Frame IR's completeness check).
 BOTH_PATHS_ENV = "ARACHNE_FRAMES_BOTH_PATHS"
+#: Set to ``1``, every frames comparison also draws its scene with the speed
+#: levers off (``speed_levers = False``) and requires each frame's bytes, on
+#: the frame grid, to equal those drawn with the levers as configured: the
+#: levers change how fast frames are made, never the frames.
+LEVERS_OFF_ENV = "ARACHNE_FRAMES_LEVERS_OFF"
 _tests_root_dir_path = Path(__file__).absolute().parents[2]
 PATH_CONTROL_DATA = _tests_root_dir_path / Path("control_data", "graphical_units_data")
 MIN_CAIRO_VERSION = 11800
@@ -240,9 +245,19 @@ def _make_test_comparing_frames(
 
     def real_test() -> None:
         both = os.environ.get(BOTH_PATHS_ENV) == "1"
+        levers_off = os.environ.get(LEVERS_OFF_ENV) == "1"
         direct = _FrameDigests(frames_tester)
         with frames_tester.testing():
-            run(direct if both else frames_tester)
+            run(direct if both or levers_off else frames_tester)
+        if levers_off:
+            unlevered = _FrameDigests(None)
+            with tempconfig({"speed_levers": False}):
+                run(unlevered)
+            assert unlevered.digests == direct.digests, (
+                "the frames drawn with the speed levers off differ from those"
+                " drawn with them on:"
+                f" {_first_difference(direct.digests, unlevered.digests)}"
+            )
         if both:
             from arachne.frame_ir.painter import IrCairoPainter
 
@@ -262,31 +277,32 @@ def _make_test_comparing_frames(
 
 
 class _FrameDigests:
-    """A tester that keeps each frame's sha256 and passes the frame on to
-    ``inner``, when there is one.
+    """A tester that keeps the sha256 of each frame of the frame grid, a
+    frame written for a run of ``repeat`` frames counted ``repeat`` times,
+    and passes each written frame on to ``inner``, when there is one.
     """
 
     def __init__(self, inner: Any) -> None:
         self.inner = inner
-        self.digests: list[tuple[int, str]] = []
+        self.digests: list[str] = []
 
     @contextlib.contextmanager
     def testing(self) -> Any:
         yield
 
-    def check_frame(self, frame_number: int, frame: Any) -> None:
+    def check_frame(self, frame_number: int, frame: Any, repeat: int = 1) -> None:
         data = memoryview(frame).tobytes()
-        self.digests.append((frame_number, hashlib.sha256(data).hexdigest()))
+        self.digests += [hashlib.sha256(data).hexdigest()] * repeat
         if self.inner is not None:
-            self.inner.check_frame(frame_number, frame)
+            self.inner.check_frame(frame_number, frame, repeat)
 
 
-def _first_difference(a: list[tuple[int, str]], b: list[tuple[int, str]]) -> str:
+def _first_difference(a: list[str], b: list[str]) -> str:
     if len(a) != len(b):
         return f"{len(a)} frames against {len(b)}"
-    for (number, x), (_, y) in zip(a, b, strict=True):
+    for number, (x, y) in enumerate(zip(a, b, strict=True)):
         if x != y:
-            return f"frame {number}"
+            return f"frame {number} of the frame grid"
     return "none"
 
 

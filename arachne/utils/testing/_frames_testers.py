@@ -41,7 +41,13 @@ class _FramesTester:
                 f"when there are {self._number_frames} control frames for this test."
             )
 
-    def check_frame(self, frame_number: int, frame: PixelArray) -> None:
+    def check_frame(
+        self, frame_number: int, frame: PixelArray, repeat: int = 1
+    ) -> None:
+        """Compare the frame written at ``frame_number`` with its control
+        frame. Control data holds one frame per write, so a frame written for
+        a run (``repeat``) is compared once.
+        """
         assert frame_number < self._number_frames, (
             f"The tested scene is at frame number {frame_number} "
             f"when there are {self._number_frames} control frames."
@@ -89,7 +95,7 @@ class _ControlDataWriter(_FramesTester):
         self._number_frames_written: int = 0
 
     # Actually write a frame.
-    def check_frame(self, index: int, frame: PixelArray) -> None:
+    def check_frame(self, index: int, frame: PixelArray, repeat: int = 1) -> None:
         frame = frame[np.newaxis, ...]
         self.frames = np.concatenate((self.frames, frame))
         self._number_frames_written += 1

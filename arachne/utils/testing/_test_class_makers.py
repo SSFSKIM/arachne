@@ -75,7 +75,7 @@ class DummySceneFileWriter(SceneFileWriter):
 def _make_scene_file_writer_class(tester: _FramesTester) -> type[SceneFileWriter]:
     class TestSceneFileWriter(DummySceneFileWriter):
         def write_frame(self, pixels: PixelArray, *, repeat: int = 1) -> None:
-            tester.check_frame(self.i, pixels)
+            tester.check_frame(self.i, pixels, repeat)
             super().write_frame(pixels, repeat=repeat)
 
     return TestSceneFileWriter

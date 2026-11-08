@@ -24,6 +24,7 @@ from arachne.cli.render.ease_of_access_options import ease_of_access_options
 from arachne.cli.render.global_options import global_options
 from arachne.cli.render.output_options import output_options
 from arachne.cli.render.render_options import render_options
+from arachne.cli.render.speed_options import speed_options
 from arachne.constants import EPILOG
 from arachne.manager import Manager
 from arachne.utils.module_ops import scene_classes_from_file
@@ -69,6 +70,7 @@ def _validate_scene_batch_output_name(scene_classes: list[type]) -> None:
 @global_options
 @output_options
 @render_options
+@speed_options
 @ease_of_access_options
 def render(**kwargs: Any) -> ClickArgs | dict[str, Any]:
     """Render SCENE(S) from the input FILE.

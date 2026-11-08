@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 from pathlib import Path
 
@@ -10,7 +11,7 @@ from click.testing import CliRunner
 from arachne import WHITE, Scene, Square, Tex, Text, tempconfig
 from arachne._config.output import OutputFormat, OutputSpec
 from arachne._config.render_session import resolve_render_session
-from arachne._config.utils import ManimConfig
+from arachne._config.utils import ManimConfig, make_config_parser
 from arachne.cli.render.commands import render
 from arachne.renderer.protocol import RendererCapabilities
 from tests.assert_utils import assert_dir_filled, assert_file_exists
@@ -607,3 +608,194 @@ def test_from_to_animations_only_first_animation(config):
     scene.render()
 
     assert scene.after_first_animation is False
+
+
+# The speed levers: one option each, and the switch that turns them all off
+# (``speed_levers``; its tests are in ``tests/utils/test_levers_switch.py``).
+
+#: Each lever option, what a config file writes to set it away from its
+#: default, the render command's flags that do the same, and what it then
+#: reads. ``{dir}`` stands for a directory of the test's own.
+LEVER_SETTINGS = [
+    ("speed_levers", "False", ["--no-speed-levers"], False),
+    ("vectorize_trusted", "False", ["--no-vectorize-trusted"], False),
+    ("construction_memo", "False", ["--no-construction-memo"], False),
+    ("draw_reuse", "False", ["--no-draw-reuse"], False),
+    ("hold_gaps", "True", ["--hold-gaps"], True),
+    ("render_workers", "3", ["--workers", "3"], 3),
+    ("typeset_dir", "{dir}", ["--typeset_dir", "{dir}"], Path("{dir}")),
+]
+
+
+def _filled(value, directory):
+    if isinstance(value, str):
+        return value.replace("{dir}", str(directory))
+    if isinstance(value, Path):
+        return Path(str(value).replace("{dir}", str(directory)))
+    if isinstance(value, list):
+        return [_filled(item, directory) for item in value]
+    return value
+
+
+def _cli_args(tmp_path, args):
+    """The namespace ``arachne render`` hands the configuration for ``args``."""
+    scene_file = tmp_path / "scene.py"
+    scene_file.write_text("# --jupyter returns before loading this file\n")
+    result = CliRunner().invoke(
+        render, [str(scene_file), "--jupyter", *args], standalone_mode=False
+    )
+    assert result.exception is None, result.output
+    return result.return_value
+
+
+def test_the_speed_levers_defaults(monkeypatch):
+    """On: the levers that change speed and never a picture. Off or unset:
+    those whose output a reader outside the engine sees (the file's frame
+    timing, how many processes draw it, where typesetting is kept).
+    """
+    monkeypatch.delenv("ARACHNE_TYPESET_DIR", raising=False)
+    defaults = ManimConfig().digest_parser(make_config_parser())
+    assert defaults.speed_levers is True
+    assert defaults.vectorize_trusted is True
+    assert defaults.construction_memo is True
+    assert defaults.draw_reuse is True
+    assert defaults.hold_gaps is False
+    assert defaults.render_workers == 1
+    assert defaults.typeset_dir is None
+
+
+@pytest.mark.parametrize(("name", "written", "args", "read"), LEVER_SETTINGS)
+def test_a_lever_is_set_from_a_config_file(tmp_path, name, written, args, read):
+    cfg = tmp_path / "arachne.cfg"
+    cfg.write_text(f"[CLI]\n{name} = {_filled(written, tmp_path)}\n")
+    assert getattr(ManimConfig().digest_file(cfg), name) == _filled(read, tmp_path)
+
+
+@pytest.mark.parametrize(("name", "written", "args", "read"), LEVER_SETTINGS)
+def test_a_lever_is_set_from_the_command_line(tmp_path, name, written, args, read):
+    candidate = ManimConfig().digest_parser(make_config_parser())
+    candidate.digest_args(_cli_args(tmp_path, _filled(args, tmp_path)))
+    assert getattr(candidate, name) == _filled(read, tmp_path)
+
+
+@pytest.mark.parametrize(("name", "written", "args", "read"), LEVER_SETTINGS)
+def test_a_lever_is_set_in_a_tempconfig_and_restored(
+    config, tmp_path, name, written, args, read
+):
+    before = getattr(config, name)
+    with tempconfig({name: _filled(read, tmp_path)}):
+        assert getattr(config, name) == _filled(read, tmp_path)
+    assert getattr(config, name) == before
+
+
+@pytest.mark.parametrize(("name", "written", "args", "read"), LEVER_SETTINGS)
+def test_an_absent_lever_flag_keeps_the_config_file_value(
+    tmp_path, name, written, args, read
+):
+    cfg = tmp_path / "arachne.cfg"
+    cfg.write_text(f"[CLI]\n{name} = {_filled(written, tmp_path)}\n")
+    candidate = ManimConfig().digest_file(cfg)
+    candidate.digest_args(_cli_args(tmp_path, []))
+    assert getattr(candidate, name) == _filled(read, tmp_path)
+
+
+def test_a_lever_flag_turns_a_lever_back_on(tmp_path):
+    cfg = tmp_path / "arachne.cfg"
+    cfg.write_text("[CLI]\ndraw_reuse = False\nhold_gaps = True\n")
+    candidate = ManimConfig().digest_file(cfg)
+    candidate.digest_args(_cli_args(tmp_path, ["--draw-reuse", "--no-hold-gaps"]))
+    assert candidate.draw_reuse is True
+    assert candidate.hold_gaps is False
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["vectorise_trusted", "construction_memos", "draw_cache", "workers", "typeset"],
+)
+def test_a_misspelt_lever_raises(config, name):
+    """Deliberate break 7: a lever set under another name is never kept unread."""
+    with pytest.raises(AttributeError, match=f"no configuration option '{name}'"):
+        setattr(config, name, False)
+    with (
+        pytest.raises(AttributeError, match=f"no configuration option '{name}'"),
+        tempconfig({name: False}),
+    ):
+        pass
+
+
+def test_workers_auto_is_the_processors_this_process_may_run_on(config, monkeypatch):
+    monkeypatch.setattr(os, "sched_getaffinity", lambda pid: {0, 2, 5}, raising=False)
+    config.render_workers = "auto"
+    assert config.render_workers == 3
+
+
+def test_workers_auto_is_the_cpu_count_without_affinity(config, monkeypatch):
+    monkeypatch.delattr(os, "sched_getaffinity", raising=False)
+    monkeypatch.setattr(os, "cpu_count", lambda: 7)
+    config.render_workers = "auto"
+    assert config.render_workers == 7
+
+
+def test_workers_auto_from_a_config_file_and_the_command_line(tmp_path, monkeypatch):
+    monkeypatch.setattr(os, "sched_getaffinity", lambda pid: {1, 3}, raising=False)
+    cfg = tmp_path / "arachne.cfg"
+    cfg.write_text("[CLI]\nrender_workers = auto\n")
+    assert ManimConfig().digest_file(cfg).render_workers == 2
+    candidate = ManimConfig().digest_parser(make_config_parser())
+    candidate.digest_args(_cli_args(tmp_path, ["--workers", "auto"]))
+    assert candidate.render_workers == 2
+
+
+@pytest.mark.parametrize("value", [0, -2, True, 2.5, "many", "2"])
+def test_workers_is_a_positive_integer_or_auto(config, value):
+    with pytest.raises(ValueError, match="render_workers"):
+        config.render_workers = value
+
+
+@pytest.mark.parametrize("value", ["0", "many"])
+def test_the_workers_flag_refuses_what_is_not_a_count(tmp_path, value):
+    scene_file = tmp_path / "scene.py"
+    scene_file.touch()
+    result = CliRunner().invoke(render, [str(scene_file), "--workers", value])
+    assert result.exit_code == 2
+    assert "Invalid value" in result.output
+
+
+@pytest.mark.parametrize("name", ["vectorize_trusted", "hold_gaps", "speed_levers"])
+def test_a_lever_switch_is_boolean(config, name):
+    with pytest.raises(ValueError, match=name):
+        setattr(config, name, "yes")
+
+
+def test_the_typeset_dir_is_unset_by_an_empty_value(config, tmp_path):
+    config.typeset_dir = tmp_path
+    assert config.typeset_dir == tmp_path
+    config.typeset_dir = ""
+    assert config.typeset_dir is None
+    config.typeset_dir = str(tmp_path)
+    assert config.typeset_dir == tmp_path
+    config.typeset_dir = None
+    assert config.typeset_dir is None
+
+
+def test_the_typeset_dir_is_named_by_the_environment(tmp_path, monkeypatch):
+    """``ARACHNE_TYPESET_DIR`` outranks a config file; the command line
+    outranks both.
+    """
+    monkeypatch.setenv("ARACHNE_TYPESET_DIR", str(tmp_path / "env"))
+    assert ManimConfig().digest_parser(make_config_parser()).typeset_dir == (
+        tmp_path / "env"
+    )
+    cfg = tmp_path / "arachne.cfg"
+    cfg.write_text(f"[CLI]\ntypeset_dir = {tmp_path / 'file'}\n")
+    candidate = ManimConfig().digest_file(cfg)
+    assert candidate.typeset_dir == tmp_path / "env"
+    candidate.digest_args(_cli_args(tmp_path, ["--typeset_dir", str(tmp_path / "cli")]))
+    assert candidate.typeset_dir == tmp_path / "cli"
+
+
+def test_an_empty_typeset_environment_variable_names_nothing(tmp_path, monkeypatch):
+    monkeypatch.setenv("ARACHNE_TYPESET_DIR", "")
+    cfg = tmp_path / "arachne.cfg"
+    cfg.write_text(f"[CLI]\ntypeset_dir = {tmp_path}\n")
+    assert ManimConfig().digest_file(cfg).typeset_dir == tmp_path
