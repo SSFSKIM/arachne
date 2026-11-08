@@ -810,17 +810,22 @@ def test_rounded_plane_rounds_each_coefficient_to_the_nearest_step_of_2_to_the_m
     step = 2.0**-20
     # Halves of a step go away from zero.
     normal, offset = _rounded_plane((2.5 * step, -2.5 * step, 1.5 * step), -1.5 * step)
-    assert normal == (3 * step, -3 * step, 2 * step) and offset == -2 * step
+    assert normal == (3 * step, -3 * step, 2 * step)
+    assert offset == -2 * step
     # Anything else to the nearer step: 0.6 and 0.8 are 629145.6 and 838860.8 steps.
     normal, offset = _rounded_plane((0.6, 0.8, (7.5 - 2.0**-30) * step), 0.6)
-    assert normal == (629146 * step, 838861 * step, 7 * step) and offset == 629146 * step
+    assert normal == (629146 * step, 838861 * step, 7 * step)
+    assert offset == 629146 * step
     # A negative zero comes back positive, a coefficient rounding to zero included.
     normal, offset = _rounded_plane((-0.0, -0.4 * step, -1.0), -0.0)
-    assert normal == (0.0, 0.0, -1.0) and offset == 0.0
+    assert normal == (0.0, 0.0, -1.0)
+    assert offset == 0.0
     assert [np.copysign(1.0, v) for v in (*normal, offset)] == [1.0, 1.0, -1.0, 1.0]
 
 
-IDENTITY_PLACES = [[[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]]] * 2
+IDENTITY_PLACES = [
+    [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]]
+] * 2
 
 
 def test_registry_tolerance_is_the_snap_s_departure_and_a_flat_record_s_own():
@@ -831,7 +836,8 @@ def test_registry_tolerance_is_the_snap_s_departure_and_a_flat_record_s_own():
     face = [tuple(p) for p in square(0.5)]
     # Unplaced: half a step times |n|_1, besides rounding.
     tolerance, flat = _registry_tolerance(face, up, grid, IDENTITY_PLACES, face, 1)
-    assert flat and half <= tolerance <= half + 1e-15
+    assert flat
+    assert half <= tolerance <= half + 1e-15
     tolerance, _ = _registry_tolerance(face, diagonal, grid, IDENTITY_PLACES, face, 1)
     assert 3**0.5 * half <= tolerance <= 3**0.5 * half + 1e-14
     # Not snapped: the core's own placing alone.
@@ -842,29 +848,41 @@ def test_registry_tolerance_is_the_snap_s_departure_and_a_flat_record_s_own():
     bow = 4 * grid
     bowed = [(0.0, 0.0, bow), (1.0, 0.0, -bow), (1.0, 1.0, bow), (0.0, 1.0, -bow)]
     as_face, flat = _registry_tolerance(bowed, up, grid, IDENTITY_PLACES, bowed, 1)
-    as_curve, curve_flat = _registry_tolerance(bowed, up, grid, IDENTITY_PLACES, bowed, 0)
-    assert flat and not curve_flat
-    assert as_curve <= half + 1e-14 and as_face >= as_curve + 1.9 * bow
+    as_curve, curve_flat = _registry_tolerance(
+        bowed, up, grid, IDENTITY_PLACES, bowed, 0
+    )
+    assert flat
+    assert not curve_flat
+    assert as_curve <= half + 1e-14
+    assert as_face >= as_curve + 1.9 * bow
     # Points on a line have no plane of their own, whatever their code.
     line = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)]
     tolerance, flat = _registry_tolerance(line, up, grid, IDENTITY_PLACES, line, 1)
-    assert not flat and half <= tolerance <= half + 1e-15
+    assert not flat
+    assert half <= tolerance <= half + 1e-15
     # A mesh triangle, on the plane through its corners; one whose corners lie on a line has no
     # plane of its own.
     corners = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)]
-    tolerance, flat = _registry_tolerance(corners, up, grid, IDENTITY_PLACES, corners, None)
-    assert flat and half <= tolerance <= half + 1e-15
+    tolerance, flat = _registry_tolerance(
+        corners, up, grid, IDENTITY_PLACES, corners, None
+    )
+    assert flat
+    assert half <= tolerance <= half + 1e-15
     tolerance, flat = _registry_tolerance(line, up, grid, IDENTITY_PLACES, line, None)
-    assert not flat and half <= tolerance <= half + 1e-15
+    assert not flat
+    assert half <= tolerance <= half + 1e-15
     # Placed from coordinates in the thousands: the placement's translation and its snapped
     # linear part (2^-25 of each coordinate it places), then the shape's points seen through it.
     s = 1 / 2000
     inner = [[s, 0.0, 0.0, 0.5], [0.0, s, 0.0, 0.5], [0.0, 0.0, s, 0.0]]
     local = [tuple(p) for p in square(1000.0)]
     placed = [(s * x + 0.5, s * y + 0.5, s * z) for x, y, z in local]
-    tolerance, flat = _registry_tolerance(placed, up, grid, [IDENTITY_PLACES[0], inner], local, 1)
+    tolerance, flat = _registry_tolerance(
+        placed, up, grid, [IDENTITY_PLACES[0], inner], local, 1
+    )
     want = half + 2000 * 2**-25 + half * s
-    assert flat and abs(tolerance - want) <= 1e-14
+    assert flat
+    assert abs(tolerance - want) <= 1e-14
     # A path on the plane nearest its points is not offered.
     with pytest.raises(ValueError):
         _registry_tolerance(face, up, grid, IDENTITY_PLACES, face, 3)
@@ -875,7 +893,10 @@ def outline(corners) -> list:
     curves = []
     for i, a in enumerate(corners):
         b = corners[(i + 1) % len(corners)]
-        curves += [tuple(u + (v - u) * t for u, v in zip(a, b)) for t in (0, 1 / 3, 2 / 3, 1)]
+        curves += [
+            tuple(u + (v - u) * t for u, v in zip(a, b, strict=False))
+            for t in (0, 1 / 3, 2 / 3, 1)
+        ]
     return curves
 
 
@@ -896,17 +917,23 @@ def test_attaches_is_the_registry_s_attach_pass_on_the_identity_its_members_sett
     # a line along that edge 0.99 of its own above: z = 0 holds both, though the face's own plane
     # does not hold the line. Raised ten times as far, no plane holds both.
     a = 0.99 * snap
-    face = outline([(-1.0, -1.0, 0.0), (1.0, -1.0, -a), (1.0, 1.0, -a), (-1.0, 1.0, 0.0)])
+    face = outline(
+        [(-1.0, -1.0, 0.0), (1.0, -1.0, -a), (1.0, 1.0, -a), (-1.0, 1.0, 0.0)]
+    )
     assert attaches([(1.0, -1.0, a), (1.0, 0.0, a), (1.0, 1.0, a)], [member(face)])
     up_10 = 10 * snap
-    assert not attaches([(1.0, -1.0, up_10), (1.0, 0.0, up_10), (1.0, 1.0, up_10)], [member(face)])
+    assert not attaches(
+        [(1.0, -1.0, up_10), (1.0, 0.0, up_10), (1.0, 1.0, up_10)], [member(face)]
+    )
     # A tick five units from a square 0.1 across, raised 20 grid steps: a plane rising from the
     # square to the tick holds both, and the bound grows enough outside the square's hull to reach
     # it, but the tick never enters that hull.
     s = 0.05
     small = outline([(-s, -s, 0.0), (s, -s, 0.0), (s, s, 0.0), (-s, s, 0.0)])
     h = 20 * grid
-    assert not attaches([(5.0, -0.15, h), (5.0, 0.0, h), (5.0, 0.15, h)], [member(small)])
+    assert not attaches(
+        [(5.0, -0.15, h), (5.0, 0.0, h), (5.0, 0.15, h)], [member(small)]
+    )
     # Mesh triangles: two halves of a square as members, a triangle whose corners lie on its
     # diagonal as the record.
     halves = [
@@ -944,7 +971,8 @@ def test_near_parallel_holds_up_to_the_turn_the_two_records_snaps_allow():
 
     def allowed(theta):
         """theta_A + theta_B for the flat square and the turned one: 2 tau / 3 each, tau half a
-        step times |n|_1 (their points lie on their own planes but for rounding)."""
+        step times |n|_1 (their points lie on their own planes but for rounding).
+        """
         return grid / 3 * (1 + np.cos(theta) + np.sin(theta))
 
     flat = record(turned(0.0))
@@ -955,12 +983,14 @@ def test_near_parallel_holds_up_to_the_turn_the_two_records_snaps_allow():
         tilted = record(turned(theta))
         for a, b in ((flat, tilted), (tilted, flat)):
             got, measured = _near_parallel(a, b, grid)
-            assert got is near and abs(measured - ratio) < 1e-6, (ratio, got, measured)
+            assert got is near, (ratio, got, measured)
+            assert abs(measured - ratio) < 1e-6, (ratio, got, measured)
     # Points on a line have no plane of their own, nor a mesh triangle whose corners lie on one.
     line = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)]
     for other in (record(line), record(line, None)):
         got, measured = _near_parallel(flat, other, grid)
-        assert got is False and np.isnan(measured)
+        assert got is False
+        assert np.isnan(measured)
     # Mesh triangles, on the planes through their corners.
     lower = record([(0.0, 0.0, 0.0), (3.0, 0.0, 0.0), (0.0, 3.0, 0.0)], None)
     upper = record([(0.0, 0.0, 0.0), (3.0, 0.0, 3e-5), (0.0, 3.0, 0.0)], None)
@@ -1018,7 +1048,9 @@ def test_line_share_is_the_snap_s_reach_along_the_sight_axis_over_each_point_s_r
         **FRAME,
     )
     thirds = (0, 1 / 3, 2 / 3, 1)
-    steep = np.array([[0.31 + 2.7 * t, -0.17 - 1.2 * t, 0.23 + 3.1 * t] for t in thirds])
+    steep = np.array(
+        [[0.31 + 2.7 * t, -0.17 - 1.2 * t, 0.23 + 3.1 * t] for t in thirds]
+    )
     steep = np.round(steep / grid) * grid
     delta.set_record(
         "path",
