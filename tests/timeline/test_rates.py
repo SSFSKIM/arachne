@@ -4,6 +4,8 @@ twins.
 
 from __future__ import annotations
 
+from fractions import Fraction
+
 import numpy as np
 import pytest
 
@@ -14,6 +16,7 @@ from arachne.timeline.rates import (
     admitted_path,
     admitted_rate,
     array_twin,
+    engine_rate,
     frozen_path,
     is_monotone,
 )
@@ -83,6 +86,158 @@ def test_a_user_rate_function_is_not_admitted_whatever_it_computes():
     assert not admitted_rate(lambda t: rf.smooth(t))
     assert not admitted_rate(rf.squish_rate_func(my_linear, 0, 1))
     assert not is_monotone(my_linear)
+
+
+class _EqualTo:
+    """A callable whose hash and equality are ``target``'s, counting its
+    own calls: it runs its own code whatever it compares equal to.
+    """
+
+    def __init__(self, target):
+        self.target = target
+        self.calls = 0
+
+    def __hash__(self):
+        return hash(self.target)
+
+    def __eq__(self, other):
+        return other is self.target or other is self
+
+    def __call__(self, t):
+        self.calls += 1
+        return self.target(t)
+
+
+class _Carrying:
+    """A callable that carries a factory closure's code and cells."""
+
+    def __init__(self, closure):
+        self.__code__ = closure.__code__
+        self.__closure__ = closure.__closure__
+
+    def __call__(self, *args):
+        return args[-1]
+
+
+class _Drifting(float):
+    """A float whose arithmetic and comparisons are its own code."""
+
+    def __sub__(self, other):
+        return float(self) - other
+
+    def __rsub__(self, other):
+        return other - float(self)
+
+
+@pytest.mark.parametrize("name", _names(RATE_FUNCTIONS))
+def test_a_callable_only_equal_to_an_engine_rate_is_not_admitted(name):
+    lookalike = _EqualTo(_by_name(name))
+    assert not admitted_rate(lookalike)
+    assert not is_monotone(lookalike)
+    with pytest.raises(KeyError):
+        array_twin(lookalike)
+    assert lookalike.calls == 0
+
+
+def test_a_factory_closure_over_a_lookalike_is_not_admitted():
+    for closure in (
+        rf.squish_rate_func(_EqualTo(rf.smooth), 0.1, 0.9),
+        rf.not_quite_there(_EqualTo(rf.linear), 0.8),
+        rf.squish_rate_func(rf.not_quite_there(_EqualTo(rf.smooth), 0.9), 0, 1),
+    ):
+        assert not admitted_rate(closure)
+        assert not is_monotone(closure)
+        with pytest.raises(KeyError):
+            array_twin(closure)
+
+
+def test_a_callable_carrying_a_factorys_code_is_not_admitted():
+    for closure in (
+        rf.squish_rate_func(rf.smooth, 0.1, 0.9),
+        rf.not_quite_there(rf.smooth, 0.8),
+    ):
+        lookalike = _Carrying(closure)
+        assert not admitted_rate(lookalike)
+        assert not is_monotone(lookalike)
+        with pytest.raises(KeyError):
+            array_twin(lookalike)
+
+
+def test_a_factory_closure_binding_a_number_of_its_own_type_is_not_admitted():
+    for closure in (
+        rf.squish_rate_func(rf.smooth, _Drifting(0.1), 0.9),
+        rf.squish_rate_func(rf.smooth, 0.1, _Drifting(0.9)),
+        rf.not_quite_there(rf.smooth, _Drifting(0.8)),
+        rf.squish_rate_func(rf.smooth, np.timedelta64(0), np.timedelta64(1)),
+    ):
+        assert not admitted_rate(closure)
+        assert not is_monotone(closure)
+
+
+def test_a_factory_closure_whose_cell_holds_itself_is_not_admitted():
+    closure = rf.squish_rate_func(rf.smooth, 0.1, 0.9)
+    cells = dict(zip(closure.__code__.co_freevars, closure.__closure__, strict=True))
+    cells["func"].cell_contents = closure
+    assert not admitted_rate(closure)
+    assert not is_monotone(closure)
+
+
+@pytest.mark.parametrize(
+    "closure",
+    [
+        rf.squish_rate_func(rf.smooth, 0.2, 0.7),
+        rf.squish_rate_func(rf.linear, 0, 1),
+        rf.squish_rate_func(rf.there_and_back, np.float64(0.25), np.float32(0.75)),
+        rf.squish_rate_func(rf.smooth, Fraction(1, 4), np.int64(1)),
+        rf.not_quite_there(rf.ease_in_sine, np.float64(0.9)),
+        rf.squish_rate_func(rf.not_quite_there(rf.smooth, 0.9), 0.1, 0.8),
+        rf.not_quite_there(rf.squish_rate_func(rf.rush_into, 0.3, 0.6), 1),
+    ],
+)
+def test_engine_factory_closures_stay_admitted_at_any_depth(closure):
+    assert admitted_rate(closure)
+    twin = array_twin(closure)
+    assert np.array_equal(twin(GRID), [closure(float(t)) for t in GRID])
+
+
+def test_every_engine_rate_stays_admitted_by_itself():
+    for function in RATE_FUNCTIONS:
+        assert admitted_rate(function), function.__name__
+        assert is_monotone(function) == (function in MONOTONE_RATE_FUNCTIONS)
+    assert is_monotone(
+        rf.squish_rate_func(rf.not_quite_there(rf.smooth, 0.9), 0.1, 0.8)
+    )
+    assert not is_monotone(rf.squish_rate_func(rf.smooth, 0.8, 0.1))
+
+
+def test_an_engine_rate_is_found_with_its_factory_layers():
+    inner = rf.not_quite_there(rf.smooth, 0.9)
+    outer = rf.squish_rate_func(inner, 0.1, 0.8)
+    found = engine_rate(outer)
+    assert found is not None
+    assert found.base is rf.smooth
+    assert [kind for kind, _ in found.layers] == ["squish", "not_quite_there"]
+    assert found.layers[0][1]["func"] is inner
+    assert engine_rate(rf.linear) == (rf.linear, ())
+    assert engine_rate(_EqualTo(rf.linear)) is None
+
+
+def test_a_path_lookalike_is_not_admitted():
+    for closure in (
+        paths.path_along_arc(np.pi / 2),
+        paths.spiral_path(np.pi),
+        paths.path_along_circles(1.0, np.zeros(3)),
+    ):
+        assert admitted_path(closure)
+        assert not admitted_path(_Carrying(closure))
+    assert not admitted_path(_EqualTo(interpolate))
+    assert not admitted_path(paths.path_along_arc(_Drifting(1.0)))
+    assert not admitted_path(paths.path_along_circles(1.0, np.zeros(3).view(_Points)))
+    assert admitted_path(paths.path_along_arc(np.float64(1.0)))
+
+
+class _Points(np.ndarray):
+    """An array type of a scene's own."""
 
 
 def test_ce_paths_are_admitted_and_others_are_not():

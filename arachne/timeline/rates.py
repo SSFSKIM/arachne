@@ -2,11 +2,15 @@
 twins of the rate functions.
 
 A rate or path function is admitted by identity, never by what its code looks
-like: CE's own rate functions (the module attributes of
-:mod:`arachne.utils.rate_functions`), the closures CE's factories return
-(``squish_rate_func`` and ``not_quite_there`` over an admitted function, with
-plain numbers bound), and CE's straight, arc and circle paths. Anything else,
-a user's lambda included, is unproven, whatever it computes.
+like or what it compares equal to: CE's own rate functions (the module
+attributes of :mod:`arachne.utils.rate_functions`, each the very object), the
+closures CE's factories return (``squish_rate_func`` and ``not_quite_there``:
+a plain function whose code is the factory's own, over an admitted function,
+with plain numbers bound), and CE's straight, arc and circle paths. Anything
+else, a user's lambda or a callable whose hash and equality are ``linear``'s
+included, is unproven, whatever it computes. :func:`engine_rate` is the one
+rule for rate functions; :func:`admitted_rate`, :func:`is_monotone` and
+:func:`array_twin` read it.
 
 Every admitted rate function has an *array twin* that evaluates it over an
 array of instants at once, equal to calling the scalar original on each.
@@ -17,23 +21,27 @@ from __future__ import annotations
 __all__ = [
     "MONOTONE_RATE_FUNCTIONS",
     "RATE_FUNCTIONS",
+    "EngineRate",
     "admitted_path",
     "admitted_rate",
     "array_twin",
+    "engine_rate",
     "frozen_path",
     "is_monotone",
 ]
 
 import types
-from collections.abc import Callable
-from numbers import Real
-from typing import Any
+from collections.abc import Callable, Mapping
+from fractions import Fraction
+from typing import Any, NamedTuple
 
 import numpy as np
 
 from arachne.utils import paths
 from arachne.utils import rate_functions as rf
 from arachne.utils.bezier import interpolate
+
+from .identity import ByIdentity
 
 ArrayFunction = Callable[[np.ndarray], np.ndarray]
 
@@ -377,14 +385,16 @@ def _pow2(exponent: np.ndarray) -> np.ndarray:
     return np.asarray(_PYTHON_POW(2.0, np.asarray(exponent, dtype=float)), dtype=float)
 
 
-#: CE's rate functions, admitted by identity: every module attribute that is
-#: a rate function (the factories ``squish_rate_func`` and ``not_quite_there``
-#: excepted; their closures are admitted through :func:`admitted_rate`).
+#: CE's rate functions: every module attribute that is a rate function (the
+#: factories ``squish_rate_func`` and ``not_quite_there`` excepted; their
+#: closures are admitted through :func:`engine_rate`). A set also takes what
+#: only compares equal to a member, so admission never asks it:
+#: :func:`admitted_rate` asks by identity.
 RATE_FUNCTIONS: frozenset[Callable[..., float]] = frozenset(_TWINS)
 
-#: CE's rate functions that never decrease, by identity. A group whose time
-#: runs through one of these crosses each part boundary once, at an instant
-#: bisection can find.
+#: CE's rate functions that never decrease. A group whose time runs through
+#: one of these crosses each part boundary once, at an instant bisection can
+#: find. As with :data:`RATE_FUNCTIONS`, ask :func:`is_monotone`.
 MONOTONE_RATE_FUNCTIONS: frozenset[Callable[[float], float]] = frozenset(
     {
         rf.linear,
@@ -422,8 +432,30 @@ MONOTONE_RATE_FUNCTIONS: frozenset[Callable[[float], float]] = frozenset(
     }
 )
 
+#: Each of CE's rate functions and its array twin, by identity.
+_ENGINE_RATES: ByIdentity[Callable[..., float], ArrayFunction] = ByIdentity(_TWINS)
+_MONOTONE = ByIdentity.of(MONOTONE_RATE_FUNCTIONS)
+
 _SQUISH_CODE = getattr(rf.squish_rate_func(rf.linear), "__code__")  # noqa: B009
 _NOT_QUITE_CODE = getattr(rf.not_quite_there(rf.linear), "__code__")  # noqa: B009
+
+#: The numbers each factory's closure binds, by name.
+_FACTORY_NUMBERS = {"squish": ("a", "b"), "not_quite_there": ("proportion",)}
+
+#: The numbers an admitted closure may bind, by exact type: Python's
+#: integers, floats and fractions, and numpy's integer and float scalars. A
+#: subclass may define its own arithmetic and comparisons, which are a
+#: script's code.
+_NUMBERS = ByIdentity.of(
+    (
+        int,
+        float,
+        Fraction,
+        *(np.byte, np.short, np.intc, np.int_, np.longlong),
+        *(np.ubyte, np.ushort, np.uintc, np.uint, np.ulonglong),
+        *(np.half, np.single, np.double, np.longdouble),
+    )
+)
 
 
 def _closure(function: Any) -> dict[str, Any] | None:
@@ -444,59 +476,75 @@ def _closure(function: Any) -> dict[str, Any] | None:
 
 
 def _number(value: Any) -> bool:
-    return isinstance(value, Real) and not isinstance(value, bool)
+    return type(value) in _NUMBERS
 
 
-def _factory_parts(function: Any) -> tuple[str, dict[str, Any]] | None:
-    """``("squish", cells)`` or ``("not_quite_there", cells)`` for a closure
-    one of CE's rate factories returned over an admitted function and plain
-    numbers; ``None`` for anything else.
+class EngineRate(NamedTuple):
+    """A rate function as CE's: the rate function at its core, and the
+    factory closures over it, outermost first, each as its kind
+    (``"squish"`` or ``"not_quite_there"``) and the values it binds by name.
     """
-    code = getattr(function, "__code__", None)
+
+    base: Callable[[float], float]
+    layers: tuple[tuple[str, Mapping[str, Any]], ...]
+
+
+def _layer(function: Any) -> tuple[str, dict[str, Any]] | None:
+    """``function`` as one of CE's factory closures (a plain function whose
+    code is the factory's own, binding plain numbers), or ``None``.
+    """
+    if type(function) is not types.FunctionType:
+        return None
+    code = function.__code__
     if code is _SQUISH_CODE:
-        cells = _closure(function)
-        if (
-            cells is not None
-            and admitted_rate(cells.get("func"))
-            and _number(cells.get("a"))
-            and _number(cells.get("b"))
-        ):
-            return "squish", cells
+        kind = "squish"
     elif code is _NOT_QUITE_CODE:
-        cells = _closure(function)
-        if (
-            cells is not None
-            and admitted_rate(cells.get("func"))
-            and _number(cells.get("proportion"))
-        ):
-            return "not_quite_there", cells
-    return None
+        kind = "not_quite_there"
+    else:
+        return None
+    cells = _closure(function)
+    if cells is None or not all(_number(cells.get(n)) for n in _FACTORY_NUMBERS[kind]):
+        return None
+    return kind, cells
+
+
+def engine_rate(function: Any) -> EngineRate | None:
+    """``function`` as CE's rate function, or ``None``: one of CE's rate
+    functions itself, or a closure a rate factory returned over one, at any
+    depth (:func:`_layer`). Each step is by identity, so a callable that only
+    compares equal to one of CE's, or only carries a factory's code, is not
+    one, and none of its own code runs to tell.
+    """
+    layers: list[tuple[str, Mapping[str, Any]]] = []
+    seen: set[int] = set()
+    while function not in _ENGINE_RATES:
+        if id(function) in seen:  # a closure whose cell holds itself
+            return None
+        seen.add(id(function))
+        layer = _layer(function)
+        if layer is None:
+            return None
+        layers.append(layer)
+        function = layer[1].get("func")
+    return EngineRate(function, tuple(layers))
 
 
 def admitted_rate(function: Any) -> bool:
     """Whether ``function`` is a rate function the trusted algebra admits."""
-    try:
-        if function in RATE_FUNCTIONS:
-            return True
-    except TypeError:  # unhashable
-        return False
-    return _factory_parts(function) is not None
+    return engine_rate(function) is not None
 
 
 def is_monotone(function: Any) -> bool:
     """Whether ``function`` is an admitted rate function that never decreases."""
-    try:
-        if function in MONOTONE_RATE_FUNCTIONS:
-            return True
-    except TypeError:
+    rate = engine_rate(function)
+    if rate is None or rate.base not in _MONOTONE:
         return False
-    parts = _factory_parts(function)
-    if parts is None:
-        return False
-    kind, cells = parts
-    if kind == "squish":
-        return cells["a"] <= cells["b"] and is_monotone(cells["func"])
-    return cells["proportion"] >= 0 and is_monotone(cells["func"])
+    for kind, cells in rate.layers:
+        if kind == "squish" and not cells["a"] <= cells["b"]:
+            return False
+        if kind == "not_quite_there" and not cells["proportion"] >= 0:
+            return False
+    return True
 
 
 def _squish(inner: ArrayFunction, a: float, b: float) -> ArrayFunction:
@@ -510,22 +558,24 @@ def _squish(inner: ArrayFunction, a: float, b: float) -> ArrayFunction:
     return twin
 
 
+def _not_quite_there(inner: ArrayFunction, proportion: float) -> ArrayFunction:
+    return lambda t: proportion * inner(np.asarray(t, dtype=float))
+
+
 def array_twin(function: Callable[..., float]) -> ArrayFunction:
     """The array twin of an admitted rate function: it evaluates ``function``
     over an array of alphas, equal to calling it on each.
     """
-    twin = _TWINS.get(function)
-    if twin is not None:
-        return twin
-    parts = _factory_parts(function)
-    if parts is None:
+    rate = engine_rate(function)
+    if rate is None:
         raise KeyError(f"{function!r} is not an admitted rate function.")
-    kind, cells = parts
-    inner = array_twin(cells["func"])
-    if kind == "squish":
-        return _squish(inner, cells["a"], cells["b"])
-    proportion = cells["proportion"]
-    return lambda t: proportion * inner(np.asarray(t, dtype=float))
+    twin = _ENGINE_RATES[rate.base]
+    for kind, cells in reversed(rate.layers):
+        if kind == "squish":
+            twin = _squish(twin, cells["a"], cells["b"])
+        else:
+            twin = _not_quite_there(twin, cells["proportion"])
+    return twin
 
 
 _ARC_CODE = paths.path_along_arc(1.0).__code__
@@ -534,20 +584,24 @@ _SPIRAL_CODE = paths.spiral_path(1.0).__code__
 
 
 def _points(value: Any) -> bool:
-    return isinstance(value, np.ndarray) and value.dtype.kind in "fiu"
+    """A numpy array itself (a subclass's arithmetic is its own code)."""
+    return type(value) is np.ndarray and value.dtype.kind in "fiu"
 
 
 def admitted_path(function: Any) -> bool:
     """Whether ``function`` is a path function the trusted algebra admits:
     the straight path (``interpolate``) or a closure of CE's arc, spiral or
-    circle paths whose angle is a number. The arrays a closure binds may be
+    circle paths (a plain function whose code is the path's own) whose
+    angle is a number (:data:`_NUMBERS`). The arrays a closure binds may be
     the script's own (``Rotate`` binds its ``about_point``): a trusted play
     runs no script code, and :func:`frozen_path` lets an evaluation after
     the play see them as the play did.
     """
     if function is interpolate:
         return True
-    code = getattr(function, "__code__", None)
+    if type(function) is not types.FunctionType:
+        return False
+    code = function.__code__
     if code is _ARC_CODE:
         cells = _closure(function)
         return cells is not None and _number(cells.get("arc_angle"))

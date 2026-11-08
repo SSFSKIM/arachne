@@ -13,6 +13,7 @@ from arachne import (
     RIGHT,
     UP,
     Circle,
+    Create,
     DecimalNumber,
     Dot,
     FadeIn,
@@ -350,3 +351,30 @@ class TickedSuccession(Scene):
                 square.animate(run_time=0.65, rate_func=linear).shift(UP),
             )
         )
+
+
+class DriftingLinear:
+    """A rate function whose hash and equality are ``linear``'s, and whose
+    value drifts by how many times it was called before: what it gives at an
+    instant depends on its own call history.
+    """
+
+    def __init__(self):
+        self.calls = 0
+
+    def __hash__(self):
+        return hash(linear)
+
+    def __eq__(self, other):
+        return other is linear or other is self
+
+    def __call__(self, t):
+        self.calls += 1
+        return min(1.0, t + 0.04 * (self.calls % 5)) if t < 1 else 1.0
+
+
+class DriftingReveal(Scene):
+    """A reveal at a rate that is only equal to ``linear``."""
+
+    def construct(self):
+        self.play(Create(Square(), rate_func=DriftingLinear()), run_time=1)
