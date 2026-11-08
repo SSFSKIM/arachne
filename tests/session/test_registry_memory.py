@@ -16,32 +16,107 @@ import pytest
 
 from arachne.server import registry
 
-from .conftest import WAIT_S
+from .conftest import WAIT_S, write
 
 MIB = 1 << 20
 
+STILL = """\
+    from arachne import Scene, Square
+
+
+    class Small(Scene):
+        def construct(self):
+            self.add(Square(side_length=1))
+            self.wait(0.5)
+
+
+    class Large(Small):
+        pass
+"""
+
 #: A client holding ``argv[2]`` MiB, every page of it written, that starts a
-#: server of the registry ``argv[1]`` itself, as its child: the server's pid,
-#: once it serves, and the client's own peak in MiB. (A server
-#: :func:`registry.connect_or_start` starts is detached by a fork that starts
-#: its peak afresh; one a client runs itself carries the client's in
-#: ``ru_maxrss``.)
+#: server of the registry ``argv[1]``: its own child, run as ``python -m
+#: arachne.server --socket``, without ``argv[3]``; with it, the session of
+#: the scene ``argv[4]`` of the file ``argv[3]`` by
+#: :func:`registry.connect_or_start`, whose server a launcher's fork detaches.
+#: It prints the server's pid, once it serves, and the client's own peak in
+#: MiB. The first way, ``ru_maxrss`` carries the client's peak into the
+#: server; the second, the fork that detaches it starts its peak afresh.
 CLIENT = """\
 import json, os, subprocess, sys
+from pathlib import Path
 
 from arachne.server import registry
 
 held = bytearray(b"x") * (int(sys.argv[2]) << 20)
-server = subprocess.Popen(
-    [sys.executable, "-m", "arachne.server", "--socket"],
-    stdin=subprocess.DEVNULL,
-    stdout=subprocess.PIPE,
-    stderr=subprocess.DEVNULL,
-    env={**os.environ, "ARACHNE_SESSION_DIR": sys.argv[1]},
-)
-ready = json.loads(server.stdout.readline())
-print(json.dumps({"pid": ready["params"]["pid"], "own_mb": registry._rss_mb(), "held": len(held)}))
+if len(sys.argv) > 3:
+    connection = registry.connect_or_start(
+        Path(sys.argv[3]),
+        sys.argv[4],
+        {"pixel_width": 96, "pixel_height": 54, "frame_rate": 4},
+        directory=Path(sys.argv[1]),
+    )
+    connection.close()
+    pid = connection.pid
+else:
+    server = subprocess.Popen(
+        [sys.executable, "-m", "arachne.server", "--socket"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        env={**os.environ, "ARACHNE_SESSION_DIR": sys.argv[1]},
+    )
+    pid = json.loads(server.stdout.readline())["params"]["pid"]
+print(json.dumps({"pid": pid, "own_mb": registry._rss_mb(), "held": len(held)}))
 """
+
+#: A process that holds about 300 MiB, frees it, and resets its peak
+#: (``5`` to ``/proc/self/clear_refs``): its peak before and after the
+#: reset, in MiB, or ``null`` where it may not write the file.
+RESET = """\
+import json
+
+from arachne.server import registry
+
+held = bytearray(b"x") * (300 << 20)
+del held
+before = registry._rss_mb()
+try:
+    with open("/proc/self/clear_refs", "w") as refs:
+        refs.write("5")
+except OSError as error:
+    print(json.dumps({"refused": str(error)}))
+else:
+    print(json.dumps({"before": before, "after": registry._rss_mb()}))
+"""
+
+ON_LINUX = pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="Linux: VmHWM, and the starting process's peak in ru_maxrss",
+)
+
+
+def _run(*argv: str) -> dict:
+    """What a Python process running ``argv`` printed, as JSON."""
+    done = subprocess.run(
+        [sys.executable, "-c", *argv],
+        capture_output=True,
+        text=True,
+        timeout=WAIT_S,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+def _started(host, held_mb: int, *session: str) -> tuple[float, float]:
+    """The entry's memory of a server started by a client holding
+    ``held_mb``, and that client's own peak (:data:`CLIENT`).
+    """
+    started = _run(CLIENT, os.fspath(host.directory), str(held_mb), *session)
+    host.pids.add(started["pid"])
+    entries = {entry.pid: entry for entry in registry.sessions(host.directory)}
+    return entries[started["pid"]].rss_mb, started["own_mb"]
 
 
 def _ru_maxrss(monkeypatch: pytest.MonkeyPatch, value: int) -> None:
@@ -87,30 +162,10 @@ def test_on_macos_the_peak_is_ru_maxrss_in_bytes(tmp_path, monkeypatch):
     assert registry._rss_mb() == 300.0
 
 
-@pytest.mark.skipif(
-    not sys.platform.startswith("linux"),
-    reason="Linux: where ru_maxrss carries the starting process's peak",
-)
+@ON_LINUX
 def test_a_server_started_by_a_large_client_reports_its_own_peak(host):
-    def start(held_mb: int) -> tuple[float, float]:
-        """The entry's memory of a server started by a client holding
-        ``held_mb``, and that client's own peak.
-        """
-        client = subprocess.run(
-            [sys.executable, "-c", CLIENT, os.fspath(host.directory), str(held_mb)],
-            capture_output=True,
-            text=True,
-            timeout=WAIT_S,
-            check=False,
-        )
-        assert client.returncode == 0, client.stderr
-        started = json.loads(client.stdout)
-        host.pids.add(started["pid"])
-        entries = {entry.pid: entry for entry in registry.sessions(host.directory)}
-        return entries[started["pid"]].rss_mb, started["own_mb"]
-
-    small, _ = start(0)
-    large, client_mb = start(300)
+    small, _ = _started(host, 0)
+    large, client_mb = _started(host, 300)
     # The client did hold what the server must not report.
     assert client_mb >= 300
     # The engine's own footprint sets what a server holds, whoever started
@@ -119,3 +174,26 @@ def test_a_server_started_by_a_large_client_reports_its_own_peak(host):
     # spawned from.
     assert small > 0
     assert large < small + 150, (small, large)
+
+
+@ON_LINUX
+def test_a_server_the_registry_starts_for_a_large_client_reports_its_own_peak(
+    host, tmp_path
+):
+    path = os.fspath(write(tmp_path, "still.py", STILL))
+    small, _ = _started(host, 0, path, "Small")
+    large, client_mb = _started(host, 300, path, "Large")
+    assert client_mb >= 300
+    # Detached by its launcher's fork, the server starts its peak afresh:
+    # nothing of the client's reaches its entry.
+    assert small > 0
+    assert large < small + 150, (small, large)
+
+
+@ON_LINUX
+def test_a_reset_peak_is_the_peak_since():
+    peaks = _run(RESET)
+    if "refused" in peaks:
+        pytest.skip(f"/proc/self/clear_refs is not writable here: {peaks['refused']}")
+    # The 300 MiB held and freed counts before the reset, and not after it.
+    assert peaks["before"] - peaks["after"] > 250, peaks
