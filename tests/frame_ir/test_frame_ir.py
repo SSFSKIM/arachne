@@ -142,7 +142,9 @@ def test_a_blend_is_stated_only_where_it_reads_as_the_plain_path(spoil):
 
 
 def test_a_held_frame_sends_an_empty_delta():
-    session = Session.open(SCENES, "Morph", config={**MEDIUM, "draw_path": "ir_cairo"})
+    # Drawn again, not reused, so that the stream describes it.
+    settings = {**MEDIUM, "draw_path": "ir_cairo", "draw_reuse": False}
+    session = Session.open(SCENES, "Morph", config=settings)
     try:
         first = np.asarray(session.frame(Fraction(1, 30)))
         painter = _painter(session.scene)

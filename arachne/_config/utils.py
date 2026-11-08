@@ -1485,7 +1485,11 @@ class ManimConfig(MutableMapping):
     @property
     def draw_reuse(self) -> bool:
         """Whether a frame whose recorded state is the previous frame's
-        reuses its pixels instead of drawing them again (on by default).
+        reuses its pixels instead of drawing them again (on by default): a
+        render keeps the frame before, a session the few it drew last
+        (:meth:`.Session.clear_draws` empties them). The state is compared
+        by the identity of every recorded version the frame reaches, never
+        by content. Every frame is still written.
         """
         return self._lever("draw_reuse")
 
