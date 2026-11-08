@@ -1079,3 +1079,33 @@ class NumberThenFormula(Scene):
     first = _open(scene, "NumberThenFormula").summary()
     again = _open(scene, "NumberThenFormula").summary()
     assert compare(first, again) is None
+
+
+def test_a_mobject_held_outside_the_walk_is_keyed_by_its_own_state(scene_dir):
+    """A dot holds a tracker that nothing draws, so no walk reaches it. Its
+    value is state the dot's frame depends on: two executions whose trackers
+    differ are not the same execution, and one's summary says so.
+    """
+    data = _write(scene_dir, "data.txt", "1")
+    scene = _write(
+        scene_dir,
+        "scene.py",
+        HEADER
+        + """
+class Holder(Dot):
+    def __init__(self):
+        super().__init__()
+        self.tracker = ValueTracker(float((HERE / "data.txt").read_text()))
+
+
+class Held(Scene):
+    def construct(self):
+        self.add(Holder())
+        self.wait(0.5)
+""",
+    )
+    divergence = _diverged_after_editing(scene, "Held", data, "2")
+    assert divergence is not None
+    assert divergence.code == "replay.diverged"
+    again = _diverged_after_editing(scene, "Held", data, "1")
+    assert again is None, "the same value is the same execution"

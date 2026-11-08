@@ -357,6 +357,7 @@ def summarize(record: Record) -> ExecutionSummary:
     is made, as the record's frames are drawn with it.
     """
     from .draw import camera_nodes
+    from .record import NodeState
 
     nodes: list[NodeValues] = []
     node_keys: list[bytes] = []
@@ -365,6 +366,8 @@ def summarize(record: Record) -> ExecutionSummary:
     numbers: dict[tuple[int, int], tuple[int, tuple[Mobject, ...]]] = {}
     camera = record._scene.renderer.camera
     owned = tuple(camera_nodes(camera))
+    # The states, as the summary is made, of mobjects only a field refers to.
+    live: dict[int, NodeState] = {}
 
     def state_values(
         capture: Capture, lists: tuple[tuple[str, Sequence[Mobject]], ...]
@@ -381,7 +384,30 @@ def summarize(record: Record) -> ExecutionSummary:
         indices: list[int] = []
         children: list[tuple[int, ...]] = []
         references: list[tuple[int, ...]] = []
-        for mob, node in walked:
+        # A walk reaches a mobject by the submobjects' lists; one a field
+        # refers to that no list holds has no state in the record. It is
+        # keyed by its state as the summary is made (as the camera's own
+        # mobjects are), never as only its type, which equal states of
+        # unlike values agree on. Its submobjects and references follow.
+        added: set[int] = set()
+
+        def _placed(held: Mobject) -> int:
+            found = positions.get(id(held))
+            if found is None:
+                node = record.node_state(held, capture)
+                if node is None:
+                    node = live.get(id(held))
+                    if node is None:
+                        node = live[id(held)] = NodeState.of(held)
+                positions[id(held)] = found = len(walked)
+                added.add(id(held))
+                walked.append((held, node))
+            return found
+
+        place = 0
+        while place < len(walked):
+            mob, node = walked[place]
+            place += 1
             known = numbers.get((id(mob), id(node)))
             if known is None:
                 fields, refers = _fields(node)
@@ -393,8 +419,13 @@ def summarize(record: Record) -> ExecutionSummary:
                 node_keys.append(_node_key(values))
             number, refers = known
             indices.append(number)
-            children.append(tuple(positions.get(id(m), -1) for m in node.submobjects))
-            references.append(tuple(positions.get(id(m), -1) for m in refers))
+            if id(mob) in added:
+                children.append(tuple(_placed(m) for m in node.submobjects))
+            else:
+                children.append(
+                    tuple(positions.get(id(m), -1) for m in node.submobjects)
+                )
+            references.append(tuple(_placed(m) for m in refers))
 
         def at(members: Iterable[Mobject], *, ordered: bool = True) -> np.ndarray:
             found = [positions.get(id(mob), -1) for mob in members]
