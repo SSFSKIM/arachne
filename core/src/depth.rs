@@ -458,6 +458,10 @@ pub struct Offer {
     /// ([`Registry::tolerance`]): how far, at each of its points, its own plane may stand from the
     /// plane content put them on ([`near_parallel`]). Zero for a record with no plane of its own.
     own_tolerance: f64,
+    /// Its handle in the registry that holds it.
+    handle: u32,
+    /// The near-parallel verdicts found for it against records of higher handles ([`tested`]).
+    tested: Tested,
 }
 
 #[cfg(feature = "counters")]
@@ -465,6 +469,84 @@ impl Offer {
     /// How many points it has.
     pub(crate) fn points(&self) -> usize {
         self.points.len()
+    }
+}
+
+/// How many partners' near-parallel verdicts a record keeps ([`tested`]).
+const TESTED: usize = 8;
+
+/// A record's last near-parallel verdicts against partners of higher handles, each one word:
+/// the partner's handle in the low 32 bits, then a bit marking the word filled, the verdict, and
+/// whether the dihedral passed [`WIDE`]. A verdict is a function of the two records alone, so
+/// every thread that fills a word fills it with the same bits, and a thread that reads another
+/// partner's word, or none, finds the verdict again. A clone keeps none.
+#[derive(Default)]
+struct Tested([std::sync::atomic::AtomicU64; TESTED]);
+
+impl Clone for Tested {
+    fn clone(&self) -> Tested {
+        Tested::default()
+    }
+}
+
+impl PartialEq for Tested {
+    fn eq(&self, _: &Tested) -> bool {
+        true
+    }
+}
+
+impl std::fmt::Debug for Tested {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Tested")
+    }
+}
+
+/// A dihedral past which a near-parallel pair is counted apart (`counters` builds): a record
+/// small across the axis has a large `θ_R`, as it should, but a crossing of clearly distinct
+/// surfaces turned to paint order over a visible band is one to see.
+pub(crate) const WIDE: f64 = 1e-2;
+
+/// [`near_parallel`]'s verdict on two records of one registry, as [`tested`] keeps it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Verdict {
+    /// Whether the two are near-parallel.
+    pub(crate) near: bool,
+    /// Whether their dihedral passes [`WIDE`].
+    pub(crate) wide: bool,
+    /// Whether this call ran the test, rather than reading a verdict kept.
+    pub(crate) fresh: bool,
+}
+
+/// [`near_parallel`]'s verdict on flat records `a` and `b` of one registry, run once per pair for
+/// as long as their registry lives: the record of the lower handle keeps it, among its last
+/// [`TESTED`] partners' ([`Tested`]). The same bits whichever thread asks, and in whichever order
+/// the two come, as [`near_parallel`] gives them.
+pub(crate) fn tested(a: &Offer, b: &Offer) -> Verdict {
+    use std::sync::atomic::Ordering::Relaxed;
+    const FILLED: u64 = 1 << 32;
+    const NEAR: u64 = 1 << 33;
+    const PAST: u64 = 1 << 34;
+    let (low, high) = if a.handle <= b.handle { (a, b) } else { (b, a) };
+    let slot = &low.tested.0[high.handle as usize % TESTED];
+    let word = slot.load(Relaxed);
+    if word & FILLED != 0 && word as u32 == high.handle {
+        return Verdict {
+            near: word & NEAR != 0,
+            wide: word & PAST != 0,
+            fresh: false,
+        };
+    }
+    let tilt = near_parallel(low, high);
+    let wide = tilt.dihedral > WIDE;
+    let bits = |on: bool, bit: u64| if on { bit } else { 0 };
+    slot.store(
+        u64::from(high.handle) | FILLED | bits(tilt.near, NEAR) | bits(wide, PAST),
+        Relaxed,
+    );
+    Verdict {
+        near: tilt.near,
+        wide,
+        fresh: true,
     }
 }
 
@@ -683,6 +765,8 @@ impl Registry {
                 spread
             },
             own_tolerance,
+            handle: 0,
+            tested: Tested::default(),
         })
     }
 
@@ -706,6 +790,8 @@ impl Registry {
             widest: snap_departure_bound(self.grid, places, shape),
             spread: f64::INFINITY,
             own_tolerance: 0.0,
+            handle: 0,
+            tested: Tested::default(),
         })
     }
 
@@ -762,10 +848,12 @@ impl Registry {
         }
     }
 
-    fn push(&mut self, offer: Offer) -> u32 {
+    fn push(&mut self, mut offer: Offer) -> u32 {
         assert!(!self.settled, "a record offered after the registry settled");
+        let handle = self.offers.len() as u32;
+        offer.handle = handle;
         self.offers.push(offer);
-        self.offers.len() as u32 - 1
+        handle
     }
 
     /// How far `offer`'s points may lie off a plane of unit normal `n` and still be on it: the
@@ -2876,36 +2964,75 @@ mod tests {
         }
     }
 
+    /// Offers to `r` a flat record of a random outline of 3 to 6 corners 0.5 to 4.5 from the
+    /// origin, on a plane through it turned up to 1e-4 from z = 0.
+    fn offer_turned(r: &mut Registry, s: &mut Seeded) {
+        let unit = |s: &mut Seeded| s.below(1 << 30) as f64 / (1u64 << 30) as f64;
+        let theta = 1e-4 * unit(s);
+        let phi = 6.0 * unit(s);
+        let n = [
+            libm::sin(theta) * libm::cos(phi),
+            libm::sin(theta) * libm::sin(phi),
+            libm::cos(theta),
+        ];
+        let corners = 3 + s.below(4) as usize;
+        let size = 0.5 + 4.0 * unit(s);
+        let points: Vec<[f64; 3]> = (0..corners)
+            .map(|k| {
+                let t = (k as f64 + 0.5 * unit(s)) / corners as f64 * std::f64::consts::TAU;
+                let (x, y) = (size * libm::cos(t), size * libm::sin(t));
+                [x, y, -(n[0] * x + n[1] * y) / n[2]]
+            })
+            .collect();
+        let own = WorldPlane::rounded(n, 0.0, 0.0);
+        r.offer_flat(own, &points, &NONE, &points);
+    }
+
+    /// The verdict a record keeps for a pair is the test's own, whichever of the two asks and
+    /// however often, with more partners than a record keeps verdicts for (so kept verdicts are
+    /// replaced); and a pair asked again reads its verdict rather than running the test.
+    #[test]
+    fn a_verdict_kept_for_a_pair_is_the_test_s_own() {
+        let mut s = Seeded(0x7465_7374_6564);
+        let mut r = registry();
+        for _ in 0..24 {
+            offer_turned(&mut r, &mut s);
+        }
+        let n = r.offers.len();
+        let (mut near, mut kept) = (0, 0);
+        for _ in 0..3 {
+            for i in 0..n {
+                for j in (0..n).filter(|j| *j != i) {
+                    let (a, b) = (&r.offers[i], &r.offers[j]);
+                    let (verdict, tilt) = (tested(a, b), near_parallel(a, b));
+                    assert_eq!(
+                        (verdict.near, verdict.wide),
+                        (tilt.near, tilt.dihedral > WIDE),
+                        "{i} and {j}: {verdict:?}, {tilt:?}"
+                    );
+                    near += usize::from(verdict.near);
+                    kept += usize::from(!verdict.fresh);
+                }
+            }
+        }
+        assert!(near > 0 && near < 3 * n * (n - 1), "{near}");
+        assert!(kept > 0, "no verdict read back");
+        let (a, b) = (&r.offers[3], &r.offers[17]);
+        tested(a, b);
+        assert!(!tested(b, a).fresh, "a pair asked again runs the test");
+    }
+
     /// The test is one of the pair, whichever comes first: over flat records of random outlines
     /// on planes turned a little from each other, every number it gives is the same bits both
     /// ways, and it holds both ways at once or neither.
     #[test]
     fn the_near_parallel_test_is_the_same_whichever_record_comes_first() {
         let mut s = Seeded(0x6e70_7061_6972);
-        let unit = |s: &mut Seeded| s.below(1 << 30) as f64 / (1u64 << 30) as f64;
         let (mut near, mut cases) = (0, 0);
         for _ in 0..400 {
             let mut r = registry();
             for _ in 0..2 {
-                let theta = 1e-4 * unit(&mut s);
-                let phi = 6.0 * unit(&mut s);
-                let n = [
-                    libm::sin(theta) * libm::cos(phi),
-                    libm::sin(theta) * libm::sin(phi),
-                    libm::cos(theta),
-                ];
-                let corners = 3 + s.below(4) as usize;
-                let size = 0.5 + 4.0 * unit(&mut s);
-                let points: Vec<[f64; 3]> = (0..corners)
-                    .map(|k| {
-                        let t = (k as f64 + 0.5 * unit(&mut s)) / corners as f64
-                            * std::f64::consts::TAU;
-                        let (x, y) = (size * libm::cos(t), size * libm::sin(t));
-                        [x, y, -(n[0] * x + n[1] * y) / n[2]]
-                    })
-                    .collect();
-                let own = WorldPlane::rounded(n, 0.0, 0.0);
-                r.offer_flat(own, &points, &NONE, &points);
+                offer_turned(&mut r, &mut s);
             }
             let (a, b) = (&r.offers[0], &r.offers[1]);
             let (x, y) = (near_parallel(a, b), near_parallel(b, a));

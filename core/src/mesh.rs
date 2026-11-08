@@ -25,7 +25,7 @@
 //!   way from either side of a shared edge.
 
 use crate::composite::{
-    Coverage, FULL, Fragment, OpaquePass, Plane, Producer, Rect, SAMPLES, SUBPIXEL,
+    Coverage, FULL, FlatRecord, Fragment, OpaquePass, Plane, Producer, Rect, SAMPLES, SUBPIXEL,
     TransparentPass, premultiply, sample_fixed,
 };
 use crate::depth::{Registry, WorldPlane};
@@ -473,7 +473,7 @@ impl Meshes {
                             .on_surface(t.surface);
                     f.plane = t.plane;
                     f.snap = t.snap;
-                    f.record = record;
+                    f.record = record.map(FlatRecord);
                     add(x, y, f);
                 }
             }

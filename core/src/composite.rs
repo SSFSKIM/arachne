@@ -288,9 +288,20 @@ pub struct Fragment<'f> {
     /// pre-projected path, one the registry was not offered). Two fragments of flat records on no
     /// one identity, whose own planes the snapped input cannot tell apart in orientation, tie
     /// within the same term as two on one identity ([`crate::order::near_parallel`]).
-    pub record: Option<&'f crate::depth::Offer>,
+    pub record: Option<FlatRecord<'f>>,
     /// The producer that added it (set by the pass).
     source: u16,
+}
+
+/// A fragment's flat record ([`Fragment::record`]): one record of its frame's registry, which two
+/// fragments share when they are fragments of the same record, whatever its content.
+#[derive(Clone, Copy, Debug)]
+pub struct FlatRecord<'f>(pub &'f crate::depth::Offer);
+
+impl PartialEq for FlatRecord<'_> {
+    fn eq(&self, other: &FlatRecord<'_>) -> bool {
+        std::ptr::eq(self.0, other.0)
+    }
 }
 
 impl Fragment<'_> {
@@ -1086,7 +1097,7 @@ impl<'a> TransparentPass<'a> {
     /// depth only by the near-parallel rule (`order::near_parallel`: both cover the sub-sample, they
     /// share no identity, their keys as the pixel's order reads them lie within the term and not
     /// within their error bounds), once per pair and sub-sample, and the pixel once if any; and the
-    /// pixel once more if such a pair's dihedral passes `order::WIDE` (`counters` builds only:
+    /// pixel once more if such a pair's dihedral passes `depth::WIDE` (`counters` builds only:
     /// it reads the pixel again, apart from its resolve).
     #[cfg(feature = "counters")]
     fn count_near_parallel(&self, frags: &[Fragment], x: u32, y: u32) {
@@ -1121,7 +1132,7 @@ impl<'a> TransparentPass<'a> {
             let (Some(ra), Some(rb)) = (fa.record, fb.record) else {
                 continue;
             };
-            let tilt = crate::depth::near_parallel(ra, rb);
+            let tilt = crate::depth::near_parallel(ra.0, rb.0);
             if !tilt.near {
                 continue;
             }
@@ -1135,7 +1146,7 @@ impl<'a> TransparentPass<'a> {
                 })
                 .count();
             samples += alone;
-            wide |= alone > 0 && tilt.dihedral > crate::order::WIDE;
+            wide |= alone > 0 && tilt.dihedral > crate::depth::WIDE;
         }
         if samples > 0 {
             count!(NEAR_PARALLEL_SAMPLES, samples);

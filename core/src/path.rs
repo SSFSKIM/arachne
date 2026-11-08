@@ -47,8 +47,8 @@
 //!   sample by sample asks for the layer's winding at the sub-samples (`scanline::mask`).
 
 use crate::composite::{
-    Coverage, Fragment, OpaquePass, Plane, Producer, Rect, SAMPLES, TransparentPass, premultiply,
-    sample_cell, sample_point,
+    Coverage, FlatRecord, Fragment, OpaquePass, Plane, Producer, Rect, SAMPLES, TransparentPass,
+    premultiply, sample_cell, sample_point,
 };
 use crate::depth::{Centreline, Planarity, Registry, WorldPlane};
 use crate::gradient::{self, Linear};
@@ -1727,7 +1727,7 @@ impl Paths {
                         f.path_layer = true;
                         f.plane = layer.plane;
                         f.snap = layer.snap;
-                        f.record = record;
+                        f.record = record.map(FlatRecord);
                         add(x, y, f);
                     }
                 },

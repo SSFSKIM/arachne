@@ -218,12 +218,10 @@ fn the_near_parallel_tie_is_counted_where_it_ties_and_its_tests_where_they_run()
     }
     assert!(count("near_parallel_px", &counts) > 1000, "{counts:?}");
     assert!(count("near_parallel_samples", &counts) >= count("near_parallel_px", &counts));
-    // Each test reads both records' points: 16 each, an outline of four segments.
-    assert_eq!(
-        count("near_parallel_points", &counts),
-        32 * count("near_parallel_tested", &counts),
-        "{counts:?}"
-    );
+    // The geometric test runs once for the one pair of records over the frame, drawn on one
+    // thread, reading both records' points: 16 each, an outline of four segments.
+    assert_eq!(count("near_parallel_run", &counts), 1, "{counts:?}");
+    assert_eq!(count("near_parallel_points", &counts), 32, "{counts:?}");
     assert_eq!(count("near_parallel_wide_pairs", &counts), 0, "{counts:?}");
     assert_eq!(count("near_parallel_wide_px", &counts), 0, "{counts:?}");
     // Turned 2.0e-3 apart, past it: tested along the hinge, where their keys lie within the term,

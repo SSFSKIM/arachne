@@ -133,35 +133,34 @@ pub fn one_plane(a: &Fragment, b: &Fragment) -> bool {
     a.plane.iter().any(|p| *p != 0 && b.plane.contains(p))
 }
 
-/// A dihedral past which a near-parallel pair is counted apart (`counters` builds): a record small
-/// across the axis has a large `θ_R`, as it should, but a crossing of clearly distinct surfaces
-/// turned to paint order over a visible band is one to see.
-#[cfg(feature = "counters")]
-pub(crate) const WIDE: f64 = 1e-2;
-
 /// Whether `a` and `b` are fragments of two flat records ([`Fragment::record`]) whose own planes
 /// the snapped input cannot tell apart in orientation: their dihedral is within how far each
 /// record's snap lets its own plane turn about the dihedral's axis from the plane content put its
 /// points on (`depth::near_parallel`, which derives it). Pairwise and symmetric: it gives no
 /// identity and does not chain. A fragment of a record with no plane of its own (a line, a curve),
-/// of a pre-projected path, or of one the registry was not offered is never near-parallel.
+/// of a pre-projected path, or of one the registry was not offered is never near-parallel. The
+/// test runs once per pair of records in a frame (`depth::tested`).
 ///
 /// [`Fragment::record`]: crate::composite::Fragment::record
 pub fn near_parallel(a: &Fragment, b: &Fragment) -> bool {
     let (Some(x), Some(y)) = (a.record, b.record) else {
         return false;
     };
-    let tilt = crate::depth::near_parallel(x, y);
+    let verdict = crate::depth::tested(x.0, y.0);
     count!(NEAR_PARALLEL_TESTED);
-    count!(NEAR_PARALLEL_POINTS, x.points() + y.points());
     #[cfg(feature = "counters")]
-    if tilt.near {
+    if verdict.fresh {
+        count!(NEAR_PARALLEL_RUN);
+        count!(NEAR_PARALLEL_POINTS, x.0.points() + y.0.points());
+    }
+    #[cfg(feature = "counters")]
+    if verdict.near {
         count!(NEAR_PARALLEL_PAIRS);
-        if tilt.dihedral > WIDE {
+        if verdict.wide {
             count!(NEAR_PARALLEL_WIDE_PAIRS);
         }
     }
-    tilt.near
+    verdict.near
 }
 
 /// Whether `a` (depth `da` within `ea`) and `b` (depth `db` within `eb`), at a sub-sample both

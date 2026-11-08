@@ -55,7 +55,10 @@ pub static ATTACH_NS: AtomicU64 = AtomicU64::new(0);
 /// Pairs of fragments on flat records of different identities whose keys lay within the tie
 /// term, tested for being near-parallel (`order::near_parallel`), counted once per test.
 pub static NEAR_PARALLEL_TESTED: AtomicU64 = AtomicU64::new(0);
-/// The records' points those tests read, both records' at each.
+/// Of those tests, the ones that ran the geometric test, finding no verdict the pair's records kept
+/// (`depth::tested`).
+pub static NEAR_PARALLEL_RUN: AtomicU64 = AtomicU64::new(0);
+/// The records' points those runs read, both records' at each.
 pub static NEAR_PARALLEL_POINTS: AtomicU64 = AtomicU64::new(0);
 /// Of those tests, the ones that found the pair near-parallel.
 pub static NEAR_PARALLEL_PAIRS: AtomicU64 = AtomicU64::new(0);
@@ -69,7 +72,7 @@ pub static NEAR_PARALLEL_PX: AtomicU64 = AtomicU64::new(0);
 /// Of those, the ones where a pair tied so has a dihedral beyond 1e-2 radians.
 pub static NEAR_PARALLEL_WIDE_PX: AtomicU64 = AtomicU64::new(0);
 
-const ALL: [(&str, &AtomicU64); 29] = [
+const ALL: [(&str, &AtomicU64); 30] = [
     ("near", &NEAR),
     ("bounds_tested", &BOUNDS_TESTED),
     ("key_under", &KEY_UNDER),
@@ -93,6 +96,7 @@ const ALL: [(&str, &AtomicU64); 29] = [
     ("partition_ns", &PARTITION_NS),
     ("attach_ns", &ATTACH_NS),
     ("near_parallel_tested", &NEAR_PARALLEL_TESTED),
+    ("near_parallel_run", &NEAR_PARALLEL_RUN),
     ("near_parallel_points", &NEAR_PARALLEL_POINTS),
     ("near_parallel_pairs", &NEAR_PARALLEL_PAIRS),
     ("near_parallel_wide_pairs", &NEAR_PARALLEL_WIDE_PAIRS),
