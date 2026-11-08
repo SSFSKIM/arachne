@@ -576,18 +576,44 @@ def _generator_state(value: Any) -> Any:
     """The state a random generator's next draw reads (Python's, numpy's
     legacy ``RandomState``, or a numpy ``Generator`` by its bit generator's
     type and state), read through the kind's own methods; ``None`` for
-    another value. A bit generator of no numpy module's is a marker.
+    another value. A bit generator of no numpy module's is a marker, and so
+    is a generator whose draws need not come from that state
+    (:func:`_draws_from_its_state`).
     """
+    kinds: tuple[type, ...] = (
+        random.Random,
+        np.random.RandomState,
+        np.random.Generator,
+    )
+    kind = next((kind for kind in kinds if isinstance(value, kind)), None)
+    if kind is None:
+        return None
+    if not _draws_from_its_state(value, kind):
+        raise _Unkeyable(_qualified(type(value)))
     if isinstance(value, random.Random):
         return random.Random.getstate(value)
     if isinstance(value, np.random.RandomState):
         return np.random.RandomState.get_state(value)
-    if isinstance(value, np.random.Generator):
-        bits = vars(np.random.Generator)["bit_generator"].__get__(value)
-        if not type(bits).__module__.startswith("numpy.random."):
-            raise _Unkeyable(_qualified(type(bits)))
-        return (_qualified(type(bits)), bits.state)
-    return None
+    bits = vars(np.random.Generator)["bit_generator"].__get__(value)
+    if not type(bits).__module__.startswith("numpy.random."):
+        raise _Unkeyable(_qualified(type(bits)))
+    return (_qualified(type(bits)), bits.state)
+
+
+def _draws_from_its_state(value: Any, kind: type) -> bool:
+    """Whether ``value``, a generator of ``kind``, draws from the state
+    ``kind`` reports: neither its classes below ``kind`` nor the instance
+    replace one of ``kind``'s public methods (``random.SystemRandom``'s
+    ``random`` reads the system, never its state).
+    """
+    drawing = {name for name in dir(kind) if not name.startswith("_")}
+    for klass in type(value).__mro__:
+        if klass is kind:
+            break
+        if drawing & vars(klass).keys():
+            return False
+    own = getattr(value, "__dict__", None) or {}
+    return not drawing & own.keys()
 
 
 def _foreign_key(value: Any) -> Any:

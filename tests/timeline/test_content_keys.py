@@ -1000,6 +1000,98 @@ def test_a_random_generator_keys_by_its_state(make):
         assert _value_key(first) == _value_key(second)
 
 
+class Urandom(random.Random):
+    """Python's generator, drawing from the system instead of its state."""
+
+    def random(self):
+        return int.from_bytes(os.urandom(7), "big") / 2**56
+
+
+class UrandomArray(np.random.Generator):
+    """numpy's generator, drawing from the system instead of its state."""
+
+    def random(self, *args, **kwargs):
+        return int.from_bytes(os.urandom(7), "big") / 2**56
+
+
+def _overridden_on_the_instance():
+    found = random.Random(1)
+    found.random = lambda: int.from_bytes(os.urandom(7), "big") / 2**56
+    return found
+
+
+#: Generators whose draws do not come from the state they report.
+DRAWING_ELSEWHERE = {
+    "system-random": (random.SystemRandom, "random.SystemRandom"),
+    "a-subclass-overriding-random": (lambda: Urandom(1), f"{__name__}.Urandom"),
+    "a-numpy-subclass-overriding-random": (
+        lambda: UrandomArray(np.random.PCG64(1)),
+        f"{__name__}.UrandomArray",
+    ),
+    "an-instance-overriding-random": (_overridden_on_the_instance, "random.Random"),
+}
+
+
+@pytest.mark.parametrize(
+    ("make", "name"), list(DRAWING_ELSEWHERE.values()), ids=list(DRAWING_ELSEWHERE)
+)
+def test_a_generator_drawing_elsewhere_than_its_state_is_a_marker(make, name):
+    """Its state does not change as it draws, so it says nothing of what it
+    draws next: the unknown-type marker, never a key of that state.
+    """
+    drawn = make()
+    assert unkeyable(drawn) == name
+    assert _value_key(drawn) != _value_key(drawn)
+    assert marker_reason(_value_key(drawn)) == (
+        f"a value of a type the key does not know ({name})"
+    )
+
+
+#: A dot holding a generator drawing from the system (``MAKE``), drawn from
+#: between its plays.
+DRAWS_ELSEWHERE = (
+    HEADER
+    + """
+import os
+import random
+
+
+class Urandom(random.Random):
+    def random(self):
+        return int.from_bytes(os.urandom(7), "big") / 2**56
+
+
+class DrawsElsewhere(Scene):
+    def construct(self):
+        tracker = ValueTracker(0)
+        dot = Dot().add_updater(lambda m: m.set_x(tracker.get_value()))
+        dot.rng = MAKE
+        self.add(dot)
+        self.play(tracker.animate.set_value(1), run_time=0.4)
+        dot.rng.random()
+        self.play(tracker.animate.set_value(0), run_time=0.4)
+"""
+)
+
+
+@pytest.mark.parametrize(
+    "make", ["random.SystemRandom()", "Urandom(1)"], ids=["system-random", "a-subclass"]
+)
+def test_a_generator_drawing_elsewhere_on_a_mobject_never_agrees(scene_dir, make):
+    path = _write(scene_dir, "scene.py", DRAWS_ELSEWHERE.replace("MAKE", make))
+    first = _open(path, "DrawsElsewhere", frame_rate=15)
+    second = _open(path, "DrawsElsewhere", frame_rate=15)
+    try:
+        found = first.compare(_across(second.summary()))
+        assert found is not None
+        assert "a value of a type the key does not know" in found.reason
+        assert play_keys(first.record) != play_keys(second.record)
+        assert first.probe.demoted, first.probe.plays
+    finally:
+        first.close()
+        second.close()
+
+
 def test_a_random_generator_keys_alike_in_another_process():
     script = (
         "import random\n"
