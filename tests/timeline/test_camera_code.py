@@ -19,7 +19,7 @@ from arachne.timeline.camera_code import (
     Replaced,
     display_funcs_rewired,
     drawn_cameras,
-    engine_display,
+    engine_override,
     engine_own,
     replaced_methods,
 )
@@ -184,13 +184,13 @@ def test_a_wrapper_the_engine_made_stands_for_what_it_wraps():
     def wrapper(mobjects, pixel_array):
         return paint(mobjects, pixel_array)
 
-    camera.display_funcs[VMobject] = engine_display(wrapper, paint)
+    camera.display_funcs[VMobject] = engine_override(wrapper, paint)
     assert not display_funcs_rewired(camera)
     assert replaced_methods(camera) == ()
     # Over an entry that was not the engine's, it is not either.
     other = Camera()
     foreign = other.display_funcs[VMobject]
-    camera.display_funcs[VMobject] = engine_display(wrapper, foreign)
+    camera.display_funcs[VMobject] = engine_override(wrapper, foreign)
     assert display_funcs_rewired(camera)
 
 
@@ -223,7 +223,7 @@ def test_every_wrapper_the_live_painter_installs_reads_as_the_engine_s():
 
 def test_the_places_that_put_functions_in_display_funcs_are_the_ones_known():
     """A new place that installs a display function must teach the detector
-    its wrapper (:func:`engine_display`) and join this list.
+    its wrapper (:func:`engine_override`) and join this list.
     """
     import re
     from pathlib import Path

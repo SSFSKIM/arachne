@@ -54,7 +54,7 @@ import os
 import sys
 import types
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple
 
@@ -389,6 +389,9 @@ class Tracer:
         self._busy = False
         self._patches: list[tuple[Any, str, Any]] = []
         self._hooks: list[tuple[type, str, Any]] = []
+        #: The hooks as the engine's own overrides while installed, so that
+        #: the camera-code detector does not read them as the scene's.
+        self._installed = ExitStack()
         self._tables: list[tuple[Any, Any]] = []
         #: The mobjects of the drawer's cameras (by id) read in the frame
         #: being drawn: each set from the view (DRAWER_CAMERA).
@@ -654,18 +657,15 @@ class Tracer:
             ("__setattr__", object.__setattr__),
             ("__delattr__", object.__delattr__),
         ):
-            own = Mobject.__dict__.get(name)
-            self._hooks.append((Mobject, name, own))
-            setattr(Mobject, name, writing(own or default))
+            self._override(
+                Mobject, name, writing(Mobject.__dict__.get(name) or default)
+            )
         for cls, kind in (
             (Mobject, "mobject"),
             (Camera, "camera"),
             (ManimConfig, "config"),
         ):
-            self._hooks.append(
-                (cls, "__getattribute__", cls.__dict__.get("__getattribute__"))
-            )
-            cls.__getattribute__ = noting(kind)  # type: ignore[method-assign]
+            self._override(cls, "__getattribute__", noting(kind))
         item = ManimConfig.__dict__["__getitem__"]
 
         def __getitem__(config: Any, key: str) -> Any:  # noqa: N807
@@ -673,8 +673,7 @@ class Tracer:
                 tracer._note("config", config, key, sys._getframe(1))
             return item(config, key)
 
-        self._hooks.append((ManimConfig, "__getitem__", item))
-        ManimConfig.__getitem__ = __getitem__  # type: ignore[method-assign]
+        self._override(ManimConfig, "__getitem__", __getitem__)
         for each in _cameras_drawn(camera):
             own = vars(each)
             table = own.get("display_funcs")
@@ -682,7 +681,19 @@ class Tracer:
                 own["display_funcs"] = _NotingTable(table, each, self)
                 self._tables.append((each, table))
 
+    def _override(self, cls: type, name: str, new: Callable[..., Any]) -> None:
+        """Put ``new`` on ``cls`` as ``name`` until :meth:`_unhook`, as the
+        engine's own override of what the class held (``camera_code``).
+        """
+        from arachne.timeline.camera_code import engine_installed
+
+        original = cls.__dict__.get(name)
+        self._hooks.append((cls, name, original))
+        self._installed.enter_context(engine_installed(new, original))
+        setattr(cls, name, new)
+
     def _unhook(self) -> None:
+        self._installed.close()
         while self._hooks:
             cls, name, original = self._hooks.pop()
             if original is None:

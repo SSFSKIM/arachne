@@ -21,14 +21,17 @@ __all__ = [
     "Replaced",
     "display_funcs_rewired",
     "drawn_cameras",
-    "engine_display",
+    "engine_installed",
+    "engine_override",
     "engine_own",
     "replaced_methods",
 ]
 
+import contextlib
 import functools
 import types
 import weakref
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -37,20 +40,44 @@ from typing import Any, Literal
 _ENGINE_OWN = "__arachne_engine_own__"
 
 
-#: The functions the engine puts in a camera's ``display_funcs`` while it
-#: draws (:func:`engine_display`), each with the entry it stands over. Found
-#: by the function object itself, never by anything the function says about
-#: itself: a scene's function can carry any attribute.
-_DISPLAY_WRAPPERS: weakref.WeakKeyDictionary[Any, Any] = weakref.WeakKeyDictionary()
+#: The functions the engine puts in the place of something of a camera's
+#: while it draws (a display function in ``display_funcs``, a class's method
+#: while the draw is traced), each with the object it stands over (``None``
+#: for a member the class did not define). Found by the function object
+#: itself, never by anything the function says about itself: a scene's
+#: function can carry any attribute.
+_OVERRIDES: weakref.WeakKeyDictionary[Any, Any] = weakref.WeakKeyDictionary()
 
 
-def engine_display(wrapper: Any, wrapped: Any) -> Any:
-    """``wrapper``, a function the engine puts in a camera's
-    ``display_funcs`` in place of ``wrapped``, recorded as the engine's so
-    :func:`_replaced_displays` reads it as ``wrapped``.
+def engine_override(installed: Any, replaced: Any) -> Any:
+    """``installed``, a function the engine puts in place of ``replaced``,
+    recorded as the engine's: detection reads it as ``replaced``
+    (:func:`_through`). Returns ``installed``.
     """
-    _DISPLAY_WRAPPERS[wrapper] = wrapped
-    return wrapper
+    _OVERRIDES[installed] = replaced
+    return installed
+
+
+@contextlib.contextmanager
+def engine_installed(installed: Any, replaced: Any) -> Iterator[None]:
+    """Within, ``installed`` is the engine's override of ``replaced``
+    (:func:`engine_override`); it is none after.
+    """
+    engine_override(installed, replaced)
+    try:
+        yield
+    finally:
+        _OVERRIDES.pop(installed, None)
+
+
+def _through(held: Any) -> Any:
+    """What ``held`` stands over where the engine overrode it, however many
+    overrides stand in a row; ``held`` itself otherwise. By the function
+    object's identity alone.
+    """
+    while type(held) is types.FunctionType and held in _OVERRIDES:
+        held = _OVERRIDES[held]
+    return held
 
 
 def engine_own(function: Any) -> Any:
@@ -126,7 +153,7 @@ def replaced_methods(camera: Any) -> tuple[Replaced, ...]:
         taken = class_members(klass)
         now = vars(klass)
         for name in sorted(set(now) | set(taken)):
-            was, held = taken.get(name), now.get(name)
+            was, held = taken.get(name), _through(now.get(name))
             if held is not was and (callable(was) or callable(held)):
                 found.append(Replaced(name, "class", klass, held))
     found.extend(
@@ -195,7 +222,7 @@ def _replaced_displays(camera: Any) -> list[Replaced]:
     """The entries of ``camera.display_funcs`` that are not the engine's own,
     named by kind (``display_funcs`` itself, whole, when its kinds are not
     the engine's); none when every one is. A live painter's own wrappers
-    (:func:`engine_display`), installed while it describes the camera's
+    (:func:`engine_override`), installed while it describes the camera's
     captures, stand for the entries they wrap; while it is installed the
     camera is not read at all (``_xf_live``).
     """
@@ -218,8 +245,7 @@ def _replaced_displays(camera: Any) -> list[Replaced]:
     changed = []
     for name, method in _DISPLAY_METHODS.items():
         func = funcs[kinds[name]]
-        while type(func) is types.FunctionType and func in _DISPLAY_WRAPPERS:
-            func = _DISPLAY_WRAPPERS[func]
+        func = _through(func)
         # A plain function or bound method first, by its exact type: any
         # other object can answer the reads below as the engine's does and
         # still run its own code when called.

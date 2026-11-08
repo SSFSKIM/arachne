@@ -277,3 +277,76 @@ def test_a_traced_frame_that_raises_leaves_no_hook(tracing, draw_path, monkeypat
     assert inside == [True]
     assert tracing.frames == []
     _assert_unhooked(made[-1])
+
+
+# The tracer's own hooks are the engine's, not the scene's
+
+
+def _scene_getattribute(self, name):
+    return object.__getattribute__(self, name)
+
+
+def _replaced_getattribute(camera) -> list:
+    from arachne.timeline.camera_code import replaced_methods
+
+    return [r for r in replaced_methods(camera) if r.name == "__getattribute__"]
+
+
+def test_a_camera_is_the_engine_s_while_its_draw_is_traced():
+    from arachne.timeline import camera_code
+
+    before = set(map(id, camera_code._OVERRIDES))
+    camera = Camera()
+    tracer = draw_reads.Tracer()
+    tracer._busy = True  # no frame is drawn: reads are not judged
+    tracer._hook(camera)
+    try:
+        assert "__getattribute__" in vars(Camera), "the hook is installed"
+        assert camera_code.replaced_methods(camera) == ()
+        assert not camera_code.display_funcs_rewired(camera)
+    finally:
+        tracer._unhook()
+    assert "__getattribute__" not in vars(Camera)
+    assert set(map(id, camera_code._OVERRIDES)) == before, "no entry of the tracer's"
+
+
+def test_a_scene_s_patch_of_the_cameras_getattribute_is_found_untraced():
+    assert "__getattribute__" not in vars(Camera)
+    Camera.__getattribute__ = _scene_getattribute
+    try:
+        (found,) = _replaced_getattribute(Camera())
+        assert found.form == "class"
+        assert found.method is _scene_getattribute
+    finally:
+        del Camera.__getattribute__
+    assert _replaced_getattribute(Camera()) == []
+
+
+def test_a_scene_s_patch_is_found_under_the_tracer_in_either_order():
+    camera = Camera()
+    # The scene's patch first, the tracer's hook over it.
+    Camera.__getattribute__ = _scene_getattribute
+    tracer = draw_reads.Tracer()
+    tracer._busy = True  # no frame is drawn: reads are not judged
+    tracer._hook(camera)
+    try:
+        (found,) = _replaced_getattribute(camera)
+        assert found.method is _scene_getattribute
+    finally:
+        tracer._unhook()
+        del Camera.__getattribute__
+    # The tracer's hook first, the scene's patch put over it.
+    tracer = draw_reads.Tracer()
+    tracer._busy = True  # no frame is drawn: reads are not judged
+    tracer._hook(camera)
+    hook = vars(Camera)["__getattribute__"]
+    Camera.__getattribute__ = _scene_getattribute
+    try:
+        (found,) = _replaced_getattribute(camera)
+        assert found.method is _scene_getattribute
+        assert found.method is not hook
+    finally:
+        tracer._unhook()
+        if "__getattribute__" in vars(Camera):
+            del Camera.__getattribute__
+    assert _replaced_getattribute(Camera()) == []

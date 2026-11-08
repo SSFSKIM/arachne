@@ -937,7 +937,7 @@ class LivePainter:
         return found
 
     def _display(self, camera: Any, kind: type, func: Any) -> Any:
-        from arachne.timeline.camera_code import engine_display
+        from arachne.timeline.camera_code import engine_override
 
         def display(mobjects: list[Any], pixel_array: Any) -> Any:
             drawn = [_Recording(mob) for mob in mobjects]
@@ -948,7 +948,7 @@ class LivePainter:
 
         # The engine's while it draws, standing for what it wraps
         # (``display_funcs_rewired``).
-        return engine_display(display, func)
+        return engine_override(display, func)
 
     def _capture(self, camera: Any, capture: Any) -> Any:
         def described(mobjects: Any, **kwargs: Any) -> None:
