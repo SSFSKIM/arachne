@@ -63,6 +63,16 @@ if TYPE_CHECKING:
     from .record import Capture, Identity, NodeState, Record
 
 
+#: Why a play run outside a render is drawn as it runs: were the record to
+#: refuse it midway, no render could execute the scene again with it drawn
+#: as it runs (:class:`Reexecute`), so every play is.
+UNREPEATABLE = (
+    "play.unrepeatable: the scene is played outside a render, which can't"
+    " execute it again with a play drawn as it runs, so each play is drawn as"
+    " it runs"
+)
+
+
 class Reexecute(BaseException):  # noqa: N818 (an instruction, not an error)
     """Play ``play``, drawn from the record, met ``reason`` mid-play: the
     scene is to be executed again with that play drawn as it runs. Not an

@@ -328,10 +328,13 @@ class _ForwardRecorder(Recorder):
         skipped: bool,
         cache_key: str | None,
         live: LiveFrames | None = None,
+        live_reason: str | None = None,
     ) -> PlayRecord:
         if live is not None and self.live_from is None:
             self.live_from = len(self.ensure_record().plays)
-        played = super().play(skipped=skipped, cache_key=cache_key, live=live)
+        played = super().play(
+            skipped=skipped, cache_key=cache_key, live=live, live_reason=live_reason
+        )
         if self.draws and live is None and played.draw_refusal is not None:
             raise _Unforeseen(played.draw_refusal)
         return played

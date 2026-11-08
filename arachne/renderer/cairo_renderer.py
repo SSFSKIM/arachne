@@ -13,7 +13,7 @@ from ..mobject.mobject import Mobject, _AnimationBuilder
 from ..scene.scene_file_writer import SceneFileWriter
 from ..timeline.clock import TICK_RATE, exact, frames_in
 from ..timeline.draw import Drawing, LiveFrames
-from ..timeline.execution import Reexecute
+from ..timeline.execution import UNREPEATABLE, Reexecute
 from ..utils.exceptions import EndSceneEarlyException
 from ..utils.iterables import list_update
 from .protocol import RendererCapabilities
@@ -145,6 +145,12 @@ class CairoRenderer:
             # play runs, as CE does.
             self._play_live(scene, skipped, cache_key, fps)
             return
+        manager = scene.manager
+        if timeline.draws and (manager is None or not manager.reexecutes):
+            # Played outside a render: a refusal found midway could not be
+            # drawn as it runs in another execution.
+            self._play_live(scene, skipped, cache_key, fps, UNREPEATABLE)
+            return
         play = timeline.play(skipped=skipped, cache_key=cache_key)
 
         frames = frames_in(play.start, play.end, fps)
@@ -181,11 +187,16 @@ class CairoRenderer:
         self.num_plays += 1
 
     def _play_live(
-        self, scene: Scene, skipped: bool, cache_key: str | None, fps: Fraction
+        self,
+        scene: Scene,
+        skipped: bool,
+        cache_key: str | None,
+        fps: Fraction,
+        reason: str | None = None,
     ) -> None:
         """Run one play of a scene whose record can't draw its frames
-        (``Record.refusal``), drawing each frame from the live scene while
-        the play runs.
+        (``Record.refusal``), or that is drawn as it runs for ``reason``,
+        drawing each frame from the live scene while the play runs.
         """
         timeline = scene._arachne_timeline
         draw = cache_key is not None and timeline.draws
@@ -213,7 +224,9 @@ class CairoRenderer:
                 self.file_writer.write_frame(pixels, repeat=repeat)
 
             live = LiveFrames(scene, fps, write)
-        play = timeline.play(skipped=skipped, cache_key=cache_key, live=live)
+        play = timeline.play(
+            skipped=skipped, cache_key=cache_key, live=live, live_reason=reason
+        )
         if opened:
             self.file_writer.end_animation(True)
         else:

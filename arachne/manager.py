@@ -79,6 +79,9 @@ class Manager(Generic[SceneT]):
         scene.manager = self
         # The source line of the play running now, or None between plays.
         self._playing: str | None = None
+        #: Whether a play refused mid-play can be drawn as it runs by
+        #: executing the scene again: only inside :meth:`render`.
+        self.reexecutes = False
 
     @property
     def renderer(self) -> CairoRenderer:
@@ -169,6 +172,30 @@ class Manager(Generic[SceneT]):
         # The configuration as the first execution found it, which the scene
         # may change as it runs (and a camera is made from).
         configured = config.copy()
+        self.reexecutes = True
+        try:
+            self._executions(known, earlier, caches, configured)
+        finally:
+            self.reexecutes = False
+        self.post_construct()
+
+        if open_after_render or presentation.show_in_file_browser:
+            open_media_file(
+                self.file_writer,
+                preview=open_after_render,
+                show_in_file_browser=presentation.show_in_file_browser,
+            )
+
+    def _executions(
+        self,
+        known: dict[int, str],
+        earlier: list[tuple[int, tuple[bytes, ...]]],
+        caches: Any,
+        configured: Any,
+    ) -> None:
+        """Execute the scene until an execution completes, again with each
+        play found refusing mid-play drawn as it runs.
+        """
         while True:
             try:
                 self._execute()
@@ -200,14 +227,6 @@ class Manager(Generic[SceneT]):
                 config.update(configured)
                 self._renew_scene()
                 self.scene._arachne_timeline.reexecuting(known, earlier)
-        self.post_construct()
-
-        if open_after_render or presentation.show_in_file_browser:
-            open_media_file(
-                self.file_writer,
-                preview=open_after_render,
-                show_in_file_browser=presentation.show_in_file_browser,
-            )
 
     def _execute(self) -> None:
         """Execute the scene's script once, recording it."""

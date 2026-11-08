@@ -544,6 +544,26 @@ class PixelShapeChangedAtTheEnd(Scene):
         config.pixel_width *= 2
 
 
+class PixelShapeChangedMidPlay(Scene):
+    """A point cloud whose updater doubles the configured pixel width halfway
+    through a tracker's play: the frames after it draw the points thicker.
+    """
+
+    def construct(self):
+        cloud = _cloud()
+        slide = ValueTracker(0)
+        widened = []
+
+        def widen(mob):
+            if slide.get_value() >= 0.5 and not widened:
+                widened.append(True)
+                config.pixel_width *= 2
+
+        cloud.add_updater(widen)
+        self.add(cloud, slide)
+        self.play(slide.animate.set_value(1), run_time=0.4, rate_func=linear)
+
+
 class PixelShapeChangedInSetup(Scene):
     """The configured pixel width doubled in ``setup``, before any play:
     every point is drawn thicker than at the pixel shape the scene was given.

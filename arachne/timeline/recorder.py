@@ -933,9 +933,12 @@ class Recorder:
         skipped: bool,
         cache_key: str | None,
         live: LiveFrames | None = None,
+        live_reason: str | None = None,
     ) -> PlayRecord:
         """Run the play the scene has compiled, and record it. ``live`` draws
-        its frames while it runs, for a record that can't (``Record.refusal``).
+        its frames while it runs, for a record that can't (``Record.refusal``)
+        or, with ``live_reason``, one whose frames are drawn as it runs all the
+        same (:data:`.execution.UNREPEATABLE`).
         """
         from arachne.animation.animation import Wait
 
@@ -984,6 +987,7 @@ class Recorder:
             play.play_internal_overridden = bool(scene_hooks(scene, ("play_internal",)))
             extras = CameraExtras.observe(scene.renderer.camera, None)
             body = _Body(play, refusal, live, extras)
+            body.live_reason = live_reason
             try:
                 play.static_seq = self.capture("static", start, play, extras).seq
                 if live is not None:
@@ -1062,7 +1066,7 @@ class Recorder:
             plan,
             held=play.held,
             base_dir=_base_dir(record),
-            refusal=body.refusal,
+            refusal=body.refusal or body.live_reason,
             demoted=self._demoted(play),
         )
         play.admission = admission
@@ -1340,6 +1344,8 @@ class _Body:
         self.play = play
         self.refusal = refusal
         self.live = live
+        #: Why a play the record could draw is drawn as it runs.
+        self.live_reason: str | None = None
         self.extras = extras
         self.run: PlayRun | None = None
         self.plan: EventPlan | None = None

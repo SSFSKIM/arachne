@@ -559,6 +559,28 @@ def test_a_pixel_shape_changed_in_setup_is_drawn_as_the_scene_runs(session_of):
     _equal_frames(_answered(session, [Fraction(k, 15) for k in range(len(live))]), live)
 
 
+def test_a_play_refused_midway_outside_a_render_is_drawn_as_it_runs():
+    """No render can execute a scene played on its own again, so its play is
+    drawn as it runs: the pixel shape changes midway and the play completes,
+    each frame as CE draws it.
+    """
+    scene_class = camera_scenes.PixelShapeChangedMidPlay
+    live = _drawn_live(scene_class, 15)
+    frames: list[np.ndarray] = []
+    settings = {**SMALL, "frame_rate": 15, "dry_run": True, "disable_caching": True}
+    with tempconfig(settings):
+        scene = scene_class()
+
+        def write_frame(pixels, *, repeat=1):
+            frames.extend([pixels] * repeat)
+
+        scene.renderer.file_writer.write_frame = write_frame
+        scene.setup()
+        scene.construct()
+    assert not np.array_equal(live[0], live[-1])
+    _equal_frames(frames, live)
+
+
 def test_a_pixel_shape_changed_as_the_file_is_imported_is_drawn_as_it_runs(
     session_of,
 ):
