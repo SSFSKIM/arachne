@@ -642,7 +642,9 @@ class RegisteredState:
         for mob, state in nodes:
             digest.update(_framed(type(mob).__qualname__.encode()))
             held(state.submobjects)
-            for key, part, refers in content_fields(state, decimals):
+            for key, part, refers in content_fields(
+                state, decimals, _omitted_fields(mob)
+            ):
                 digest.update(_framed(key.encode()))
                 digest.update(_framed(part))
                 held(refers)
@@ -681,15 +683,37 @@ def covered_fields(state: NodeState) -> Iterator[tuple[str, Any]]:
 
 
 def content_fields(
-    state: NodeState, decimals: int | None = None
+    state: NodeState,
+    decimals: int | None = None,
+    omit: frozenset[str] = frozenset(),
 ) -> Iterator[tuple[str, bytes, tuple[Mobject, ...]]]:
-    """Each field a content key covers (:func:`covered_fields`), with its
-    value's key and the mobjects the value refers to
+    """Each field a content key covers (:func:`covered_fields`) but those in
+    ``omit``, with its value's key and the mobjects the value refers to
     (:func:`.keys.value_key`).
     """
     for key, value in covered_fields(state):
-        part, refers = value_key(value, decimals)
-        yield key, part, refers
+        if key not in omit:
+            part, refers = value_key(value, decimals)
+            yield key, part, refers
+
+
+_TYPESET_FILE = frozenset({"file_name"})
+
+
+def _omitted_fields(mob: Mobject) -> frozenset[str]:
+    """The fields a content key reads nothing from for ``mob``: the file of
+    a formula or a text the engine typeset (``file_name``). Its name is the
+    typesetting's (a hash CE gives it in ``tex_dir`` or ``text_dir``, another
+    the shared directory gives it), so the same formula keys apart by the
+    lever that typeset it; its points and the string it was typeset from are
+    keyed, and they carry its content.
+    """
+    from arachne.mobject.text.tex_mobject import SingleStringMathTex
+    from arachne.mobject.text.text_mobject import MarkupText, Text
+
+    if isinstance(mob, (SingleStringMathTex, Text, MarkupText)):
+        return _TYPESET_FILE
+    return frozenset()
 
 
 def _value_key(value: Any, decimals: int | None = None) -> bytes:

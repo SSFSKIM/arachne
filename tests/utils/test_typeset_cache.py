@@ -918,6 +918,33 @@ def test_a_hit_builds_and_draws_what_a_fresh_compile_does(tmp_path):
     assert kept == ce
 
 
+def test_a_formula_keys_the_same_typeset_either_way_and_another_formula_apart(tmp_path):
+    """The file a formula is typeset into is named by the typesetting, not the
+    formula: the key reads its points and string, so the lever changes no key,
+    and another formula still keys apart.
+    """
+    from arachne.session import Session
+    from arachne.timeline.execution import play_keys
+
+    small = {"pixel_width": 96, "pixel_height": 54, "frame_rate": 15}
+
+    def keys(formula: str, **options: object) -> tuple[bytes, ...]:
+        path = tmp_path / f"{abs(hash(formula))}.py"
+        path.write_text(SCENE.replace("\\int_0^1 x^2\\,dx", formula))
+        session = Session.open(path, "Typeset", config={**small, **options})
+        try:
+            return play_keys(session.record)
+        finally:
+            session.close()
+
+    formula = "\\int_0^1 x^2\\,dx"
+    other = "\\int_0^1 x^3\\,dx"
+    off = keys(formula, media_dir=str(tmp_path / "off"))
+    on = keys(formula, media_dir=str(tmp_path / "on"), typeset_dir=str(tmp_path / "t"))
+    assert off == on
+    assert keys(other, media_dir=str(tmp_path / "other")) != off
+
+
 def test_processes_typesetting_at_once_with_the_real_tools_all_succeed(tmp_path):
     code = textwrap.dedent(
         """\
