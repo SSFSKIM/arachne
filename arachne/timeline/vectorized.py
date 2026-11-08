@@ -42,7 +42,12 @@ paint array that is not float64: its run time, a rate function's or a rate
 factory's numbers, a lag ratio, a flash's time width, a group's time, a
 style number or color. A number of the scene's own class may run the
 scene's code each time it is computed with, and numpy promotes a lower
-precision in ways these arrays do not follow. So does a
+precision in ways these arrays do not follow. So does an integer past
+2**53, which a double does not hold exactly, or a reveal's integer lag
+whose products with its leaves' indices pass int64; a group whose timings
+or masks are not CE's arrays of its own parts (a scene may assign them);
+and an animation or mobject holding its own attribute under a method the
+vectorized path stands in for. So does a
 play the route evaluates at one instant only, and any trusted play whose
 evaluation may run the scene's code (``routes._runs_scene_code``).
 """
@@ -81,13 +86,29 @@ _ACTIVE: VectorPlan | None = None
 #: follow) keeps the whole play scalar.
 _EXACT = frozenset({bool, int, float, np.float64, np.int64})
 
+#: The largest integer the vectorized path computes with: a double holds
+#: every integer up to it exactly, so numpy's conversions of it, and its
+#: comparisons with doubles, are Python's.
+_LARGEST_INTEGER = 2**53
+
+#: The bound an integer the arrays compute in int64 stays under.
+_INT64_BOUND = 2**63
+
 
 def _exact(*values: Any) -> bool:
-    return all(type(value) in _EXACT for value in values)
+    for value in values:
+        if type(value) not in _EXACT:
+            return False
+        integer = type(value) is not float and type(value) is not np.float64
+        if integer and abs(int(value)) > _LARGEST_INTEGER:
+            return False
+    return True
 
 
 def _number(value: Any) -> str:
     """A number the plan does not compute with, as a refusal names it."""
+    if type(value) in _EXACT:
+        return f"an integer past 2**53, {value}"
     return f"a {type(value).__name__}"
 
 
@@ -368,6 +389,13 @@ def _node(animation: Animation) -> _Group | _Leaf | str:
         if bounds is _flash_bounds and not _exact(width):
             return f"{name}'s time width is {_number(width)}"
         families = list(animation.get_all_families_zipped())
+        # Each leaf's lower bound is its index times the lag, in int64.
+        lag = animation.lag_ratio
+        if (
+            not isinstance(lag, float)
+            and abs(int(lag)) * max(len(families) - 1, 0) >= _INT64_BOUND
+        ):
+            return f"{name}'s lag ratio times its leaves passes int64"
         for family in families:
             reason = _revealable(*family)
             if reason is not None:

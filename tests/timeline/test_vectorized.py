@@ -18,6 +18,7 @@ from arachne import (
     AnimationGroup,
     Circle,
     Create,
+    Dot,
     FadeIn,
     ShowPassingFlash,
     Square,
@@ -368,6 +369,33 @@ def test_an_instance_holding_its_own_method_keeps_the_play_scalar(made, method):
     animation = made()
     animation.begin()
     assert method in vectorized.refusal([animation])
+
+
+def test_an_integer_lag_past_int64_keeps_the_play_scalar():
+    scene = assert_same_as_scalar(vectorized_scenes.EnormousLag)
+    play = scene.timeline.ensure_record().plays[0]
+    assert play.route == "trusted"
+    assert not play.vectorized
+    assert "lag ratio" in vectorized.refusal(play._animations)
+
+
+def test_an_integer_lag_whose_products_pass_int64_keeps_the_play_scalar():
+    """Each leaf's lower bound is its index times the lag, in int64."""
+    dots = VGroup(*(Dot() for _ in range(1025)))
+    reveal = Create(dots, lag_ratio=2**53)
+    reveal.begin()
+    assert "lag ratio" in vectorized.refusal([reveal])
+    fitting = Create(VGroup(*dots[:1024]), lag_ratio=2**53)
+    fitting.begin()
+    assert vectorized.refusal([fitting]) is None
+
+
+def test_a_style_integer_past_doubles_exact_range_keeps_the_play_scalar():
+    start, end = Square(), Circle()
+    start.stroke_width, end.stroke_width = 2**53 + 1, 3
+    transform = Transform(start, end)
+    transform.begin()
+    assert "style number" in vectorized.refusal([transform])
 
 
 def test_a_play_with_one_kept_instant_is_not_batched():

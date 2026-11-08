@@ -344,3 +344,10 @@ class CountedTimings(Scene):
         timings["end"] = [Counted(1.0)]
         group.anims_with_timings = timings
         self.play(group)
+
+
+class EnormousLag(Scene):
+    """A reveal of several leaves lagged by an integer past int64."""
+
+    def construct(self):
+        self.play(Create(VGroup(Square(), Circle()), lag_ratio=2**63), run_time=1)
