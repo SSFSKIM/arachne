@@ -332,10 +332,11 @@ lifted.
   keyed: an engine module's function replaced by the scene (`tex_mobject.tex_to_svg_file = f`), and a class the
   scene defines whose name is an engine class's, which shares that class's image cache entries (the image cache keys
   by class name, as in CE). Direction: none unless a scene is found doing either.
-- **Its bound is an entry count.** 512 entries. An entry is the formula's mobjects plus the image cache's entry:
-  about 0.2 MiB for a one-line formula and 2 MiB for a large one (a 4×4 matrix with a sum and an integral), measured
-  as deep size on CPython 3.13. Full of large formulas, the memo would hold about 1 GiB. Direction: bound it by size
-  when sessions run under a memory budget.
+- **Its bound is 64 MiB, a constant.** An entry's size is the deep size of what it keeps, taken once as it is stored:
+  about 0.2 MiB for a one-line formula and 2 MiB for a large one (a 4×4 matrix with a sum and an integral) on CPython
+  3.13, so the bound holds about 280 one-line formulas. The size is an estimate (values a live mobject shares with the
+  prototype count in full) and is never taken again. Direction: an option, if a session's memory budget comes to need
+  one.
 - **A hit still costs one deep copy.** What it hands out is a copy of the prototype (it must be, so that the caller's
   changes never reach it), and the copy dominates a hit: each path's parsed `svgelements` objects are copied with it.
   Direction: cheaper copies of mobjects (below).

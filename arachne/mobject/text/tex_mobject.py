@@ -34,7 +34,7 @@ from arachne import config, logger
 from arachne.constants import *
 from arachne.mobject.geometry.line import Line
 from arachne.mobject.svg.svg_mobject import SVGMobject
-from arachne.mobject.text.tex_memo import SERVED, TEX_MEMO, memoized
+from arachne.mobject.text.tex_memo import TEX_MEMO, serve
 from arachne.mobject.types.vectorized_mobject import VGroup, VMobject
 from arachne.utils.tex import TexTemplate
 from arachne.utils.tex_file_writing import tex_to_svg_file
@@ -53,7 +53,6 @@ class SingleStringMathTex(SVGMobject):
         SingleStringMathTex('Test')
     """
 
-    @memoized
     def __init__(
         self,
         tex_string: str,
@@ -278,7 +277,6 @@ class MathTex(SingleStringMathTex):
 
     """
 
-    @memoized
     def __init__(
         self,
         *tex_strings: str,
@@ -608,7 +606,8 @@ class MathTex(SingleStringMathTex):
         return self
 
 
-SERVED.update((SingleStringMathTex, MathTex))
+serve(SingleStringMathTex)
+serve(MathTex)
 
 
 class MathTexPart(VMobject):
@@ -635,7 +634,6 @@ class Tex(MathTex):
 
     """
 
-    @memoized
     def __init__(
         self,
         *tex_strings: str,
@@ -651,7 +649,7 @@ class Tex(MathTex):
         )
 
 
-SERVED.add(Tex)
+serve(Tex)
 
 
 class BulletedList(Tex):

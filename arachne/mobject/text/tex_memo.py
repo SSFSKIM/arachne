@@ -35,9 +35,11 @@ arguments (the template, a colour map) rather than copies.
 The memo survives executions (it is not among the construction caches a
 session forgets each execution, :mod:`.construction_caches`): what a
 construction builds is a function of its key, and the key names the state
-of those caches it reads. It holds at most :attr:`TexMemo.bound` entries,
-the least recently used dropped first; dropping one costs a hit, never
-correctness.
+of those caches it reads. It holds at most :attr:`TexMemo.bound` bytes, an
+entry's size taken once as it is stored (the deep size of what it keeps);
+the least recently used entries are dropped first until a new one fits, and
+an entry larger than the whole bound is never stored. Dropping one costs a
+hit, never correctness.
 
 Nothing is served while a recording would count the image's file as a
 scene input (a media directory inside the scene's own), since a hit reads
@@ -46,15 +48,18 @@ no file.
 
 from __future__ import annotations
 
-__all__ = ["TEX_MEMO", "TexMemo", "memoized"]
+__all__ = ["TEX_MEMO", "TexMemo", "serve"]
 
 import copy
 import dataclasses
 import enum
 import functools
+import gc
 import hashlib
+import sys
+import types
 from collections import OrderedDict
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
 from operator import is_
 from pathlib import PurePath
@@ -201,6 +206,8 @@ class _Entry:
     classes: tuple[_ClassState, ...]
     #: ``None`` when it was built while nothing was tagged.
     placement: _Placement | None
+    #: The bytes it keeps alive (:func:`_deep_size`).
+    size: int = 0
 
     def serves(self, root: Any) -> bool:
         if ORIGINS.active and (self.placement is None or ORIGINS.get(root) is None):
@@ -240,11 +247,13 @@ class _Construction:
 
 
 class TexMemo:
-    """The memo of TeX constructions, bounded by entry count."""
+    """The memo of TeX constructions, bounded in bytes."""
 
     def __init__(self, bound: int) -> None:
-        #: How many entries it keeps.
+        #: How many bytes its entries may keep alive together.
         self.bound = bound
+        #: How many they keep now.
+        self.bytes = 0
         #: Constructions served from it, and those built and looked up.
         self.hits = 0
         self.misses = 0
@@ -257,6 +266,7 @@ class TexMemo:
     def clear(self) -> None:
         """Drop every entry."""
         self._entries.clear()
+        self.bytes = 0
 
     # The constructor's side.
 
@@ -398,12 +408,19 @@ class TexMemo:
             image,
             tuple(_ClassState.of(klass) for klass in classes),
             _placement(root, made, {id(o): p for o, p in pairs if o is not root}),
+            _deep_size(prototype, image),
         )
         entries = self._entries
+        replaced = entries.pop(construction.key, None)
+        if replaced is not None:
+            self.bytes -= replaced.size
+        if entry.size > self.bound:
+            return
+        while entries and self.bytes + entry.size > self.bound:
+            _, dropped = entries.popitem(last=False)
+            self.bytes -= dropped.size
         entries[construction.key] = entry
-        entries.move_to_end(construction.key)
-        while len(entries) > self.bound:
-            entries.popitem(last=False)
+        self.bytes += entry.size
 
     @contextmanager
     def _constructing(self, construction: _Construction) -> Iterator[None]:
@@ -412,6 +429,35 @@ class TexMemo:
             yield
         finally:
             self._open.pop()
+
+
+#: What a deep size does not count: code and namespaces, shared by all.
+_SHARED = (
+    type,
+    types.ModuleType,
+    types.FunctionType,
+    types.BuiltinFunctionType,
+    types.CodeType,
+)
+
+
+def _deep_size(*roots: Any) -> int:
+    """The bytes of every object reachable from ``roots`` (classes, modules
+    and functions aside), each counted once.
+    """
+    seen: set[int] = set()
+    stack = [root for root in roots if root is not None]
+    size = 0
+    while stack:
+        obj = stack.pop()
+        if id(obj) in seen or isinstance(obj, _SHARED):
+            continue
+        seen.add(id(obj))
+        size += sys.getsizeof(obj)
+        if isinstance(obj, np.ndarray) and obj.base is not None:
+            stack.append(obj.base)
+        stack.extend(gc.get_referents(obj))
+    return size
 
 
 #: Values a construction holds that no copy distinguishes from the caller's.
@@ -459,18 +505,18 @@ def _placement(
 
 
 #: The memo of every TeX construction in the process.
-TEX_MEMO = TexMemo(bound=512)
+TEX_MEMO = TexMemo(bound=64 * 2**20)
 
-#: The classes whose own constructions the memo serves (filled by
-#: :mod:`.tex_mobject`): the engine's, never a subclass, whose code may do
-#: anything.
+#: The classes whose own constructions the memo serves (:func:`serve`): the
+#: engine's, never a subclass, whose code may do anything.
 SERVED: set[type] = set()
 
 
-def memoized(init: Callable[..., None]) -> Callable[..., None]:
-    """Make the ``__init__`` of a class in :data:`SERVED` construct through
-    the memo.
+def serve(cls: type) -> None:
+    """Make constructions of ``cls`` itself go through the memo: its
+    ``__init__`` is wrapped (and is what ``set_default()`` restores).
     """
+    init = vars(cls)["__init__"]
 
     @functools.wraps(init)
     def __init__(self: Any, *args: Any, **kwargs: Any) -> None:
@@ -485,4 +531,6 @@ def memoized(init: Callable[..., None]) -> Callable[..., None]:
                 return
             TEX_MEMO._store(construction, made)
 
-    return __init__
+    cls.__init__ = __init__  # type: ignore[misc]
+    cls._original__init__ = __init__  # type: ignore[attr-defined]
+    SERVED.add(cls)

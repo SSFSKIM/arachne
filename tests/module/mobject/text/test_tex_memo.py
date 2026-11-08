@@ -406,16 +406,70 @@ def test_a_hit_holds_the_caller_s_own_objects_where_a_miss_does():
     assert third.tex_template is config.tex_template
 
 
-def test_the_memo_is_bounded_and_eviction_costs_only_a_hit(monkeypatch):
-    monkeypatch.setattr(TEX_MEMO, "bound", 3)
+def _entry_size() -> int:
+    """The bytes an entry for a one-digit formula takes."""
+    forget_construction_caches()
+    MathTex("9")
+    size = TEX_MEMO.bytes
+    TEX_MEMO.clear()
+    assert TEX_MEMO.bytes == 0
+    return size
+
+
+def _expected(make: Callable[[], VMobject]) -> list:
+    with tempconfig({"construction_memo": False}):
+        forget_construction_caches()
+        return mobject_state(make())
+
+
+def test_the_memo_s_default_bound_is_in_bytes():
+    assert TEX_MEMO.bound == 64 * 2**20
+
+
+def test_the_memo_evicts_by_bytes_the_least_recently_used_first(monkeypatch):
+    size = _entry_size()
+    # Room for two entries of about this size, never three.
+    monkeypatch.setattr(TEX_MEMO, "bound", int(size * 2.5))
     for k in range(5):
         forget_construction_caches()
         MathTex(f"{k}")
-    assert len(TEX_MEMO) == 3
-    assert not _hit(lambda: MathTex("0"))
+        assert TEX_MEMO.bytes <= TEX_MEMO.bound
+    assert len(TEX_MEMO) == 2
     assert _hit(lambda: MathTex("4"))
-    with tempconfig({"construction_memo": False}):
-        forget_construction_caches()
-        expected = mobject_state(MathTex("0"))
+    assert _hit(lambda: MathTex("3"))
+    # The least recently used now is 4: a new entry evicts it.
     forget_construction_caches()
-    assert mobject_state(MathTex("0")) == expected
+    MathTex("5")
+    assert not _hit(lambda: MathTex("4"))
+
+
+def test_eviction_costs_only_a_hit(monkeypatch):
+    size = _entry_size()
+    monkeypatch.setattr(TEX_MEMO, "bound", int(size * 2.5))
+    for k in range(5):
+        forget_construction_caches()
+        MathTex(f"{k}")
+    assert not _hit(lambda: MathTex("0"))
+    forget_construction_caches()
+    assert mobject_state(MathTex("0")) == _expected(lambda: MathTex("0"))
+    # And what it still serves is what a fresh construction builds.
+    hits = TEX_MEMO.hits
+    forget_construction_caches()
+    served = MathTex("0")
+    assert TEX_MEMO.hits == hits + 1
+    assert mobject_state(served) == _expected(lambda: MathTex("0"))
+
+
+def test_an_entry_larger_than_the_bound_is_never_stored(monkeypatch):
+    size = _entry_size()
+    forget_construction_caches()
+    MathTex("1")
+    kept = len(TEX_MEMO)
+    monkeypatch.setattr(TEX_MEMO, "bound", size // 2)
+    forget_construction_caches()
+    MathTex("8")
+    # Not stored, and nothing evicted for it.
+    assert len(TEX_MEMO) == kept
+    assert not _hit(lambda: MathTex("8"))
+    forget_construction_caches()
+    assert mobject_state(MathTex("8")) == _expected(lambda: MathTex("8"))
