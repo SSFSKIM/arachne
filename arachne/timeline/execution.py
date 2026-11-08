@@ -49,11 +49,13 @@ import hashlib
 import json
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from enum import Enum
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any, TypeAlias
 
 import numpy as np
 
+from .keys import value_key
 from .source import SourceLine
 
 if TYPE_CHECKING:
@@ -137,7 +139,7 @@ TOLERANCE = 1e-9
 KEY_DECIMALS = 9
 
 #: The version of an execution summary's serialised form.
-SUMMARY_VERSION = 2
+SUMMARY_VERSION = 3
 
 #: A raw value of a field: an array, or a scalar.
 Leaf: TypeAlias = np.ndarray | bool | int | float | str | None
@@ -202,7 +204,11 @@ class StateValues:
     (as indices into :attr:`ExecutionSummary.nodes`); and ``drawing``, the
     capture's drawing inputs that are not mobjects: which of those nodes
     each draw list holds, in order (as positions in ``nodes``, ``-1`` for a
-    mobject the capture does not reach), and the camera's values.
+    mobject the capture does not reach), and the camera's values. And the
+    tree, by the same positions: for each of those nodes, which nodes its
+    submobjects are (``submobjects``), and which the mobjects its fields
+    refer to are, in the order its fields hold them (``references``): a node
+    walked once is told apart by its place, whichever parent holds it.
 
     ``key`` digests all of it, every number rounded to 9 decimals and every
     array's dtype and shape included: equal keys mean equal states.
@@ -211,6 +217,8 @@ class StateValues:
     key: bytes
     nodes: tuple[int, ...]
     drawing: tuple[tuple[str, Leaf], ...]
+    submobjects: tuple[tuple[int, ...], ...]
+    references: tuple[tuple[int, ...], ...]
 
 
 @dataclass(frozen=True, eq=False)
@@ -334,7 +342,9 @@ def summarize(record: Record) -> ExecutionSummary:
 
     nodes: list[NodeValues] = []
     node_keys: list[bytes] = []
-    numbers: dict[tuple[int, int], int] = {}
+    # Each node version once, by its mobject and version: its number in
+    # ``nodes`` and the mobjects its fields refer to.
+    numbers: dict[tuple[int, int], tuple[int, tuple[Mobject, ...]]] = {}
     camera = record._scene.renderer.camera
     owned = tuple(camera_nodes(camera))
 
@@ -348,19 +358,25 @@ def summarize(record: Record) -> ExecutionSummary:
             *(mob for _, members in lists for mob in members),
             *owned,
         ]
+        walked = list(record._walk(capture, roots))
+        positions = {id(mob): place for place, (mob, _) in enumerate(walked)}
         indices: list[int] = []
-        positions: dict[int, int] = {}
-        for mob, node in record._walk(capture, roots):
-            number = numbers.get((id(mob), id(node)))
-            if number is None:
-                number = numbers[id(mob), id(node)] = len(nodes)
+        children: list[tuple[int, ...]] = []
+        references: list[tuple[int, ...]] = []
+        for mob, node in walked:
+            known = numbers.get((id(mob), id(node)))
+            if known is None:
+                fields, refers = _fields(node)
                 values = NodeValues(
-                    type(mob).__qualname__, len(node.submobjects), _fields(node)
+                    type(mob).__qualname__, len(node.submobjects), fields
                 )
+                known = numbers[id(mob), id(node)] = (len(nodes), refers)
                 nodes.append(values)
                 node_keys.append(_node_key(values))
-            positions[id(mob)] = len(indices)
+            number, refers = known
             indices.append(number)
+            children.append(tuple(positions.get(id(m), -1) for m in node.submobjects))
+            references.append(tuple(positions.get(id(m), -1) for m in refers))
 
         def at(members: Iterable[Mobject], *, ordered: bool = True) -> np.ndarray:
             found = [positions.get(id(mob), -1) for mob in members]
@@ -376,10 +392,18 @@ def summarize(record: Record) -> ExecutionSummary:
         if capture.camera is not None:
             drawing.extend(_camera_leaves("camera", capture.camera, at))
         digest = hashlib.blake2b(digest_size=16)
-        for number in indices:
+        for number, held, referred in zip(indices, children, references, strict=True):
             digest.update(node_keys[number])
+            digest.update(_places_key(held))
+            digest.update(_places_key(referred))
         digest.update(_fields_key(drawing))
-        return StateValues(digest.digest(), tuple(indices), tuple(drawing))
+        return StateValues(
+            digest.digest(),
+            tuple(indices),
+            tuple(drawing),
+            tuple(children),
+            tuple(references),
+        )
 
     plays = []
     for play in record.plays:
@@ -569,16 +593,28 @@ def _state_difference(
             f"it holds {len(state.nodes)} mobjects, and {len(other.nodes)} in the"
             " other execution"
         )
-    for a, b in zip(state.nodes, other.nodes, strict=True):
+    for place, (a, b) in enumerate(zip(state.nodes, other.nodes, strict=True)):
         node, twin = mine.nodes[a], theirs.nodes[b]
         if node.type != twin.type or node.children != twin.children:
             return (
                 f"a {node.type} with {node.children} submobjects is a {twin.type}"
                 f" with {twin.children} in the other execution"
             )
+        # Its edges, not only how many: a child two parents share is walked
+        # once, so pointing one of them at another child keeps every count.
+        if state.submobjects[place] != other.submobjects[place]:
+            return (
+                f"a {node.type}'s submobjects are other mobjects than in the"
+                " other execution"
+            )
         why = _fields_difference(node.fields, twin.fields)
         if why is not None:
             return f"its {node.type}'s {why}"
+        if state.references[place] != other.references[place]:
+            return (
+                f"its {node.type}'s fields refer to other mobjects than in the"
+                " other execution"
+            )
     why = _fields_difference(state.drawing, other.drawing)
     if why is not None:
         return f"its drawing's {why}"
@@ -630,22 +666,22 @@ def _brief(value: Leaf) -> str:
     return repr(value)
 
 
-def _fields(node: NodeState) -> tuple[tuple[str, Leaf], ...]:
+def _fields(
+    node: NodeState,
+) -> tuple[tuple[tuple[str, Leaf], ...], tuple[Mobject, ...]]:
     """The raw values of the fields a content key covers
-    (:func:`.content_fields`), a paint's and a placement's spelled out: the
-    paint's fields (its numbers as floats, as its key takes them), the
-    placement's points.
+    (:func:`.covered_fields`), a paint's and a placement's spelled out (the
+    paint's fields, its numbers as floats as its key takes them, and the
+    placement's points), with the mobjects they refer to, in order.
     """
     from arachne.mobject.placement import Placement
     from arachne.mobject.values import Paint
 
-    from .record import content_fields
+    from .record import covered_fields
 
-    keyed = {name for name, _ in content_fields(node)}
     found: list[tuple[str, Leaf]] = []
-    for name, value in sorted(zip(node.keys, node.values, strict=True)):
-        if name not in keyed:
-            continue
+    refers: list[Mobject] = []
+    for name, value in covered_fields(node):
         if isinstance(value, Paint):
             own = vars(value)
             found.extend(
@@ -656,8 +692,34 @@ def _fields(node: NodeState) -> tuple[tuple[str, Leaf], ...]:
         elif isinstance(value, Placement):
             found.append((name, _leaf(value.points)))
         else:
-            found.append((name, _leaf(value)))
-    return tuple(found)
+            leaf, held = _field_leaf(value)
+            found.append((name, leaf))
+            refers.extend(held)
+    return tuple(found), tuple(refers)
+
+
+def _field_leaf(value: Any) -> tuple[Leaf, tuple[Mobject, ...]]:
+    """A field's raw value, and the mobjects it refers to: a number, a string,
+    an array or a colour as itself (:func:`_leaf`), an enum by its class and
+    member; any other value as its type and content key
+    (:func:`.keys.value_key`), which for a value of a type the key does not
+    know is equal to no other.
+    """
+    from arachne.utils.color import ManimColor
+
+    if isinstance(value, Enum):
+        cls = type(value)
+        return f"{cls.__qualname__}.{value.name}", ()
+    plain = (
+        value is None
+        or isinstance(value, (bool, int, float, str, np.generic, ManimColor))
+        or (isinstance(value, np.ndarray) and not value.dtype.hasobject)
+    )
+    if plain:
+        return _leaf(value), ()
+    key, refers = value_key(value, KEY_DECIMALS)
+    digest = hashlib.blake2b(key, digest_size=16).hexdigest()
+    return f"<{type(value).__qualname__} {digest}>", refers
 
 
 def _camera_leaves(
@@ -781,10 +843,28 @@ def _fields_from_json(fields: list[Any]) -> tuple[tuple[str, Leaf], ...]:
     return tuple((name, _leaf_from_json(value)) for name, value in fields)
 
 
+def _places_key(places: tuple[int, ...]) -> bytes:
+    """``places`` as bytes, their count first."""
+    packed = np.array(places, dtype=">i8").tobytes()
+    return len(places).to_bytes(4, "big") + bytes(packed)
+
+
 def _state_json(state: StateValues) -> list[Any]:
-    return [state.key.hex(), list(state.nodes), _fields_json(state.drawing)]
+    return [
+        state.key.hex(),
+        list(state.nodes),
+        _fields_json(state.drawing),
+        [list(places) for places in state.submobjects],
+        [list(places) for places in state.references],
+    ]
 
 
 def _state_from_json(data: list[Any]) -> StateValues:
-    key, nodes, drawing = data
-    return StateValues(bytes.fromhex(key), tuple(nodes), _fields_from_json(drawing))
+    key, nodes, drawing, submobjects, references = data
+    return StateValues(
+        bytes.fromhex(key),
+        tuple(nodes),
+        _fields_from_json(drawing),
+        tuple(tuple(places) for places in submobjects),
+        tuple(tuple(places) for places in references),
+    )

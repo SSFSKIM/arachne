@@ -39,6 +39,7 @@ import numpy as np
 from .clock import exact, frames_in
 from .dispatch import draw_member_refusal, draw_names
 from .execution import Execution
+from .keys import value_key
 from .origins import Origin, origin_of
 from .source import SourceLine
 
@@ -492,7 +493,8 @@ class RegisteredState:
         The walk visits a node held twice once, so the shape is keyed as
         which node each root and each parent's child is, by its place in
         the walk: two trees of the same nodes in which a parent holds
-        another of them key apart.
+        another of them key apart. A mobject a field refers to is keyed
+        the same way.
         """
         nodes = list(self.nodes())
         place = {id(mob): index for index, (mob, _) in enumerate(nodes)}
@@ -508,9 +510,10 @@ class RegisteredState:
         for mob, state in nodes:
             digest.update(_framed(type(mob).__qualname__.encode()))
             held(state.submobjects)
-            for key, part in content_fields(state, decimals):
+            for key, part, refers in content_fields(state, decimals):
                 digest.update(_framed(key.encode()))
                 digest.update(_framed(part))
+                held(refers)
         return digest.digest()
 
 
@@ -527,42 +530,42 @@ def _framed(data: bytes) -> bytes:
 #: caching filters it for the same reason).
 IDENTITY_FIELDS = frozenset({"original_id"})
 
+#: The fields of a mobject that hold its tree and its code, not a value:
+#: ``submobjects`` is keyed as the tree's shape (which node each child is),
+#: and ``updaters`` is the scene's code run between captures, whose effects
+#: every later capture keys.
+STRUCTURE_FIELDS = frozenset({"submobjects", "updaters"})
+
+
+def covered_fields(state: NodeState) -> Iterator[tuple[str, Any]]:
+    """Each field of ``state`` a content key covers, by name in sorted order,
+    with its value: every field but those naming an object of this process
+    (:data:`IDENTITY_FIELDS`), so that two executions in two processes key
+    the same content alike, and the tree's (:data:`STRUCTURE_FIELDS`).
+    """
+    for key, value in sorted(zip(state.keys, state.values, strict=True)):
+        if key not in IDENTITY_FIELDS and key not in STRUCTURE_FIELDS:
+            yield key, value
+
 
 def content_fields(
     state: NodeState, decimals: int | None = None
-) -> Iterator[tuple[str, bytes]]:
-    """Each field of ``state`` a content key covers, by name in sorted order,
-    with its value's key (:func:`_value_key`): none naming an object of this
-    process (:data:`IDENTITY_FIELDS`), so that two executions in two
-    processes key the same content alike.
+) -> Iterator[tuple[str, bytes, tuple[Mobject, ...]]]:
+    """Each field a content key covers (:func:`covered_fields`), with its
+    value's key and the mobjects the value refers to
+    (:func:`.keys.value_key`).
     """
-    for key, value in sorted(zip(state.keys, state.values, strict=True)):
-        if key in IDENTITY_FIELDS:
-            continue
-        part = _value_key(value, decimals)
-        if part is not None:
-            yield key, part
+    for key, value in covered_fields(state):
+        part, refers = value_key(value, decimals)
+        yield key, part, refers
 
 
-def _value_key(value: Any, decimals: int | None = None) -> bytes | None:
-    """A content key for a value a content key covers, else ``None``; its
-    floats rounded to ``decimals`` when given.
+def _value_key(value: Any, decimals: int | None = None) -> bytes:
+    """``value``'s content key (:func:`.keys.value_key`), its floats rounded
+    to ``decimals`` when given; a mobject it refers to stands in it as its
+    type.
     """
-    from arachne.mobject.placement import Placement
-    from arachne.mobject.values import FrozenArray, Paint
-
-    if isinstance(value, (Paint, Placement)):
-        return value.key
-    if isinstance(value, FrozenArray):
-        if decimals is not None and value.dtype.kind in "fc":
-            # Adding zero turns -0.0, which rounding makes, into 0.0.
-            value = np.round(value, decimals) + 0.0
-        return hashlib.blake2b(value.tobytes(), digest_size=16).digest()
-    if isinstance(value, float) and decimals is not None:
-        return repr(round(value, decimals) + 0.0).encode()
-    if value is None or isinstance(value, (bool, int, float, str)):
-        return repr(value).encode()
-    return None
+    return value_key(value, decimals)[0]
 
 
 @dataclass(frozen=True)
