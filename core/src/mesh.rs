@@ -10,8 +10,8 @@
 //!   with a corner at or behind the eye, the plane through the corners approximates it), so a plane
 //!   per triangle is exact at every sub-sample. The plane comes from the triangle's canonical world
 //!   plane (`depth::WorldPlane`), so coplanar triangles of any triangulation get bit-identical
-//!   depth; registered in the frame's `depth::Registry`, before its paths, it gives the triangle
-//!   the identity of the plane it lies on, which paths and other meshes on that plane share, so
+//!   depth; offered to the frame's `depth::Registry` with its paths, the triangle takes the
+//!   identity of the plane it lies on, which paths and other meshes on that plane share, so
 //!   they tie by draw order where their keys lie within the snap's departure of one plane
 //!   (`order::coplanar_tied`). A fixed orientation record is a
 //!   camera-facing plane at its centre's depth. Anything else is in front of the scene, and ties go
@@ -74,8 +74,11 @@ struct Tri {
     /// Which mesh drawn it belongs to (from 1), so the compositor can merge one surface's
     /// fragments that tile a pixel.
     surface: u32,
-    /// The registered plane it lies on ([`Fragment::plane`]), `0` for none.
-    plane: u32,
+    /// The identity of the registered plane it lies on ([`Fragment::plane`]), all zero for none:
+    /// set from `handle` once the registry settles ([`Meshes::identify`]).
+    plane: [u32; 4],
+    /// Its record's handle in the frame's registry plus one, `0` for a triangle not offered.
+    handle: u32,
     /// The snap's departure of its key ([`Fragment::snap`]), finite on a registered plane.
     snap: f64,
 }
@@ -85,6 +88,47 @@ pub struct Meshes {
     tris: Vec<Tri>,
     bins: Vec<Vec<u32>>,
     width: u32,
+    /// The frame's map and its camera's projection, which key a triangle's share once the
+    /// registry settles ([`Meshes::identify`]).
+    map: FrameMap,
+    projection: Option<Projection>,
+}
+
+impl Meshes {
+    /// Gives each triangle offered to `registry`, now settled, the identities of the planes it lies
+    /// on. A triangle with no plane of its own (`Registry::offer_triangle`) carries, as any record
+    /// with no plane of its own does, the largest share its identities give it: for each, how far
+    /// its corners may stand off that identity's plane (`Registry::off_identity`), which bounds how
+    /// far its key, read on its corners within their hull, stands from that plane's.
+    pub fn identify(&mut self, registry: &Registry) {
+        for t in &mut self.tris {
+            if t.handle == 0 {
+                continue;
+            }
+            let handle = t.handle - 1;
+            t.plane = registry.identities(handle);
+            if registry.is_flat(handle) {
+                continue;
+            }
+            count!(DEGENERATE_TRIANGLES);
+            if !registry.attached(handle) {
+                count!(UNATTACHED_TRIANGLES);
+            }
+            if let Some(p) = &self.projection
+                && t.plane[0] != 0
+            {
+                t.snap = t
+                    .plane
+                    .iter()
+                    .take_while(|id| **id != 0)
+                    .map(|id| {
+                        let off = registry.off_identity(handle, *id);
+                        p.key_reach(&registry.plane(*id), &self.map, off)
+                    })
+                    .fold(0.0, f64::max);
+            }
+        }
+    }
 }
 
 /// A normal through a placement: by the cofactors of its linear part, normalized.
@@ -103,8 +147,9 @@ fn transform_normal(m: &Affine, n: [f64; 3]) -> [f64; 3] {
     }
 }
 
-/// Lowers mesh records to triangles for a frame of `width x height` pixels, registering the plane
-/// of each triangle keyed on its world plane in the frame's `registry`, in draw order.
+/// Lowers mesh records to triangles for a frame of `width x height` pixels, offering each triangle
+/// keyed on its world plane to the frame's `registry`; once it settles, [`Meshes::identify`] gives
+/// them their identities.
 pub fn lower(
     view: &View,
     width: u32,
@@ -124,6 +169,8 @@ pub fn lower(
         tris: Vec::new(),
         bins: vec![Vec::new(); (tiles_across(width) * height.div_ceil(TILE)) as usize],
         width,
+        map,
+        projection: projection.clone(),
     };
     for (surface, draw) in draws.iter().enumerate() {
         let rec = draw.record;
@@ -191,28 +238,34 @@ pub fn lower(
                 px.iter().map(|p| p[1]).fold(f64::NEG_INFINITY, f64::max),
             ];
             // A projected triangle lies on its world plane, made canonical so coplanar meshes of
-            // any triangulation get the same depth plane, and registered, so what lies on it
-            // shares its identity. Its key carries the snap's departure of its corners, placed
-            // (`depth::snap_departure`) and theirs off its plane (`depth::departure`: nothing but
-            // rounding, unless the plane is the axis plane its corners share within the grid). The
-            // rounding of its plane's coefficients is in its key's own bound, as it happened
-            // (`Projection::key_plane`).
-            let (depth, plane, snap) = match (keyed, projection.as_ref()) {
+            // any triangulation get the same depth plane, and offered to the registry, so what
+            // lies on it shares its identity. Its key carries the snap's departure of its corners,
+            // placed (`depth::snap_departure`) and theirs off its plane (`depth::departure`:
+            // nothing but rounding, unless the plane is the axis plane its corners share within
+            // the grid). The rounding of its plane's coefficients is in its key's own bound, as it
+            // happened (`Projection::key_plane`). A triangle whose corners lie on a line has no
+            // plane of its own (`Registry::offer_triangle`): keyed on its corners' axis plane where
+            // they share one, else through its corners on screen, it takes the identities it lies
+            // on, and the share they give it ([`Meshes::identify`]), once the registry settles.
+            let (depth, handle, snap) = match (keyed, projection.as_ref()) {
                 (Some(plane), _) => (plane, 0, f64::INFINITY),
                 (None, Some(p)) if idx.iter().all(|i| p.keys_planar_at(world[*i])) => {
                     let at = idx.map(|i| world[i]);
-                    WorldPlane::of_triangle(at, grid)
-                        .and_then(|plane| {
-                            let id = registry.merge(plane, &at);
-                            let key = p.key_plane(&plane, &map, at[0], MIN_PLANE_COS, region)?;
-                            let own = idx.map(|i| draw.positions[i]);
-                            let normal = plane.unrounded.normal;
-                            let off =
-                                crate::depth::snap_departure(grid, normal, &draw.places, &own)
-                                    + crate::depth::departure(&plane, &at);
-                            Some((key, id, p.key_reach(&plane, &map, off)))
-                        })
-                        .unwrap_or_else(|| (through(), 0, f64::INFINITY))
+                    let own = idx.map(|i| draw.positions[i]);
+                    let plane = WorldPlane::of_triangle(at, grid);
+                    let (handle, flat) = registry.offer_triangle(plane, &at, &draw.places, &own);
+                    let keyed = plane.and_then(|plane| {
+                        let key = p.key_plane(&plane, &map, at[0], MIN_PLANE_COS, region)?;
+                        let normal = plane.unrounded.normal;
+                        let off = crate::depth::snap_departure(grid, normal, &draw.places, &own)
+                            + crate::depth::departure(&plane, &at);
+                        Some((key, p.key_reach(&plane, &map, off)))
+                    });
+                    match keyed {
+                        Some((key, snap)) => (key, handle + 1, snap),
+                        None if !flat => (through(), handle + 1, f64::INFINITY),
+                        None => (through(), 0, f64::INFINITY),
+                    }
                 }
                 _ => (through(), 0, f64::INFINITY),
             };
@@ -235,7 +288,8 @@ pub fn lower(
                 order: draw.order,
                 sub: draw.sub + sub as u32,
                 surface: surface as u32 + 1,
-                plane,
+                plane: [0; 4],
+                handle,
                 snap,
             };
             meshes.push(px, tri, height);

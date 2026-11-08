@@ -222,10 +222,11 @@ pub(crate) fn of_pixel(
                 if of[i] == l {
                     scratch.fragments.push(*f);
                     rows.push(coverage[i]);
-                    depth_rows.push(passes[i]);
+                    depth_rows.push(passes[i].clone());
                 }
             }
-            resolve_pixel(&mut scratch, [0; 4], |i, _| rows[i], |i, _| depth_rows[i]).1
+            let depth = |i: usize, _: &Fragment| depth_rows[i].clone();
+            resolve_pixel(&mut scratch, [0; 4], |i, _| rows[i], depth).1
         })
         .collect();
     // The pixel's one order, as the resolve ranks it: each leaf at its front-most fragment in it

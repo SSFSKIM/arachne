@@ -120,13 +120,13 @@ pub fn own_layers(a: &Fragment, b: &Fragment) -> bool {
         && (a.sub % 3 == 1 || b.sub % 3 == 1)
 }
 
-/// Whether `a` and `b` lie on one registered plane ([`Fragment::plane`]), whichever producer drew
-/// each: the registry found either's points on the other's plane, so they may be one plane.
-/// Whether they are, where both cover, their keys decide ([`coplanar_tied`]).
+/// Whether `a` and `b` lie on one registered plane: their identities ([`Fragment::plane`]) meet,
+/// whichever producer drew each, so one plane holds both within their tolerances and they may be
+/// one plane. Whether they are, where both cover, their keys decide ([`coplanar_tied`]).
 ///
 /// [`Fragment::plane`]: crate::composite::Fragment::plane
 pub fn one_plane(a: &Fragment, b: &Fragment) -> bool {
-    a.plane != 0 && a.plane == b.plane
+    a.plane.iter().any(|p| *p != 0 && b.plane.contains(p))
 }
 
 /// Whether `a` (depth `da` within `ea`) and `b` (depth `db` within `eb`), at a sub-sample both
@@ -401,7 +401,7 @@ mod tests {
                 ..Plane::constant(key)
             };
             let mut f = at_depth(depth, RED, Coverage::Mask(u16::MAX), order);
-            (f.plane, f.snap) = (7, 0.0);
+            (f.plane, f.snap) = ([7, 0, 0, 0], 0.0);
             f
         };
         let first = on_plane(-1.0, 1);
@@ -433,7 +433,7 @@ mod tests {
                 Coverage::Mask(u16::MAX),
                 order,
             );
-            (f.plane, f.snap, f.path_layer, f.sub) = (plane, 0.0, true, 1);
+            (f.plane, f.snap, f.path_layer, f.sub) = ([plane, 0, 0, 0], 0.0, true, 1);
             f
         };
         let f1 = fill(-1.0, 1, 7, RED);
@@ -469,7 +469,8 @@ mod tests {
         // The resolve composites it so: the stroke in front over the whole pixel.
         let mut scratch = crate::composite::Scratch::default();
         scratch.fragments.extend_from_slice(&frags);
-        let (_, pixel) = resolve_pixel(&mut scratch, [0, 0, 0, 255], |_, _| FULL, |i, _| depths[i]);
+        let depth = |i: usize, _: &Fragment| depths[i].clone();
+        let (_, pixel) = resolve_pixel(&mut scratch, [0, 0, 0, 255], |_, _| FULL, depth);
         assert_eq!(pixel, BLUE);
     }
 
@@ -845,7 +846,7 @@ mod tests {
         crate::composite::strokes_on_own_fills(&frags, &mut depths, |j| rows[j]);
         assert_eq!(depths, own);
         for &k in &rest {
-            let (s, x_at) = (depths[1], depths[2]);
+            let (s, x_at) = (&depths[1], &depths[2]);
             assert_eq!(
                 at_sample(&stroke, s.samples[k], s.err, &x, x_at.samples[k], x_at.err),
                 Ordering::Greater
@@ -921,7 +922,7 @@ mod tests {
                         next(6) as u32,
                     );
                     f.path_layer = next(3) != 0;
-                    f.plane = next(3) as u32;
+                    f.plane = [next(3) as u32, 0, 0, 0];
                     (f, next(8) as f64 * 0.01, next(3) as f64 * 0.01)
                 })
                 .collect();

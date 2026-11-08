@@ -18,8 +18,16 @@ pub static MOST_FEET: AtomicU64 = AtomicU64::new(0);
 pub static GAPS: AtomicU64 = AtomicU64::new(0);
 /// Keys read on one segment (`key_on`).
 pub static KEY_ON: AtomicU64 = AtomicU64::new(0);
+/// Records with no plane of their own that lay on more identities than a fragment carries
+/// (`depth::MOST_IDENTITIES`), and so kept the first ones (`depth::Registry::settle`).
+pub static CAPPED_SETS: AtomicU64 = AtomicU64::new(0);
+/// Mesh triangles whose corners lie on a line, offered with no plane of their own
+/// (`depth::Registry::offer_triangle`).
+pub static DEGENERATE_TRIANGLES: AtomicU64 = AtomicU64::new(0);
+/// Of those, the ones no flat record's identity holds (`depth::Registry::attached`).
+pub static UNATTACHED_TRIANGLES: AtomicU64 = AtomicU64::new(0);
 
-const ALL: [(&str, &AtomicU64); 7] = [
+const ALL: [(&str, &AtomicU64); 10] = [
     ("near", &NEAR),
     ("bounds_tested", &BOUNDS_TESTED),
     ("key_under", &KEY_UNDER),
@@ -27,6 +35,9 @@ const ALL: [(&str, &AtomicU64); 7] = [
     ("most_feet", &MOST_FEET),
     ("key_on", &KEY_ON),
     ("gaps", &GAPS),
+    ("capped_sets", &CAPPED_SETS),
+    ("degenerate_triangles", &DEGENERATE_TRIANGLES),
+    ("unattached_triangles", &UNATTACHED_TRIANGLES),
 ];
 
 /// Adds `n` to `counter`.

@@ -260,21 +260,26 @@ pub struct Fragment {
     /// the layer `k` (0 its background stroke, 1 its fill, 2 its stroke), which the order reads
     /// ([`crate::order::own_layers`]).
     pub path_layer: bool,
-    /// The plane a path's layer or a mesh's triangle lies on, when not 0: one of its frame's
-    /// registered planes (`depth::Registry`), which the camera keys finitely. Two fragments on one
-    /// such plane, whichever producer drew each, keep paint order where their keys are one depth
-    /// within what the snap can do to one plane ([`crate::order::coplanar_tied`]).
-    pub plane: u32,
+    /// The identities of the planes a path's layer or a mesh's triangle lies on, ascending, the
+    /// rest zero (none: all zero): of its frame's registered planes (`depth::Registry`), which the
+    /// camera keys finitely. A flat record lies on one; a record with no plane of its own (a line,
+    /// a curve) on every one whose plane holds it, up to four (`depth::MOST_IDENTITIES`), so a line
+    /// along a cube's edge lies on both faces'. Two fragments sharing one, whichever producer drew
+    /// each, keep paint order where their keys are one depth within what the snap can do to one
+    /// plane ([`crate::order::coplanar_tied`]).
+    pub plane: [u32; 4],
     /// How far its key may stand, as a share of the key wherever it is read, from the key across
     /// the plane content put its points on, for the snap of those points to the input grid and its
     /// own plane's fit to them (`Projection::key_reach` of `depth::snap_departure` and
     /// `depth::departure`; in a frame not snapped, the rounding of the core's own placing of them
     /// alone): what two fragments on one registered plane may part by and still be one plane
-    /// ([`crate::order::coplanar_tied`]). Zero for a path content did not make flat (its planarity
-    /// as the writer decided it): no plane content put it on. A stroke on a registered plane
-    /// carries its path's; each layer of such a path is read on its plane against what shares it
-    /// ([`Depths::against`]). Infinite where nothing bounds it (a path whose points reached the
-    /// core already projected), and then it ties with anything on its plane.
+    /// ([`crate::order::coplanar_tied`]). For a record with no plane of its own read on the planes
+    /// of the identities it lies on, the most of its snap's departure along each one's normal and
+    /// its points' departure from it. Zero for a flat path content did not make flat (its
+    /// planarity as the writer decided it): no plane content put it on. A stroke on a registered
+    /// plane carries its path's; each layer of such a path is read on its plane against what
+    /// shares it ([`Depths::against`]). Infinite where nothing bounds it (a path whose points
+    /// reached the core already projected), and then it ties with anything on its plane.
     pub snap: f64,
     /// The producer that added it (set by the pass).
     source: u16,
@@ -295,7 +300,7 @@ impl Fragment {
             sub,
             surface: 0,
             path_layer: false,
-            plane: 0,
+            plane: [0; 4],
             snap: f64::INFINITY,
             source: 0,
         }
@@ -557,47 +562,73 @@ pub trait Producer: Sync {
     }
 
     /// For the fragment this producer added to pixel `(x, y)` with exact area and this `id`, a
-    /// layer of a path on a registered plane (its fill, or a stroke keyed on its curve): its path's
-    /// key at each of the pixel's sub-samples ([`sample_point`]), wherever the sub-sample lies,
-    /// into `out`, and that key's error bound there.
-    /// What it is read on against a fragment on that plane ([`Depths::against`]). `None`, and
-    /// `out` untouched, for any other fragment.
-    fn plane_depths(&self, _id: u32, _x: u32, _y: u32, _out: &mut [f64; SAMPLES]) -> Option<f64> {
+    /// layer of a path on a registered plane (its fill, or a stroke keyed on its curve), and
+    /// `identity`, one of the identities it lies on ([`Fragment::plane`]): its key on that
+    /// identity's plane at each of the pixel's sub-samples ([`sample_point`]), wherever the
+    /// sub-sample lies, into `out`, and that key's error bound there. A flat path's key there is
+    /// its own plane's; a path with no plane of its own is keyed on each identity's plane. What it
+    /// is read on against a fragment sharing that identity ([`Depths::against`]). `None`, and `out`
+    /// untouched, for any other fragment.
+    fn plane_depths(
+        &self,
+        _id: u32,
+        _identity: u32,
+        _x: u32,
+        _y: u32,
+        _out: &mut [f64; SAMPLES],
+    ) -> Option<f64> {
         None
     }
 }
 
+/// A fragment's key at each sub-sample of a pixel and that key's bound: one of [`Depths`]'s plane
+/// rows.
+pub(crate) type Row = ([f64; SAMPLES], f64);
+
 /// A fragment's depth at each sub-sample of a pixel and at its centre, where the resolve and the
 /// contributor report read it (`-0.0` read as `0.0`, as [`Plane::at`] reads it), and how far any
 /// of them may stand from the exact depth of the fragment's inputs ([`crate::order`]).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Depths {
     pub(crate) samples: [f64; SAMPLES],
     pub(crate) centre: f64,
     pub(crate) err: f64,
-    /// For a layer of a path on a registered plane, its path's key at the sub-samples and that
-    /// key's bound ([`Producer::plane_depths`]): what it is read on against a fragment on that
-    /// plane ([`Depths::against`]).
-    pub(crate) on_plane: Option<([f64; SAMPLES], f64)>,
+    /// For a layer of a path on a registered plane, its key on the plane of the first identity it
+    /// lies on ([`Fragment::plane`]) at the sub-samples and that key's bound
+    /// ([`Producer::plane_depths`]): what it is read on against a fragment sharing that identity
+    /// ([`Depths::against`]).
+    pub(crate) on_plane: Option<Row>,
+    /// Its rows on the planes of the identities it lies on after the first, in their order: empty
+    /// but for a record with no plane of its own lying on more than one.
+    pub(crate) more: Vec<Option<Row>>,
 }
 
 impl Depths {
-    /// The depths `a` (whose depths these are) is read at against `b`, and their bound: on its
-    /// path's plane where it has one and `b` lies on that registered plane ([`crate::order::one_plane`]),
-    /// so a path's layer and what shares its plane are held to one plane's keys at one point: a
-    /// stroke's body reaching off its curve on that plane, a fill's sub-sample beyond its outline
-    /// read where it lies, not at the outline's nearest point; else its own. Against anything
-    /// else a stroke keeps the key along its curve, and a fill its key at its outline, which no
-    /// plane extrapolates.
+    /// The depths `a` (whose depths these are) is read at against `b`, and their bound: where `b`
+    /// shares an identity with it ([`crate::order::one_plane`]), its row on the first identity of
+    /// its own that `b` lies on too, where it has one, so a path's layer and what shares its plane
+    /// are held to one plane's keys at one point: a stroke's body reaching off its curve on that
+    /// plane, a fill's sub-sample beyond its outline read where it lies, not at the outline's
+    /// nearest point; else its own. Against anything else a stroke keeps the key along its curve,
+    /// and a fill its key at its outline, which no plane extrapolates.
     pub(crate) fn against(&self, a: &Fragment, b: &Fragment) -> (&[f64; SAMPLES], f64) {
-        match &self.on_plane {
-            Some((samples, err)) if crate::order::one_plane(a, b) => (samples, *err),
-            _ => (&self.samples, self.err),
+        let row = if crate::order::one_plane(a, b) {
+            match shared_identity(&a.plane, &b.plane) {
+                Some(0) | None => self.on_plane.as_ref(),
+                Some(k) => self.more.get(k - 1).and_then(Option::as_ref),
+            }
+        } else {
+            None
+        };
+        match row {
+            Some((samples, err)) => (samples, *err),
+            None => (&self.samples, self.err),
         }
     }
 
     /// Fragment `f`'s at pixel `(x, y)`: as its producer keys it where its plane read at each
-    /// point does not give it ([`Producer::point_depths`]), else on its plane.
+    /// point does not give it ([`Producer::point_depths`]), else on its plane; with its rows on
+    /// the planes of the identities it lies on ([`Producer::plane_depths`]).
     pub(crate) fn of(producers: &[&dyn Producer], f: &Fragment, x: u32, y: u32) -> Depths {
         if let Coverage::Area { id, .. } = f.coverage {
             let mut points = [[x as f64 + 0.5, y as f64 + 0.5]; SAMPLES + 1];
@@ -605,14 +636,18 @@ impl Depths {
                 *p = sample_point(x, y, k);
             }
             let producer = producers[f.source as usize];
-            let mut on = [0.0; SAMPLES];
-            let on_plane = if f.plane != 0 {
+            let row = |identity: u32| {
+                let mut on = [0.0; SAMPLES];
                 producer
-                    .plane_depths(id, x, y, &mut on)
+                    .plane_depths(id, identity, x, y, &mut on)
                     .map(|err| (on.map(|v| v + 0.0), err))
-            } else {
-                None
             };
+            let on_plane = (f.plane[0] != 0).then(|| row(f.plane[0])).flatten();
+            let more: Vec<Option<Row>> = f.plane[1..]
+                .iter()
+                .take_while(|identity| **identity != 0)
+                .map(|identity| row(*identity))
+                .collect();
             let mut out = [0.0; SAMPLES + 1];
             if let Some(err) = producer.point_depths(id, x, y, &points, &mut out) {
                 return Depths {
@@ -620,14 +655,21 @@ impl Depths {
                     centre: out[SAMPLES] + 0.0,
                     err,
                     on_plane,
+                    more,
                 };
             }
             return Depths {
                 on_plane,
+                more,
                 ..Depths::of_plane(f, x, y)
             };
         }
         Depths::of_plane(f, x, y)
+    }
+
+    /// Every plane row it has ([`Depths::on_plane`], [`Depths::more`]).
+    pub(crate) fn rows(&self) -> impl Iterator<Item = &Row> {
+        self.on_plane.iter().chain(self.more.iter().flatten())
     }
 
     /// Fragment `f`'s at pixel `(x, y)` on its plane.
@@ -646,8 +688,14 @@ impl Depths {
             // The plane's own error and the rounding of reading it anywhere in the pixel.
             err: f.depth.err + f.depth.read_error(x as f64 + 1.0, y as f64 + 1.0),
             on_plane: None,
+            more: Vec::new(),
         }
     }
+}
+
+/// Where in identity set `a` ([`Fragment::plane`]) lies the first identity set `b` holds too.
+pub(crate) fn shared_identity(a: &[u32; 4], b: &[u32; 4]) -> Option<usize> {
+    a.iter().position(|p| *p != 0 && b.contains(p))
 }
 
 /// A path's strokes drawn on its own fill, at pixel depths `depths` of `frags`: at each sub-sample
@@ -678,25 +726,26 @@ pub(crate) fn strokes_on_own_fills(
             }
             let filled = *filled.get_or_insert_with(|| coverage(j));
             let stroked = coverage(i);
-            let (on, own) = (depths[j], depths[i]);
+            let (on, on_err) = (depths[j].samples, depths[j].err);
+            let (own, own_err) = (depths[i].samples, depths[i].err);
             let mut err = 0.0f64;
             for k in 0..SAMPLES {
                 if filled[k] == 0 || stroked[k] == 0 {
-                    err = err.max(own.err);
+                    err = err.max(own_err);
                     continue;
                 }
-                let (f, s) = (on.samples[k], own.samples[k]);
+                let (f, s) = (on[k], own[k]);
                 if f < s {
                     depths[i].samples[k] = f;
                 }
                 // The bound of the nearer of two depths: the chosen one's where they part beyond
                 // their bounds, else either's, as either may be the nearer.
-                err = err.max(if crate::order::tied(f, on.err, s, own.err) {
-                    on.err.max(own.err)
+                err = err.max(if crate::order::tied(f, on_err, s, own_err) {
+                    on_err.max(own_err)
                 } else if f < s {
-                    on.err
+                    on_err
                 } else {
-                    own.err
+                    own_err
                 });
             }
             depths[i].err = err;
@@ -1166,7 +1215,7 @@ pub(crate) fn resolve_pixel(
     let flat = s
         .rows
         .iter()
-        .all(|d| d.samples == first && d.on_plane.is_none_or(|(on, _)| on == first));
+        .all(|d| d.samples == first && d.rows().all(|(on, _)| *on == first));
     s.coverage.clear();
     if !flat {
         s.coverage
@@ -1500,25 +1549,39 @@ mod tests {
 
     #[test]
     fn a_stroke_is_read_on_its_path_s_plane_only_against_what_shares_that_plane() {
-        let on = |key: f64, plane: u32| {
+        let on = |key: f64, plane: [u32; 4]| {
             let mut f = Fragment::new(Plane::constant(key), [0; 4], Coverage::Mask(u16::MAX), 1, 0);
             f.plane = plane;
             f
         };
-        let (stroke, same, other, none) = (on(-1.0, 7), on(-2.0, 7), on(-2.0, 9), on(-2.0, 0));
+        let set = |p: u32| [p, 0, 0, 0];
+        let (stroke, same, other, none) = (
+            on(-1.0, set(7)),
+            on(-2.0, set(7)),
+            on(-2.0, set(9)),
+            on(-2.0, set(0)),
+        );
         let mut d = Depths::of_plane(&stroke, 0, 0);
         let own = (d.samples, d.err);
         d.on_plane = Some(([-0.5; SAMPLES], 1e-9));
-        let read = |d: &Depths, b: &Fragment| {
-            let (s, e) = d.against(&stroke, b);
+        let read = |d: &Depths, a: &Fragment, b: &Fragment| {
+            let (s, e) = d.against(a, b);
             (*s, e)
         };
-        assert_eq!(read(&d, &same), ([-0.5; SAMPLES], 1e-9));
-        assert_eq!(read(&d, &other), own);
-        assert_eq!(read(&d, &none), own);
+        assert_eq!(read(&d, &stroke, &same), ([-0.5; SAMPLES], 1e-9));
+        assert_eq!(read(&d, &stroke, &other), own);
+        assert_eq!(read(&d, &stroke, &none), own);
+        // A line on two identities is read on the plane of the one it shares.
+        let line = on(-1.0, [3, 7, 0, 0]);
+        d.more = vec![Some(([-0.6; SAMPLES], 2e-9))];
+        assert_eq!(read(&d, &line, &same), ([-0.6; SAMPLES], 2e-9));
+        assert_eq!(read(&d, &line, &on(-2.0, set(3))), ([-0.5; SAMPLES], 1e-9));
+        assert_eq!(read(&d, &line, &other), own);
         // A fragment with no plane row reads its own against anything.
         d.on_plane = None;
-        assert_eq!(read(&d, &same), own);
+        d.more.clear();
+        assert_eq!(read(&d, &stroke, &same), own);
+        assert_eq!(read(&d, &line, &same), own);
     }
 
     #[test]
