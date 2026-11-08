@@ -322,6 +322,13 @@ lifted.
   finds the construction caches (`arachne/mobject/construction_caches.py`: this one and a number's glyph
   cache, which fills it) as a fresh process (a session) or as the scene's first execution (a render executed again)
   found it, so two executions of one source agree. Direction: none while CE's behaviour is the reference.
+- **Fixed: a class named as another shared its images.** Manim Community Edition keys a cached image by the name of
+  the class that parsed it (`SVGMobject.hash_seed`), so a scene's own `class MathTex(MathTex)` whose parse differs
+  (an overridden `generate_mobject`) handed its image to the engine's `MathTex` built after it from the same file,
+  and took the engine's image when built after that. The key now holds the class itself
+  (`arachne/mobject/svg/svg_mobject.py`, tests `tests/module/mobject/svg/test_svg_mobject.py`, the "same-named"
+  ones). No two engine classes share a name, so a scene that defines no such class finds every image it found
+  before.
 
 ## The session server (`arachne/server/`)
 
