@@ -630,14 +630,18 @@ class Drawing:
         for mob, state in reached:
             state.install(mob)
         if capture.references:
-            # Each depth reference point as the capture found it, which the
-            # group's state now need not give (the scene may not hold it).
-            shown = {id(mob) for mob, _ in reached}
-            for mob, reference in capture.references:
-                if id(mob) in shown:
-                    mob.__dict__["z_index_group"] = reference
+            self.show_references(capture, {id(mob) for mob, _ in reached})
         if capture.pictures:
             self._show_pictures(capture, {id(mob) for mob, _ in reached})
+
+    def show_references(self, capture: Capture, shown: set[int]) -> None:
+        """Give each of the ``shown`` mobjects (by id) the depth sort places
+        by its ``z_index_group`` the point ``capture`` found, which the
+        group's state now need not give (the scene may not hold it).
+        """
+        for mob, reference in capture.references:
+            if id(mob) in shown:
+                mob.__dict__["z_index_group"] = reference
 
     def show_camera(self, capture: Capture) -> None:
         """Give the camera, alone, its recorded inputs at ``capture``: for a

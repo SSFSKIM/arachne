@@ -235,6 +235,34 @@ def test_a_depth_reference_the_scene_does_not_hold_sorts_each_frame_where_it_was
         np.testing.assert_array_equal(frame, reference, err_msg=f"session {k}")
 
 
+@pytest.mark.parametrize("draw_path", ["cairo", "ir_cairo"])
+def test_a_restored_instant_sorts_by_the_depth_reference_its_capture_found(
+    session_of, draw_path
+):
+    """Between two frames of the state play, the restore starts from the
+    capture before and sorts the red square by the reference point that
+    capture found, behind the blue one, as a forward run evaluated there
+    does; the point the scene moved in front after the play is not it.
+    """
+    if draw_path == "ir_cairo":
+        pytest.importorskip("arachne_core")
+    name = "RestoredDepthReference"
+    settings = {"frame_rate": 15, "probe": False, "draw_path": draw_path}
+    session = session_of(name, CAMERA_SCENES, **settings)
+    play = session.record.plays[0]
+    assert play.route == "state"
+    t = play.start + Fraction(3, 30)
+    assert session.state_at(t).answer == "restored"
+    frame = np.asarray(session.frame(t))
+    blue = tuple(int(v) for v in ManimColor(BLUE).to_int_rgb())
+    assert _centre(frame) == blue
+    oracle = session_of(name, CAMERA_SCENES, instants=[t], **settings)
+    np.testing.assert_array_equal(frame, np.asarray(oracle.frame(t)))
+    # The probe's restores find the play as it ran: nothing demotes it.
+    probed = session_of(name, CAMERA_SCENES, frame_rate=15, draw_path=draw_path)
+    assert probed.record.plays[0].route == "state"
+
+
 def _kept_pictures(record) -> list[np.ndarray]:
     """Every picture of another camera the record keeps, each once."""
     kept: dict[int, np.ndarray] = {}

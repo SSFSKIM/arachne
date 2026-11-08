@@ -24,8 +24,10 @@ from arachne import (
     Scene,
     Square,
     ThreeDScene,
+    ValueTracker,
     VectorizedPoint,
     ZoomedScene,
+    linear,
 )
 
 
@@ -234,6 +236,27 @@ class StaticDepthReferenceMoves(ThreeDScene):
         dot.add_updater(drive)
         self.add(red, blue)
         self.play(dot.animate.shift(DOWN), run_time=0.4)
+
+
+class RestoredDepthReference(ThreeDScene):
+    """The red square of :class:`DepthReferenceMoves` behind the blue one,
+    following a tracker by an updater (a state play, restored between its
+    frames); after the play its reference point moves in front.
+    """
+
+    def construct(self):
+        self.camera.should_apply_shading = False
+        reference = VectorizedPoint([0.0, 0.0, -1.0])
+        red = Square(color=RED, fill_opacity=1, stroke_width=0, shade_in_3d=True)
+        blue = Square(color=BLUE, fill_opacity=1, stroke_width=0, shade_in_3d=True)
+        red.z_index_group = reference
+        slide = ValueTracker(0)
+        red.add_updater(lambda mob: mob.set_x(slide.get_value()))
+        self.add(red, blue)
+        self.play(slide.animate.set_value(0.3), run_time=0.4, rate_func=linear)
+        red.clear_updaters()
+        reference.shift(OUT * 2)
+        self.wait(0.2)
 
 
 def _other_camera_display() -> tuple[MovingCamera, ImageMobjectFromCamera]:
