@@ -231,6 +231,12 @@ lifted.
   reader caches (`_reads`, `_protocols`) parse the engine's own source,
   which is fixed for a process; only engine-private names reach them, so no
   scene can hold one on a field. Reclass them as reading if that changes.
+- **Keying every field costs time at each capture.** Against the engine
+  before full key coverage, `play_keys` and `summarize` take a median 2.19x
+  per scene, p95 6.95 s and max 9.90 s, over a run of real scenes;
+  `Session.open` is unchanged. Candidate: reuse the key of every node whose
+  version has not changed since the last play, so a capture keys only what
+  moved.
 
 ## Convex hulls (`arachne/utils/qhull.py`)
 
