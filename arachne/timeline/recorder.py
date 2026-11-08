@@ -532,11 +532,12 @@ class Recorder:
             raise ValueError(f"states is 'none', 'armed' or 'all', not {states!r}")
         self.scene = scene
         self.grid = exact(grid) if grid is not None else None
-        #: The configured pixel shape the execution began under, which the
-        #: frames its record draws are drawn at (``Record.pixel_shape_changed``):
-        #: as the scene is made, or as the session executing it was configured
-        #: before it imported the scene's file.
-        self.configured_pixel_shape = (config.pixel_width, config.pixel_height)
+        #: The configured pixel shape the frames its record draws are drawn
+        #: at (``Record.pixel_shape_changed``): for a session, as it was
+        #: configured before it imported the scene's file, which it draws
+        #: under after the scene ran; ``None`` for a render, which draws each
+        #: play as it ends, at the shape its first drawn capture found.
+        self.configured_pixel_shape: tuple[int, int] | None = None
         self.draws = draws
         self.stepping = stepping
         self.on_step = on_step

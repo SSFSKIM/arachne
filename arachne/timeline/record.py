@@ -760,7 +760,7 @@ class Record:
         #: scene's code, and the mobjects checked since (by id).
         self._entry_refusal: str | None = None
         self._entry_checked: set[int] = set()
-        #: The configured pixel shape the execution began under (its
+        #: The configured pixel shape the record's frames are drawn at (its
         #: recorder's), or the first drawn capture's when none was given, and
         #: the seq of the first drawn capture that found another (``None``
         #: while none has).
@@ -1028,8 +1028,8 @@ class Record:
         return fitted
 
     def _note_pixel_shape(self, seq: int | Fraction) -> None:
-        """Compare the configured pixel shape now with the one the execution
-        began under; from the first capture that finds another, every capture
+        """Compare the configured pixel shape now with the one the record's
+        frames are drawn at; from the first capture that finds another, every capture
         refuses its play (:data:`PIXEL_SHAPE_CHANGED`).
         """
         from arachne import config

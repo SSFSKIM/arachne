@@ -544,12 +544,15 @@ def test_a_pixel_shape_changed_after_the_last_play_is_drawn_as_the_scene_left_it
 
 
 def test_a_pixel_shape_changed_in_setup_is_drawn_as_the_scene_runs(session_of):
+    """A render draws each play as it ends, under the shape its captures
+    found; a session draws after the scene ran, under its own, so it refuses.
+    """
     scene_class = camera_scenes.PixelShapeChangedInSetup
     live = _drawn_live(scene_class, 15)
     width = SMALL["pixel_width"]
     np.testing.assert_array_equal(live[0], _cloud_as_ce_draws(width, 2 * width))
     scene, drawn = render(scene_class, 15)
-    assert scene.timeline.record.refusal.startswith("config.pixel_shape:")
+    assert scene.timeline.record.refusal is None
     _equal_frames(drawn, live)
     session = session_of(scene_class.__name__, CAMERA_SCENES, frame_rate=15)
     assert session.record.refusal.startswith("config.pixel_shape:")
