@@ -323,6 +323,26 @@ lifted.
   cache, which fills it) as a fresh process (a session) or as the scene's first execution (a render executed again)
   found it, so two executions of one source agree. Direction: none while CE's behaviour is the reference.
 
+## The typesetting cache (`arachne/utils/typeset_cache.py`)
+
+- **Its key names the TeX distribution by its compilers' version lines, not by its packages.** A Tex file is
+  keyed by the whole source, the compilers, the output format and the first line each of the compilers and
+  `dvisvgm` print for `--version` (pdfTeX's names its TeX Live year). A package updated within one distribution
+  release (`tlmgr update`), or the Ghostscript or MuPDF that `dvisvgm --pdf` converts PDF output through, can
+  change an SVG while its key stays, so hosts whose TeX trees differ that way share files that would differ.
+  Direction: add a digest of the TeX tree's package database (`ls-R` under `kpsewhich -var-value TEXMFDIST`) and
+  the PDF converter's version to the key, if hosts with diverging TeX trees ever share one directory.
+- **Its font fingerprint names families, not font files.** Text is keyed by the sorted family list Pango can
+  use, with every font registered through `register_font` by its file's content; a system font replaced by
+  another version under the same family names is not seen. Direction: digest the font files fontconfig resolves
+  (`FcFontList` with their paths), if hosts that share a directory install fonts apart.
+- **Contended strings are typeset more than once, and failed compiles leave scratch.** Writers take no lock:
+  two processes that miss one string at once both compile it, and the later rename replaces the earlier file
+  with the same bytes (`tests/utils/test_typeset_cache.py::test_a_process_never_reads_an_svg_another_is_still_writing`).
+  A compile that fails keeps its scratch directory, with its log, under `scratch/`, and nothing removes it.
+  Direction: a lock file per key taken around the miss, if contended starts ever cost; scratch directories older
+  than a day removed as a directory is opened.
+
 ## The session server (`arachne/server/`)
 
 - **A render at another pixel aspect than its session's execution is not checked.** The camera keeps its configured

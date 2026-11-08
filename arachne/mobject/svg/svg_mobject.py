@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import os
 from pathlib import Path
 from typing import Any, Self
@@ -198,12 +199,13 @@ class SVGMobject(VMobject):
         file_path = self.get_file_path()
         element_tree = ET.parse(file_path)
         new_tree = self.modify_xml_tree(element_tree)  # type: ignore[arg-type]
-        # Create a temporary svg file to dump modified svg to be parsed
-        modified_file_path = file_path.with_name(f"{file_path.stem}_{file_path.suffix}")
-        new_tree.write(modified_file_path)
-
-        svg = se.SVG.parse(modified_file_path)
-        modified_file_path.unlink()
+        # Parsed from memory: CE writes these bytes to a file beside the SVG,
+        # <name>_.svg, which two processes loading one SVG share, one removing
+        # it while the other parses it.
+        modified = io.BytesIO()
+        new_tree.write(modified)
+        modified.seek(0)
+        svg = se.SVG.parse(modified)
 
         mobjects, mobject_dict = self.get_mobjects_from(svg)
         self.add(*mobjects)

@@ -39,6 +39,10 @@ __all__ = ["config_file_paths", "make_config_parser", "ManimConfig", "ManimFrame
 
 logger = logging.getLogger("arachne")
 
+#: The environment variable that names the typesetting directory
+#: (``typeset_dir``), over the configuration files.
+TYPESET_DIR_ENV = "ARACHNE_TYPESET_DIR"
+
 RENDERER_REMOVED = (
     "The OpenGL renderer was removed: Cairo is the renderer. "
     "Remove the renderer setting."
@@ -369,6 +373,7 @@ class ManimConfig(MutableMapping):
         "tex_template",
         "tex_template_file",
         "text_dir",
+        "typeset_dir",
         "upto_animation_number",
         "verbosity",
         "video_codec",
@@ -708,6 +713,10 @@ class ManimConfig(MutableMapping):
             "preview_command",
         ]:
             setattr(self, key, parser["CLI"].get(key, fallback="", raw=True))
+        # The environment names the typesetting directory over the files.
+        self.typeset_dir = os.environ.get(TYPESET_DIR_ENV) or parser["CLI"].get(
+            "typeset_dir", fallback="", raw=True
+        )
 
         # float keys
         for key in [
@@ -832,6 +841,7 @@ class ManimConfig(MutableMapping):
             "video_codec",
             "pixel_format",
             "video_encoder_options",
+            "typeset_dir",
         ]:
             if hasattr(args, key):
                 attr = getattr(args, key)
@@ -1562,6 +1572,7 @@ class ManimConfig(MutableMapping):
             "images_dir",
             "text_dir",
             "tex_dir",
+            "typeset_dir",
             "log_dir",
             "input_file",
             "output_file",
@@ -1661,6 +1672,22 @@ class ManimConfig(MutableMapping):
     @tex_dir.setter
     def tex_dir(self, value: str | Path) -> None:
         self._set_dir("tex_dir", value)
+
+    @property
+    def typeset_dir(self) -> str:
+        """The typesetting cache's directory (``--typeset_dir``, or the
+        ``ARACHNE_TYPESET_DIR`` environment variable): Tex and Text SVGs
+        kept there, each named by everything its bytes depend on, are
+        shared by every scene and process that names the directory, on any
+        host, and every file there is written whole. Empty (the default),
+        each media directory keeps its own, in ``tex_dir`` and ``text_dir``,
+        as CE does. See :mod:`arachne.utils.typeset_cache`.
+        """
+        return self._d["typeset_dir"]
+
+    @typeset_dir.setter
+    def typeset_dir(self, value: str | Path) -> None:
+        self._set_dir("typeset_dir", value)
 
     @property
     def partial_movie_dir(self) -> str:

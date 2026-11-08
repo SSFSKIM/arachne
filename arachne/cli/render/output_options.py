@@ -27,6 +27,12 @@ output_options = option_group(
         help="Path to store rendered videos and latex.",
     ),
     option(
+        "--typeset_dir",
+        type=Path(),
+        default=None,
+        help="Directory of Tex and Text SVGs shared by every render naming it.",
+    ),
+    option(
         "--log_dir",
         type=Path(),
         help="Path to store render logs.",
