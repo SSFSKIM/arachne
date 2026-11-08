@@ -433,24 +433,22 @@ class ConvexHull3D(Polyhedron):
         hull = QuickHull(tolerance)
         hull.build(array)
 
-        # Setup Lists
-        vertices = []
-        faces = []
-
-        # Extract Faces
-        c = 0
-        d = {}
+        # The facets come from sets, whose order follows the hash seed. Order everything by the
+        # points alone, so the same points give the same polyhedron in every process: the vertices
+        # in coordinate order; each face from its lowest vertex, counterclockwise seen from outside
+        # (its normal, which the shading reads at that first corner, points outward); the faces in
+        # the order of their vertex lists.
         facets = set(hull.facets) - hull.removed
+        corners = sorted({tuple(row) for facet in facets for row in facet.coordinates.tolist()})
+        index = {corner: i for i, corner in enumerate(corners)}
+        vertices = [np.array(corner) for corner in corners]
+        faces = []
         for facet in facets:
-            tmp = set()
-            for subfacet in facet.subfacets:
-                for point in subfacet.points:
-                    if point not in d:
-                        vertices.append(point.coordinates)
-                        d[point] = c
-                        c += 1
-                    tmp.add(point)
-            faces.append([d[point] for point in tmp])
+            a, b, c = sorted(index[tuple(row)] for row in facet.coordinates.tolist())
+            if np.dot(np.cross(vertices[b] - vertices[a], vertices[c] - vertices[a]), facet.normal) < 0:
+                b, c = c, b
+            faces.append([a, b, c])
+        faces.sort()
 
         # Call Polyhedron
         super().__init__(

@@ -5,7 +5,7 @@ from .collect import EXCLUDED, _blocks_in_text, collect, sample_indices
 # Every ``.. arachne::`` block Sphinx renders, in docstrings and in docs/source.
 EXPECTED_BLOCKS = 461
 EXPECTED_STILL = 281
-EXPECTED_EXCLUDED = 2
+EXPECTED_EXCLUDED = 1
 
 
 def test_collector_finds_every_block():

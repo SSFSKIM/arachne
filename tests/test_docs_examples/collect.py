@@ -27,10 +27,6 @@ DOCS_DIR = REPO_DIR / "docs" / "source"
 # Blocks that are not frame tests, by name, with the reason: they cannot run as
 # written, or their frame does not follow the engine alone.
 EXCLUDED: dict[str, str] = {
-    "ConvexHull3DExample": (
-        "renders differently from run to run: ConvexHull3D orders its faces by "
-        "iterating a set of objects, whose order follows their memory addresses"
-    ),
     "LabeledCountryExample": (
         "downloads its outline from a CDN while rendering, so its frame follows that "
         "file and the network, not the engine"

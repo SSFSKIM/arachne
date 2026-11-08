@@ -854,8 +854,17 @@ class ConvexHull(Polygram):
             (sf,) = facet.subfacets - {sf}
             subfacets.append(sf)
 
-        # Setup Vertices as Point3D
+        # The walk starts at whichever facet the set gives first and goes either way round, and set
+        # order follows the hash seed. Run counterclockwise from the lowest-left vertex instead, so
+        # the same points give the same polygon, start and winding in every process.
         coordinates = np.vstack([sf.coordinates for sf in subfacets])
+        x, y = coordinates[:, 0], coordinates[:, 1]
+        if np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)) < 0:
+            coordinates = coordinates[::-1]
+        start = np.lexsort((coordinates[:, 1], coordinates[:, 0]))[0]
+        coordinates = np.roll(coordinates, -start, axis=0)
+
+        # Setup Vertices as Point3D
         vertices = np.hstack((coordinates, np.zeros((len(coordinates), 1))))
 
         # Call Polygram
