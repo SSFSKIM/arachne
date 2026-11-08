@@ -142,6 +142,16 @@ CAMERA_REPLACED = (
     "the engine's is traced as any read is."
 )
 
+#: An entry of a camera's table of display functions replaced by the scene.
+DISPLAY_REPLACED = (
+    "An entry of the camera's ``display_funcs`` the scene replaced: the scene's own code, "
+    "which the record finds and reports (``Record.camera_replaced``, form "
+    "``display_funcs``) and does not vouch for, as for a replaced method "
+    "(:data:`CAMERA_REPLACED`). Exempt are the lookup of the reported entry and the reads "
+    "of the camera it is bound to when that is another camera (the scene drew through that "
+    "camera's settings); what else the scene's function reads is traced as any read is."
+)
+
 #: Configuration options a draw reads that are keyed: each read holds only at
 #: a capture before the first that found the option changed.
 CONFIG_KEYED: dict[str, str] = {
@@ -818,6 +828,8 @@ class Tracer:
         if extras is None:
             if name == "pixel_array" and id(camera) in frame.drawing._pictures_saved:
                 return None  # a display's camera, showing the picture the record kept
+            if self._borrowed(camera):
+                return None  # DISPLAY_REPLACED
             return "a camera the capture recorded no inputs of"
         own = object.__getattribute__(camera, "__dict__")
         member = _class_member(type(camera), name)
@@ -880,11 +892,34 @@ class Tracer:
         if self._quiet():
             return
         why = _entry_why(camera, entry)
-        if why is not None:
+        if why is not None and not self._reported(camera, kind, entry):
             name = f"display_funcs[{getattr(kind, '__name__', kind)}]"
             self.found.setdefault(
                 Read(_type_name(camera), name, _site(caller), why), None
             )
+
+    def _borrowed(self, camera: Any) -> bool:
+        """Whether a display function the record reports as the scene's is a
+        method bound to ``camera``, a camera the capture recorded no inputs
+        of: the scene drew through that camera's settings
+        (``DISPLAY_REPLACED``).
+        """
+        return any(
+            each.form == "display_funcs"
+            and getattr(each.method, "__self__", None) is camera
+            for each in self.frames[-1].drawing.record.camera_replaced
+        )
+
+    def _reported(self, camera: Any, kind: Any, entry: Any) -> bool:
+        """Whether the record reports ``entry`` as the scene's replacement of
+        ``camera``'s display function for ``kind`` (``Record.camera_replaced``,
+        ``DISPLAY_REPLACED``). Only the lookup of that entry is exempt.
+        """
+        name = f"display_funcs[{getattr(kind, '__name__', kind)}]"
+        return any(
+            each.form == "display_funcs" and each.name == name and each.method is entry
+            for each in self.frames[-1].drawing.record.camera_replaced
+        )
 
 
 #: Camera attributes the record installs from the capture's inputs

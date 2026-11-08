@@ -70,6 +70,42 @@ def test_a_method_deleted_from_an_engine_camera_class_is_found(monkeypatch):
     )
 
 
+def test_an_entry_of_the_display_functions_the_scene_replaced_is_found():
+    from arachne import VMobject
+
+    camera = ThreeDCamera()
+    shown = camera.display_funcs[VMobject]
+
+    def display(mobjects, pixel_array):
+        shown(mobjects, pixel_array)
+
+    camera.display_funcs[VMobject] = display
+    assert replaced_methods(camera) == (
+        Replaced("display_funcs[VMobject]", "display_funcs", ThreeDCamera, display),
+    )
+    assert replaced_methods(camera)[0].qualname == (
+        "ThreeDCamera.display_funcs[VMobject]"
+    )
+
+
+def test_a_display_function_bound_to_another_camera_is_replaced():
+    from arachne import VMobject
+
+    camera = Camera()
+    camera.display_funcs[VMobject] = Camera().display_funcs[VMobject]
+    (found,) = replaced_methods(camera)
+    assert found.name == "display_funcs[VMobject]"
+
+
+def test_a_table_of_display_functions_the_scene_replaced_whole_is_found():
+    camera = Camera()
+    table = {}
+    camera.display_funcs = table
+    assert replaced_methods(camera) == (
+        Replaced("display_funcs", "display_funcs", Camera, table),
+    )
+
+
 def test_what_is_no_engine_camera_has_nothing_replaced():
     class Duck:
         def capture_mobjects(self, mobjects):

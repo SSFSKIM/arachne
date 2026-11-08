@@ -82,6 +82,16 @@ class ReplacesADisplayFunction(Scene):
         self.play(Create(Square()), run_time=0.2)
 
 
+class ReplacesADisplayFunctionAndReadsAnOption(ReplacesADisplayFunction):
+    """``ReplacesADisplayFunction``, and a read of an option the record does
+    not hold, made by the scene's code in the camera's method of its own.
+    """
+
+    def construct(self):
+        _replace_display(self, lambda: config.frame_rate)
+        super().construct()
+
+
 class FilledFromAnImage(Scene):
     def construct(self):
         circle = Circle(fill_opacity=1)
@@ -136,13 +146,41 @@ def test_an_option_no_entry_lists_is_found(tracing):
     ) in _found(tracing)
 
 
-def test_a_display_function_the_scene_replaced_is_found(tracing):
-    render(ReplacesADisplayFunction, 15)
+_ENTRY = (
+    "arachne.camera.camera.Camera",
+    "display_funcs[VMobject]",
+    "a display function the engine did not define",
+)
+
+
+def test_a_display_function_the_scene_replaced_is_not_found_once_the_record_reports_it(
+    tracing,
+):
+    scene, _ = render(ReplacesADisplayFunction, 15)
+    assert [r.name for r in scene.timeline.record.camera_replaced] == [
+        "display_funcs[VMobject]"
+    ]
+    assert _ENTRY not in _found(tracing)
+
+
+def test_a_display_function_the_record_does_not_report_is_found(tracing, monkeypatch):
+    from arachne.timeline import camera_code
+
+    monkeypatch.setattr(camera_code, "_replaced_displays", lambda camera: [])
+    scene, _ = render(ReplacesADisplayFunction, 15)
+    assert scene.timeline.record.camera_replaced == ()
+    assert _ENTRY in _found(tracing)
+
+
+def test_the_exemption_of_a_reported_display_function_covers_that_entry_only(tracing):
+    render(ReplacesADisplayFunctionAndReadsAnOption, 15)
+    found = _found(tracing)
+    assert _ENTRY not in found
     assert (
-        "arachne.camera.camera.Camera",
-        "display_funcs[VMobject]",
-        "a display function the engine did not define",
-    ) in _found(tracing)
+        "arachne._config.utils.ManimConfig",
+        "frame_rate",
+        "a configuration option no list entry covers",
+    ) in found
 
 
 def test_an_image_the_record_keeps_by_reference_is_found(tracing, monkeypatch):
