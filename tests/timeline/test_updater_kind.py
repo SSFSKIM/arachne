@@ -348,16 +348,19 @@ def zips_taken() -> Iterator[list[int]]:
 
 
 class Morphs(Scene):
-    """One trusted play, sixty frames at 60 fps."""
+    """One trusted play evaluated frame by frame (its path is an arc, which
+    the vectorized path leaves scalar), sixty frames at 60 fps.
+    """
 
     def construct(self):
-        self.play(Transform(Square(), Circle()), run_time=1)
+        self.play(Transform(Square(), Circle(), path_arc=np.pi / 2), run_time=1)
 
 
 def test_a_trusted_play_zips_its_families_once_while_it_runs():
     with zips_taken() as taken:
         scene, frames = render(Morphs, 60)
-    assert [play.route for play in scene.timeline.ensure_record().plays] == ["trusted"]
+    plays = scene.timeline.ensure_record().plays
+    assert [(play.route, play.vectorized) for play in plays] == [("trusted", False)]
     assert len(frames) == 60
     # Its begin and its finish zip as they always have; the sixty frames
     # between them, once.

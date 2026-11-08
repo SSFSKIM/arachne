@@ -68,6 +68,8 @@ if TYPE_CHECKING:
     from arachne.mobject.mobject import Mobject
     from arachne.scene.scene import Scene
 
+    from .vectorized import VectorPlan
+
 
 #: The recorders whose scene's script is running, the innermost last.
 _RUNNING: list[Recorder] = []
@@ -277,6 +279,9 @@ class PlayRun:
         #: A state-function play's last restore point, which the next shares
         #: what is unchanged with.
         self._point: RestorePoint | None = None
+        #: A trusted play's values at its kept instants, when its route
+        #: computed them at once (:mod:`.vectorized`).
+        self.vector: VectorPlan | None = None
 
     def set_clock(self, instant: Fraction) -> None:
         """Make the scene clock read ``instant``, drawing first whatever frames
@@ -332,8 +337,10 @@ class PlayRun:
             # trusted play's animations' state; a state-function play's
             # restore point (:mod:`.restore`), its animations' state included.
             if play.route == "trusted":
-                play._animation_states[capture.seq] = snapshot_animations(
-                    play._animations
+                play._animation_states[capture.seq] = (
+                    self.vector.snapshot()
+                    if self.vector is not None
+                    else snapshot_animations(play._animations)
                 )
             elif play.route == "state":
                 self._point = restore_point(self.scene, play, self._point)

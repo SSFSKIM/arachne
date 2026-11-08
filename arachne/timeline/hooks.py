@@ -44,6 +44,8 @@ __all__ = [
 from fractions import Fraction
 from typing import TYPE_CHECKING
 
+from .vectorized import install
+
 if TYPE_CHECKING:
     from arachne.scene.scene import Scene
 
@@ -152,7 +154,9 @@ def animate(
     local = instant - start
     for animation in scene.animations or []:
         animation.update_mobjects(dt)
-        animation.interpolate(_alpha(local, animation.run_time))
+        # A trusted play whose values were computed at once takes them.
+        if not install(animation, instant):
+            animation.interpolate(_alpha(local, animation.run_time))
     plan.run_events()
 
 

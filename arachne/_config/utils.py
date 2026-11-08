@@ -1465,9 +1465,12 @@ class ManimConfig(MutableMapping):
 
     @property
     def vectorize_trusted(self) -> bool:
-        """Whether a trusted play's values are computed for all of its
+        """Whether a trusted play's values are computed for all of its kept
         instants at once (on by default) rather than one frame at a time:
-        the same values, bit for bit, its animations' families zipped once.
+        the same values, bit for bit. A trusted play whose leaves are not
+        all straight-path blends and reveals is still evaluated frame by
+        frame, its animations' families zipped once
+        (:mod:`arachne.timeline.vectorized`).
         """
         return self._lever("vectorize_trusted")
 

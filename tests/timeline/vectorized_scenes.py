@@ -1,0 +1,384 @@
+"""Scenes the vectorized-play tests execute: trusted plays whose leaves are
+blends and reveals, composed by CE's groups under linear and nonlinear rate
+functions, and trusted plays that stay scalar.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+
+from arachne import (
+    DOWN,
+    LEFT,
+    RED,
+    RIGHT,
+    UP,
+    Add,
+    Animation,
+    AnimationGroup,
+    Circle,
+    Create,
+    Dot,
+    FadeIn,
+    FadeOut,
+    LaggedStart,
+    LaggedStartMap,
+    Rotate,
+    Scene,
+    ShowPassingFlash,
+    Square,
+    Succession,
+    Transform,
+    TransformFromCopy,
+    Triangle,
+    Uncreate,
+    VGroup,
+    Wait,
+    linear,
+)
+from arachne.utils.rate_functions import (
+    ease_in_out_cubic,
+    ease_out_back,
+    not_quite_there,
+    running_start,
+    rush_into,
+    smooth,
+    smootherstep,
+    squish_rate_func,
+    there_and_back,
+)
+
+
+def _row(count: int, mob=Square, **kwargs) -> VGroup:
+    return VGroup(*(mob(**kwargs).scale(0.3) for _ in range(count))).arrange(RIGHT)
+
+
+class Grouped(Scene):
+    """An AnimationGroup with a lag and a nonlinear rate, its parts a blend
+    and a reveal of several leaves each.
+    """
+
+    def construct(self):
+        row = _row(3)
+        self.add(row)
+        self.play(
+            AnimationGroup(
+                Transform(row, _row(3, Circle).shift(UP)),
+                Create(_row(2, Triangle).shift(DOWN)),
+                lag_ratio=0.4,
+                rate_func=smooth,
+            ),
+            run_time=1,
+        )
+
+
+class Lagged(Scene):
+    """LaggedStart and LaggedStartMap, and a leaf with its own lag."""
+
+    def construct(self):
+        dots = [Dot(RIGHT * k) for k in range(4)]
+        self.play(LaggedStart(*(FadeIn(d, shift=UP) for d in dots), lag_ratio=0.3))
+        self.play(LaggedStartMap(FadeOut, VGroup(*dots), lag_ratio=0.5), run_time=1)
+        row = _row(4)
+        self.play(FadeIn(row, lag_ratio=0.4, shift=DOWN), run_time=0.8)
+
+
+class Nested(Scene):
+    """Groups nested in groups, a zero-length part and a waiting part."""
+
+    def construct(self):
+        a, b = Square().shift(LEFT * 2), Circle().shift(RIGHT * 2)
+        self.add(a)
+        self.play(
+            AnimationGroup(
+                LaggedStart(
+                    Create(b), Transform(a, Triangle().shift(LEFT)), lag_ratio=0.5
+                ),
+                AnimationGroup(Wait(0.3), FadeIn(Dot(UP * 2)), lag_ratio=1),
+                Add(Dot(DOWN * 2)),
+                rate_func=rush_into,
+            ),
+            run_time=1.2,
+        )
+
+
+class Rated(Scene):
+    """Leaf rate functions of every kind the twins handle: CE's factories'
+    closures, functions whose twins call Python's ``pow``, functions that
+    leave the unit interval, and a reversed rate.
+    """
+
+    def construct(self):
+        sq = Square()
+        self.add(sq)
+        self.play(sq.animate(rate_func=squish_rate_func(smooth, 0.2, 0.8)).shift(UP))
+        self.play(sq.animate(rate_func=not_quite_there(smooth, 0.7)).scale(0.5))
+        self.play(
+            Transform(sq, Circle(color=RED), rate_func=smootherstep), run_time=0.6
+        )
+        self.play(sq.animate(rate_func=ease_in_out_cubic).shift(LEFT), run_time=0.6)
+        self.play(sq.animate(rate_func=running_start).shift(RIGHT * 2), run_time=0.6)
+        self.play(Create(Circle().shift(UP), rate_func=ease_out_back), run_time=0.6)
+        self.play(sq.animate(rate_func=there_and_back).set_fill(RED, 1), run_time=0.6)
+        self.play(Uncreate(sq), run_time=0.6)
+
+
+class Revealed(Scene):
+    """Reveals of paths of many curves: Create over a group with a lag, a
+    passing flash of a width that crosses both ends, and a linear reveal
+    whose window lands on curve boundaries.
+    """
+
+    def construct(self):
+        self.play(Create(VGroup(Circle(), Square().scale(0.5))), run_time=1)
+        self.play(ShowPassingFlash(Circle(color=RED), time_width=0.6), run_time=1)
+        self.play(Create(Square(), rate_func=linear), run_time=1)
+
+
+class Copied(Scene):
+    """TransformFromCopy, which interpolates its transform at ``1 - alpha``."""
+
+    def construct(self):
+        sq = Square().shift(LEFT)
+        self.add(sq)
+        self.play(TransformFromCopy(sq, Circle().shift(RIGHT)), run_time=0.8)
+
+
+class Successions(Scene):
+    """Successions, with part boundaries at exact instants and found by
+    bisection: they keep the scalar path.
+    """
+
+    def construct(self):
+        a, b = Square().shift(LEFT), Circle().shift(RIGHT)
+        self.add(a, b)
+        self.play(Succession(a.animate.shift(UP), Transform(b, Triangle())), run_time=1)
+        self.play(
+            Succession(Create(Square()), a.animate.shift(DOWN), rate_func=smooth),
+            run_time=1,
+        )
+
+
+class Mixed(Scene):
+    """A trusted play with a leaf outside the vectorized kinds (Rotate)
+    beside a blend: the whole play stays scalar.
+    """
+
+    def construct(self):
+        a, b = Square().shift(LEFT), Square().shift(RIGHT)
+        self.add(a, b)
+        self.play(Rotate(a, angle=np.pi / 3), b.animate.shift(UP), run_time=0.8)
+
+
+class Brief(Scene):
+    """A play shorter than a frame: one kept instant, nothing to batch."""
+
+    def construct(self):
+        sq = Square()
+        self.add(sq)
+        self.play(sq.animate.shift(UP), run_time=0.01)
+        self.play(sq.animate.shift(RIGHT), run_time=0.5)
+
+
+def _single_precision(mob, colors: bool, numbers: bool):
+    if colors:
+        for name in ("fill_rgbas", "stroke_rgbas", "background_stroke_rgbas"):
+            setattr(mob, name, np.asarray(getattr(mob, name), dtype=np.float32))
+    if numbers:
+        for name in ("stroke_width", "background_stroke_width", "sheen_factor"):
+            setattr(mob, name, np.float32(getattr(mob, name) + 0.3))
+    return mob
+
+
+class SinglePrecisionColors(Scene):
+    """A blend between colors held in single precision: CE mixes them in
+    numpy's arithmetic, single precision at a linear rate's Python float
+    alphas: the play stays scalar.
+    """
+
+    def construct(self):
+        a = _single_precision(Square(fill_opacity=0.4), True, False)
+        b = _single_precision(Circle(color=RED, fill_opacity=0.9), True, False)
+        self.add(a)
+        self.play(Transform(a, b, rate_func=linear), run_time=0.8)
+
+
+class SinglePrecisionWidths(Scene):
+    """A blend between stroke widths and sheen factors that are numpy
+    single-precision numbers: the play stays scalar.
+    """
+
+    def construct(self):
+        a = _single_precision(Square(), False, True)
+        b = _single_precision(Circle(color=RED), False, True)
+        self.add(a)
+        self.play(Transform(a, b, rate_func=linear), run_time=0.8)
+
+
+class Counted(float):
+    """A number with arithmetic of the scene's own: each operation counts
+    itself and drifts its result by the count, so a value computed ahead of
+    the play, or computed a different number of times, shows.
+    """
+
+    def __new__(cls, value):
+        number = super().__new__(cls, value)
+        number.calls = 0
+        return number
+
+    def _drift(self, value):
+        self.calls += 1
+        return value + self.calls * 1e-3
+
+    def __mul__(self, other):
+        return self._drift(float(self) * other)
+
+    def __rmul__(self, other):
+        return self._drift(other * float(self))
+
+    def __add__(self, other):
+        return self._drift(float(self) + other)
+
+    def __radd__(self, other):
+        return self._drift(other + float(self))
+
+    def __sub__(self, other):
+        return self._drift(float(self) - other)
+
+    def __rsub__(self, other):
+        return self._drift(other - float(self))
+
+    def __truediv__(self, other):
+        return self._drift(float(self) / other)
+
+    def __rtruediv__(self, other):
+        return self._drift(other / float(self))
+
+
+class CountedProportion(Scene):
+    """A blend whose rate is ``not_quite_there`` over a counted proportion."""
+
+    def construct(self):
+        sq = Square()
+        self.add(sq)
+        rate = not_quite_there(linear, Counted(0.7))
+        self.play(Transform(sq, Square().shift(UP)), rate_func=rate, run_time=1)
+
+
+class CountedSquish(Scene):
+    """A reveal whose rate squishes into a counted window."""
+
+    def construct(self):
+        rate = squish_rate_func(smooth, Counted(0.1), 0.9)
+        self.play(Create(Circle(), rate_func=rate), run_time=1)
+
+
+class CountedWidth(Scene):
+    """A blend between counted stroke widths."""
+
+    def construct(self):
+        a, b = Square(), Circle()
+        a.stroke_width, b.stroke_width = Counted(1.2), Counted(3.7)
+        self.add(a)
+        self.play(Transform(a, b, rate_func=linear), run_time=1)
+
+
+class CountedLag(Scene):
+    """A blend of several leaves lagged by a counted ratio."""
+
+    def construct(self):
+        row = _row(3)
+        self.add(row)
+        self.play(
+            Transform(row, _row(3, Circle).shift(UP), lag_ratio=Counted(0.4)),
+            run_time=1,
+        )
+
+
+class CountedFlash(Scene):
+    """A passing flash whose window is a counted width."""
+
+    def construct(self):
+        flash = ShowPassingFlash(Circle(), time_width=Counted(0.3))
+        self.play(flash, run_time=1)
+
+
+class CountedRunTime(Scene):
+    """A blend whose run time is counted."""
+
+    def construct(self):
+        sq = Square()
+        self.add(sq)
+        self.play(sq.animate.shift(UP), run_time=Counted(0.8))
+
+
+class CountedInert(Scene):
+    """A group with a part that writes nothing, its rate over a counted
+    proportion, beside a blend; after the play a dot is placed by how many
+    times the part's rate was computed.
+    """
+
+    def construct(self):
+        sq, dot = Square(), Dot().shift(LEFT)
+        self.add(sq, dot)
+        proportion = Counted(0.5)
+        quiet = Animation(dot, rate_func=not_quite_there(linear, proportion))
+        self.play(AnimationGroup(quiet, sq.animate.shift(UP)), run_time=1)
+        self.add(Dot().shift(RIGHT * (proportion.calls % 7) * 0.2))
+        self.wait(0.2)
+
+
+class CountedTimings(Scene):
+    """A group whose timings the scene assigns: an object array whose part
+    ends at a counted time.
+    """
+
+    def construct(self):
+        blend = Transform(Square(), Square().shift(UP), rate_func=linear)
+        group = AnimationGroup(blend, rate_func=linear)
+        timings = np.empty(
+            1, dtype=[("anim", object), ("start", object), ("end", object)]
+        )
+        timings["anim"] = group.animations
+        timings["start"] = [0.0]
+        timings["end"] = [Counted(1.0)]
+        group.anims_with_timings = timings
+        self.play(group)
+
+
+class EnormousLag(Scene):
+    """A reveal of several leaves lagged by an integer past int64."""
+
+    def construct(self):
+        self.play(Create(VGroup(Square(), Circle()), lag_ratio=2**63), run_time=1)
+
+
+class EqualToLinear:
+    """A rate function equal to ``linear`` (its hash and equality are
+    ``linear``'s) that counts its own calls.
+    """
+
+    def __init__(self):
+        self.calls = 0
+
+    def __hash__(self):
+        return hash(linear)
+
+    def __eq__(self, other):
+        return other is linear or other is self
+
+    def __call__(self, t):
+        self.calls += 1
+        return linear(t)
+
+
+class RateEqualToLinear(Scene):
+    """A reveal at a rate that is only equal to ``linear``; after the play a
+    dot is placed by how many times the rate was called.
+    """
+
+    def construct(self):
+        rate = EqualToLinear()
+        self.play(Create(Square(), rate_func=rate), run_time=1)
+        self.add(Dot(RIGHT * (rate.calls % 7) * 0.3))
+        self.wait(0.2)

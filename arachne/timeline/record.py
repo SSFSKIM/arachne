@@ -465,6 +465,9 @@ class PlayRecord:
     #: run at its frames only (:mod:`.hooks`), and whether ``play_internal`` was.
     frame_hooks: tuple[str, ...] = ()
     play_internal_overridden: bool = False
+    #: Whether its route computed its values at every kept instant at once
+    #: (a trusted play, :mod:`.vectorized`) rather than frame by frame.
+    vectorized: bool = False
     _record: Record | None = field(default=None, repr=False)
     #: The animations it played, as objects.
     _animations: tuple[Animation, ...] = field(default=(), repr=False)
