@@ -638,8 +638,6 @@ class Drawing:
                     mob.__dict__["z_index_group"] = reference
         if capture.pictures:
             self._show_pictures(capture, {id(mob) for mob, _ in reached})
-        if capture.camera is not None and capture.camera.displays is not None:
-            self._show_display_pictures(capture, [mob for mob, _ in reached])
 
     def show_camera(self, capture: Capture) -> None:
         """Give the camera, alone, its recorded inputs at ``capture``: for a
@@ -673,23 +671,6 @@ class Drawing:
         if id(sub_camera) not in self._pictures_saved:
             self._pictures_saved[id(sub_camera)] = (sub_camera, sub_camera.pixel_array)
         sub_camera.pixel_array = picture
-
-    def _show_display_pictures(self, capture: Capture, reached: list[Mobject]) -> None:
-        """A display on screen whose camera the MultiCamera does not draw into
-        at ``capture`` shows its camera's picture as CE left it: the first one,
-        when the display joins later.
-        """
-        from arachne.mobject.types.image_mobject import ImageMobjectFromCamera
-
-        assert capture.camera is not None
-        assert capture.camera.displays is not None
-        joined = {id(display) for display in capture.camera.displays}
-        for mob in reached:
-            if not isinstance(mob, ImageMobjectFromCamera) or id(mob) in joined:
-                continue
-            picture = self.record.display_picture(mob, capture)
-            if picture is not None:
-                self._show_picture(mob.camera, picture)
 
     def static(self, play: PlayRecord) -> PixelArray | None:
         """The play's static picture: its static mobjects as they were when

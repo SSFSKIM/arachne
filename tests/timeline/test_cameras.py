@@ -102,6 +102,28 @@ def test_a_display_whose_camera_joins_mid_scene_is_empty_until_it_joins(session_
     assert np.array_equal(frames[6], after)
 
 
+@pytest.mark.parametrize("draw_path", ["cairo", "ir_cairo"])
+def test_a_display_repainted_before_its_camera_joins_shows_each_plays_picture(
+    session_of, draw_path
+):
+    """Before its camera joins, the display shows that camera's picture as
+    each play found it: red in the first wait, blue in the second. Drawn
+    with the picture its camera held as it joined, both waits show blue.
+    """
+    if draw_path == "ir_cairo":
+        pytest.importorskip("arachne_core")
+    scene_class = camera_scenes.DisplayRepaintedBeforeItJoins
+    live = _drawn_live(scene_class, 15, draw_path=draw_path)
+    assert _display_brightness(live[1]) != _display_brightness(live[4])
+    scene, drawn = render(scene_class, 15, draw_path=draw_path)
+    assert scene.timeline.record.refusal is None
+    _equal_frames(drawn, live)
+    session = session_of(scene_class.__name__, CAMERA_SCENES, draw_path=draw_path)
+    _equal_frames(
+        [np.asarray(session.frame(Fraction(k, 15))) for k in range(len(live))], live
+    )
+
+
 def test_a_display_left_by_its_camera_is_drawn_as_the_scene_runs(session_of):
     """Once a display's camera leaves, the display shows the last picture
     drawn into it, which only drawing as the scene runs knows: the record

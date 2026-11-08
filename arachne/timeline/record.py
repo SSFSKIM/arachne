@@ -746,10 +746,6 @@ class Record:
         #: The play the last drawn capture was taken in (how many plays had
         #: begun then; -1 for the final capture).
         self._captured_play = -1
-        #: Per MultiCamera display (by id): the first capture its camera was
-        #: drawn into at, and that camera's picture before it, which the
-        #: display shows wherever it is on screen before then.
-        self._display_joins: dict[int, tuple[int, np.ndarray]] = {}
 
     # Capturing
 
@@ -883,12 +879,6 @@ class Record:
             pictures,
         )
         self._captures.append(capture)
-        if camera is not None and camera.displays:
-            for display in camera.displays:
-                if id(display) not in self._display_joins:
-                    picture = display.camera.pixel_array.copy()  # type: ignore[attr-defined]
-                    picture.flags.writeable = False
-                    self._display_joins[id(display)] = (capture.drawn_seq, picture)
         return capture
 
     def entry_refusal(self) -> str | None:
@@ -915,15 +905,6 @@ class Record:
                         return display
                 return None
         return None
-
-    def display_picture(self, display: Mobject, capture: Capture) -> np.ndarray | None:
-        """The picture ``display`` shows at ``capture`` when its camera is not
-        drawn into there: its camera's first picture, before it ever was.
-        """
-        joined = self._display_joins.get(id(display))
-        if joined is None or joined[0] < capture.seq:
-            return None
-        return joined[1]
 
     # Reading
 

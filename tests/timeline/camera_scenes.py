@@ -142,6 +142,34 @@ class DisplayLeaves(ZoomedScene):
         self.play(dot.animate.shift(DOWN * 0.5), run_time=0.5)
 
 
+class DisplayRepaintedBeforeItJoins(ZoomedScene):
+    """The zoomed display is on screen before its camera joins the scene's
+    camera: that camera's picture is red for the first wait and blue for the
+    second (repainted between them), then the camera joins and the display
+    shows the zoomed dot.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(
+            zoom_factor=0.3, zoomed_display_height=3, zoomed_display_width=3, **kwargs
+        )
+
+    def construct(self):
+        dot = Dot(radius=0.2, color=YELLOW)
+        self.add(dot)
+        camera = self.zoomed_camera
+        camera.frame.move_to(dot)
+        camera.background_color = RED
+        camera.reset()
+        self.add_foreground_mobjects(self.zoomed_display)
+        self.wait(0.2)
+        camera.background_color = BLUE
+        camera.reset()
+        self.wait(0.2)
+        self.renderer.camera.add_image_mobject_from_camera(self.zoomed_display)
+        self.play(dot.animate.shift(UP * 0.1), run_time=0.2)
+
+
 class Mapped(Scene):
     """A mapping camera that draws every point two units to the right."""
 
