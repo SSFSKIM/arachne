@@ -1166,6 +1166,11 @@ class Drawing:
         from arachne import config
 
         camera = self.camera
+        if capture.camera is not None:
+            # The camera as it was drawn with, before its own mobjects (the
+            # light it holds at the capture, say) are walked: one the scene
+            # has since replaced is part of what the frame is drawn from.
+            self._install_camera(camera, capture.camera)
         reached = [
             *capture.draw_list(),
             *capture.moving,
@@ -1182,9 +1187,6 @@ class Drawing:
             and self.static_layer
             and self._picture_holds(play, capture)
         )
-        if capture.camera is not None:
-            # The background the frame is drawn over, as drawing it gives it.
-            self._install_camera(camera, capture.camera)
         return _DrawKey(
             camera,
             (camera.pixel_height, camera.pixel_width),

@@ -25,6 +25,7 @@ from arachne import (
     Mobject,
     MovingCameraScene,
     PMobject,
+    Point,
     Scene,
     Square,
     ThreeDScene,
@@ -270,3 +271,26 @@ class ForwardedNothing(_ForwardedDisplay):
     """:class:`_ForwardedDisplay` for the do-nothing function."""
 
     kind = Mobject
+
+
+class LightMovedThenReplaced(ThreeDScene):
+    """A shaded square lit by the camera's own light, which an updater moves
+    through a wait; then the scene gives the camera another light, so that
+    the camera the record is drawn with holds not the light that lit the
+    wait.
+    """
+
+    def construct(self):
+        square = Square(side_length=3, fill_opacity=1, stroke_width=0, shade_in_3d=True)
+        square.set_color(BLUE)
+        light = self.camera.light_source
+        elapsed = [0.0]
+
+        def drive(mob, dt):
+            elapsed[0] += dt
+            light.move_to(np.array([-20.0 * elapsed[0], 0.0, 10.0]))
+
+        square.add_updater(drive)
+        self.add(square)
+        self.wait(0.4)
+        self.camera.light_source = Point(np.array([0.0, 20.0, 10.0]))

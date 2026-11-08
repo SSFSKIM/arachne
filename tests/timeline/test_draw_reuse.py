@@ -401,6 +401,28 @@ def test_a_frame_at_another_configured_pixel_size_is_drawn_again():
     assert after.tobytes() != before.tobytes(), "the thickness follows the setting"
 
 
+def test_a_frame_lit_by_a_light_the_camera_no_longer_holds_is_drawn_not_reused():
+    """A frame's recorded camera inputs include the light that lit it, which
+    the camera holds only while it is drawn: the key is made of it as it is
+    then, not of the light the camera holds when the drawing is made.
+    """
+    scene, _ = render_writes(reuse_scenes.LightMovedThenReplaced, draw_reuse=False)
+    record = scene.timeline.record
+    (play,) = record.plays
+    first, second = play.samples[1], play.samples[-1]
+    reuse = DrawReuse(2)
+    with tempconfig({**SMALL, "frame_rate": FPS}):
+        with Drawing(record, reuse=reuse, static_layer=False) as drawing:
+            before = drawing.sample(play, first, None)
+        with Drawing(record, reuse=reuse, static_layer=False) as drawing:
+            after = drawing.sample(play, second, None)
+            assert not drawing.reused
+        with Drawing(record, static_layer=False) as drawing:
+            fresh = drawing.sample(play, second, None)
+    assert after.tobytes() == fresh.tobytes()
+    assert after.tobytes() != before.tobytes(), "the light moved the shading"
+
+
 @pytest.mark.parametrize(
     "settings", [{"draw_reuse": False}, {"speed_levers": False}, {}]
 )
