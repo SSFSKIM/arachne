@@ -181,14 +181,12 @@ def _copy(x: Any, memo: dict[int, Any], alive: list[Any]) -> Any:
                 value = _copy(value, memo, alive)
             y[key] = value
     elif kind is _TUPLE:
-        items = [
-            a if kinds.get(type(a)) is _ATOM else _copy(a, memo, alive) for a in x
-        ]
+        items = [a if kinds.get(type(a)) is _ATOM else _copy(a, memo, alive) for a in x]
         try:
             return memo[d]
         except KeyError:
             pass
-        for k, j in zip(x, items):
+        for k, j in zip(x, items, strict=True):
             if k is not j:
                 y = tuple(items)
                 break

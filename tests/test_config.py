@@ -620,6 +620,7 @@ LEVER_SETTINGS = [
     ("speed_levers", "False", ["--no-speed-levers"], False),
     ("vectorize_trusted", "False", ["--no-vectorize-trusted"], False),
     ("construction_memo", "False", ["--no-construction-memo"], False),
+    ("fast_copy", "False", ["--no-fast-copy"], False),
     ("draw_reuse", "False", ["--no-draw-reuse"], False),
     ("hold_gaps", "True", ["--hold-gaps"], True),
     ("render_workers", "3", ["--workers", "3"], 3),
@@ -665,6 +666,7 @@ def test_the_speed_levers_defaults():
     assert defaults.speed_levers is True
     assert defaults.vectorize_trusted is True
     assert defaults.construction_memo is True
+    assert defaults.fast_copy is True
     assert defaults.draw_reuse is True
     assert defaults.hold_gaps is False
     assert defaults.render_workers == 1

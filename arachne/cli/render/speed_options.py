@@ -47,6 +47,13 @@ speed_options = option_group(
         help="Reuse what an equal text or number construction built.",
     ),
     option(
+        "--fast-copy/--no-fast-copy",
+        "fast_copy",
+        default=None,
+        help="Make a mobject's deep copy with the engine's own copier (the same "
+        "copy as copy.deepcopy's).",
+    ),
+    option(
         "--draw-reuse/--no-draw-reuse",
         "draw_reuse",
         default=None,

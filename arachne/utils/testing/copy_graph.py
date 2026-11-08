@@ -35,7 +35,7 @@ _CODE = (
 
 def _edges(x: Any, opaque: Counter[str] | None = None) -> list[tuple[str, Any]]:
     """What a deep copy reaches from ``x``, each with how it is reached."""
-    if isinstance(x, _SCALARS) or isinstance(x, _CODE):
+    if isinstance(x, (*_SCALARS, *_CODE)):
         return []
     if isinstance(x, types.MethodType):
         return [(".__func__", x.__func__), (".__self__", x.__self__)]
@@ -137,7 +137,9 @@ def copy_differences(
                     )
             continue
         if type(a) is not type(b):
-            found.append(f"{path or '<root>'}: {type(a).__name__} against {type(b).__name__}")
+            found.append(
+                f"{path or '<root>'}: {type(a).__name__} against {type(b).__name__}"
+            )
             continue
         known = paired.get(id(a))
         if known is not None or id(b) in paired_back:
@@ -153,7 +155,9 @@ def copy_differences(
         if [name for name, _ in edges_a] != [name for name, _ in edges_b]:
             found.append(f"{path or '<root>'}: holds different fields")
             continue
-        for (name, va), (_, vb) in zip(reversed(edges_a), reversed(edges_b)):
+        for (name, va), (_, vb) in zip(
+            reversed(edges_a), reversed(edges_b), strict=True
+        ):
             stack.append((f"{path}{name}", va, vb))
     # Keep the paired objects alive until the walk is over, so that no id is
     # reused while it is still being compared.

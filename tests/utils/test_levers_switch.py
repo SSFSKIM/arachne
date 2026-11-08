@@ -31,6 +31,7 @@ from arachne.utils.testing.frames_comparison import (
 ALL_ON = {
     "vectorize_trusted": True,
     "construction_memo": True,
+    "fast_copy": True,
     "draw_reuse": True,
     "hold_gaps": True,
     "render_workers": 4,

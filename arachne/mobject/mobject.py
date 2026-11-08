@@ -46,6 +46,7 @@ from ..utils.iterables import (
 from ..utils.paths import straight_path
 from ..utils.simple_functions import clip
 from ..utils.space_ops import angle_between_vectors, normalize, rotation_matrix
+from .copying import copy_mobject
 from .placement import (
     MIN_PLACED_POINTS,
     UNKNOWN,
@@ -53,7 +54,6 @@ from .placement import (
     anchor_bounds,
     point_bounds,
 )
-from .copying import copy_mobject
 from .updater_kind import takes_dt
 from .values import FrozenPoints, adopt, freeze
 
