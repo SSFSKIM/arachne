@@ -116,6 +116,45 @@ MADE_WITH_ARGUMENTS = {
 }
 
 
+PICTURE = (
+    Path(__file__).parents[1]
+    / "test_graphical_units/img_svg_resources/tree_img_640x351.png"
+)
+
+
+def _painted_with_a_picture() -> Square:
+    from PIL import Image
+
+    return Square().color_using_background_image(Image.open(PICTURE))
+
+
+#: Mobjects made with options that give them fields their defaults do not:
+#: numbers and tips on axes, a graph's labels, a picture from a file, a
+#: picture painted onto a shape, a template of one's own.
+MADE_WITH_OPTIONS = {
+    "axes with numbers and tips": lambda: Axes(
+        x_range=[-2, 2, 1],
+        y_range=[-2, 2, 1],
+        tips=True,
+        axis_config={"include_numbers": True},
+    ),
+    "a graph with labels": lambda: Graph(
+        [1, 2], [(1, 2)], labels=True, layout="circular"
+    ),
+    "a picture from a file": lambda: ImageMobject(PICTURE),
+    "a shape painted with a picture": _painted_with_a_picture,
+    "tex with a template of its own": lambda: MathTex(
+        r"\mathbb{R}", tex_template=_own_template()
+    ),
+}
+
+
+def _own_template() -> TexTemplate:
+    template = TexTemplate(description="its own")
+    template.add_to_preamble(r"\usepackage{bm}")
+    return template
+
+
 def public_mobject_classes() -> list[type[Mobject]]:
     """Every mobject class the engine exports, by name."""
     import arachne
@@ -137,13 +176,16 @@ def make(cls: type[Mobject]) -> Mobject:
 
 
 #: The classes whose points differ from one process to the next however the
-#: scene is seeded: their hull is found by iterating sets of points by
-#: identity.
+#: scene is seeded: their hull is found by iterating sets of points hashed
+#: by their coordinates' bytes, an order that follows each process's string
+#: hash seed (``tech-debt-tracker.md``).
 UNSTABLE_ACROSS_PROCESSES = frozenset({"ConvexHull", "ConvexHull3D"})
 
 
 class EveryMobject(Scene):
-    """One mobject of every class the engine exports, in the scene."""
+    """One mobject of every class the engine exports, in the scene, and the
+    mobjects made with options (:data:`MADE_WITH_OPTIONS`).
+    """
 
     left_out: frozenset[str] = frozenset()
 
@@ -153,6 +195,7 @@ class EveryMobject(Scene):
             for cls in public_mobject_classes()
             if cls.__qualname__ not in self.left_out
         ]
+        self.made.extend(factory() for factory in MADE_WITH_OPTIONS.values())
         self.add(*self.made)
         self.wait(0.25)
 

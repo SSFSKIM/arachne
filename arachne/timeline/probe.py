@@ -54,7 +54,7 @@ import numpy as np
 from .clock import TICK_RATE
 from .draw import CameraExtras, camera_nodes
 from .execution import KEY_DECIMALS, TOLERANCE, Divergence
-from .keys import value_key
+from .keys import marker_reason, value_key
 from .record import NodeState, covered_fields
 from .restore import Unrestorable, restored
 
@@ -442,6 +442,9 @@ def _value_difference(
             kept_refers, places, 1
         ):
             return None
+        reason = marker_reason(key)
+        if reason is not None:
+            return f"holds {reason}, which agrees with nothing kept"
     return f"is {reprlib.repr(a)}, kept {reprlib.repr(b)}"
 
 

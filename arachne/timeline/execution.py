@@ -47,6 +47,7 @@ __all__ = [
 import base64
 import hashlib
 import json
+import sys
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
@@ -55,7 +56,7 @@ from typing import TYPE_CHECKING, Any, TypeAlias
 
 import numpy as np
 
-from .keys import value_key
+from .keys import marker_reason, value_key
 from .source import SourceLine
 
 if TYPE_CHECKING:
@@ -139,7 +140,7 @@ TOLERANCE = 1e-9
 KEY_DECIMALS = 9
 
 #: The version of an execution summary's serialised form.
-SUMMARY_VERSION = 3
+SUMMARY_VERSION = 4
 
 #: A raw value of a field: an array, or a scalar.
 Leaf: TypeAlias = np.ndarray | bool | int | float | str | None
@@ -249,6 +250,10 @@ class ExecutionSummary:
     #: record without a final capture.
     final: StateValues | None = field(default=None, repr=False)
     end: Fraction | None = None
+    #: The interpreter that made it (its cache tag, ``cpython-313``): a
+    #: function's key is its bytecode, which another interpreter writes
+    #: otherwise.
+    interpreter: str = sys.implementation.cache_tag
 
     def to_json(self) -> str:
         """The summary as JSON text; :meth:`from_json` reads it back."""
@@ -256,6 +261,7 @@ class ExecutionSummary:
         return json.dumps(
             {
                 "version": SUMMARY_VERSION,
+                "interpreter": self.interpreter,
                 "identity": {
                     "source_digest": identity.source_digest,
                     "input_digests": [list(pair) for pair in identity.input_digests],
@@ -329,6 +335,7 @@ class ExecutionSummary:
             ),
             final=None if data["final"] is None else _state_from_json(data["final"]),
             end=None if data["end"] is None else Fraction(data["end"]),
+            interpreter=data["interpreter"],
         )
 
 
@@ -446,9 +453,10 @@ def compare(
     state the script left at its end: by key, and where keys differ, by raw
     value within :data:`TOLERANCE` (an array's dtype and shape exactly).
     Raises :class:`Incomparable` for two executions of different sources,
-    and for one whose source is unknown (a ``None`` digest: a source file
-    gone before its run ended, a scene defined in no file), which is the
-    same source as none.
+    for one whose source is unknown (a ``None`` digest: a source file gone
+    before its run ended, a scene defined in no file), which is the same
+    source as none, and for two made by different interpreters, whose keys
+    of one function differ.
 
     With ``until``, only what both did up to that instant is compared: the
     plays that began by then, the instants up to it, a play's end where
@@ -468,6 +476,11 @@ def compare(
         raise Incomparable(
             "Two executions of different sources are not compared: source digest"
             f" {digests[0]} and {digests[1]}."
+        )
+    if mine.interpreter != theirs.interpreter:
+        raise Incomparable(
+            "Two executions made by different interpreters are not compared:"
+            f" {mine.interpreter} and {theirs.interpreter}."
         )
     changed = changed_inputs(mine.identity, theirs.identity)
     plays = _begun(mine.plays, until)[:before_play]
@@ -663,6 +676,8 @@ def _leaf_difference(a: Leaf, b: Leaf) -> str | None:
 def _brief(value: Leaf) -> str:
     if isinstance(value, np.ndarray):
         return f"an array of {value.dtype}{list(value.shape)}"
+    if isinstance(value, str) and value.startswith(_TAGGED):
+        return value[len(_TAGGED) :]
     return repr(value)
 
 
@@ -700,26 +715,42 @@ def _fields(
 
 def _field_leaf(value: Any) -> tuple[Leaf, tuple[Mobject, ...]]:
     """A field's raw value, and the mobjects it refers to: a number, a string,
-    an array or a colour as itself (:func:`_leaf`), an enum by its class and
-    member; any other value as its type and content key
-    (:func:`.keys.value_key`), which for a value of a type the key does not
-    know is equal to no other.
+    an array of numbers compared within the tolerance, or a colour as itself
+    (:func:`_leaf`); an enum by its class and member; any other value (an
+    array compared exactly, a picture's pixels among them, needs no more) as
+    its type and content key (:func:`.keys.value_key`), and a value the key
+    cannot key as why, equal to no other leaf. Those stand for a value and
+    begin with :data:`_TAGGED`.
     """
     from arachne.utils.color import ManimColor
 
     if isinstance(value, Enum):
         cls = type(value)
-        return f"{cls.__qualname__}.{value.name}", ()
+        return f"{_TAGGED}{cls.__qualname__}.{value.name}", ()
     plain = (
         value is None
-        or isinstance(value, (bool, int, float, str, np.generic, ManimColor))
-        or (isinstance(value, np.ndarray) and not value.dtype.hasobject)
+        or isinstance(value, (bool, int, float, np.generic, ManimColor))
+        or (isinstance(value, str) and not value.startswith(_TAGGED))
+        or (isinstance(value, np.ndarray) and value.dtype.kind in "fc")
     )
     if plain:
         return _leaf(value), ()
     key, refers = value_key(value, KEY_DECIMALS)
+    reason = marker_reason(key)
+    if reason is not None:
+        # Equal to no other leaf: the marker's own random tail.
+        return f"{_TAGGED}<{reason}, {key[-16:].hex()}>", ()
+    kind = type(value).__qualname__
+    if isinstance(value, np.ndarray):
+        kind = f"{value.dtype}{list(value.shape)}"
     digest = hashlib.blake2b(key, digest_size=16).hexdigest()
-    return f"<{type(value).__qualname__} {digest}>", refers
+    return f"{_TAGGED}<{kind} {digest}>", refers
+
+
+#: What begins a leaf that stands for a value rather than being it (an enum,
+#: a digest, a marker), so that no string a field holds reads as one: a
+#: string beginning with it is itself keyed as a digest.
+_TAGGED = "\0"
 
 
 def _camera_leaves(

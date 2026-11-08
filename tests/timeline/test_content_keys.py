@@ -9,11 +9,13 @@ every mobject class the engine exports keys without it.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import subprocess
 import sys
 import textwrap
+import threading
 from enum import Enum, IntEnum
 from fractions import Fraction
 from pathlib import Path
@@ -25,8 +27,13 @@ from arachne.constants import CapStyleType, LineJointType
 from arachne.session import Session
 from arachne.timeline import admission
 from arachne.timeline.execution import ExecutionSummary, compare, play_keys
-from arachne.timeline.keys import unkeyable
-from arachne.timeline.record import IDENTITY_FIELDS, STRUCTURE_FIELDS, _value_key
+from arachne.timeline.keys import OVER_BUDGET_KIND, unkeyable
+from arachne.timeline.record import (
+    IDENTITY_FIELDS,
+    STRUCTURE_FIELDS,
+    _value_key,
+    covered_fields,
+)
 
 from . import key_scenes
 
@@ -74,15 +81,15 @@ def _pixels(session: Session, t: Fraction) -> np.ndarray:
     return np.asarray(session.frame(t), dtype=np.int16)
 
 
-def _two_executions(scene_dir, source, scene, data, first, second):
+def _two_executions(scene_dir, source, scene, data, first, second, **settings):
     """Two executions of ``source``, the file ``data`` holding ``first`` for
     the first and ``second`` for the other.
     """
     path = _write(scene_dir, "scene.py", source)
     _write(scene_dir, data, first)
-    before = _open(path, scene)
+    before = _open(path, scene, **settings)
     _write(scene_dir, data, second)
-    after = _open(path, scene)
+    after = _open(path, scene, **settings)
     return before, after
 
 
@@ -104,7 +111,19 @@ class Level(IntEnum):
 
 
 class Note:
-    """A value of a type the content key does not know."""
+    """A value of a type the content key does not know: no attributes of
+    its own to key it by.
+    """
+
+    __slots__ = ()
+
+
+class Helper:
+    """An object of a plain class, keyed by its attributes."""
+
+    def __init__(self, k, held=None):
+        self.k = k
+        self.held = held
 
 
 def test_an_enum_keys_by_its_class_and_its_members_value():
@@ -143,6 +162,11 @@ def test_containers_key_by_what_they_hold():
     looped: list = [1]
     looped.append(looped)
     assert _value_key(looped) == _value_key(looped)
+    # A large array keys as a digest, however deep it sits.
+    large = np.arange(100_000, dtype=float)
+    assert len(_value_key(large)) < 100
+    assert len(_value_key([[large]])) < 200
+    assert _value_key(large) != _value_key(large + 1)
 
 
 def test_a_function_keys_by_its_code_and_what_it_closes_over():
@@ -162,6 +186,18 @@ def test_a_value_of_a_type_the_key_does_not_know_never_keys_alike():
     assert unkeyable({"note": note}) == f"{__name__}.Note"
     assert _value_key([note]) != _value_key([note])
     assert unkeyable(CapStyleType.ROUND) is None
+
+
+def test_an_object_of_a_plain_class_keys_by_its_attributes():
+    assert _value_key(Helper(1.0)) == _value_key(Helper(1.0))
+    assert _value_key(Helper(1.0)) != _value_key(Helper(2.0))
+    # What it holds of this process alone is still the marker.
+    held = Helper(1.0, held=threading.Lock())
+    assert (
+        unkeyable(held)
+        == f"{type(held.held).__module__}.{type(held.held).__qualname__}"
+    )
+    assert _value_key(held) != _value_key(held)
 
 
 def test_the_fields_a_key_leaves_out_are_named():
@@ -352,20 +388,23 @@ def test_the_probe_demotes_a_hook_writing_an_enum_by_history_as_it_does_a_number
 
 # The marker in every comparison
 
-#: A line holding a value of a type the key does not know, through a state
+#: A line holding a value the key cannot key (``NOTE``), through a state
 #: play.
 NOTED = """
+import threading
+
 from arachne import *
 
 
 class Note:
-    pass
+    def __init__(self):
+        self.lock = threading.Lock()
 
 
 class Noted(Scene):
     def construct(self):
         line = Line(LEFT, RIGHT)
-        line.note = Note()
+        line.note = NOTE
         tracker = ValueTracker(0)
         mover = Dot().add_updater(lambda m: m.set_x(tracker.get_value()))
         self.add(line, mover)
@@ -373,24 +412,305 @@ class Noted(Scene):
 """
 
 
-def test_a_value_the_key_does_not_know_is_a_difference_wherever_it_is_compared(
-    scene_dir,
+@pytest.mark.parametrize(
+    ("note", "why"),
+    [
+        ("Note()", "a value of a type the key does not know (_thread.lock)"),
+        ("[[0] * 1000 for _ in range(200)]", "too large to key"),
+    ],
+    ids=["of-a-type-the-key-does-not-know", "over-the-budget"],
+)
+def test_a_value_the_key_cannot_key_is_a_difference_wherever_it_is_compared(
+    scene_dir, note, why
 ):
-    path = _write(scene_dir, "noted.py", NOTED)
+    path = _write(scene_dir, "noted.py", NOTED.replace("NOTE", note))
     first = _open(path, "Noted", frame_rate=15)
     second = _open(path, "Noted", frame_rate=15)
     try:
-        # Two executions of one unchanged source: never found alike.
+        # Two executions of one unchanged source: never found alike, and
+        # why is said, each marker apart from the other.
         assert play_keys(first.record) != play_keys(second.record)
         found = first.compare(_across(second.summary()))
         assert found is not None
         assert "note" in found.reason
+        assert why in found.reason
         # The probe: a restored state never agrees with the kept one.
         assert first.probe.demoted == (0,)
-        assert "note" in (first.probe.plays[0].reason or "")
+        assert why in (first.probe.plays[0].reason or "")
     finally:
         first.close()
         second.close()
+
+
+# A scene's own attribute, read later
+
+#: The scene keeps ``k`` on itself and reads it only as play 1 runs, in the
+#: code ``READ`` names: an updater, a redrawn mobject, or a function of a
+#: tracker that is a method of the scene. Play 0 runs with the tracker at 0,
+#: where ``k`` changes nothing.
+LATER = (
+    HEADER
+    + """
+class Later(Scene):
+    def at(self, value):
+        return RIGHT * self.k * value
+
+    def construct(self):
+        self.k = float((HERE / "k.txt").read_text())
+        tracker = ValueTracker(0)
+        READ
+        self.add(shown)
+        self.wait(0.25)
+        self.play(tracker.animate.set_value(1), run_time=0.5)
+        self.wait(0.25)
+"""
+)
+
+READS_LATER = {
+    "an-updater": (
+        "shown = Dot().add_updater(lambda m: m.set_x(self.k * tracker.get_value()))"
+    ),
+    "a-redrawn-mobject": (
+        "shown = always_redraw(lambda: Dot(RIGHT * self.k * tracker.get_value()))"
+    ),
+    "a-method-of-the-scene": (
+        "shown = Dot().add_updater(lambda m: m.move_to(self.at(tracker.get_value())))"
+    ),
+}
+
+
+@pytest.mark.parametrize("read", list(READS_LATER.values()), ids=list(READS_LATER))
+@pytest.mark.parametrize(("first", "second"), [("1.0", "2.0"), ("2.0", "2.0")])
+def test_a_scene_attribute_read_during_a_play_diverges_at_that_play(
+    scene_dir, read, first, second
+):
+    """Keying a scene by its type rests on this: what the scene's own
+    attributes do reaches a frame only through state the record keys, so
+    two executions apart in one diverge at the first play it changes, and
+    each answers that play from its own record.
+    """
+    source = LATER.replace("READ", read)
+    before, after = _two_executions(
+        scene_dir, source, "Later", "k.txt", first, second, frame_rate=15
+    )
+    try:
+        found = before.compare(_across(after.summary()))
+        inside = Fraction(1, 2)  # inside play 1, its tracker past 0
+        mine, theirs = _pixels(before, inside), _pixels(after, inside)
+        assert bool((mine != theirs).any()) == (first != second)
+        if first == second:
+            assert found is None
+        else:
+            assert found is not None
+            assert found.play == 1, found.reason
+        # No restore stands in for another execution's state: play 1 is a
+        # state play in each, its restores built from that execution's own
+        # record, and the probe finds them agreeing with it.
+        for session in (before, after):
+            assert session.record.plays[1].route == "state"
+            outcomes = {probe.play: probe.outcome for probe in session.probe.plays}
+            assert outcomes == {1: "agreed"}, session.probe.plays
+    finally:
+        before.close()
+        after.close()
+
+
+# Ordinary ways of handing a mobject a function
+
+#: Graphs of a method of the scene, a lambda over the scene, a cached
+#: function, a wrapped one and a vectorized one, and a dot holding an
+#: object of the scene's own class, through a state play.
+IDIOMS = (
+    HEADER
+    + """
+import functools
+
+import numpy as np
+
+
+class Gain:
+    def __init__(self, k):
+        self.k = k
+        self.label = "gain"
+
+
+@functools.lru_cache(maxsize=None)
+def cached(x):
+    return x * x
+
+
+def logged(function):
+    @functools.wraps(function)
+    def inner(x):
+        return function(x)
+
+    return inner
+
+
+@logged
+def wrapped(x):
+    return x / 2
+
+
+class Idioms(Scene):
+    def f(self, x):
+        return 0.5 * x
+
+    def construct(self):
+        k = float((HERE / "k.txt").read_text())
+        axes = Axes(x_range=[-1, 1, 1], y_range=[-1, 1, 1], x_length=4, y_length=3)
+        graphs = VGroup(
+            axes.plot(self.f),
+            axes.plot(lambda x: self.f(x)),
+            axes.plot(cached),
+            axes.plot(wrapped),
+            axes.plot(np.vectorize(lambda x: x / 3)),
+        )
+        tracker = ValueTracker(0)
+        dot = Dot().add_updater(lambda m: m.set_x(tracker.get_value()))
+        dot.gain = Gain(k)
+        self.add(axes, graphs, dot)
+        self.play(tracker.animate.set_value(1), run_time=0.4)
+"""
+)
+
+
+@pytest.mark.parametrize(("first", "second"), [("1.0", "1.0"), ("1.0", "2.0")])
+def test_ordinary_ways_of_handing_a_mobject_a_function_key_alike(
+    scene_dir, first, second
+):
+    before, after = _two_executions(
+        scene_dir, IDIOMS, "Idioms", "k.txt", first, second, frame_rate=15
+    )
+    try:
+        for session in (before, after):
+            for mob, node in session.record.plays[0].start_state.nodes():
+                for name, value in covered_fields(node):
+                    assert unkeyable(value) is None, (type(mob).__name__, name)
+            assert session.record.plays[0].route == "state"
+            assert session.probe.demoted == (), session.probe.plays
+        found = before.compare(_across(after.summary()))
+        if first == second:
+            assert found is None
+            assert play_keys(before.record) == play_keys(after.record)
+        else:
+            # The scene's own object changed, and nothing drawn: still apart.
+            assert found is not None
+            assert "gain" in found.reason
+    finally:
+        before.close()
+        after.close()
+
+
+def test_ordinary_ways_of_handing_a_mobject_a_function_key_alike_in_another_process(
+    scene_dir,
+):
+    path = _write(scene_dir, "scene.py", IDIOMS)
+    _write(scene_dir, "k.txt", "1.0")
+    media = scene_dir.parent / "media"
+    root = Path(__file__).resolve().parents[2]
+    run = subprocess.run(
+        [sys.executable, "-c", SUMMARY, str(path), "Idioms", str(media)],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=root,
+    )
+    theirs = json.loads(run.stdout.splitlines()[-1])
+    session = _open(path, "Idioms")
+    try:
+        assert theirs["play_keys"] == [key.hex() for key in play_keys(session.record)]
+        assert session.compare(ExecutionSummary.from_json(theirs["summary"])) is None
+    finally:
+        session.close()
+
+
+# A field that refers to a mobject
+
+#: A dot whose ``target`` is one square or the other: nothing drawn differs.
+TARGET = (
+    HEADER
+    + """
+class Target(Scene):
+    def construct(self):
+        which = (HERE / "which.txt").read_text().strip()
+        a, b = Square(), Square().shift(RIGHT)
+        dot = Dot()
+        dot.target_square = a if which == "a" else b
+        self.add(a, b, dot)
+        self.wait(0.5)
+"""
+)
+
+
+@pytest.mark.parametrize(("first", "second"), [("a", "b"), ("a", "a")])
+def test_a_field_pointed_at_another_mobject_keys_apart(scene_dir, first, second):
+    before, after = _two_executions(
+        scene_dir, TARGET, "Target", "which.txt", first, second
+    )
+    try:
+        apart = first != second
+        assert (play_keys(before.record) != play_keys(after.record)) == apart
+        mine, theirs = before.summary(), after.summary()
+        assert (
+            mine.plays[0].start_state.key != theirs.plays[0].start_state.key
+        ) == apart
+        found = compare(mine, _across(theirs))
+        if apart:
+            assert found is not None
+            assert "fields refer to other mobjects" in found.reason
+        else:
+            assert found is None
+    finally:
+        before.close()
+        after.close()
+
+
+def test_the_probe_demotes_a_hook_pointing_a_field_at_another_mobject_by_history(
+    scene_dir,
+):
+    write = "self.line.target_mobject = self.mover if on else self.line"
+    source = HOOK.replace("WRITE", write).replace(
+        "self.add(self.line, mover)",
+        "self.mover = mover\n        self.add(self.line, mover)",
+    )
+    path = _write(scene_dir, "hook.py", source)
+    session = _open(path, "Hook", frame_rate=15)
+    try:
+        assert session.probe.demoted == (0,), session.probe.plays
+        assert "target_mobject" in (session.probe.plays[0].reason or "")
+    finally:
+        session.close()
+
+
+# What the summary records
+
+
+def test_a_summary_names_its_interpreter_and_refuses_another(every_mobject):
+    from arachne.timeline.execution import Incomparable
+
+    mine = every_mobject.summary()
+    assert mine.interpreter == sys.implementation.cache_tag
+    assert _across(mine).interpreter == mine.interpreter
+    other = dataclasses.replace(_across(mine), interpreter="other-99")
+    with pytest.raises(Incomparable, match="other-99"):
+        compare(mine, other)
+
+
+def test_an_enum_field_never_reads_as_a_string_of_its_name():
+    from arachne.timeline.execution import _field_leaf
+
+    leaf, _ = _field_leaf(CapStyleType.ROUND)
+    assert leaf != "CapStyleType.ROUND"
+    assert _field_leaf(leaf)[0] != leaf
+
+
+def test_a_value_too_large_to_key_is_a_marker_of_its_own():
+    big = [[0] * 1000 for _ in range(200)]
+    assert unkeyable(big) == OVER_BUDGET_KIND
+    assert _value_key(big) != _value_key(big)
+    assert _value_key(big).startswith(b"\0over budget")
+    assert _value_key(Note()).startswith(b"\0unkeyable")
 
 
 # Every mobject the engine exports

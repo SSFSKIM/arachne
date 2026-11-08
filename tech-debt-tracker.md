@@ -180,24 +180,27 @@ lifted.
   path for equality. Reproducer:
   `tests/timeline/test_sample_keys.py::test_a_sample_key_rounds_numbers_so_nearness_does_not_decide_equality`
   (it asserts today's behaviour).
-- **A content key does not tell a re-pointed shared child apart.** The
-  walk a key digests visits each mobject once, in the order it first
-  meets it, and keys each node by its type, its number of submobjects and
-  its values; which mobjects its children are is not in it. In
-  `Group(Group(a, b), Group(a))`, pointing the second group at `b` keeps
-  every count and value, so the key stays the same though the tree
-  changed. That deduplicated first-occurrence order is also the draw
-  order, so for a tree with shared children equal keys do not imply an
-  equal draw order. Every comparison by key inherits the limit:
-  `RegisteredState.content_key`, `PlayRecord.sample_keys`, and an
-  execution summary's state key (`execution.py`), which the comparison of
-  two executions trusts when keys are equal. So would any reuse of draws
-  by key, and until the fix lands nothing may reuse draws by content key.
-  The probe compares each node's children by their positions in the walk
-  (`probe._tree_difference`), so it is not affected. The change to the
-  record's content key now in progress closes it: each node's children
-  digested as positions in the walk. The shape it misses:
-  `tests/timeline/test_probe.py::test_a_re_pointed_shared_child_is_a_tree_difference`.
+- **A set holding several mobjects of one type keys which they are in the
+  set's own order.** A field's key (`arachne/timeline/keys.py`) stands a
+  mobject in as its type, and the consumer keys which mobject each is by
+  its place in the walk, in the order the key met them. A set's parts are
+  sorted by their keys, and mobjects of one type tie, so they keep the
+  set's iteration order, which follows their identities. Two executions
+  holding the same mobjects in such a set can key apart; never alike where
+  they differ. No mobject the engine exports holds one. The fix: order the
+  tied references by their places in the walk before keying them.
+
+## Convex hulls (`arachne/utils/qhull.py`)
+
+- **A convex hull's points come out in an order that differs between
+  processes.** The hull walks sets of points and facets; a point hashes by
+  its coordinates' bytes, so the sets iterate in an order that follows the
+  process's string hash seed, and `ConvexHull` and `ConvexHull3D` build
+  their points in that order. Two processes of one scene with a hull never
+  key it alike (one process, or a fixed `PYTHONHASHSEED`, does). The fix:
+  iterate the facets in a sorted order. The comparison across processes
+  leaves the two classes out for it:
+  `tests/timeline/key_scenes.py` (`UNSTABLE_ACROSS_PROCESSES`).
 
 ## The draw route (`arachne/timeline/dispatch.py`)
 
