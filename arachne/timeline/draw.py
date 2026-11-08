@@ -590,6 +590,23 @@ class _DrawKey:
         )
 
 
+def _live_pixels(mob: Mobject, state: NodeState) -> bool:
+    """Whether ``mob``, at ``state``, shows pixels no recorded state holds: a
+    display of a camera's picture, which it reads from that camera as it is
+    drawn, or an image whose pixels are a view of memory still written.
+    """
+    from arachne.mobject.types.image_mobject import ImageMobjectFromCamera
+
+    if isinstance(mob, ImageMobjectFromCamera):
+        return True
+    pixels = state.get("_pixel_array")
+    while isinstance(pixels, np.ndarray):
+        if pixels.flags.writeable:
+            return True
+        pixels = pixels.base
+    return False
+
+
 class DrawReuse:
     """The last frames drawn from captures, at most ``capacity`` of them,
     each with what it was drawn from (:class:`_DrawKey`): a frame drawn
@@ -859,18 +876,22 @@ class Drawing:
         if reuse is None:
             return self._sample(play, capture, static, prepare, instant)
         key = self._reuse_key(play, capture)
-        found = reuse.find(key)
+        found = reuse.find(key) if key is not None else None
         if found is not None:
             # The camera holds the frame, as when it is drawn.
             self.camera.set_pixel_array(found)
             self.reused = True
             return found.copy()
         pixels = self._sample(play, capture, static, None, instant)
-        reuse.keep(key, pixels)
+        if key is not None:
+            reuse.keep(key, pixels)
         return pixels
 
-    def _reuse_key(self, play: PlayRecord, capture: Capture) -> _DrawKey:
-        """What the frame at ``capture`` is drawn from (:class:`_DrawKey`)."""
+    def _reuse_key(self, play: PlayRecord, capture: Capture) -> _DrawKey | None:
+        """What the frame at ``capture`` is drawn from (:class:`_DrawKey`);
+        ``None`` when it shows pixels no recorded state holds (a display of
+        another camera's live picture), so it is drawn and not kept.
+        """
         from arachne import config
 
         camera = self.camera
@@ -880,6 +901,9 @@ class Drawing:
             *play.static,
             *camera_nodes(camera),
         ]
+        states = tuple(self.record._walk(capture, reached))
+        if any(_live_pixels(mob, state) for mob, state in states):
+            return None
         holds = (
             self.painter is None
             and self.static_layer
@@ -901,7 +925,7 @@ class Drawing:
             capture.moving,
             play.static,
             holds,
-            tuple(state for _, state in self.record._walk(capture, reached)),
+            tuple(state for _, state in states),
         )
 
     def _sample(

@@ -1,8 +1,9 @@
 """Scenes the draw reuse tests render and open: frames whose recorded state
 repeats (a wait whose updater changes nothing, a frozen frame), one whose
 mobject changes only its line joint, a camera that moves over mobjects
-that stay still, a point drawn at a configured thickness, and a camera
-whose drawing the scene's code replaced.
+that stay still, a point drawn at a configured thickness, a camera whose
+drawing the scene's code replaced, a camera whose display functions it
+replaced, and a display showing another camera's live picture.
 """
 
 from __future__ import annotations
@@ -11,15 +12,20 @@ import numpy as np
 
 from arachne import (
     BLUE,
+    RED,
     RIGHT,
     Circle,
+    ImageMobjectFromCamera,
     LineJointType,
     MovingCameraScene,
     PMobject,
     Scene,
     Square,
     Triangle,
+    VMobject,
+    Wait,
 )
+from arachne.camera.moving_camera import MovingCamera
 
 
 class StillWait(Scene):
@@ -108,3 +114,44 @@ class PatchedCamera(Scene):
         square.add_updater(lambda m, dt: None)
         self.add(square)
         self.wait(0.4)
+
+
+class ReplacedDisplay(Scene):
+    """A wait whose updater changes nothing, drawn by a camera whose display
+    function for vectorized mobjects the scene's code replaced: each call
+    marks the frame with how many calls it has made.
+    """
+
+    def construct(self):
+        original = self.camera.display_funcs[VMobject]
+        calls = [0]
+
+        def display(mobjects, pixel_array):
+            original(mobjects, pixel_array)
+            calls[0] += 1
+            pixel_array[0, 0, :3] = calls[0]
+
+        self.camera.display_funcs[VMobject] = display
+        square = Square(fill_opacity=0.5)
+        square.add_updater(lambda m, dt: None)
+        self.add(square)
+        self.wait(0.4)
+
+
+class OtherCameraShown(Scene):
+    """A display of a camera outside the scene, whose picture turns from red to
+    blue between two plays of one wait: nothing the record holds changes.
+    """
+
+    def construct(self):
+        other = MovingCamera()
+        other.background_color = RED
+        other.reset()
+        display = ImageMobjectFromCamera(other).scale(0.4)
+        display.add_updater(lambda m, dt: None)
+        self.add(display)
+        wait = Wait(run_time=0.4)
+        self.play(wait)
+        other.background_color = BLUE
+        other.reset()
+        self.play(wait)

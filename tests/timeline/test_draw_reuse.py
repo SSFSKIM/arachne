@@ -162,6 +162,46 @@ def test_the_writes_are_the_same_with_and_without_reuse(scene_class):
     assert_same_writes(on, off)
 
 
+def test_a_camera_whose_display_function_the_scene_replaced_draws_every_frame():
+    """An entry of the camera's ``display_funcs`` replaced by the scene's code
+    draws through that code at every draw (here it marks each frame with its
+    count): such a camera reuses nothing.
+    """
+    from arachne.frame_ir.painter import user_camera
+
+    scene, on = render_writes(reuse_scenes.ReplacedDisplay)
+    _, off = render_writes(reuse_scenes.ReplacedDisplay, draw_reuse=False)
+    assert scene.timeline.record.refusal is None, "drawn from the record"
+    assert user_camera(scene.renderer.camera) is not None
+    assert [int(pixels[0, 0, 0]) for pixels, _ in off] == list(range(1, len(off) + 1))
+    assert scene.renderer.draws.reused == 0
+    assert_same_writes(on, off)
+
+
+def test_an_engine_camera_s_display_functions_are_its_own():
+    from arachne.camera.camera import Camera
+    from arachne.camera.moving_camera import MovingCamera
+    from arachne.camera.three_d_camera import ThreeDCamera
+    from arachne.frame_ir.painter import user_camera
+
+    for kind in (Camera, MovingCamera, ThreeDCamera):
+        assert user_camera(kind()) is None, kind.__name__
+
+
+def test_a_frame_showing_another_camera_s_live_picture_is_drawn():
+    """A display of a camera outside the scene shows that camera's pixels as
+    they are when the frame is drawn, which no recorded state holds: a frame
+    that reaches such a display is drawn every time.
+    """
+    scene, on = render_writes(reuse_scenes.OtherCameraShown)
+    _, off = render_writes(reuse_scenes.OtherCameraShown, draw_reuse=False)
+    assert scene.timeline.record.refusal is None, "drawn from the record"
+    centres = [tuple(pixels[27, 48, :3]) for pixels, _ in off]
+    assert centres[0] != centres[-1], "the picture changed between the plays"
+    assert scene.renderer.draws.reused == 0
+    assert_same_writes(on, off)
+
+
 def test_a_camera_whose_drawing_the_scene_replaced_draws_every_frame():
     """A capture replaced on the camera instance runs the scene's code at each
     draw, which no recorded state holds (here it marks each frame with its

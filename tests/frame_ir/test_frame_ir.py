@@ -516,6 +516,27 @@ def test_a_camera_method_the_scene_replaces_on_the_instance_draws_on_cairo(
     assert "replaced on the camera instance" in finding.message
 
 
+def test_a_display_function_the_scene_replaces_draws_on_cairo(monkeypatch):
+    """The camera draws each kind of mobject through its ``display_funcs``: an
+    entry the scene's code replaced changes how that kind is drawn, which XF
+    does not describe, so the frames fall back to Cairo, the same bytes as
+    the direct path's.
+    """
+    from arachne.frame_ir import lint
+
+    monkeypatch.setattr(lint, "raised", [])
+    before = IrCairoPainter.drawn_total
+    direct, described, _ = frames_both_ways(scenes.PatchedDisplay)
+    assert len(direct) == len(described) > 0
+    assert tuple(direct[0][0, 0, :3]) == (1, 2, 3), "the replaced function drew"
+    for index, (a, b) in enumerate(zip(direct, described, strict=True)):
+        np.testing.assert_array_equal(a, b, err_msg=f"frame {index}")
+    assert IrCairoPainter.drawn_total == before, "nothing drawn from XF"
+    [finding] = lint.raised
+    assert finding.code == "render.fallback"
+    assert "display_funcs" in finding.message
+
+
 def test_a_camera_method_the_scene_replaces_on_the_engine_class_draws_on_cairo(
     monkeypatch,
 ):
