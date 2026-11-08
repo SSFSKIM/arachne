@@ -336,9 +336,10 @@ def _content_key(value: Any, keying: _Keying) -> bytes:
     if isinstance(value, np.ufunc):
         # One of numpy's own, by its name; another (``np.frompyfunc``'s) is
         # code of this process.
-        if getattr(np, value.__name__, None) is not value:
+        name = value.__name__
+        if getattr(np, name, None) is not value:
             raise _Unkeyable(_qualified(type(value)))
-        return _framed(value.__name__.encode())
+        return _framed(name.encode())
     if isinstance(value, types.BuiltinFunctionType):
         owner = value.__self__
         bound = () if owner is None or isinstance(owner, types.ModuleType) else (owner,)
