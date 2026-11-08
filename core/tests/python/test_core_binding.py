@@ -868,3 +868,62 @@ def test_registry_tolerance_is_the_snap_s_departure_and_a_flat_record_s_own():
     # A path on the plane nearest its points is not offered.
     with pytest.raises(ValueError):
         _registry_tolerance(face, up, grid, IDENTITY_PLACES, face, 3)
+
+
+def outline(corners) -> list:
+    """The closed polygon through `corners` in CE's cubic layout."""
+    curves = []
+    for i, a in enumerate(corners):
+        b = corners[(i + 1) % len(corners)]
+        curves += [tuple(u + (v - u) * t for u, v in zip(a, b)) for t in (0, 1 / 3, 2 / 3, 1)]
+    return curves
+
+
+def test_attaches_is_the_registry_s_attach_pass_on_the_identity_its_members_settle_into():
+    from arachne_core._core import _attaches, _registry_tolerance
+
+    grid, up = 1 / 16384, (0.0, 0.0, 1.0)
+    corner = [(1.0, 1.0, 0.0)]
+    snap, _ = _registry_tolerance(corner, up, grid, IDENTITY_PLACES, corner, 0)
+
+    def member(points, planes=1):
+        return (points, IDENTITY_PLACES, points, planes)
+
+    def attaches(points, members, planes=0):
+        return _attaches(points, IDENTITY_PLACES, points, planes, members, grid)
+
+    # A face 2 across whose corners at x = 1 stand 0.99 of their snap's departure below z = 0, and
+    # a line along that edge 0.99 of its own above: z = 0 holds both, though the face's own plane
+    # does not hold the line. Raised ten times as far, no plane holds both.
+    a = 0.99 * snap
+    face = outline([(-1.0, -1.0, 0.0), (1.0, -1.0, -a), (1.0, 1.0, -a), (-1.0, 1.0, 0.0)])
+    assert attaches([(1.0, -1.0, a), (1.0, 0.0, a), (1.0, 1.0, a)], [member(face)])
+    up_10 = 10 * snap
+    assert not attaches([(1.0, -1.0, up_10), (1.0, 0.0, up_10), (1.0, 1.0, up_10)], [member(face)])
+    # A tick five units from a square 0.1 across, raised 20 grid steps: a plane rising from the
+    # square to the tick holds both, but the tick stands past the bound the square leaves a record
+    # near it.
+    s = 0.05
+    small = outline([(-s, -s, 0.0), (s, -s, 0.0), (s, s, 0.0), (-s, s, 0.0)])
+    h = 20 * grid
+    assert not attaches([(5.0, -0.15, h), (5.0, 0.0, h), (5.0, 0.15, h)], [member(small)])
+    # Mesh triangles: two halves of a square as members, a triangle whose corners lie on its
+    # diagonal as the record.
+    halves = [
+        member([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0)], None),
+        member([(0.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0)], None),
+    ]
+    diagonal = [(0.0, 0.0, 0.0), (0.5, 0.5, 0.0), (1.0, 1.0, 0.0)]
+    assert attaches(diagonal, halves, None)
+    line = [(-1.0, 0.0, 0.0), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)]
+    with pytest.raises(ValueError, match="flat"):
+        attaches(face, [member(small)], 1)
+    with pytest.raises(ValueError, match="no members"):
+        attaches(line, [])
+    with pytest.raises(ValueError, match="no plane of its own"):
+        attaches(line, [member(face), member(line)])
+    lifted = [(x, y, z + 1.0) for x, y, z in face]
+    with pytest.raises(ValueError, match="more than one identity"):
+        attaches(line, [member(face), member(lifted)])
+    with pytest.raises(ValueError):
+        attaches(line, [member(face)], 3)

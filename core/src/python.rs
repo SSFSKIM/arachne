@@ -1225,12 +1225,27 @@ fn registry_tolerance(
     shape: Vec<[f64; 3]>,
     planes: Option<u8>,
 ) -> PyResult<(f64, bool)> {
-    use crate::depth::{Planarity, Registry, WorldPlane};
+    let mut registry = crate::depth::Registry::of_grid(grid);
+    let (handle, flat) = offer(&mut registry, grid, &points, &places, &shape, planes)?;
+    Ok((registry.tolerance_along(handle, normal), flat))
+}
+
+/// Offers a record to `registry`, for points snapped to `grid`, as a frame offers it: a path of
+/// planarity code `planes`, or a mesh triangle (`None`) whose `points` are its three corners. Its
+/// handle and whether it is flat; a `ValueError` for a record a frame does not offer.
+fn offer(
+    registry: &mut crate::depth::Registry,
+    grid: f64,
+    points: &[[f64; 3]],
+    places: &[Affine; 2],
+    shape: &[[f64; 3]],
+    planes: Option<u8>,
+) -> PyResult<(u32, bool)> {
+    use crate::depth::{Planarity, WorldPlane};
     if points.is_empty() {
         return Err(PyValueError::new_err("a record has points"));
     }
-    let mut registry = Registry::of_grid(grid);
-    let (handle, flat) = match planes {
+    match planes {
         Some(code) => {
             let planarity = Planarity::of_code(code)
                 .ok_or_else(|| PyValueError::new_err(format!("no planarity has code {code}")))?;
@@ -1239,19 +1254,62 @@ fn registry_tolerance(
                     "a path on the plane nearest its points is not offered",
                 ));
             }
-            let (handle, flat, _) = registry.offer_path(&points, planarity, &places, &shape);
-            (handle, flat)
+            let (handle, flat, _) = registry.offer_path(points, planarity, places, shape);
+            Ok((handle, flat))
         }
         None => {
             let corners: [[f64; 3]; 3] = points
-                .as_slice()
                 .try_into()
                 .map_err(|_| PyValueError::new_err("a mesh triangle has three corners"))?;
             let plane = WorldPlane::of_triangle(corners, grid);
-            registry.offer_triangle(plane, &corners, &places, &shape)
+            Ok(registry.offer_triangle(plane, &corners, places, shape))
         }
+    }
+}
+
+/// A record as `_registry_tolerance` takes one: its points placed in the world, its two
+/// placements, its shape's own points, and its planarity code (`None` for a mesh triangle).
+type Offered = (Vec<[f64; 3]>, [Affine; 2], Vec<[f64; 3]>, Option<u8>);
+
+/// Whether the frame's plane registry (`depth::Registry`) attaches a record with no plane of its
+/// own to the identity that flat records `members` settle into: a registry for points snapped to
+/// `grid` (`0.0`: not snapped) offered the record and each member, `(points, places, shape,
+/// planes)`, each as `_registry_tolerance` takes one, then settled once, as a frame settles it.
+/// A `ValueError` for a record or member a frame does not offer, a flat record, no members, a
+/// member with no plane of its own, or members settling into more than one identity.
+#[pyfunction(name = "_attaches", signature = (points, places, shape, planes, members, grid))]
+fn attaches(
+    points: Vec<[f64; 3]>,
+    places: [Affine; 2],
+    shape: Vec<[f64; 3]>,
+    planes: Option<u8>,
+    members: Vec<Offered>,
+    grid: f64,
+) -> PyResult<bool> {
+    let mut registry = crate::depth::Registry::of_grid(grid);
+    let (record, flat) = offer(&mut registry, grid, &points, &places, &shape, planes)?;
+    if flat {
+        return Err(PyValueError::new_err("the record is flat"));
+    }
+    let mut held = Vec::with_capacity(members.len());
+    for (points, places, shape, planes) in &members {
+        let (handle, flat) = offer(&mut registry, grid, points, places, shape, *planes)?;
+        if !flat {
+            return Err(PyValueError::new_err("a member has no plane of its own"));
+        }
+        held.push(handle);
+    }
+    let Some(&first) = held.first() else {
+        return Err(PyValueError::new_err("no members"));
     };
-    Ok((registry.tolerance_along(handle, normal), flat))
+    registry.settle();
+    let identity = registry.identities(first);
+    if held.iter().any(|h| registry.identities(*h) != identity) {
+        return Err(PyValueError::new_err(
+            "the members settle into more than one identity",
+        ));
+    }
+    Ok(registry.attached(record))
 }
 
 /// Every call count by name since the last take, each set back to zero (`counters`).
@@ -1282,6 +1340,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(points_somewhere, m)?)?;
     m.add_function(wrap_pyfunction!(rounded_plane, m)?)?;
     m.add_function(wrap_pyfunction!(registry_tolerance, m)?)?;
+    m.add_function(wrap_pyfunction!(attaches, m)?)?;
     #[cfg(feature = "counters")]
     m.add_function(wrap_pyfunction!(take_counts, m)?)?;
     Ok(())
