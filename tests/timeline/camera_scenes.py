@@ -21,12 +21,15 @@ from arachne import (
     ImageMobjectFromCamera,
     MappingCamera,
     MovingCamera,
+    PMobject,
+    Point,
     Scene,
     Square,
     ThreeDScene,
     ValueTracker,
     VectorizedPoint,
     ZoomedScene,
+    config,
     linear,
 )
 
@@ -256,6 +259,64 @@ class RestoredDepthReference(ThreeDScene):
         self.play(slide.animate.set_value(0.3), run_time=0.4, rate_func=linear)
         red.clear_updaters()
         reference.shift(OUT * 2)
+        self.wait(0.2)
+
+
+class PixelShapeChanged(Scene):
+    """A point cloud on screen while an updater doubles the configured pixel
+    width partway through the wait: its points are drawn thicker from then.
+    """
+
+    def construct(self):
+        cloud = PMobject(stroke_width=4)
+        cloud.add_points(np.array([[-1.0, 0, 0], [0, 0, 0], [1.0, 0, 0]]), color=YELLOW)
+        start = config.pixel_width
+        elapsed = [0.0]
+
+        def drive(mob, dt):
+            elapsed[0] += dt
+            if elapsed[0] >= 0.2 and config.pixel_width == start:
+                config.pixel_width = start * 2
+
+        cloud.add_updater(drive)
+        self.add(cloud)
+        self.wait(0.4)
+
+
+def _lit_square() -> tuple[Square, Point]:
+    """A shaded square, and a lamp off screen behind it."""
+    square = Square(side_length=3, fill_opacity=1, stroke_width=0, shade_in_3d=True)
+    square.set_color(BLUE)
+    return square, Point(np.array([20.0, 0.0, -10.0]))
+
+
+class LightReboundInPlay(ThreeDScene):
+    """A shaded square lit by the camera's light until an updater rebinds
+    the light, partway through the wait, to a lamp the scene holds.
+    """
+
+    def construct(self):
+        square, lamp = _lit_square()
+        elapsed = [0.0]
+
+        def drive(mob, dt):
+            elapsed[0] += dt
+            if elapsed[0] >= 0.2 and self.camera.light_source is not lamp:
+                self.camera.light_source = lamp
+
+        square.add_updater(drive)
+        self.add(square, lamp)
+        self.wait(0.4)
+
+
+class LightReboundBetweenPlays(ThreeDScene):
+    """As :class:`LightReboundInPlay`, the light rebound between two waits."""
+
+    def construct(self):
+        square, lamp = _lit_square()
+        self.add(square, lamp)
+        self.wait(0.2)
+        self.camera.light_source = lamp
         self.wait(0.2)
 
 

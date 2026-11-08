@@ -92,7 +92,9 @@ class CameraExtras:
     sub-cameras into (``image_mobjects_from_cameras``), which a scene adds
     and removes as it goes (a ``ZoomedScene`` activating its zoom), and the
     inputs of each display's own camera, which draws into it
-    (``sub_cameras``, recorded the same way).
+    (``sub_cameras``, recorded the same way). ``bindings`` are the camera's
+    own mobjects by attribute (a ThreeDCamera's light, frame centre and
+    trackers, a MovingCamera's frame), which a scene can rebind.
     """
 
     values: tuple[tuple[str, Any], ...]
@@ -101,6 +103,7 @@ class CameraExtras:
     background: FrozenBackground | None = None
     displays: tuple[Mobject, ...] | None = None
     sub_cameras: tuple[tuple[Camera, CameraExtras], ...] = ()
+    bindings: tuple[tuple[str, Mobject], ...] = ()
 
     @classmethod
     def observe(
@@ -136,8 +139,11 @@ class CameraExtras:
             )
         displays = _displays(camera)
         sub_cameras = _sub_cameras(camera, displays, previous, evaluate)
+        bindings = _bindings(camera, previous.bindings if previous else None)
         if previous is None:
-            return cls(values, fixed, centers, background, displays, sub_cameras)
+            return cls(
+                values, fixed, centers, background, displays, sub_cameras, bindings
+            )
         if (
             displays is not None
             and previous.displays is not None
@@ -159,9 +165,19 @@ class CameraExtras:
             and background is previous.background
             and displays is previous.displays
             and sub_cameras is previous.sub_cameras
+            and bindings is previous.bindings
         ):
             return previous
-        return cls(values, fixed, centers, background, displays, sub_cameras)
+        return cls(values, fixed, centers, background, displays, sub_cameras, bindings)
+
+    def bound(self) -> tuple[Any, ...]:
+        """The camera's own mobjects, and its displays' cameras', by
+        identity: what a rebinding changes.
+        """
+        return (
+            tuple((name, id(mob)) for name, mob in self.bindings),
+            tuple((id(sub), extras.bound()) for sub, extras in self.sub_cameras),
+        )
 
     def same(self, other: CameraExtras) -> bool:
         """Whether ``other`` gives a camera what these give it
@@ -192,6 +208,7 @@ class CameraExtras:
                 for (a, b), (c, d) in zip(self.centers, other.centers, strict=True)
             )
             and self.background is other.background
+            and _same_bindings(self.bindings, other.bindings)
         )
 
     def install(self, camera: Camera) -> None:
@@ -199,6 +216,7 @@ class CameraExtras:
         from arachne.camera.three_d_camera import ThreeDCamera
 
         _set_camera_values(camera, self.values)
+        _set_bindings(camera, self.bindings)
         if self.background is None:
             camera.background = camera._built_background
         else:
@@ -214,7 +232,40 @@ class CameraExtras:
             camera.image_mobjects_from_cameras = list(self.displays)  # type: ignore[attr-defined]
 
 
-def _saved_inputs(camera: Any) -> tuple[Any, Any, Any, Any]:
+def _bindings(
+    camera: Camera, previous: tuple[tuple[str, Mobject], ...] | None
+) -> tuple[tuple[str, Mobject], ...]:
+    """The camera's own mobjects now, by attribute; ``previous`` itself when
+    they are the same objects.
+    """
+    from arachne.mobject.mobject import Mobject
+
+    found = tuple(
+        (name, value)
+        for name, value in vars(camera).items()
+        if isinstance(value, Mobject)
+    )
+    if previous is not None and _same_bindings(previous, found):
+        return previous
+    return found
+
+
+def _same_bindings(
+    a: tuple[tuple[str, Mobject], ...], b: tuple[tuple[str, Mobject], ...]
+) -> bool:
+    return a is b or (
+        len(a) == len(b)
+        and all(m == n and x is y for (m, x), (n, y) in zip(a, b, strict=True))
+    )
+
+
+def _set_bindings(camera: Camera, bindings: tuple[tuple[str, Mobject], ...]) -> None:
+    own = vars(camera)
+    for name, mob in bindings:
+        own[name] = mob
+
+
+def _saved_inputs(camera: Any) -> tuple[Any, Any, Any, Any, Any]:
     """A camera's live inputs, as they are (calling no centre function)."""
     orientation = (
         (camera.fixed_in_frame_mobjects, camera.fixed_orientation_mobjects)
@@ -226,12 +277,14 @@ def _saved_inputs(camera: Any) -> tuple[Any, Any, Any, Any]:
         (camera.background, camera._built_background),
         orientation,
         vars(camera).get("image_mobjects_from_cameras"),
+        _bindings(camera, None),
     )
 
 
-def _restore_inputs(camera: Any, saved: tuple[Any, Any, Any, Any]) -> None:
-    values, backgrounds, orientation, displays = saved
+def _restore_inputs(camera: Any, saved: tuple[Any, Any, Any, Any, Any]) -> None:
+    values, backgrounds, orientation, displays, bindings = saved
     _set_camera_values(camera, values)
+    _set_bindings(camera, bindings)
     camera.background, camera._built_background = backgrounds
     if orientation is not None:
         camera.fixed_in_frame_mobjects, camera.fixed_orientation_mobjects = orientation

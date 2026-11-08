@@ -334,3 +334,50 @@ def test_a_display_repainted_during_a_play_draws_that_play_live(session_of, draw
     session = session_of(scene_class.__name__, CAMERA_SCENES, draw_path=draw_path)
     with pytest.raises(RecordRefused, match="display_redrawn"):
         session.frame(Fraction(1, 15))
+
+
+@pytest.mark.parametrize("draw_path", ["cairo", "ir_cairo"])
+def test_a_pixel_shape_changed_during_a_play_draws_from_that_play_live(draw_path):
+    if draw_path == "ir_cairo":
+        pytest.importorskip("arachne_core")
+    scene_class = camera_scenes.PixelShapeChanged
+    live = _drawn_live(scene_class, 15, draw_path=draw_path)
+    assert not np.array_equal(live[1], live[-1])
+    scene, drawn = render(scene_class, 15, draw_path=draw_path)
+    refusal = scene.timeline.record.refusal
+    assert refusal is not None
+    assert refusal.startswith("config.pixel_shape:")
+    _equal_frames(drawn, live)
+
+
+@pytest.mark.parametrize("draw_path", ["cairo", "ir_cairo"])
+def test_a_light_rebound_during_a_play_draws_that_play_live(draw_path):
+    if draw_path == "ir_cairo":
+        pytest.importorskip("arachne_core")
+    scene_class = camera_scenes.LightReboundInPlay
+    live = _drawn_live(scene_class, 15, draw_path=draw_path)
+    assert _centre(live[1]) != _centre(live[-1])
+    scene, drawn = render(scene_class, 15, draw_path=draw_path)
+    refusal = scene.timeline.record.refusal
+    assert refusal is not None
+    assert refusal.startswith("camera.rebound:")
+    _equal_frames(drawn, live)
+
+
+@pytest.mark.parametrize("draw_path", ["cairo", "ir_cairo"])
+def test_a_light_rebound_between_plays_is_drawn_from_the_record(session_of, draw_path):
+    """Each play's frames are lit by the light bound as it ran, also when
+    drawn after the scene ended, with the other light bound.
+    """
+    if draw_path == "ir_cairo":
+        pytest.importorskip("arachne_core")
+    scene_class = camera_scenes.LightReboundBetweenPlays
+    live = _drawn_live(scene_class, 15, draw_path=draw_path)
+    assert _centre(live[1]) != _centre(live[-1])
+    scene, drawn = render(scene_class, 15, draw_path=draw_path)
+    assert scene.timeline.record.refusal is None
+    _equal_frames(drawn, live)
+    session = session_of(scene_class.__name__, CAMERA_SCENES, draw_path=draw_path)
+    _equal_frames(
+        [np.asarray(session.frame(Fraction(k, 15))) for k in range(len(live))], live
+    )

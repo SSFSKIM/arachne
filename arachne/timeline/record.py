@@ -240,6 +240,27 @@ DISPLAY_REDRAWN = (
 )
 
 
+#: Why a record can't draw a play from which on the configured pixel shape
+#: is not the one its first capture found: a point's thickness is drawn by it
+#: (``Camera.adjusted_thickness``), and a frame drawn after the play reads it
+#: as it is then.
+PIXEL_SHAPE_CHANGED = (
+    "config.pixel_shape: the scene changed the configured pixel shape"
+    " (config.pixel_width, config.pixel_height), which a point is drawn as thick"
+    " as, so its frames from this play on are drawn while the scene runs and its"
+    " record answers no instant there"
+)
+
+#: Why a record can't draw a play during which a camera's own mobject was
+#: rebound: its frames would each need the binding of their own instant,
+#: which an instant between captures does not have.
+CAMERA_REBOUND = (
+    "camera.rebound: a camera's own mobject (its light, frame centre, a tracker"
+    " or its frame) was rebound to another during the play, so its frames are"
+    " drawn while the scene runs and its record answers no instant"
+)
+
+
 def _pictures(
     displays: Sequence[Mobject],
     previous: tuple[tuple[Mobject, np.ndarray], ...],
@@ -732,6 +753,11 @@ class Record:
         #: scene's code, and the mobjects checked since (by id).
         self._entry_refusal: str | None = None
         self._entry_checked: set[int] = set()
+        #: The configured pixel shape the first drawn capture found, and the
+        #: seq of the first drawn capture that found another (``None`` while
+        #: none has).
+        self._pixel_shape: tuple[int, int] | None = None
+        self.pixel_shape_changed: int | None = None
         self.final: Capture | None = None
         #: The names the scene's code had for its mobjects when it ended.
         self.final_names: dict[int, str] = {}
@@ -864,6 +890,16 @@ class Record:
             )
             if redrawn and self._entry_refusal is None:
                 self._entry_refusal = DISPLAY_REDRAWN
+        if (
+            camera is not None
+            and previous is not None
+            and previous.camera is not None
+            and self._captured_play == play
+            and camera.bound() != previous.camera.bound()
+            and self._entry_refusal is None
+        ):
+            self._entry_refusal = CAMERA_REBOUND
+        self._note_pixel_shape(seq)
         self._captured_play = play
         capture = Capture(
             seq,
@@ -880,6 +916,21 @@ class Record:
         )
         self._captures.append(capture)
         return capture
+
+    def _note_pixel_shape(self, seq: int) -> None:
+        """Compare the configured pixel shape now with the first drawn
+        capture's; from the first capture that finds another, every capture
+        refuses its play (:data:`PIXEL_SHAPE_CHANGED`).
+        """
+        from arachne import config
+
+        shape = (config.pixel_width, config.pixel_height)
+        if self._pixel_shape is None:
+            self._pixel_shape = shape
+        elif shape != self._pixel_shape and self.pixel_shape_changed is None:
+            self.pixel_shape_changed = seq
+        if self.pixel_shape_changed is not None and self._entry_refusal is None:
+            self._entry_refusal = PIXEL_SHAPE_CHANGED
 
     def entry_refusal(self) -> str | None:
         """Why a mobject found as it entered a capture since this was last
