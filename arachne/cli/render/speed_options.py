@@ -50,7 +50,8 @@ speed_options = option_group(
         "--draw-reuse/--no-draw-reuse",
         "draw_reuse",
         default=None,
-        help="Reuse the pixels of a frame whose recorded state is unchanged.",
+        help="Reuse the pixels of a frame whose recorded state is unchanged. "
+        "Off unless asked for.",
     ),
     option(
         "--hold-gaps/--no-hold-gaps",

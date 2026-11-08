@@ -33,14 +33,27 @@ from .test_video_output import CASES
 
 FPS = 15
 SCENES = Path(reuse_scenes.__file__)
+#: A session opened with reuse asked for (it is off otherwise).
+REUSING = {**SMALL, "frame_rate": FPS, "draw_reuse": True}
 
 
 def render_writes(
     scene_class: type, **settings
 ) -> tuple[object, list[tuple[np.ndarray, int]]]:
+    """:func:`render_as_configured` with reuse opted in (it is off unless
+    asked for), as these tests are about what reuse does; pass
+    ``draw_reuse=False`` for the same render without it.
+    """
+    return render_as_configured(scene_class, **{"draw_reuse": True, **settings})
+
+
+def render_as_configured(
+    scene_class: type, **settings
+) -> tuple[object, list[tuple[np.ndarray, int]]]:
     """Render ``scene_class`` with nothing encoded; return the scene and
     every write its writer was handed, as (pixels, repeat), in the execution
-    that ended the render.
+    that ended the render. Nothing is set but ``settings``, and the test
+    sizes: the default of every option is what the render runs with.
     """
     executions: list[list[tuple[np.ndarray, int]]] = []
     with tempconfig(
@@ -388,12 +401,28 @@ def test_a_frame_at_another_configured_pixel_size_is_drawn_again():
     assert after.tobytes() != before.tobytes(), "the thickness follows the setting"
 
 
-@pytest.mark.parametrize("settings", [{"draw_reuse": False}, {"speed_levers": False}])
+@pytest.mark.parametrize(
+    "settings", [{"draw_reuse": False}, {"speed_levers": False}, {}]
+)
 def test_with_the_lever_off_every_frame_is_drawn(settings):
-    scene, writes = render_writes(reuse_scenes.StillWait, **settings)
+    """Off is how the option is set unasked (``{}``), by the option, and by
+    the switch of every speed lever: no frame reuses another's pixels.
+    """
+    scene, writes = render_as_configured(reuse_scenes.StillWait, **settings)
     assert scene.renderer.draws.reused == 0
     assert scene.renderer.frame_runs == {0: (1,) * FPS}
     assert len(writes) == FPS
+
+
+def test_an_opted_in_render_writes_the_bytes_an_unopted_one_does():
+    """Asked for (``draw_reuse=True``), reuse takes frames; asked for or not,
+    every write is the same bytes as one that reuses nothing.
+    """
+    scene, on = render_as_configured(reuse_scenes.StillWait, draw_reuse=True)
+    plain, off = render_as_configured(reuse_scenes.StillWait)
+    assert scene.renderer.draws.reused == FPS - 1
+    assert plain.renderer.draws.reused == 0
+    assert_same_writes(on, off)
 
 
 # ── a session ────────────────────────────────────────────────────────────────
@@ -401,7 +430,7 @@ def test_with_the_lever_off_every_frame_is_drawn(settings):
 
 @pytest.fixture
 def held_session() -> Iterator[Session]:
-    session = Session.open(SCENES, "Holds", config={**SMALL, "frame_rate": FPS})
+    session = Session.open(SCENES, "Holds", config=REUSING)
     try:
         yield session
     finally:
@@ -461,7 +490,7 @@ def test_an_evaluated_frame_is_drawn_every_time(held_session):
 
 
 def test_a_session_keeps_a_few_frames_and_lets_the_oldest_go():
-    session = Session.open(SCENES, "Holds", config={**SMALL, "frame_rate": FPS})
+    session = Session.open(SCENES, "Holds", config=REUSING)
     try:
         moving = session.record.plays[0]
         instants = [moving.start + Fraction(i, FPS) for i in range(7)]
@@ -513,8 +542,19 @@ def test_a_described_frame_reused_between_two_drawn_ones_changes_nothing_after()
     np.testing.assert_array_equal(c_on, c_off)
 
 
-def test_a_reload_starts_with_no_frames():
+def test_a_session_reuses_no_frame_unless_asked():
     session = Session.open(SCENES, "Holds", config={**SMALL, "frame_rate": FPS})
+    try:
+        first_t, second_t = held_instants(session)
+        session.frame(first_t)
+        session.frame(second_t)
+        assert session.draws.reused == 0
+    finally:
+        session.close()
+
+
+def test_a_reload_starts_with_no_frames():
+    session = Session.open(SCENES, "Holds", config=REUSING)
     try:
         session.frame(held_instants(session)[0])
         assert len(session.draws) == 1
@@ -609,7 +649,7 @@ def test_reuse_reads_no_content_key(monkeypatch):
         assert len(found) >= REQUIRED
         scene, writes = render_writes(reuse_scenes.StillWait)
         assert scene.renderer.draws.reused == FPS - 1, "frames were reused"
-        session = Session.open(SCENES, "Holds", config={**SMALL, "frame_rate": FPS})
+        session = Session.open(SCENES, "Holds", config=REUSING)
         try:
             first_t, second_t = held_instants(session)
             session.frame(first_t)

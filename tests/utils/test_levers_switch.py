@@ -139,7 +139,7 @@ def _lever_dependent(seen):
     def construct(scene):
         seen.append(config.speed_levers)
         scene.add(Square())
-        scene.play(Create(Circle(color=RED if config.draw_reuse else BLUE)))
+        scene.play(Create(Circle(color=RED if config.vectorize_trusted else BLUE)))
 
     return construct
 

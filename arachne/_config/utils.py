@@ -699,9 +699,9 @@ class ManimConfig(MutableMapping):
             "speed_levers",
             "vectorize_trusted",
             "construction_memo",
-            "draw_reuse",
         ]:
             setattr(self, key, parser["CLI"].getboolean(key, fallback=True))
+        self.draw_reuse = parser["CLI"].getboolean("draw_reuse", fallback=False)
         self.hold_gaps = parser["CLI"].getboolean("hold_gaps", fallback=False)
         workers = parser["CLI"].get("render_workers", fallback="1").strip()
         self.render_workers = int(workers) if workers.isdecimal() else workers
@@ -1496,7 +1496,7 @@ class ManimConfig(MutableMapping):
     @property
     def draw_reuse(self) -> bool:
         """Whether a frame whose recorded state is the previous frame's
-        reuses its pixels instead of drawing them again (on by default): a
+        reuses its pixels instead of drawing them again (off by default): a
         render keeps the frame before, a session the few it drew last
         (:meth:`.Session.clear_draws` empties them). The state is compared
         by the identity of every recorded version the frame reaches, never

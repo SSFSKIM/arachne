@@ -620,7 +620,7 @@ LEVER_SETTINGS = [
     ("speed_levers", "False", ["--no-speed-levers"], False),
     ("vectorize_trusted", "False", ["--no-vectorize-trusted"], False),
     ("construction_memo", "False", ["--no-construction-memo"], False),
-    ("draw_reuse", "False", ["--no-draw-reuse"], False),
+    ("draw_reuse", "True", ["--draw-reuse"], True),
     ("hold_gaps", "True", ["--hold-gaps"], True),
     ("render_workers", "3", ["--workers", "3"], 3),
     ("typeset_dir", "{dir}", ["--typeset_dir", "{dir}"], Path("{dir}")),
@@ -657,15 +657,16 @@ def _no_typeset_dir_from_the_shell(monkeypatch):
 
 
 def test_the_speed_levers_defaults():
-    """On: the levers that change speed and never a picture. Off or unset:
-    those whose output a reader outside the engine sees (the file's frame
-    timing, how many processes draw it, where typesetting is kept).
+    """On: the levers that change speed and never a picture, bar draw reuse.
+    Off or unset: draw reuse, which is asked for; and those whose output a
+    reader outside the engine sees (the file's frame timing, how many
+    processes draw it, where typesetting is kept).
     """
     defaults = ManimConfig().digest_parser(make_config_parser())
     assert defaults.speed_levers is True
     assert defaults.vectorize_trusted is True
     assert defaults.construction_memo is True
-    assert defaults.draw_reuse is True
+    assert defaults.draw_reuse is False
     assert defaults.hold_gaps is False
     assert defaults.render_workers == 1
     assert defaults.typeset_dir is None
@@ -708,11 +709,22 @@ def test_an_absent_lever_flag_keeps_the_config_file_value(
 
 def test_a_lever_flag_turns_a_lever_back_on(tmp_path):
     cfg = tmp_path / "arachne.cfg"
-    cfg.write_text("[CLI]\ndraw_reuse = False\nhold_gaps = True\n")
+    cfg.write_text("[CLI]\nconstruction_memo = False\nhold_gaps = True\n")
     candidate = ManimConfig().digest_file(cfg)
-    candidate.digest_args(_cli_args(tmp_path, ["--draw-reuse", "--no-hold-gaps"]))
-    assert candidate.draw_reuse is True
+    candidate.digest_args(
+        _cli_args(tmp_path, ["--construction-memo", "--no-hold-gaps"])
+    )
+    assert candidate.construction_memo is True
     assert candidate.hold_gaps is False
+
+
+def test_a_lever_flag_turns_a_lever_off_that_a_config_file_turned_on(tmp_path):
+    cfg = tmp_path / "arachne.cfg"
+    cfg.write_text("[CLI]\ndraw_reuse = True\n")
+    candidate = ManimConfig().digest_file(cfg)
+    assert candidate.draw_reuse is True
+    candidate.digest_args(_cli_args(tmp_path, ["--no-draw-reuse"]))
+    assert candidate.draw_reuse is False
 
 
 def test_the_switch_flag_turns_the_levers_back_on(tmp_path):
@@ -721,7 +733,7 @@ def test_the_switch_flag_turns_the_levers_back_on(tmp_path):
     candidate = ManimConfig().digest_file(cfg)
     candidate.digest_args(_cli_args(tmp_path, ["--speed-levers"]))
     assert candidate.speed_levers is True
-    assert candidate.draw_reuse is True
+    assert candidate.vectorize_trusted is True
 
 
 @pytest.mark.parametrize(
