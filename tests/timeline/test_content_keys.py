@@ -1704,3 +1704,15 @@ def test_a_structured_array_is_keyed_by_the_fields_it_reads_its_bytes_as():
         assert _value_key([first]) != _value_key([second])
     assert _value_key(floats) == _value_key(floats.copy())
     assert _value_key(floats[0]) != _value_key(integers[0])
+
+
+def test_an_enum_member_is_a_summary_leaf_by_its_value_too():
+    """Two enums of one name whose members' values differ (a definition that
+    reads its input) are two leaves; one enum's member is one leaf.
+    """
+    from arachne.timeline.execution import _field_leaf
+
+    low = Enum("Level", {"ONE": 1})
+    high = Enum("Level", {"ONE": 2})
+    assert _field_leaf(low.ONE) == _field_leaf(low.ONE)
+    assert _field_leaf(low.ONE) != _field_leaf(high.ONE)

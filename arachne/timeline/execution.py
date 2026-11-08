@@ -771,7 +771,7 @@ def _fields(
 def _field_leaf(value: Any) -> tuple[Leaf, tuple[Mobject, ...]]:
     """A field's raw value, and the mobjects it refers to: a number, a string,
     an array of numbers compared within the tolerance, or a colour as itself
-    (:func:`_leaf`); an enum by its class and member; any other value (an
+    (:func:`_leaf`); an enum by its class, member and value; any other value (an
     array compared exactly, a picture's pixels among them, needs no more) as
     its type and content key (:func:`.keys.value_key`), and a value the key
     cannot key as why, equal to no other leaf. Those stand for a value and
@@ -780,8 +780,12 @@ def _field_leaf(value: Any) -> tuple[Leaf, tuple[Mobject, ...]]:
     from arachne.utils.color import ManimColor
 
     if isinstance(value, Enum):
+        # The member's value too, which a definition that reads its input
+        # can change under one name.
         cls = type(value)
-        return f"{_TAGGED}{cls.__qualname__}.{value.name}", ()
+        held = value_key(value.value, KEY_DECIMALS)[0]
+        digest = hashlib.blake2b(held, digest_size=8).hexdigest()
+        return f"{_TAGGED}{cls.__qualname__}.{value.name}={digest}", ()
     plain = (
         value is None
         or isinstance(value, (bool, int, float, np.generic, ManimColor))
