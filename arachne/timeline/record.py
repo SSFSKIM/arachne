@@ -16,6 +16,7 @@ from __future__ import annotations
 
 __all__ = [
     "Capture",
+    "DepthReference",
     "Identity",
     "Marker",
     "NodeState",
@@ -35,6 +36,7 @@ from operator import is_
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+from PIL import Image
 
 from .clock import exact, frames_in
 from .dispatch import draw_member_refusal, draw_names
@@ -166,6 +168,19 @@ class Capture:
     of the play draws over its static picture: flattened when the play
     began, and grown by whatever the scene added since (CE's ``Scene.add``
     appends to it during a play).
+
+    ``references`` are the depth sort's reference points there: a mobject
+    with a ``z_index_group`` is sorted by that group's centre, which is
+    another mobject's state (one the scene may not even hold), so the point
+    itself is kept, as the sort reads it, and a drawing gives it back.
+
+    ``pictures`` are what the displays of other cameras show: an
+    ``ImageMobjectFromCamera`` reads its camera's framebuffer as it is drawn,
+    and a camera the scene's camera does not draw into (one of the scene's
+    own, or a MultiCamera's display before it joins) holds no recorded
+    state. Its picture is kept once a play, shared with the play before
+    while it is the same; a picture that changes during a play is not kept
+    (:data:`DISPLAY_REDRAWN`), which keeps one copy a play at most.
     """
 
     seq: int | Fraction
@@ -177,6 +192,12 @@ class Capture:
     scene_updaters: tuple[Any, ...]
     camera: CameraExtras | None
     until: Fraction | None = None
+    #: Each mobject a ThreeDCamera sorts by a point other than its own centre
+    #: (its ``z_index_group``), with that point here (:class:`DepthReference`).
+    references: tuple[tuple[Mobject, DepthReference], ...] = ()
+    #: Each display on screen of a camera the scene's camera does not draw
+    #: into, with that camera's picture as the play found it, read-only.
+    pictures: tuple[tuple[Mobject, np.ndarray], ...] = ()
 
     @property
     def drawn_seq(self) -> int:
@@ -194,6 +215,113 @@ class Capture:
         return [m for m in self.roots if id(m) not in foreground] + list(
             self.foreground
         )
+
+
+class DepthReference:
+    """The point a ThreeDCamera's depth sort placed a mobject by at a
+    capture, standing in for its ``z_index_group`` while a frame is drawn:
+    what ``Mobject.get_z_index_reference_point`` reads of the group.
+    """
+
+    __slots__ = ("center",)
+
+    def __init__(self, center: np.ndarray) -> None:
+        self.center = center
+
+    def get_center(self) -> np.ndarray:
+        return self.center
+
+
+#: Why a record can't draw a play during which a display of another camera
+#: showed a new picture: keeping one a capture costs a framebuffer each.
+DISPLAY_REDRAWN = (
+    "camera.display_redrawn: a display shows a camera the scene's camera does not"
+    " draw into, and that camera's picture changed during the play, so its frames"
+    " are drawn while the scene runs and its record answers no instant"
+)
+
+
+#: Why a record can't draw a play from which on the configured pixel shape
+#: is not the one the execution began under: a point's thickness is drawn by it
+#: (``Camera.adjusted_thickness``), and a frame drawn after the play reads it
+#: as it is then.
+PIXEL_SHAPE_CHANGED = (
+    "config.pixel_shape: the scene changed the configured pixel shape"
+    " (config.pixel_width, config.pixel_height), which a point is drawn as thick"
+    " as, so its frames from this play on are drawn while the scene runs and its"
+    " record answers no instant there"
+)
+
+#: Why a record can't draw a play during which a camera's own mobject was
+#: rebound: its frames would each need the binding of their own instant,
+#: which an instant between captures does not have.
+CAMERA_REBOUND = (
+    "camera.rebound: a camera's own mobject (its light, frame centre, a tracker"
+    " or its frame) was rebound to another during the play, so its frames are"
+    " drawn while the scene runs and its record answers no instant"
+)
+
+
+def _pictures(
+    displays: Sequence[Mobject],
+    previous: tuple[tuple[Mobject, np.ndarray], ...],
+    kept: dict[int, tuple[Mobject, np.ndarray, int]],
+    play: int,
+) -> tuple[tuple[tuple[Mobject, np.ndarray], ...], bool]:
+    """The picture each of ``displays`` shows now, its camera's framebuffer,
+    and whether one changed during ``play`` since the play first showed it.
+    ``kept`` holds, per display (by id), the last picture kept and the play
+    it was last shown in, whether or not it was on screen at every capture
+    between: a picture is shared while it is the same, copied anew in a new
+    play, and not copied for a change within the play (that play's is kept).
+    ``previous`` itself, or its pictures, where they are the same.
+    """
+    found: list[tuple[Mobject, np.ndarray]] = []
+    redrawn = False
+    for mob in displays:
+        live = mob.camera.pixel_array  # type: ignore[attr-defined]
+        entry = kept.get(id(mob))
+        picture = None
+        if entry is not None and entry[0] is mob:
+            held, shown_in = entry[1], entry[2]
+            if held.shape == live.shape and np.array_equal(held, live):
+                picture = held
+            elif shown_in == play:
+                redrawn = True
+                picture = held
+        if picture is None:
+            picture = live.copy()
+            picture.flags.writeable = False
+        kept[id(mob)] = (mob, picture, play)
+        found.append((mob, picture))
+    if len(found) == len(previous) and all(
+        a is c and b is d for (a, b), (c, d) in zip(found, previous, strict=True)
+    ):
+        return previous, redrawn
+    return tuple(found), redrawn
+
+
+def _references(
+    mobs: Sequence[Mobject],
+    previous: tuple[tuple[Mobject, DepthReference], ...],
+) -> tuple[tuple[Mobject, DepthReference], ...]:
+    """The depth reference point of each of ``mobs`` now; ``previous``
+    itself, or its points, where they are the same.
+    """
+    earlier = {id(mob): reference for mob, reference in previous}
+    found: list[tuple[Mobject, DepthReference]] = []
+    for mob in mobs:
+        center = np.array(mob.get_z_index_reference_point(), dtype=float)
+        reference = earlier.get(id(mob))
+        if reference is None or not np.array_equal(reference.center, center):
+            center.flags.writeable = False
+            reference = DepthReference(center)
+        found.append((mob, reference))
+    if len(found) == len(previous) and all(
+        a is c and b is d for (a, b), (c, d) in zip(found, previous, strict=True)
+    ):
+        return previous
+    return tuple(found)
 
 
 @dataclass(frozen=True)
@@ -632,6 +760,27 @@ class Record:
         #: scene's code, and the mobjects checked since (by id).
         self._entry_refusal: str | None = None
         self._entry_checked: set[int] = set()
+        #: The configured pixel shape the record's frames are drawn at (its
+        #: recorder's), or the first drawn capture's when none was given, and
+        #: the seq of the first drawn capture that found another (``None``
+        #: while none has).
+        self._pixel_shape: tuple[int, int] | None = None
+        #: Per image a drawn mobject fills from (by id): the image, and the
+        #: names it had (``str(image)``, what a camera keys its read of it
+        #: by), each with the seq of the first drawn capture that found it.
+        self._image_names: dict[
+            int, tuple[Image.Image, list[int | Fraction], list[str]]
+        ] = {}
+        #: Per camera (by id) and image name: the camera, and the image's
+        #: pixels as that camera first read them under that name, before
+        #: they are fitted to its pixel shape (:meth:`image_read`).
+        self._image_reads: dict[tuple[int, str], tuple[Any, np.ndarray]] = {}
+        #: Each read fitted to a pixel shape, by camera, name and shape.
+        self._image_fits: dict[tuple[int, str, tuple[int, ...]], np.ndarray] = {}
+        #: Per display of another camera (by id): its last picture kept, and
+        #: the play that last showed it (:func:`_pictures`).
+        self._kept_pictures: dict[int, tuple[Mobject, np.ndarray, int]] = {}
+        self.pixel_shape_changed: int | Fraction | None = None
         self.final: Capture | None = None
         #: The names the scene's code had for its mobjects when it ended.
         self.final_names: dict[int, str] = {}
@@ -643,10 +792,9 @@ class Record:
         #: What the script does after it and before the next is placed
         #: there (``BridgeCall.seq``).
         self.last_seq: int | Fraction = -1
-        #: Per MultiCamera display (by id): the first capture its camera was
-        #: drawn into at, and that camera's picture before it, which the
-        #: display shows wherever it is on screen before then.
-        self._display_joins: dict[int, tuple[int, np.ndarray]] = {}
+        #: The play the last drawn capture was taken in (how many plays had
+        #: begun then; -1 for the final capture).
+        self._captured_play = -1
 
     # Capturing
 
@@ -691,7 +839,14 @@ class Record:
         )
         nodes = self._nodes
         seen: set[int] = set()
+        # A ThreeDCamera sorts a shaded mobject by its z_index_group's centre.
+        sorts_by_depth = drawn and _sorts_by_depth(scene.renderer.camera)
+        grouped: list[Mobject] = []
+        # The cameras the scene's camera draws into at this capture.
+        drawing = _drawn_cameras(scene.renderer.camera) if drawn else frozenset()
+        shown: list[Mobject] = []
         checked = self._entry_checked
+        filled = False
         names: tuple[frozenset[str], frozenset[str]] | None = None
         classes: dict[type, str | None] = {}
         stack = [
@@ -714,6 +869,20 @@ class Record:
             if state is not last:
                 node.seqs.append(seq)
                 node.states.append(state)
+            if sorts_by_depth:
+                group = mob.__dict__.get("z_index_group")
+                if (
+                    group is not None
+                    and group is not mob
+                    and getattr(mob, "shade_in_3d", False)
+                ):
+                    grouped.append(mob)
+            if drawn:
+                if isinstance(mob.__dict__.get("background_image"), Image.Image):
+                    filled = True
+                other = mob.__dict__.get("camera")
+                if other is not None and id(other) not in drawing and _shows(mob):
+                    shown.append(mob)
             if not drawn:
                 # Changed here, it is checked by the next capture that draws.
                 if state is not last:
@@ -728,19 +897,150 @@ class Record:
                     names = draw_names(scene.renderer.camera)
                 self._entry_refusal = draw_member_refusal(names, mob, classes)
             stack.extend(reversed(state.submobjects))
-        capture = Capture(
-            seq, instant, kind, roots, foreground, moving, updaters, camera, until
-        )
         if not drawn:
-            return capture
+            return Capture(
+                seq, instant, kind, roots, foreground, moving, updaters, camera, until
+            )
+        if filled:
+            self._read_images(scene.renderer.camera, seq, [*roots, *foreground])
+        references = (
+            _references(grouped, previous.references if previous else ())
+            if grouped
+            else ()
+        )
+        play = len(self.plays) if kind != "final" else -1
+        pictures: tuple[tuple[Mobject, np.ndarray], ...] = ()
+        if shown:
+            pictures, redrawn = _pictures(
+                shown,
+                previous.pictures if previous else (),
+                self._kept_pictures,
+                play,
+            )
+            if redrawn and self._entry_refusal is None:
+                self._entry_refusal = DISPLAY_REDRAWN
+        if (
+            camera is not None
+            and previous is not None
+            and previous.camera is not None
+            and self._captured_play == play
+            and camera.bound() != previous.camera.bound()
+            and self._entry_refusal is None
+        ):
+            self._entry_refusal = CAMERA_REBOUND
+        self._note_pixel_shape(seq)
+        self._captured_play = play
+        capture = Capture(
+            seq,
+            instant,
+            kind,
+            roots,
+            foreground,
+            moving,
+            updaters,
+            camera,
+            until,
+            references,
+            pictures,
+        )
         self._captures.append(capture)
-        if camera is not None and camera.displays:
-            for display in camera.displays:
-                if id(display) not in self._display_joins:
-                    picture = display.camera.pixel_array.copy()  # type: ignore[attr-defined]
-                    picture.flags.writeable = False
-                    self._display_joins[id(display)] = (capture.drawn_seq, picture)
         return capture
+
+    def _read_images(
+        self, camera: Any, seq: int | Fraction, mobjects: Sequence[Mobject]
+    ) -> None:
+        """Read, as each camera drawing at capture ``seq`` reads them, the
+        images the paths it draws fill from. A camera reads a fill's image
+        once per name (``str(image)``) and keeps that read
+        (``BackgroundColoredVMobjectDisplayer.get_background_array``): the
+        scene's camera reads those of the paths with points in ``mobjects``'
+        families, and before it, as a MultiCamera captures, each display's
+        camera those of the list less the display's family, unless cameras
+        may capture their own display.
+        """
+        from arachne.mobject.types.vectorized_mobject import VMobject
+        from arachne.utils.family import extract_mobject_family_members
+        from arachne.utils.iterables import list_difference_update
+
+        reading = [(camera, list(mobjects))]
+        for display in vars(camera).get("image_mobjects_from_cameras", ()):
+            to_add = list(mobjects)
+            if not camera.allow_cameras_to_capture_their_own_display:
+                to_add = list_difference_update(to_add, display.get_family())
+            reading.append((display.camera, to_add))
+        reads = self._image_reads
+        for reader, to_add in reading:
+            for mob in extract_mobject_family_members(
+                to_add, only_those_with_points=True
+            ):
+                image = mob.__dict__.get("background_image")
+                if isinstance(mob, VMobject) and isinstance(image, Image.Image):
+                    name = self._image_name(image, seq)
+                    if (id(reader), name) not in reads:
+                        pixels = np.array(image)
+                        pixels.flags.writeable = False
+                        reads[id(reader), name] = (reader, pixels)
+
+    def _image_name(self, image: Image.Image, seq: int | Fraction) -> str:
+        """``image``'s name now, noted at ``seq`` when it is a new one."""
+        name = str(image)
+        entry = self._image_names.get(id(image))
+        if entry is None or entry[0] is not image:
+            self._image_names[id(image)] = (image, [seq], [name])
+        elif entry[2][-1] != name:
+            entry[1].append(seq)
+            entry[2].append(name)
+        return name
+
+    def models_image(self, value: Any) -> bool:
+        """Whether ``value`` is an image a drawn path fills from, which the
+        record keeps the reads of (:meth:`image_read`).
+        """
+        entry = self._image_names.get(id(value))
+        return entry is not None and entry[0] is value
+
+    def image_read(
+        self, camera: Any, image: Image.Image, capture: Capture, fitted_to: np.ndarray
+    ) -> np.ndarray | None:
+        """What ``camera`` holds for ``image`` when it draws ``capture``: its
+        first read of the image under the name the image had there, fitted
+        to ``fitted_to``'s shape as the camera fits it. ``None`` when the
+        camera read none (it draws no path the image fills there).
+        """
+        entry = self._image_names.get(id(image))
+        if entry is None or entry[0] is not image:
+            return None
+        at = bisect.bisect_right(entry[1], capture.seq) - 1
+        if at < 0:
+            return None
+        name = entry[2][at]
+        read = self._image_reads.get((id(camera), name))
+        if read is None or read[0] is not camera:
+            return None
+        key = (id(camera), name, fitted_to.shape)
+        fitted = self._image_fits.get(key)
+        if fitted is None:
+            pixels = read[1]
+            if pixels.shape != fitted_to.shape:
+                displayer = camera.get_background_colored_vmobject_displayer()
+                pixels = displayer.resize_background_array_to_match(pixels, fitted_to)
+            fitted = self._image_fits[key] = pixels
+        return fitted
+
+    def _note_pixel_shape(self, seq: int | Fraction) -> None:
+        """Compare the configured pixel shape now with the one the record's
+        frames are drawn at; from the first capture that finds another, every capture
+        refuses its play (:data:`PIXEL_SHAPE_CHANGED`).
+        """
+        from arachne import config
+
+        shape = (config.pixel_width, config.pixel_height)
+        if self._pixel_shape is None:
+            self._pixel_shape = shape
+        elif shape != self._pixel_shape and self.pixel_shape_changed is None:
+            self.pixel_shape_changed = seq
+        if self.pixel_shape_changed is not None and self._entry_refusal is None:
+            self._entry_refusal = PIXEL_SHAPE_CHANGED
 
     def entry_refusal(self) -> str | None:
         """Why a mobject found as it entered a capture since this was last
@@ -766,15 +1066,6 @@ class Record:
                         return display
                 return None
         return None
-
-    def display_picture(self, display: Mobject, capture: Capture) -> np.ndarray | None:
-        """The picture ``display`` shows at ``capture`` when its camera is not
-        drawn into there: its camera's first picture, before it ever was.
-        """
-        joined = self._display_joins.get(id(display))
-        if joined is None or joined[0] < capture.seq:
-            return None
-        return joined[1]
 
     # Reading
 
@@ -882,6 +1173,32 @@ class Record:
     def markers_in(self, start: Fraction, end: Fraction) -> list[Marker]:
         """The markers placed at an instant in ``[start, end)``."""
         return [marker for marker in self.markers if start <= marker.t < end]
+
+
+def _sorts_by_depth(camera: Any) -> bool:
+    """Whether ``camera`` sorts the mobjects it draws by depth: a
+    ThreeDCamera, which reads a shaded mobject's reference point.
+    """
+    from arachne.camera.three_d_camera import ThreeDCamera
+
+    return isinstance(camera, ThreeDCamera)
+
+
+def _drawn_cameras(camera: Any) -> frozenset[int]:
+    """The cameras (by id) ``camera`` draws into as it captures: itself, and
+    a MultiCamera's displays' cameras.
+    """
+    found = {id(camera)}
+    for display in vars(camera).get("image_mobjects_from_cameras", ()):
+        found.add(id(display.camera))
+    return frozenset(found)
+
+
+def _shows(mob: Any) -> bool:
+    """Whether ``mob`` is a display of a camera's picture."""
+    from arachne.mobject.types.image_mobject import ImageMobjectFromCamera
+
+    return isinstance(mob, ImageMobjectFromCamera)
 
 
 def _reuse(value: tuple[Any, ...], previous: tuple[Any, ...] | None) -> tuple[Any, ...]:

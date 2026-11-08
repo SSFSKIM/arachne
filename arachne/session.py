@@ -775,6 +775,9 @@ def execute(
     with imports(path):
         with tempconfig(settings):
             ORIGINS.start(base_dir, str(path))
+            # The pixel shape configured before the scene's file runs: what a
+            # frame its record draws is drawn at.
+            configured = (global_config.pixel_width, global_config.pixel_height)
             try:
                 module = _import(path)
                 try:
@@ -785,6 +788,7 @@ def execute(
                         )
                     instance: Scene = scene_class()
                     instance._arachne_timeline = recorder(instance)
+                    instance._arachne_timeline.configured_pixel_shape = configured
                     instance.render()
                 except BaseException:
                     sys.modules.pop(module.__name__, None)

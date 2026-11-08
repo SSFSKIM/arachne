@@ -100,7 +100,9 @@ class CameraExtras:
     sub-cameras into (``image_mobjects_from_cameras``), which a scene adds
     and removes as it goes (a ``ZoomedScene`` activating its zoom), and the
     inputs of each display's own camera, which draws into it
-    (``sub_cameras``, recorded the same way).
+    (``sub_cameras``, recorded the same way). ``bindings`` are the camera's
+    own mobjects by attribute (a ThreeDCamera's light, frame centre and
+    trackers, a MovingCamera's frame), which a scene can rebind.
     """
 
     values: tuple[tuple[str, Any], ...]
@@ -109,6 +111,7 @@ class CameraExtras:
     background: FrozenBackground | None = None
     displays: tuple[Mobject, ...] | None = None
     sub_cameras: tuple[tuple[Camera, CameraExtras], ...] = ()
+    bindings: tuple[tuple[str, Mobject], ...] = ()
 
     @classmethod
     def observe(
@@ -144,8 +147,11 @@ class CameraExtras:
             )
         displays = _displays(camera)
         sub_cameras = _sub_cameras(camera, displays, previous, evaluate)
+        bindings = _bindings(camera, previous.bindings if previous else None)
         if previous is None:
-            return cls(values, fixed, centers, background, displays, sub_cameras)
+            return cls(
+                values, fixed, centers, background, displays, sub_cameras, bindings
+            )
         if (
             displays is not None
             and previous.displays is not None
@@ -167,9 +173,19 @@ class CameraExtras:
             and background is previous.background
             and displays is previous.displays
             and sub_cameras is previous.sub_cameras
+            and bindings is previous.bindings
         ):
             return previous
-        return cls(values, fixed, centers, background, displays, sub_cameras)
+        return cls(values, fixed, centers, background, displays, sub_cameras, bindings)
+
+    def bound(self) -> tuple[Any, ...]:
+        """The camera's own mobjects, and its displays' cameras', by
+        identity: what a rebinding changes.
+        """
+        return (
+            tuple((name, id(mob)) for name, mob in self.bindings),
+            tuple((id(sub), extras.bound()) for sub, extras in self.sub_cameras),
+        )
 
     def same(self, other: CameraExtras) -> bool:
         """Whether ``other`` gives a camera what these give it
@@ -200,6 +216,7 @@ class CameraExtras:
                 for (a, b), (c, d) in zip(self.centers, other.centers, strict=True)
             )
             and self.background is other.background
+            and _same_bindings(self.bindings, other.bindings)
         )
 
     def install(self, camera: Camera) -> None:
@@ -207,6 +224,7 @@ class CameraExtras:
         from arachne.camera.three_d_camera import ThreeDCamera
 
         _set_camera_values(camera, self.values)
+        _set_bindings(camera, self.bindings)
         if self.background is None:
             camera.background = camera._built_background
         else:
@@ -222,7 +240,40 @@ class CameraExtras:
             camera.image_mobjects_from_cameras = list(self.displays)  # type: ignore[attr-defined]
 
 
-def _saved_inputs(camera: Any) -> tuple[Any, Any, Any, Any]:
+def _bindings(
+    camera: Camera, previous: tuple[tuple[str, Mobject], ...] | None
+) -> tuple[tuple[str, Mobject], ...]:
+    """The camera's own mobjects now, by attribute; ``previous`` itself when
+    they are the same objects.
+    """
+    from arachne.mobject.mobject import Mobject
+
+    found = tuple(
+        (name, value)
+        for name, value in vars(camera).items()
+        if isinstance(value, Mobject)
+    )
+    if previous is not None and _same_bindings(previous, found):
+        return previous
+    return found
+
+
+def _same_bindings(
+    a: tuple[tuple[str, Mobject], ...], b: tuple[tuple[str, Mobject], ...]
+) -> bool:
+    return a is b or (
+        len(a) == len(b)
+        and all(m == n and x is y for (m, x), (n, y) in zip(a, b, strict=True))
+    )
+
+
+def _set_bindings(camera: Camera, bindings: tuple[tuple[str, Mobject], ...]) -> None:
+    own = vars(camera)
+    for name, mob in bindings:
+        own[name] = mob
+
+
+def _saved_inputs(camera: Any) -> tuple[Any, Any, Any, Any, Any]:
     """A camera's live inputs, as they are (calling no centre function)."""
     orientation = (
         (camera.fixed_in_frame_mobjects, camera.fixed_orientation_mobjects)
@@ -234,12 +285,14 @@ def _saved_inputs(camera: Any) -> tuple[Any, Any, Any, Any]:
         (camera.background, camera._built_background),
         orientation,
         vars(camera).get("image_mobjects_from_cameras"),
+        _bindings(camera, None),
     )
 
 
-def _restore_inputs(camera: Any, saved: tuple[Any, Any, Any, Any]) -> None:
-    values, backgrounds, orientation, displays = saved
+def _restore_inputs(camera: Any, saved: tuple[Any, Any, Any, Any, Any]) -> None:
+    values, backgrounds, orientation, displays, bindings = saved
     _set_camera_values(camera, values)
+    _set_bindings(camera, bindings)
     camera.background, camera._built_background = backgrounds
     if orientation is not None:
         camera.fixed_in_frame_mobjects, camera.fixed_orientation_mobjects = orientation
@@ -736,7 +789,7 @@ class Drawing:
         self._saved: dict[int, tuple[Mobject, NodeState]] = {}
         #: Every camera given recorded inputs (the scene's, and the cameras
         #: of its displays), with what it held before.
-        self._cameras_saved: dict[int, tuple[Any, tuple[Any, Any, Any, Any]]] = {}
+        self._cameras_saved: dict[int, tuple[Any, tuple[Any, Any, Any, Any, Any]]] = {}
         #: Display cameras whose picture was replaced, with what they held.
         self._pictures_saved: dict[int, tuple[Any, PixelArray]] = {}
         if reuse is not None and (
@@ -746,6 +799,9 @@ class Drawing:
         self.reuse = reuse
         #: Whether the last frame :meth:`sample` gave took a kept frame's pixels.
         self.reused = False
+        #: Each camera's image read given an image's name, by its displayer
+        #: and the name: the camera, displayer and image.
+        self._image_reads_saved: dict[tuple[int, str], tuple[Any, Any, Any]] = {}
 
     def __enter__(self) -> Drawing:
         return self
@@ -770,10 +826,36 @@ class Drawing:
             for sub_camera, picture in self._pictures_saved.values():
                 sub_camera.pixel_array = picture
             self._pictures_saved.clear()
+            self._settle_image_reads()
+
+    def _settle_image_reads(self) -> None:
+        """Leave each camera given an image read holding, under the image's
+        name, what it holds by now: its first read under that name, as a
+        camera drawing as the scene runs then finds it, or nothing.
+        """
+        record = self.record
+        latest = record._captures[-1] if record._captures else None
+        for (_, name), (camera, displayer, image) in self._image_reads_saved.items():
+            held = (
+                record.image_read(camera, image, latest, displayer.pixel_array)
+                if latest is not None and str(image) == name
+                else None
+            )
+            reads = displayer.file_name_to_pixel_array_map
+            if held is None:
+                reads.pop(name, None)
+            else:
+                reads[name] = held
+        self._image_reads_saved.clear()
 
     def show(self, capture: Capture, roots: Sequence[Mobject]) -> None:
         """Give every mobject reachable from ``roots`` (and the camera's own)
-        its state at ``capture``, and the camera its recorded inputs.
+        its state at ``capture``, and the camera its recorded inputs. A
+        mobject the depth sort places by its ``z_index_group`` holds, in its
+        place, the point the capture found
+        (:class:`~arachne.timeline.record.DepthReference`), and a display of
+        a camera the scene's camera does not draw into shows the picture the
+        capture kept (``Capture.pictures``).
         """
         from .record import NodeState
 
@@ -787,8 +869,57 @@ class Drawing:
                 saved[id(mob)] = (mob, NodeState.of(mob))
         for mob, state in reached:
             state.install(mob)
-        if capture.camera is not None and capture.camera.displays is not None:
-            self._show_display_pictures(capture, [mob for mob, _ in reached])
+        self.show_kept(capture, [mob for mob, _ in reached])
+        if capture.pictures:
+            self._show_pictures(capture, {id(mob) for mob, _ in reached})
+
+    def show_kept(self, capture: Capture, shown: Sequence[Mobject]) -> None:
+        """Give the ``shown`` mobjects, their states installed, what the
+        record kept of what their states only refer to: each one the depth
+        sort places by its ``z_index_group`` the point ``capture`` found (the
+        scene may not hold the group), and each camera drawing ``capture``
+        what it holds of each image a shown mobject fills from: its first
+        read of the image under the name the image had there
+        (:meth:`.Record.image_read`), whatever the scene painted into it
+        since.
+        """
+        if capture.references:
+            ids = {id(mob) for mob in shown}
+            for mob, reference in capture.references:
+                if id(mob) in ids:
+                    mob.__dict__["z_index_group"] = reference
+        record = self.record
+        if record._image_reads:
+            images = {}
+            for mob in shown:
+                image = mob.__dict__.get("background_image")
+                if record.models_image(image):
+                    images[id(image)] = image
+            if images:
+                cameras = [self.camera]
+                if capture.camera is not None and capture.camera.sub_cameras:
+                    # Shaped as the capture shapes them, before any reads
+                    # through a displayer it would make at that shape.
+                    self.camera.update_sub_cameras()  # type: ignore[attr-defined]
+                    cameras.extend(sub for sub, _ in capture.camera.sub_cameras)
+                for camera in cameras:
+                    for image in images.values():
+                        self._show_image_read(camera, image, capture)
+
+    def _show_image_read(self, camera: Any, image: Any, capture: Capture) -> None:
+        """Give ``camera`` what it holds of ``image`` at ``capture``, under the
+        name the image has now, which its draw reads it by.
+        """
+        displayer = camera.get_background_colored_vmobject_displayer()
+        held = self.record.image_read(camera, image, capture, displayer.pixel_array)
+        reads = displayer.file_name_to_pixel_array_map
+        name = str(image)
+        if (id(displayer), name) not in self._image_reads_saved:
+            self._image_reads_saved[id(displayer), name] = (camera, displayer, image)
+        if held is None:
+            reads.pop(name, None)
+        else:
+            reads[name] = held
 
     def show_camera(self, capture: Capture) -> None:
         """Give the camera, alone, its recorded inputs at ``capture``: for a
@@ -809,29 +940,19 @@ class Drawing:
         for sub_camera, sub_extras in extras.sub_cameras:
             self._install_camera(sub_camera, sub_extras)
 
-    def _show_display_pictures(self, capture: Capture, reached: list[Mobject]) -> None:
-        """A display on screen whose camera the MultiCamera does not draw into
-        at ``capture`` shows its camera's picture as CE left it: the first one,
-        when the display joins later.
+    def _show_pictures(self, capture: Capture, shown: set[int]) -> None:
+        """Each shown display of a camera the scene's camera does not draw
+        into shows its camera's picture as ``capture`` kept it.
         """
-        from arachne.mobject.types.image_mobject import ImageMobjectFromCamera
+        for mob, picture in capture.pictures:
+            if id(mob) in shown:
+                self._show_picture(mob.camera, picture)
 
-        assert capture.camera is not None
-        assert capture.camera.displays is not None
-        joined = {id(display) for display in capture.camera.displays}
-        for mob in reached:
-            if not isinstance(mob, ImageMobjectFromCamera) or id(mob) in joined:
-                continue
-            picture = self.record.display_picture(mob, capture)
-            if picture is None:
-                continue
-            sub_camera: Any = mob.camera
-            if id(sub_camera) not in self._pictures_saved:
-                self._pictures_saved[id(sub_camera)] = (
-                    sub_camera,
-                    sub_camera.pixel_array,
-                )
-            sub_camera.pixel_array = picture
+    def _show_picture(self, sub_camera: Any, picture: PixelArray) -> None:
+        """Give ``sub_camera`` ``picture``, saving the one it held first."""
+        if id(sub_camera) not in self._pictures_saved:
+            self._pictures_saved[id(sub_camera)] = (sub_camera, sub_camera.pixel_array)
+        sub_camera.pixel_array = picture
 
     def static(self, play: PlayRecord) -> PixelArray | None:
         """The play's static picture: its static mobjects as they were when
@@ -1031,7 +1152,7 @@ class Drawing:
     def _picture_holds(self, play: PlayRecord, capture: Capture) -> bool:
         """Whether the frame at ``capture`` has the static list the play's
         static picture painted, every member at the version it painted, and
-        the camera's inputs it was painted with.
+        the camera's inputs and depth reference points it was painted with.
         """
         start = self.record._captures[play.static_seq]
         if not (
@@ -1039,6 +1160,9 @@ class Drawing:
             and _same_items(capture.roots, start.roots)
             and _same_items(capture.foreground, start.foreground)
             and _same_items(capture.moving, start.moving)
+            # A depth reference point that moved can reorder the picture's
+            # leaves while every version stays the same.
+            and capture.references is start.references
         ):
             return False
         validity = self._validity_of(play)

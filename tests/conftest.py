@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -49,6 +50,31 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if "slow" in item.keywords:
                 item.add_marker(slow_skip)
+
+
+@pytest.fixture(autouse=True)
+def draw_reads():
+    """With ``ARACHNE_DRAW_READS`` set, every frame the test draws from the
+    record is traced, and a read the record does not hold fails the test
+    (:mod:`tests.helpers.draw_reads`).
+    """
+    from tests.helpers.draw_reads import ENV
+
+    if not os.environ.get(ENV):
+        yield
+        return
+    from tests.helpers.draw_reads import tracer
+
+    traced = tracer()
+    traced.take()
+    yield
+    found = traced.take()
+    if found:
+        pytest.fail(
+            "drawing from the record read what the record does not hold:\n"
+            + "\n".join(f"  {read}" for read in found),
+            pytrace=False,
+        )
 
 
 @pytest.fixture(autouse=True)

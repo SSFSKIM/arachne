@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 
 import srt
 
-from . import logger
+from . import config, logger
 from .mobject.construction_caches import (
     construction_caches,
     restore_construction_caches,
@@ -79,6 +79,9 @@ class Manager(Generic[SceneT]):
         scene.manager = self
         # The source line of the play running now, or None between plays.
         self._playing: str | None = None
+        #: Whether a play refused mid-play can be drawn as it runs by
+        #: executing the scene again: only inside :meth:`render`.
+        self.reexecutes = False
 
     @property
     def renderer(self) -> CairoRenderer:
@@ -148,7 +151,8 @@ class Manager(Generic[SceneT]):
         and every later one as it runs. Each such refusal costs at most one
         execution. The interrupted execution is not torn down, as CE tears
         down no run that raised: :meth:`tear_down` runs once, for the
-        execution that completes.
+        execution that completes. An execution again finds the configuration
+        as the first one found it, whatever the scene set in it.
 
         Parameters
         ----------
@@ -165,6 +169,33 @@ class Manager(Generic[SceneT]):
         # The construction caches as a scene rendered earlier in this process
         # left them: an execution again finds them as the first execution did.
         caches = construction_caches()
+        # The configuration as the first execution found it, which the scene
+        # may change as it runs (and a camera is made from).
+        configured = config.copy()
+        self.reexecutes = True
+        try:
+            self._executions(known, earlier, caches, configured)
+        finally:
+            self.reexecutes = False
+        self.post_construct()
+
+        if open_after_render or presentation.show_in_file_browser:
+            open_media_file(
+                self.file_writer,
+                preview=open_after_render,
+                show_in_file_browser=presentation.show_in_file_browser,
+            )
+
+    def _executions(
+        self,
+        known: dict[int, str],
+        earlier: list[tuple[int, tuple[bytes, ...]]],
+        caches: Any,
+        configured: Any,
+    ) -> None:
+        """Execute the scene until an execution completes, again with each
+        play found refusing mid-play drawn as it runs.
+        """
         while True:
             try:
                 self._execute()
@@ -193,16 +224,9 @@ class Manager(Generic[SceneT]):
                     },
                 )
                 restore_construction_caches(caches)
+                config.update(configured)
                 self._renew_scene()
                 self.scene._arachne_timeline.reexecuting(known, earlier)
-        self.post_construct()
-
-        if open_after_render or presentation.show_in_file_browser:
-            open_media_file(
-                self.file_writer,
-                preview=open_after_render,
-                show_in_file_browser=presentation.show_in_file_browser,
-            )
 
     def _execute(self) -> None:
         """Execute the scene's script once, recording it."""

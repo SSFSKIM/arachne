@@ -326,6 +326,49 @@ lifted.
   be made writable and written; a frame reused after such a write shows the value before it, as would anything
   else that shares the value. Direction: none; a change goes through the setters.
 
+## What a frame drawn from the record reads (`arachne/timeline/record.py`)
+
+- **A display of another camera costs one picture a play.** A display of a camera the scene's camera does not draw
+  into keeps that camera's picture once a play (`Capture.pictures`), shared with the play before while it is the
+  same: a picture that changes only between plays costs one copy a play, 7.9 MiB at 1920x1080 and 1.6 MiB at
+  854x480, kept for the execution. A picture that changes during a play refuses the record from that play
+  (`camera.display_redrawn`), so the scene is executed again and drawn as it runs from there, rather than keep a
+  copy at each capture (7.9 MiB each at 1920x1080, about 4.7 GB for ten seconds at 60 fps). Each capture compares
+  the picture with the last one kept: 0.6 to 0.7 ms at 1920x1080, 0.1 ms at 854x480. Reproducers:
+  `tests/timeline/test_cameras.py::test_a_display_repainted_between_plays_keeps_a_picture_a_play` and
+  `::test_a_display_repainted_during_a_play_draws_that_play_live`.
+- **An execution summary does not cover a capture's depth references or pictures.** `summarize` digests each
+  capture's mobject states, lists and camera inputs, not `Capture.references` (a depth reference point the scene
+  may not hold) nor `Capture.pictures` (another camera's picture). Two executions that differ only there summarise
+  alike, so a comparison of them reports no divergence where there is one: the probe's (`Session.compare`), a
+  forward run's (`fallback.py`) and a render's self-check (`server/render.py`). No frame is wrong for it: a
+  summary selects no frame and no answer (each run draws from its own record, and kept answers are keyed by
+  manifest, not by summary), so what is lost is a report. A summary needs, per capture, each reference's mobject
+  position and point, and each picture's display position and a digest of its pixels (one per kept array, by
+  identity, as the background's should be). A content key (`RegisteredState.content_key`,
+  `PlayRecord.sample_keys`) is a state's, and neither is part of one.
+- **Not debt: an image painted in place at its size keeps showing the pixels first read.** A camera keeps its
+  read of a fill's image per name (`str(image)`, `BackgroundColoredVMobjectDisplayer.get_background_array`),
+  so a scene that paints into the image without changing its name (its mode, size or identity) goes on showing
+  the pixels that camera read first; drawing from the record does the same (`Record.image_read`). A renamed
+  image (shrunk in place) is read anew, and each camera keeps its own reads. Reproducers:
+  `tests/timeline/test_cameras.py::test_an_image_painted_in_place_is_drawn_as_the_camera_first_read_it`,
+  `::test_an_image_renamed_in_place_is_read_anew`, `::test_each_camera_keeps_its_own_first_read_of_an_image`.
+- **On `ir_cairo`, a path filled from an image can't be drawn inside a display.** A frame is one description,
+  one record per mobject, and a display's camera reads the image at its own pixel shape, so a path both cameras
+  draw is `render.unable` ("drawn two ways in one frame"); before, the display's drawer, which is given no
+  images, failed to open the image's name as a file. `cairo` draws it. Remedy: a record per camera for a path
+  with a fill image, or a display's images seeded as the main camera's are (`CairoDrawer._seed_images`).
+  Reproducer: `camera_scenes.ImageFillZoomedAfterPainting` rendered with `draw_path="ir_cairo"`.
+- **`ir_cairo` raises `render.unable` in cases `cairo` draws.** Among them: a path filled from an image that
+  also appears inside a display (above), and a camera with a non-default `rgb_max_val` or pixel dtype. That is
+  the path's contract: a frame it can't describe is named, never drawn wrong. Whether such a frame should
+  instead fall back to `cairo`, frame by frame, is an open design question for `ir_cairo`.
+- **Replacing an engine module's function is not traced.** The draw-reads test sees reads of mobjects, cameras, the
+  configuration, the camera's display functions and the files a drawing opens, not which module function a draw
+  calls. A scene that replaces one (`camera.py`'s, `vectorized_mobject.py`'s helpers) runs its own code where the
+  engine's ran; drawing from the record does not vouch for it, as it does not for a replaced class member.
+
 ## The image cache (`arachne/mobject/svg/svg_mobject.py`)
 
 - **An image built from the cache is not the image parsing built.** Inherited from Manim Community Edition: a
