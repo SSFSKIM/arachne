@@ -147,12 +147,12 @@ def _replaced_displays(camera: Any) -> str:
                 and getattr(func, "__module__", None) == Camera.__module__
             )
         else:
-            # Bound to the camera, or to the one it was copied from (a copy
-            # shares the dictionary), as the engine's class has it.
-            bound = getattr(func, "__self__", None)
-            engine = type(bound) is kind and getattr(func, "__func__", None) is getattr(
-                kind, method, None
-            )
+            # Bound to this camera, as its class has it: one bound to another
+            # camera (a shallow copy shares the original's dictionary) draws
+            # with that camera's settings.
+            engine = getattr(func, "__self__", None) is camera and getattr(
+                func, "__func__", None
+            ) is getattr(kind, method, None)
         if not engine:
             changed.append(f"display_funcs[{name}]")
     return ", ".join(changed)

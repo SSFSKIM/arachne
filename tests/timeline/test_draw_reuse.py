@@ -201,6 +201,35 @@ def test_an_engine_camera_s_display_functions_are_its_own():
         assert user_camera(kind()) is None, kind.__name__
 
 
+def test_a_display_function_of_another_camera_is_the_scene_s_code():
+    """A display function bound to another camera draws with that camera's
+    settings, which change without a recorded state of this one: the camera
+    is the scene's code, and reuses nothing.
+    """
+    from arachne.frame_ir.painter import user_camera
+
+    scene, on = render_writes(reuse_scenes.BorrowedDisplay)
+    _, off = render_writes(reuse_scenes.BorrowedDisplay, draw_reuse=False)
+    subject, _ = user_camera(scene.renderer.camera)
+    assert subject == "display_funcs[VMobject]"
+    assert scene.renderer.draws.reused == 0
+    assert_same_writes(on, off)
+
+
+def test_a_shallow_copy_of_a_camera_draws_through_the_original_s_functions():
+    """A copy shares the original's display functions, bound to the original:
+    it draws with the original's settings, so it counts as the scene's code.
+    """
+    import copy
+
+    from arachne.camera.camera import Camera
+    from arachne.frame_ir.painter import user_camera
+
+    original = Camera()
+    assert user_camera(original) is None
+    assert user_camera(copy.copy(original)) is not None
+
+
 def test_a_frame_showing_another_camera_s_live_picture_is_drawn():
     """A display of a camera outside the scene shows that camera's pixels as
     they are when the frame is drawn, which no recorded state holds: a frame
