@@ -466,6 +466,103 @@ struct Identity {
     corners: [(usize, usize); 3],
 }
 
+/// How far past 1 a fit's largest share ([`Registry::minimax`]), each point's tolerance taken along
+/// one normal, may fall back within 1 with the tolerances taken along the normal of the plane
+/// fitted, a turn of at most the corners' tilt away: a fit over the corners, a necessary test, gives
+/// up only past it, and a fit of every member past 1 but within it is tried again along the fitted
+/// normal ([`Registry::fit`]).
+const REFIT_ROOM: f64 = 1.0 / 1024.0;
+
+/// Which pass of [`Registry::settle`] a fit runs in, for its counts (`counters` builds).
+#[derive(Clone, Copy)]
+enum Pass {
+    /// The partition of the flat records.
+    Partition,
+    /// The records with no plane of their own attaching to the partition's identities.
+    Attach,
+}
+
+impl Pass {
+    /// Counts one linear program run ([`chebyshev`]).
+    fn program(self) {
+        match self {
+            Pass::Partition => {
+                count!(PARTITION_PROGRAMS);
+            }
+            Pass::Attach => {
+                count!(ATTACH_PROGRAMS);
+            }
+        }
+    }
+
+    /// Counts one fit that ran over every member and found no plane.
+    fn failed(self) {
+        match self {
+            Pass::Partition => {
+                count!(PARTITION_FAILED_FITS);
+            }
+            Pass::Attach => {
+                count!(ATTACH_FAILED_FITS);
+            }
+        }
+    }
+}
+
+/// What an identity's corners bound, found from them alone ([`Registry::corners`]): its plane, the
+/// corners on the plane of the two coordinates other than its normal's largest, each corner's
+/// tolerance along its normal and `gap` (that and the corner's bound along every normal: how far
+/// another plane holding the members may stand from its plane there), the corners' doubled signed
+/// area, and `tilt`, how far the normals of two such planes may part ([`Registry::surely_apart`]).
+#[derive(Clone, Copy)]
+struct Corners {
+    plane: WorldPlane,
+    axes: [usize; 2],
+    at: [[f64; 2]; 3],
+    tolerance: [f64; 3],
+    gap: [f64; 3],
+    area: f64,
+    tilt: f64,
+}
+
+/// What the attach pass of [`Registry::settle`] reads of a settled flat identity, found once: its
+/// corners' bounds, and the parts of the bound within which a record with no plane of its own that
+/// lies on it stands off its plane ([`Reach::bound`]).
+struct Reach {
+    corners: Corners,
+    /// The largest over its members of their tolerance and their snap's departure
+    /// ([`snap_departure`]), both along its plane's normal.
+    members: f64,
+    /// The largest over its members of their tolerance's bound along every normal.
+    widest: f64,
+    /// Twice how far its plane's unit normal may stand from the normal of a plane holding its
+    /// members within their tolerances' bounds along every normal: twice its corners' tilt, and
+    /// at most 4 (two unit normals stand at most 2 apart).
+    turn: f64,
+}
+
+impl Reach {
+    /// How far off the identity's plane a record with no plane of its own may stand where content
+    /// put it on one plane with the identity's members, within their points' hull:
+    /// `tolerance + members + turn (widest + Reach::widest)`, `tolerance` its tolerance along the
+    /// plane's normal and `widest` its bound along every normal.
+    ///
+    /// The identity's plane `n . x = d` holds each member's points within its tolerance `t_m` along
+    /// `n`; the content's plane `v . x = e` holds them within their snap's departure along `v`,
+    /// `s_m(v)`, each moved from where content put it by at most its bound `w_m` along every
+    /// normal. The two planes' difference is affine, its gradient `n - v`, of length `a`: at a
+    /// member's point as content put it, at most `t_m(n) + s_m(v) + a w_m`, so within their hull
+    /// at most the largest of those. A point of the record, moved from content's point on `v` in
+    /// that hull by at most `w`, so stands off `n . x = d` by at most that, `a w`, and `s(v)`. The
+    /// snap's departure is a seminorm of the normal, at most `w` on unit normals, so `s(v)` is at
+    /// most `s(n) + a w`: in all, `t(n) + max_m (t_m(n) + s_m(n)) + 2 a (w + max_m w_m)`, and the
+    /// corners bound `a` by their tilt ([`Registry::surely_apart`]). Outside the hull the
+    /// difference grows with the distance, by up to the tilt: a record there may stand farther
+    /// off, and is not read on the identity's plane.
+    fn bound(&self, tolerance: f64, widest: f64) -> f64 {
+        tolerance + self.members + self.turn * (widest + self.widest)
+    }
+}
+
 /// The planes of a frame's mesh triangles and paths, and their identities ([`Fragment::plane`],
 /// from 1), which what lies on one plane shares whichever producer drew it, so it ties by draw
 /// order there (`order::one_plane`): the planes fitted to snapped points of things on one plane
@@ -489,9 +586,12 @@ struct Identity {
 /// - A record with **no plane of its own** ([`Registry::offer_planeless`]: points on a line,
 ///   however the writer coded them, or a curve) neither founds an identity nor joins one: once the
 ///   partition settles, it attaches to every identity on which one plane holds the members' points
-///   and its own within their tolerances (a line along a cube's edge, to both faces'), the first
-///   [`MOST_IDENTITIES`] of them. One that attaches to none and lies on an axis plane shares an
-///   identity with the others on that axis plane that one value of the coordinate holds.
+///   and its own within their tolerances (a line along a cube's edge, to both faces') and whose
+///   plane its points stand off by no more than content's plane through the members would
+///   leave them ([`Reach::bound`]), the first [`MOST_IDENTITIES`] of them: a record far outside a
+///   small identity's members, which a plane turned within their tolerances holds, does not. One
+///   that attaches to none and lies on an axis plane shares an identity with the others on exactly
+///   that axis plane, its axis and offset.
 ///
 /// An identity's plane is its founder's own until a record joins that it does not hold; then the
 /// plane holding every member with the most room, as a share of each one's tolerance ([`minimax`]).
@@ -691,6 +791,8 @@ impl Registry {
             return;
         }
         self.settled = true;
+        #[cfg(feature = "counters")]
+        let settling = std::time::Instant::now();
         let offers = self.offers.len();
         let mut flat: Vec<usize> = (0..offers).filter(|&o| self.offers[o].flat).collect();
         flat.sort_by(|&a, &b| canonical(&self.offers[a], &self.offers[b]));
@@ -735,10 +837,29 @@ impl Registry {
             self.sets[o][0] = i as u32 + 1;
         }
         let flats = ids.len();
+        #[cfg(feature = "counters")]
+        crate::counters::since(&crate::counters::PARTITION_NS, settling);
+        #[cfg(feature = "counters")]
+        let attaching = std::time::Instant::now();
+        let reach: Vec<Reach> = ids.iter().map(|id| self.reach(id)).collect();
         let mut alone = Vec::new();
         let planeless: Vec<usize> = (0..offers).filter(|&o| !self.offers[o].flat).collect();
+        count!(FLAT_IDENTITIES, flats);
+        count!(ATTACH_RECORDS, planeless.len());
+        count!(ATTACH_PAIRS, planeless.len() * flats);
         for o in planeless {
-            let on: Vec<usize> = (0..flats).filter(|&i| self.contains(&ids[i], o)).collect();
+            // Its first point first, against its bound along every normal: one product a pair.
+            let (first, widest) = (
+                self.offers[o].points.first().copied(),
+                self.offers[o].widest,
+            );
+            let on: Vec<usize> = (0..flats)
+                .filter(|&i| {
+                    let bound = reach[i].bound(widest, widest);
+                    first.is_none_or(|p| within(&ids[i].plane, p) <= bound)
+                        && self.contains(&ids[i], &reach[i], o)
+                })
+                .collect();
             if on.len() > MOST_IDENTITIES {
                 self.capped += 1;
                 count!(CAPPED_SETS);
@@ -751,46 +872,39 @@ impl Registry {
                 alone.push(o);
             }
         }
-        // What attaches to no flat identity and lies on an axis plane: one identity per run of
-        // those on one axis plane that one value of the coordinate holds within each one's
-        // tolerance, in the canonical order, as the partition is made.
+        #[cfg(feature = "counters")]
+        crate::counters::since(&crate::counters::ATTACH_NS, attaching);
+        // What attaches to no flat identity and lies on an axis plane shares an identity only with
+        // the others on exactly that plane: the same axis and the same offset, the coordinate of
+        // its first point, which is its plane. No tolerance and no fit: an axis plane is authored,
+        // and a plane its records only lie near, or that a fit finds through them, does not decide
+        // an identity. Its plane is that axis plane, which no flat record's plane replaces (the
+        // partition is made); a flat identity holding such a record took it above. Numbered in
+        // the canonical order of each plane's first record, as the partition is.
         alone.sort_by(|&a, &b| canonical(&self.offers[a], &self.offers[b]));
-        let mut runs: Vec<(usize, f64, f64, usize)> = Vec::new();
+        let mut runs: std::collections::HashMap<(usize, u64), usize> = Default::default();
         for o in alone {
             let offer = &self.offers[o];
-            let k = offer.axis.expect("an axis record");
-            let mut n = [0.0; 3];
-            n[k] = 1.0;
-            let tolerance = self.tolerance(offer, n);
-            let (lo, hi) = offer
-                .points
-                .iter()
-                .fold((f64::NEG_INFINITY, f64::INFINITY), |(lo, hi), p| {
-                    (lo.max(p[k] - tolerance), hi.min(p[k] + tolerance))
+            let plane = offer.own.expect("an axis record has its axis plane");
+            let at = (
+                offer.axis.expect("an axis record"),
+                (plane.unrounded.offset + 0.0).to_bits(),
+            );
+            let i = *runs.entry(at).or_insert_with(|| {
+                ids.push(Identity {
+                    members: Vec::new(),
+                    plane,
+                    corners: [(o, 0); 3],
                 });
-            let i = match runs
-                .iter_mut()
-                .find(|run| run.0 == k && run.1.max(lo) <= run.2.min(hi))
-            {
-                Some(run) => {
-                    (run.1, run.2) = (run.1.max(lo), run.2.min(hi));
-                    ids[run.3].members.push(o);
-                    run.3
-                }
-                None => {
-                    let plane = offer.own.expect("an axis record has its axis plane");
-                    ids.push(Identity {
-                        members: vec![o],
-                        plane,
-                        corners: [(o, 0); 3],
-                    });
-                    runs.push((k, lo, hi, ids.len() - 1));
-                    ids.len() - 1
-                }
-            };
+                ids.len() - 1
+            });
+            ids[i].members.push(o);
             self.sets[o][0] = i as u32 + 1;
         }
+        count!(AXIS_RUN_IDENTITIES, runs.len());
         self.planes = ids.iter().map(|id| id.plane).collect();
+        #[cfg(feature = "counters")]
+        crate::counters::since(&crate::counters::SETTLE_NS, settling);
     }
 
     /// The identities whose planes lie in the buckets within reach of flat offer `o`'s own plane
@@ -844,45 +958,84 @@ impl Registry {
         if self.holds(&id.plane, o) {
             return Some(None);
         }
-        if self.surely_apart(id, o) {
+        if self.surely_apart(&self.corners(id), o) {
             return None;
         }
-        self.fit(id, o).map(Some)
+        self.fit(id, o, Pass::Partition).map(Some)
     }
 
-    /// Whether offer `o`, with no plane of its own, lies on settled identity `id`: one plane holds
-    /// its points and every member's within their tolerances.
-    fn contains(&self, id: &Identity, o: usize) -> bool {
-        self.holds(&id.plane, o) || !self.surely_apart(id, o) && self.fit(id, o).is_some()
+    /// What settled flat identity `id` gives the attach pass ([`Reach`]): its corners' bounds, and
+    /// its members' tolerances and snap's departures along its plane's normal, and their bounds
+    /// along every normal, at their largest.
+    fn reach(&self, id: &Identity) -> Reach {
+        let n = id.plane.unrounded.normal;
+        let (mut members, mut widest) = (0.0f64, 0.0f64);
+        for &m in &id.members {
+            let offer = &self.offers[m];
+            let snap = snap_departure(self.grid, n, &offer.places, &offer.shape);
+            members = members.max(2.0 * snap + offer.dep);
+            widest = widest.max(offer.widest);
+        }
+        let corners = self.corners(id);
+        let turn = 2.0 * corners.tilt.min(2.0);
+        Reach {
+            corners,
+            members,
+            widest,
+            turn,
+        }
+    }
+
+    /// Whether offer `o`, with no plane of its own, lies on settled identity `id`, `reach` what
+    /// `id` gives the attach pass: one plane holds its points and every member's within their
+    /// tolerances, and its points stand off `id`'s plane within the bound content's plane through
+    /// the members leaves them ([`Reach::bound`]), so a key read on `id`'s plane stands within that
+    /// of theirs.
+    fn contains(&self, id: &Identity, reach: &Reach, o: usize) -> bool {
+        count!(ATTACH_NEAR);
+        let offer = &self.offers[o];
+        let tolerance = self.tolerance(offer, id.plane.unrounded.normal);
+        let bound = reach.bound(tolerance, offer.widest);
+        if offer.points.iter().any(|p| within(&id.plane, *p) > bound) {
+            return false;
+        }
+        offer.points.iter().all(|p| off(&id.plane, *p) <= tolerance)
+            || !self.surely_apart(&reach.corners, o) && self.fit(id, o, Pass::Attach).is_some()
     }
 
     /// The plane holding every member of `id` and offer `o` with the most room ([`minimax`]),
     /// where it holds each within its own tolerance along its own normal; `None` where none does.
-    /// The fit weighs each record by its tolerance along `id`'s plane's normal: it is tried, its
-    /// tolerances taken again along its own normal, and fitted once more from there if they do not
-    /// hold. A fit over `id`'s corners and `o` alone, a necessary test, is tried first.
-    fn fit(&self, id: &Identity, o: usize) -> Option<WorldPlane> {
+    /// The fit weighs each record by its tolerance along `id`'s plane's normal: it is tried and,
+    /// where its tolerances taken again along its own normal do not hold or its largest share
+    /// passes 1 by no more than [`REFIT_ROOM`], fitted once more from there. A fit over `id`'s
+    /// corners and `o` alone, a necessary test, is tried first.
+    fn fit(&self, id: &Identity, o: usize, pass: Pass) -> Option<WorldPlane> {
         let n = id.plane.unrounded.normal;
         let point = |(m, k): (usize, usize)| (m, self.offers[m].points[k]);
         let ours = self.offers[o].points.iter().map(|p| (o, *p));
+        pass.program();
         if let Some((_, t)) = self.minimax(id.corners.map(point).into_iter().chain(ours), n)
-            && t > 1.0 + 1.0 / 1024.0
+            && t > 1.0 + REFIT_ROOM
         {
             return None;
         }
         let records = || id.members.iter().copied().chain([o]);
         let mut along = n;
-        for _ in 0..2 {
+        for again in [false, true] {
             let points = records().flat_map(|m| self.offers[m].points.iter().map(move |p| (m, *p)));
-            let (plane, t) = self.minimax(points, along)?;
-            if t > 1.0 {
-                return None;
-            }
-            if records().all(|m| self.holds(&plane, m)) {
+            pass.program();
+            let Some((plane, t)) = self.minimax(points, along) else {
+                break;
+            };
+            if t <= 1.0 && records().all(|m| self.holds(&plane, m)) {
                 return Some(plane);
+            }
+            if again || t > 1.0 + REFIT_ROOM {
+                break;
             }
             along = plane.unrounded.normal;
         }
+        pass.failed();
         None
     }
 
@@ -941,37 +1094,58 @@ impl Registry {
     /// `sqrt(3)` times), which moves a point's distance by that share of its height off the plane.
     /// A point of `o` farther from `id`'s plane than its own bound along any normal, that reach,
     /// and the tilt's room, lies off every such plane. Not decided (`false`) where the corners'
-    /// tilt passes a sixteenth.
-    fn surely_apart(&self, id: &Identity, o: usize) -> bool {
-        let plane = &id.plane;
-        let n = plane.unrounded.normal;
-        let axis = largest_component(n);
-        let (i, j) = ((axis + 1) % 3, (axis + 2) % 3);
-        let flat = |p: [f64; 3]| [p[i], p[j]];
-        let corner = id.corners.map(|(m, k)| flat(self.offers[m].points[k]));
-        let tolerance = id.corners.map(|(m, _)| self.tolerance(&self.offers[m], n));
-        let gap: [f64; 3] =
-            std::array::from_fn(|v| tolerance[v] + self.offers[id.corners[v].0].widest);
-        let twice = |p: [f64; 2], q: [f64; 2], r: [f64; 2]| {
-            (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
-        };
-        let [a, b, c] = corner;
-        let area = twice(a, b, c);
-        let side = |p: [f64; 2], q: [f64; 2]| libm::hypot(p[0] - q[0], p[1] - q[1]);
-        let sides = [side(b, c), side(c, a), side(a, b)];
-        let tilt = 3f64.sqrt() * (0..3).map(|v| gap[v] * sides[v] / area.abs()).sum::<f64>();
+    /// tilt passes a sixteenth. `corners` are `id`'s ([`Registry::corners`]).
+    fn surely_apart(&self, corners: &Corners, o: usize) -> bool {
+        let Corners {
+            plane,
+            axes: [i, j],
+            at: [a, b, c],
+            tolerance,
+            gap,
+            area,
+            tilt,
+        } = *corners;
         if tilt.is_nan() || tilt > 1.0 / 16.0 {
             return false;
         }
         let offer = &self.offers[o];
         offer.points.iter().any(|x| {
-            let p = flat(*x);
+            let p = [x[i], x[j]];
             let weights = [twice(p, b, c), twice(a, p, c), twice(a, b, p)].map(|w| w / area);
             let reach: f64 = (0..3)
                 .map(|v| weights[v].abs() * (gap[v] + 2.0 * tilt * tolerance[v]))
                 .sum();
-            within(plane, *x) * (1.0 - 2.0 * tilt) > offer.widest + reach
+            within(&plane, *x) * (1.0 - 2.0 * tilt) > offer.widest + reach
         })
+    }
+
+    /// What identity `id`'s corners bound ([`Corners`]), as [`Registry::surely_apart`] reads it.
+    fn corners(&self, id: &Identity) -> Corners {
+        let plane = id.plane;
+        let n = plane.unrounded.normal;
+        let axis = largest_component(n);
+        let axes = [(axis + 1) % 3, (axis + 2) % 3];
+        let at = id.corners.map(|(m, k)| {
+            let p = self.offers[m].points[k];
+            [p[axes[0]], p[axes[1]]]
+        });
+        let tolerance = id.corners.map(|(m, _)| self.tolerance(&self.offers[m], n));
+        let gap: [f64; 3] =
+            std::array::from_fn(|v| tolerance[v] + self.offers[id.corners[v].0].widest);
+        let [a, b, c] = at;
+        let area = twice(a, b, c);
+        let side = |p: [f64; 2], q: [f64; 2]| libm::hypot(p[0] - q[0], p[1] - q[1]);
+        let sides = [side(b, c), side(c, a), side(a, b)];
+        let tilt = 3f64.sqrt() * (0..3).map(|v| gap[v] * sides[v] / area.abs()).sum::<f64>();
+        Corners {
+            plane,
+            axes,
+            at,
+            tolerance,
+            gap,
+            area,
+            tilt,
+        }
     }
 
     /// `corners` widened by offer `o`'s points: each replaces a corner where the triangle grows.
@@ -1192,6 +1366,11 @@ fn solve4(m: [[f64; 4]; 4], rhs: [f64; 4]) -> Option<[f64; 4]> {
         x[r] = s / a[r][r];
     }
     x.iter().all(|v| v.is_finite()).then_some(x)
+}
+
+/// Twice the signed area of the triangle `p, q, r` on a plane.
+fn twice(p: [f64; 2], q: [f64; 2], r: [f64; 2]) -> f64 {
+    (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
 }
 
 /// The index of `n`'s largest component in magnitude, the first of equals.
@@ -2286,5 +2465,174 @@ mod tests {
         assert_eq!(r.identities(on), [ids[0], ids[1], ids[2], ids[3]]);
         assert!(r.attached(on));
         assert_eq!(r.capped(), 1);
+    }
+
+    /// A square 0.1 across facing z, and a tick 0.3 long along y five units off along x, raised 20
+    /// grid steps: the plane rising from the square's centre to the tick holds the square within
+    /// half its tolerance and the tick on it, so one plane holds both; but the tick stands 20
+    /// steps off the square's plane, past the bound content's plane through the square leaves a
+    /// record near it (about 2.5 steps, [`Reach::bound`]), so it does not lie on the square's
+    /// identity, whose plane would key it.
+    #[test]
+    fn a_record_far_off_a_small_identity_s_plane_does_not_lie_on_it() {
+        let s = 0.05;
+        let square = ring(&[[-s, -s, 0.0], [s, -s, 0.0], [s, s, 0.0], [-s, s, 0.0]]);
+        let h = 20.0 * GRID;
+        let tick = [[5.0, -0.15, h], [5.0, 0.0, h], [5.0, 0.15, h]];
+        let rise = h / 5.0;
+        let n = [-rise, 0.0, 1.0].map(|v| v / (1.0 + rise * rise).sqrt());
+        let held = |p: &[[f64; 3]]| {
+            let tolerance = snap_departure(GRID, n, &NONE, p);
+            p.iter().all(|q| dot(n, *q).abs() < tolerance / 2.0)
+        };
+        assert!(held(&square) && held(&tick));
+        let mut r = registry();
+        let face = flat(&mut r, &square);
+        let line = r.offer_planeless(None, &tick, &NONE, &tick);
+        r.settle();
+        assert!(r.identities(face)[0] != 0);
+        assert!(
+            !r.attached(line) && r.identities(line) == [0; 4],
+            "the tick lies on {:?}",
+            r.identities(line)
+        );
+    }
+
+    /// A face 2 across whose corners at `x = 1` stand 0.99 of their snap's departure below
+    /// `z = 0` (its own plane tilted by the snap), and a line along that edge content put on
+    /// `z = 0` too, 0.99 of its own above: the line stands off the face's plane by 0.99 of the two
+    /// tolerances together, so that plane does not hold it, but `z = 0` holds both, and it stands
+    /// within the bound content's plane through the face leaves it ([`Reach::bound`], 1.5 of the
+    /// face's tolerance): it lies on the face's identity.
+    #[test]
+    fn a_line_on_a_face_s_edge_lies_on_it_off_the_face_s_plane() {
+        let snap = snap_departure(GRID, [0.0, 0.0, 1.0], &NONE, &[[1.0, 1.0, 0.0]]);
+        let a = 0.99 * snap;
+        let face = ring(&[
+            [-1.0, -1.0, 0.0],
+            [1.0, -1.0, -a],
+            [1.0, 1.0, -a],
+            [-1.0, 1.0, 0.0],
+        ]);
+        let edge = [[1.0, -1.0, a], [1.0, 0.0, a], [1.0, 1.0, a]];
+        let mut r = registry();
+        let id = flat(&mut r, &face);
+        let line = r.offer_planeless(None, &edge, &NONE, &edge);
+        r.settle();
+        let plane = r.plane(r.identities(id)[0]);
+        let n = plane.unrounded.normal;
+        let both = r.tolerance_along(id, n) + r.tolerance_along(line, n);
+        let apart = edge.iter().map(|p| within(&plane, *p)).fold(0.0, f64::max);
+        assert!(
+            apart > 0.98 * both && apart < both,
+            "the line stands {apart:e} off the face's plane, against {both:e}"
+        );
+        assert!(r.attached(line));
+        assert_eq!(r.identities(line), r.identities(id));
+    }
+
+    /// Two lines crossing at the origin, one coded on the axis plane of x (its points share x
+    /// alone) and one on that of y, with nothing to attach to: two axis planes, two identities.
+    #[test]
+    fn lines_on_two_axis_planes_that_cross_share_no_identity() {
+        let on_x = [[0.0, -1.0, -1.0], [0.0, 0.0, 0.0], [0.0, 1.0, 1.0]];
+        let on_y = [[-1.0, 0.0, -1.0], [0.0, 0.0, 0.0], [1.0, 0.0, 1.0]];
+        let mut r = registry();
+        let (a, ..) = r.offer_path(&on_x, Planarity::Axis(0), &NONE, &on_x);
+        let (b, ..) = r.offer_path(&on_y, Planarity::Axis(1), &NONE, &on_y);
+        r.settle();
+        let (on_a, on_b) = (r.identities(a), r.identities(b));
+        assert!(
+            on_a[0] != 0 && on_b[0] != 0 && on_a != on_b,
+            "{on_a:?} and {on_b:?}"
+        );
+    }
+
+    /// Two lines coded on the axis plane of z with nothing to attach to: at offsets one tolerance
+    /// apart, two identities, though one value of z holds both within their tolerances; at one
+    /// offset, one.
+    #[test]
+    fn lines_on_one_axis_at_offsets_a_tolerance_apart_share_no_identity() {
+        let line = |y: f64, z: f64| [[-1.0, y, z], [0.0, y, z], [1.0, y, z]];
+        let tolerance = snap_departure(GRID, [0.0, 0.0, 1.0], &NONE, &line(0.0, 0.0));
+        for (z, one) in [(tolerance, false), (0.0, true)] {
+            let (low, high) = (line(0.0, 0.0), line(0.5, z));
+            let mut r = registry();
+            let (a, ..) = r.offer_path(&low, Planarity::Axis(2), &NONE, &low);
+            let (b, ..) = r.offer_path(&high, Planarity::Axis(2), &NONE, &high);
+            r.settle();
+            let (on_a, on_b) = (r.identities(a), r.identities(b));
+            assert!(
+                on_a[0] != 0 && on_b[0] != 0 && (on_a == on_b) == one,
+                "{z:e} apart: {on_a:?} and {on_b:?}"
+            );
+        }
+    }
+
+    /// Lines coded on the axis plane of z on a square on that plane and beside it, past its edges:
+    /// the square's plane holds them, so they attach to its identity and form none of their own.
+    #[test]
+    fn lines_on_an_axis_plane_a_face_holds_join_its_identity_and_form_none() {
+        let z = 0.25;
+        let mut r = registry();
+        let square = ring(&[
+            [-1.0, -1.0, z],
+            [1.0, -1.0, z],
+            [1.0, 1.0, z],
+            [-1.0, 1.0, z],
+        ]);
+        let face = flat(&mut r, &square);
+        let lines = [0.0, 0.9, 1.2].map(|y| {
+            let points = [[-1.5, y, z], [0.0, y, z], [1.5, y, z]];
+            r.offer_path(&points, Planarity::Axis(2), &NONE, &points).0
+        });
+        r.settle();
+        for line in lines {
+            assert!(r.attached(line));
+            assert_eq!(r.identities(line), r.identities(face));
+        }
+        assert_eq!(r.planes.len(), 1);
+    }
+
+    /// Two squares 0.01 across facing z, 0.01 apart along x, the second raised by 4.002 times
+    /// their tolerance along z: along z no plane holds both (the best leaves the four columns of
+    /// corners a quarter of the rise off alternately, 1.0005 of that tolerance), but the plane
+    /// rising through them, turned about 6e-3, holds each within its tolerance along its own
+    /// normal, which that turn widens by 0.6%. Along z the fit's largest share passes 1 by less
+    /// than [`REFIT_ROOM`], so it is fitted again along its normal: one identity.
+    #[test]
+    fn squares_held_only_along_a_turned_normal_are_one_identity() {
+        let s = 0.01;
+        let square =
+            |x: f64, z: f64| ring(&[[x, 0.0, z], [x + s, 0.0, z], [x + s, s, z], [x, s, z]]);
+        let tolerance = |p: &[[f64; 3]], n: [f64; 3]| {
+            let own = WorldPlane::fit(p, Planarity::Newell).unwrap();
+            snap_departure(GRID, n, &NONE, p) + departure(&own, p)
+        };
+        let up = [0.0, 0.0, 1.0];
+        let worst = tolerance(&square(0.0, 0.0), up).max(tolerance(&square(2.0 * s, 0.0), up));
+        let rise = 4.002 * worst;
+        let squares = [square(0.0, 0.0), square(2.0 * s, rise)];
+        let share = rise / 4.0 / worst;
+        assert!(share > 1.0 && share < 1.0 + REFIT_ROOM, "{share}");
+        // The plane z = rise (x / (2 s) - 1 / 4), leaving each column of corners a quarter of the
+        // rise off along z, holds each square within its tolerance along its own normal.
+        let slope = rise / (2.0 * s);
+        let n = [-slope, 0.0, 1.0].map(|v| v / (1.0 + slope * slope).sqrt());
+        let d = -rise / 4.0 * n[2];
+        for p in &squares {
+            let off = p.iter().map(|q| (dot(n, *q) - d).abs()).fold(0.0, f64::max);
+            assert!(off < 0.996 * tolerance(p, n), "{off:e}");
+        }
+        let mut r = registry();
+        let [a, b] = [0, 1].map(|k| flat(&mut r, &squares[k]));
+        r.settle();
+        assert!(
+            r.identities(a)[0] != 0 && r.identities(a) == r.identities(b),
+            "{:?} and {:?}",
+            r.identities(a),
+            r.identities(b)
+        );
+        assert!(linked(&r));
     }
 }

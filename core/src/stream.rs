@@ -2581,12 +2581,13 @@ mod tests {
     /// its snap's departure along that plane's normal and its points' departure from it. A flat
     /// face one grid step nearer shares the identity (one plane holds it and the face beneath
     /// within their tolerances), and the two tie: the bent quad, drawn later, is above it wherever
-    /// both cover. Three steps nearer, the face has an identity of its own, which the bent quad
+    /// both cover. Two steps nearer (the first whole step past the two faces' tolerances
+    /// together, 1.546 steps) and three, the face has an identity of its own, which the bent quad
     /// does not lie on, and depth orders them: the face above.
     #[test]
     fn a_bent_quad_on_a_registered_plane_ties_within_its_reach_and_is_ordered_beyond_it() {
         let view = snapped_view(70.0, -110.0);
-        for (steps, tie) in [(1.0, true), (3.0, false)] {
+        for (steps, tie) in [(1.0, true), (2.0, false), (3.0, false)] {
             let base = camera_square(&view, 1.6, (0.0, 0.0), 0.0);
             let near = camera_square(&view, 1.0, (0.2, 0.1), steps * GRID);
             let bent = camera_ring(
@@ -2687,7 +2688,7 @@ mod tests {
     /// every point of its outline, and the line, with no plane of its own, attaches to the
     /// identity, ties with the face and is drawn over it at every sub-sample both cover (keyed on
     /// the square's plane, the face came about 2e-5 nearer than its own points at its far corner
-    /// and hid the line).
+    /// and hid the line). Unsnapped, the square's tilt passes its tolerance, and the two are apart.
     #[test]
     fn a_face_that_shares_a_smaller_record_s_plane_is_keyed_on_its_own() {
         let view = snapped_view(70.0, -110.0);
@@ -2761,12 +2762,35 @@ mod tests {
         let shown =
             crate::project::pre_display(&face, Some(&p), crate::project::Placement::Projected);
         let s = paths_stream(
-            view,
+            view.clone(),
+            vec![
+                (
+                    square.clone(),
+                    face_record(1, [0.8, 0.2, 0.2, 1.0], None, None),
+                ),
+                (
+                    face.clone(),
+                    face_record(2, [0.2, 0.4, 0.8, 1.0], None, None),
+                ),
+                (line, line_record),
+            ],
+        );
+        // Unsnapped, each one's tolerance is its rounding alone, which the square's tilt over its
+        // own extent passes: the two are apart.
+        let mut unsnapped = view;
+        unsnapped.input_grid = 0.0;
+        let apart = identities(&paths_stream(
+            unsnapped,
             vec![
                 (square, face_record(1, [0.8, 0.2, 0.2, 1.0], None, None)),
                 (face, face_record(2, [0.2, 0.4, 0.8, 1.0], None, None)),
-                (line, line_record),
             ],
+        ));
+        assert!(
+            !apart[&101].is_empty() && apart[&101].is_disjoint(&apart[&102]),
+            "unsnapped, the square lies on {:?} and the face on {:?}",
+            apart[&101],
+            apart[&102]
         );
         let (mut planes, mut key) = ([0u32; 2], None);
         s.visit_contributors(0, 0, w, h, |_, _, frags, _, _, _| {
@@ -3176,6 +3200,114 @@ mod tests {
         assert!(both > 50, "{both} sub-samples hold the face and the line");
         assert_eq!(
             wrong, 0,
+            "the face is above the line drawn after it at {wrong} of {both}"
+        );
+    }
+
+    /// Two lines crossing on the world's plane `z = 0`, their points sharing z (so coded on that
+    /// axis plane, as the writer codes them), with no face to attach to: they lie on one axis
+    /// plane, so share its identity and tie, and the line drawn second is above the first wherever
+    /// both cover (read on their own centrelines, each sub-sample of the crossing keyed at a
+    /// different foot on each, depth would order them both ways).
+    #[test]
+    fn lines_on_one_axis_plane_with_no_face_tie_and_keep_paint_order() {
+        let view = snapped_view(70.0, -110.0);
+        let axis = crate::depth::Planarity::Axis(2);
+        let one = snapped_line([-1.2, -0.3, 0.0], [1.2, 0.4, 0.0]);
+        let two = snapped_line([-0.2, -1.1, 0.0], [0.3, 1.2, 0.0]);
+        for line in [&one, &two] {
+            assert_eq!(crate::depth::WorldPlane::decide(line, false), axis);
+        }
+        let s = paths_stream(
+            view,
+            vec![
+                (one, line_record(1, 8.0, axis)),
+                (two, line_record(2, 8.0, axis)),
+            ],
+        );
+        let ids = identities(&s);
+        let (first, second) = (&ids[&101], &ids[&102]);
+        assert!(
+            !first.is_empty() && first == second,
+            "the lines lie on {first:?} and {second:?}"
+        );
+        let (wrong, both) = above(&s, 101, 102);
+        assert!(both > 50, "{both} sub-samples hold both lines");
+        assert_eq!(
+            wrong, 0,
+            "the first line is above the second at {wrong} of {both}"
+        );
+    }
+
+    /// What the attach bound gives up: a face 0.08 across on the world plane `z = 0.3 x`, and a
+    /// line along x through it and 2.46 past it either way, its points sharing y (so coded on the
+    /// axis plane of y), both snapped, at the spot of those searched where the snap tilts the
+    /// face's own plane most, the line's ends standing more than 8 grid steps off it (the bound
+    /// there is under 3). Content put both on one plane, which holds each within its snap's
+    /// departure, but the line runs far outside the face's points, where its key read on the
+    /// face's plane is held to nothing: it does not lie on the face's identity (it has its axis
+    /// plane's), and depth orders the two where both cover, the line keyed on that axis plane
+    /// through its centre, the face above it on part of its width.
+    #[test]
+    fn a_line_far_past_a_small_face_does_not_share_its_identity_and_depth_orders_them() {
+        let view = snapped_view(70.0, -110.0);
+        let at = |x: f64, y: f64| [x, y, 0.3 * x];
+        let off = |own: &crate::depth::WorldPlane, points: &[[f64; 3]]| {
+            let (n, d) = (own.unrounded.normal, own.unrounded.offset);
+            points
+                .iter()
+                .map(|q| (dot3(n, *q) - d).abs())
+                .fold(0.0, f64::max)
+        };
+        let (most, face, line) = (0..4000)
+            .filter_map(|k| {
+                let (cx, cy) = (-0.6 + 0.000713 * k as f64, -0.3 + 0.000419 * k as f64);
+                let h = 0.04;
+                let face = snapped(
+                    &ring(&[
+                        at(cx - h, cy - h),
+                        at(cx + h, cy - h),
+                        at(cx + h, cy + h),
+                        at(cx - h, cy + h),
+                    ]),
+                    GRID,
+                );
+                let line = snapped_line(at(cx - 2.5, cy), at(cx + 2.5, cy));
+                let own = crate::depth::WorldPlane::fit(&face, crate::depth::Planarity::Newell)?;
+                Some((off(&own, &line), face, line))
+            })
+            .max_by(|a, b| a.0.total_cmp(&b.0))
+            .expect("faces");
+        assert!(
+            most > 8.0 * GRID,
+            "the line's ends stand at most {} steps off the face's plane",
+            most / GRID
+        );
+        let axis = crate::depth::Planarity::Axis(1);
+        assert_eq!(crate::depth::WorldPlane::decide(&line, false), axis);
+        let content = crate::depth::WorldPlane::canonical([-0.3, 0.0, 1.0], [0.0; 3]).unwrap();
+        for points in [&face, &line] {
+            let n = content.unrounded.normal;
+            let snap = crate::depth::snap_departure(GRID, n, &[IDENTITY, IDENTITY], points);
+            assert!(off(&content, points) <= snap, "content's plane holds each");
+        }
+        let flat = Some(crate::depth::Planarity::Newell);
+        let s = paths_stream(
+            view,
+            vec![
+                (face, face_record(1, [0.2, 0.4, 0.8, 1.0], None, flat)),
+                (line, line_record(2, 6.0, axis)),
+            ],
+        );
+        let ids = identities(&s);
+        let (on_face, on_line) = (&ids[&101], &ids[&102]);
+        assert!(
+            !on_face.is_empty() && !on_line.is_empty() && on_face.is_disjoint(on_line),
+            "the face lies on {on_face:?}, the line on {on_line:?}"
+        );
+        let (wrong, both) = above(&s, 101, 102);
+        assert!(
+            both > 20 && wrong > 0 && wrong < both,
             "the face is above the line drawn after it at {wrong} of {both}"
         );
     }

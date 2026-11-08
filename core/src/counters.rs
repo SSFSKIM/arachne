@@ -1,6 +1,6 @@
-//! How often the depth read along a curve runs its parts, for measuring what it costs: counted
-//! only in a build with the `counters` feature, which no release turns on. Every count is shared
-//! by the threads a draw runs on.
+//! How often the depth read along a curve and the plane registry run their parts, and how long the
+//! registry takes, for measuring what they cost: counted only in a build with the `counters`
+//! feature, which no release turns on. Every count is shared by the threads a draw runs on.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -26,8 +26,34 @@ pub static CAPPED_SETS: AtomicU64 = AtomicU64::new(0);
 pub static DEGENERATE_TRIANGLES: AtomicU64 = AtomicU64::new(0);
 /// Of those, the ones no flat record's identity holds (`depth::Registry::attached`).
 pub static UNATTACHED_TRIANGLES: AtomicU64 = AtomicU64::new(0);
+/// The identities the plane registry's partition of flat records made (`depth::Registry::settle`).
+pub static FLAT_IDENTITIES: AtomicU64 = AtomicU64::new(0);
+/// Linear programs the partition ran (`depth::Registry::fit`).
+pub static PARTITION_PROGRAMS: AtomicU64 = AtomicU64::new(0);
+/// Its fits that ran over every member of an identity and found no plane holding them.
+pub static PARTITION_FAILED_FITS: AtomicU64 = AtomicU64::new(0);
+/// Records with no plane of their own the registry's attach pass offered to the partition's
+/// identities (`depth::Registry::settle`).
+pub static ATTACH_RECORDS: AtomicU64 = AtomicU64::new(0);
+/// Pairs of such a record and a flat identity the attach pass tried.
+pub static ATTACH_PAIRS: AtomicU64 = AtomicU64::new(0);
+/// Of those, the ones its first point's distance from the identity's plane did not part, which
+/// were tested at every point (`depth::Registry::contains`).
+pub static ATTACH_NEAR: AtomicU64 = AtomicU64::new(0);
+/// Linear programs the attach pass ran.
+pub static ATTACH_PROGRAMS: AtomicU64 = AtomicU64::new(0);
+/// Its fits that ran over every member of an identity and found no plane holding them.
+pub static ATTACH_FAILED_FITS: AtomicU64 = AtomicU64::new(0);
+/// Identities of records with no plane of their own that attached to none and share an axis
+/// plane (`depth::Registry::settle`).
+pub static AXIS_RUN_IDENTITIES: AtomicU64 = AtomicU64::new(0);
+/// Nanoseconds the registry spent settling (`depth::Registry::settle`), in its partition of flat
+/// records, and in its attach pass.
+pub static SETTLE_NS: AtomicU64 = AtomicU64::new(0);
+pub static PARTITION_NS: AtomicU64 = AtomicU64::new(0);
+pub static ATTACH_NS: AtomicU64 = AtomicU64::new(0);
 
-const ALL: [(&str, &AtomicU64); 10] = [
+const ALL: [(&str, &AtomicU64); 22] = [
     ("near", &NEAR),
     ("bounds_tested", &BOUNDS_TESTED),
     ("key_under", &KEY_UNDER),
@@ -38,11 +64,29 @@ const ALL: [(&str, &AtomicU64); 10] = [
     ("capped_sets", &CAPPED_SETS),
     ("degenerate_triangles", &DEGENERATE_TRIANGLES),
     ("unattached_triangles", &UNATTACHED_TRIANGLES),
+    ("flat_identities", &FLAT_IDENTITIES),
+    ("partition_programs", &PARTITION_PROGRAMS),
+    ("partition_failed_fits", &PARTITION_FAILED_FITS),
+    ("attach_records", &ATTACH_RECORDS),
+    ("attach_pairs", &ATTACH_PAIRS),
+    ("attach_near", &ATTACH_NEAR),
+    ("attach_programs", &ATTACH_PROGRAMS),
+    ("attach_failed_fits", &ATTACH_FAILED_FITS),
+    ("axis_run_identities", &AXIS_RUN_IDENTITIES),
+    ("settle_ns", &SETTLE_NS),
+    ("partition_ns", &PARTITION_NS),
+    ("attach_ns", &ATTACH_NS),
 ];
 
 /// Adds `n` to `counter`.
 pub fn add(counter: &AtomicU64, n: usize) {
     counter.fetch_add(n as u64, Ordering::Relaxed);
+}
+
+/// Adds the nanoseconds since `start` to `counter`.
+pub fn since(counter: &AtomicU64, start: std::time::Instant) {
+    let ns = u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX);
+    counter.fetch_add(ns, Ordering::Relaxed);
 }
 
 /// Raises `counter` to `n` if it is lower.
