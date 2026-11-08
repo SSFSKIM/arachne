@@ -453,6 +453,24 @@ def test_an_image_painted_in_place_is_drawn_as_the_camera_first_read_it(
 
 
 @pytest.mark.parametrize("draw_path", ["cairo", "ir_cairo"])
+def test_an_image_the_camera_read_before_the_record_is_drawn_as_it_read_it(
+    session_of, draw_path
+):
+    """The camera's own read of an image outranks what the image holds when
+    the record first meets it: painted after the camera read it, the image
+    is still drawn as it was read, from the record and as the scene runs.
+    """
+    if draw_path == "ir_cairo":
+        pytest.importorskip("arachne_core")
+    scene_class = camera_scenes.ImageFillPrimed
+    live = _drawn_live(scene_class, 15, draw_path=draw_path)
+    assert _centre(live[0]) == _centre(live[-1]) == (255, 0, 0)
+    scene, drawn = render(scene_class, 15, draw_path=draw_path)
+    assert scene.timeline.record.refusal is None
+    _equal_frames(drawn, live)
+
+
+@pytest.mark.parametrize("draw_path", ["cairo", "ir_cairo"])
 def test_an_image_renamed_in_place_is_read_anew(session_of, draw_path):
     """A camera keeps its read of an image under the image's name: an image
     shrunk in place has another, which the camera reads as it is then.

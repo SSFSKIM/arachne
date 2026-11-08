@@ -1011,7 +1011,17 @@ class Record:
                 if isinstance(mob, VMobject) and isinstance(image, Image.Image):
                     name = self._image_name(image, seq)
                     if (id(reader), name) not in reads:
-                        pixels = np.array(image)
+                        # The camera's own read, when it made one before the
+                        # record met the image, outranks what the image holds.
+                        displayer = reader.__dict__.get(
+                            "background_colored_vmobject_displayer"
+                        )
+                        held = (
+                            displayer.file_name_to_pixel_array_map.get(name)
+                            if displayer is not None
+                            else None
+                        )
+                        pixels = np.array(image if held is None else held)
                         pixels.flags.writeable = False
                         reads[id(reader), name] = (reader, pixels)
 

@@ -453,6 +453,23 @@ class ImageFillPainted(Scene):
         self.wait(0.4)
 
 
+class ImageFillPrimed(Scene):
+    """A red image the camera has already read (the scene drew with it), then
+    painted blue before a circle filled from it is first shown: the camera
+    keeps its read, so the circle is red.
+    """
+
+    def construct(self):
+        image = Image.new("RGBA", (8, 8), (255, 0, 0, 255))
+        displayer = self.renderer.camera.get_background_colored_vmobject_displayer()
+        displayer.get_background_array(image)
+        image.paste((0, 0, 255, 255), (0, 0, 8, 8))
+        circle = Circle(radius=1.5, fill_opacity=1, stroke_width=0)
+        circle.color_using_background_image(image)
+        self.add(circle)
+        self.wait(0.4)
+
+
 class ImageFillResized(Scene):
     """A circle filled from a red image, which an updater paints blue and
     shrinks in place partway through the wait: the image's name (its size
