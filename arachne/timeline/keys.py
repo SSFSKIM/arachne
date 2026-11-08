@@ -653,11 +653,15 @@ def _foreign_key(value: Any) -> Any:
     image = sys.modules.get("PIL.Image")
     if image is not None and isinstance(value, image.Image):
         # ``info`` too: its transparency is read where it converts to colours.
+        # The palette in the mode it is held in, which keeps its alpha.
+        palette = getattr(value, "palette", None)
+        mode = getattr(palette, "mode", None) or "RGB"
         return (
             value.mode,
             value.size,
             value.tobytes(),
-            value.getpalette(),
+            mode,
+            value.getpalette(mode),
             value.info,
         )
     svg = sys.modules.get("svgelements")

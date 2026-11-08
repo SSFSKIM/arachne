@@ -1716,3 +1716,18 @@ def test_an_enum_member_is_a_summary_leaf_by_its_value_too():
     high = Enum("Level", {"ONE": 2})
     assert _field_leaf(low.ONE) == _field_leaf(low.ONE)
     assert _field_leaf(low.ONE) != _field_leaf(high.ONE)
+
+
+def test_a_palette_image_is_keyed_by_its_palettes_alpha_too():
+    """Palettes of one set of colours that differ only in alpha convert to
+    other pixels: two images, two keys.
+    """
+    from PIL import Image
+
+    def palette_image(alpha: int) -> Image.Image:
+        image = Image.new("P", (2, 2), 0)
+        image.putpalette([255, 0, 0, alpha], rawmode="RGBA")
+        return image
+
+    assert _value_key(palette_image(0)) != _value_key(palette_image(255))
+    assert _value_key(palette_image(255)) == _value_key(palette_image(255))
