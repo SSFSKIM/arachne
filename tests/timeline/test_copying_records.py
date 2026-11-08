@@ -6,6 +6,7 @@ bytes, the same animation states kept, and equal bytes at every frame.
 
 from __future__ import annotations
 
+import functools
 import importlib.util
 import sys
 from pathlib import Path
@@ -19,6 +20,7 @@ from .test_vectorized import animation_states, keys, recorded_values, same_value
 TEACHING = Path(__file__).parents[2] / "benchmarks" / "teaching_scenes" / "scenes.py"
 
 
+@functools.cache
 def teaching_scenes():
     spec = importlib.util.spec_from_file_location("teaching_scenes", TEACHING)
     module = importlib.util.module_from_spec(spec)
@@ -42,6 +44,11 @@ TEACHING_NAMES = [
 
 
 def assert_same_with_the_copier_on_and_off(scene_class, fps: int = 15):
+    # A scene's first render in a process can record other content keys than
+    # its later renders do, with either copier (what the process's caches
+    # hold differs): one render first, so that both compared renders are
+    # later ones.
+    render(scene_class, fps)
     on_scene, on = render(scene_class, fps, fast_copy=True)
     off_scene, off = render(scene_class, fps, fast_copy=False)
     assert keys(on_scene) == keys(off_scene)
