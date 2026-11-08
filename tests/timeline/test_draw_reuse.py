@@ -175,6 +175,61 @@ def test_a_camera_whose_drawing_the_scene_replaced_draws_every_frame():
     assert_same_writes(on, off)
 
 
+def test_a_background_built_again_from_another_image_is_drawn(tmp_path):
+    """A background image is found by its file name in the assets directory:
+    the same name in another directory builds another background with the
+    same camera values. Frames drawn over it are drawn, not reused.
+    """
+    from PIL import Image
+
+    from arachne import Scene, Square, Wait, config
+
+    red, blue = tmp_path / "red", tmp_path / "blue"
+    for folder, colour in ((red, (255, 0, 0, 255)), (blue, (0, 0, 255, 255))):
+        folder.mkdir()
+        Image.new("RGBA", (96, 54), colour).save(folder / "same.png")
+
+    class RebuiltBackground(Scene):
+        def construct(self):
+            square = Square(fill_opacity=0.5)
+            square.add_updater(lambda m, dt: None)
+            self.add(square)
+            self.camera.background_image = "same.png"
+            wait = Wait(run_time=0.4)
+            for folder in (red, blue):
+                config.assets_dir = str(folder)
+                self.camera.init_background()
+                self.camera.reset()
+                self.play(wait)
+
+    scene, on = render_writes(RebuiltBackground)
+    # Within each play the frames still reuse; across the rebuild they don't.
+    assert scene.renderer.draws.reused == 2 * (len(on) // 2 - 1)
+    _, off = render_writes(RebuiltBackground, draw_reuse=False)
+    corners = [tuple(pixels[0, 0, :3]) for pixels, _ in off]
+    assert corners[0] == (255, 0, 0)
+    assert corners[-1] == (0, 0, 255)
+    assert_same_writes(on, off)
+
+
+@pytest.mark.parametrize("supplied", [False, True], ids=["built", "supplied"])
+def test_a_camera_background_refuses_an_in_place_write(supplied):
+    """A camera's background, built or supplied, can't be written in place
+    or made writable: a change makes a new array.
+    """
+    # The reuse key holds the background by identity: it rests on this.
+    from arachne.camera.camera import Camera
+
+    camera = Camera()
+    if supplied:
+        camera.set_background(np.zeros_like(camera.background))
+    background = camera.background
+    with pytest.raises(ValueError, match="read-only"):
+        background[..., :3] = 200
+    with pytest.raises(ValueError, match="read-only"):
+        background.flags.writeable = True
+
+
 def test_a_frame_at_another_configured_pixel_size_is_drawn_again():
     """The camera draws a point's thickness from the configured pixel size
     (``Camera.adjusted_thickness``), which the scene's code can change

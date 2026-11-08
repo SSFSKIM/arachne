@@ -540,8 +540,10 @@ class _DrawKey:
     """What a frame drawn from a capture is drawn from: the camera, its pixel
     size and the configured one (which a stroke's thickness is drawn from,
     ``Camera.adjusted_thickness``, and the scene's code can change between
-    plays), the draw path and static layer, the camera's recorded inputs, the
-    scene's roots, foreground and moving lists there, the play's static
+    plays), the draw path and static layer, the camera's recorded inputs and
+    the background they give it (which the camera builds afresh from an image
+    found by name, and which is never written in place: a change makes a new
+    array), the scene's roots, foreground and moving lists there, the play's static
     list and whether its static picture holds, and the version of every
     mobject the frame reaches (the camera's own included), in walk order.
     Two keys match when each of these is the same object (the camera's
@@ -555,6 +557,7 @@ class _DrawKey:
     draw_path: str
     static_layer: bool
     extras: CameraExtras | None
+    background: PixelArray | None
     roots: tuple[Mobject, ...]
     foreground: tuple[Mobject, ...]
     moving: tuple[Mobject, ...]
@@ -570,6 +573,7 @@ class _DrawKey:
             and self.draw_path == other.draw_path
             and self.static_layer == other.static_layer
             and self.holds == other.holds
+            and self.background is other.background
             and _same_items(self.states, other.states)
             and _same_items(self.roots, other.roots)
             and _same_items(self.foreground, other.foreground)
@@ -881,6 +885,9 @@ class Drawing:
             and self.static_layer
             and self._picture_holds(play, capture)
         )
+        if capture.camera is not None:
+            # The background the frame is drawn over, as drawing it gives it.
+            self._install_camera(camera, capture.camera)
         return _DrawKey(
             camera,
             (camera.pixel_height, camera.pixel_width),
@@ -888,6 +895,7 @@ class Drawing:
             self.draw_path,
             self.static_layer,
             capture.camera,
+            camera.background,
             capture.roots,
             capture.foreground,
             capture.moving,

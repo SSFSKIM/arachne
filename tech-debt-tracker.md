@@ -313,6 +313,19 @@ lifted.
   uploads across restores (they are immutable), or give the restore a
   copy-on-write view of the record's stream.
 
+## Draw reuse (`arachne/timeline/draw.py`)
+
+- **Whether a drawing reuses frames is decided when it is made.** `Drawing` checks its camera's class and replaced
+  methods once, as it is constructed. A caller that replaces a camera method while it still holds that drawing
+  can be given a frame drawn before the change. The engine makes a new drawing for every play and every session
+  operation, so none of its paths does this, and it is not a supported use. Direction: none unless a caller
+  needs to patch a camera mid-drawing; then the check moves to each frame.
+- **A write through a frozen value's owning array is not supported.** A camera's background, a mobject's points
+  and an image's pixels are read-only arrays that refuse writes and refuse being made writable, and draw reuse
+  keys them by identity: a change makes a new array. The plain array that owns their memory (`.base`) can still
+  be made writable and written; a frame reused after such a write shows the value before it, as would anything
+  else that shares the value. Direction: none; a change goes through the setters.
+
 ## The image cache (`arachne/mobject/svg/svg_mobject.py`)
 
 - **An image built from the cache is not the image parsing built.** Inherited from Manim Community Edition: a
