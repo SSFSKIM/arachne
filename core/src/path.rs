@@ -958,9 +958,11 @@ pub struct Keyed {
     /// For a path with no plane of its own on identities, each one's plane, in the order of `ids`:
     /// what its layers are read on against what shares that identity. Empty for any other.
     pub shared: Vec<WorldPlane>,
-    /// For each of `shared`, how far its points may stand off that plane, as its shares of a key
-    /// read there take it: where it meets the flat records on it ([`Registry::off_members`]), and
-    /// wherever it meets another record with no plane of its own ([`Registry::off_identity`]).
+    /// For a path with no plane of its own attached to flat records' identities, for each of
+    /// `shared`, how far its points may stand off that plane, as its shares of a key read there
+    /// take it: where it meets the flat records on it ([`Registry::off_members`]), and wherever it
+    /// meets another record with no plane of its own ([`Registry::off_identity`]). Empty for any
+    /// other: one on axis planes alone lies on each as its writer coded it or exactly.
     pub offs: Vec<[f64; 2]>,
     /// For a flat path (offered to the registry on its own plane), its handle there: the record
     /// its layers' fragments carry ([`Fragment::record`]). None for any other.
@@ -1123,8 +1125,9 @@ impl<'v> Lowering<'v> {
     /// not lie on a line, takes part in the partition and is keyed on its own plane; a path with
     /// no plane of its own (points on a line, however coded; a curve) attaches to every identity on
     /// whose plane it lies and is read on each one's plane against what shares it, and against
-    /// anything else as it is on none: on its own plane (on none, an axis-coded line's identity is
-    /// shared with the others on its axis plane), or by its curve's depth. So things on one plane
+    /// anything else as it is on none: on its own plane, or by its curve's depth (on no flat
+    /// record's identity, it shares one with the others on each axis plane it lies on, coded or
+    /// exactly, and is read on each such plane against them alike). So things on one plane
     /// tie by draw order, though each plane fitted to snapped points differs by the snap's noise,
     /// and attaching moves no key read against anything else. A surface's face on no one plane,
     /// and a pre-projected path, keep the plane fitted to their own points.
@@ -1175,11 +1178,12 @@ impl<'v> Lowering<'v> {
                     planeless: true,
                 })
             } else if !flat {
+                let on = ids.iter().take_while(|id| **id != 0);
                 Some(Keyed {
                     plane: own,
                     ids,
                     planarity,
-                    shared: Vec::new(),
+                    shared: on.map(|id| registry.plane(*id)).collect(),
                     offs: Vec::new(),
                     record: None,
                     planeless: true,
@@ -1469,8 +1473,10 @@ impl<'v> Lowering<'v> {
     /// each, how far its points may stand off that plane ([`Keyed::offs`]) bounds how far it may
     /// stand from that plane, and it carries the most of those; its fill keyed as on none
     /// ([`Keyed::plane`]), on its own plane or along its curve; on no identity, its fill keyed so,
-    /// where the camera keys the first identity's plane nowhere (the eye in it). A path the camera
-    /// placed itself (`placed` none) has no bound.
+    /// where the camera keys the first identity's plane nowhere (the eye in it). One on axis
+    /// planes alone (no `offs`: on no flat record's identity) is read on each of those the camera
+    /// keys, carrying the most of the snap's departures along them and its points' from them, and
+    /// on none of the others. A path the camera placed itself (`placed` none) has no bound.
     ///
     /// With the depths: the identities, and the rows each layer is read on against what shares
     /// each ([`Producer::plane_depths`]): a flat path's own key for its one identity, else each
@@ -1507,8 +1513,22 @@ impl<'v> Lowering<'v> {
                     Some(key)
                 });
                 let mut rows = [None; 4];
+                let (mut ids, mut planes) = (on.ids, Vec::new());
                 if on.shared.is_empty() {
                     rows[0] = Some(key?);
+                } else if on.offs.is_empty() {
+                    // On axis planes alone: read on each one the camera keys against what shares
+                    // it, and on none of the others (the eye in it), as against what shares none.
+                    ids = [0; 4];
+                    for (id, shared) in on.ids.iter().zip(&on.shared) {
+                        if let Some(row) = p.key_plane(shared, &self.map, world[0], 0.0, region) {
+                            (ids[planes.len()], rows[planes.len()]) = (*id, Some(row));
+                            planes.push(*shared);
+                        }
+                    }
+                    if planes.is_empty() {
+                        return Some((key, [0; 4], [f64::INFINITY, f64::NEG_INFINITY], [None; 4]));
+                    }
                 } else {
                     for (row, shared) in rows.iter_mut().zip(&on.shared) {
                         *row = p.key_plane(shared, &self.map, world[0], 0.0, region);
@@ -1525,7 +1545,17 @@ impl<'v> Lowering<'v> {
                         + crate::depth::departure(plane, world)
                 };
                 let snap = match placed {
-                    Some(_) if on.ids[0] != 0 && !on.shared.is_empty() => {
+                    // On axis planes alone: the snap's departure along each, the most of them.
+                    Some((places, points)) if !planes.is_empty() => {
+                        let most = planes
+                            .iter()
+                            .map(|plane| {
+                                p.key_reach(plane, &self.map, departing(plane, places, points))
+                            })
+                            .fold(0.0, f64::max);
+                        [most, f64::NEG_INFINITY]
+                    }
+                    Some(_) if on.ids[0] != 0 && !on.offs.is_empty() => {
                         let most = |k: usize| {
                             on.shared
                                 .iter()
@@ -1547,7 +1577,7 @@ impl<'v> Lowering<'v> {
                     }
                     _ => [f64::INFINITY, f64::NEG_INFINITY],
                 };
-                Some((key, on.ids, snap, rows))
+                Some((key, ids, snap, rows))
             });
         let registered = fill.map_or([0; 4], |(_, ids, _, _)| ids);
         let snap = fill.map_or([f64::INFINITY, f64::NEG_INFINITY], |(_, _, snap, _)| snap);
@@ -2302,7 +2332,8 @@ mod tests {
     /// the eye, so the camera keys that plane nowhere; and a sliver a quarter grid step wide lying
     /// on it, filled, its points on a line to within the grid and coded on the axis plane of z:
     /// the sliver, with no plane of its own, lies on the face's identity, and its fill is keyed
-    /// on its own plane and on no identity, as it is with the face not drawn.
+    /// on its own plane and on no identity, as it is with the face not drawn (then on its axis
+    /// plane's identity alone).
     #[test]
     fn a_fill_on_an_identity_whose_plane_holds_the_eye_keeps_its_own_key() {
         let grid = 1.0 / 16384.0;
@@ -2409,7 +2440,11 @@ mod tests {
         );
         assert!(!keys, "the camera keys the face's plane");
         let (alone, (key_alone, _), _) = lowered(false);
-        assert!(alone.shared.is_empty());
+        assert!(
+            alone.offs.is_empty() && alone.shared.len() == 1,
+            "with the face not drawn, on its axis plane alone: {:?}",
+            alone.ids
+        );
         assert!(
             key.is_some() && key == key_alone,
             "{key:?} against {key_alone:?}"

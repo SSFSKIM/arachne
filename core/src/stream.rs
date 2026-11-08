@@ -4637,11 +4637,12 @@ mod tests {
         assert_eq!(above, 0, "A above B at {above} of {}", both.len());
     }
 
-    /// A line on no identity a stroke's own share of its key reaches past a flat face: the face a
-    /// square 2 across on z = 0, the line across it two grid steps above (the nearer), no plane
-    /// holding both within their tolerances (each half a step along z), coded on no plane, drawn
-    /// first. The face has no own share, so depth orders the two, the line above the face at every
-    /// sub-sample both cover, though paint order would put the face above.
+    /// A line on none of a flat face's identities a stroke's own share of its key reaches past it:
+    /// the face a square 2 across on z = 0, the line across it two grid steps above (the nearer),
+    /// no plane holding both within their tolerances (each half a step along z), coded on no plane
+    /// (on the axis planes it holds exactly alone), drawn first. The face has no own share, so
+    /// depth orders the two, the line above the face at every sub-sample both cover, though paint
+    /// order would put the face above.
     #[test]
     fn a_line_against_a_flat_face_never_ties_by_its_own_share() {
         let view = snapped_view(0.0, -90.0);
@@ -4662,7 +4663,7 @@ mod tests {
         );
         let ids = identities(&s);
         assert!(
-            !ids[&101].is_empty() && ids[&102].is_empty(),
+            !ids[&101].is_empty() && ids[&101].is_disjoint(&ids[&102]),
             "the face on {:?}, the line on {:?}",
             ids[&101],
             ids[&102]
@@ -4691,11 +4692,13 @@ mod tests {
 
     /// Two lines seen from straight above, crossing on screen at the origin: A level on z = 0,
     /// along x; B along y, its points snapped to three and four grid steps above (so through 3.5
-    /// at the crossing, the nearer), both coded on no plane and so on no identity, B drawn first.
-    /// Where both cover, their keys part by more than their own shares reach, by less than a
-    /// quarter more, so depth orders them, B above A at every sub-sample, though paint order would
-    /// put A above. Each share is the stroke's own, finite; the share of a key a stroke on no
-    /// registered plane carries otherwise ([`composite::Fragment::snap`]) is unbounded.
+    /// at the crossing, the nearer), both coded on no plane, so on no identity in common (A on
+    /// the axis planes it holds exactly, y = 0 and z = 0, B on x = 0), B drawn first. Where both
+    /// cover, their keys part by more than their own shares reach, by less than a quarter more, so
+    /// depth orders them, B above A at every sub-sample, though paint order would put A above.
+    /// Each share is the stroke's own, finite; the share of a key B carries otherwise
+    /// ([`composite::Fragment::snap`]), on no plane the camera keys (the eye lies in x = 0), is
+    /// unbounded.
     #[test]
     fn crossing_lines_just_beyond_their_own_shares_keep_depth_order() {
         let view = snapped_view(0.0, -90.0);
@@ -4723,14 +4726,57 @@ mod tests {
                 "at {:?} the keys part by {gap:e} against their reach {room:e}",
                 m.at
             );
-            assert!(
-                m.a.2 == f64::INFINITY && m.b.2 == f64::INFINITY,
-                "snap shares {} and {}",
-                m.a.2,
-                m.b.2
-            );
+            assert!(m.b.2 == f64::INFINITY, "B's snap share {}", m.b.2);
         }
         let above = both.iter().filter(|m| m.a_above).count();
         assert_eq!(above, 0, "A above B at {above} of {}", both.len());
+    }
+
+    /// A segment of the z axis (its points on x = 0 and y = 0, coded on y's plane) and a tick
+    /// across it (on y = 0 and z = 0.5, coded on z's), as an axis and its ticks are drawn, seen
+    /// over an orbit (the camera 70 degrees from z, turned 7 degrees about it a frame), the
+    /// segment drawn first. Both lie on y = 0 exactly, so they share its identity and are read on
+    /// its plane against each other, one depth there: the tick above the segment at every
+    /// sub-sample both cover in every frame, though along their curves their keys part across the
+    /// strokes' overlap, now one way and now the other as the camera turns.
+    #[test]
+    fn a_tick_and_its_axis_on_one_axis_plane_tie_in_every_frame_of_an_orbit() {
+        let (on_y, on_z) = (
+            crate::depth::Planarity::Axis(1),
+            crate::depth::Planarity::Axis(2),
+        );
+        let (mut met_any, mut frames) = (0, Vec::new());
+        for frame in 0..16u32 {
+            let view = snapped_view(70.0, -110.0 + 7.0 * f64::from(frame));
+            let s = paths_stream(
+                view,
+                vec![
+                    (
+                        snapped_line([0.0, 0.0, -1.0], [0.0, 0.0, 1.0]),
+                        line_record(1, 6.0, on_y),
+                    ),
+                    (
+                        snapped_line([-0.25, 0.0, 0.5], [0.25, 0.0, 0.5]),
+                        line_record(2, 6.0, on_z),
+                    ),
+                ],
+            );
+            let both = met(&s, 101, 102);
+            met_any += both.len();
+            let above = both.iter().filter(|m| m.a_above).count();
+            let ids = identities(&s);
+            frames.push((above, both.len(), !ids[&101].is_disjoint(&ids[&102])));
+        }
+        assert!(met_any > 200, "{met_any} sub-samples");
+        assert!(
+            frames.iter().all(|(above, _, _)| *above == 0),
+            "the segment above the tick, (at, of) a frame: {:?}",
+            frames.iter().map(|f| (f.0, f.1)).collect::<Vec<_>>()
+        );
+        assert!(
+            frames.iter().all(|(_, _, shared)| *shared),
+            "an identity in common a frame: {:?}",
+            frames.iter().map(|f| f.2).collect::<Vec<_>>()
+        );
     }
 }

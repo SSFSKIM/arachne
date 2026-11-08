@@ -438,6 +438,9 @@ pub struct Offer {
     flat: bool,
     /// For a record with no plane of its own on an axis plane: the coordinate its points share.
     axis: Option<usize>,
+    /// For a path with no plane of its own ([`Registry::offer_path`]): the axes whose coordinate
+    /// every one of its points holds exactly, a bit per axis ([`exact_axes`]). Zero for any other.
+    exact: u8,
     /// Its points placed in the world, as drawn.
     points: Vec<[f64; 3]>,
     /// Its placements, outer first, and its shape's own points: what the snap's departure of its
@@ -734,8 +737,9 @@ impl Reach {
 ///   as fast as that plane may part from the identity's), and whose members' hull it enters
 ///   ([`Registry::enters`]), the first [`MOST_IDENTITIES`] of them: a record that passes beside an
 ///   identity's members, or far off its plane past them, does not. One
-///   that attaches to none and lies on an axis plane shares an identity with the others on exactly
-///   that axis plane, its axis and offset.
+///   that attaches to none shares an identity with the others on exactly each axis plane it lies
+///   on, its axis and offset: the one its writer coded, and for a path every one whose coordinate
+///   all its points hold exactly (as snapped; no tolerance).
 ///
 /// An identity's plane is its founder's own until a record joins that it does not hold; then the
 /// plane holding every member with the most room, as a share of each one's tolerance ([`minimax`]).
@@ -804,6 +808,7 @@ impl Registry {
             own: Some(own),
             flat: true,
             axis: None,
+            exact: 0,
             points: points.to_vec(),
             places: *places,
             shape: shape.to_vec(),
@@ -833,6 +838,7 @@ impl Registry {
             own: axis.map(|k| axis_plane(k, points[0])),
             flat: false,
             axis: axis.map(usize::from),
+            exact: 0,
             points: points.to_vec(),
             places: *places,
             shape: shape.to_vec(),
@@ -850,7 +856,8 @@ impl Registry {
     /// `shape`: flat ([`Registry::offer_flat`]) on its plane fitted ([`WorldPlane::fit`]) where
     /// content made it flat (Newell's, the widest triangle's or an axis plane), its points do not
     /// lie on a line ([`on_a_line`]) and the fit finds a plane; else with no plane of its own
-    /// ([`Registry::offer_planeless`]). Its handle, whether it is flat, and its plane fitted.
+    /// ([`Registry::offer_planeless`]), with the axes whose coordinate all its points hold exactly
+    /// ([`exact_axes`]). Its handle, whether it is flat, and its plane fitted.
     pub(crate) fn offer_path(
         &mut self,
         points: &[[f64; 3]],
@@ -871,6 +878,7 @@ impl Registry {
                     _ => None,
                 };
                 let handle = self.offer_planeless(axis, points, places, shape);
+                self.offers[handle as usize].exact = exact_axes(points);
                 (handle, false, own)
             }
         }
@@ -1059,39 +1067,48 @@ impl Registry {
                 self.sets[o][k] = *i as u32 + 1;
             }
             self.attached[o] = !on.is_empty();
-            if on.is_empty() && self.offers[o].axis.is_some() {
+            if on.is_empty() && (self.offers[o].axis.is_some() || self.offers[o].exact != 0) {
                 alone.push(o);
             }
         }
         self.reaches = reach;
         #[cfg(feature = "counters")]
         crate::counters::since(&crate::counters::ATTACH_NS, attaching);
-        // What attaches to no flat identity and lies on an axis plane shares an identity only with
-        // the others on exactly that plane: the same axis and the same offset, the coordinate of
-        // its first point, which is its plane. No tolerance and no fit: an axis plane is authored,
-        // and a plane its records only lie near, or that a fit finds through them, does not decide
-        // an identity. Its plane is that axis plane, which no flat record's plane replaces (the
-        // partition is made); a flat identity holding such a record took it above. Numbered in
-        // the canonical order of each plane's first record, as the partition is.
+        // What attaches to no flat identity lies on each axis plane it holds: the one its writer
+        // coded (its axis, through its first point), and, for a path, every one whose coordinate
+        // all its points hold exactly ([`Offer::exact`]). It shares an identity with the others
+        // on exactly that plane: the same axis and the same offset. No tolerance and no fit (not
+        // even `shared_axis`'s step of the grid): a plane its records only lie near, or that a
+        // fit finds through them, does not decide an identity. Each plane is that axis plane,
+        // which no flat record's plane replaces (the partition is made); a flat identity holding
+        // such a record took it above. At most one plane an axis, so no more than three, within
+        // [`MOST_IDENTITIES`]. Numbered in the canonical order of each plane's first record, as
+        // the partition is, a record's planes by axis.
         alone.sort_by(|&a, &b| canonical(&self.offers[a], &self.offers[b]));
         let mut runs: std::collections::HashMap<(usize, u64), usize> = Default::default();
         for o in alone {
             let offer = &self.offers[o];
-            let plane = offer.own.expect("an axis record has its axis plane");
-            let at = (
-                offer.axis.expect("an axis record"),
-                (plane.unrounded.offset + 0.0).to_bits(),
-            );
-            let i = *runs.entry(at).or_insert_with(|| {
-                ids.push(Identity {
-                    members: Vec::new(),
-                    plane,
-                    corners: [(o, 0); 3],
-                });
-                ids.len() - 1
-            });
-            ids[i].members.push(o);
-            self.sets[o][0] = i as u32 + 1;
+            let first = offer.points[0];
+            let mut on: Vec<usize> = (0..3)
+                .filter(|&k| offer.axis == Some(k) || offer.exact & (1 << k) != 0)
+                .map(|k| {
+                    let plane = axis_plane(k as u8, first);
+                    let at = (k, (plane.unrounded.offset + 0.0).to_bits());
+                    *runs.entry(at).or_insert_with(|| {
+                        ids.push(Identity {
+                            members: Vec::new(),
+                            plane,
+                            corners: [(o, 0); 3],
+                        });
+                        ids.len() - 1
+                    })
+                })
+                .collect();
+            on.sort_unstable();
+            for (k, &i) in on.iter().enumerate() {
+                ids[i].members.push(o);
+                self.sets[o][k] = i as u32 + 1;
+            }
         }
         count!(AXIS_RUN_IDENTITIES, runs.len());
         self.planes = ids.iter().map(|id| id.plane).collect();
@@ -1624,8 +1641,8 @@ pub(crate) fn near_parallel(a: &Offer, b: &Offer) -> Tilt {
 /// and their shapes' points. Total: two records it does not tell apart are the same record in
 /// every number the registry reads, and either order of the two gives one partition.
 fn canonical(a: &Offer, b: &Offer) -> std::cmp::Ordering {
-    let header = |o: &Offer| -> [f64; 18] {
-        let mut h = [0.0; 18];
+    let header = |o: &Offer| -> [f64; 19] {
+        let mut h = [0.0; 19];
         h[0] = o.spread;
         if let Some(p) = o.own {
             h[1] = 1.0;
@@ -1641,6 +1658,7 @@ fn canonical(a: &Offer, b: &Offer) -> std::cmp::Ordering {
         h[15] = o.dep;
         h[16] = f64::from(u8::from(o.flat));
         h[17] = o.axis.map_or(-1.0, |k| k as f64);
+        h[18] = f64::from(o.exact);
         h
     };
     let numbers = |a: &[f64], b: &[f64]| {
@@ -1997,6 +2015,17 @@ pub fn on_a_line(points: &[[f64; 3]], grid: f64) -> bool {
     )
 }
 
+/// The axes whose coordinate every one of `points` holds exactly (`==`, the points as given), a
+/// bit per axis (`1 << k`); zero for no points.
+fn exact_axes(points: &[[f64; 3]]) -> u8 {
+    let Some(first) = points.first() else {
+        return 0;
+    };
+    (0..3)
+        .filter(|&k| points.iter().all(|p| p[k] == first[k]))
+        .fold(0, |bits, k| bits | 1 << k)
+}
+
 /// The axis plane of coordinate `k` through `p`, its offset rounded to the grid (the axis and the
 /// coordinate exact before it).
 fn axis_plane(k: u8, p: [f64; 3]) -> WorldPlane {
@@ -2074,14 +2103,15 @@ fn widest_normal(points: &[[f64; 3]], first: [f64; 3]) -> [f64; 3] {
         .unwrap_or([0.0; 3])
 }
 
-/// The coordinate every point shares, preferring z, then y, then x. A coordinate is shared when
-/// every point lies within the planarity tolerance of the first point's, or within a step of
-/// `grid` for snapped points (one value snaps to one value, and values an ulp apart that straddle
-/// a grid boundary to two a step apart): content places an edge between two vertices at one value,
-/// and arithmetic that differs between machines in the last bit must not turn its plane into a
-/// centreline on one of them. The boundary sits at that tolerance, which content reaches only by
-/// coincidence, against a fixed reference (the first point), so the test is the same whatever the
-/// other points' order.
+/// The coordinate every point shares, preferring z, then y, then x (unlike the further axis planes
+/// a path with no plane of its own lies on, [`exact_axes`], which take no tolerance). A coordinate
+/// is shared when every point lies within the planarity tolerance of the first point's, or within
+/// a step of `grid` for snapped points (one value snaps to one value, and values an ulp apart that
+/// straddle a grid boundary to two a step apart): content places an edge between two vertices at
+/// one value, and arithmetic that differs between machines in the last bit must not turn its plane
+/// into a centreline on one of them. The boundary sits at that tolerance, which content reaches
+/// only by coincidence, against a fixed reference (the first point), so the test is the same
+/// whatever the other points' order.
 fn shared_axis(points: &[[f64; 3]], grid: f64) -> Option<u8> {
     let first = points.first()?;
     let tolerance = (PLANAR_TOLERANCE * extent(points).max(1.0)).max(grid);
@@ -3087,9 +3117,14 @@ mod tests {
         );
     }
 
-    /// Two lines coded on the axis plane of z with nothing to attach to: at offsets one tolerance
-    /// apart, two identities, though one value of z holds both within their tolerances; at one
-    /// offset, one.
+    /// Whether two sets of identities share one.
+    fn share(a: [u32; 4], b: [u32; 4]) -> bool {
+        a.iter().any(|i| *i != 0 && b.contains(i))
+    }
+
+    /// Two lines coded on the axis plane of z with nothing to attach to (each also on the plane of
+    /// y it holds, 0 and 0.5): at offsets one tolerance apart along z, no identity in common,
+    /// though one value of z holds both within their tolerances; at one offset, that one.
     #[test]
     fn lines_on_one_axis_at_offsets_a_tolerance_apart_share_no_identity() {
         let line = |y: f64, z: f64| [[-1.0, y, z], [0.0, y, z], [1.0, y, z]];
@@ -3102,16 +3137,84 @@ mod tests {
             r.settle();
             let (on_a, on_b) = (r.identities(a), r.identities(b));
             assert!(
-                on_a[0] != 0 && on_b[0] != 0 && (on_a == on_b) == one,
+                on_a[0] != 0 && on_b[0] != 0 && share(on_a, on_b) == one,
                 "{z:e} apart: {on_a:?} and {on_b:?}"
             );
+        }
+    }
+
+    /// A segment of the z axis (its points on x = 0 and y = 0 exactly, coded on y's plane) and a
+    /// tick across it (on y = 0 and z = 0.5 exactly, coded on z's), with nothing to attach to:
+    /// each lies on both axis planes it holds, and they share one identity, y = 0's. A record whose
+    /// points all coincide holds all three planes, the most any record can: [`MOST_IDENTITIES`]
+    /// never cuts them, and a record's identities ascend.
+    #[test]
+    fn lines_lie_on_every_axis_plane_their_points_hold_exactly() {
+        let segment = [[0.0, 0.0, -1.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
+        let tick = [[-0.25, 0.0, 0.5], [0.0, 0.0, 0.5], [0.25, 0.0, 0.5]];
+        let point = [[0.75, 0.75, 0.75]; 3];
+        let mut r = registry();
+        let (a, ..) = r.offer_path(&segment, Planarity::Axis(1), &NONE, &segment);
+        let (b, ..) = r.offer_path(&tick, Planarity::Axis(2), &NONE, &tick);
+        let (c, ..) = r.offer_path(&point, Planarity::Axis(0), &NONE, &point);
+        r.settle();
+        let ids =
+            |h: u32| -> Vec<u32> { r.identities(h).into_iter().filter(|i| *i != 0).collect() };
+        let normal = |i: u32| r.plane(i).unrounded.normal;
+        let (on_a, on_b, on_c) = (ids(a), ids(b), ids(c));
+        assert_eq!(on_a.len(), 2, "{on_a:?}");
+        assert_eq!(on_b.len(), 2, "{on_b:?}");
+        assert_eq!(on_c.len(), 3, "{on_c:?}");
+        let common: Vec<u32> = on_a.iter().copied().filter(|i| on_b.contains(i)).collect();
+        assert_eq!(common.len(), 1, "{on_a:?} and {on_b:?}");
+        assert_eq!(normal(common[0]), [0.0, 1.0, 0.0]);
+        assert_eq!(r.plane(common[0]).unrounded.offset, 0.0);
+        for set in [&on_a, &on_b, &on_c] {
+            assert!(set.windows(2).all(|w| w[0] < w[1]), "{set:?}");
+        }
+        assert!(
+            !share(r.identities(c), r.identities(a)) && !share(r.identities(c), r.identities(b))
+        );
+        assert_eq!(r.capped(), 0);
+    }
+
+    /// The tick of [`lines_lie_on_every_axis_plane_their_points_hold_exactly`] off y = 0 by a step of
+    /// the grid, whole or at one end, and turned off it by its placement (a turn about z): none
+    /// lies on y = 0, so none shares an identity with the segment on it. Lying near a plane, by any
+    /// amount, is not lying on it: the whole tick lies on y = one step's plane, the others on their
+    /// coded plane alone.
+    #[test]
+    fn a_line_off_an_axis_plane_by_a_step_of_the_grid_or_by_a_turn_does_not_lie_on_it() {
+        let segment = [[0.0, 0.0, -1.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
+        let off = [[-0.25, GRID, 0.5], [0.0, GRID, 0.5], [0.25, GRID, 0.5]];
+        let tilted = [[-0.25, 0.0, 0.5], [0.0, 0.0, 0.5], [0.25, GRID, 0.5]];
+        let shape = [[-0.25, 0.0, 0.5], [0.0, 0.0, 0.5], [0.25, 0.0, 0.5]];
+        let (c, s) = (libm::cos(0.01), libm::sin(0.01));
+        let turn: crate::xf::Affine = [[c, -s, 0.0, 0.0], [s, c, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]];
+        let turned = shape.map(|p| crate::xf::place(&turn, p));
+        assert!(turned.iter().all(|p| p[2] == 0.5) && turned[0][1] != turned[2][1]);
+        let mut r = registry();
+        let (a, ..) = r.offer_path(&segment, Planarity::Axis(1), &NONE, &segment);
+        let (b, ..) = r.offer_path(&off, Planarity::Axis(2), &NONE, &off);
+        let (t, ..) = r.offer_path(&tilted, Planarity::Axis(2), &NONE, &tilted);
+        let places = [turn, crate::xf::IDENTITY];
+        let (u, ..) = r.offer_path(&turned, Planarity::Axis(2), &places, &shape);
+        r.settle();
+        let count = |h: u32| r.identities(h).iter().filter(|i| **i != 0).count();
+        for (h, n) in [(b, 2), (t, 1), (u, 1)] {
+            assert!(
+                !share(r.identities(h), r.identities(a)),
+                "{:?}",
+                r.identities(h)
+            );
+            assert_eq!(count(h), n, "{:?}", r.identities(h));
         }
     }
 
     /// Lines coded on the axis plane of z across a square on that plane, past its edges: the
     /// square's plane holds them, so they attach to its identity and form none of their own. A
     /// third beside it, 0.2 past its edge, which that plane holds as well, never enters the
-    /// square's hull: it does not attach, and forms its axis plane's identity.
+    /// square's hull: it does not attach, and forms the identities of the axis planes it holds.
     #[test]
     fn lines_across_a_face_on_its_axis_plane_join_its_identity_and_one_beside_it_does_not() {
         let z = 0.25;
@@ -3134,8 +3237,9 @@ mod tests {
         }
         assert!(!r.attached(beside));
         let own = r.identities(beside);
-        assert!(own[0] != 0 && own != r.identities(face), "{own:?}");
-        assert_eq!(r.planes.len(), 2);
+        assert!(own[0] != 0 && !share(own, r.identities(face)), "{own:?}");
+        // The face's, and the two axis planes the line beside it holds exactly (z and y = 1.2).
+        assert_eq!(r.planes.len(), 3);
     }
 
     /// Two squares 0.01 across facing z, 0.01 apart along x, the second raised by 4.002 times
