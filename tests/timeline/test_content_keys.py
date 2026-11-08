@@ -960,7 +960,109 @@ class Scaled:
 
 
 class Seeded(random.Random):
+    """Python's generator, subclassed."""
+
+
+class SeededArray(np.random.Generator):
+    """numpy's generator, subclassed."""
+
+
+class Buffered(io.BytesIO):
     """An object of a class whose state a builtin base holds."""
+
+
+#: The generators a scene seeds, each made from a seed.
+GENERATORS = {
+    "numpy-generator": np.random.default_rng,
+    "numpy-random-state": np.random.RandomState,
+    "python-random": random.Random,
+    "numpy-generator-subclassed": lambda seed: SeededArray(np.random.PCG64(seed)),
+    "python-random-subclassed": Seeded,
+}
+
+
+@pytest.mark.parametrize("make", list(GENERATORS.values()), ids=list(GENERATORS))
+def test_a_random_generator_keys_by_its_state(make):
+    """Seeded alike, two generators key alike; seeded apart, or one drawn
+    from since, they key apart. A subclass's own attributes are keyed too.
+    """
+    assert _value_key(make(1)) == _value_key(make(1))
+    assert _value_key(make(1)) != _value_key(make(2))
+    drawn = make(1)
+    before = _value_key(drawn)
+    drawn.random()
+    assert _value_key(drawn) != before
+    first, second = make(1), make(1)
+    if hasattr(first, "__dict__"):
+        first.label, second.label = "a", "b"
+        assert _value_key(first) != _value_key(second)
+        second.label = "a"
+        assert _value_key(first) == _value_key(second)
+
+
+def test_a_random_generator_keys_alike_in_another_process():
+    script = (
+        "import random\n"
+        "import numpy as np\n"
+        "from arachne.timeline.keys import value_key\n"
+        "for value in (np.random.default_rng(3), np.random.RandomState(3),"
+        " random.Random(3)):\n"
+        "    print(value_key(value)[0].hex())\n"
+    )
+    found = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, check=True
+    ).stdout.split()
+    mine = [
+        _value_key(value).hex()
+        for value in (
+            np.random.default_rng(3),
+            np.random.RandomState(3),
+            random.Random(3),
+        )
+    ]
+    assert found == mine
+
+
+#: A dot holding a generator the scene seeds from ``seed.txt`` and draws
+#: from between its plays, the draws drawn nowhere.
+SEEDED = (
+    HEADER
+    + """
+import numpy as np
+
+
+class Seeded(Scene):
+    def construct(self):
+        seed = int((HERE / "seed.txt").read_text())
+        tracker = ValueTracker(0)
+        dot = Dot().add_updater(lambda m: m.set_x(tracker.get_value()))
+        dot.rng = np.random.default_rng(seed)
+        self.add(dot)
+        self.play(tracker.animate.set_value(1), run_time=0.4)
+        dot.rng.random()
+        self.play(tracker.animate.set_value(0), run_time=0.4)
+"""
+)
+
+
+@pytest.mark.parametrize(("first", "second"), [("4", "4"), ("4", "5")])
+def test_a_generator_on_a_mobject_agrees_seeded_alike_and_diverges_apart(
+    scene_dir, first, second
+):
+    before, after = _two_executions(
+        scene_dir, SEEDED, "Seeded", "seed.txt", first, second, frame_rate=15
+    )
+    try:
+        found = before.compare(_across(after.summary()))
+        if first == second:
+            assert found is None, found.reason
+            assert play_keys(before.record) == play_keys(after.record)
+        else:
+            assert found is not None
+            assert "rng" in found.reason
+    finally:
+        before.close()
+        after.close()
 
 
 class Tagged(list):
@@ -1255,9 +1357,9 @@ def test_an_object_keys_by_all_of_its_state_or_is_a_marker():
             "a cache whose entries the key cannot read"
         ), value
     # State a builtin base holds is not in the attributes: the marker.
-    for value in (Seeded(1), io.StringIO("a")):
+    for value in (io.StringIO("a"), Buffered(b"a")):
         assert unkeyable(value) == _qualified(type(value)), value
-    assert _value_key(Seeded(1)) != _value_key(Seeded(1))
+    assert _value_key(Buffered(b"a")) != _value_key(Buffered(b"a"))
     # A builtin container's subclass keys its own attributes beside its parts.
     first, second = Tagged([1]), Tagged([1])
     first.tag, second.tag = "a", "b"

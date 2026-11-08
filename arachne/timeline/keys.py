@@ -54,6 +54,7 @@ import functools
 import hashlib
 import os
 import pathlib
+import random
 import sys
 import types
 from fractions import Fraction
@@ -450,6 +451,16 @@ def _content_key(value: Any, keying: _Keying) -> bytes:
         # What a scene and a camera do lands in the mobjects and camera
         # inputs a capture keys; a module is code, as the source digest is.
         return b""
+    drawn = _generator_state(value)
+    if drawn is not None:
+        # A random generator by the state its next draw reads, and a
+        # subclass's own attributes and slots beside it.
+        attributes = getattr(value, "__dict__", None) or {}
+        return (
+            _key(drawn, keying)
+            + each(sorted(attributes.items()))
+            + each(_slot_items(value))
+        )
     foreign = _foreign_key(value)
     if foreign is not None:
         return _key(foreign, keying)
@@ -470,7 +481,7 @@ def _content_key(value: Any, keying: _Keying) -> bytes:
 def _state_in_python(cls: type) -> bool:
     """Whether an instance of ``cls`` holds its state where Python reads it,
     in its attributes or its slots: no builtin or extension base of it holds
-    any (``random.Random``'s generator, ``io.StringIO``'s buffer), so its
+    any (``io.StringIO``'s buffer, ``collections.deque``'s parts), so its
     layout is ``object``'s, slots aside.
     """
     size = cls.__basicsize__
@@ -559,6 +570,24 @@ def _code_key(code: types.CodeType, keying: _Keying) -> bytes:
         + len(consts).to_bytes(4, "big")
         + b"".join(map(_framed, consts))
     )
+
+
+def _generator_state(value: Any) -> Any:
+    """The state a random generator's next draw reads (Python's, numpy's
+    legacy ``RandomState``, or a numpy ``Generator`` by its bit generator's
+    type and state), read through the kind's own methods; ``None`` for
+    another value. A bit generator of no numpy module's is a marker.
+    """
+    if isinstance(value, random.Random):
+        return random.Random.getstate(value)
+    if isinstance(value, np.random.RandomState):
+        return np.random.RandomState.get_state(value)
+    if isinstance(value, np.random.Generator):
+        bits = vars(np.random.Generator)["bit_generator"].__get__(value)
+        if not type(bits).__module__.startswith("numpy.random."):
+            raise _Unkeyable(_qualified(type(bits)))
+        return (_qualified(type(bits)), bits.state)
+    return None
 
 
 def _foreign_key(value: Any) -> Any:
