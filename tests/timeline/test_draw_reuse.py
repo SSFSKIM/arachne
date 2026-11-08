@@ -25,7 +25,7 @@ import pytest
 from arachne import tempconfig
 from arachne.manager import Manager
 from arachne.session import Session
-from arachne.timeline.draw import Drawing
+from arachne.timeline.draw import Drawing, DrawReuse
 
 from . import reuse_scenes
 from .conftest import SMALL
@@ -162,6 +162,45 @@ def test_the_writes_are_the_same_with_and_without_reuse(scene_class):
     assert_same_writes(on, off)
 
 
+def test_a_camera_whose_drawing_the_scene_replaced_draws_every_frame():
+    """A capture replaced on the camera instance runs the scene's code at each
+    draw, which no recorded state holds (here it marks each frame with its
+    count): such a camera reuses nothing.
+    """
+    scene, on = render_writes(reuse_scenes.PatchedCamera)
+    _, off = render_writes(reuse_scenes.PatchedCamera, draw_reuse=False)
+    assert scene.timeline.record.refusal is None, "drawn from the record"
+    assert [int(pixels[0, 0, 0]) for pixels, _ in off] == list(range(1, len(off) + 1))
+    assert scene.renderer.draws.reused == 0
+    assert_same_writes(on, off)
+
+
+def test_a_frame_at_another_configured_pixel_size_is_drawn_again():
+    """The camera draws a point's thickness from the configured pixel size
+    (``Camera.adjusted_thickness``), which the scene's code can change
+    between plays: a frame drawn under another is drawn, not reused.
+    """
+    from arachne import config
+
+    scene, _ = render_writes(reuse_scenes.StillPoint)
+    record = scene.timeline.record
+    (play,) = record.plays
+    first, second = play.samples[0], play.samples[1]
+    reuse = DrawReuse(1)
+    with tempconfig({**SMALL, "frame_rate": FPS}):
+        with Drawing(record, reuse=reuse) as drawing:
+            before = drawing.sample(play, first, drawing.static(play))
+        config.pixel_width = 10 * SMALL["pixel_width"]
+        with Drawing(record, reuse=reuse) as drawing:
+            after = drawing.sample(play, second, drawing.static(play))
+            assert not drawing.reused
+        with Drawing(record) as drawing:
+            fresh = drawing.sample(play, second, drawing.static(play))
+    assert reuse.reused == 0
+    assert after.tobytes() == fresh.tobytes()
+    assert after.tobytes() != before.tobytes(), "the thickness follows the setting"
+
+
 @pytest.mark.parametrize("settings", [{"draw_reuse": False}, {"speed_levers": False}])
 def test_with_the_lever_off_every_frame_is_drawn(settings):
     scene, writes = render_writes(reuse_scenes.StillWait, **settings)
@@ -250,6 +289,41 @@ def test_a_session_keeps_a_few_frames_and_lets_the_oldest_go():
         assert session.draws.reused == reused + 1, "the oldest was let go"
     finally:
         session.close()
+
+
+def test_a_described_frame_reused_between_two_drawn_ones_changes_nothing_after():
+    """On a draw path that describes frames, a reused frame sends nothing to
+    the stream; the next frame drawn is described against the stream's own
+    last frame, and its pixels are those of a session that reuses nothing.
+    """
+    pytest.importorskip("arachne_core")
+    from arachne.frame_ir.painter import painter_for
+
+    found = []
+    for reuse in (True, False):
+        settings = {**SMALL, "frame_rate": FPS, "draw_path": "ir_cairo"}
+        session = Session.open(
+            SCENES, "Holds", config={**settings, "draw_reuse": reuse}
+        )
+        try:
+            moving = session.record.plays[0]
+            a, b, c = (moving.start + Fraction(i, FPS) for i in range(3))
+            session.frame(a)
+            session.frame(b)
+            painter = painter_for(session.record, "ir_cairo")
+            assert painter is not None
+            sent, last = painter.frames, painter.last
+            again = np.asarray(session.frame(a))
+            if reuse:
+                assert session.draws.reused == 1
+                assert painter.frames == sent, "no delta sent"
+                assert painter.last is last
+            found.append((again, np.asarray(session.frame(c))))
+        finally:
+            session.close()
+    (a_on, c_on), (a_off, c_off) = found
+    np.testing.assert_array_equal(a_on, a_off)
+    np.testing.assert_array_equal(c_on, c_off)
 
 
 def test_a_reload_starts_with_no_frames():

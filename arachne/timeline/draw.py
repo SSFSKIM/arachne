@@ -538,7 +538,9 @@ def _one_batch(camera: Camera, a: Mobject, b: Mobject) -> bool:
 @dataclass(frozen=True, eq=False)
 class _DrawKey:
     """What a frame drawn from a capture is drawn from: the camera, its pixel
-    size, the draw path and static layer, the camera's recorded inputs, the
+    size and the configured one (which a stroke's thickness is drawn from,
+    ``Camera.adjusted_thickness``, and the scene's code can change between
+    plays), the draw path and static layer, the camera's recorded inputs, the
     scene's roots, foreground and moving lists there, the play's static
     list and whether its static picture holds, and the version of every
     mobject the frame reaches (the camera's own included), in walk order.
@@ -549,6 +551,7 @@ class _DrawKey:
 
     camera: Camera
     shape: tuple[int, int]
+    configured: tuple[int, int]
     draw_path: str
     static_layer: bool
     extras: CameraExtras | None
@@ -563,6 +566,7 @@ class _DrawKey:
         return (
             self.camera is other.camera
             and self.shape == other.shape
+            and self.configured == other.configured
             and self.draw_path == other.draw_path
             and self.static_layer == other.static_layer
             and self.holds == other.holds
@@ -656,9 +660,11 @@ class Drawing:
     drawing it; :attr:`reused` says whether the last :meth:`sample` did. A
     frame some evaluation brings to its instant (``prepare``) holds a state
     the record does not, and is neither kept nor taken. Only the engine's
-    flat, moving and 3D cameras reuse: a MultiCamera's capture also draws
-    into its displays' cameras, and a camera class of the scene's own can
-    draw from what no recorded state holds.
+    flat, moving and 3D cameras reuse, as the engine made them: a
+    MultiCamera's capture also draws into its displays' cameras, and a
+    camera class of the scene's own, or a camera method the scene's code
+    replaced (:func:`~arachne.frame_ir.painter.user_camera`), runs code that
+    can read what no recorded state holds at every draw.
     """
 
     def __init__(
@@ -675,7 +681,7 @@ class Drawing:
             static_layer = config.static_layer
         if draw_path is None:
             draw_path = config.draw_path
-        from arachne.frame_ir.painter import camera_path, painter_for
+        from arachne.frame_ir.painter import camera_path, painter_for, user_camera
 
         self.record = record
         self.static_layer = static_layer
@@ -699,7 +705,11 @@ class Drawing:
         self._cameras_saved: dict[int, tuple[Any, tuple[Any, Any, Any, Any]]] = {}
         #: Display cameras whose picture was replaced, with what they held.
         self._pictures_saved: dict[int, tuple[Any, PixelArray]] = {}
-        self.reuse = reuse if _paints_its_list(self.camera) else None
+        if reuse is not None and (
+            not _paints_its_list(self.camera) or user_camera(self.camera) is not None
+        ):
+            reuse = None
+        self.reuse = reuse
         #: Whether the last frame :meth:`sample` gave took a kept frame's pixels.
         self.reused = False
 
@@ -857,6 +867,8 @@ class Drawing:
 
     def _reuse_key(self, play: PlayRecord, capture: Capture) -> _DrawKey:
         """What the frame at ``capture`` is drawn from (:class:`_DrawKey`)."""
+        from arachne import config
+
         camera = self.camera
         reached = [
             *capture.draw_list(),
@@ -872,6 +884,7 @@ class Drawing:
         return _DrawKey(
             camera,
             (camera.pixel_height, camera.pixel_width),
+            (config.pixel_height, config.pixel_width),
             self.draw_path,
             self.static_layer,
             capture.camera,

@@ -1,10 +1,13 @@
 """Scenes the draw reuse tests render and open: frames whose recorded state
 repeats (a wait whose updater changes nothing, a frozen frame), one whose
-mobject changes only its line joint, and a camera that moves over mobjects
-that stay still.
+mobject changes only its line joint, a camera that moves over mobjects
+that stay still, a point drawn at a configured thickness, and a camera
+whose drawing the scene's code replaced.
 """
 
 from __future__ import annotations
+
+import numpy as np
 
 from arachne import (
     BLUE,
@@ -12,6 +15,7 @@ from arachne import (
     Circle,
     LineJointType,
     MovingCameraScene,
+    PMobject,
     Scene,
     Square,
     Triangle,
@@ -68,3 +72,39 @@ class Holds(Scene):
         self.add(square)
         self.play(square.animate.shift(RIGHT), run_time=0.5)
         self.wait(1)
+
+
+class StillPoint(Scene):
+    """A thick point, and a wait whose updater changes nothing: the camera
+    draws its thickness from the configured pixel size.
+    """
+
+    def construct(self):
+        point = PMobject(stroke_width=9)
+        point.add_points(np.array([[0.0, 0.0, 0.0]]))
+        point.add_updater(lambda m, dt: None)
+        self.add(point)
+        self.wait(0.4)
+
+
+class PatchedCamera(Scene):
+    """A wait whose updater changes nothing, drawn by an engine camera whose
+    capture the scene's code replaced on the instance: each capture marks
+    the frame with how many captures it has made.
+    """
+
+    def construct(self):
+        camera = self.camera
+        original = camera.capture_mobjects
+        calls = [0]
+
+        def capture(*args, **kwargs):
+            original(*args, **kwargs)
+            calls[0] += 1
+            camera.pixel_array[0, 0, :3] = calls[0]
+
+        camera.capture_mobjects = capture
+        square = Square(fill_opacity=0.5)
+        square.add_updater(lambda m, dt: None)
+        self.add(square)
+        self.wait(0.4)
