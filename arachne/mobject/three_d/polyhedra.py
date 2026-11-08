@@ -439,13 +439,21 @@ class ConvexHull3D(Polyhedron):
         # (its normal, which the shading reads at that first corner, points outward); the faces in
         # the order of their vertex lists.
         facets = set(hull.facets) - hull.removed
-        corners = sorted({tuple(row) for facet in facets for row in facet.coordinates.tolist()})
+        corners = sorted(
+            {tuple(row) for facet in facets for row in facet.coordinates.tolist()}
+        )
         index = {corner: i for i, corner in enumerate(corners)}
         vertices = [np.array(corner) for corner in corners]
         faces = []
         for facet in facets:
             a, b, c = sorted(index[tuple(row)] for row in facet.coordinates.tolist())
-            if np.dot(np.cross(vertices[b] - vertices[a], vertices[c] - vertices[a]), facet.normal) < 0:
+            if (
+                np.dot(
+                    np.cross(vertices[b] - vertices[a], vertices[c] - vertices[a]),
+                    facet.normal,
+                )
+                < 0
+            ):
                 b, c = c, b
             faces.append([a, b, c])
         faces.sort()

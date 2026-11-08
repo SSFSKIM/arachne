@@ -19,11 +19,34 @@ import pytest
 
 from arachne import ConvexHull, ConvexHull3D
 
-POINTS_2D = [[-2.3, -2.2, 0], [1.6, -2.3, 0], [2.7, -0.2, 0], [1.6, 1.8, 0], [-0.3, 2.8, 0], [-2.4, 0.7, 0],
-             [-0.4, -1.2, 0], [0.6, -0.3, 0], [0.1, 0.4, 0], [-1.2, 0.9, 0], [2.0, 0.6, 0], [-1.9, -1.5, 0]]
-POINTS_3D = [[1.6, 0.3, -1.2], [-1.1, 1.4, 0.5], [-0.3, -0.8, 0.4], [-0.6, -1.3, 1.4], [-1.5, 0.7, -1.6],
-             [1.4, -0.4, 0.9], [0.2, 0.6, -1.7], [0.9, 1.5, 1.6], [0.1, -1.6, -0.9], [-1.7, -0.2, 0.1],
-             [0.0, 0.1, 0.2], [0.3, -0.2, -0.1]]
+POINTS_2D = [
+    [-2.3, -2.2, 0],
+    [1.6, -2.3, 0],
+    [2.7, -0.2, 0],
+    [1.6, 1.8, 0],
+    [-0.3, 2.8, 0],
+    [-2.4, 0.7, 0],
+    [-0.4, -1.2, 0],
+    [0.6, -0.3, 0],
+    [0.1, 0.4, 0],
+    [-1.2, 0.9, 0],
+    [2.0, 0.6, 0],
+    [-1.9, -1.5, 0],
+]
+POINTS_3D = [
+    [1.6, 0.3, -1.2],
+    [-1.1, 1.4, 0.5],
+    [-0.3, -0.8, 0.4],
+    [-0.6, -1.3, 1.4],
+    [-1.5, 0.7, -1.6],
+    [1.4, -0.4, 0.9],
+    [0.2, 0.6, -1.7],
+    [0.9, 1.5, 1.6],
+    [0.1, -1.6, -0.9],
+    [-1.7, -0.2, 0.1],
+    [0.0, 0.1, 0.2],
+    [0.3, -0.2, -0.1],
+]
 
 BUILD = f"""
 import json
@@ -44,7 +67,13 @@ print(json.dumps({{
 
 def build_in(hash_seed: str) -> dict:
     env = dict(os.environ, PYTHONHASHSEED=hash_seed)
-    p = subprocess.run([sys.executable, "-c", BUILD], env=env, capture_output=True, text=True, check=True)
+    p = subprocess.run(
+        [sys.executable, "-c", BUILD],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
     return json.loads(p.stdout.strip().splitlines()[-1])
 
 
@@ -67,7 +96,9 @@ def test_a_flat_hull_runs_counterclockwise_from_its_lowest_left_vertex():
     lowest = min(range(len(v)), key=lambda i: (v[i, 0], v[i, 1]))
     assert lowest == 0
     # the geometry is the hull's: every vertex is an input point, and no input point lies outside
-    assert {tuple(p) for p in np.round(v, 9).tolist()} <= {tuple(map(float, p)) for p in POINTS_2D}
+    assert {tuple(p) for p in np.round(v, 9).tolist()} <= {
+        tuple(map(float, p)) for p in POINTS_2D
+    }
 
 
 def test_a_solid_hull_lists_its_vertices_in_order_and_winds_each_face_outward():
@@ -97,9 +128,12 @@ def test_the_solid_hull_keeps_its_faces(points):
 
     q = QuickHull(1e-5)
     q.build(np.array(points))
-    facets = {frozenset(tuple(p.coordinates) for sf in f.subfacets for p in sf.points)
-              for f in set(q.facets) - q.removed}
+    facets = {
+        frozenset(tuple(p.coordinates) for sf in f.subfacets for p in sf.points)
+        for f in set(q.facets) - q.removed
+    }
     hull = ConvexHull3D(*points)
     verts = [tuple(v) for v in np.array(hull.vertex_coords, dtype=float)]
     faces = {frozenset(verts[i] for i in face) for face in hull.faces_list}
-    assert faces == facets and len(hull.faces_list) == len(facets)
+    assert faces == facets
+    assert len(hull.faces_list) == len(facets)
