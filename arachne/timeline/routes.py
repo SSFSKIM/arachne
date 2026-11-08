@@ -243,7 +243,7 @@ class TrustedRoute(_SampledRoute):
     def run(self, run: PlayRun, plan: EventPlan) -> None:
         from arachne import config
 
-        if not config.vectorize_trusted or _runs_scene_code(run):
+        if not config.vectorize_trusted or _runs_scene_code(run, plan):
             super().run(run, plan)
             return
         from arachne.animation.animation import keeping_families
@@ -257,24 +257,18 @@ class TrustedRoute(_SampledRoute):
             super().run(run, plan)
 
 
-#: The scene's methods a play's parts call as they begin, which a part that
-#: begins while the play runs calls then (``Animation._setup_scene``).
-_SETUP_METHODS = ("add", "get_mobject_family_members")
-
-
-def _runs_scene_code(run: PlayRun) -> bool:
+def _runs_scene_code(run: PlayRun, plan: EventPlan) -> bool:
     """Whether the scene's own code may run while a trusted play is
     evaluated, where admission does not look: the scene's frame hooks, a
-    watch the record reads at every kept capture, or the scene's own
-    ``add`` called by a part that begins while the play runs. Any of them
-    may change a family's members.
+    watch the record reads at every kept capture, or a part that begins
+    while the play runs (only a ``Succession`` begins one), which may call
+    the scene's functions (``ApplyFunction``'s) and its own ``add`` as it
+    begins. Any of them may change a family's members.
     """
-    from .dispatch import scene_hooks
-
     return (
         bool(run.play.frame_hooks)
         or run.recorder.ensure_record().bridge.watching
-        or bool(scene_hooks(run.scene, _SETUP_METHODS))
+        or bool(plan.successions)
     )
 
 

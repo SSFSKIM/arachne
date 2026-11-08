@@ -551,8 +551,9 @@ def keeping_families(animations: Iterable[Animation]) -> Iterator[None]:
     runs: nothing but the animations runs (no updater, callback or code of
     the scene's own, which :class:`.TrustedRoute` checks before it keeps a
     play's families), and no two parts that run at once write the same
-    mobject. A part that begins in the block (a ``Succession``'s next) zips
-    again, since its mobjects are new copies.
+    mobject. A part that begins in the block zips again, since its
+    mobjects are new copies (:class:`.TrustedRoute` keeps no play with a
+    ``Succession``, whose parts may run the scene's code as they begin).
     """
     global _kept_families
     previous = _kept_families

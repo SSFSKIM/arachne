@@ -19,6 +19,8 @@ import pytest
 from arachne import (
     RIGHT,
     AnimationGroup,
+    ApplyFunction,
+    ApplyPointwiseFunction,
     Axes,
     Circle,
     Create,
@@ -497,8 +499,59 @@ class AddLoses(Scene):
         return super().add(*mobjects)
 
 
+class FunctionLoses(Scene):
+    """A trusted play whose part begins mid-play and calls the scene's
+    function as it begins, which takes a member out of a group another part
+    creates.
+    """
+
+    def construct(self):
+        group = VGroup(Square().shift(2 * RIGHT), Square().shift(-2 * RIGHT))
+
+        def moved(mob):
+            if len(group) == 2:
+                group.remove(group[0])
+            return mob.shift(RIGHT)
+
+        self.play(
+            AnimationGroup(
+                Create(group), Succession(Wait(0.4), ApplyFunction(moved, Dot()))
+            ),
+            run_time=1,
+            rate_func=linear,
+        )
+
+
+class PointwiseLoses(Scene):
+    """As :class:`FunctionLoses`, the function applied to each point."""
+
+    def construct(self):
+        group = VGroup(Square().shift(2 * RIGHT), Square().shift(-2 * RIGHT))
+
+        def moved(point):
+            if len(group) == 2:
+                group.remove(group[0])
+            return point + RIGHT
+
+        self.play(
+            AnimationGroup(
+                Create(group),
+                Succession(Wait(0.4), ApplyPointwiseFunction(moved, Dot())),
+            ),
+            run_time=1,
+            rate_func=linear,
+        )
+
+
 #: Scenes whose trusted plays run the scene's code while they run.
-SCENE_CODE_SCENES = (CounterMoves, GroupLoses, WatchLoses, AddLoses)
+SCENE_CODE_SCENES = (
+    CounterMoves,
+    GroupLoses,
+    WatchLoses,
+    AddLoses,
+    FunctionLoses,
+    PointwiseLoses,
+)
 
 FRAME_SCENES: list[Any] = [
     *(pytest.param(case.values[0], id=case.id) for case in CASES),
@@ -508,6 +561,8 @@ FRAME_SCENES: list[Any] = [
     pytest.param(GroupLoses, id="frame_hook_removes_a_member"),
     pytest.param(WatchLoses, id="watch_removes_a_member"),
     pytest.param(AddLoses, id="scene_add_removes_a_member"),
+    pytest.param(FunctionLoses, id="function_at_begin_removes_a_member"),
+    pytest.param(PointwiseLoses, id="pointwise_function_removes_a_member"),
 ]
 
 
