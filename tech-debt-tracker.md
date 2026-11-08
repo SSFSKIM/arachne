@@ -347,6 +347,10 @@ lifted.
   images, failed to open the image's name as a file. `cairo` draws it. Remedy: a record per camera for a path
   with a fill image, or a display's images seeded as the main camera's are (`CairoDrawer._seed_images`).
   Reproducer: `camera_scenes.ImageFillZoomedAfterPainting` rendered with `draw_path="ir_cairo"`.
+- **`ir_cairo` raises `render.unable` in cases `cairo` draws.** Among them: a path filled from an image that
+  also appears inside a display (above), and a camera with a non-default `rgb_max_val` or pixel dtype. That is
+  the path's contract: a frame it can't describe is named, never drawn wrong. Whether such a frame should
+  instead fall back to `cairo`, frame by frame, is an open design question for `ir_cairo`.
 - **Replacing an engine module's function is not traced.** The draw-reads test sees reads of mobjects, cameras, the
   configuration, the camera's display functions and the files a drawing opens, not which module function a draw
   calls. A scene that replaces one (`camera.py`'s, `vectorized_mobject.py`'s helpers) runs its own code where the
