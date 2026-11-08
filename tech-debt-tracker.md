@@ -333,18 +333,23 @@ lifted.
   - the environment's TeX search variables (`TEXINPUTS` and the other `TEX*`, `*INPUTS` and `*FONTS` names);
   - for XeLaTeX and LuaLaTeX, the system fonts `fontspec` can load: the digest of fontconfig's list (`fc-list`,
     each font's file, index and version, sorted, asked once per process) and `OSFONTDIR`;
-  - the working directory, with the files there the source names literally: the `.sty`, `.cls`, `.cfg`, `.clo`
-    and `.def` of each package and class it loads (`\usepackage`, `\RequirePackage`, `\documentclass`,
-    `\LoadClass`), and each file it reads through `\input`, `\include`, `\import`/`\subimport` (directory and
-    file), `\inputminted` (its file argument), `\includegraphics` (an extensionless name with the usual
-    graphics suffixes), `\includesvg`, `\includepdf`, `\includestandalone`, `\lstinputlisting`,
-    `\verbatiminput`, `\InputIfFileExists` and `\IfFileExists`.
+  - the working directory, with these files there:
+    - every file of a suffix only TeX reads (`.sty .cls .clo .fd .def .ltx .tfm .vf .pfb .pfa .afm .enc .map`),
+      whatever its name, so a package loaded in turn (a local `amsbsy.sty` under `amsmath`) or a size option
+      file (`size12.clo`) counts;
+    - under XeLaTeX and LuaLaTeX, every `.otf`, `.ttf` and `.ttc` (fonts loaded by file name);
+    - the `.cfg` of each package and class the source loads (`\usepackage`, `\RequirePackage`,
+      `\documentclass`, `\LoadClass`), by name, since `.cfg` names are common outside TeX;
+    - each file the source reads through `\input`, `\include`, `\import`/`\subimport` (directory and file),
+      `\inputminted` (its file argument), `\includegraphics` (an extensionless name with the usual graphics
+      suffixes), `\includesvg`, `\includepdf`, `\includestandalone`, `\lstinputlisting`, `\verbatiminput`,
+      `\InputIfFileExists` and `\IfFileExists`.
 
   Known misses, each a file the compile reads that the key does not cover:
   - a file reached through a directory those variables name, or in the trees `TEXMFHOME` and `TEXMFLOCAL`
     (packages installed outside the distribution's database);
-  - a file a package or class loads in turn (a local `amsbsy.sty` that `amsmath` requires), and a font file,
-    `.fd`, `.map` or `.enc` beside the process that a font package finds;
+  - a `.cfg`, `.tex` or `.bib` beside the process that a package reads in turn under a name the source does not
+    use;
   - `\usepackage`, `\documentclass` and `\RequirePackage` naming a path in a subdirectory;
   - a stream opened for `\read`, and the packages that read data files that way (`datatool`, `pgfplotstable`,
     `csvsimple`);

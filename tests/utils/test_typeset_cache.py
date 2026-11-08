@@ -584,6 +584,49 @@ def test_a_working_directory_tex_can_read_from_keys_apart(tools, tmp_path, monke
 
 
 @pytest.mark.parametrize(
+    ("found", "template"),
+    [
+        # A package the source's packages load in turn (``amsmath`` loads it).
+        ("amsbsy.sty", {}),
+        # The size option file a class loads for its point size.
+        ("size12.clo", {"documentclass": r"\documentclass[12pt]{article}"}),
+        # Files a font package or the font machinery finds by name.
+        ("t1cmr.fd", {}),
+        ("cmr10.tfm", {}),
+        ("cmr10.pfb", {}),
+    ],
+)
+def test_a_file_only_tex_reads_beside_the_process_keys_apart(
+    tools, tmp_path, monkeypatch, found, template
+):
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.chdir(work)
+    with tempconfig({"typeset_dir": str(tmp_path / "shared")}):
+        bare = _typeset(**template)
+        (work / found).write_text("% a local file\n")
+        assert _typeset(**template) != bare
+
+
+def test_a_font_file_beside_the_process_keys_apart_where_fonts_load_by_file_name(
+    tools, tmp_path, monkeypatch
+):
+    r"""XeLaTeX and LuaLaTeX load a font by its file name
+    (``\setmainfont{Inter-Regular.otf}``) from the working directory; LaTeX
+    reads no such file.
+    """
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.chdir(work)
+    xelatex = {"tex_compiler": "xelatex", "output_format": ".xdv"}
+    with tempconfig({"typeset_dir": str(tmp_path / "shared")}):
+        latex, xe = _typeset(), _typeset(**xelatex)
+        (work / "Inter-Regular.otf").write_bytes(b"OTTO")
+        assert _typeset(**xelatex) != xe
+        assert _typeset() == latex
+
+
+@pytest.mark.parametrize(
     ("preamble", "read"),
     [
         (r"\input{macros}", "macros.tex"),

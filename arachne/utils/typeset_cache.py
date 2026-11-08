@@ -11,9 +11,10 @@ A file's name is a digest of everything its bytes depend on.
   package database, by digest; the environment's TeX search path; for
   XeLaTeX and LuaLaTeX, the system fonts they can load (fontconfig's list,
   by digest, and ``OSFONTDIR``); and, where the compile can read files
-  beside the process (a package or class the source loads, found in the
-  working directory, or a file the source reads by name), the working
-  directory and those files.
+  beside the process (a file there only TeX reads, such as a package, a
+  font description or metrics, and for XeLaTeX and LuaLaTeX a font file;
+  the configuration of a package or class the source loads; a file the
+  source reads by name), the working directory and those files.
 - For Text and MarkupText: every argument Pango typesets with (the text, its
   spans' fonts, slants, weights and colours, the size, the line spacing and
   the layout's width); the versions of ManimPango, Pango, HarfBuzz and
@@ -150,16 +151,40 @@ def _publish(made: Path, target: Path) -> Path:
 
 # What Tex depends on beside its source
 
-#: Packages and classes the source loads by name, which TeX finds in the
-#: working directory before the distribution.
+#: Packages and classes the source loads by name, whose configuration
+#: (``<name>.cfg``) TeX finds in the working directory before the
+#: distribution's.
 _LOADS = re.compile(
     r"\\(?:usepackage|RequirePackage|documentclass|LoadClass)\s*"
     r"(?:\[[^\]]*\])?\s*\{([^{}]*)\}"
 )
 
-#: The files a loaded package or class ``name`` is read from by that name:
-#: itself, and the configuration and option files it reads by its own name.
-_LOADED_AS = (".sty", ".cls", ".cfg", ".clo", ".def")
+#: Suffixes of the files only TeX reads (packages, classes, their option and
+#: definition files, font descriptions, metrics, Type 1 fonts and maps),
+#: which count wherever they are found beside the process: a package the
+#: source's packages load in turn is found there by a name the source never
+#: names.
+_ONLY_TEX_READS = frozenset(
+    {
+        ".sty",
+        ".cls",
+        ".clo",
+        ".fd",
+        ".def",
+        ".ltx",
+        ".tfm",
+        ".vf",
+        ".pfb",
+        ".pfa",
+        ".afm",
+        ".enc",
+        ".map",
+    }
+)
+
+#: Suffixes of the font files XeLaTeX and LuaLaTeX load by file name
+#: (``\setmainfont{Inter-Regular.otf}``), which count under those compilers.
+_FONT_FILES = frozenset({".otf", ".ttf", ".ttc"})
 
 #: Commands that read a file by the name they are given: the file is the
 #: first argument, or the second for the commands named here; the suffixes
@@ -211,8 +236,9 @@ def tex_toolchain(
             ["mutool", _version("mutool", "-v")],
             ["gs", _version("gs", "--version")],
         ]
-    found = [tools, _packages(), _search_path(), _beside(source)]
-    if _SYSTEM_FONT_COMPILERS.intersection(compilers):
+    system_fonts = bool(_SYSTEM_FONT_COMPILERS.intersection(compilers))
+    found = [tools, _packages(), _search_path(), _beside(source, system_fonts)]
+    if system_fonts:
         found.append(_system_fonts())
     return found
 
@@ -319,24 +345,27 @@ def _file_digest(path: str, size: int, mtime_ns: int) -> str:
     return digest.hexdigest()
 
 
-def _beside(source: str) -> list[object]:
-    """The files beside the process a compile of ``source`` can read: none
-    to name when the working directory holds none of the packages and
-    classes ``source`` loads and ``source`` reads no file by name; else the
-    directory and each of those files there, by size and time of change.
+def _beside(source: str, font_files: bool) -> list[object]:
+    """The files beside the process a compile of ``source`` can read: each
+    file there only TeX reads (and, where ``font_files``, each font file);
+    the configuration (``.cfg``) of each package and class ``source`` loads;
+    and each file ``source`` reads by name. None to name when there are none
+    and ``source`` reads no file by name; else the directory and each of
+    those files, by size and time of change.
     """
     here = os.getcwd()
-    listed = _listing(here, os.stat(here).st_mtime_ns)
-    loaded = {
-        name.strip() + suffix
+    mtime_ns = os.stat(here).st_mtime_ns
+    configured = {
+        name.strip() + ".cfg"
         for loads in _LOADS.finditer(source)
         for name in loads.group(1).split(",")
-        for suffix in _LOADED_AS
     }
     reads = list(_READS.finditer(source))
-    candidates = (loaded & listed) | {
-        name for read in reads for name in _read_names(read)
-    }
+    candidates = (
+        _only_tex_reads(here, mtime_ns, font_files)
+        | (configured & _listing(here, mtime_ns))
+        | {name for read in reads for name in _read_names(read)}
+    )
     if not candidates and not reads:
         return ["nothing beside"]
     files = []
@@ -348,6 +377,19 @@ def _beside(source: str) -> list[object]:
         if S_ISREG(status.st_mode):
             files.append([name, status.st_size, status.st_mtime_ns])
     return ["beside", here, files]
+
+
+@functools.lru_cache(maxsize=64)
+def _only_tex_reads(here: str, mtime_ns: int, font_files: bool) -> frozenset[str]:
+    """The names in directory ``here`` of files only TeX reads (font files
+    too, where ``font_files``), found once for each version of its entries.
+    """
+    suffixes = _ONLY_TEX_READS | _FONT_FILES if font_files else _ONLY_TEX_READS
+    return frozenset(
+        name
+        for name in _listing(here, mtime_ns)
+        if os.path.splitext(name)[1].lower() in suffixes
+    )
 
 
 @functools.lru_cache(maxsize=64)
