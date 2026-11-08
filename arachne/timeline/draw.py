@@ -597,8 +597,9 @@ class _DrawKey:
     the background they give it (which the camera builds afresh from an image
     found by name, and which is never written in place: a change makes a new
     array), the scene's roots, foreground and moving lists there, the play's static
-    list and whether its static picture holds, and the version of every
-    mobject the frame reaches (the camera's own included), in walk order.
+    list and whether its static picture holds, the version of every
+    mobject the frame reaches (the camera's own included), in walk order,
+    and what the record kept for them beside their states (:class:`_Kept`).
     Two keys match when each of these is the same object (the camera's
     inputs: the same values, :meth:`CameraExtras.same`), never by content:
     a mobject's version changes whenever anything it holds does.
@@ -617,6 +618,7 @@ class _DrawKey:
     static: tuple[Mobject, ...]
     holds: bool
     states: tuple[NodeState, ...]
+    kept: _Kept
 
     def matches(self, other: _DrawKey) -> bool:
         return (
@@ -632,6 +634,7 @@ class _DrawKey:
             and _same_items(self.foreground, other.foreground)
             and _same_items(self.moving, other.moving)
             and _same_items(self.static, other.static)
+            and self.kept.same(other.kept)
             and (
                 self.extras is other.extras
                 or (
@@ -641,6 +644,40 @@ class _DrawKey:
                 )
             )
         )
+
+
+@dataclass(frozen=True)
+class _Kept:
+    """What the record kept of a capture for the mobjects it shows, beside
+    their states, which a drawing gives them back (:meth:`Drawing.kept`): the
+    depth reference points, the pictures of the displays of other cameras,
+    and each camera's read of each image a shown mobject fills from. It is
+    what :meth:`Drawing.show` installs and what a reuse key holds, so
+    that a frame is reused only when it is drawn from the same of each.
+    Each part is a tuple of tuples, equal when their members are the same
+    objects.
+    """
+
+    references: tuple[tuple[Mobject, Any], ...] = ()
+    pictures: tuple[tuple[Mobject, PixelArray], ...] = ()
+    reads: tuple[tuple[Camera, Any, PixelArray | None], ...] = ()
+
+    def same(self, other: _Kept) -> bool:
+        return (
+            _same_rows(self.references, other.references)
+            and _same_rows(self.pictures, other.pictures)
+            and _same_rows(self.reads, other.reads)
+        )
+
+
+def _same_rows(a: Sequence[Sequence[Any]], b: Sequence[Sequence[Any]]) -> bool:
+    return a is b or (
+        len(a) == len(b)
+        and all(
+            len(x) == len(y) and all(map(operator.is_, x, y))
+            for x, y in zip(a, b, strict=True)
+        )
+    )
 
 
 def _live_pixels(mob: Mobject, state: NodeState) -> bool:
@@ -869,42 +906,72 @@ class Drawing:
                 saved[id(mob)] = (mob, NodeState.of(mob))
         for mob, state in reached:
             state.install(mob)
-        self.show_kept(capture, [mob for mob, _ in reached])
-        if capture.pictures:
-            self._show_pictures(capture, {id(mob) for mob, _ in reached})
+        self._install_kept(capture, self.kept(capture, reached), pictures=True)
 
-    def show_kept(self, capture: Capture, shown: Sequence[Mobject]) -> None:
-        """Give the ``shown`` mobjects, their states installed, what the
-        record kept of what their states only refer to: each one the depth
-        sort places by its ``z_index_group`` the point ``capture`` found (the
-        scene may not hold the group), and each camera drawing ``capture``
-        what it holds of each image a shown mobject fills from: its first
-        read of the image under the name the image had there
-        (:meth:`.Record.image_read`), whatever the scene painted into it
+    def kept(
+        self, capture: Capture, nodes: Sequence[tuple[Mobject, NodeState]]
+    ) -> _Kept:
+        """What the record kept for ``capture`` of what the states of the
+        ``nodes`` shown only refer to: each shown mobject's depth reference
+        point (the depth sort places it by its ``z_index_group``, which the
+        scene may not hold), each shown display's picture of a camera the
+        scene's camera does not draw into, and, for each camera drawing
+        ``capture`` and each image a shown mobject fills from, its first read
+        of the image under the name the image had there
+        (:meth:`.Record.image_pixels`), whatever the scene painted into it
         since.
         """
-        if capture.references:
-            ids = {id(mob) for mob in shown}
-            for mob, reference in capture.references:
-                if id(mob) in ids:
-                    mob.__dict__["z_index_group"] = reference
         record = self.record
+        references = pictures = ()
+        if capture.references or capture.pictures:
+            shown = {id(mob) for mob, _ in nodes}
+            references = tuple(
+                (mob, reference)
+                for mob, reference in capture.references
+                if id(mob) in shown
+            )
+            pictures = tuple(
+                (mob, picture) for mob, picture in capture.pictures if id(mob) in shown
+            )
+        reads: list[tuple[Camera, Any, PixelArray | None]] = []
         if record._image_reads:
             images = {}
-            for mob in shown:
-                image = mob.__dict__.get("background_image")
+            for _, state in nodes:
+                image = state.get("background_image")
                 if record.models_image(image):
                     images[id(image)] = image
             if images:
                 cameras = [self.camera]
-                if capture.camera is not None and capture.camera.sub_cameras:
-                    # Shaped as the capture shapes them, before any reads
-                    # through a displayer it would make at that shape.
-                    self.camera.update_sub_cameras()  # type: ignore[attr-defined]
+                if capture.camera is not None:
                     cameras.extend(sub for sub, _ in capture.camera.sub_cameras)
-                for camera in cameras:
-                    for image in images.values():
-                        self._show_image_read(camera, image, capture)
+                reads.extend(
+                    (camera, image, record.image_pixels(camera, image, capture))
+                    for camera in cameras
+                    for image in images.values()
+                )
+        return _Kept(references, pictures, tuple(reads))
+
+    def show_kept(
+        self, capture: Capture, nodes: Sequence[tuple[Mobject, NodeState]]
+    ) -> None:
+        """Give the ``nodes`` shown, their states installed, the depth
+        reference points and image reads :meth:`kept` finds for ``capture``.
+        """
+        self._install_kept(capture, self.kept(capture, nodes), pictures=False)
+
+    def _install_kept(self, capture: Capture, kept: _Kept, *, pictures: bool) -> None:
+        for mob, reference in kept.references:
+            mob.__dict__["z_index_group"] = reference
+        if kept.reads:
+            if capture.camera is not None and capture.camera.sub_cameras:
+                # Shaped as the capture shapes them, before any reads
+                # through a displayer it would make at that shape.
+                self.camera.update_sub_cameras()  # type: ignore[attr-defined]
+            for camera, image, _ in kept.reads:
+                self._show_image_read(camera, image, capture)
+        if pictures:
+            for mob, picture in kept.pictures:
+                self._show_picture(mob.camera, picture)
 
     def _show_image_read(self, camera: Any, image: Any, capture: Capture) -> None:
         """Give ``camera`` what it holds of ``image`` at ``capture``, under the
@@ -939,14 +1006,6 @@ class Drawing:
         extras.install(camera)
         for sub_camera, sub_extras in extras.sub_cameras:
             self._install_camera(sub_camera, sub_extras)
-
-    def _show_pictures(self, capture: Capture, shown: set[int]) -> None:
-        """Each shown display of a camera the scene's camera does not draw
-        into shows its camera's picture as ``capture`` kept it.
-        """
-        for mob, picture in capture.pictures:
-            if id(mob) in shown:
-                self._show_picture(mob.camera, picture)
 
     def _show_picture(self, sub_camera: Any, picture: PixelArray) -> None:
         """Give ``sub_camera`` ``picture``, saving the one it held first."""
@@ -1063,6 +1122,7 @@ class Drawing:
             play.static,
             holds,
             tuple(state for _, state in states),
+            self.kept(capture, states),
         )
 
     def _sample(

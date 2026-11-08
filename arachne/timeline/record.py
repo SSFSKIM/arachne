@@ -999,28 +999,40 @@ class Record:
         entry = self._image_names.get(id(value))
         return entry is not None and entry[0] is value
 
-    def image_read(
-        self, camera: Any, image: Image.Image, capture: Capture, fitted_to: np.ndarray
-    ) -> np.ndarray | None:
-        """What ``camera`` holds for ``image`` when it draws ``capture``: its
-        first read of the image under the name the image had there, fitted
-        to ``fitted_to``'s shape as the camera fits it. ``None`` when the
-        camera read none (it draws no path the image fills there).
-        """
+    def _name_at(self, image: Image.Image, capture: Capture) -> str | None:
+        """The name ``image`` had at ``capture``, if it was noted by then."""
         entry = self._image_names.get(id(image))
         if entry is None or entry[0] is not image:
             return None
         at = bisect.bisect_right(entry[1], capture.seq) - 1
-        if at < 0:
-            return None
-        name = entry[2][at]
-        read = self._image_reads.get((id(camera), name))
-        if read is None or read[0] is not camera:
+        return entry[2][at] if at >= 0 else None
+
+    def image_pixels(
+        self, camera: Any, image: Image.Image, capture: Capture
+    ) -> np.ndarray | None:
+        """``camera``'s first read of ``image`` under the name the image had
+        at ``capture``, as it read it; ``None`` when it read none (it draws
+        no path the image fills there). The same array for the same read.
+        """
+        name = self._name_at(image, capture)
+        read = None if name is None else self._image_reads.get((id(camera), name))
+        return read[1] if read is not None and read[0] is camera else None
+
+    def image_read(
+        self, camera: Any, image: Image.Image, capture: Capture, fitted_to: np.ndarray
+    ) -> np.ndarray | None:
+        """What ``camera`` holds for ``image`` when it draws ``capture``: its
+        first read of the image under the name the image had there
+        (:meth:`image_pixels`), fitted to ``fitted_to``'s shape as the camera
+        fits it. ``None`` when the camera read none.
+        """
+        name = self._name_at(image, capture)
+        pixels = self.image_pixels(camera, image, capture)
+        if name is None or pixels is None:
             return None
         key = (id(camera), name, fitted_to.shape)
         fitted = self._image_fits.get(key)
         if fitted is None:
-            pixels = read[1]
             if pixels.shape != fitted_to.shape:
                 displayer = camera.get_background_colored_vmobject_displayer()
                 pixels = displayer.resize_background_array_to_match(pixels, fitted_to)

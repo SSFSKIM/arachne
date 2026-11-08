@@ -209,7 +209,7 @@ def _restoring(
             state.install(mob)
         # A restore point's state holds the live group and the live image,
         # not what the record kept of them.
-        drawing.show_kept(base, [mob for mob, _ in point.nodes])
+        drawing.show_kept(base, point.nodes)
         with (
             _assigned(scene, assignments),
             _animations_at(point),
