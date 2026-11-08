@@ -12,6 +12,7 @@ import pytest
 from arachne.camera import projection
 from arachne.frame_ir.painter import IrCairoPainter
 
+from ..helpers.draw_reads import untraced
 from ..timeline.conftest import render
 from ..timeline.scenes import TimelineDiagram
 from . import camera_scenes, scenes
@@ -49,23 +50,24 @@ def boxes_against_the_projection(monkeypatch, scene_class) -> list[tuple]:
 
     def watched(self, camera, groups, **kwargs):
         pixels = paint(self, camera, groups, **kwargs)
-        held = self.stream._view
-        view = projection.view_of(camera, mapping_centre=held["mapping_centre"])
-        live = projection.view_of(camera, mapping_centre=camera.frame_center)
-        mobs = {slot: mob for mob, slot in self.stream._slots.values()}
-        for slot, box in self.core.screen_boxes().items():
-            mob = mobs[slot]
-            kind = self.stream._held[slot].kind
-            found.append(
-                (
-                    kwargs.get("t"),
-                    slot,
-                    f"{kind} {type(mob).__name__}",
-                    box,
-                    projected(camera, view, mob, kind),
-                    projected(camera, live, mob, kind),
+        with untraced():
+            held = self.stream._view
+            view = projection.view_of(camera, mapping_centre=held["mapping_centre"])
+            live = projection.view_of(camera, mapping_centre=camera.frame_center)
+            mobs = {slot: mob for mob, slot in self.stream._slots.values()}
+            for slot, box in self.core.screen_boxes().items():
+                mob = mobs[slot]
+                kind = self.stream._held[slot].kind
+                found.append(
+                    (
+                        kwargs.get("t"),
+                        slot,
+                        f"{kind} {type(mob).__name__}",
+                        box,
+                        projected(camera, view, mob, kind),
+                        projected(camera, live, mob, kind),
+                    )
                 )
-            )
         return pixels
 
     monkeypatch.setattr(IrCairoPainter, "paint", watched)
@@ -121,14 +123,17 @@ def test_a_changed_camera_s_records_are_boxed_where_it_placed_them(
 
     def described(self, camera, drawn, centres, background):
         pixels = describe(self, camera, drawn, centres, background)
-        painter = self.painter(camera)
-        view = projection.view_of(
-            camera, mapping_centre=painter.stream._view["mapping_centre"]
-        )
-        mobs = {slot: mob for mob, slot in painter.stream._slots.values()}
-        for slot, box in painter.core.screen_boxes().items():
-            kind = painter.stream._held[slot].kind
-            found.append((slot, kind, box, projected(camera, view, mobs[slot], kind)))
+        with untraced():
+            painter = self.painter(camera)
+            view = projection.view_of(
+                camera, mapping_centre=painter.stream._view["mapping_centre"]
+            )
+            mobs = {slot: mob for mob, slot in painter.stream._slots.values()}
+            for slot, box in painter.core.screen_boxes().items():
+                kind = painter.stream._held[slot].kind
+                found.append(
+                    (slot, kind, box, projected(camera, view, mobs[slot], kind))
+                )
         return pixels
 
     monkeypatch.setattr(live_module.LivePainter, "_describe", described)

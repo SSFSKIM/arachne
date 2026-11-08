@@ -587,6 +587,12 @@ class Tracer:
 
     @contextmanager
     def _frame(self, drawing: Any, capture: Any) -> Iterator[None]:
+        if drawing.captured:
+            # Frames described from the camera's own captures are drawn by its
+            # code as it runs now (``arachne.frame_ir.live``): its reads of the
+            # live scene are what that route is, and it reuses no frame.
+            yield
+            return
         frame = _Frame(drawing, capture)
         if capture.camera is not None:
             self._cameras_of(frame, drawing.camera, capture.camera)
@@ -916,9 +922,8 @@ class Tracer:
         (``DISPLAY_REPLACED``).
         """
         return any(
-            each.form == "display_funcs"
-            and getattr(each.method, "__self__", None) is camera
-            for each in self.frames[-1].drawing.record.camera_replaced
+            getattr(each.method, "__self__", None) is camera
+            for each in self._replaced_displays()
         )
 
     def _reported(self, camera: Any, kind: Any, entry: Any) -> bool:
@@ -928,9 +933,26 @@ class Tracer:
         """
         name = f"display_funcs[{getattr(kind, '__name__', kind)}]"
         return any(
-            each.form == "display_funcs" and each.name == name and each.method is entry
-            for each in self.frames[-1].drawing.record.camera_replaced
+            each.name == name and each.method is entry
+            for each in self._replaced_displays()
         )
+
+    def _replaced_displays(self) -> list[Any]:
+        """The display functions the scene replaced on the cameras the frame is
+        drawn with, as the camera-code detector finds them now.
+        """
+        from arachne.timeline.camera_code import drawn_cameras, replaced_methods
+
+        held, self._busy = self._busy, True
+        try:
+            return [
+                each
+                for camera in drawn_cameras(self.frames[-1].drawing.camera)
+                for each in replaced_methods(camera)
+                if each.form == "display_funcs"
+            ]
+        finally:
+            self._busy = held
 
 
 #: Camera attributes the record installs from the capture's inputs
@@ -1220,6 +1242,22 @@ def _line(frame: types.FrameType) -> str:
 
 
 _TRACER: Tracer | None = None
+
+
+@contextmanager
+def untraced() -> Iterator[None]:
+    """Within: reads are not judged. For a test's own code that watches a
+    drawing from inside it (a spy on a painter), whose reads of the engine
+    are the test's, not the drawing's. Nothing changes when no frame is traced.
+    """
+    if _TRACER is None:
+        yield
+        return
+    _TRACER._site_depth += 1
+    try:
+        yield
+    finally:
+        _TRACER._site_depth -= 1
 
 
 def tracer() -> Tracer:

@@ -153,17 +153,21 @@ _ENTRY = (
 )
 
 
-def test_a_display_function_the_scene_replaced_is_not_found_once_the_record_reports_it(
+def test_a_display_function_the_scene_replaced_is_not_found_once_the_detector_reports_it(
     tracing,
 ):
+    from arachne.timeline.camera_code import replaced_methods
+
     scene, _ = render(ReplacesADisplayFunction, 15)
-    assert [r.name for r in scene.timeline.record.camera_replaced] == [
+    assert [r.name for r in replaced_methods(scene.renderer.camera)] == [
         "display_funcs[VMobject]"
     ]
+    # The record of replaced camera code holds methods only.
+    assert scene.timeline.record.camera_replaced == ()
     assert _ENTRY not in _found(tracing)
 
 
-def test_a_display_function_the_record_does_not_report_is_found(tracing, monkeypatch):
+def test_a_display_function_the_detector_does_not_report_is_found(tracing, monkeypatch):
     from arachne.timeline import camera_code
 
     monkeypatch.setattr(camera_code, "_replaced_displays", lambda camera: [])
