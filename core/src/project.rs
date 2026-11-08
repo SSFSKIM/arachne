@@ -182,6 +182,18 @@ impl Projection {
         U * (2.0 * f.abs() + 4.0 * f * f / d.abs() * reach)
     }
 
+    /// How far, as a share of itself, the depth key `-factor(z)` of a curve through points
+    /// `project` placed at `shown` may move where each of those points moves by up to `moved` in
+    /// the world ([`depth_share`]).
+    pub fn depth_share(&self, shown: &[[f64; 3]], moved: f64) -> f64 {
+        depth_share(
+            self.focal_distance,
+            self.exponential,
+            shown.iter().map(|q| q[2]),
+            moved,
+        )
+    }
+
     /// The depth key (`-factor`) across a world plane, as a plane on the pixel plane under the
     /// frame mapping `map`; `None` under the exponential option or where the plane is seen within
     /// `min_cos` of edge-on (the cosine between its normal and the sight line to `at`, a point on
@@ -517,6 +529,37 @@ pub fn produced_pivot(record: &Record, own: &[[f64; 3]], shown: &[[f64; 3]]) -> 
     let own = place(&record.geometry.place_a, *own.first()?);
     let shown = *shown.first()?;
     Some(std::array::from_fn(|k| centre[k] + (shown[k] - own[k])))
+}
+
+/// How far, as a share of itself, the depth key `-factor(z)` of a curve through points at
+/// projected depths `depths` (before the perspective, as `Projection::project` gives them) may move
+/// where each of those points moves by up to `moved` in the world, under a camera at
+/// `focal_distance`: `z`, rotated, moves by as much, and `factor = d / (d - z)` by at most
+/// `factor moved / (d - z - moved)` of itself (at `z + moved`); a key along the curve is a
+/// combination of its points' keys with weights summing to one, all of one sign, so it moves by
+/// at most the most of their shares. Under the exponential option `factor` grows by at most
+/// `1 / d` of itself per unit of `z`, so by at most `moved / (d - moved)`. Infinite where a moved
+/// point may reach the eye.
+pub fn depth_share(
+    focal_distance: f64,
+    exponential: bool,
+    depths: impl IntoIterator<Item = f64>,
+    moved: f64,
+) -> f64 {
+    let share = |room: f64| {
+        if room - moved > 0.0 {
+            moved / (room - moved)
+        } else {
+            f64::INFINITY
+        }
+    };
+    if exponential {
+        return share(focal_distance);
+    }
+    depths
+        .into_iter()
+        .map(|z| share(focal_distance - z))
+        .fold(0.0, f64::max)
 }
 
 /// `transform_points_pre_display`. A 3D placement needs the projection.

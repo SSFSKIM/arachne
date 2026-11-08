@@ -967,3 +967,35 @@ def test_near_parallel_holds_up_to_the_turn_the_two_records_snaps_allow():
     assert _near_parallel(lower, upper, grid)[0] is True
     with pytest.raises(ValueError):
         _near_parallel(flat, record(turned(0.0), 3), grid)
+
+
+def test_line_share_is_the_snap_s_reach_over_each_point_s_room_from_the_eye():
+    from arachne_core._core import _line_share, _lines_tied
+
+    grid, d = 1 / 16384, 20.0
+    line = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.5), (2.0, 0.0, 1.0)]
+    depths = [0.0, 0.5, 1.0]
+
+    def share(points=line, planes=0, depths=depths, exponential=False):
+        return _line_share(points, IDENTITY_PLACES, points, planes, grid, depths, d, exponential)
+
+    # Unplaced, the snap moves a point by half a step along each axis: sqrt(3) times the
+    # identity's Frobenius norm of that, bound along every normal. The nearest point has the
+    # least room from the eye.
+    w, s = share()
+    assert w == pytest.approx(1.5 * grid, rel=1e-9)
+    assert s == pytest.approx(w / (d - 1.0 - w), rel=1e-12)
+    assert share(exponential=True) == pytest.approx((w, w / (d - w)), rel=1e-12)
+    assert share(depths=[d])[1] == float("inf")
+    face = outline([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0)])
+    with pytest.raises(ValueError, match="flat"):
+        share(face, 1)
+    with pytest.raises(ValueError, match="path"):
+        share(planes=None)
+    with pytest.raises(ValueError, match="no depths"):
+        share(depths=[])
+    # The term: two keys within each one's bound and own share of itself of each other.
+    k, e = -1.0, 1e-15
+    reach = e + (abs(k) + e) * s
+    assert _lines_tied((k, e, s), (k - 1.999 * reach, e, s))
+    assert not _lines_tied((k, e, s), (k - 2.001 * reach, e, s))

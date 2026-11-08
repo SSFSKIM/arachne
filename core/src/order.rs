@@ -180,21 +180,48 @@ pub fn near_parallel(a: &Fragment, b: &Fragment) -> bool {
 /// records' hull, take against each other the shares their whole departures give
 /// ([`Fragment::wide`]).
 ///
-/// It is `(one_plane(a, b) || near_parallel(a, b)) && within_term(..)`, the near-parallel test,
-/// the only one that reads more than the two fragments' own numbers, run last: only where the two
-/// share no identity, are both fragments of flat records, and their keys lie within the term.
+/// Two strokes of paths with no plane of their own on no one identity ([`lines`]) are one depth
+/// within their error bounds and each one's own share of its key ([`lines_term`]): two lines
+/// content put crossing, which the snap moves apart along each sight line by no more.
+///
+/// It is `one_plane(a, b) && within_term(..)`, else `lines(a, b) && lines_term(..)`, else
+/// `near_parallel(a, b) && within_term(..)`: the three cases are disjoint (a flat record's
+/// fragment is no stroke of a path with no plane of its own), and the near-parallel test, the only
+/// one that reads more than the two fragments' own numbers, runs last: only where the two share no
+/// identity, are both fragments of flat records, and their keys lie within the term.
 ///
 /// [`Fragment::snap`]: crate::composite::Fragment::snap
 /// [`Fragment::wide`]: crate::composite::Fragment::wide
 pub fn coplanar_tied(a: &Fragment, da: f64, ea: f64, b: &Fragment, db: f64, eb: f64) -> bool {
     if one_plane(a, b) {
         within_term(a, da, ea, b, db, eb)
+    } else if lines(a, b) {
+        lines_term((da, ea, a.own), (db, eb, b.own))
     } else {
         a.record.is_some()
             && b.record.is_some()
             && within_term(a, da, ea, b, db, eb)
             && near_parallel(a, b)
     }
+}
+
+/// Whether `a` and `b` are strokes (or background strokes) of paths with no plane of their own
+/// ([`Fragment::own`]), attached to identities or not, on no one identity: two lines or curves
+/// whose keys along their curves the snap moves by at most each one's own share of itself.
+///
+/// [`Fragment::own`]: crate::composite::Fragment::own
+pub fn lines(a: &Fragment, b: &Fragment) -> bool {
+    a.own >= 0.0 && b.own >= 0.0 && !one_plane(a, b)
+}
+
+/// Whether two keys, each `(d, e, s)`: the key `d` within `e` and its share `s` of itself
+/// ([`Fragment::own`]), lie within their error bounds and each one's share of its key (with its
+/// bound) of each other: [`lines`]' term, `|da - db| <= ea + (|da| + ea) sa + eb + (|db| + eb) sb`.
+///
+/// [`Fragment::own`]: crate::composite::Fragment::own
+pub fn lines_term((da, ea, sa): (f64, f64, f64), (db, eb, sb): (f64, f64, f64)) -> bool {
+    let reach = |d: f64, e: f64, share: f64| e + (d.abs() + e) * share;
+    tied(da, reach(da, ea, sa), db, reach(db, eb, sb))
 }
 
 /// Whether `a`'s key `da` (within `ea`) and `b`'s `db` (within `eb`) lie within their error bounds

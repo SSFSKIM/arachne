@@ -248,6 +248,12 @@ fn layer_runs(layer: &Layer) -> Vec<Vec<(u32, u32)>> {
         .collect()
 }
 
+/// Where a layer lies ([`Lowering::push`]): the identities of the registered planes it lies on,
+/// its key's shares ([`Fragment::snap`] and [`Fragment::wide`]), its keys on those planes, the
+/// registry's handle of its flat record ([`Fragment::record`]), and its own share of its key
+/// ([`Fragment::own`]).
+type On = ([u32; 4], [f64; 2], [Option<Plane>; 4], Option<u32>, f64);
+
 /// One coverage layer: a fill or a stroke's outline, with its paint and place.
 struct Layer {
     edges: Vec<Edge>,
@@ -274,6 +280,9 @@ struct Layer {
     snap: f64,
     /// Its share against what else has no plane of its own ([`Fragment::wide`]).
     wide: f64,
+    /// For a stroke of a path with no plane of its own, its own share of its key
+    /// ([`Fragment::own`]).
+    own: f64,
     /// For a layer of a path keyed on a registered plane, its path's key on each identity's plane,
     /// in the order of `plane`: what it is read on against a fragment sharing that identity
     /// ([`Producer::plane_depths`]).
@@ -956,6 +965,9 @@ pub struct Keyed {
     /// For a flat path (offered to the registry on its own plane), its handle there: the record
     /// its layers' fragments carry ([`Fragment::record`]). None for any other.
     pub record: Option<u32>,
+    /// Offered to the registry with no plane of its own, attached or not: its strokes carry their
+    /// own share of their keys ([`Fragment::own`]).
+    pub planeless: bool,
 }
 
 impl Keyed {
@@ -968,6 +980,7 @@ impl Keyed {
             shared: Vec::new(),
             offs: Vec::new(),
             record: None,
+            planeless: false,
         }
     }
 }
@@ -1101,7 +1114,8 @@ impl<'v> Lowering<'v> {
         (keyed.is_none() && matches!(placed, Placement::Projected)).then_some((world, true))
     }
 
-    /// Where each of `draws` (in draw order) is keyed ([`Keyed`]), `None` for its curve's depth.
+    /// Where each of `draws` (in draw order) is keyed ([`Keyed`]): `None` for a path read by its
+    /// curve's depth that the registry was not offered.
     ///
     /// Every path in the world is offered to the frame's [`Registry`], with its meshes' triangles,
     /// then the registry settles and each takes its identities, whatever the draw order: a flat
@@ -1158,11 +1172,22 @@ impl<'v> Lowering<'v> {
                         })
                         .collect(),
                     record: None,
+                    planeless: true,
+                })
+            } else if !flat {
+                Some(Keyed {
+                    plane: own,
+                    ids,
+                    planarity,
+                    shared: Vec::new(),
+                    offs: Vec::new(),
+                    record: None,
+                    planeless: true,
                 })
             } else {
                 own.map(|plane| Keyed {
                     ids,
-                    record: flat.then_some(handle),
+                    record: Some(handle),
                     ..Keyed::alone(plane, planarity)
                 })
             };
@@ -1171,7 +1196,7 @@ impl<'v> Lowering<'v> {
     }
 
     /// Lowers one path into up to three layers, `plane` where it is keyed ([`Lowering::coplanar`]),
-    /// or `None` for its curve's depth.
+    /// or `None` for its curve's depth off the registry.
     pub fn path(&mut self, draw: &PathDraw<'_>, plane: Option<Keyed>) {
         let rec = draw.record;
         let Some(world) = drawn_world(draw) else {
@@ -1227,6 +1252,16 @@ impl<'v> Lowering<'v> {
         };
         // A flat path's record, carried by each of its layers keyed with its term.
         let record = plane.as_ref().and_then(|on| on.record);
+        // A path with no plane of its own: how far its snap may move the keys along its curve, as
+        // a share of them, which its strokes carry ([`Fragment::own`]).
+        let own = match (&plane, self.projection.as_ref()) {
+            (Some(on), Some(p)) if on.planeless => {
+                let grid = crate::depth::input_grid(self.view);
+                let moved = crate::depth::snap_departure_bound(grid, &draw.places, &draw.points);
+                p.depth_share(&shown, moved)
+            }
+            _ => f64::NEG_INFINITY,
+        };
         let scale = self.map.xx.abs().max(self.map.yy.abs());
         let area = self.guard(&user, draw.stroke_width.max(draw.background_stroke_width));
         let guarded = match area {
@@ -1320,11 +1355,12 @@ impl<'v> Lowering<'v> {
                 [f64::INFINITY, f64::NEG_INFINITY]
             };
             let record = record.filter(|_| snap[0].is_finite());
+            let own = if k == 1 { f64::NEG_INFINITY } else { own };
             self.push(
                 &rings(&outline_px),
                 spec,
                 depth,
-                (ids, snap, on_plane, record),
+                (ids, snap, on_plane, record, own),
                 draw.order,
                 draw.sub + k,
             );
@@ -1553,18 +1589,19 @@ impl<'v> Lowering<'v> {
 
     /// Adds the layer whose outline is the closed polygons `rings`, on the pixel plane, on the
     /// registered planes `on.0` with its key's shares `on.1` ([`Fragment::snap`] and
-    /// [`Fragment::wide`]), its keys on their planes `on.2` and the registry's handle of its flat
-    /// record `on.3` ([`Fragment::record`]).
+    /// [`Fragment::wide`]), its keys on their planes `on.2`, the registry's handle of its flat
+    /// record `on.3` ([`Fragment::record`]) and its own share of its key `on.4`
+    /// ([`Fragment::own`]).
     fn push(
         &mut self,
         rings: &[Vec<[f64; 2]>],
         spec: PaintSpec,
         depth: LayerDepth,
-        on: ([u32; 4], [f64; 2], [Option<Plane>; 4], Option<u32>),
+        on: On,
         order: u32,
         sub: u32,
     ) {
-        let (plane, [snap, wide], on_plane, record) = on;
+        let (plane, [snap, wide], on_plane, record, own) = on;
         let edges = scanline::edges_of(rings);
         if edges.is_empty() {
             return;
@@ -1621,6 +1658,7 @@ impl<'v> Lowering<'v> {
             plane,
             snap,
             wide,
+            own,
             on_plane,
             record,
             order,
@@ -1760,6 +1798,7 @@ impl Paths {
                         f.snap = layer.snap;
                         f.record = record.map(FlatRecord);
                         f.wide = layer.wide;
+                        f.own = layer.own;
                         add(x, y, f);
                     }
                 },

@@ -296,6 +296,12 @@ pub struct Fragment<'f> {
     /// normal and its points' departure from it (`depth::Registry::off_identity`). Negative (minus
     /// infinity) for any other.
     pub wide: f64,
+    /// For a stroke (or background stroke) of a path with no plane of its own, on identities or
+    /// not: how far, as a share of itself, its key may stand from the key along its curve through
+    /// its points as content put them, for their snap to the input grid
+    /// (`Projection::depth_share` of `depth::snap_departure_bound`). Two such strokes sharing no
+    /// identity tie within it ([`crate::order::lines`]). Negative (minus infinity) for any other.
+    pub own: f64,
     /// The producer that added it (set by the pass).
     source: u16,
 }
@@ -330,6 +336,7 @@ impl Fragment<'_> {
             snap: f64::INFINITY,
             record: None,
             wide: f64::NEG_INFINITY,
+            own: f64::NEG_INFINITY,
             source: 0,
         }
     }

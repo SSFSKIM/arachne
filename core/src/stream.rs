@@ -4319,14 +4319,18 @@ mod tests {
         paths_stream(view.clone(), items)
     }
 
+    /// A fragment's key read against another, its bound, and its shares: `snap`, `wide` and `own`
+    /// ([`composite::Fragment`]).
+    type Read = (f64, f64, f64, f64, f64);
+
     /// One sub-sample objects `a` and `b` both cover, each one's key read against the other
     /// ([`composite::Depths::against`]) with its bound, each fragment's shares, and whether the
     /// resolve composites `a` above `b` there.
     #[derive(Clone, Copy, Debug, PartialEq)]
     struct Met {
         at: (u32, u32, usize),
-        a: (f64, f64, f64, f64),
-        b: (f64, f64, f64, f64),
+        a: Read,
+        b: Read,
         a_above: bool,
     }
 
@@ -4350,8 +4354,9 @@ mod tests {
             let ((ka, ea), (kb, eb)) = (d[i].against(fa, fb), d[j].against(fb, fa));
             for k in 0..composite::SAMPLES {
                 if cov[i][k] != 0 && cov[j][k] != 0 {
-                    let read =
-                        |key: f64, err: f64, f: &composite::Fragment| (key, err, f.snap, f.wide);
+                    let read = |key: f64, err: f64, f: &composite::Fragment| {
+                        (key, err, f.snap, f.wide, f.own)
+                    };
                     keys.insert((x, y, k), (read(ka[k], ea, fa), read(kb[k], eb, fb)));
                 }
             }
@@ -4383,8 +4388,8 @@ mod tests {
 
     /// Whether `m`'s two keys lie within the term each one's `share` of its key and their bounds
     /// make ([`order::coplanar_tied`]'s term).
-    fn within_shares(m: &Met, share: impl Fn((f64, f64, f64, f64)) -> f64) -> bool {
-        let reach = |(d, e, ..): (f64, f64, f64, f64), share: f64| e + (d.abs() + e) * share;
+    fn within_shares(m: &Met, share: impl Fn(Read) -> f64) -> bool {
+        let reach = |(d, e, ..): Read, share: f64| e + (d.abs() + e) * share;
         let (sa, sb) = (share(m.a), share(m.b));
         !(sa.is_finite() && sb.is_finite())
             || order::tied(m.a.0, reach(m.a, sa), m.b.0, reach(m.b, sb))
@@ -4517,5 +4522,215 @@ mod tests {
         assert_eq!(broken, 0, "of {} sub-samples of the line and B", on_b.len());
         let alone = hinged_faces_and_line(&view, false, true);
         assert_eq!(read_against(&s, 103, 102), read_against(&alone, 103, 102));
+    }
+
+    /// Frame `frame` of two lines crossing at a point, applied to `s` (frame 0 the first delta,
+    /// drawn A, slot 1, then B, slot 2): content puts each through `(0, 0, lift)`, turned about z
+    /// by `0.3 + 0.07 frame` rad (B square to A) and lifted to `lift = 0.3 + 0.37 frame` grid
+    /// steps, as an orbit places its fixed-orientation mobjects again each frame; each rising along
+    /// itself (A by 0.71 grid steps a unit, B falling by 0.53), so the snap moves the two apart at
+    /// their crossing by a different fraction of a step each frame; coded on no plane, so on no
+    /// identity.
+    fn crossing_lines(s: &mut Stream, view: &View, frame: u32) {
+        let turn = 0.3 + 0.07 * f64::from(frame);
+        let lift = 0.3 + 0.37 * GRID * f64::from(frame);
+        let (c, sn) = (libm::cos(turn), libm::sin(turn));
+        let line = |dir: [f64; 2], rise: f64| {
+            let at = |t: f64| [t * dir[0], t * dir[1], lift + rise * GRID * t];
+            snapped(&[at(-2.0), at(-2.0 / 3.0), at(2.0 / 3.0), at(2.0)], GRID)
+        };
+        let curve = crate::depth::Planarity::Curve;
+        let items: Vec<(Shape, Record)> = [(line([c, sn], 0.71), 1u32), (line([-sn, c], -0.53), 2)]
+            .into_iter()
+            .map(|(points, slot)| {
+                let shape = Shape::new(ShapeData::Path { points });
+                let mut r = line_record(slot, 6.0, curve);
+                r.geometry.shape_a = Some(shape.key());
+                (shape, r)
+            })
+            .collect();
+        let delta = if frame == 0 {
+            crate::probes::first_delta(view.clone(), &items, &[1, 2])
+        } else {
+            let mut d = Delta::new(
+                Time {
+                    num: i64::from(frame),
+                    den: 30,
+                },
+                u64::from(frame),
+            );
+            for (shape, r) in &items {
+                d.upload.push(shape.clone());
+                d.set.push(r.clone());
+            }
+            d
+        };
+        s.apply(&delta).expect("the delta applies");
+    }
+
+    /// The lines of [`crossing_lines`] over sixteen frames, seen from straight above, so their keys
+    /// part only by what the snap does to them: on no identity, each a stroke of a path with no
+    /// plane of its own carrying its own finite share of its key, they tie wherever both cover in
+    /// every frame, B, drawn later, above A at every sub-sample, so no order there flips from frame
+    /// to frame, though the snap makes now one and now the other the nearer by its key.
+    #[test]
+    fn two_lines_crossing_on_no_identity_tie_in_every_frame_of_an_orbit() {
+        let view = snapped_view(0.0, -90.0);
+        let mut s = Stream::new();
+        let mut nearer = [0usize; 2];
+        for frame in 0..16u32 {
+            crossing_lines(&mut s, &view, frame);
+            let ids = identities(&s);
+            assert!(
+                ids[&101].is_empty() && ids[&102].is_empty(),
+                "frame {frame}: A on {:?}, B on {:?}",
+                ids[&101],
+                ids[&102]
+            );
+            let both = met(&s, 101, 102);
+            assert!(both.len() > 50, "frame {frame}: {} sub-samples", both.len());
+            for m in &both {
+                assert!(
+                    [m.a.4, m.b.4].iter().all(|s| s.is_finite() && *s > 0.0),
+                    "frame {frame}: shares {} and {}",
+                    m.a.4,
+                    m.b.4
+                );
+                assert!(!m.a_above, "frame {frame}: A above B at {:?}", m.at);
+                if !order::tied(m.a.0, m.a.1, m.b.0, m.b.1) {
+                    nearer[usize::from(m.a.0 < m.b.0)] += 1;
+                }
+            }
+        }
+        assert!(
+            nearer[0] > 0 && nearer[1] > 0,
+            "the keys put A nearer at {} sub-samples, B at {}",
+            nearer[1],
+            nearer[0]
+        );
+    }
+
+    /// Two level lines along x seen from straight above, one over the other, A on z = 0 and B ten
+    /// grid steps above it (the nearer), coded on no plane and so on no identity, B drawn first:
+    /// apart by more than their own shares reach, depth orders them, B above A at every sub-sample
+    /// both cover, though paint order would put A above.
+    #[test]
+    fn parallel_lines_apart_beyond_their_own_shares_keep_depth_order() {
+        let view = snapped_view(0.0, -90.0);
+        let (curve, up) = (crate::depth::Planarity::Curve, 10.0 * GRID);
+        let s = paths_stream(
+            view,
+            vec![
+                (
+                    snapped_line([-2.0, 0.0, up], [2.0, 0.0, up]),
+                    line_record(2, 6.0, curve),
+                ),
+                (
+                    snapped_line([-2.0, 0.0, 0.0], [2.0, 0.0, 0.0]),
+                    line_record(1, 6.0, curve),
+                ),
+            ],
+        );
+        let both = met(&s, 101, 102);
+        assert!(both.len() > 1000, "{} sub-samples", both.len());
+        let above = both.iter().filter(|m| m.a_above).count();
+        assert_eq!(above, 0, "A above B at {above} of {}", both.len());
+    }
+
+    /// A line on no identity a stroke's own share of its key reaches past a flat face: the face a
+    /// square 2 across on z = 0, the line across it two grid steps above (the nearer), no plane
+    /// holding both within their tolerances (each half a step along z), coded on no plane, drawn
+    /// first. The face has no own share, so depth orders the two, the line above the face at every
+    /// sub-sample both cover, though paint order would put the face above.
+    #[test]
+    fn a_line_against_a_flat_face_never_ties_by_its_own_share() {
+        let view = snapped_view(0.0, -90.0);
+        let up = 2.0 * GRID;
+        let flat = Some(crate::depth::Planarity::Newell);
+        let s = paths_stream(
+            view,
+            vec![
+                (
+                    snapped_line([-0.5, 0.2, up], [0.5, 0.2, up]),
+                    line_record(2, 6.0, crate::depth::Planarity::Curve),
+                ),
+                (
+                    flat_square(-1.0, 2.0),
+                    face_record(1, [0.8, 0.3, 0.2, 1.0], None, flat),
+                ),
+            ],
+        );
+        let ids = identities(&s);
+        assert!(
+            !ids[&101].is_empty() && ids[&102].is_empty(),
+            "the face on {:?}, the line on {:?}",
+            ids[&101],
+            ids[&102]
+        );
+        let both = met(&s, 101, 102);
+        assert!(both.len() > 500, "{} sub-samples", both.len());
+        for m in &both {
+            assert!(m.a.4 < 0.0 && m.b.4 > 0.0, "shares {} and {}", m.a.4, m.b.4);
+            let reach = |(d, e, _, _, s): Read| e + (d.abs() + e) * s;
+            assert!(
+                (m.a.0 - m.b.0).abs() <= reach(m.b) * 2.0,
+                "the keys {} and {} part by more than twice the line's own reach {}",
+                m.a.0,
+                m.b.0,
+                reach(m.b)
+            );
+        }
+        let above = both.iter().filter(|m| m.a_above).count();
+        assert_eq!(
+            above,
+            0,
+            "the face above the line at {above} of {}",
+            both.len()
+        );
+    }
+
+    /// Two lines seen from straight above, crossing on screen at the origin: A level on z = 0,
+    /// along x; B along y, its points snapped to three and four grid steps above (so through 3.5
+    /// at the crossing, the nearer), both coded on no plane and so on no identity, B drawn first.
+    /// Where both cover, their keys part by more than their own shares reach, by less than a
+    /// quarter more, so depth orders them, B above A at every sub-sample, though paint order would
+    /// put A above. Each share is the stroke's own, finite; the share of a key a stroke on no
+    /// registered plane carries otherwise ([`composite::Fragment::snap`]) is unbounded.
+    #[test]
+    fn crossing_lines_just_beyond_their_own_shares_keep_depth_order() {
+        let view = snapped_view(0.0, -90.0);
+        let curve = crate::depth::Planarity::Curve;
+        let s = paths_stream(
+            view,
+            vec![
+                (
+                    snapped_line([0.0, -2.0, 3.0 * GRID], [0.0, 2.0, 4.0 * GRID]),
+                    line_record(2, 6.0, curve),
+                ),
+                (
+                    snapped_line([-2.0, 0.0, 0.0], [2.0, 0.0, 0.0]),
+                    line_record(1, 6.0, curve),
+                ),
+            ],
+        );
+        let both = met(&s, 101, 102);
+        assert!(both.len() > 50, "{} sub-samples", both.len());
+        let reach = |(d, e, _, _, s): Read| e + (d.abs() + e) * s;
+        for m in &both {
+            let (gap, room) = ((m.a.0 - m.b.0).abs(), reach(m.a) + reach(m.b));
+            assert!(
+                gap > room && gap < 1.25 * room,
+                "at {:?} the keys part by {gap:e} against their reach {room:e}",
+                m.at
+            );
+            assert!(
+                m.a.2 == f64::INFINITY && m.b.2 == f64::INFINITY,
+                "snap shares {} and {}",
+                m.a.2,
+                m.b.2
+            );
+        }
+        let above = both.iter().filter(|m| m.a_above).count();
+        assert_eq!(above, 0, "A above B at {above} of {}", both.len());
     }
 }

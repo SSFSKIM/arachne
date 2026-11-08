@@ -1335,6 +1335,53 @@ fn near_parallel(a: Offered, b: Offered, grid: f64) -> PyResult<(bool, f64)> {
     })
 }
 
+/// A stroke's own share of its key, as the core sets it on a path with no plane of its own
+/// (`Fragment::own`): offered as `_registry_tolerance` takes a record (a path's planarity code;
+/// a frame offers it with no plane of its own), its points at projected depths `depths` (the
+/// third coordinate `project` gives them, before the perspective) under a camera at
+/// `focal_distance`, exponential or not. `(w, s)`: `w` the snap's bound on how far it moved any
+/// point along any unit normal (`depth::snap_departure_bound`), `s` the share
+/// (`project::depth_share`). A `ValueError` for a record a frame does not offer, a mesh
+/// triangle, a flat record, or no depths.
+#[allow(clippy::too_many_arguments)]
+#[pyfunction(
+    name = "_line_share",
+    signature = (points, places, shape, planes, grid, depths, focal_distance, exponential)
+)]
+fn line_share(
+    points: Vec<[f64; 3]>,
+    places: [Affine; 2],
+    shape: Vec<[f64; 3]>,
+    planes: Option<u8>,
+    grid: f64,
+    depths: Vec<f64>,
+    focal_distance: f64,
+    exponential: bool,
+) -> PyResult<(f64, f64)> {
+    if planes.is_none() {
+        return Err(PyValueError::new_err("a stroke is a path's"));
+    }
+    let mut registry = crate::depth::Registry::of_grid(grid);
+    let (_, flat) = offer(&mut registry, grid, &points, &places, &shape, planes)?;
+    if flat {
+        return Err(PyValueError::new_err("the record is flat"));
+    }
+    if depths.is_empty() {
+        return Err(PyValueError::new_err("no depths"));
+    }
+    let w = crate::depth::snap_departure_bound(grid, &places, &shape);
+    let s = crate::project::depth_share(focal_distance, exponential, depths, w);
+    Ok((w, s))
+}
+
+/// Whether two keys of strokes of paths with no plane of their own on no one identity, each
+/// `(d, e, s)` (the key, its error bound, its own share), are one depth: the core's term for them
+/// (`order::lines_term`).
+#[pyfunction(name = "_lines_tied", signature = (a, b))]
+fn lines_tied(a: (f64, f64, f64), b: (f64, f64, f64)) -> bool {
+    crate::order::lines_term(a, b)
+}
+
 /// Every call count by name since the last take, each set back to zero (`counters`).
 #[cfg(feature = "counters")]
 #[pyfunction(name = "_take_counts")]
@@ -1365,6 +1412,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(registry_tolerance, m)?)?;
     m.add_function(wrap_pyfunction!(attaches, m)?)?;
     m.add_function(wrap_pyfunction!(near_parallel, m)?)?;
+    m.add_function(wrap_pyfunction!(line_share, m)?)?;
+    m.add_function(wrap_pyfunction!(lines_tied, m)?)?;
     #[cfg(feature = "counters")]
     m.add_function(wrap_pyfunction!(take_counts, m)?)?;
     Ok(())
