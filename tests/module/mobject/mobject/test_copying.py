@@ -246,6 +246,92 @@ def test_a_memo_already_holding_the_mobject_returns_its_entry(fast):
     assert copy.deepcopy([square], memo)[0] is stand_in
 
 
+# ── a class's copy hooks changed while the scene runs ────────────────────────
+
+
+def _shares_its_data(self, memo):
+    """A __deepcopy__ that shares what the class holds."""
+    new = Plain()
+    new.__dict__.update(self.__dict__)
+    return new
+
+
+def _rebuilds_from_a_list(self):
+    return (Plain, (), {"rebuilt": list(self.__dict__)})
+
+
+def _states_only_its_keys(self):
+    return {"keys": sorted(self.__dict__)}
+
+
+def _sets_state_in_reverse(self, state):
+    self.__dict__.update(dict(reversed(list(state.items()))), restored=True)
+
+
+def _reduces_by_registration(obj):
+    return (Plain, (), {"registered": True})
+
+
+def _copies_as_none(self, memo):
+    return None
+
+
+#: Each hook a scene may give its class after the class was first copied:
+#: (the class it is set on, the hook, its new value).
+HOOKS = {
+    "mobject __deepcopy__": ("mobject", "__deepcopy__", _copies_as_none),
+    "__deepcopy__": ("plain", "__deepcopy__", _shares_its_data),
+    "__reduce_ex__": (
+        "plain",
+        "__reduce_ex__",
+        lambda self, protocol: _rebuilds_from_a_list(self),
+    ),
+    "__reduce__": ("plain", "__reduce__", _rebuilds_from_a_list),
+    "__getstate__": ("plain", "__getstate__", _states_only_its_keys),
+    "__setstate__": ("plain", "__setstate__", _sets_state_in_reverse),
+    "copyreg.dispatch_table": ("plain", None, _reduces_by_registration),
+}
+
+
+@pytest.mark.parametrize("hook", sorted(HOOKS))
+def test_a_hook_changed_after_the_first_copy_is_the_one_used(fast, monkeypatch, hook):
+    """A scene's own classes are copied by copy.deepcopy's rules as they are
+    when the copy is made, not as they were at the class's first copy.
+    """
+    import copyreg
+
+    class Part(VMobject):
+        pass
+
+    class Note:
+        def __init__(self):
+            self.text, self.marks = "note", [1, 2]
+
+    def build():
+        group = VGroup(Part(), Square())
+        group.note = Note()
+        group.submobjects[0].note = Note()
+        return group
+
+    original = build()
+    made_by(fast, True, copy.deepcopy, original)  # each class's first copy
+    where, name, value = HOOKS[hook]
+    cls = Part if where == "mobject" else Note
+    if name is None:
+        monkeypatch.setitem(copyreg.dispatch_table, cls, value)
+    else:
+        monkeypatch.setattr(cls, name, value, raising=False)
+    reference = made_by(fast, False, copy.deepcopy, original)
+    made = made_by(fast, True, copy.deepcopy, original)
+    assert copy_differences(original, reference, made) == []
+
+    # And back: the hook removed, the class is copied as before.
+    monkeypatch.undo()
+    reference = made_by(fast, False, copy.deepcopy, original)
+    made = made_by(fast, True, copy.deepcopy, original)
+    assert copy_differences(original, reference, made) == []
+
+
 # ── the user's code changing the copy in place ───────────────────────────────
 
 

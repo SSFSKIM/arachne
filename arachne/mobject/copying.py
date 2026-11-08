@@ -20,6 +20,14 @@ same copy by the same rules, with the common kinds of value handled inline:
 The copy is the one :func:`copy.deepcopy` makes: the same objects are new and
 the same are shared, the memo records the same originals, and two references
 to one object in the original are two references to one object in the copy.
+
+Which kind a class is follows from its copy hooks (``__deepcopy__``, the
+reduce and state methods, a :data:`copyreg.dispatch_table` entry). Each copy
+reads a class's hooks again the first time it meets the class, and finds its
+kind again if they changed, so a scene that gives its own class new hooks
+between two copies has the second follow them. A hook changed by code that
+runs inside a copy (another object's ``__deepcopy__``) is followed from the
+next copy on.
 """
 
 from __future__ import annotations
@@ -56,13 +64,56 @@ else:
         if copier is copy._deepcopy_atomic  # type: ignore[attr-defined]
     )
 
-# How each class's instances are copied, found once per class.
+# How each class's instances are copied.
 _ATOM, _LIST, _DICT, _TUPLE, _MOBJECT, _OWN, _PLAIN, _GENERAL = range(8)
-_KINDS: dict[type, int] = dict.fromkeys(_ATOMIC, _ATOM)
-_KINDS.update({list: _LIST, dict: _DICT, tuple: _TUPLE})
+#: The builtin types, whose copy hooks can't change.
+_BUILTIN: dict[type, int] = dict.fromkeys(_ATOMIC, _ATOM)
+_BUILTIN.update({list: _LIST, dict: _DICT, tuple: _TUPLE})
+#: Every other class's kind, with the copy hooks it was found from: the
+#: kind holds while the class resolves those hooks to the same objects.
+_DECIDED: dict[type, tuple[int, tuple[Any, ...]]] = {}
+#: The kinds this copy has found to hold, the builtins' included: emptied of
+#: the other classes as each copy begins, so that a scene that gives its
+#: class other hooks between two copies has the second copy follow them.
+_KINDS: dict[type, int] = dict(_BUILTIN)
+
+#: The class attributes copy.deepcopy's treatment of an instance depends on.
+_HOOKS = (
+    "__deepcopy__",
+    "__reduce_ex__",
+    "__reduce__",
+    "__getstate__",
+    "__setstate__",
+    "__getnewargs_ex__",
+    "__getnewargs__",
+    "__getattribute__",
+    "__getattr__",
+)
 
 _HEAPTYPE = 1 << 9  # Py_TPFLAGS_HEAPTYPE: a class defined in Python
 _OBJECT_STATE = (object.__reduce_ex__, object.__reduce__, object.__getstate__)
+
+
+def _hooks(cls: type) -> tuple[Any, ...]:
+    """What ``cls`` resolves each copy hook to, and its registrations."""
+    return (
+        *[getattr(cls, name, None) for name in _HOOKS],
+        copyreg.dispatch_table.get(cls),
+        _DISPATCH.get(cls),
+    )
+
+
+def _kind_of(cls: type, x: Any) -> int:
+    """``cls``'s kind, found again only if its hooks changed since it was."""
+    hooks = _hooks(cls)
+    decided = _DECIDED.get(cls)
+    if decided is not None and decided[1] == hooks:
+        kind = decided[0]
+    else:
+        kind = _classify(cls, x)
+        _DECIDED[cls] = (kind, hooks)
+    _KINDS[cls] = kind
+    return kind
 
 
 def _classify(cls: type, x: Any) -> int:
@@ -85,7 +136,6 @@ def _classify(cls: type, x: Any) -> int:
         kind = _PLAIN
     else:
         kind = _GENERAL
-    _KINDS[cls] = kind
     return kind
 
 
@@ -142,7 +192,7 @@ def _copy(x: Any, memo: dict[int, Any], alive: list[Any]) -> Any:
     if y is not _nil:
         return y
     if kind is None:
-        kind = _classify(cls, x)
+        kind = _kind_of(cls, x)
         if kind is _ATOM:
             return x
     if kind is _PLAIN:
@@ -231,4 +281,7 @@ def copy_mobject(mob: _M, memo: dict[int, Any]) -> _M:
     alive = memo.get(id(memo))
     if alive is None:
         alive = memo[id(memo)] = []
+    # Each class's hooks are read again in this copy, once per class.
+    _KINDS.clear()
+    _KINDS.update(_BUILTIN)
     return _copy_mobject(mob, memo, alive)
