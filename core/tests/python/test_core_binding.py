@@ -804,6 +804,22 @@ def test_points_somewhere_is_the_core_s_own_bound_at_the_grid_given(
     assert _points_somewhere(newell, extent, perimeter, grid) is want
 
 
+def test_rounded_plane_rounds_each_coefficient_to_the_nearest_step_of_2_to_the_minus_20():
+    from arachne_core._core import _rounded_plane
+
+    step = 2.0**-20
+    # Halves of a step go away from zero.
+    normal, offset = _rounded_plane((2.5 * step, -2.5 * step, 1.5 * step), -1.5 * step)
+    assert normal == (3 * step, -3 * step, 2 * step) and offset == -2 * step
+    # Anything else to the nearer step: 0.6 and 0.8 are 629145.6 and 838860.8 steps.
+    normal, offset = _rounded_plane((0.6, 0.8, (7.5 - 2.0**-30) * step), 0.6)
+    assert normal == (629146 * step, 838861 * step, 7 * step) and offset == 629146 * step
+    # A negative zero comes back positive, a coefficient rounding to zero included.
+    normal, offset = _rounded_plane((-0.0, -0.4 * step, -1.0), -0.0)
+    assert normal == (0.0, 0.0, -1.0) and offset == 0.0
+    assert [np.copysign(1.0, v) for v in (*normal, offset)] == [1.0, 1.0, -1.0, 1.0]
+
+
 IDENTITY_PLACES = [[[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]]] * 2
 
 

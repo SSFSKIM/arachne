@@ -1191,6 +1191,16 @@ fn points_somewhere(newell: [f64; 3], extent: f64, perimeter: f64, grid: f64) ->
     crate::depth::points_somewhere(newell, extent, perimeter, grid)
 }
 
+/// The plane `normal . p = offset` as the core rounds a world plane
+/// (`depth::WorldPlane::rounded`): each component of `normal`, and `offset`, rounded to the
+/// nearest multiple of 2^-20, halves away from zero, a negative zero made positive.
+#[pyfunction(name = "_rounded_plane")]
+fn rounded_plane(normal: [f64; 3], offset: f64) -> ((f64, f64, f64), f64) {
+    let plane = crate::depth::WorldPlane::rounded(normal, offset, 0.0);
+    let [a, b, c] = plane.normal;
+    ((a, b, c), plane.offset)
+}
+
 /// How far a record's points may lie off a plane of unit normal `normal` and still be on it, as
 /// the frame's plane registry takes it (`depth::Registry`), and whether the record is flat: the
 /// record offered alone to a registry for points snapped to `grid` (`0.0`: not snapped), as a
@@ -1270,6 +1280,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(read_xf, m)?)?;
     m.add_function(wrap_pyfunction!(write_xf, m)?)?;
     m.add_function(wrap_pyfunction!(points_somewhere, m)?)?;
+    m.add_function(wrap_pyfunction!(rounded_plane, m)?)?;
     m.add_function(wrap_pyfunction!(registry_tolerance, m)?)?;
     #[cfg(feature = "counters")]
     m.add_function(wrap_pyfunction!(take_counts, m)?)?;
