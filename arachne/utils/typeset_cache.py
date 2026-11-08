@@ -271,7 +271,7 @@ def _system_fonts() -> list[str]:
     listed = _font_list(found, status.st_ino, status.st_mtime_ns, _fontconfig_env())
     if listed is None:
         return host()
-    return ["system fonts", listed, os.environ.get("OSFONTDIR", ""), _font_config()]
+    return ["system fonts", listed, os.environ.get("OSFONTDIR", ""), *_font_config()]
 
 
 def _fontconfig_env() -> tuple[tuple[str, str], ...]:

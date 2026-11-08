@@ -218,7 +218,7 @@ def _dtype_name(dtype: np.dtype[Any]) -> str:
     its fields' names, types and offsets too.
     """
     if dtype.fields is None and dtype.subdtype is None:
-        return dtype.str
+        return str(dtype.str)
     return f"{dtype}{dtype.itemsize}"
 
 
@@ -530,6 +530,7 @@ READING_ENGINE_CACHES = frozenset(
         "arachne.utils.typeset_cache._font_list",
         "arachne.utils.typeset_cache._harfbuzz_version",
         "arachne.utils.typeset_cache._listing",
+        "arachne.utils.typeset_cache._loaded_configs",
         "arachne.utils.typeset_cache._only_tex_reads",
         "arachne.utils.typeset_fonts._loaded",
     }
