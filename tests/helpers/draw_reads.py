@@ -36,9 +36,12 @@ lines, not attribute reads, so neither can do this; an audit hook sees the
 files the drawing opens, and only that is what one is used for.
 
 What the record's own code reads (giving mobjects and the camera their
-recorded states, the route's evaluation of an instant between captures, the
-drawer that draws a described frame from its description alone) is not a
-drawing read of the scene: those functions are the :data:`SITES`.
+recorded states, the route's evaluation of an instant between captures) is
+not a drawing read of the scene: those functions are the :data:`SITES`. A
+frame described in XF is drawn by the Cairo drawer from its description
+alone, through proxies and a camera of its own; what it reads of those is
+checked against what the description gives them (:data:`DRAWER_PROXIES`,
+:data:`DRAWER_CAMERA`).
 """
 
 from __future__ import annotations
@@ -175,6 +178,78 @@ SCRATCH_TYPES: dict[str, str] = {
     ),
 }
 
+#: The Cairo drawer's proxies of described mobjects, by type: each read
+#: of one must be of its own fields or of engine code.
+DRAWER_PROXIES: dict[str, str] = {
+    f"arachne.frame_ir.cairo_painter.{name}": (
+        "What the camera reads off a described mobject, built by the drawer from "
+        "one record's fields of the frame's description (``CairoDrawer._make``) "
+        "and holding nothing else."
+    )
+    for name in ("_PathProxy", "_PointsProxy", "_ImageProxy")
+}
+
+#: The Cairo drawer's cameras, by type.
+DRAWER_CAMERA_TYPES = frozenset(
+    f"arachne.frame_ir.cairo_painter.{name}"
+    for name in ("_PainterCamera", "_Painter3DCamera")
+)
+
+_FROM_VIEW = (
+    "Set from the frame's view (XF's camera state) by ``CairoDrawer._camera`` "
+    "before each frame is drawn."
+)
+_ENGINE_DEFAULT = (
+    "The engine's default, which the drawer's camera keeps: a frame of a camera "
+    "holding another is not described (``render.unable``, ``FrameStream._view_of``)."
+)
+
+#: Attributes of the Cairo drawer's camera a draw reads, and where each one's
+#: value comes from. Its construction reads configuration defaults
+#: (``CairoDrawer._camera`` is a site); an attribute a draw reads that is not
+#: here is one the description does not give.
+DRAWER_CAMERA: dict[str, str] = {
+    **dict.fromkeys(
+        (
+            "pixel_width",
+            "pixel_height",
+            "frame_width",
+            "frame_height",
+            "frame_center",
+            "_frame_center",
+            "_xf_centre",
+            "cairo_line_width_multiple",
+            "exponential_projection",
+            "should_apply_shading",
+            "light_source",
+            "phi_tracker",
+            "theta_tracker",
+            "gamma_tracker",
+            "focal_distance_tracker",
+            "zoom_tracker",
+        ),
+        _FROM_VIEW,
+    ),
+    "fixed_in_frame_mobjects": (
+        "The described mobjects in frame space, from each record's ``space`` "
+        "(``CairoDrawer._orient``)."
+    ),
+    "fixed_orientation_mobjects": (
+        "Each described mobject's fixed-orientation centre, from its record "
+        "(``CairoDrawer._orient``)."
+    ),
+    "pixel_array": "The drawer's array, reset to the view's background each frame.",
+    "__dict__": "Read for the drawer's own cache of Cairo contexts (``_context``).",
+    "background_colored_vmobject_displayer": (
+        "The drawer camera's displayer of image-filled paths, given the "
+        "description's images by name (``CairoDrawer._seed_images``)."
+    ),
+    "display_funcs": "The drawer camera's own table of its engine methods.",
+    **dict.fromkeys(
+        ("pixel_array_dtype", "image_mode", "rgb_max_val"), _ENGINE_DEFAULT
+    ),
+}
+
 #: A mobject a trusted play's term is made of.
 TERM_ENDS = (
     "The start or end mobject of a trusted play's term (``PlayRecord.leaf_terms``, "
@@ -205,10 +280,10 @@ SITES: dict[str, str] = {
         "Evaluates a trusted play's terms from its animations' recorded states "
         "(see TERM_ENDS for what is read of them after)."
     ),
-    "arachne.frame_ir.cairo_painter:CairoDrawer.draw": (
-        "Draws a described frame from its XF description alone, with a camera and "
-        "proxies it builds from the description: what it reads is the description, "
-        "whose every read of the scene was made, and traced, as it was described."
+    "arachne.frame_ir.cairo_painter:CairoDrawer._camera": (
+        "Builds the drawer's camera for a view, or takes the one it built, and "
+        "gives it the view's inputs: what a draw then reads of it is checked "
+        "against DRAWER_CAMERA."
     ),
 }
 
@@ -282,6 +357,9 @@ class Tracer:
         self._patches: list[tuple[Any, str, Any]] = []
         self._hooks: list[tuple[type, str, Any]] = []
         self._tables: list[tuple[Any, Any]] = []
+        #: The mobjects of the drawer's cameras (by id) read in the frame
+        #: being drawn: each set from the view (DRAWER_CAMERA).
+        self._drawer_owned: dict[int, Any] = {}
 
     def take(self) -> list[Read]:
         """The unlisted reads found since last taken."""
@@ -494,6 +572,7 @@ class Tracer:
             self.frames.pop()
             if outer:
                 self._unhook()
+                self._drawer_owned.clear()
             self.traced += 1
 
     def _cameras_of(self, frame: _Frame, camera: Any, extras: Any) -> None:
@@ -634,6 +713,10 @@ class Tracer:
 
     def _mobject_why(self, mob: Any, name: str) -> str | None:
         own = object.__getattribute__(mob, "__dict__")
+        if _type_name(mob) in DRAWER_PROXIES or (
+            self._drawer_owned.get(id(mob)) is mob
+        ):
+            return _drawer_own_why(mob, own, name)
         member = _class_member(type(mob), name)
         if member is not None and name != "__dict__":
             owner, value = member
@@ -703,6 +786,8 @@ class Tracer:
         from arachne.timeline.draw import _same_value
 
         frame = self.frames[-1]
+        if _type_name(camera) in DRAWER_CAMERA_TYPES:
+            return self._drawer_camera_why(camera, name)
         extras = frame.cameras.get(id(camera))
         if extras is None:
             if name == "pixel_array" and id(camera) in frame.drawing._pictures_saved:
@@ -737,6 +822,28 @@ class Tracer:
         if name not in own and member is None:
             return None  # CAMERA_ABSENT
         return "a camera attribute the record neither holds nor installs"
+
+    def _drawer_camera_why(self, camera: Any, name: str) -> str | None:
+        from arachne.mobject.mobject import Mobject
+
+        own = object.__getattribute__(camera, "__dict__")
+        member = _class_member(type(camera), name)
+        if member is not None and name != "__dict__":
+            owner, value = member
+            if _is_data_descriptor(value) or name not in own:
+                return _drawer_member_why(owner, name, value)
+        if name in DRAWER_CAMERA:
+            value = own.get(name)
+            if isinstance(value, Mobject):
+                self._drawer_owned[id(value)] = value
+            return None
+        if name in CAMERA_DERIVED and name in own:
+            if np.array_equal(own[name], CAMERA_DERIVED[name][1](camera)):
+                return None
+            return "a cache of the drawer's camera that its view's inputs do not give"
+        if name not in own and member is None:
+            return None  # CAMERA_ABSENT
+        return "an attribute of the drawer's camera that the description does not give"
 
     def _note_entry(
         self, camera: Any, kind: Any, entry: Any, caller: types.FrameType
@@ -804,6 +911,35 @@ def _member_why(owner: type, name: str, value: Any) -> str | None:
     if _is_code(value) or (owner.__qualname__, name) in CLASS_CONSTANTS:
         return None
     return f"a class attribute of {owner.__qualname__} no list entry covers"
+
+
+#: The module of the Cairo drawer, whose classes are the drawer's own.
+_DRAWER_MODULE = "arachne.frame_ir.cairo_painter"
+
+
+def _drawer_member_why(owner: type, name: str, value: Any) -> str | None:
+    """Why a class attribute read of one of the drawer's objects is not
+    engine code.
+    """
+    if owner.__module__ == _DRAWER_MODULE:
+        return None if _is_code(value) else f"a class attribute of {owner.__qualname__}"
+    return _member_why(owner, name, value)
+
+
+def _drawer_own_why(obj: Any, own: dict[str, Any], name: str) -> str | None:
+    """Why a read of a drawer's proxy, or of its camera's own mobject, is not
+    of a field the drawer gave it or of engine code.
+    """
+    member = _class_member(type(obj), name)
+    if member is not None and name != "__dict__":
+        owner, value = member
+        if _is_data_descriptor(value) or name not in own:
+            if name in MOBJECT_CONSTANTS:
+                return None
+            return _drawer_member_why(owner, name, value)
+    if name == "__dict__" or name in own:
+        return None
+    return "an attribute of a drawer's mobject that the description does not give"
 
 
 def _replaced_camera_member(owner: type, name: str, value: Any) -> bool:
