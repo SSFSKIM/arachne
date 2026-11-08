@@ -365,6 +365,12 @@ lifted.
   when the camera is made). Narrow it to the display path's methods only
   if a case is ever refused over a member that does not affect drawing
   (the refusal names the member).
+- **Lint reads a camera's replaced display entries from the live camera at
+  query time.** A scene that rewires a display entry during some plays and
+  restores it before the end gets no `CameraReplaced` mark, and the leaf
+  memo does not refuse. The draw is unaffected, because each frame's
+  detector falls back to Cairo. Closing it means lint accumulating the
+  detector per play.
 
 ## Restored frames on a described path (`arachne/timeline/draw.py`)
 
