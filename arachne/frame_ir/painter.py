@@ -17,8 +17,10 @@ from __future__ import annotations
 
 __all__ = ["IrCairoPainter", "camera_path", "painter_for"]
 
+import functools
 import inspect
 import os
+import types
 import weakref
 from collections.abc import Mapping, Sequence
 from fractions import Fraction
@@ -41,9 +43,10 @@ def user_camera(camera: Any) -> tuple[str, str] | None:
     code, as ``(subject, why)``: a method of an engine camera class replaced
     on the class (:func:`~arachne.timeline.camera_code.replaced_methods`); a
     camera's class, a subclass of one of the engine's cameras defined
-    outside the engine; or a method of its class replaced on the instance.
-    ``None`` for engine cameras as the engine made them, or for no camera at
-    all.
+    outside the engine; a method of its class replaced on the instance; or
+    an entry of its ``display_funcs``, through which it draws each kind of
+    mobject, replaced. ``None`` for engine cameras as the engine made them,
+    or for no camera at all.
     """
     from arachne.timeline.camera_code import drawn_cameras
 
@@ -91,7 +94,88 @@ def _own_code(camera: Any) -> tuple[str, str] | None:
             shadowed,
             f"{shadowed}, replaced on the camera instance by the scene's code,",
         )
+    displays = _replaced_displays(camera)
+    if displays:
+        return (
+            displays,
+            f"{displays}, replaced in the camera's display_funcs by the scene's code,",
+        )
     return None
+
+
+#: The camera's display function for each kind of mobject, as
+#: ``Camera.__init__`` makes them: the method of that name, bound to the
+#: camera; the do-nothing function for any other mobject (``None``).
+_DISPLAY_METHODS = {
+    "VMobject": "display_multiple_vectorized_mobjects",
+    "PMobject": "display_multiple_point_cloud_mobjects",
+    "AbstractImageMobject": "display_multiple_image_mobjects",
+    "Mobject": None,
+}
+
+
+@functools.cache
+def _nothing_code() -> types.CodeType:
+    """The code of the do-nothing display function ``Camera.__init__``
+    makes: the one function it defines.
+    """
+    from arachne.camera.camera import Camera
+
+    (code,) = (
+        const
+        for const in Camera.__init__.__code__.co_consts
+        if isinstance(const, types.CodeType)
+    )
+    return code
+
+
+def _replaced_displays(camera: Any) -> str:
+    """The entries of ``camera.display_funcs`` that are not the engine's own,
+    named by kind (``display_funcs`` itself when its kinds are not the
+    engine's); empty when every one is. A live painter's own wrappers
+    (:mod:`.live`), installed while it describes the camera's captures,
+    stand over entries checked before it installed them.
+    """
+    from arachne.mobject.mobject import Mobject
+    from arachne.mobject.types.image_mobject import AbstractImageMobject
+    from arachne.mobject.types.point_cloud_mobject import PMobject
+    from arachne.mobject.types.vectorized_mobject import VMobject
+
+    own = vars(camera)
+    if "_xf_live" in own:
+        return ""
+    funcs = own.get("display_funcs")
+    kinds = {
+        kind.__name__: kind
+        for kind in (VMobject, PMobject, AbstractImageMobject, Mobject)
+    }
+    if not isinstance(funcs, dict) or set(funcs) != set(kinds.values()):
+        return "display_funcs"
+    kind = type(camera)
+    changed = []
+    for name, method in _DISPLAY_METHODS.items():
+        func = funcs[kinds[name]]
+        # A plain function or bound method first, by its exact type: any
+        # other object can answer the reads below as the engine's does and
+        # still run its own code when called.
+        if method is None:
+            # The do-nothing lambda Camera.__init__ makes, by its code: a
+            # wrapper can copy its name and module, not its code.
+            engine = (
+                type(func) is types.FunctionType and func.__code__ is _nothing_code()
+            )
+        else:
+            # Bound to this camera, as its class has it: one bound to another
+            # camera (a shallow copy shares the original's dictionary) draws
+            # with that camera's settings.
+            engine = (
+                type(func) is types.MethodType
+                and func.__self__ is camera
+                and func.__func__ is getattr(kind, method, None)
+            )
+        if not engine:
+            changed.append(f"display_funcs[{name}]")
+    return ", ".join(changed)
 
 
 def camera_path(camera: Any, draw_path: str) -> str:

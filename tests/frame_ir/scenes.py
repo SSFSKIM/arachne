@@ -446,6 +446,24 @@ class PatchedOrder(Overlapping):
         camera.get_mobjects_to_display = _reversed(camera.get_mobjects_to_display)
 
 
+class PatchedDisplay(Overlapping):
+    """As :class:`Overlapping`, the camera's display function for vectorized
+    mobjects replaced in its ``display_funcs`` by the scene: each call marks
+    the frame's corner.
+    """
+
+    def patch(self, camera) -> None:
+        from arachne import VMobject
+
+        original = camera.display_funcs[VMobject]
+
+        def display(mobjects, pixel_array):
+            original(mobjects, pixel_array)
+            pixel_array[0, 0, :3] = (1, 2, 3)
+
+        camera.display_funcs[VMobject] = display
+
+
 class ZoomPatched(ZoomedScene):
     """A zoomed display whose camera's capture is replaced on the instance:
     the picture it shows changed by the scene's code.

@@ -540,8 +540,10 @@ class _DrawKey:
     """What a frame drawn from a capture is drawn from: the camera, its pixel
     size and the configured one (which a stroke's thickness is drawn from,
     ``Camera.adjusted_thickness``, and the scene's code can change between
-    plays), the draw path and static layer, the camera's recorded inputs, the
-    scene's roots, foreground and moving lists there, the play's static
+    plays), the draw path and static layer, the camera's recorded inputs and
+    the background they give it (which the camera builds afresh from an image
+    found by name, and which is never written in place: a change makes a new
+    array), the scene's roots, foreground and moving lists there, the play's static
     list and whether its static picture holds, and the version of every
     mobject the frame reaches (the camera's own included), in walk order.
     Two keys match when each of these is the same object (the camera's
@@ -555,6 +557,7 @@ class _DrawKey:
     draw_path: str
     static_layer: bool
     extras: CameraExtras | None
+    background: PixelArray | None
     roots: tuple[Mobject, ...]
     foreground: tuple[Mobject, ...]
     moving: tuple[Mobject, ...]
@@ -570,6 +573,7 @@ class _DrawKey:
             and self.draw_path == other.draw_path
             and self.static_layer == other.static_layer
             and self.holds == other.holds
+            and self.background is other.background
             and _same_items(self.states, other.states)
             and _same_items(self.roots, other.roots)
             and _same_items(self.foreground, other.foreground)
@@ -584,6 +588,36 @@ class _DrawKey:
                 )
             )
         )
+
+
+def _live_pixels(mob: Mobject, state: NodeState) -> bool:
+    """Whether ``mob``, at ``state``, shows pixels no recorded state holds: a
+    display of a camera's picture, which it reads from that camera as it is
+    drawn, or an image whose pixels are a view of memory still written.
+    """
+    from arachne.mobject.types.image_mobject import ImageMobjectFromCamera
+
+    if isinstance(mob, ImageMobjectFromCamera):
+        return True
+    pixels = state.get("_pixel_array")
+    while isinstance(pixels, np.ndarray):
+        if pixels.flags.writeable:
+            return True
+        pixels = pixels.base
+    return False
+
+
+def _reads_outside(states: Sequence[tuple[Mobject, NodeState]]) -> bool:
+    """Whether drawing the walked mobjects reads a mobject outside them: a
+    depth sort reads each one's ``z_index_group``
+    (``Mobject.get_z_index_reference_point``), which can be any mobject.
+    """
+    walked = {id(mob) for mob, _ in states}
+    for _, state in states:
+        group = state.get("z_index_group")
+        if group is not None and id(group) not in walked:
+            return True
+    return False
 
 
 class DrawReuse:
@@ -855,18 +889,23 @@ class Drawing:
         if reuse is None:
             return self._sample(play, capture, static, prepare, instant)
         key = self._reuse_key(play, capture)
-        found = reuse.find(key)
+        found = reuse.find(key) if key is not None else None
         if found is not None:
             # The camera holds the frame, as when it is drawn.
             self.camera.set_pixel_array(found)
             self.reused = True
             return found.copy()
         pixels = self._sample(play, capture, static, None, instant)
-        reuse.keep(key, pixels)
+        if key is not None:
+            reuse.keep(key, pixels)
         return pixels
 
-    def _reuse_key(self, play: PlayRecord, capture: Capture) -> _DrawKey:
-        """What the frame at ``capture`` is drawn from (:class:`_DrawKey`)."""
+    def _reuse_key(self, play: PlayRecord, capture: Capture) -> _DrawKey | None:
+        """What the frame at ``capture`` is drawn from (:class:`_DrawKey`);
+        ``None`` when it shows pixels no recorded state holds (a display of
+        another camera's live picture) or reads a mobject the frame does not
+        reach, so it is drawn and not kept.
+        """
         from arachne import config
 
         camera = self.camera
@@ -876,11 +915,19 @@ class Drawing:
             *play.static,
             *camera_nodes(camera),
         ]
+        states = tuple(self.record._walk(capture, reached))
+        if any(_live_pixels(mob, state) for mob, state in states) or _reads_outside(
+            states
+        ):
+            return None
         holds = (
             self.painter is None
             and self.static_layer
             and self._picture_holds(play, capture)
         )
+        if capture.camera is not None:
+            # The background the frame is drawn over, as drawing it gives it.
+            self._install_camera(camera, capture.camera)
         return _DrawKey(
             camera,
             (camera.pixel_height, camera.pixel_width),
@@ -888,12 +935,13 @@ class Drawing:
             self.draw_path,
             self.static_layer,
             capture.camera,
+            camera.background,
             capture.roots,
             capture.foreground,
             capture.moving,
             play.static,
             holds,
-            tuple(state for _, state in self.record._walk(capture, reached)),
+            tuple(state for _, state in states),
         )
 
     def _sample(

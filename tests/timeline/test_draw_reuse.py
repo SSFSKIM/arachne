@@ -162,6 +162,131 @@ def test_the_writes_are_the_same_with_and_without_reuse(scene_class):
     assert_same_writes(on, off)
 
 
+def test_a_camera_whose_display_function_the_scene_replaced_draws_every_frame():
+    """An entry of the camera's ``display_funcs`` replaced by the scene's code
+    draws through that code at every draw (here it marks each frame with its
+    count): such a camera reuses nothing.
+    """
+    from arachne.frame_ir.painter import user_camera
+
+    scene, on = render_writes(reuse_scenes.ReplacedDisplay)
+    _, off = render_writes(reuse_scenes.ReplacedDisplay, draw_reuse=False)
+    assert scene.timeline.record.refusal is None, "drawn from the record"
+    assert user_camera(scene.renderer.camera) is not None
+    assert [int(pixels[0, 0, 0]) for pixels, _ in off] == list(range(1, len(off) + 1))
+    assert scene.renderer.draws.reused == 0
+    assert_same_writes(on, off)
+
+
+def test_a_frame_sorted_by_a_mobject_outside_the_scene_is_drawn():
+    """A mobject's depth can be read from another mobject (its public
+    ``z_index_group``) that the frame does not reach: what that one holds is
+    no recorded state of the frame, so the frame is drawn every time.
+    """
+    scene, on = render_writes(reuse_scenes.OutsideDepth)
+    _, off = render_writes(reuse_scenes.OutsideDepth, draw_reuse=False)
+    centres = [tuple(pixels[27, 48, :3]) for pixels, _ in off]
+    assert centres[0] != centres[-1], "the order changed between the plays"
+    assert scene.renderer.draws.reused == 0
+    assert_same_writes(on, off)
+
+
+def test_an_engine_camera_s_display_functions_are_its_own():
+    from arachne.camera.camera import Camera
+    from arachne.camera.moving_camera import MovingCamera
+    from arachne.camera.three_d_camera import ThreeDCamera
+    from arachne.frame_ir.painter import user_camera
+
+    for kind in (Camera, MovingCamera, ThreeDCamera):
+        assert user_camera(kind()) is None, kind.__name__
+
+
+def test_a_display_function_of_another_camera_is_the_scene_s_code():
+    """A display function bound to another camera draws with that camera's
+    settings, which change without a recorded state of this one: the camera
+    is the scene's code, and reuses nothing.
+    """
+    from arachne.frame_ir.painter import user_camera
+
+    scene, on = render_writes(reuse_scenes.BorrowedDisplay)
+    _, off = render_writes(reuse_scenes.BorrowedDisplay, draw_reuse=False)
+    subject, _ = user_camera(scene.renderer.camera)
+    assert subject == "display_funcs[VMobject]"
+    assert scene.renderer.draws.reused == 0
+    assert_same_writes(on, off)
+
+
+def test_a_wrapped_do_nothing_display_function_is_the_scene_s_code():
+    """A wrapper of the engine's do-nothing display function keeps its name
+    and module (``functools.wraps``) but runs the scene's code: the camera
+    reuses nothing.
+    """
+    from arachne.frame_ir.painter import user_camera
+
+    scene, on = render_writes(reuse_scenes.WrappedNothing)
+    _, off = render_writes(reuse_scenes.WrappedNothing, draw_reuse=False)
+    subject, _ = user_camera(scene.renderer.camera)
+    assert subject == "display_funcs[Mobject]"
+    assert [int(pixels[0, 0, 0]) for pixels, _ in off] == list(range(1, len(off) + 1))
+    assert scene.renderer.draws.reused == 0
+    assert_same_writes(on, off)
+
+
+@pytest.mark.parametrize(
+    ("scene_class", "subject"),
+    [
+        (reuse_scenes.ForwardedDisplay, "display_funcs[VMobject]"),
+        (reuse_scenes.ForwardedNothing, "display_funcs[Mobject]"),
+    ],
+    ids=["method", "nothing"],
+)
+def test_an_object_forwarding_to_the_engine_s_display_function_is_the_scene_s_code(
+    scene_class, subject
+):
+    """An object that answers every attribute read as the engine's display
+    function does (its code, its camera, its function) still runs its own
+    code when called: only the engine's function or bound method itself is
+    the engine's.
+    """
+    from arachne.frame_ir.painter import user_camera
+
+    scene, on = render_writes(scene_class)
+    _, off = render_writes(scene_class, draw_reuse=False)
+    found, _ = user_camera(scene.renderer.camera)
+    assert found == subject
+    assert [int(pixels[0, 0, 0]) for pixels, _ in off] == list(range(1, len(off) + 1))
+    assert scene.renderer.draws.reused == 0
+    assert_same_writes(on, off)
+
+
+def test_a_shallow_copy_of_a_camera_draws_through_the_original_s_functions():
+    """A copy shares the original's display functions, bound to the original:
+    it draws with the original's settings, so it counts as the scene's code.
+    """
+    import copy
+
+    from arachne.camera.camera import Camera
+    from arachne.frame_ir.painter import user_camera
+
+    original = Camera()
+    assert user_camera(original) is None
+    assert user_camera(copy.copy(original)) is not None
+
+
+def test_a_frame_showing_another_camera_s_live_picture_is_drawn():
+    """A display of a camera outside the scene shows that camera's pixels as
+    they are when the frame is drawn, which no recorded state holds: a frame
+    that reaches such a display is drawn every time.
+    """
+    scene, on = render_writes(reuse_scenes.OtherCameraShown)
+    _, off = render_writes(reuse_scenes.OtherCameraShown, draw_reuse=False)
+    assert scene.timeline.record.refusal is None, "drawn from the record"
+    centres = [tuple(pixels[27, 48, :3]) for pixels, _ in off]
+    assert centres[0] != centres[-1], "the picture changed between the plays"
+    assert scene.renderer.draws.reused == 0
+    assert_same_writes(on, off)
+
+
 def test_a_camera_whose_drawing_the_scene_replaced_draws_every_frame():
     """A capture replaced on the camera instance runs the scene's code at each
     draw, which no recorded state holds (here it marks each frame with its
@@ -173,6 +298,61 @@ def test_a_camera_whose_drawing_the_scene_replaced_draws_every_frame():
     assert [int(pixels[0, 0, 0]) for pixels, _ in off] == list(range(1, len(off) + 1))
     assert scene.renderer.draws.reused == 0
     assert_same_writes(on, off)
+
+
+def test_a_background_built_again_from_another_image_is_drawn(tmp_path):
+    """A background image is found by its file name in the assets directory:
+    the same name in another directory builds another background with the
+    same camera values. Frames drawn over it are drawn, not reused.
+    """
+    from PIL import Image
+
+    from arachne import Scene, Square, Wait, config
+
+    red, blue = tmp_path / "red", tmp_path / "blue"
+    for folder, colour in ((red, (255, 0, 0, 255)), (blue, (0, 0, 255, 255))):
+        folder.mkdir()
+        Image.new("RGBA", (96, 54), colour).save(folder / "same.png")
+
+    class RebuiltBackground(Scene):
+        def construct(self):
+            square = Square(fill_opacity=0.5)
+            square.add_updater(lambda m, dt: None)
+            self.add(square)
+            self.camera.background_image = "same.png"
+            wait = Wait(run_time=0.4)
+            for folder in (red, blue):
+                config.assets_dir = str(folder)
+                self.camera.init_background()
+                self.camera.reset()
+                self.play(wait)
+
+    scene, on = render_writes(RebuiltBackground)
+    # Within each play the frames still reuse; across the rebuild they don't.
+    assert scene.renderer.draws.reused == 2 * (len(on) // 2 - 1)
+    _, off = render_writes(RebuiltBackground, draw_reuse=False)
+    corners = [tuple(pixels[0, 0, :3]) for pixels, _ in off]
+    assert corners[0] == (255, 0, 0)
+    assert corners[-1] == (0, 0, 255)
+    assert_same_writes(on, off)
+
+
+@pytest.mark.parametrize("supplied", [False, True], ids=["built", "supplied"])
+def test_a_camera_background_refuses_an_in_place_write(supplied):
+    """A camera's background, built or supplied, can't be written in place
+    or made writable: a change makes a new array.
+    """
+    # The reuse key holds the background by identity: it rests on this.
+    from arachne.camera.camera import Camera
+
+    camera = Camera()
+    if supplied:
+        camera.set_background(np.zeros_like(camera.background))
+    background = camera.background
+    with pytest.raises(ValueError, match="read-only"):
+        background[..., :3] = 200
+    with pytest.raises(ValueError, match="read-only"):
+        background.flags.writeable = True
 
 
 def test_a_frame_at_another_configured_pixel_size_is_drawn_again():
