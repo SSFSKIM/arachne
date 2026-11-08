@@ -212,6 +212,16 @@ def _digest(data: bytes) -> bytes:
     return hashlib.blake2b(data, digest_size=16).digest()
 
 
+def _dtype_name(dtype: np.dtype[Any]) -> str:
+    """``dtype`` as a key names it: its ``str`` (which is its kind and size),
+    and for a structured one, whose ``str`` is only the void of its size,
+    its fields' names, types and offsets too.
+    """
+    if dtype.fields is None and dtype.subdtype is None:
+        return dtype.str
+    return f"{dtype}{dtype.itemsize}"
+
+
 def _key(value: Any, keying: _Keying) -> bytes:
     """``value``'s key, the mobjects it refers to appended to
     ``keying.refers``.
@@ -227,7 +237,7 @@ def _key(value: Any, keying: _Keying) -> bytes:
     if isinstance(value, (Paint, Placement)):
         return value.key
     if isinstance(value, FrozenArray):
-        shape = _framed(f"{value.dtype.str}{value.shape}".encode())
+        shape = _framed(f"{_dtype_name(value.dtype)}{value.shape}".encode())
         if decimals is not None and value.dtype.kind in "fc":
             # Adding zero turns -0.0, which rounding makes, into 0.0.
             value = np.round(value, decimals) + 0.0
@@ -249,7 +259,9 @@ def _key(value: Any, keying: _Keying) -> bytes:
         return b"mobject " + _framed(type(value).__qualname__.encode())
     if isinstance(value, np.generic):
         return (
-            b"scalar " + _framed(value.dtype.str.encode()) + _key(value.item(), keying)
+            b"scalar "
+            + _framed(_dtype_name(value.dtype).encode())
+            + _key(value.item(), keying)
         )
     active = keying.active
     if id(value) in active:
@@ -342,7 +354,7 @@ def _content_key(value: Any, keying: _Keying) -> bytes:
         return _framed(kind.__repr__(value).encode())
     if isinstance(value, np.ndarray):
         array = np.asarray(value).view(np.ndarray)
-        shape = _framed(f"{array.dtype.str}{array.shape}".encode())
+        shape = _framed(f"{_dtype_name(array.dtype)}{array.shape}".encode())
         if array.dtype.hasobject:
             return shape + each(array.ravel().tolist())
         if keying.decimals is not None and array.dtype.kind in "fc":

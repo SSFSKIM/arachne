@@ -1690,3 +1690,17 @@ def test_an_array_subclass_keys_the_state_it_holds_beside_its_data():
     assert _value_key(one) == _value_key(
         np.ma.masked_array(data.copy(), mask=[False, True, False])
     )
+
+
+def test_a_structured_array_is_keyed_by_the_fields_it_reads_its_bytes_as():
+    """The same bytes under another field's type or name are another value
+    (``dtype.str`` of both is the void of their size).
+    """
+    floats = np.array([(1.0,), (2.0,)], dtype=[("a", "<f8")])
+    integers = floats.view([("a", "<i8")])
+    renamed = floats.view([("b", "<f8")])
+    for first, second in ((floats, integers), (floats, renamed)):
+        assert _value_key(first) != _value_key(second)
+        assert _value_key([first]) != _value_key([second])
+    assert _value_key(floats) == _value_key(floats.copy())
+    assert _value_key(floats[0]) != _value_key(integers[0])
