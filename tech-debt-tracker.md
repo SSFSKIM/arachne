@@ -391,3 +391,17 @@ lifted.
   leaves `vectorize_trusted` on. Only the removed options are refused there (`tests/test_config_removed.py`).
   Direction: refuse an unknown `[CLI]` key, naming the nearest option, once the keys that sections legitimately carry
   beside the options (plugins' among them) are listed.
+
+## Vectorized trusted plays (`arachne/timeline/vectorized.py`)
+
+- **A trusted play with a `Succession` is evaluated frame by frame.** A part that begins while the play runs may
+  run the scene's code as it begins (`ApplyFunction`'s function, the scene's own `add`), which can change what any
+  other part interpolates from then on, so no value of the play is computed ahead. Direction: compute each part's
+  values from its own begin, and every other part's again from each event, if the share of render time such plays
+  take justifies it.
+- **Only straight-path blends and reveals are computed ahead.** Arc and circle paths (`ClockwiseTransform`,
+  `CyclicReplace`, `Swap`, `SpinInFromNothing`, any `path_arc`), `Rotate`, `Rotating`, `Write`, `Unwrite`,
+  `DrawBorderThenFill`, and mobjects that interpolate their own way (images, point clouds, `ValueTracker`) keep the
+  whole play on the frame-by-frame path. An instant between kept ones (a session's `frame(t)`) and the painter's
+  terms (`PlayRecord.leaf_terms`) are evaluated by the animations themselves, as without the lever. Direction: the
+  same treatment for arc paths, whose formula is CE's `path_along_arc`, once the share they take is measured.
