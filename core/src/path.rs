@@ -2155,17 +2155,43 @@ impl CurveDepth {
 
     /// The segments a read at pixel `(x, y)` (at its centre or its sub-samples) of a stroke whose
     /// body reaches `body` picks among, in order, into `near`: those whose bounds hold the pixel's
-    /// centre ([`Self::near`]); where none does, enough of the others that a read among them
-    /// picks as a read among every segment does ([`Self::around`]).
+    /// centre ([`Self::near`]) where they hold every segment such a read may take; else enough of
+    /// the others that a read among them picks as a read among every segment does
+    /// ([`Self::around`]).
+    ///
+    /// A segment's bounds lie no farther from a point than the segment, on each axis, so the
+    /// bounds widened by the margin hold the centre for every segment within the margin of it, on
+    /// each axis: [`Self::near`] holds them all. A read at a point of the pixel takes a segment
+    /// holding the point within `body`, or its first nearest, which lies no farther from the point
+    /// than the centre's nearest does, within the centre's nearest distance and how far the point
+    /// lies from the centre (under 0.75): such a segment lies within
+    /// `max(body, nearest + 0.75)` of a point of the pixel, the reach [`Self::around`] keeps, so
+    /// within that and half a pixel of the centre on each axis. The nearest among those found is no
+    /// nearer than the centre's own. So where that reach and half a pixel lie under the margin,
+    /// with room for their rounding, the segments found hold every one a read may take, in order.
     fn candidates(&self, x: u32, y: u32, body: f64, near: &mut Vec<u32>) {
         self.near(x, y, near);
-        if near.is_empty() {
-            self.around(x, y, body, near);
+        if !near.is_empty() {
+            let centre = [x as f64 + 0.5, y as f64 + 0.5];
+            let nearest = near
+                .iter()
+                .map(|&k| self.line.distance2(k as usize, centre))
+                .fold(f64::INFINITY, f64::min)
+                .sqrt();
+            let reach = (nearest + 0.75).max(body) + 0.5;
+            let room = self.line.rounding(reach + centre[0].max(centre[1]));
+            // Answered only under the margin; never at or over it, or where it is not a number.
+            if (reach + room).partial_cmp(&self.margin) == Some(std::cmp::Ordering::Less) {
+                return;
+            }
+            near.clear();
         }
+        self.around(x, y, body, near);
     }
 
     /// The segments that may lie nearest a point of pixel `(x, y)` or hold one within `body` of
-    /// them, in order, into `out` (empty), where no segment's bounds hold the pixel's centre: those
+    /// them, in order, into `out` (empty), where the segments whose bounds hold the pixel's centre
+    /// may not be all of them ([`Self::candidates`]): those
     /// beyond the frame's tiles and those filed under the tiles ring by ring around the pixel's,
     /// until every segment not found lies further from every point of the pixel than `reach`, the
     /// further of `body` and the centre's nearest found and how far a point of the pixel lies from
@@ -2602,5 +2628,439 @@ mod tests {
             "{key:?} against {key_alone:?}"
         );
         assert_eq!(ids, [0; 4]);
+    }
+}
+
+/// Reads through the frame's candidate paths (`Paths::depth_at` for a pixel's centre,
+/// `Paths::point_depths` for its sub-samples), against the same read among every segment of the
+/// curve, which needs no candidate set to be complete.
+#[cfg(test)]
+mod brute_force_reads {
+    use super::*;
+    use crate::composite::{SAMPLES, sample_point};
+
+    type Key = dyn Fn([f64; 2]) -> f64;
+
+    /// A straight CE edge from the last point of `out` to `b` (handles at its thirds), flattened as
+    /// `curve_depth` flattens it: `ceil(len / 2)` pieces, 1 to 64, at even steps of its parameter.
+    fn edge(out: &mut Vec<([f64; 2], f64)>, b: [f64; 2], key: &Key) {
+        let a = out.last().expect("a start").0;
+        let len = ((b[0] - a[0]) * (b[0] - a[0]) + (b[1] - a[1]) * (b[1] - a[1])).sqrt();
+        let n = (len / 2.0).ceil().clamp(1.0, 64.0) as usize;
+        let c = [
+            a,
+            [a[0] + (b[0] - a[0]) / 3.0, a[1] + (b[1] - a[1]) / 3.0],
+            [
+                a[0] + (b[0] - a[0]) * 2.0 / 3.0,
+                a[1] + (b[1] - a[1]) * 2.0 / 3.0,
+            ],
+            b,
+        ];
+        for s in 1..=n {
+            let t = s as f64 / n as f64;
+            let u = 1.0 - t;
+            let w = [u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t];
+            let p =
+                [0, 1].map(|k| w[0] * c[0][k] + w[1] * c[1][k] + w[2] * c[2][k] + w[3] * c[3][k]);
+            out.push((p, key(p)));
+        }
+    }
+
+    fn polyline(corners: &[[f64; 2]], closed: bool, key: &Key) -> Centreline {
+        let mut out = vec![(corners[0], key(corners[0]))];
+        for c in &corners[1..] {
+            edge(&mut out, *c, key);
+        }
+        if closed {
+            edge(&mut out, corners[0], key);
+        }
+        Centreline::new(&out, &[])
+    }
+
+    fn inside(poly: &[[f64; 2]], p: [f64; 2]) -> bool {
+        let mut c = false;
+        for i in 0..poly.len() {
+            let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+            if (a[1] > p[1]) != (b[1] > p[1])
+                && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0]
+            {
+                c = !c;
+            }
+        }
+        c
+    }
+
+    /// The first nearest of `among` (all segments when empty) to `p`, as `find` picks it, and its
+    /// distance.
+    fn nearest(line: &Centreline, among: &[u32], p: [f64; 2]) -> (usize, f64) {
+        let all: Vec<u32> = (0..line.len() as u32).collect();
+        let among = if among.is_empty() { &all[..] } else { among };
+        let mut best = (usize::MAX, f64::INFINITY);
+        for &i in among {
+            let d2 = line.distance2(i as usize, p);
+            if d2 < best.1 {
+                best = (i as usize, d2);
+            }
+        }
+        (best.0, best.1.sqrt())
+    }
+
+    #[derive(Default)]
+    struct Tally {
+        centres: u64,
+        subs: u64,
+        misses: Vec<String>,
+        missed: u64,
+        worst: f64,
+    }
+
+    impl Tally {
+        fn miss(&mut self, what: String, dk: f64) {
+            self.missed += 1;
+            self.worst = self.worst.max(dk);
+            if self.misses.len() < 12 {
+                self.misses.push(what);
+            }
+        }
+
+        fn add(&mut self, t: Tally) {
+            self.centres += t.centres;
+            self.subs += t.subs;
+            self.missed += t.missed;
+            self.worst = self.worst.max(t.worst);
+            if self.misses.len() < 12 {
+                self.misses.extend(t.misses.into_iter().take(3));
+            }
+        }
+    }
+
+    /// Pixel `(x, y)` of `depth` at body `body`: its centre as `depth_at` reads it and its
+    /// sub-samples as `point_depths` reads them, each against the read among every segment.
+    fn check(depth: &CurveDepth, x: u32, y: u32, body: f64, subs: bool, case: &str, t: &mut Tally) {
+        let line = &depth.line;
+        let centre = [x as f64 + 0.5, y as f64 + 0.5];
+        // As `Paths::depth_at`.
+        let mut near = Vec::new();
+        let by_grid = depth.near_cut(centre, &[centre], body, &mut near);
+        if !by_grid {
+            depth.candidates(x, y, body, &mut near);
+            line.cut(centre, &[centre], &mut near, body);
+        }
+        let got = line.key_under(centre, &near, body);
+        let want = line.key_under(centre, &[], body);
+        t.centres += 1;
+        if got.0.to_bits() != want.0.to_bits() || got.1.to_bits() != want.1.to_bits() {
+            let (fi, fd) = nearest(line, &near, centre);
+            let (ti, td) = nearest(line, &[], centre);
+            t.miss(
+                format!(
+                    "{case} centre ({x}, {y}) [{}]: key {:e} against {:e} (diff {:e}); nearest \
+                     candidate {fi} at {fd:.3} px, true nearest {ti} at {td:.3} px; {} candidates",
+                    if by_grid {
+                        "fine grid"
+                    } else {
+                        "candidates+cut"
+                    },
+                    got.0,
+                    want.0,
+                    (got.0 - want.0).abs(),
+                    near.len()
+                ),
+                (got.0 - want.0).abs(),
+            );
+        }
+        if !subs {
+            return;
+        }
+        // As `Paths::point_depths`.
+        let mut points: Vec<[f64; 2]> = (0..SAMPLES).map(|k| sample_point(x, y, k)).collect();
+        points.push(centre);
+        let mut near = Vec::new();
+        let mut out = vec![0.0; points.len()];
+        let by_grid = depth.near_cut(centre, &points, body, &mut near);
+        if by_grid {
+            line.keys_among(&points, &near, body, &mut out);
+        } else {
+            depth.candidates(x, y, body, &mut near);
+            line.keys_under(centre, &points, &mut near, body, &mut out);
+        }
+        for (k, p) in points.iter().enumerate() {
+            let want = line.key_under(*p, &[], body).0;
+            t.subs += 1;
+            if out[k].to_bits() != want.to_bits() {
+                let (fi, fd) = nearest(line, &near, *p);
+                let (ti, td) = nearest(line, &[], *p);
+                t.miss(
+                    format!(
+                        "{case} ({x}, {y}) sub {k} at {p:?} [{}]: key {:e} against {:e} (diff \
+                         {:e}); nearest candidate {fi} at {fd:.3} px, true nearest {ti} at {td:.3} \
+                         px; {} candidates",
+                        if by_grid {
+                            "fine grid"
+                        } else {
+                            "candidates+cut"
+                        },
+                        out[k],
+                        want,
+                        (out[k] - want).abs(),
+                        near.len()
+                    ),
+                    (out[k] - want).abs(),
+                );
+            }
+        }
+    }
+
+    fn report(name: &str, t: &Tally) {
+        eprintln!(
+            "BRUTE {name}: {} centres, {} sub-samples, {} misses, worst key diff {:e}",
+            t.centres, t.subs, t.missed, t.worst
+        );
+        for m in &t.misses {
+            eprintln!("  {m}");
+        }
+    }
+
+    /// Deep inside large filled outlines of a path with no plane of its own (its fill read on its
+    /// curve with body 0, its margin the bins of a path with no stroke: 18 px), every pixel inside
+    /// on a stride of 3, centres everywhere and sub-samples at every fifth.
+    #[test]
+    #[ignore = "exhaustive: some 9M reads, about half a minute in release; run with --ignored"]
+    fn deep_inside_a_large_planeless_fill_the_read_is_the_true_nearest_s() {
+        let (w, h) = (1280u32, 960u32);
+        let key = |p: [f64; 2]| -(1.0 + 1e-4 * (0.37 * p[0] + 0.61 * p[1]) + 1e-8 * p[0] * p[1]);
+        let rot = |c: [f64; 2], r: f64, deg: f64, n: usize| -> Vec<[f64; 2]> {
+            (0..n)
+                .map(|i| {
+                    let a = (deg + 360.0 * i as f64 / n as f64).to_radians();
+                    [c[0] + r * libm::cos(a), c[1] + r * libm::sin(a)]
+                })
+                .collect()
+        };
+        let mut shapes: Vec<(String, Vec<[f64; 2]>)> = Vec::new();
+        for s in [200.0, 400.0, 800.0, 1600.0, 3200.0] {
+            shapes.push((
+                format!("right triangle {s}"),
+                vec![[40.25, 30.5], [40.25 + s, 30.5], [40.25, 30.5 + s]],
+            ));
+            shapes.push((
+                format!("right triangle flipped {s}"),
+                vec![
+                    [1240.75, 930.25],
+                    [1240.75 - s, 930.25],
+                    [1240.75, 930.25 - s],
+                ],
+            ));
+            for (n, deg) in [(3usize, 7.0), (4, 20.0), (5, 3.0), (6, 11.0), (32, 1.0)] {
+                shapes.push((
+                    format!("{n}-gon r {} turned {deg}", s / 2.0),
+                    rot([640.3, 480.7], s / 2.0, deg, n),
+                ));
+            }
+        }
+        let mut total = Tally::default();
+        for (name, poly) in &shapes {
+            let line = polyline(poly, true, &key);
+            let depth = CurveDepth::new(line, 18.0, w, h);
+            let mut t = Tally::default();
+            for y in (0..h).step_by(3) {
+                for x in (0..w).step_by(3) {
+                    if !inside(poly, [x as f64 + 0.5, y as f64 + 0.5]) {
+                        continue;
+                    }
+                    let subs = (x / 3 + y / 3) % 5 == 0;
+                    check(&depth, x, y, 0.0, subs, name, &mut t);
+                }
+            }
+            report(name, &t);
+            total.add(t);
+        }
+        report("deep fills, all shapes", &total);
+        assert_eq!(total.missed, 0, "reads that are not the true nearest's");
+    }
+
+    /// At and around the miter tips of two straight edges meeting at 10, 12, 15, 20 and 30 degrees
+    /// (10 is past Cairo's miter limit, a bevel), under four turns, at stroke half widths from 0.5
+    /// to 20 px, the margin the path's bins give it (`(half * MITER_LIMIT).max(TILE) + 2`): every
+    /// pixel on the tip's side the stroke rasterizes (one of its points within an edge's body,
+    /// butt-ended at the joint, or the join: the miter up to its tip within the limit, the bevel
+    /// past it), centres and sub-samples, read at the stroke's body.
+    #[test]
+    #[ignore = "exhaustive: some 3M reads; run with --ignored"]
+    fn at_miter_tips_the_read_is_the_true_nearest_s() {
+        let (w, h) = (1400u32, 1400u32);
+        let key = |p: [f64; 2]| -(2.0 + 3e-4 * (0.53 * p[0] - 0.29 * p[1]));
+        let v = [700.3, 700.7];
+        let mut total = Tally::default();
+        for theta in [10.0f64, 12.0, 15.0, 20.0, 30.0] {
+            for turn in [0.0f64, 17.0, 45.0, 73.0] {
+                for half in [0.5f64, 1.2, 2.0, 4.0, 10.0, 20.0] {
+                    let margin = (half * MITER_LIMIT).max(TILE as f64) + 2.0;
+                    let len = 300.0;
+                    // The tip points along `turn`; the edges come into the joint from the far side
+                    // at +-theta/2 about the bisector.
+                    let at = |deg: f64| {
+                        let a = deg.to_radians();
+                        [v[0] + len * libm::cos(a), v[1] + len * libm::sin(a)]
+                    };
+                    let (a, b) = (
+                        at(turn + theta / 2.0 + 180.0),
+                        at(turn - theta / 2.0 + 180.0),
+                    );
+                    let line = polyline(&[a, v, b], false, &key);
+                    let depth = CurveDepth::new(line, margin, w, h);
+                    // Cairo's join: a miter where its length over the stroke's width,
+                    // 1 / sin(theta / 2), is within the limit, its tip that times `half` from the
+                    // joint along the bisector; past it a bevel, the line between the outer
+                    // corners of the two edges' butt ends at the joint.
+                    let miter = 1.0 / libm::sin((theta / 2.0).to_radians());
+                    let bevel = miter > MITER_LIMIT;
+                    let tip = half * miter;
+                    let r = if bevel { half } else { tip } + 2.0;
+                    let (dx, dy) = (libm::cos(turn.to_radians()), libm::sin(turn.to_radians()));
+                    let unit = |s: [f64; 2], e: [f64; 2]| {
+                        let l = libm::hypot(e[0] - s[0], e[1] - s[1]);
+                        [(e[0] - s[0]) / l, (e[1] - s[1]) / l]
+                    };
+                    let (u1, u2) = (unit(a, v), unit(v, b));
+                    // The outer side of the joint: right of the path where it turns left.
+                    let out = if u1[0] * u2[1] - u1[1] * u2[0] > 0.0 {
+                        1.0
+                    } else {
+                        -1.0
+                    };
+                    let corner = |u: [f64; 2]| [v[0] + out * half * u[1], v[1] - out * half * u[0]];
+                    let join = if bevel {
+                        vec![v, corner(u1), corner(u2)]
+                    } else {
+                        vec![
+                            v,
+                            corner(u1),
+                            [v[0] + tip * dx, v[1] + tip * dy],
+                            corner(u2),
+                        ]
+                    };
+                    // An edge's body: within `half` of it, its foot on it.
+                    let on_edge = |s: [f64; 2], e: [f64; 2], q: [f64; 2]| {
+                        let u = unit(s, e);
+                        let l = libm::hypot(e[0] - s[0], e[1] - s[1]);
+                        let along = (q[0] - s[0]) * u[0] + (q[1] - s[1]) * u[1];
+                        let across = (q[1] - s[1]) * u[0] - (q[0] - s[0]) * u[1];
+                        (0.0..=l).contains(&along) && across.abs() <= half
+                    };
+                    let rasterized =
+                        |q: [f64; 2]| on_edge(a, v, q) || on_edge(v, b, q) || inside(&join, q);
+                    let mut t = Tally::default();
+                    let name = format!("joint {theta} deg turned {turn} half {half}");
+                    let (x0, x1) = ((v[0] - r - 2.0) as u32, (v[0] + r + 2.0) as u32);
+                    let (y0, y1) = ((v[1] - r - 2.0) as u32, (v[1] + r + 2.0) as u32);
+                    for y in y0..=y1 {
+                        for x in x0..=x1 {
+                            let p = [x as f64 + 0.5 - v[0], y as f64 + 0.5 - v[1]];
+                            // The tip's side of the joint, where the stroke rasterizes the pixel.
+                            let points = (0..SAMPLES)
+                                .map(|k| sample_point(x, y, k))
+                                .chain([[x as f64 + 0.5, y as f64 + 0.5]]);
+                            if p[0] * dx + p[1] * dy < -1.5 || !points.into_iter().any(rasterized) {
+                                continue;
+                            }
+                            check(&depth, x, y, half, true, &name, &mut t);
+                        }
+                    }
+                    if t.missed > 0 {
+                        report(&name, &t);
+                    }
+                    total.add(t);
+                }
+            }
+        }
+        report("miter tips, all joints", &total);
+        assert_eq!(total.missed, 0, "reads that are not the true nearest's");
+    }
+
+    /// Inside filled outlines of short pieces, of a path with no plane of its own (its fill read on
+    /// its curve with body 0, its margin the bins of a path with no stroke: 18 px), seeded: 16
+    /// polygons of 12 to 48 sides, 60 to 160 px in radius, turned and placed at random, their keys
+    /// sloped at random; at 400 pixels each, drawn at random inside, the centre as `depth_at` reads
+    /// it and the sub-samples as `point_depths` reads them, each against the read among every
+    /// segment. Where the widened bounds of a piece hold a pixel whose nearest piece lies beyond
+    /// the margin, the bounds alone are not all a read may take.
+    #[test]
+    fn inside_seeded_planeless_fills_of_short_pieces_the_read_is_the_true_nearest_s() {
+        let (w, h) = (1280u32, 960u32);
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut total = Tally::default();
+        for trial in 0..16 {
+            let n = 12 + (next() * 37.0) as usize;
+            let r = 60.0 + next() * 100.0;
+            let c = [400.0 + next() * 480.0, 300.0 + next() * 360.0];
+            let turn = next() * 360.0;
+            let slope = [next() - 0.5, next() - 0.5];
+            let key = move |p: [f64; 2]| -(1.0 + 1e-4 * (slope[0] * p[0] + slope[1] * p[1]));
+            let poly: Vec<[f64; 2]> = (0..n)
+                .map(|i| {
+                    let a = (turn + 360.0 * i as f64 / n as f64).to_radians();
+                    [c[0] + r * libm::cos(a), c[1] + r * libm::sin(a)]
+                })
+                .collect();
+            let depth = CurveDepth::new(polyline(&poly, true, &key), 18.0, w, h);
+            let name = format!("trial {trial}: {n}-gon r {r:.1}");
+            let mut t = Tally::default();
+            let mut read = 0;
+            while read < 400 {
+                let (x, y) = (
+                    (c[0] + (2.0 * next() - 1.0) * r) as u32,
+                    (c[1] + (2.0 * next() - 1.0) * r) as u32,
+                );
+                if inside(&poly, [x as f64 + 0.5, y as f64 + 0.5]) {
+                    check(&depth, x, y, 0.0, true, &name, &mut t);
+                    read += 1;
+                }
+            }
+            total.add(t);
+        }
+        report("seeded short-piece fills", &total);
+        assert!(total.subs >= 16 * 400 * SAMPLES as u64);
+        assert_eq!(total.missed, 0, "reads that are not the true nearest's");
+    }
+
+    /// Where the widened bounds of the pixel centre's nearest hold the centre, the pixel's
+    /// sub-samples reach half a pixel past it on each axis: a fill's curve with a long side 17.2 px
+    /// to the left of the centre (its nearest, its bounds holding it) and a short one 18.05 px to
+    /// its right (its bounds, widened by the 18 px margin, missing it by 0.05 px), keyed apart.
+    /// A sub-sample at the pixel's right edge lies nearer the right side, 17.58 against 17.67 px:
+    /// within the centre's nearest and 0.75, and that and the half pixel beyond the margin.
+    #[test]
+    fn near_a_pixel_s_edge_a_read_takes_a_segment_whose_widened_bounds_miss_its_centre() {
+        let (w, h) = (256u32, 256u32);
+        let c = [100.5, 100.5];
+        let line = Centreline::new(
+            &[
+                ([c[0] - 17.2, 50.0], -1.01),
+                ([c[0] - 17.2, 150.0], -1.01),
+                ([c[0] + 18.05, 95.0], -1.0),
+                ([c[0] + 18.05, 105.0], -1.0),
+            ],
+            &[2],
+        );
+        let depth = CurveDepth::new(line, 18.0, w, h);
+        let mut t = Tally::default();
+        check(
+            &depth,
+            100,
+            100,
+            0.0,
+            true,
+            "two sides about the margin",
+            &mut t,
+        );
+        report("two sides about the margin", &t);
+        assert_eq!(t.missed, 0, "reads that are not the true nearest's");
     }
 }

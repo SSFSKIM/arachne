@@ -2133,8 +2133,10 @@ pub struct Centreline {
     /// points the curve is drawn through may move ([`Centreline::slide_under`]): `2` for ends
     /// moving on their own, less for the ends of a cubic's piece, which move together.
     turns: Vec<f64>,
-    /// For each segment, the segment that shares each of its ends (start, end), point and key: the
-    /// previous or next one of its run, or the run's last or first where the run closes on itself.
+    /// For each segment, the segment that shares each of its ends (start, end) as one point of the
+    /// list it was made from: the previous or next one of its run, one point of content too. None
+    /// at a run's closing point or where two runs meet, whose two points are two points of content,
+    /// which the snap may have put together.
     partners: Vec<[Option<usize>; 2]>,
     /// The largest magnitude of a coordinate of a segment's end.
     scale: f64,
@@ -2165,13 +2167,10 @@ impl Centreline {
         let mut segments = Vec::new();
         let mut errs = Vec::new();
         let mut turned = Vec::new();
-        // Each run's segments, as a range of `segments`.
-        let mut runs = Vec::new();
-        let mut run = 0;
+        // The point of the list each segment ends at.
+        let mut ends = Vec::new();
         for i in 1..points.len() {
             if breaks.contains(&i) {
-                runs.push(run..segments.len());
-                run = segments.len();
                 continue;
             }
             let (a, ka) = points[i - 1];
@@ -2183,6 +2182,7 @@ impl Centreline {
                 segments.push((a, ka, b, kb));
                 errs.push(err(i - 1).max(err(i)));
                 turned.push(turn(i));
+                ends.push(i);
             }
         }
         if segments.is_empty()
@@ -2194,20 +2194,19 @@ impl Centreline {
             segments.push((p, k, p, k));
             errs.push(err(i));
             turned.push(2.0);
+            ends.push(i);
         }
-        runs.push(run..segments.len());
         let n = segments.len();
-        // Whether segment `s` ends where segment `t` starts, point and key.
-        let meets =
-            |s: usize, t: usize| segments[s].2 == segments[t].0 && segments[s].3 == segments[t].1;
-        let mut partners: Vec<[Option<usize>; 2]> = (0..n)
+        // Segment `s` ends at the point the next starts at.
+        let joined = |s: usize| ends[s] + 1 == ends[s + 1];
+        let partners: Vec<[Option<usize>; 2]> = (0..n)
             .map(|s| {
-                let start = if s > 0 && meets(s - 1, s) {
+                let start = if s > 0 && joined(s - 1) {
                     Some(s - 1)
                 } else {
                     None
                 };
-                let end = if s + 1 < n && meets(s, s + 1) {
+                let end = if s + 1 < n && joined(s) {
                     Some(s + 1)
                 } else {
                     None
@@ -2215,12 +2214,6 @@ impl Centreline {
                 [start, end]
             })
             .collect();
-        for r in runs {
-            if r.len() > 1 && partners[r.start][0].is_none() && meets(r.end - 1, r.start) {
-                partners[r.start][0] = Some(r.end - 1);
-                partners[r.end - 1][1] = Some(r.start);
-            }
-        }
         let scale = segments
             .iter()
             .flat_map(|(a, _, b, _)| [a[0], a[1], b[0], b[1]])
@@ -2438,13 +2431,15 @@ impl Centreline {
     /// area in the sub-sample's cell, which the move may change. The fill's read is the front-most
     /// key of the segments `p` lies on, else the first nearest's; after the move it is the moved key
     /// of one within `2 shift` of the nearest distance, less any whose foot lies more than `dt`
-    /// past an end that a segment among the reads shares (point and key) while that one's foot does
-    /// not: that one stays nearest the end, and the other lies no farther, keyed there as it is. So
+    /// past an end that the previous or next segment of its run, among the reads, shares (one point
+    /// of the list, so one in content too) while that one's foot does not: that one stays nearest the
+    /// end, and the other lies no farther, keyed there as it is. So
     /// the key is the read or the nearer of it and the fill's before the move, and after it lies
     /// within the most either set may move of the lowest of their keys and the stroke's highest:
     /// `jump` is taken from those, and the magnitude returned is the lesser of the two keys'. Where
-    /// the fill's read is never nearer than the stroke's, as on a convex outline, the bound is the
-    /// stroke's own.
+    /// the fill's read is never nearer than the stroke's, as on a convex outline with no other part
+    /// holding the outer wedge of a corner, the bound is the stroke's own, away from a run's closing
+    /// point.
     ///
     /// Two moves lie outside this bound, stated limits gated on exposure. The flattening of a
     /// curved cubic into pieces changes where the snap changes how many pieces it is cut into (the
@@ -2568,8 +2563,9 @@ impl Centreline {
         // The fill's read, as `find` makes it with no body: the front-most key of the segments `p`
         // lies on, else the first nearest's; after the move, the moved key of one of those within
         // `2 reach` of the nearest distance, of which one may be left out: a segment whose foot
-        // lies more than `dt` past an end that a segment among the reads shares (point and key),
-        // that one's foot not past it. The first stays nearest that end before and after the move,
+        // lies more than `dt` past an end that its run's previous or next segment among the reads
+        // shares, that one's foot not past it. The first stays nearest that end before and after
+        // the move,
         // and the second lies no farther (the end is on it), at that end's key where as far, so the
         // first is the read only tied with the second at the second's key.
         let filled = reads
@@ -2594,6 +2590,13 @@ impl Centreline {
                     })
             })
         };
+        // Every member of this set outside the stroke's `may` and near-nearest sets lies more than
+        // `dt` past an end of its segment, where the clamp of short end pieces makes its move 0: so
+        // `fill_most <= most`, kept as margin, and only such members can lower the floor. With that
+        // clamp reverted the term is reachable, a member past an end moving by its spread times
+        // `dt`; the short pieces of
+        // `a_read_past_a_short_piece_s_end_moves_by_the_share_alone_and_its_reach_says_so` are
+        // that shape.
         let (mut floor, mut fill_most) = (filled, 0.0f64);
         for r in &reads {
             if r.d <= nearest.d + 2.0 * reach && (std::ptr::eq(r, nearest) || !beside(r)) {
@@ -2987,7 +2990,8 @@ mod tests {
             "TIGHT fill production: {worst:.3} at worst; where the fill undercuts the stroke {least:.3} \
              at least over {under} points"
         );
-        // Convex: the square's bound is the same with the fill as without it.
+        // Convex: the square's bound is the same with the fill as without it, but near its run's
+        // closing point, where it is no less.
         let square = [vec![
             ([10.0, 10.0], -1.0300),
             ([13.0, 10.0], -1.0313),
@@ -2999,11 +3003,19 @@ mod tests {
         let line = Centreline::new(&square[0], &[]);
         for &p in &at {
             for body in [0.15, 1.5] {
-                assert_eq!(
-                    line.slide_under(p, &[], body, 4.2e-3, 2.9e-6, true),
-                    line.slide_under(p, &[], body, 4.2e-3, 2.9e-6, false),
-                    "at {p:?}, {body} wide: the fill moved the bound of a convex outline"
-                );
+                let filled = line.slide_under(p, &[], body, 4.2e-3, 2.9e-6, true);
+                let unfilled = line.slide_under(p, &[], body, 4.2e-3, 2.9e-6, false);
+                if libm::hypot(p[0] - 10.0, p[1] - 10.0) > 1.0 {
+                    assert_eq!(
+                        filled, unfilled,
+                        "at {p:?}, {body} wide: the fill moved the bound of a convex outline"
+                    );
+                } else {
+                    assert!(
+                        filled.0 >= unfilled.0 && filled.1 == unfilled.1,
+                        "at {p:?}, {body} wide: the fill lowered the bound of a convex outline"
+                    );
+                }
             }
         }
         let (worst, _, under) = run(
@@ -3020,6 +3032,100 @@ mod tests {
             under, 0,
             "the fill's read undercut a convex outline's stroke"
         );
+        // Closing: the square's run closes on its first point in the frame the bound is read in,
+        // the drawn one, while the content it stands for may hold the two apart, two points of
+        // content the snap put together. Read from the drawn frame, the bound holds the content's
+        // resolved key, every way the fill's cover allows. First the case a partner at the closing
+        // point would leave open: a point 0.1 px outside the last side and 0.04 px along it from
+        // the closing point (so within `2 reach` of its distance from the side), past the first
+        // side's start; the content's first point moved toward it by the shift and the last side
+        // away by as much, so there the first side is the content's nearest, at the closing point's
+        // key, below the last side's. Then a closing point a third of the shift apart in content,
+        // and seeded moves.
+        {
+            let (shift, share, body) = (4.2e-3, 2.9e-6, 0.15);
+            let rim = shift * (1.0 - 1e-9);
+            let drawn = Centreline::new(&square[0], &[]);
+            let n = square[0].len();
+            let target = [9.9, 10.04];
+            let toward = {
+                let (dx, dy) = (target[0] - 10.0, target[1] - 10.0);
+                let l = libm::hypot(dx, dy);
+                [rim * dx / l, rim * dy / l]
+            };
+            let shape = |m: &dyn Fn(usize) -> ([f64; 2], f64)| -> Vec<([f64; 2], f64)> {
+                square[0]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (p, k))| {
+                        let (d, s) = m(i);
+                        ([p[0] + d[0], p[1] + d[1]], k * (1.0 + s * share * 0.999))
+                    })
+                    .collect()
+            };
+            let mut contents = vec![
+                shape(&|i| match i {
+                    0 => (toward, 1.0),
+                    3 | 4 => ([rim, 0.0], 1.0),
+                    _ => ([0.0, 0.0], 1.0),
+                }),
+                shape(&|i| {
+                    if i == n - 1 {
+                        ([rim / 3.0, 0.0], 1.0)
+                    } else {
+                        ([0.0, 0.0], 1.0)
+                    }
+                }),
+            ];
+            let mut seeded = Seeded(0x0c10_5e0f_f1e1_d5a1);
+            for _ in 0..16 {
+                let m: Vec<([f64; 2], f64)> = (0..n)
+                    .map(|_| {
+                        let angle = (seeded.next() >> 11) as f64 / (1u64 << 53) as f64
+                            * std::f64::consts::TAU;
+                        let sign = if seeded.next() & 1 == 1 { 1.0 } else { -1.0 };
+                        ([rim * libm::cos(angle), rim * libm::sin(angle)], sign)
+                    })
+                    .collect();
+                contents.push(shape(&|i| m[i]));
+            }
+            let lines: Vec<Centreline> = contents.iter().map(|c| Centreline::new(c, &[])).collect();
+            let resolved = |l: &Centreline, p: [f64; 2]| {
+                let (s, es) = l.key_under(p, &[], body);
+                let (f, ef) = l.key_under(p, &[], 0.0);
+                ([s, s.min(f)], es.max(ef))
+            };
+            let mut at = grid(9.85, 9.95, 10.0, 10.08, 0.005);
+            at.push(target);
+            // The worst move over reach, where, and its move and reach.
+            let mut worst = (0.0f64, [0.0; 2], 0.0, 0.0);
+            for &p in &at {
+                let (before, e0) = resolved(&drawn, p);
+                let (slide, magnitude) = drawn.slide_under(p, &[], body, shift, share, true);
+                let own = share + slide / magnitude * (1.0 + 4.0 * U);
+                for l in &lines {
+                    let (after, e1) = resolved(l, p);
+                    for k0 in before {
+                        for k1 in after {
+                            let reach = e0 + e1 + (k0.abs() + e0) * own;
+                            let moved_by = (k1 - k0).abs();
+                            if moved_by / reach > worst.0 {
+                                worst = (moved_by / reach, p, moved_by, reach);
+                            }
+                        }
+                    }
+                }
+            }
+            let (ratio, p, moved_by, reach) = worst;
+            eprintln!(
+                "TIGHT fill closing: {ratio:.3} at worst over {} points, at {p:?}",
+                at.len()
+            );
+            assert!(
+                ratio <= 1.0,
+                "closing, at {p:?}: the resolved key moved by {moved_by:e} against its reach {reach:e}"
+            );
+        }
     }
 
     /// A read past a short piece's end, as on a thin shape seen almost edge-on: two sides 3 px
