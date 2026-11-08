@@ -477,13 +477,15 @@ def _redraw_code() -> Any:
 
 
 def _classify_updater(scene: Scene, mob: Mobject, updater: Any) -> Callback:
+    from arachne.mobject.updater_kind import takes_dt
+
     try:
-        parameters = inspect.signature(updater).parameters
+        handed = takes_dt(updater)
     except (TypeError, ValueError):
         return Callback(
             "updater", updater, mob, _line(updater), refusal="it has no signature"
         )
-    if "dt" in parameters:
+    if handed:
         return Callback(
             "dt_updater",
             updater,

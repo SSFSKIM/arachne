@@ -1462,7 +1462,10 @@ class ManimConfig(MutableMapping):
     def vectorize_trusted(self) -> bool:
         """Whether a trusted play's values are computed for all of its
         instants at once (on by default) rather than one frame at a time:
-        the same values, bit for bit.
+        the same values, bit for bit. With it, what a frame would read again
+        unchanged is read once: whether each updater takes ``dt``
+        (:mod:`.updater_kind`), and the families a trusted play's
+        animations zip.
         """
         return self._lever("vectorize_trusted")
 

@@ -240,6 +240,20 @@ class TrustedRoute(_SampledRoute):
 
     name = "trusted"
 
+    def run(self, run: PlayRun, plan: EventPlan) -> None:
+        from arachne import config
+
+        if not config.vectorize_trusted:
+            super().run(run, plan)
+            return
+        from arachne.animation.animation import keeping_families
+
+        from .trusted import iter_animations
+
+        # Admission keeps every family's members as they are while it runs.
+        with keeping_families(iter_animations(run.play._animations)):
+            super().run(run, plan)
+
 
 class StateRoute(_SampledRoute):
     """Route 2: sampled where its consumer reads, on the tick in a session."""

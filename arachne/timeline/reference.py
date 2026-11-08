@@ -34,7 +34,6 @@ __all__ = ["BRUTE_FORCE", "BruteForce", "integrates", "scene_updater_integrates"
 
 import contextlib
 import dis
-import inspect
 import math
 import types
 from collections.abc import Iterator
@@ -74,11 +73,13 @@ def integrates(updater: Any) -> bool:
     then calls ``updater(mobject, dt)``, so what reads ``dt`` is whatever
     receives the second positional argument (:func:`_reads_argument`).
     """
+    from arachne.mobject.updater_kind import takes_dt
+
     try:
-        parameters = inspect.signature(updater).parameters
+        handed = takes_dt(updater)
     except (TypeError, ValueError):
         return True
-    return "dt" in parameters and _reads_argument(updater, 1)
+    return handed and _reads_argument(updater, 1)
 
 
 def scene_updater_integrates(updater: Any) -> bool:
