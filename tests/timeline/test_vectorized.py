@@ -246,6 +246,18 @@ def test_a_leaf_outside_the_vectorized_kinds_keeps_the_whole_play_scalar():
     assert vectorized.refusal(play._animations) is not None
 
 
+@pytest.mark.parametrize("name", ["SinglePrecisionColors", "SinglePrecisionWidths"])
+def test_a_style_held_in_another_precision_keeps_the_whole_play_scalar(name):
+    """A style in single precision is mixed in numpy's promoted arithmetic,
+    which the vectorized path does not reproduce: the play stays scalar.
+    """
+    scene = assert_same_as_scalar(getattr(vectorized_scenes, name))
+    (play,) = scene.timeline.ensure_record().plays
+    assert play.route == "trusted"
+    assert not play.vectorized
+    assert "style" in vectorized.refusal(play._animations)
+
+
 def test_a_play_with_one_kept_instant_is_not_batched():
     scene = assert_same_as_scalar(vectorized_scenes.Brief)
     assert vectorized_plays(scene) == [False, True]

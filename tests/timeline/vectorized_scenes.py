@@ -177,3 +177,38 @@ class Brief(Scene):
         self.add(sq)
         self.play(sq.animate.shift(UP), run_time=0.01)
         self.play(sq.animate.shift(RIGHT), run_time=0.5)
+
+
+def _single_precision(mob, colors: bool, numbers: bool):
+    if colors:
+        for name in ("fill_rgbas", "stroke_rgbas", "background_stroke_rgbas"):
+            setattr(mob, name, np.asarray(getattr(mob, name), dtype=np.float32))
+    if numbers:
+        for name in ("stroke_width", "background_stroke_width", "sheen_factor"):
+            setattr(mob, name, np.float32(getattr(mob, name) + 0.3))
+    return mob
+
+
+class SinglePrecisionColors(Scene):
+    """A blend between colors held in single precision: CE mixes them in
+    numpy's arithmetic, single precision at a linear rate's Python float
+    alphas: the play stays scalar.
+    """
+
+    def construct(self):
+        a = _single_precision(Square(fill_opacity=0.4), True, False)
+        b = _single_precision(Circle(color=RED, fill_opacity=0.9), True, False)
+        self.add(a)
+        self.play(Transform(a, b, rate_func=linear), run_time=0.8)
+
+
+class SinglePrecisionWidths(Scene):
+    """A blend between stroke widths and sheen factors that are numpy
+    single-precision numbers: the play stays scalar.
+    """
+
+    def construct(self):
+        a = _single_precision(Square(), False, True)
+        b = _single_precision(Circle(color=RED), False, True)
+        self.add(a)
+        self.play(Transform(a, b, rate_func=linear), run_time=0.8)

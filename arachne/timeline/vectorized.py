@@ -67,6 +67,17 @@ if TYPE_CHECKING:
 #: The plan whose values the play being evaluated takes, while one is.
 _ACTIVE: VectorPlan | None = None
 
+#: The types of number the vectorized path computes with: Python's and
+#: numpy's double-precision and integer scalars, whose arithmetic is their
+#: own. Any other number (a subclass, which may define its own arithmetic, or
+#: a lower precision, which numpy promotes in ways the arrays here do not
+#: follow) keeps the whole play scalar.
+_EXACT = frozenset({bool, int, float, np.float64, np.int64})
+
+
+def _exact(*values: Any) -> bool:
+    return all(type(value) in _EXACT for value in values)
+
 
 # The arithmetic: CE's expressions over arrays of alphas.
 
@@ -312,12 +323,16 @@ def _blendable(leaf: Any, start: Any, end: Any) -> str | None:
         start._paint, end._paint
     ):
         return "styles CE's interpolation does not mix"
-    for name, kind in Paint.FIELD_KINDS.items():
-        if kind is not None and 0 in (
-            np.ndim(start._paint.__dict__[name]),
-            np.ndim(end._paint.__dict__[name]),
-        ):
-            return "styles CE's interpolation does not mix"
+    for paint in (start._paint, end._paint):
+        for name, kind in Paint.FIELD_KINDS.items():
+            value = paint.__dict__[name]
+            if kind is None:
+                if not _exact(value):
+                    return f"style numbers of type {type(value).__name__}"
+            elif np.ndim(value) == 0:
+                return "styles CE's interpolation does not mix"
+            elif value.dtype != np.float64:
+                return f"styles held in {value.dtype}"
     return None
 
 
