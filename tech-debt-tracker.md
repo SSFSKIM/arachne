@@ -382,3 +382,12 @@ lifted.
 - **Polish.** `arachne/server/registry.py`'s module docstring wraps one sentence oddly near line 44, and a
   `.alive-XXXX` temporary file a server left between making its lock and naming it (a crash in that instant) is
   never swept. Direction: rewrap; sweep `.alive-*` files that are old and unlocked.
+
+## Configuration (`arachne/_config/utils.py`)
+
+- **A misspelt key in a config file is ignored.** Setting an unknown option from code raises (deliberate break 7:
+  as an attribute, an item, in `tempconfig` or a session's configuration), but an unknown key in a `.cfg` file's
+  `[CLI]` section is read by nothing and passes silently, as in Manim Community Edition: `vectorise_trusted = False`
+  leaves `vectorize_trusted` on. Only the removed options are refused there (`tests/test_config_removed.py`).
+  Direction: refuse an unknown `[CLI]` key, naming the nearest option, once the keys that sections legitimately carry
+  beside the options (plugins' among them) are listed.

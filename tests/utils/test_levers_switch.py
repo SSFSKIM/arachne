@@ -6,15 +6,11 @@ CE-style setting, whatever it is set to; that is the reference a levers-on
 render is compared with. With ``ARACHNE_FRAMES_LEVERS_OFF=1``
 (``frames_comparison.LEVERS_OFF_ENV``) each frames comparison draws its
 scene again with the levers off and requires each frame's bytes to equal
-the first drawing's.
+the first drawing's; ``tests/frame_ir/test_units.py`` runs every graphical
+unit that way.
 """
 
 from __future__ import annotations
-
-import os
-import subprocess
-import sys
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -30,8 +26,6 @@ from arachne.utils.testing.frames_comparison import (
     _FrameDigests,
     _make_test_comparing_frames,
 )
-
-UNITS = Path(__file__).parents[1] / "test_graphical_units"
 
 #: Every lever set away from its off setting.
 ALL_ON = {
@@ -72,6 +66,15 @@ def test_a_lever_set_while_the_switch_is_off_still_reads_off(config):
         config.render_workers = "auto"
         assert config.hold_gaps is False
         assert config.render_workers == 1
+
+
+def test_a_typeset_dir_the_environment_names_reads_none_with_the_switch_off(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("ARACHNE_TYPESET_DIR", str(tmp_path))
+    cfg = tmp_path / "arachne.cfg"
+    cfg.write_text("[CLI]\nspeed_levers = False\n")
+    assert ManimConfig().digest_file(cfg).typeset_dir is None
 
 
 def test_the_switch_off_on_the_command_line_wins_over_lever_flags(tmp_path):
@@ -193,28 +196,3 @@ def test_without_the_switch_the_comparison_draws_once(tmp_path, monkeypatch):
     seen = []
     _comparison(tmp_path, _lever_dependent(seen), last_frame=False)()
     assert seen == [True]
-
-
-@pytest.mark.slow
-def test_every_graphical_unit_draws_the_same_bytes_with_the_levers_off():
-    done = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            str(UNITS),
-            "-q",
-            "-p",
-            "no:cacheprovider",
-            "-p",
-            "no:xdist",
-            "--no-cov",
-            "-o",
-            "addopts=",
-        ],
-        env={**os.environ, LEVERS_OFF_ENV: "1"},
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert done.returncode == 0, done.stdout[-4000:] + done.stderr[-2000:]

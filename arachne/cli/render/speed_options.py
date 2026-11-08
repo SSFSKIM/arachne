@@ -17,7 +17,7 @@ def validate_workers(
     """A positive worker count, or ``"auto"``."""
     if value is None or value == "auto":
         return value
-    if value.isdigit() and int(value) >= 1:
+    if value.isdecimal() and int(value) >= 1:
         return int(value)
     raise BadParameter(
         f"{value!r} is neither a positive integer nor 'auto'", ctx=ctx, param=param

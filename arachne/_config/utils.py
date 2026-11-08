@@ -704,7 +704,7 @@ class ManimConfig(MutableMapping):
             setattr(self, key, parser["CLI"].getboolean(key, fallback=True))
         self.hold_gaps = parser["CLI"].getboolean("hold_gaps", fallback=False)
         workers = parser["CLI"].get("render_workers", fallback="1").strip()
-        self.render_workers = int(workers) if workers.isdigit() else workers
+        self.render_workers = int(workers) if workers.isdecimal() else workers
         self.typeset_dir = os.environ.get(TYPESET_DIR_ENV) or parser["CLI"].get(
             "typeset_dir", fallback="", raw=True
         )
@@ -1440,6 +1440,8 @@ class ManimConfig(MutableMapping):
     # ``SPEED_LEVERS_OFF`` while keeping what it was set to.
 
     def _lever(self, key: str) -> Any:
+        # Read a lever through its property, never through ``_d``: only the
+        # property sees the switch.
         if not self._d["speed_levers"]:
             return SPEED_LEVERS_OFF[key]
         return self._d[key]

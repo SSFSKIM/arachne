@@ -648,12 +648,19 @@ def _cli_args(tmp_path, args):
     return result.return_value
 
 
-def test_the_speed_levers_defaults(monkeypatch):
+@pytest.fixture(autouse=True)
+def _no_typeset_dir_from_the_shell(monkeypatch):
+    """Configurations built here read no ``ARACHNE_TYPESET_DIR`` but a
+    test's own.
+    """
+    monkeypatch.delenv("ARACHNE_TYPESET_DIR", raising=False)
+
+
+def test_the_speed_levers_defaults():
     """On: the levers that change speed and never a picture. Off or unset:
     those whose output a reader outside the engine sees (the file's frame
     timing, how many processes draw it, where typesetting is kept).
     """
-    monkeypatch.delenv("ARACHNE_TYPESET_DIR", raising=False)
     defaults = ManimConfig().digest_parser(make_config_parser())
     assert defaults.speed_levers is True
     assert defaults.vectorize_trusted is True
@@ -708,6 +715,15 @@ def test_a_lever_flag_turns_a_lever_back_on(tmp_path):
     assert candidate.hold_gaps is False
 
 
+def test_the_switch_flag_turns_the_levers_back_on(tmp_path):
+    cfg = tmp_path / "arachne.cfg"
+    cfg.write_text("[CLI]\nspeed_levers = False\n")
+    candidate = ManimConfig().digest_file(cfg)
+    candidate.digest_args(_cli_args(tmp_path, ["--speed-levers"]))
+    assert candidate.speed_levers is True
+    assert candidate.draw_reuse is True
+
+
 @pytest.mark.parametrize(
     "name",
     ["vectorise_trusted", "construction_memos", "draw_cache", "workers", "typeset"],
@@ -752,7 +768,15 @@ def test_workers_is_a_positive_integer_or_auto(config, value):
         config.render_workers = value
 
 
-@pytest.mark.parametrize("value", ["0", "many"])
+@pytest.mark.parametrize("value", ["0", "many", "²"])
+def test_a_config_file_refuses_workers_that_are_not_a_count(tmp_path, value):
+    cfg = tmp_path / "arachne.cfg"
+    cfg.write_text(f"[CLI]\nrender_workers = {value}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="render_workers"):
+        ManimConfig().digest_file(cfg)
+
+
+@pytest.mark.parametrize("value", ["0", "many", "²"])
 def test_the_workers_flag_refuses_what_is_not_a_count(tmp_path, value):
     scene_file = tmp_path / "scene.py"
     scene_file.touch()
