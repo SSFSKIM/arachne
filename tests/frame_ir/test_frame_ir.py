@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 from arachne import LineJointType, config, tempconfig
+from arachne.frame_ir.extract import Unable
 from arachne.frame_ir.painter import IrCairoPainter, painter_for
 from arachne.frame_ir.xf import Record
 from arachne.session import Session
@@ -573,8 +574,25 @@ def test_a_display_camera_the_scene_changed_draws_on_cairo(
     assert "a display camera of the MultiCamera" in finding.message
 
 
+@pytest.mark.parametrize(
+    "scene_class",
+    [scenes.DimmedCamera, scenes.DimmedDisplayCamera],
+    ids=lambda c: c.__name__,
+)
+def test_a_camera_value_xf_does_not_describe_is_unable(scene_class):
+    """A camera holding another brightest value than the engine's draws
+    otherwise on Cairo, and XF 1 does not carry it: the frame is not
+    described, rather than drawn at the engine's value.
+    """
+    _, direct = render(scene_class, FPS, **MEDIUM)
+    if scene_class is scenes.DimmedCamera:
+        assert int(direct[0][..., :3].max()) == 127
+    with pytest.raises(Unable, match="render.unable: the camera's rgb_max_val"):
+        render(scene_class, FPS, draw_path="ir_cairo", **MEDIUM)
+
+
 def test_a_camera_that_is_no_engine_camera_is_unable():
-    from arachne.frame_ir.extract import FrameStream, Unable
+    from arachne.frame_ir.extract import FrameStream
     from arachne.frame_ir.painter import camera_path
 
     class Duck:

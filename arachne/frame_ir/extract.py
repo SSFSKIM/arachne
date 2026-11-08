@@ -115,6 +115,16 @@ MOBJECT_READS = (
 #: CE's default tolerance for closing a subpath (XF assumes it).
 _TOLERANCE = 1e-6
 
+#: Camera values a draw reads that a view does not carry, each with the
+#: engine's default, which the Cairo drawer's camera holds: a frame of a
+#: camera (or a display's camera) holding another is not described.
+_ENGINE_ONLY = (
+    ("image_mode", "RGBA"),
+    ("n_channels", 4),
+    ("pixel_array_dtype", "uint8"),
+    ("rgb_max_val", 255),
+)
+
 
 def _camera_kind(camera: Camera) -> str:
     from arachne.camera.camera import Camera
@@ -256,13 +266,6 @@ class FrameStream:
         id, the leaves a straight-path blend states.
         """
         kind = _camera_kind(camera)
-        for attr, default in (
-            ("image_mode", "RGBA"),
-            ("n_channels", 4),
-            ("pixel_array_dtype", "uint8"),
-        ):
-            if getattr(camera, attr) != default:
-                raise Unable(f"render.unable: the camera's {attr} is not {default}")
         self._blends = {}
         objects: list[tuple[int, str, str]] = []
         uploads: dict[bytes, Any] = {}
@@ -719,6 +722,9 @@ class FrameStream:
         there reads it; :meth:`_freeze` states the frozen one once a frame
         draws through the context).
         """
+        for attr, default in _ENGINE_ONLY:
+            if getattr(camera, attr) != default:
+                raise Unable(f"render.unable: the camera's {attr} is not {default}")
         if background is None:
             background = np.asarray(camera.background)
         shape = Shape("image", background)

@@ -32,6 +32,7 @@ from arachne import (
     MovingCamera,
     MovingCameraScene,
     PMobject,
+    PointCloudDot,
     Polygon,
     Rectangle,
     Rotate,
@@ -550,6 +551,33 @@ class LiveMovedCentre(Scene):
         self.wait(0.2)
         self.renderer.camera.frame_center = np.array([1.0, 0.5, 0.0])
         self.play(FadeIn(Circle(radius=0.5)), run_time=0.3)
+
+
+class DimmedCamera(Scene):
+    """A white point cloud drawn by a camera whose brightest value is 127
+    (``rgb_max_val``), a value XF 1 does not describe: Cairo draws the cloud
+    grey.
+    """
+
+    def construct(self):
+        self.renderer.camera.rgb_max_val = 127
+        self.add(PointCloudDot(color=WHITE))
+        self.wait(0.2)
+
+
+class DimmedDisplayCamera(ZoomedScene):
+    """As :class:`DimmedCamera`, the dimmed camera a zoomed display's."""
+
+    def __init__(self, **kwargs):
+        super().__init__(
+            zoom_factor=0.3, zoomed_display_height=2, zoomed_display_width=3, **kwargs
+        )
+
+    def construct(self):
+        self.zoomed_camera.rgb_max_val = 127
+        self.add(PointCloudDot(color=WHITE))
+        self.activate_zooming(animate=False)
+        self.wait(0.2)
 
 
 MOVED_CENTRE_LIVE = [LiveCloudFirst, LiveFromStartCloudFirst, LiveMovedCentre]
