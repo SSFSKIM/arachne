@@ -138,7 +138,7 @@ impl Producer for HalfPlane {
 /// One fragment in one pixel, through the transparent pass.
 struct Single {
     at: (u32, u32),
-    fragment: Fragment,
+    fragment: Fragment<'static>,
 }
 
 impl Producer for Single {
@@ -783,7 +783,7 @@ impl Lcg {
 }
 
 /// Fragments stacked in one pixel, through the transparent pass.
-struct Stack(Vec<Fragment>);
+struct Stack(Vec<Fragment<'static>>);
 
 impl Producer for Stack {
     fn transparent(&self, pass: &mut TransparentPass<'_>) {

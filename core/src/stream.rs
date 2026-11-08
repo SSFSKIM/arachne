@@ -903,11 +903,13 @@ impl Stream {
         let mut meshes = mesh::lower(view, width, height, &meshes, &mut registry);
         let mut lowering = path::Lowering::new(view, width, height);
         let planes = lowering.coplanar(&paths, &mut registry);
+        // Settled, it holds the flat records the producers' fragments carry.
+        let registry = std::sync::Arc::new(registry);
         meshes.identify(&registry);
         for (draw, plane) in paths.iter().zip(planes) {
             lowering.path(draw, plane);
         }
-        let paths = lowering.finish();
+        let paths = lowering.finish(&registry);
         let blocks = points::lower(view, width, height, &clouds);
         let mut producers: Vec<&dyn Producer> = vec![&meshes, &paths, &blocks];
         producers.extend_from_slice(extra);
@@ -3513,6 +3515,394 @@ mod tests {
         assert_eq!(
             wrong, 0,
             "the nearer square is above the sliver drawn after it at {wrong} of {both}"
+        );
+    }
+
+    /// The world square on z = 0 spanning `[x0, x0 + side]` in x and `[-side / 2, side / 2]` in
+    /// y, as a closed outline.
+    fn flat_square(x0: f64, side: f64) -> Vec<[f64; 3]> {
+        let h = side / 2.0;
+        ring(&[
+            [x0, -h, 0.0],
+            [x0 + side, -h, 0.0],
+            [x0 + side, h, 0.0],
+            [x0, h, 0.0],
+        ])
+    }
+
+    /// The writer's grid for a placement's linear part: 2^-24.
+    const RATIO_STEP: f64 = 1.0 / 16_777_216.0;
+
+    /// The placement `x -> x + shift`, `z -> z + slope x`, which takes z = 0 onto
+    /// `z = slope (x - shift)`: linear, so a flat shape stays flat, turned by `atan(slope)` about
+    /// the line `x = shift` of z = 0.
+    fn sheared(slope: f64, shift: f64) -> Affine {
+        [
+            [1.0, 0.0, 0.0, shift],
+            [0.0, 1.0, 0.0, 0.0],
+            [slope, 0.0, 1.0, 0.0],
+        ]
+    }
+
+    /// `steps` steps of the ratio grid toward `view`'s eye from z = 0: a slope that turns a face
+    /// sheared by it ([`sheared`]) nearer the camera where `x` grows.
+    fn toward_eye(view: &View, steps: f64) -> f64 {
+        eye_of(view)[2].signum() * steps * RATIO_STEP
+    }
+
+    /// Two faces 3 across, content made flat, on the grid: A, object 101, the world square on z = 0
+    /// centred on the origin; B, object 102, the square `[-1.5 - shift, 1.5 - shift] x
+    /// [-1.5, 1.5]` placed by `sheared(slope, shift)`, so over A, turned from it by `atan(slope)`
+    /// about the line `x = shift`: with `shift` -1.5 about A's edge (a hinge), with `shift` 0
+    /// about the y axis (a crossing). Drawn A first when `a_first`.
+    fn sheared_pair(view: &View, slope: f64, shift: f64, a_first: bool) -> Stream {
+        let flat = Some(crate::depth::Planarity::Newell);
+        let a = (
+            flat_square(-1.5, 3.0),
+            face_record(1, [0.8, 0.3, 0.2, 1.0], None, flat),
+        );
+        let mut placed = face_record(2, [0.2, 0.4, 0.8, 1.0], None, flat);
+        placed.geometry.place_a = sheared(slope, shift);
+        let b = (flat_square(-1.5 - shift, 3.0), placed);
+        paths_stream(view.clone(), if a_first { vec![a, b] } else { vec![b, a] })
+    }
+
+    /// The turn the snaps of [`sheared_pair`]'s faces allow about their dihedral's axis (the y
+    /// axis), `θ_A + θ_B`, each `2 τ_R / L_R`: `τ_R` the record's tolerance along its own normal
+    /// (the snap's departure of its points with its placements, and their departure from its own
+    /// plane: `depth::snap_departure`, `depth::departure`), `L_R` its extent across the axis (3);
+    /// and the dihedral of the two own planes, each fitted as the core fits a path content made
+    /// flat.
+    fn sheared_turns(slope: f64, shift: f64) -> (f64, f64) {
+        use crate::depth::{Planarity, WorldPlane, departure, snap_departure};
+        let place = sheared(slope, shift);
+        let a = flat_square(-1.5, 3.0);
+        let shape = flat_square(-1.5 - shift, 3.0);
+        let b: Vec<[f64; 3]> = shape.iter().map(|p| place_point(&place, *p)).collect();
+        let turn = |points: &[[f64; 3]], places: &[Affine; 2], shape: &[[f64; 3]]| {
+            let own = WorldPlane::fit(points, Planarity::Newell).expect("a plane");
+            let n = own.unrounded.normal;
+            let tau = snap_departure(GRID, n, places, shape) + departure(&own, points);
+            (2.0 * tau / 3.0, n)
+        };
+        let (ta, na) = turn(&a, &[IDENTITY, IDENTITY], &a);
+        let (tb, nb) = turn(&b, &[IDENTITY, place], &shape);
+        let c = cross3(na, nb);
+        let dihedral = libm::atan2(dot3(c, c).sqrt(), dot3(na, nb).abs());
+        (ta + tb, dihedral)
+    }
+
+    /// `p` through placement `m`.
+    fn place_point(m: &Affine, p: [f64; 3]) -> [f64; 3] {
+        crate::xf::place(m, p)
+    }
+
+    /// One sub-sample objects 101 and 102 both cover.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    struct Shared {
+        at: (u32, u32, usize),
+        /// Their keys part by more than their error bounds.
+        apart: bool,
+        /// Their keys lie within the tie term of each other, as two fragments on one registered
+        /// plane are read (`order::coplanar_tied`): their error bounds and each one's share of its
+        /// key ([`composite::Fragment::snap`]) apart, or less.
+        within: bool,
+        /// 101's key is the nearer.
+        a_nearer: bool,
+        /// The resolve composites 101 above 102 there.
+        a_above: bool,
+    }
+
+    /// The sub-samples objects 101 and 102 both cover in `s`, as [`Shared`] reads each.
+    // The sub-sample `k` indexes both fragments' coverage and depth rows.
+    #[allow(clippy::needless_range_loop)]
+    fn shared_samples(s: &Stream) -> Vec<Shared> {
+        let (w, h) = {
+            let view = s.view.as_ref().expect("a view");
+            (view.pixel_width, view.pixel_height)
+        };
+        let mut keys = BTreeMap::new();
+        s.visit_contributors(0, 0, w, h, |x, y, frags, cov, d, _| {
+            let find = |id: u32| frags.iter().position(|f| s.leaf_of(f).0 == id);
+            let (Some(i), Some(j)) = (find(101), find(102)) else {
+                return;
+            };
+            let (fa, fb) = (&frags[i], &frags[j]);
+            let reach = |d: f64, e: f64, share: f64| e + (d.abs() + e) * share;
+            for k in 0..composite::SAMPLES {
+                if cov[i][k] == 0 || cov[j][k] == 0 {
+                    continue;
+                }
+                let (da, ea, db, eb) = (d[i].samples[k], d[i].err, d[j].samples[k], d[j].err);
+                let within = !(fa.snap.is_finite() && fb.snap.is_finite())
+                    || order::tied(da, reach(da, ea, fa.snap), db, reach(db, eb, fb.snap));
+                keys.insert((x, y, k), (!order::tied(da, ea, db, eb), within, da < db));
+            }
+        })
+        .expect("the stream draws");
+        let mut out = Vec::new();
+        for ((x, y), pixel) in &s.contributors(0, 0, w, h).expect("the stream draws") {
+            let leaf = |object: u32| pixel.leaves.iter().position(|l| l.object == object);
+            let (Some(a), Some(b)) = (leaf(101), leaf(102)) else {
+                continue;
+            };
+            for (k, seq) in pixel.samples.iter().enumerate() {
+                let at = |l: usize| seq.iter().rposition(|(m, _)| *m == l);
+                let (Some(pa), Some(pb)) = (at(a), at(b)) else {
+                    continue;
+                };
+                if let Some(&(apart, within, a_nearer)) = keys.get(&(*x, *y, k)) {
+                    out.push(Shared {
+                        at: (*x, *y, k),
+                        apart,
+                        within,
+                        a_nearer,
+                        a_above: pa > pb,
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    /// Of `shared`: the sub-samples whose keys part beyond their error bounds yet lie within the
+    /// tie term (where only the near-parallel rule can tie them), and those beyond the term.
+    fn by_term(shared: &[Shared]) -> (Vec<Shared>, Vec<Shared>) {
+        let within = shared.iter().filter(|x| x.apart && x.within).copied();
+        let beyond = shared.iter().filter(|x| !x.within).copied();
+        (within.collect(), beyond.collect())
+    }
+
+    /// Two faces 3 across on the writer's grid (2^-14), B turned from A by 4.0e-5 rad about A's
+    /// edge (671 steps of the ratio grid), toward the camera: within the turn their snaps allow
+    /// (about 6.2e-5: A's own plane may turn 2.0e-5, B's, placed, 4.1e-5), so the input does not
+    /// decide how the two are turned to each other, though no one plane holds both within their
+    /// tolerances and each has an identity of its own. Where their keys lie within the tie term
+    /// they tie, and A, drawn later, is above B; beyond it (the far third of the overlap from the
+    /// hinge) depth orders them, and B, nearer, is above A.
+    #[test]
+    fn faces_turned_apart_within_what_their_snaps_allow_tie_within_the_term_and_not_beyond() {
+        let view = snapped_view(30.0, -60.0);
+        let slope = toward_eye(&view, 671.0);
+        let (room, dihedral) = sheared_turns(slope, -1.5);
+        assert!(
+            (dihedral - 4.0e-5).abs() < 1e-7 && dihedral / room < 0.7,
+            "dihedral {dihedral:e}, room {room:e}"
+        );
+        let s = sheared_pair(&view, slope, -1.5, false);
+        let (planes, ..) = two_faces(&s);
+        assert!(
+            planes[0] != 0 && planes[1] != 0 && planes[0] != planes[1],
+            "identities {planes:?}"
+        );
+        let shared = shared_samples(&s);
+        let (within, beyond) = by_term(&shared);
+        assert!(
+            within.len() > shared.len() / 2 && beyond.len() > shared.len() / 20,
+            "of {} sub-samples, {} within the term and apart, {} beyond it",
+            shared.len(),
+            within.len(),
+            beyond.len()
+        );
+        assert!(shared.iter().filter(|x| x.apart).all(|x| !x.a_nearer));
+        let depth_within = within.iter().filter(|x| !x.a_above).count();
+        let paint_beyond = beyond.iter().filter(|x| x.a_above).count();
+        assert_eq!(
+            (depth_within, paint_beyond),
+            (0, 0),
+            "of {} within the term, B above at {depth_within}; of {} beyond, A above at \
+             {paint_beyond}",
+            within.len(),
+            beyond.len()
+        );
+    }
+
+    /// The same hinge just within the turn the two faces' snaps allow (0.998 of it, to the ratio
+    /// grid's step) and just past it (1.002): within, the faces tie where their keys lie within
+    /// the term, A drawn later above B at every such sub-sample; past it, depth orders them there,
+    /// B above A at every one.
+    #[test]
+    fn hinged_faces_tie_just_within_the_turn_their_snaps_allow_and_not_just_past_it() {
+        let view = snapped_view(30.0, -60.0);
+        for (target, tie) in [(0.998, true), (1.002, false)] {
+            let mut steps = 1000.0;
+            for _ in 0..4 {
+                let (room, _) = sheared_turns(toward_eye(&view, steps), -1.5);
+                steps = (target * room / RATIO_STEP).round();
+            }
+            let slope = toward_eye(&view, steps);
+            let (room, dihedral) = sheared_turns(slope, -1.5);
+            let ratio = dihedral / room;
+            assert!(
+                if tie { ratio < 0.9995 } else { ratio > 1.0005 },
+                "{steps} steps: ratio {ratio}"
+            );
+            let s = sheared_pair(&view, slope, -1.5, false);
+            let shared = shared_samples(&s);
+            let (within, _) = by_term(&shared);
+            assert!(
+                within.len() > shared.len() / 4,
+                "ratio {ratio}: {} of {} within the term and apart",
+                within.len(),
+                shared.len()
+            );
+            let paint = within.iter().filter(|x| x.a_above).count();
+            assert_eq!(
+                paint,
+                if tie { within.len() } else { 0 },
+                "ratio {ratio}: A, drawn later, above at {paint} of {} within the term",
+                within.len()
+            );
+        }
+    }
+
+    /// Whichever of the two hinged faces is drawn first (so whichever the order reads first), at
+    /// 0.8 of the turn their snaps allow, where A's own allowance alone, twice over, falls short
+    /// of the dihedral and B's does not: the faces tie at the same sub-samples, the later drawn
+    /// above there, and depth orders them alike everywhere else.
+    #[test]
+    fn the_near_parallel_tie_is_the_same_whichever_face_is_drawn_first() {
+        let view = snapped_view(30.0, -60.0);
+        let mut steps = 1000.0;
+        for _ in 0..4 {
+            let (room, _) = sheared_turns(toward_eye(&view, steps), -1.5);
+            steps = (0.8 * room / RATIO_STEP).round();
+        }
+        let slope = toward_eye(&view, steps);
+        let runs =
+            [false, true].map(|a_first| shared_samples(&sheared_pair(&view, slope, -1.5, a_first)));
+        assert_eq!(runs[0].len(), runs[1].len());
+        let (within, _) = by_term(&runs[0]);
+        assert!(within.len() > runs[0].len() / 4, "{} within", within.len());
+        let mut tied = 0;
+        for (x, y) in runs[0].iter().zip(&runs[1]) {
+            assert_eq!(
+                (x.at, x.apart, x.within, x.a_nearer),
+                (y.at, y.apart, y.within, y.a_nearer)
+            );
+            if x.apart && x.within {
+                // Tied: the later drawn above, A in the first run, B in the second.
+                assert!(x.a_above && !y.a_above, "{x:?} and {y:?}");
+                tied += 1;
+            } else if x.apart {
+                assert_eq!(x.a_above, y.a_above, "{x:?} and {y:?}");
+            }
+        }
+        assert_eq!(tied, within.len());
+    }
+
+    /// Two faces 3 across crossing at 2.0e-3 rad (about fifty times the turn their snaps allow),
+    /// each on an identity of its own: the input decides how they are turned to each other, so
+    /// depth orders them at every sub-sample where their keys part beyond their error bounds,
+    /// though along the crossing a band of them (a few pixels) lies within the tie term.
+    #[test]
+    fn faces_crossing_at_a_dihedral_the_input_decides_keep_depth_order_beyond_their_bounds() {
+        let view = snapped_view(30.0, -60.0);
+        let slope = toward_eye(&view, (2.0e-3 / RATIO_STEP).round());
+        let (room, dihedral) = sheared_turns(slope, 0.0);
+        assert!(dihedral / room > 30.0, "{dihedral:e} against {room:e}");
+        for a_first in [false, true] {
+            let s = sheared_pair(&view, slope, 0.0, a_first);
+            let shared = shared_samples(&s);
+            let (within, _) = by_term(&shared);
+            assert!(
+                within.len() > 1000,
+                "{} of {} within the term",
+                within.len(),
+                shared.len()
+            );
+            let wrong = shared
+                .iter()
+                .filter(|x| x.apart && x.a_above != x.a_nearer)
+                .count();
+            assert_eq!(
+                wrong,
+                0,
+                "A first {a_first}: of {} sub-samples, the farther above at {wrong}",
+                shared.len()
+            );
+        }
+    }
+
+    /// Two faces 3 across on the writer's grid, one hinged off the other's edge by 3.5e-5 rad
+    /// toward the camera, the pair turning slowly about the world x axis (0.0021 rad a frame,
+    /// over sixteen frames of one stream), each frame's points snapped as the writer snaps them:
+    /// the snap's noise changes from frame to frame, and turns each face's own plane by up to
+    /// what the snap allows, so their keys lie within the tie term over nearly all of their
+    /// overlap and which is nearer there is the noise's. The input does not decide their order:
+    /// they tie, and the face drawn later is above at every sub-sample of every frame, never
+    /// flickering under the other.
+    #[test]
+    fn near_parallel_faces_turning_slowly_keep_paint_order_at_every_sub_sample_of_every_frame() {
+        let view = snapped_view(30.0, -60.0);
+        let eye = eye_of(&view);
+        let flat = Some(crate::depth::Planarity::Newell);
+        let mut s = Stream::new();
+        let (mut apart_identities, mut noise_nearer) = (0, 0);
+        for frame in 0..16u32 {
+            let phi = 0.3 + 0.0021 * f64::from(frame);
+            let (c, sn) = (libm::cos(phi), libm::sin(phi));
+            let turned = |p: [f64; 3]| [p[0], p[1] * c - p[2] * sn, p[1] * sn + p[2] * c];
+            let up = dot3(eye, [0.0, -sn, c]).signum();
+            let face = |rise: f64| -> Vec<[f64; 3]> {
+                let points: Vec<[f64; 3]> = flat_square(-1.5, 3.0)
+                    .into_iter()
+                    .map(|p| turned([p[0], p[1], up * rise * (p[0] + 1.5)]))
+                    .collect();
+                snapped(&points, GRID)
+            };
+            let items: Vec<(Shape, Record)> = [(face(0.0), 1u32), (face(3.5e-5), 2)]
+                .into_iter()
+                .map(|(points, slot)| {
+                    let shape = Shape::new(ShapeData::Path { points });
+                    let shade = [0.8 - 0.6 * f64::from(slot - 1), 0.3, 0.5, 1.0];
+                    let mut r = face_record(slot, shade, None, flat);
+                    r.geometry.shape_a = Some(shape.key());
+                    (shape, r)
+                })
+                .collect();
+            let delta = if frame == 0 {
+                crate::probes::first_delta(view.clone(), &items, &[1, 2])
+            } else {
+                let mut d = Delta::new(
+                    Time {
+                        num: i64::from(frame),
+                        den: 30,
+                    },
+                    u64::from(frame),
+                );
+                for (shape, r) in &items {
+                    d.upload.push(shape.clone());
+                    d.set.push(r.clone());
+                }
+                d
+            };
+            s.apply(&delta).expect("the delta applies");
+            let (planes, ..) = two_faces(&s);
+            apart_identities += usize::from(planes[0] != planes[1]);
+            let shared = shared_samples(&s);
+            let within = shared.iter().filter(|x| x.within).count();
+            assert!(
+                shared.len() > 100_000 && within > shared.len() * 4 / 5,
+                "frame {frame}: {within} of {} within the term",
+                shared.len()
+            );
+            noise_nearer += usize::from(shared.iter().any(|x| x.apart && x.a_nearer));
+            let flicker = shared.iter().filter(|x| x.a_above).count();
+            assert_eq!(
+                flicker,
+                0,
+                "frame {frame}: A, drawn first, above B at {flicker} of {} sub-samples",
+                shared.len()
+            );
+        }
+        assert!(
+            apart_identities >= 8,
+            "{apart_identities} frames on two identities"
+        );
+        assert!(
+            noise_nearer >= 4,
+            "{noise_nearer} frames with A's key the nearer somewhere"
         );
     }
 }

@@ -345,7 +345,7 @@ mod tests {
     }
 
     /// A fragment of leaf `object` at depth `a + b x` (nearer is smaller), drawn `order`th.
-    fn fragment(a: f64, b: f64, colour: [u8; 4], order: u32, object: u32) -> Fragment {
+    fn fragment(a: f64, b: f64, colour: [u8; 4], order: u32, object: u32) -> Fragment<'static> {
         Fragment::new(
             Plane::new(a, b, 0.0),
             colour,
@@ -361,7 +361,7 @@ mod tests {
     }
 
     /// `f` with the mask its full-coverage sub-samples in `row` make, as a producer gives it.
-    fn masked(mut f: Fragment, row: &[u8; SAMPLES]) -> Fragment {
+    fn masked<'f>(mut f: Fragment<'f>, row: &[u8; SAMPLES]) -> Fragment<'f> {
         f.coverage = Coverage::Mask(
             (0..SAMPLES)
                 .filter(|k| row[*k] == 255)

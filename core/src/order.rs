@@ -45,6 +45,10 @@
 //! where their depths lie within their error bounds and those departures of each other
 //! ([`coplanar_tied`]); elsewhere depth orders them.
 //!
+//! Two fragments of flat records on no one identity whose own planes the snapped input cannot
+//! tell apart in orientation ([`near_parallel`]) tie within the same term: there the input cannot
+//! decide their order either, and the snap's noise, which changes from frame to frame, would.
+//!
 //! [`Fragment::snap`]: crate::composite::Fragment::snap
 //! One order for the pixel (what the coverage composite and the contributor report's leaf order
 //! read) takes each pair's order from the sub-samples both cover ([`pair`]); one order per
@@ -59,7 +63,7 @@ use std::cmp::Ordering;
 /// far that depth may stand from the exact one.
 #[derive(Clone, Copy)]
 pub struct Seen<'a> {
-    pub fragment: &'a Fragment,
+    pub fragment: &'a Fragment<'a>,
     pub coverage: &'a [u8; SAMPLES],
     pub depth: &'a [f64; SAMPLES],
     pub err: f64,
@@ -129,12 +133,44 @@ pub fn one_plane(a: &Fragment, b: &Fragment) -> bool {
     a.plane.iter().any(|p| *p != 0 && b.plane.contains(p))
 }
 
+/// A dihedral past which a near-parallel pair is counted apart (`counters` builds): a record small
+/// across the axis has a large `θ_R`, as it should, but a crossing of clearly distinct surfaces
+/// turned to paint order over a visible band is one to see.
+#[cfg(feature = "counters")]
+pub(crate) const WIDE: f64 = 1e-2;
+
+/// Whether `a` and `b` are fragments of two flat records ([`Fragment::record`]) whose own planes
+/// the snapped input cannot tell apart in orientation: their dihedral is within how far each
+/// record's snap lets its own plane turn about the dihedral's axis from the plane content put its
+/// points on (`depth::near_parallel`, which derives it). Pairwise and symmetric: it gives no
+/// identity and does not chain. A fragment of a record with no plane of its own (a line, a curve),
+/// of a pre-projected path, or of one the registry was not offered is never near-parallel.
+///
+/// [`Fragment::record`]: crate::composite::Fragment::record
+pub fn near_parallel(a: &Fragment, b: &Fragment) -> bool {
+    let (Some(x), Some(y)) = (a.record, b.record) else {
+        return false;
+    };
+    let tilt = crate::depth::near_parallel(x, y);
+    count!(NEAR_PARALLEL_TESTED);
+    count!(NEAR_PARALLEL_POINTS, x.points() + y.points());
+    #[cfg(feature = "counters")]
+    if tilt.near {
+        count!(NEAR_PARALLEL_PAIRS);
+        if tilt.dihedral > WIDE {
+            count!(NEAR_PARALLEL_WIDE_PAIRS);
+        }
+    }
+    tilt.near
+}
+
 /// Whether `a` (depth `da` within `ea`) and `b` (depth `db` within `eb`), at a sub-sample both
-/// cover, lie on one registered plane ([`one_plane`]) and are one depth there: within their error
-/// bounds and the snap's departure of each of each other, a share ([`Fragment::snap`]) of each one's
-/// key there (with its bound: the key moves by its own share of itself). Two faces content made
-/// coplanar always are; two parallel faces farther apart than the snap can move one plane are not,
-/// and depth orders them, though the registry gave them one identity.
+/// cover, lie on one registered plane ([`one_plane`]) or are near-parallel ([`near_parallel`]),
+/// and are one depth there: within their error bounds and the snap's departure of each of each
+/// other, a share ([`Fragment::snap`]) of each one's key there (with its bound: the key moves by
+/// its own share of itself). Two faces content made coplanar always are; two parallel faces
+/// farther apart than the snap can move one plane are not, and depth orders them, though the
+/// registry gave them one identity, or found them near-parallel.
 ///
 /// A fragment whose key nothing bounds (an infinite `snap`: a path whose points reached the core
 /// already projected, so no world plane bounds its key) ties with anything on its plane, whatever
@@ -142,12 +178,31 @@ pub fn one_plane(a: &Fragment, b: &Fragment) -> bool {
 /// stroke, or a fill beyond its outline) is read here on its path's plane at the sub-sample, with
 /// its path's share, against what shares that plane ([`crate::composite::Depths::against`]).
 ///
+/// It is `(one_plane(a, b) || near_parallel(a, b)) && within_term(..)`, the near-parallel test,
+/// the only one that reads more than the two fragments' own numbers, run last: only where the two
+/// share no identity, are both fragments of flat records, and their keys lie within the term.
+///
 /// [`Fragment::snap`]: crate::composite::Fragment::snap
 pub fn coplanar_tied(a: &Fragment, da: f64, ea: f64, b: &Fragment, db: f64, eb: f64) -> bool {
+    if one_plane(a, b) {
+        within_term(a, da, ea, b, db, eb)
+    } else {
+        a.record.is_some()
+            && b.record.is_some()
+            && within_term(a, da, ea, b, db, eb)
+            && near_parallel(a, b)
+    }
+}
+
+/// Whether `a`'s key `da` (within `ea`) and `b`'s `db` (within `eb`) lie within their error bounds
+/// and each one's share of its key ([`Fragment::snap`]) of each other, or either key is unbounded
+/// (an infinite share): [`coplanar_tied`]'s term.
+///
+/// [`Fragment::snap`]: crate::composite::Fragment::snap
+pub(crate) fn within_term(a: &Fragment, da: f64, ea: f64, b: &Fragment, db: f64, eb: f64) -> bool {
     let reach = |d: f64, e: f64, share: f64| e + (d.abs() + e) * share;
-    one_plane(a, b)
-        && (!(a.snap.is_finite() && b.snap.is_finite())
-            || tied(da, reach(da, ea, a.snap), db, reach(db, eb, b.snap)))
+    !(a.snap.is_finite() && b.snap.is_finite())
+        || tied(da, reach(da, ea, a.snap), db, reach(db, eb, b.snap))
 }
 
 /// `a` (depth `da` within `ea`) against `b` (depth `db` within `eb`) at a sub-sample both cover:
@@ -332,7 +387,12 @@ mod tests {
         sample_point,
     };
 
-    fn at_depth(depth: Plane, colour: [u8; 4], coverage: Coverage, order: u32) -> Fragment {
+    fn at_depth(
+        depth: Plane,
+        colour: [u8; 4],
+        coverage: Coverage,
+        order: u32,
+    ) -> Fragment<'static> {
         Fragment::new(depth, colour, coverage, order, 0)
     }
 

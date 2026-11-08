@@ -927,3 +927,43 @@ def test_attaches_is_the_registry_s_attach_pass_on_the_identity_its_members_sett
         attaches(line, [member(face), member(lifted)])
     with pytest.raises(ValueError):
         attaches(line, [member(face)], 3)
+
+
+def test_near_parallel_holds_up_to_the_turn_the_two_records_snaps_allow():
+    from arachne_core._core import _near_parallel
+
+    grid = 1 / 16384
+
+    def record(points, planes=1):
+        return (points, IDENTITY_PLACES, points, planes)
+
+    def turned(theta):
+        """The square 3 across in CE's cubic layout, turned by `theta` about the x axis."""
+        c, s = np.cos(theta), np.sin(theta)
+        return [(float(x), float(y * c), float(y * s)) for x, y, _ in square(1.5)]
+
+    def allowed(theta):
+        """theta_A + theta_B for the flat square and the turned one: 2 tau / 3 each, tau half a
+        step times |n|_1 (their points lie on their own planes but for rounding)."""
+        return grid / 3 * (1 + np.cos(theta) + np.sin(theta))
+
+    flat = record(turned(0.0))
+    for ratio, near in ((0.999, True), (1.001, False), (0.5, True), (2.0, False)):
+        theta = ratio * allowed(0.0)
+        for _ in range(4):
+            theta = ratio * allowed(theta)
+        tilted = record(turned(theta))
+        for a, b in ((flat, tilted), (tilted, flat)):
+            got, measured = _near_parallel(a, b, grid)
+            assert got is near and abs(measured - ratio) < 1e-6, (ratio, got, measured)
+    # Points on a line have no plane of their own, nor a mesh triangle whose corners lie on one.
+    line = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)]
+    for other in (record(line), record(line, None)):
+        got, measured = _near_parallel(flat, other, grid)
+        assert got is False and np.isnan(measured)
+    # Mesh triangles, on the planes through their corners.
+    lower = record([(0.0, 0.0, 0.0), (3.0, 0.0, 0.0), (0.0, 3.0, 0.0)], None)
+    upper = record([(0.0, 0.0, 0.0), (3.0, 0.0, 3e-5), (0.0, 3.0, 0.0)], None)
+    assert _near_parallel(lower, upper, grid)[0] is True
+    with pytest.raises(ValueError):
+        _near_parallel(flat, record(turned(0.0), 3), grid)

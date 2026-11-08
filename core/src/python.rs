@@ -1312,6 +1312,29 @@ fn attaches(
     Ok(registry.attached(record))
 }
 
+/// Whether two records `a` and `b`, each `(points, places, shape, planes)` as `_registry_tolerance`
+/// takes a record, offered to one registry for points snapped to `grid`, are near-parallel
+/// (`depth::near_parallel`), and the ratio of their own planes' acute dihedral `θ` to `θ_A + θ_B`.
+/// `θ_R = 2 τ_R / L_R`: `τ_R` record R's tolerance along its own plane's unit normal `n_R`, `L_R`
+/// the extent of its points along `n_R × a`, `a` the unit axis along `n_A × n_B`. Near-parallel
+/// when `θ <= θ_A + θ_B`, `θ` rounded up and the sum down by bounds on their rounding. `(False,
+/// nan)` when either record is not flat; a `ValueError` for a record a frame does not offer.
+#[pyfunction(name = "_near_parallel", signature = (a, b, grid))]
+fn near_parallel(a: Offered, b: Offered, grid: f64) -> PyResult<(bool, f64)> {
+    let mut registry = crate::depth::Registry::of_grid(grid);
+    let mut handle = |(points, places, shape, planes): &Offered| {
+        offer(&mut registry, grid, points, places, shape, *planes).map(|(h, _)| h)
+    };
+    let (a, b) = (handle(&a)?, handle(&b)?);
+    Ok(match (registry.flat_record(a), registry.flat_record(b)) {
+        (Some(a), Some(b)) => {
+            let tilt = crate::depth::near_parallel(a, b);
+            (tilt.near, tilt.dihedral / tilt.room)
+        }
+        _ => (false, f64::NAN),
+    })
+}
+
 /// Every call count by name since the last take, each set back to zero (`counters`).
 #[cfg(feature = "counters")]
 #[pyfunction(name = "_take_counts")]
@@ -1341,6 +1364,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rounded_plane, m)?)?;
     m.add_function(wrap_pyfunction!(registry_tolerance, m)?)?;
     m.add_function(wrap_pyfunction!(attaches, m)?)?;
+    m.add_function(wrap_pyfunction!(near_parallel, m)?)?;
     #[cfg(feature = "counters")]
     m.add_function(wrap_pyfunction!(take_counts, m)?)?;
     Ok(())

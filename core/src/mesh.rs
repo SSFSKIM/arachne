@@ -33,6 +33,7 @@ use crate::project::{FrameMap, Projection, placement, pre_display};
 use crate::shade::{Light, TriangleColour};
 use crate::tiles::{TILE, tile_index, tiles_across};
 use crate::xf::*;
+use std::sync::Arc;
 
 /// How far outside the frame, in pixels, a triangle may reach before it is clipped.
 const GUARD: f64 = 65536.0;
@@ -81,6 +82,9 @@ struct Tri {
     handle: u32,
     /// The snap's departure of its key ([`Fragment::snap`]), finite on a registered plane.
     snap: f64,
+    /// Whether it is a flat record of the registry, which its fragments carry
+    /// ([`Fragment::record`]): set once the registry settles ([`Meshes::identify`]).
+    flat: bool,
 }
 
 /// Mesh records lowered to triangles, binned by tile: a producer of mask fragments.
@@ -92,15 +96,20 @@ pub struct Meshes {
     /// registry settles ([`Meshes::identify`]).
     map: FrameMap,
     projection: Option<Projection>,
+    /// The frame's registry, settled, which holds the flat triangles' records their fragments
+    /// carry ([`Fragment::record`]); none before [`Meshes::identify`].
+    records: Option<Arc<Registry>>,
 }
 
 impl Meshes {
     /// Gives each triangle offered to `registry`, now settled, the identities of the planes it lies
-    /// on. A triangle with no plane of its own (`Registry::offer_triangle`) carries, as any record
-    /// with no plane of its own does, the largest share its identities give it: for each, how far
-    /// its corners may stand off that identity's plane (`Registry::off_identity`), which bounds how
-    /// far its key, read on its corners within their hull, stands from that plane's.
-    pub fn identify(&mut self, registry: &Registry) {
+    /// on, and its fragments the record it is where it is flat ([`Fragment::record`]). A triangle
+    /// with no plane of its own (`Registry::offer_triangle`) carries, as any record with no plane
+    /// of its own does, the largest share its identities give it: for each, how far its corners
+    /// may stand off that identity's plane (`Registry::off_identity`), which bounds how far its
+    /// key, read on its corners within their hull, stands from that plane's.
+    pub fn identify(&mut self, registry: &Arc<Registry>) {
+        self.records = Some(Arc::clone(registry));
         for t in &mut self.tris {
             if t.handle == 0 {
                 continue;
@@ -108,6 +117,7 @@ impl Meshes {
             let handle = t.handle - 1;
             t.plane = registry.identities(handle);
             if registry.is_flat(handle) {
+                t.flat = t.snap.is_finite();
                 continue;
             }
             count!(DEGENERATE_TRIANGLES);
@@ -171,6 +181,7 @@ pub fn lower(
         width,
         map,
         projection: projection.clone(),
+        records: None,
     };
     for (surface, draw) in draws.iter().enumerate() {
         let rec = draw.record;
@@ -291,6 +302,7 @@ pub fn lower(
                 plane: [0; 4],
                 handle,
                 snap,
+                flat: false,
             };
             meshes.push(px, tri, height);
         }
@@ -418,13 +430,17 @@ impl Meshes {
     }
 
     /// Rasterizes the opaque or the other triangles of the tile at `rect`.
-    fn raster(&self, rect: Rect, opaque: bool, mut add: impl FnMut(u32, u32, Fragment)) {
+    fn raster<'a>(&'a self, rect: Rect, opaque: bool, mut add: impl FnMut(u32, u32, Fragment<'a>)) {
         let offsets: [[i64; 2]; SAMPLES] = std::array::from_fn(sample_fixed);
+        let records = self.records.as_deref();
         for &i in &self.bins[tile_index(self.width, rect.x0, rect.y0)] {
             let t = &self.tris[i as usize];
             if t.opaque != opaque {
                 continue;
             }
+            let record = records
+                .filter(|_| t.flat)
+                .and_then(|r| r.flat_record(t.handle - 1));
             // Per edge: the offset of each sub-sample from the pixel's corner, and their range.
             let off: [[i64; SAMPLES]; 3] = t
                 .edges
@@ -457,6 +473,7 @@ impl Meshes {
                             .on_surface(t.surface);
                     f.plane = t.plane;
                     f.snap = t.snap;
+                    f.record = record;
                     add(x, y, f);
                 }
             }
@@ -465,11 +482,11 @@ impl Meshes {
 }
 
 impl Producer for Meshes {
-    fn opaque(&self, pass: &mut OpaquePass<'_>) {
+    fn opaque<'a>(&'a self, pass: &mut OpaquePass<'a>) {
         self.raster(pass.rect(), true, |x, y, f| pass.add(x, y, f));
     }
 
-    fn transparent(&self, pass: &mut TransparentPass<'_>) {
+    fn transparent<'a>(&'a self, pass: &mut TransparentPass<'a>) {
         self.raster(pass.rect(), false, |x, y, f| pass.add(x, y, f));
     }
 }

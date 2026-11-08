@@ -425,9 +425,12 @@ const MOST_REACH: i64 = 2;
 /// [`Fragment::plane`]: crate::composite::Fragment::plane
 pub const MOST_IDENTITIES: usize = 4;
 
-/// A record offered to the registry.
-#[derive(Clone, Debug)]
-struct Offer {
+/// A record offered to the registry. A fragment of a flat record carries it
+/// ([`Fragment::record`]), which the near-parallel test reads ([`near_parallel`]).
+///
+/// [`Fragment::record`]: crate::composite::Fragment::record
+#[derive(Clone, Debug, PartialEq)]
+pub struct Offer {
     /// Its own plane: a flat record's, fitted to its points; for a record with no plane of its own,
     /// the axis plane its points share, if they do.
     own: Option<WorldPlane>,
@@ -451,6 +454,18 @@ struct Offer {
     /// (the plane through those three corners within `widest` of each tilts by at most `widest`
     /// over each height, summed). Infinite for a record with no plane of its own.
     spread: f64,
+    /// For a flat record, its tolerance along its own plane's unit normal
+    /// ([`Registry::tolerance`]): how far, at each of its points, its own plane may stand from the
+    /// plane content put them on ([`near_parallel`]). Zero for a record with no plane of its own.
+    own_tolerance: f64,
+}
+
+#[cfg(feature = "counters")]
+impl Offer {
+    /// How many points it has.
+    pub(crate) fn points(&self) -> usize {
+        self.points.len()
+    }
 }
 
 /// An identity while the registry settles.
@@ -652,6 +667,7 @@ impl Registry {
         let [a, b, c] = widest_triangle(points).map(|k| points[k]);
         let spread = widest * (length(sub(b, a)) + length(sub(c, b)) + length(sub(a, c)))
             / (length(cross(sub(b, a), sub(c, a))) / 2.0);
+        let own_tolerance = snap_departure(self.grid, own.unrounded.normal, places, shape) + dep;
         self.push(Offer {
             own: Some(own),
             flat: true,
@@ -666,6 +682,7 @@ impl Registry {
             } else {
                 spread
             },
+            own_tolerance,
         })
     }
 
@@ -688,6 +705,7 @@ impl Registry {
             dep: 0.0,
             widest: snap_departure_bound(self.grid, places, shape),
             spread: f64::INFINITY,
+            own_tolerance: 0.0,
         })
     }
 
@@ -1171,6 +1189,15 @@ impl Registry {
         self.sets[handle as usize]
     }
 
+    /// The record offered as `handle` where it is flat, as its fragments carry it
+    /// ([`Fragment::record`]); `None` for one with no plane of its own.
+    ///
+    /// [`Fragment::record`]: crate::composite::Fragment::record
+    pub(crate) fn flat_record(&self, handle: u32) -> Option<&Offer> {
+        let offer = &self.offers[handle as usize];
+        offer.flat.then_some(offer)
+    }
+
     /// Whether the record with no plane of its own offered as `handle` attached to flat records'
     /// identities (once settled), and is read on their planes.
     pub(crate) fn attached(&self, handle: u32) -> bool {
@@ -1204,6 +1231,118 @@ fn within(plane: &WorldPlane, p: [f64; 3]) -> f64 {
     let u = plane.unrounded;
     let terms = dot(u.normal.map(f64::abs), p.map(f64::abs)) + u.offset.abs();
     ((dot(u.normal, p) - u.offset).abs() - 4.0 * U * terms - u.offset_err).max(0.0)
+}
+
+/// How two flat records' own planes stand to each other, as [`near_parallel`] finds it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Tilt {
+    /// Whether the two are near-parallel.
+    pub(crate) near: bool,
+    /// Their acute dihedral `θ`, as computed.
+    pub(crate) dihedral: f64,
+    /// `θ_A + θ_B`, as computed, before the rounding the test takes against itself.
+    pub(crate) room: f64,
+}
+
+/// Whether flat records `a` and `b` (each offered with its own plane, [`Registry::offer_flat`]) are
+/// near-parallel: whether the snapped input leaves their own planes' relative orientation
+/// undecided. Two such records on no one identity tie where their keys lie within the snap's term
+/// of each other (`order::coplanar_tied`), as two on one identity do. Their identities answer
+/// whether one plane holds both within their tolerances over their whole extents; at a pixel the
+/// question is whether the input determines how the two are turned to each other. Where it does
+/// not, their order there is the snap's noise, which changes from frame to frame, and two such
+/// sheets ordered by it shimmer.
+///
+/// Each record `R` is keyed on its own plane `F_R` (its unrounded unit normal `n_R`), fitted to
+/// its snapped points; content put those points on a plane `P_R`. `P_R` holds the snapped points
+/// within the snap's departure `δ_R` along `n_R` ([`snap_departure`]), and `F_R` holds them within
+/// their departure `dep_R` from it ([`departure`]), so at each point of `R` the two planes part by
+/// at most `τ_R = δ_R + dep_R`, its tolerance along its own normal (the registry's).
+///
+/// Let `a = n_A × n_B / |n_A × n_B|`, the axis of the two planes' dihedral, and `θ` that dihedral,
+/// acute. A turn of a plane by `φ` about a line along `a` moves it, at a point `s` across the line
+/// (`s = p · (n_R × a)` less the line's), by `φ s`. `R`'s points span
+/// `L_R = max - min` of `p · (n_R × a)` over all of them: its whole extent across `a`, which its
+/// own plane was fitted over. Turned about the middle of that span by `φ`, `F_R` stays within
+/// `τ_R` of where it was at every point of `R` while `φ L_R / 2 <= τ_R`; turned about any line along
+/// `a`, it moves by `φ L_R` more at one end of the span than at the other, so by more than `τ_R` at
+/// one of them once `φ > 2 τ_R / L_R`. So `θ_R = 2 τ_R / L_R` is the most a plane turned from
+/// `F_R` about `a` may turn and still hold `R`'s points within `τ_R` of `F_R`.
+///
+/// The two are near-parallel when `θ <= θ_A + θ_B`: then `P_A` and `P_B` may be parallel, each
+/// turned about `a` from its own plane by at most its `θ_R`, and only where the two lie (their keys
+/// at the pixel) can decide them. Beyond it, no turn about `a` that each one's snap allows makes
+/// them parallel: they cross at an angle the input determines, and depth orders them beyond their
+/// error bounds. Only turns about `a` count. A record whose points allow a larger turn about `a`
+/// together with one across it (a slanted sliver) is held to the smaller. So the test can keep
+/// depth order where the input does not decide it, but never ties a pair the input decides.
+///
+/// It is a test of two records, symmetric in them (swapping them negates `a`, which leaves each
+/// `L_R`, `θ_R` and their sum the same bits), and made of their own inputs alone: it makes no
+/// identity and does not chain (`A` near-parallel to `B` and `B` to `C` says nothing of `A` and
+/// `C`). A small record has a large `θ_R`, as it should. A record with no plane of its own (a line,
+/// a curve) has no `n_R` and is never tested.
+///
+/// Rounding is taken against the test: the dihedral rounded up, and each `θ_R` and their sum down,
+/// by bounds on each step's rounding (`u = 2^-53`; each normal within `4u` of unit length):
+/// - `n_A × n_B` lies within `8u` of the exact product and `|n_A · n_B|` within `4u`, so `atan2`
+///   of their lengths, its own error under `4u` of itself, lies within `16u` and `16u` of itself of
+///   the exact dihedral;
+/// - the axis, from a cross product of length `s` at least `32u`, lies within `32u / s + 4u` of the
+///   exact one, and so `n_R × a` within `e = 40u / s + 16u`, rounding included; a coordinate
+///   across `a` of a point `d` from `R`'s first point, taken from it, lies within `d (e + 16u)` of
+///   the exact one (for `e` at most 1); so `L_R` is taken as its computed extent and twice that at
+///   the farthest point from the first, `far`;
+/// - no extent of `R` exceeds `2 far`, which holds `L_R` where the axis is less well known (`s`
+///   under `32u`, or `e` past 1); the extent is then rounded up by `8u` of itself;
+/// - `2 τ_R / L_R` and the sum are each rounded down by `2u` of themselves.
+///
+/// That moves the test by about `1e-14` rad where `θ_R` is about `1e-5` (the writer's grid,
+/// `2^-14`, over a few units).
+pub(crate) fn near_parallel(a: &Offer, b: &Offer) -> Tilt {
+    let normal = |r: &Offer| {
+        r.own
+            .expect("a flat record has its own plane")
+            .unrounded
+            .normal
+    };
+    let (na, nb) = (normal(a), normal(b));
+    let c = cross(na, nb);
+    let s = length(c);
+    let dihedral = libm::atan2(s, dot(na, nb).abs());
+    let high = dihedral * (1.0 + 16.0 * U) + 16.0 * U;
+    let off_axis = if s >= 32.0 * U {
+        40.0 * U / s + 16.0 * U
+    } else {
+        f64::INFINITY
+    };
+    let axis = c.map(|v| v / s);
+    // `θ_R` as computed, and rounded down.
+    let turn = |r: &Offer| -> (f64, f64) {
+        let across = cross(normal(r), axis);
+        let first = r.points[0];
+        let (mut lo, mut hi, mut far) = (f64::INFINITY, f64::NEG_INFINITY, 0.0f64);
+        for p in &r.points {
+            let q = sub(*p, first);
+            let t = dot(q, across);
+            (lo, hi, far) = (lo.min(t), hi.max(t), far.max(length(q)));
+        }
+        let extent = if s > 0.0 { hi - lo } else { 2.0 * far };
+        let read = if off_axis <= 1.0 {
+            extent + 2.0 * far * (off_axis + 16.0 * U)
+        } else {
+            f64::INFINITY
+        };
+        let span = read.min(2.0 * far) * (1.0 + 8.0 * U);
+        let twice = 2.0 * r.own_tolerance;
+        (twice / extent, twice / span * (1.0 - 2.0 * U))
+    };
+    let ((ta, ta_low), (tb, tb_low)) = (turn(a), turn(b));
+    Tilt {
+        near: high <= (ta_low + tb_low) * (1.0 - 2.0 * U),
+        dihedral,
+        room: ta + tb,
+    }
 }
 
 /// The order the registry partitions flat records in, and groups the rest: the least spread first
@@ -2634,5 +2773,185 @@ mod tests {
             r.identities(b)
         );
         assert!(linked(&r));
+    }
+
+    /// The square `side` across centred on the origin of the plane through it turned from z = 0
+    /// by `theta` about the x axis, the plane lifted by `lift` along its normal off the points: its
+    /// corners, and that plane.
+    fn turned_square(side: f64, theta: f64, lift: f64) -> (Vec<[f64; 3]>, WorldPlane) {
+        let (s, c) = (libm::sin(theta), libm::cos(theta));
+        let h = side / 2.0;
+        let points = [[-h, -h], [h, -h], [h, h], [-h, h]]
+            .map(|[x, y]| [x, y * c, y * s])
+            .to_vec();
+        (points, WorldPlane::rounded([0.0, -s, c], lift, 0.0))
+    }
+
+    /// Two squares (see [`turned_square`]) offered alone to a registry for points snapped to
+    /// `grid`, each on its own plane: `side_a` across on z = 0 and `side_b` across turned from it
+    /// by `theta`, both planes lifted by `lift`. Their offers, each one's own tolerance checked
+    /// against the registry's along its own normal.
+    fn squares(grid: f64, theta: f64, side_a: f64, side_b: f64, lift: f64) -> (Offer, Offer) {
+        let mut r = Registry {
+            grid,
+            ..Registry::default()
+        };
+        for (side, turn) in [(side_a, 0.0), (side_b, theta)] {
+            let (points, own) = turned_square(side, turn, lift);
+            let h = r.offer_flat(own, &points, &NONE, &points);
+            let offer = &r.offers[h as usize];
+            assert_eq!(
+                offer.own_tolerance,
+                r.tolerance_along(h, own.unrounded.normal)
+            );
+        }
+        (r.offers[0].clone(), r.offers[1].clone())
+    }
+
+    /// The dihedral `ratio` times the turn the squares' snaps allow about the x axis, `θ_A + θ_B`
+    /// (each `2 τ_R / L_R`, `L_R` its side, as the axis runs along an edge), with the turned
+    /// square's tolerance read at that dihedral; and the squares at it.
+    fn squares_at(
+        ratio: f64,
+        grid: f64,
+        side_a: f64,
+        side_b: f64,
+        lift: f64,
+    ) -> (f64, Offer, Offer) {
+        let room =
+            |a: &Offer, b: &Offer| 2.0 * a.own_tolerance / side_a + 2.0 * b.own_tolerance / side_b;
+        let mut theta = 0.0;
+        for _ in 0..8 {
+            let (a, b) = squares(grid, theta, side_a, side_b, lift);
+            theta = ratio * room(&a, &b);
+        }
+        let (a, b) = squares(grid, theta, side_a, side_b, lift);
+        let exact = theta / room(&a, &b);
+        assert!((exact - ratio).abs() < 1e-14 * ratio, "{exact} for {ratio}");
+        (theta, a, b)
+    }
+
+    /// Two faces turned apart by a dihedral within the turn their snaps allow are near-parallel,
+    /// and past it are not, at the writer's grid (2^-14) over a few units (two squares 3 across:
+    /// `θ` about 4.07e-5), and with one square ten times the other across: its turn is read over
+    /// its whole extent, so the larger allows a tenth of the smaller's. Just within is within
+    /// the rounding the test takes against itself.
+    #[test]
+    fn faces_are_near_parallel_up_to_the_turn_their_snaps_allow_and_not_past_it() {
+        for (side_a, side_b) in [(3.0, 3.0), (30.0, 3.0), (3.0, 30.0)] {
+            for (ratio, near) in [(1.0 - 1e-8, true), (1.0 + 1e-12, false), (0.5, true)] {
+                let (theta, a, b) = squares_at(ratio, GRID, side_a, side_b, 0.0);
+                if side_a == side_b && ratio > 0.9 {
+                    assert!(theta > 4.0e-5 && theta < 4.2e-5, "{theta:e}");
+                }
+                for (x, y) in [(&a, &b), (&b, &a)] {
+                    let tilt = near_parallel(x, y);
+                    assert_eq!(
+                        tilt.near, near,
+                        "{side_a} and {side_b} across, ratio {ratio}: {tilt:?} at {theta:e}"
+                    );
+                    assert!((tilt.dihedral / theta - 1.0).abs() < 1e-12, "{tilt:?}");
+                    assert!(
+                        (tilt.dihedral / tilt.room - ratio).abs() < 1e-12,
+                        "{tilt:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Where the dihedral is so small that its axis is known only roughly (here to about 0.3%,
+    /// two squares 3 across lifted 1e-12 off their own planes, on no grid, so each allows a turn of
+    /// about 6.7e-13), the test reads each record's extent across it as wide as that error allows:
+    /// a pair at 0.995 of the turn by the computed axis is not near-parallel, and one at 0.98 is.
+    #[test]
+    fn where_the_dihedral_s_axis_is_known_roughly_the_test_holds_to_the_widest_extent_it_allows() {
+        for (ratio, near) in [(0.98, true), (0.995, false), (1.0 + 1e-12, false)] {
+            let (theta, a, b) = squares_at(ratio, 0.0, 3.0, 3.0, 1e-12);
+            assert!(theta > 1e-12 && theta < 2e-12, "{theta:e}");
+            for (x, y) in [(&a, &b), (&b, &a)] {
+                let tilt = near_parallel(x, y);
+                assert_eq!(tilt.near, near, "ratio {ratio}: {tilt:?}");
+            }
+        }
+    }
+
+    /// The test is one of the pair, whichever comes first: over flat records of random outlines
+    /// on planes turned a little from each other, every number it gives is the same bits both
+    /// ways, and it holds both ways at once or neither.
+    #[test]
+    fn the_near_parallel_test_is_the_same_whichever_record_comes_first() {
+        let mut s = Seeded(0x6e70_7061_6972);
+        let unit = |s: &mut Seeded| s.below(1 << 30) as f64 / (1u64 << 30) as f64;
+        let (mut near, mut cases) = (0, 0);
+        for _ in 0..400 {
+            let mut r = registry();
+            for _ in 0..2 {
+                let theta = 1e-4 * unit(&mut s);
+                let phi = 6.0 * unit(&mut s);
+                let n = [
+                    libm::sin(theta) * libm::cos(phi),
+                    libm::sin(theta) * libm::sin(phi),
+                    libm::cos(theta),
+                ];
+                let corners = 3 + s.below(4) as usize;
+                let size = 0.5 + 4.0 * unit(&mut s);
+                let points: Vec<[f64; 3]> = (0..corners)
+                    .map(|k| {
+                        let t = (k as f64 + 0.5 * unit(&mut s)) / corners as f64
+                            * std::f64::consts::TAU;
+                        let (x, y) = (size * libm::cos(t), size * libm::sin(t));
+                        [x, y, -(n[0] * x + n[1] * y) / n[2]]
+                    })
+                    .collect();
+                let own = WorldPlane::rounded(n, 0.0, 0.0);
+                r.offer_flat(own, &points, &NONE, &points);
+            }
+            let (a, b) = (&r.offers[0], &r.offers[1]);
+            let (x, y) = (near_parallel(a, b), near_parallel(b, a));
+            assert_eq!(x.near, y.near, "{x:?} and {y:?}");
+            assert_eq!(
+                x.dihedral.to_bits(),
+                y.dihedral.to_bits(),
+                "{x:?} and {y:?}"
+            );
+            assert_eq!(x.room.to_bits(), y.room.to_bits(), "{x:?} and {y:?}");
+            near += usize::from(x.near);
+            cases += 1;
+        }
+        assert!(near > 0 && near < cases, "{near} of {cases}");
+    }
+
+    /// A record with no plane of its own (points on a line, a triangle whose corners lie on one,
+    /// a line on an axis plane) is no flat record, and its fragments carry none: it is never
+    /// near-parallel to anything.
+    #[test]
+    fn a_record_with_no_plane_of_its_own_is_never_tested_for_near_parallel() {
+        let mut r = registry();
+        let line = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.5, 0.0],
+            [2.0, 1.0, 0.0],
+            [3.0, 1.5, 0.0],
+        ];
+        let (on_line, is_flat, _) = r.offer_path(&line, Planarity::Newell, &NONE, &line);
+        assert!(!is_flat);
+        let (on_axis, is_flat, _) = r.offer_path(&line, Planarity::Axis(2), &NONE, &line);
+        assert!(!is_flat);
+        let corners = [line[0], line[1], line[3]];
+        let plane = WorldPlane::of_triangle(corners, GRID);
+        let (degenerate, is_flat) = r.offer_triangle(plane, &corners, &NONE, &corners);
+        assert!(!is_flat);
+        let square = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+        let face = flat(&mut r, &square);
+        for h in [on_line, on_axis, degenerate] {
+            assert!(r.flat_record(h).is_none(), "record {h}");
+        }
+        assert!(r.flat_record(face).is_some());
     }
 }

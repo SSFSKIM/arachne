@@ -218,7 +218,7 @@ impl Blocks {
         self.blocks.is_empty()
     }
 
-    fn raster(&self, rect: Rect, opaque: bool, mut add: impl FnMut(u32, u32, Fragment)) {
+    fn raster<'f>(&self, rect: Rect, opaque: bool, mut add: impl FnMut(u32, u32, Fragment<'f>)) {
         for &i in &self.bins[tile_index(self.width, rect.x0, rect.y0)] {
             let b = &self.blocks[i as usize];
             if (b.colour[3] == 255) != opaque {

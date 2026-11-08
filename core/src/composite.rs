@@ -242,9 +242,10 @@ pub enum Coverage {
     Area { area: f32, id: u32 },
 }
 
-/// One drawn object's share of one pixel.
+/// One drawn object's share of one pixel, `'f` the frame's records it may carry one of
+/// ([`Fragment::record`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Fragment {
+pub struct Fragment<'f> {
     pub depth: Plane,
     /// Premultiplied, in the frame's byte order.
     pub colour: [u8; 4],
@@ -281,11 +282,18 @@ pub struct Fragment {
     /// shares it ([`Depths::against`]). Infinite where nothing bounds it (a path whose points
     /// reached the core already projected), and then it ties with anything on its plane.
     pub snap: f64,
+    /// The flat record it is a fragment of, as its frame's registry holds it (`depth::Registry`):
+    /// a path content made flat, or a mesh triangle, offered on its own plane and keyed with a
+    /// finite [`Fragment::snap`]; `None` for any other (a record with no plane of its own, a
+    /// pre-projected path, one the registry was not offered). Two fragments of flat records on no
+    /// one identity, whose own planes the snapped input cannot tell apart in orientation, tie
+    /// within the same term as two on one identity ([`crate::order::near_parallel`]).
+    pub record: Option<&'f crate::depth::Offer>,
     /// The producer that added it (set by the pass).
     source: u16,
 }
 
-impl Fragment {
+impl Fragment<'_> {
     /// The producer that added it, as an index into the pass's producers.
     pub(crate) fn source(&self) -> u16 {
         self.source
@@ -302,6 +310,7 @@ impl Fragment {
             path_layer: false,
             plane: [0; 4],
             snap: f64::INFINITY,
+            record: None,
             source: 0,
         }
     }
@@ -516,12 +525,13 @@ pub fn add_emission(pixel: [u8; 4], emission: [f64; 3]) -> [u8; 4] {
 /// drawn before. Tiles are drawn in any order on any thread, and a frame's bytes are the same on
 /// any number of threads only because of this.
 pub trait Producer: Sync {
-    /// Adds the producer's opaque fragments in the pass's rectangle.
-    fn opaque(&self, _pass: &mut OpaquePass<'_>) {}
+    /// Adds the producer's opaque fragments in the pass's rectangle. A fragment may carry a record
+    /// the producer holds ([`Fragment::record`]) for as long as the pass lives.
+    fn opaque<'a>(&'a self, _pass: &mut OpaquePass<'a>) {}
 
     /// Adds the producer's other fragments and emission in the pass's rectangle; the opaque depth
     /// is readable here.
-    fn transparent(&self, _pass: &mut TransparentPass<'_>) {}
+    fn transparent<'a>(&'a self, _pass: &mut TransparentPass<'a>) {}
 
     /// The mask, at the sub-samples, of the fragment this producer added to pixel `(x, y)` with
     /// exact area and this `id`: point-sampled at [`sample_point`]s. Read for the opaque depth.
@@ -821,13 +831,13 @@ impl ResolveCounts {
 }
 
 /// Fragments grouped by pixel, in the order they were added.
-struct ByPixel {
+struct ByPixel<'f> {
     starts: Vec<u32>,
-    items: Vec<Fragment>,
+    items: Vec<Fragment<'f>>,
 }
 
-impl ByPixel {
-    fn new(list: Vec<(u32, Fragment)>, pixels: usize) -> ByPixel {
+impl<'f> ByPixel<'f> {
+    fn new(list: Vec<(u32, Fragment<'f>)>, pixels: usize) -> ByPixel<'f> {
         let mut starts = vec![0u32; pixels + 1];
         for (i, _) in &list {
             starts[*i as usize + 1] += 1;
@@ -846,7 +856,7 @@ impl ByPixel {
         ByPixel { starts, items }
     }
 
-    fn at(&self, pixel: usize) -> &[Fragment] {
+    fn at(&self, pixel: usize) -> &[Fragment<'f>] {
         &self.items[self.starts[pixel] as usize..self.starts[pixel + 1] as usize]
     }
 }
@@ -856,7 +866,7 @@ pub struct OpaquePass<'a> {
     rect: Rect,
     producers: &'a [&'a dyn Producer],
     pub(crate) source: u16,
-    fragments: Vec<(u32, Fragment)>,
+    fragments: Vec<(u32, Fragment<'a>)>,
 }
 
 impl<'a> OpaquePass<'a> {
@@ -875,7 +885,7 @@ impl<'a> OpaquePass<'a> {
 
     /// Adds an opaque fragment to pixel `(x, y)`. (A fragment that is not opaque is composited
     /// like any other but adds nothing to the opaque depth.)
-    pub fn add(&mut self, x: u32, y: u32, mut fragment: Fragment) {
+    pub fn add(&mut self, x: u32, y: u32, mut fragment: Fragment<'a>) {
         fragment.source = self.source;
         let i = self.rect.index(x, y) as u32;
         self.fragments.push((i, fragment));
@@ -900,8 +910,8 @@ pub struct TransparentPass<'a> {
     rect: Rect,
     producers: &'a [&'a dyn Producer],
     pub(crate) source: u16,
-    opaque: ByPixel,
-    fragments: Vec<(u32, Fragment)>,
+    opaque: ByPixel<'a>,
+    fragments: Vec<(u32, Fragment<'a>)>,
     /// Linear RGB emitted into each pixel, made on the first emission.
     emission: Vec<[f64; 3]>,
 }
@@ -915,7 +925,7 @@ pub struct Rendered {
     pub counts: ResolveCounts,
 }
 
-impl TransparentPass<'_> {
+impl<'a> TransparentPass<'a> {
     pub fn rect(&self) -> Rect {
         self.rect
     }
@@ -961,7 +971,7 @@ impl TransparentPass<'_> {
 
     /// Adds a fragment to pixel `(x, y)`: the one call through which every producer feeds the
     /// transparent pass.
-    pub fn add(&mut self, x: u32, y: u32, mut fragment: Fragment) {
+    pub fn add(&mut self, x: u32, y: u32, mut fragment: Fragment<'a>) {
         fragment.source = self.source;
         let i = self.rect.index(x, y) as u32;
         self.fragments.push((i, fragment));
@@ -1063,18 +1073,84 @@ impl TransparentPass<'_> {
                 Some(e) if *e != [0.0; 3] => pixel = add_emission(pixel, *e),
                 _ => {}
             }
+            #[cfg(feature = "counters")]
+            self.count_near_parallel(&scratch.fragments, x, y);
             out.rgba[i * 4..i * 4 + 4].copy_from_slice(&pixel);
             out.resolves[i] = class as u8;
             out.counts.count(class);
         }
         out
     }
+
+    /// Counts, at pixel `(x, y)` holding `frags`, the sub-samples where two fragments are one
+    /// depth only by the near-parallel rule (`order::near_parallel`: both cover the sub-sample, they
+    /// share no identity, their keys as the pixel's order reads them lie within the term and not
+    /// within their error bounds), once per pair and sub-sample, and the pixel once if any; and the
+    /// pixel once more if such a pair's dihedral passes `order::WIDE` (`counters` builds only:
+    /// it reads the pixel again, apart from its resolve).
+    #[cfg(feature = "counters")]
+    fn count_near_parallel(&self, frags: &[Fragment], x: u32, y: u32) {
+        use crate::order::{one_plane, own_layers, tied, within_term};
+        let n = frags.len();
+        // The pairs the rule may tie: both of flat records, on no one identity.
+        let pairs: Vec<(usize, usize)> = (0..n)
+            .flat_map(|a| (a + 1..n).map(move |b| (a, b)))
+            .filter(|&(a, b)| {
+                let (fa, fb) = (&frags[a], &frags[b]);
+                fa.record.is_some()
+                    && fb.record.is_some()
+                    && !one_plane(fa, fb)
+                    && !own_layers(fa, fb)
+            })
+            .collect();
+        if pairs.is_empty() {
+            return;
+        }
+        let cov: Vec<[u8; SAMPLES]> = frags
+            .iter()
+            .map(|f| self.sample_coverage(f, x, y))
+            .collect();
+        let mut rows: Vec<Depths> = frags
+            .iter()
+            .map(|f| Depths::of(self.producers, f, x, y))
+            .collect();
+        strokes_on_own_fills(frags, &mut rows, |i| cov[i]);
+        let (mut samples, mut wide) = (0usize, false);
+        for (a, b) in pairs {
+            let (fa, fb) = (&frags[a], &frags[b]);
+            let (Some(ra), Some(rb)) = (fa.record, fb.record) else {
+                continue;
+            };
+            let tilt = crate::depth::near_parallel(ra, rb);
+            if !tilt.near {
+                continue;
+            }
+            let ((da, ea), (db, eb)) = (rows[a].against(fa, fb), rows[b].against(fb, fa));
+            let alone = (0..SAMPLES)
+                .filter(|&k| {
+                    cov[a][k] != 0
+                        && cov[b][k] != 0
+                        && !tied(da[k], ea, db[k], eb)
+                        && within_term(fa, da[k], ea, fb, db[k], eb)
+                })
+                .count();
+            samples += alone;
+            wide |= alone > 0 && tilt.dihedral > crate::order::WIDE;
+        }
+        if samples > 0 {
+            count!(NEAR_PARALLEL_SAMPLES, samples);
+            count!(NEAR_PARALLEL_PX);
+            if wide {
+                count!(NEAR_PARALLEL_WIDE_PX);
+            }
+        }
+    }
 }
 
 /// Buffers reused from pixel to pixel.
 #[derive(Default)]
-pub(crate) struct Scratch {
-    pub(crate) fragments: Vec<Fragment>,
+pub(crate) struct Scratch<'f> {
+    pub(crate) fragments: Vec<Fragment<'f>>,
     /// Each fragment's depths, its strokes on its own fills ([`strokes_on_own_fills`]).
     rows: Vec<Depths>,
     order: Vec<usize>,

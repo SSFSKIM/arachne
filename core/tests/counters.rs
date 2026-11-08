@@ -155,3 +155,91 @@ fn a_pixel_s_candidates_are_found_near_it_not_among_every_segment_whose_bounds_h
         gaps / reads
     );
 }
+
+/// The counts of one draw of two flat world faces `side` across on the writer's grid (2^-14),
+/// each its square outline: the first on z = 0 centred on the origin, the second placed over it
+/// by a shear (linear, so it stays flat) that turns it from the first by `atan(slope)` about the
+/// first's edge at `x = -side / 2`.
+fn hinged_counts(side: f64, slope: f64) -> Vec<(&'static str, u64)> {
+    let (w, h) = (854, 480);
+    let mut view = three_d_view(w, h);
+    view.input_grid = 1.0 / 16384.0;
+    let half = side / 2.0;
+    let square = |x0: f64| {
+        lines(&[
+            [x0, -half, 0.0],
+            [x0 + side, -half, 0.0],
+            [x0 + side, half, 0.0],
+            [x0, half, 0.0],
+            [x0, -half, 0.0],
+        ])
+    };
+    let face = |slot: u32, points: Vec<[f64; 3]>, place: Affine| {
+        let shape = Shape::new(ShapeData::Path { points });
+        let mut r = Record::new(RecordKind::Path, slot, 100 + slot);
+        r.geometry.shape_a = Some(shape.key());
+        r.geometry.place_a = place;
+        r.paint.fill = Paint::One([0.3 * slot as f64, 0.4, 0.5, 1.0]);
+        r.depth.space = Space::World;
+        r.planes = Some(vec![arachne_core::depth::Planarity::Newell.code()]);
+        (shape, r)
+    };
+    let hinge = [
+        [1.0, 0.0, 0.0, -half],
+        [0.0, 1.0, 0.0, 0.0],
+        [slope, 0.0, 1.0, 0.0],
+    ];
+    let items = [
+        face(1, square(-half), IDENTITY),
+        face(2, square(0.0), hinge),
+    ];
+    let d = arachne_core::probes::first_delta(view, &items, &[1, 2]);
+    let mut s = Stream::new();
+    s.apply(&d).expect("the delta applies");
+    counters::take();
+    s.draw(w, h, 1).unwrap();
+    counters::take()
+}
+
+#[test]
+fn the_near_parallel_tie_is_counted_where_it_ties_and_its_tests_where_they_run() {
+    let _one = COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let step = 1.0 / 16_777_216.0;
+    // Faces 3 across turned 4.0e-5 apart, within the turn their snaps allow: tested, found
+    // near-parallel, and tied at sub-samples of many pixels; no dihedral past 1e-2.
+    let counts = hinged_counts(3.0, 671.0 * step);
+    for name in [
+        "near_parallel_tested",
+        "near_parallel_pairs",
+        "near_parallel_samples",
+        "near_parallel_px",
+    ] {
+        assert!(count(name, &counts) > 0, "{name}: {counts:?}");
+    }
+    assert!(count("near_parallel_px", &counts) > 1000, "{counts:?}");
+    assert!(count("near_parallel_samples", &counts) >= count("near_parallel_px", &counts));
+    // Each test reads both records' points: 16 each, an outline of four segments.
+    assert_eq!(
+        count("near_parallel_points", &counts),
+        32 * count("near_parallel_tested", &counts),
+        "{counts:?}"
+    );
+    assert_eq!(count("near_parallel_wide_pairs", &counts), 0, "{counts:?}");
+    assert_eq!(count("near_parallel_wide_px", &counts), 0, "{counts:?}");
+    // Turned 2.0e-3 apart, past it: tested along the hinge, where their keys lie within the term,
+    // and never tied by it.
+    let counts = hinged_counts(3.0, 2.0e-3);
+    assert!(count("near_parallel_tested", &counts) > 0, "{counts:?}");
+    for name in [
+        "near_parallel_pairs",
+        "near_parallel_samples",
+        "near_parallel_px",
+    ] {
+        assert_eq!(count(name, &counts), 0, "{name}: {counts:?}");
+    }
+    // Faces 3 * 2^-9 across (a third of a pixel), turned 2.0e-2 apart: the turn a face that small
+    // lets its snap make is wider still, so they tie, and are counted as wide.
+    let counts = hinged_counts(3.0 / 512.0, 2.0e-2);
+    assert!(count("near_parallel_wide_pairs", &counts) > 0, "{counts:?}");
+    assert!(count("near_parallel_wide_px", &counts) > 0, "{counts:?}");
+}

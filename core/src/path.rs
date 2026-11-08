@@ -57,6 +57,7 @@ use crate::scanline::{self, Edge, Scratch};
 use crate::tiles::{TILE, tile_index, tiles_across};
 use crate::xf::*;
 use kurbo::{BezPath, ParamCurve as _, ParamCurveArclen as _, PathEl, PathSeg, Point, Shape as _};
+use std::sync::Arc;
 
 /// Cairo's default tolerance for flattening curves, in pixels.
 pub const TOLERANCE: f64 = 0.1;
@@ -275,6 +276,9 @@ struct Layer {
     /// in the order of `plane`: what it is read on against a fragment sharing that identity
     /// ([`Producer::plane_depths`]).
     on_plane: [Option<Plane>; 4],
+    /// For a layer of a flat path keyed with a finite `snap`, its record's handle in the frame's
+    /// registry: the record its fragments carry ([`Fragment::record`]).
+    record: Option<u32>,
     order: u32,
     sub: u32,
 }
@@ -494,6 +498,9 @@ pub struct Paths {
     centrelines: Vec<CurveDepth>,
     bins: Vec<Vec<u32>>,
     width: u32,
+    /// The frame's registry, settled, which holds the flat paths' records their layers' fragments
+    /// carry ([`Fragment::record`]); none for paths lowered without one.
+    records: Option<Arc<Registry>>,
 }
 
 /// numpy's `isclose(a, b)` with CE's tolerance, for one coordinate.
@@ -939,6 +946,9 @@ pub struct Keyed {
     /// For a path with no plane of its own on identities, each one's plane, in the order of `ids`:
     /// what its layers are read on against what shares that identity. Empty for any other.
     pub shared: Vec<WorldPlane>,
+    /// For a flat path (offered to the registry on its own plane), its handle there: the record
+    /// its layers' fragments carry ([`Fragment::record`]). None for any other.
+    pub record: Option<u32>,
 }
 
 impl Keyed {
@@ -949,6 +959,7 @@ impl Keyed {
             ids: [0; 4],
             planarity,
             shared: Vec::new(),
+            record: None,
         }
     }
 }
@@ -986,6 +997,7 @@ impl<'v> Lowering<'v> {
                 centrelines: Vec::new(),
                 bins: vec![Vec::new(); (tiles_across(width) * height.div_ceil(TILE)) as usize],
                 width,
+                records: None,
             },
         }
     }
@@ -1134,10 +1146,12 @@ impl<'v> Lowering<'v> {
                     ids,
                     planarity,
                     shared,
+                    record: None,
                 })
             } else {
                 own.map(|plane| Keyed {
                     ids,
+                    record: flat.then_some(handle),
                     ..Keyed::alone(plane, planarity)
                 })
             };
@@ -1200,6 +1214,8 @@ impl<'v> Lowering<'v> {
                 }
             }
         };
+        // A flat path's record, carried by each of its layers keyed with its term.
+        let record = plane.as_ref().and_then(|on| on.record);
         let scale = self.map.xx.abs().max(self.map.yy.abs());
         let area = self.guard(&user, draw.stroke_width.max(draw.background_stroke_width));
         let guarded = match area {
@@ -1294,11 +1310,12 @@ impl<'v> Lowering<'v> {
             } else {
                 f64::INFINITY
             };
+            let record = record.filter(|_| snap.is_finite());
             self.push(
                 &rings(&outline_px),
                 spec,
                 depth,
-                (ids, snap, on_plane),
+                (ids, snap, on_plane, record),
                 draw.order,
                 draw.sub + k,
             );
@@ -1505,18 +1522,19 @@ impl<'v> Lowering<'v> {
     }
 
     /// Adds the layer whose outline is the closed polygons `rings`, on the pixel plane, on the
-    /// registered planes `on.0` with its key's snap departure `on.1` ([`Fragment::snap`]) and its
-    /// keys on their planes `on.2`.
+    /// registered planes `on.0` with its key's snap departure `on.1` ([`Fragment::snap`]), its
+    /// keys on their planes `on.2` and the registry's handle of its flat record `on.3`
+    /// ([`Fragment::record`]).
     fn push(
         &mut self,
         rings: &[Vec<[f64; 2]>],
         spec: PaintSpec,
         depth: LayerDepth,
-        on: ([u32; 4], f64, [Option<Plane>; 4]),
+        on: ([u32; 4], f64, [Option<Plane>; 4], Option<u32>),
         order: u32,
         sub: u32,
     ) {
-        let (plane, snap, on_plane) = on;
+        let (plane, snap, on_plane, record) = on;
         let edges = scanline::edges_of(rings);
         if edges.is_empty() {
             return;
@@ -1573,6 +1591,7 @@ impl<'v> Lowering<'v> {
             plane,
             snap,
             on_plane,
+            record,
             order,
             sub,
         };
@@ -1631,9 +1650,13 @@ impl<'v> Lowering<'v> {
         self.paths.layers.push(layer);
     }
 
-    /// The lowered paths, ready to draw.
-    pub fn finish(self) -> Paths {
-        self.paths
+    /// The lowered paths, ready to draw, their flat paths' layers carrying their records as
+    /// `registry`, the frame's, settled, holds them ([`Fragment::record`]).
+    pub fn finish(self, registry: &Arc<Registry>) -> Paths {
+        Paths {
+            records: Some(Arc::clone(registry)),
+            ..self.paths
+        }
     }
 }
 
@@ -1663,14 +1686,16 @@ impl Paths {
     }
 
     /// Rasterizes the opaque or the other layers of the tile at `rect`.
-    fn raster(&self, rect: Rect, opaque: bool, mut add: impl FnMut(u32, u32, Fragment)) {
+    fn raster<'a>(&'a self, rect: Rect, opaque: bool, mut add: impl FnMut(u32, u32, Fragment<'a>)) {
         let mut scratch = Scratch::default();
         let mut near = Vec::new();
+        let records = self.records.as_deref();
         for &i in &self.bins[tile_index(self.width, rect.x0, rect.y0)] {
             let layer = &self.layers[i as usize];
             if layer.opaque != opaque {
                 continue;
             }
+            let record = layer.record.and_then(|handle| records?.flat_record(handle));
             let area = Rect {
                 x0: rect.x0.max(layer.bbox[0]),
                 y0: rect.y0.max(layer.bbox[1]),
@@ -1702,6 +1727,7 @@ impl Paths {
                         f.path_layer = true;
                         f.plane = layer.plane;
                         f.snap = layer.snap;
+                        f.record = record;
                         add(x, y, f);
                     }
                 },
@@ -1950,11 +1976,11 @@ impl CurveDepth {
 }
 
 impl Producer for Paths {
-    fn opaque(&self, pass: &mut OpaquePass<'_>) {
+    fn opaque<'a>(&'a self, pass: &mut OpaquePass<'a>) {
         self.raster(pass.rect(), true, |x, y, f| pass.add(x, y, f));
     }
 
-    fn transparent(&self, pass: &mut TransparentPass<'_>) {
+    fn transparent<'a>(&'a self, pass: &mut TransparentPass<'a>) {
         self.raster(pass.rect(), false, |x, y, f| pass.add(x, y, f));
     }
 
