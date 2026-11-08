@@ -313,6 +313,24 @@ lifted.
   uploads across restores (they are immutable), or give the restore a
   copy-on-write view of the record's stream.
 
+## What a frame drawn from the record reads (`arachne/timeline/record.py`)
+
+- **A display of another camera costs one picture a play.** A display of a camera the scene's camera does not draw
+  into keeps that camera's picture once a play (`Capture.pictures`), shared with the play before while it is the
+  same: a picture that changes only between plays costs one copy a play, 7.9 MiB at 1920x1080 and 1.6 MiB at
+  854x480, kept for the execution. A picture that changes during a play refuses the record from that play
+  (`camera.display_redrawn`), so the scene is executed again and drawn as it runs from there, rather than keep a
+  copy at each capture (7.9 MiB each at 1920x1080, about 4.7 GB for ten seconds at 60 fps). Each capture compares
+  the picture with the last one kept: 0.6 to 0.7 ms at 1920x1080, 0.1 ms at 854x480. Reproducers:
+  `tests/timeline/test_cameras.py::test_a_display_repainted_between_plays_keeps_a_picture_a_play` and
+  `::test_a_display_repainted_during_a_play_draws_that_play_live`.
+- **An execution summary does not cover a capture's depth references or pictures.** `summarize` digests each
+  capture's mobject states, lists and camera inputs, not `Capture.references` (a depth reference point the scene
+  may not hold) nor `Capture.pictures` (another camera's picture). Two executions that differ only there summarise
+  alike, so a comparison of executions by summary, or an answer kept under one, would take one for the other. A
+  summary needs, per capture, each reference's mobject position and point, and each picture's display position and
+  a digest of its pixels (one per kept array, by identity, as the background's should be). A content key
+  (`RegisteredState.content_key`, `PlayRecord.sample_keys`) is a state's, and neither is part of one.
 ## The image cache (`arachne/mobject/svg/svg_mobject.py`)
 
 - **An image built from the cache is not the image parsing built.** Inherited from Manim Community Edition: a

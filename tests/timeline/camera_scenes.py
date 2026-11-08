@@ -1,5 +1,5 @@
 """Scenes the camera tests execute: camera callbacks, zoomed displays, a
-mapping camera and a depth sort.
+mapping camera, a depth sort and a display of another camera.
 """
 
 from __future__ import annotations
@@ -18,7 +18,9 @@ from arachne import (
     Circle,
     Dot,
     FadeIn,
+    ImageMobjectFromCamera,
     MappingCamera,
+    MovingCamera,
     Scene,
     Square,
     ThreeDScene,
@@ -204,3 +206,65 @@ class StaticDepthReferenceMoves(ThreeDScene):
         dot.add_updater(drive)
         self.add(red, blue)
         self.play(dot.animate.shift(DOWN), run_time=0.4)
+
+
+def _other_camera_display() -> tuple[MovingCamera, ImageMobjectFromCamera]:
+    """A red camera the scene's camera does not draw into, and a display of
+    its picture.
+    """
+    other = MovingCamera(pixel_width=32, pixel_height=18, background_color=RED)
+    other.reset()
+    display = ImageMobjectFromCamera(other)
+    display.scale_to_fit_height(3)
+    return other, display
+
+
+class OtherCameraStill(Scene):
+    """A display of another camera whose picture never changes, over three
+    plays.
+    """
+
+    def construct(self):
+        _, display = _other_camera_display()
+        self.add(display)
+        self.wait(0.2)
+        self.play(display.animate.shift(LEFT), run_time=0.2)
+        self.wait(0.2)
+
+
+class OtherCameraBetweenPlays(Scene):
+    """A display of another camera that the scene repaints between plays:
+    red, then blue, then red again.
+    """
+
+    def construct(self):
+        other, display = _other_camera_display()
+        self.add(display)
+        self.wait(0.2)
+        other.background_color = BLUE
+        other.reset()
+        self.play(display.animate.shift(LEFT), run_time=0.2)
+        other.background_color = RED
+        other.reset()
+        self.wait(0.2)
+
+
+class OtherCameraShown(Scene):
+    """A display of a camera the scene's camera does not draw into: its
+    updater gives that camera a blue background partway through the wait,
+    over the red one it had.
+    """
+
+    def construct(self):
+        other, display = _other_camera_display()
+        elapsed = [0.0]
+
+        def drive(mob, dt):
+            elapsed[0] += dt
+            if elapsed[0] >= 0.2 and other.background_color != BLUE:
+                other.background_color = BLUE
+                other.reset()
+
+        display.add_updater(drive)
+        self.add(display)
+        self.wait(0.4)

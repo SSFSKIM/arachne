@@ -172,6 +172,14 @@ class Capture:
     with a ``z_index_group`` is sorted by that group's centre, which is
     another mobject's state (one the scene may not even hold), so the point
     itself is kept, as the sort reads it, and a drawing gives it back.
+
+    ``pictures`` are what the displays of other cameras show: an
+    ``ImageMobjectFromCamera`` reads its camera's framebuffer as it is drawn,
+    and a camera the scene's camera does not draw into (one of the scene's
+    own, or a MultiCamera's display before it joins) holds no recorded
+    state. Its picture is kept once a play, shared with the play before
+    while it is the same; a picture that changes during a play is not kept
+    (:data:`DISPLAY_REDRAWN`), which keeps one copy a play at most.
     """
 
     seq: int | Fraction
@@ -186,6 +194,9 @@ class Capture:
     #: Each mobject a ThreeDCamera sorts by a point other than its own centre
     #: (its ``z_index_group``), with that point here (:class:`DepthReference`).
     references: tuple[tuple[Mobject, DepthReference], ...] = ()
+    #: Each display on screen of a camera the scene's camera does not draw
+    #: into, with that camera's picture as the play found it, read-only.
+    pictures: tuple[tuple[Mobject, np.ndarray], ...] = ()
 
     @property
     def drawn_seq(self) -> int:
@@ -218,6 +229,48 @@ class DepthReference:
 
     def get_center(self) -> np.ndarray:
         return self.center
+
+
+#: Why a record can't draw a play during which a display of another camera
+#: showed a new picture: keeping one a capture costs a framebuffer each.
+DISPLAY_REDRAWN = (
+    "camera.display_redrawn: a display shows a camera the scene's camera does not"
+    " draw into, and that camera's picture changed during the play, so its frames"
+    " are drawn while the scene runs and its record answers no instant"
+)
+
+
+def _pictures(
+    displays: Sequence[Mobject],
+    previous: tuple[tuple[Mobject, np.ndarray], ...],
+    same_play: bool,
+) -> tuple[tuple[tuple[Mobject, np.ndarray], ...], bool]:
+    """The picture each of ``displays`` shows now, its camera's framebuffer,
+    and whether one changed since ``previous`` within the play
+    (``same_play``): that one is not copied, and ``previous``'s picture is
+    kept for it. ``previous`` itself, or its pictures, where they are the
+    same.
+    """
+    earlier = {id(mob): picture for mob, picture in previous}
+    found: list[tuple[Mobject, np.ndarray]] = []
+    redrawn = False
+    for mob in displays:
+        live = mob.camera.pixel_array  # type: ignore[attr-defined]
+        picture = earlier.get(id(mob))
+        if picture is None or not (
+            picture.shape == live.shape and np.array_equal(picture, live)
+        ):
+            if picture is not None and same_play:
+                redrawn = True
+            else:
+                picture = live.copy()
+                picture.flags.writeable = False
+        found.append((mob, picture))
+    if len(found) == len(previous) and all(
+        a is c and b is d for (a, b), (c, d) in zip(found, previous, strict=True)
+    ):
+        return previous, redrawn
+    return tuple(found), redrawn
 
 
 def _references(
@@ -690,6 +743,9 @@ class Record:
         #: What the script does after it and before the next is placed
         #: there (``BridgeCall.seq``).
         self.last_seq: int | Fraction = -1
+        #: The play the last drawn capture was taken in (how many plays had
+        #: begun then; -1 for the final capture).
+        self._captured_play = -1
         #: Per MultiCamera display (by id): the first capture its camera was
         #: drawn into at, and that camera's picture before it, which the
         #: display shows wherever it is on screen before then.
@@ -741,6 +797,9 @@ class Record:
         # A ThreeDCamera sorts a shaded mobject by its z_index_group's centre.
         sorts_by_depth = drawn and _sorts_by_depth(scene.renderer.camera)
         grouped: list[Mobject] = []
+        # The cameras the scene's camera draws into at this capture.
+        drawing = _drawn_cameras(scene.renderer.camera) if drawn else frozenset()
+        shown: list[Mobject] = []
         checked = self._entry_checked
         names: tuple[frozenset[str], frozenset[str]] | None = None
         classes: dict[type, str | None] = {}
@@ -772,6 +831,10 @@ class Record:
                     and getattr(mob, "shade_in_3d", False)
                 ):
                     grouped.append(mob)
+            if drawn:
+                other = mob.__dict__.get("camera")
+                if other is not None and id(other) not in drawing and _shows(mob):
+                    shown.append(mob)
             if not drawn:
                 # Changed here, it is checked by the next capture that draws.
                 if state is not last:
@@ -795,6 +858,17 @@ class Record:
             if grouped
             else ()
         )
+        play = len(self.plays) if kind != "final" else -1
+        pictures: tuple[tuple[Mobject, np.ndarray], ...] = ()
+        if shown:
+            pictures, redrawn = _pictures(
+                shown,
+                previous.pictures if previous else (),
+                previous is not None and self._captured_play == play,
+            )
+            if redrawn and self._entry_refusal is None:
+                self._entry_refusal = DISPLAY_REDRAWN
+        self._captured_play = play
         capture = Capture(
             seq,
             instant,
@@ -806,6 +880,7 @@ class Record:
             camera,
             until,
             references,
+            pictures,
         )
         self._captures.append(capture)
         if camera is not None and camera.displays:
@@ -965,6 +1040,23 @@ def _sorts_by_depth(camera: Any) -> bool:
     from arachne.camera.three_d_camera import ThreeDCamera
 
     return isinstance(camera, ThreeDCamera)
+
+
+def _drawn_cameras(camera: Any) -> frozenset[int]:
+    """The cameras (by id) ``camera`` draws into as it captures: itself, and
+    a MultiCamera's displays' cameras.
+    """
+    found = {id(camera)}
+    for display in vars(camera).get("image_mobjects_from_cameras", ()):
+        found.add(id(display.camera))
+    return frozenset(found)
+
+
+def _shows(mob: Any) -> bool:
+    """Whether ``mob`` is a display of a camera's picture."""
+    from arachne.mobject.types.image_mobject import ImageMobjectFromCamera
+
+    return isinstance(mob, ImageMobjectFromCamera)
 
 
 def _reuse(value: tuple[Any, ...], previous: tuple[Any, ...] | None) -> tuple[Any, ...]:

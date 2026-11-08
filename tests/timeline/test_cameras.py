@@ -211,3 +211,76 @@ def test_a_depth_reference_the_scene_does_not_hold_sorts_each_frame_where_it_was
     for k, reference in enumerate(live):
         frame = np.asarray(session.frame(Fraction(k, 15)))
         np.testing.assert_array_equal(frame, reference, err_msg=f"session {k}")
+
+
+def _kept_pictures(record) -> list[np.ndarray]:
+    """Every picture of another camera the record keeps, each once."""
+    kept: dict[int, np.ndarray] = {}
+    for capture in record._captures:
+        for _, picture in capture.pictures:
+            kept[id(picture)] = picture
+    return list(kept.values())
+
+
+def _equal_frames(drawn, reference) -> None:
+    assert len(drawn) == len(reference)
+    for k, (frame, expected) in enumerate(zip(drawn, reference, strict=True)):
+        np.testing.assert_array_equal(frame, expected, err_msg=str(k))
+
+
+@pytest.mark.parametrize("draw_path", ["cairo", "ir_cairo"])
+def test_a_still_display_of_another_camera_keeps_one_picture(session_of, draw_path):
+    if draw_path == "ir_cairo":
+        pytest.importorskip("arachne_core")
+    scene_class = camera_scenes.OtherCameraStill
+    live = _drawn_live(scene_class, 15, draw_path=draw_path)
+    scene, drawn = render(scene_class, 15, draw_path=draw_path)
+    record = scene.timeline.record
+    assert record.refusal is None
+    assert len(record.plays) == 3
+    assert len(_kept_pictures(record)) == 1
+    _equal_frames(drawn, live)
+    session = session_of(scene_class.__name__, CAMERA_SCENES, draw_path=draw_path)
+    _equal_frames(
+        [np.asarray(session.frame(Fraction(k, 15))) for k in range(len(live))], live
+    )
+
+
+@pytest.mark.parametrize("draw_path", ["cairo", "ir_cairo"])
+def test_a_display_repainted_between_plays_keeps_a_picture_a_play(
+    session_of, draw_path
+):
+    if draw_path == "ir_cairo":
+        pytest.importorskip("arachne_core")
+    scene_class = camera_scenes.OtherCameraBetweenPlays
+    live = _drawn_live(scene_class, 15, draw_path=draw_path)
+    red, blue = (tuple(int(v) for v in ManimColor(c).to_int_rgb()) for c in (RED, BLUE))
+    assert [_centre(live[k]) for k in (0, 4, 8)] == [red, blue, red]
+    scene, drawn = render(scene_class, 15, draw_path=draw_path)
+    record = scene.timeline.record
+    assert record.refusal is None
+    # Red, blue, red: one copy each play, the last not the first's.
+    assert len(_kept_pictures(record)) == 3
+    _equal_frames(drawn, live)
+    session = session_of(scene_class.__name__, CAMERA_SCENES, draw_path=draw_path)
+    _equal_frames(
+        [np.asarray(session.frame(Fraction(k, 15))) for k in range(len(live))], live
+    )
+
+
+@pytest.mark.parametrize("draw_path", ["cairo", "ir_cairo"])
+def test_a_display_repainted_during_a_play_draws_that_play_live(session_of, draw_path):
+    if draw_path == "ir_cairo":
+        pytest.importorskip("arachne_core")
+    scene_class = camera_scenes.OtherCameraShown
+    live = _drawn_live(scene_class, 15, draw_path=draw_path)
+    red, blue = (tuple(int(v) for v in ManimColor(c).to_int_rgb()) for c in (RED, BLUE))
+    centres = [_centre(frame) for frame in live]
+    assert centres[0] == red
+    assert centres[-1] == blue
+    scene, drawn = render(scene_class, 15, draw_path=draw_path)
+    assert scene.timeline.record.refusal.startswith("camera.display_redrawn:")
+    _equal_frames(drawn, live)
+    session = session_of(scene_class.__name__, CAMERA_SCENES, draw_path=draw_path)
+    with pytest.raises(RecordRefused, match="display_redrawn"):
+        session.frame(Fraction(1, 15))

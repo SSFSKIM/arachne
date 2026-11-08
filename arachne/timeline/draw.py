@@ -613,7 +613,9 @@ class Drawing:
         its state at ``capture``, and the camera its recorded inputs. A
         mobject the depth sort places by its ``z_index_group`` holds, in its
         place, the point the capture found
-        (:class:`~arachne.timeline.record.DepthReference`).
+        (:class:`~arachne.timeline.record.DepthReference`), and a display of
+        a camera the scene's camera does not draw into shows the picture the
+        capture kept (``Capture.pictures``).
         """
         from .record import NodeState
 
@@ -634,6 +636,8 @@ class Drawing:
             for mob, reference in capture.references:
                 if id(mob) in shown:
                     mob.__dict__["z_index_group"] = reference
+        if capture.pictures:
+            self._show_pictures(capture, {id(mob) for mob, _ in reached})
         if capture.camera is not None and capture.camera.displays is not None:
             self._show_display_pictures(capture, [mob for mob, _ in reached])
 
@@ -656,6 +660,20 @@ class Drawing:
         for sub_camera, sub_extras in extras.sub_cameras:
             self._install_camera(sub_camera, sub_extras)
 
+    def _show_pictures(self, capture: Capture, shown: set[int]) -> None:
+        """Each shown display of a camera the scene's camera does not draw
+        into shows its camera's picture as ``capture`` kept it.
+        """
+        for mob, picture in capture.pictures:
+            if id(mob) in shown:
+                self._show_picture(mob.camera, picture)
+
+    def _show_picture(self, sub_camera: Any, picture: PixelArray) -> None:
+        """Give ``sub_camera`` ``picture``, saving the one it held first."""
+        if id(sub_camera) not in self._pictures_saved:
+            self._pictures_saved[id(sub_camera)] = (sub_camera, sub_camera.pixel_array)
+        sub_camera.pixel_array = picture
+
     def _show_display_pictures(self, capture: Capture, reached: list[Mobject]) -> None:
         """A display on screen whose camera the MultiCamera does not draw into
         at ``capture`` shows its camera's picture as CE left it: the first one,
@@ -670,15 +688,8 @@ class Drawing:
             if not isinstance(mob, ImageMobjectFromCamera) or id(mob) in joined:
                 continue
             picture = self.record.display_picture(mob, capture)
-            if picture is None:
-                continue
-            sub_camera: Any = mob.camera
-            if id(sub_camera) not in self._pictures_saved:
-                self._pictures_saved[id(sub_camera)] = (
-                    sub_camera,
-                    sub_camera.pixel_array,
-                )
-            sub_camera.pixel_array = picture
+            if picture is not None:
+                self._show_picture(mob.camera, picture)
 
     def static(self, play: PlayRecord) -> PixelArray | None:
         """The play's static picture: its static mobjects as they were when
