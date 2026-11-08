@@ -2,29 +2,38 @@
 repeats (a wait whose updater changes nothing, a frozen frame), one whose
 mobject changes only its line joint, a camera that moves over mobjects
 that stay still, a point drawn at a configured thickness, a camera whose
-drawing the scene's code replaced, a camera whose display functions it
-replaced, and a display showing another camera's live picture.
+drawing the scene's code replaced, cameras whose display functions it
+replaced (with its own, another camera's, or a wrapper of the engine's),
+a display showing another camera's live picture, and a depth sort that
+reads a point outside the scene.
 """
 
 from __future__ import annotations
+
+import functools
 
 import numpy as np
 
 from arachne import (
     BLUE,
+    OUT,
     RED,
     RIGHT,
     Circle,
     ImageMobjectFromCamera,
     LineJointType,
+    Mobject,
     MovingCameraScene,
     PMobject,
     Scene,
     Square,
+    ThreeDScene,
     Triangle,
+    VectorizedPoint,
     VMobject,
     Wait,
 )
+from arachne.camera.camera import Camera
 from arachne.camera.moving_camera import MovingCamera
 
 
@@ -154,4 +163,64 @@ class OtherCameraShown(Scene):
         self.play(wait)
         other.background_color = BLUE
         other.reset()
+        self.play(wait)
+
+
+class BorrowedDisplay(Scene):
+    """A camera whose display function for vectorized mobjects is another
+    camera's, whose line width changes between two plays of one wait.
+    """
+
+    def construct(self):
+        other = Camera()
+        other.cairo_line_width_multiple = 0.01
+        self.camera.display_funcs[VMobject] = other.display_multiple_vectorized_mobjects
+        square = Square(stroke_width=8)
+        square.add_updater(lambda m, dt: None)
+        self.add(square)
+        wait = Wait(run_time=0.4)
+        self.play(wait)
+        other.cairo_line_width_multiple = 0.1
+        self.play(wait)
+
+
+class WrappedNothing(Scene):
+    """A camera whose do-nothing display function the scene wrapped, keeping
+    its name: each call marks the frame with how many calls it has made.
+    """
+
+    def construct(self):
+        original = self.camera.display_funcs[Mobject]
+        calls = [0]
+
+        @functools.wraps(original)
+        def display(mobjects, pixel_array):
+            original(mobjects, pixel_array)
+            calls[0] += 1
+            pixel_array[0, 0, :3] = calls[0]
+
+        self.camera.display_funcs[Mobject] = display
+        mob = Mobject()
+        mob.points = np.array([[0.0, 0.0, 0.0]])
+        mob.add_updater(lambda m, dt: None)
+        self.add(mob)
+        self.wait(0.4)
+
+
+class OutsideDepth(ThreeDScene):
+    """Two overlapping squares sorted by depth, one by a point outside the
+    scene (its ``z_index_group``), moved between two plays of one wait.
+    """
+
+    def construct(self):
+        self.camera.should_apply_shading = False
+        reference = VectorizedPoint(np.array([0.0, 0.0, -1.0]))
+        red = Square(color=RED, fill_opacity=1, stroke_width=0, shade_in_3d=True)
+        blue = Square(color=BLUE, fill_opacity=1, stroke_width=0, shade_in_3d=True)
+        red.z_index_group = reference
+        red.add_updater(lambda m, dt: None)
+        self.add(red, blue)
+        wait = Wait(run_time=0.4)
+        self.play(wait)
+        reference.shift(OUT * 2)
         self.play(wait)

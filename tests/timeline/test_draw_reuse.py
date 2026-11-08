@@ -178,6 +178,19 @@ def test_a_camera_whose_display_function_the_scene_replaced_draws_every_frame():
     assert_same_writes(on, off)
 
 
+def test_a_frame_sorted_by_a_mobject_outside_the_scene_is_drawn():
+    """A mobject's depth can be read from another mobject (its public
+    ``z_index_group``) that the frame does not reach: what that one holds is
+    no recorded state of the frame, so the frame is drawn every time.
+    """
+    scene, on = render_writes(reuse_scenes.OutsideDepth)
+    _, off = render_writes(reuse_scenes.OutsideDepth, draw_reuse=False)
+    centres = [tuple(pixels[27, 48, :3]) for pixels, _ in off]
+    assert centres[0] != centres[-1], "the order changed between the plays"
+    assert scene.renderer.draws.reused == 0
+    assert_same_writes(on, off)
+
+
 def test_an_engine_camera_s_display_functions_are_its_own():
     from arachne.camera.camera import Camera
     from arachne.camera.moving_camera import MovingCamera

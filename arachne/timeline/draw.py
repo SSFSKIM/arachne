@@ -607,6 +607,19 @@ def _live_pixels(mob: Mobject, state: NodeState) -> bool:
     return False
 
 
+def _reads_outside(states: Sequence[tuple[Mobject, NodeState]]) -> bool:
+    """Whether drawing the walked mobjects reads a mobject outside them: a
+    depth sort reads each one's ``z_index_group``
+    (``Mobject.get_z_index_reference_point``), which can be any mobject.
+    """
+    walked = {id(mob) for mob, _ in states}
+    for _, state in states:
+        group = state.get("z_index_group")
+        if group is not None and id(group) not in walked:
+            return True
+    return False
+
+
 class DrawReuse:
     """The last frames drawn from captures, at most ``capacity`` of them,
     each with what it was drawn from (:class:`_DrawKey`): a frame drawn
@@ -890,7 +903,8 @@ class Drawing:
     def _reuse_key(self, play: PlayRecord, capture: Capture) -> _DrawKey | None:
         """What the frame at ``capture`` is drawn from (:class:`_DrawKey`);
         ``None`` when it shows pixels no recorded state holds (a display of
-        another camera's live picture), so it is drawn and not kept.
+        another camera's live picture) or reads a mobject the frame does not
+        reach, so it is drawn and not kept.
         """
         from arachne import config
 
@@ -902,7 +916,9 @@ class Drawing:
             *camera_nodes(camera),
         ]
         states = tuple(self.record._walk(capture, reached))
-        if any(_live_pixels(mob, state) for mob, state in states):
+        if any(_live_pixels(mob, state) for mob, state in states) or _reads_outside(
+            states
+        ):
             return None
         holds = (
             self.painter is None
