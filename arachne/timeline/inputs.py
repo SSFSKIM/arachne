@@ -219,6 +219,7 @@ ENGINE_DIR_KEYS = (
     "images_dir",
     "text_dir",
     "tex_dir",
+    "typeset_dir",
     "partial_movie_dir",
     "log_dir",
 )
