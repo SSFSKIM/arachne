@@ -630,3 +630,53 @@ lifted.
   whole play on the frame-by-frame path. An instant between kept ones (a session's `frame(t)`) and the painter's
   terms (`PlayRecord.leaf_terms`) are evaluated by the animations themselves, as without the lever. Direction: the
   same treatment for arc paths, whose formula is CE's `path_along_arc`, once the share they take is measured.
+
+## Speed: measured and not built
+
+Measured on a sample of scenes, each opened in a session, edited to make its last play 0.5 s longer, and executed
+again; "the floor" is the time from the edit to the new record.
+
+- **The deep copies in a play's `begin`.** Taken across every route (`Transform.begin`, `create_starting_mobject`,
+  fades, `Write`'s outlines), they are about 11–14% of the floor by the per-scene median, under the bar for a lever of
+  their own. Every deep copy, whoever asks for it, is about 20% by the median. Direction: fewer copies, not faster
+  ones (see "A faster `Mobject.copy`" below): share values a play only reads instead of copying them.
+- **`DrawBorderThenFill` builds its outline twice.** `__init__` builds it (`arachne/animation/creation.py:243`) and
+  `begin` builds it again (`:252`), which wastes about 1% of the floor. Direction: build it once, in `begin`, once
+  nothing reads the first.
+- **Fast-forward of trusted plays.** After their values are vectorized, evaluating trusted plays is about 19% of the
+  floor by the per-scene median and 12% pooled. About half of that is the play's `begin`, so a fast-forward that
+  still runs `begin` saves little. Not built.
+- **A memo of formula construction (`MathTex`, `Tex`) surviving executions.** Formula construction is about 17% of a
+  reload; the parse and the layout a memo would skip are about 8% of it, and its net is about 5–6% of the floor
+  before the cost of a hit. A hit must hand out a deep copy of what it keeps, and the copy is about 92% of a hit, so
+  a hit is only 1.2–1.6x faster than a construction whose image the image cache already holds: about 1.3–3% of the
+  floor realized. Not built; a reference implementation exists on a branch. What it found a memo's key must cover,
+  beyond the arguments, the template and the image file's content:
+  - module constants a construction reads at call time (`SCALE_FACTOR_PER_FONT_POINT`);
+  - engine functions changed in place (`__defaults__`, `__code__`), which a check of class members by identity
+    misses;
+  - which image the image cache holds, not only whether it holds one (see "The image cache");
+  - file reads a hit skips that the input watcher may record (the parser's temporary `<stem>_.svg`, through a
+    symlink outside the excluded directories);
+  - every raw configuration value construction reads (the settings `get_dir` resolves directories from), not only
+    the resolved paths.
+
+  A hit also skips the constructor's diagnostics (a parse warning is logged on a miss only), and every mobject a
+  construction makes advances its line's origin numbering, temporaries included, so a hit must replay that count.
+  Revisit if mobject copies become substantially cheaper.
+- **A faster `Mobject.copy` with exactly `copy.deepcopy`'s semantics.** Measured with the copier on and off, as the
+  saving on the floor (per-scene median, then pooled):
+
+  | copier | all scenes | narrated scenes | teaching scenes |
+  |---|---|---|---|
+  | first cut, not fully equivalent | 6.9%, 7.7% | 6.9%, 7.7% | 7.0%, 7.8% |
+  | equivalent to `deepcopy` step for step | -0.1%, -0.9% | 0.2%, 0.3% | -1.5%, -1.6% |
+
+  The first cut skipped steps `deepcopy` takes: it did not read the memo before an atomic value, ignored hooks set on
+  an instance or changed on a class after its first copy, copied a dict's key before its value, and made the
+  keep-alive list eagerly. Restoring every step took the saving to nothing. Reading the memo before every value alone
+  is about a third of the first cut's saving; the rest is per-container and per-object call overhead. The equivalent
+  copier hands about 0.14% of copied objects to `copy.deepcopy` (paths only), so its narrowed domain is not what cost
+  the gain. Ceiling: about 7% of the floor without full equivalence, about 0% with it. Not built; the equivalent
+  copier is at commit `5133121a`, unmerged. It would also read private `copy` and `copyreg` internals. Direction:
+  fewer copies. A play's `begin` copies (about 11–15% of the floor, above) are where to start.
