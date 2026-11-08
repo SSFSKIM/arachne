@@ -36,6 +36,13 @@ the other leaves that interpolate their own way, a mobject whose class
 interpolates its own way (an image, a point cloud), and a ``Succession``,
 whose parts begin while the play runs: a part begun then may run the
 scene's code as it begins, so no value is computed before that. So does a
+play that computes with a number of any other type than Python's and
+numpy's double-precision and integer scalars (:data:`_EXACT`), or with a
+paint array that is not float64: its run time, a rate function's or a rate
+factory's numbers, a lag ratio, a flash's time width, a group's time, a
+style number or color. A number of the scene's own class may run the
+scene's code each time it is computed with, and numpy promotes a lower
+precision in ways these arrays do not follow. So does a
 play the route evaluates at one instant only, and any trusted play whose
 evaluation may run the scene's code (``routes._runs_scene_code``).
 """
@@ -196,7 +203,7 @@ def refusal(animations: Sequence[Animation]) -> str | None:
     is evaluated vectorized.
     """
     for animation in animations:
-        node = _node(animation)
+        node = _top(animation)
         if isinstance(node, str):
             return node
     return None
@@ -209,6 +216,49 @@ def _twin(function: Any) -> Any:
         return array_twin(function)
     except (KeyError, TypeError):
         return None
+
+
+def _rate_refusal(name: str, function: Any) -> str | None:
+    """Why ``name``'s rate function is not one the plan may call ahead of
+    the play: one with no array twin, or a factory's closure over a number
+    that is not exact (:data:`_EXACT`), at any depth.
+    """
+    from .rates import _factory_parts
+
+    if _twin(function) is None:
+        return f"{name}'s rate function has no array twin"
+    while (parts := _factory_parts(function)) is not None:
+        kind, cells = parts
+        numbers = ("a", "b") if kind == "squish" else ("proportion",)
+        for number in numbers:
+            if not _exact(cells[number]):
+                kind_name = type(cells[number]).__name__
+                return f"{name}'s rate function computes with a {kind_name}"
+        function = cells["func"]
+    return None
+
+
+def _top(animation: Animation) -> _Group | _Leaf | str:
+    """The plan of a play's animation: its node, its run time exact."""
+    if not _exact(animation.run_time):
+        kind_name = type(animation.run_time).__name__
+        return f"{type(animation).__name__}'s run time is a {kind_name}"
+    return _node(animation)
+
+
+def _leaf_refusal(name: str, animation: Animation) -> str | None:
+    """Why the numbers ``get_sub_alpha`` computes a leaf's sub-alphas with
+    are not ones the plan may compute with ahead of the play.
+    """
+    reason = _rate_refusal(name, animation.rate_func)
+    if reason is not None:
+        return reason
+    if not _exact(animation.lag_ratio):
+        return f"{name}'s lag ratio is a {type(animation.lag_ratio).__name__}"
+    if type(animation.reverse_rate_function) is not bool:
+        kind_name = type(animation.reverse_rate_function).__name__
+        return f"{name}'s reverse_rate_function is a {kind_name}"
+    return None
 
 
 def _node(animation: Animation) -> _Group | _Leaf | str:
@@ -226,8 +276,12 @@ def _node(animation: Animation) -> _Group | _Leaf | str:
     if isinstance(animation, AnimationGroup):
         if cls.interpolate is not AnimationGroup.interpolate:
             return f"{name} interpolates its parts its own way"
-        if _twin(animation.rate_func) is None:
-            return f"{name}'s rate function has no array twin"
+        reason = _rate_refusal(name, animation.rate_func)
+        if reason is not None:
+            return reason
+        for held in (animation.max_end_time, animation.anim_group_time):
+            if not _exact(held):
+                return f"{name}'s time is a {type(held).__name__}"
         parts: list[Any] = []
         for part in animation.animations:
             node = _node(part)
@@ -245,11 +299,14 @@ def _node(animation: Animation) -> _Group | _Leaf | str:
         or cls.get_sub_alpha is not Animation.get_sub_alpha
     ):
         return f"{name} interpolates its own way"
+    # A leaf that writes nothing still computes its sub-alphas on the scalar
+    # path, so its numbers are held to the same types.
+    reason = _leaf_refusal(name, animation)
+    if reason is not None:
+        return reason
     if cls.interpolate_submobject is Animation.interpolate_submobject:
         return _Leaf(animation, None)
     twin = _twin(animation.rate_func)
-    if twin is None:
-        return f"{name}'s rate function has no array twin"
     if (
         isinstance(animation, Transform)
         and cls.interpolate_submobject is Transform.interpolate_submobject
@@ -274,6 +331,9 @@ def _node(animation: Animation) -> _Group | _Leaf | str:
         and cls.get_all_families_zipped is Animation.get_all_families_zipped
         and bounds is not None
     ):
+        width = getattr(animation, "time_width", None)
+        if bounds is _flash_bounds and not _exact(width):
+            return f"{name}'s time width is a {type(width).__name__}"
         families = list(animation.get_all_families_zipped())
         for family in families:
             reason = _revealable(*family)
@@ -353,11 +413,8 @@ def _revealable(leaf: Any, start: Any, *rest: Any) -> str | None:
         or type(start).get_num_curves is not VMobject.get_num_curves
     ):
         return f"a {cls.__name__}, which takes its part its own way"
-    if (
-        leaf.n_points_per_cubic_curve != 4
-        or start.n_points_per_cubic_curve != 4
-        or leaf.dim != 3
-    ):
+    counts = (leaf.n_points_per_cubic_curve, start.n_points_per_cubic_curve, leaf.dim)
+    if any(type(count) is not int for count in counts) or counts != (4, 4, 3):
         return "curves that are not cubic"
     return None
 
@@ -371,7 +428,7 @@ def plan(
     """
     nodes = []
     for animation in animations:
-        node = _node(animation)
+        node = _top(animation)
         if isinstance(node, str):
             return None
         nodes.append(node)

@@ -14,6 +14,7 @@ from arachne import (
     RIGHT,
     UP,
     Add,
+    Animation,
     AnimationGroup,
     Circle,
     Create,
@@ -212,3 +213,116 @@ class SinglePrecisionWidths(Scene):
         b = _single_precision(Circle(color=RED), False, True)
         self.add(a)
         self.play(Transform(a, b, rate_func=linear), run_time=0.8)
+
+
+class Counted(float):
+    """A number with arithmetic of the scene's own: each operation counts
+    itself and drifts its result by the count, so a value computed ahead of
+    the play, or computed a different number of times, shows.
+    """
+
+    def __new__(cls, value):
+        number = super().__new__(cls, value)
+        number.calls = 0
+        return number
+
+    def _drift(self, value):
+        self.calls += 1
+        return value + self.calls * 1e-3
+
+    def __mul__(self, other):
+        return self._drift(float(self) * other)
+
+    def __rmul__(self, other):
+        return self._drift(other * float(self))
+
+    def __add__(self, other):
+        return self._drift(float(self) + other)
+
+    def __radd__(self, other):
+        return self._drift(other + float(self))
+
+    def __sub__(self, other):
+        return self._drift(float(self) - other)
+
+    def __rsub__(self, other):
+        return self._drift(other - float(self))
+
+    def __truediv__(self, other):
+        return self._drift(float(self) / other)
+
+    def __rtruediv__(self, other):
+        return self._drift(other / float(self))
+
+
+class CountedProportion(Scene):
+    """A blend whose rate is ``not_quite_there`` over a counted proportion."""
+
+    def construct(self):
+        sq = Square()
+        self.add(sq)
+        rate = not_quite_there(linear, Counted(0.7))
+        self.play(Transform(sq, Square().shift(UP)), rate_func=rate, run_time=1)
+
+
+class CountedSquish(Scene):
+    """A reveal whose rate squishes into a counted window."""
+
+    def construct(self):
+        rate = squish_rate_func(smooth, Counted(0.1), 0.9)
+        self.play(Create(Circle(), rate_func=rate), run_time=1)
+
+
+class CountedWidth(Scene):
+    """A blend between counted stroke widths."""
+
+    def construct(self):
+        a, b = Square(), Circle()
+        a.stroke_width, b.stroke_width = Counted(1.2), Counted(3.7)
+        self.add(a)
+        self.play(Transform(a, b, rate_func=linear), run_time=1)
+
+
+class CountedLag(Scene):
+    """A blend of several leaves lagged by a counted ratio."""
+
+    def construct(self):
+        row = _row(3)
+        self.add(row)
+        self.play(
+            Transform(row, _row(3, Circle).shift(UP), lag_ratio=Counted(0.4)),
+            run_time=1,
+        )
+
+
+class CountedFlash(Scene):
+    """A passing flash whose window is a counted width."""
+
+    def construct(self):
+        flash = ShowPassingFlash(Circle(), time_width=Counted(0.3))
+        self.play(flash, run_time=1)
+
+
+class CountedRunTime(Scene):
+    """A blend whose run time is counted."""
+
+    def construct(self):
+        sq = Square()
+        self.add(sq)
+        self.play(sq.animate.shift(UP), run_time=Counted(0.8))
+
+
+class CountedInert(Scene):
+    """A group with a part that writes nothing, its rate over a counted
+    proportion, beside a blend; after the play a dot is placed by how many
+    times the part's rate was computed.
+    """
+
+    def construct(self):
+        sq, dot = Square(), Dot().shift(LEFT)
+        self.add(sq, dot)
+        proportion = Counted(0.5)
+        quiet = Animation(dot, rate_func=not_quite_there(linear, proportion))
+        self.play(AnimationGroup(quiet, sq.animate.shift(UP)), run_time=1)
+        self.add(Dot().shift(RIGHT * (proportion.calls % 7) * 0.2))
+        self.wait(0.2)

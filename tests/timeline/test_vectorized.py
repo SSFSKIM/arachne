@@ -258,6 +258,32 @@ def test_a_style_held_in_another_precision_keeps_the_whole_play_scalar(name):
     assert "style" in vectorized.refusal(play._animations)
 
 
+#: Scenes whose play computes with a number of the scene's own type, one
+#: operand of the vectorized evaluator each.
+COUNTED = [
+    "CountedProportion",
+    "CountedSquish",
+    "CountedWidth",
+    "CountedLag",
+    "CountedFlash",
+    "CountedRunTime",
+    "CountedInert",
+]
+
+
+@pytest.mark.parametrize("name", COUNTED)
+def test_a_number_of_the_scenes_own_type_keeps_the_whole_play_scalar(name):
+    """A number whose class defines its own arithmetic runs the scene's code
+    each time it is computed with: the play stays scalar, so that code runs
+    when, and as often as, the scalar path runs it.
+    """
+    scene = assert_same_as_scalar(getattr(vectorized_scenes, name))
+    play = scene.timeline.ensure_record().plays[0]
+    assert play.route == "trusted"
+    assert not play.vectorized
+    assert "Counted" in vectorized.refusal(play._animations)
+
+
 def test_a_play_with_one_kept_instant_is_not_batched():
     scene = assert_same_as_scalar(vectorized_scenes.Brief)
     assert vectorized_plays(scene) == [False, True]
