@@ -416,7 +416,10 @@ class Noted(Scene):
     ("note", "why"),
     [
         ("Note()", "a value of a type the key does not know (_thread.lock)"),
-        ("[[0] * 1000 for _ in range(200)]", "too large to key"),
+        (
+            "[[0] * 1000 for _ in range(200)]",
+            "a builtins.list of more than 100000 parts, too large to key",
+        ),
     ],
     ids=["of-a-type-the-key-does-not-know", "over-the-budget"],
 )

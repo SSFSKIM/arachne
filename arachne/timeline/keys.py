@@ -104,8 +104,13 @@ def value_key(
     try:
         return _key(value, keying), tuple(keying.refers)
     except _Unkeyable as found:
-        head = OVER_BUDGET if found.kind == OVER_BUDGET_KIND else UNKEYABLE
-        return head + found.kind.encode() + b"\0" + os.urandom(16), ()
+        # Each marker names its cause's type: the type that fell through, or
+        # that of the value too large to key.
+        if found.kind == OVER_BUDGET_KIND:
+            head, kind = OVER_BUDGET, _qualified(type(value))
+        else:
+            head, kind = UNKEYABLE, found.kind
+        return head + kind.encode() + b"\0" + os.urandom(16), ()
 
 
 def unkeyable(value: Any) -> str | None:
@@ -121,12 +126,15 @@ def unkeyable(value: Any) -> str | None:
 
 
 def marker_reason(key: bytes) -> str | None:
-    """Why ``key`` is a marker, in words, or ``None`` for a key of content."""
-    if key.startswith(UNKEYABLE):
-        kind = key[len(UNKEYABLE) :].split(b"\0", 1)[0].decode()
-        return f"a value of a type the key does not know ({kind})"
-    if key.startswith(OVER_BUDGET):
-        return f"a value of more than {BUDGET} parts, too large to key"
+    """Why ``key`` is a marker, in words, naming the type it is a marker
+    for, or ``None`` for a key of content.
+    """
+    for head in (UNKEYABLE, OVER_BUDGET):
+        if key.startswith(head):
+            kind = key[len(head) :].split(b"\0", 1)[0].decode()
+            if head == UNKEYABLE:
+                return f"a value of a type the key does not know ({kind})"
+            return f"a {kind} of more than {BUDGET} parts, too large to key"
     return None
 
 
