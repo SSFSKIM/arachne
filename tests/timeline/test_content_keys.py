@@ -918,11 +918,12 @@ class Anything:
         return None
 
 
-class Endless(list):
-    """A list whose iteration recurses without end as it is read."""
+class Endless:
+    """An object whose attributes recurse without end as they are read."""
 
-    def __iter__(self):
-        return self.__iter__()
+    @property
+    def __dict__(self):
+        return self.__dict__
 
 
 def test_a_value_nested_too_deep_to_key_is_a_marker_naming_its_type():
@@ -997,17 +998,85 @@ class Unloaded:
         raise RuntimeError("not loaded")
 
 
-class Unlistable(list):
-    """A list whose parts raise when iterated."""
+class Unready:
+    """An object whose attributes raise another error when read."""
 
-    def __iter__(self):
-        raise ValueError("no parts")
+    @property
+    def __dict__(self):
+        raise ValueError("not ready")
 
 
 class Toned(list):
     """A list with a slot of its own."""
 
     __slots__ = ("tone",)
+
+
+def _reporting_alike(kind: type, *methods: str) -> type:
+    """A subclass of ``kind`` whose ``methods`` report one thing for every
+    instance, whatever it holds: a string, a number, nothing to iterate.
+    """
+    same: dict[type, object] = {
+        str: "same",
+        int: 7,
+        float: 7.0,
+        complex: 7j,
+        bytes: b"same",
+        Fraction: Fraction(7),
+    }
+
+    def reported(name: str):
+        if name in ("__iter__", "items", "keys", "values"):
+            return lambda self: iter(())
+        if name == "__repr__":
+            return lambda self: "same"
+        if name == "__str__":
+            return lambda self: "same"
+        return lambda self: same[{"__bytes__": bytes}.get(name, kind)]
+
+    return type(
+        f"Reporting{kind.__name__.title()}",
+        (kind,),
+        {name: reported(name) for name in methods},
+    )
+
+
+#: Two of a builtin kind's subclass that hold different values, whose
+#: overridden methods report the same for both.
+REPORTING_ALIKE = {
+    "str": (_reporting_alike(str, "__str__", "__repr__"), "a", "b"),
+    "int": (_reporting_alike(int, "__int__", "__index__", "__repr__"), 1, 2),
+    "float": (_reporting_alike(float, "__float__", "__repr__"), 1.0, 2.0),
+    "complex": (_reporting_alike(complex, "__complex__", "__repr__"), 1j, 2j),
+    "bytes": (_reporting_alike(bytes, "__bytes__", "__iter__"), b"a", b"b"),
+    "bytearray": (_reporting_alike(bytearray, "__iter__"), b"a", b"b"),
+    "tuple": (_reporting_alike(tuple, "__iter__"), (1,), (2,)),
+    "list": (_reporting_alike(list, "__iter__"), [1], [2]),
+    "set": (_reporting_alike(set, "__iter__"), {1}, {2}),
+    "frozenset": (_reporting_alike(frozenset, "__iter__"), {1}, {2}),
+    "dict": (
+        _reporting_alike(dict, "__iter__", "items", "keys", "values"),
+        {"a": 1},
+        {"a": 2},
+    ),
+    "fraction": (_reporting_alike(Fraction, "__repr__", "__str__"), 1, 2),
+}
+
+
+@pytest.mark.parametrize(
+    ("kind", "first", "second"),
+    list(REPORTING_ALIKE.values()),
+    ids=list(REPORTING_ALIKE),
+)
+def test_a_builtin_kind_s_subclass_keys_by_what_it_holds_not_what_it_reports(
+    kind, first, second
+):
+    """Its value is read as the builtin kind reads it, not through methods
+    the subclass overrides: two that hold different values key apart
+    however alike they report themselves.
+    """
+    assert _value_key(kind(first)) != _value_key(kind(second))
+    assert _value_key(kind(first)) == _value_key(kind(first))
 
 
 def test_a_builtin_kind_s_subclass_keys_as_that_kind_and_all_it_holds_beside():
@@ -1039,11 +1108,11 @@ def test_a_builtin_kind_s_subclass_keys_as_that_kind_and_all_it_holds_beside():
             f"raised: builtins.RuntimeError, keying a {__name__}.Unloaded",
         ),
         (
-            {"parts": Unlistable([1])},
-            f"raised: builtins.ValueError, keying a {__name__}.Unlistable",
+            {"parts": [Unready()]},
+            f"raised: builtins.ValueError, keying a {__name__}.Unready",
         ),
     ],
-    ids=["a-property-that-raises", "an-iteration-that-raises"],
+    ids=["a-property-that-raises", "one-inside-other-values"],
 )
 def test_a_value_whose_key_raises_is_a_marker_naming_it(value, why):
     """The key reads a scene's own objects (their attributes, their parts),

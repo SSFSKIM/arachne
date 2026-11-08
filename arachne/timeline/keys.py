@@ -14,7 +14,9 @@ difference rather than agreement: a value of a type the key does not know
 (:data:`UNREAD_CACHE`), a value holding more parts than one key walks
 (:data:`BUDGET` parts, :data:`OVER_BUDGET`), one nested deeper than it
 follows (:data:`DEPTH`, :data:`OVER_DEPTH`) and one whose reading raised
-(a property, an ``__iter__`` of the scene's own: :data:`RAISED`).
+(a property of the scene's own, a library value's method: :data:`RAISED`).
+A builtin kind's value (a subclass's of ``str``, ``list``, ``dict``) is
+read through the kind's own methods, never ones the subclass overrides.
 
 A class (an enum member's included) and a function are named by their
 qualified names, not their modules': a scene's module is named for the load
@@ -318,12 +320,15 @@ def _content_key(value: Any, keying: _Keying) -> bytes:
     def each(parts: Any) -> bytes:
         return _each(parts, keying)
 
+    # A builtin kind's value is read through the kind's own methods, never
+    # ones a subclass overrides (its ``__str__``, ``__iter__``, ``items``),
+    # which can report one thing for different values.
     if isinstance(value, (int, float, str)):
         # A subclass of a number or a string: its value, as the builtin kind
         # it is (whatever it mixes in); its class and what else it holds
         # are :func:`_held_key`'s.
         kind: Any = next(k for k in type(value).__mro__ if k in (int, float, str))
-        return _framed(repr(kind(value)).encode())
+        return _framed(kind.__repr__(value).encode())
     if isinstance(value, np.ndarray):
         array = np.asarray(value).view(np.ndarray)
         shape = _framed(f"{array.dtype.str}{array.shape}".encode())
@@ -334,18 +339,25 @@ def _content_key(value: Any, keying: _Keying) -> bytes:
         return shape + _digest(np.ascontiguousarray(array).tobytes())
     if isinstance(value, ManimColor):
         return _key(value.to_rgba(), keying)
-    if isinstance(value, (tuple, list)):
-        return each(value)
+    if isinstance(value, tuple):
+        return each(tuple.__iter__(value))
+    if isinstance(value, list):
+        return each(list.__iter__(value))
     if isinstance(value, (dict, set, frozenset)):
         # A dict in the order it holds its items, which code iterating it
         # reads (a colour map applied in order); a set, which has no order a
         # program can rely on, in the order of its parts' keys. Each part
         # with the mobjects it refers to.
         pairs: Any
+        parts: Any
         if isinstance(value, dict):
-            ordered, pairs = True, value.items()
+            ordered, pairs = True, dict.items(value)
         else:
-            ordered, pairs = False, ((part,) for part in value)
+            if isinstance(value, set):
+                parts = set.__iter__(value)
+            else:
+                parts = frozenset.__iter__(value)
+            ordered, pairs = False, ((part,) for part in parts)
         keyed = []
         held = keying.refers
         for pair in pairs:
@@ -361,11 +373,19 @@ def _content_key(value: Any, keying: _Keying) -> bytes:
             _framed(part_key) for part_key, _ in keyed
         )
         if isinstance(value, collections.defaultdict):
-            found += _key(value.default_factory, keying)
+            factory = vars(collections.defaultdict)["default_factory"].__get__(value)
+            found += _key(factory, keying)
         return found
-    if isinstance(value, (bytes, bytearray)):
-        return _digest(bytes(value))
-    if isinstance(value, (complex, Fraction, range, slice)):
+    if isinstance(value, bytes):
+        return _digest(bytes.__bytes__(value))
+    if isinstance(value, bytearray):
+        return _digest(bytes(bytearray.copy(value)))
+    if isinstance(value, complex):
+        return _framed(complex.__repr__(value).encode())
+    if isinstance(value, Fraction):
+        return _framed(Fraction.__repr__(value).encode())
+    if isinstance(value, (range, slice)):
+        # Neither can be subclassed: its own ``repr``.
         return _framed(repr(value).encode())
     if isinstance(value, type):
         return b"class " + _framed(value.__qualname__.encode())
