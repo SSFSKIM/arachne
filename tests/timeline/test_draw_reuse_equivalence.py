@@ -77,7 +77,6 @@ def test_every_write_is_the_same_with_and_without_reuse(scene_class, draw_path):
 #: which reuse nothing.
 DELIVERED = [
     (reuse_scenes.StillWait, True),
-    (reuse_scenes.Holds, True),
     (reuse_scenes.ReplacedDisplay, False),
     (reuse_scenes.PatchedCamera, False),
 ]

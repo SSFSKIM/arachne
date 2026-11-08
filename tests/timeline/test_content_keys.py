@@ -1472,6 +1472,7 @@ PURE_ENGINE_CACHES = {
     "arachne.lint.parts._unit_types",
     "arachne.lint.parts._text_like_types",
     "arachne.mobject.types.vectorized_mobject._bezier_parameters",
+    "arachne.timeline.camera_code._nothing_code",
     "arachne.timeline.dispatch._all_engine_classes",
     "arachne.timeline.dispatch.draw_methods",
     "arachne.timeline.dispatch.camera_draw_methods",
