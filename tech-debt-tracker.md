@@ -391,3 +391,37 @@ lifted.
   leaves `vectorize_trusted` on. Only the removed options are refused there (`tests/test_config_removed.py`).
   Direction: refuse an unknown `[CLI]` key, naming the nearest option, once the keys that sections legitimately carry
   beside the options (plugins' among them) are listed.
+
+## Speed: measured and not built
+
+Measured on a sample of scenes, each opened in a session, edited to make its last play 0.5 s longer, and executed
+again; "the floor" is the time from the edit to the new record.
+
+- **The deep copies in a play's `begin`.** Taken across every route (`Transform.begin`, `create_starting_mobject`,
+  fades, `Write`'s outlines), they are about 11–14% of the floor by the per-scene median, under the bar for a lever of
+  their own. Every deep copy, whoever asks for it, is about 20% by the median. Direction: make mobject copies cheaper
+  rather than fewer.
+- **`DrawBorderThenFill` builds its outline twice.** `__init__` builds it (`arachne/animation/creation.py:243`) and
+  `begin` builds it again (`:252`), which wastes about 1% of the floor. Direction: build it once, in `begin`, once
+  nothing reads the first.
+- **Fast-forward of trusted plays.** After their values are vectorized, evaluating trusted plays is about 19% of the
+  floor by the per-scene median and 12% pooled. About half of that is the play's `begin`, so a fast-forward that
+  still runs `begin` saves little. Not built.
+- **A memo of formula construction (`MathTex`, `Tex`) surviving executions.** Formula construction is about 17% of a
+  reload; the parse and the layout a memo would skip are about 8% of it, and its net is about 5–6% of the floor
+  before the cost of a hit. A hit must hand out a deep copy of what it keeps, and the copy is about 92% of a hit, so
+  a hit is only 1.2–1.6x faster than a construction whose image the image cache already holds: about 1.3–3% of the
+  floor realized. Not built; a reference implementation exists on a branch. What it found a memo's key must cover,
+  beyond the arguments, the template and the image file's content:
+  - module constants a construction reads at call time (`SCALE_FACTOR_PER_FONT_POINT`);
+  - engine functions changed in place (`__defaults__`, `__code__`), which a check of class members by identity
+    misses;
+  - which image the image cache holds, not only whether it holds one (see "The image cache");
+  - file reads a hit skips that the input watcher may record (the parser's temporary `<stem>_.svg`, through a
+    symlink outside the excluded directories);
+  - every raw configuration value construction reads (the settings `get_dir` resolves directories from), not only
+    the resolved paths.
+
+  A hit also skips the constructor's diagnostics (a parse warning is logged on a miss only), and every mobject a
+  construction makes advances its line's origin numbering, temporaries included, so a hit must replay that count.
+  Revisit if mobject copies become substantially cheaper.
