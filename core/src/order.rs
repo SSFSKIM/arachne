@@ -249,7 +249,20 @@ pub(crate) fn within_term(a: &Fragment, da: f64, ea: f64, b: &Fragment, db: f64,
 /// registered plane ([`coplanar_tied`]) or are one path's fill and its own stroke
 /// ([`own_layers`]); then paint order.
 pub fn at_sample(a: &Fragment, da: f64, ea: f64, b: &Fragment, db: f64, eb: f64) -> Ordering {
-    if own_layers(a, b) || coplanar_tied(a, da, ea, b, db, eb) || tied(da, ea, db, eb) {
+    ordered(a, da, b, db, weak_at(a, da, ea, b, db, eb))
+}
+
+/// Whether [`at_sample`]'s order of `a` and `b` at a sub-sample both cover is paint order, weak:
+/// one path's fill and its own stroke, one depth on one registered plane, or tied. What
+/// [`at_sample`] and [`strong_at`] read; the same both ways, as each of the three is.
+fn weak_at(a: &Fragment, da: f64, ea: f64, b: &Fragment, db: f64, eb: f64) -> bool {
+    own_layers(a, b) || coplanar_tied(a, da, ea, b, db, eb) || tied(da, ea, db, eb)
+}
+
+/// [`at_sample`]'s order of `a` (at depth `da`) against `b` (at `db`), given whether it is weak
+/// ([`weak_at`]): paint order if so, else the nearer in front.
+fn ordered(a: &Fragment, da: f64, b: &Fragment, db: f64, weak: bool) -> Ordering {
+    if weak {
         painted(a, b)
     } else {
         da.total_cmp(&db)
@@ -282,43 +295,113 @@ pub fn rank_sample(
 /// ([`own_layers`]) is weak. So at one sub-sample the strong orders are strict orders of finite
 /// depths, which never cycle.
 pub fn strong_at(a: &Fragment, da: f64, ea: f64, b: &Fragment, db: f64, eb: f64) -> bool {
-    !own_layers(a, b) && !coplanar_tied(a, da, ea, b, db, eb) && !tied(da, ea, db, eb)
+    !weak_at(a, da, ea, b, db, eb)
 }
 
-/// `a` against `b` at the pixel, from their coverage and depth at each sub-sample, and how that was
-/// decided: [`Ordering::Less`] when `a` is in front.
+// The masks below hold one bit per sub-sample: a sample count past their width fails the build
+// rather than truncate them.
+const _: () = assert!(SAMPLES <= u16::BITS as usize);
+
+/// One way of a pair's orders at the sub-samples both cover, as masks over the sub-samples (bit
+/// `k` for sub-sample `k`, clear wherever either does not cover it): where [`at_sample`] puts the
+/// first in front ([`Ordering::Less`]), where behind ([`Ordering::Greater`]), and where
+/// [`strong_at`] holds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AtSamples {
+    pub front: u16,
+    pub behind: u16,
+    pub strong: u16,
+}
+
+/// A pair's orders at each sub-sample both cover, each read once ([`shared`]): what [`pair`]
+/// decides the pixel's order from, and [`at_sample`]'s and [`strong_at`]'s orders there both
+/// ways, which the pixel's sub-sample ranks read rather than evaluate again.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Shared {
+    /// The sub-samples both cover.
+    pub covered: u16,
+    /// Where the two are not one depth ([`tied`], [`coplanar_tied`]) and `a` is the nearer, and
+    /// where `b` is: [`pair`]'s counts.
+    pub a_nearer: u16,
+    pub b_nearer: u16,
+    /// `a` against `b`, and `b` against `a`.
+    pub ab: AtSamples,
+    pub ba: AtSamples,
+}
+
+/// The orders of `a` and `b` at each sub-sample both cover ([`Shared`]), with one evaluation of
+/// their tie per sub-sample: [`pair`]'s test of `a` against `b`, which with [`own_layers`] is
+/// [`weak_at`]'s of `a` against `b` and of `b` against `a`, since [`own_layers`],
+/// [`coplanar_tied`] and [`tied`] are each symmetric in their two sides.
 // The sub-sample `k` indexes both fragments' coverage and depth rows.
 #[allow(clippy::needless_range_loop)]
-pub fn pair(a: Seen, b: Seen) -> (Ordering, Decided) {
-    let (mut shared, mut a_front, mut b_front) = (0, 0, 0);
+pub fn shared(a: Seen, b: Seen) -> Shared {
+    let mut s = Shared::default();
     let (ca, da, cb, db) = (a.coverage, a.depth, b.coverage, b.depth);
+    let (fa, fb) = (a.fragment, b.fragment);
+    let own = own_layers(fa, fb);
     for k in 0..SAMPLES {
         if ca[k] == 0 || cb[k] == 0 {
             continue;
         }
-        shared += 1;
-        let (fa, fb) = (a.fragment, b.fragment);
-        if !tied(da[k], a.err, db[k], b.err) && !coplanar_tied(fa, da[k], a.err, fb, db[k], b.err) {
+        let bit = 1u16 << k;
+        s.covered |= bit;
+        let tie =
+            tied(da[k], a.err, db[k], b.err) || coplanar_tied(fa, da[k], a.err, fb, db[k], b.err);
+        if !tie {
             if da[k] < db[k] {
-                a_front += 1;
+                s.a_nearer |= bit;
             } else {
-                b_front += 1;
+                s.b_nearer |= bit;
+            }
+        }
+        let weak = own || tie;
+        for (at, o) in [
+            (&mut s.ab, ordered(fa, da[k], fb, db[k], weak)),
+            (&mut s.ba, ordered(fb, db[k], fa, da[k], weak)),
+        ] {
+            match o {
+                Ordering::Less => at.front |= bit,
+                Ordering::Greater => at.behind |= bit,
+                Ordering::Equal => {}
+            }
+            if !weak {
+                at.strong |= bit;
             }
         }
     }
-    let paint = painted(a.fragment, b.fragment);
-    if shared > 0 && own_layers(a.fragment, b.fragment) {
-        return (paint, Decided::Paint);
-    }
-    match (shared, a_front, b_front) {
-        (0, _, _) => (paint, Decided::Paint),
-        (_, 0, 0) => (paint, Decided::Tie),
-        (_, _, 0) => (Ordering::Less, Decided::Depth),
-        (_, 0, _) => (Ordering::Greater, Decided::Depth),
-        _ => (
-            a_front.cmp(&b_front).reverse().then(paint),
-            Decided::Majority,
-        ),
+    s
+}
+
+/// `a` against `b` at the pixel, from their coverage and depth at each sub-sample, and how that was
+/// decided: [`Ordering::Less`] when `a` is in front.
+pub fn pair(a: Seen, b: Seen) -> (Ordering, Decided) {
+    shared(a, b).decided(a.fragment, b.fragment)
+}
+
+impl Shared {
+    /// [`pair`]'s order of `a` against `b`, the fragments these are the orders of, and how it was
+    /// decided.
+    pub fn decided(&self, a: &Fragment, b: &Fragment) -> (Ordering, Decided) {
+        let (shared, a_front, b_front) = (
+            self.covered.count_ones(),
+            self.a_nearer.count_ones(),
+            self.b_nearer.count_ones(),
+        );
+        let paint = painted(a, b);
+        if shared > 0 && own_layers(a, b) {
+            return (paint, Decided::Paint);
+        }
+        match (shared, a_front, b_front) {
+            (0, _, _) => (paint, Decided::Paint),
+            (_, 0, 0) => (paint, Decided::Tie),
+            (_, _, 0) => (Ordering::Less, Decided::Depth),
+            (_, 0, _) => (Ordering::Greater, Decided::Depth),
+            _ => (
+                a_front.cmp(&b_front).reverse().then(paint),
+                Decided::Majority,
+            ),
+        }
     }
 }
 

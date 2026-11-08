@@ -1193,7 +1193,14 @@ pub(crate) struct Scratch<'f> {
     fronts: Vec<bool>,
     /// `strong[a * n + b]`: depth decided that pair ([`crate::order::Decided::is_strong`]).
     strong: Vec<bool>,
+    /// `at[a * n + b]`: fragment `a` against fragment `b` at each sub-sample both cover
+    /// ([`crate::order::shared`]), what the sub-sample orders read; empty for a flat pixel.
+    at: Vec<crate::order::AtSamples>,
     samples: SampleRanks,
+    /// Evaluate each sub-sample order where it is read, as before [`Scratch::at`] held them: the
+    /// tests' reference for the orders read from it.
+    #[cfg(test)]
+    unhoisted: bool,
 }
 
 /// Each sub-sample's fragments in the order the sample resolve composites them, and which of them
@@ -1331,16 +1338,10 @@ pub(crate) fn resolve_pixel(
     let painted = |a: usize, b: usize| order::painted(&frags[a], &frags[b]);
     // `a`'s depths and their bound against `b` ([`Depths::against`]).
     let read = |a: usize, b: usize| rows[a].against(&frags[a], &frags[b]);
-    // `a` against `b` at sub-sample `k`, where both cover it.
+    // `a` against `b` at sub-sample `k`, where both cover it, evaluated there.
     let at = |a: usize, b: usize, k: usize| {
         let ((da, ea), (db, eb)) = (read(a, b), read(b, a));
         order::at_sample(&frags[a], da[k], ea, &frags[b], db[k], eb)
-    };
-    // The sub-sample orders, as `SampleRanks::rank` reads them.
-    let front_at = |a: usize, b: usize, k: usize| a != b && at(a, b, k) == Ordering::Less;
-    let strong_at = |a: usize, b: usize, k: usize| {
-        let ((da, ea), (db, eb)) = (read(a, b), read(b, a));
-        order::strong_at(&frags[a], da[k], ea, &frags[b], db[k], eb)
     };
     s.samples.ends.clear();
     let seen = |i: usize, against: usize| {
@@ -1352,18 +1353,26 @@ pub(crate) fn resolve_pixel(
             err,
         }
     };
-    // Each pair's order, once: `order::pair` of `b` and `a` is that of `a` and `b` reversed.
+    // Each pair's order, once: `order::pair` of `b` and `a` is that of `a` and `b` reversed. From
+    // the same reads, each pair's orders at every sub-sample both cover, both ways
+    // (`order::shared`), which the sub-sample orders below read rather than evaluate again.
     let n = frags.len();
     s.fronts.clear();
     s.fronts.resize(n * n, false);
     s.strong.clear();
     s.strong.resize(n * n, false);
+    s.at.clear();
+    if !flat {
+        s.at.resize(n * n, order::AtSamples::default());
+    }
     for a in 0..n {
         for b in a + 1..n {
             let (o, how) = if flat {
                 (painted(a, b), order::Decided::Paint)
             } else {
-                order::pair(seen(a, b), seen(b, a))
+                let shared = order::shared(seen(a, b), seen(b, a));
+                (s.at[a * n + b], s.at[b * n + a]) = (shared.ab, shared.ba);
+                shared.decided(&frags[a], &frags[b])
             };
             s.fronts[a * n + b] = o == Ordering::Less;
             s.fronts[b * n + a] = o == Ordering::Greater;
@@ -1372,6 +1381,33 @@ pub(crate) fn resolve_pixel(
         }
     }
     let (fronts, strong) = (&s.fronts, &s.strong);
+    // The sub-sample orders at a sub-sample both cover, as `SampleRanks::rank` and the units read
+    // them: `a` in front of `b`, behind it, and depth deciding. Read from `s.at`; a flat pixel has
+    // none, and evaluates them.
+    #[cfg(test)]
+    let unhoisted = s.unhoisted;
+    #[cfg(not(test))]
+    let unhoisted = false;
+    let table = (!flat && !unhoisted).then_some(&s.at);
+    let bit = |mask: u16, k: usize| mask >> k & 1 != 0;
+    let front_at = |a: usize, b: usize, k: usize| {
+        a != b
+            && match table {
+                Some(t) => bit(t[a * n + b].front, k),
+                None => at(a, b, k) == Ordering::Less,
+            }
+    };
+    let behind_at = |a: usize, b: usize, k: usize| match table {
+        Some(t) => bit(t[a * n + b].behind, k),
+        None => at(a, b, k) == Ordering::Greater,
+    };
+    let strong_at = |a: usize, b: usize, k: usize| match table {
+        Some(t) => bit(t[a * n + b].strong, k),
+        None => {
+            let ((da, ea), (db, eb)) = (read(a, b), read(b, a));
+            order::strong_at(&frags[a], da[k], ea, &frags[b], db[k], eb)
+        }
+    };
     s.covering.clear();
     s.covering.extend(0..n);
     let how = order::rank(
@@ -1454,9 +1490,9 @@ pub(crate) fn resolve_pixel(
     // k, where both cover it.
     let before = |u: (usize, usize), v: (usize, usize), k: usize| {
         order[u.0..u.1].iter().all(|a| {
-            order[v.0..v.1].iter().all(|b| {
-                !flat && (cov[*a][k] == 0 || cov[*b][k] == 0) || at(*a, *b, k) != Ordering::Greater
-            })
+            order[v.0..v.1]
+                .iter()
+                .all(|b| !flat && (cov[*a][k] == 0 || cov[*b][k] == 0) || !behind_at(*a, *b, k))
         })
     };
     let unit_mask = |u: (usize, usize)| {
@@ -1688,6 +1724,266 @@ mod tests {
         d.more.clear();
         assert_eq!(read(&d, &stroke, &same), own);
         assert_eq!(read(&d, &line, &same), own);
+    }
+
+    /// A pseudo-random pixel: `n` fragments of paths' layers and meshes, on registered planes or
+    /// none, sloped or flat, some read on a plane row against what shares it (so a fragment's
+    /// depths against one differ from its depths against another), at depths and bounds that tie,
+    /// part within their terms or part beyond them, translucent or opaque, covering the pixel
+    /// whole or a few sub-samples; with each fragment's coverage at each sub-sample and depths.
+    fn random_pixel(
+        next: &mut impl FnMut(u64) -> u64,
+    ) -> (Vec<Fragment<'static>>, Vec<[u8; SAMPLES]>, Vec<Depths>) {
+        let n = 2 + next(6) as usize;
+        let (mut frags, mut rows, mut depths) = (Vec::new(), Vec::new(), Vec::new());
+        for _ in 0..n {
+            let slope = [0.0, 0.05, -0.05, 0.3][next(4) as usize];
+            let key = next(6) as f64 * 0.04;
+            let plane = Plane {
+                err: [0.0, 0.01, 0.05][next(3) as usize],
+                ..Plane::new(key - slope * 0.5, slope, [0.0, 0.02][next(2) as usize])
+            };
+            let mask = match next(3) {
+                0 => FULL,
+                _ => (next(1 << 16) as u16) | 1 << next(16),
+            };
+            let coverage = if next(2) == 0 {
+                Coverage::Mask(mask)
+            } else {
+                let area = if mask == FULL { 1.0 } else { 0.5 };
+                Coverage::Area { area, id: 0 }
+            };
+            let colour = if next(3) == 0 {
+                [0, 60, 120, 128]
+            } else {
+                [next(256) as u8, 40, 200, 255]
+            };
+            let mut f = Fragment::new(plane, colour, coverage, next(4) as u32, next(6) as u32);
+            f.path_layer = next(3) != 0;
+            f.plane = [[0, 0, 0, 0], [7, 0, 0, 0], [9, 0, 0, 0], [3, 7, 0, 0]][next(4) as usize];
+            f.snap = [0.0, 0.05, f64::INFINITY][next(3) as usize];
+            if f.plane[0] == 3 || next(4) == 0 {
+                f.own = [0.0, 0.1][next(2) as usize];
+            }
+            if next(4) == 0 {
+                f.wide = 0.1;
+            }
+            let mut d = Depths::of_plane(&f, 0, 0);
+            if f.path_layer && f.plane[0] != 0 && next(2) == 0 {
+                let off = [-0.1, 0.0, 0.1][next(3) as usize];
+                d.on_plane = Some((d.samples.map(|v| v + off), 0.01));
+                if f.plane[1] != 0 {
+                    d.more = vec![Some((d.samples.map(|v| v - off), 0.0))];
+                }
+            }
+            let row: [u8; SAMPLES] =
+                std::array::from_fn(|k| if mask >> k & 1 != 0 { 255 } else { 0 });
+            frags.push(f);
+            rows.push(row);
+            depths.push(d);
+        }
+        (frags, rows, depths)
+    }
+
+    /// The sub-sample orders a pixel reads from its pairs' (`Scratch::at`, filled from
+    /// `order::shared`) are those it evaluates where it reads them: on pseudo-random pixels, the
+    /// resolve gives one pixel both ways, ranks every sub-sample one way, keeps the same order and
+    /// shows the same fragments; among them pixels whose strong orders cycle, pixels a layer
+    /// covering them whole culls through the sub-sample ranks, and sub-samples whose rank breaks
+    /// a cycle through a weak order.
+    #[test]
+    fn the_sub_sample_orders_read_from_the_pairs_are_those_evaluated_where_read() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = |m: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % m
+        };
+        let (mut cycles, mut culls, mut weak_subs, mut sampled) = (0, 0, 0, 0);
+        for _ in 0..40_000 {
+            let (frags, rows, depths) = random_pixel(&mut next);
+            let run = |unhoisted: bool| {
+                let mut s = Scratch {
+                    unhoisted,
+                    ..Scratch::default()
+                };
+                s.fragments.extend_from_slice(&frags);
+                let got = resolve_pixel(
+                    &mut s,
+                    [10, 20, 30, 255],
+                    |i, _| rows[i],
+                    |i, _| depths[i].clone(),
+                );
+                let ranks = (s.samples.ranks.clone(), s.samples.ends.clone());
+                (got, s.order.clone(), ranks, s.samples.shown.clone())
+            };
+            let hoisted = run(false);
+            assert_eq!(hoisted, run(true), "{frags:?} {rows:?} {depths:?}");
+            sampled += (hoisted.0.0 == Resolve::Sample) as usize;
+            // Which of the paths that read the sub-sample orders the pixel took.
+            let n = frags.len();
+            let mut d = depths.clone();
+            strokes_on_own_fills(&frags, &mut d, |i| rows[i]);
+            let read = |a: usize, b: usize| d[a].against(&frags[a], &frags[b]);
+            let seen = |i: usize, against: usize| {
+                let (depth, err) = read(i, against);
+                crate::order::Seen {
+                    fragment: &frags[i],
+                    coverage: &rows[i],
+                    depth,
+                    err,
+                }
+            };
+            let pair = |a: usize, b: usize| crate::order::pair(seen(a, b), seen(b, a));
+            let painted = |a: usize, b: usize| crate::order::painted(&frags[a], &frags[b]);
+            let mut out = Vec::new();
+            let items: Vec<usize> = (0..n).collect();
+            let how = crate::order::rank(
+                &items,
+                |a, b| a != b && pair(a, b).0 == Ordering::Less,
+                |a, b| pair(a, b).1.is_strong(),
+                painted,
+                &mut out,
+            );
+            let flat = d
+                .iter()
+                .all(|r| r.samples == d[0].samples && r.rows().all(|(on, _)| *on == d[0].samples));
+            if flat {
+                continue;
+            }
+            if how == crate::order::Ranked::Strong {
+                cycles += 1;
+            } else if out
+                .iter()
+                .any(|i| frags[*i].is_opaque() && frags[*i].is_full())
+            {
+                culls += 1;
+            }
+            for k in 0..SAMPLES {
+                let covering: Vec<usize> = (0..n).filter(|i| rows[*i][k] != 0).collect();
+                let at = |a: usize, b: usize| {
+                    let ((da, ea), (db, eb)) = (read(a, b), read(b, a));
+                    (&frags[a], da[k], ea, &frags[b], db[k], eb)
+                };
+                let how = crate::order::rank_sample(
+                    &covering,
+                    |a, b| {
+                        let (fa, da, ea, fb, db, eb) = at(a, b);
+                        a != b && crate::order::at_sample(fa, da, ea, fb, db, eb).is_lt()
+                    },
+                    |a, b| {
+                        let (fa, da, ea, fb, db, eb) = at(a, b);
+                        crate::order::strong_at(fa, da, ea, fb, db, eb)
+                    },
+                    painted,
+                    &mut out,
+                );
+                weak_subs += (how == crate::order::Ranked::Weak) as usize;
+            }
+        }
+        assert!(
+            cycles > 100 && culls > 100 && weak_subs > 100 && sampled > 100,
+            "{cycles} {culls} {weak_subs} {sampled}"
+        );
+    }
+
+    /// `order::shared`'s masks are `order::at_sample`'s and `order::strong_at`'s orders both ways
+    /// at each sub-sample both cover, and nothing elsewhere; and `order::pair` from them decides
+    /// as counting each shared sub-sample's tie in turn does.
+    #[test]
+    fn a_pair_s_shared_orders_are_its_orders_at_each_sub_sample_both_ways() {
+        use crate::order::{
+            Decided, Seen, at_sample, coplanar_tied, own_layers, painted, strong_at,
+        };
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = |m: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % m
+        };
+        let mut decided = [0usize; 4];
+        for _ in 0..20_000 {
+            let (frags, rows, depths) = random_pixel(&mut next);
+            for a in 0..frags.len() {
+                for b in 0..frags.len() {
+                    if a == b {
+                        continue;
+                    }
+                    let (fa, fb) = (&frags[a], &frags[b]);
+                    let ((da, ea), (db, eb)) =
+                        (depths[a].against(fa, fb), depths[b].against(fb, fa));
+                    let sa = Seen {
+                        fragment: fa,
+                        coverage: &rows[a],
+                        depth: da,
+                        err: ea,
+                    };
+                    let sb = Seen {
+                        fragment: fb,
+                        coverage: &rows[b],
+                        depth: db,
+                        err: eb,
+                    };
+                    let s = crate::order::shared(sa, sb);
+                    let (mut shared, mut a_front, mut b_front) = (0, 0, 0);
+                    for k in 0..SAMPLES {
+                        let bit = |m: u16| m >> k & 1 != 0;
+                        let both = rows[a][k] != 0 && rows[b][k] != 0;
+                        assert_eq!(bit(s.covered), both);
+                        let (ab, ba) = if both {
+                            (
+                                at_sample(fa, da[k], ea, fb, db[k], eb),
+                                at_sample(fb, db[k], eb, fa, da[k], ea),
+                            )
+                        } else {
+                            (Ordering::Equal, Ordering::Equal)
+                        };
+                        let strong = both && strong_at(fa, da[k], ea, fb, db[k], eb);
+                        assert_eq!(strong, both && strong_at(fb, db[k], eb, fa, da[k], ea));
+                        for (at, o) in [(s.ab, ab), (s.ba, ba)] {
+                            assert_eq!(
+                                (bit(at.front), bit(at.behind), bit(at.strong)),
+                                (o.is_lt(), o.is_gt(), strong),
+                                "{a} {b} {k}"
+                            );
+                        }
+                        // `pair` as it counted them.
+                        if both {
+                            shared += 1;
+                            if !crate::order::tied(da[k], ea, db[k], eb)
+                                && !coplanar_tied(fa, da[k], ea, fb, db[k], eb)
+                            {
+                                if da[k] < db[k] {
+                                    a_front += 1;
+                                } else {
+                                    b_front += 1;
+                                }
+                            }
+                        }
+                    }
+                    let paint = painted(fa, fb);
+                    let want = if shared > 0 && own_layers(fa, fb) {
+                        (paint, Decided::Paint)
+                    } else {
+                        match (shared, a_front, b_front) {
+                            (0, _, _) => (paint, Decided::Paint),
+                            (_, 0, 0) => (paint, Decided::Tie),
+                            (_, _, 0) => (Ordering::Less, Decided::Depth),
+                            (_, 0, _) => (Ordering::Greater, Decided::Depth),
+                            _ => (
+                                a_front.cmp(&b_front).reverse().then(paint),
+                                Decided::Majority,
+                            ),
+                        }
+                    };
+                    assert_eq!(crate::order::pair(sa, sb), want);
+                    decided[want.1 as usize] += 1;
+                }
+            }
+        }
+        assert!(decided.iter().all(|c| *c > 1000), "{decided:?}");
     }
 
     #[test]
