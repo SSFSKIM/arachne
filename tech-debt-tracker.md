@@ -327,10 +327,13 @@ lifted.
 - **An execution summary does not cover a capture's depth references or pictures.** `summarize` digests each
   capture's mobject states, lists and camera inputs, not `Capture.references` (a depth reference point the scene
   may not hold) nor `Capture.pictures` (another camera's picture). Two executions that differ only there summarise
-  alike, so a comparison of executions by summary, or an answer kept under one, would take one for the other. A
-  summary needs, per capture, each reference's mobject position and point, and each picture's display position and
-  a digest of its pixels (one per kept array, by identity, as the background's should be). A content key
-  (`RegisteredState.content_key`, `PlayRecord.sample_keys`) is a state's, and neither is part of one.
+  alike, so a comparison of them reports no divergence where there is one: the probe's (`Session.compare`), a
+  forward run's (`fallback.py`) and a render's self-check (`server/render.py`). No frame is wrong for it: a
+  summary selects no frame and no answer (each run draws from its own record, and kept answers are keyed by
+  manifest, not by summary), so what is lost is a report. A summary needs, per capture, each reference's mobject
+  position and point, and each picture's display position and a digest of its pixels (one per kept array, by
+  identity, as the background's should be). A content key (`RegisteredState.content_key`,
+  `PlayRecord.sample_keys`) is a state's, and neither is part of one.
 - **Replacing an engine module's function is not traced.** The draw-reads test sees reads of mobjects, cameras, the
   configuration, the camera's display functions and the files a drawing opens, not which module function a draw
   calls. A scene that replaces one (`camera.py`'s, `vectorized_mobject.py`'s helpers) runs its own code where the
