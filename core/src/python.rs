@@ -1191,6 +1191,59 @@ fn points_somewhere(newell: [f64; 3], extent: f64, perimeter: f64, grid: f64) ->
     crate::depth::points_somewhere(newell, extent, perimeter, grid)
 }
 
+/// How far a record's points may lie off a plane of unit normal `normal` and still be on it, as
+/// the frame's plane registry takes it (`depth::Registry`), and whether the record is flat: the
+/// record offered alone to a registry for points snapped to `grid` (`0.0`: not snapped), as a
+/// frame offers it. `points` are its points placed in the world, as drawn; `places` its two
+/// placements, outer first, each three rows of four (the identity for none); `shape` its shape's
+/// own points. `planes` is a path's planarity code (`depth::Planarity::code`, as XF's `planes`
+/// carries it, or as decided from its points), `None` for a mesh triangle, whose `points` are its
+/// three corners and its plane the one through them (`depth::WorldPlane::of_triangle`).
+///
+/// The tolerance is `depth::snap_departure(grid, normal, places, shape)`, plus, for a flat
+/// record, `depth::departure(own, points)` of its own plane `own`: a path made flat (Newell's,
+/// the widest triangle's or an axis plane), or a mesh triangle, whose points do not lie on a
+/// line. A record with no plane of its own (points on a line, whatever its code, or a curve) has
+/// no departure part, and `False` for flat. A `ValueError` for a path a frame does not offer, on
+/// the plane nearest its points (code 3).
+#[pyfunction(name = "_registry_tolerance", signature = (points, normal, grid, places, shape, planes))]
+fn registry_tolerance(
+    points: Vec<[f64; 3]>,
+    normal: [f64; 3],
+    grid: f64,
+    places: [Affine; 2],
+    shape: Vec<[f64; 3]>,
+    planes: Option<u8>,
+) -> PyResult<(f64, bool)> {
+    use crate::depth::{Planarity, Registry, WorldPlane};
+    if points.is_empty() {
+        return Err(PyValueError::new_err("a record has points"));
+    }
+    let mut registry = Registry::of_grid(grid);
+    let (handle, flat) = match planes {
+        Some(code) => {
+            let planarity = Planarity::of_code(code)
+                .ok_or_else(|| PyValueError::new_err(format!("no planarity has code {code}")))?;
+            if planarity == Planarity::Nearest {
+                return Err(PyValueError::new_err(
+                    "a path on the plane nearest its points is not offered",
+                ));
+            }
+            let (handle, flat, _) = registry.offer_path(&points, planarity, &places, &shape);
+            (handle, flat)
+        }
+        None => {
+            let corners: [[f64; 3]; 3] = points
+                .as_slice()
+                .try_into()
+                .map_err(|_| PyValueError::new_err("a mesh triangle has three corners"))?;
+            let plane = WorldPlane::of_triangle(corners, grid);
+            registry.offer_triangle(plane, &corners, &places, &shape)
+        }
+    };
+    Ok((registry.tolerance_along(handle, normal), flat))
+}
+
 /// Every call count by name since the last take, each set back to zero (`counters`).
 #[cfg(feature = "counters")]
 #[pyfunction(name = "_take_counts")]
@@ -1217,6 +1270,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(read_xf, m)?)?;
     m.add_function(wrap_pyfunction!(write_xf, m)?)?;
     m.add_function(wrap_pyfunction!(points_somewhere, m)?)?;
+    m.add_function(wrap_pyfunction!(registry_tolerance, m)?)?;
     #[cfg(feature = "counters")]
     m.add_function(wrap_pyfunction!(take_counts, m)?)?;
     Ok(())

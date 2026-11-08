@@ -802,3 +802,53 @@ def test_points_somewhere_is_the_core_s_own_bound_at_the_grid_given(
 
     newell = (0.6 * length, 0.0, 0.8 * length)
     assert _points_somewhere(newell, extent, perimeter, grid) is want
+
+
+IDENTITY_PLACES = [[[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]]] * 2
+
+
+def test_registry_tolerance_is_the_snap_s_departure_and_a_flat_record_s_own():
+    from arachne_core._core import _registry_tolerance
+
+    grid, half = 1 / 16384, 1 / 32768
+    up, diagonal = (0.0, 0.0, 1.0), (3**-0.5,) * 3
+    face = [tuple(p) for p in square(0.5)]
+    # Unplaced: half a step times |n|_1, besides rounding.
+    tolerance, flat = _registry_tolerance(face, up, grid, IDENTITY_PLACES, face, 1)
+    assert flat and half <= tolerance <= half + 1e-15
+    tolerance, _ = _registry_tolerance(face, diagonal, grid, IDENTITY_PLACES, face, 1)
+    assert 3**0.5 * half <= tolerance <= 3**0.5 * half + 1e-14
+    # Not snapped: the core's own placing alone.
+    tolerance, _ = _registry_tolerance(face, up, 0.0, IDENTITY_PLACES, face, 1)
+    assert tolerance < 1e-15
+    # A bowed quad: its departure from its own plane (Newell's, through its first corner) counts,
+    # unless it is a curve, which has no plane of its own.
+    bow = 4 * grid
+    bowed = [(0.0, 0.0, bow), (1.0, 0.0, -bow), (1.0, 1.0, bow), (0.0, 1.0, -bow)]
+    as_face, flat = _registry_tolerance(bowed, up, grid, IDENTITY_PLACES, bowed, 1)
+    as_curve, curve_flat = _registry_tolerance(bowed, up, grid, IDENTITY_PLACES, bowed, 0)
+    assert flat and not curve_flat
+    assert as_curve <= half + 1e-14 and as_face >= as_curve + 1.9 * bow
+    # Points on a line have no plane of their own, whatever their code.
+    line = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)]
+    tolerance, flat = _registry_tolerance(line, up, grid, IDENTITY_PLACES, line, 1)
+    assert not flat and half <= tolerance <= half + 1e-15
+    # A mesh triangle, on the plane through its corners; one whose corners lie on a line has no
+    # plane of its own.
+    corners = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)]
+    tolerance, flat = _registry_tolerance(corners, up, grid, IDENTITY_PLACES, corners, None)
+    assert flat and half <= tolerance <= half + 1e-15
+    tolerance, flat = _registry_tolerance(line, up, grid, IDENTITY_PLACES, line, None)
+    assert not flat and half <= tolerance <= half + 1e-15
+    # Placed from coordinates in the thousands: the placement's translation and its snapped
+    # linear part (2^-25 of each coordinate it places), then the shape's points seen through it.
+    s = 1 / 2000
+    inner = [[s, 0.0, 0.0, 0.5], [0.0, s, 0.0, 0.5], [0.0, 0.0, s, 0.0]]
+    local = [tuple(p) for p in square(1000.0)]
+    placed = [(s * x + 0.5, s * y + 0.5, s * z) for x, y, z in local]
+    tolerance, flat = _registry_tolerance(placed, up, grid, [IDENTITY_PLACES[0], inner], local, 1)
+    want = half + 2000 * 2**-25 + half * s
+    assert flat and abs(tolerance - want) <= 1e-14
+    # A path on the plane nearest its points is not offered.
+    with pytest.raises(ValueError):
+        _registry_tolerance(face, up, grid, IDENTITY_PLACES, face, 3)
