@@ -2134,12 +2134,48 @@ pub struct Centreline {
     /// moving on their own, less for the ends of a cubic's piece, which move together.
     turns: Vec<f64>,
     /// For each segment, the segment that shares each of its ends (start, end) as one point of the
-    /// list it was made from: the previous or next one of its run, one point of content too. None
-    /// at a run's closing point or where two runs meet, whose two points are two points of content,
-    /// which the snap may have put together.
+    /// list it was made from and of one cubic: the previous or next one of its run, one point of
+    /// content too. None at a run's closing point, where two runs meet and where a cubic begins
+    /// after another ([`Boundary`]), whose two points are two points of content, which the snap may
+    /// have put together.
     partners: Vec<[Option<usize>; 2]>,
+    /// The segments that begin a cubic where the content may start them elsewhere than the drawn
+    /// frame does, by segment, in order ([`Boundary`]).
+    joints: Vec<(usize, Boundary)>,
+    /// The most a joined one may move its segment's start past the shift
+    /// ([`Centreline::slack_bound`]).
+    joined_most: f64,
+    /// The split ones by how far their drawn gap lies past their tolerance, least first, each with
+    /// the most slack any up to it may give before the shift's own part
+    /// ([`Centreline::slack_bound`]).
+    splits: Vec<(f64, f64)>,
     /// The largest magnitude of a coordinate of a segment's end.
     scale: f64,
+}
+
+/// How far past its tolerance, in shifts, a drawn split's gap may lie for the content to join the
+/// two ([`Boundary`]): twice the shift, and the tolerance at the content's coordinates, `1e-5` of
+/// the shift more on each axis.
+const JOINS: f64 = 2.0 + 2e-5;
+
+/// Where a segment begins a cubic after another of the list its centreline was made from. The
+/// drawn frame starts it at the previous cubic's end, `E`, where CE's subpaths join the two (each
+/// axis of `E` within `1e-6 + 1e-5 |S|` of `S`'s), else at the cubic's own first point, `S`; the
+/// content, whose subpaths may join or split the two otherwise, may start it at the other one.
+/// `E` and `S` are two points of content either way, each within the shift of where it is drawn.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Boundary {
+    /// The point of the list the segment ends at.
+    pub end: usize,
+    /// How far apart `E` and `S` are drawn, in pixels.
+    pub gap: f64,
+    /// The subpath tolerance at the drawn `S`, in pixels: the length over both axes of each axis's
+    /// tolerance through the frame's scale on it.
+    pub tol: f64,
+    /// How far apart `E` and `S` are keyed.
+    pub key: f64,
+    /// Whether the drawn frame splits the two cubics.
+    pub split: bool,
 }
 
 impl Centreline {
@@ -2162,6 +2198,19 @@ impl Centreline {
         turns: &[f64],
         breaks: &[usize],
     ) -> Centreline {
+        Centreline::with_joints(points, errors, turns, breaks, &[])
+    }
+
+    /// [`Centreline::with_turns`] with `joints`, in order of their points: where a segment begins
+    /// a cubic after another ([`Boundary`]). It has no partner at its start.
+    pub fn with_joints(
+        points: &[([f64; 2], f64)],
+        errors: &[f64],
+        turns: &[f64],
+        breaks: &[usize],
+        joints: &[Boundary],
+    ) -> Centreline {
+        debug_assert!(joints.windows(2).all(|w| w[0].end < w[1].end));
         let err = |i: usize| errors.get(i).copied().unwrap_or(0.0);
         let turn = |i: usize| turns.get(i).copied().unwrap_or(2.0);
         let mut segments = Vec::new();
@@ -2197,8 +2246,9 @@ impl Centreline {
             ends.push(i);
         }
         let n = segments.len();
-        // Segment `s` ends at the point the next starts at.
-        let joined = |s: usize| ends[s] + 1 == ends[s + 1];
+        // Segment `s` ends at the point the next starts at, of one cubic.
+        let begins = |i: usize| joints.binary_search_by_key(&i, |j| j.end).is_ok();
+        let joined = |s: usize| ends[s] + 1 == ends[s + 1] && !begins(ends[s + 1]);
         let partners: Vec<[Option<usize>; 2]> = (0..n)
             .map(|s| {
                 let start = if s > 0 && joined(s - 1) {
@@ -2218,11 +2268,36 @@ impl Centreline {
             .iter()
             .flat_map(|(a, _, b, _)| [a[0], a[1], b[0], b[1]])
             .fold(0.0, |m: f64, v| m.max(v.abs()));
+        // The joints that may move their segment's start past the shift, by segment.
+        let joints: Vec<(usize, Boundary)> = joints
+            .iter()
+            .filter(|j| j.split || j.gap != 0.0 || j.key != 0.0)
+            .filter_map(|j| ends.binary_search(&j.end).ok().map(|s| (s, *j)))
+            .collect();
+        let joined_most = joints
+            .iter()
+            .filter(|(_, j)| !j.split)
+            .map(|(_, j)| j.gap)
+            .fold(0.0, f64::max);
+        let mut splits: Vec<(f64, f64)> = joints
+            .iter()
+            .filter(|(_, j)| j.split)
+            .map(|(_, j)| (j.gap - j.tol, j.gap.min(j.tol)))
+            .collect();
+        splits.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut most = 0.0f64;
+        for s in &mut splits {
+            most = most.max(s.1);
+            s.1 = most;
+        }
         Centreline {
             segments,
             errors: errs,
             turns: turned,
             partners,
+            joints,
+            joined_most,
+            splits,
             scale,
         }
     }
@@ -2291,6 +2366,53 @@ impl Centreline {
     /// for the rounded distances as for the exact ones.
     pub fn rounding(&self, extent: f64) -> f64 {
         128.0 * U * self.scale.max(extent).max(1.0)
+    }
+
+    /// The most the start of any segment may move past `shift` where it begins a cubic after
+    /// another ([`Centreline::slack`]): a joined one's gap, and the slack of each split one the
+    /// content may join; none where no joint may move one. Snapping moves each point by at most the
+    /// shift, so a drawn gap past the tolerance by more than twice the shift is a content gap past
+    /// it, which no content joins.
+    pub fn slack_bound(&self, shift: f64) -> f64 {
+        if self.joints.is_empty() {
+            return 0.0;
+        }
+        let k = self.splits.partition_point(|(d, _)| *d <= JOINS * shift);
+        let split = if k == 0 {
+            0.0
+        } else {
+            self.splits[k - 1].1 + 2e-5 * shift
+        };
+        self.joined_most.max(split)
+    }
+
+    /// How far past `shift` the start of segment `i` may move, its key past `share` of itself, and
+    /// whether its ends move apart on their own, where it begins a cubic after another
+    /// ([`Boundary`]). Where the drawn frame joins the two cubics it starts the segment at `E`; the
+    /// content starts it at `E` or `S`, each within `shift` of where it is drawn, `S` drawn `gap`
+    /// from `E`: the start moves by at most `shift + gap`. Where the drawn frame splits them it
+    /// starts the segment at `S`, and the content joins them only where its two lie within its
+    /// tolerance, the drawn one with `1e-5` of the shift more on each axis for the content's own
+    /// coordinates: so only where the drawn two lie within that and twice the shift, and it then
+    /// starts the segment at `E`, within the shift and the lesser of that tolerance and the gap of
+    /// `S`. Either way the start's key moves by up to the two keys' distance (CE's tolerance does
+    /// not read depth) and its share of that.
+    fn slack(&self, i: usize, shift: f64, share: f64) -> (f64, f64, bool) {
+        let none = (0.0, 0.0, false);
+        if self.joints.is_empty() {
+            return none;
+        }
+        let Ok(k) = self.joints.binary_search_by_key(&i, |(s, _)| *s) else {
+            return none;
+        };
+        let j = self.joints[k].1;
+        if !j.split {
+            (j.gap, (1.0 + share) * j.key, true)
+        } else if j.gap - j.tol <= JOINS * shift {
+            (j.gap.min(j.tol + 2e-5 * shift), (1.0 + share) * j.key, true)
+        } else {
+            none
+        }
     }
 
     /// The key at point `p` of the part of the curve that covers it, among the segments
@@ -2410,6 +2532,13 @@ impl Centreline {
     /// `share |k| + (1 + share) |kb - ka| dt'` in all. A segment shorter than `turn` is keyed between its ends' keys before and after: within
     /// `(1 + share) |kb - ka| + share max(|ka|, |kb|)`.
     ///
+    /// Where a segment begins a cubic after another ([`Boundary`]), its start may move by `slack`
+    /// more than the shift and its key by `key` more than its share, its ends apart on their own
+    /// ([`Centreline::slack`]): `shift + slack` stands for the shift in `dt`, `turn` is
+    /// `2 shift + slack`, and its key's move takes `key` more. Every test of how far a segment may
+    /// lie from `p` after the move (which segments may hold `p`, surely hold it, or lie near the
+    /// nearest) takes the line's largest slack beside the shift ([`Centreline::slack_bound`]).
+    ///
     /// A segment holds `p` where the foot's raw parameter lies within `0..=1` and `p` within `body`
     /// of the segment; the segment moves by at most `shift` (its ends do), so one holding `p` with
     /// its parameter `dt` inside the ends and its distance `shift` inside the body still holds it,
@@ -2431,15 +2560,14 @@ impl Centreline {
     /// area in the sub-sample's cell, which the move may change. The fill's read is the front-most
     /// key of the segments `p` lies on, else the first nearest's; after the move it is the moved key
     /// of one within `2 shift` of the nearest distance, less any whose foot lies more than `dt`
-    /// past an end that the previous or next segment of its run, among the reads, shares (one point
-    /// of the list, so one in content too) while that one's foot does not: that one stays nearest the
-    /// end, and the other lies no farther, keyed there as it is. So
+    /// past an end that the previous or next segment of its run, among the reads, shares (one
+    /// point of the list and of one cubic, so one in content too) while that one's foot does not:
+    /// that one stays nearest the end, and the other lies no farther, keyed there as it is. So
     /// the key is the read or the nearer of it and the fill's before the move, and after it lies
     /// within the most either set may move of the lowest of their keys and the stroke's highest:
     /// `jump` is taken from those, and the magnitude returned is the lesser of the two keys'. Where
     /// the fill's read is never nearer than the stroke's, as on a convex outline with no other part
-    /// holding the outer wedge of a corner, the bound is the stroke's own, away from a run's closing
-    /// point.
+    /// holding the outer wedge of a corner, the bound is the stroke's own, away from a cubic's ends.
     ///
     /// Two moves lie outside this bound, stated limits gated on exposure. The flattening of a
     /// curved cubic into pieces changes where the snap changes how many pieces it is cut into (the
@@ -2461,7 +2589,7 @@ impl Centreline {
         fill: bool,
     ) -> (f64, f64) {
         let room = self.rounding(p[0].abs().max(p[1].abs()));
-        let reach = shift + room;
+        let reach = shift + self.slack_bound(shift) + room;
         let body2 = body * body;
         // Each segment's key at `p`, how far it may move, whether it holds `p` now, may hold it
         // after the move or surely does, and its distance.
@@ -2485,21 +2613,35 @@ impl Centreline {
             let (raw, d2) = foot(a, b, p);
             let key = key_on((a, ka), (b, kb), 0.0, p, raw).0;
             let len = libm::hypot(b[0] - a[0], b[1] - a[1]);
-            let turn = shift * self.turns[i];
+            // Where the segment begins a cubic after another, its start moves by `slack` more, its
+            // key by `key_slack`, and its ends apart on their own ([`Centreline::slack`]).
+            let (slack, key_slack, whole) = self.slack(i, shift, share);
+            let moved = shift + slack;
+            let turn = if whole {
+                2.0 * shift + slack
+            } else {
+                shift * self.turns[i]
+            };
             let spread = (kb - ka).abs();
             let (dt, moves) = if len > turn {
                 let q = ((p[0] - a[0]) * (b[1] - a[1]) - (p[1] - a[1]) * (b[0] - a[0])).abs() / len;
-                let along = ((1.0 - raw).abs() + raw.abs()) * shift * len;
-                let dt = (along + (q + shift + raw.abs() * turn) * turn)
+                let along = ((1.0 - raw).abs() + raw.abs()) * moved * len;
+                let dt = (along + (q + moved + raw.abs() * turn) * turn)
                     / ((len - turn) * (len - turn))
                     + room / len;
                 // The key is read at the foot clamped to the ends: a foot past an end stays the
                 // end's until it re-enters the segment, and none moves by more than the segment.
                 let past = (-raw).max(raw - 1.0).max(0.0);
-                (dt, (1.0 + share) * spread * (dt - past).clamp(0.0, 1.0))
+                (
+                    dt,
+                    (1.0 + share) * spread * (dt - past).clamp(0.0, 1.0) + key_slack,
+                )
             } else {
                 let most = ka.abs().max(kb.abs());
-                (f64::INFINITY, (1.0 + share) * spread + share * most)
+                (
+                    f64::INFINITY,
+                    (1.0 + share) * spread + share * most + key_slack,
+                )
             };
             let d = d2.sqrt();
             Read {
@@ -2650,7 +2792,7 @@ impl Centreline {
         }
         let extent = area.iter().fold(body + spread, |m, v| m.max(v.abs()));
         let room = self.rounding(extent);
-        let reach = shift + room;
+        let reach = shift + self.slack_bound(shift) + room;
         let nearest = all
             .iter()
             .map(|&i| self.distance2(i as usize, centre))
@@ -2990,8 +3132,8 @@ mod tests {
             "TIGHT fill production: {worst:.3} at worst; where the fill undercuts the stroke {least:.3} \
              at least over {under} points"
         );
-        // Convex: the square's bound is the same with the fill as without it, but near its run's
-        // closing point, where it is no less.
+        // Convex: the square's bound is the same with the fill as without it, but near a cubic's
+        // ends (its corners, each side a cubic), where it is no less.
         let square = [vec![
             ([10.0, 10.0], -1.0300),
             ([13.0, 10.0], -1.0313),
@@ -3000,12 +3142,21 @@ mod tests {
             ([10.0, 10.0], -1.0300),
         ]];
         let at = grid(9.5, 13.5, 9.5, 13.5, 0.05);
-        let line = Centreline::new(&square[0], &[]);
+        let corners: Vec<Boundary> = (2..=4)
+            .map(|end| Boundary {
+                end,
+                ..Boundary::default()
+            })
+            .collect();
+        let line = Centreline::with_joints(&square[0], &[], &[], &[], &corners);
         for &p in &at {
             for body in [0.15, 1.5] {
                 let filled = line.slide_under(p, &[], body, 4.2e-3, 2.9e-6, true);
                 let unfilled = line.slide_under(p, &[], body, 4.2e-3, 2.9e-6, false);
-                if libm::hypot(p[0] - 10.0, p[1] - 10.0) > 1.0 {
+                if square[0]
+                    .iter()
+                    .all(|(c, _)| libm::hypot(p[0] - c[0], p[1] - c[1]) > 1.0)
+                {
                     assert_eq!(
                         filled, unfilled,
                         "at {p:?}, {body} wide: the fill moved the bound of a convex outline"
@@ -3045,7 +3196,7 @@ mod tests {
         {
             let (shift, share, body) = (4.2e-3, 2.9e-6, 0.15);
             let rim = shift * (1.0 - 1e-9);
-            let drawn = Centreline::new(&square[0], &[]);
+            let drawn = Centreline::with_joints(&square[0], &[], &[], &[], &corners);
             let n = square[0].len();
             let target = [9.9, 10.04];
             let toward = {
@@ -3139,6 +3290,30 @@ mod tests {
     /// stroke's own share takes them. Beyond the short piece's end, where its far corner is the
     /// curve's nearest point and the read that corner's key, which the snap moves by the share
     /// alone, the reach lies within ten times the largest move found.
+    /// A drawn split whose gap lies past its tolerance by more than twice the shift is one no
+    /// content joins: the sets take no slack for it, as for a path with none; one within that,
+    /// its slack.
+    #[test]
+    fn a_split_no_content_joins_raises_no_set_reach() {
+        let points = [
+            ([0.0, 0.0], -1.0),
+            ([10.0, 0.0], -1.0),
+            ([20.0, 0.0], -1.0),
+            ([30.0, 0.0], -1.0),
+        ];
+        let split = |gap: f64| Boundary {
+            end: 3,
+            gap,
+            tol: 5e-3,
+            key: 0.0,
+            split: true,
+        };
+        let far = Centreline::with_joints(&points, &[], &[], &[2], &[split(10.0)]);
+        assert_eq!(far.slack_bound(1.6e-3), 0.0);
+        let near = Centreline::with_joints(&points, &[], &[], &[2], &[split(7e-3)]);
+        assert!(near.slack_bound(1.6e-3) >= 5e-3);
+    }
+
     #[test]
     fn a_read_past_a_short_piece_s_end_moves_by_the_share_alone_and_its_reach_says_so() {
         let (shift, share, body) = (4.2e-3, 2.9e-6, 0.15);

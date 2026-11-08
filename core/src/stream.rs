@@ -5345,8 +5345,8 @@ mod tests {
                     if name == "square" {
                         let s = paths_stream(view.clone(), vec![(ring.clone(), record(false))]);
                         let bare = resolved_keys(&s, 101);
-                        // The same, but near the ring's closing point, where the fill's set keeps
-                        // the closing point's neighbour past it: there no less, on pixels together.
+                        // The same, but near a cubic's ends (the square's corners), where the
+                        // fill's set keeps the neighbour past an end: there no less.
                         let mut raised: Vec<(u32, u32)> = Vec::new();
                         for (at, (_, _, own)) in &exact {
                             if let Some((_, _, alone)) = bare.get(at) {
@@ -5360,24 +5360,42 @@ mod tests {
                                 }
                             }
                         }
-                        let apart = raised
+                        // Each cubic's ends on screen, and how far from the nearest of them each
+                        // raised pixel lies.
+                        let (w, h) = (view.pixel_width, view.pixel_height);
+                        let map = crate::project::FrameMap::of_kind(&view, RecordKind::Path, w, h);
+                        let shown = crate::project::pre_display(
+                            &ring,
+                            Some(&projection_of(&view)),
+                            crate::project::Placement::Projected,
+                        );
+                        let ends: Vec<[f64; 2]> = shown
                             .iter()
-                            .flat_map(|a| {
-                                raised
-                                    .iter()
-                                    .map(move |b| a.0.abs_diff(b.0).max(a.1.abs_diff(b.1)))
+                            .enumerate()
+                            .filter(|(i, _)| i % 4 == 0 || i % 4 == 3)
+                            .map(|(_, q)| map.apply(*q))
+                            .collect();
+                        let off = raised
+                            .iter()
+                            .map(|&(x, y)| {
+                                let (x, y) = (x as f64, y as f64);
+                                ends.iter()
+                                    .map(|e| {
+                                        let dx = (x - e[0]).max(e[0] - x - 1.0).max(0.0);
+                                        let dy = (y - e[1]).max(e[1] - y - 1.0).max(0.0);
+                                        libm::hypot(dx, dy)
+                                    })
+                                    .fold(f64::INFINITY, f64::min)
                             })
-                            .max()
-                            .unwrap_or(0);
+                            .fold(0.0, f64::max);
                         assert!(
-                            apart <= 8,
+                            off <= 2.0,
                             "({phi}, {theta}) square, {width} wide: the fill moved a convex outline's \
-                             own share at {} sub-samples {apart} px apart",
-                            raised.len()
+                             own share {off} px from a cubic's ends"
                         );
                         eprintln!(
-                            "TIGHT filled square closing phi {phi} theta {theta} width {width}: own \
-                             raised at {} sub-samples, {apart} px apart",
+                            "TIGHT filled square corners phi {phi} theta {theta} width {width}: own \
+                             raised at {} sub-samples, at most {off:.2} px from a cubic's ends",
                             raised.len()
                         );
                     }

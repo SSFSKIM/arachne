@@ -50,7 +50,7 @@ use crate::composite::{
     Coverage, FlatRecord, Fragment, OpaquePass, Plane, Producer, Rect, SAMPLES, TransparentPass,
     premultiply, sample_cell, sample_point,
 };
-use crate::depth::{Centreline, Planarity, Registry, WorldPlane};
+use crate::depth::{Boundary, Centreline, Planarity, Registry, WorldPlane};
 use crate::gradient::{self, Linear};
 use crate::project::{FrameMap, Placement, Projection, placement, pre_display, produced_key};
 use crate::scanline::{self, Edge, Scratch};
@@ -913,13 +913,29 @@ fn nearest_plane_departure(key: &Plane, shown: &[[f64; 3]], map: &FrameMap, p: &
 
 /// The screen polyline of a path's cubics with the depth key carried along each (the cubic of its
 /// control points' keys, at the same parameter), each key with its error: the greatest of its
-/// control points' ([`Projection::key_error`]) and the rounding of the cubic's weighted sum.
+/// control points' ([`Projection::key_error`]) and the rounding of the cubic's weighted sum. Each
+/// cubic's first piece after another of the list is a joint ([`Boundary`]).
 fn curve_depth(shown: &[[f64; 3]], map: &FrameMap, projection: &Projection) -> Centreline {
     let mut points = Vec::new();
     let mut errors = Vec::new();
     let mut turns = Vec::new();
     let mut breaks = Vec::new();
+    let mut joints = Vec::new();
     let screen = |p: [f64; 3]| (map.apply(p), -projection.factor(p[2]));
+    // The joint of the cubic at `i` after another, its first piece ending at point `end`: the
+    // previous cubic's end and this one's first point as drawn, CE's tolerance at the latter through
+    // the frame's scale on each axis, and whether the drawn frame splits the two.
+    let joint = |i: usize, end: usize, split: bool| {
+        let ((e, ke), (s, ks)) = (screen(shown[i - 1]), screen(shown[i]));
+        let tol = |k: usize, scale: f64| (POINT_EQUALITY + 1e-5 * shown[i][k].abs()) * scale.abs();
+        Boundary {
+            end,
+            gap: libm::hypot(s[0] - e[0], s[1] - e[1]),
+            tol: libm::hypot(tol(0, map.xx), tol(1, map.yy)) * (1.0 + 1e-9),
+            key: (ks - ke).abs(),
+            split,
+        }
+    };
     for (start, end) in subpaths(shown) {
         if end - start < 4 {
             continue;
@@ -958,15 +974,24 @@ fn curve_depth(shown: &[[f64; 3]], map: &FrameMap, projection: &Projection) -> C
                 };
                 points.push(([at(&|k| c[k].0[0]), at(&|k| c[k].0[1])], at(&|k| c[k].1)));
                 errors.push(err);
+                if s == 1 && i >= 4 {
+                    joints.push(joint(i, points.len() - 1, i == start));
+                }
                 // The piece's two ends move apart by at most the sum of their weights' changes
-                // times how far a control point moves (at most `6 dt` of the parameter's `dt`).
+                // times how far a control point moves (at most `6 dt` of the parameter's `dt`); a
+                // cubic's first piece after another of its subpath starts at the other's end, a
+                // point of its own, so its ends move apart on their own.
                 let before = weights((s - 1) as f64 / n as f64);
                 let turn: f64 = (0..4).map(|k| (w[k] - before[k]).abs()).sum();
-                turns.push((turn * (1.0 + 16.0 * crate::composite::U)).min(2.0));
+                turns.push(if s == 1 && i > start {
+                    2.0
+                } else {
+                    (turn * (1.0 + 16.0 * crate::composite::U)).min(2.0)
+                });
             }
         }
     }
-    Centreline::with_turns(&points, &errors, &turns, &breaks)
+    Centreline::with_joints(&points, &errors, &turns, &breaks, &joints)
 }
 
 /// How far on screen, in pixels, the snap may move any point a curve through `shown` (as the
@@ -1909,7 +1934,7 @@ impl Paths {
             near
         };
         let room = curve.line.rounding(centre[0].max(centre[1]) + body + 2.0);
-        let reach = layer.shift + room;
+        let reach = layer.shift + curve.line.slack_bound(layer.shift) + room;
         let mut near = among(body + 2.0 * reach);
         let nearest = near
             .iter()
@@ -2628,6 +2653,378 @@ mod tests {
             "{key:?} against {key_alone:?}"
         );
         assert_eq!(ids, [0; 4]);
+    }
+
+    /// The camera looking down z: a point at depth `z` keyed `-20 / (20 - z)`.
+    fn down_z() -> Projection {
+        Projection::new(
+            &ThreeDCamera {
+                phi: 0.0,
+                theta: -std::f64::consts::FRAC_PI_2,
+                gamma: 0.0,
+                focal_distance: 20.0,
+                zoom: 1.0,
+                exponential_projection: false,
+                light_source: [0.0; 3],
+                shading_factor: 0.2,
+                should_apply_shading: true,
+            },
+            [0.0; 3],
+        )
+    }
+
+    /// The straight cubic from `a` to `b` in CE's layout, its handles at its thirds, depth alike.
+    fn straight(a: [f64; 3], b: [f64; 3]) -> [[f64; 3]; 4] {
+        std::array::from_fn(|k| {
+            let t = k as f64 / 3.0;
+            std::array::from_fn(|c| a[c] + (b[c] - a[c]) * t)
+        })
+    }
+
+    /// The points of a grid from `(x0, y0)` to `(x1, y1)`, `step` apart.
+    fn grid(x0: f64, x1: f64, y0: f64, y1: f64, step: f64) -> Vec<[f64; 2]> {
+        let nx = ((x1 - x0) / step).round() as usize;
+        let ny = ((y1 - y0) / step).round() as usize;
+        (0..=nx)
+            .flat_map(|i| (0..=ny).map(move |j| [x0 + i as f64 * step, y0 + j as f64 * step]))
+            .collect()
+    }
+
+    /// Over the points `at`, the worst move over reach of the key read on the centreline
+    /// `curve_depth` makes of `drawn` (through `map`, keyed by [`down_z`]) to the one it makes of
+    /// each of `contents` (each point within `shift` of `drawn`'s on screen, at its depth),
+    /// against the bound read on the drawn one at `body`; with `fill`, every way a stroke on its
+    /// own fill allows (its read, or the nearer of it and the fill's, on each side). The ratio,
+    /// where, the move and the reach.
+    #[allow(clippy::too_many_arguments)]
+    fn worst_over_reach(
+        drawn: &[[f64; 3]],
+        contents: &[Vec<[f64; 3]>],
+        map: &FrameMap,
+        at: &[[f64; 2]],
+        body: f64,
+        shift: f64,
+        share: f64,
+        fill: bool,
+    ) -> (f64, [f64; 2], f64, f64) {
+        let p = down_z();
+        for c in contents {
+            assert_eq!(c.len(), drawn.len());
+            for (q, d) in c.iter().zip(drawn) {
+                let (a, b) = (map.apply(*q), map.apply(*d));
+                assert!(libm::hypot(a[0] - b[0], a[1] - b[1]) <= shift && q[2] == d[2]);
+            }
+        }
+        let line = curve_depth(drawn, map, &p);
+        let lines: Vec<Centreline> = contents.iter().map(|c| curve_depth(c, map, &p)).collect();
+        let resolved = |l: &Centreline, q: [f64; 2]| {
+            let (s, es) = l.key_under(q, &[], body);
+            if fill {
+                let (f, ef) = l.key_under(q, &[], 0.0);
+                (vec![s, s.min(f)], es.max(ef))
+            } else {
+                (vec![s], es)
+            }
+        };
+        let mut worst = (0.0f64, [0.0; 2], 0.0, 0.0);
+        for &q in at {
+            let (before, e0) = resolved(&line, q);
+            let (slide, magnitude) = line.slide_under(q, &[], body, shift, share, fill);
+            let own = share + slide / magnitude * (1.0 + 4.0 * crate::composite::U);
+            for l in &lines {
+                let (after, e1) = resolved(l, q);
+                for &k0 in &before {
+                    for &k1 in &after {
+                        let reach = e0 + e1 + (k0.abs() + e0) * own;
+                        let moved = (k1 - k0).abs();
+                        if moved / reach > worst.0 {
+                            worst = (moved / reach, q, moved, reach);
+                        }
+                    }
+                }
+            }
+        }
+        worst
+    }
+
+    /// Two straight cubics on one line, keyed along it, their shared anchor snapped to one point
+    /// while the content holds the first cubic's end and the second's first point up to twice the
+    /// shift apart, within CE's subpath tolerance: the content draws the second cubic's first
+    /// piece from the first one's end, a point of its own, so the piece's ends move apart by up to
+    /// twice the shift whatever its weights (its end moves with its cubic's points, its start with
+    /// the other cubic's). The second cubic is long, so its first piece's weights hold its ends
+    /// together closely. Read across that piece, a stroke 6 px wide.
+    #[test]
+    fn at_a_cubic_boundary_snapped_to_one_point_the_next_piece_s_ends_move_apart_on_their_own() {
+        let map = FrameMap::cairo(1280, 720, 1280.0 / 90.0, 8.0, [0.0; 3]);
+        let delta = 1.8e-5;
+        let shift = delta * map.xx * (1.0 + 1e-6);
+        let at = |y: f64| [6.0, y, 5.0 * (y + 0.3)];
+        let drawn = [straight(at(-0.3), at(0.0)), straight(at(0.0), at(0.41))].concat();
+        let moved = |e: [f64; 2], s: [f64; 2]| {
+            let mut c = drawn.clone();
+            c[3] = [c[3][0] + e[0], c[3][1] + e[1], c[3][2]];
+            c[4] = [c[4][0] + s[0], c[4][1] + s[1], c[4][2]];
+            c
+        };
+        let mut contents = vec![
+            moved([delta, 0.0], [-delta, 0.0]),
+            moved([-delta, 0.0], [delta, 0.0]),
+        ];
+        assert!(contents.iter().all(|c| subpaths(c).len() == 1));
+        let mut seeded = Seeded(0x6a09_e667_f3bc_c908);
+        for _ in 0..16 {
+            let mut turn =
+                || (seeded.next() >> 11) as f64 / (1u64 << 53) as f64 * std::f64::consts::TAU;
+            let a = turn();
+            let b = turn();
+            contents.push(moved(
+                [delta * libm::cos(a), delta * libm::sin(a)],
+                [delta * libm::cos(b), delta * libm::sin(b)],
+            ));
+        }
+        let v = map.apply(at(0.0));
+        let points = grid(v[0] - 3.0, v[0] + 3.0, v[1] - 2.5, v[1] + 0.5, 0.1);
+        let (ratio, p, moved_by, reach) =
+            worst_over_reach(&drawn, &contents, &map, &points, 3.0, shift, 0.0, false);
+        eprintln!(
+            "TIGHT cubic boundary snapped to one point: {ratio:.3} at worst over {} points, at {p:?}",
+            points.len()
+        );
+        assert!(
+            ratio <= 1.0,
+            "snapped to one point, at {p:?}: the key moved by {moved_by:e} against its reach {reach:e}"
+        );
+    }
+
+    /// Two straight cubics on one line whose shared anchor's two points, the first cubic's end `E`
+    /// and the second's first point `S`, stand 0.9e-5 |S| apart in one frame and 1.5e-5 |S| in
+    /// the other, across CE's subpath tolerance (`1e-6 + 1e-5 |S|` on each axis): one frame joins
+    /// the two, drawing the second cubic's first piece from `E`, and the other splits them,
+    /// drawing it from `S`. Drawn joined and content split, and drawn split and content joined:
+    /// the piece's start moves by the shift and the gap the joined frame closes. The second cubic
+    /// is short (two pieces), so its first piece is too.
+    #[test]
+    fn at_a_cubic_boundary_across_the_subpath_tolerance_the_piece_starts_where_either_frame_draws_it()
+     {
+        let map = FrameMap::cairo(1280, 720, 1280.0 / 90.0, 8.0, [0.0; 3]);
+        let b = 6.0;
+        let delta = 0.3e-5 * b;
+        let shift = delta * map.xx * (1.0 + 1e-6);
+        let at = |x: f64, y: f64| [x, y, 5.0 * (y + 0.3)];
+        let mut failed = Vec::new();
+        for (name, drawn_gap, content_gap) in [
+            ("joined, content split", 0.9e-5, 1.5e-5),
+            ("split, content joined", 1.5e-5, 0.9e-5),
+        ] {
+            let drawn = [
+                straight(at(b, -0.3), at(b - drawn_gap * b, 0.0)),
+                straight(at(b, 0.0), at(b, 0.025)),
+            ]
+            .concat();
+            let apart = if content_gap > drawn_gap { 1.0 } else { -1.0 };
+            let mut content = drawn.clone();
+            content[3][0] -= apart * delta;
+            content[4][0] += apart * delta;
+            let joined = |c: &[[f64; 3]]| subpaths(c).len() == 1;
+            assert_eq!(
+                (joined(&drawn), joined(&content)),
+                (drawn_gap < content_gap, drawn_gap > content_gap),
+                "{name}"
+            );
+            let v = map.apply(at(b, 0.0));
+            let points = grid(v[0] - 3.0, v[0] + 3.0, v[1] - 2.0, v[1] + 0.5, 0.05);
+            let (ratio, p, moved_by, reach) =
+                worst_over_reach(&drawn, &[content], &map, &points, 3.0, shift, 0.0, false);
+            eprintln!(
+                "TIGHT cubic boundary {name}: {ratio:.3} at worst over {} points, at {p:?}",
+                points.len()
+            );
+            failed.extend((ratio > 1.0).then(|| {
+                format!(
+                    "{name}, at {p:?}: the key moved by {moved_by:e} against its reach {reach:e}"
+                )
+            }));
+        }
+        assert!(failed.is_empty(), "{failed:?}");
+    }
+
+    /// The corner of the depth tests' square (from (10, 13) down to (10, 10) and on to (13, 10),
+    /// keyed as there), its two sides two straight cubics: the first cubic's end and the second's
+    /// first point are two points of content, which the snap put together, and which the content
+    /// holds farther apart than CE's subpath tolerance, splitting them. Read as a stroke on its own
+    /// fill by the corner's outside, against the content of the case a partner across the
+    /// boundary leaves open (the second cubic's first point moved toward the point read by the
+    /// shift, the first cubic away along x by as much), the first cubic's end a third of the shift
+    /// off, and seeded moves.
+    #[test]
+    fn at_a_cubic_boundary_a_filled_stroke_s_resolved_key_lies_within_its_reach() {
+        let map = FrameMap {
+            xx: 1.0,
+            yy: 1.0,
+            x0: 0.0,
+            y0: 0.0,
+        };
+        let z = |k: f64| 20.0 + 20.0 / k;
+        let (c, v, a) = (
+            [10.0, 13.0, z(-1.0287)],
+            [10.0, 10.0, z(-1.0300)],
+            [13.0, 10.0, z(-1.0313)],
+        );
+        let drawn = [straight(c, v), straight(v, a)].concat();
+        let (shift, share, body) = (4.2e-3, 2.9e-6, 0.15);
+        let rim = shift * (1.0 - 1e-9);
+        let target = [9.9, 10.04];
+        let toward = {
+            let (dx, dy) = (target[0] - v[0], target[1] - v[1]);
+            let l = libm::hypot(dx, dy);
+            [rim * dx / l, rim * dy / l]
+        };
+        let moved = |m: &dyn Fn(usize) -> [f64; 2]| -> Vec<[f64; 3]> {
+            drawn
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    let d = m(i);
+                    [p[0] + d[0], p[1] + d[1], p[2]]
+                })
+                .collect()
+        };
+        let mut contents = vec![
+            moved(&|i| match i {
+                4 => toward,
+                0..4 => [rim, 0.0],
+                _ => [0.0, 0.0],
+            }),
+            moved(&|i| if i == 3 { [rim / 3.0, 0.0] } else { [0.0, 0.0] }),
+        ];
+        let mut seeded = Seeded(0x0c10_5e0f_f1e1_d5a1);
+        for _ in 0..16 {
+            let m: Vec<[f64; 2]> = (0..drawn.len())
+                .map(|_| {
+                    let a =
+                        (seeded.next() >> 11) as f64 / (1u64 << 53) as f64 * std::f64::consts::TAU;
+                    [rim * libm::cos(a), rim * libm::sin(a)]
+                })
+                .collect();
+            contents.push(moved(&|i| m[i]));
+        }
+        assert!(
+            subpaths(&drawn).len() == 1 && contents.iter().take(2).all(|c| subpaths(c).len() == 2)
+        );
+        let mut points = grid(9.85, 9.95, 10.0, 10.08, 0.005);
+        points.push(target);
+        let (ratio, p, moved_by, reach) =
+            worst_over_reach(&drawn, &contents, &map, &points, body, shift, share, true);
+        eprintln!(
+            "TIGHT cubic boundary filled corner: {ratio:.3} at worst over {} points, at {p:?}",
+            points.len()
+        );
+        assert!(
+            ratio <= 1.0,
+            "filled corner, at {p:?}: the resolved key moved by {moved_by:e} against its reach {reach:e}"
+        );
+    }
+
+    /// The drawn-joined boundary of the tolerance row, its second cubic keyed apart from the first
+    /// one's end, 0.05 nearer the eye (CE's tolerance does not read depth): the content, splitting
+    /// the two, starts the piece at its own first point and key, so the start's key moves by the
+    /// keys' distance.
+    #[test]
+    fn at_a_cubic_boundary_keyed_apart_the_piece_s_start_key_moves_by_the_keys_distance() {
+        let map = FrameMap::cairo(1280, 720, 1280.0 / 90.0, 8.0, [0.0; 3]);
+        let b = 6.0;
+        let delta = 0.3e-5 * b;
+        let shift = delta * map.xx * (1.0 + 1e-6);
+        let at = |x: f64, y: f64, dz: f64| [x, y, 5.0 * (y + 0.3) + dz];
+        let drawn = [
+            straight(at(b, -0.3, 0.0), at(b - 0.9e-5 * b, 0.0, 0.0)),
+            straight(at(b, 0.0, 0.05), at(b, 0.025, 0.05)),
+        ]
+        .concat();
+        let mut content = drawn.clone();
+        content[3][0] -= delta;
+        content[4][0] += delta;
+        assert!(subpaths(&drawn).len() == 1 && subpaths(&content).len() == 2);
+        let v = map.apply(at(b, 0.0, 0.0));
+        let points = grid(v[0] - 3.0, v[0] + 3.0, v[1] - 2.0, v[1] + 0.5, 0.05);
+        let (ratio, p, moved_by, reach) =
+            worst_over_reach(&drawn, &[content], &map, &points, 3.0, shift, 0.0, false);
+        eprintln!(
+            "TIGHT cubic boundary keyed apart: {ratio:.3} at worst over {} points, at {p:?}",
+            points.len()
+        );
+        assert!(
+            ratio <= 1.0,
+            "keyed apart, at {p:?}: the key moved by {moved_by:e} against its reach {reach:e}"
+        );
+    }
+
+    /// The drawn-joined boundary of the row above (the first cubic's end drawn 0.9e-5 |S| from the
+    /// second's first point, the content splitting them), with a far part of the curve: a point
+    /// outside the stroke's body whose nearest is that part, keyed far from the line, and whose
+    /// distance from the boundary piece lies past the body by more than the shift and less than
+    /// the shift and the gap. The content, starting the piece at `S`, brings it within the body,
+    /// and the piece takes the read: only a test of which segments may hold a point that takes the
+    /// gap beside the shift has the piece among them.
+    #[test]
+    fn at_a_cubic_boundary_a_piece_the_gap_brings_within_the_body_takes_the_read() {
+        let map = FrameMap::cairo(1280, 720, 1280.0 / 90.0, 8.0, [0.0; 3]);
+        let b = 6.0;
+        let delta = 0.3e-5 * b;
+        let shift = delta * map.xx * (1.0 + 1e-6);
+        let body = 3.0;
+        let at = |x: f64, y: f64| [x, y, 5.0 * (y + 0.3)];
+        let line = [
+            straight(at(b, -0.3), at(b - 0.9e-5 * b, 0.0)),
+            straight(at(b, 0.0), at(b, 0.025)),
+        ]
+        .concat();
+        let p = down_z();
+        // The boundary piece is segment 14: the first cubic is 27 px long, 14 pieces.
+        let alone = curve_depth(&line, &map, &p);
+        let y = 359.7;
+        let distance = |x: f64| alone.distance2(14, [x, y]).sqrt();
+        let (mut lo, mut hi) = (1180.0, 1190.0);
+        for _ in 0..80 {
+            let mid = 0.5 * (lo + hi);
+            if distance(mid) < body + 4e-3 {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let q = [lo, y];
+        // The far part: a straight cubic along y, 3.0004 px beyond the point, keyed -1.2.
+        let far = (q[0] + body + 4e-4 - map.x0) / map.xx;
+        let zf = 20.0 + 20.0 / -1.2;
+        let drawn = [
+            line.clone(),
+            straight([far, 0.06, zf], [far, -0.06, zf]).to_vec(),
+        ]
+        .concat();
+        let mut content = drawn.clone();
+        content[3][0] -= delta;
+        content[4][0] += delta;
+        let (before, after) = (
+            curve_depth(&drawn, &map, &p),
+            curve_depth(&content, &map, &p),
+        );
+        let (k0, k1) = (
+            before.key_under(q, &[], body).0,
+            after.key_under(q, &[], body).0,
+        );
+        assert!(
+            (k0 + 1.2).abs() < 1e-9 && (k1 - k0).abs() > 0.1,
+            "the far part keys the drawn read ({k0}), the piece the content's ({k1})"
+        );
+        let (ratio, _, moved_by, reach) =
+            worst_over_reach(&drawn, &[content], &map, &[q], body, shift, 0.0, false);
+        eprintln!("TIGHT cubic boundary piece brought within the body: {ratio:.3} at {q:?}");
+        assert!(
+            ratio <= 1.0,
+            "at {q:?}: the key moved by {moved_by:e} against its reach {reach:e}"
+        );
     }
 }
 
