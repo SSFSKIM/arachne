@@ -332,6 +332,193 @@ def test_a_hook_changed_after_the_first_copy_is_the_one_used(fast, monkeypatch, 
     assert copy_differences(original, reference, made) == []
 
 
+# ── what copy.deepcopy does at each step, followed in every case ─────────────
+
+
+def both_ways(fast, copier, original):
+    """The copy made with the copier off and on, and any difference."""
+    reference = made_by(fast, False, copier, original)
+    made = made_by(fast, True, copier, original)
+    return reference, made, copy_differences(original, reference, made)
+
+
+class Alike(type):
+    """A metaclass under which every class equals every other and hashes alike."""
+
+    def __eq__(cls, other):
+        return isinstance(other, Alike)
+
+    def __hash__(cls):
+        return 0
+
+
+class PlainAlike(metaclass=Alike):
+    def __init__(self):
+        self.items = [1]
+
+
+class OwnAlike(metaclass=Alike):
+    def __deepcopy__(self, memo):
+        return "its own copy"
+
+
+def test_classes_that_compare_equal_are_still_two_classes(fast):
+    group = VGroup(Square())
+    group.first, group.second = PlainAlike(), OwnAlike()
+    assert both_ways(fast, copy.deepcopy, group)[2] == []
+
+
+class Dynamic(Square):
+    """An attribute lookup of its own, which supplies its own __deepcopy__."""
+
+    def __getattribute__(self, name):
+        if name == "__deepcopy__":
+            return lambda memo: "a dynamic copy"
+        return super().__getattribute__(name)
+
+
+class Owned:
+    def __init__(self):
+        self.items = [1, 2]
+
+    def __deepcopy__(self, memo):
+        return "the class's copy"
+
+
+def _setting_state(obj):
+    def setstate(state):
+        obj.__dict__.update(state, restored=True)
+
+    return setstate
+
+
+class Payload:
+    """Each instance made with a __setstate__ of its own."""
+
+    def __new__(cls, *args, **kwargs):
+        obj = super().__new__(cls)
+        obj.__setstate__ = _setting_state(obj)
+        return obj
+
+    def __init__(self):
+        self.items = [1, 2]
+
+
+def dynamic():
+    return VGroup(Dynamic(), Square())
+
+
+def unset_deepcopy():
+    unset = Owned()
+    unset.__deepcopy__ = None  # copy.deepcopy then reduces it
+    return VGroup(Square()).set(unset=unset)
+
+
+def instance_setstate():
+    return VGroup(Square()).set(payload=Payload())
+
+
+def setstate_from_new_only():
+    payload = Payload()
+    del payload.__setstate__  # the original's gone; its copy gets one from __new__
+    return VGroup(Square()).set(payload=payload)
+
+
+def instance_getstate():
+    state = Plain(items=[3])
+    state.__getstate__ = lambda: {"items": "stated"}
+    return VGroup(Square()).set(stated=state)
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        dynamic,
+        unset_deepcopy,
+        instance_setstate,
+        setstate_from_new_only,
+        instance_getstate,
+    ],
+    ids=lambda make: make.__name__,
+)
+def test_an_instances_own_lookup_and_hooks_are_followed(fast, make):
+    assert both_ways(fast, copy.deepcopy, make())[2] == []
+
+
+LOG: list[str] = []
+
+
+class Logged:
+    def __init__(self, tag):
+        self.tag = tag
+
+    def __deepcopy__(self, memo):
+        LOG.append(self.tag)
+        return Logged(self.tag)
+
+
+def test_a_dicts_value_is_copied_before_its_key(fast):
+    holder = Holder()
+    holder.table = {Logged("key"): Logged("value")}
+    holder.plain.table = {Logged("key"): Logged("value")}
+    orders = []
+    for fast_copy in (False, True):
+        LOG.clear()
+        made_by(fast, fast_copy, copy.deepcopy, holder)
+        orders.append(list(LOG))
+    assert orders[0] == orders[1]
+
+
+class Replacement(Plain):
+    pass
+
+
+@pytest.mark.parametrize(
+    "seeded", ["name", "joint_type", "plain", "plain's class"], ids=str
+)
+def test_a_callers_memo_entry_is_answered_as_copy_deepcopy_answers_it(fast, seeded):
+    """A memo the caller filled in: for a string (atomic: honoured on 3.12
+    and 3.13, not on 3.14), an enum member, a plain object, and a plain
+    object's class (the one argument copy.deepcopy rebuilds it from).
+    """
+    square = Square()
+    square.plain = Plain(items=[1])
+    if seeded == "plain's class":
+        memo = {id(Plain): Replacement}
+    else:
+        memo = {id(getattr(square, seeded)): "a replacement"}
+
+    def copier(m):
+        return copy.deepcopy(m, dict(memo))
+
+    assert both_ways(fast, copier, square)[2] == []
+
+
+class Peeking:
+    """A __deepcopy__ that reads how large the memo is."""
+
+    seen: list[int] = []
+
+    def __deepcopy__(self, memo):
+        Peeking.seen.append(len(memo))
+        return Peeking()
+
+
+class PeekFirst(Square):
+    def __init__(self, **kwargs):
+        self.peek = Peeking()  # the first value copied
+        super().__init__(**kwargs)
+
+
+def test_the_memo_keeps_originals_alive_only_once_one_is_kept(fast):
+    lengths = []
+    for fast_copy in (False, True):
+        Peeking.seen.clear()
+        made_by(fast, fast_copy, copy.deepcopy, PeekFirst())
+        lengths.append(list(Peeking.seen))
+    assert lengths[0] == lengths[1]
+
+
 # ── the user's code changing the copy in place ───────────────────────────────
 
 
@@ -457,3 +644,22 @@ def test_the_check_finds_a_different_value():
     reference = made_by_off(dot)
     moved = made_by_off(dot).shift(RIGHT)
     assert copy_differences(dot, reference, moved)
+
+
+class Measured(float):
+    pass
+
+
+@pytest.mark.parametrize("kind", [Listed, Keyed, Measured], ids=lambda k: k.__name__)
+@pytest.mark.parametrize("change", ["shared", "different"])
+def test_the_check_reads_what_a_subclass_of_a_container_or_number_holds(kind, change):
+    value = kind()
+    value.extra = [1]
+    original = Plain(value=value)
+    reference = copy.deepcopy(original)
+    candidate = copy.deepcopy(original)
+    if change == "shared":
+        candidate.value.extra = original.value.extra
+    else:
+        candidate.value.extra = [2]
+    assert copy_differences(original, reference, candidate)

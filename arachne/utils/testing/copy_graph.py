@@ -33,12 +33,31 @@ _CODE = (
 )
 
 
-def _edges(x: Any, opaque: Counter[str] | None = None) -> list[tuple[str, Any]]:
-    """What a deep copy reaches from ``x``, each with how it is reached."""
-    if isinstance(x, (*_SCALARS, *_CODE)):
+#: The value types whose instances hold nothing but their value or items.
+_BARE = frozenset(
+    (
+        type(None),
+        bool,
+        int,
+        float,
+        complex,
+        str,
+        bytes,
+        list,
+        tuple,
+        dict,
+        set,
+        frozenset,
+    )
+)
+
+
+def _items(x: Any) -> list[tuple[str, Any]] | None:
+    """What ``x`` holds as a scalar or a container, or ``None`` if it is
+    neither.
+    """
+    if isinstance(x, _SCALARS):
         return []
-    if isinstance(x, types.MethodType):
-        return [(".__func__", x.__func__), (".__self__", x.__self__)]
     if isinstance(x, (list, tuple)):
         return [(f"[{i}]", v) for i, v in enumerate(x)]
     if isinstance(x, dict):
@@ -49,19 +68,42 @@ def _edges(x: Any, opaque: Counter[str] | None = None) -> list[tuple[str, Any]]:
         return out
     if isinstance(x, (set, frozenset)):
         return [(f"<item {i}>", v) for i, v in enumerate(x)]
+    return None
+
+
+def _state(x: Any) -> tuple[list[tuple[str, Any]], list[str]]:
+    """What ``x`` holds in its instance ``__dict__`` and slots, and its slots."""
+    out = []
+    own = getattr(x, "__dict__", None)
+    if isinstance(own, dict):
+        out.append(("<__dict__>", own))
+    slots = copyreg._slotnames(type(x))  # type: ignore[attr-defined]
+    out += [(f".{name}", getattr(x, name)) for name in slots if hasattr(x, name)]
+    return out, slots
+
+
+def _edges(x: Any, opaque: Counter[str] | None = None) -> list[tuple[str, Any]]:
+    """What a deep copy reaches from ``x``, each with how it is reached: a
+    container's items, and the instance ``__dict__`` and slots of anything
+    but a bare value (a subclass of a container or a number holds both).
+    """
+    if isinstance(x, _CODE):
+        return []
+    if isinstance(x, types.MethodType):
+        return [(".__func__", x.__func__), (".__self__", x.__self__)]
+    items = _items(x)
+    if items is not None:
+        if type(x) in _BARE or isinstance(x, np.generic):
+            return items
+        return items + _state(x)[0]
     out = []
     if isinstance(x, np.ndarray):
         if x.base is not None:
             out.append(("<base>", x.base))
         if x.dtype.hasobject:
             out += [(f"<item {i}>", v) for i, v in enumerate(x.ravel().tolist())]
-    own = getattr(x, "__dict__", None)
-    if isinstance(own, dict):
-        out.append(("<__dict__>", own))
-    slots = copyreg._slotnames(type(x))  # type: ignore[attr-defined]
-    for name in slots:
-        if hasattr(x, name):
-            out.append((f".{name}", getattr(x, name)))
+    state, slots = _state(x)
+    out += state
     if opaque is not None and not out and not isinstance(x, np.ndarray) and not slots:
         opaque[f"{type(x).__module__}.{type(x).__qualname__}"] += 1
     return out

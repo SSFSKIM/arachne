@@ -1,40 +1,70 @@
 """A mobject's deep copy, made without :func:`copy.deepcopy`'s general machinery
-(``fast_copy``).
+where that is safe (``fast_copy``).
 
 :meth:`.Mobject.copy` is :func:`copy.deepcopy`, and :mod:`copy` dispatches
 every value it meets through a Python call: a mobject's dozens of numbers and
-flags, and each point of the SVG path a glyph keeps. This module makes the
-same copy by the same rules, with the common kinds of value handled inline:
+flags, and each point of the SVG path a glyph keeps. This module copies the
+common values inline and hands every other value to :func:`copy.deepcopy`
+itself.
 
-- values :mod:`copy` returns as they are (numbers, strings, functions,
-  classes) are returned as they are;
-- lists, dicts and tuples are copied as :mod:`copy` copies them;
-- a mobject is copied as :meth:`.Mobject.__deepcopy__` copies it;
-- a value with its own ``__deepcopy__`` (a read-only array, a
-  :class:`~.Paint`) is asked for its copy;
-- an instance of a plain Python class, which :mod:`copy` rebuilds from its
-  ``__reduce_ex__`` (a colour, an SVG path and its points), is rebuilt
-  directly: a new instance whose ``__dict__`` is a copy of the original's;
-- anything else is handed to :func:`copy.deepcopy`.
+**The domain.** A value is copied here only if it is one of:
 
-The copy is the one :func:`copy.deepcopy` makes: the same objects are new and
-the same are shared, the memo records the same originals, and two references
-to one object in the original are two references to one object in the copy.
+- an *atomic* value: one whose exact type :mod:`copy` returns as it is
+  (numbers, strings, ``None``, functions, ``type``…), with no memo entry for it;
+- an exact ``list``, ``dict`` or ``tuple``, while :mod:`copy`'s dispatch table
+  still sends that type to its own copier;
+- an instance of a *checked* class whose instance ``__dict__`` holds none of
+  the copy hooks (``__deepcopy__``, ``__setstate__``, ``__reduce_ex__``,
+  ``__reduce__``, ``__getstate__``). A checked class has ``object``'s
+  ``__getattribute__``, no entry in :mod:`copy`'s dispatch table, and is one
+  of:
 
-Which kind a class is follows from its copy hooks (``__deepcopy__``, the
-reduce and state methods, a :data:`copyreg.dispatch_table` entry). Each copy
-reads a class's hooks again the first time it meets the class, and finds its
-kind again if they changed, so a scene that gives its own class new hooks
-between two copies has the second follow them. A hook changed by code that
-runs inside a copy (another object's ``__deepcopy__``) is followed from the
-next copy on.
+  - a *mobject* class, whose ``__deepcopy__`` is :meth:`.Mobject.__deepcopy__`;
+  - an *own-copy* class, with any other ``__deepcopy__`` (a read-only array, a
+    :class:`~.Paint`, an enum);
+  - a *plain* class, which :mod:`copy` rebuilds through ``object``'s reduce: no
+    ``__deepcopy__``, no :data:`copyreg.dispatch_table` entry, ``object``'s
+    ``__reduce_ex__``, ``__reduce__``, ``__getstate__`` and ``__new__``, no
+    ``__setstate__``, ``__getnewargs_ex__``, ``__getnewargs__`` or
+    ``__getattr__``, an instance ``__dict__``, no slots, no class among its
+    bases but ``object`` that is not defined in Python or that sets
+    ``__class__``, and :func:`copyreg.__newobj__` as :mod:`copyreg` defines
+    it; and whose class the memo holds no entry for.
+
+Every other value goes to :func:`copy.deepcopy` with the same memo, and so
+does an atomic value the memo holds.
+
+**Why the copy is copy.deepcopy's.** Inside the domain, each case runs the
+steps :func:`copy.deepcopy` runs for that value, in its order: the memo is
+read first and a hit returned (but for an atomic value's, which 3.14 skips:
+:func:`copy.deepcopy` answers that one as the running Python does); an atomic
+value is returned as it is; a list, dict or tuple is copied as ``copy``'s own
+copier does, a dict's value before its key; a mobject's or own-copy class's
+``__deepcopy__`` is the one ``getattr(x, "__deepcopy__")`` finds, because
+neither the instance nor a custom attribute lookup can supply another; a
+plain instance is rebuilt as ``copy._reconstruct`` rebuilds ``object``'s
+reduction of it: ``cls.__new__(cls)`` (its one argument, the class, copies to
+itself, the memo holding nothing for it), then a deep copy of its
+``__dict__`` through the same dict copy, applied with ``update`` because
+neither its class nor its ``__new__`` gives the new instance a
+``__setstate__``. Every copy that is not its original is entered in the memo
+and kept alive in ``memo[id(memo)]``, created when first needed, as
+``copy._keep_alive`` does.
+
+**Classes are checked again in every copy.** A class's kind is found once and
+kept by the class's identity with the hooks it was found from; each copy
+reads those hooks again the first time it meets the class and finds the kind
+again if one changed, so a scene that gives its own class new hooks between
+two copies has the second follow them. A hook changed by code running inside
+a copy (another object's ``__deepcopy__``) is followed from the next copy on.
 """
 
 from __future__ import annotations
 
 import copy
 import copyreg
-import enum
+import weakref
+from collections import Counter
 from typing import TYPE_CHECKING, Any, TypeVar
 
 if TYPE_CHECKING:
@@ -42,19 +72,24 @@ if TYPE_CHECKING:
 
 _M = TypeVar("_M", bound="Mobject")
 
-__all__ = ["copy_mobject"]
+__all__ = ["FALLBACKS", "copy_mobject"]
 
 _nil: list[Any] = []
+_deepcopy = copy.deepcopy
 
-# What copy.deepcopy reads, from copy and copyreg: private, so typeshed
-# doesn't declare them.
+# What copy.deepcopy reads from copy and copyreg: private, so typeshed doesn't
+# declare them.
 _DISPATCH: dict[type, Any] = copy._deepcopy_dispatch  # type: ignore[attr-defined]
-_NEWOBJ: Any = copyreg.__newobj__  # type: ignore[attr-defined]
+_COPY_LIST = _DISPATCH[list]
+_COPY_DICT = _DISPATCH[dict]
+_COPY_TUPLE = _DISPATCH[tuple]
 _slotnames: Any = copyreg._slotnames  # type: ignore[attr-defined]
+_NEWOBJ = copyreg.__newobj__  # type: ignore[attr-defined]
 
-# The types copy.deepcopy returns as they are, without a memo entry: its
-# atomic set where it has one (3.14), else the types its dispatch table sends
-# to ``_deepcopy_atomic``.
+# The types copy.deepcopy returns as they are, with no memo entry: its atomic
+# set where it has one (3.14), else the types its dispatch table sends to
+# ``_deepcopy_atomic``. Read once; a value of one is also read from the memo
+# first, so a caller's memo entry for it is answered by copy.deepcopy itself.
 if hasattr(copy, "_atomic_types"):
     _ATOMIC: frozenset[type] = frozenset(copy._atomic_types)
 else:
@@ -64,211 +99,217 @@ else:
         if copier is copy._deepcopy_atomic  # type: ignore[attr-defined]
     )
 
-# How each class's instances are copied.
-_ATOM, _LIST, _DICT, _TUPLE, _MOBJECT, _OWN, _PLAIN, _GENERAL = range(8)
-#: The builtin types, whose copy hooks can't change.
-_BUILTIN: dict[type, int] = dict.fromkeys(_ATOMIC, _ATOM)
-_BUILTIN.update({list: _LIST, dict: _DICT, tuple: _TUPLE})
-#: Every other class's kind, with the copy hooks it was found from: the
-#: kind holds while the class resolves those hooks to the same objects.
-_DECIDED: dict[type, tuple[int, tuple[Any, ...]]] = {}
-#: The kinds this copy has found to hold, the builtins' included: emptied of
-#: the other classes as each copy begins, so that a scene that gives its
-#: class other hooks between two copies has the second copy follow them.
-_KINDS: dict[type, int] = dict(_BUILTIN)
+#: How many values each copy handed to copy.deepcopy because they were
+#: outside the domain, by type name: a measure, never read by the copier.
+FALLBACKS: Counter[str] = Counter()
 
-#: The class attributes copy.deepcopy's treatment of an instance depends on.
-_HOOKS = (
-    "__deepcopy__",
-    "__reduce_ex__",
-    "__reduce__",
-    "__getstate__",
-    "__setstate__",
-    "__getnewargs_ex__",
-    "__getnewargs__",
-    "__getattribute__",
-    "__getattr__",
-)
-
+_MOBJECT, _OWN, _PLAIN, _GENERAL = range(4)
 _HEAPTYPE = 1 << 9  # Py_TPFLAGS_HEAPTYPE: a class defined in Python
-_OBJECT_STATE = (object.__reduce_ex__, object.__reduce__, object.__getstate__)
+#: The copy hooks an instance's own ``__dict__`` can supply in place of its
+#: class's.
+_SHADOWING = frozenset(
+    ("__deepcopy__", "__setstate__", "__reduce_ex__", "__reduce__", "__getstate__")
+)
+_OBJECT_GETATTRIBUTE = object.__getattribute__
+
+#: Each class's kind, by the class's id: (a weak reference to the class, its
+#: kind, the hooks the kind was found from).
+_DECIDED: dict[int, tuple[Any, int, tuple[Any, ...]]] = {}
+#: The kinds this copy has checked, by the class's id; emptied as each copy
+#: begins.
+_CHECKED: dict[int, int] = {}
 
 
-def _hooks(cls: type) -> tuple[Any, ...]:
-    """What ``cls`` resolves each copy hook to, and its registrations."""
-    return (
-        *[getattr(cls, name, None) for name in _HOOKS],
-        copyreg.dispatch_table.get(cls),
+def _hooks(cls: type, kind: int) -> tuple[Any, ...]:
+    """What a ``kind`` decision about ``cls`` read: the hooks it resolved."""
+    common = (
         _DISPATCH.get(cls),
+        getattr(cls, "__deepcopy__", None),
+        cls.__getattribute__,
+    )
+    if kind != _PLAIN:
+        return common
+    return (
+        *common,
+        cls.__reduce_ex__,
+        cls.__reduce__,
+        getattr(cls, "__getstate__", None),
+        getattr(cls, "__setstate__", None),
+        getattr(cls, "__getnewargs_ex__", None),
+        getattr(cls, "__getnewargs__", None),
+        getattr(cls, "__getattr__", None),
+        cls.__new__,
+        copyreg.dispatch_table.get(cls),
+        copyreg.__newobj__,  # type: ignore[attr-defined]
+        cls.__mro__,
     )
 
 
-def _kind_of(cls: type, x: Any) -> int:
-    """``cls``'s kind, found again only if its hooks changed since it was."""
-    hooks = _hooks(cls)
-    decided = _DECIDED.get(cls)
-    if decided is not None and decided[1] == hooks:
-        kind = decided[0]
-    else:
-        kind = _classify(cls, x)
-        _DECIDED[cls] = (kind, hooks)
-    _KINDS[cls] = kind
-    return kind
-
-
-def _classify(cls: type, x: Any) -> int:
+def _classify(cls: type) -> int:
     from .mobject import Mobject
 
-    if cls in _DISPATCH:
-        # The dispatch table's other entries (bound methods) are left to it.
-        kind = _GENERAL
-    elif issubclass(cls, type):
-        kind = _ATOM
-    elif getattr(cls, "__deepcopy__", None) is Mobject.__deepcopy__:
-        kind = _MOBJECT
-    elif getattr(cls, "__deepcopy__", None) is enum.Enum.__deepcopy__:
-        # An enum member is its own copy, and copy.deepcopy keeps no memo
-        # entry for it.
-        kind = _ATOM
-    elif getattr(cls, "__deepcopy__", None) is not None:
-        kind = _GENERAL if _custom_lookup(cls) else _OWN
-    elif _plain(cls, x):
-        kind = _PLAIN
-    else:
-        kind = _GENERAL
+    if (
+        cls in _DISPATCH
+        or issubclass(cls, type)
+        or cls.__getattribute__ is not _OBJECT_GETATTRIBUTE
+    ):
+        return _GENERAL
+    own = getattr(cls, "__deepcopy__", None)
+    if own is Mobject.__deepcopy__:
+        return _MOBJECT
+    if own is not None:
+        return _OWN
+    if (
+        cls not in copyreg.dispatch_table
+        and cls.__reduce_ex__ is object.__reduce_ex__
+        and cls.__reduce__ is object.__reduce__
+        and getattr(cls, "__getstate__", None) is object.__getstate__
+        and cls.__new__ is object.__new__
+        and copyreg.__newobj__ is _NEWOBJ  # type: ignore[attr-defined]
+        and not any(
+            hasattr(cls, name)
+            for name in (
+                "__setstate__",
+                "__getnewargs_ex__",
+                "__getnewargs__",
+                "__getattr__",
+            )
+        )
+        and all(base is object or base.__flags__ & _HEAPTYPE for base in cls.__mro__)
+        and cls.__dictoffset__
+        and not _slotnames(cls)
+        # object's reduce reads the instance's __class__: no class overrides it.
+        and all("__class__" not in vars(base) for base in cls.__mro__[:-1])
+    ):
+        return _PLAIN
+    return _GENERAL
+
+
+def _kind_of(cls: type) -> int:
+    """``cls``'s kind, its hooks read again in this copy."""
+    key = id(cls)
+    decided = _DECIDED.get(key)
+    if decided is not None and decided[0]() is cls:
+        kind = decided[1]
+        if kind == _GENERAL or decided[2] == _hooks(cls, kind):
+            _CHECKED[key] = kind
+            return kind
+    kind = _classify(cls)
+    _DECIDED[key] = (
+        weakref.ref(cls),
+        kind,
+        () if kind == _GENERAL else _hooks(cls, kind),
+    )
+    _CHECKED[key] = kind
     return kind
 
 
-def _custom_lookup(cls: type) -> bool:
-    """Whether reading an attribute of an instance may run the class's code."""
-    return (
-        cls.__getattribute__ is not object.__getattribute__
-        or getattr(cls, "__getattr__", None) is not None
-    )
+def _keep_alive(x: Any, memo: dict[int, Any]) -> None:
+    try:
+        memo[id(memo)].append(x)
+    except KeyError:
+        memo[id(memo)] = [x]
 
 
-def _plain(cls: type, x: Any) -> bool:
-    """Whether :mod:`copy` rebuilds ``cls``'s instances as ``object`` reduces
-    them: ``cls.__new__(cls)``, then the original's ``__dict__``, copied, as
-    the new instance's.
-    """
-    if (
-        cls in copyreg.dispatch_table
-        or (cls.__reduce_ex__, cls.__reduce__, cls.__getstate__) != _OBJECT_STATE
-        or _custom_lookup(cls)
-        or any(
-            hasattr(cls, name)
-            for name in ("__setstate__", "__getnewargs_ex__", "__getnewargs__")
-        )
-        or not all(base is object or base.__flags__ & _HEAPTYPE for base in cls.__mro__)
-        or not cls.__dictoffset__
-        or _slotnames(cls)
-    ):
-        return False
-    # And the instance at hand reduces that way.
-    reduced = x.__reduce_ex__(4)
-    state = x.__dict__ or None
-    return (
-        len(reduced) == 5
-        and reduced[0] is _NEWOBJ
-        and reduced[1] == (cls,)
-        and reduced[2] is state
-        and reduced[3] is None
-        and reduced[4] is None
-    )
+def _fallback(x: Any, memo: dict[int, Any]) -> Any:
+    FALLBACKS[type(x).__name__] += 1
+    return _deepcopy(x, memo)
 
 
-def _copy(x: Any, memo: dict[int, Any], alive: list[Any]) -> Any:
-    """``copy.deepcopy(x, memo)``, where ``alive`` is the memo's list of the
-    originals it keeps alive (``memo[id(memo)]``).
-    """
-    cls: Any = type(x)
-    kinds = _KINDS
-    kind = kinds.get(cls)
-    if kind is _ATOM:
-        return x
+def _copy(x: Any, memo: dict[int, Any]) -> Any:
+    """``copy.deepcopy(x, memo)``."""
     d = id(x)
     y = memo.get(d, _nil)
     if y is not _nil:
-        return y
-    if kind is None:
-        kind = _kind_of(cls, x)
-        if kind is _ATOM:
-            return x
-    if kind is _PLAIN:
-        state = x.__dict__
-        if "__deepcopy__" in state or "__reduce_ex__" in state or "__reduce__" in state:
-            return copy.deepcopy(x, memo)
-        y = cls.__new__(cls)
+        # copy.deepcopy answers the memo for every value but an atomic one on
+        # 3.14, which it returns as it is: it answers this one itself.
+        return _deepcopy(x, memo) if type(x) in _ATOMIC else y
+    cls: Any = type(x)
+    if cls in _ATOMIC:
+        return x
+    if cls is list or cls is dict or cls is tuple:
+        y = _copy_builtin(x, cls, memo)
+        if y is x:
+            return y
+    else:
+        kind = _CHECKED.get(id(cls))
+        if kind is None:
+            kind = _kind_of(cls)
+        if kind == _GENERAL:
+            return _fallback(x, memo)
+        state = getattr(x, "__dict__", None)
+        if state is not None and not _SHADOWING.isdisjoint(state):
+            return _fallback(x, memo)
+        if kind == _MOBJECT:
+            y = _copy_mobject(x, memo)
+        elif kind == _OWN:
+            y = x.__deepcopy__(memo)
+        elif id(cls) in memo:
+            # copy._reconstruct copies the class, its one argument, and a
+            # caller's memo entry for it is answered by copy.deepcopy.
+            return _fallback(x, memo)
+        else:
+            y = cls.__new__(cls)
+            memo[d] = y
+            if state:
+                y.__dict__.update(_copy(state, memo))
+    if y is not x:
         memo[d] = y
-        if state:
-            s = id(state)
-            copied = memo.get(s, _nil)
-            if copied is _nil:
-                copied = {}
-                memo[s] = copied
-                for key, value in state.items():
-                    if kinds.get(type(key)) is not _ATOM:
-                        key = _copy(key, memo, alive)
-                    if kinds.get(type(value)) is not _ATOM:
-                        value = _copy(value, memo, alive)
-                    copied[key] = value
-                alive.append(state)
-            y.__dict__.update(copied)
-    elif kind is _LIST:
-        y = []
-        memo[d] = y
+        _keep_alive(x, memo)
+    return y
+
+
+def _copy_builtin(x: Any, cls: type, memo: dict[int, Any]) -> Any:
+    """What copy's own copier of an exact list, dict or tuple does, if copy's
+    dispatch table still sends ``cls`` to it. A value outside the memo whose
+    type is atomic is its own copy, inline.
+    """
+    copier = _DISPATCH.get(cls)
+    atomic = _ATOMIC
+    if cls is list and copier is _COPY_LIST:
+        y: Any = []
+        memo[id(x)] = y
         append = y.append
         for a in x:
-            append(a if kinds.get(type(a)) is _ATOM else _copy(a, memo, alive))
-    elif kind is _OWN:
-        y = x.__deepcopy__(memo)
-    elif kind is _MOBJECT:
-        # An instance's own ``__deepcopy__`` would be the one copy.deepcopy
-        # calls.
-        if "__deepcopy__" in x.__dict__:
-            return copy.deepcopy(x, memo)
-        y = _copy_mobject(x, memo, alive)
-    elif kind is _DICT:
+            append(a if id(a) not in memo and type(a) in atomic else _copy(a, memo))
+        return y
+    if cls is dict and copier is _COPY_DICT:
         y = {}
-        memo[d] = y
+        memo[id(x)] = y
         for key, value in x.items():
-            if kinds.get(type(key)) is not _ATOM:
-                key = _copy(key, memo, alive)
-            if kinds.get(type(value)) is not _ATOM:
-                value = _copy(value, memo, alive)
+            # The value first, as copy's ``y[deepcopy(key)] = deepcopy(value)``.
+            if id(value) in memo or type(value) not in atomic:
+                value = _copy(value, memo)
+            if id(key) in memo or type(key) not in atomic:
+                key = _copy(key, memo)
             y[key] = value
-    elif kind is _TUPLE:
-        items = [a if kinds.get(type(a)) is _ATOM else _copy(a, memo, alive) for a in x]
+        return y
+    if cls is tuple and copier is _COPY_TUPLE:
+        items = [
+            a if id(a) not in memo and type(a) in atomic else _copy(a, memo) for a in x
+        ]
         try:
-            return memo[d]
+            return memo[id(x)]
         except KeyError:
             pass
         for k, j in zip(x, items, strict=True):
             if k is not j:
-                y = tuple(items)
-                break
-        else:
-            y = x
-    else:
-        return copy.deepcopy(x, memo)
-    if y is not x:
-        memo[d] = y
-        alive.append(x)
-    return y
+                return tuple(items)
+        return x
+    return _fallback(x, memo)
 
 
-def _copy_mobject(mob: _M, memo: dict[int, Any], alive: list[Any]) -> _M:
+def _copy_mobject(mob: _M, memo: dict[int, Any]) -> _M:
     """What :meth:`.Mobject.__deepcopy__` does, each value copied by
-    :func:`_copy`.
+    :func:`_copy` (a value outside the memo whose type is atomic inline).
     """
     cls = mob.__class__
     result = cls.__new__(cls)
     memo[id(mob)] = result
-    kinds = _KINDS
+    atomic = _ATOMIC
     for k, v in mob.__dict__.items():
-        if kinds.get(type(v)) is not _ATOM:
-            v = _copy(v, memo, alive)
+        if id(v) in memo or type(v) not in atomic:
+            v = _copy(v, memo)
         setattr(result, k, v)
     result.original_id = str(id(mob))
     return result
@@ -278,10 +319,5 @@ def copy_mobject(mob: _M, memo: dict[int, Any]) -> _M:
     """``mob``'s deep copy with ``memo``, as :meth:`.Mobject.__deepcopy__`
     makes it.
     """
-    alive = memo.get(id(memo))
-    if alive is None:
-        alive = memo[id(memo)] = []
-    # Each class's hooks are read again in this copy, once per class.
-    _KINDS.clear()
-    _KINDS.update(_BUILTIN)
-    return _copy_mobject(mob, memo, alive)
+    _CHECKED.clear()
+    return _copy_mobject(mob, memo)
