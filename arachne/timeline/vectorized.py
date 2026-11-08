@@ -68,7 +68,9 @@ __all__ = [
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from fractions import Fraction
+from functools import cache
 from operator import is_
+from types import FunctionType
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -270,16 +272,30 @@ def _twin(function: Any) -> Any:
         return None
 
 
+@cache
+def _engine_rates() -> dict[int, Callable[..., Any]]:
+    """CE's rate functions, by identity."""
+    from .rates import RATE_FUNCTIONS
+
+    return {id(function): function for function in RATE_FUNCTIONS}
+
+
 def _rate_refusal(name: str, function: Any) -> str | None:
     """Why ``name``'s rate function is not one the plan may call ahead of
-    the play: one with no array twin, or a factory's closure over a number
-    that is not exact (:data:`_EXACT`), at any depth.
+    the play. It must be one of CE's rate functions itself, or the closure a
+    rate factory returned (a function whose code is the factory's own) over
+    one, at any depth, with numbers that are exact (:data:`_EXACT`): a
+    callable that only compares equal to one of CE's runs its own call.
     """
     from .rates import _factory_parts
 
-    if _twin(function) is None:
-        return f"{name}'s rate function has no array twin"
-    while (parts := _factory_parts(function)) is not None:
+    rates = _engine_rates()
+    while rates.get(id(function)) is not function:
+        parts = None
+        if type(function) is FunctionType:
+            parts = _factory_parts(function)
+        if parts is None:
+            return f"{name}'s rate function is not one of CE's"
         kind, cells = parts
         numbers = ("a", "b") if kind == "squish" else ("proportion",)
         for number in numbers:

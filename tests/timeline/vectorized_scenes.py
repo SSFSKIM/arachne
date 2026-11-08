@@ -351,3 +351,34 @@ class EnormousLag(Scene):
 
     def construct(self):
         self.play(Create(VGroup(Square(), Circle()), lag_ratio=2**63), run_time=1)
+
+
+class EqualToLinear:
+    """A rate function equal to ``linear`` (its hash and equality are
+    ``linear``'s) that counts its own calls.
+    """
+
+    def __init__(self):
+        self.calls = 0
+
+    def __hash__(self):
+        return hash(linear)
+
+    def __eq__(self, other):
+        return other is linear or other is self
+
+    def __call__(self, t):
+        self.calls += 1
+        return linear(t)
+
+
+class RateEqualToLinear(Scene):
+    """A reveal at a rate that is only equal to ``linear``; after the play a
+    dot is placed by how many times the rate was called.
+    """
+
+    def construct(self):
+        rate = EqualToLinear()
+        self.play(Create(Square(), rate_func=rate), run_time=1)
+        self.add(Dot(RIGHT * (rate.calls % 7) * 0.3))
+        self.wait(0.2)

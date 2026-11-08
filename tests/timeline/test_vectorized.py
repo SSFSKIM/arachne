@@ -35,6 +35,7 @@ from arachne.timeline.draw import Drawing
 from arachne.timeline.record import IDENTITY_FIELDS, RegisteredState
 from arachne.timeline.routes import _resolve
 from arachne.utils.bezier import integer_interpolate, interpolate, partial_bezier_points
+from arachne.utils.rate_functions import smooth, squish_rate_func
 
 from . import route_scenes, vectorized_scenes
 from .conftest import render
@@ -396,6 +397,39 @@ def test_a_style_integer_past_doubles_exact_range_keeps_the_play_scalar():
     transform = Transform(start, end)
     transform.begin()
     assert "style number" in vectorized.refusal([transform])
+
+
+def test_a_rate_only_equal_to_an_engine_rate_keeps_the_play_scalar():
+    """An engine rate is the engine's function itself, not a callable that
+    compares equal to it: one that is only equal runs its own call.
+    """
+    scene = assert_same_as_scalar(vectorized_scenes.RateEqualToLinear)
+    play = scene.timeline.ensure_record().plays[0]
+    assert not play.vectorized
+    assert "rate function" in vectorized.refusal(play._animations)
+
+
+class _FactoryLookalike:
+    """A callable that carries an engine rate factory's code and closure."""
+
+    def __init__(self, closure_of):
+        self.__code__ = closure_of.__code__
+        self.__closure__ = closure_of.__closure__
+        self.calls = 0
+
+    def __call__(self, t):
+        self.calls += 1
+        return t
+
+
+def test_a_callable_carrying_a_factorys_code_keeps_the_play_scalar():
+    lookalike = _FactoryLookalike(squish_rate_func(smooth, 0.1, 0.9))
+    reveal = Create(Circle(), rate_func=lookalike)
+    reveal.begin()
+    assert "rate function" in vectorized.refusal([reveal])
+    genuine = Create(Circle(), rate_func=squish_rate_func(smooth, 0.1, 0.9))
+    genuine.begin()
+    assert vectorized.refusal([genuine]) is None
 
 
 def test_a_play_with_one_kept_instant_is_not_batched():
