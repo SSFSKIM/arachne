@@ -24,13 +24,14 @@ from arachne.timeline.execution import Divergence
 from arachne.timeline.probe import (
     PlayProbe,
     Probe,
+    _fields_difference,
     _paint_name,
     _tree_difference,
     _Walk,
     _walk,
 )
 from arachne.timeline.purity import Proof, Refused
-from arachne.timeline.record import NodeState
+from arachne.timeline.record import DepthReference, NodeState
 
 from . import camera_scenes, probe_scenes, restore_scenes, route_scenes
 from .conftest import SMALL, render
@@ -682,3 +683,27 @@ def test_a_demotion_at_a_line_whose_occurrences_did_not_change_keeps_its_play(
     finally:
         session.close()
         admission.DEMOTED.clear()
+
+
+def test_a_depth_stand_in_is_compared_with_the_reference_point_the_record_kept():
+    """A restore draws a mobject sorted by a ``z_index_group`` by a stand-in
+    for the group (the point its capture found): the probe takes it for the
+    kept group when its point is the one the kept capture found, and for a
+    difference otherwise.
+    """
+    import numpy as np
+
+    from arachne import Square, VectorizedPoint
+
+    square = Square()
+    group = VectorizedPoint([0.0, 0.0, -1.0])
+    square.z_index_group = group
+    kept = NodeState.of(square)
+    square.z_index_group = DepthReference(np.array([0.0, 0.0, -1.0]))
+    restored = NodeState.of(square)
+    places = ({}, {})
+    centre = np.array([0.0, 0.0, -1.0])
+    assert _fields_difference(restored, kept, places, centre) is None
+    moved = np.array([0.0, 0.0, 1.0])
+    assert "reference point" in _fields_difference(restored, kept, places, moved)
+    assert "reference point" in _fields_difference(restored, kept, places, None)

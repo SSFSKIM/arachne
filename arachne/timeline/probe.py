@@ -55,7 +55,7 @@ from .clock import TICK_RATE
 from .draw import CameraExtras, camera_nodes
 from .execution import KEY_DECIMALS, TOLERANCE, Divergence
 from .keys import marker_reason, value_key
-from .record import NodeState, covered_fields
+from .record import DepthReference, NodeState, covered_fields
 from .restore import Unrestorable, restored
 
 if TYPE_CHECKING:
@@ -235,7 +235,11 @@ def _difference(
             )
         )
         why = _tree_difference(
-            mine, lists, theirs, (kept.roots, kept.foreground, kept.moving)
+            mine,
+            lists,
+            theirs,
+            (kept.roots, kept.foreground, kept.moving),
+            {id(mob): reference.center for mob, reference in kept.references},
         )
         if why is not None:
             return why
@@ -295,8 +299,12 @@ def _tree_difference(
     my_lists: Sequence[Sequence[Mobject]],
     theirs: _Walk,
     their_lists: Sequence[Sequence[Mobject]],
+    centers: Mapping[int, np.ndarray] = {},  # noqa: B006 (read only)
 ) -> str | None:
-    """How the restored draw lists, tree and nodes differ from the kept."""
+    """How the restored draw lists, tree and nodes differ from the kept.
+    ``centers`` are the depth reference points the kept capture found, by
+    mobject.
+    """
     for name, members, others in zip(_LISTS, my_lists, their_lists, strict=True):
         if _positions(mine, members) != _positions(theirs, others):
             return f"the {name} differ from those kept"
@@ -317,7 +325,9 @@ def _tree_difference(
                 f"a {type(mob).__name__}'s submobjects are other mobjects than"
                 " in the record"
             )
-        why = _fields_difference(state, kept, (mine.places, theirs.places))
+        why = _fields_difference(
+            state, kept, (mine.places, theirs.places), centers.get(id(twin))
+        )
         if why is not None:
             return f"its {type(mob).__name__}'s {why}"
     return None
@@ -329,12 +339,28 @@ _Places = tuple[Mapping[int, int], Mapping[int, int]]
 
 
 def _fields_difference(
-    state: NodeState, kept: NodeState, places: _Places
+    state: NodeState,
+    kept: NodeState,
+    places: _Places,
+    center: np.ndarray | None,
 ) -> str | None:
+    """How the fields of a restored node differ from those of the kept one.
+    ``center`` is the depth reference point the kept capture found for the
+    node, which a restore's stand-in for its ``z_index_group``
+    (:class:`.record.DepthReference`) is compared with.
+    """
     mine, theirs = dict(covered_fields(state)), dict(covered_fields(kept))
     if mine.keys() != theirs.keys():
         return f"fields {', '.join(sorted(mine.keys() ^ theirs.keys()))} differ"
     for name in sorted(mine):
+        if name == "z_index_group" and isinstance(mine[name], DepthReference):
+            # The stand-in is the point the depth sort reads of the group the
+            # record kept; the kept capture's own point is its value.
+            if center is None or not np.allclose(
+                mine[name].center, center, rtol=0, atol=TOLERANCE
+            ):
+                return "z_index_group's reference point differs from the kept"
+            continue
         why = _value_difference(
             mine[name], theirs[name], paint=_paint_name(name), places=places
         )
