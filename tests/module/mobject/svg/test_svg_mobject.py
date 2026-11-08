@@ -344,6 +344,23 @@ def test_the_cache_keeps_alive_every_class_it_holds_an_image_of():
     assert alive() is not None
 
 
+def test_the_cache_key_of_a_class_that_cannot_be_hashed_is_made():
+    """The class is told by its identity, not hashed: a metaclass that makes
+    its classes unhashable stops no key being made.
+    """
+    from arachne.utils.iterables import hash_obj
+
+    class Unhashable(type(SVGMobject)):
+        __hash__ = None
+
+    class Hashless(SVGMobject, metaclass=Unhashable):
+        pass
+
+    made = object.__new__(Hashless)
+    made.svg_default, made.path_string_config, made.file_name = {}, {}, "heart.svg"
+    assert hash_obj(made.hash_seed) == hash_obj(made.hash_seed)
+
+
 _HEARTS = """
 from arachne import Scene, SVGMobject
 

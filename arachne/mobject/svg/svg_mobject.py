@@ -196,12 +196,15 @@ class SVGMobject(VMobject):
         mobject points.
 
         Used as keys in the ``SVG_HASH_TO_MOB_MAP`` caching dictionary. The
-        class is the class itself, not its name: a class of the scene's own
-        named as an engine class is, which parses otherwise, makes another
-        image.
+        class is told by its identity, not its name: a class of the scene's
+        own named as an engine class is, which parses otherwise, makes
+        another image. (An entry is an instance of the class that parsed it,
+        so the class lives as long as the entry, and its identity is never
+        another class's. The class itself is not hashed: its metaclass can
+        make it unhashable.)
         """
         return (
-            type(self),
+            id(type(self)),
             self.svg_default,
             self.path_string_config,
             self.file_name,
