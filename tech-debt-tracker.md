@@ -399,8 +399,8 @@ again; "the floor" is the time from the edit to the new record.
 
 - **The deep copies in a play's `begin`.** Taken across every route (`Transform.begin`, `create_starting_mobject`,
   fades, `Write`'s outlines), they are about 11–14% of the floor by the per-scene median, under the bar for a lever of
-  their own. Every deep copy, whoever asks for it, is about 20% by the median. Direction: make mobject copies cheaper
-  rather than fewer.
+  their own. Every deep copy, whoever asks for it, is about 20% by the median. Direction: fewer copies, not faster
+  ones (see "A faster `Mobject.copy`" below): share values a play only reads instead of copying them.
 - **`DrawBorderThenFill` builds its outline twice.** `__init__` builds it (`arachne/animation/creation.py:243`) and
   `begin` builds it again (`:252`), which wastes about 1% of the floor. Direction: build it once, in `begin`, once
   nothing reads the first.
@@ -425,3 +425,19 @@ again; "the floor" is the time from the edit to the new record.
   A hit also skips the constructor's diagnostics (a parse warning is logged on a miss only), and every mobject a
   construction makes advances its line's origin numbering, temporaries included, so a hit must replay that count.
   Revisit if mobject copies become substantially cheaper.
+- **A faster `Mobject.copy` with exactly `copy.deepcopy`'s semantics.** Measured with the copier on and off, as the
+  saving on the floor (per-scene median, then pooled):
+
+  | copier | all scenes | narrated scenes | teaching scenes |
+  |---|---|---|---|
+  | first cut, not fully equivalent | 6.9%, 7.7% | 6.9%, 7.7% | 7.0%, 7.8% |
+  | equivalent to `deepcopy` step for step | -0.1%, -0.9% | 0.2%, 0.3% | -1.5%, -1.6% |
+
+  The first cut skipped steps `deepcopy` takes: it did not read the memo before an atomic value, ignored hooks set on
+  an instance or changed on a class after its first copy, copied a dict's key before its value, and made the
+  keep-alive list eagerly. Restoring every step took the saving to nothing. Reading the memo before every value alone
+  is about a third of the first cut's saving; the rest is per-container and per-object call overhead. The equivalent
+  copier hands about 0.14% of copied objects to `copy.deepcopy` (paths only), so its narrowed domain is not what cost
+  the gain. Ceiling: about 7% of the floor without full equivalence, about 0% with it. Not built; the equivalent
+  copier is at commit `5133121a`, unmerged. It would also read private `copy` and `copyreg` internals. Direction:
+  fewer copies. A play's `begin` copies (about 11–15% of the floor, above) are where to start.
