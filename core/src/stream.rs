@@ -4779,4 +4779,80 @@ mod tests {
             frames.iter().map(|f| f.2).collect::<Vec<_>>()
         );
     }
+
+    /// A segment of the z axis (its points on x = 0 and y = 0, coded on y's plane) and a tick across
+    /// it on one of those two planes and on z = 0.5, seen over an orbit whose eye lies in the
+    /// segment's other plane (theta -90 degrees for x = 0, 0 for y = 0; phi 56 to 86 degrees), the
+    /// segment drawn first. The camera keys the plane through its eye nowhere, so the segment is read
+    /// on the plane it shares with the tick alone, one depth there: the tick above the segment at
+    /// every sub-sample both cover in every frame, whichever of the segment's two planes is its first
+    /// identity. Turned 3 degrees off the plane through the eye, the camera keys both, nearly edge-on
+    /// the one the eye left, and the segment's snap share is the most of the snap's reach on each of
+    /// them: several times that of a line on the shared plane alone.
+    #[test]
+    fn a_line_on_two_axis_planes_one_holding_the_eye_is_read_on_the_other() {
+        let axis = crate::depth::Planarity::Axis;
+        let segment = || {
+            (
+                snapped_line([0.0, 0.0, -1.0], [0.0, 0.0, 1.0]),
+                line_record(1, 6.0, axis(1)),
+            )
+        };
+        // The eye's theta, the plane the tick shares with the segment, the tick, and a line on that
+        // plane alone (through the origin, rising across it).
+        for (theta, shared, tick, alone) in [
+            (
+                -90.0,
+                1u8,
+                ([-0.25, 0.0, 0.5], [0.25, 0.0, 0.5]),
+                ([-0.5, 0.0, -1.0], [0.5, 0.0, 1.0]),
+            ),
+            (
+                0.0,
+                0u8,
+                ([0.0, -0.25, 0.5], [0.0, 0.25, 0.5]),
+                ([0.0, -0.5, -1.0], [0.0, 0.5, 1.0]),
+            ),
+        ] {
+            let (mut met_any, mut frames) = (0, Vec::new());
+            for frame in 0..16u32 {
+                let view = snapped_view(56.0 + 2.0 * f64::from(frame), theta);
+                let s = paths_stream(
+                    view,
+                    vec![
+                        segment(),
+                        (snapped_line(tick.0, tick.1), line_record(2, 6.0, axis(2))),
+                    ],
+                );
+                let both = met(&s, 101, 102);
+                met_any += both.len();
+                frames.push((both.iter().filter(|m| m.a_above).count(), both.len()));
+            }
+            assert!(met_any > 200, "theta {theta}: {met_any} sub-samples");
+            assert!(
+                frames.iter().all(|f| f.0 == 0),
+                "theta {theta}: the segment above the tick, (at, of) a frame: {frames:?}"
+            );
+            let s = paths_stream(
+                snapped_view(75.0, theta + 3.0),
+                vec![
+                    segment(),
+                    (
+                        snapped_line(alone.0, alone.1),
+                        line_record(2, 6.0, axis(shared)),
+                    ),
+                ],
+            );
+            let both = met(&s, 101, 102);
+            assert!(both.len() > 20, "theta {theta}: {} sub-samples", both.len());
+            for m in &both {
+                assert!(
+                    m.a.2.is_finite() && m.b.2.is_finite() && m.a.2 > 4.0 * m.b.2,
+                    "theta {theta}: the segment's snap share {} against the line's {}",
+                    m.a.2,
+                    m.b.2
+                );
+            }
+        }
+    }
 }
