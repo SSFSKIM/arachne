@@ -223,8 +223,8 @@ def _replaced_displays(camera: Any) -> list[Replaced]:
     named by kind (``display_funcs`` itself, whole, when its kinds are not
     the engine's); none when every one is. A live painter's own wrappers
     (:func:`engine_override`), installed while it describes the camera's
-    captures, stand for the entries they wrap; while it is installed the
-    camera is not read at all (``_xf_live``).
+    captures, stand for the entries they wrap, so an entry the scene put
+    under one is still the scene's.
     """
     from arachne.mobject.mobject import Mobject
     from arachne.mobject.types.image_mobject import AbstractImageMobject
@@ -232,8 +232,6 @@ def _replaced_displays(camera: Any) -> list[Replaced]:
     from arachne.mobject.types.vectorized_mobject import VMobject
 
     own = vars(camera)
-    if "_xf_live" in own:
-        return []
     funcs = own.get("display_funcs")
     kinds = {
         kind.__name__: kind

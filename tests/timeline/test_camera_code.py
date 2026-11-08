@@ -197,8 +197,7 @@ def test_a_wrapper_the_engine_made_stands_for_what_it_wraps():
 def test_every_wrapper_the_live_painter_installs_reads_as_the_engine_s():
     """The one place the engine puts wrappers in ``display_funcs`` is
     ``LivePainter._install``, for each camera it watches. Built for each
-    engine camera class, the table it leaves is not rewired (read once the
-    painter's own marker is gone, as a camera outside a live capture is).
+    engine camera class, the table it leaves is not rewired.
     """
     from arachne.frame_ir.live import LivePainter
 
@@ -213,12 +212,34 @@ def test_every_wrapper_the_live_painter_installs_reads_as_the_engine_s():
         assert not any(
             getattr(func, "__self__", None) is camera for func in wrappers
         ), "the entries were wrapped"
-        vars(camera).pop("_xf_live")
         assert not display_funcs_rewired(camera), type(camera).__name__
         assert replaced_methods(camera) == ()
-        vars(camera)["_xf_live"] = []
         restore()
         assert not display_funcs_rewired(camera)
+
+
+def test_an_entry_the_scene_put_under_the_live_painter_s_wrapper_is_still_flagged():
+    """The wrapper stands for the entry it wraps, whoever's that is: a scene's
+    function under it is the scene's.
+    """
+    from arachne.frame_ir.live import LivePainter
+
+    camera = Camera()
+    paint = camera.display_funcs[VMobject]
+
+    def bordered(mobjects, pixel_array):
+        paint(mobjects, pixel_array)
+
+    camera.display_funcs[VMobject] = bordered
+    restore = LivePainter(draw=False)._install(camera)
+    try:
+        assert "_xf_live" in vars(camera)
+        assert display_funcs_rewired(camera)
+        (found,) = replaced_methods(camera)
+        assert found.name == "display_funcs[VMobject]"
+        assert found.method is bordered
+    finally:
+        restore()
 
 
 def test_the_places_that_put_functions_in_display_funcs_are_the_ones_known():

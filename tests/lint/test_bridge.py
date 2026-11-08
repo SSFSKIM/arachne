@@ -388,7 +388,6 @@ def test_an_unknown_code_or_a_missing_reference_is_refused(session_of, scene, er
         ("InstanceReplaced", "Camera.get_mobjects_to_display (on the instance)"),
         ("ClassReplaced", "Camera.get_mobjects_to_display (on the class)"),
         ("MemberReplaced", "Camera.get_coords_of_all_pixels (on the instance)"),
-        ("DisplayReplaced", "Camera.display_funcs[VMobject] (on the display_funcs)"),
     ],
 )
 def test_a_replaced_camera_method_keeps_the_record_and_marks_its_queries(
@@ -408,6 +407,18 @@ def test_a_replaced_camera_method_keeps_the_record_and_marks_its_queries(
     marked = query.overlaps()
     assert isinstance(marked, CameraReplaced)
     assert marked.replaced == (member,)
+
+
+def test_a_rewired_display_entry_leaves_the_record_as_it_was(session_of):
+    """A display entry the scene replaced is told from the engine's by the
+    draw route (``camera_code.display_funcs_rewired``); the record of replaced
+    camera code holds the methods only, as it did before the route did.
+    """
+    from arachne.timeline.camera_code import display_funcs_rewired
+
+    session = session_of("DisplayReplaced", BRIDGE, frame_rate=15)
+    assert display_funcs_rewired(session.scene.renderer.camera)
+    assert session.record.camera_replaced == ()
 
 
 def test_the_engine_s_camera_refuses_and_marks_nothing(session_of):

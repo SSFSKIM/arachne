@@ -627,6 +627,8 @@ class Recorder:
         found = list(record.camera_replaced)
         for camera in drawn_cameras(self.scene.renderer.camera):
             for replaced in replaced_methods(camera):
+                if replaced.form == "display_funcs":
+                    continue  # a rewired table is the route's (camera_code)
                 key = (replaced.owner, replaced.name, replaced.form)
                 if key not in known:
                     known.add(key)
