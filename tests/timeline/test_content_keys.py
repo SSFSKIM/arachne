@@ -10,8 +10,11 @@ every mobject class the engine exports keys without it.
 from __future__ import annotations
 
 import dataclasses
+import functools
+import io
 import json
 import os
+import random
 import subprocess
 import sys
 import textwrap
@@ -27,7 +30,12 @@ from arachne.constants import CapStyleType, LineJointType
 from arachne.session import Session
 from arachne.timeline import admission
 from arachne.timeline.execution import ExecutionSummary, compare, play_keys
-from arachne.timeline.keys import OVER_BUDGET_KIND, unkeyable
+from arachne.timeline.keys import (
+    OVER_BUDGET_KIND,
+    OVER_DEPTH_KIND,
+    marker_reason,
+    unkeyable,
+)
 from arachne.timeline.record import (
     IDENTITY_FIELDS,
     STRUCTURE_FIELDS,
@@ -401,6 +409,18 @@ class Note:
         self.lock = threading.Lock()
 
 
+class Link:
+    def __init__(self, after):
+        self.after = after
+
+
+def chain(length):
+    link = None
+    for _ in range(length):
+        link = Link(link)
+    return link
+
+
 class Noted(Scene):
     def construct(self):
         line = Line(LEFT, RIGHT)
@@ -420,8 +440,9 @@ class Noted(Scene):
             "[[0] * 1000 for _ in range(200)]",
             "a builtins.list of more than 100000 parts, too large to key",
         ),
+        ("chain(1000)", "Link nested deeper than"),
     ],
-    ids=["of-a-type-the-key-does-not-know", "over-the-budget"],
+    ids=["of-a-type-the-key-does-not-know", "over-the-budget", "nested-too-deep"],
 )
 def test_a_value_the_key_cannot_key_is_a_difference_wherever_it_is_compared(
     scene_dir, note, why
@@ -448,9 +469,9 @@ def test_a_value_the_key_cannot_key_is_a_difference_wherever_it_is_compared(
 # A scene's own attribute, read later
 
 #: The scene keeps ``k`` on itself and reads it only as play 1 runs, in the
-#: code ``READ`` names: an updater, a redrawn mobject, or a function of a
-#: tracker that is a method of the scene. Play 0 runs with the tracker at 0,
-#: where ``k`` changes nothing.
+#: code ``READ`` names. Play 0 runs with the tracker at 0, where ``k``
+#: changes nothing. ``CHANGE`` is what the scene does to ``k`` after play 1
+#: (play 2 then reads the new value).
 LATER = (
     HEADER
     + """
@@ -458,17 +479,28 @@ class Later(Scene):
     def at(self, value):
         return RIGHT * self.k * value
 
+    def point(self):
+        return self.at(self.tracker.get_value())
+
     def construct(self):
         self.k = float((HERE / "k.txt").read_text())
-        tracker = ValueTracker(0)
+        tracker = self.tracker = ValueTracker(0)
         READ
         self.add(shown)
         self.wait(0.25)
         self.play(tracker.animate.set_value(1), run_time=0.5)
-        self.wait(0.25)
+        CHANGE
+        self.play(tracker.animate.set_value(0.5), run_time=0.5)
 """
 )
 
+#: How the scene reads ``k`` as play 1 runs. The first three read it from
+#: a closure held in the mobject's ``updaters``, which no key covers (they
+#: are code, ``STRUCTURE_FIELDS``): they show that what the read does lands
+#: in keyed state. The traced path reads it through a field the key covers,
+#: ``traced_point_func``, a method of the scene, which keys as its function
+#: and the scene's type: it is the case that rests on keying a scene by its
+#: type.
 READS_LATER = {
     "an-updater": (
         "shown = Dot().add_updater(lambda m: m.set_x(self.k * tracker.get_value()))"
@@ -479,7 +511,37 @@ READS_LATER = {
     "a-method-of-the-scene": (
         "shown = Dot().add_updater(lambda m: m.move_to(self.at(tracker.get_value())))"
     ),
+    "a-traced-path-of-a-method": "shown = TracedPath(self.point, stroke_width=12)",
 }
+
+
+def _forward_frames(path: Path, scene: str, fps: int) -> list[np.ndarray]:
+    """The frames a render of ``scene`` in ``path`` draws, executing it
+    forward from its first line.
+    """
+    import importlib.util
+
+    from .conftest import render
+
+    spec = importlib.util.spec_from_file_location(f"forward_{path.stem}", path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    _, frames = render(getattr(module, scene), fps)
+    return [np.asarray(frame, dtype=np.int16) for frame in frames]
+
+
+def _answers_as_forward(session: Session, frames: list[np.ndarray], fps: int) -> None:
+    """Every frame ``session`` answers is the one a forward render draws, and
+    the probe either agrees with each state play or demotes it.
+    """
+    for index, frame in enumerate(frames):
+        t = Fraction(index, fps)
+        assert np.array_equal(_pixels(session, t), frame), t
+    for probe in session.probe.plays:
+        assert probe.outcome in {"agreed", "demoted"}, session.probe.plays
 
 
 @pytest.mark.parametrize("read", list(READS_LATER.values()), ids=list(READS_LATER))
@@ -490,9 +552,10 @@ def test_a_scene_attribute_read_during_a_play_diverges_at_that_play(
     """Keying a scene by its type rests on this: what the scene's own
     attributes do reaches a frame only through state the record keys, so
     two executions apart in one diverge at the first play it changes, and
-    each answers that play from its own record.
+    each answers its frames as a forward render draws them, never from the
+    other's state. (Which cases exercise the scene's key: ``READS_LATER``.)
     """
-    source = LATER.replace("READ", read)
+    source = LATER.replace("READ", read).replace("CHANGE", "pass")
     before, after = _two_executions(
         scene_dir, source, "Later", "k.txt", first, second, frame_rate=15
     )
@@ -506,16 +569,47 @@ def test_a_scene_attribute_read_during_a_play_diverges_at_that_play(
         else:
             assert found is not None
             assert found.play == 1, found.reason
-        # No restore stands in for another execution's state: play 1 is a
-        # state play in each, its restores built from that execution's own
-        # record, and the probe finds them agreeing with it.
-        for session in (before, after):
-            assert session.record.plays[1].route == "state"
-            outcomes = {probe.play: probe.outcome for probe in session.probe.plays}
-            assert outcomes == {1: "agreed"}, session.probe.plays
+        # The session answering now is the second execution's, its input
+        # as a forward render reads it.
+        frames = _forward_frames(scene_dir / "scene.py", "Later", 15)
+        _answers_as_forward(after, frames, 15)
     finally:
         before.close()
         after.close()
+
+
+#: ``k`` changed by the scene where a restore of its plays cannot see it:
+#: after play 1 (play 2 reads the new value), or during play 1, by a frame
+#: hook counting its frames (history no restore knows).
+STALE = {
+    "after-play-1": ("CHANGE", "self.k = 3 * self.k"),
+    "during-play-1-by-a-hook": (
+        "    def construct(self):",
+        "    frames = 0\n\n"
+        "    def update_to_time(self, t):\n"
+        "        super().update_to_time(t)\n"
+        "        if hasattr(self, 'k'):\n"
+        "            self.frames += 1\n"
+        "            self.k = 1.0 + 0.1 * self.frames\n\n"
+        "    def construct(self):",
+    ),
+}
+
+
+@pytest.mark.parametrize("read", list(READS_LATER.values()), ids=list(READS_LATER))
+@pytest.mark.parametrize("stale", list(STALE.values()), ids=list(STALE))
+def test_a_scene_attribute_changed_where_no_restore_sees_it_is_answered_as_forward(
+    scene_dir, read, stale
+):
+    old, new = stale
+    source = LATER.replace("READ", read).replace(old, new).replace("CHANGE", "pass")
+    path = _write(scene_dir, "scene.py", source)
+    _write(scene_dir, "k.txt", "1.0")
+    session = _open(path, "Later", frame_rate=15)
+    try:
+        _answers_as_forward(session, _forward_frames(path, "Later", 15), 15)
+    finally:
+        session.close()
 
 
 # Ordinary ways of handing a mobject a function
@@ -714,6 +808,154 @@ def test_a_value_too_large_to_key_is_a_marker_of_its_own():
     assert _value_key(big) != _value_key(big)
     assert _value_key(big).startswith(b"\0over budget")
     assert _value_key(Note()).startswith(b"\0unkeyable")
+
+
+def _qualified(cls: type) -> str:
+    return f"{cls.__module__}.{cls.__qualname__}"
+
+
+class Link:
+    """One link of a chain of plain objects."""
+
+    def __init__(self, after):
+        self.after = after
+
+
+class Anything:
+    """An object that makes a fresh callable for every name asked of it."""
+
+    def __getattr__(self, name):
+        return Anything()
+
+    def __call__(self):
+        return None
+
+
+class Endless(list):
+    """A list whose iteration recurses without end as it is read."""
+
+    def __iter__(self):
+        return self.__iter__()
+
+
+def test_a_value_nested_too_deep_to_key_is_a_marker_naming_its_type():
+    chain = None
+    for _ in range(1000):
+        chain = Link(chain)
+    # A chain deeper than the bound, and code that recurses as the key reads
+    # it, which no bound on the value's depth sees.
+    for value in (chain, Endless()):
+        key = _value_key(value)  # never a RecursionError
+        assert key != _value_key(value)
+        assert unkeyable(value) == OVER_DEPTH_KIND
+        why = marker_reason(key)
+        assert why is not None
+        assert f"{__name__}.{type(value).__qualname__}" in why
+        assert "too deep to key" in why
+    # A shallow chain keys.
+    short = Link(Link(None))
+    assert _value_key(short) == _value_key(Link(Link(None)))
+    # An object making a fresh callable for every name asked of it holds no
+    # state: it keys, as two of it behave alike.
+    assert _value_key(Anything()) == _value_key(Anything())
+
+
+class Scaled:
+    """A callable object of its own state wrapping a function."""
+
+    def __init__(self, function, k):
+        self.__wrapped__ = function
+        self.k = k
+
+    def __call__(self, x):
+        return self.k * self.__wrapped__(x)
+
+
+class Seeded(random.Random):
+    """An object of a class whose state a builtin base holds."""
+
+
+class Tagged(list):
+    """A list with an attribute of its own."""
+
+
+@dataclasses.dataclass
+class Spec:
+    width: float
+
+
+def test_values_that_differ_anywhere_key_apart():
+    """Each rule keys all of its value: two that differ in any part a later
+    read could see never key alike.
+    """
+    import cmath
+    import collections
+    import math
+
+    import networkx
+    from PIL import Image
+
+    from arachne.mobject.values import FrozenPoints, freeze
+
+    def apart(a, b):
+        assert _value_key(a) != _value_key(b), (a, b)
+
+    # An array's dtype and shape, not only its bytes.
+    flat = np.arange(6, dtype=float)
+    apart(
+        freeze(flat.reshape(2, 3), FrozenPoints),
+        freeze(flat.reshape(3, 2), FrozenPoints),
+    )
+    # A container's subclass and its own attributes; a default dict's default.
+    apart(collections.defaultdict(list), collections.defaultdict(int))
+    word, other = type("Word", (str,), {})("a"), type("Word", (str,), {})("a")
+    word.note, other.note = 1, 2
+    apart(word, other)
+    # A dataclass's attributes beyond its fields; a function's own.
+    spec, wider = Spec(1.0), Spec(1.0)
+    wider.extra = 2
+    apart(spec, wider)
+
+    def f(x):
+        return x
+
+    def g(x):
+        return x
+
+    g.factor = 2
+    apart(f, g)
+    # A builtin by its module; a ufunc numpy did not name is no numpy ufunc.
+    apart(math.sin, cmath.sin)
+    made = np.frompyfunc(lambda x: x, 1, 1)
+    assert unkeyable(made) == _qualified(type(made))
+    assert _value_key(np.sin) == _value_key(np.sin)
+    # A picture's palette; a graph's own attributes.
+    first, second = Image.new("P", (2, 2)), Image.new("P", (2, 2))
+    first.putpalette([0, 0, 0] * 256)
+    second.putpalette([255, 0, 0] * 256)
+    apart(first, second)
+    one, two = networkx.Graph(name="one"), networkx.Graph(name="two")
+    apart(one, two)
+    # A function's cache by its options too.
+    apart(functools.lru_cache(maxsize=1)(abs), functools.lru_cache(maxsize=2)(abs))
+
+
+def test_an_object_keys_by_all_of_its_state_or_is_a_marker():
+    # A callable object wrapping a function keys by its own state too.
+    assert _value_key(Scaled(abs, 1)) != _value_key(Scaled(abs, 5))
+    assert _value_key(Scaled(abs, 1)) == _value_key(Scaled(abs, 1))
+    # A function's cache keys as the function it caches.
+    assert _value_key(functools.lru_cache(abs)) == _value_key(functools.lru_cache(abs))
+    # State a builtin base holds is not in the attributes: the marker.
+    for value in (Seeded(1), io.StringIO("a")):
+        assert unkeyable(value) == _qualified(type(value)), value
+    assert _value_key(Seeded(1)) != _value_key(Seeded(1))
+    # A builtin container's subclass keys its own attributes beside its parts.
+    first, second = Tagged([1]), Tagged([1])
+    first.tag, second.tag = "a", "b"
+    assert _value_key(first) != _value_key(second)
+    second.tag = "a"
+    assert _value_key(first) == _value_key(second)
 
 
 # Every mobject the engine exports

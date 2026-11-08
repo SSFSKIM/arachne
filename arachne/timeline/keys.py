@@ -39,6 +39,7 @@ __all__ = [
     "value_key",
 ]
 
+import collections
 import dataclasses
 import enum
 import functools
@@ -59,17 +60,26 @@ if TYPE_CHECKING:
 #: the value it keys becomes the marker :data:`OVER_BUDGET`.
 BUDGET = 100_000
 
+#: How deep one key follows values held inside values before the value it
+#: keys becomes the marker :data:`OVER_DEPTH`: well inside the interpreter's
+#: recursion limit, whatever stack the caller stands on.
+DEPTH = 100
+
 #: The head of the marker of a value of a type the key does not know.
 UNKEYABLE = b"\0unkeyable "
 #: The head of the marker of a value holding more than :data:`BUDGET` parts.
 OVER_BUDGET = b"\0over budget "
-#: What :func:`unkeyable` names a value over the budget.
+#: The head of the marker of a value nested deeper than :data:`DEPTH`.
+OVER_DEPTH = b"\0over depth "
+#: What :func:`unkeyable` names a value over the budget, and one too deep.
 OVER_BUDGET_KIND = "over the key budget"
+OVER_DEPTH_KIND = "over the key depth"
 
 
 class _Unkeyable(Exception):  # noqa: N818 (a finding, named as one)
     """A value the key cannot key: of a type it does not know, by the type's
-    name, or over the budget (:data:`OVER_BUDGET_KIND`).
+    name, over the budget (:data:`OVER_BUDGET_KIND`) or too deep
+    (:data:`OVER_DEPTH_KIND`).
     """
 
     def __init__(self, kind: str) -> None:
@@ -103,38 +113,48 @@ def value_key(
     keying = _Keying(decimals)
     try:
         return _key(value, keying), tuple(keying.refers)
-    except _Unkeyable as found:
+    except (_Unkeyable, RecursionError) as found:
         # Each marker names its cause's type: the type that fell through, or
-        # that of the value too large to key.
-        if found.kind == OVER_BUDGET_KIND:
+        # that of the value too large or too deep to key. A recursion the
+        # depth did not bound (code that recurses as it is read) is too deep.
+        kind = _found(found)
+        if kind == OVER_BUDGET_KIND:
             head, kind = OVER_BUDGET, _qualified(type(value))
+        elif kind == OVER_DEPTH_KIND:
+            head, kind = OVER_DEPTH, _qualified(type(value))
         else:
-            head, kind = UNKEYABLE, found.kind
+            head = UNKEYABLE
         return head + kind.encode() + b"\0" + os.urandom(16), ()
 
 
 def unkeyable(value: Any) -> str | None:
     """What in ``value`` the key cannot key, the first it meets: a type's
-    qualified name, or :data:`OVER_BUDGET_KIND`; ``None`` when it keys all
-    of ``value``.
+    qualified name, :data:`OVER_BUDGET_KIND` or :data:`OVER_DEPTH_KIND`;
+    ``None`` when it keys all of ``value``.
     """
     try:
         _key(value, _Keying(None))
-    except _Unkeyable as found:
-        return found.kind
+    except (_Unkeyable, RecursionError) as found:
+        return _found(found)
     return None
+
+
+def _found(found: Exception) -> str:
+    return found.kind if isinstance(found, _Unkeyable) else OVER_DEPTH_KIND
 
 
 def marker_reason(key: bytes) -> str | None:
     """Why ``key`` is a marker, in words, naming the type it is a marker
     for, or ``None`` for a key of content.
     """
-    for head in (UNKEYABLE, OVER_BUDGET):
+    for head in (UNKEYABLE, OVER_BUDGET, OVER_DEPTH):
         if key.startswith(head):
             kind = key[len(head) :].split(b"\0", 1)[0].decode()
             if head == UNKEYABLE:
                 return f"a value of a type the key does not know ({kind})"
-            return f"a {kind} of more than {BUDGET} parts, too large to key"
+            if head == OVER_BUDGET:
+                return f"a {kind} of more than {BUDGET} parts, too large to key"
+            return f"a {kind} nested deeper than {DEPTH} levels, too deep to key"
     return None
 
 
@@ -169,10 +189,11 @@ def _key(value: Any, keying: _Keying) -> bytes:
     if isinstance(value, (Paint, Placement)):
         return value.key
     if isinstance(value, FrozenArray):
+        shape = _framed(f"{value.dtype.str}{value.shape}".encode())
         if decimals is not None and value.dtype.kind in "fc":
             # Adding zero turns -0.0, which rounding makes, into 0.0.
             value = np.round(value, decimals) + 0.0
-        return _digest(value.tobytes())
+        return shape + _digest(value.tobytes())
     if isinstance(value, enum.Enum):
         # Its class and its value, as another process names them alike.
         return (
@@ -180,9 +201,9 @@ def _key(value: Any, keying: _Keying) -> bytes:
             + _framed(type(value).__qualname__.encode())
             + _key(value.value, keying)
         )
-    if isinstance(value, float) and decimals is not None:
+    if type(value) is float and decimals is not None:
         return repr(round(value, decimals) + 0.0).encode()
-    if value is None or value is Ellipsis or isinstance(value, (bool, int, float, str)):
+    if value is None or value is Ellipsis or type(value) in (bool, int, float, str):
         return repr(value).encode()
     if isinstance(value, Mobject):
         # Which mobject it is, the caller keys; its own state is a node's.
@@ -195,6 +216,8 @@ def _key(value: Any, keying: _Keying) -> bytes:
     active = keying.active
     if id(value) in active:
         return b"back " + active[::-1].index(id(value)).to_bytes(4, "big")
+    if len(active) >= DEPTH:
+        raise _Unkeyable(OVER_DEPTH_KIND)
     active.append(id(value))
     try:
         return _held_key(value, keying)
@@ -204,29 +227,69 @@ def _key(value: Any, keying: _Keying) -> bytes:
 
 def _held_key(value: Any, keying: _Keying) -> bytes:
     """The key of a value that holds others: an array, a container, a colour,
-    a function or an object of a kind the key knows.
+    a function or an object of a kind the key knows; a value of a builtin
+    kind's subclass with its own attributes too.
     """
+    head = b"of " + _framed(type(value).__qualname__.encode())
+    return head + _content_key(value, keying) + _own_attributes(value, keying)
+
+
+def _each(parts: Any, keying: _Keying) -> bytes:
+    found = [_key(part, keying) for part in parts]
+    return len(found).to_bytes(4, "big") + b"".join(map(_framed, found))
+
+
+def _own_attributes(value: Any, keying: _Keying) -> bytes:
+    """The attributes an instance of a subclass of a builtin kind (a ``str``,
+    a ``list``, a ``dict``) holds beside its value, which no rule for the
+    kind reads; nothing for another value.
+    """
+    if not isinstance(value, _BUILTIN_KINDS) or type(value) in _BUILTIN_KINDS:
+        return b""
+    own = getattr(value, "__dict__", None)
+    return _each(sorted(own.items()), keying) if own else b""
+
+
+#: The builtin kinds a rule of :func:`_content_key` keys by their values.
+_BUILTIN_KINDS = (
+    int,
+    float,
+    str,
+    tuple,
+    list,
+    dict,
+    set,
+    frozenset,
+    bytes,
+    bytearray,
+    complex,
+)
+
+
+def _content_key(value: Any, keying: _Keying) -> bytes:
+    """``value``'s key past its type (:func:`_held_key`)."""
     from arachne.camera.camera import Camera
     from arachne.scene.scene import Scene
     from arachne.utils.color import ManimColor
 
     def each(parts: Any) -> bytes:
-        found = [_key(part, keying) for part in parts]
-        return len(found).to_bytes(4, "big") + b"".join(map(_framed, found))
+        return _each(parts, keying)
 
-    head = b"of " + _framed(type(value).__qualname__.encode())
+    if isinstance(value, (int, float, str)):
+        # A subclass of a number or a string: its value, as the builtin's.
+        return _framed(repr(type(value).__mro__[-2](value)).encode())
     if isinstance(value, np.ndarray):
         array = np.asarray(value).view(np.ndarray)
         shape = _framed(f"{array.dtype.str}{array.shape}".encode())
         if array.dtype.hasobject:
-            return head + shape + each(array.ravel().tolist())
+            return shape + each(array.ravel().tolist())
         if keying.decimals is not None and array.dtype.kind in "fc":
             array = np.round(array, keying.decimals) + 0.0
-        return head + shape + _digest(np.ascontiguousarray(array).tobytes())
+        return shape + _digest(np.ascontiguousarray(array).tobytes())
     if isinstance(value, ManimColor):
-        return head + _key(value.to_rgba(), keying)
+        return _key(value.to_rgba(), keying)
     if isinstance(value, (tuple, list)):
-        return head + each(value)
+        return each(value)
     if isinstance(value, (dict, set, frozenset)):
         # Unordered: its parts in the order of their keys, each with the
         # mobjects it refers to.
@@ -244,69 +307,96 @@ def _held_key(value: Any, keying: _Keying) -> bytes:
         keyed.sort(key=lambda item: item[0])
         for _, own in keyed:
             held.extend(own)
-        return (
-            head
-            + len(keyed).to_bytes(4, "big")
-            + b"".join(_framed(part_key) for part_key, _ in keyed)
+        found = len(keyed).to_bytes(4, "big") + b"".join(
+            _framed(part_key) for part_key, _ in keyed
         )
+        if isinstance(value, collections.defaultdict):
+            found += _key(value.default_factory, keying)
+        return found
     if isinstance(value, (bytes, bytearray)):
-        return head + _digest(bytes(value))
+        return _digest(bytes(value))
     if isinstance(value, (complex, Fraction, range, slice)):
-        return head + _framed(repr(value).encode())
+        return _framed(repr(value).encode())
     if isinstance(value, type):
         return b"class " + _framed(value.__qualname__.encode())
     if isinstance(value, types.FunctionType):
-        # What it runs and what it closes over, not where it is: a function
-        # made twice from one definition keys alike.
+        # What it runs, what it closes over and its own attributes, not where
+        # it is: a function made twice from one definition keys alike.
         cells = [_contents(cell) for cell in value.__closure__ or ()]
         return (
-            head
-            + _framed(value.__qualname__.encode())
+            _framed(value.__qualname__.encode())
             + _code_key(value.__code__, keying)
             + each(value.__defaults__ or ())
             + _key(value.__kwdefaults__, keying)
             + each(cells)
+            + each(sorted(vars(value).items()))
         )
     if isinstance(value, types.MethodType):
-        return head + each((value.__func__, value.__self__))
+        return each((value.__func__, value.__self__))
     if isinstance(value, np.ufunc):
-        return head + _framed(value.__name__.encode())
+        # One of numpy's own, by its name; another (``np.frompyfunc``'s) is
+        # code of this process.
+        if getattr(np, value.__name__, None) is not value:
+            raise _Unkeyable(_qualified(type(value)))
+        return _framed(value.__name__.encode())
     if isinstance(value, types.BuiltinFunctionType):
         owner = value.__self__
         bound = () if owner is None or isinstance(owner, types.ModuleType) else (owner,)
-        return head + _framed(value.__qualname__.encode()) + each(bound)
+        # A builtin's module is named alike in every load: ``math`` and
+        # ``cmath`` each have a ``sin``.
+        name = f"{value.__module__}.{value.__qualname__}"
+        return _framed(name.encode()) + each(bound)
     if isinstance(value, functools.partial):
-        return head + each((value.func, value.args, value.keywords))
+        return each((value.func, value.args, value.keywords))
     if isinstance(value, np.vectorize):
         # The function it vectorizes and how; not the ufunc it builds and
         # caches on its first call.
-        return head + each(
-            (value.pyfunc, value.otypes, value.excluded, value.signature)
+        return each(
+            (value.pyfunc, value.otypes, value.excluded, value.signature, value.cache)
         )
-    if callable(value) and hasattr(value, "__wrapped__"):
-        # A function's cache or another wrapper: the function it wraps.
-        return head + _key(value.__wrapped__, keying)
+    if isinstance(value, functools._lru_cache_wrapper):
+        # The function it caches and how: what it returns is what the
+        # function returned for those arguments.
+        return each((value.__wrapped__, sorted(value.cache_parameters().items())))
     if isinstance(value, pathlib.PurePath):
         # Where a file was written differs between executions (their media
         # directories); what it holds is keyed where it was read.
-        return head + _framed(value.name.encode())
+        return _framed(value.name.encode())
     if isinstance(value, (Scene, Camera, types.ModuleType)):
         # What a scene and a camera do lands in the mobjects and camera
         # inputs a capture keys; a module is code, as the source digest is.
-        return head
-    if dataclasses.is_dataclass(value):
-        return head + each(
+        return b""
+    foreign = _foreign_key(value)
+    if foreign is not None:
+        return _key(foreign, keying)
+    if not _state_in_python(type(value)):
+        raise _Unkeyable(_qualified(type(value)))
+    if dataclasses.is_dataclass(value) and not hasattr(value, "__dict__"):
+        return each(
             (field.name, getattr(value, field.name))
             for field in dataclasses.fields(value)
         )
-    foreign = _foreign_key(value)
-    if foreign is not None:
-        return head + _key(foreign, keying)
     if isinstance(getattr(value, "__dict__", None), dict):
-        # An object of a plain class (the scene's own helpers, the engine's
-        # scales): its type and its attributes.
-        return head + each(sorted(vars(value).items()))
+        # An object of a plain class (the scene's own helpers, a dataclass,
+        # the engine's scales): its type and its attributes.
+        return each(sorted(vars(value).items()))
     raise _Unkeyable(_qualified(type(value)))
+
+
+def _state_in_python(cls: type) -> bool:
+    """Whether an instance of ``cls`` holds its state where Python reads it,
+    in its attributes or its slots: no builtin or extension base of it holds
+    any (``random.Random``'s generator, ``io.StringIO``'s buffer), so its
+    layout is ``object``'s, slots aside.
+    """
+    size = cls.__basicsize__
+    for klass in cls.__mro__:
+        slots = vars(klass).get("__slots__", ())
+        size -= len((slots,) if isinstance(slots, str) else slots) * _POINTER
+    return size == object.__basicsize__
+
+
+_POINTER = np.dtype(np.intp).itemsize
 
 
 #: What an empty closure cell holds, for its key: a variable the function
@@ -344,7 +434,7 @@ def _foreign_key(value: Any) -> Any:
     """
     image = sys.modules.get("PIL.Image")
     if image is not None and isinstance(value, image.Image):
-        return (value.mode, value.size, value.tobytes())
+        return (value.mode, value.size, value.tobytes(), value.getpalette())
     svg = sys.modules.get("svgelements")
     if svg is not None and isinstance(value, svg.Path):
         return value.d()
@@ -354,6 +444,7 @@ def _foreign_key(value: Any) -> Any:
     networkx = sys.modules.get("networkx")
     if networkx is not None and isinstance(value, networkx.Graph):
         return (
+            value.graph,
             [list(node) for node in value.nodes(data=True)],
             [list(edge) for edge in value.edges(data=True)],
         )
