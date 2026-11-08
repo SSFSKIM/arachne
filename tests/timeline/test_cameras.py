@@ -319,6 +319,28 @@ def test_a_display_repainted_between_plays_keeps_a_picture_a_play(
 
 
 @pytest.mark.parametrize("draw_path", ["cairo", "ir_cairo"])
+def test_a_display_repainted_while_off_screen_during_a_play_draws_that_play_live(
+    session_of, draw_path
+):
+    """The play's picture of the display is the one it showed first, also
+    when the display leaves the screen between: shown again repainted, it
+    refuses the play rather than keep a second picture.
+    """
+    if draw_path == "ir_cairo":
+        pytest.importorskip("arachne_core")
+    scene_class = camera_scenes.OtherCameraHidden
+    live = _drawn_live(scene_class, 15, draw_path=draw_path)
+    red, blue = (tuple(int(v) for v in ManimColor(c).to_int_rgb()) for c in (RED, BLUE))
+    assert _centre(live[0]) == red
+    assert _centre(live[-1]) == blue
+    scene, drawn = render(scene_class, 15, draw_path=draw_path)
+    refusal = scene.timeline.record.refusal
+    assert refusal is not None
+    assert refusal.startswith("camera.display_redrawn:")
+    _equal_frames(drawn, live)
+
+
+@pytest.mark.parametrize("draw_path", ["cairo", "ir_cairo"])
 def test_a_display_repainted_during_a_play_draws_that_play_live(session_of, draw_path):
     if draw_path == "ir_cairo":
         pytest.importorskip("arachne_core")

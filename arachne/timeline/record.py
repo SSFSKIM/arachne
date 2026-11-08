@@ -264,28 +264,34 @@ CAMERA_REBOUND = (
 def _pictures(
     displays: Sequence[Mobject],
     previous: tuple[tuple[Mobject, np.ndarray], ...],
-    same_play: bool,
+    kept: dict[int, tuple[Mobject, np.ndarray, int]],
+    play: int,
 ) -> tuple[tuple[tuple[Mobject, np.ndarray], ...], bool]:
     """The picture each of ``displays`` shows now, its camera's framebuffer,
-    and whether one changed since ``previous`` within the play
-    (``same_play``): that one is not copied, and ``previous``'s picture is
-    kept for it. ``previous`` itself, or its pictures, where they are the
-    same.
+    and whether one changed during ``play`` since the play first showed it.
+    ``kept`` holds, per display (by id), the last picture kept and the play
+    it was last shown in, whether or not it was on screen at every capture
+    between: a picture is shared while it is the same, copied anew in a new
+    play, and not copied for a change within the play (that play's is kept).
+    ``previous`` itself, or its pictures, where they are the same.
     """
-    earlier = {id(mob): picture for mob, picture in previous}
     found: list[tuple[Mobject, np.ndarray]] = []
     redrawn = False
     for mob in displays:
         live = mob.camera.pixel_array  # type: ignore[attr-defined]
-        picture = earlier.get(id(mob))
-        if picture is None or not (
-            picture.shape == live.shape and np.array_equal(picture, live)
-        ):
-            if picture is not None and same_play:
+        entry = kept.get(id(mob))
+        picture = None
+        if entry is not None and entry[0] is mob:
+            held, shown_in = entry[1], entry[2]
+            if held.shape == live.shape and np.array_equal(held, live):
+                picture = held
+            elif shown_in == play:
                 redrawn = True
-            else:
-                picture = live.copy()
-                picture.flags.writeable = False
+                picture = held
+        if picture is None:
+            picture = live.copy()
+            picture.flags.writeable = False
+        kept[id(mob)] = (mob, picture, play)
         found.append((mob, picture))
     if len(found) == len(previous) and all(
         a is c and b is d for (a, b), (c, d) in zip(found, previous, strict=True)
@@ -757,6 +763,9 @@ class Record:
         #: seq of the first drawn capture that found another (``None`` while
         #: none has).
         self._pixel_shape: tuple[int, int] | None = None
+        #: Per display of another camera (by id): its last picture kept, and
+        #: the play that last showed it (:func:`_pictures`).
+        self._kept_pictures: dict[int, tuple[Mobject, np.ndarray, int]] = {}
         self.pixel_shape_changed: int | None = None
         self.final: Capture | None = None
         #: The names the scene's code had for its mobjects when it ended.
@@ -886,7 +895,8 @@ class Record:
             pictures, redrawn = _pictures(
                 shown,
                 previous.pictures if previous else (),
-                previous is not None and self._captured_play == play,
+                self._kept_pictures,
+                play,
             )
             if redrawn and self._entry_refusal is None:
                 self._entry_refusal = DISPLAY_REDRAWN

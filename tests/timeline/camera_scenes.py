@@ -18,6 +18,7 @@ from arachne import (
     Circle,
     Dot,
     FadeIn,
+    Group,
     ImageMobjectFromCamera,
     MappingCamera,
     MovingCamera,
@@ -380,3 +381,30 @@ class OtherCameraShown(Scene):
         display.add_updater(drive)
         self.add(display)
         self.wait(0.4)
+
+
+class OtherCameraHidden(Scene):
+    """A display of another camera, in a group: an updater takes it out of the
+    group partway through the wait, repaints its camera blue while it is out,
+    and puts it back.
+    """
+
+    def construct(self):
+        other, display = _other_camera_display()
+        group = Group(display)
+        elapsed = [0.0]
+
+        def drive(mob, dt):
+            elapsed[0] += dt
+            if 0.1 <= elapsed[0] < 0.3 and display in group.submobjects:
+                group.remove(display)
+            elif elapsed[0] >= 0.2 and other.background_color != BLUE:
+                other.background_color = BLUE
+                other.reset()
+            elif elapsed[0] >= 0.3 and display not in group.submobjects:
+                group.add(display)
+
+        clock = Dot(LEFT * 6, radius=0.05)
+        clock.add_updater(drive)
+        self.add(group, clock)
+        self.wait(0.5)
