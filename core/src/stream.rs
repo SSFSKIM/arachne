@@ -5069,4 +5069,195 @@ mod tests {
             "the line drawn first above, (at, of) a frame: {frames:?}"
         );
     }
+
+    /// The snap's move of a bent stroke's key at fixed sub-samples, through the frame's own
+    /// sampling, as for a straight line above: two straight cubics meeting at 30, 90 and 150
+    /// degrees (the first 45 or 10 degrees from the sight axis, the second turned toward the
+    /// screen's y), and a closed rectangle outline (its sides along a direction 45 degrees from
+    /// the sight axis and along the screen's y), each 6 and 0.5 wide, under the three cameras;
+    /// drawn where content put it and where a snap within half a grid step of each of its points'
+    /// coordinates moved it, a point two cubics share moved as one (the box's corners alike,
+    /// opposed between alternate points and between the shared points and the rest, and random
+    /// moves). At a joint or a corner a read changes segment as the snap moves the stroke (the
+    /// holder-set jump), and past a thin stroke's body near a corner the nearest segment, clamped
+    /// at its end, keys it. Each row's tightness is printed.
+    #[test]
+    fn a_snapped_bent_stroke_s_key_at_each_sub_sample_lies_within_its_own_reach_of_the_content_s() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+        };
+        let corners: Vec<[f64; 3]> = (0..8)
+            .map(|c| [0, 1, 2].map(|k| if (c >> k) & 1 == 1 { 0.5 } else { -0.5 }))
+            .collect();
+        let curve = crate::depth::Planarity::Curve;
+        let centre = [0.31, -0.17, 0.23];
+        let mut rows = Vec::new();
+        for (phi, theta) in [(0.0, -90.0), (70.0, -110.0), (85.0, -100.0)] {
+            let view = snapped_view(phi, theta);
+            let r = projection_of(&view).rotation();
+            let along = |angle: f64| -> [f64; 3] {
+                let (c, s) = (libm::cos(angle.to_radians()), libm::sin(angle.to_radians()));
+                std::array::from_fn(|j| c * r[2][j] + s * r[0][j])
+            };
+            let third = |p: [f64; 3], q: [f64; 3], t: f64| -> [f64; 3] {
+                std::array::from_fn(|j| p[j] + (q[j] - p[j]) * t)
+            };
+            // Each shape: its name, its distinct points, and its points as indices into them.
+            let mut shapes: Vec<(String, Vec<[f64; 3]>, Vec<usize>)> = Vec::new();
+            for first in [45.0, 10.0] {
+                let u = along(first);
+                let length = if first < 15.0 { 2.0 } else { 1.0 };
+                for bend in [30.0f64, 90.0, 150.0] {
+                    let (c, s) = (libm::cos(bend.to_radians()), libm::sin(bend.to_radians()));
+                    let w: [f64; 3] = std::array::from_fn(|j| -c * u[j] + s * r[1][j]);
+                    let a: [f64; 3] = std::array::from_fn(|j| centre[j] - length * u[j]);
+                    let b: [f64; 3] = std::array::from_fn(|j| centre[j] + length * w[j]);
+                    let distinct = vec![
+                        a,
+                        third(a, centre, 1.0 / 3.0),
+                        third(a, centre, 2.0 / 3.0),
+                        centre,
+                        third(centre, b, 1.0 / 3.0),
+                        third(centre, b, 2.0 / 3.0),
+                        b,
+                    ];
+                    shapes.push((
+                        format!("bent {bend} from {first}"),
+                        distinct,
+                        vec![0, 1, 2, 3, 3, 4, 5, 6],
+                    ));
+                }
+            }
+            let (u, v) = (along(45.0), r[1]);
+            let corner = |x: f64, y: f64| -> [f64; 3] {
+                std::array::from_fn(|j| centre[j] + x * u[j] + y * v[j])
+            };
+            let ring = [
+                corner(-1.0, -0.6),
+                corner(1.0, -0.6),
+                corner(1.0, 0.6),
+                corner(-1.0, 0.6),
+            ];
+            let (mut distinct, mut index) = (Vec::new(), Vec::new());
+            for (k, &p) in ring.iter().enumerate() {
+                let q = ring[(k + 1) % 4];
+                distinct.extend([p, third(p, q, 1.0 / 3.0), third(p, q, 2.0 / 3.0)]);
+                index.extend([3 * k, 3 * k + 1, 3 * k + 2, (3 * k + 3) % 12]);
+            }
+            shapes.push(("rectangle".to_string(), distinct, index));
+            for (name, distinct, index) in &shapes {
+                let n = distinct.len();
+                let shared: Vec<bool> = (0..n)
+                    .map(|i| index.iter().filter(|&&k| k == i).count() > 1)
+                    .collect();
+                let mut moves: Vec<Vec<[f64; 3]>> = Vec::new();
+                for c in &corners {
+                    let o = c.map(|v| -v);
+                    moves.push(vec![*c; n]);
+                    moves.push((0..n).map(|i| if i % 2 == 0 { *c } else { o }).collect());
+                    moves.push((0..n).map(|i| if shared[i] { *c } else { o }).collect());
+                }
+                for _ in 0..16 {
+                    moves.push((0..n).map(|_| std::array::from_fn(|_| next())).collect());
+                }
+                for width in [6.0, 0.5] {
+                    let draw = |points: Vec<[f64; 3]>| {
+                        let s = paths_stream(
+                            view.clone(),
+                            vec![(points, line_record(1, width, curve))],
+                        );
+                        curve_keys(&s, 101)
+                    };
+                    let exact = draw(index.iter().map(|&k| distinct[k]).collect());
+                    let (mut worst, mut met_any) = (0.0f64, 0usize);
+                    for m in &moves {
+                        let moved: Vec<[f64; 3]> = index
+                            .iter()
+                            .map(|&k| std::array::from_fn(|j| distinct[k][j] + m[k][j] * GRID))
+                            .collect();
+                        for (at, (k, e, own)) in draw(moved) {
+                            let Some((k0, e0, _)) = exact.get(&at) else {
+                                continue;
+                            };
+                            met_any += 1;
+                            assert!(own.is_finite() && own > 0.0, "own share {own}");
+                            let reach = e + e0 + (k.abs() + e) * own;
+                            let moved_by = (k - k0).abs();
+                            assert!(
+                                moved_by <= reach,
+                                "({phi}, {theta}) {name}, {width} wide, at {at:?}: the key moved \
+                                 by {moved_by:e} against its reach {reach:e}"
+                            );
+                            worst = worst.max(moved_by / reach);
+                        }
+                    }
+                    assert!(
+                        met_any > 200,
+                        "({phi}, {theta}) {name}, {width} wide: {met_any} sub-samples"
+                    );
+                    rows.push((phi, theta, name.clone(), width, worst, met_any));
+                }
+            }
+        }
+        for (phi, theta, name, width, worst, n) in rows {
+            eprintln!(
+                "TIGHT phi {phi} theta {theta} {name} width {width}: {worst:.3} over {n} sub-samples"
+            );
+        }
+    }
+
+    /// As the segment and tick above at theta -90 degrees (the eye in x = 0), the segment's
+    /// first identity now the plane through the eye: a short line along y on x = 0 and z = -0.8,
+    /// coded on z's plane, comes first in the registry's order and founds x = 0 before the tick
+    /// founds y = 0, so the segment numbers x = 0 first and y = 0 after it (seen 3 degrees off
+    /// the plane through the eye, where the camera keys both and its fragments carry both). The
+    /// camera keys x = 0 nowhere at theta -90; the segment is read on the plane it shares with
+    /// the tick, the tick above it at every sub-sample both cover in every frame.
+    #[test]
+    fn a_line_whose_first_identity_holds_the_eye_is_read_on_the_plane_it_shares() {
+        let axis = crate::depth::Planarity::Axis;
+        let items = || {
+            vec![
+                (
+                    snapped_line([0.0, 0.0, -1.0], [0.0, 0.0, 1.0]),
+                    line_record(1, 6.0, axis(1)),
+                ),
+                (
+                    snapped_line([-0.25, 0.0, 0.5], [0.25, 0.0, 0.5]),
+                    line_record(2, 6.0, axis(2)),
+                ),
+                (
+                    snapped_line([0.0, -0.1, -0.8], [0.0, 0.1, -0.8]),
+                    line_record(3, 6.0, axis(2)),
+                ),
+            ]
+        };
+        let ids = identities(&paths_stream(snapped_view(75.0, -87.0), items()));
+        let first = ids[&101].iter().next().copied();
+        assert!(
+            ids[&101].len() == 2
+                && first.is_some_and(|i| ids[&103].contains(&i) && !ids[&102].contains(&i)),
+            "the segment on {:?}, the tick on {:?}, the line on x = 0 on {:?}",
+            ids[&101],
+            ids[&102],
+            ids[&103]
+        );
+        let (mut met_any, mut frames) = (0, Vec::new());
+        for frame in 0..16u32 {
+            let view = snapped_view(56.0 + 2.0 * f64::from(frame), -90.0);
+            let s = paths_stream(view, items());
+            let both = met(&s, 101, 102);
+            met_any += both.len();
+            frames.push((both.iter().filter(|m| m.a_above).count(), both.len()));
+        }
+        assert!(met_any > 200, "{met_any} sub-samples");
+        assert!(
+            frames.iter().all(|f| f.0 == 0),
+            "the segment above the tick, (at, of) a frame: {frames:?}"
+        );
+    }
 }
