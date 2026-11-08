@@ -5224,6 +5224,180 @@ mod tests {
         }
     }
 
+    /// Each sub-sample a filled object `a`'s stroke covers in `s`: its key there as the resolve
+    /// orders by it, the stroke drawn on its own fill taking the fill's key where nearer
+    /// ([`composite::strokes_on_own_fills`]), the key's bound, and the stroke's own share.
+    // The sub-sample `k` indexes the fragment's coverage and depth rows.
+    #[allow(clippy::needless_range_loop)]
+    fn resolved_keys(s: &Stream, a: u32) -> BTreeMap<(u32, u32, usize), (f64, f64, f64)> {
+        let (w, h) = {
+            let view = s.view.as_ref().expect("a view");
+            (view.pixel_width, view.pixel_height)
+        };
+        let mut keys = BTreeMap::new();
+        s.visit_contributors(0, 0, w, h, |x, y, frags, cov, d, _| {
+            let Some(i) = frags
+                .iter()
+                .position(|f| s.leaf_of(f).0 == a && f.path_layer && f.sub % 3 == 2)
+            else {
+                return;
+            };
+            let mut d = d.to_vec();
+            composite::strokes_on_own_fills(frags, &mut d, |j| cov[j]);
+            for k in 0..composite::SAMPLES {
+                if cov[i][k] != 0 {
+                    keys.insert((x, y, k), (d[i].samples[k], d[i].err, frags[i].own));
+                }
+            }
+        })
+        .expect("the stream draws");
+        keys
+    }
+
+    /// The snap's move of a filled stroke's key at fixed sub-samples, as the resolve orders by it
+    /// (the stroke drawn on its own fill, read on the stroke's curve with no body, takes the fill's
+    /// key where nearer: [`resolved_keys`]), moved as the bent stroke below: a thin shape seen
+    /// almost edge-on at 40 and 65 degrees from the sight axis (two lines 4 long, 0.01 apart along
+    /// it and 0.0001 apart on screen, closed at both ends); a folded outline (a side ending in a
+    /// corner, a leg turning off it, and another part of the outline passing 0.0001 beyond the side
+    /// and farther); and a square, convex, whose stroke's own share is the same filled as not.
+    /// Each 6 and 0.3 wide, under a camera looking down z and a turned one. At every sub-sample
+    /// the stroke covers in both, the moved key lies within its reach of the content's; each row's
+    /// worst and median move over reach are printed.
+    #[test]
+    fn a_snapped_filled_stroke_s_resolved_key_lies_within_its_own_reach_of_the_content_s() {
+        let mut seed = 0x243f_6a88_85a3_08d3u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+        };
+        let corners: Vec<[f64; 3]> = (0..8)
+            .map(|c| [0, 1, 2].map(|k| if (c >> k) & 1 == 1 { 0.5 } else { -0.5 }))
+            .collect();
+        let curve = crate::depth::Planarity::Curve;
+        let mut rows = Vec::new();
+        for (phi, theta) in [(0.0, -90.0), (70.0, -110.0)] {
+            let view = snapped_view(phi, theta);
+            // Each shape: its name and its corners in the camera's axes (larger z nearer).
+            let mut shapes: Vec<(String, Vec<[f64; 3]>)> = Vec::new();
+            for slant in [40.0f64, 65.0] {
+                let (c, s) = (libm::cos(slant.to_radians()), libm::sin(slant.to_radians()));
+                let u = [s, 0.0, c];
+                let at = |t: f64, y: f64, z: f64| [0.3 + t * u[0], -0.2 + y, 0.1 + t * u[2] + z];
+                shapes.push((
+                    format!("thin slant {slant}"),
+                    vec![
+                        at(-2.0, 0.0, 0.0),
+                        at(2.0, 0.0, 0.0),
+                        at(2.0, 0.0001, 0.01),
+                        at(-2.0, 0.0001, 0.01),
+                    ],
+                ));
+            }
+            shapes.push((
+                "folded".to_string(),
+                vec![
+                    [-1.0, 0.0, 0.0],
+                    [0.0, 0.0, 0.05],
+                    [0.0, 1.0, 0.0],
+                    [0.5, 1.0, 0.0],
+                    [0.5, 0.0001, -0.05],
+                    [-1.0, 0.0001, -0.05],
+                ],
+            ));
+            shapes.push((
+                "square".to_string(),
+                vec![
+                    [-1.0, -1.0, 0.0],
+                    [1.0, -1.0, 0.2],
+                    [1.0, 1.0, 0.0],
+                    [-1.0, 1.0, -0.2],
+                ],
+            ));
+            for (name, corners_of) in &shapes {
+                let ring = camera_ring(&view, corners_of);
+                let n = ring.len();
+                let mut moves: Vec<Vec<[f64; 3]>> = Vec::new();
+                for c in &corners {
+                    let o = c.map(|v| -v);
+                    moves.push(vec![*c; n]);
+                    moves.push((0..n).map(|i| if i % 2 == 0 { *c } else { o }).collect());
+                    moves.push((0..n).map(|i| if i < n / 2 { *c } else { o }).collect());
+                }
+                for _ in 0..16 {
+                    moves.push((0..n).map(|_| std::array::from_fn(|_| next())).collect());
+                }
+                for width in [6.0, 0.3] {
+                    let record = |filled: bool| {
+                        let mut r = line_record(1, width, curve);
+                        if filled {
+                            r.paint.fill = Paint::One([0.2, 0.4, 0.6, 1.0]);
+                        }
+                        r
+                    };
+                    let draw = |points: Vec<[f64; 3]>| {
+                        let s = paths_stream(view.clone(), vec![(points, record(true))]);
+                        resolved_keys(&s, 101)
+                    };
+                    let exact = draw(ring.clone());
+                    if name == "square" {
+                        let s = paths_stream(view.clone(), vec![(ring.clone(), record(false))]);
+                        let bare = resolved_keys(&s, 101);
+                        for (at, (_, _, own)) in &exact {
+                            if let Some((_, _, alone)) = bare.get(at) {
+                                assert_eq!(
+                                    own, alone,
+                                    "({phi}, {theta}) square, {width} wide, at {at:?}: the fill \
+                                     moved a convex outline's own share"
+                                );
+                            }
+                        }
+                    }
+                    let mut ratios: BTreeMap<(u32, u32, usize), f64> = BTreeMap::new();
+                    for m in &moves {
+                        let moved: Vec<[f64; 3]> = ring
+                            .iter()
+                            .zip(m)
+                            .map(|(p, d)| std::array::from_fn(|j| p[j] + d[j] * GRID))
+                            .collect();
+                        for (at, (k, e, own)) in draw(moved) {
+                            let Some((k0, e0, _)) = exact.get(&at) else {
+                                continue;
+                            };
+                            assert!(own.is_finite() && own > 0.0, "own share {own}");
+                            let reach = e + e0 + (k.abs() + e) * own;
+                            let moved_by = (k - k0).abs();
+                            assert!(
+                                moved_by <= reach,
+                                "({phi}, {theta}) {name}, {width} wide, at {at:?}: the key moved \
+                                 by {moved_by:e} against its reach {reach:e}"
+                            );
+                            let ratio = ratios.entry(at).or_insert(0.0);
+                            *ratio = ratio.max(moved_by / reach);
+                        }
+                    }
+                    let mut sorted: Vec<f64> = ratios.values().copied().collect();
+                    sorted.sort_by(f64::total_cmp);
+                    assert!(
+                        sorted.len() > 200,
+                        "({phi}, {theta}) {name}, {width} wide: {} sub-samples",
+                        sorted.len()
+                    );
+                    let (worst, median) = (sorted[sorted.len() - 1], sorted[sorted.len() / 2]);
+                    rows.push((phi, theta, name.clone(), width, worst, median, sorted.len()));
+                }
+            }
+        }
+        for (phi, theta, name, width, worst, median, n) in rows {
+            eprintln!(
+                "TIGHT filled phi {phi} theta {theta} {name} width {width}: {worst:.3} at worst, \
+                 {median:.3} at the median, over {n} sub-samples"
+            );
+        }
+    }
+
     /// The snap's move of a bent stroke's key at fixed sub-samples, through the frame's own
     /// sampling, as for a straight line above: two straight cubics meeting at 30, 90 and 150
     /// degrees (the first 45 or 10 degrees from the sight axis, the second turned toward the

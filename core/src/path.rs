@@ -294,6 +294,10 @@ struct Layer {
     /// For such a stroke, how far on screen, in pixels, the snap may move each point its curve is
     /// drawn through ([`screen_shift`]); zero for any other layer.
     shift: f64,
+    /// For such a stroke, drawn after its path's fill and keyed on the curve that fill is read on
+    /// (with no body): where both cover a sub-sample, its key there is the nearer of its read and
+    /// the fill's ([`crate::composite::strokes_on_own_fills`]), which its own share bounds too.
+    on_fill: bool,
     /// For a layer of a path keyed on a registered plane, its path's key on each identity's plane,
     /// in the order of `plane`: what it is read on against a fragment sharing that identity
     /// ([`Producer::plane_depths`]).
@@ -1364,6 +1368,8 @@ impl<'v> Lowering<'v> {
             (None, None) => None,
         };
         let [background_rows, fill_rows, stroke_rows] = self.layer_rows(draw, &world, lit);
+        // A stroke drawn after a fill read on the stroke's own curve may be resolved at the fill's key.
+        let fill_drawn = fill_rows.is_some();
         for (k, rows, width) in [
             (0, background_rows, draw.background_stroke_width),
             (1, fill_rows, 0.0),
@@ -1445,6 +1451,7 @@ impl<'v> Lowering<'v> {
                 (ids, snap, on_plane, record, own),
                 draw.order,
                 draw.sub + k,
+                k == 2 && fill_drawn && matches!(fill, LayerDepth::Curve(..)),
             );
         }
     }
@@ -1699,7 +1706,9 @@ impl<'v> Lowering<'v> {
     /// registered planes `on.0` with its key's shares `on.1` ([`Fragment::snap`] and
     /// [`Fragment::wide`]), its keys on their planes `on.2`, the registry's handle of its flat
     /// record `on.3` ([`Fragment::record`]) and its own share of its key with its curve's shift on
-    /// screen `on.4` ([`Fragment::own`], [`Layer::shift`]).
+    /// screen `on.4` ([`Fragment::own`], [`Layer::shift`]); `on_fill` for a stroke drawn after its
+    /// path's fill and keyed on the curve that fill is read on ([`Layer::on_fill`]).
+    #[allow(clippy::too_many_arguments)]
     fn push(
         &mut self,
         rings: &[Vec<[f64; 2]>],
@@ -1708,6 +1717,7 @@ impl<'v> Lowering<'v> {
         on: On,
         order: u32,
         sub: u32,
+        on_fill: bool,
     ) {
         let (plane, [snap, wide], on_plane, record, [own, shift]) = on;
         let edges = scanline::edges_of(rings);
@@ -1768,6 +1778,7 @@ impl<'v> Lowering<'v> {
             wide,
             own,
             shift,
+            on_fill,
             on_plane,
             record,
             order,
@@ -1909,10 +1920,15 @@ impl Paths {
         if wide > body + 2.0 * reach {
             near = among(wide);
         }
-        let (most, least) =
-            curve
-                .line
-                .slides_among(&points, centre, &near, body, layer.shift, layer.own);
+        let (most, least) = curve.line.slides_among(
+            &points,
+            centre,
+            &near,
+            body,
+            layer.shift,
+            layer.own,
+            layer.on_fill,
+        );
         if least > 0.0 {
             layer.own + most / least * (1.0 + 4.0 * crate::composite::U)
         } else {

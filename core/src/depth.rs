@@ -2133,6 +2133,9 @@ pub struct Centreline {
     /// points the curve is drawn through may move ([`Centreline::slide_under`]): `2` for ends
     /// moving on their own, less for the ends of a cubic's piece, which move together.
     turns: Vec<f64>,
+    /// For each segment, the segment that shares each of its ends (start, end), point and key: the
+    /// previous or next one of its run, or the run's last or first where the run closes on itself.
+    partners: Vec<[Option<usize>; 2]>,
     /// The largest magnitude of a coordinate of a segment's end.
     scale: f64,
 }
@@ -2162,8 +2165,13 @@ impl Centreline {
         let mut segments = Vec::new();
         let mut errs = Vec::new();
         let mut turned = Vec::new();
+        // Each run's segments, as a range of `segments`.
+        let mut runs = Vec::new();
+        let mut run = 0;
         for i in 1..points.len() {
             if breaks.contains(&i) {
+                runs.push(run..segments.len());
+                run = segments.len();
                 continue;
             }
             let (a, ka) = points[i - 1];
@@ -2187,6 +2195,32 @@ impl Centreline {
             errs.push(err(i));
             turned.push(2.0);
         }
+        runs.push(run..segments.len());
+        let n = segments.len();
+        // Whether segment `s` ends where segment `t` starts, point and key.
+        let meets =
+            |s: usize, t: usize| segments[s].2 == segments[t].0 && segments[s].3 == segments[t].1;
+        let mut partners: Vec<[Option<usize>; 2]> = (0..n)
+            .map(|s| {
+                let start = if s > 0 && meets(s - 1, s) {
+                    Some(s - 1)
+                } else {
+                    None
+                };
+                let end = if s + 1 < n && meets(s, s + 1) {
+                    Some(s + 1)
+                } else {
+                    None
+                };
+                [start, end]
+            })
+            .collect();
+        for r in runs {
+            if r.len() > 1 && partners[r.start][0].is_none() && meets(r.end - 1, r.start) {
+                partners[r.start][0] = Some(r.end - 1);
+                partners[r.end - 1][1] = Some(r.start);
+            }
+        }
         let scale = segments
             .iter()
             .flat_map(|(a, _, b, _)| [a[0], a[1], b[0], b[1]])
@@ -2195,6 +2229,7 @@ impl Centreline {
             segments,
             errors: errs,
             turns: turned,
+            partners,
             scale,
         }
     }
@@ -2397,6 +2432,20 @@ impl Centreline {
     /// `share (|read| + jump) + jump + most`: this returns `(1 + share) jump + most`, each
     /// comparison and parameter with room for its rounding ([`Centreline::rounding`]).
     ///
+    /// With `fill`, `p`'s read is that of a stroke drawn on its own fill read on the same curve with
+    /// no body, and the key the resolve orders by is the nearer of the two reads wherever the fill
+    /// covers `p`'s sub-sample ([`crate::composite::strokes_on_own_fills`]), its cover the fill's
+    /// area in the sub-sample's cell, which the move may change. The fill's read is the front-most
+    /// key of the segments `p` lies on, else the first nearest's; after the move it is the moved key
+    /// of one within `2 shift` of the nearest distance, less any whose foot lies more than `dt`
+    /// past an end that a segment among the reads shares (point and key) while that one's foot does
+    /// not: that one stays nearest the end, and the other lies no farther, keyed there as it is. So
+    /// the key is the read or the nearer of it and the fill's before the move, and after it lies
+    /// within the most either set may move of the lowest of their keys and the stroke's highest:
+    /// `jump` is taken from those, and the magnitude returned is the lesser of the two keys'. Where
+    /// the fill's read is never nearer than the stroke's, as on a convex outline, the bound is the
+    /// stroke's own.
+    ///
     /// Two moves lie outside this bound, stated limits gated on exposure. The flattening of a
     /// curved cubic into pieces changes where the snap changes how many pieces it is cut into (the
     /// count follows its control polygon's length on screen); that moves no read of a straight
@@ -2414,6 +2463,7 @@ impl Centreline {
         body: f64,
         shift: f64,
         share: f64,
+        fill: bool,
     ) -> (f64, f64) {
         let room = self.rounding(p[0].abs().max(p[1].abs()));
         let reach = shift + room;
@@ -2426,6 +2476,12 @@ impl Centreline {
             holds: bool,
             may: bool,
             surely: bool,
+            // The segment, its foot's parameter and how far the move may take it, and whether `p`
+            // lies on the segment (a holder of a read with no body).
+            seg: usize,
+            raw: f64,
+            dt: f64,
+            on: bool,
             d: f64,
             d2: f64,
         }
@@ -2457,6 +2513,10 @@ impl Centreline {
                 holds: (0.0..=1.0).contains(&raw) && d2 <= body2,
                 may: raw >= -dt && raw <= 1.0 + dt && d <= body + reach,
                 surely: raw >= dt && raw <= 1.0 - dt && d + reach <= body,
+                seg: i,
+                raw,
+                dt,
+                on: (0.0..=1.0).contains(&raw) && d2 <= 0.0,
                 d,
                 d2,
             }
@@ -2502,13 +2562,63 @@ impl Centreline {
             high = high.max(k);
         }
         let jump = (read - low).max(high - read);
-        (((1.0 + share) * jump + most) * (1.0 + 64.0 * U), read.abs())
+        if !fill {
+            return (((1.0 + share) * jump + most) * (1.0 + 64.0 * U), read.abs());
+        }
+        // The fill's read, as `find` makes it with no body: the front-most key of the segments `p`
+        // lies on, else the first nearest's; after the move, the moved key of one of those within
+        // `2 reach` of the nearest distance, of which one may be left out: a segment whose foot
+        // lies more than `dt` past an end that a segment among the reads shares (point and key),
+        // that one's foot not past it. The first stays nearest that end before and after the move,
+        // and the second lies no farther (the end is on it), at that end's key where as far, so the
+        // first is the read only tied with the second at the second's key.
+        let filled = reads
+            .iter()
+            .filter(|r| r.on)
+            .map(|r| r.key)
+            .reduce(f64::min)
+            .unwrap_or(nearest.key);
+        let beside = |r: &Read| {
+            let ends = [r.raw < -r.dt, r.raw > 1.0 + r.dt];
+            (0..2).any(|end| {
+                ends[end]
+                    && self.partners[r.seg][end].is_some_and(|q| {
+                        reads.iter().any(|o| {
+                            o.seg == q
+                                && if end == 0 {
+                                    o.raw <= 1.0 + o.dt
+                                } else {
+                                    o.raw >= -o.dt
+                                }
+                        })
+                    })
+            })
+        };
+        let (mut floor, mut fill_most) = (filled, 0.0f64);
+        for r in &reads {
+            if r.d <= nearest.d + 2.0 * reach && (std::ptr::eq(r, nearest) || !beside(r)) {
+                floor = floor.min(r.key);
+                fill_most = fill_most.max(r.moves);
+            }
+        }
+        // Where the fill covers the sub-sample the key is the nearer of the two reads, elsewhere
+        // the stroke's own, and the fill's cover (its area in the sub-sample's cell) may change
+        // with the move. Before it the key is `read` or `min(read, filled)`; after it, within the
+        // most either set may move of `min(low, floor)..=high`.
+        let resolved = read.min(filled);
+        let jump = (read - low.min(floor)).max(high - resolved);
+        (
+            ((1.0 + share) * jump + most.max(fill_most)) * (1.0 + 64.0 * U),
+            read.abs().min(resolved.abs()),
+        )
     }
 
     /// [`Centreline::slide_under`] at each of `points` (a pixel's reads, `centre` its centre)
     /// among `candidates` (all segments when empty, holding every segment a read among every
     /// segment at one of the points may take), cut down to those that may hold one of the points
-    /// or lie near its nearest: the most any read may move and the least magnitude of the reads.
+    /// or lie near its nearest: the most any read may move and the least magnitude of the reads,
+    /// with `fill` each read's bound taking its stroke's own fill's read beside its own.
+    #[allow(clippy::too_many_arguments)]
     pub fn slides_among(
         &self,
         points: &[[f64; 2]],
@@ -2517,6 +2627,7 @@ impl Centreline {
         body: f64,
         shift: f64,
         share: f64,
+        fill: bool,
     ) -> (f64, f64) {
         let all: Vec<u32> = if candidates.is_empty() {
             (0..self.segments.len() as u32).collect()
@@ -2551,7 +2662,7 @@ impl Centreline {
             .collect();
         let (mut most, mut least) = (0.0f64, f64::INFINITY);
         for p in points {
-            let (m, k) = self.slide_under(*p, &kept, body, shift, share);
+            let (m, k) = self.slide_under(*p, &kept, body, shift, share, fill);
             most = most.max(m);
             least = least.min(k);
         }
@@ -2686,6 +2797,231 @@ mod tests {
     use super::*;
     use crate::composite::{SAMPLES, sample_point};
 
+    /// A stroke drawn on its own fill, the fill read on the stroke's curve with no body: where both
+    /// cover a sub-sample the resolve takes the nearer of the stroke's read and the fill's
+    /// (`composite::strokes_on_own_fills`, which takes the larger of their bounds), and the fill may
+    /// cover it on one side of the move only. Three rows, each moved as the short piece above
+    /// (points within the shift, keys within the share), the resolved key before and after taken
+    /// every way the fill's cover allows:
+    /// - folded: a side ending in a corner, a leg turning off it, and another part of the curve
+    ///   passing 0.007 px beyond the side and farther. Past the corner, where the corner is the
+    ///   curve's nearest point and that part holds the point in the stroke's body, the fill's read
+    ///   is the corner's key, nearer than the stroke's, and the move may hand it to that part.
+    /// - production: three segments of a thin shape seen almost edge-on, as a production scene draws
+    ///   them, read at the sub-samples and the centre of the pixel they cross, with the shift, share
+    ///   and body its stroke had there.
+    /// - convex: a square 3 px across, no part of the curve within the body of another, where the
+    ///   fill's read never undercuts the stroke's: the stroke's bound is the same with the fill as
+    ///   without it.
+    ///
+    /// The resolved key moves within its reach (its errors, and its magnitude times the share and
+    /// the bound over the least read, as a stroke's own share takes them) everywhere; and where the
+    /// fill's read undercuts the stroke's on the folded row, within ten times the largest move
+    /// found.
+    #[test]
+    fn a_stroke_resolved_on_its_own_fill_moves_within_the_reach_its_own_share_gives_it() {
+        // One row: the curve's runs (points and keys), each point's turn, the shift, share and body,
+        // and the points read. The worst move over reach, and the least of the worst where the
+        // fill's read undercuts the stroke's, with how many such points.
+        let run = |runs: &[Vec<([f64; 2], f64)>],
+                   turns: &[f64],
+                   (shift, share, body): (f64, f64, f64),
+                   at: &[[f64; 2]],
+                   seed: u64|
+         -> (f64, f64, usize) {
+            let mut points = Vec::new();
+            let mut breaks = Vec::new();
+            for r in runs {
+                breaks.push(points.len());
+                points.extend_from_slice(r);
+            }
+            let rim = shift * (1.0 - 1e-9);
+            let c = rim / 2f64.sqrt();
+            let n = points.len();
+            let mut seeded = Seeded(seed);
+            let mut moves: Vec<Vec<([f64; 2], f64)>> = Vec::new();
+            for (j, d) in [[c, c], [c, -c], [-c, c], [-c, -c]].into_iter().enumerate() {
+                let o = [-d[0], -d[1]];
+                let sign = |i: usize| if (i + j).is_multiple_of(2) { 1.0 } else { -1.0 };
+                moves.push((0..n).map(|i| (d, sign(i))).collect());
+                moves.push(
+                    (0..n)
+                        .map(|i| (if i % 2 == 0 { d } else { o }, -sign(i)))
+                        .collect(),
+                );
+                moves.push(
+                    (0..n)
+                        .map(|i| (if i < n / 2 { d } else { o }, sign(i)))
+                        .collect(),
+                );
+            }
+            for _ in 0..16 {
+                moves.push(
+                    (0..n)
+                        .map(|_| {
+                            let angle = (seeded.next() >> 11) as f64 / (1u64 << 53) as f64
+                                * std::f64::consts::TAU;
+                            let sign = if seeded.next() & 1 == 1 { 1.0 } else { -1.0 };
+                            ([rim * libm::cos(angle), rim * libm::sin(angle)], sign)
+                        })
+                        .collect(),
+                );
+            }
+            let line = |m: Option<&Vec<([f64; 2], f64)>>| {
+                let moved: Vec<([f64; 2], f64)> = points
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (p, k))| match m {
+                        Some(m) => {
+                            let (d, s) = m[i];
+                            ([p[0] + d[0], p[1] + d[1]], k * (1.0 + s * share * 0.999))
+                        }
+                        None => (*p, *k),
+                    })
+                    .collect();
+                Centreline::with_turns(&moved, &[], turns, &breaks)
+            };
+            let content = line(None);
+            let shapes: Vec<Centreline> = moves.iter().map(|m| line(Some(m))).collect();
+            // The keys the resolve may take at `p`: the stroke's, and the nearer of it and the
+            // fill's, with the larger of their bounds.
+            let resolved = |l: &Centreline, p: [f64; 2]| {
+                let (s, es) = l.key_under(p, &[], body);
+                let (f, ef) = l.key_under(p, &[], 0.0);
+                ([s, s.min(f)], es.max(ef), f < s)
+            };
+            let (mut worst, mut least, mut under) = (0.0f64, f64::INFINITY, 0usize);
+            for &p in at {
+                let (before, e0, undercut) = resolved(&content, p);
+                let mut most = 0.0f64;
+                for l in &shapes {
+                    let (after, e1, _) = resolved(l, p);
+                    let (slide, magnitude) = l.slide_under(p, &[], body, shift, share, true);
+                    let own = share + slide / magnitude * (1.0 + 4.0 * U);
+                    for k0 in before {
+                        for k1 in after {
+                            let reach = e0 + e1 + (k1.abs() + e1) * own;
+                            let moved_by = (k1 - k0).abs();
+                            assert!(
+                                moved_by <= reach,
+                                "at {p:?}: the resolved key moved by {moved_by:e} against its reach {reach:e}"
+                            );
+                            most = most.max(moved_by / reach);
+                        }
+                    }
+                }
+                worst = worst.max(most);
+                if undercut {
+                    under += 1;
+                    least = least.min(most);
+                }
+            }
+            (worst, least, under)
+        };
+        let grid = |x0: f64, x1: f64, y0: f64, y1: f64, step: f64| -> Vec<[f64; 2]> {
+            let (nx, ny) = (((x1 - x0) / step) as usize, ((y1 - y0) / step) as usize);
+            (0..=nx)
+                .flat_map(|i| (0..=ny).map(move |j| [x0 + step * i as f64, y0 + step * j as f64]))
+                .collect()
+        };
+        // Folded: the side from (10, 10) to the corner (13, 10), keyed nearer toward it; the leg
+        // from the corner to (13, 13); and, a run of its own, a part from (14, 10.007) to
+        // (10.5, 10.007), 2e-4 farther.
+        let k = |x: f64| -1.0300 - (x - 10.0) * 4.4e-4;
+        let folded = [
+            vec![
+                ([10.0, 10.0], k(10.0)),
+                ([13.0, 10.0], k(13.0)),
+                ([13.0, 13.0], k(13.0) + 1.0e-3),
+            ],
+            vec![
+                ([14.0, 10.007], k(14.0) + 2.0e-4),
+                ([10.5, 10.007], k(10.5) + 2.0e-4),
+            ],
+        ];
+        let at = grid(12.9, 13.15, 9.8, 10.05, 0.00625);
+        let (worst, least, under) = run(
+            &folded,
+            &[],
+            (4.2e-3, 2.9e-6, 0.15),
+            &at,
+            0x1234_5678_9abc_def1,
+        );
+        eprintln!(
+            "TIGHT fill folded: {worst:.3} at worst; where the fill undercuts the stroke {least:.3} at \
+             least over {under} points"
+        );
+        assert!(
+            under > 20,
+            "{under} points where the fill's read undercuts the stroke's"
+        );
+        assert!(
+            least >= 0.1,
+            "where the fill undercuts the stroke the reach is {:.1} times the largest move found",
+            1.0 / least
+        );
+        // Production: segments 63, 64 and 65 of the stroke, its pixel (376, 327).
+        let production = [vec![
+            ([374.0461941614779, 326.2985603421078], -1.030779121446947),
+            ([376.93274863346124, 327.31736540337], -1.0321260712019857),
+            ([377.0361374712487, 327.3463367885355], -1.031950744612201),
+            ([374.14992438032107, 326.3276620287807], -1.0306042458726619),
+        ]];
+        let turns = [2.0, 9.229278564453142e-2, 2.0, 9.229278564453142e-2];
+        let pixel: Vec<[f64; 2]> = (0..=SAMPLES)
+            .map(|s| {
+                if s < SAMPLES {
+                    sample_point(376, 327, s)
+                } else {
+                    [376.5, 327.5]
+                }
+            })
+            .collect();
+        let shape = (
+            4.187107287632731e-3,
+            2.663099474160483e-6,
+            1.5011718638153979e-1,
+        );
+        let (worst, least, under) = run(&production, &turns, shape, &pixel, 0x0f1e_2d3c_4b5a_6978);
+        eprintln!(
+            "TIGHT fill production: {worst:.3} at worst; where the fill undercuts the stroke {least:.3} \
+             at least over {under} points"
+        );
+        // Convex: the square's bound is the same with the fill as without it.
+        let square = [vec![
+            ([10.0, 10.0], -1.0300),
+            ([13.0, 10.0], -1.0313),
+            ([13.0, 13.0], -1.0300),
+            ([10.0, 13.0], -1.0287),
+            ([10.0, 10.0], -1.0300),
+        ]];
+        let at = grid(9.5, 13.5, 9.5, 13.5, 0.05);
+        let line = Centreline::new(&square[0], &[]);
+        for &p in &at {
+            for body in [0.15, 1.5] {
+                assert_eq!(
+                    line.slide_under(p, &[], body, 4.2e-3, 2.9e-6, true),
+                    line.slide_under(p, &[], body, 4.2e-3, 2.9e-6, false),
+                    "at {p:?}, {body} wide: the fill moved the bound of a convex outline"
+                );
+            }
+        }
+        let (worst, _, under) = run(
+            &square,
+            &[],
+            (4.2e-3, 2.9e-6, 0.15),
+            &at,
+            0x5555_aaaa_3333_cccc,
+        );
+        eprintln!(
+            "TIGHT fill convex: {worst:.3} at worst; the fill undercuts the stroke at {under} points"
+        );
+        assert_eq!(
+            under, 0,
+            "the fill's read undercut a convex outline's stroke"
+        );
+    }
+
     /// A read past a short piece's end, as on a thin shape seen almost edge-on: two sides 3 px
     /// long and 0.007 px apart, keyed along their length as a line 45 degrees from the sight axis
     /// is and 2.2e-4 apart, joined at one end by a piece 0.1 px long, each piece's ends moving on
@@ -2753,7 +3089,7 @@ mod tests {
                 let mut most = 0.0f64;
                 for line in &shapes {
                     let (k1, e1) = line.key_under(p, &[], body);
-                    let (slide, magnitude) = line.slide_under(p, &[], body, shift, share);
+                    let (slide, magnitude) = line.slide_under(p, &[], body, shift, share, false);
                     let own = share + slide / magnitude * (1.0 + 4.0 * U);
                     let reach = e0 + e1 + (k1.abs() + e1) * own;
                     let moved_by = (k1 - k0).abs();
