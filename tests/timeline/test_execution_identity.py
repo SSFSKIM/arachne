@@ -1109,3 +1109,41 @@ class Held(Scene):
     assert divergence.code == "replay.diverged"
     again = _diverged_after_editing(scene, "Held", data, "1")
     assert again is None, "the same value is the same execution"
+
+
+def test_a_numpy_scalar_a_field_holds_has_a_json_form_whatever_its_kind(scene_dir):
+    """A complex number, a date or a string in a mobject's field is a leaf of
+    the summary, and the summary goes through JSON as another process would
+    hand it over: the values compare, and two that differ are told apart.
+    """
+    data = _write(scene_dir, "data.txt", "1")
+    scene = _write(
+        scene_dir,
+        "scene.py",
+        HEADER
+        + """
+import numpy as np
+
+
+class Holder(Dot):
+    def __init__(self):
+        super().__init__()
+        value = float((HERE / "data.txt").read_text())
+        self.gain = np.complex64(value + 2j)
+        self.day = np.datetime64("2020-01-01") + int(value)
+        self.label = np.str_("a")
+        self.tag = np.bytes_(b"b")
+
+
+class Scalars(Scene):
+    def construct(self):
+        self.add(Holder())
+        self.wait(0.5)
+""",
+    )
+    summary = _open(scene, "Scalars").summary()
+    again = ExecutionSummary.from_json(summary.to_json())
+    assert compare(summary, again) is None
+    assert _diverged_after_editing(scene, "Scalars", data, "1") is None
+    divergence = _diverged_after_editing(scene, "Scalars", data, "2")
+    assert divergence is not None

@@ -862,7 +862,14 @@ def _leaf(value: Any) -> Leaf:
         # Its numbers, not its text: the hex string keeps 8 bits a channel.
         return _contiguous(value.to_rgba()).astype(float)
     if isinstance(value, np.generic):
-        return value.item()
+        # A number or string is its Python value. A complex number is the
+        # array of one (compared within the tolerance, kept in a summary's
+        # JSON as an array is); any other kind has no JSON form of its own.
+        if value.dtype.kind in "biuf" or isinstance(value, str):
+            return value.item()
+        if value.dtype.kind == "c":
+            return np.asarray(value)
+        return repr(value)
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
     return repr(value)
