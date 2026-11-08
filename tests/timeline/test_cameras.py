@@ -14,7 +14,8 @@ from unittest import mock
 import numpy as np
 import pytest
 
-from arachne import BLUE, LEFT, RED, RIGHT, Dot, tempconfig
+from arachne import BLUE, LEFT, RED, RIGHT, Dot, config, tempconfig
+from arachne.camera.camera import Camera
 from arachne.timeline import recorder
 from arachne.timeline.routes import RecordRefused
 from arachne.utils.color import ManimColor
@@ -23,6 +24,8 @@ from . import camera_scenes
 from .conftest import SMALL, render
 
 CAMERA_SCENES = Path(camera_scenes.__file__)
+#: Opened in a session only: importing it changes the process's configuration.
+CONFIG_SCENES = Path(__file__).parent / "config_scenes.py"
 RATES = (4, 15, 30, 60)
 
 
@@ -263,6 +266,29 @@ def test_a_restored_instant_sorts_by_the_depth_reference_its_capture_found(
     assert probed.record.plays[0].route == "state"
 
 
+@pytest.mark.parametrize("draw_path", ["cairo", "ir_cairo"])
+def test_a_restored_instant_sorts_by_a_depth_group_the_restore_moves(
+    session_of, draw_path
+):
+    """The scene holds the depth group, and the restore evaluates it at the
+    instant: by then it is in front of the blue square, as a forward run
+    evaluated there finds it, though the capture before found it behind.
+    """
+    if draw_path == "ir_cairo":
+        pytest.importorskip("arachne_core")
+    name = "RestoredMovingDepthGroup"
+    settings = {"frame_rate": 15, "probe": False, "draw_path": draw_path}
+    session = session_of(name, CAMERA_SCENES, **settings)
+    assert session.record.plays[0].route == "state"
+    t = Fraction(19, 100)
+    assert session.state_at(t).answer == "restored"
+    frame = np.asarray(session.frame(t))
+    red = tuple(int(v) for v in ManimColor(RED).to_int_rgb())
+    assert _centre(frame) == red
+    oracle = session_of(name, CAMERA_SCENES, instants=[t], **settings)
+    np.testing.assert_array_equal(frame, np.asarray(oracle.frame(t)))
+
+
 def _kept_pictures(record) -> list[np.ndarray]:
     """Every picture of another camera the record keeps, each once."""
     kept: dict[int, np.ndarray] = {}
@@ -424,3 +450,56 @@ def test_an_image_painted_in_place_is_drawn_as_the_camera_first_read_it(
     _equal_frames(
         [np.asarray(session.frame(Fraction(k, 15))) for k in range(len(live))], live
     )
+
+
+def _cloud_as_ce_draws(camera_width: int, configured_width: int) -> np.ndarray:
+    """The cloud of the pixel-shape scenes drawn as CE draws it: by a camera
+    ``camera_width`` wide while the configured width is ``configured_width``.
+    """
+    with tempconfig({**SMALL, "pixel_width": camera_width, "dry_run": True}):
+        camera = Camera()
+        config.pixel_width = configured_width
+        camera.capture_mobjects([camera_scenes._cloud()])
+        return camera.pixel_array.copy()
+
+
+def _answered(session, instants) -> list[np.ndarray]:
+    return [np.asarray(found.frame) for found in session.answers(instants)]
+
+
+def test_a_pixel_shape_changed_after_the_last_play_is_drawn_as_the_scene_left_it(
+    session_of,
+):
+    scene, _ = render(camera_scenes.PixelShapeChangedAtTheEnd, 15)
+    assert scene.timeline.record.refusal.startswith("config.pixel_shape:")
+    session = session_of("PixelShapeChangedAtTheEnd", CAMERA_SCENES, frame_rate=15)
+    assert session.record.refusal.startswith("config.pixel_shape:")
+    width = SMALL["pixel_width"]
+    (final,) = _answered(session, [session.record.duration])
+    np.testing.assert_array_equal(final, _cloud_as_ce_draws(width, 2 * width))
+    (first,) = _answered(session, [0])
+    np.testing.assert_array_equal(first, _cloud_as_ce_draws(width, width))
+
+
+def test_a_pixel_shape_changed_in_setup_is_drawn_as_the_scene_runs(session_of):
+    scene_class = camera_scenes.PixelShapeChangedInSetup
+    live = _drawn_live(scene_class, 15)
+    width = SMALL["pixel_width"]
+    np.testing.assert_array_equal(live[0], _cloud_as_ce_draws(width, 2 * width))
+    scene, drawn = render(scene_class, 15)
+    assert scene.timeline.record.refusal.startswith("config.pixel_shape:")
+    _equal_frames(drawn, live)
+    session = session_of(scene_class.__name__, CAMERA_SCENES, frame_rate=15)
+    assert session.record.refusal.startswith("config.pixel_shape:")
+    _equal_frames(_answered(session, [Fraction(k, 15) for k in range(len(live))]), live)
+
+
+def test_a_pixel_shape_changed_as_the_file_is_imported_is_drawn_as_it_runs(
+    session_of,
+):
+    session = session_of("PixelShapeChangedOnImport", CONFIG_SCENES, frame_rate=15)
+    assert session.record.refusal.startswith("config.pixel_shape:")
+    width = SMALL["pixel_width"]
+    expected = _cloud_as_ce_draws(2 * width, 2 * width)
+    for frame in _answered(session, [Fraction(k, 15) for k in range(3)]):
+        np.testing.assert_array_equal(frame, expected)

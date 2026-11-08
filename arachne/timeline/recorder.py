@@ -532,6 +532,11 @@ class Recorder:
             raise ValueError(f"states is 'none', 'armed' or 'all', not {states!r}")
         self.scene = scene
         self.grid = exact(grid) if grid is not None else None
+        #: The configured pixel shape the execution began under, which the
+        #: frames its record draws are drawn at (``Record.pixel_shape_changed``):
+        #: as the scene is made, or as the session executing it was configured
+        #: before it imported the scene's file.
+        self.configured_pixel_shape = (config.pixel_width, config.pixel_height)
         self.draws = draws
         self.stepping = stepping
         self.on_step = on_step
@@ -590,6 +595,7 @@ class Recorder:
                 identity=Identity(source_digest=None, seed=scene.random_seed),
             )
             self.record.execution = self.execution
+            self.record._pixel_shape = self.configured_pixel_shape
             if self.exits == "all":
                 self.record.exits = {}
                 self.record.entries = {}
@@ -850,6 +856,11 @@ class Recorder:
             extras = CameraExtras.observe(camera, None)
             now = self.scene.time
             record.final = record._capture("final", now, camera_nodes(camera), extras)
+            # What the final capture found that the record can't draw, as a
+            # play's captures refuse it.
+            found = record.entry_refusal()
+            if record.refusal is None:
+                record.refusal = found
             self.read_watches(now)
             record.duration = max(record.duration, now)
             if record.plays:

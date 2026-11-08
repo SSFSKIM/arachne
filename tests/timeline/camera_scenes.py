@@ -323,6 +323,25 @@ class LightReboundBetweenPlays(ThreeDScene):
         self.wait(0.2)
 
 
+class RestoredMovingDepthGroup(ThreeDScene):
+    """Red and blue squares in one place, red placed by a depth group the
+    scene holds, which an updater carries from behind the blue square to in
+    front of it as a tracker slides (a state play, restored between its
+    frames).
+    """
+
+    def construct(self):
+        self.camera.should_apply_shading = False
+        red = Square(color=RED, fill_opacity=1, stroke_width=0, shade_in_3d=True)
+        blue = Square(color=BLUE, fill_opacity=1, stroke_width=0, shade_in_3d=True)
+        slide = ValueTracker(-0.9)
+        group = VectorizedPoint([0.0, 0.0, -0.9])
+        group.add_updater(lambda point: point.set_z(slide.get_value()))
+        red.z_index_group = group
+        self.add(red, blue, group)
+        self.play(slide.animate.set_value(1.1), run_time=0.4, rate_func=linear)
+
+
 def _other_camera_display() -> tuple[MovingCamera, ImageMobjectFromCamera]:
     """A red camera the scene's camera does not draw into, and a display of
     its picture.
@@ -432,3 +451,33 @@ class ImageFillPainted(Scene):
         circle.add_updater(drive)
         self.add(circle)
         self.wait(0.4)
+
+
+def _cloud() -> PMobject:
+    cloud = PMobject(stroke_width=4)
+    cloud.add_points(np.array([[-1.0, 0, 0], [0, 0, 0], [1.0, 0, 0]]), color=YELLOW)
+    return cloud
+
+
+class PixelShapeChangedAtTheEnd(Scene):
+    """A point cloud for a wait; after it, the scene doubles the configured
+    pixel width and ends: its final frame's points are drawn thicker.
+    """
+
+    def construct(self):
+        self.add(_cloud())
+        self.wait(0.2)
+        config.pixel_width *= 2
+
+
+class PixelShapeChangedInSetup(Scene):
+    """The configured pixel width doubled in ``setup``, before any play:
+    every point is drawn thicker than at the pixel shape the scene was given.
+    """
+
+    def setup(self):
+        config.pixel_width *= 2
+
+    def construct(self):
+        self.add(_cloud())
+        self.wait(0.2)

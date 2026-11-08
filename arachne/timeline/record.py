@@ -242,7 +242,7 @@ DISPLAY_REDRAWN = (
 
 
 #: Why a record can't draw a play from which on the configured pixel shape
-#: is not the one its first capture found: a point's thickness is drawn by it
+#: is not the one the execution began under: a point's thickness is drawn by it
 #: (``Camera.adjusted_thickness``), and a frame drawn after the play reads it
 #: as it is then.
 PIXEL_SHAPE_CHANGED = (
@@ -760,9 +760,10 @@ class Record:
         #: scene's code, and the mobjects checked since (by id).
         self._entry_refusal: str | None = None
         self._entry_checked: set[int] = set()
-        #: The configured pixel shape the first drawn capture found, and the
-        #: seq of the first drawn capture that found another (``None`` while
-        #: none has).
+        #: The configured pixel shape the execution began under (its
+        #: recorder's), or the first drawn capture's when none was given, and
+        #: the seq of the first drawn capture that found another (``None``
+        #: while none has).
         self._pixel_shape: tuple[int, int] | None = None
         #: Per image a drawn mobject fills from (by id): the image, and a copy
         #: of it as the first drawn capture that reached it found it
@@ -953,8 +954,8 @@ class Record:
         return self._image_copies.get(id(value)) is value
 
     def _note_pixel_shape(self, seq: int | Fraction) -> None:
-        """Compare the configured pixel shape now with the first drawn
-        capture's; from the first capture that finds another, every capture
+        """Compare the configured pixel shape now with the one the execution
+        began under; from the first capture that finds another, every capture
         refuses its play (:data:`PIXEL_SHAPE_CHANGED`).
         """
         from arachne import config
