@@ -25,6 +25,7 @@ from arachne import (
     Dot,
     MathTex,
     SVGMobject,
+    config,
     tempconfig,
 )
 from arachne.camera.camera import Camera
@@ -295,6 +296,23 @@ def test_a_retry_tears_down_only_the_execution_that_completes():
     assert cls.steps == ["setup", "setup", "tear_down"]
     assert cls.open == [1]
     _same_frames(frames, _drawn_serially(6, [("fill", RED)]))
+
+
+class ConfiguringTransientFill(soundness_scenes.TransientFill):
+    """``TransientFill`` setting the configured background colour first,
+    which a camera is made with: the second execution's camera is made as the
+    first's was.
+    """
+
+    def construct(self):
+        config.background_color = BLUE
+        super().construct()
+
+
+def test_an_execution_again_finds_the_configuration_its_first_execution_found():
+    scene, frames = render(ConfiguringTransientFill, 6)
+    assert scene.record.execution.number == 2
+    _same_frames(frames, _drawn_serially(6, [("fill", RED), ("wait", 0.5)]))
 
 
 @pytest.mark.xfail(

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 
 import srt
 
-from . import logger
+from . import config, logger
 from .mobject.construction_caches import (
     construction_caches,
     restore_construction_caches,
@@ -148,7 +148,8 @@ class Manager(Generic[SceneT]):
         and every later one as it runs. Each such refusal costs at most one
         execution. The interrupted execution is not torn down, as CE tears
         down no run that raised: :meth:`tear_down` runs once, for the
-        execution that completes.
+        execution that completes. An execution again finds the configuration
+        as the first one found it, whatever the scene set in it.
 
         Parameters
         ----------
@@ -165,6 +166,9 @@ class Manager(Generic[SceneT]):
         # The construction caches as a scene rendered earlier in this process
         # left them: an execution again finds them as the first execution did.
         caches = construction_caches()
+        # The configuration as the first execution found it, which the scene
+        # may change as it runs (and a camera is made from).
+        configured = config.copy()
         while True:
             try:
                 self._execute()
@@ -193,6 +197,7 @@ class Manager(Generic[SceneT]):
                     },
                 )
                 restore_construction_caches(caches)
+                config.update(configured)
                 self._renew_scene()
                 self.scene._arachne_timeline.reexecuting(known, earlier)
         self.post_construct()
