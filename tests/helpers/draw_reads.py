@@ -186,8 +186,9 @@ IMMUTABLE_TYPES: dict[str, str] = {
 KEPT_APART = (
     "A display's camera, whose picture the record keeps per play "
     "(``Capture.pictures``) or whose inputs it records per capture "
-    "(``CameraExtras.sub_cameras``); or the record's copy of a fill's image "
-    "(``Record.kept_image``)."
+    "(``CameraExtras.sub_cameras``); or a fill's image, of which the drawing "
+    "gives each camera its read under the name the image had at the capture "
+    "(``Record.image_read``)."
 )
 
 #: Mobjects the drawing makes for itself, by type, and why reading them reads
@@ -1051,7 +1052,7 @@ def _held_by_reference(name: str, value: Any, record: Any) -> str | None:
         return f"a {type(value).__name__} the record keeps by reference"
     if isinstance(value, Mobject):
         return None  # its state is checked as any mobject's
-    if isinstance(value, Camera) or record.holds_image(value):
+    if isinstance(value, Camera) or record.models_image(value):
         return None  # KEPT_APART
     if isinstance(value, types.FunctionType):
         return None if engine_code(value) else "a function the engine did not define"

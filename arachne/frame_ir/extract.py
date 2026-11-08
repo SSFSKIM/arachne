@@ -208,6 +208,10 @@ class _Cached:
     uploads: dict[bytes, Any]
     extras: tuple[Any, ...] | None = None
     record: Record | None = None
+    #: The camera and the pixels a path's fill image was read as, which a
+    #: camera holds per image name: a frame drawn at another name, or by
+    #: another camera, reads them anew.
+    fill: tuple[Any, Any] | None = None
 
 
 class FrameStream:
@@ -440,16 +444,23 @@ class FrameStream:
         from arachne.timeline.record import NodeState
 
         cached = self._cache.get(id(leaf))
-        if cached is None or cached.kind != kind or not _holds(cached.state, leaf):
+        if (
+            cached is None
+            or cached.kind != kind
+            or not _holds(cached.state, leaf)
+            or not _same_fill(cached.fill, camera, leaf)
+        ):
             state = NodeState.of(leaf)
             own: dict[bytes, Any] = {}
+            fill = None
             if kind == "path":
                 base = self._path_fields(camera, leaf, own)
+                fill = _fill_read(camera, leaf)
             elif kind == "points":
                 base = self._points_fields(leaf, own)
             else:
                 base = self._image_fields(leaf, own)
-            cached = _Cached(state, base, kind, own)
+            cached = _Cached(state, base, kind, own, fill=fill)
             self._cache[id(leaf)] = cached
         extras = self._depth(camera, leaf)
         if cached.record is None or cached.extras != extras:
@@ -817,6 +828,27 @@ class FrameStream:
             delta.order = order
             self._order = order
         return delta
+
+
+def _fill_read(camera: Any, vmob: Any) -> tuple[Any, Any] | None:
+    """The camera and what it holds for ``vmob``'s fill image, by identity
+    (``None`` without one): the pixels its record's fill was made from.
+    """
+    image = vmob.get_background_image()
+    if not image:
+        return None
+    displayer = camera.get_background_colored_vmobject_displayer()
+    return (camera, displayer.get_background_array(image))
+
+
+def _same_fill(fill: tuple[Any, Any] | None, camera: Any, vmob: Any) -> bool:
+    """Whether ``camera`` holds for ``vmob``'s fill image what ``fill``
+    was read as (always, for a record made with no fill image).
+    """
+    if fill is None:
+        return True
+    now = _fill_read(camera, vmob)
+    return now is not None and now[0] is fill[0] and now[1] is fill[1]
 
 
 def _holds(state: Any, mob: Any) -> bool:

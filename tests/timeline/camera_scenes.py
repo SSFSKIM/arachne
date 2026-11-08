@@ -453,6 +453,80 @@ class ImageFillPainted(Scene):
         self.wait(0.4)
 
 
+class ImageFillResized(Scene):
+    """A circle filled from a red image, which an updater paints blue and
+    shrinks in place partway through the wait: the image's name (its size
+    among it) changes, under which the camera reads it anew, so the circle
+    turns blue.
+    """
+
+    def construct(self):
+        image = Image.new("RGBA", (8, 8), (255, 0, 0, 255))
+        circle = Circle(radius=1.5, fill_opacity=1, stroke_width=0)
+        circle.color_using_background_image(image)
+        elapsed = [0.0]
+
+        def drive(mob, dt):
+            elapsed[0] += dt
+            if elapsed[0] >= 0.2 and image.size != (4, 4):
+                image.paste((0, 0, 255, 255), (0, 0, 8, 8))
+                image.thumbnail((4, 4))
+
+        circle.add_updater(drive)
+        self.add(circle)
+        self.wait(0.4)
+
+
+class ImageFillZoomedAfterPainting(ZoomedScene):
+    """A circle filled from a red image, painted blue in place after a wait,
+    then zoomed: the scene's camera keeps the image red, as it first read it,
+    and the zoomed camera, which first reads it after the painting, shows it
+    blue.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(
+            zoom_factor=0.3, zoomed_display_height=2, zoomed_display_width=3, **kwargs
+        )
+
+    def construct(self):
+        image = Image.new("RGBA", (8, 8), (255, 0, 0, 255))
+        circle = Circle(radius=1.5, fill_opacity=1, stroke_width=0)
+        circle.color_using_background_image(image)
+        self.add(circle)
+        self.wait(0.2)
+        image.paste((0, 0, 255, 255), (0, 0, 8, 8))
+        self.activate_zooming(animate=False)
+        self.wait(0.2)
+
+
+class _OwnFill(Dot):
+    """A user's dot that computes its own fill: a play drawing it is drawn
+    as the scene runs.
+    """
+
+    def get_fill_rgbas(self):
+        return np.array([[0.0, 1.0, 0.0, 1.0]])
+
+
+class ImageFillPaintedBeforeALivePlay(Scene):
+    """A circle filled from a red image for a wait, painted blue in place,
+    then a wait the record can't draw (a dot computing its own fill joins):
+    the camera drawing it as the scene runs still holds the red it first
+    read.
+    """
+
+    def construct(self):
+        image = Image.new("RGBA", (8, 8), (255, 0, 0, 255))
+        circle = Circle(radius=1.5, fill_opacity=1, stroke_width=0)
+        circle.color_using_background_image(image)
+        self.add(circle)
+        self.wait(0.2)
+        image.paste((0, 0, 255, 255), (0, 0, 8, 8))
+        self.add(_OwnFill().shift(LEFT * 5))
+        self.wait(0.2)
+
+
 def _cloud() -> PMobject:
     cloud = PMobject(stroke_width=4)
     cloud.add_points(np.array([[-1.0, 0, 0], [0, 0, 0], [1.0, 0, 0]]), color=YELLOW)

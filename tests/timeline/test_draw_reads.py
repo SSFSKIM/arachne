@@ -148,8 +148,8 @@ def test_a_display_function_the_scene_replaced_is_found(tracing):
 def test_an_image_the_record_keeps_by_reference_is_found(tracing, monkeypatch):
     render(FilledFromAnImage, 15)
     assert tracing.take() == []
-    # Drawn with the scene's own image, not the record's copy of it.
-    monkeypatch.setattr(Record, "kept_image", lambda record, image: None)
+    # Drawn with the scene's own image, not the cameras' reads of it.
+    monkeypatch.setattr(Record, "models_image", lambda record, value: False)
     render(FilledFromAnImage, 15)
     assert (
         "arachne.mobject.geometry.arc.Circle",

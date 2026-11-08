@@ -452,6 +452,68 @@ def test_an_image_painted_in_place_is_drawn_as_the_camera_first_read_it(
     )
 
 
+@pytest.mark.parametrize("draw_path", ["cairo", "ir_cairo"])
+def test_an_image_renamed_in_place_is_read_anew(session_of, draw_path):
+    """A camera keeps its read of an image under the image's name: an image
+    shrunk in place has another, which the camera reads as it is then.
+    """
+    if draw_path == "ir_cairo":
+        pytest.importorskip("arachne_core")
+    scene_class = camera_scenes.ImageFillResized
+    live = _drawn_live(scene_class, 15, draw_path=draw_path)
+    assert _centre(live[0]) == (255, 0, 0)
+    assert _centre(live[-1]) == (0, 0, 255)
+    scene, drawn = render(scene_class, 15, draw_path=draw_path)
+    assert scene.timeline.record.refusal is None
+    _equal_frames(drawn, live)
+    session = session_of(scene_class.__name__, CAMERA_SCENES, draw_path=draw_path)
+    _equal_frames(
+        [np.asarray(session.frame(Fraction(k, 15))) for k in range(len(live))], live
+    )
+
+
+def _pixel_of(scene, point) -> tuple[int, int]:
+    """The pixel (row, column) the scene's camera draws ``point`` at."""
+    camera = scene.renderer.camera
+    height, width = camera.pixel_array.shape[:2]
+    x, y = point[0], point[1]
+    column = int((x / camera.frame_width + 0.5) * width)
+    row = int((0.5 - y / camera.frame_height) * height)
+    return row, column
+
+
+def test_each_camera_keeps_its_own_first_read_of_an_image(session_of):
+    """The zoomed camera first reads the image after the scene painted it,
+    the scene's camera before: one frame shows it both ways.
+    """
+    scene_class = camera_scenes.ImageFillZoomedAfterPainting
+    live = _drawn_live(scene_class, 15)
+    scene, drawn = render(scene_class, 15)
+    assert scene.timeline.record.refusal is None
+    row, column = _pixel_of(scene, scene.zoomed_display.get_center())
+    assert _centre(live[-1]) == (255, 0, 0)
+    assert tuple(int(v) for v in live[-1][row, column, :3]) == (0, 0, 255)
+    _equal_frames(drawn, live)
+    session = session_of(scene_class.__name__, CAMERA_SCENES)
+    _equal_frames(
+        [np.asarray(session.frame(Fraction(k, 15))) for k in range(len(live))], live
+    )
+
+
+def test_a_frame_drawn_as_the_scene_runs_finds_the_reads_drawn_frames_made(
+    session_of,
+):
+    """The second wait is drawn as the scene runs, after the first was drawn
+    from the record: its camera holds the image as it first read it, red,
+    though the scene painted it blue since.
+    """
+    scene_class = camera_scenes.ImageFillPaintedBeforeALivePlay
+    scene, drawn = render(scene_class, 15)
+    # Refused from the second wait on, as it began.
+    assert scene.timeline.record.refusal.startswith("draw.user_override:")
+    assert {_centre(frame) for frame in drawn} == {(255, 0, 0)}
+
+
 def _cloud_as_ce_draws(camera_width: int, configured_width: int) -> np.ndarray:
     """The cloud of the pixel-shape scenes drawn as CE draws it: by a camera
     ``camera_width`` wide while the configured width is ``configured_width``.

@@ -636,6 +636,9 @@ class Drawing:
         self._cameras_saved: dict[int, tuple[Any, tuple[Any, Any, Any, Any, Any]]] = {}
         #: Display cameras whose picture was replaced, with what they held.
         self._pictures_saved: dict[int, tuple[Any, PixelArray]] = {}
+        #: Each camera's image read given an image's name, by its displayer
+        #: and the name: the camera, displayer and image.
+        self._image_reads_saved: dict[tuple[int, str], tuple[Any, Any, Any]] = {}
 
     def __enter__(self) -> Drawing:
         return self
@@ -660,6 +663,27 @@ class Drawing:
             for sub_camera, picture in self._pictures_saved.values():
                 sub_camera.pixel_array = picture
             self._pictures_saved.clear()
+            self._settle_image_reads()
+
+    def _settle_image_reads(self) -> None:
+        """Leave each camera given an image read holding, under the image's
+        name, what it holds by now: its first read under that name, as a
+        camera drawing as the scene runs then finds it, or nothing.
+        """
+        record = self.record
+        latest = record._captures[-1] if record._captures else None
+        for (_, name), (camera, displayer, image) in self._image_reads_saved.items():
+            held = (
+                record.image_read(camera, image, latest, displayer.pixel_array)
+                if latest is not None and str(image) == name
+                else None
+            )
+            reads = displayer.file_name_to_pixel_array_map
+            if held is None:
+                reads.pop(name, None)
+            else:
+                reads[name] = held
+        self._image_reads_saved.clear()
 
     def show(self, capture: Capture, roots: Sequence[Mobject]) -> None:
         """Give every mobject reachable from ``roots`` (and the camera's own)
@@ -690,8 +714,11 @@ class Drawing:
         """Give the ``shown`` mobjects, their states installed, what the
         record kept of what their states only refer to: each one the depth
         sort places by its ``z_index_group`` the point ``capture`` found (the
-        scene may not hold the group), and each one filled from an image the
-        record's copy of it (:meth:`.Record.kept_image`).
+        scene may not hold the group), and each camera drawing ``capture``
+        what it holds of each image a shown mobject fills from: its first
+        read of the image under the name the image had there
+        (:meth:`.Record.image_read`), whatever the scene painted into it
+        since.
         """
         if capture.references:
             ids = {id(mob) for mob in shown}
@@ -699,13 +726,37 @@ class Drawing:
                 if id(mob) in ids:
                     mob.__dict__["z_index_group"] = reference
         record = self.record
-        if record._images:
+        if record._image_reads:
+            images = {}
             for mob in shown:
                 image = mob.__dict__.get("background_image")
-                if image is not None:
-                    kept = record.kept_image(image)
-                    if kept is not None:
-                        mob.__dict__["background_image"] = kept
+                if record.models_image(image):
+                    images[id(image)] = image
+            if images:
+                cameras = [self.camera]
+                if capture.camera is not None and capture.camera.sub_cameras:
+                    # Shaped as the capture shapes them, before any reads
+                    # through a displayer it would make at that shape.
+                    self.camera.update_sub_cameras()  # type: ignore[attr-defined]
+                    cameras.extend(sub for sub, _ in capture.camera.sub_cameras)
+                for camera in cameras:
+                    for image in images.values():
+                        self._show_image_read(camera, image, capture)
+
+    def _show_image_read(self, camera: Any, image: Any, capture: Capture) -> None:
+        """Give ``camera`` what it holds of ``image`` at ``capture``, under the
+        name the image has now, which its draw reads it by.
+        """
+        displayer = camera.get_background_colored_vmobject_displayer()
+        held = self.record.image_read(camera, image, capture, displayer.pixel_array)
+        reads = displayer.file_name_to_pixel_array_map
+        name = str(image)
+        if (id(displayer), name) not in self._image_reads_saved:
+            self._image_reads_saved[id(displayer), name] = (camera, displayer, image)
+        if held is None:
+            reads.pop(name, None)
+        else:
+            reads[name] = held
 
     def show_camera(self, capture: Capture) -> None:
         """Give the camera, alone, its recorded inputs at ``capture``: for a

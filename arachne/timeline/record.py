@@ -765,11 +765,18 @@ class Record:
         #: the seq of the first drawn capture that found another (``None``
         #: while none has).
         self._pixel_shape: tuple[int, int] | None = None
-        #: Per image a drawn mobject fills from (by id): the image, and a copy
-        #: of it as the first drawn capture that reached it found it
-        #: (:meth:`kept_image`).
-        self._images: dict[int, tuple[Image.Image, Image.Image]] = {}
-        self._image_copies: dict[int, Image.Image] = {}
+        #: Per image a drawn mobject fills from (by id): the image, and the
+        #: names it had (``str(image)``, what a camera keys its read of it
+        #: by), each with the seq of the first drawn capture that found it.
+        self._image_names: dict[
+            int, tuple[Image.Image, list[int | Fraction], list[str]]
+        ] = {}
+        #: Per camera (by id) and image name: the camera, and the image's
+        #: pixels as that camera first read them under that name, before
+        #: they are fitted to its pixel shape (:meth:`image_read`).
+        self._image_reads: dict[tuple[int, str], tuple[Any, np.ndarray]] = {}
+        #: Each read fitted to a pixel shape, by camera, name and shape.
+        self._image_fits: dict[tuple[int, str, tuple[int, ...]], np.ndarray] = {}
         #: Per display of another camera (by id): its last picture kept, and
         #: the play that last showed it (:func:`_pictures`).
         self._kept_pictures: dict[int, tuple[Mobject, np.ndarray, int]] = {}
@@ -839,6 +846,7 @@ class Record:
         drawing = _drawn_cameras(scene.renderer.camera) if drawn else frozenset()
         shown: list[Mobject] = []
         checked = self._entry_checked
+        filled = False
         names: tuple[frozenset[str], frozenset[str]] | None = None
         classes: dict[type, str | None] = {}
         stack = [
@@ -870,11 +878,8 @@ class Record:
                 ):
                     grouped.append(mob)
             if drawn:
-                image = mob.__dict__.get("background_image")
-                if isinstance(image, Image.Image) and id(image) not in self._images:
-                    copy = image.copy()
-                    self._images[id(image)] = (image, copy)
-                    self._image_copies[id(copy)] = copy
+                if isinstance(mob.__dict__.get("background_image"), Image.Image):
+                    filled = True
                 other = mob.__dict__.get("camera")
                 if other is not None and id(other) not in drawing and _shows(mob):
                     shown.append(mob)
@@ -896,6 +901,8 @@ class Record:
             return Capture(
                 seq, instant, kind, roots, foreground, moving, updaters, camera, until
             )
+        if filled:
+            self._read_images(scene.renderer.camera, seq, [*roots, *foreground])
         references = (
             _references(grouped, previous.references if previous else ())
             if grouped
@@ -939,19 +946,86 @@ class Record:
         self._captures.append(capture)
         return capture
 
-    def kept_image(self, image: Any) -> Image.Image | None:
-        """The copy of ``image``, a mobject's fill image, the record took at
-        the first drawn capture that reached it: a camera reads a fill's image
-        once and keeps it (``BackgroundColoredVMobjectDisplayer``), so what it
-        draws is the image as it was then, however the scene paints the image
-        in place later. ``None`` for anything else.
+    def _read_images(
+        self, camera: Any, seq: int | Fraction, mobjects: Sequence[Mobject]
+    ) -> None:
+        """Read, as each camera drawing at capture ``seq`` reads them, the
+        images the paths it draws fill from. A camera reads a fill's image
+        once per name (``str(image)``) and keeps that read
+        (``BackgroundColoredVMobjectDisplayer.get_background_array``): the
+        scene's camera reads those of the paths with points in ``mobjects``'
+        families, and before it, as a MultiCamera captures, each display's
+        camera those of the list less the display's family, unless cameras
+        may capture their own display.
         """
-        found = self._images.get(id(image))
-        return found[1] if found is not None and found[0] is image else None
+        from arachne.mobject.types.vectorized_mobject import VMobject
+        from arachne.utils.family import extract_mobject_family_members
+        from arachne.utils.iterables import list_difference_update
 
-    def holds_image(self, value: Any) -> bool:
-        """Whether ``value`` is one of the record's copies of an image."""
-        return self._image_copies.get(id(value)) is value
+        reading = [(camera, list(mobjects))]
+        for display in vars(camera).get("image_mobjects_from_cameras", ()):
+            to_add = list(mobjects)
+            if not camera.allow_cameras_to_capture_their_own_display:
+                to_add = list_difference_update(to_add, display.get_family())
+            reading.append((display.camera, to_add))
+        reads = self._image_reads
+        for reader, to_add in reading:
+            for mob in extract_mobject_family_members(
+                to_add, only_those_with_points=True
+            ):
+                image = mob.__dict__.get("background_image")
+                if isinstance(mob, VMobject) and isinstance(image, Image.Image):
+                    name = self._image_name(image, seq)
+                    if (id(reader), name) not in reads:
+                        pixels = np.array(image)
+                        pixels.flags.writeable = False
+                        reads[id(reader), name] = (reader, pixels)
+
+    def _image_name(self, image: Image.Image, seq: int | Fraction) -> str:
+        """``image``'s name now, noted at ``seq`` when it is a new one."""
+        name = str(image)
+        entry = self._image_names.get(id(image))
+        if entry is None or entry[0] is not image:
+            self._image_names[id(image)] = (image, [seq], [name])
+        elif entry[2][-1] != name:
+            entry[1].append(seq)
+            entry[2].append(name)
+        return name
+
+    def models_image(self, value: Any) -> bool:
+        """Whether ``value`` is an image a drawn path fills from, which the
+        record keeps the reads of (:meth:`image_read`).
+        """
+        entry = self._image_names.get(id(value))
+        return entry is not None and entry[0] is value
+
+    def image_read(
+        self, camera: Any, image: Image.Image, capture: Capture, fitted_to: np.ndarray
+    ) -> np.ndarray | None:
+        """What ``camera`` holds for ``image`` when it draws ``capture``: its
+        first read of the image under the name the image had there, fitted
+        to ``fitted_to``'s shape as the camera fits it. ``None`` when the
+        camera read none (it draws no path the image fills there).
+        """
+        entry = self._image_names.get(id(image))
+        if entry is None or entry[0] is not image:
+            return None
+        at = bisect.bisect_right(entry[1], capture.seq) - 1
+        if at < 0:
+            return None
+        name = entry[2][at]
+        read = self._image_reads.get((id(camera), name))
+        if read is None or read[0] is not camera:
+            return None
+        key = (id(camera), name, fitted_to.shape)
+        fitted = self._image_fits.get(key)
+        if fitted is None:
+            pixels = read[1]
+            if pixels.shape != fitted_to.shape:
+                displayer = camera.get_background_colored_vmobject_displayer()
+                pixels = displayer.resize_background_array_to_match(pixels, fitted_to)
+            fitted = self._image_fits[key] = pixels
+        return fitted
 
     def _note_pixel_shape(self, seq: int | Fraction) -> None:
         """Compare the configured pixel shape now with the one the execution
