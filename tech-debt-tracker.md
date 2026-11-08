@@ -323,25 +323,51 @@ lifted.
   cache, which fills it) as a fresh process (a session) or as the scene's first execution (a render executed again)
   found it, so two executions of one source agree. Direction: none while CE's behaviour is the reference.
 
-## The typesetting cache (`arachne/utils/typeset_cache.py`)
+## The typesetting cache (`arachne/utils/typeset_cache.py`, `arachne/utils/typeset_fonts.py`)
 
-- **Its key names the TeX distribution by its compilers' version lines, not by its packages.** A Tex file is
-  keyed by the whole source, the compilers, the output format and the first line each of the compilers and
-  `dvisvgm` print for `--version` (pdfTeX's names its TeX Live year). A package updated within one distribution
-  release (`tlmgr update`), or the Ghostscript or MuPDF that `dvisvgm --pdf` converts PDF output through, can
-  change an SVG while its key stays, so hosts whose TeX trees differ that way share files that would differ.
-  Direction: add a digest of the TeX tree's package database (`ls-R` under `kpsewhich -var-value TEXMFDIST`) and
-  the PDF converter's version to the key, if hosts with diverging TeX trees ever share one directory.
-- **Its font fingerprint names families, not font files.** Text is keyed by the sorted family list Pango can
-  use, with every font registered through `register_font` by its file's content; a system font replaced by
-  another version under the same family names is not seen. Direction: digest the font files fontconfig resolves
-  (`FcFontList` with their paths), if hosts that share a directory install fonts apart.
-- **Contended strings are typeset more than once, and failed compiles leave scratch.** Writers take no lock:
-  two processes that miss one string at once both compile it, and the later rename replaces the earlier file
-  with the same bytes (`tests/utils/test_typeset_cache.py::test_a_process_never_reads_an_svg_another_is_still_writing`).
-  A compile that fails keeps its scratch directory, with its log, under `scratch/`, and nothing removes it.
-  Direction: a lock file per key taken around the miss, if contended starts ever cost; scratch directories older
-  than a day removed as a directory is opened.
+- **A Tex key knows the files a compile may read only from the outside.** It covers:
+  - the whole source, the compilers with their `--version` output, and `dvisvgm --version=yes` (its libraries);
+  - for PDF output, `mutool` and `gs`;
+  - the digest of the distribution's package database (`tlpkg/texlive.tlpdb` under `kpsewhich`'s
+    `TEXMFROOT`);
+  - the environment's TeX search variables (`TEXINPUTS` and the other `TEX*`, `*INPUTS` and `*FONTS` names);
+  - the working directory, with its files, whenever it holds a file TeX finds by name (`.sty`, `.cls`, `.cfg`
+    and the like, the engine's own `arachne.cfg` aside), or the source names a file through `\input`,
+    `\includegraphics` and their kin.
+
+  Not covered:
+  - a file reached through a directory those variables name;
+  - the trees `TEXMFHOME` and `TEXMFLOCAL` (packages installed outside the distribution's database);
+  - a file named through a macro rather than a literal argument.
+
+  A distribution that keeps no `texlive.tlpdb` keys by the host instead, so its files are not shared across hosts.
+  Direction: compile with `-recorder` and key each file by the files its `.fls` lists, read on the next lookup
+  (a file is kept with the list of what it read). That is the sturdier option, if hosts with local TeX trees
+  ever share one directory.
+- **The fonts a Text is shaped with are read through Pango's public structs by `ctypes`.** Each span is laid out
+  as ManimPango lays it out, and each run's font is read from `PangoItem.analysis.font`. The digest covers the
+  font's data as HarfBuzz holds it (the font file, else its tables), cached by description, `head` table and
+  size.
+  - The field offsets are Pango's public ABI, checked at load on a one-character layout. Where that check fails,
+    or ManimPango exports none of the symbols, Text keys by the host and is not shared across hosts.
+  - The first Text in a process pays for loading and for hashing each font it uses: about 0.8 s on macOS for
+    Latin plus a CJK fallback font, then about 0.1 ms per Text.
+- **Contended strings are typeset more than once, and failed compiles leave scratch.**
+  - Writers take no lock. Two processes that miss one string at once both compile it, and the later rename
+    replaces the earlier file with the same bytes
+    (`tests/utils/test_typeset_cache.py::test_a_process_never_reads_an_svg_another_is_still_writing`).
+  - A compile that fails keeps its scratch directory, with its log, under `scratch/`, and nothing removes it.
+
+  Owner: the cache's maintainer, before a shared directory is used in production. Direction: remove scratch
+  directories older than a day as a directory is opened, and take a lock file per key around a miss if contended
+  starts ever cost.
+- **Without a typesetting directory, SVGs are parsed as CE parses them, racing.** `SVGMobject.generate_mobject`
+  writes the modified SVG to `<name>_.svg` beside the file, parses it and removes it. Two processes loading one
+  SVG (an asset shared by renders running at once) remove each other's copy, giving `FileNotFoundError`, or parse
+  it half written. A directory the process cannot write to fails too. With `typeset_dir` named, the same bytes
+  are parsed from memory
+  (`tests/utils/test_typeset_cache.py::test_an_svg_is_parsed_through_no_file_another_process_shares`).
+  Direction: parse from memory always, once CE's behaviour stops being the reference for this.
 
 ## The session server (`arachne/server/`)
 

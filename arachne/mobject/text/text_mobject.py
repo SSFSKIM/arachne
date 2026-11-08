@@ -73,7 +73,7 @@ from arachne.mobject.geometry.arc import Dot
 from arachne.mobject.svg.svg_mobject import SVGMobject
 from arachne.mobject.types.vectorized_mobject import VGroup, VMobject
 from arachne.typing import Point3D
-from arachne.utils import typeset_cache
+from arachne.utils import typeset_cache, typeset_fonts
 from arachne.utils.color import ManimColor, ParsableManimColor, color_gradient
 
 if TYPE_CHECKING:
@@ -887,6 +887,10 @@ class Text(SVGMobject):
             [s.start, s.end, s.font, s.slant, s.weight, s.line_num, s.color]
             for s in settings
         ]
+        shaped = [
+            (self.text[s.start : s.end].replace("\n", " "), s.font, s.slant, s.weight)
+            for s in settings
+        ]
         inputs = [
             "Text",
             self.text,
@@ -899,6 +903,7 @@ class Text(SVGMobject):
             width,
             height,
             typeset_cache.text_toolchain(),
+            typeset_fonts.text_fonts(shaped, size),
         ]
         return str(typeset_cache.made("text", inputs, make))
 
@@ -1486,6 +1491,9 @@ class MarkupText(SVGMobject):
             self.justify,
             500,
             typeset_cache.text_toolchain(),
+            typeset_fonts.text_fonts(
+                [(final_text, self.font, self.slant, self.weight)], size, markup=True
+            ),
         ]
         return str(typeset_cache.made("text", inputs, make))
 

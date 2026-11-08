@@ -1705,7 +1705,6 @@ class ManimConfig(MutableMapping):
             "images_dir",
             "text_dir",
             "tex_dir",
-            "typeset_dir",
             "log_dir",
             "input_file",
             "output_file",

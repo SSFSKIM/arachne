@@ -268,6 +268,11 @@ def _engine_dir(view: Any, key: str) -> str | None:
     """The real path of the directory ``key`` of ``view`` names, up to a
     module or scene name, or ``None`` when it excludes nothing.
     """
+    if key == "typeset_dir":
+        # A directory of its own, never one of the others' templates; named
+        # only while the speed levers are on.
+        named = view.typeset_dir
+        return None if named is None else os.path.realpath(named)
     if not isinstance(view._d.get(key), str):
         return None
     directory = view.get_dir(key, module_name=_HOLE, scene_name=_HOLE)

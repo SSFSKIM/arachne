@@ -101,9 +101,9 @@ def _kept_svg_file(
         dvi_file = compile_tex(
             tex_file, compiler, output_format, output_dir=path.parent
         )
-        convert_to_svg(dvi_file, output_format).replace(path)
+        convert_to_svg(dvi_file, output_format, checked=True).replace(path)
 
-    toolchain = typeset_cache.tex_toolchain(compilers)
+    toolchain = typeset_cache.tex_toolchain(compilers, output_format, code)
     return typeset_cache.made("tex", [code, compilers, output_format, toolchain], make)
 
 
@@ -263,7 +263,9 @@ def compile_tex(
     return result
 
 
-def convert_to_svg(dvi_file: Path, extension: str, page: int = 1) -> Path:
+def convert_to_svg(
+    dvi_file: Path, extension: str, page: int = 1, checked: bool = False
+) -> Path:
     """Converts a .dvi, .xdv, or .pdf file into an svg using dvisvgm.
 
     Parameters
@@ -274,6 +276,10 @@ def convert_to_svg(dvi_file: Path, extension: str, page: int = 1) -> Path:
         String containing the file extension and thus indicating the file type, e.g. ``.dvi`` or ``.pdf``
     page
         Page to be converted if input file is multi-page.
+    checked
+        Whether ``dvisvgm`` failing (exiting with an error, its output written
+        or not) raises; CE's conversion (``False``) raises only when it wrote
+        nothing.
 
     Returns
     -------
@@ -291,7 +297,11 @@ def convert_to_svg(dvi_file: Path, extension: str, page: int = 1) -> Path:
             f"--output={result.as_posix()}",
             f"{dvi_file.as_posix()}",
         ]
-        subprocess.run(command, stdout=subprocess.DEVNULL)
+        ran = subprocess.run(command, stdout=subprocess.DEVNULL)
+        if checked and ran.returncode != 0:
+            raise ValueError(
+                f"dvisvgm failed converting {dvi_file} (exit status {ran.returncode})."
+            )
 
     # if the file does not exist now, this means conversion failed
     if not result.exists():

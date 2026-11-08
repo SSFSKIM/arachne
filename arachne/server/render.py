@@ -11,8 +11,9 @@ it was, and the rename is atomic, so ``out`` is only ever the file before
 or the render. A render is a render as the command line makes it: the
 scene's own recorder, at the quality's pixel size and frame rate, the plays
 it leaves out executed all the same, as ``-n first,last`` executes them.
-Its Tex files are the session's (its ``tex_dir``, or the typesetting
-directory it names), so it compiles nothing the session's execution did.
+With a typesetting directory named, it typesets nothing the session's
+execution did; with none, it typesets into its own media directory, as the
+command line does.
 """
 
 from __future__ import annotations
@@ -135,14 +136,12 @@ def render(
     session judged.
     """
     out.parent.mkdir(parents=True, exist_ok=True)
-    typesetting = _tex_dir(config)
     media = Path(tempfile.mkdtemp(prefix=f".{out.name}.", dir=out.parent))
     scratch(media)
     try:
         options = {
             **config,
             **quality_options(quality),
-            **typesetting,
             "dry_run": False,
             "disable_caching": True,
             "media_dir": os.fspath(media),
@@ -175,19 +174,6 @@ def render(
     finally:
         shutil.rmtree(media, ignore_errors=True)
         scratch(None)
-
-
-def _tex_dir(config: Mapping[str, Any]) -> dict[str, str]:
-    """The session's Tex directory under ``config``, as the option a render
-    runs under, so that the render, whose media directory is its own,
-    compiles nothing the session's execution compiled. (Its Text files stay
-    its own: CE names them without the pixel width their lines wrap at,
-    which a render's quality changes. In a typesetting directory, which
-    keys them by it, both are shared.)
-    """
-    with tempconfig(dict(config)):
-        found = global_config.get_dir("tex_dir")
-    return {} if found is None else {"tex_dir": os.path.abspath(found)}
 
 
 def _execute(path: Path, scene: str, settings: Any, named: str) -> tuple[Scene, Record]:
