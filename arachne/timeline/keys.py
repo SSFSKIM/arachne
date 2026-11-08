@@ -378,8 +378,8 @@ def _content_key(value: Any, keying: _Keying) -> bytes:
         )
     if isinstance(getattr(value, "__dict__", None), dict):
         # An object of a plain class (the scene's own helpers, a dataclass,
-        # the engine's scales): its type and its attributes.
-        return each(sorted(vars(value).items()))
+        # the engine's scales): its type, its attributes and any slots.
+        return each(sorted(vars(value).items())) + each(_slot_items(value))
     raise _Unkeyable(_qualified(type(value)))
 
 
@@ -399,6 +399,25 @@ def _state_in_python(cls: type) -> bool:
 _POINTER = np.dtype(np.intp).itemsize
 
 
+def _slot_items(value: Any) -> list[tuple[str, Any]]:
+    """The slots ``value``'s classes declare that hold a value, each with
+    its value, by name.
+    """
+    found = []
+    missing = object()
+    for klass in type(value).__mro__:
+        slots = vars(klass).get("__slots__", ())
+        for name in (slots,) if isinstance(slots, str) else slots:
+            if name in ("__dict__", "__weakref__"):
+                continue
+            if name.startswith("__") and not name.endswith("__"):
+                name = f"_{klass.__name__.lstrip('_')}{name}"
+            held = getattr(value, name, missing)
+            if held is not missing:
+                found.append((name, held))
+    return sorted(found, key=lambda item: item[0])
+
+
 #: What an empty closure cell holds, for its key: a variable the function
 #: reads that is not yet bound.
 _EMPTY = ("empty cell",)
@@ -412,7 +431,16 @@ def _contents(cell: types.CellType) -> Any:
 
 
 def _code_key(code: types.CodeType, keying: _Keying) -> bytes:
-    """The key of a function's code: its instructions, constants and names."""
+    """The key of a function's code: its instructions, constants and names,
+    and how it is called (its parameters, by count, kind and name: an
+    updater taking ``dt`` is called with it).
+    """
+    signature = (
+        code.co_argcount,
+        code.co_posonlyargcount,
+        code.co_kwonlyargcount,
+        code.co_flags,
+    )
     consts = [
         _code_key(const, keying)
         if isinstance(const, types.CodeType)
@@ -421,6 +449,8 @@ def _code_key(code: types.CodeType, keying: _Keying) -> bytes:
     ]
     return (
         _framed(code.co_code)
+        + _framed(repr(signature).encode())
+        + _framed(" ".join(code.co_varnames).encode())
         + _framed(" ".join(code.co_names).encode())
         + len(consts).to_bytes(4, "big")
         + b"".join(map(_framed, consts))
@@ -434,18 +464,33 @@ def _foreign_key(value: Any) -> Any:
     """
     image = sys.modules.get("PIL.Image")
     if image is not None and isinstance(value, image.Image):
-        return (value.mode, value.size, value.tobytes(), value.getpalette())
+        # ``info`` too: its transparency is read where it converts to colours.
+        return (
+            value.mode,
+            value.size,
+            value.tobytes(),
+            value.getpalette(),
+            value.info,
+        )
     svg = sys.modules.get("svgelements")
     if svg is not None and isinstance(value, svg.Path):
-        return value.d()
+        # Its segments as they are, which iterating it reads, and the
+        # transform its ``d()`` applies to them.
+        return (value.d(transformed=False), str(value.transform))
     soup = sys.modules.get("bs4.element")
     if soup is not None and isinstance(value, soup.Tag):
         return str(value)
     networkx = sys.modules.get("networkx")
     if networkx is not None and isinstance(value, networkx.Graph):
+        # A multigraph's edges with their keys, which tell its edges apart.
+        edges = (
+            value.edges(keys=True, data=True)
+            if value.is_multigraph()
+            else value.edges(data=True)
+        )
         return (
             value.graph,
             [list(node) for node in value.nodes(data=True)],
-            [list(edge) for edge in value.edges(data=True)],
+            [list(edge) for edge in edges],
         )
     return None

@@ -884,6 +884,16 @@ class Spec:
     width: float
 
 
+class Attributed:
+    """An object with attributes."""
+
+
+class Slotted(Attributed):
+    """An object with attributes and a slot."""
+
+    __slots__ = ("slot",)
+
+
 def test_values_that_differ_anywhere_key_apart():
     """Each rule keys all of its value: two that differ in any part a later
     read could see never key alike.
@@ -893,6 +903,7 @@ def test_values_that_differ_anywhere_key_apart():
     import math
 
     import networkx
+    import svgelements
     from PIL import Image
 
     from arachne.mobject.values import FrozenPoints, freeze
@@ -924,6 +935,11 @@ def test_values_that_differ_anywhere_key_apart():
 
     g.factor = 2
     apart(f, g)
+    # A function's parameters: an updater taking ``dt`` is called with it.
+    apart(lambda m, dt: None, lambda m: None)
+    apart(lambda m, dt: m, lambda m, t: m)
+    apart(lambda m, dt: m, lambda m, *, dt: m)
+    apart(lambda *m: m, lambda m: m)
     # A builtin by its module; a ufunc numpy did not name is no numpy ufunc.
     apart(math.sin, cmath.sin)
     made = np.frompyfunc(lambda x: x, 1, 1)
@@ -936,6 +952,24 @@ def test_values_that_differ_anywhere_key_apart():
     apart(first, second)
     one, two = networkx.Graph(name="one"), networkx.Graph(name="two")
     apart(one, two)
+    # A multigraph's edges by their keys too.
+    keyed, other_keyed = networkx.MultiGraph(), networkx.MultiGraph()
+    keyed.add_edge(0, 1, key="a")
+    other_keyed.add_edge(0, 1, key="b")
+    apart(keyed, other_keyed)
+    # A picture's transparency, which its conversion to colours reads.
+    clear = Image.new("P", (2, 2))
+    clear.info["transparency"] = 0
+    apart(Image.new("P", (2, 2)), clear)
+    # A parsed path's own segments and its transform, each read apart.
+    apart(
+        svgelements.Path("M 0 0 L 2 2"),
+        svgelements.Path("M 0 0 L 1 1", transform="scale(2)"),
+    )
+    # The slots of an object that has attributes too.
+    held, other_held = Slotted(), Slotted()
+    held.slot, other_held.slot = 1, 2
+    apart(held, other_held)
     # A function's cache by its options too.
     apart(functools.lru_cache(maxsize=1)(abs), functools.lru_cache(maxsize=2)(abs))
 
