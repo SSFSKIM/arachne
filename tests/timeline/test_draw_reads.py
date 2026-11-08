@@ -11,6 +11,9 @@ import pytest
 from PIL import Image
 
 from arachne import LEFT, RIGHT, Circle, Create, Dot, Scene, Square, VMobject, config
+from arachne._config.utils import ManimConfig
+from arachne.camera.camera import Camera
+from arachne.frame_ir.cairo_painter import CairoDrawer
 from arachne.mobject.mobject import Mobject
 from arachne.timeline.record import Record
 from tests.helpers import draw_reads
@@ -94,6 +97,16 @@ class Plain(Scene):
         self.wait(0.2)
 
 
+class PlainKeepingItsTable(Plain):
+    """``Plain``, keeping the camera's table of display functions as the
+    scene made it.
+    """
+
+    def construct(self):
+        self.table = self.camera.display_funcs
+        super().construct()
+
+
 def _found(tracer) -> set[tuple[str, str, str]]:
     return {(read.owner, read.attribute, read.why) for read in tracer.take()}
 
@@ -152,16 +165,77 @@ def test_a_scene_the_record_holds_whole_reads_nothing_unlisted(tracing):
     assert tracing.take() == []
 
 
-def test_tracing_changes_no_frame_and_leaves_no_hook(tracing):
+#: What a traced frame hooks, as the engine defines it: each must be back
+#: once the frame is done.
+_UNHOOKED = {
+    (Mobject, "__getattribute__"): None,
+    (Camera, "__getattribute__"): None,
+    (ManimConfig, "__getattribute__"): None,
+    (Mobject, "__setattr__"): None,
+    (Mobject, "__delattr__"): None,
+    (ManimConfig, "__getitem__"): vars(ManimConfig)["__getitem__"],
+}
+
+
+def _assert_unhooked(scene) -> None:
+    """Every hook a traced frame installs is gone, the scene's camera holding
+    its own table of display functions again. (The tracer's audit hook
+    stays, as every audit hook does, and sees nothing once no frame is
+    traced.)
+    """
+    for (cls, name), original in _UNHOOKED.items():
+        assert vars(cls).get(name) is original, (cls, name)
+    assert vars(scene.camera)["display_funcs"] is scene.table
+
+
+def _skip_without_core(draw_path: str) -> None:
+    if draw_path == "ir_cairo":
+        pytest.importorskip("arachne_core")
+
+
+@pytest.mark.parametrize("draw_path", ["cairo", "ir_cairo"])
+def test_tracing_changes_no_frame_and_leaves_no_hook(tracing, draw_path):
+    _skip_without_core(draw_path)
     tracing.uninstall()
     try:
-        _, untraced = render(Plain, 15)
+        _, untraced = render(PlainKeepingItsTable, 15, draw_path=draw_path)
     finally:
         tracing.install()
-    _, traced = render(Plain, 15)
+    before = tracing.traced
+    scene, traced = render(PlainKeepingItsTable, 15, draw_path=draw_path)
+    assert tracing.traced > before
     assert len(traced) == len(untraced)
     for k, (a, b) in enumerate(zip(traced, untraced, strict=True)):
         np.testing.assert_array_equal(a, b, err_msg=str(k))
-    for cls in (Mobject, type(config)):
-        assert "__getattribute__" not in vars(cls)
-    assert "__setattr__" not in vars(Mobject)
+    _assert_unhooked(scene)
+
+
+class _Failed(Exception):
+    pass
+
+
+@pytest.mark.parametrize("draw_path", ["cairo", "ir_cairo"])
+def test_a_traced_frame_that_raises_leaves_no_hook(tracing, draw_path, monkeypatch):
+    _skip_without_core(draw_path)
+    made: list = []
+    inside: list[bool] = []
+
+    def init(scene, *args, **kwargs):
+        made.append(scene)
+        original_init(scene, *args, **kwargs)
+
+    def fail(*args, **kwargs):
+        inside.append(bool(tracing.frames))
+        raise _Failed
+
+    original_init = PlainKeepingItsTable.__init__
+    monkeypatch.setattr(PlainKeepingItsTable, "__init__", init)
+    if draw_path == "cairo":
+        monkeypatch.setattr(Camera, "capture_mobjects", fail)
+    else:
+        monkeypatch.setattr(CairoDrawer, "draw", fail)
+    with pytest.raises(_Failed):
+        render(PlainKeepingItsTable, 15, draw_path=draw_path)
+    assert inside == [True]
+    assert tracing.frames == []
+    _assert_unhooked(made[-1])
