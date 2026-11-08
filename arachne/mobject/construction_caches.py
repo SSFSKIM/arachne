@@ -12,7 +12,11 @@ a fresh process does; a render executed again starts from them as its first
 execution found them.
 
 A cache the engine adds that hands out mobjects or their parts is registered
-in :data:`CACHES`, and is then forgotten and restored with the rest.
+in :data:`CACHES`, and is then forgotten and restored with the rest. The TeX
+construction memo (:mod:`.text.tex_memo`) is not among them: it keys each
+construction on whether the image cache holds its image, so it builds what
+a construction from these caches as they are builds, and survives
+executions.
 """
 
 from __future__ import annotations

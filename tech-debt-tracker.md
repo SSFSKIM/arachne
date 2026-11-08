@@ -321,7 +321,40 @@ lifted.
   within one process the first of two equal images differs from the second, as in CE. Each execution now
   finds the construction caches (`arachne/mobject/construction_caches.py`: this one and a number's glyph
   cache, which fills it) as a fresh process (a session) or as the scene's first execution (a render executed again)
-  found it, so two executions of one source agree. Direction: none while CE's behaviour is the reference.
+  found it, so two executions of one source agree. The TeX construction memo (`arachne/mobject/text/tex_memo.py`)
+  keeps this: whether the cache holds a formula's image is part of its key, and a hit on an image the cache lacks
+  puts the cache's entry back. Direction: none while CE's behaviour is the reference.
+
+## The TeX construction memo (`arachne/mobject/text/tex_memo.py`)
+
+- **What its key does not cover.** Every argument, the configured template, the image (path and content), the
+  image cache's state and the code and defaults of the engine classes the construction made or holds are keyed. Not
+  keyed: an engine module's function replaced by the scene (`tex_mobject.tex_to_svg_file = f`), and a class the
+  scene defines whose name is an engine class's, which shares that class's image cache entries (the image cache keys
+  by class name, as in CE). Direction: none unless a scene is found doing either.
+- **Its bound is an entry count.** 512 entries. An entry is the formula's mobjects plus the image cache's entry:
+  about 0.2 MiB for a one-line formula and 2 MiB for a large one (a 4×4 matrix with a sum and an integral), measured
+  as deep size on CPython 3.13. Full of large formulas, the memo would hold about 1 GiB. Direction: bound it by size
+  when sessions run under a memory budget.
+- **A hit still costs one deep copy.** What it hands out is a copy of the prototype (it must be, so that the caller's
+  changes never reach it), and the copy dominates a hit: each path's parsed `svgelements` objects are copied with it.
+  Direction: cheaper copies of mobjects (below).
+
+## Speed: measured and not built
+
+Measured on a sample of scenes, each opened in a session, edited to make its last play 0.5 s longer, and executed
+again; "the floor" is the time from the edit to the new record.
+
+- **The deep copies in a play's `begin`.** Taken across every route (`Transform.begin`, `create_starting_mobject`,
+  fades, `Write`'s outlines), they are about 11–14% of the floor by the per-scene median, under the bar for a lever of
+  their own. Every deep copy, whoever asks for it, is about 20% by the median. Direction: make mobject copies cheaper
+  rather than fewer.
+- **`DrawBorderThenFill` builds its outline twice.** `__init__` builds it (`arachne/animation/creation.py:243`) and
+  `begin` builds it again (`:252`), which wastes about 1% of the floor. Direction: build it once, in `begin`, once
+  nothing reads the first.
+- **Fast-forward of trusted plays.** After their values are vectorized, evaluating trusted plays is about 19% of the
+  floor by the per-scene median and 12% pooled. About half of that is the play's `begin`, so a fast-forward that
+  still runs `begin` saves little. Not built.
 
 ## The session server (`arachne/server/`)
 

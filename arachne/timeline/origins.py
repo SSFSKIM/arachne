@@ -19,7 +19,7 @@ __all__ = ["Origin", "ORIGINS", "origin_of"]
 import os
 import sys
 import weakref
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -54,6 +54,8 @@ class _Origins:
         self.scene_file: str | None = None
         self._entries: dict[int, tuple[weakref.ref[Any], Origin]] = {}
         self._ordinals: dict[str, int] = {}
+        #: The lists :meth:`counting` hands out, open now.
+        self._counts: list[list[tuple[object, Origin]]] = []
 
     def start(self, base_dir: str | None, scene_file: str | None = None) -> None:
         """Begin tagging, with source paths relative to ``base_dir`` and
@@ -141,6 +143,12 @@ class _Origins:
         ordinal = self._ordinals.get(where, 0)
         self._ordinals[where] = ordinal + 1
         origin = Origin(f"{where}#{ordinal}", line, scene_line)
+        self._enter(obj, origin)
+        for made in self._counts:
+            made.append((obj, origin))
+        return origin
+
+    def _enter(self, obj: object, origin: Origin) -> None:
         key = id(obj)
         entries = self._entries
 
@@ -150,7 +158,51 @@ class _Origins:
                 del entries[key]
 
         entries[key] = (weakref.ref(obj, forget), origin)
-        return origin
+
+    @contextmanager
+    def counting(self) -> Iterator[list[tuple[object, Origin]]]:
+        """A list of every object given an origin inside the block, with its
+        origin, in order.
+        """
+        made: list[tuple[object, Origin]] = []
+        self._counts.append(made)
+        try:
+            yield made
+        finally:
+            # Blocks nest: the list open last closes first.
+            self._counts.pop()
+
+    @contextmanager
+    def paused(self) -> Iterator[None]:
+        """Tag nothing created inside the block."""
+        active, self.active = self.active, False
+        try:
+            yield
+        finally:
+            self.active = active
+
+    def place(
+        self, root: object, placed: Iterable[tuple[object, int]], count: int
+    ) -> None:
+        """Number objects as a construction of ``root`` numbered what it made:
+        ``count`` objects at ``root``'s line right after ``root``, of which
+        each of ``placed`` is the one at its offset among them; the line is
+        numbered on after all ``count``. Nothing happens when ``root`` has no
+        origin.
+        """
+        origin = self.get(root)
+        if origin is None:
+            return
+        where, _, ordinal = origin.id.rpartition("#")
+        first = int(ordinal) + 1
+        for obj, offset in placed:
+            self._enter(
+                obj,
+                Origin(
+                    f"{where}#{first + offset}", origin.source_line, origin.scene_line
+                ),
+            )
+        self._ordinals[where] = first + count
 
     def get(self, obj: object) -> Origin | None:
         """The origin ``obj`` was given, if any."""

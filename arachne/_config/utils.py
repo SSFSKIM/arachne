@@ -1472,9 +1472,13 @@ class ManimConfig(MutableMapping):
 
     @property
     def construction_memo(self) -> bool:
-        """Whether text and number construction reuse what an equal
-        construction built (on by default): a reused mobject is built
-        exactly as a fresh one is.
+        """Whether a ``MathTex``, ``Tex`` or ``SingleStringMathTex`` equal to
+        one built before (its arguments, the TeX template, its image and
+        the engine's classes all alike) is handed a copy of what that one
+        built, in place of parsing and laying out its image again (on by
+        default; it survives executions): what it holds, and the origins a
+        recording gives it, are exactly a fresh construction's
+        (:mod:`arachne.mobject.text.tex_memo`).
         """
         return self._lever("construction_memo")
 

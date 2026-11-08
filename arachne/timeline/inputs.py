@@ -29,6 +29,8 @@ __all__ = [
     "engine_dirs",
     "source_digest",
     "source_files",
+    "unwatched",
+    "watched",
 ]
 
 import ast
@@ -38,6 +40,7 @@ import os
 import sys
 import threading
 from collections.abc import Callable, Collection, Iterable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from types import FrameType
 from typing import Any, NamedTuple
@@ -69,6 +72,29 @@ def _audit(event: str, args: tuple[Any, ...]) -> None:
             watcher.opened(path, frame)
     finally:
         _LOCAL.busy = False
+
+
+@contextmanager
+def unwatched() -> Iterator[None]:
+    """Files opened inside the block are the engine's own reads, which no
+    recording sees.
+    """
+    busy = getattr(_LOCAL, "busy", False)
+    _LOCAL.busy = True
+    try:
+        yield
+    finally:
+        _LOCAL.busy = busy
+
+
+def watched(path: str | os.PathLike[str]) -> bool:
+    """Whether a recording watching now may count a read of ``path``: it
+    lies outside a watcher's excluded directories.
+    """
+    if not _WATCHING:
+        return False
+    real = os.path.realpath(path)
+    return any(not real.startswith(watcher._excluded) for watcher in _WATCHING)
 
 
 def _reads(mode: str | None, flags: int) -> bool:

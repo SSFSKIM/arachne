@@ -44,7 +44,7 @@ speed_options = option_group(
         "--construction-memo/--no-construction-memo",
         "construction_memo",
         default=None,
-        help="Reuse what an equal text or number construction built.",
+        help="Hand a TeX formula equal to one built before a copy of what it built.",
     ),
     option(
         "--draw-reuse/--no-draw-reuse",

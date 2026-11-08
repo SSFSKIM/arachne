@@ -34,6 +34,7 @@ from arachne import config, logger
 from arachne.constants import *
 from arachne.mobject.geometry.line import Line
 from arachne.mobject.svg.svg_mobject import SVGMobject
+from arachne.mobject.text.tex_memo import SERVED, TEX_MEMO, memoized
 from arachne.mobject.types.vectorized_mobject import VGroup, VMobject
 from arachne.utils.tex import TexTemplate
 from arachne.utils.tex_file_writing import tex_to_svg_file
@@ -52,6 +53,7 @@ class SingleStringMathTex(SVGMobject):
         SingleStringMathTex('Test')
     """
 
+    @memoized
     def __init__(
         self,
         tex_string: str,
@@ -106,6 +108,12 @@ class SingleStringMathTex(SVGMobject):
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}({repr(self.tex_string)})"
+
+    def init_svg_mobject(self, use_svg_cache: bool) -> Self:
+        # The construction memo serves this construction here, once its
+        # image is known, if it can (:mod:`.tex_memo`).
+        TEX_MEMO.reached(self, use_svg_cache)
+        return super().init_svg_mobject(use_svg_cache)
 
     @property
     def font_size(self) -> float:
@@ -270,6 +278,7 @@ class MathTex(SingleStringMathTex):
 
     """
 
+    @memoized
     def __init__(
         self,
         *tex_strings: str,
@@ -599,6 +608,9 @@ class MathTex(SingleStringMathTex):
         return self
 
 
+SERVED.update((SingleStringMathTex, MathTex))
+
+
 class MathTexPart(VMobject):
     tex_string: str
 
@@ -623,6 +635,7 @@ class Tex(MathTex):
 
     """
 
+    @memoized
     def __init__(
         self,
         *tex_strings: str,
@@ -636,6 +649,9 @@ class Tex(MathTex):
             tex_environment=tex_environment,
             **kwargs,
         )
+
+
+SERVED.add(Tex)
 
 
 class BulletedList(Tex):
