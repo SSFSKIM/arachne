@@ -5,7 +5,9 @@ class, or a value equal to an engine value, is not taken for it.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
+from types import ModuleType
 
 import numpy as np
 import pytest
@@ -142,7 +144,8 @@ def test_a_class_equal_to_an_engine_class_is_not_the_engines():
         frozen.class_members(OwnSquare)
     assert frozen.engine_class(Square)
     assert not setters.builtin_class(OwnSquare)
-    assert setters.setter_for(OwnSquare(), "shift") is None
+    assert setters.setter_for(Square(), "move_to") is not None
+    assert setters.setter_for(OwnSquare(), "move_to") is None
     assert setters.read_kind(OwnSquare(), "get_center") is None
     assert setters.read_kind(Square(), "get_center") == "value"
 
@@ -305,3 +308,45 @@ def test_a_list_type_only_equal_to_list_is_not_read_as_a_list():
     purity.prove_readout(_reads_plain_items, scene)
     with pytest.raises(purity.Refused):
         purity.prove_readout(_reads_own_items, scene)
+
+
+class DriftingModule(ModuleType):
+    """A module of a scene's own whose attribute is its own code."""
+
+    reads = 0
+
+    @property
+    def value(self):
+        self.reads += 1
+        return self.reads / 100
+
+
+DRIFTING = DriftingModule("math")
+#: A plain module object named ``math`` whose missing names are its own code.
+MADE = ModuleType("math")
+MADE.__getattr__ = lambda name: len(name) / 100
+
+
+def _reads_math():
+    return math.pi
+
+
+def _reads_drifting():
+    return DRIFTING.value
+
+
+def _reads_made():
+    return MADE.pi
+
+
+def test_only_the_interpreters_own_module_of_a_name_is_read():
+    assert setters.pure_module(math)
+    assert not setters.pure_module(DRIFTING)
+    assert not setters.pure_module(MADE)
+    scene = Scene()
+    purity.prove_readout(_reads_math, scene)
+    reads = DRIFTING.reads
+    for readout in (_reads_drifting, _reads_made):
+        with pytest.raises(purity.Refused):
+            purity.prove_readout(readout, scene)
+    assert DRIFTING.reads == reads

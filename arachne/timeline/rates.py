@@ -578,44 +578,47 @@ def array_twin(function: Callable[..., float]) -> ArrayFunction:
     return twin
 
 
-_ARC_CODE = paths.path_along_arc(1.0).__code__
-_CIRCLES_CODE = paths.path_along_circles(1.0, np.zeros(3)).__code__
-_SPIRAL_CODE = paths.spiral_path(1.0).__code__
+#: The code of each of CE's path closures, by identity, and the name of the
+#: angle it binds.
+_PATH_ANGLES: ByIdentity[types.CodeType, str] = ByIdentity(
+    {
+        paths.path_along_arc(1.0).__code__: "arc_angle",
+        paths.path_along_circles(1.0, np.zeros(3)).__code__: "arc_angle",
+        paths.spiral_path(1.0).__code__: "angle",
+    }
+)
 
 
 def _points(value: Any) -> bool:
-    """A numpy array itself (a subclass's arithmetic is its own code)."""
-    return type(value) is np.ndarray and value.dtype.kind in "fiu"
+    """A plain numpy array of numbers: not a subclass, whose arithmetic is
+    its own code, and not of objects, whose arithmetic is theirs.
+    """
+    return type(value) is np.ndarray and value.dtype.kind in ("f", "i", "u")
 
 
 def admitted_path(function: Any) -> bool:
     """Whether ``function`` is a path function the trusted algebra admits:
     the straight path (``interpolate``) or a closure of CE's arc, spiral or
     circle paths (a plain function whose code is the path's own) whose
-    angle is a number (:data:`_NUMBERS`). The arrays a closure binds may be
-    the script's own (``Rotate`` binds its ``about_point``): a trusted play
-    runs no script code, and :func:`frozen_path` lets an evaluation after
-    the play see them as the play did.
+    angle is a number (:data:`_NUMBERS`) and whose every other value (the
+    axis, the circles' centres) is a plain array of numbers. The arrays may
+    be the script's own (``Rotate`` binds its ``about_point``): a trusted
+    play runs no script code, and :func:`frozen_path` lets an evaluation
+    after the play see them as the play did.
     """
     if function is interpolate:
         return True
     if type(function) is not types.FunctionType:
         return False
-    code = function.__code__
-    if code is _ARC_CODE:
-        cells = _closure(function)
-        return cells is not None and _number(cells.get("arc_angle"))
-    if code is _SPIRAL_CODE:
-        cells = _closure(function)
-        return cells is not None and _number(cells.get("angle"))
-    if code is _CIRCLES_CODE:
-        cells = _closure(function)
-        return (
-            cells is not None
-            and _number(cells.get("arc_angle"))
-            and _points(cells.get("circles_centers"))
-        )
-    return False
+    angle = _PATH_ANGLES.get(function.__code__)
+    if angle is None:
+        return False
+    cells = _closure(function)
+    return (
+        cells is not None
+        and _number(cells.get(angle))
+        and all(_points(v) for k, v in cells.items() if k != angle)
+    )
 
 
 def frozen_path(function: Any) -> Any:

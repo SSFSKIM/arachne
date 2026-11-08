@@ -240,6 +240,29 @@ class _Points(np.ndarray):
     """An array type of a scene's own."""
 
 
+class _Scaling(float):
+    """A float whose product is its own code."""
+
+    def __mul__(self, other):
+        return float(self) * other
+
+    __rmul__ = __mul__
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda axis: paths.spiral_path(1.0, axis=axis),
+        lambda axis: paths.path_along_arc(1.0, axis=axis),
+        lambda axis: paths.path_along_circles(1.0, np.zeros(3), axis=axis),
+    ],
+)
+def test_a_path_whose_axis_is_not_plain_numbers_is_not_admitted(factory):
+    assert admitted_path(factory(np.array([0.0, 0.0, 1.0])))
+    assert admitted_path(factory([0, 0, 2]))
+    assert not admitted_path(factory(np.array([0.0, 0.0, _Scaling(1.0)], dtype=object)))
+
+
 def test_ce_paths_are_admitted_and_others_are_not():
     assert admitted_path(interpolate)
     assert admitted_path(paths.path_along_arc(np.pi / 2))

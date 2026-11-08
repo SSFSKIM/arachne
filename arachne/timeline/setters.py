@@ -37,6 +37,7 @@ __all__ = [
 ]
 
 import inspect
+import sys
 import types
 from dataclasses import dataclass
 from functools import cache
@@ -566,8 +567,17 @@ _READABLE_MODULES = (
 
 
 def pure_module(module: types.ModuleType) -> bool:
-    """Whether a callback may read names off ``module``."""
-    name = module.__name__
+    """Whether a callback may read names off ``module``: the interpreter's
+    own module of one of the readable names, by identity (the object
+    ``sys.modules`` holds under that name). A module object a scene made,
+    of any class, is not one, whatever it is called: its attributes, or its
+    module ``__getattr__``, may be its own code.
+    """
+    if type(module) is not types.ModuleType:
+        return False
+    name = vars(module).get("__name__")
+    if type(name) is not str or sys.modules.get(name) is not module:
+        return False
     if name in ("math", "numpy", "numpy.linalg", "arachne"):
         return True
     return name.startswith(_READABLE_MODULES) or name.startswith("arachne.constants")

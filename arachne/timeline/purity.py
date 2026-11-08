@@ -403,7 +403,8 @@ class _Prover:
             return VALUE
         if isinstance(value, types.ModuleType):
             if not setters.pure_module(value):
-                raise Refused(f"{name} is the module {value.__name__}")
+                # Its name is not read: a module of a scene's may compute it.
+                raise Refused(f"{name} is a module a callback may not read")
             return _Known(value)
         if one_of(type(value), (list, tuple)):
             return _Items(
