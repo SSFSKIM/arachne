@@ -12,8 +12,9 @@ its own included, so that every comparison that meets it finds a
 difference rather than agreement: a value of a type the key does not know
 (:data:`UNKEYABLE`), a cache whose entries it cannot read
 (:data:`UNREAD_CACHE`), a value holding more parts than one key walks
-(:data:`BUDGET` parts, :data:`OVER_BUDGET`) and one nested deeper than it
-follows (:data:`DEPTH`, :data:`OVER_DEPTH`).
+(:data:`BUDGET` parts, :data:`OVER_BUDGET`), one nested deeper than it
+follows (:data:`DEPTH`, :data:`OVER_DEPTH`) and one whose reading raised
+(a property, an ``__iter__`` of the scene's own: :data:`RAISED`).
 
 A class (an enum member's included) and a function are named by their
 qualified names, not their modules': a scene's module is named for the load
@@ -35,6 +36,7 @@ __all__ = [
     "BUDGET",
     "OVER_BUDGET",
     "OVER_BUDGET_KIND",
+    "RAISED",
     "READING_ENGINE_CACHES",
     "UNKEYABLE",
     "UNREAD_CACHE",
@@ -77,6 +79,8 @@ UNREAD_CACHE = b"\0unread cache "
 OVER_BUDGET = b"\0over budget "
 #: The head of the marker of a value nested deeper than :data:`DEPTH`.
 OVER_DEPTH = b"\0over depth "
+#: The head of the marker of a value whose reading raised.
+RAISED = b"\0raised "
 #: What :func:`unkeyable` names a value over the budget, and one too deep.
 OVER_BUDGET_KIND = "over the key budget"
 OVER_DEPTH_KIND = "over the key depth"
@@ -121,47 +125,68 @@ def value_key(
     keying = _Keying(decimals)
     try:
         return _key(value, keying), tuple(keying.refers)
-    except (_Unkeyable, RecursionError) as found:
+    except Exception as found:  # noqa: BLE001 (every value keys, or is a marker)
         # Each marker names its cause's type: the type that fell through, or
-        # that of the value too large or too deep to key. A recursion the
-        # depth did not bound (code that recurses as it is read) is too deep.
-        kind = _found(found)
-        if kind == OVER_BUDGET_KIND:
-            head, kind = OVER_BUDGET, _qualified(type(value))
-        elif kind == OVER_DEPTH_KIND:
-            head, kind = OVER_DEPTH, _qualified(type(value))
-        else:
-            head = found.head if isinstance(found, _Unkeyable) else UNKEYABLE
+        # that of the value too large or too deep to key, or what raised.
+        head, kind = _marker(_found(found, value), value)
         return head + kind.encode() + b"\0" + os.urandom(16), ()
 
 
 def unkeyable(value: Any) -> str | None:
     """What in ``value`` the key cannot key, the first it meets: a type's
-    qualified name, a cache's function's name, :data:`OVER_BUDGET_KIND` or
-    :data:`OVER_DEPTH_KIND`; ``None`` when it keys all of ``value``.
+    qualified name, a cache's function's name, :data:`OVER_BUDGET_KIND`,
+    :data:`OVER_DEPTH_KIND`, or the exception reading a value raised and
+    the value's type; ``None`` when it keys all of ``value``.
     """
     try:
         _key(value, _Keying(None))
-    except (_Unkeyable, RecursionError) as found:
-        return _found(found)
+    except Exception as found:  # noqa: BLE001 (as value_key)
+        return _found(found, value).kind
     return None
 
 
-def _found(found: Exception) -> str:
-    return found.kind if isinstance(found, _Unkeyable) else OVER_DEPTH_KIND
+def _found(found: Exception, value: Any) -> _Unkeyable:
+    """``found``, raised keying ``value``, as the finding it is: a
+    recursion the depth did not bound (code that recurses as it is read)
+    is too deep; anything else raised is a raise of reading ``value``.
+    """
+    if isinstance(found, _Unkeyable):
+        return found
+    if isinstance(found, RecursionError):
+        return _Unkeyable(OVER_DEPTH_KIND)
+    return _raised(found, value)
+
+
+def _raised(error: Exception, value: Any) -> _Unkeyable:
+    return _Unkeyable(
+        f"{_qualified(type(error))}, keying a {_qualified(type(value))}", RAISED
+    )
+
+
+def _marker(found: _Unkeyable, value: Any) -> tuple[bytes, str]:
+    """The head and kind of the marker of ``found``, raised keying
+    ``value``: an overflow names ``value``'s type.
+    """
+    if found.kind == OVER_BUDGET_KIND:
+        return OVER_BUDGET, _qualified(type(value))
+    if found.kind == OVER_DEPTH_KIND:
+        return OVER_DEPTH, _qualified(type(value))
+    return found.head, found.kind
 
 
 def marker_reason(key: bytes) -> str | None:
     """Why ``key`` is a marker, in words, naming the type it is a marker
     for, or ``None`` for a key of content.
     """
-    for head in (UNKEYABLE, UNREAD_CACHE, OVER_BUDGET, OVER_DEPTH):
+    for head in (UNKEYABLE, UNREAD_CACHE, OVER_BUDGET, OVER_DEPTH, RAISED):
         if key.startswith(head):
             kind = key[len(head) :].split(b"\0", 1)[0].decode()
             if head == UNKEYABLE:
                 return f"a value of a type the key does not know ({kind})"
             if head == UNREAD_CACHE:
                 return f"a cache whose entries the key cannot read ({kind})"
+            if head == RAISED:
+                return f"raised: {kind}"
             if head == OVER_BUDGET:
                 return f"a {kind} of more than {BUDGET} parts, too large to key"
             return f"a {kind} nested deeper than {DEPTH} levels, too deep to key"
@@ -231,6 +256,11 @@ def _key(value: Any, keying: _Keying) -> bytes:
     active.append(id(value))
     try:
         return _held_key(value, keying)
+    except (_Unkeyable, RecursionError):
+        raise
+    except Exception as error:  # noqa: BLE001 (a scene's own code, read)
+        # Named by the innermost value whose reading raised.
+        raise _raised(error, value) from error
     finally:
         active.pop()
 
@@ -250,14 +280,17 @@ def _each(parts: Any, keying: _Keying) -> bytes:
 
 
 def _own_attributes(value: Any, keying: _Keying) -> bytes:
-    """The attributes an instance of a subclass of a builtin kind (a ``str``,
-    a ``list``, a ``dict``) holds beside its value, which no rule for the
-    kind reads; nothing for another value.
+    """The attributes and slots an instance of a subclass of a builtin kind
+    (a ``str``, a ``list``, a ``dict``) holds beside its value, which no rule
+    for the kind reads; nothing for another value.
     """
     if not isinstance(value, _BUILTIN_KINDS) or type(value) in _BUILTIN_KINDS:
         return b""
-    own = getattr(value, "__dict__", None)
-    return _each(sorted(own.items()), keying) if own else b""
+    own = getattr(value, "__dict__", None) or {}
+    slots = _slot_items(value)
+    if not own and not slots:
+        return b""
+    return _each(sorted(own.items()), keying) + _each(slots, keying)
 
 
 #: The builtin kinds a rule of :func:`_content_key` keys by their values.
@@ -286,8 +319,11 @@ def _content_key(value: Any, keying: _Keying) -> bytes:
         return _each(parts, keying)
 
     if isinstance(value, (int, float, str)):
-        # A subclass of a number or a string: its value, as the builtin's.
-        return _framed(repr(type(value).__mro__[-2](value)).encode())
+        # A subclass of a number or a string: its value, as the builtin kind
+        # it is (whatever it mixes in); its class and what else it holds
+        # are :func:`_held_key`'s.
+        kind: Any = next(k for k in type(value).__mro__ if k in (int, float, str))
+        return _framed(repr(kind(value)).encode())
     if isinstance(value, np.ndarray):
         array = np.asarray(value).view(np.ndarray)
         shape = _framed(f"{array.dtype.str}{array.shape}".encode())
@@ -348,12 +384,15 @@ def _content_key(value: Any, keying: _Keying) -> bytes:
     if isinstance(value, types.MethodType):
         return each((value.__func__, value.__self__))
     if isinstance(value, np.ufunc):
-        # One of numpy's own, by its name; another (``np.frompyfunc``'s) is
-        # code of this process.
+        # One numpy or scipy.special names, by that module and its name;
+        # another (``np.frompyfunc``'s) is code of this process. scipy is
+        # looked at only where it is loaded already.
         name = value.__name__
-        if getattr(np, name, None) is not value:
-            raise _Unkeyable(_qualified(type(value)))
-        return _framed(name.encode())
+        for named_by in ("numpy", "scipy.special"):
+            loaded = sys.modules.get(named_by)
+            if loaded is not None and getattr(loaded, name, None) is value:
+                return _framed(named_by.encode()) + _framed(name.encode())
+        raise _Unkeyable(_qualified(type(value)))
     if isinstance(value, types.BuiltinFunctionType):
         owner = value.__self__
         bound = () if owner is None or isinstance(owner, types.ModuleType) else (owner,)

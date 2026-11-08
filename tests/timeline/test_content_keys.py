@@ -674,6 +674,15 @@ def test_a_class_attribute_changed_where_no_restore_sees_it_is_answered_as_forwa
     _write(scene_dir, "k.txt", "1.0")
     session = _open(path, "Later", frame_rate=15)
     try:
+        # The plays reading it tick from the first execution: for that read
+        # (a traced path's ticks for its dt updater first).
+        for play in session.record.plays[1:]:
+            assert play.route == "ticked", play.admission.reasons
+            assert any(
+                "reads Holder.k" in reason or "takes dt" in reason
+                for reason in play.admission.reasons
+            ), play.admission.reasons
+        assert session.probe.plays == ()
         _answers_as_forward(session, _forward_frames(path, "Later", 15), 15)
     finally:
         session.close()
@@ -970,6 +979,108 @@ class Slotted(Attributed):
     """An object with attributes and a slot."""
 
     __slots__ = ("slot",)
+
+
+class Mixin:
+    """A class with nothing of a builtin's, mixed into one."""
+
+
+class Word(str, Mixin):
+    """A string with a mixin after it, so ``str`` is not its last base."""
+
+
+class Unloaded:
+    """An object whose attributes raise when read, as a lazy load can."""
+
+    @property
+    def __dict__(self):
+        raise RuntimeError("not loaded")
+
+
+class Unlistable(list):
+    """A list whose parts raise when iterated."""
+
+    def __iter__(self):
+        raise ValueError("no parts")
+
+
+class Toned(list):
+    """A list with a slot of its own."""
+
+    __slots__ = ("tone",)
+
+
+def test_a_builtin_kind_s_subclass_keys_as_that_kind_and_all_it_holds_beside():
+    """Its value, as the builtin kind it is (whatever it mixes in), its
+    class, and its own attributes and slots: two that differ in any of
+    them key apart, two alike in all key alike.
+    """
+    assert unkeyable(Word("a")) is None
+    assert _value_key(Word("a")) == _value_key(Word("a"))
+    assert _value_key(Word("a")) != _value_key(Word("b"))
+    assert _value_key(Word("a")) != _value_key("a")
+    toned, other = Word("a"), Word("a")
+    toned.tone, other.tone = 1, 2
+    assert _value_key(toned) != _value_key(other)
+    other.tone = 1
+    assert _value_key(toned) == _value_key(other)
+    slotted, other_slotted = Toned([1]), Toned([1])
+    slotted.tone, other_slotted.tone = 1, 2
+    assert _value_key(slotted) != _value_key(other_slotted)
+    other_slotted.tone = 1
+    assert _value_key(slotted) == _value_key(other_slotted)
+
+
+@pytest.mark.parametrize(
+    ("value", "why"),
+    [
+        (
+            Unloaded(),
+            f"raised: builtins.RuntimeError, keying a {__name__}.Unloaded",
+        ),
+        (
+            {"parts": Unlistable([1])},
+            f"raised: builtins.ValueError, keying a {__name__}.Unlistable",
+        ),
+    ],
+    ids=["a-property-that-raises", "an-iteration-that-raises"],
+)
+def test_a_value_whose_key_raises_is_a_marker_naming_it(value, why):
+    """The key reads a scene's own objects (their attributes, their parts),
+    and what they raise is a marker naming the value and the exception,
+    never an error of the summary, the probe or the record's keys.
+    """
+    key = _value_key(value)
+    assert marker_reason(key) == why
+    assert _value_key(value) != key
+    assert unkeyable(value) is not None
+
+
+def test_a_ufunc_keys_by_its_module_and_name_alike_in_every_process():
+    """numpy's and ``scipy.special``'s ufuncs key by the module that names
+    them and their name, alike in another process; one numpy makes of a
+    Python function is a marker.
+    """
+    special = pytest.importorskip(
+        "scipy.special", reason="scipy is not installed in this environment"
+    )
+    assert _value_key(special.erf) != _value_key(special.gamma)
+    assert _value_key(np.sin) != _value_key(special.erf)
+    made = np.frompyfunc(lambda x: x, 1, 1)
+    assert marker_reason(_value_key(made)).startswith(
+        "a value of a type the key does not know"
+    )
+    script = (
+        "import numpy as np\n"
+        "from arachne.timeline.keys import value_key\n"
+        "print(value_key(np.sin)[0].hex())\n"
+        "import scipy.special\n"
+        "print(value_key(scipy.special.erf)[0].hex())\n"
+    )
+    found = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, check=True
+    ).stdout.split()
+    assert found == [_value_key(np.sin).hex(), _value_key(special.erf).hex()]
 
 
 def test_values_that_differ_anywhere_key_apart():

@@ -213,6 +213,24 @@ lifted.
   naming it, so a play holding one is demoted and its scene diverges from
   itself. The fix, if a scene needs it: key a cache whose function the
   admission proves reads its arguments alone as that function.
+- **Standard-library values whose state lives in C are markers.** A
+  `decimal.Decimal`, a `datetime.date` or a `datetime.datetime` on a field
+  keys as the marker (its layout is not `object`'s), so its scene diverges
+  from itself. The fix: key each by its exact value (`repr`, or its fields),
+  as `Fraction` and `range` already are.
+- **An object whose `__slots__` names `"__dict__"` is a marker.** The slot
+  count the layout check subtracts includes `__dict__`, which holds no slot
+  pointer of its own, so the object reads as holding state outside Python.
+  The fix: leave `__dict__` and `__weakref__` out of that count.
+- **The engine-cache inventory test reads decorators only.** It finds
+  `@cache` and `@lru_cache` on module and class functions; a cache made in a
+  nested function, by calling `functools.cache(f)`, or a `cached_property`
+  would escape it (the engine has none of the first two today). The fix:
+  walk every function body, and calls, as well as decorators.
+- **Two caches read engine source but are classed pure.** The dispatch
+  reader caches (`_reads`, `_protocols`) parse the engine's own source,
+  which is fixed for a process; only engine-private names reach them, so no
+  scene can hold one on a field. Reclass them as reading if that changes.
 
 ## Convex hulls (`arachne/utils/qhull.py`)
 
