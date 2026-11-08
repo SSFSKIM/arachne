@@ -1,0 +1,145 @@
+"""The draw-reads tracer (``tests/helpers/draw_reads.py``) itself: it finds a
+read of what the record does not hold, made any way Python reads an
+attribute, names its type, attribute and line, and changes nothing the
+engine draws. The suite runs under it with ``ARACHNE_DRAW_READS`` set.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import pytest
+
+from arachne import LEFT, RIGHT, Circle, Create, Dot, Scene, Square, VMobject, config
+from arachne.mobject.mobject import Mobject
+from tests.helpers import draw_reads
+
+from .conftest import render
+
+HERE = "tests/timeline/test_draw_reads.py"
+
+#: A mobject no scene holds, which the drawings below read.
+OUTSIDE = Dot(LEFT)
+
+
+@pytest.fixture
+def tracing():
+    """The process's tracer when the suite runs under one, else one of the
+    test's own, removed after it.
+    """
+    shared = draw_reads._TRACER
+    tracer = shared
+    if tracer is None:
+        tracer = draw_reads.Tracer()
+        tracer.install()
+    tracer.take()
+    yield tracer
+    tracer.take()
+    if shared is None:
+        tracer.uninstall()
+
+
+def _replace_display(scene: Scene, reads) -> None:
+    """Make the scene's camera call ``reads()`` each time it draws a
+    vectorized mobject (a method replaced on the instance: the scene's own
+    code, whose reads of the engine are traced as any are).
+    """
+    camera = scene.camera
+    display = camera.display_vectorized
+
+    def displaying(vmobject, ctx):
+        reads()
+        return display(vmobject, ctx)
+
+    camera.display_vectorized = displaying
+
+
+class ReadsOutside(Scene):
+    def construct(self):
+        def reads():
+            OUTSIDE.points  # noqa: B018  # a property, reading _points
+            getattr(OUTSIDE, "z_index")  # noqa: B009
+            vars(OUTSIDE)
+
+        _replace_display(self, reads)
+        self.play(Create(Square()), run_time=0.2)
+
+
+class ReadsAnOption(Scene):
+    def construct(self):
+        _replace_display(self, lambda: config.frame_rate)
+        self.play(Create(Square()), run_time=0.2)
+
+
+class ReplacesADisplayFunction(Scene):
+    def construct(self):
+        own = self.camera.display_funcs[VMobject]
+        self.camera.display_funcs[VMobject] = lambda batch, pixels: own(batch, pixels)
+        self.play(Create(Square()), run_time=0.2)
+
+
+class Plain(Scene):
+    def construct(self):
+        square, circle = Square(), Circle().shift(RIGHT)
+        self.add(square)
+        self.play(Create(circle), square.animate.shift(LEFT), run_time=0.4)
+        self.wait(0.2)
+
+
+def _found(tracer) -> set[tuple[str, str, str]]:
+    return {(read.owner, read.attribute, read.why) for read in tracer.take()}
+
+
+def test_a_read_of_a_mobject_the_record_does_not_hold_is_found_however_made(tracing):
+    render(ReadsOutside, 15)
+    reads = tracing.take()
+    dot = "arachne.mobject.geometry.arc.Dot"
+    by_name = {read.attribute: read for read in reads if read.owner == dot}
+    # Through a property's getter, getattr, and vars().
+    assert {"_points", "z_index", "__dict__"} <= set(by_name)
+    for name in ("z_index", "__dict__"):
+        assert by_name[name].site.startswith(HERE), by_name[name]
+        assert by_name[name].why == "a mobject the record does not hold"
+    assert by_name["_points"].site.startswith("arachne/mobject/mobject.py:")
+    assert f"via {HERE}" not in by_name["_points"].site
+    # Nothing the record holds is found: only the outside dot was read so.
+    assert {read.owner for read in reads} == {dot}
+
+
+def test_an_option_no_entry_lists_is_found(tracing):
+    render(ReadsAnOption, 15)
+    assert (
+        "arachne._config.utils.ManimConfig",
+        "frame_rate",
+        "a configuration option no list entry covers",
+    ) in _found(tracing)
+
+
+def test_a_display_function_the_scene_replaced_is_found(tracing):
+    render(ReplacesADisplayFunction, 15)
+    assert (
+        "arachne.camera.camera.Camera",
+        "display_funcs[VMobject]",
+        "a display function the engine did not define",
+    ) in _found(tracing)
+
+
+def test_a_scene_the_record_holds_whole_reads_nothing_unlisted(tracing):
+    before = tracing.traced
+    render(Plain, 15)
+    assert tracing.traced > before + 9
+    assert tracing.take() == []
+
+
+def test_tracing_changes_no_frame_and_leaves_no_hook(tracing):
+    tracing.uninstall()
+    try:
+        _, untraced = render(Plain, 15)
+    finally:
+        tracing.install()
+    _, traced = render(Plain, 15)
+    assert len(traced) == len(untraced)
+    for k, (a, b) in enumerate(zip(traced, untraced, strict=True)):
+        np.testing.assert_array_equal(a, b, err_msg=str(k))
+    for cls in (Mobject, type(config)):
+        assert "__getattribute__" not in vars(cls)
+    assert "__setattr__" not in vars(Mobject)

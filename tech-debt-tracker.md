@@ -331,6 +331,11 @@ lifted.
   summary needs, per capture, each reference's mobject position and point, and each picture's display position and
   a digest of its pixels (one per kept array, by identity, as the background's should be). A content key
   (`RegisteredState.content_key`, `PlayRecord.sample_keys`) is a state's, and neither is part of one.
+- **Replacing an engine module's function is not traced.** The draw-reads test sees reads of mobjects, cameras, the
+  configuration, the camera's display functions and the files a drawing opens, not which module function a draw
+  calls. A scene that replaces one (`camera.py`'s, `vectorized_mobject.py`'s helpers) runs its own code where the
+  engine's ran; drawing from the record does not vouch for it, as it does not for a replaced class member.
+
 ## The image cache (`arachne/mobject/svg/svg_mobject.py`)
 
 - **An image built from the cache is not the image parsing built.** Inherited from Manim Community Edition: a

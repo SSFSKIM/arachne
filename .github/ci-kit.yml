@@ -41,6 +41,13 @@ gates:
     run: uv run python -m pytest --ignore=tests/test_docs_examples
     env: {UV_PYTHON: "3.14"}
     timeout: 45
+  # Every frame drawn from the record traced (tests/helpers/draw_reads.py): a read of what the
+  # record does not hold for that frame fails the test that drew it. The graphical units run on
+  # both draw paths here too (tests/frame_ir/test_units.py inherits the variable).
+  - name: draw-reads
+    run: uv run python -m pytest --ignore=tests/test_docs_examples
+    env: {UV_PYTHON: "3.14", ARACHNE_DRAW_READS: "1"}
+    timeout: 60
   - name: docs-examples
     run: uv run python -m pytest tests/test_docs_examples --dist=load --no-cov
     # One BLAS kernel and one thread, whatever the runner's CPU: an eigenvector in a
