@@ -16,6 +16,7 @@ from __future__ import annotations
 
 __all__ = [
     "Capture",
+    "DepthReference",
     "Identity",
     "Marker",
     "NodeState",
@@ -166,6 +167,11 @@ class Capture:
     of the play draws over its static picture: flattened when the play
     began, and grown by whatever the scene added since (CE's ``Scene.add``
     appends to it during a play).
+
+    ``references`` are the depth sort's reference points there: a mobject
+    with a ``z_index_group`` is sorted by that group's centre, which is
+    another mobject's state (one the scene may not even hold), so the point
+    itself is kept, as the sort reads it, and a drawing gives it back.
     """
 
     seq: int | Fraction
@@ -177,6 +183,9 @@ class Capture:
     scene_updaters: tuple[Any, ...]
     camera: CameraExtras | None
     until: Fraction | None = None
+    #: Each mobject a ThreeDCamera sorts by a point other than its own centre
+    #: (its ``z_index_group``), with that point here (:class:`DepthReference`).
+    references: tuple[tuple[Mobject, DepthReference], ...] = ()
 
     @property
     def drawn_seq(self) -> int:
@@ -194,6 +203,44 @@ class Capture:
         return [m for m in self.roots if id(m) not in foreground] + list(
             self.foreground
         )
+
+
+class DepthReference:
+    """The point a ThreeDCamera's depth sort placed a mobject by at a
+    capture, standing in for its ``z_index_group`` while a frame is drawn:
+    what ``Mobject.get_z_index_reference_point`` reads of the group.
+    """
+
+    __slots__ = ("center",)
+
+    def __init__(self, center: np.ndarray) -> None:
+        self.center = center
+
+    def get_center(self) -> np.ndarray:
+        return self.center
+
+
+def _references(
+    mobs: Sequence[Mobject],
+    previous: tuple[tuple[Mobject, DepthReference], ...],
+) -> tuple[tuple[Mobject, DepthReference], ...]:
+    """The depth reference point of each of ``mobs`` now; ``previous``
+    itself, or its points, where they are the same.
+    """
+    earlier = {id(mob): reference for mob, reference in previous}
+    found: list[tuple[Mobject, DepthReference]] = []
+    for mob in mobs:
+        center = np.array(mob.get_z_index_reference_point(), dtype=float)
+        reference = earlier.get(id(mob))
+        if reference is None or not np.array_equal(reference.center, center):
+            center.flags.writeable = False
+            reference = DepthReference(center)
+        found.append((mob, reference))
+    if len(found) == len(previous) and all(
+        a is c and b is d for (a, b), (c, d) in zip(found, previous, strict=True)
+    ):
+        return previous
+    return tuple(found)
 
 
 @dataclass(frozen=True)
@@ -691,6 +738,9 @@ class Record:
         )
         nodes = self._nodes
         seen: set[int] = set()
+        # A ThreeDCamera sorts a shaded mobject by its z_index_group's centre.
+        sorts_by_depth = drawn and _sorts_by_depth(scene.renderer.camera)
+        grouped: list[Mobject] = []
         checked = self._entry_checked
         names: tuple[frozenset[str], frozenset[str]] | None = None
         classes: dict[type, str | None] = {}
@@ -714,6 +764,14 @@ class Record:
             if state is not last:
                 node.seqs.append(seq)
                 node.states.append(state)
+            if sorts_by_depth:
+                group = mob.__dict__.get("z_index_group")
+                if (
+                    group is not None
+                    and group is not mob
+                    and getattr(mob, "shade_in_3d", False)
+                ):
+                    grouped.append(mob)
             if not drawn:
                 # Changed here, it is checked by the next capture that draws.
                 if state is not last:
@@ -728,11 +786,27 @@ class Record:
                     names = draw_names(scene.renderer.camera)
                 self._entry_refusal = draw_member_refusal(names, mob, classes)
             stack.extend(reversed(state.submobjects))
-        capture = Capture(
-            seq, instant, kind, roots, foreground, moving, updaters, camera, until
-        )
         if not drawn:
-            return capture
+            return Capture(
+                seq, instant, kind, roots, foreground, moving, updaters, camera, until
+            )
+        references = (
+            _references(grouped, previous.references if previous else ())
+            if grouped
+            else ()
+        )
+        capture = Capture(
+            seq,
+            instant,
+            kind,
+            roots,
+            foreground,
+            moving,
+            updaters,
+            camera,
+            until,
+            references,
+        )
         self._captures.append(capture)
         if camera is not None and camera.displays:
             for display in camera.displays:
@@ -882,6 +956,15 @@ class Record:
     def markers_in(self, start: Fraction, end: Fraction) -> list[Marker]:
         """The markers placed at an instant in ``[start, end)``."""
         return [marker for marker in self.markers if start <= marker.t < end]
+
+
+def _sorts_by_depth(camera: Any) -> bool:
+    """Whether ``camera`` sorts the mobjects it draws by depth: a
+    ThreeDCamera, which reads a shaded mobject's reference point.
+    """
+    from arachne.camera.three_d_camera import ThreeDCamera
+
+    return isinstance(camera, ThreeDCamera)
 
 
 def _reuse(value: tuple[Any, ...], previous: tuple[Any, ...] | None) -> tuple[Any, ...]:

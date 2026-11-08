@@ -610,7 +610,10 @@ class Drawing:
 
     def show(self, capture: Capture, roots: Sequence[Mobject]) -> None:
         """Give every mobject reachable from ``roots`` (and the camera's own)
-        its state at ``capture``, and the camera its recorded inputs.
+        its state at ``capture``, and the camera its recorded inputs. A
+        mobject the depth sort places by its ``z_index_group`` holds, in its
+        place, the point the capture found
+        (:class:`~arachne.timeline.record.DepthReference`).
         """
         from .record import NodeState
 
@@ -624,6 +627,13 @@ class Drawing:
                 saved[id(mob)] = (mob, NodeState.of(mob))
         for mob, state in reached:
             state.install(mob)
+        if capture.references:
+            # Each depth reference point as the capture found it, which the
+            # group's state now need not give (the scene may not hold it).
+            shown = {id(mob) for mob, _ in reached}
+            for mob, reference in capture.references:
+                if id(mob) in shown:
+                    mob.__dict__["z_index_group"] = reference
         if capture.camera is not None and capture.camera.displays is not None:
             self._show_display_pictures(capture, [mob for mob, _ in reached])
 
@@ -800,7 +810,7 @@ class Drawing:
     def _picture_holds(self, play: PlayRecord, capture: Capture) -> bool:
         """Whether the frame at ``capture`` has the static list the play's
         static picture painted, every member at the version it painted, and
-        the camera's inputs it was painted with.
+        the camera's inputs and depth reference points it was painted with.
         """
         start = self.record._captures[play.static_seq]
         if not (
@@ -808,6 +818,9 @@ class Drawing:
             and _same_items(capture.roots, start.roots)
             and _same_items(capture.foreground, start.foreground)
             and _same_items(capture.moving, start.moving)
+            # A depth reference point that moved can reorder the picture's
+            # leaves while every version stays the same.
+            and capture.references is start.references
         ):
             return False
         validity = self._validity_of(play)

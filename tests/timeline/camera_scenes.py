@@ -1,5 +1,5 @@
-"""Scenes the camera tests execute: camera callbacks, zoomed displays and a
-mapping camera.
+"""Scenes the camera tests execute: camera callbacks, zoomed displays, a
+mapping camera and a depth sort.
 """
 
 from __future__ import annotations
@@ -7,8 +7,10 @@ from __future__ import annotations
 import numpy as np
 
 from arachne import (
+    BLUE,
     DOWN,
     LEFT,
+    OUT,
     RED,
     RIGHT,
     UP,
@@ -20,6 +22,7 @@ from arachne import (
     Scene,
     Square,
     ThreeDScene,
+    VectorizedPoint,
     ZoomedScene,
 )
 
@@ -152,3 +155,52 @@ class Mapped(Scene):
         self.add(dot)
         self.play(dot.animate.shift(RIGHT * 2))
         self.wait(0.25)
+
+
+class DepthReferenceMoves(ThreeDScene):
+    """A red square the depth sort places by a point the scene does not hold
+    (its ``z_index_group``), over a blue one: behind it until the square's
+    updater moves the point, partway through the wait, then in front.
+    """
+
+    def construct(self):
+        self.camera.should_apply_shading = False
+        reference = VectorizedPoint([0.0, 0.0, -1.0])
+        red = Square(color=RED, fill_opacity=1, stroke_width=0, shade_in_3d=True)
+        blue = Square(color=BLUE, fill_opacity=1, stroke_width=0, shade_in_3d=True)
+        red.z_index_group = reference
+        elapsed = [0.0]
+
+        def drive(mob, dt):
+            elapsed[0] += dt
+            if elapsed[0] >= 0.2 and reference.get_center()[2] < 0:
+                reference.shift(OUT * 2)
+
+        red.add_updater(drive)
+        self.add(red, blue)
+        self.wait(0.4)
+
+
+class StaticDepthReferenceMoves(ThreeDScene):
+    """The same two squares, still: a dot's updater moves the red square's
+    reference point partway through a play that moves only the dot, so the
+    squares are the play's static mobjects and their order changes.
+    """
+
+    def construct(self):
+        self.camera.should_apply_shading = False
+        reference = VectorizedPoint([0.0, 0.0, -1.0])
+        red = Square(color=RED, fill_opacity=1, stroke_width=0, shade_in_3d=True)
+        blue = Square(color=BLUE, fill_opacity=1, stroke_width=0, shade_in_3d=True)
+        red.z_index_group = reference
+        dot = Dot(LEFT * 3, radius=0.1)
+        elapsed = [0.0]
+
+        def drive(mob, dt):
+            elapsed[0] += dt
+            if elapsed[0] >= 0.2 and reference.get_center()[2] < 0:
+                reference.shift(OUT * 2)
+
+        dot.add_updater(drive)
+        self.add(red, blue)
+        self.play(dot.animate.shift(DOWN), run_time=0.4)

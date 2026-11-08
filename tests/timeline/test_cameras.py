@@ -9,12 +9,15 @@ import itertools
 import math
 from fractions import Fraction
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 import pytest
 
-from arachne import LEFT, RIGHT, Dot, tempconfig
+from arachne import BLUE, LEFT, RED, RIGHT, Dot, tempconfig
+from arachne.timeline import recorder
 from arachne.timeline.routes import RecordRefused
+from arachne.utils.color import ManimColor
 
 from . import camera_scenes
 from .conftest import SMALL, render
@@ -164,3 +167,47 @@ def test_a_mapping_camera_scene_is_drawn_as_it_runs(fps):
     assert len(frames) == len(expected)
     for k, (frame, reference) in enumerate(zip(frames, expected, strict=True)):
         assert np.array_equal(frame, reference), k
+
+
+def _drawn_live(scene_class, fps, **settings) -> list[np.ndarray]:
+    """The frames of ``scene_class`` drawn as the scene runs, each from the
+    live scene at its instant, as CE draws them.
+    """
+    with mock.patch.object(
+        recorder, "camera_refusal", return_value="drawn live, to compare"
+    ):
+        scene, frames = render(scene_class, fps, **settings)
+    assert scene.timeline.record.refusal is not None
+    return frames
+
+
+def _centre(frame: np.ndarray) -> tuple[int, ...]:
+    height, width = frame.shape[:2]
+    return tuple(int(v) for v in frame[height // 2, width // 2, :3])
+
+
+@pytest.mark.parametrize("draw_path", ["cairo", "ir_cairo"])
+@pytest.mark.parametrize(
+    "scene_class",
+    [camera_scenes.DepthReferenceMoves, camera_scenes.StaticDepthReferenceMoves],
+)
+def test_a_depth_reference_the_scene_does_not_hold_sorts_each_frame_where_it_was(
+    session_of, scene_class, draw_path
+):
+    if draw_path == "ir_cairo":
+        pytest.importorskip("arachne_core")
+    live = _drawn_live(scene_class, 15, draw_path=draw_path)
+    # The point moves partway through: blue in front, then red.
+    red, blue = (tuple(int(v) for v in ManimColor(c).to_int_rgb()) for c in (RED, BLUE))
+    centres = [_centre(frame) for frame in live]
+    assert centres[0] == blue
+    assert centres[-1] == red
+    scene, drawn = render(scene_class, 15, draw_path=draw_path)
+    assert scene.timeline.record.refusal is None
+    assert len(drawn) == len(live)
+    for k, (frame, reference) in enumerate(zip(drawn, live, strict=True)):
+        np.testing.assert_array_equal(frame, reference, err_msg=str(k))
+    session = session_of(scene_class.__name__, CAMERA_SCENES, draw_path=draw_path)
+    for k, reference in enumerate(live):
+        frame = np.asarray(session.frame(Fraction(k, 15)))
+        np.testing.assert_array_equal(frame, reference, err_msg=f"session {k}")
