@@ -47,6 +47,7 @@ from arachne.animation.updaters.update import UpdateFromAlphaFunc, UpdateFromFun
 
 from .dispatch import family_refusal, instance_shadows, user_overrides
 from .frozen import engine_class
+from .identity import ByIdentity, one_of
 from .rates import admitted_path, admitted_rate, is_monotone
 
 if TYPE_CHECKING:
@@ -106,21 +107,23 @@ def _nothing(animation: Animation) -> str | None:
 
 
 #: The leaf entries: type -> a check returning why an instance is outside the
-#: algebra, or ``None``. Matched by exact type: a subclass may interpolate its
-#: own way.
-LEAVES: dict[type[Animation], Callable[[Animation], str | None]] = {
-    Animation: _nothing,
-    Wait: _nothing,
-    Add: _nothing,
-    rotation.Rotating: _nothing,
-    **dict.fromkeys(_TRANSFORMS, _path),
-    **dict.fromkeys(_REVEALS, _nothing),
-}
+#: algebra, or ``None``. Matched by exact type, by identity: a subclass may
+#: interpolate its own way, whatever its metaclass says it equals.
+LEAVES: ByIdentity[type[Animation], Callable[[Animation], str | None]] = ByIdentity(
+    {
+        Animation: _nothing,
+        Wait: _nothing,
+        Add: _nothing,
+        rotation.Rotating: _nothing,
+        **dict.fromkeys(_TRANSFORMS, _path),
+        **dict.fromkeys(_REVEALS, _nothing),
+    }
+)
 
 #: Compositions whose interpolation is CE's group or succession timing over
-#: their parts.
-GROUPS: frozenset[type[Animation]] = frozenset(
-    {
+#: their parts, by identity.
+GROUPS: ByIdentity[type[Animation], None] = ByIdentity.of(
+    (
         composition.AnimationGroup,
         composition.LaggedStart,
         composition.LaggedStartMap,
@@ -131,7 +134,7 @@ GROUPS: frozenset[type[Animation]] = frozenset(
         indication.Blink,
         indication.ShowPassingFlashWithThinningStrokeWidth,
         transform_matching_parts.TransformMatchingShapes,
-    }
+    )
 )
 
 #: Built-ins that keep state outside everything a record registers, named so
@@ -167,7 +170,7 @@ def writes(
         for part in animation.animations:
             found |= writes(part, callback_writes)
         return found
-    if type(animation) in (Wait, Add) or type(animation) is Animation:
+    if one_of(type(animation), (Wait, Add, Animation)):
         return set()
     mobject: Mobject | None = animation.mobject
     if callback_writes is not None and id(animation) in callback_writes:
@@ -198,8 +201,11 @@ def refusals(
 
 
 #: Animations that run a script's function: route 2 proves the function or
-#: the play ticks (:mod:`.admission`); as parts of a group they are timed by it.
-CALLBACK_ANIMATIONS: tuple[type[Animation], ...] = (UpdateFromFunc, UpdateFromAlphaFunc)
+#: the play ticks (:mod:`.admission`); as parts of a group they are timed by
+#: it. By exact type, by identity.
+CALLBACK_ANIMATIONS: ByIdentity[type[Animation], None] = ByIdentity.of(
+    (UpdateFromFunc, UpdateFromAlphaFunc)
+)
 
 
 def _refuse(

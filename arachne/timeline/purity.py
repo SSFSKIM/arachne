@@ -60,6 +60,7 @@ import numpy as np
 from . import library, setters
 from .dispatch import family_refusal
 from .frozen import engine_code
+from .identity import ByIdentity, one_of
 
 #: How deep the proof follows calls into helper functions.
 MAX_DEPTH = 4
@@ -404,7 +405,7 @@ class _Prover:
             if not setters.pure_module(value):
                 raise Refused(f"{name} is the module {value.__name__}")
             return _Known(value)
-        if type(value) in (list, tuple):
+        if one_of(type(value), (list, tuple)):
             return _Items(
                 tuple(self._classify(item, f"{name}[]") for item in value), exact=True
             )
@@ -1277,15 +1278,24 @@ def _constant(value: Any) -> bool:
     from .setters import builtin_class
 
     kind = type(value)
-    if value is None or kind in (bool, int, float, complex, str, bytes, Fraction):
+    if value is None or one_of(kind, (bool, int, float, complex, str, bytes, Fraction)):
         return True
     if isinstance(value, np.generic):
-        return kind.__module__ == "numpy" and value.dtype != object
+        return kind in _NUMPY_SCALARS and value.dtype != object
     if isinstance(value, (ManimColor, Enum)):
         return builtin_class(kind)
-    if kind in (tuple, frozenset):
+    if one_of(kind, (tuple, frozenset)):
         return all(_constant(item) for item in value)
     return False
+
+
+#: numpy's own scalar types, by identity: the ones numpy names (a class of a
+#: scene's may say its ``__module__`` is ``"numpy"``).
+_NUMPY_SCALARS = ByIdentity.of(
+    value
+    for value in vars(np).values()
+    if isinstance(value, type) and issubclass(value, np.generic)
+)
 
 
 def _contents(value: Any) -> Any:

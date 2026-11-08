@@ -39,6 +39,7 @@ import numpy as np
 from .clock import exact, frames_in
 from .dispatch import draw_member_refusal, draw_names
 from .execution import Execution
+from .identity import ByIdentity
 from .origins import Origin, origin_of
 from .source import SourceLine
 
@@ -693,7 +694,7 @@ class Record:
         seen: set[int] = set()
         checked = self._entry_checked
         names: tuple[frozenset[str], frozenset[str]] | None = None
-        classes: dict[type, str | None] = {}
+        classes: ByIdentity[type, str | None] = ByIdentity()
         stack = [
             *reversed(extra_roots),
             *reversed(moving),

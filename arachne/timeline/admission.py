@@ -53,6 +53,7 @@ from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from .dispatch import engine_patches, user_overrides
+from .identity import ByIdentity, one_of
 from .purity import Proof, Refused, prove_builder, prove_readout, prove_setter_body
 from .source import SourceLine, relative_path
 
@@ -202,7 +203,7 @@ def camera_refusal(camera: Any) -> str | None:
             if reason is not None:
                 return reason
         return None
-    if kind in (Camera, MovingCamera, ThreeDCamera):
+    if one_of(kind, (Camera, MovingCamera, ThreeDCamera)):
         return None
     if isinstance(camera, MappingCamera):
         return (
@@ -434,7 +435,7 @@ def _update_replaced(scene: Scene) -> str | None:
     read: a mobject whose ``update`` (which runs its updaters, then its
     children's) is a scene's code, on the instance or in its class.
     """
-    classes: dict[type, bool] = {}
+    classes: ByIdentity[type, bool] = ByIdentity()
     for mob in scene.mobjects:
         for member in mob.get_family():
             cls = type(member)

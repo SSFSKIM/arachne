@@ -38,6 +38,8 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from .identity import one_of
+
 if TYPE_CHECKING:
     from arachne.camera.camera import Camera
     from arachne.mobject.mobject import Mobject
@@ -481,7 +483,7 @@ def _paints_its_list(camera: Camera) -> bool:
     from arachne.camera.moving_camera import MovingCamera
     from arachne.camera.three_d_camera import ThreeDCamera
 
-    return type(camera) in (Camera, MovingCamera, ThreeDCamera)
+    return one_of(type(camera), (Camera, MovingCamera, ThreeDCamera))
 
 
 def _reset_rotation(camera: Camera) -> None:

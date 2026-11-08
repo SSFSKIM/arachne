@@ -42,6 +42,8 @@ from dataclasses import dataclass
 from functools import cache
 from typing import Any
 
+from .identity import ByIdentity
+
 
 @dataclass(frozen=True)
 class Setter:
@@ -93,8 +95,8 @@ def _resolve(dotted: str) -> type:
 
 
 @cache
-def _setter_functions() -> dict[Any, Setter]:
-    found: dict[Any, Setter] = {}
+def _setter_functions() -> ByIdentity[Any, Setter]:
+    found: ByIdentity[Any, Setter] = ByIdentity()
     for setter in SETTERS:
         owner = _resolve(setter.owner)
         found[owner.__dict__[setter.name]] = setter
@@ -293,14 +295,14 @@ def engine_classes() -> tuple[type, ...]:
 
 
 @cache
-def _functions_named(names: tuple[str, ...]) -> frozenset[Any]:
-    functions: set[Any] = set()
+def _functions_named(names: tuple[str, ...]) -> ByIdentity[Any, None]:
+    functions: ByIdentity[Any, None] = ByIdentity()
     for cls in engine_classes():
         for name in names:
             function = cls.__dict__.get(name)
             if function is not None:
-                functions.add(function)
-    return frozenset(functions)
+                functions[function] = None
+    return functions
 
 
 def read_kind(receiver: Any, name: str) -> str | None:
@@ -527,10 +529,10 @@ _VALUE_CONSTRUCTORS = (
 
 
 @cache
-def _constructors() -> dict[type, str]:
+def _constructors() -> ByIdentity[type, str]:
     import arachne
 
-    found: dict[type, str] = {}
+    found: ByIdentity[type, str] = ByIdentity()
     for names, kind in (
         (_VALUE_CONSTRUCTORS, "values"),
         (_READER_CONSTRUCTORS, "reads"),
