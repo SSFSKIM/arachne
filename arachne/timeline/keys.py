@@ -305,11 +305,11 @@ def _content_key(value: Any, keying: _Keying) -> bytes:
         # reads (a colour map applied in order); a set, which has no order a
         # program can rely on, in the order of its parts' keys. Each part
         # with the mobjects it refers to.
-        ordered = isinstance(value, dict)
-        if ordered:
-            pairs: Any = value.items()
+        pairs: Any
+        if isinstance(value, dict):
+            ordered, pairs = True, value.items()
         else:
-            pairs = ((part,) for part in value)
+            ordered, pairs = False, ((part,) for part in value)
         keyed = []
         held = keying.refers
         for pair in pairs:
