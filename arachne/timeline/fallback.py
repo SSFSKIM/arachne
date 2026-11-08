@@ -81,6 +81,7 @@ from .execution import (
     Incomparable,
     _begun,
     compare,
+    not_known_to_agree,
     summarize,
 )
 from .inputs import Read, file_digests, source_files
@@ -154,7 +155,9 @@ class Answer:
 class ForwardRun:
     """One forward run: the instants it answered, in time order, how many
     plays it ran before it stopped (every play, when it ran the script to
-    its end), and where it differs from the record's execution if it does.
+    its end), and where it differs from the record's execution if it does:
+    of the whole scene where they can't be compared (made by different
+    interpreters), since they are not known to agree.
 
     What was compared: up to ``compared_until`` (the last instant asked, for
     a run that stopped; ``None``: to the end of both), and of those plays
@@ -504,13 +507,19 @@ def _forward(
         stale: Fallback | None = None
         try:
             divergence = compare(mine, theirs, until=until, before_play=before_play)
-        except Incomparable:
-            # Another program than the record's: nothing to compare, and no
-            # divergence (two executions of one source differing), but the
-            # record is stale.
-            divergence = None
-            stale = _source_changed(source, record)
-            session.stale = True
+        except Incomparable as incomparable:
+            known = mine.identity.source_digest
+            if known is not None and known == theirs.identity.source_digest:
+                # The record's own program, executed by another interpreter:
+                # not known to agree, which is a divergence.
+                divergence = not_known_to_agree(incomparable)
+            else:
+                # Another program than the record's: nothing to compare, and
+                # no divergence (two executions of one source differing), but
+                # the record is stale.
+                divergence = None
+                stale = _source_changed(source, record)
+                session.stale = True
         if divergence is not None:
             # What the two executions read differently for the plays compared.
             divergence = replace(

@@ -40,6 +40,7 @@ __all__ = [
     "changed_inputs",
     "compare",
     "divergence",
+    "not_known_to_agree",
     "play_keys",
     "summarize",
 ]
@@ -508,6 +509,19 @@ def compare(
     if reason is not None:
         return Divergence("execution", None, None, reason, changed)
     return None
+
+
+def not_known_to_agree(refused: Incomparable) -> Divergence:
+    """Two executions of one source :func:`compare` refused (``refused``:
+    made by different interpreters) as a divergence of the whole scene:
+    what can't be compared is not known to agree.
+    """
+    return Divergence(
+        "execution",
+        None,
+        None,
+        f"they can't be compared, so they are not known to agree: {refused}",
+    )
 
 
 def changed_inputs(mine: Identity, theirs: Identity) -> tuple[str, ...]:

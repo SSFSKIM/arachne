@@ -16,10 +16,13 @@ import time
 from pathlib import Path
 
 import av
+import click
 import pytest
 from jsonschema import Draft202012Validator
 
 from arachne import api_json
+from arachne.cli.asking import EXIT_STRICT
+from arachne.cli.session.render import _done, formatted
 from arachne.server import protocol, registry
 from arachne.server.store import summary_key
 from arachne.session import Session
@@ -176,6 +179,43 @@ def test_a_render_checks_itself_against_its_session_s_execution(host, tmp_path):
     assert checked["render"]["self_check"] == LINTED
     # A finding is an answer: the render was written all the same.
     assert _frames(out) == (15, 96, 54)
+
+
+def test_a_render_checked_against_another_interpreter_s_summary_is_unchecked(
+    host, tmp_path, capsys
+):
+    """A kept summary another interpreter made can't be compared with the
+    render's execution: the render is unchecked, saying why with both
+    interpreters named, in its reply, in the command line's reading of it,
+    and in a strict command's exit; never checked, and never diverged.
+    """
+    path = write(tmp_path, "scattered.py", SCATTERED)
+    session = host.connect(path, "Scattered", SMALL)
+    session.call("lint")
+    (kept,) = Path(os.environ["ARACHNE_STORE"]).rglob("summaries/*.json")
+    foreign = json.loads(kept.read_text())
+    foreign["interpreter"] = "other-99"
+    kept.write_text(json.dumps(foreign))
+
+    out = tmp_path / "render.mp4"
+    found = session.call("render", out=str(out), deadline_s=120)
+    rendered = _valid("render", found["render"])
+    check = rendered["self_check"]
+    assert check["status"] == "unchecked"
+    assert check["reference"] is None
+    assert sys.implementation.cache_tag in check["reason"]
+    assert "other-99" in check["reason"]
+    assert "divergence" not in rendered
+    assert _frames(out) == (15, 96, 54)
+
+    assert formatted(rendered).splitlines()[-1] == (
+        f"self_check: unchecked ({check['reason']})"
+    )
+    _done(found, "render", as_json=False, strict=False)
+    with pytest.raises(click.exceptions.Exit) as stopped:
+        _done(found, "render", as_json=True, strict=True)
+    assert stopped.value.exit_code == EXIT_STRICT
+    capsys.readouterr()
 
 
 def test_a_render_says_which_execution_it_was_checked_against(host, tmp_path):
