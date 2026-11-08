@@ -120,11 +120,10 @@ CAMERA_DERIVED: dict[str, tuple[str, Callable[[Any], Any]]] = {
 #: An attribute of a camera that holds one of its own mobjects.
 CAMERA_OWN_MOBJECTS = (
     "A camera's own mobject (a tracker, the frame centre, the light, a moving "
-    "camera's frame), made with the camera and rebound by no engine code; its "
-    "state is recorded (``camera_nodes``), so each read of it is checked as a "
-    "mobject's. A play's frames are drawn right after it runs, so rebinding one "
-    "between plays draws as live; rebinding one from an updater during a play is "
-    "not a supported use."
+    "camera's frame): keyed, the one the capture recorded bound there "
+    "(``CameraExtras.bindings``, installed with the camera's inputs), whose "
+    "state is recorded (``camera_nodes``) and checked as any mobject's. A play "
+    "during which one is rebound is refused (``camera.rebound``)."
 )
 
 #: An attribute a camera does not have.
@@ -141,14 +140,15 @@ CAMERA_REPLACED = (
     "the engine's is traced as any read is."
 )
 
-#: Configuration options a draw reads, and why the record need not hold them.
-CONFIG_CONSTANTS: dict[str, str] = {
+#: Configuration options a draw reads that are keyed: each read holds only at
+#: a capture before the first that found the option changed.
+CONFIG_KEYED: dict[str, str] = {
     "pixel_width": (
-        "The configured pixel shape a line's thickness is scaled by "
-        "(``Camera.adjusted_thickness``): the render's own setting, or a session's "
-        "while it draws at its quality. A play's frames are drawn right after it "
-        "runs, so a change between plays draws as live; setting it from an updater "
-        "during a play is not a supported use."
+        "The configured pixel shape a point's thickness is scaled by "
+        "(``Camera.adjusted_thickness``): the drawing's own quality, as the scene's "
+        "was while the record found it as its first capture did "
+        "(``Record.pixel_shape_changed``); from the first capture that finds "
+        "another, the record refuses (``config.pixel_shape``)."
     ),
     "pixel_height": "As ``pixel_width``.",
 }
@@ -691,7 +691,7 @@ class Tracer:
         self._busy = True
         try:
             if kind == "config":
-                why = self._config_why(name, caller)
+                why = self._config_why(self.frames[-1], name, caller)
             elif kind == "camera":
                 why = self._camera_why(obj, name)
             else:
@@ -704,11 +704,14 @@ class Tracer:
             self._busy = False
 
     @staticmethod
-    def _config_why(name: str, caller: types.FrameType) -> str | None:
-        if name in CONFIG_CONSTANTS or caller.f_code.co_filename.startswith(
-            _CONFIG_CODE
-        ):
-            return None  # listed, or the configuration's own code reading itself
+    def _config_why(frame: _Frame, name: str, caller: types.FrameType) -> str | None:
+        if caller.f_code.co_filename.startswith(_CONFIG_CODE):
+            return None  # the configuration's own code reading itself
+        if name in CONFIG_KEYED:
+            changed = frame.drawing.record.pixel_shape_changed
+            if changed is None or frame.capture.seq < changed:
+                return None
+            return "a configuration option the scene changed by this capture"
         return "a configuration option no list entry covers"
 
     def _mobject_why(self, mob: Any, name: str) -> str | None:
@@ -817,8 +820,11 @@ class Tracer:
             if np.array_equal(own[name], CAMERA_DERIVED[name][1](camera)):
                 return None
             return "a cache that no longer holds what its recorded inputs give"
-        if isinstance(own.get(name), Mobject):
-            return None  # CAMERA_OWN_MOBJECTS
+        value = own.get(name)
+        if isinstance(value, Mobject):
+            if any(key == name and mob is value for key, mob in extras.bindings):
+                return None  # CAMERA_OWN_MOBJECTS
+            return "a camera's own mobject other than the one the capture recorded"
         if name not in own and member is None:
             return None  # CAMERA_ABSENT
         return "a camera attribute the record neither holds nor installs"
