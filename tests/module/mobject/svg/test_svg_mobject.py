@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gc
+import weakref
 from pathlib import Path
 
 import numpy as np
@@ -8,7 +10,7 @@ import svgelements as se
 
 from arachne import *
 from arachne.mobject.construction_caches import forget_construction_caches
-from arachne.mobject.svg.svg_mobject import VMobjectFromSVGPath
+from arachne.mobject.svg.svg_mobject import SVG_HASH_TO_MOB_MAP, VMobjectFromSVGPath
 from tests.helpers.path_utils import get_svg_resource
 
 
@@ -274,12 +276,14 @@ def test_opengl_path_flags_leave_points_untouched():
 # another image than the engine class does.
 
 
-def _stretching(base: type) -> type:
-    """A class named as ``base`` is, whose parse stretches the image."""
+def _stretching(base: type, factor: float = 2) -> type:
+    """A class named as ``base`` is, whose parse stretches the image by
+    ``factor``.
+    """
 
     def generate_mobject(self):
         base.generate_mobject(self)
-        self.stretch(2, 0)
+        self.stretch(factor, 0)
         return self
 
     return type(base.__name__, (base,), {"generate_mobject": generate_mobject})
@@ -314,3 +318,63 @@ def test_a_same_named_formula_class_s_image_is_not_the_engine_s():
     forget_construction_caches()
     stretched("x")
     assert MathTex("x").width == pytest.approx(expected)
+
+
+def test_a_class_named_again_with_another_parse_parses_again():
+    heart = get_svg_resource("heart.svg")
+    expected = _fresh_width(lambda: SVGMobject(heart, height=None))
+    forget_construction_caches()
+    _stretching(SVGMobject)(heart, height=None)
+    again = _stretching(SVGMobject, 3)
+    assert again(heart, height=None).width == pytest.approx(expected * 3)
+
+
+def test_the_cache_keeps_alive_every_class_it_holds_an_image_of():
+    """Its entry is an instance of the class that parsed it, so the class
+    lives as long as the entry, and no class made later takes its key.
+    """
+    heart = get_svg_resource("heart.svg")
+    stretched = _stretching(SVGMobject)
+    alive = weakref.ref(stretched)
+    forget_construction_caches()
+    stretched(heart, height=None)
+    assert [type(entry) for entry in SVG_HASH_TO_MOB_MAP.values()] == [stretched]
+    del stretched
+    gc.collect()
+    assert alive() is not None
+
+
+_HEARTS = """
+from arachne import Scene, SVGMobject
+
+
+class SVGMobject(SVGMobject):
+    def generate_mobject(self):
+        super().generate_mobject()
+        self.stretch({factor}, 0)
+        return self
+
+
+class Hearts(Scene):
+    def construct(self):
+        self.add(SVGMobject({heart!r}, height=None))
+"""
+
+
+def test_a_session_reload_parses_a_class_its_edit_redefined(tmp_path):
+    from arachne.session import Session
+
+    heart = get_svg_resource("heart.svg")
+    expected = _fresh_width(lambda: SVGMobject(heart, height=None))
+    scene = tmp_path / "hearts.py"
+    scene.write_text(_HEARTS.format(factor=2, heart=heart))
+    session = Session.open(
+        scene, "Hearts", config={"pixel_width": 96, "pixel_height": 54}
+    )
+    try:
+        assert session.scene.mobjects[0].width == pytest.approx(expected * 2)
+        scene.write_text(_HEARTS.format(factor=3, heart=heart))
+        assert session.reload()
+        assert session.scene.mobjects[0].width == pytest.approx(expected * 3)
+    finally:
+        session.close()
