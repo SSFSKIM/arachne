@@ -6,7 +6,8 @@ The directory is ``ARACHNE_SESSION_DIR``, else a per-user one
 keeps an entry beside its socket, ``<pid>.json``: the session it holds
 (its file, by real path, scene and config, the working directory the server
 runs in, and their key), its generation,
-the memory it has held at most (``rss_mb``), when it last answered, and
+the memory it has held at most (``rss_mb``, its own, never that of the
+process that started it), when it last answered, and
 whether it is answering now. A server writes its entry as it starts
 serving, keeps it as it answers, and removes it, with its socket, as it
 ends. Whether a server lives is told by ``<pid>.alive``, a lock it holds
@@ -759,8 +760,28 @@ def _stop(directory: Path, entry: Entry) -> None:
 # The server's side
 
 
+#: Linux's account of this process's own memory, its peak (``VmHWM``) among it.
+_STATUS = Path("/proc/self/status")
+
+
 def _rss_mb() -> float:
-    """The most memory this process has held, in megabytes."""
+    """The most memory this process has held, in megabytes.
+
+    On Linux, its own high-water mark (``VmHWM``): its ``ru_maxrss`` would
+    carry the peak of the process that started it, across fork and exec, so
+    a server a large process runs as its child would report that process's
+    memory. A process that resets its peak (``5`` written to
+    ``/proc/self/clear_refs``) reports the peak since. Elsewhere, and on a
+    Linux without ``/proc``, ``ru_maxrss``, which on macOS is the process's
+    own.
+    """
+    try:
+        status = _STATUS.read_text()
+    except OSError:
+        status = ""
+    for line in status.splitlines():
+        if line.startswith("VmHWM:"):
+            return int(line.split()[1]) / (1 << 10)
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     # Bytes on macOS, kilobytes elsewhere.
     return peak / (1 << 20) if sys.platform == "darwin" else peak / (1 << 10)
