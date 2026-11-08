@@ -608,8 +608,17 @@ class Tracer:
                 self._hook(drawing.camera)
             finally:
                 self._busy = False
+        from arachne.frame_ir.extract import Unable
+
+        before = set(self.found)
         try:
             yield
+        except Unable:
+            # A frame the path refuses (``render.unable``) is drawn by nothing,
+            # and the scene is drawn again on Cairo: what it read is not read.
+            for read in [read for read in self.found if read not in before]:
+                del self.found[read]
+            raise
         finally:
             self.frames.pop()
             if outer:
@@ -869,6 +878,8 @@ class Tracer:
         if name in _INSTALLED_CAMERA_FIELDS:
             return None
         if name in CAMERA_DERIVED and name in own:
+            if _camera_code_is_the_scene_s(camera):
+                return None  # the scene's own camera code computes it (CAMERA_REPLACED)
             if np.array_equal(own[name], CAMERA_DERIVED[name][1](camera)):
                 return None
             return "a cache that no longer holds what its recorded inputs give"
@@ -980,6 +991,16 @@ class _NotingTable(dict):
         entry = super().__getitem__(kind)
         self._tracer._note_entry(self._camera, kind, entry, sys._getframe(1))
         return entry
+
+
+def _camera_code_is_the_scene_s(camera: Any) -> bool:
+    """Whether the camera is the scene's code in any part (its own class, or
+    a method or display function replaced), whose methods a check of the
+    tracer's would call, and count.
+    """
+    from arachne.frame_ir.painter import user_camera
+
+    return user_camera(camera) is not None
 
 
 def _entry_why(camera: Any, entry: Any) -> str | None:
