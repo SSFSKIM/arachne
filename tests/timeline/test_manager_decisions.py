@@ -78,3 +78,20 @@ def test_a_decision_holds_over_what_the_scene_set_and_ends_as_asked():
         assert config.draw_path == "core"
         manager._undecide()
         assert config.draw_path == "core"
+
+
+def test_an_execution_again_finds_the_tex_template_the_first_found():
+    """A TeX template the caller set is part of the configuration the first
+    execution found: the snapshot keeps it, and an execution again reads it,
+    not a default.
+    """
+    from arachne import TexTemplate
+
+    template = TexTemplate(preamble="\\newcommand{\\mine}{x}")
+    with tempconfig({**SMALL, "dry_run": True, "tex_template": template}):
+        manager = Manager(Refused())
+        configured = config.copy()
+        assert configured.tex_template.preamble == template.preamble
+        config.tex_template = TexTemplate()
+        manager._reconfigure(configured)
+        assert config.tex_template.preamble == template.preamble

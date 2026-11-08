@@ -537,8 +537,13 @@ class ManimConfig(MutableMapping):
         c = type(self)()
         # Deepcopying the underlying dict is enough because all properties
         # either read directly from it or compute their value on the fly from
-        # values read directly from it.
+        # values read directly from it, but for the TeX template: one set on
+        # this configuration is held beside the dictionary (one read from
+        # ``tex_template_file`` is made again from it).
         c._d = copy.deepcopy(self._d, memo)  # type: ignore[arg-type]
+        template = self.__dict__.get("_tex_template")
+        if template:
+            c._tex_template = copy.deepcopy(template, memo)
         return c
 
     # helper type-checking methods
