@@ -10,7 +10,8 @@ from ..utils.rate_functions import linear, smooth
 __all__ = ["Animation", "Wait", "Add", "override_animation"]
 
 
-from collections.abc import Callable, Iterable, Sequence
+import contextlib
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from copy import deepcopy
 from fractions import Fraction
 from functools import partialmethod
@@ -333,7 +334,7 @@ class Animation:
             is completed. For example, alpha-values of 0, 0.5, and 1 correspond
             to the animation being completed 0%, 50%, and 100%, respectively.
         """
-        families = list(self.get_all_families_zipped())
+        families = zipped_families(self)
         for i, mobs in enumerate(families):
             sub_alpha = self.get_sub_alpha(alpha, i, len(families))
             self.interpolate_submobject(*mobs, sub_alpha)
@@ -533,6 +534,55 @@ class Animation:
             cls.__init__ = partialmethod(cls.__init__, **kwargs)
         else:
             cls.__init__ = cls._original__init__
+
+
+#: While a trusted play runs (:func:`keeping_families`): each of its
+#: animations by id, with the mobjects it last zipped the families of and
+#: the families, or ``None`` until it zips them.
+_kept_families: dict[int, tuple[tuple[Mobject, ...], list[tuple]] | None] | None = None
+
+
+@contextlib.contextmanager
+def keeping_families(animations: Iterable[Animation]) -> Iterator[None]:
+    """Zip each of ``animations``' families once while the block runs, not at
+    every :meth:`~.Animation.interpolate_mobject`.
+
+    Sound only where nothing changes a family's members while the block
+    runs: nothing but the animations runs (no updater, callback or code of
+    the scene's own, which :class:`.TrustedRoute` checks before it keeps a
+    play's families), and no two parts that run at once write the same
+    mobject. A part that begins in the block zips again, since its
+    mobjects are new copies (:class:`.TrustedRoute` keeps no play with a
+    ``Succession``, whose parts may run the scene's code as they begin).
+    """
+    global _kept_families
+    previous = _kept_families
+    _kept_families = dict.fromkeys(map(id, animations))
+    try:
+        yield
+    finally:
+        _kept_families = previous
+
+
+def zipped_families(animation: Animation) -> list[tuple]:
+    """``animation``'s families, zipped (:meth:`~.Animation.get_all_families_zipped`):
+    the zip it last took while :func:`keeping_families` keeps it and its
+    mobjects are the ones that zip was taken from, else a new one.
+    """
+    kept = _kept_families
+    if kept is None or id(animation) not in kept:
+        return list(animation.get_all_families_zipped())
+    mobjects = tuple(animation.get_all_mobjects())
+    held = kept[id(animation)]
+    if (
+        held is not None
+        and len(held[0]) == len(mobjects)
+        and all(a is b for a, b in zip(held[0], mobjects, strict=True))
+    ):
+        return held[1]
+    families = list(animation.get_all_families_zipped())
+    kept[id(animation)] = (mobjects, families)
+    return families
 
 
 def prepare_animation(

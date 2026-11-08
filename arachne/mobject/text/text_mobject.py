@@ -73,6 +73,7 @@ from arachne.mobject.geometry.arc import Dot
 from arachne.mobject.svg.svg_mobject import SVGMobject
 from arachne.mobject.types.vectorized_mobject import VGroup, VMobject
 from arachne.typing import Point3D
+from arachne.utils import typeset_cache, typeset_fonts
 from arachne.utils.color import ManimColor, ParsableManimColor, color_gradient
 
 if TYPE_CHECKING:
@@ -537,8 +538,11 @@ class Text(SVGMobject):
             self.line_spacing = self._font_size + self._font_size * self.line_spacing
 
         parsed_color: ManimColor = ManimColor(color) if color else VMobject().color
-        file_name = self._text2svg(parsed_color.to_hex())
-        PangoUtils.remove_last_M(file_name)
+        if typeset_cache.directory() is None:
+            file_name = self._text2svg(parsed_color.to_hex())
+            PangoUtils.remove_last_M(file_name)
+        else:
+            file_name = self._kept_svg(parsed_color.to_hex())
         super().__init__(
             file_name,
             fill_opacity=fill_opacity,
@@ -851,6 +855,57 @@ class Text(SVGMobject):
             )
 
         return svg_file
+
+    def _kept_svg(self, color: ParsableManimColor) -> str:
+        """:meth:`_text2svg` in the typesetting directory
+        (:mod:`.typeset_cache`), keyed by every argument Pango typesets
+        with, the pixel width its lines wrap at included, and made final
+        (:meth:`~.PangoUtils.remove_last_M`) before it is published.
+        """
+        size = self._font_size / TEXT2SVG_ADJUSTMENT_FACTOR
+        line_spacing = self.line_spacing / TEXT2SVG_ADJUSTMENT_FACTOR
+        settings = self._text2settings(color)
+        width = config["pixel_width"]
+        height = config["pixel_height"]
+
+        def make(path: Path) -> None:
+            manimpango.text2svg(
+                settings,
+                size,
+                line_spacing,
+                self.disable_ligatures,
+                str(path),
+                START_X,
+                START_Y,
+                width,
+                height,
+                self.text,
+            )
+            PangoUtils.remove_last_M(str(path))
+
+        spans = [
+            [s.start, s.end, s.font, s.slant, s.weight, s.line_num, s.color]
+            for s in settings
+        ]
+        shaped = [
+            (self.text[s.start : s.end].replace("\n", " "), s.font, s.slant, s.weight)
+            for s in settings
+        ]
+        inputs = [
+            "Text",
+            self.text,
+            spans,
+            size,
+            line_spacing,
+            self.disable_ligatures,
+            START_X,
+            START_Y,
+            width,
+            height,
+            typeset_cache.text_toolchain(),
+            typeset_fonts.text_fonts(shaped, size),
+        ]
+        return str(typeset_cache.made("text", inputs, make))
 
     def init_colors(self, propagate_colors: bool = True) -> Self:
         super().init_colors(propagate_colors=propagate_colors)
@@ -1231,9 +1286,11 @@ class MarkupText(SVGMobject):
             self.line_spacing = self._font_size + self._font_size * self.line_spacing
 
         parsed_color: ManimColor = ManimColor(color) if color else VMobject().color
-        file_name = self._text2svg(parsed_color)
-
-        PangoUtils.remove_last_M(file_name)
+        if typeset_cache.directory() is None:
+            file_name = self._text2svg(parsed_color)
+            PangoUtils.remove_last_M(file_name)
+        else:
+            file_name = self._kept_svg(parsed_color)
         super().__init__(
             file_name,
             fill_opacity=fill_opacity,
@@ -1387,6 +1444,58 @@ class MarkupText(SVGMobject):
                 pango_width=500,
             )
         return svg_file
+
+    def _kept_svg(self, color: ParsableManimColor) -> str:
+        """:meth:`_text2svg` in the typesetting directory
+        (:mod:`.typeset_cache`), keyed by every argument Pango typesets
+        with, and made final (:meth:`~.PangoUtils.remove_last_M`) before it
+        is published.
+        """
+        color = ManimColor(color)
+        size = self._font_size / TEXT2SVG_ADJUSTMENT_FACTOR
+        line_spacing = self.line_spacing / TEXT2SVG_ADJUSTMENT_FACTOR
+        final_text = f'<span foreground="{color.to_hex()}">{self.text}</span>'
+
+        def make(path: Path) -> None:
+            MarkupUtils.text2svg(
+                final_text,
+                self.font,
+                self.slant,
+                self.weight,
+                size,
+                line_spacing,
+                self.disable_ligatures,
+                str(path),
+                START_X,
+                START_Y,
+                600,  # width
+                400,  # height
+                justify=self.justify,
+                pango_width=500,
+            )
+            PangoUtils.remove_last_M(str(path))
+
+        inputs = [
+            "MarkupText",
+            final_text,
+            self.font,
+            self.slant,
+            self.weight,
+            size,
+            line_spacing,
+            self.disable_ligatures,
+            START_X,
+            START_Y,
+            600,
+            400,
+            self.justify,
+            500,
+            typeset_cache.text_toolchain(),
+            typeset_fonts.text_fonts(
+                [(final_text, self.font, self.slant, self.weight)], size, markup=True
+            ),
+        ]
+        return str(typeset_cache.made("text", inputs, make))
 
     def _count_real_chars(self, s: str) -> int:
         """Counts characters that will be displayed.

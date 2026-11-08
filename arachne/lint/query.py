@@ -29,8 +29,9 @@ rules' own, with boxes as a report gives them (scene units, and pixels of
 the session's resolution).
 
 Those numbers are the engine camera's. A scene whose code replaced a method
-of its camera (:attr:`~arachne.timeline.record.Record.camera_replaced`) may
-draw its picture elsewhere, so each answer that measures the picture
+of its camera, or an entry of its display functions
+(:attr:`~arachne.timeline.record.Record.camera_replaced`), may draw its
+picture elsewhere, so each answer that measures the picture
 (:meth:`Query.bbox`, :meth:`Query.overlaps`, :meth:`Query.occlusions`,
 :meth:`Query.offscreen`, :meth:`Query.text_heights`) is a
 :class:`CameraReplaced` in its place, unless every method replaced only
@@ -170,9 +171,10 @@ class TextHeight:
 @dataclass(frozen=True)
 class CameraReplaced:
     """Given in place of a measurement of the picture: the scene replaced
-    camera methods that place what it draws (``replaced``, each as
-    ``Owner.name (on the instance|class)``), so the picture need not be where
-    the engine's camera would put it.
+    camera methods, or entries of the camera's display functions
+    (``display_funcs[Kind]``), that place what it draws (``replaced``, each
+    as ``Owner.name (on the instance|class|display_funcs)``), so the picture
+    need not be where the engine's camera would put it.
     """
 
     replaced: tuple[str, ...]

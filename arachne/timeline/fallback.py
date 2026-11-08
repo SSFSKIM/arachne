@@ -308,6 +308,16 @@ class _ForwardRecorder(Recorder):
         #: The first error a visit raised, raised again once the run is out
         #: of the scene's code, which might have caught it.
         self.visit_error: Exception | None = None
+        #: The configuration as the script left it, which the final frame is
+        #: drawn under, as the render draws it while the script's settings
+        #: hold (``None`` until the script ends).
+        self.left_config: Any = None
+
+    def end_run(self) -> None:
+        from arachne import config
+
+        self.left_config = config.copy()
+        super().end_run()
 
     def refusal(self) -> str | None:
         # The renderer asks this first as each play begins.
@@ -321,10 +331,13 @@ class _ForwardRecorder(Recorder):
         skipped: bool,
         cache_key: str | None,
         live: LiveFrames | None = None,
+        live_reason: str | None = None,
     ) -> PlayRecord:
         if live is not None and self.live_from is None:
             self.live_from = len(self.ensure_record().plays)
-        played = super().play(skipped=skipped, cache_key=cache_key, live=live)
+        played = super().play(
+            skipped=skipped, cache_key=cache_key, live=live, live_reason=live_reason
+        )
         if self.draws and live is None and played.draw_refusal is not None:
             raise _Unforeseen(played.draw_refusal)
         return played
@@ -692,8 +705,12 @@ def _rendered(
         ended = record.play_at(t) is None
         if ended and frames and final is None:
             # As the render draws the scene its record can't: from the live
-            # scene, which the script left so.
-            scene.renderer._draw_final(scene)
+            # scene, which the script left so, under the configuration it
+            # left too.
+            from arachne import tempconfig
+
+            with tempconfig(forward.left_config or {}):
+                scene.renderer._draw_final(scene)
             final = camera.pixel_array.copy()
         shown = t if ended else _on_screen(fps, [t])[0]
         state = _state(record, t, _route(record, shown))

@@ -208,6 +208,9 @@ def _restoring(
             if id(mob) not in saved:
                 saved[id(mob)] = (mob, NodeState.of(mob))
             state.install(mob)
+        # A restore point's state holds the live group and the live image,
+        # not what the record kept of them.
+        drawing.show_kept(base, point.nodes)
         with (
             _assigned(scene, assignments),
             _animations_at(point),
@@ -219,6 +222,7 @@ def _restoring(
             camera = scene.renderer.camera
             _install_centre_functions(point.centers)
             evaluate_instant(scene, plan, play.start, t, float(t - base.instant))
+            _evaluated_groups(drawing, base, point)
             extras = CameraExtras.observe(camera, base.camera)
             if extras is not None:
                 # The centres as values, as a capture holds them.
@@ -226,6 +230,24 @@ def _restoring(
             yield
 
     return base, restoring
+
+
+def _evaluated_groups(drawing: Drawing, base: Capture, point: RestorePoint) -> None:
+    """Place by its live group again each mobject the depth sort places by a
+    group the scene holds: the restore evaluated that group at the instant,
+    so its point is the one a forward run finds there, not the one ``base``
+    kept (:meth:`.Drawing.show_kept`). A group the scene does not hold keeps
+    the kept point, as no callback of the instant moves it.
+    """
+    states = {id(mob): state for mob, state in point.nodes}
+    saved = drawing._saved
+    for mob, reference in base.references:
+        if mob.__dict__.get("z_index_group") is not reference:
+            continue  # the instant's callbacks gave it another
+        state = states.get(id(mob)) or drawing.record.node_state(mob, base)
+        group = state.get("z_index_group") if state is not None else None
+        if group is not None and id(group) in saved:
+            mob.__dict__["z_index_group"] = group
 
 
 @contextmanager

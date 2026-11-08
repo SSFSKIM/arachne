@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 from arachne import LineJointType, config, tempconfig
+from arachne.frame_ir.extract import Unable
 from arachne.frame_ir.painter import IrCairoPainter, painter_for
 from arachne.frame_ir.xf import Record
 from arachne.session import Session
@@ -142,7 +143,9 @@ def test_a_blend_is_stated_only_where_it_reads_as_the_plain_path(spoil):
 
 
 def test_a_held_frame_sends_an_empty_delta():
-    session = Session.open(SCENES, "Morph", config={**MEDIUM, "draw_path": "ir_cairo"})
+    # Drawn again, not reused, so that the stream describes it.
+    settings = {**MEDIUM, "draw_path": "ir_cairo", "draw_reuse": False}
+    session = Session.open(SCENES, "Morph", config=settings)
     try:
         first = np.asarray(session.frame(Fraction(1, 30)))
         painter = _painter(session.scene)
@@ -468,7 +471,7 @@ def test_the_drawing_lint_codes_are_declared():
 
 
 def test_a_camera_that_is_no_engine_camera_is_unable():
-    from arachne.frame_ir.extract import FrameStream, Unable
+    from arachne.frame_ir.extract import FrameStream
     from arachne.frame_ir.painter import camera_path
 
     class Duck:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 import types
 from collections.abc import Callable
 from typing import TYPE_CHECKING
@@ -12,6 +11,7 @@ from numpy import piecewise
 from ..animation.animation import Animation, Wait, prepare_animation
 from ..animation.composition import AnimationGroup
 from ..mobject.mobject import Mobject, _AnimationBuilder
+from ..mobject.updater_kind import takes_dt
 from ..scene.scene import Scene
 
 if TYPE_CHECKING:
@@ -265,7 +265,7 @@ class ChangeSpeed(Animation):
         :class:`.ChangeSpeed`
         :meth:`.Mobject.add_updater`
         """
-        if "dt" in inspect.signature(update_function).parameters:
+        if takes_dt(update_function):
             mobject.add_updater(
                 lambda mob, dt: update_function(
                     mob, ChangeSpeed.dt if ChangeSpeed.is_changing_dt else dt

@@ -7,7 +7,6 @@ __all__ = ["Mobject", "Group", "override_animate"]
 
 import copy
 import difflib
-import inspect
 import itertools as it
 import math
 import operator as op
@@ -54,6 +53,7 @@ from .placement import (
     anchor_bounds,
     point_bounds,
 )
+from .updater_kind import takes_dt
 from .values import FrozenPoints, adopt, freeze
 
 if TYPE_CHECKING:
@@ -1277,7 +1277,7 @@ class Mobject:
             # A stepping tick runs only the updaters whose code loads dt.
             if steps is not None and not steps(updater):
                 continue
-            if "dt" in inspect.signature(updater).parameters:
+            if takes_dt(updater):
                 time_based_updater = cast(_TimeBasedUpdater, updater)
                 time_based_updater(self, dt)
             else:
@@ -1306,7 +1306,7 @@ class Mobject:
         """
         rv: list[_TimeBasedUpdater] = []
         for updater in self.updaters:
-            if "dt" in inspect.signature(updater).parameters:
+            if takes_dt(updater):
                 time_based_updater = cast(_TimeBasedUpdater, updater)
                 rv.append(time_based_updater)
         return rv
@@ -1325,9 +1325,7 @@ class Mobject:
         :meth:`get_time_based_updaters`
 
         """
-        return any(
-            "dt" in inspect.signature(updater).parameters for updater in self.updaters
-        )
+        return any(takes_dt(updater) for updater in self.updaters)
 
     def get_updaters(self) -> list[_Updater]:
         """Return all updaters.
@@ -1422,8 +1420,7 @@ class Mobject:
         else:
             self.updaters.insert(index, update_function)
         if call_updater:
-            parameters = inspect.signature(update_function).parameters
-            if "dt" in parameters:
+            if takes_dt(update_function):
                 time_based_updater = cast(_TimeBasedUpdater, update_function)
                 time_based_updater(self, 0)
             else:

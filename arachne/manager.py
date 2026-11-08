@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 
 import srt
 
-from . import logger
+from . import config, logger
 from .mobject.construction_caches import (
     construction_caches,
     restore_construction_caches,
@@ -79,6 +79,12 @@ class Manager(Generic[SceneT]):
         scene.manager = self
         # The source line of the play running now, or None between plays.
         self._playing: str | None = None
+        #: Whether a play refused mid-play can be drawn as it runs by
+        #: executing the scene again: only inside :meth:`render`.
+        self.reexecutes = False
+        #: The options the manager itself decided for this render, each with
+        #: the value it was asked as and the one decided (:meth:`_decide`).
+        self._decided: dict[str, tuple[Any, Any]] = {}
 
     @property
     def renderer(self) -> CairoRenderer:
@@ -148,7 +154,8 @@ class Manager(Generic[SceneT]):
         and every later one as it runs. Each such refusal costs at most one
         execution. The interrupted execution is not torn down, as CE tears
         down no run that raised: :meth:`tear_down` runs once, for the
-        execution that completes.
+        execution that completes. An execution again finds the configuration
+        as the first one found it, whatever the scene set in it.
 
         A scene drawn on the core that the core cannot draw
         (``render.unable``: never drawn wrong, and never one frame by another
@@ -172,31 +179,33 @@ class Manager(Generic[SceneT]):
         # The construction caches as a scene rendered earlier in this process
         # left them: an execution again finds them as the first execution did.
         caches = construction_caches()
-        # While the scene is drawn on Cairo after the core refused it: the
-        # draw path asked for, the option's again once the render ends.
-        asked: str | None = None
+        # The configuration as the first execution found it, which the scene
+        # may change as it runs (and a camera is made from).
+        configured = config.copy()
         try:
             while True:
                 try:
-                    self._executions(known, earlier, caches)
+                    self.reexecutes = True
+                    try:
+                        self._executions(known, earlier, caches, configured)
+                    finally:
+                        self.reexecutes = False
                     self.post_construct()
                     break
                 except Exception as unable:
-                    if asked is not None or not self._refused_by_the_core(unable):
+                    if self._decided or not self._refused_by_the_core(unable):
                         raise
-                    asked = self._draw_on_cairo(unable)
+                    self._draw_on_cairo(unable)
                     # As for a play's refusal: the interrupted execution's
                     # encoders were aborted and its run abandoned.
                     record = self.scene._arachne_timeline.ensure_record()
                     earlier.append((record.execution.number, play_keys(record)))
                     restore_construction_caches(caches)
+                    self._reconfigure(configured)
                     self._renew_scene()
                     self.scene._arachne_timeline.reexecuting(known, earlier)
         finally:
-            if asked is not None:
-                from . import config
-
-                config.draw_path = asked
+            self._undecide()
 
         if open_after_render or presentation.show_in_file_browser:
             open_media_file(
@@ -210,10 +219,10 @@ class Manager(Generic[SceneT]):
         known: dict[int, str],
         earlier: list[tuple[int, tuple[bytes, ...]]],
         caches: Any,
+        configured: Any,
     ) -> None:
-        """Execute the scene until an execution completes: again from the
-        start for each play it meant to draw from its record that a mobject
-        the record can't draw joined mid-play (``known``, by play).
+        """Execute the scene until an execution completes, again with each
+        play found refusing mid-play drawn as it runs (``known``, by play).
         """
         while True:
             try:
@@ -243,8 +252,38 @@ class Manager(Generic[SceneT]):
                     },
                 )
                 restore_construction_caches(caches)
+                self._reconfigure(configured)
                 self._renew_scene()
                 self.scene._arachne_timeline.reexecuting(known, earlier)
+
+    def _decide(self, option: str, value: Any) -> None:
+        """Set ``option`` to ``value`` for the rest of this render: a
+        decision of the manager's, not scene state. It holds across the
+        executions again (:meth:`_reconfigure`) and the option is what it
+        was asked as again when the render ends (:meth:`_undecide`).
+        """
+        asked = (
+            self._decided[option][0]
+            if option in self._decided
+            else getattr(config, option)
+        )
+        self._decided[option] = (asked, value)
+        setattr(config, option, value)
+
+    def _undecide(self) -> None:
+        """Every option the manager decided is what it was asked as."""
+        for option, (asked, _) in self._decided.items():
+            setattr(config, option, asked)
+        self._decided.clear()
+
+    def _reconfigure(self, configured: Any) -> None:
+        """The configuration an execution again begins from: as the first
+        execution found it (the scene may have changed it as it ran), then
+        the manager's decisions over it.
+        """
+        config.update(configured)
+        for option, (_, value) in self._decided.items():
+            setattr(config, option, value)
 
     def _refused_by_the_core(self, error: Exception) -> bool:
         """Whether ``error`` is the core's refusal (``render.unable``) of a
@@ -252,7 +291,6 @@ class Manager(Generic[SceneT]):
         for its camera). Read only once raised: the drawing imported it by
         then, and the engine's code is read before (``timeline.frozen``).
         """
-        from . import config
         from .frame_ir.extract import Unable
         from .frame_ir.painter import scene_path
 
@@ -260,12 +298,10 @@ class Manager(Generic[SceneT]):
             return False
         return scene_path(self.scene.renderer.camera, config.draw_path) == "core"
 
-    def _draw_on_cairo(self, unable: Exception) -> str:
+    def _draw_on_cairo(self, unable: Exception) -> None:
         """The scene, refused by the core (``unable``), is drawn on Cairo from
-        now on, with a ``render.fallback`` finding: return the draw path that
-        was asked for.
+        now on, with a ``render.fallback`` finding.
         """
-        from . import config
         from .frame_ir.lint import raise_finding
 
         name = type(self.scene).__name__
@@ -275,9 +311,7 @@ class Manager(Generic[SceneT]):
             f"{name} is drawn on Cairo for the whole scene, executed again from"
             f" its start: the core could not draw it ({unable})",
         )
-        asked = config.draw_path
-        config.draw_path = "cairo"
-        return asked
+        self._decide("draw_path", "cairo")
 
     def _execute(self) -> None:
         """Execute the scene's script once, recording it."""

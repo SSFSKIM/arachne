@@ -12,8 +12,8 @@ from ..camera.camera import Camera
 from ..mobject.mobject import Mobject, _AnimationBuilder
 from ..scene.scene_file_writer import SceneFileWriter
 from ..timeline.clock import TICK_RATE, exact, frames_in
-from ..timeline.draw import Drawing, LiveFrames
-from ..timeline.execution import Reexecute
+from ..timeline.draw import Drawing, DrawReuse, LiveFrames
+from ..timeline.execution import UNREPEATABLE, Reexecute
 from ..utils.exceptions import EndSceneEarlyException
 from ..utils.iterables import list_update
 from .protocol import RendererCapabilities
@@ -40,6 +40,17 @@ class CairoRenderer:
 
     time : float
         Time elapsed since initialisation of scene.
+
+    draws : DrawReuse
+        The frame drawn last from the record, which the next frame drawn
+        from the same recorded state reuses (``draw_reuse``): kept for one
+        execution of the scene.
+
+    frame_runs : dict[int, tuple[int, ...]]
+        Per play drawn from the record (by index), its frames as runs of
+        equal frames, in order: a frozen frame's are one run, and a frame
+        that reused the frame before it extends that frame's run. Every
+        frame is written all the same.
     """
 
     capabilities = RendererCapabilities(live_preview=False)
@@ -65,6 +76,8 @@ class CairoRenderer:
         self._capturing_static = False
         self._clock = Fraction(0)
         self.static_image: PixelArray | None = None
+        self.draws = DrawReuse(1)
+        self.frame_runs: dict[int, tuple[int, ...]] = {}
 
     def renew(self) -> None:
         """Start afresh for another execution of the scene: a new camera of
@@ -147,6 +160,12 @@ class CairoRenderer:
             # play runs, as CE does.
             self._play_live(scene, skipped, cache_key, fps)
             return
+        manager = scene.manager
+        if timeline.draws and (manager is None or not manager.reexecutes):
+            # Played outside a render: a refusal found midway could not be
+            # drawn as it runs in another execution.
+            self._play_live(scene, skipped, cache_key, fps, UNREPEATABLE)
+            return
         play = timeline.play(skipped=skipped, cache_key=cache_key)
 
         frames = frames_in(play.start, play.end, fps)
@@ -183,11 +202,16 @@ class CairoRenderer:
         self.num_plays += 1
 
     def _play_live(
-        self, scene: Scene, skipped: bool, cache_key: str | None, fps: Fraction
+        self,
+        scene: Scene,
+        skipped: bool,
+        cache_key: str | None,
+        fps: Fraction,
+        reason: str | None = None,
     ) -> None:
         """Run one play of a scene whose record can't draw its frames
-        (``Record.refusal``), drawing each frame from the live scene while
-        the play runs.
+        (``Record.refusal``), or that is drawn as it runs for ``reason``,
+        drawing each frame from the live scene while the play runs.
         """
         timeline = scene._arachne_timeline
         draw = cache_key is not None and timeline.draws
@@ -215,7 +239,9 @@ class CairoRenderer:
                 self.file_writer.write_frame(pixels, repeat=repeat)
 
             live = LiveFrames(scene, fps, write)
-        play = timeline.play(skipped=skipped, cache_key=cache_key, live=live)
+        play = timeline.play(
+            skipped=skipped, cache_key=cache_key, live=live, live_reason=reason
+        )
         if opened:
             self.file_writer.end_animation(True)
         else:
@@ -258,16 +284,25 @@ class CairoRenderer:
         """
         record = scene._arachne_timeline.ensure_record()
         self.file_writer.begin_animation(True, animation_index=self.num_plays)
-        with Drawing(record) as drawing:
+        reuse = self.draws if config.draw_reuse else None
+        runs: list[int] = []
+        with Drawing(record, reuse=reuse) as drawing:
             static = drawing.static(play)
             if play.held:
                 pixels = drawing.sample(play, play.samples[0], static)
                 self.file_writer.write_frame(pixels, repeat=len(frames))
+                runs.append(len(frames))
             else:
                 for t in frames:
                     pixels = drawing.sample(play, play.capture_at(t), static)
+                    # One write per frame, reused or drawn.
                     self.file_writer.write_frame(pixels)
+                    if runs and drawing.reused:
+                        runs[-1] += 1
+                    else:
+                        runs.append(1)
         self.file_writer.end_animation(True)
+        self.frame_runs[play.index] = tuple(runs)
         return static
 
     def update_frame(  # TODO Description in Docstring

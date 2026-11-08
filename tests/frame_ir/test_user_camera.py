@@ -208,6 +208,8 @@ def test_a_class_patch_of_a_camera_s_constructor_draws_on_cairo(monkeypatch, fin
         ),
         (camera_scenes.Bordered, "BorderedCamera", "display_funcs"),
         (camera_scenes.Rewired, "ThreeDCamera.display_funcs", "display_funcs"),
+        # An entry the scene replaced, writing the frame's array by hand.
+        (scenes.PatchedDisplay, "Camera.display_funcs", "display_funcs"),
     ],
     ids=lambda v: getattr(v, "__name__", v),
 )

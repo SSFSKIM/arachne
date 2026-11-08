@@ -67,9 +67,10 @@ def user_camera(camera: Any) -> tuple[str, str] | None:
     code, as ``(subject, why)``: a method of an engine camera class replaced
     on the class (:func:`~arachne.timeline.camera_code.replaced_methods`); a
     camera's class, a subclass of one of the engine's cameras defined
-    outside the engine; or a method of its class replaced on the instance.
-    ``None`` for engine cameras as the engine made them, or for no camera at
-    all.
+    outside the engine; a method of its class replaced on the instance; or
+    an entry of its ``display_funcs``, through which it draws each kind of
+    mobject, replaced. ``None`` for engine cameras as the engine made them,
+    or for no camera at all.
     """
     from arachne.timeline.camera_code import drawn_cameras
 
@@ -198,7 +199,10 @@ def camera_changes(camera: Any) -> tuple[tuple[str, str], ...]:
         for name in vars(klass)
         if name not in _CLASS_BOOKKEEPING and hasattr(base, name)
     }
-    changes.update((r.form, r.name) for r in replaced_methods(camera))
+    changes.update(
+        (r.form, r.name) for r in replaced_methods(camera) if r.form != "display_funcs"
+    )
+    # The display functions are one change, whichever entries it concerns.
     if display_funcs_rewired(camera):
         changes.add(("instance", "display_funcs"))
     return tuple(sorted(changes))

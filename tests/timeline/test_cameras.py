@@ -9,17 +9,23 @@ import itertools
 import math
 from fractions import Fraction
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 import pytest
 
-from arachne import LEFT, RIGHT, Dot, tempconfig
+from arachne import BLUE, LEFT, RED, RIGHT, Dot, config, tempconfig
+from arachne.camera.camera import Camera
+from arachne.timeline import recorder
 from arachne.timeline.routes import RecordRefused
+from arachne.utils.color import ManimColor
 
 from . import camera_scenes
 from .conftest import SMALL, render
 
 CAMERA_SCENES = Path(camera_scenes.__file__)
+#: Opened in a session only: importing it changes the process's configuration.
+CONFIG_SCENES = Path(__file__).parent / "config_scenes.py"
 RATES = (4, 15, 30, 60)
 
 
@@ -99,6 +105,28 @@ def test_a_display_whose_camera_joins_mid_scene_is_empty_until_it_joins(session_
     assert np.array_equal(frames[6], after)
 
 
+@pytest.mark.parametrize("draw_path", ["cairo", "ir_cairo"])
+def test_a_display_repainted_before_its_camera_joins_shows_each_plays_picture(
+    session_of, draw_path
+):
+    """Before its camera joins, the display shows that camera's picture as
+    each play found it: red in the first wait, blue in the second. Drawn
+    with the picture its camera held as it joined, both waits show blue.
+    """
+    if draw_path == "ir_cairo":
+        pytest.importorskip("arachne_core")
+    scene_class = camera_scenes.DisplayRepaintedBeforeItJoins
+    live = _drawn_live(scene_class, 15, draw_path=draw_path)
+    assert _display_brightness(live[1]) != _display_brightness(live[4])
+    scene, drawn = render(scene_class, 15, draw_path=draw_path)
+    assert scene.timeline.record.refusal is None
+    _equal_frames(drawn, live)
+    session = session_of(scene_class.__name__, CAMERA_SCENES, draw_path=draw_path)
+    _equal_frames(
+        [np.asarray(session.frame(Fraction(k, 15))) for k in range(len(live))], live
+    )
+
+
 def test_a_display_left_by_its_camera_is_drawn_as_the_scene_runs(session_of):
     """Once a display's camera leaves, the display shows the last picture
     drawn into it, which only drawing as the scene runs knows: the record
@@ -164,3 +192,401 @@ def test_a_mapping_camera_scene_is_drawn_as_it_runs(fps):
     assert len(frames) == len(expected)
     for k, (frame, reference) in enumerate(zip(frames, expected, strict=True)):
         assert np.array_equal(frame, reference), k
+
+
+def _drawn_live(scene_class, fps, **settings) -> list[np.ndarray]:
+    """The frames of ``scene_class`` drawn as the scene runs, each from the
+    live scene at its instant, as CE draws them.
+    """
+    with mock.patch.object(
+        recorder, "camera_refusal", return_value="drawn live, to compare"
+    ):
+        scene, frames = render(scene_class, fps, **settings)
+    assert scene.timeline.record.refusal is not None
+    return frames
+
+
+def _centre(frame: np.ndarray) -> tuple[int, ...]:
+    height, width = frame.shape[:2]
+    return tuple(int(v) for v in frame[height // 2, width // 2, :3])
+
+
+@pytest.mark.parametrize("draw_path", ["cairo", "ir_cairo"])
+@pytest.mark.parametrize(
+    "scene_class",
+    [camera_scenes.DepthReferenceMoves, camera_scenes.StaticDepthReferenceMoves],
+)
+def test_a_depth_reference_the_scene_does_not_hold_sorts_each_frame_where_it_was(
+    session_of, scene_class, draw_path
+):
+    if draw_path == "ir_cairo":
+        pytest.importorskip("arachne_core")
+    live = _drawn_live(scene_class, 15, draw_path=draw_path)
+    # The point moves partway through: blue in front, then red.
+    red, blue = (tuple(int(v) for v in ManimColor(c).to_int_rgb()) for c in (RED, BLUE))
+    centres = [_centre(frame) for frame in live]
+    assert centres[0] == blue
+    assert centres[-1] == red
+    scene, drawn = render(scene_class, 15, draw_path=draw_path)
+    assert scene.timeline.record.refusal is None
+    assert len(drawn) == len(live)
+    for k, (frame, reference) in enumerate(zip(drawn, live, strict=True)):
+        np.testing.assert_array_equal(frame, reference, err_msg=str(k))
+    session = session_of(scene_class.__name__, CAMERA_SCENES, draw_path=draw_path)
+    for k, reference in enumerate(live):
+        frame = np.asarray(session.frame(Fraction(k, 15)))
+        np.testing.assert_array_equal(frame, reference, err_msg=f"session {k}")
+
+
+@pytest.mark.parametrize("draw_path", ["cairo", "ir_cairo"])
+def test_a_restored_instant_sorts_by_the_depth_reference_its_capture_found(
+    session_of, draw_path
+):
+    """Between two frames of the state play, the restore starts from the
+    capture before and sorts the red square by the reference point that
+    capture found, behind the blue one, as a forward run evaluated there
+    does; the point the scene moved in front after the play is not it.
+    """
+    if draw_path == "ir_cairo":
+        pytest.importorskip("arachne_core")
+    name = "RestoredDepthReference"
+    settings = {"frame_rate": 15, "probe": False, "draw_path": draw_path}
+    session = session_of(name, CAMERA_SCENES, **settings)
+    play = session.record.plays[0]
+    assert play.route == "state"
+    t = play.start + Fraction(3, 30)
+    assert session.state_at(t).answer == "restored"
+    frame = np.asarray(session.frame(t))
+    blue = tuple(int(v) for v in ManimColor(BLUE).to_int_rgb())
+    assert _centre(frame) == blue
+    oracle = session_of(name, CAMERA_SCENES, instants=[t], **settings)
+    np.testing.assert_array_equal(frame, np.asarray(oracle.frame(t)))
+    # The probe's restores find the play as it ran: nothing demotes it.
+    probed = session_of(name, CAMERA_SCENES, frame_rate=15, draw_path=draw_path)
+    assert probed.record.plays[0].route == "state"
+
+
+@pytest.mark.parametrize("draw_path", ["cairo", "ir_cairo"])
+def test_a_restored_instant_sorts_by_a_depth_group_the_restore_moves(
+    session_of, draw_path
+):
+    """The scene holds the depth group, and the restore evaluates it at the
+    instant: by then it is in front of the blue square, as a forward run
+    evaluated there finds it, though the capture before found it behind.
+    """
+    if draw_path == "ir_cairo":
+        pytest.importorskip("arachne_core")
+    name = "RestoredMovingDepthGroup"
+    settings = {"frame_rate": 15, "probe": False, "draw_path": draw_path}
+    session = session_of(name, CAMERA_SCENES, **settings)
+    assert session.record.plays[0].route == "state"
+    t = Fraction(19, 100)
+    assert session.state_at(t).answer == "restored"
+    frame = np.asarray(session.frame(t))
+    red = tuple(int(v) for v in ManimColor(RED).to_int_rgb())
+    assert _centre(frame) == red
+    oracle = session_of(name, CAMERA_SCENES, instants=[t], **settings)
+    np.testing.assert_array_equal(frame, np.asarray(oracle.frame(t)))
+
+
+def _kept_pictures(record) -> list[np.ndarray]:
+    """Every picture of another camera the record keeps, each once."""
+    kept: dict[int, np.ndarray] = {}
+    for capture in record._captures:
+        for _, picture in capture.pictures:
+            kept[id(picture)] = picture
+    return list(kept.values())
+
+
+def _equal_frames(drawn, reference) -> None:
+    assert len(drawn) == len(reference)
+    for k, (frame, expected) in enumerate(zip(drawn, reference, strict=True)):
+        np.testing.assert_array_equal(frame, expected, err_msg=str(k))
+
+
+@pytest.mark.parametrize("draw_path", ["cairo", "ir_cairo"])
+def test_a_still_display_of_another_camera_keeps_one_picture(session_of, draw_path):
+    if draw_path == "ir_cairo":
+        pytest.importorskip("arachne_core")
+    scene_class = camera_scenes.OtherCameraStill
+    live = _drawn_live(scene_class, 15, draw_path=draw_path)
+    scene, drawn = render(scene_class, 15, draw_path=draw_path)
+    record = scene.timeline.record
+    assert record.refusal is None
+    assert len(record.plays) == 3
+    assert len(_kept_pictures(record)) == 1
+    _equal_frames(drawn, live)
+    session = session_of(scene_class.__name__, CAMERA_SCENES, draw_path=draw_path)
+    _equal_frames(
+        [np.asarray(session.frame(Fraction(k, 15))) for k in range(len(live))], live
+    )
+
+
+@pytest.mark.parametrize("draw_path", ["cairo", "ir_cairo"])
+def test_a_display_repainted_between_plays_keeps_a_picture_a_play(
+    session_of, draw_path
+):
+    if draw_path == "ir_cairo":
+        pytest.importorskip("arachne_core")
+    scene_class = camera_scenes.OtherCameraBetweenPlays
+    live = _drawn_live(scene_class, 15, draw_path=draw_path)
+    red, blue = (tuple(int(v) for v in ManimColor(c).to_int_rgb()) for c in (RED, BLUE))
+    assert [_centre(live[k]) for k in (0, 4, 8)] == [red, blue, red]
+    scene, drawn = render(scene_class, 15, draw_path=draw_path)
+    record = scene.timeline.record
+    assert record.refusal is None
+    # Red, blue, red: one copy each play, the last not the first's.
+    assert len(_kept_pictures(record)) == 3
+    _equal_frames(drawn, live)
+    session = session_of(scene_class.__name__, CAMERA_SCENES, draw_path=draw_path)
+    _equal_frames(
+        [np.asarray(session.frame(Fraction(k, 15))) for k in range(len(live))], live
+    )
+
+
+@pytest.mark.parametrize("draw_path", ["cairo", "ir_cairo"])
+def test_a_display_repainted_while_off_screen_during_a_play_draws_that_play_live(
+    session_of, draw_path
+):
+    """The play's picture of the display is the one it showed first, also
+    when the display leaves the screen between: shown again repainted, it
+    refuses the play rather than keep a second picture.
+    """
+    if draw_path == "ir_cairo":
+        pytest.importorskip("arachne_core")
+    scene_class = camera_scenes.OtherCameraHidden
+    live = _drawn_live(scene_class, 15, draw_path=draw_path)
+    red, blue = (tuple(int(v) for v in ManimColor(c).to_int_rgb()) for c in (RED, BLUE))
+    assert _centre(live[0]) == red
+    assert _centre(live[-1]) == blue
+    scene, drawn = render(scene_class, 15, draw_path=draw_path)
+    refusal = scene.timeline.record.refusal
+    assert refusal is not None
+    assert refusal.startswith("camera.display_redrawn:")
+    _equal_frames(drawn, live)
+
+
+@pytest.mark.parametrize("draw_path", ["cairo", "ir_cairo"])
+def test_a_display_repainted_during_a_play_draws_that_play_live(session_of, draw_path):
+    if draw_path == "ir_cairo":
+        pytest.importorskip("arachne_core")
+    scene_class = camera_scenes.OtherCameraShown
+    live = _drawn_live(scene_class, 15, draw_path=draw_path)
+    red, blue = (tuple(int(v) for v in ManimColor(c).to_int_rgb()) for c in (RED, BLUE))
+    centres = [_centre(frame) for frame in live]
+    assert centres[0] == red
+    assert centres[-1] == blue
+    scene, drawn = render(scene_class, 15, draw_path=draw_path)
+    assert scene.timeline.record.refusal.startswith("camera.display_redrawn:")
+    _equal_frames(drawn, live)
+    session = session_of(scene_class.__name__, CAMERA_SCENES, draw_path=draw_path)
+    with pytest.raises(RecordRefused, match="display_redrawn"):
+        session.frame(Fraction(1, 15))
+
+
+@pytest.mark.parametrize("draw_path", ["cairo", "ir_cairo"])
+def test_a_pixel_shape_changed_during_a_play_draws_from_that_play_live(draw_path):
+    if draw_path == "ir_cairo":
+        pytest.importorskip("arachne_core")
+    scene_class = camera_scenes.PixelShapeChanged
+    live = _drawn_live(scene_class, 15, draw_path=draw_path)
+    assert not np.array_equal(live[1], live[-1])
+    scene, drawn = render(scene_class, 15, draw_path=draw_path)
+    refusal = scene.timeline.record.refusal
+    assert refusal is not None
+    assert refusal.startswith("config.pixel_shape:")
+    _equal_frames(drawn, live)
+
+
+@pytest.mark.parametrize("draw_path", ["cairo", "ir_cairo"])
+def test_a_light_rebound_during_a_play_draws_that_play_live(draw_path):
+    if draw_path == "ir_cairo":
+        pytest.importorskip("arachne_core")
+    scene_class = camera_scenes.LightReboundInPlay
+    live = _drawn_live(scene_class, 15, draw_path=draw_path)
+    assert _centre(live[1]) != _centre(live[-1])
+    scene, drawn = render(scene_class, 15, draw_path=draw_path)
+    refusal = scene.timeline.record.refusal
+    assert refusal is not None
+    assert refusal.startswith("camera.rebound:")
+    _equal_frames(drawn, live)
+
+
+@pytest.mark.parametrize("draw_path", ["cairo", "ir_cairo"])
+def test_a_light_rebound_between_plays_is_drawn_from_the_record(session_of, draw_path):
+    """Each play's frames are lit by the light bound as it ran, also when
+    drawn after the scene ended, with the other light bound.
+    """
+    if draw_path == "ir_cairo":
+        pytest.importorskip("arachne_core")
+    scene_class = camera_scenes.LightReboundBetweenPlays
+    live = _drawn_live(scene_class, 15, draw_path=draw_path)
+    assert _centre(live[1]) != _centre(live[-1])
+    scene, drawn = render(scene_class, 15, draw_path=draw_path)
+    assert scene.timeline.record.refusal is None
+    _equal_frames(drawn, live)
+    session = session_of(scene_class.__name__, CAMERA_SCENES, draw_path=draw_path)
+    _equal_frames(
+        [np.asarray(session.frame(Fraction(k, 15))) for k in range(len(live))], live
+    )
+
+
+@pytest.mark.parametrize("draw_path", ["cairo", "ir_cairo"])
+def test_an_image_painted_in_place_is_drawn_as_the_camera_first_read_it(
+    session_of, draw_path
+):
+    """The camera reads a fill's image once and keeps it: painted later in
+    place, it is drawn as it was then, also when drawn after the scene ran.
+    """
+    if draw_path == "ir_cairo":
+        pytest.importorskip("arachne_core")
+    scene_class = camera_scenes.ImageFillPainted
+    live = _drawn_live(scene_class, 15, draw_path=draw_path)
+    assert _centre(live[0]) == _centre(live[-1]) == (255, 0, 0)
+    scene, drawn = render(scene_class, 15, draw_path=draw_path)
+    assert scene.timeline.record.refusal is None
+    _equal_frames(drawn, live)
+    session = session_of(scene_class.__name__, CAMERA_SCENES, draw_path=draw_path)
+    _equal_frames(
+        [np.asarray(session.frame(Fraction(k, 15))) for k in range(len(live))], live
+    )
+
+
+@pytest.mark.parametrize("draw_path", ["cairo", "ir_cairo"])
+def test_an_image_renamed_in_place_is_read_anew(session_of, draw_path):
+    """A camera keeps its read of an image under the image's name: an image
+    shrunk in place has another, which the camera reads as it is then.
+    """
+    if draw_path == "ir_cairo":
+        pytest.importorskip("arachne_core")
+    scene_class = camera_scenes.ImageFillResized
+    live = _drawn_live(scene_class, 15, draw_path=draw_path)
+    assert _centre(live[0]) == (255, 0, 0)
+    assert _centre(live[-1]) == (0, 0, 255)
+    scene, drawn = render(scene_class, 15, draw_path=draw_path)
+    assert scene.timeline.record.refusal is None
+    _equal_frames(drawn, live)
+    session = session_of(scene_class.__name__, CAMERA_SCENES, draw_path=draw_path)
+    _equal_frames(
+        [np.asarray(session.frame(Fraction(k, 15))) for k in range(len(live))], live
+    )
+
+
+def _pixel_of(scene, point) -> tuple[int, int]:
+    """The pixel (row, column) the scene's camera draws ``point`` at."""
+    camera = scene.renderer.camera
+    height, width = camera.pixel_array.shape[:2]
+    x, y = point[0], point[1]
+    column = int((x / camera.frame_width + 0.5) * width)
+    row = int((0.5 - y / camera.frame_height) * height)
+    return row, column
+
+
+def test_each_camera_keeps_its_own_first_read_of_an_image(session_of):
+    """The zoomed camera first reads the image after the scene painted it,
+    the scene's camera before: one frame shows it both ways.
+    """
+    scene_class = camera_scenes.ImageFillZoomedAfterPainting
+    live = _drawn_live(scene_class, 15)
+    scene, drawn = render(scene_class, 15)
+    assert scene.timeline.record.refusal is None
+    row, column = _pixel_of(scene, scene.zoomed_display.get_center())
+    assert _centre(live[-1]) == (255, 0, 0)
+    assert tuple(int(v) for v in live[-1][row, column, :3]) == (0, 0, 255)
+    _equal_frames(drawn, live)
+    session = session_of(scene_class.__name__, CAMERA_SCENES)
+    _equal_frames(
+        [np.asarray(session.frame(Fraction(k, 15))) for k in range(len(live))], live
+    )
+
+
+def test_a_frame_drawn_as_the_scene_runs_finds_the_reads_drawn_frames_made(
+    session_of,
+):
+    """The second wait is drawn as the scene runs, after the first was drawn
+    from the record: its camera holds the image as it first read it, red,
+    though the scene painted it blue since.
+    """
+    scene_class = camera_scenes.ImageFillPaintedBeforeALivePlay
+    scene, drawn = render(scene_class, 15)
+    # Refused from the second wait on, as it began.
+    assert scene.timeline.record.refusal.startswith("draw.user_override:")
+    assert {_centre(frame) for frame in drawn} == {(255, 0, 0)}
+
+
+def _cloud_as_ce_draws(camera_width: int, configured_width: int) -> np.ndarray:
+    """The cloud of the pixel-shape scenes drawn as CE draws it: by a camera
+    ``camera_width`` wide while the configured width is ``configured_width``.
+    """
+    with tempconfig({**SMALL, "pixel_width": camera_width, "dry_run": True}):
+        camera = Camera()
+        config.pixel_width = configured_width
+        camera.capture_mobjects([camera_scenes._cloud()])
+        return camera.pixel_array.copy()
+
+
+def _answered(session, instants) -> list[np.ndarray]:
+    return [np.asarray(found.frame) for found in session.answers(instants)]
+
+
+def test_a_pixel_shape_changed_after_the_last_play_is_drawn_as_the_scene_left_it(
+    session_of,
+):
+    scene, _ = render(camera_scenes.PixelShapeChangedAtTheEnd, 15)
+    assert scene.timeline.record.refusal.startswith("config.pixel_shape:")
+    session = session_of("PixelShapeChangedAtTheEnd", CAMERA_SCENES, frame_rate=15)
+    assert session.record.refusal.startswith("config.pixel_shape:")
+    width = SMALL["pixel_width"]
+    (final,) = _answered(session, [session.record.duration])
+    np.testing.assert_array_equal(final, _cloud_as_ce_draws(width, 2 * width))
+    (first,) = _answered(session, [0])
+    np.testing.assert_array_equal(first, _cloud_as_ce_draws(width, width))
+
+
+def test_a_pixel_shape_changed_in_setup_is_drawn_as_the_scene_runs(session_of):
+    """A render draws each play as it ends, under the shape its captures
+    found; a session draws after the scene ran, under its own, so it refuses.
+    """
+    scene_class = camera_scenes.PixelShapeChangedInSetup
+    live = _drawn_live(scene_class, 15)
+    width = SMALL["pixel_width"]
+    np.testing.assert_array_equal(live[0], _cloud_as_ce_draws(width, 2 * width))
+    scene, drawn = render(scene_class, 15)
+    assert scene.timeline.record.refusal is None
+    _equal_frames(drawn, live)
+    session = session_of(scene_class.__name__, CAMERA_SCENES, frame_rate=15)
+    assert session.record.refusal.startswith("config.pixel_shape:")
+    _equal_frames(_answered(session, [Fraction(k, 15) for k in range(len(live))]), live)
+
+
+def test_a_play_refused_midway_outside_a_render_is_drawn_as_it_runs():
+    """No render can execute a scene played on its own again, so its play is
+    drawn as it runs: the pixel shape changes midway and the play completes,
+    each frame as CE draws it.
+    """
+    scene_class = camera_scenes.PixelShapeChangedMidPlay
+    live = _drawn_live(scene_class, 15)
+    frames: list[np.ndarray] = []
+    settings = {**SMALL, "frame_rate": 15, "dry_run": True, "disable_caching": True}
+    with tempconfig(settings):
+        scene = scene_class()
+
+        def write_frame(pixels, *, repeat=1):
+            frames.extend([pixels] * repeat)
+
+        scene.renderer.file_writer.write_frame = write_frame
+        scene.setup()
+        scene.construct()
+    assert not np.array_equal(live[0], live[-1])
+    _equal_frames(frames, live)
+
+
+def test_a_pixel_shape_changed_as_the_file_is_imported_is_drawn_as_it_runs(
+    session_of,
+):
+    session = session_of("PixelShapeChangedOnImport", CONFIG_SCENES, frame_rate=15)
+    assert session.record.refusal.startswith("config.pixel_shape:")
+    width = SMALL["pixel_width"]
+    expected = _cloud_as_ce_draws(2 * width, 2 * width)
+    for frame in _answered(session, [Fraction(k, 15) for k in range(3)]):
+        np.testing.assert_array_equal(frame, expected)

@@ -68,6 +68,8 @@ if TYPE_CHECKING:
     from arachne.mobject.mobject import Mobject
     from arachne.scene.scene import Scene
 
+    from .vectorized import VectorPlan
+
 
 #: The recorders whose scene's script is running, the innermost last.
 _RUNNING: list[Recorder] = []
@@ -277,6 +279,9 @@ class PlayRun:
         #: A state-function play's last restore point, which the next shares
         #: what is unchanged with.
         self._point: RestorePoint | None = None
+        #: A trusted play's values at its kept instants, when its route
+        #: computed them at once (:mod:`.vectorized`).
+        self.vector: VectorPlan | None = None
 
     def set_clock(self, instant: Fraction) -> None:
         """Make the scene clock read ``instant``, drawing first whatever frames
@@ -332,8 +337,10 @@ class PlayRun:
             # trusted play's animations' state; a state-function play's
             # restore point (:mod:`.restore`), its animations' state included.
             if play.route == "trusted":
-                play._animation_states[capture.seq] = snapshot_animations(
-                    play._animations
+                play._animation_states[capture.seq] = (
+                    self.vector.snapshot()
+                    if self.vector is not None
+                    else snapshot_animations(play._animations)
                 )
             elif play.route == "state":
                 self._point = restore_point(self.scene, play, self._point)
@@ -532,6 +539,12 @@ class Recorder:
             raise ValueError(f"states is 'none', 'armed' or 'all', not {states!r}")
         self.scene = scene
         self.grid = exact(grid) if grid is not None else None
+        #: The configured pixel shape the frames its record draws are drawn
+        #: at (``Record.pixel_shape_changed``): for a session, as it was
+        #: configured before it imported the scene's file, which it draws
+        #: under after the scene ran; ``None`` for a render, which draws each
+        #: play as it ends, at the shape its first drawn capture found.
+        self.configured_pixel_shape: tuple[int, int] | None = None
         self.draws = draws
         self.stepping = stepping
         self.on_step = on_step
@@ -590,6 +603,7 @@ class Recorder:
                 identity=Identity(source_digest=None, seed=scene.random_seed),
             )
             self.record.execution = self.execution
+            self.record._pixel_shape = self.configured_pixel_shape
             if self.exits == "all":
                 self.record.exits = {}
                 self.record.entries = {}
@@ -850,6 +864,11 @@ class Recorder:
             extras = CameraExtras.observe(camera, None)
             now = self.scene.time
             record.final = record._capture("final", now, camera_nodes(camera), extras)
+            # What the final capture found that the record can't draw, as a
+            # play's captures refuse it.
+            found = record.entry_refusal()
+            if record.refusal is None:
+                record.refusal = found
             self.read_watches(now)
             record.duration = max(record.duration, now)
             if record.plays:
@@ -921,9 +940,12 @@ class Recorder:
         skipped: bool,
         cache_key: str | None,
         live: LiveFrames | None = None,
+        live_reason: str | None = None,
     ) -> PlayRecord:
         """Run the play the scene has compiled, and record it. ``live`` draws
-        its frames while it runs, for a record that can't (``Record.refusal``).
+        its frames while it runs, for a record that can't (``Record.refusal``)
+        or, with ``live_reason``, one whose frames are drawn as it runs all the
+        same (:data:`.execution.UNREPEATABLE`).
         """
         from arachne.animation.animation import Wait
 
@@ -972,6 +994,7 @@ class Recorder:
             play.play_internal_overridden = bool(scene_hooks(scene, ("play_internal",)))
             extras = CameraExtras.observe(scene.renderer.camera, None)
             body = _Body(play, refusal, live, extras)
+            body.live_reason = live_reason
             try:
                 play.static_seq = self.capture("static", start, play, extras).seq
                 if live is not None:
@@ -1050,7 +1073,7 @@ class Recorder:
             plan,
             held=play.held,
             base_dir=_base_dir(record),
-            refusal=body.refusal,
+            refusal=body.refusal or body.live_reason,
             demoted=self._demoted(play),
         )
         play.admission = admission
@@ -1328,6 +1351,8 @@ class _Body:
         self.play = play
         self.refusal = refusal
         self.live = live
+        #: Why a play the record could draw is drawn as it runs.
+        self.live_reason: str | None = None
         self.extras = extras
         self.run: PlayRun | None = None
         self.plan: EventPlan | None = None

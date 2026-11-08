@@ -24,6 +24,7 @@ from arachne import (
     Text,
     ValueTracker,
     VGroup,
+    VMobject,
     there_and_back,
 )
 from arachne.lint.bridge import apart, arm, clear, declare, record, sweep, watch
@@ -296,6 +297,20 @@ class MemberReplaced(Scene):
     def construct(self):
         camera = self.renderer.camera
         camera.get_coords_of_all_pixels = lambda: None
+        _plays(self)
+
+
+class DisplayReplaced(Scene):
+    """The camera's display function for vectorized mobjects is the scene's,
+    in place of the engine's.
+    """
+
+    def construct(self):
+        display = self.renderer.camera.display_funcs
+        original = display[VMobject]
+        display[VMobject] = lambda mobjects, pixel_array: original(
+            mobjects, pixel_array
+        )
         _plays(self)
 
 

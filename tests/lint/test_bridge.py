@@ -388,6 +388,7 @@ def test_an_unknown_code_or_a_missing_reference_is_refused(session_of, scene, er
         ("InstanceReplaced", "Camera.get_mobjects_to_display (on the instance)"),
         ("ClassReplaced", "Camera.get_mobjects_to_display (on the class)"),
         ("MemberReplaced", "Camera.get_coords_of_all_pixels (on the instance)"),
+        ("DisplayReplaced", "Camera.display_funcs[VMobject] (on the display_funcs)"),
     ],
 )
 def test_a_replaced_camera_method_keeps_the_record_and_marks_its_queries(

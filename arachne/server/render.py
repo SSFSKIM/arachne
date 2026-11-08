@@ -11,6 +11,9 @@ it was, and the rename is atomic, so ``out`` is only ever the file before
 or the render. A render is a render as the command line makes it: the
 scene's own recorder, at the quality's pixel size and frame rate, the plays
 it leaves out executed all the same, as ``-n first,last`` executes them.
+With a typesetting directory named, it typesets nothing the session's
+execution did; with none, it typesets into its own media directory, as the
+command line does.
 """
 
 from __future__ import annotations

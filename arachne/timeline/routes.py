@@ -9,7 +9,8 @@ route a play takes is decided when it begins (:mod:`.admission`).
   instants and at the frames a render draws, and at any other instant it is
   evaluated exactly there: the recorded state at the last of those instants
   before it is installed and the play's animations are interpolated to the
-  instant (answer ``"analytic"``).
+  instant (answer ``"analytic"``). Its values at the instants it keeps may
+  be computed at once as it begins (``vectorize_trusted``, :mod:`.vectorized`).
 - ``"state"`` (route 2): the play is sampled at the instants its consumer
   reads (a render's frame grid; a session's 60 Hz tick) and at its events;
   at any other instant it is restored from its latest kept capture before
@@ -44,6 +45,7 @@ __all__ = [
     "TickedRoute",
     "TrustedRoute",
     "Unavailable",
+    "animation_state",
     "answer",
     "draw",
     "evaluate_instant",
@@ -211,13 +213,21 @@ class _SampledRoute:
     def run(self, run: PlayRun, plan: EventPlan) -> None:
         if _held(run):
             return
+        self.evaluate(run, plan, self.instants(run, plan))
+
+    def instants(self, run: PlayRun, plan: EventPlan) -> list[Fraction]:
+        """The instants the play is evaluated and kept at, in order."""
         start, end = run.start, run.requested_end
         asked = run.recorder.instants
-        instants = sorted(
+        return sorted(
             {start, *plan.instants(start, end)}
             | {t for t in self.consumer_instants(run) if start <= t < end}
             | {t for t in asked if start <= t < end}
         )
+
+    def evaluate(self, run: PlayRun, plan: EventPlan, instants: list[Fraction]) -> None:
+        """Evaluate the play at each of ``instants`` and keep every one."""
+        start, end = run.start, run.requested_end
         progress = run.progress(instants)
         previous = start
         try:
@@ -239,6 +249,55 @@ class TrustedRoute(_SampledRoute):
     """Route 1: analytic at any instant."""
 
     name = "trusted"
+
+    def run(self, run: PlayRun, plan: EventPlan) -> None:
+        from arachne import config
+
+        if _held(run):
+            return
+        instants = self.instants(run, plan)
+        if not config.vectorize_trusted or _runs_scene_code(run, plan):
+            self.evaluate(run, plan, instants)
+            return
+        from arachne.animation.animation import keeping_families
+
+        from . import vectorized
+        from .trusted import iter_animations
+
+        # Nothing but the play's own animations runs while it is evaluated,
+        # and they change no family's members: admission refuses updaters
+        # and callbacks, and parts that run at once and write one mobject.
+        # So their values at every instant can be computed now, unless the
+        # play is evaluated at one instant only, which has nothing to batch.
+        animations = run.play._animations
+        vector = (
+            vectorized.plan(animations, instants, run.start)
+            if len(instants) > 1
+            else None
+        )
+        if vector is None:
+            with keeping_families(iter_animations(animations)):
+                self.evaluate(run, plan, instants)
+            return
+        run.play.vectorized = True
+        run.vector = vector
+        with vectorized.installing(vector):
+            self.evaluate(run, plan, instants)
+
+
+def _runs_scene_code(run: PlayRun, plan: EventPlan) -> bool:
+    """Whether the scene's own code may run while a trusted play is
+    evaluated, where admission does not look: the scene's frame hooks, a
+    watch the record reads at every kept capture, or a part that begins
+    while the play runs (only a ``Succession`` begins one), which may call
+    the scene's functions (``ApplyFunction``'s) and its own ``add`` as it
+    begins. Any of them may change a family's members.
+    """
+    return (
+        bool(run.play.frame_hooks)
+        or run.recorder.ensure_record().bridge.watching
+        or bool(plan.successions)
+    )
 
 
 class StateRoute(_SampledRoute):
@@ -298,16 +357,24 @@ def snapshot_animations(
     a read-only view changes with its base), and its path function holding
     detached copies of the arrays it binds.
     """
-    from .rates import frozen_path
     from .trusted import iter_animations
 
-    snapshot = []
-    for animation in iter_animations(animations):
-        state = _copied(vars(animation))
-        if state.get("_path_func") is not None:
-            state["_path_func"] = frozen_path(state["_path_func"])
-        snapshot.append((animation, state))
-    return tuple(snapshot)
+    return tuple(
+        (animation, animation_state(animation))
+        for animation in iter_animations(animations)
+    )
+
+
+def animation_state(animation: Any) -> dict[str, Any]:
+    """What one animation's ``__dict__`` holds now, as
+    :func:`snapshot_animations` keeps it.
+    """
+    from .rates import frozen_path
+
+    state = _copied(vars(animation))
+    if state.get("_path_func") is not None:
+        state["_path_func"] = frozen_path(state["_path_func"])
+    return state
 
 
 def _copied(state: dict[str, Any]) -> dict[str, Any]:

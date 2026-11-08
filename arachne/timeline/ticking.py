@@ -63,7 +63,6 @@ __all__ = [
 import contextlib
 import dis
 import functools
-import inspect
 import types
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
@@ -153,8 +152,10 @@ def takes_dt(updater: Any) -> bool:
     """Whether ``updater`` has a ``dt`` parameter, as :meth:`.Mobject.update`
     decides which form to call.
     """
+    from arachne.mobject.updater_kind import takes_dt as signature_takes_dt
+
     try:
-        return "dt" in inspect.signature(updater).parameters
+        return signature_takes_dt(updater)
     except (TypeError, ValueError):
         return True
 

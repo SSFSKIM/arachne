@@ -376,6 +376,62 @@ lifted.
   uploads across restores (they are immutable), or give the restore a
   copy-on-write view of the record's stream.
 
+## Draw reuse (`arachne/timeline/draw.py`)
+
+- **Whether a drawing reuses frames is decided when it is made.** `Drawing` checks its camera's class and replaced
+  methods once, as it is constructed. A caller that replaces a camera method while it still holds that drawing
+  can be given a frame drawn before the change. The engine makes a new drawing for every play and every session
+  operation, so none of its paths does this, and it is not a supported use. Direction: none unless a caller
+  needs to patch a camera mid-drawing; then the check moves to each frame.
+- **A write through a frozen value's owning array is not supported.** A camera's background, a mobject's points
+  and an image's pixels are read-only arrays that refuse writes and refuse being made writable, and draw reuse
+  keys them by identity: a change makes a new array. The plain array that owns their memory (`.base`) can still
+  be made writable and written; a frame reused after such a write shows the value before it, as would anything
+  else that shares the value. Direction: none; a change goes through the setters.
+
+## What a frame drawn from the record reads (`arachne/timeline/record.py`)
+
+- **A display of another camera costs one picture a play.** A display of a camera the scene's camera does not draw
+  into keeps that camera's picture once a play (`Capture.pictures`), shared with the play before while it is the
+  same: a picture that changes only between plays costs one copy a play, 7.9 MiB at 1920x1080 and 1.6 MiB at
+  854x480, kept for the execution. A picture that changes during a play refuses the record from that play
+  (`camera.display_redrawn`), so the scene is executed again and drawn as it runs from there, rather than keep a
+  copy at each capture (7.9 MiB each at 1920x1080, about 4.7 GB for ten seconds at 60 fps). Each capture compares
+  the picture with the last one kept: 0.6 to 0.7 ms at 1920x1080, 0.1 ms at 854x480. Reproducers:
+  `tests/timeline/test_cameras.py::test_a_display_repainted_between_plays_keeps_a_picture_a_play` and
+  `::test_a_display_repainted_during_a_play_draws_that_play_live`.
+- **An execution summary does not cover a capture's depth references or pictures.** `summarize` digests each
+  capture's mobject states, lists and camera inputs, not `Capture.references` (a depth reference point the scene
+  may not hold) nor `Capture.pictures` (another camera's picture). Two executions that differ only there summarise
+  alike, so a comparison of them reports no divergence where there is one: the probe's (`Session.compare`), a
+  forward run's (`fallback.py`) and a render's self-check (`server/render.py`). No frame is wrong for it: a
+  summary selects no frame and no answer (each run draws from its own record, and kept answers are keyed by
+  manifest, not by summary), so what is lost is a report. A summary needs, per capture, each reference's mobject
+  position and point, and each picture's display position and a digest of its pixels (one per kept array, by
+  identity, as the background's should be). A content key (`RegisteredState.content_key`,
+  `PlayRecord.sample_keys`) is a state's, and neither is part of one.
+- **Not debt: an image painted in place at its size keeps showing the pixels first read.** A camera keeps its
+  read of a fill's image per name (`str(image)`, `BackgroundColoredVMobjectDisplayer.get_background_array`),
+  so a scene that paints into the image without changing its name (its mode, size or identity) goes on showing
+  the pixels that camera read first; drawing from the record does the same (`Record.image_read`). A renamed
+  image (shrunk in place) is read anew, and each camera keeps its own reads. Reproducers:
+  `tests/timeline/test_cameras.py::test_an_image_painted_in_place_is_drawn_as_the_camera_first_read_it`,
+  `::test_an_image_renamed_in_place_is_read_anew`, `::test_each_camera_keeps_its_own_first_read_of_an_image`.
+- **On `ir_cairo`, a path filled from an image can't be drawn inside a display.** A frame is one description,
+  one record per mobject, and a display's camera reads the image at its own pixel shape, so a path both cameras
+  draw is `render.unable` ("drawn two ways in one frame"); before, the display's drawer, which is given no
+  images, failed to open the image's name as a file. `cairo` draws it. Remedy: a record per camera for a path
+  with a fill image, or a display's images seeded as the main camera's are (`CairoDrawer._seed_images`).
+  Reproducer: `camera_scenes.ImageFillZoomedAfterPainting` rendered with `draw_path="ir_cairo"`.
+- **`ir_cairo` raises `render.unable` in cases `cairo` draws.** Among them: a path filled from an image that
+  also appears inside a display (above), and a camera with a non-default `rgb_max_val` or pixel dtype. That is
+  the path's contract: a frame it can't describe is named, never drawn wrong. Whether such a frame should
+  instead fall back to `cairo`, frame by frame, is an open design question for `ir_cairo`.
+- **Replacing an engine module's function is not traced.** The draw-reads test sees reads of mobjects, cameras, the
+  configuration, the camera's display functions and the files a drawing opens, not which module function a draw
+  calls. A scene that replaces one (`camera.py`'s, `vectorized_mobject.py`'s helpers) runs its own code where the
+  engine's ran; drawing from the record does not vouch for it, as it does not for a replaced class member.
+
 ## The construction caches (`arachne/mobject/construction_caches.py`)
 
 - **An image built from the cache is the image parsing built; CE's is not.** In Manim Community Edition a
@@ -400,6 +456,75 @@ lifted.
   (`arachne/mobject/svg/svg_mobject.py`, tests `tests/module/mobject/svg/test_svg_mobject.py`, the "same-named"
   ones). No two engine classes share a name, so a scene that defines no such class finds every image it found
   before.
+
+## The typesetting cache (`arachne/utils/typeset_cache.py`, `arachne/utils/typeset_fonts.py`)
+
+- **A Tex key knows the files a compile may read only from the outside.** It covers:
+  - the whole source, the compilers with their `--version` output, and `dvisvgm --version=yes` (its libraries);
+  - for PDF output, `mutool` and `gs`;
+  - the digest of the distribution's package database (`tlpkg/texlive.tlpdb` under `kpsewhich`'s
+    `TEXMFROOT`);
+  - the environment's TeX search variables (`TEXINPUTS` and the other `TEX*`, `*INPUTS` and `*FONTS` names);
+  - for XeLaTeX and LuaLaTeX, the system fonts `fontspec` can load: the digest of fontconfig's list (`fc-list`,
+    each font's file, index and version, sorted, asked once per process) and `OSFONTDIR`;
+  - the working directory, with these files there:
+    - every file of a suffix only TeX reads (`.sty .cls .clo .fd .def .ltx .tfm .vf .pfb .pfa .afm .enc .map`),
+      whatever its name, so a package loaded in turn (a local `amsbsy.sty` under `amsmath`) or a size option
+      file (`size12.clo`) counts;
+    - under XeLaTeX and LuaLaTeX, every `.otf`, `.ttf` and `.ttc` (fonts loaded by file name);
+    - the `.cfg` of each package and class the source loads (`\usepackage`, `\RequirePackage`,
+      `\documentclass`, `\LoadClass`), by name, since `.cfg` names are common outside TeX;
+    - each file the source reads through `\input`, `\include`, `\import`/`\subimport` (directory and file),
+      `\inputminted` (its file argument), `\includegraphics` (an extensionless name with the usual graphics
+      suffixes), `\includesvg`, `\includepdf`, `\includestandalone`, `\lstinputlisting`, `\verbatiminput`,
+      `\InputIfFileExists` and `\IfFileExists`.
+
+  Known misses, each a file the compile reads that the key does not cover:
+  - a file reached through a directory those variables name, or in the trees `TEXMFHOME` and `TEXMFLOCAL`
+    (packages installed outside the distribution's database);
+  - a `.cfg`, `.tex` or `.bib` beside the process that a package reads in turn under a name the source does not
+    use;
+  - `\usepackage`, `\documentclass` and `\RequirePackage` naming a path in a subdirectory;
+  - a stream opened for `\read`, and the packages that read data files that way (`datatool`, `pgfplotstable`,
+    `csvsimple`);
+  - fontspec's `Path=` option, and fonts a process installs after its first XeLaTeX or LuaLaTeX key;
+  - `\special{psfile=…}` and other driver specials naming a file;
+  - `\graphicspath`, which moves where `\includegraphics` and `\includesvg` look;
+  - a brace-less `\input file`, and any file named through a macro rather than a literal argument.
+
+  Where the key cannot see what a compile reads, it names the host (its hostname, `/etc/machine-id` and boot id,
+  where it has them; on macOS only the hostname): a distribution with no `texlive.tlpdb`, and XeLaTeX or LuaLaTeX
+  where `fc-list` is missing or, on macOS, is not what they load fonts through (XeTeX asks CoreText there).
+  Direction: compile with `-recorder` and key each file by the files its `.fls` lists, read on the next lookup (a
+  file is kept with the list of what it read). That removes every miss above at once, and is the fix if hosts with
+  local TeX trees, or sources that read files beside the process, ever share one directory.
+- **The fonts a Text is shaped with are read through Pango's public structs by `ctypes`.** Each span is laid out
+  as ManimPango lays it out, and each run's font is read from `PangoItem.analysis.font`. The digest covers the
+  font's data as HarfBuzz holds it (the font file, else its tables), cached by description, `head` table and
+  size.
+  - The field offsets are Pango's public ABI, checked at load on a one-character English layout: its one run's
+    item, then its language (an interned pointer, compared with the layout's without following it), before its
+    font is followed. Where that check fails, or ManimPango exports none of the symbols, Text keys by the host and
+    is not shared across hosts. Each font is held by a reference while its layout is read, so a freed font's
+    address never names another.
+  - The first Text in a process pays for loading and for hashing each font it uses: about 0.8 s on macOS for
+    Latin plus a CJK fallback font, then about 0.1 ms per Text.
+- **Contended strings are typeset more than once, and failed compiles leave scratch.**
+  - Writers take no lock. Two processes that miss one string at once both compile it, and the later rename
+    replaces the earlier file with the same bytes
+    (`tests/utils/test_typeset_cache.py::test_a_process_never_reads_an_svg_another_is_still_writing`).
+  - A compile that fails keeps its scratch directory, with its log, under `scratch/`, and nothing removes it.
+
+  Owner: the cache's maintainer, before a shared directory is relied on. Direction: remove scratch
+  directories older than a day as a directory is opened, and take a lock file per key around a miss if contended
+  starts ever cost.
+- **Without a typesetting directory, SVGs are parsed as CE parses them, racing.** `SVGMobject.generate_mobject`
+  writes the modified SVG to `<name>_.svg` beside the file, parses it and removes it. Two processes loading one
+  SVG (an asset shared by renders running at once) remove each other's copy, giving `FileNotFoundError`, or parse
+  it half written. A directory the process cannot write to fails too. With `typeset_dir` named, the same bytes
+  are parsed from memory
+  (`tests/utils/test_typeset_cache.py::test_an_svg_is_parsed_through_no_file_another_process_shares`).
+  Direction: parse from memory always, once CE's behaviour stops being the reference for this.
 
 ## The session server (`arachne/server/`)
 
@@ -482,3 +607,26 @@ lifted.
   belongs with giving the core canonical float inputs, the same bits on
   every machine, after which the test can be exact again; short of that,
   a tolerance against each axis's own extent.
+
+## Configuration (`arachne/_config/utils.py`)
+
+- **A misspelt key in a config file is ignored.** Setting an unknown option from code raises (deliberate break 7:
+  as an attribute, an item, in `tempconfig` or a session's configuration), but an unknown key in a `.cfg` file's
+  `[CLI]` section is read by nothing and passes silently, as in Manim Community Edition: `vectorise_trusted = False`
+  leaves `vectorize_trusted` on. Only the removed options are refused there (`tests/test_config_removed.py`).
+  Direction: refuse an unknown `[CLI]` key, naming the nearest option, once the keys that sections legitimately carry
+  beside the options (plugins' among them) are listed.
+
+## Vectorized trusted plays (`arachne/timeline/vectorized.py`)
+
+- **A trusted play with a `Succession` is evaluated frame by frame.** A part that begins while the play runs may
+  run the scene's code as it begins (`ApplyFunction`'s function, the scene's own `add`), which can change what any
+  other part interpolates from then on, so no value of the play is computed ahead. Direction: compute each part's
+  values from its own begin, and every other part's again from each event, if the share of render time such plays
+  take justifies it.
+- **Only straight-path blends and reveals are computed ahead.** Arc and circle paths (`ClockwiseTransform`,
+  `CyclicReplace`, `Swap`, `SpinInFromNothing`, any `path_arc`), `Rotate`, `Rotating`, `Write`, `Unwrite`,
+  `DrawBorderThenFill`, and mobjects that interpolate their own way (images, point clouds, `ValueTracker`) keep the
+  whole play on the frame-by-frame path. An instant between kept ones (a session's `frame(t)`) and the painter's
+  terms (`PlayRecord.leaf_terms`) are evaluated by the animations themselves, as without the lever. Direction: the
+  same treatment for arc paths, whose formula is CE's `path_along_arc`, once the share they take is measured.
