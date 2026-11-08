@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from PIL import Image
 
 from arachne import LEFT, RIGHT, Circle, Create, Dot, Scene, Square, VMobject, config
 from arachne.mobject.mobject import Mobject
+from arachne.timeline.record import Record
 from tests.helpers import draw_reads
 
 from .conftest import render
@@ -77,6 +79,13 @@ class ReplacesADisplayFunction(Scene):
         self.play(Create(Square()), run_time=0.2)
 
 
+class FilledFromAnImage(Scene):
+    def construct(self):
+        circle = Circle(fill_opacity=1)
+        circle.color_using_background_image(Image.new("RGBA", (4, 4), (255, 0, 0, 255)))
+        self.play(circle.animate.shift(RIGHT), run_time=0.2)
+
+
 class Plain(Scene):
     def construct(self):
         square, circle = Square(), Circle().shift(RIGHT)
@@ -120,6 +129,19 @@ def test_a_display_function_the_scene_replaced_is_found(tracing):
         "arachne.camera.camera.Camera",
         "display_funcs[VMobject]",
         "a display function the engine did not define",
+    ) in _found(tracing)
+
+
+def test_an_image_the_record_keeps_by_reference_is_found(tracing, monkeypatch):
+    render(FilledFromAnImage, 15)
+    assert tracing.take() == []
+    # Drawn with the scene's own image, not the record's copy of it.
+    monkeypatch.setattr(Record, "kept_image", lambda record, image: None)
+    render(FilledFromAnImage, 15)
+    assert (
+        "arachne.mobject.geometry.arc.Circle",
+        "background_image",
+        "an image the record keeps by reference, which can be painted in place",
     ) in _found(tracing)
 
 

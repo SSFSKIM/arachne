@@ -10,8 +10,9 @@ display functions or a file must be one of:
 
 - a field of a mobject's state as the record gave it for the frame's
   capture (a key of its ``__dict__``, present or absent), the mobject still
-  holding it, and a value the record does not hold by reference to memory
-  that can be written in place;
+  holding it, and a value nothing can change in place since: a plain value,
+  a read-only array, a mobject (checked as any), or a type of
+  :data:`IMMUTABLE_TYPES`;
 - a keyed camera field: a camera input the capture recorded, holding the
   recorded value, or one the record installs from them;
 - an entry of a reviewed list below, with why the record need not hold it.
@@ -46,6 +47,7 @@ checked against what the description gives them (:data:`DRAWER_PROXIES`,
 
 from __future__ import annotations
 
+import enum
 import functools
 import importlib
 import os
@@ -167,6 +169,26 @@ MOBJECT_CONSTANTS: dict[str, str] = {
         "``__class__``: a mobject's class is the one it was made with."
     ),
 }
+
+#: Types of a value a drawing reads off a recorded state, beyond the plain
+#: ones, that nothing can change in place, and why.
+IMMUTABLE_TYPES: dict[str, str] = {
+    "arachne.mobject.values.Paint": (
+        "A vectorized mobject's style as one immutable value, its arrays frozen."
+    ),
+    "arachne.timeline.record.DepthReference": (
+        "A depth reference point the record made at a capture, its centre a "
+        "read-only array."
+    ),
+}
+
+#: A value of a recorded state whose drawing inputs the record keeps apart.
+KEPT_APART = (
+    "A display's camera, whose picture the record keeps per play "
+    "(``Capture.pictures``) or whose inputs it records per capture "
+    "(``CameraExtras.sub_cameras``); or the record's copy of a fill's image "
+    "(``Record.kept_image``)."
+)
 
 #: Mobjects the drawing makes for itself, by type, and why reading them reads
 #: no state of the scene's.
@@ -734,7 +756,7 @@ class Tracer:
         if why is not None or name == "__dict__":
             return why
         if name in own and name not in frame.written.get(id(mob), ()):
-            return _held_by_reference(name, own[name])
+            return _held_by_reference(name, own[name], frame.drawing.record)
         return None
 
     def _given_why(self, frame: _Frame, mob: Any) -> str | None:
@@ -1010,21 +1032,57 @@ def _same_state(state: Any, own: dict[str, Any], written: set[str]) -> bool:
     return True
 
 
-def _held_by_reference(name: str, value: Any) -> str | None:
+def _held_by_reference(name: str, value: Any, record: Any) -> str | None:
     """Why ``value``, a field of a recorded state, is not held by the record
-    as it was at the capture: an array or a container the record keeps by
-    reference that can be written in place. ``None`` when it can't.
+    as it was at the capture: an object the record keeps by reference that
+    can be changed in place. ``None`` when it can't.
     """
+    from arachne.camera.camera import Camera
+    from arachne.mobject.mobject import Mobject
+    from arachne.timeline.frozen import engine_code
+
+    if isinstance(value, np.ndarray):
+        if _immutable(value):
+            return None
+        return "an array the record keeps by reference, writable in place"
+    if isinstance(value, (list, dict, set, bytearray)):
+        if name in _LISTS:
+            return None  # kept by their contents
+        return f"a {type(value).__name__} the record keeps by reference"
+    if isinstance(value, Mobject):
+        return None  # its state is checked as any mobject's
+    if isinstance(value, Camera) or record.holds_image(value):
+        return None  # KEPT_APART
+    if isinstance(value, types.FunctionType):
+        return None if engine_code(value) else "a function the engine did not define"
+    if _immutable(value):
+        return None
+    kind = type(value)
+    if f"{kind.__module__}.{kind.__qualname__}" == "PIL.Image.Image":
+        return "an image the record keeps by reference, which can be painted in place"
+    return (
+        f"a {kind.__module__}.{kind.__qualname__} the record keeps by reference, "
+        "which no list entry says is immutable"
+    )
+
+
+#: Plain values: nothing changes one in place.
+_PLAIN = (type(None), bool, int, float, complex, str, bytes, np.generic, enum.Enum)
+
+
+def _immutable(value: Any) -> bool:
     if isinstance(value, np.ndarray):
         array: Any = value
         while isinstance(array, np.ndarray):
             if array.flags.writeable:
-                return "an array the record keeps by reference, writable in place"
+                return False
             array = array.base
-        return None
-    if isinstance(value, (list, dict, set, bytearray)) and name not in _LISTS:
-        return f"a {type(value).__name__} the record keeps by reference"
-    return None
+        return True
+    if isinstance(value, _PLAIN):
+        return True
+    if isinstance(value, (tuple, frozenset)):
+        return all(_immutable(item) for item in value)
+    return _type_name(value) in IMMUTABLE_TYPES
 
 
 def _live_family(roots: list[Any]) -> Iterator[Any]:
