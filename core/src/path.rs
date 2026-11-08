@@ -2829,7 +2829,7 @@ mod tests {
 
     /// Over the points `at`, the worst move over reach of the key read on the centreline
     /// `curve_depth` makes of `drawn` (through `map`, keyed by [`down_z`]) to the one it makes of
-    /// each of `contents` (each point within `shift` of `drawn`'s on screen, at its depth),
+    /// each of `contents` (each point within `shift` of `drawn`'s on screen, keyed within `share`),
     /// against the bound read on the drawn one at `body`; with `fill`, every way a stroke on its
     /// own fill allows (its read, or the nearer of it and the fill's, on each side). The ratio,
     /// where, the move and the reach.
@@ -2849,7 +2849,11 @@ mod tests {
             assert_eq!(c.len(), drawn.len());
             for (q, d) in c.iter().zip(drawn) {
                 let (a, b) = (map.apply(*q), map.apply(*d));
-                assert!(libm::hypot(a[0] - b[0], a[1] - b[1]) <= shift && q[2] == d[2]);
+                let (kq, kd) = (p.factor(q[2]), p.factor(d[2]));
+                assert!(
+                    libm::hypot(a[0] - b[0], a[1] - b[1]) <= shift
+                        && (kq - kd).abs() <= share * kd.abs()
+                );
             }
         }
         let line = curve_depth(drawn, map, &p);
@@ -2946,9 +2950,18 @@ mod tests {
     /// (on screen along y), of the contents with its ends moved apart and together along it by
     /// `delta` and of 16 seeded moves of every point by `delta`.
     fn step_row(drawn: &[[f64; 3]], delta: f64, seed: u64) -> (f64, [f64; 2], f64, f64) {
+        step_row_with(drawn, delta, seed, Vec::new())
+    }
+
+    /// [`step_row`] with the contents `more` beside its own.
+    fn step_row_with(
+        drawn: &[[f64; 3]],
+        delta: f64,
+        seed: u64,
+        mut contents: Vec<Vec<[f64; 3]>>,
+    ) -> (f64, [f64; 2], f64, f64) {
         let map = FrameMap::cairo(1280, 720, 1280.0 / 90.0, 8.0, [0.0; 3]);
         let shift = delta * map.xx * (1.0 + 1e-6);
-        let mut contents = Vec::new();
         for s in [-1.0, 1.0] {
             let mut c = drawn.to_vec();
             c[0][1] -= s * delta;
@@ -2965,6 +2978,13 @@ mod tests {
             }
             contents.push(c);
         }
+        let points = across(drawn, &map);
+        worst_over_reach(drawn, &contents, &map, &points, 3.0, shift, 0.0, false)
+    }
+
+    /// The points a stroke 6 px wide is read at across `drawn` (on screen along y): 0.1 px apart,
+    /// 3 px either side of its first point and 0.5 px past its points' ends.
+    fn across(drawn: &[[f64; 3]], map: &FrameMap) -> Vec<[f64; 2]> {
         let ys: Vec<f64> = drawn.iter().map(|q| map.apply(*q)[1]).collect();
         let x = map.apply(drawn[0])[0];
         let (y0, y1) = ys
@@ -2972,8 +2992,7 @@ mod tests {
             .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, m), y| {
                 (l.min(*y), m.max(*y))
             });
-        let points = grid(x - 3.0, x + 3.0, y0 - 0.5, y1 + 0.5, 0.1);
-        worst_over_reach(drawn, &contents, &map, &points, 3.0, shift, 0.0, false)
+        grid(x - 3.0, x + 3.0, y0 - 0.5, y1 + 0.5, 0.1)
     }
 
     /// A cubic straight on screen in a plane through the eye, 5 to 15 deep before a camera 20 away
@@ -3020,6 +3039,224 @@ mod tests {
             ratio <= 1.0,
             "at {p:?}: the key moved by {moved_by:e} against its reach {reach:e}"
         );
+    }
+
+    /// The folding cubic of the row above 5.5 shifts short of its step, its points also moved
+    /// back and forth along the chord in turn: each leg then lengthens by twice the shift, the
+    /// polygon by six shifts, across the step. The step is charged within that window.
+    #[test]
+    fn at_a_piece_count_step_a_cubic_folding_back_5_5_shifts_short_takes_the_band() {
+        let delta = 1.8e-5;
+        let at = |px: f64, z: f64| [6.0, px / 90.0, z];
+        let drawn = [
+            at(0.0, 5.0),
+            at(24.0, 5.0 + 10.0 / 3.0),
+            at(-4.0, 5.0 + 20.0 / 3.0),
+            [6.0, 20.0 / 90.0 - 5.5 * delta, 15.0],
+        ];
+        let turns = [-1.0, 1.0].map(|s| {
+            let mut c = drawn.to_vec();
+            for (j, q) in c.iter_mut().enumerate() {
+                let sign = if j % 2 == 0 { -s } else { s };
+                q[1] += sign * delta;
+            }
+            c
+        });
+        let (ratio, p, moved_by, reach) =
+            step_row_with(&drawn, delta, 0xa54f_f53a_5f1d_36f1, turns.to_vec());
+        eprintln!(
+            "TIGHT piece-count step, folding back 5.5 shifts short: {ratio:.3} at worst, at {p:?}"
+        );
+        assert!(
+            ratio <= 1.0,
+            "at {p:?}: the key moved by {moved_by:e} against its reach {reach:e}"
+        );
+    }
+
+    /// The depth-curved cubic at its step, its interior control points 2.5 shifts off its chord
+    /// on screen: within the gate (`(2 + 2 |u'|) shift`, about 3.3 shifts here), so its pieces
+    /// still take the step.
+    #[test]
+    fn at_a_piece_count_step_a_depth_curved_cubic_bent_within_the_gate_takes_the_step() {
+        let delta = 1.8e-5;
+        let mut drawn = straight([6.0, 0.0, 5.0], [6.0, 0.4, 15.0]);
+        for q in &mut drawn[1..3] {
+            q[0] += 2.5 * delta;
+        }
+        let (ratio, p, moved_by, reach) = step_row(&drawn, delta, 0x510e_527f_ade6_82d1);
+        eprintln!("TIGHT piece-count step, bent 2.5 shifts: {ratio:.3} at worst, at {p:?}");
+        assert!(
+            ratio <= 1.0,
+            "at {p:?}: the key moved by {moved_by:e} against its reach {reach:e}"
+        );
+    }
+
+    /// A cubic whose chord may turn freely (0.0009 px, under four shifts): its interior control
+    /// points 1 px off its ends, its control polygon 1.9991 px, by the step from one piece to two,
+    /// keyed `-4/3` at its first point and on the line through its ends in place along the chord
+    /// and key, 0.3 nearer the eye at its interior points. Drawn as one piece, it may be cut into
+    /// two whose shared point lies at the far side of the loop: the read takes the span, though
+    /// its band is none.
+    #[test]
+    fn at_a_piece_count_step_a_cubic_whose_chord_may_turn_freely_takes_its_span() {
+        let delta = 1.8e-5;
+        let at = |px: f64, key: f64| [6.0, px / 90.0, depth_of(key)];
+        let (k0, chord) = (-4.0 / 3.0, 0.0009);
+        let drawn = [
+            at(0.0, k0),
+            at(1.0, k0 - 0.3),
+            at(1.0, k0 - 0.3),
+            at(chord, k0 - 0.3 * chord),
+        ];
+        let mut out = Vec::new();
+        for s in [-1.0, 1.0] {
+            for j in [1, 2] {
+                let mut c = drawn.to_vec();
+                c[j][1] += s * delta;
+                out.push(c);
+            }
+        }
+        let (ratio, p, moved_by, reach) = step_row_with(&drawn, delta, 0x9b05_688c_2b3e_6c1f, out);
+        eprintln!("TIGHT piece-count step, free chord: {ratio:.3} at worst, at {p:?}");
+        assert!(
+            ratio <= 1.0,
+            "at {p:?}: the key moved by {moved_by:e} against its reach {reach:e}"
+        );
+    }
+
+    /// The depth [`down_z`] keys `key` (negative).
+    fn depth_of(key: f64) -> f64 {
+        20.0 + 20.0 / key
+    }
+
+    /// A cubic `px` long on screen along y, its control points at its thirds and keyed linearly
+    /// along it from `-1.2` to `-1.3`: collinear in place and key, as a cubic straight in the world
+    /// before the eye draws under the default projection.
+    fn collinear(px: f64) -> [[f64; 3]; 4] {
+        std::array::from_fn(|j| {
+            let t = j as f64 / 3.0;
+            [6.0, px / 90.0 * t, depth_of(-1.2 - 0.1 * t)]
+        })
+    }
+
+    /// The collinear cubic `px` long, by a step of its piece count, against its contents: its ends
+    /// moved apart and together along it by `delta`, with its interior keys moved by `share` each
+    /// way, its interior points by `delta` along it and across it each way; and 16 seeded moves of
+    /// every point by `delta` and every key within `share`. A stroke 6 px wide read across it
+    /// moves within its reach, and at each point of its middle its own share is at most 1.1 times
+    /// the one it takes there `away` px long, off every step.
+    fn collinear_row(px: f64, away: f64) {
+        let map = FrameMap::cairo(1280, 720, 1280.0 / 90.0, 8.0, [0.0; 3]);
+        let (delta, share, body) = (6e-5, 2e-6, 3.0);
+        let shift = delta * map.xx * (1.0 + 1e-6);
+        let key = |q: [f64; 3]| -down_z().factor(q[2]);
+        let rekey = |q: &mut [f64; 3], s: f64| {
+            q[2] = depth_of(key(*q) * (1.0 + s * share * (1.0 - 1e-6)));
+        };
+        let drawn = collinear(px);
+        let signs = [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)];
+        let mut contents = Vec::new();
+        for e in [-1.0, 1.0] {
+            let mut ends = drawn.to_vec();
+            ends[0][1] -= e * delta;
+            ends[3][1] += e * delta;
+            contents.push(ends.clone());
+            for (s1, s2) in signs {
+                let mut c = ends.clone();
+                rekey(&mut c[1], s1);
+                rekey(&mut c[2], s2);
+                contents.push(c);
+                for axis in [0, 1] {
+                    let mut c = ends.clone();
+                    c[1][axis] += s1 * delta;
+                    c[2][axis] += s2 * delta;
+                    contents.push(c);
+                }
+            }
+        }
+        let mut seeded = Seeded(0x1f83_d9ab_fb41_bd6b);
+        for _ in 0..16 {
+            let mut c = drawn.to_vec();
+            for q in &mut c {
+                let a = (seeded.next() >> 11) as f64 / (1u64 << 53) as f64 * std::f64::consts::TAU;
+                q[0] += delta * libm::cos(a);
+                q[1] += delta * libm::sin(a);
+                rekey(q, (seeded.next() >> 11) as f64 / (1u64 << 52) as f64 - 1.0);
+            }
+            contents.push(c);
+        }
+        // The contents cross the step.
+        let count = |c: &[[f64; 3]]| {
+            let length: f64 = c
+                .windows(2)
+                .map(|w| {
+                    let (a, b) = (map.apply(w[0]), map.apply(w[1]));
+                    libm::hypot(b[0] - a[0], b[1] - a[1])
+                })
+                .sum();
+            (length / 2.0).ceil()
+        };
+        assert!(contents.iter().any(|c| count(c) != count(&drawn[..])));
+        let points = across(&drawn, &map);
+        let (ratio, p, moved_by, reach) =
+            worst_over_reach(&drawn, &contents, &map, &points, body, shift, share, false);
+        // The own share at each point of the stroke's middle: a quarter of it from either end, 0.05
+        // px or more from every piece's end at either length, and 0.5 px or more inside the body.
+        let [x, top] = map.apply(drawn[0]);
+        let bottom = map.apply(drawn[3])[1];
+        let ends = |length: f64| {
+            let n = (length / 2.0).ceil();
+            (0..=n as usize).map(move |s| top - length * s as f64 / n)
+        };
+        let middle: Vec<[f64; 2]> = points
+            .iter()
+            .filter(|q| {
+                (q[0] - x).abs() <= body - 0.5
+                    && q[1] <= top - px / 4.0
+                    && q[1] >= bottom + px / 4.0
+                    && ends(px).chain(ends(away)).all(|y| (q[1] - y).abs() >= 0.05)
+            })
+            .copied()
+            .collect();
+        let own = |line: &Centreline, q: [f64; 2]| {
+            let (slide, magnitude) = line.slide_under(q, &[], body, shift, share, false);
+            share + slide / magnitude
+        };
+        let (on, off) = (
+            curve_depth(&drawn, &map, &down_z()),
+            curve_depth(&collinear(away), &map, &down_z()),
+        );
+        let (widened, at) = middle
+            .iter()
+            .map(|q| (own(&on, *q) / own(&off, *q), *q))
+            .fold((0.0f64, [0.0; 2]), |w, r| if r.0 > w.0 { r } else { w });
+        eprintln!(
+            "TIGHT piece-count step, collinear {px} px: {ratio:.3} at worst, at {p:?}; own share \
+             {widened:.3} times its own off the step at worst, at {at:?}"
+        );
+        assert!(
+            ratio <= 1.0,
+            "at {p:?}: the key moved by {moved_by:e} against its reach {reach:e}"
+        );
+        assert!(
+            !middle.is_empty() && widened <= 1.1,
+            "own share {widened:.3} times its own off the step, at {at:?}"
+        );
+    }
+
+    /// The collinear cubic 28.0099 px long, 0.0099 px past the step at 28 px: a world-straight
+    /// axis before the eye draws one (the ThreeDParametricSpring example's x axis does), and a
+    /// step charge there widened its own share past the curve in front of it.
+    #[test]
+    fn at_a_piece_count_step_a_cubic_collinear_in_place_and_key_keeps_its_own_share() {
+        collinear_row(28.0099, 28.04);
+    }
+
+    /// The collinear row at the step from one piece to two, 2.0099 px long, where the two counts'
+    /// cuts depart most.
+    #[test]
+    fn at_the_first_piece_count_step_a_cubic_collinear_in_place_and_key_keeps_its_own_share() {
+        collinear_row(2.0099, 2.04);
     }
 
     /// Two straight cubics on one line whose shared anchor's two points, the first cubic's end `E`

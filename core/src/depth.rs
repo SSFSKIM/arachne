@@ -2588,6 +2588,21 @@ impl Centreline {
     /// shift along the chord of a drawn point keyed within `E`): `adjacent + 2 (E + slope shift)`,
     /// where that is the lesser. Where the chord may turn freely (it is shorter than `4 shift`),
     /// each key lies within the control points' keys: the span and `2 E`.
+    ///
+    /// Where the drawn cubic is collinear in place along its chord and key (its band within the
+    /// rounding of its own computation, `eps`), a step moves no read beyond what the piece pays
+    /// without one, so it takes its band and rounding alone. Each point of a content cut, of any
+    /// count, lies within the shift on screen, and within `share` of its key, of the drawn point
+    /// at its parameter, and every drawn point lies on the drawn line. The content's cuts lie on
+    /// one line (the content straight on screen, as above) and are read at one foot on it, where
+    /// each one's key is the drawn line's at a place within the shift along it (the slide pays
+    /// that), off it by at most the share of the read (keys all of one sign), on a line turned as
+    /// its pieces are. Not where the chord may turn freely: a content cut's key may then leave the
+    /// drawn piece's end keys. The charge is twice the band and `eps` (`1 + share` times where
+    /// that is more): a band within `eps` still gives each piece a slope, which a change of count
+    /// moves by up to twice the band over a piece's length, read a shift along it. And only where
+    /// the keys are all of one sign (their span less than their largest magnitude); elsewhere
+    /// the whole step.
     fn step(&self, i: usize, shift: f64, share: f64) -> f64 {
         let Some(f) = self.cubics.get(i).and_then(|c| self.flats.get(*c as usize)) else {
             return 0.0;
@@ -2610,6 +2625,13 @@ impl Centreline {
         let wide = f.along[0].abs().max(f.along[1].abs()) + du;
         if f.lateral > shift * (2.0 + 2.0 * wide) * (1.0 + 1e-9) + room {
             return 0.0;
+        }
+        // Collinear in place and key: each `rj` rounds within `eps`, its place `uj`, taken from
+        // screen coordinates, within about `U scale / chord`.
+        let most_along = f.along[0].abs().max(f.along[1].abs());
+        let eps = 128.0 * U * (f.kmax + f.kends * (1.0 + most_along) * (1.0 + self.scale / v));
+        if f.span < f.kmax && f.high - f.low <= eps {
+            return ((1.0 + share).max(2.0) * (f.high - f.low + eps) + rounding) * (1.0 + 16.0 * U);
         }
         let band = f.high - f.low + 2.0 * (2.0 * keys * (1.0 + wide) + f.kends * du);
         let adjacent = if window < 1.0 && f.adjacent.is_finite() && f.slope.is_finite() {
@@ -2977,10 +2999,11 @@ impl Centreline {
             })
         };
         // Every member of this set outside the stroke's `may` and near-nearest sets lies more than
-        // `dt` past an end of its segment, where the clamp of short end pieces makes its move 0: so
-        // `fill_most <= most`, kept as margin, and only such members can lower the floor. With that
-        // clamp reverted the term is reachable, a member past an end moving by its spread times
-        // `dt`; the short pieces of
+        // `dt` past an end of its segment, where the clamp of short end pieces leaves only its key
+        // slack and step in its move ([`Centreline::slack`], [`Centreline::step`]): `fill_most`
+        // carries those and may exceed `most`, and only such members can lower the floor. With
+        // that clamp reverted a member past an end also moves by its spread times `dt`; the short
+        // pieces of
         // `a_read_past_a_short_piece_s_end_moves_by_the_share_alone_and_its_reach_says_so` are
         // that shape.
         let (mut floor, mut fill_most) = (filled, 0.0f64);
@@ -3556,6 +3579,54 @@ mod tests {
         assert_eq!(far.slack_bound(1.6e-3), 0.0);
         let near = Centreline::with_joints(&points, &[], &[], &[2], &[split(7e-3)]);
         assert!(near.slack_bound(1.6e-3) >= 5e-3);
+    }
+
+    /// A cubic straight on screen, 28 px of it on a step of its piece count, keyed along it from
+    /// `-1.2` to `-1.3` with its first interior key off that line by half and by one and a half
+    /// times the rounding its band is computed within: collinear within that rounding, a step
+    /// charges the band and rounding alone; past it, the whole step. No row pins that charge
+    /// against 0: it is `2 (high - low + eps)` and the step's rounding, a margin of a few `eps`
+    /// (the drawn band lies within `eps`), which no read a realistic row makes can tell. Keyed
+    /// across 0 from `0.05` to `-0.05`, collinear, it takes the whole step.
+    #[test]
+    fn at_a_piece_count_step_a_cubic_off_collinear_past_its_band_s_rounding_takes_the_step() {
+        let (shift, share) = (1.6e-3, 2e-6);
+        let charged = |off: f64, k0: f64, k3: f64| {
+            let c: [([f64; 2], f64); 4] = std::array::from_fn(|j| {
+                let t = j as f64 / 3.0;
+                let k = k0 + (k3 - k0) * t + if j == 1 { off } else { 0.0 };
+                ([1180.0, 300.0 - 28.0 * t], k)
+            });
+            let n = 14;
+            let points: Vec<([f64; 2], f64)> = (0..=n)
+                .map(|s| {
+                    let t = s as f64 / n as f64;
+                    let u = 1.0 - t;
+                    let w = [u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t];
+                    let at = |f: &dyn Fn(usize) -> f64| (0..4).map(|k| w[k] * f(k)).sum::<f64>();
+                    ([at(&|k| c[k].0[0]), at(&|k| c[k].0[1])], at(&|k| c[k].1))
+                })
+                .collect();
+            let pieces: Vec<u32> = (0..=n).map(|s| if s == 0 { u32::MAX } else { 0 }).collect();
+            let flat = Flat::of(c, 28.0);
+            let line = Centreline::with_flats(&points, &[], &[], &[], &[], &pieces, &[flat]);
+            let most_along = flat.along[0].abs().max(flat.along[1].abs());
+            let eps = 128.0
+                * U
+                * (flat.kmax + flat.kends * (1.0 + most_along) * (1.0 + line.scale / flat.chord));
+            (flat.high - flat.low, eps, line.step(0, shift, share))
+        };
+        let (band, eps, _) = charged(0.0, -1.2, -1.3);
+        assert!(band <= 0.1 * eps, "the straight cubic's band {band:e}");
+        let (below, eps_below, within) = charged(0.5 * eps, -1.2, -1.3);
+        let (above, eps_above, past) = charged(1.5 * eps, -1.2, -1.3);
+        assert!(below <= eps_below && above > eps_above);
+        let keys = share * (1.0 + share) * 1.3;
+        assert!(within <= 5.0 * eps, "within its rounding {within:e}");
+        assert!(past >= 2.0 * keys, "past its rounding {past:e}");
+        let (band, eps, across) = charged(0.0, 0.05, -0.05);
+        assert!(band <= eps, "the cubic across 0: its band {band:e}");
+        assert!(across >= 2.0 * share * 0.05, "across 0 {across:e}");
     }
 
     #[test]
