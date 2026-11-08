@@ -682,19 +682,30 @@ class Drawing:
                 saved[id(mob)] = (mob, NodeState.of(mob))
         for mob, state in reached:
             state.install(mob)
-        if capture.references:
-            self.show_references(capture, {id(mob) for mob, _ in reached})
+        self.show_kept(capture, [mob for mob, _ in reached])
         if capture.pictures:
             self._show_pictures(capture, {id(mob) for mob, _ in reached})
 
-    def show_references(self, capture: Capture, shown: set[int]) -> None:
-        """Give each of the ``shown`` mobjects (by id) the depth sort places
-        by its ``z_index_group`` the point ``capture`` found, which the
-        group's state now need not give (the scene may not hold it).
+    def show_kept(self, capture: Capture, shown: Sequence[Mobject]) -> None:
+        """Give the ``shown`` mobjects, their states installed, what the
+        record kept of what their states only refer to: each one the depth
+        sort places by its ``z_index_group`` the point ``capture`` found (the
+        scene may not hold the group), and each one filled from an image the
+        record's copy of it (:meth:`.Record.kept_image`).
         """
-        for mob, reference in capture.references:
-            if id(mob) in shown:
-                mob.__dict__["z_index_group"] = reference
+        if capture.references:
+            ids = {id(mob) for mob in shown}
+            for mob, reference in capture.references:
+                if id(mob) in ids:
+                    mob.__dict__["z_index_group"] = reference
+        record = self.record
+        if record._images:
+            for mob in shown:
+                image = mob.__dict__.get("background_image")
+                if image is not None:
+                    kept = record.kept_image(image)
+                    if kept is not None:
+                        mob.__dict__["background_image"] = kept
 
     def show_camera(self, capture: Capture) -> None:
         """Give the camera, alone, its recorded inputs at ``capture``: for a

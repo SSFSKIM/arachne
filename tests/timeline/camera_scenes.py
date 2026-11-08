@@ -1,10 +1,12 @@
 """Scenes the camera tests execute: camera callbacks, zoomed displays, a
-mapping camera, a depth sort and a display of another camera.
+mapping camera, a depth sort, a display of another camera and a fill from an
+image.
 """
 
 from __future__ import annotations
 
 import numpy as np
+from PIL import Image
 
 from arachne import (
     BLUE,
@@ -408,3 +410,25 @@ class OtherCameraHidden(Scene):
         clock.add_updater(drive)
         self.add(group, clock)
         self.wait(0.5)
+
+
+class ImageFillPainted(Scene):
+    """A circle filled from a red image, which an updater paints blue in
+    place partway through the wait: the camera keeps the image as it first
+    read it, so the circle stays red.
+    """
+
+    def construct(self):
+        image = Image.new("RGBA", (8, 8), (255, 0, 0, 255))
+        circle = Circle(radius=1.5, fill_opacity=1, stroke_width=0)
+        circle.color_using_background_image(image)
+        elapsed = [0.0]
+
+        def drive(mob, dt):
+            elapsed[0] += dt
+            if elapsed[0] >= 0.2 and image.getpixel((0, 0)) != (0, 0, 255, 255):
+                image.paste((0, 0, 255, 255), (0, 0, 8, 8))
+
+        circle.add_updater(drive)
+        self.add(circle)
+        self.wait(0.4)

@@ -36,6 +36,7 @@ from operator import is_
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+from PIL import Image
 
 from .clock import exact, frames_in
 from .dispatch import draw_member_refusal, draw_names
@@ -763,6 +764,11 @@ class Record:
         #: seq of the first drawn capture that found another (``None`` while
         #: none has).
         self._pixel_shape: tuple[int, int] | None = None
+        #: Per image a drawn mobject fills from (by id): the image, and a copy
+        #: of it as the first drawn capture that reached it found it
+        #: (:meth:`kept_image`).
+        self._images: dict[int, tuple[Image.Image, Image.Image]] = {}
+        self._image_copies: dict[int, Image.Image] = {}
         #: Per display of another camera (by id): its last picture kept, and
         #: the play that last showed it (:func:`_pictures`).
         self._kept_pictures: dict[int, tuple[Mobject, np.ndarray, int]] = {}
@@ -863,6 +869,11 @@ class Record:
                 ):
                     grouped.append(mob)
             if drawn:
+                image = mob.__dict__.get("background_image")
+                if isinstance(image, Image.Image) and id(image) not in self._images:
+                    copy = image.copy()
+                    self._images[id(image)] = (image, copy)
+                    self._image_copies[id(copy)] = copy
                 other = mob.__dict__.get("camera")
                 if other is not None and id(other) not in drawing and _shows(mob):
                     shown.append(mob)
@@ -926,6 +937,20 @@ class Record:
         )
         self._captures.append(capture)
         return capture
+
+    def kept_image(self, image: Any) -> Image.Image | None:
+        """The copy of ``image``, a mobject's fill image, the record took at
+        the first drawn capture that reached it: a camera reads a fill's image
+        once and keeps it (``BackgroundColoredVMobjectDisplayer``), so what it
+        draws is the image as it was then, however the scene paints the image
+        in place later. ``None`` for anything else.
+        """
+        found = self._images.get(id(image))
+        return found[1] if found is not None and found[0] is image else None
+
+    def holds_image(self, value: Any) -> bool:
+        """Whether ``value`` is one of the record's copies of an image."""
+        return self._image_copies.get(id(value)) is value
 
     def _note_pixel_shape(self, seq: int) -> None:
         """Compare the configured pixel shape now with the first drawn

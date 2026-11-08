@@ -403,3 +403,24 @@ def test_a_light_rebound_between_plays_is_drawn_from_the_record(session_of, draw
     _equal_frames(
         [np.asarray(session.frame(Fraction(k, 15))) for k in range(len(live))], live
     )
+
+
+@pytest.mark.parametrize("draw_path", ["cairo", "ir_cairo"])
+def test_an_image_painted_in_place_is_drawn_as_the_camera_first_read_it(
+    session_of, draw_path
+):
+    """The camera reads a fill's image once and keeps it: painted later in
+    place, it is drawn as it was then, also when drawn after the scene ran.
+    """
+    if draw_path == "ir_cairo":
+        pytest.importorskip("arachne_core")
+    scene_class = camera_scenes.ImageFillPainted
+    live = _drawn_live(scene_class, 15, draw_path=draw_path)
+    assert _centre(live[0]) == _centre(live[-1]) == (255, 0, 0)
+    scene, drawn = render(scene_class, 15, draw_path=draw_path)
+    assert scene.timeline.record.refusal is None
+    _equal_frames(drawn, live)
+    session = session_of(scene_class.__name__, CAMERA_SCENES, draw_path=draw_path)
+    _equal_frames(
+        [np.asarray(session.frame(Fraction(k, 15))) for k in range(len(live))], live
+    )

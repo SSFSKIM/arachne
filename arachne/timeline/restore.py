@@ -207,10 +207,9 @@ def _restoring(
             if id(mob) not in saved:
                 saved[id(mob)] = (mob, NodeState.of(mob))
             state.install(mob)
-        if base.references:
-            # A restore point's state holds the live group, not the point
-            # the capture found.
-            drawing.show_references(base, {id(mob) for mob, _ in point.nodes})
+        # A restore point's state holds the live group and the live image,
+        # not what the record kept of them.
+        drawing.show_kept(base, [mob for mob, _ in point.nodes])
         with (
             _assigned(scene, assignments),
             _animations_at(point),
