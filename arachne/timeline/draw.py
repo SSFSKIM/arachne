@@ -633,7 +633,7 @@ class Drawing:
         self._saved: dict[int, tuple[Mobject, NodeState]] = {}
         #: Every camera given recorded inputs (the scene's, and the cameras
         #: of its displays), with what it held before.
-        self._cameras_saved: dict[int, tuple[Any, tuple[Any, Any, Any, Any]]] = {}
+        self._cameras_saved: dict[int, tuple[Any, tuple[Any, Any, Any, Any, Any]]] = {}
         #: Display cameras whose picture was replaced, with what they held.
         self._pictures_saved: dict[int, tuple[Any, PixelArray]] = {}
 

@@ -772,7 +772,7 @@ class Record:
         #: Per display of another camera (by id): its last picture kept, and
         #: the play that last showed it (:func:`_pictures`).
         self._kept_pictures: dict[int, tuple[Mobject, np.ndarray, int]] = {}
-        self.pixel_shape_changed: int | None = None
+        self.pixel_shape_changed: int | Fraction | None = None
         self.final: Capture | None = None
         #: The names the scene's code had for its mobjects when it ended.
         self.final_names: dict[int, str] = {}
@@ -952,7 +952,7 @@ class Record:
         """Whether ``value`` is one of the record's copies of an image."""
         return self._image_copies.get(id(value)) is value
 
-    def _note_pixel_shape(self, seq: int) -> None:
+    def _note_pixel_shape(self, seq: int | Fraction) -> None:
         """Compare the configured pixel shape now with the first drawn
         capture's; from the first capture that finds another, every capture
         refuses its play (:data:`PIXEL_SHAPE_CHANGED`).
