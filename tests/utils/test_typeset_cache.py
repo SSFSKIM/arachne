@@ -871,8 +871,32 @@ def test_a_layout_read_at_the_wrong_offsets_is_refused_before_its_font_is_used()
 
 def test_the_text_toolchain_names_pango_harfbuzz_and_cairo():
     names = typeset_cache.text_toolchain()
-    assert [name for name, _ in names] == ["manimpango", "pango", "harfbuzz", "cairo"]
-    assert all(value for _, value in names)
+    assert [name for name, _ in names] == [
+        "manimpango",
+        "pango",
+        "harfbuzz",
+        "cairo",
+        "language",
+    ]
+    assert all(value for _, value in names[:4])
+
+
+def test_the_text_toolchain_follows_the_language_pango_shapes_in(monkeypatch):
+    """Pango picks the language its glyph choices follow from the locale
+    environment (and ``PANGO_LANGUAGE``): text set under another one is
+    another text, so the toolchain a cached text is keyed by differs.
+    """
+    names = ("LANGUAGE", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "LANG", "PANGO_LANGUAGE")
+    for name in names:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("LANG", "en_US.UTF-8")
+    english = typeset_cache.text_toolchain()
+    assert typeset_cache.text_toolchain() == english
+    monkeypatch.setenv("LANG", "sr_RS.UTF-8")
+    assert typeset_cache.text_toolchain() != english
+    monkeypatch.setenv("LANG", "en_US.UTF-8")
+    monkeypatch.setenv("PANGO_LANGUAGE", "sr")
+    assert typeset_cache.text_toolchain() != english
 
 
 # A hit is a fresh compile.

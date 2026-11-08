@@ -466,15 +466,34 @@ def _answer(
 # What Text depends on beside its arguments and fonts
 
 
+#: The environment variables Pango reads its default language from, which
+#: picks the glyphs a font substitutes by language (``PANGO_LANGUAGE``, and
+#: the locale as GLib orders it).
+_LANGUAGE_VARIABLES = (
+    "PANGO_LANGUAGE",
+    "LANGUAGE",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LC_MESSAGES",
+    "LANG",
+)
+
+
 def text_toolchain() -> list[tuple[str, str]]:
-    """ManimPango's, Pango's, HarfBuzz's and Cairo's versions."""
+    """ManimPango's, Pango's, HarfBuzz's and Cairo's versions, and the
+    language Pango shapes in (the locale environment it reads it from).
+    """
     import manimpango
 
+    language = ";".join(
+        f"{name}={os.environ.get(name, '')}" for name in _LANGUAGE_VARIABLES
+    )
     return [
         ("manimpango", manimpango.__version__),
         ("pango", manimpango.pango_version()),
         ("harfbuzz", _harfbuzz_version()),
         ("cairo", manimpango.cairo_version()),
+        ("language", language),
     ]
 
 
