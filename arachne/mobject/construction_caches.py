@@ -1,15 +1,16 @@
 """The module-level caches that hand out mobjects or the parts they are
 built from, kept as one unit.
 
-A cache hit can build a mobject another way than a miss does: an image from
-the image cache is never flipped, so its own sheen direction differs from
-the parsed one's (Manim Community Edition's behaviour, kept for parity).
-The caches also fill each other: a number fills the glyph cache and the
-image cache at once, and on a later glyph hit it fills neither. So an
-execution builds what an earlier one built only when it starts from every
-cache as that one found it. A session's execution starts from them empty, as
-a fresh process does; a render executed again starts from them as its first
-execution found them.
+An image from the image cache is the image parsing builds
+(:meth:`.SVGMobject.init_svg_mobject`). The glyph cache still keeps history:
+it is keyed by a number's string alone, so a glyph is built as the first
+number in the process to need it asked, whatever class or style a later one
+asks for (Manim Community Edition's behaviour). The caches also fill each
+other: a number fills the glyph cache and the image cache at once, and on a
+later glyph hit it fills neither. So an execution builds what an earlier one
+built only when it starts from every cache as that one found it. A session's
+execution starts from them empty, as a fresh process does; a render executed
+again starts from them as its first execution found them.
 
 A cache the engine adds that hands out mobjects or their parts is registered
 in :data:`CACHES`, and is then forgotten and restored with the rest.

@@ -364,15 +364,23 @@ lifted.
   uploads across restores (they are immutable), or give the restore a
   copy-on-write view of the record's stream.
 
-## The image cache (`arachne/mobject/svg/svg_mobject.py`)
+## The construction caches (`arachne/mobject/construction_caches.py`)
 
-- **An image built from the cache is not the image parsing built.** Inherited from Manim Community Edition: a
+- **An image built from the cache is the image parsing built; CE's is not.** In Manim Community Edition a
   cache hit adds copies of the cached parts, but the image itself never gets parsing's `flip(RIGHT)`, so its
-  own `sheen_direction` stays unflipped (its parts match). Invisible unless a sheen is set on the image, and
-  within one process the first of two equal images differs from the second, as in CE. Each execution now
-  finds the construction caches (`arachne/mobject/construction_caches.py`: this one and a number's glyph
-  cache, which fills it) as a fresh process (a session) or as the scene's first execution (a render executed again)
-  found it, so two executions of one source agree. Direction: none while CE's behaviour is the reference.
+  own `sheen_direction` stays unflipped, and within one process the first of two equal images differs from the
+  second. A scene that reads the image's direction (`set_sheen(f, image.get_sheen_direction())`) then draws
+  its first render otherwise than its later ones, and a restore that finds the image cached differs from the
+  forward run that parsed it. Direction (decided 2026-11-08): a cache must not change what a construction
+  builds, and parsing is the documented construction, so a hit turns the image's own direction as parsing's
+  flip does: a deliberate break from CE's image cache (`SVGMobject.init_svg_mobject`;
+  `tests/timeline/test_image_cache.py`). Frames change only where a scene reads a cached image's own
+  direction.
+- **The glyph cache is keyed by a number's string alone.** `DecimalNumber._string_to_mob` builds a glyph as
+  the first number in the process to need it asked (its class, the `\dots` colour) and hands that out to
+  every later one, as CE does. Each execution therefore still finds the construction caches as a fresh process
+  (a session) or as the scene's first execution (a render executed again) found them, so two executions of
+  one source agree. Remedy, if a scene ever needs it: key the cache by the class and arguments too.
 
 ## The session server (`arachne/server/`)
 
