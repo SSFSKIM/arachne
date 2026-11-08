@@ -24,6 +24,7 @@ __all__ = [
     "engine_installed",
     "engine_override",
     "engine_own",
+    "replaced_displays",
     "replaced_methods",
 ]
 
@@ -207,6 +208,18 @@ def _engine_method(kind: type, name: str) -> Any:
             if engine_class(klass) and name in class_members(klass)
         ),
         None,
+    )
+
+
+def replaced_displays(camera: Any) -> tuple[Replaced, ...]:
+    """The entries of the display functions the scene's code replaced, on
+    ``camera`` and every camera a frame it draws is drawn with
+    (:func:`drawn_cameras`). The record of replaced camera code
+    (``Record.camera_replaced``) holds methods only; what reads the picture's
+    measures (the lint) asks here for these.
+    """
+    return tuple(
+        found for each in drawn_cameras(camera) for found in _replaced_displays(each)
     )
 
 

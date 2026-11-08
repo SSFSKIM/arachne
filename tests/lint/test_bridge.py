@@ -421,6 +421,21 @@ def test_a_rewired_display_entry_leaves_the_record_as_it_was(session_of):
     assert session.record.camera_replaced == ()
 
 
+def test_a_rewired_display_entry_marks_the_picture_s_queries(session_of):
+    """The record holds no display entry, yet the lint's answers about the
+    picture are marked for one, as they are for a replaced method: the lint
+    reads the camera-code detector for the entries.
+    """
+    session = session_of("DisplayReplaced", BRIDGE, frame_rate=15)
+    assert session.record.refusal is None
+    assert session.record.camera_replaced == ()
+    query = session.query(Fraction(1, 3))
+    assert query.answer == "recorded"
+    marked = query.overlaps()
+    assert isinstance(marked, CameraReplaced)
+    assert marked.replaced == ("Camera.display_funcs[VMobject] (on the display_funcs)",)
+
+
 def test_the_engine_s_camera_refuses_and_marks_nothing(session_of):
     session = session_of("NothingReplaced", BRIDGE, frame_rate=15)
     assert session.record.refusal is None

@@ -30,8 +30,9 @@ the session's resolution).
 
 Those numbers are the engine camera's. A scene whose code replaced a method
 of its camera, or an entry of its display functions
-(:attr:`~arachne.timeline.record.Record.camera_replaced`), may draw its
-picture elsewhere, so each answer that measures the picture
+(:attr:`~arachne.timeline.record.Record.camera_replaced` for the methods,
+:func:`~arachne.timeline.camera_code.replaced_displays` for the entries), may
+draw its picture elsewhere, so each answer that measures the picture
 (:meth:`Query.bbox`, :meth:`Query.overlaps`, :meth:`Query.occlusions`,
 :meth:`Query.offscreen`, :meth:`Query.text_heights`) is a
 :class:`CameraReplaced` in its place, unless every method replaced only
@@ -59,6 +60,7 @@ from functools import cached_property
 from typing import TYPE_CHECKING
 
 from arachne.camera.projection import Box, home_box, record_view
+from arachne.timeline.camera_code import replaced_displays
 from arachne.timeline.clock import exact
 from arachne.timeline.draw import Drawing, camera_nodes
 
@@ -322,7 +324,9 @@ def query(session: Session, t: Fraction | float) -> Query:
         read.boxes,
         terms,
         _in_force(execution, instant.t),
-        _replaced(record.camera_replaced),
+        _replaced(
+            record.camera_replaced + replaced_displays(session.scene.renderer.camera)
+        ),
     )
 
 

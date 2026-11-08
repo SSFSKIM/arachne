@@ -17,6 +17,7 @@ from arachne import (
     Square,
     ThreeDScene,
     VGroup,
+    VMobject,
     always_redraw,
 )
 
@@ -232,6 +233,19 @@ class ReplacedPathTrace(ThreeDScene):
 
         camera.set_cairo_context_path = traced
         self.set_camera_orientation(phi=60 * DEGREES, theta=-45 * DEGREES)
+        self.add(probe())
+        self.wait(2 * HOLD)
+
+
+class ReplacedDisplay(Scene):
+    """The scene's code puts its own function in the camera's table of display
+    functions, in place of the engine's for vectorized mobjects.
+    """
+
+    def construct(self):
+        display = self.renderer.camera.display_funcs
+        engine = display[VMobject]
+        display[VMobject] = lambda mobjects, pixel_array: engine(mobjects, pixel_array)
         self.add(probe())
         self.wait(2 * HOLD)
 

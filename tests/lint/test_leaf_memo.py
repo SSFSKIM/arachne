@@ -119,6 +119,7 @@ def test_a_change_to_the_camera_alone_places_the_leaf_again(
         "RedrawnProbe",
         "SceneUpdaterBeside",
         "ReplacedProjection",
+        "ReplacedDisplay",
     ],
 )
 def test_a_read_the_key_cannot_see_all_of_is_never_kept(session_of, monkeypatch, scene):

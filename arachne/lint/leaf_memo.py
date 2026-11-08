@@ -33,7 +33,8 @@ read every time:
 - a live read of a forward run's scene, which holds no recorded versions
   (its caller passes no memo);
 - every read of a record whose camera runs the scene's code
-  (``Record.camera_replaced``);
+  (``Record.camera_replaced``, and the entries of its display functions,
+  :func:`~arachne.timeline.camera_code.replaced_displays`);
 - every read of a capture with scene updaters, or whose camera draws other
   cameras' displays, whose pictures are shown apart from the versions;
 - every read where one of the camera's own mobjects has no version at the
@@ -55,6 +56,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from arachne.camera.projection import Box, View, draw_kind, engine_trace, hold_rotation
+from arachne.timeline.camera_code import replaced_displays
 from arachne.timeline.draw import camera_nodes
 
 if TYPE_CHECKING:
@@ -145,7 +147,11 @@ class LeafMemo:
         """The memo for a read of ``capture`` (shown) through ``camera`` and
         ``view``, or ``None`` when nothing read there may be kept.
         """
-        if record.camera_replaced or capture.scene_updaters:
+        if (
+            record.camera_replaced
+            or replaced_displays(camera)
+            or capture.scene_updaters
+        ):
             return None
         extras = capture.camera
         if extras is not None and (extras.displays is not None or extras.sub_cameras):
