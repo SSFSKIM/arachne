@@ -284,10 +284,15 @@ def _each(parts: Any, keying: _Keying) -> bytes:
 
 def _own_attributes(value: Any, keying: _Keying) -> bytes:
     """The attributes and slots an instance of a subclass of a builtin kind
-    (a ``str``, a ``list``, a ``dict``) holds beside its value, which no rule
-    for the kind reads; nothing for another value.
+    (a ``str``, a ``list``, a ``dict``), of ``functools.partial`` or of an
+    array (a masked array's mask) holds beside its value, which no rule for
+    the kind reads; nothing for another value.
     """
-    if not isinstance(value, _BUILTIN_KINDS) or type(value) in _BUILTIN_KINDS:
+    if (
+        not isinstance(value, _OWNING_KINDS)
+        or type(value) in _BUILTIN_KINDS
+        or type(value) is np.ndarray
+    ):
         return b""
     own = getattr(value, "__dict__", None) or {}
     slots = _slot_items(value)
@@ -310,6 +315,11 @@ _BUILTIN_KINDS = (
     bytearray,
     complex,
 )
+
+
+#: The kinds whose instances can hold attributes beside what a rule of
+#: :func:`_content_key` keys of them.
+_OWNING_KINDS = (*_BUILTIN_KINDS, functools.partial, np.ndarray)
 
 
 def _content_key(value: Any, keying: _Keying) -> bytes:

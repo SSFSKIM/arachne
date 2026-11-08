@@ -1662,3 +1662,31 @@ def test_every_mobject_the_engine_exports_keys_alike_in_another_process(media):
         assert session.compare(ExecutionSummary.from_json(theirs["summary"])) is None
     finally:
         session.close()
+
+
+def _scaled_partial(factor):
+    class Scaled(functools.partial):
+        """A partial whose own call reads an attribute it holds."""
+
+    made = Scaled(max)
+    made.factor = factor
+    return made
+
+
+def test_a_partial_subclass_keys_the_attributes_it_holds():
+    """What its own ``__call__`` could read, beside the function and the
+    arguments the partial holds.
+    """
+    assert _value_key(_scaled_partial(2)) != _value_key(_scaled_partial(3))
+    assert _value_key(_scaled_partial(2)) == _value_key(_scaled_partial(2))
+
+
+def test_an_array_subclass_keys_the_state_it_holds_beside_its_data():
+    """A masked array's mask is read by every operation on it."""
+    data = np.array([1.0, 2.0, 3.0])
+    one = np.ma.masked_array(data, mask=[False, True, False])
+    other = np.ma.masked_array(data, mask=[False, False, True])
+    assert _value_key(one) != _value_key(other)
+    assert _value_key(one) == _value_key(
+        np.ma.masked_array(data.copy(), mask=[False, True, False])
+    )
