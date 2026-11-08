@@ -7,6 +7,8 @@ the session reports where.
 
 from __future__ import annotations
 
+import sys
+from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
 from textwrap import dedent
@@ -14,6 +16,7 @@ from textwrap import dedent
 import pytest
 
 from arachne import LEFT, RIGHT, Dot, Group
+from arachne import session as session_module
 from arachne.session import Session
 from arachne.timeline import admission
 from arachne.timeline import probe as probe_module
@@ -121,6 +124,39 @@ def test_a_frame_hook_writing_what_its_frames_show_is_demoted(session_of):
     assert session.probe.demoted == (0,)
     assert session.record.plays[0].route == "ticked"
     assert [d.kind for d in session.divergences][:1] == ["probe"]
+
+
+def test_an_execution_recorded_again_that_can_t_be_compared_is_a_divergence(
+    session_of, monkeypatch
+):
+    """The execution recorded after a demotion, summarized as another
+    interpreter's, can't be compared with the first: the session reports
+    that as a divergence of the whole scene naming both interpreters, never
+    as an agreement, and the demoted play is ticked all the same.
+    """
+    summarize = session_module.summarize
+    seen: list[object] = []
+
+    def foreign_after_the_first(record):
+        summary = summarize(record)
+        if seen and record is not seen[0]:
+            return replace(summary, interpreter="other-99")
+        seen.append(record)
+        return summary
+
+    monkeypatch.setattr(session_module, "summarize", foreign_after_the_first)
+    session = session_of("FrameCounter", RESTORE_SCENES, frame_rate=15)
+    assert session.probe.demoted == (0,)
+    assert session.record.plays[0].route == "ticked"
+    (found,) = [d for d in session.divergences if d.kind == "execution"]
+    assert (found.code, found.play, found.source_line) == (
+        "replay.diverged",
+        None,
+        None,
+    )
+    assert sys.implementation.cache_tag in found.reason
+    assert "other-99" in found.reason
+    assert not session.stale
 
 
 @pytest.mark.parametrize(

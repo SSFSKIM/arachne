@@ -14,11 +14,13 @@ kept there:
 
 - the draw lists, the tree (every node's type and its children, in order)
   exactly;
-- every field a content key covers (:func:`.record.content_fields`):
+- every field a content key covers (:func:`.record.covered_fields`):
   paint exactly (a paint value by its key, an array of a paint kind such as
   a point cloud's colours, a number in a field that holds paint), geometry
   (points, placements, other numbers) within :data:`.execution.TOLERANCE`,
-  anything else exactly;
+  anything else by its content key (:func:`.keys.value_key`), with the
+  mobjects it refers to by their places in the walk, as children are; a
+  value of a type the key does not know never agrees;
 - the camera's inputs: its paint (background colour and opacity, line
   width, a supplied background) exactly, its other values and its
   fixed-orientation centres within the tolerance, and the same for every
@@ -41,6 +43,7 @@ from __future__ import annotations
 __all__ = ["PlayProbe", "Probe", "probe"]
 
 import re
+import reprlib
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from fractions import Fraction
@@ -50,8 +53,9 @@ import numpy as np
 
 from .clock import TICK_RATE
 from .draw import CameraExtras, camera_nodes
-from .execution import TOLERANCE, Divergence
-from .record import NodeState, _value_key, content_fields
+from .execution import KEY_DECIMALS, TOLERANCE, Divergence
+from .keys import marker_reason, value_key
+from .record import NodeState, covered_fields
 from .restore import Unrestorable, restored
 
 if TYPE_CHECKING:
@@ -313,31 +317,30 @@ def _tree_difference(
                 f"a {type(mob).__name__}'s submobjects are other mobjects than"
                 " in the record"
             )
-        why = _fields_difference(state, kept)
+        why = _fields_difference(state, kept, (mine.places, theirs.places))
         if why is not None:
             return f"its {type(mob).__name__}'s {why}"
     return None
 
 
-def _fields_difference(state: NodeState, kept: NodeState) -> str | None:
-    mine, theirs = _keyed(state), _keyed(kept)
+#: Each walked mobject's place in the restored walk and in the kept one, by
+#: id: a field's references to mobjects are compared by them.
+_Places = tuple[Mapping[int, int], Mapping[int, int]]
+
+
+def _fields_difference(
+    state: NodeState, kept: NodeState, places: _Places
+) -> str | None:
+    mine, theirs = dict(covered_fields(state)), dict(covered_fields(kept))
     if mine.keys() != theirs.keys():
         return f"fields {', '.join(sorted(mine.keys() ^ theirs.keys()))} differ"
     for name in sorted(mine):
-        why = _value_difference(mine[name], theirs[name], paint=_paint_name(name))
+        why = _value_difference(
+            mine[name], theirs[name], paint=_paint_name(name), places=places
+        )
         if why is not None:
             return f"{name} {why}"
     return None
-
-
-def _keyed(state: NodeState) -> dict[str, Any]:
-    """The fields of ``state`` a content key covers, with their values."""
-    names = {name for name, _ in content_fields(state)}
-    return {
-        name: value
-        for name, value in zip(state.keys, state.values, strict=True)
-        if name in names
-    }
 
 
 #: What names a field that holds paint as a plain number or a colour,
@@ -376,11 +379,17 @@ def _paint_arrays() -> tuple[type, ...]:
     )
 
 
-def _value_difference(a: Any, b: Any, *, paint: bool = False) -> str | None:
+def _value_difference(
+    a: Any, b: Any, *, paint: bool = False, places: _Places | None = None
+) -> str | None:
     """How a restored value differs from the kept one: paint exactly (a
     :class:`Paint` by its key, an array of a paint kind, a number of a field
     that holds paint, ``paint``), geometry within
-    :data:`.execution.TOLERANCE`, the rest exactly.
+    :data:`.execution.TOLERANCE`, the rest by content key
+    (:func:`.keys.value_key`), its numbers to :data:`.execution.KEY_DECIMALS`
+    unless it is paint, and the mobjects it refers to by their ``places`` in
+    the two walks (by identity without them). A value of a type the key does
+    not know always differs.
     """
     from arachne.mobject.placement import Placement
     from arachne.mobject.values import Paint
@@ -405,7 +414,11 @@ def _value_difference(a: Any, b: Any, *, paint: bool = False) -> str | None:
         a = a.points
     if isinstance(b, Placement):
         b = b.points
-    if isinstance(a, np.ndarray) and isinstance(b, np.ndarray):
+    if (
+        isinstance(a, np.ndarray)
+        and isinstance(b, np.ndarray)
+        and not (a.dtype.hasobject or b.dtype.hasobject)
+    ):
         if a.dtype != b.dtype or a.shape != b.shape:
             return f"is {a.dtype}{list(a.shape)}, kept {b.dtype}{list(b.shape)}"
         if paint or a.dtype.kind not in "fc":
@@ -419,9 +432,31 @@ def _value_difference(a: Any, b: Any, *, paint: bool = False) -> str | None:
         if abs(a - b) <= TOLERANCE or (a != a and b != b):
             return None
         return f"differs from the kept by {abs(a - b):.3g}"
-    if type(a) is type(b) and _value_key(a) == _value_key(b):
-        return None
-    return f"is {a!r}, kept {b!r}"
+    if type(a) is type(b):
+        decimals = None if paint else KEY_DECIMALS
+        (key, refers), (kept, kept_refers) = (
+            value_key(a, decimals),
+            value_key(b, decimals),
+        )
+        if key == kept and _referred(refers, places, 0) == _referred(
+            kept_refers, places, 1
+        ):
+            return None
+        reason = marker_reason(key)
+        if reason is not None:
+            return f"holds {reason}, which agrees with nothing kept"
+    return f"is {reprlib.repr(a)}, kept {reprlib.repr(b)}"
+
+
+def _referred(
+    mobs: tuple[Mobject, ...], places: _Places | None, side: int
+) -> tuple[int, ...]:
+    """Which mobjects ``mobs`` are: their places in the walk of ``side``,
+    ``-1`` for one outside it; their identities without ``places``.
+    """
+    if places is None:
+        return tuple(map(id, mobs))
+    return tuple(places[side].get(id(mob), -1) for mob in mobs)
 
 
 def _same(a: Any, b: Any) -> bool:

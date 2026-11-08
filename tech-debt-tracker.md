@@ -180,24 +180,75 @@ lifted.
   path for equality. Reproducer:
   `tests/timeline/test_sample_keys.py::test_a_sample_key_rounds_numbers_so_nearness_does_not_decide_equality`
   (it asserts today's behaviour).
-- **A content key does not tell a re-pointed shared child apart.** The
-  walk a key digests visits each mobject once, in the order it first
-  meets it, and keys each node by its type, its number of submobjects and
-  its values; which mobjects its children are is not in it. In
-  `Group(Group(a, b), Group(a))`, pointing the second group at `b` keeps
-  every count and value, so the key stays the same though the tree
-  changed. That deduplicated first-occurrence order is also the draw
-  order, so for a tree with shared children equal keys do not imply an
-  equal draw order. Every comparison by key inherits the limit:
-  `RegisteredState.content_key`, `PlayRecord.sample_keys`, and an
-  execution summary's state key (`execution.py`), which the comparison of
-  two executions trusts when keys are equal. So would any reuse of draws
-  by key, and until the fix lands nothing may reuse draws by content key.
-  The probe compares each node's children by their positions in the walk
-  (`probe._tree_difference`), so it is not affected. The change to the
-  record's content key now in progress closes it: each node's children
-  digested as positions in the walk. The shape it misses:
-  `tests/timeline/test_probe.py::test_a_re_pointed_shared_child_is_a_tree_difference`.
+- **A set holding several mobjects of one type keys which they are in the
+  set's own order.** A field's key (`arachne/timeline/keys.py`) stands a
+  mobject in as its type, and the consumer keys which mobject each is by
+  its place in the walk, in the order the key met them. A set's parts are
+  sorted by their keys, and mobjects of one type tie, so they keep the
+  set's iteration order, which follows their identities. Two executions
+  holding the same mobjects in such a set can key apart; never alike where
+  they differ. No mobject the engine exports holds one. The fix: order the
+  tied references by their places in the walk before keying them.
+- **A key over its budget or depth names only the outermost value's type,
+  and data-heavy fields become markers.** A field holding more than
+  `BUDGET` parts (a list of 100,000 numbers, say) or values nested deeper
+  than `DEPTH` keys as a marker naming the field's own type, not the part
+  that made it large or deep. Such a field is a difference in every
+  comparison, so its scene diverges from itself and its state plays are
+  demoted: conservative, at the cost of speed. The fix, if a scene needs
+  it: key long runs of numbers as one array, and name the deepest type met.
+- **A dict built from a set's iteration keys apart across processes.** A
+  dict keys its items in the order it holds them, since code iterating it
+  reads that order (a colour map applied in order, where substrings
+  overlap). Where the order comes from iterating a set of strings, it
+  follows the process's string hash seed, so such a dict keys apart in two
+  processes, and a render checked against a kept summary diverges. That
+  is honest: the scene can draw differently in the two. It only costs a
+  demotion or a divergence, never a stale answer. The fix, if a scene
+  needs it: build the dict from a sorted sequence.
+- **A scene's own cache is a marker.** CPython's `functools` caches expose
+  no entries, and a call returns them. A cache of an engine function of its
+  arguments alone keys as that function; every other cache (a scene's own,
+  and the engine's few that read the fonts installed or files) is a marker
+  naming it, so a play holding one is demoted and its scene diverges from
+  itself. The fix, if a scene needs it: key a cache whose function the
+  admission proves reads its arguments alone as that function.
+- **Standard-library values whose state lives in C are markers.** A
+  `decimal.Decimal`, a `datetime.date` or a `datetime.datetime` on a field
+  keys as the marker (its layout is not `object`'s), so its scene diverges
+  from itself. The fix: key each by its exact value (`repr`, or its fields),
+  as `Fraction` and `range` already are.
+- **An object whose `__slots__` names `"__dict__"` is a marker.** The slot
+  count the layout check subtracts includes `__dict__`, which holds no slot
+  pointer of its own, so the object reads as holding state outside Python.
+  The fix: leave `__dict__` and `__weakref__` out of that count.
+- **The engine-cache inventory test reads decorators only.** It finds
+  `@cache` and `@lru_cache` on module and class functions; a cache made in a
+  nested function, by calling `functools.cache(f)`, or a `cached_property`
+  would escape it (the engine has none of the first two today). The fix:
+  walk every function body, and calls, as well as decorators.
+- **Two caches read engine source but are classed pure.** The dispatch
+  reader caches (`_reads`, `_protocols`) parse the engine's own source,
+  which is fixed for a process; only engine-private names reach them, so no
+  scene can hold one on a field. Reclass them as reading if that changes.
+- **Keying every field costs time at each capture.** Against the engine
+  before full key coverage, `play_keys` and `summarize` take a median 2.19x
+  per scene, p95 6.95 s and max 9.90 s, over a run of real scenes;
+  `Session.open` is unchanged. Candidate: reuse the key of every node whose
+  version has not changed since the last play, so a capture keys only what
+  moved.
+
+## Convex hulls (`arachne/utils/qhull.py`)
+
+- **A convex hull's points come out in an order that differs between
+  processes.** The hull walks sets of points and facets; a point hashes by
+  its coordinates' bytes, so the sets iterate in an order that follows the
+  process's string hash seed, and `ConvexHull` and `ConvexHull3D` build
+  their points in that order. Two processes of one scene with a hull never
+  key it alike (one process, or a fixed `PYTHONHASHSEED`, does). The fix:
+  iterate the facets in a sorted order. The comparison across processes
+  leaves the two classes out for it:
+  `tests/timeline/key_scenes.py` (`UNSTABLE_ACROSS_PROCESSES`).
 
 ## The draw route (`arachne/timeline/dispatch.py`)
 
@@ -313,15 +364,23 @@ lifted.
   uploads across restores (they are immutable), or give the restore a
   copy-on-write view of the record's stream.
 
-## The image cache (`arachne/mobject/svg/svg_mobject.py`)
+## The construction caches (`arachne/mobject/construction_caches.py`)
 
-- **An image built from the cache is not the image parsing built.** Inherited from Manim Community Edition: a
+- **An image built from the cache is the image parsing built; CE's is not.** In Manim Community Edition a
   cache hit adds copies of the cached parts, but the image itself never gets parsing's `flip(RIGHT)`, so its
-  own `sheen_direction` stays unflipped (its parts match). Invisible unless a sheen is set on the image, and
-  within one process the first of two equal images differs from the second, as in CE. Each execution now
-  finds the construction caches (`arachne/mobject/construction_caches.py`: this one and a number's glyph
-  cache, which fills it) as a fresh process (a session) or as the scene's first execution (a render executed again)
-  found it, so two executions of one source agree. Direction: none while CE's behaviour is the reference.
+  own `sheen_direction` stays unflipped, and within one process the first of two equal images differs from the
+  second. A scene that reads the image's direction (`set_sheen(f, image.get_sheen_direction())`) then draws
+  its first render otherwise than its later ones, and a restore that finds the image cached differs from the
+  forward run that parsed it. Direction (decided 2026-11-08): a cache must not change what a construction
+  builds, and parsing is the documented construction, so a hit turns the image's own direction as parsing's
+  flip does: a deliberate break from CE's image cache (`SVGMobject.init_svg_mobject`;
+  `tests/timeline/test_image_cache.py`). Frames change only where a scene reads a cached image's own
+  direction.
+- **The glyph cache is keyed by a number's string alone.** `DecimalNumber._string_to_mob` builds a glyph as
+  the first number in the process to need it asked (its class, the `\dots` colour) and hands that out to
+  every later one, as CE does. Each execution therefore still finds the construction caches as a fresh process
+  (a session) or as the scene's first execution (a render executed again) found them, so two executions of
+  one source agree. Remedy, if a scene ever needs it: key the cache by the class and arguments too.
 - **Fixed: a class named as another shared its images.** Manim Community Edition keys a cached image by the name of
   the class that parsed it (`SVGMobject.hash_seed`), so a scene's own `class MathTex(MathTex)` whose parse differs
   (an overridden `generate_mobject`) handed its image to the engine's `MathTex` built after it from the same file,

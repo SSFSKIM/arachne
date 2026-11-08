@@ -13,7 +13,7 @@ import svgelements as se
 from arachne import logger
 from arachne.utils.color import ManimColor, ParsableManimColor
 
-from ...constants import RIGHT
+from ...constants import RIGHT, TAU
 from ...utils.images import get_full_vector_image_path
 from ...utils.iterables import hash_obj
 from ..geometry.arc import Circle
@@ -162,6 +162,12 @@ class SVGMobject(VMobject):
         """Checks whether the SVG has already been imported and
         generates it if not.
 
+        An image found in the cache is the image parsing builds: it takes
+        copies of the cached parts, which parsing flipped, and its own sheen
+        direction is turned as parsing's flip turns it. (Manim Community
+        Edition leaves a cached image's own direction unflipped, so its first
+        image of a file differs from its later ones.)
+
         See also
         --------
         :meth:`.SVGMobject.generate_mobject`
@@ -172,6 +178,9 @@ class SVGMobject(VMobject):
                 mob = SVG_HASH_TO_MOB_MAP[hash_val].copy()
                 self.add(*mob)
                 self.id_to_vgroup_dict = mob.id_to_vgroup_dict
+                # The image's own share of the flip in generate_mobject
+                # (flip is a half turn, which turns the sheen direction).
+                self.rotate_sheen_direction(TAU / 2, RIGHT, family=False)
                 return self
 
         self.generate_mobject()

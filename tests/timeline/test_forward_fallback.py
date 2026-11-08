@@ -11,6 +11,7 @@ import os
 import random
 import sys
 import textwrap
+from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
 
@@ -19,6 +20,7 @@ import pytest
 
 from arachne import session as session_module
 from arachne.session import Session
+from arachne.timeline import fallback as fallback_module
 from arachne.timeline.origins import ORIGINS
 
 from . import camera_scenes, restore_scenes
@@ -203,6 +205,39 @@ def test_a_forward_run_is_compared_with_the_record(scene_dir, edited):
         dot = answer.state.named("dot")
         expected = 1.5 + (2 - 1.5) * _smooth(Fraction(1, 7))
         assert (dot.box[0] + dot.box[2]) / 2 == pytest.approx(expected)
+    finally:
+        session.close()
+
+
+def test_a_forward_run_that_can_t_be_compared_is_a_divergence_not_a_change(
+    scene_dir, monkeypatch
+):
+    """A forward run of the record's own source, summarized as another
+    interpreter's, can't be compared with the record: it still answers, for
+    the reason the record could not, and the session reports a divergence of
+    the whole scene naming both interpreters. The source did not change, so
+    the record is not stale.
+    """
+    summarize = fallback_module.summarize
+    monkeypatch.setattr(
+        fallback_module,
+        "summarize",
+        lambda record: replace(summarize(record), interpreter="other-99"),
+    )
+    session, _ = _open_written(scene_dir)
+    try:
+        (answer,) = session.answers([Fraction(1, 7)])
+        assert answer.state.answer == "forward"
+        assert answer.fallback.reason == "restore.global_rebound"
+        assert not session.stale
+        (run,) = session.forward_runs
+        assert not run.source_changed
+        divergence = run.divergence
+        assert divergence is not None
+        assert (divergence.kind, divergence.play) == ("execution", None)
+        assert sys.implementation.cache_tag in divergence.reason
+        assert "other-99" in divergence.reason
+        assert session.divergences == [divergence]
     finally:
         session.close()
 

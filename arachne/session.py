@@ -27,7 +27,6 @@ from __future__ import annotations
 
 __all__ = ["Session"]
 
-import contextlib
 import functools
 import importlib.util
 import itertools
@@ -59,6 +58,7 @@ from .timeline.execution import (
     Incomparable,
     changed_inputs,
     compare,
+    not_known_to_agree,
     summarize,
 )
 from .timeline.fallback import Answer, ForwardRun, answer_instants
@@ -222,7 +222,9 @@ class Session:
         every session of the source from then on: the scene is recorded
         again with it on route 3, as a new execution compared with the
         first, and the probe's ``replay.diverged`` is kept in
-        :attr:`divergences`, with any the comparison finds. The scene is
+        :attr:`divergences`, with any the comparison finds (one of the
+        whole scene where it can't compare them, as for executions made
+        by different interpreters: they are not known to agree). The scene is
         recorded again until the probe demotes nothing more, unless an
         execution plays other plays than the one before it (another count,
         or another kind or line at an index): that is kept as a divergence
@@ -362,8 +364,13 @@ class Session:
                     *_execute(path, scene, effective, options, demotions, named)
                 )
                 executions += 1
-                with contextlib.suppress(Incomparable):
+                try:
                     session.compare(first)
+                except Incomparable as refused:
+                    # One source that can't be compared (another source is
+                    # stale, below) is not known to agree.
+                    if _same_source(record, session.record):
+                        session._keep(not_known_to_agree(refused))
                 if not _same_source(record, session.record):
                     # Another source is stale, never a divergence, whether or not
                     # the probe still runs.

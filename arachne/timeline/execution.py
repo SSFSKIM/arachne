@@ -40,6 +40,7 @@ __all__ = [
     "changed_inputs",
     "compare",
     "divergence",
+    "not_known_to_agree",
     "play_keys",
     "summarize",
 ]
@@ -47,13 +48,16 @@ __all__ = [
 import base64
 import hashlib
 import json
+import sys
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from enum import Enum
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any, TypeAlias
 
 import numpy as np
 
+from .keys import marker_reason, value_key
 from .source import SourceLine
 
 if TYPE_CHECKING:
@@ -137,7 +141,7 @@ TOLERANCE = 1e-9
 KEY_DECIMALS = 9
 
 #: The version of an execution summary's serialised form.
-SUMMARY_VERSION = 2
+SUMMARY_VERSION = 4
 
 #: A raw value of a field: an array, or a scalar.
 Leaf: TypeAlias = np.ndarray | bool | int | float | str | None
@@ -202,7 +206,11 @@ class StateValues:
     (as indices into :attr:`ExecutionSummary.nodes`); and ``drawing``, the
     capture's drawing inputs that are not mobjects: which of those nodes
     each draw list holds, in order (as positions in ``nodes``, ``-1`` for a
-    mobject the capture does not reach), and the camera's values.
+    mobject the capture does not reach), and the camera's values. And the
+    tree, by the same positions: for each of those nodes, which nodes its
+    submobjects are (``submobjects``), and which the mobjects its fields
+    refer to are, in the order its fields hold them (``references``): a node
+    walked once is told apart by its place, whichever parent holds it.
 
     ``key`` digests all of it, every number rounded to 9 decimals and every
     array's dtype and shape included: equal keys mean equal states.
@@ -211,6 +219,8 @@ class StateValues:
     key: bytes
     nodes: tuple[int, ...]
     drawing: tuple[tuple[str, Leaf], ...]
+    submobjects: tuple[tuple[int, ...], ...]
+    references: tuple[tuple[int, ...], ...]
 
 
 @dataclass(frozen=True, eq=False)
@@ -241,6 +251,10 @@ class ExecutionSummary:
     #: record without a final capture.
     final: StateValues | None = field(default=None, repr=False)
     end: Fraction | None = None
+    #: The interpreter that made it (its cache tag, ``cpython-313``): a
+    #: function's key is its bytecode, which another interpreter writes
+    #: otherwise.
+    interpreter: str = sys.implementation.cache_tag
 
     def to_json(self) -> str:
         """The summary as JSON text; :meth:`from_json` reads it back."""
@@ -248,6 +262,7 @@ class ExecutionSummary:
         return json.dumps(
             {
                 "version": SUMMARY_VERSION,
+                "interpreter": self.interpreter,
                 "identity": {
                     "source_digest": identity.source_digest,
                     "input_digests": [list(pair) for pair in identity.input_digests],
@@ -321,6 +336,7 @@ class ExecutionSummary:
             ),
             final=None if data["final"] is None else _state_from_json(data["final"]),
             end=None if data["end"] is None else Fraction(data["end"]),
+            interpreter=data["interpreter"],
         )
 
 
@@ -334,7 +350,9 @@ def summarize(record: Record) -> ExecutionSummary:
 
     nodes: list[NodeValues] = []
     node_keys: list[bytes] = []
-    numbers: dict[tuple[int, int], int] = {}
+    # Each node version once, by its mobject and version: its number in
+    # ``nodes`` and the mobjects its fields refer to.
+    numbers: dict[tuple[int, int], tuple[int, tuple[Mobject, ...]]] = {}
     camera = record._scene.renderer.camera
     owned = tuple(camera_nodes(camera))
 
@@ -348,19 +366,25 @@ def summarize(record: Record) -> ExecutionSummary:
             *(mob for _, members in lists for mob in members),
             *owned,
         ]
+        walked = list(record._walk(capture, roots))
+        positions = {id(mob): place for place, (mob, _) in enumerate(walked)}
         indices: list[int] = []
-        positions: dict[int, int] = {}
-        for mob, node in record._walk(capture, roots):
-            number = numbers.get((id(mob), id(node)))
-            if number is None:
-                number = numbers[id(mob), id(node)] = len(nodes)
+        children: list[tuple[int, ...]] = []
+        references: list[tuple[int, ...]] = []
+        for mob, node in walked:
+            known = numbers.get((id(mob), id(node)))
+            if known is None:
+                fields, refers = _fields(node)
                 values = NodeValues(
-                    type(mob).__qualname__, len(node.submobjects), _fields(node)
+                    type(mob).__qualname__, len(node.submobjects), fields
                 )
+                known = numbers[id(mob), id(node)] = (len(nodes), refers)
                 nodes.append(values)
                 node_keys.append(_node_key(values))
-            positions[id(mob)] = len(indices)
+            number, refers = known
             indices.append(number)
+            children.append(tuple(positions.get(id(m), -1) for m in node.submobjects))
+            references.append(tuple(positions.get(id(m), -1) for m in refers))
 
         def at(members: Iterable[Mobject], *, ordered: bool = True) -> np.ndarray:
             found = [positions.get(id(mob), -1) for mob in members]
@@ -376,10 +400,18 @@ def summarize(record: Record) -> ExecutionSummary:
         if capture.camera is not None:
             drawing.extend(_camera_leaves("camera", capture.camera, at))
         digest = hashlib.blake2b(digest_size=16)
-        for number in indices:
+        for number, held, referred in zip(indices, children, references, strict=True):
             digest.update(node_keys[number])
+            digest.update(_places_key(held))
+            digest.update(_places_key(referred))
         digest.update(_fields_key(drawing))
-        return StateValues(digest.digest(), tuple(indices), tuple(drawing))
+        return StateValues(
+            digest.digest(),
+            tuple(indices),
+            tuple(drawing),
+            tuple(children),
+            tuple(references),
+        )
 
     plays = []
     for play in record.plays:
@@ -422,9 +454,10 @@ def compare(
     state the script left at its end: by key, and where keys differ, by raw
     value within :data:`TOLERANCE` (an array's dtype and shape exactly).
     Raises :class:`Incomparable` for two executions of different sources,
-    and for one whose source is unknown (a ``None`` digest: a source file
-    gone before its run ended, a scene defined in no file), which is the
-    same source as none.
+    for one whose source is unknown (a ``None`` digest: a source file gone
+    before its run ended, a scene defined in no file), which is the same
+    source as none, and for two made by different interpreters, whose keys
+    of one function differ.
 
     With ``until``, only what both did up to that instant is compared: the
     plays that began by then, the instants up to it, a play's end where
@@ -444,6 +477,11 @@ def compare(
         raise Incomparable(
             "Two executions of different sources are not compared: source digest"
             f" {digests[0]} and {digests[1]}."
+        )
+    if mine.interpreter != theirs.interpreter:
+        raise Incomparable(
+            "Two executions made by different interpreters are not compared:"
+            f" {mine.interpreter} and {theirs.interpreter}."
         )
     changed = changed_inputs(mine.identity, theirs.identity)
     plays = _begun(mine.plays, until)[:before_play]
@@ -471,6 +509,19 @@ def compare(
     if reason is not None:
         return Divergence("execution", None, None, reason, changed)
     return None
+
+
+def not_known_to_agree(refused: Incomparable) -> Divergence:
+    """Two executions of one source :func:`compare` refused (``refused``:
+    made by different interpreters) as a divergence of the whole scene:
+    what can't be compared is not known to agree.
+    """
+    return Divergence(
+        "execution",
+        None,
+        None,
+        f"they can't be compared, so they are not known to agree: {refused}",
+    )
 
 
 def changed_inputs(mine: Identity, theirs: Identity) -> tuple[str, ...]:
@@ -569,16 +620,28 @@ def _state_difference(
             f"it holds {len(state.nodes)} mobjects, and {len(other.nodes)} in the"
             " other execution"
         )
-    for a, b in zip(state.nodes, other.nodes, strict=True):
+    for place, (a, b) in enumerate(zip(state.nodes, other.nodes, strict=True)):
         node, twin = mine.nodes[a], theirs.nodes[b]
         if node.type != twin.type or node.children != twin.children:
             return (
                 f"a {node.type} with {node.children} submobjects is a {twin.type}"
                 f" with {twin.children} in the other execution"
             )
+        # Its edges, not only how many: a child two parents share is walked
+        # once, so pointing one of them at another child keeps every count.
+        if state.submobjects[place] != other.submobjects[place]:
+            return (
+                f"a {node.type}'s submobjects are other mobjects than in the"
+                " other execution"
+            )
         why = _fields_difference(node.fields, twin.fields)
         if why is not None:
             return f"its {node.type}'s {why}"
+        if state.references[place] != other.references[place]:
+            return (
+                f"its {node.type}'s fields refer to other mobjects than in the"
+                " other execution"
+            )
     why = _fields_difference(state.drawing, other.drawing)
     if why is not None:
         return f"its drawing's {why}"
@@ -627,25 +690,27 @@ def _leaf_difference(a: Leaf, b: Leaf) -> str | None:
 def _brief(value: Leaf) -> str:
     if isinstance(value, np.ndarray):
         return f"an array of {value.dtype}{list(value.shape)}"
+    if isinstance(value, str) and value.startswith(_TAGGED):
+        return value[len(_TAGGED) :]
     return repr(value)
 
 
-def _fields(node: NodeState) -> tuple[tuple[str, Leaf], ...]:
+def _fields(
+    node: NodeState,
+) -> tuple[tuple[tuple[str, Leaf], ...], tuple[Mobject, ...]]:
     """The raw values of the fields a content key covers
-    (:func:`.content_fields`), a paint's and a placement's spelled out: the
-    paint's fields (its numbers as floats, as its key takes them), the
-    placement's points.
+    (:func:`.covered_fields`), a paint's and a placement's spelled out (the
+    paint's fields, its numbers as floats as its key takes them, and the
+    placement's points), with the mobjects they refer to, in order.
     """
     from arachne.mobject.placement import Placement
     from arachne.mobject.values import Paint
 
-    from .record import content_fields
+    from .record import covered_fields
 
-    keyed = {name for name, _ in content_fields(node)}
     found: list[tuple[str, Leaf]] = []
-    for name, value in sorted(zip(node.keys, node.values, strict=True)):
-        if name not in keyed:
-            continue
+    refers: list[Mobject] = []
+    for name, value in covered_fields(node):
         if isinstance(value, Paint):
             own = vars(value)
             found.extend(
@@ -656,8 +721,50 @@ def _fields(node: NodeState) -> tuple[tuple[str, Leaf], ...]:
         elif isinstance(value, Placement):
             found.append((name, _leaf(value.points)))
         else:
-            found.append((name, _leaf(value)))
-    return tuple(found)
+            leaf, held = _field_leaf(value)
+            found.append((name, leaf))
+            refers.extend(held)
+    return tuple(found), tuple(refers)
+
+
+def _field_leaf(value: Any) -> tuple[Leaf, tuple[Mobject, ...]]:
+    """A field's raw value, and the mobjects it refers to: a number, a string,
+    an array of numbers compared within the tolerance, or a colour as itself
+    (:func:`_leaf`); an enum by its class and member; any other value (an
+    array compared exactly, a picture's pixels among them, needs no more) as
+    its type and content key (:func:`.keys.value_key`), and a value the key
+    cannot key as why, equal to no other leaf. Those stand for a value and
+    begin with :data:`_TAGGED`.
+    """
+    from arachne.utils.color import ManimColor
+
+    if isinstance(value, Enum):
+        cls = type(value)
+        return f"{_TAGGED}{cls.__qualname__}.{value.name}", ()
+    plain = (
+        value is None
+        or isinstance(value, (bool, int, float, np.generic, ManimColor))
+        or (isinstance(value, str) and not value.startswith(_TAGGED))
+        or (isinstance(value, np.ndarray) and value.dtype.kind in "fc")
+    )
+    if plain:
+        return _leaf(value), ()
+    key, refers = value_key(value, KEY_DECIMALS)
+    reason = marker_reason(key)
+    if reason is not None:
+        # Equal to no other leaf: the marker's own random tail.
+        return f"{_TAGGED}<{reason}, {key[-16:].hex()}>", ()
+    kind = type(value).__qualname__
+    if isinstance(value, np.ndarray):
+        kind = f"{value.dtype}{list(value.shape)}"
+    digest = hashlib.blake2b(key, digest_size=16).hexdigest()
+    return f"{_TAGGED}<{kind} {digest}>", refers
+
+
+#: What begins a leaf that stands for a value rather than being it (an enum,
+#: a digest, a marker), so that no string a field holds reads as one: a
+#: string beginning with it is itself keyed as a digest.
+_TAGGED = "\0"
 
 
 def _camera_leaves(
@@ -781,10 +888,28 @@ def _fields_from_json(fields: list[Any]) -> tuple[tuple[str, Leaf], ...]:
     return tuple((name, _leaf_from_json(value)) for name, value in fields)
 
 
+def _places_key(places: tuple[int, ...]) -> bytes:
+    """``places`` as bytes, their count first."""
+    packed = np.array(places, dtype=">i8").tobytes()
+    return len(places).to_bytes(4, "big") + bytes(packed)
+
+
 def _state_json(state: StateValues) -> list[Any]:
-    return [state.key.hex(), list(state.nodes), _fields_json(state.drawing)]
+    return [
+        state.key.hex(),
+        list(state.nodes),
+        _fields_json(state.drawing),
+        [list(places) for places in state.submobjects],
+        [list(places) for places in state.references],
+    ]
 
 
 def _state_from_json(data: list[Any]) -> StateValues:
-    key, nodes, drawing = data
-    return StateValues(bytes.fromhex(key), tuple(nodes), _fields_from_json(drawing))
+    key, nodes, drawing, submobjects, references = data
+    return StateValues(
+        bytes.fromhex(key),
+        tuple(nodes),
+        _fields_from_json(drawing),
+        tuple(tuple(places) for places in submobjects),
+        tuple(tuple(places) for places in references),
+    )
