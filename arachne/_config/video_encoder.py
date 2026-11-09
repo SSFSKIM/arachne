@@ -205,9 +205,10 @@ def resolve_video_encoder(
     ``gaps`` asks for a run of equal frames to be written as one frame that
     lasts the run. A GIF's segments are decoded and renumbered frame by
     frame, so they are written without. With gaps the encoder writes no
-    B-frames: in MP4 and MOV a stream ends where its last frame in decoding
-    order does, which a frame shown after it would cut short, losing a
-    trailing hold.
+    B-frames (``bf=0``), and B-frames asked for in any spelling (``bf``, or
+    ``bframes`` in x264's own option lists) are refused: with them, libx264's
+    segments with gaps in MP4 can come out with a stream duration short of
+    their last frame's end, losing part of a trailing hold.
     """
     if not output.is_video:
         return None
@@ -239,10 +240,12 @@ def resolve_video_encoder(
     resolved_options.update(supplied_options)
     gaps = gaps and not output.is_gif
     if gaps:
-        if resolved_options.get("bf", "0") != "0":
+        asked = _b_frames_asked(resolved_options)
+        if asked:
             raise ValueError(
                 "hold_gaps writes no B-frames: a video with gaps cannot take "
-                f"bf={resolved_options['bf']}.",
+                + ", ".join(asked)
+                + ".",
             )
         resolved_options["bf"] = "0"
 
@@ -264,6 +267,41 @@ def resolve_video_encoder(
     )
 
 
+#: The libx264 options that carry a list of x264's own settings
+#: (``name=value``, joined by ``:``). FFmpeg applies them after the generic
+#: options, so a setting there overrides ``bf`` or ``threads``.
+_X264_LISTS = ("x264-params", "x264opts")
+
+
+def _x264_items(text: str) -> list[tuple[str, str | None]]:
+    """The settings of an x264 option list: ``(name, value)``, ``None`` for a
+    setting given without a value.
+    """
+    items: list[tuple[str, str | None]] = []
+    for part in text.split(":"):
+        if part:
+            name, equals, value = part.partition("=")
+            items.append((name, value if equals else None))
+    return items
+
+
+def _x264_name(name: str) -> str:
+    """An x264 setting's name as x264 reads it (``_`` and ``-`` alike)."""
+    return name.strip().replace("_", "-")
+
+
+def _b_frames_asked(options: Mapping[str, str]) -> list[str]:
+    """Every setting in ``options`` that asks for B-frames, as written."""
+    asked = []
+    if options.get("bf", "0").strip() != "0":
+        asked.append(f"bf={options['bf']}")
+    for key in _X264_LISTS:
+        for name, value in _x264_items(options.get(key, "")):
+            if _x264_name(name) == "bframes" and (value or "").strip() != "0":
+                asked.append(f"{key} {name}={value}")
+    return asked
+
+
 def with_thread_share(
     spec: VideoEncoderSpec,
     workers: int,
@@ -273,10 +311,12 @@ def with_thread_share(
     ``cores`` processors (by default, those this process may run on): its
     encoder's threads capped at its share of them, at least one.
 
-    One encoder, or threads asked for in the options, keep the settings.
+    Threads asked for in the options, generic (``threads``) or x264's own,
+    are capped too: a count above the share, or ``0`` or ``auto`` (one per
+    processor, or more), becomes the share; a count within it is kept. One
+    encoder keeps the settings.
     """
-    options = dict(spec.options)
-    if workers <= 1 or "threads" in options:
+    if workers <= 1:
         return spec
     if cores is None:
         cores = (
@@ -284,5 +324,25 @@ def with_thread_share(
             if hasattr(os, "sched_getaffinity")
             else os.cpu_count() or 1
         )
-    options["threads"] = str(max(1, cores // workers))
+    share = max(1, cores // workers)
+
+    def capped(value: str | None) -> str:
+        try:
+            count = int((value or "").strip())
+        except ValueError:
+            count = 0  # auto
+        return str(share) if count <= 0 or count > share else str(count)
+
+    options = dict(spec.options)
+    options["threads"] = capped(options.get("threads"))
+    for key in _X264_LISTS:
+        if key in options:
+            options[key] = ":".join(
+                f"{name}={capped(value)}"
+                if _x264_name(name) == "threads"
+                else name
+                if value is None
+                else f"{name}={value}"
+                for name, value in _x264_items(options[key])
+            )
     return replace(spec, options=tuple(sorted(options.items())))

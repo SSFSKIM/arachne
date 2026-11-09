@@ -371,6 +371,24 @@ def test_the_default_encoder_writes_gaps(tmp_path):
     assert movie["stream_duration"] == movie["container_duration"] == 21
 
 
+def test_gaps_refuse_x264_b_frames(tmp_path):
+    options = {"x264-params": "bframes=3:b-adapt=0:scenecut=0"}
+    with pytest.raises(ValueError, match="B-frames"):
+        render_to_video(
+            HeldAround, tmp_path, hold_gaps=True, video_encoder_options=options
+        )
+
+
+def test_gaps_take_other_x264_settings(tmp_path):
+    options = {"x264-params": "b-adapt=0:scenecut=0"}
+    _, drawn, video = render_to_video(
+        HeldAround, tmp_path, hold_gaps=True, video_encoder_options=options
+    )
+    movie = stream_of(video)
+    assert movie["times"] == run_starts(drawn)
+    assert movie["stream_duration"] == 21
+
+
 def test_a_sound_lasts_to_the_end_of_the_last_hold(tmp_path):
     _, drawn, video = render_to_video(Narrated, tmp_path, hold_gaps=True)
     assert len(drawn) == 30

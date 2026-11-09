@@ -8,6 +8,7 @@ the stream ends, and the frames expanded on the grid.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from arachne._config.video_encoder import (
     with_thread_share,
 )
 from arachne.scene.scene_file_writer import uncached_key
+from arachne.scene.video_segment_encoder import VideoSegmentEncoder
 
 WIDTH, HEIGHT, FPS = 32, 24, 15
 
@@ -307,9 +309,9 @@ def test_a_play_drawn_with_caching_on_is_found_cached(tmp_path):
 
 
 def test_the_default_encoder_writes_gaps_without_b_frames(tmp_path):
-    """Reordered frames would end an MP4's stream at the last frame decoded,
-    not the last shown, losing a trailing hold: under ``hold_gaps`` x264
-    writes none. Every run lasts two frames, so no frame time is one frame
+    """Under ``hold_gaps`` x264 writes no B-frames (see
+    ``test_b_frames_would_cut_a_trailing_hold_short``). Every run lasts two
+    frames, so no frame time is one frame
     from the next, and the rate the stream declares is still the scene's.
     """
     plays = [[(picture(i), 2) for i in range(12)]]
@@ -386,10 +388,61 @@ def test_without_gaps_the_encoder_settings_are_unchanged():
     assert dict(_mp4().options) == {"crf": "23"}
 
 
-def test_gaps_refuse_b_frames_asked_for():
+@pytest.mark.parametrize(
+    "asked",
+    [
+        {"bf": "2"},
+        {"x264-params": "bframes=3:b-adapt=0:scenecut=0"},
+        {"x264opts": "scenecut=0:bframes=3"},
+        {"x264-params": "b_adapt=0:bframes=1"},
+    ],
+    ids=["bf", "x264-params", "x264opts", "x264-params-last"],
+)
+def test_gaps_refuse_b_frames_asked_for_in_any_spelling(asked):
     with pytest.raises(ValueError, match="B-frames"):
-        _mp4(gaps=True, options={"bf": "2"})
-    assert dict(_mp4(gaps=True, options={"bf": "0"}).options)["bf"] == "0"
+        _mp4(gaps=True, options=asked)
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"bf": "0"},
+        {"x264-params": "bframes=0:b-adapt=0:scenecut=0"},
+        {"x264opts": "scenecut=0"},
+    ],
+    ids=["bf", "x264-params", "x264opts"],
+)
+def test_gaps_take_settings_that_ask_for_no_b_frames(options):
+    spec = _mp4(gaps=True, options=options)
+    assert dict(spec.options) == {"crf": "23", **options, "bf": "0"}
+
+
+def test_without_gaps_b_frames_may_be_asked_for():
+    asked = {"x264-params": "bframes=3:b-adapt=0:scenecut=0"}
+    assert dict(_mp4(options=asked).options) == {"crf": "23", **asked}
+
+
+def test_b_frames_would_cut_a_trailing_hold_short(tmp_path):
+    """Why gaps take no B-frames: with them, this run pattern (pictures and
+    size as here) comes out of libx264 into MP4 with a stream two frames
+    short of its last frame's end; without, exact. Should this ever pass
+    with B-frames, ``bf=0`` could be revisited.
+    """
+    runs = [1, 4, 1, 1, 6]
+
+    def stream_duration(spec, target):
+        encoder = VideoSegmentEncoder(target=target, spec=spec)
+        for index, repeat in enumerate(runs):
+            encoder.write_frame(picture(index), repeat=repeat)
+        encoder.finish()
+        return decoded(target)["stream_duration"]
+
+    gapped = _mp4(gaps=True)
+    with_b_frames = replace(
+        gapped, options=tuple(sorted({**dict(gapped.options), "bf": "3"}.items()))
+    )
+    assert stream_duration(gapped, tmp_path / "without.mp4") == 13
+    assert stream_duration(with_b_frames, tmp_path / "with.mp4") == 11
 
 
 def test_a_gif_s_segments_have_no_gaps():
@@ -413,8 +466,40 @@ def test_an_encoder_s_threads_are_capped_at_its_share_of_the_cores():
     assert dict(with_thread_share(spec, workers=16, cores=8).options)["threads"] == "1"
 
 
-def test_one_encoder_or_threads_asked_for_keep_the_settings():
+@pytest.mark.parametrize(
+    ("asked", "shared"),
+    [
+        ({"threads": "6"}, {"threads": "2"}),
+        ({"threads": "0"}, {"threads": "2"}),
+        ({"threads": "auto"}, {"threads": "2"}),
+        (
+            {"x264-params": "threads=8:bframes=0"},
+            {"threads": "2", "x264-params": "threads=2:bframes=0"},
+        ),
+        (
+            {"x264opts": "scenecut=0:threads=auto"},
+            {"threads": "2", "x264opts": "scenecut=0:threads=2"},
+        ),
+    ],
+    ids=["above", "zero", "auto", "x264-params", "x264opts"],
+)
+def test_threads_asked_for_are_capped_at_the_share(asked, shared):
+    spec = with_thread_share(_mp4(options=asked), workers=4, cores=8)
+    assert dict(spec.options) == {"crf": "23", **shared}
+
+
+def test_threads_asked_for_within_the_share_are_kept():
+    spec = with_thread_share(
+        _mp4(options={"threads": "1", "x264-params": "threads=1:scenecut=0"}),
+        workers=4,
+        cores=8,
+    )
+    assert dict(spec.options)["threads"] == "1"
+    assert dict(spec.options)["x264-params"] == "threads=1:scenecut=0"
+
+
+def test_one_encoder_keeps_the_settings():
     spec = _mp4()
     assert with_thread_share(spec, workers=1, cores=8) == spec
     asked = _mp4(options={"threads": "6"})
-    assert with_thread_share(asked, workers=4, cores=8) == asked
+    assert with_thread_share(asked, workers=1, cores=8) == asked
