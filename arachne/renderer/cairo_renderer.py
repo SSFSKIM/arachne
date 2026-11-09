@@ -128,6 +128,8 @@ class CairoRenderer:
         #: The plays run so far, while their frames wait for the workers;
         #: ``None`` when each play is drawn as the render reaches it.
         self._deferred: list[_Deferred] | None = None
+        #: The scene being rendered (:meth:`init_scene`).
+        self._scene: Scene | None = None
         self.drawn_by: tuple[workers.WorkerReport, ...] = ()
         self.worker_fallback: str | None = None
 
@@ -148,6 +150,7 @@ class CairoRenderer:
         file_writer_settings: _SceneFileWriterSettings,
     ) -> None:
         self.file_writer: Any = self._file_writer_class(file_writer_settings)
+        self._scene = scene
         self._deferred = None
         if config.render_workers > 1:
             reason = self._no_workers(self.file_writer.output_spec)
@@ -430,6 +433,19 @@ class CairoRenderer:
         self._fall_back(reason)
         self._draw_in_order(scene, deferred)
 
+    def _frame_read(self) -> None:
+        """The scene's code reads a frame through the renderer: if plays
+        wait for the workers, draw them here first, and every play after
+        them, so that the frame it reads is the one a render drawing each
+        play as it runs holds.
+        """
+        if self._deferred and any(each.play is not None for each in self._deferred):
+            assert self._scene is not None
+            self._draw_here(
+                self._scene,
+                "the scene's code reads a frame while plays wait for the workers",
+            )
+
     def _draw_in_order(self, scene: Scene, deferred: Sequence[_Deferred]) -> None:
         """Draw the frames of ``deferred`` in this process, in order,
         leaving the renderer as drawing each as it ran would have.
@@ -649,6 +665,7 @@ class CairoRenderer:
         """
         if self.skip_animations and not ignore_skipping:
             return
+        self._frame_read()
         if not mobjects:
             mobjects = list_update(
                 scene.mobjects,
@@ -686,6 +703,7 @@ class CairoRenderer:
             NumPy array of pixel values of each pixel in screen.
             The shape of the array is height x width x 3.
         """
+        self._frame_read()
         return self.camera.pixel_array.copy()
 
     def add_frame(self, frame: PixelArray, num_frames: int = 1) -> None:

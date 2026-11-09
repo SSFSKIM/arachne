@@ -187,12 +187,15 @@ class SkippedCentreZoomed(ZoomedScene, SkippedCentre):
     """
 
 
-def show_a_snapshot(scene):
-    """The scene's frame drawn now, over the renderer's static picture,
-    shown full size in place of what it shows, held.
-    """
+def drawn_now(scene):
+    """The scene's frame, drawn now over the renderer's static picture."""
     scene.renderer.update_frame(scene)
-    image = ImageMobject(np.array(scene.camera.get_image()))
+    return np.array(scene.camera.get_image())
+
+
+def show(scene, pixels):
+    """``pixels`` shown full size in place of what the scene shows, held."""
+    image = ImageMobject(pixels)
     image.height = scene.camera.frame_height
     image.move_to(scene.camera.frame_center)
     scene.clear()
@@ -206,4 +209,61 @@ class SkippedCentreSnapshot(SkippedCentre):
     """
 
     def then(self, circle):
-        show_a_snapshot(self)
+        show(self, drawn_now(self))
+
+
+class FrameRead(Scene):
+    """A frozen frame, the frame centre moved, then the script reads a
+    frame, drawn now, and shows it before a last play: read while the
+    frozen frame waits to be drawn.
+    """
+
+    def construct(self):
+        self.first()
+        circle = Circle(radius=0.6)
+        self.add(circle)
+        self.wait(0.4)
+        self.camera.frame_center = np.array([1.0, 0.5, 0.0])
+        self.middle()
+        self.add(circle)
+        self.play(circle.animate.shift(LEFT), run_time=0.4)
+
+    def first(self):
+        pass
+
+    def middle(self):
+        show(self, self.read())
+
+    def read(self):
+        return drawn_now(self)
+
+
+class FrameGot(FrameRead):
+    """:class:`FrameRead` reading the renderer's frame as it is."""
+
+    def read(self):
+        return self.renderer.get_frame()
+
+
+class CameraImageGot(FrameRead):
+    """:class:`FrameRead` reading the camera's image as it is."""
+
+    def read(self):
+        return np.array(self.camera.get_image())
+
+
+class FrameNotRead(FrameRead):
+    """:class:`FrameRead` with a wait where it reads a frame."""
+
+    def middle(self):
+        self.wait(0.4)
+
+
+class FrameReadFirst(FrameNotRead):
+    """:class:`FrameNotRead` whose script reads a frame before its first
+    play.
+    """
+
+    def first(self):
+        drawn_now(self)
+        self.renderer.get_frame()

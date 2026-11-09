@@ -302,17 +302,53 @@ def test_a_skipped_static_picture_drawn_while_plays_wait_maps_as_one_process_doe
     """The script draws a frame over a skipped frame's static picture, drawn
     while the plays before it wait for the workers, and shows it.
     """
-    one, two, held = renders(
-        tmp_path,
-        "SkippedCentreSnapshot",
-        [at(1), at(2), {**at(2), "thread": True}],
-    )
+    one, two = renders(tmp_path, "SkippedCentreSnapshot", [at(1), at(2)])
+    drawn_here(one)
+    drawn_here(two)
+    assert READ in two["fallback"]
+    assert two["movie"]["frames"] == one["drawn"]
+
+
+#: Why a render whose script reads a frame while plays wait for the workers
+#: draws them here, and every play after them.
+READ = "reads a frame"
+
+
+@pytest.mark.parametrize(
+    "scene",
+    [
+        "FrameRead",
+        "FrameGot",
+        pytest.param(
+            "CameraImageGot",
+            marks=pytest.mark.xfail(
+                strict=True,
+                reason="a frame read from the camera itself does not reach the"
+                " renderer (tech-debt-tracker.md, Render workers)",
+            ),
+        ),
+    ],
+)
+def test_a_frame_read_while_plays_wait_draws_the_render_here(tmp_path, scene):
+    """Drawn now (``update_frame``), or as the renderer or the camera holds
+    it, the frame the script reads is one process's.
+    """
+    one, two = renders(tmp_path, scene, [at(1), at(2)])
+    drawn_here(one)
+    drawn_here(two)
+    assert READ in two["fallback"]
+    assert two["movie"]["frames"] == one["drawn"]
+
+
+@pytest.mark.parametrize("scene", ["FrameNotRead", "FrameReadFirst"])
+def test_a_render_reading_no_frame_while_plays_wait_is_drawn_by_workers(
+    tmp_path, scene
+):
+    """No frame read, or one read before any play waits."""
+    one, two = renders(tmp_path, scene, [at(1), at(2)])
     drawn_here(one)
     drawn_by_workers(two, 2)
     assert two["movie"]["frames"] == one["drawn"]
-    drawn_here(held)
-    assert "thread" in held["fallback"]
-    assert held["movie"]["frames"] == one["drawn"]
 
 
 # ── a worker that fails ──────────────────────────────────────────────────────
