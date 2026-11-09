@@ -20,9 +20,11 @@ import pytest
 
 #: The peak measured when this test was written was 1.0 to 1.16 GiB on Linux
 #: and macOS alike, a spread of about 180 MiB between runs (and before the
-#: render was written as one stream, the same). The ceiling leaves three
-#: times that spread above the highest, and fails a render that holds twice
-#: the encoder's frames, let alone every frame of the scene (14 GB).
+#: render was written as one stream, the same). The ceiling, an absolute
+#: guard on the whole render's peak, leaves three times that spread above
+#: the highest. It fails a render that keeps every frame of the scene
+#: (14 GB), not one whose encoder needs twice its memory: libx264's share of
+#: the peak is about 550 MiB, and twice that still comes in under it.
 CEILING_MB = 1800
 
 #: A parent that holds ``argv[1]`` MiB, every page written, and then runs the

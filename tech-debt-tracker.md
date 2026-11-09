@@ -404,6 +404,13 @@ lifted.
   frame grid, the time base one frame. `hold_gaps` is off by default
   (`tests/test_scene_rendering/test_hold_gaps.py::test_the_default_encoder_writes_gaps_without_b_frames`).
   Direction: whoever reads a video with gaps reads H.264's declared rate, or the scene's.
+- **An encoder's thread share misses a thread count spelled with quotes or escapes.** `with_thread_share`
+  (`arachne/_config/video_encoder.py`) caps `threads` in x264's own option lists as plainly written
+  (`threads=8`); FFmpeg also reads a quoted or escaped name or value there (`'threads'=8`, `thr\eads=8`), which
+  the cap leaves as asked. What it costs is processors oversubscribed while encoders run at once, not a wrong
+  frame, and only for options written that way by hand. Direction: read the count the opened encoder applies,
+  or decode the lists as FFmpeg does before capping
+  (`tests/test_scene_rendering/test_hold_gaps.py::test_threads_asked_for_are_capped_at_the_share`).
 
 ## What a frame drawn from the record reads (`arachne/timeline/record.py`)
 
