@@ -1147,3 +1147,37 @@ class Scalars(Scene):
     assert _diverged_after_editing(scene, "Scalars", data, "1") is None
     divergence = _diverged_after_editing(scene, "Scalars", data, "2")
     assert divergence is not None
+
+
+def test_a_set_of_sets_of_mobjects_a_field_holds_summarizes_and_agrees(scene_dir):
+    """A tied element of a set that is itself a set of mobjects reaches the
+    summary as places, not as an object the walk never saw: two executions
+    of one scene, whose sets may iterate in another order, agree.
+    """
+    scene = _write(
+        scene_dir,
+        "scene.py",
+        HEADER
+        + """
+class Same(Dot):
+    def __hash__(self):
+        return 1
+
+
+class Holder(Dot):
+    pass
+
+
+class Nested(Scene):
+    def construct(self):
+        a, b, c, d = (Same().shift(i * RIGHT) for i in range(4))
+        holder = Holder()
+        holder.groups = {frozenset((a, b)), frozenset((c, d))}
+        self.add(a, b, c, d, holder)
+        self.wait(0.5)
+""",
+    )
+    first = _open(scene, "Nested").summary()
+    again = _open(scene, "Nested").summary()
+    assert compare(first, again) is None
+    assert compare(first, ExecutionSummary.from_json(again.to_json())) is None

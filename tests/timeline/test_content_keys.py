@@ -1770,3 +1770,46 @@ def test_a_set_of_mobjects_is_one_value_whichever_order_it_iterates_in():
         _value_difference({a, b, d}, {a, b, c}, places=_walk_places(a, b, c, d))
         is not None
     )
+
+
+def test_a_set_of_sets_of_mobjects_resolves_each_group_to_places():
+    """A tied element that is itself a set of mobjects holds a group of its
+    own: every reference resolves to a place, and the sets agree whichever
+    order they hold their elements in; other pairings of the mobjects do not.
+    """
+    from arachne.timeline.keys import referred_places, value_key
+    from arachne.timeline.probe import _value_difference
+
+    a, b, c, d = (_Colliding() for _ in range(4))
+    places = _walk_places(a, b, c, d)
+    forward, backward, other = set(), set(), set()
+    for each in (frozenset((a, b)), frozenset((c, d))):
+        forward.add(each)
+    for each in (frozenset((d, c)), frozenset((b, a))):
+        backward.add(each)
+    for each in (frozenset((a, c)), frozenset((b, d))):
+        other.add(each)
+    refers = value_key(forward)[1]
+    # Only mobjects reach the place function (it knows no other object).
+    assert sorted(referred_places(refers, lambda mob: places[0][id(mob)])) == [
+        0,
+        1,
+        2,
+        3,
+    ]
+    assert _value_difference(forward, backward, places=places) is None
+    assert _value_difference(forward, other, places=places) is not None
+
+
+def test_a_dict_keeps_the_order_it_holds_its_items_in():
+    """A dict's order is part of its key: two dicts holding the same two
+    mobjects (of one type, under equal values) in opposite orders differ,
+    where two sets of them do not.
+    """
+    from arachne.timeline.probe import _value_difference
+
+    a, b = _Colliding(), _Colliding()
+    places = _walk_places(a, b)
+    assert _value_difference({a: 0, b: 0}, {b: 0, a: 0}, places=places) is not None
+    assert _value_difference({a: 0, b: 0}, {a: 0, b: 0}, places=places) is None
+    assert _value_difference({a, b}, {b, a}, places=places) is None

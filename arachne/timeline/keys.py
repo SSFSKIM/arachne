@@ -120,12 +120,13 @@ def referred_places(
     """Which mobjects ``refers`` (a value's references, as
     :func:`value_key` gives them) are, by ``place``: in the order they stand
     in the value, but for the elements of a set that tie, whose places are
-    in order of place (each element's own, in the order it holds them).
+    in order of place (each element's own, in the order it holds them; an
+    element that holds a group of its own is resolved the same way).
     """
     found: list[int] = []
     for item in refers:
         if isinstance(item, Unordered):
-            for element in sorted(tuple(place(mob) for mob in each) for each in item):
+            for element in sorted(referred_places(each, place) for each in item):
                 found.extend(element)
         else:
             found.append(place(item))
@@ -423,13 +424,14 @@ def _content_key(value: Any, keying: _Keying) -> bytes:
             keyed.sort(key=lambda item: item[0])
         index = 0
         while index < len(keyed):
-            # Elements whose keys tie are told apart only by which mobjects
-            # they refer to, which their order in the set says nothing of.
+            # Elements of a set whose keys tie are told apart only by which
+            # mobjects they refer to, which their order in the set says
+            # nothing of. A dict's order is part of its key.
             end = index + 1
             while end < len(keyed) and keyed[end][0] == keyed[index][0]:
                 end += 1
             tied = keyed[index:end]
-            if len(tied) > 1 and any(own for _, own in tied):
+            if not ordered and len(tied) > 1 and any(own for _, own in tied):
                 held.append(Unordered(tuple(own) for _, own in tied))
             else:
                 for _, own in tied:
