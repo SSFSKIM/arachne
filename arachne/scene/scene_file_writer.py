@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-__all__ = ["SceneFileWriter"]
+__all__ = ["SceneFileWriter", "uncached_key"]
 
 import json
 import shutil
 import warnings
 from contextlib import suppress
 from dataclasses import dataclass
+from fractions import Fraction
 from io import BytesIO
 from pathlib import Path
 from queue import Queue
@@ -76,6 +77,15 @@ def _webm_audio_codec() -> str:
     except ValueError:
         return "libopus"
     return "libvorbis"
+
+
+#: How the key of a play drawn with caching off begins.
+_UNCACHED = "uncached_"
+
+
+def uncached_key(index: int) -> str:
+    """The key of play ``index`` when it is drawn with caching off."""
+    return f"{_UNCACHED}{index:05}"
 
 
 class _PartialMovieEncodeJob:
@@ -232,6 +242,14 @@ class SceneFileWriter:
     segments with optional audio, sections, and subcaptions. It also writes
     still images and PNG sequences described by the output plan.
 
+    A play drawn with caching on is encoded into a segment of its own, which a
+    later render may reuse. Consecutive plays drawn with caching off share one
+    stream (a single encoder, a single segment), unless sections are saved:
+    each section's video is joined from its plays' segments. A play drawn
+    with caching on, or :meth:`cut_stream`, ends a stream; the next play
+    drawn with caching off starts another. The movie joins segments and
+    streams in play order.
+
     Parameters
     ----------
     settings
@@ -242,7 +260,8 @@ class SceneFileWriter:
     sections
         Ordered section metadata for the scene.
     partial_movie_files
-        Segment paths in animation order, including ``None`` for skipped plays.
+        Segment paths in animation order, including ``None`` for skipped plays;
+        the plays of one stream share its path.
     """
 
     def __init__(self, settings: _SceneFileWriterSettings) -> None:
@@ -253,6 +272,11 @@ class SceneFileWriter:
         self._inflight_encode_jobs: list[_PartialMovieEncodeJob] = []
         self._inflight_by_path: dict[str, _PartialMovieEncodeJob] = {}
         self._current_encode_job: _PartialMovieEncodeJob | None = None
+        #: The paths of the streams, the one the next play drawn with caching
+        #: off joins (``None``: it starts another), and its open job.
+        self._streams: set[str] = set()
+        self._open_stream: str | None = None
+        self._stream_job: _PartialMovieEncodeJob | None = None
         self.init_audio()
         self.frame_count = 0
         self.partial_movie_files: list[str | None] = []
@@ -356,7 +380,9 @@ class SceneFileWriter:
         Parameters
         ----------
         hash_animation
-            Hash of the animation.
+            Hash of the animation (:func:`uncached_key` when drawn with
+            caching off: the play joins the open stream, or starts one named
+            after it).
         """
         if not self.output_spec.is_video:
             return
@@ -365,10 +391,42 @@ class SceneFileWriter:
         if hash_animation is None:
             self.partial_movie_files.append(None)
             self.sections[-1].partial_movie_files.append(None)
+            return
+        if self._streamed(hash_animation):
+            if self._open_stream is None:
+                self._open_stream = str(
+                    self.output_plan.segment_path(f"{hash_animation}_on"),
+                )
+                self._streams.add(self._open_stream)
+            new_partial_movie_file = self._open_stream
         else:
+            self.cut_stream()
             new_partial_movie_file = str(self.output_plan.segment_path(hash_animation))
-            self.partial_movie_files.append(new_partial_movie_file)
-            self.sections[-1].partial_movie_files.append(new_partial_movie_file)
+        self.partial_movie_files.append(new_partial_movie_file)
+        self.sections[-1].partial_movie_files.append(new_partial_movie_file)
+
+    def _streamed(self, hash_animation: str) -> bool:
+        """Whether the play keyed ``hash_animation`` is written to a stream:
+        drawn with caching off, with no sections saved.
+        """
+        return (
+            hash_animation.startswith(_UNCACHED)
+            and self.output_spec.is_video
+            and not self.output_spec.save_sections
+        )
+
+    def cut_stream(self) -> None:
+        """End the open stream: the next play drawn with caching off starts
+        another, encoded apart (the frames already written to the open one
+        are encoded on as it closes).
+        """
+        self._open_stream = None
+        job = self._stream_job
+        if job is None or job is self._current_encode_job:
+            # A play is being written to it: it is sealed once that play ends.
+            return
+        self._stream_job = None
+        self._retire(job)
 
     # Sound
     def init_audio(self) -> None:
@@ -523,6 +581,8 @@ class SceneFileWriter:
                 # the worker discards the partial before join() re-raises.
                 job.seal()
                 self._current_encode_job = None
+                if job is self._stream_job:
+                    self._stream_job = self._open_stream = None
                 job.join()
             job.put(repeat, pixels)
 
@@ -574,11 +634,14 @@ class SceneFileWriter:
         animation_index: int,
         file_path: StrPath | None = None,
     ) -> None:
-        """Create a queued encoder job for one planned video segment."""
+        """Create a queued encoder job for one planned video segment, or take
+        up the open stream's job for a play written to it.
+        """
         if self._current_encode_job is not None:
             raise RuntimeError(
                 "Cannot open a video segment while another segment is still open.",
             )
+        stream = False
         if file_path is None:
             file_path = self.partial_movie_files[animation_index]
             if file_path is None:
@@ -586,6 +649,16 @@ class SceneFileWriter:
                     "open_partial_movie_stream() called for a play that has no "
                     "partial movie file path.",
                 )
+            stream = file_path in self._streams
+            job = self._stream_job
+            if stream and job is not None and str(job.path) == file_path:
+                self._current_encode_job = job
+                return
+        if self._stream_job is not None:
+            # Any other segment or stream comes after the open stream's plays.
+            self._open_stream = None
+            self._retire(self._stream_job)
+            self._stream_job = None
         file_path = Path(file_path)
         file_path.parent.mkdir(parents=True, exist_ok=True)
         path_key = str(file_path)
@@ -597,6 +670,8 @@ class SceneFileWriter:
             encoder=segment_encoder,
             frame_queue_size=self.settings.encoder_queue_size,
         )
+        if stream:
+            self._stream_job = self._current_encode_job
 
     def _join_job(self, job: _PartialMovieEncodeJob) -> None:
         """Remove and join an in-flight partial movie encode job."""
@@ -619,7 +694,15 @@ class SceneFileWriter:
             raise
 
     def join_all_encode_jobs(self) -> None:
-        """Join every in-flight encode job, re-raising the first failure."""
+        """Join every in-flight encode job, re-raising the first failure. An
+        open stream no play is being written to is sealed and joined too.
+        """
+        stream = self._stream_job
+        if stream is not None and stream is not self._current_encode_job:
+            self._stream_job = self._open_stream = None
+            stream.seal()
+            self._inflight_encode_jobs.append(stream)
+            self._inflight_by_path[str(stream.path)] = stream
         first_exception: BaseException | None = None
         for job in list(self._inflight_encode_jobs):
             try:
@@ -660,6 +743,17 @@ class SceneFileWriter:
                     "Discarded partial movie file of aborted animation %(index)d",
                     {"index": job.animation_index},
                 )
+        stream, self._stream_job, self._open_stream = self._stream_job, None, None
+        if stream is not None and stream is not job:
+            # The open stream holds plays of the aborted render: discarded.
+            stream.abort()
+            stream.thread.join()
+            if stream._exception is not None:
+                logger.error(
+                    "Encoder for the stream from animation %d had also failed",
+                    stream.animation_index,
+                    exc_info=stream._exception,
+                )
         if reraise_encoder_failures:
             self.join_all_encode_jobs()
             if current_exception is not None:
@@ -673,18 +767,29 @@ class SceneFileWriter:
                 logger.exception("Encoder failure while aborting render")
 
     def close_partial_movie_stream(self) -> None:
-        """Seal the current segment and enforce the in-flight job limit."""
+        """Seal the current segment and enforce the in-flight job limit. A
+        stream stays open for the plays that follow, until it is cut.
+        """
         job = self._current_encode_job
         if job is None:
             raise RuntimeError(
                 "close_partial_movie_stream() called without an open partial "
                 "movie stream.",
             )
+        self._current_encode_job = None
+        if job is self._stream_job:
+            if str(job.path) == self._open_stream:
+                return
+            self._stream_job = None
+        self._retire(job)
+
+    def _retire(self, job: _PartialMovieEncodeJob) -> None:
+        """Seal ``job``, which takes no more frames, and enforce the in-flight
+        job limit.
+        """
         job.seal()
         self._inflight_encode_jobs.append(job)
         self._inflight_by_path[str(job.path)] = job
-        self._current_encode_job = None
-
         while len(self._inflight_encode_jobs) >= self.settings.max_inflight_encoders:
             self._join_job_and_drain_on_failure(self._inflight_encode_jobs[0])
 
@@ -699,9 +804,10 @@ class SceneFileWriter:
         Returns
         -------
         :class:`bool`
-            Whether the file exists.
+            Whether the file exists. A play drawn with caching off is never
+            cached, whatever another render left under its key.
         """
-        if not self.output_spec.is_video:
+        if not self.output_spec.is_video or hash_invocation.startswith(_UNCACHED):
             return False
         path = self.output_plan.segment_path(hash_invocation)
         path_key = str(path)
@@ -828,8 +934,8 @@ class SceneFileWriter:
                 output_container.mux(packet)
 
         else:
-            output_stream = output_container.add_stream_from_template(
-                template=partial_movies_stream,
+            output_stream = self._copied_video_stream(
+                output_container, partial_movies_stream
             )
             if (
                 self.output_spec.transparent
@@ -852,12 +958,38 @@ class SceneFileWriter:
         output_container.close()
         manifest.close()
 
+    def _copied_video_stream(
+        self, container: av.container.OutputContainer, template: av.video.VideoStream
+    ) -> av.video.VideoStream:
+        """A video stream of ``container`` for ``template``'s packets, copied
+        as they are. No encoder is opened for it (the default encoder for an
+        RGB H.264 segment's codec refuses RGB), and its time base is one frame
+        of the grid, so every frame's time, and a held frame's duration, stay
+        exactly on the grid.
+        """
+        stream = container.add_stream_from_template(template=template, opaque=True)
+        encoder = self.video_encoder
+        assert encoder is not None
+        stream.time_base = Fraction(
+            encoder.frame_rate.denominator, encoder.frame_rate.numerator
+        )
+        return stream
+
     def combine_to_movie(self) -> None:
         """Used internally by Manim to combine the separate
         partial movie files that make up a Scene into a single
         video file for that Scene.
         """
-        partial_movie_files = [el for el in self.partial_movie_files if el is not None]
+        partial_movie_files: list[str] = []
+        for path in self.partial_movie_files:
+            # The plays of one stream share its file, joined once.
+            if path is None or (
+                path in self._streams
+                and partial_movie_files
+                and partial_movie_files[-1] == path
+            ):
+                continue
+            partial_movie_files.append(path)
         # NOTE: Here we should do a check and raise an exception if partial
         # movie file is empty.  We can't, as a lot of stuff (in particular, in
         # tests) use scene initialization, and this error would be raised as
@@ -925,8 +1057,8 @@ class SceneFileWriter:
                 output_container = av.open(
                     str(temp_file_path), mode="w", options=av_options
                 )
-                output_video_stream = output_container.add_stream_from_template(
-                    template=video_stream
+                output_video_stream = self._copied_video_stream(
+                    output_container, video_stream
                 )
                 output_audio_stream = output_container.add_stream_from_template(
                     template=audio_stream

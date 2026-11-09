@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+from contextlib import suppress
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 
@@ -319,18 +320,16 @@ class Manager(Generic[SceneT]):
         timeline.begin_run()
         try:
             self.setup()
-            try:
+            # Reaching the configured animation boundary ends the scene normally.
+            with suppress(EndSceneEarlyException):
                 self.construct()
-            except EndSceneEarlyException:
-                # Reaching the configured animation boundary ends the scene normally.
-                pass
-            except BaseException:
-                # A mid-play exception leaves an unsealed encode job whose
-                # non-daemon worker would hang the process at exit.
-                self.file_writer.abort_encode_jobs()
-                raise
             self.tear_down()
         except BaseException:
+            # A mid-play exception leaves an unsealed encode job, and the
+            # stream of the plays drawn with caching off stays open between
+            # plays: a non-daemon worker waiting on either would hang the
+            # process at exit.
+            self.file_writer.abort_encode_jobs()
             timeline.abandon_run()
             raise
         timeline.end_run()

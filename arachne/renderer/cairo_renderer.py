@@ -10,7 +10,7 @@ from .. import config, logger
 from .._config.video_encoder import video_encoder_fingerprint
 from ..camera.camera import Camera
 from ..mobject.mobject import Mobject, _AnimationBuilder
-from ..scene.scene_file_writer import SceneFileWriter
+from ..scene.scene_file_writer import SceneFileWriter, uncached_key
 from ..timeline.clock import TICK_RATE, exact, frames_in
 from ..timeline.draw import Drawing, DrawReuse, LiveFrames
 from ..timeline.execution import UNREPEATABLE, Reexecute
@@ -138,7 +138,7 @@ class CairoRenderer:
             logger.debug(f"Skipping animation {self.num_plays}")
         elif config["disable_caching"]:
             logger.info("Caching disabled.")
-            cache_key = f"uncached_{self.num_plays:05}"
+            cache_key = uncached_key(self.num_plays)
         else:
             assert scene.animations is not None
             cache_key = get_hash_from_play_call(

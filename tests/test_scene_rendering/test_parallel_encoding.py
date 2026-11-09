@@ -722,12 +722,17 @@ def test_keyboard_interrupt_aborts_encode_jobs_and_reraises(config):
 
 
 @pytest.mark.slow
-def test_end_scene_early_keeps_completed_partials(config, tmp_path):
+@pytest.mark.parametrize("disable_caching", [True, False])
+def test_end_scene_early_keeps_the_plays_drawn(config, tmp_path, disable_caching):
+    """Plays drawn with caching off share one stream, plays drawn with it on
+    keep a segment each; either way the movie holds every frame drawn.
+    """
+
     class EarlyEndScene(Scene):
         def construct(self):
             for index in range(3):
                 square = Square(side_length=0.3 + index / 10)
-                self.play(FadeIn(square), run_time=0.1)
+                self.play(FadeIn(square), run_time=0.2)
                 self.clear()
 
     with tempconfig(
@@ -735,17 +740,50 @@ def test_end_scene_early_keeps_completed_partials(config, tmp_path):
             "media_dir": tmp_path,
             "quality": "low_quality",
             "max_inflight_encoders": 3,
-            "disable_caching": True,
+            "disable_caching": disable_caching,
             "upto_animation_number": 1,
         },
     ):
         scene = EarlyEndScene()
         scene.render()
-        partial_directory = Path(scene.renderer.file_writer.partial_movie_directory)
+        writer = scene.renderer.file_writer
+        partial_directory = Path(writer.partial_movie_directory)
+        movie = Path(writer.movie_file_path)
 
     partial_movies = sorted(path.name for path in partial_directory.glob("*.mp4"))
-    assert partial_movies == ["uncached_00000.mp4", "uncached_00001.mp4"]
+    if disable_caching:
+        assert partial_movies == ["uncached_00000_on.mp4"]
+    else:
+        assert len(partial_movies) == 2
+    drawn = sum(sum(runs) for runs in scene.renderer.frame_runs.values())
+    assert drawn == 6
+    assert _decode_frame_count(movie) == drawn
     assert not _alive_encoder_threads()
+
+
+@pytest.mark.slow
+def test_a_failure_after_the_last_play_discards_the_open_stream(config, tmp_path):
+    """The stream stays open between plays: a failure after the last one
+    (here in tear_down) must not leave its encoder waiting for frames.
+    """
+
+    class FailingTearDown(Scene):
+        def construct(self):
+            self.play(FadeIn(Square()), run_time=0.2)
+
+        def tear_down(self):
+            raise RuntimeError("tear_down failure")
+
+    with tempconfig(
+        {"media_dir": tmp_path, "quality": "low_quality", "disable_caching": True},
+    ):
+        scene = FailingTearDown()
+        with pytest.raises(RuntimeError, match="tear_down failure"):
+            scene.render()
+        partial_directory = Path(scene.renderer.file_writer.partial_movie_directory)
+
+    assert not _alive_encoder_threads()
+    assert not list(partial_directory.glob("*.mp4"))
 
 
 _MID_PLAY_FAILURE_SCENE_NAME = "MidPlayFailureScene"
@@ -819,8 +857,9 @@ def test_mid_play_exception_does_not_hang_process(tmp_path):
         / "partial_movie_files"
         / _MID_PLAY_FAILURE_SCENE_NAME
     )
-    assert (partial_directory / "uncached_00000.mp4").exists()
-    assert not (partial_directory / "uncached_00001.mp4").exists()
+    # The plays drawn with caching off shared one stream, discarded with the
+    # failed render.
+    assert not list(partial_directory.glob("*.mp4"))
 
 
 _BURST_SCENE_NAME = "ParallelEncodingBurstScene"

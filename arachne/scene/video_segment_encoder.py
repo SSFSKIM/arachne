@@ -16,13 +16,24 @@ __all__ = ["VideoSegmentEncoder"]
 
 
 class VideoSegmentEncoder:
-    """Encode top-left-origin C-contiguous RGBA frames into one video segment."""
+    """Encode top-left-origin C-contiguous RGBA frames into one video segment.
+
+    Frames are placed on the frame grid: a frame's presentation time counts
+    the frames of the grid before it, on a time base of one frame. With the
+    spec's ``gaps``, a run of equal frames (repeats, or consecutive frames
+    with equal bytes) is encoded once, as one frame whose duration covers the
+    run; the next frame's time leaves a gap. Every frame carries its duration,
+    so the last one's keeps a trailing hold in the segment's duration.
+    """
 
     def __init__(self, *, target: Path, spec: VideoEncoderSpec) -> None:
         self.target = target
         self.spec = spec
         self._next_pts = 0
         self._closed = False
+        #: With gaps: the run being written, and how many frames it lasts.
+        self._pending: RGBAPixelArray | None = None
+        self._pending_frames = 0
         self.target.parent.mkdir(parents=True, exist_ok=True)
 
         container = None
@@ -40,6 +51,9 @@ class VideoSegmentEncoder:
             stream.pix_fmt = self.spec.pixel_format
             stream.width = self.spec.width
             stream.height = self.spec.height
+            if self.spec.gaps:
+                # The encoder copies each frame's duration to its packet.
+                stream.codec_context.flags |= av.codec.context.Flags.frame_duration
         except BaseException as error:
             if container is not None:
                 with suppress(BaseException):
@@ -84,23 +98,59 @@ class VideoSegmentEncoder:
         if not pixels.flags.c_contiguous:
             raise ValueError("Video segment frames must be C-contiguous.")
 
-    def write_frame(self, pixels: RGBAPixelArray, *, repeat: int = 1) -> None:
-        """Encode ``pixels`` at consecutive segment-local PTS values."""
-        self._validate_frame(pixels, repeat)
-        time_base = Fraction(
+    @property
+    def _time_base(self) -> Fraction:
+        return Fraction(
             self.spec.frame_rate.denominator,
             self.spec.frame_rate.numerator,
         )
+
+    def write_frame(self, pixels: RGBAPixelArray, *, repeat: int = 1) -> None:
+        """Encode ``pixels`` for the next ``repeat`` frames of the grid."""
+        self._validate_frame(pixels, repeat)
+        if self.spec.gaps:
+            self._extend_run(pixels, repeat)
+            return
         try:
             for _ in range(repeat):
                 frame = av.VideoFrame.from_ndarray(pixels, format="rgba")
                 frame.pts = self._next_pts
-                frame.time_base = time_base
+                frame.time_base = self._time_base
                 self._next_pts += 1
                 for packet in self._stream.encode(frame):
                     self._container.mux(packet)
         except BaseException as error:
             raise self._operation_error("encode", error) from error
+
+    def _extend_run(self, pixels: RGBAPixelArray, repeat: int) -> None:
+        """Add ``repeat`` frames of ``pixels`` to the run being written, or
+        encode that run and start another: a run's duration is known only
+        once a different frame, or the end, arrives.
+        """
+        pending = self._pending
+        if pending is not None and (
+            pixels is pending or np.array_equal(pixels, pending)
+        ):
+            self._pending_frames += repeat
+            return
+        try:
+            self._encode_run()
+        except BaseException as error:
+            raise self._operation_error("encode", error) from error
+        self._pending, self._pending_frames = pixels, repeat
+
+    def _encode_run(self) -> None:
+        """Encode the run being written, if any, as one frame lasting it."""
+        if self._pending is None:
+            return
+        frame = av.VideoFrame.from_ndarray(self._pending, format="rgba")
+        frame.pts = self._next_pts
+        frame.time_base = self._time_base
+        frame.duration = self._pending_frames
+        self._next_pts += self._pending_frames
+        self._pending, self._pending_frames = None, 0
+        for packet in self._stream.encode(frame):
+            self._container.mux(packet)
 
     def finish(self) -> None:
         """Flush encoded packets and close the segment."""
@@ -110,6 +160,7 @@ class VideoSegmentEncoder:
         first_error: Exception | None = None
         try:
             try:
+                self._encode_run()
                 for packet in self._stream.encode():
                     self._container.mux(packet)
             except Exception as error:

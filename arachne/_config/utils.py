@@ -1520,7 +1520,9 @@ class ManimConfig(MutableMapping):
     def hold_gaps(self) -> bool:
         """Whether a run of equal frames is written to a video as one frame
         that lasts the run, a variable frame rate (off by default). Decoded
-        on the frame grid, the frames are the same.
+        on the frame grid, the frames are the same. Frames are equal when
+        their bytes are. A GIF is still written frame by frame, and the
+        encoder writes no B-frames.
         """
         return self._lever("hold_gaps")
 

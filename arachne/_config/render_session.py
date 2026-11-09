@@ -51,6 +51,7 @@ class _SessionConfigSource(Protocol):
     video_codec: str
     pixel_format: str
     video_encoder_options: dict[str, str]
+    hold_gaps: bool
 
 
 class _OutputConfigSource(Protocol):
@@ -130,6 +131,7 @@ def resolve_render_session(
         codec=config.video_codec,
         pixel_format=config.pixel_format,
         options=config.video_encoder_options,
+        gaps=config.hold_gaps,
     )
     return RenderSessionSpec(
         output=output,

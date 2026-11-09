@@ -5,8 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from fractions import Fraction
 
 import av
@@ -18,6 +19,7 @@ __all__ = [
     "resolve_video_encoder",
     "to_av_frame_rate",
     "video_encoder_fingerprint",
+    "with_thread_share",
 ]
 
 _CONFLICTING_OPTION_KEYS = frozenset(
@@ -42,7 +44,12 @@ _DEFAULT_OPTIONS = {
 
 @dataclass(frozen=True, slots=True)
 class VideoEncoderSpec:
-    """Complete byte-affecting settings for one cached video segment."""
+    """Complete byte-affecting settings for one cached video segment.
+
+    With ``gaps``, a run of equal frames is written as one frame that lasts
+    the run (a variable frame rate on the frame grid); without, every frame
+    of the grid is written.
+    """
 
     container_format: str
     codec: str
@@ -51,13 +58,14 @@ class VideoEncoderSpec:
     height: int
     frame_rate: Fraction
     options: tuple[tuple[str, str], ...]
+    gaps: bool = False
 
 
 def video_encoder_fingerprint(spec: VideoEncoderSpec | None) -> str:
     """Return the stable cache-identity token for resolved encoder settings."""
     if spec is None:
         return "none"
-    payload = {
+    payload: dict[str, object] = {
         "schema": "manim-video-segment-v1",
         "container_format": spec.container_format,
         "codec": spec.codec,
@@ -72,6 +80,9 @@ def video_encoder_fingerprint(spec: VideoEncoderSpec | None) -> str:
             {"name": name, "value": value} for name, value in sorted(spec.options)
         ],
     }
+    if spec.gaps:
+        # Only when set: a segment written without gaps keeps its identity.
+        payload["gaps"] = True
     serialized = json.dumps(
         payload,
         ensure_ascii=False,
@@ -187,8 +198,17 @@ def resolve_video_encoder(
     codec: str = "auto",
     pixel_format: str = "auto",
     options: Mapping[str, str] | None = None,
+    gaps: bool = False,
 ) -> VideoEncoderSpec | None:
-    """Resolve and validate cached-segment encoder settings."""
+    """Resolve and validate cached-segment encoder settings.
+
+    ``gaps`` asks for a run of equal frames to be written as one frame that
+    lasts the run. A GIF's segments are decoded and renumbered frame by
+    frame, so they are written without. With gaps the encoder writes no
+    B-frames: in MP4 and MOV a stream ends where its last frame in decoding
+    order does, which a frame shown after it would cut short, losing a
+    trailing hold.
+    """
     if not output.is_video:
         return None
 
@@ -217,6 +237,14 @@ def resolve_video_encoder(
         dict(_DEFAULT_OPTIONS[default_codec]) if resolved_codec == default_codec else {}
     )
     resolved_options.update(supplied_options)
+    gaps = gaps and not output.is_gif
+    if gaps:
+        if resolved_options.get("bf", "0") != "0":
+            raise ValueError(
+                "hold_gaps writes no B-frames: a video with gaps cannot take "
+                f"bf={resolved_options['bf']}.",
+            )
+        resolved_options["bf"] = "0"
 
     _validate_profile(
         container_format=container_format,
@@ -232,4 +260,29 @@ def resolve_video_encoder(
         height=height,
         frame_rate=resolved_rate,
         options=tuple(sorted(resolved_options.items())),
+        gaps=gaps,
     )
+
+
+def with_thread_share(
+    spec: VideoEncoderSpec,
+    workers: int,
+    cores: int | None = None,
+) -> VideoEncoderSpec:
+    """The settings for one of ``workers`` encoders running at once on
+    ``cores`` processors (by default, those this process may run on): its
+    encoder's threads capped at its share of them, at least one.
+
+    One encoder, or threads asked for in the options, keep the settings.
+    """
+    options = dict(spec.options)
+    if workers <= 1 or "threads" in options:
+        return spec
+    if cores is None:
+        cores = (
+            len(os.sched_getaffinity(0))
+            if hasattr(os, "sched_getaffinity")
+            else os.cpu_count() or 1
+        )
+    options["threads"] = str(max(1, cores // workers))
+    return replace(spec, options=tuple(sorted(options.items())))

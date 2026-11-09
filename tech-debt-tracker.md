@@ -395,6 +395,16 @@ lifted.
   be made writable and written; a frame reused after such a write shows the value before it, as would anything
   else that shares the value. Direction: none; a change goes through the setters.
 
+## Video output (`arachne/scene/scene_file_writer.py`, `arachne/scene/video_segment_encoder.py`)
+
+- **A video with gaps declares no frame rate a frame-rate probe reads.** MP4 and MOV store each frame's time, not a
+  rate, so a probe's rate is a guess from the times (ffprobe's `r_frame_rate` is their greatest common step: a
+  scene whose runs all last two frames reads as half its rate, a title held for 2 s as 1/2). H.264 declares the
+  scene's rate in its stream header, and that stays exact; other codecs declare none. Every frame's time is on the
+  frame grid, the time base one frame. `hold_gaps` is off by default
+  (`tests/test_scene_rendering/test_hold_gaps.py::test_the_default_encoder_writes_gaps_without_b_frames`).
+  Direction: whoever reads a video with gaps reads H.264's declared rate, or the scene's.
+
 ## What a frame drawn from the record reads (`arachne/timeline/record.py`)
 
 - **A display of another camera costs one picture a play.** A display of a camera the scene's camera does not draw

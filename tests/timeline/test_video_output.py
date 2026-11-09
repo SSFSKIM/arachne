@@ -4,11 +4,14 @@ on every way a play comes to be drawn as it runs.
 The other timeline tests render with nothing written; these write an MP4,
 decode it and compare it with the frames the renderer handed its writer:
 losslessly (PNG frames in the MP4 container) to compare pixels, and with
-the default encoder to count frames.
+the default encoder to count frames. With ``hold_gaps`` a run of equal frames
+is one decoded frame that lasts the run: decoded frames are expanded on the
+frame grid by their times before they are compared.
 """
 
 from __future__ import annotations
 
+from fractions import Fraction
 from pathlib import Path
 
 import av
@@ -128,7 +131,7 @@ def render_to_video(
         collect()
         scene.render()
         video = Path(scene.renderer.file_writer.movie_file_path)
-    assert video.suffix == ".mp4"
+    assert video.suffix == f".{settings.get('format', 'mp4')}"
     return scene, executions[-1], video
 
 
@@ -216,3 +219,202 @@ def test_the_default_encoder_writes_every_frame(tmp_path, scene_class, frames, p
     scene, drawn, video = render_to_video(scene_class, tmp_path)
     assert len(drawn) == frames
     assert len(decoded(video)) == frames
+
+
+# ── one stream, and holds as gaps ────────────────────────────────────────────
+
+#: Lossless encodings: PNG frames in MP4, and QuickTime RLE in MOV.
+GAPPED_LOSSLESS = {
+    "png": LOSSLESS,
+    "qtrle": {"format": "mov", "video_codec": "qtrle", "pixel_format": "rgb24"},
+}
+
+CLICK = Path(__file__).parents[2] / "docs" / "source" / "_static" / "click.wav"
+
+
+class HeldAround(Scene):
+    """A hold first, a play, and a hold to the end: the first frame, a middle
+    run and the last frame each last several frames.
+    """
+
+    def construct(self):
+        dot = Dot(LEFT)
+        self.add(dot)
+        self.wait(0.4)
+        self.play(dot.animate.shift(RIGHT * 2), run_time=0.4)
+        self.wait(0.6)
+
+
+class Narrated(Scene):
+    """A sound that ends inside the scene's last hold."""
+
+    def construct(self):
+        dot = Dot()
+        self.add(dot)
+        self.add_sound(CLICK, time_offset=1.35)
+        self.play(dot.animate.shift(RIGHT), run_time=0.5)
+        self.wait(1.5)
+
+
+GAPPED_CASES = [*CASES, pytest.param(HeldAround, 21, ["trusted"] * 3, id="held_around")]
+
+
+def stream_of(video: Path) -> dict:
+    """The video stream decoded: its frames (RGB) and their times in frames
+    of the grid, the time its last frame ends, and its durations.
+    """
+    with av.open(str(video)) as container:
+        stream = container.streams.video[0]
+        base = Fraction(stream.time_base)
+        packets = [
+            (p.pts, p.duration) for p in container.demux(stream) if p.pts is not None
+        ]
+        stream_duration = stream.duration * base * FPS if stream.duration else None
+        microseconds = container.duration
+    with av.open(str(video)) as container:
+        frames = list(container.decode(video=0))
+    origin = min(pts for pts, _ in packets)
+    # The container's duration is in whole microseconds: the nearest whole
+    # frame when the duration is that frame's, rounded.
+    nearest = round(Fraction(microseconds * FPS, av.time_base))
+    rounded = round(Fraction(nearest * av.time_base, FPS)) == microseconds
+    return {
+        "times": [(f.pts - origin) * base * FPS for f in frames],
+        "pictures": [f.to_ndarray(format="rgb24") for f in frames],
+        "end": (max(p + d for p, d in packets) - origin) * base * FPS,
+        "stream_duration": stream_duration,
+        "container_duration": (
+            nearest if rounded else Fraction(microseconds * FPS, av.time_base)
+        ),
+    }
+
+
+def on_grid(movie: dict) -> list[np.ndarray]:
+    """Decoded frames expanded on the frame grid: each from its time to the
+    next frame's, the last to the stream's end. Every time is on the grid.
+    """
+    ends = [*movie["times"][1:], movie["end"]]
+    shown: list[np.ndarray] = []
+    for start, end, pixels in zip(movie["times"], ends, movie["pictures"], strict=True):
+        assert start.denominator == 1, start
+        assert end.denominator == 1, end
+        shown += [pixels] * int(end - start)
+    return shown
+
+
+def run_starts(drawn: list[np.ndarray]) -> list[int]:
+    """Where each run of equal frames in ``drawn`` starts."""
+    return [
+        index
+        for index, pixels in enumerate(drawn)
+        if index == 0 or not np.array_equal(pixels, drawn[index - 1])
+    ]
+
+
+def runs(drawn: list[np.ndarray]) -> int:
+    """How many runs of equal frames ``drawn`` holds."""
+    return len(run_starts(drawn))
+
+
+@pytest.mark.parametrize("encoding", sorted(GAPPED_LOSSLESS))
+@pytest.mark.parametrize(("scene_class", "frames", "plays"), GAPPED_CASES)
+def test_a_gapped_video_shows_the_frames_drawn(
+    tmp_path, scene_class, frames, plays, encoding
+):
+    scene, drawn, video = render_to_video(
+        scene_class, tmp_path, hold_gaps=True, **GAPPED_LOSSLESS[encoding]
+    )
+    check_routes(scene, plays)
+    assert len(drawn) == frames
+    movie = stream_of(video)
+    assert len(movie["pictures"]) == runs(drawn)
+    assert movie["end"] == frames
+    shown = on_grid(movie)
+    assert len(shown) == frames
+    for index, (pixels, frame) in enumerate(zip(drawn, shown, strict=True)):
+        np.testing.assert_array_equal(frame, pixels[..., :3], err_msg=f"frame {index}")
+
+
+def test_holds_are_written_once(tmp_path):
+    _, drawn, video = render_to_video(HeldAround, tmp_path, hold_gaps=True, **LOSSLESS)
+    # The leading hold (6 frames, and the play's first frame, which shows
+    # the same), the play's other frames, and the last hold (9 frames).
+    starts = run_starts(drawn)
+    assert starts[0] == 0
+    assert starts[1] >= 6
+    assert starts[-1] == 12
+    assert stream_of(video)["times"] == starts
+
+
+def test_without_gaps_holds_are_written_frame_by_frame(tmp_path):
+    _, drawn, video = render_to_video(HeldAround, tmp_path, **LOSSLESS)
+    assert stream_of(video)["times"] == list(range(21))
+
+
+def test_a_render_with_caching_off_writes_one_stream(tmp_path):
+    scene, _, _ = render_to_video(Moves, tmp_path, **LOSSLESS)
+    directory = scene.renderer.file_writer.partial_movie_directory
+    assert len([p for p in directory.iterdir() if p.suffix == ".mp4"]) == 1
+
+
+def test_a_render_with_caching_on_writes_a_segment_per_play(tmp_path):
+    scene, _, _ = render_to_video(Moves, tmp_path, disable_caching=False, **LOSSLESS)
+    directory = scene.renderer.file_writer.partial_movie_directory
+    assert len([p for p in directory.iterdir() if p.suffix == ".mp4"]) == 3
+
+
+def test_the_default_encoder_writes_gaps(tmp_path):
+    _, drawn, video = render_to_video(HeldAround, tmp_path, hold_gaps=True)
+    movie = stream_of(video)
+    assert movie["times"] == run_starts(drawn)
+    assert len(movie["times"]) < 21
+    assert movie["stream_duration"] == movie["container_duration"] == 21
+
+
+def test_a_sound_lasts_to_the_end_of_the_last_hold(tmp_path):
+    _, drawn, video = render_to_video(Narrated, tmp_path, hold_gaps=True)
+    assert len(drawn) == 30
+    movie = stream_of(video)
+    assert len(movie["pictures"]) == runs(drawn) < 30
+    assert movie["stream_duration"] == 30
+    with av.open(str(video)) as container:
+        audio = container.streams.audio[0]
+        heard = audio.duration * audio.time_base
+    # The click starts at 1.35 s and lasts 0.6 s: it ends within the hold.
+    assert Fraction(19, 10) <= heard <= Fraction(2)
+
+
+def test_sections_keep_a_segment_per_play_and_their_gaps(tmp_path):
+    scene, drawn, _ = render_to_video(
+        HeldAround, tmp_path, hold_gaps=True, save_sections=True, **LOSSLESS
+    )
+    writer = scene.renderer.file_writer
+    directory = writer.partial_movie_directory
+    assert len([p for p in directory.iterdir() if p.suffix == ".mp4"]) == 3
+    (section,) = [s for s in writer.sections if s.video is not None]
+    movie = stream_of(writer.sections_output_dir / section.video)
+    # Each play's segment holds its own runs: the hold's picture, which the
+    # play's first frame shows too, is one frame in each.
+    per_play = runs(drawn[:6]) + runs(drawn[6:12]) + runs(drawn[12:])
+    assert len(movie["pictures"]) == per_play == runs(drawn) + 1
+    shown = on_grid(movie)
+    assert len(shown) == len(drawn)
+    for index, (pixels, frame) in enumerate(zip(drawn, shown, strict=True)):
+        np.testing.assert_array_equal(frame, pixels[..., :3], err_msg=f"frame {index}")
+
+
+def test_a_gif_keeps_every_frame(tmp_path):
+    settings = {
+        **SMALL,
+        "frame_rate": FPS,
+        "media_dir": str(tmp_path),
+        "disable_caching": True,
+        "format": "gif",
+        "hold_gaps": True,
+    }
+    with tempconfig(settings):
+        scene = HeldAround()
+        scene.render()
+        gif = Path(scene.renderer.file_writer.gif_file_path)
+    with av.open(str(gif)) as container:
+        assert sum(1 for _ in container.decode(video=0)) == 21
