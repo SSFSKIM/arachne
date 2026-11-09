@@ -1,3 +1,4 @@
+from dataclasses import replace
 from fractions import Fraction
 from unittest.mock import Mock, call
 
@@ -27,6 +28,8 @@ def _detached_encoder(tmp_path, *, stream=None, container=None):
     encoder.spec = _spec()
     encoder._next_pts = 0
     encoder._closed = False
+    encoder._pending = None
+    encoder._pending_frames = 0
     encoder._stream = Mock() if stream is None else stream
     encoder._container = Mock() if container is None else container
     return encoder
@@ -55,6 +58,33 @@ def test_write_frame_owns_repeat_and_segment_local_pts(tmp_path):
     assert [frame.time_base for frame in encoded_frames] == [Fraction(1, 30)] * 3
     assert encoder._next_pts == 3
     assert container.mux.call_args_list == [call(packet)] * 3
+
+
+def test_with_gaps_a_run_is_encoded_once_lasting_the_run(tmp_path):
+    encoded = []
+    stream = Mock()
+
+    def encode(frame=None):
+        if frame is not None:
+            encoded.append((frame.pts, frame.duration))
+        return []
+
+    stream.encode.side_effect = encode
+    encoder = _detached_encoder(tmp_path, stream=stream)
+    encoder.spec = replace(_spec(), gaps=True)
+    other = _frame()
+    other[0, 0, 0] = 0
+
+    encoder.write_frame(_frame(), repeat=3)
+    encoder.write_frame(_frame())  # equal bytes, another array
+    assert encoded == []  # the run's length is not known yet
+    encoder.write_frame(other, repeat=2)
+    assert encoded == [(0, 4)]
+    encoder.finish()
+
+    # The last run is encoded at the end, its duration the trailing hold.
+    assert encoded == [(0, 4), (4, 2)]
+    assert encoder._next_pts == 6
 
 
 @pytest.mark.parametrize(
