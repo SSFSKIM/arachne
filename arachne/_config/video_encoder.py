@@ -204,11 +204,13 @@ def resolve_video_encoder(
 
     ``gaps`` asks for a run of equal frames to be written as one frame that
     lasts the run. A GIF's segments are decoded and renumbered frame by
-    frame, so they are written without. With gaps the encoder writes no
-    B-frames (``bf=0``), and B-frames asked for in any spelling (``bf``, or
-    ``bframes`` in x264's own option lists) are refused: with them, libx264's
+    frame, so they are written without. With gaps the encoder is asked for no
+    B-frames (``bf=0``, unless the options set ``bf``): with them, libx264's
     segments with gaps in MP4 can come out with a stream duration short of
-    their last frame's end, losing part of a trailing hold.
+    their last frame's end, losing part of a trailing hold. The opened
+    encoder refuses B-frames asked for in any spelling (see
+    :class:`.VideoSegmentEncoder`); an encoder that may reorder frames
+    without saying so when opened is refused here.
     """
     if not output.is_video:
         return None
@@ -240,14 +242,7 @@ def resolve_video_encoder(
     resolved_options.update(supplied_options)
     gaps = gaps and not output.is_gif
     if gaps:
-        asked = _b_frames_asked(resolved_options)
-        if asked:
-            raise ValueError(
-                "hold_gaps writes no B-frames: a video with gaps cannot take "
-                + ", ".join(asked)
-                + ".",
-            )
-        resolved_options["bf"] = "0"
+        resolved_options.setdefault("bf", "0")
 
     _validate_profile(
         container_format=container_format,
@@ -255,6 +250,12 @@ def resolve_video_encoder(
         pixel_format=resolved_pixel_format,
         transparent=output.transparent,
     )
+    if gaps and not _says_when_it_reorders(resolved_codec):
+        raise ValueError(
+            f"hold_gaps cannot be written by {resolved_codec}: it may reorder "
+            "frames without saying so. Choose another encoder, or turn "
+            "hold_gaps off.",
+        )
     return VideoEncoderSpec(
         container_format=container_format,
         codec=resolved_codec,
@@ -290,16 +291,32 @@ def _x264_name(name: str) -> str:
     return name.strip().replace("_", "-")
 
 
-def _b_frames_asked(options: Mapping[str, str]) -> list[str]:
-    """Every setting in ``options`` that asks for B-frames, as written."""
-    asked = []
-    if options.get("bf", "0").strip() != "0":
-        asked.append(f"bf={options['bf']}")
-    for key in _X264_LISTS:
-        for name, value in _x264_items(options.get(key, "")):
-            if _x264_name(name) == "bframes" and (value or "").strip() != "0":
-                asked.append(f"{key} {name}={value}")
-    return asked
+#: Encoders of formats that may reorder frames, each seen either to report
+#: it when opened (``has_b_frames``) or never to reorder. Not here: libx265,
+#: which reorders with ``has_b_frames`` false, and h264_videotoolbox, which
+#: could not be seen writing B-frames.
+_REPORTS_REORDERING = frozenset(
+    {
+        "h263",
+        "h263p",
+        "hevc_videotoolbox",
+        "libopenh264",
+        "libx264",
+        "libx264rgb",
+        "mpeg1video",
+        "mpeg2video",
+        "mpeg4",
+    },
+)
+
+
+def _says_when_it_reorders(codec_name: str) -> bool:
+    """Whether the encoder's packets come in presentation order unless its
+    opened encoder says otherwise.
+    """
+    codec = av.codec.Codec(codec_name, "w")
+    reorders = bool(codec.properties & av.codec.codec.Properties.REORDER.value)
+    return not reorders or codec.name in _REPORTS_REORDERING
 
 
 def with_thread_share(

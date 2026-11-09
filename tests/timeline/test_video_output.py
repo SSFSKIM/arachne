@@ -371,8 +371,11 @@ def test_the_default_encoder_writes_gaps(tmp_path):
     assert movie["stream_duration"] == movie["container_duration"] == 21
 
 
-def test_gaps_refuse_x264_b_frames(tmp_path):
-    options = {"x264-params": "bframes=3:b-adapt=0:scenecut=0"}
+@pytest.mark.parametrize(
+    "spelled", ["bframes=3", "'bframes'=3"], ids=["plain", "quoted"]
+)
+def test_gaps_refuse_x264_b_frames(spelled, tmp_path):
+    options = {"x264-params": f"{spelled}:b-adapt=0:scenecut=0"}
     with pytest.raises(ValueError, match="B-frames"):
         render_to_video(
             HeldAround, tmp_path, hold_gaps=True, video_encoder_options=options

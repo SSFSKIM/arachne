@@ -23,7 +23,8 @@ class VideoSegmentEncoder:
     spec's ``gaps``, a run of equal frames (repeats, or consecutive frames
     with equal bytes) is encoded once, as one frame whose duration covers the
     run; the next frame's time leaves a gap. Every frame carries its duration,
-    so the last one's keeps a trailing hold in the segment's duration.
+    so the last one's keeps a trailing hold in the segment's duration. With
+    gaps, an encoder that writes B-frames is refused (``ValueError``).
     """
 
     def __init__(self, *, target: Path, spec: VideoEncoderSpec) -> None:
@@ -54,16 +55,29 @@ class VideoSegmentEncoder:
             if self.spec.gaps:
                 # The encoder copies each frame's duration to its packet.
                 stream.codec_context.flags |= av.codec.context.Flags.frame_duration
+                # Opened now, it says whether it writes B-frames, however
+                # its options spelled them.
+                stream.codec_context.open()
         except BaseException as error:
-            if container is not None:
-                with suppress(BaseException):
-                    container.close()
-            with suppress(OSError):
-                self.target.unlink(missing_ok=True)
+            self._discard(container)
             raise self._operation_error("open", error) from error
+        if self.spec.gaps and stream.codec_context.has_b_frames:
+            self._discard(container)
+            raise ValueError(
+                f"hold_gaps writes no B-frames, but {self.spec.codec} with "
+                f"these options writes them: {dict(self.spec.options)}",
+            )
 
         self._container = container
         self._stream = stream
+
+    def _discard(self, container: av.container.OutputContainer | None) -> None:
+        """Close a container being set up, and remove its target."""
+        if container is not None:
+            with suppress(BaseException):
+                container.close()
+        with suppress(OSError):
+            self.target.unlink(missing_ok=True)
 
     def _profile_description(self) -> str:
         return (

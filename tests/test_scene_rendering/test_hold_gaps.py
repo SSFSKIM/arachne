@@ -388,61 +388,149 @@ def test_without_gaps_the_encoder_settings_are_unchanged():
     assert dict(_mp4().options) == {"crf": "23"}
 
 
+def write_one_run(spec, target: Path) -> dict:
+    """Write a run of three frames of one picture under ``spec``; decode it."""
+    encoder = VideoSegmentEncoder(target=target, spec=spec)
+    encoder.write_frame(picture(0), repeat=3)
+    encoder.finish()
+    return decoded(target)
+
+
 @pytest.mark.parametrize(
     "asked",
     [
         {"bf": "2"},
         {"x264-params": "bframes=3:b-adapt=0:scenecut=0"},
-        {"x264opts": "scenecut=0:bframes=3"},
+        {"x264-params": "'bframes'=3:b-adapt=0:scenecut=0"},
+        {"x264-params": r"bfram\es=3"},
         {"x264-params": "b_adapt=0:bframes=1"},
+        {"x264opts": "scenecut=0:bframes=2"},
     ],
-    ids=["bf", "x264-params", "x264opts", "x264-params-last"],
+    ids=["bf", "x264-params", "quoted", "escaped", "underscore", "x264opts"],
 )
-def test_gaps_refuse_b_frames_asked_for_in_any_spelling(asked):
+def test_gaps_refuse_an_encoder_that_writes_b_frames(asked, tmp_path):
+    """The opened encoder says whether it writes B-frames, however its
+    options spell them.
+    """
+    target = tmp_path / "refused.mp4"
     with pytest.raises(ValueError, match="B-frames"):
-        _mp4(gaps=True, options=asked)
+        write_one_run(_mp4(gaps=True, options=asked), target)
+    assert not target.exists()
 
 
 @pytest.mark.parametrize(
     "options",
     [
+        {},
         {"bf": "0"},
         {"x264-params": "bframes=0:b-adapt=0:scenecut=0"},
+        {"x264-params": "bframes='0'"},
         {"x264opts": "scenecut=0"},
     ],
-    ids=["bf", "x264-params", "x264opts"],
+    ids=["default", "bf", "x264-params", "quoted-zero", "x264opts"],
 )
-def test_gaps_take_settings_that_ask_for_no_b_frames(options):
-    spec = _mp4(gaps=True, options=options)
-    assert dict(spec.options) == {"crf": "23", **options, "bf": "0"}
+def test_gaps_take_settings_that_ask_for_no_b_frames(options, tmp_path):
+    movie = write_one_run(_mp4(gaps=True, options=options), tmp_path / "taken.mp4")
+    assert movie["times"] == [0]
+    assert movie["end"] == 3
 
 
-def test_without_gaps_b_frames_may_be_asked_for():
+def test_gaps_leave_a_b_frame_count_asked_for_to_the_encoder():
+    assert dict(_mp4(gaps=True, options={"bf": "2"}).options)["bf"] == "2"
+
+
+def test_without_gaps_b_frames_may_be_asked_for(tmp_path):
     asked = {"x264-params": "bframes=3:b-adapt=0:scenecut=0"}
-    assert dict(_mp4(options=asked).options) == {"crf": "23", **asked}
+    spec = _mp4(options=asked)
+    assert dict(spec.options) == {"crf": "23", **asked}
+    assert write_one_run(spec, tmp_path / "plain.mp4")["times"] == [0, 1, 2]
+
+
+def _resolved(output_format: OutputFormat, *, transparent=False, **kwargs):
+    output = OutputSpec(
+        output_format,
+        transparent=transparent,
+        save_sections=False,
+        fallback_to_still=False,
+    )
+    return resolve_video_encoder(
+        output, width=WIDTH, height=HEIGHT, frame_rate=FPS, gaps=True, **kwargs
+    )
+
+
+def test_gaps_take_a_lossless_encoder(tmp_path):
+    spec = _resolved(OutputFormat.MOV, transparent=True)
+    assert spec.codec == "qtrle"
+    movie = write_one_run(spec, tmp_path / "lossless.mov")
+    assert movie["times"] == [0]
+    assert movie["end"] == 3
+
+
+def test_gaps_take_an_encoder_that_never_reorders(tmp_path):
+    spec = _resolved(OutputFormat.WEBM)
+    assert spec.codec == "libvpx-vp9"
+    movie = write_one_run(spec, tmp_path / "never.webm")
+    assert movie["times"] == [0]
+    assert movie["end"] == 3
+
+
+#: Encoders that may reorder frames whose opened encoder was not seen to say
+#: so: libx265 reorders with ``has_b_frames`` false; rv20 was not checked.
+UNCHECKED = [name for name in ("libx265", "rv20") if name in av.codecs_available]
+
+
+@pytest.mark.parametrize("codec", UNCHECKED)
+def test_gaps_refuse_an_encoder_that_may_reorder_unsaid(codec):
+    with pytest.raises(ValueError, match=codec):
+        _mp4(gaps=True, codec=codec)
+    assert _mp4(codec=codec).codec == codec
+
+
+def test_an_encoder_that_may_reorder_unsaid_is_always_there():
+    assert "rv20" in UNCHECKED  # one of FFmpeg's own
+
+
+@pytest.mark.parametrize(
+    ("codec", "pixel_format"), [("mpeg4", "yuv420p"), ("libx264rgb", "rgb24")]
+)
+def test_gaps_take_an_encoder_that_says_it_reorders(codec, pixel_format, tmp_path):
+    spec = _mp4(gaps=True, codec=codec, pixel_format=pixel_format)
+    assert write_one_run(spec, tmp_path / "taken.mp4")["end"] == 3
+    with_b_frames = replace(
+        spec, options=tuple(sorted({**dict(spec.options), "bf": "2"}.items()))
+    )
+    with pytest.raises(ValueError, match="B-frames"):
+        write_one_run(with_b_frames, tmp_path / "refused.mp4")
 
 
 def test_b_frames_would_cut_a_trailing_hold_short(tmp_path):
     """Why gaps take no B-frames: with them, this run pattern (pictures and
     size as here) comes out of libx264 into MP4 with a stream two frames
     short of its last frame's end; without, exact. Should this ever pass
-    with B-frames, ``bf=0`` could be revisited.
+    with B-frames, refusing them could be revisited. The runs are written
+    here as the segment encoder writes them, which refuses B-frames.
     """
     runs = [1, 4, 1, 1, 6]
 
-    def stream_duration(spec, target):
-        encoder = VideoSegmentEncoder(target=target, spec=spec)
-        for index, repeat in enumerate(runs):
-            encoder.write_frame(picture(index), repeat=repeat)
-        encoder.finish()
+    def stream_duration(b_frames, target):
+        with av.open(str(target), mode="w") as container:
+            stream = container.add_stream(
+                "libx264", rate=FPS, options={"crf": "23", "bf": str(b_frames)}
+            )
+            stream.width, stream.height, stream.pix_fmt = WIDTH, HEIGHT, "yuv420p"
+            stream.codec_context.flags |= av.codec.context.Flags.frame_duration
+            pts = 0
+            for index, run in enumerate(runs):
+                frame = av.VideoFrame.from_ndarray(picture(index), format="rgba")
+                frame.pts, frame.duration = pts, run
+                frame.time_base = Fraction(1, FPS)
+                pts += run
+                container.mux(stream.encode(frame))
+            container.mux(stream.encode())
         return decoded(target)["stream_duration"]
 
-    gapped = _mp4(gaps=True)
-    with_b_frames = replace(
-        gapped, options=tuple(sorted({**dict(gapped.options), "bf": "3"}.items()))
-    )
-    assert stream_duration(gapped, tmp_path / "without.mp4") == 13
-    assert stream_duration(with_b_frames, tmp_path / "with.mp4") == 11
+    assert stream_duration(0, tmp_path / "without.mp4") == 13
+    assert stream_duration(3, tmp_path / "with.mp4") == 11
 
 
 def test_a_gif_s_segments_have_no_gaps():

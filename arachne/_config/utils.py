@@ -1521,8 +1521,9 @@ class ManimConfig(MutableMapping):
         """Whether a run of equal frames is written to a video as one frame
         that lasts the run, a variable frame rate (off by default). Decoded
         on the frame grid, the frames are the same. Frames are equal when
-        their bytes are. A GIF is still written frame by frame, and the
-        encoder writes no B-frames.
+        their bytes are. A GIF is still written frame by frame. The encoder
+        writes no B-frames: settings that ask for them are refused, as is an
+        encoder that may reorder frames without saying so (such as libx265).
         """
         return self._lever("hold_gaps")
 
