@@ -1618,23 +1618,21 @@ impl<'v> Lowering<'v> {
                     kurbo::Circle::new(Point::new(shown[0][0], shown[0][1]), w / 2.0)
                         .to_path(TOLERANCE / scale)
                 } else {
+                    // kurbo decides which turns it joins by the tolerance it strokes at, so the
+                    // joins are read at the same one.
+                    let tolerance = stroke_tolerance(w * scale) / scale;
                     let stroked = kurbo::stroke(
                         elements.iter().copied(),
                         &style,
                         &kurbo::StrokeOpts::default(),
-                        stroke_tolerance(w * scale) / scale,
+                        tolerance,
                     );
                     // Joins carried as Cairo decided them (XF 1.4): kurbo's stroke, edited at those
                     // it decided otherwise.
                     match &decided {
                         Some(decided) => {
-                            let (edited, _edits) = join_mask::apply(
-                                stroked,
-                                elements,
-                                &style,
-                                TOLERANCE / scale,
-                                decided,
-                            );
+                            let (edited, _edits) =
+                                join_mask::apply(stroked, elements, &style, tolerance, decided);
                             count!(JOINS_DROPPED, _edits.dropped as usize);
                             count!(JOINS_INSERTED, _edits.inserted as usize);
                             count!(JOINS_PARALLEL, _edits.parallel as usize);
