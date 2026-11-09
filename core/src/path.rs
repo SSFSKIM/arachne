@@ -151,11 +151,39 @@ fn drawn_world(draw: &PathDraw<'_>) -> Option<Vec<[f64; 3]>> {
 /// dash whose gaps total less than this solid.
 const SOLID_DASH_GAP: f64 = 1.0 / 512.0;
 
+/// A dash's two entries, on and off, as they are handed to Cairo (`set_dash`).
+fn dash_entries(d: &Dash) -> [f64; 2] {
+    [d.period * d.duty, d.period * (1.0 - d.duty)]
+}
+
 /// The dash `rec` is stroked with, as Cairo takes it: none where it has none, its duty is 1, or
 /// its gap is shorter than Cairo's least length ([`SOLID_DASH_GAP`]), which Cairo strokes solid.
+/// The gap is Cairo's own sums (`_cairo_gstate_set_dash`): the entries' total less the on length.
 fn drawn_dash(rec: &Record) -> Option<Dash> {
-    rec.dash
-        .filter(|d| d.duty < 1.0 && d.period * (1.0 - d.duty) >= SOLID_DASH_GAP)
+    rec.dash.filter(|d| {
+        let [on, off] = dash_entries(d);
+        let total = on + off;
+        d.duty < 1.0 && total - on >= SOLID_DASH_GAP
+    })
+}
+
+/// Whether Cairo's dashed stroker starts a subpath in a dash that is on (`dash_starts_on`): the
+/// offset taken within the entries' total (`_cairo_gstate_set_dash`), then stepped past each
+/// entry it reaches or passes (`_cairo_stroker_dash_start`).
+fn dash_starts_on(d: &Dash) -> bool {
+    let entries = dash_entries(d);
+    let total = entries[0] + entries[1];
+    let mut offset = (d.phase * d.period) % total;
+    if offset < 0.0 {
+        offset += total;
+    }
+    let (mut on, mut i) = (true, 0);
+    while offset >= entries[i] {
+        offset -= entries[i];
+        on = !on;
+        i = (i + 1) % 2;
+    }
+    on
 }
 
 /// Whether `draw`'s strokes are a round cap's dot, as Cairo strokes a closed subpath of no
@@ -168,7 +196,7 @@ fn strokes_as_dot(draw: &PathDraw<'_>, shown: &[[f64; 3]]) -> bool {
     let rec = draw.record;
     let on_at_start = match drawn_dash(rec) {
         None => true,
-        Some(d) => (d.phase * d.period).rem_euclid(d.period) < d.period * d.duty,
+        Some(d) => dash_starts_on(&d),
     };
     draw.surface
         && rec.paint.cap == Cap::Round
@@ -1511,7 +1539,7 @@ impl<'v> Lowering<'v> {
                     .with_miter_limit(MITER_LIMIT);
                 // Dashes are laid on the whole outline, then culled, so culling never moves them.
                 let dashes = drawn_dash(rec).map(|d| {
-                    let pattern = [d.period * d.duty, d.period * (1.0 - d.duty)];
+                    let pattern = dash_entries(&d);
                     dashed(&user, d.phase * d.period, &pattern, area)
                 });
                 let stroked = if strokes_as_dot(draw, &shown) {
