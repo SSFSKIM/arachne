@@ -1557,3 +1557,36 @@ fn a_face_the_order_does_not_draw_is_reported_as_no_dot() {
     );
     assert_eq!(dots, Vec::<(u32, u32)>::new());
 }
+
+/// A path record's joins (XF 1.4) carry one byte per cubic of the points the path draws: its
+/// shape's, cut to its reveal window. Any other count is refused, and so is any other kind of
+/// record carrying them, as the face lists of a face group are refused when they do not fit it.
+#[test]
+fn a_record_s_joins_are_one_per_cubic_it_draws_and_carried_by_a_path_alone() {
+    let shape = square();
+    let cubics = common::square_points(1.0).len() / 4;
+    let path = |joins: usize, reveal: Option<(f64, f64)>| {
+        let mut d = delta(0);
+        d.view = Some(common::flat_view(4, 4, [0.0, 0.0, 0.0, 1.0]));
+        d.upload = vec![shape.clone()];
+        let mut r = path_record(1, &shape);
+        r.geometry.reveal = reveal;
+        r.joins = Some(vec![0; joins]);
+        d.set = vec![r];
+        d.order = Some(vec![entry(1)]);
+        d
+    };
+    Stream::new().apply(&path(cubics, None)).unwrap();
+    for n in [0, cubics - 1, cubics + 1] {
+        let reason = invalid(&path(n, None));
+        assert!(reason.contains("joins"), "{n}: {reason}");
+    }
+    // A reveal from a tenth to four tenths of the square draws parts of its first two cubics.
+    Stream::new().apply(&path(2, Some((0.1, 0.4)))).unwrap();
+    let reason = invalid(&path(cubics, Some((0.1, 0.4))));
+    assert!(reason.contains("joins"), "{reason}");
+    let mut faces = faces_with_ends(2, 24, Vec::new(), Vec::new());
+    faces.set[0].joins = Some(vec![0; 6]);
+    let reason = invalid(&faces);
+    assert!(reason.contains("joins"), "{reason}");
+}
