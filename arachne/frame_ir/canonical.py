@@ -729,9 +729,8 @@ class Canonical:
         if made is not None:
             points = made
         else:
-            shape = self._shapes.get(
-                pre["points"] if pre is not None else fields.get("shape")
-            )
+            key = pre["points"] if pre is not None else fields.get("shape")
+            shape = None if key is None else self._shapes.get(key)
             if shape is None:
                 return None
             points = shape.data
