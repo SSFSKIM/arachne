@@ -172,6 +172,54 @@ def test_a_path_draws_its_fill_and_stroke():
     assert (resolves == ac.RESOLVES.index("coverage")).sum() > 0
 
 
+def shaded_stroke_frame(alpha: float | None) -> np.ndarray:
+    """A bent square stroked at ``alpha`` and shaded as CE shades it: lit at its start
+    and end corners into two stops of different colours, both at ``alpha``. ``None``
+    draws only the background.
+    """
+    width, height = 64, 36
+    delta = ac.FrameDelta(t=(0, 1), seq=0)
+    delta.set_view(
+        pixel_width=width,
+        pixel_height=height,
+        background=(0, 0, 0, 1),
+        camera="three_d",
+        phi=1.25,
+        theta=-0.75,
+        light_model="ce",
+        **FRAME,
+    )
+    order = []
+    if alpha is not None:
+        bent = square(1.0)
+        bent[4:12, 2] = [0, 1 / 3, 2 / 3, 1, 1, 2 / 3, 1 / 3, 0]
+        key = delta.upload_path(bent)
+        delta.set_record(
+            "path",
+            1,
+            11,
+            shape=key,
+            stroke=(0.4, 0.6, 0.8, alpha),
+            stroke_width=20.0,
+            space="world",
+            shade_in_3d=True,
+        )
+        order = [("moving", 1, 0)]
+    delta.set_order(order)
+    stream = ac.Stream()
+    stream.apply(delta)
+    return stream.draw(width, height)
+
+
+def test_a_shaded_stroke_whose_stops_cairo_finds_clear_leaves_the_frame_untouched():
+    # A stop's alpha as Cairo's short is int(a * 65535 + 0.5): 233 here. A gradient
+    # whose every stop is at most 0xff is clear to Cairo, which draws nothing from it;
+    # at 0x100 it draws.
+    background = shaded_stroke_frame(None)
+    assert (shaded_stroke_frame(0.003548) == background).all()
+    assert (shaded_stroke_frame(0x100 / 65535) != background).any()
+
+
 def test_a_reserved_kind_is_refused_and_nothing_is_drawn():
     stream = ac.Stream()
     delta = background_delta(4, 4, (0, 0, 0, 1))
