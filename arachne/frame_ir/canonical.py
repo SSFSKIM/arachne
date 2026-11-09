@@ -80,7 +80,7 @@ __all__ = [
 
 import contextlib
 import math
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence, Set
 from typing import Any
 
 import numpy as np
@@ -388,23 +388,27 @@ class Canonical:
         self.grid = grid
         if self._view is not None and (delta.view is not None or regrid):
             found.view = self._view_of(self._view)
-        # A face group's shape is its faces' points, one equal run each.
-        runs = {
-            record.fields["shape"]: len(record.fields["uv"])
-            for record in self._records.values()
-            if record.kind == "face_group"
-        }
+        # How each held record draws a stream shape's points: a face group as
+        # its faces, one equal run each; anything else as the points whole.
+        uses: dict[bytes, set[int]] = {}
+        for record in self._records.values():
+            key = record.fields.get("shape")
+            if isinstance(key, bytes):
+                faces = record.kind == "face_group"
+                uses.setdefault(key, set()).add(
+                    len(record.fields["uv"]) if faces else 1
+                )
         for shape in delta.upload:
             if shape.kind == "image":
                 found.upload.append(shape)
             elif shape.kind == "path":
                 self._shapes[shape.key] = shape
-                self._hold(shape.key, shape.data, found, runs.get(shape.key, 1))
+                self._hold(shape.key, shape.data, found, uses.get(shape.key, {1}))
             else:
                 raise ValueError(f"canonical: a {shape.kind} shape is not classified")
         if regrid:
             for key, shape in self._shapes.items():
-                self._hold(key, shape.data, found, runs.get(key, 1))
+                self._hold(key, shape.data, found, uses.get(key, {1}))
         found.upload_paints = list(delta.upload_paints)
         for key in delta.release:
             if self._shapes.pop(key, None) is None:
@@ -480,19 +484,22 @@ class Canonical:
             for slot, normals in self._decider.normals(slots, grid).items()
         }
 
-    def _hold(self, holder: Any, points: Any, found: Delta, runs: int = 1) -> bytes:
+    def _hold(
+        self, holder: Any, points: Any, found: Delta, uses: Set[int] = frozenset({1})
+    ) -> bytes:
         """``points`` snapped, held by ``holder`` (instead of what it held);
         their key. Whether the delta uploads them is decided once it is built
-        (:meth:`_settle_shapes`). ``runs``: the paths the points are, in
-        equal runs (a face group's faces).
+        (:meth:`_settle_shapes`). ``uses``: each way the points are drawn, as
+        that many paths in equal runs (a face group's faces; 1, whole).
         """
         assert self.grid is not None
         shape = Shape("path", _position(points, self.grid))
         made = np.asarray(points, dtype=np.float64)
-        for run, snapped in zip(
-            np.split(made, runs), np.split(shape.data, runs), strict=True
-        ):
-            _count_disagreements(run, snapped)
+        for runs in sorted(uses):
+            for run, snapped in zip(
+                np.split(made, runs), np.split(shape.data, runs), strict=True
+            ):
+                _count_disagreements(run, snapped)
         if self._snapped.get(holder) == shape.key:
             return shape.key
         holders = self._holders.setdefault(shape.key, set())
