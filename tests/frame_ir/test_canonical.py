@@ -457,13 +457,16 @@ def _two_faces(shape: Shape) -> tuple[Record, list[PaintTable]]:
     return record, [fills, strokes]
 
 
-@pytest.mark.parametrize("drawn", ["faces", "faces and a path"])
+@pytest.mark.parametrize(
+    "drawn", ["faces", "faces and a path", "faces, then a path in a later delta"]
+)
 def test_a_face_group_s_shape_is_measured_by_each_use(drawn):
     """Two closed squares, the second 2e-6 to the right of the first: CE
     leaves the first's end and the second's start apart (its tolerance at
     the origin is 1e-6), and snapped to 2^-16 they meet. As a face group's
     two faces that join draws nothing, so it is not counted; a path drawing
-    the same points joins there, so it is, whatever else draws them.
+    the same points joins there, so it is, whatever else draws them, and
+    whenever it begins to draw them (the shape held, uploaded no more).
     """
     first = _square_closing(0.0)
     points = np.concatenate([first, first + [2e-6, 0, 0]])
@@ -472,15 +475,21 @@ def test_a_face_group_s_shape_is_measured_by_each_use(drawn):
     view = {**_FLAT_VIEW, "pixel_width": 1920, "pixel_height": 1080}
     delta = Delta(seq=0, view=view, upload=[shape], upload_paints=tables)
     delta.set = [(0, group)]
+    fields = dict(_revealing(shape).fields)
+    del fields["reveal"]
+    path = Record("path", fields)
+    deltas = [delta]
     if drawn == "faces and a path":
-        fields = dict(_revealing(shape).fields)
-        del fields["reveal"]
-        delta.set.append((1, Record("path", fields)))
+        delta.set.append((1, path))
+    elif drawn != "faces":
+        deltas.append(Delta(seq=1, set=[(1, path)]))
     canonical.point_equality_disagreements.clear()
-    Canonical(planes=False)(delta)
+    snapper = Canonical(planes=False)
+    for each in deltas:
+        snapper(each)
     found = list(canonical.point_equality_disagreements)
     canonical.point_equality_disagreements.clear()
-    assert bool(found) == (drawn == "faces and a path"), found
+    assert bool(found) == (drawn != "faces"), found
 
 
 #: A flat view of the configured frame at 192x108.

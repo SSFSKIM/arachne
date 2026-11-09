@@ -126,7 +126,11 @@ class Solids(ThreeDScene):
 class FacesAroundSquare(ThreeDScene):
     """A flat surface and an upright square through its middle, both
     static: CE's depth sort puts the square between the surface's faces.
+    ``live``: below them a square whose stroke width is the scene's own
+    code, so the scene is drawn as it runs.
     """
+
+    live = False
 
     def construct(self):
         self.set_camera_orientation(phi=70 * PI / 180, theta=-45 * PI / 180)
@@ -140,8 +144,16 @@ class FacesAroundSquare(ThreeDScene):
         self.square = Square(2, fill_opacity=1, color=RED).rotate(PI / 2, RIGHT)
         self.square.set_shade_in_3d(True)
         dot = Dot(LEFT * 3 + DOWN * 3)
+        if self.live:
+            from .scenes import WideStroke
+
+            self.add(WideStroke(0.5, color=YELLOW).shift(RIGHT * 3 + DOWN * 3))
         self.add(self.surface, self.square, dot)
         self.play(dot.animate.shift(UP), run_time=0.4)
+
+
+class FacesAroundSquareLive(FacesAroundSquare):
+    live = True
 
 
 def _uv_faces(surface):
@@ -317,10 +329,15 @@ def test_a_surface_of_uv_faces_alone_keeps_its_record_bytes(handed):
 # described as the record describes it, its uv faces one face group.
 
 
+#: The solids of :class:`TurningSolids`, by attribute.
+SOLIDS = ("surface", "cone", "cylinder", "bare", "shaft")
+
+
 class TurningSolids(ThreeDScene):
     """A surface, a cone (with two points) and a cylinder (with two caps),
-    each turning. ``live``: beside them a square whose stroke width is the
-    scene's own code, so the scene is drawn as it runs.
+    and a surface and a cylinder stroked 0 wide (CE reads no stroke colour
+    of theirs), each turning. ``live``: beside them a square whose stroke
+    width is the scene's own code, so the scene is drawn as it runs.
     """
 
     live = True
@@ -334,14 +351,15 @@ class TurningSolids(ThreeDScene):
         self.cone.shift(LEFT * 3)
         self.cylinder = Cylinder(radius=0.5, height=1.2, resolution=(6, 8))
         self.cylinder.shift(RIGHT * 3)
-        self.add(self.surface, self.cone, self.cylinder)
+        self.bare = _wave((4, 4)).scale(0.5).shift(UP * 2.5).set_stroke(width=0)
+        self.shaft = Cylinder(radius=0.3, height=1.0, resolution=(4, 6))
+        self.shaft.shift(LEFT * 3 + UP * 2).set_stroke(width=0)
+        solids = [getattr(self, name) for name in SOLIDS]
+        self.add(*solids)
         if self.live:
             self.add(WideStroke(0.5, color=YELLOW).shift(DOWN * 3))
         self.play(
-            Rotate(self.surface, PI / 3, axis=OUT),
-            Rotate(self.cone, PI / 3, axis=RIGHT),
-            Rotate(self.cylinder, PI / 3, axis=RIGHT),
-            run_time=0.4,
+            *(Rotate(solid, PI / 3, axis=RIGHT) for solid in solids), run_time=0.4
         )
 
 
@@ -389,8 +407,8 @@ def test_a_solid_drawn_live_is_one_face_group_and_its_other_parts_their_own(
     frames = [frame for frame in frames if frame[2]]
     assert len(frames) > 2
     for frame in frames:
-        for solid in (scene.surface, scene.cone, scene.cylinder):
-            _assert_grouped(frame, solid)
+        for name in SOLIDS:
+            _assert_grouped(frame, getattr(scene, name))
         _, records, order = frame
         slots = {id(mob): slot for slot, (mob, _) in records.items()}
         for cap in (scene.cylinder.base_top, scene.cylinder.base_bottom):
@@ -401,10 +419,9 @@ def test_a_solid_drawn_live_is_one_face_group_and_its_other_parts_their_own(
 
 def test_a_solid_s_face_group_is_the_same_drawn_live_or_recorded(monkeypatch):
     """The scene's last frame drawn live and drawn from the record: each
-    solid's face group is the same record, but where any live record differs
-    from a recorded one: it carries no sort point (its order is the
-    capture's), and no background stroke where the capture read none (its
-    width is 0).
+    solid's face group is the same record, but for the sort point a live
+    record never carries (its order is the capture's, and the core reads no
+    sort point: :func:`test_a_surface_s_faces_keep_ce_s_order_live_or_recorded`).
     """
     live, live_frames = _painted(TurningSolids, monkeypatch, live=True)
     recorded, recorded_frames = _painted(TurningSolidsRecorded, monkeypatch, live=False)
@@ -413,7 +430,7 @@ def test_a_solid_s_face_group_is_the_same_drawn_live_or_recorded(monkeypatch):
     def groups(scene, frame):
         _, records, _ = frame
         found = {}
-        for name in ("surface", "cone", "cylinder"):
+        for name in SOLIDS:
             solid = getattr(scene, name)
             [record] = [r for mob, r in records.values() if mob is solid]
             found[name] = record
@@ -423,9 +440,8 @@ def test_a_solid_s_face_group_is_the_same_drawn_live_or_recorded(monkeypatch):
     b = groups(recorded, recorded_frames[-1])
     for name in a:
         assert a[name].kind == b[name].kind == "face_group", name
+        assert "sort_point" not in a[name].fields
         fields = {k: v for k, v in b[name].fields.items() if k != "sort_point"}
-        assert fields["background_stroke_width"] == 0.0
-        fields["background_stroke"] = None
         assert a[name].fields.keys() == fields.keys(), name
         for key, value in fields.items():
             other = a[name].fields[key]
@@ -433,3 +449,123 @@ def test_a_solid_s_face_group_is_the_same_drawn_live_or_recorded(monkeypatch):
                 np.testing.assert_array_equal(other, value, err_msg=f"{name} {key}")
             else:
                 assert other == value, (name, key)
+
+
+def test_a_surface_s_faces_keep_ce_s_order_live_or_recorded(monkeypatch):
+    """Both routes take a frame's order from the camera's own depth sort, at
+    the frame's grid: the record from its lists, a live capture as it
+    draws. On each frame of the play the square CE sorts between faces of
+    the surface is drawn between the same faces, live or recorded, each face
+    a part of the surface's face group.
+    """
+
+    def drawn(scene, frames):
+        """Per instant, the faces (by index) and the square in the order of
+        the instant's last frame.
+        """
+        faces = {id(face): index for index, face in enumerate(_uv_faces(scene.surface))}
+        found = {}
+        for t, records, order in frames:
+            labels = []
+            for _, slot, part in order:
+                mob, record = records[slot]
+                if mob is scene.surface:
+                    assert record.kind == "face_group"
+                    labels.append(part)
+                elif mob is scene.square:
+                    labels.append("square")
+                else:
+                    assert id(mob) not in faces, "a face drawn alone"
+            if labels:
+                found[t] = labels
+        return found
+
+    live, live_frames = _painted(FacesAroundSquareLive, monkeypatch, live=True)
+    assert live.timeline.record.refusal is not None, "drawn live"
+    recorded, recorded_frames = _painted(FacesAroundSquare, monkeypatch, live=False)
+    a, b = drawn(live, live_frames), drawn(recorded, recorded_frames)
+    shared = sorted(set(a) & set(b))
+    assert len(shared) > 2
+    for t in shared:
+        assert a[t] == b[t], f"t={t}"
+        at = a[t].index("square")
+        assert 0 < at < len(a[t]) - 1, "CE sorts the square between faces"
+
+
+class GradientFace(ThreeDScene):
+    """A surface one face of which states its gradient's ends by its own
+    method, beside a square whose stroke width is the scene's own code.
+    """
+
+    def construct(self):
+        from .scenes import WideStroke
+
+        self.set_camera_orientation(phi=65 * PI / 180, theta=-45 * PI / 180)
+        self.surface = _wave((4, 4))
+        face = self.surface.submobjects[0]
+        start, end = face.get_gradient_start_and_end_points()
+        face.get_gradient_start_and_end_points = lambda: (end, start)
+        self.add(self.surface, WideStroke(0.5, color=YELLOW).shift(DOWN * 3))
+        self.play(Rotate(self.surface, PI / 3, axis=RIGHT), run_time=0.4)
+
+
+def test_a_face_stating_its_own_gradient_ends_is_drawn_as_a_path_live(monkeypatch):
+    """A face group draws no face's gradient ends, so the record leaves a
+    surface whose face states its own (``extract._one_group``) as paths, and
+    a live capture does too.
+    """
+    scene, frames = _painted(GradientFace, monkeypatch, live=True)
+    frames = [frame for frame in frames if frame[2]]
+    assert frames
+    faces = {id(face) for face in _uv_faces(scene.surface)}
+    for t, records, _ in frames:
+        kinds = {r.kind for mob, r in records.values() if id(mob) in faces}
+        assert kinds == {"path"}, f"t={t}"
+        assert not [r for mob, r in records.values() if mob is scene.surface]
+
+
+@pytest.mark.parametrize("fill", ["steady", "changing"])
+def test_a_face_drawn_twice_in_a_capture_is_drawn_one_way(fill):
+    """A capture's list holds a face twice (``include_submobjects=False``
+    keeps it). Each draw is a record of the reads it made: one way, the face
+    is a part of its surface's group twice; two ways (its fill changed
+    between the draws), it is ``render.unable``, grouped or not.
+    """
+    from fractions import Fraction
+
+    from arachne import tempconfig
+    from arachne.frame_ir.extract import Unable
+    from arachne.frame_ir.live import live
+
+    with tempconfig(MEDIUM):
+        surface = _wave((2, 2))
+        face = surface.submobjects[0]
+        if fill == "changing":
+            own = face.get_fill_rgbas
+            calls = []
+
+            def get_fill_rgbas():
+                calls.append(None)
+                rows = np.array(own(), dtype=float)
+                if len(calls) > 1:
+                    rows[:, 0] = 1 - rows[:, 0]
+                return rows
+
+            face.get_fill_rgbas = get_fill_rgbas
+        camera = ThreeDCamera()
+        leaves = [*surface.submobjects, face]
+
+        def capture():
+            with live(camera, Fraction(0), draw_path="core", roots=[surface]):
+                camera.reset()
+                camera.capture_mobjects(leaves, include_submobjects=False)
+
+        if fill == "changing":
+            with pytest.raises(Unable, match="drawn two ways"):
+                capture()
+            return
+        capture()
+        painter = live_painter(camera).painter(camera)
+        [(_, record)] = painter.stream._held.items()
+        assert record.kind == "face_group"
+        assert sorted(part for _, _, part in painter.stream._order) == [0, 0, 1, 2, 3]
