@@ -307,7 +307,8 @@ class CairoRenderer:
         # watches the first of each (``LivePainter._sample``). The picture the
         # frame starts on is set within, so the frame is described over it.
         play = ("static", self.num_plays) if self._capturing_static else self.num_plays
-        with live(self.camera, self.clock, play=play):
+        roots = list_update(scene.mobjects, scene.foreground_mobjects)
+        with live(self.camera, self.clock, play=play, roots=roots):
             if self.static_image is not None:
                 self.camera.set_frame_to_background(self.static_image)
             else:

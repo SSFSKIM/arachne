@@ -355,7 +355,9 @@ def _begin_held_play(camera, static):
 
     from arachne.timeline.draw import LiveFrames
 
-    scene = SimpleNamespace(renderer=SimpleNamespace(camera=camera))
+    scene = SimpleNamespace(
+        renderer=SimpleNamespace(camera=camera), mobjects=[], foreground_mobjects=[]
+    )
     frames = LiveFrames(scene, Fraction(15), lambda *_: None, static_layer=True)
     play = SimpleNamespace(index=0, held=True, static=list(static), start=Fraction(0))
     frames.begin(play)

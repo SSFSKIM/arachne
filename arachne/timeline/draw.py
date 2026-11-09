@@ -703,7 +703,9 @@ class Drawing:
             camera.set_pixel_array(pixels)
             return pixels
         camera.reset()
-        with self._captures(capture.instant, ("static", play.index), reset=True):
+        with self._captures(
+            capture.instant, ("static", play.index), capture, reset=True
+        ):
             camera.capture_mobjects(list(play.static))
         self._pictures[play.index] = self._painted(play, capture)
         kept = camera.pixel_array.copy()
@@ -714,19 +716,27 @@ class Drawing:
         return kept
 
     def _captures(
-        self, t: Fraction, play: Any, *, reset: bool = False
+        self, t: Fraction, play: Any, capture: Capture, *, reset: bool = False
     ) -> contextlib.AbstractContextManager[Any]:
         """Within: the camera's captures are frames at the scene's instant
         ``t`` of the play ``play`` (its index; ``("static", index)`` for its
-        static picture; ``"final"``) described from what the camera produced,
-        where this drawing's frames are (:attr:`captured`); else nothing
-        changes. ``reset``: the camera was reset just before (``live``).
+        static picture; ``"final"``) of the scene as ``capture`` holds it,
+        described from what the camera produced, where this drawing's frames
+        are (:attr:`captured`); else nothing changes. ``reset``: the camera
+        was reset just before (``live``).
         """
         if not self.captured:
             return contextlib.nullcontext()
         from arachne.frame_ir.live import live
 
-        return live(self.camera, t, self.draw_path, play, reset=reset)
+        return live(
+            self.camera,
+            t,
+            self.draw_path,
+            play,
+            reset=reset,
+            roots=capture.draw_list(),
+        )
 
     def _painted(self, play: PlayRecord, capture: Capture) -> _Picture:
         """What the play's static picture paints, its static mobjects shown at
@@ -785,7 +795,7 @@ class Drawing:
         if self.painter is not None:
             return self._paint(play, capture, targets, prepare, instant)
         shown = capture.instant if instant is None else instant
-        with self._captures(shown, play.index):
+        with self._captures(shown, play.index, capture):
             if self.static_layer and self._picture_holds(play, capture):
                 self.show(capture, targets)
                 if prepare is not None:
@@ -1033,7 +1043,7 @@ class Drawing:
             self.camera.set_pixel_array(pixels)
         else:
             self.camera.reset()
-            with self._captures(capture.instant, "final", reset=True):
+            with self._captures(capture.instant, "final", capture, reset=True):
                 self.camera.capture_mobjects(targets)
             pixels = self.camera.pixel_array.copy()
         self._deliver()
@@ -1093,7 +1103,17 @@ class LiveFrames:
             # code has always seen it; the live scope is told of the reset,
             # so the capture is known to begin on the camera's background.
             self.camera.reset()
-            with live(self.camera, play.start, play=("static", play.index), reset=True):
+            from arachne.utils.iterables import list_update
+
+            scene = self.scene
+            roots = list_update(scene.mobjects, scene.foreground_mobjects)
+            with live(
+                self.camera,
+                play.start,
+                play=("static", play.index),
+                reset=True,
+                roots=roots,
+            ):
                 self.camera.capture_mobjects(list(play.static))
             self._static = self.camera.pixel_array.copy()
             keep_static_picture(self.camera, self._static)
@@ -1123,7 +1143,7 @@ class LiveFrames:
         camera = self.camera
         from arachne.frame_ir.live import live
 
-        with live(camera, instant, play=self._play):
+        with live(camera, instant, play=self._play, roots=roots):
             if self._static is not None:
                 camera.set_frame_to_background(self._static)
             else:

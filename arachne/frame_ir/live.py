@@ -43,7 +43,7 @@ __all__ = ["LivePainter", "live"]
 import contextlib
 import os
 import weakref
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 from typing import Any
@@ -62,6 +62,7 @@ from .extract import (
     _floats,
     _paint,
     _path_shape,
+    _uv_faces,
     view_values,
 )
 from .xf import (
@@ -554,6 +555,9 @@ class LivePainter:
         #: (``canonical.input_grid``, once per frame), which the scene
         #: camera's painter snaps the core's geometry to.
         self.grid: float | None = None
+        #: The scene's mobjects, within :meth:`around`: a surface among
+        #: their families draws its faces as one face group.
+        self._roots: list[Any] = []
 
     def painter(self, camera: Any) -> Any:
         """The painter of ``camera``'s captures: the path's for the scene's
@@ -601,6 +605,7 @@ class LivePainter:
         asked: str = "core",
         *,
         reset: bool = False,
+        roots: Sequence[Any] = (),
     ) -> Iterator[LivePainter]:
         """Within: ``camera``'s captures, and its displays' cameras', are
         described in XF and drawn back from it, as one frame at instant ``t``
@@ -608,10 +613,12 @@ class LivePainter:
         a scene whose frames were asked for on the draw path ``asked``. With
         ``reset``, ``camera``'s array is as its reset just left it, set
         before the frame's route was read: its first capture begins on it.
+        ``roots`` are the scene's mobjects.
         """
         from .painter import deliver, delivered
 
         self.instant = t
+        self._roots = list(roots)
         self.play = play
         self._scene = (camera, asked)
         self._frames += 1
@@ -1016,6 +1023,9 @@ class LivePainter:
             background = self._behind(camera, background)
         drawn: list[tuple[type, _Recording]] = []
         centres: dict[int, list[Any]] = {}
+        # Where the faces drawn find their surface: the scene's families, and
+        # the list captured (a play's static list holds faces alone).
+        owners = [*self._roots, *(mobjects if isinstance(mobjects, list) else ())]
         frames.append(drawn)
         restore = self._record_centres(camera, centres)
         try:
@@ -1055,7 +1065,7 @@ class LivePainter:
             drawn, centres = [*under.drawn, *drawn], merged
         if self._real and not self.draw:
             self._unders[key] = self._drawn_under(key, background)
-        pixels = self._describe(camera, drawn, centres, background)
+        pixels = self._describe(camera, drawn, centres, background, owners)
         painter = self.painter(camera)
         if isinstance(painter, CorePainter):
             # The core painter's frame is this capture's: whole or not, as
@@ -1225,7 +1235,13 @@ class LivePainter:
         drawn: list[tuple[type, _Recording]],
         centres: dict[int, list[Any]],
         background: np.ndarray,
+        owners: list[Any],
     ) -> np.ndarray:
+        """The capture's frame: each leaf drawn, its record made from what the
+        capture read of it, in the order drawn; a surface's uv faces, all
+        drawn, as one face group (``owners``: where surfaces are found), each
+        face a part of it at its own place in that order.
+        """
         kind = _view_kind(camera)
         painter = self.painter(camera)
         stream: _LiveStream = painter.stream
@@ -1236,21 +1252,35 @@ class LivePainter:
         # The capture itself froze the centre if it drew through the context.
         view = stream._view_of(camera, kind, uploads, background=background)
         held = stream._held
-        for leaf_kind, recording in drawn:
-            leaf = recording._xf_leaf
-            record = self._record(camera, leaf_kind, recording, centres, uploads)
-            slot = stream._slot(leaf, objects)
+        made = [
+            (
+                recording._xf_leaf,
+                self._record(camera, leaf_kind, recording, centres, uploads),
+            )
+            for leaf_kind, recording in drawn
+        ]
+        faces = _face_groups(made, owners, uploads)
+        for leaf, record in made:
+            mob, part = leaf, 0
+            face = faces.get(id(leaf))
+            if face is not None:
+                mob, part, record = face
+            slot = stream._slot(mob, objects)
+            if face is not None and slot in records:
+                # A later face of a group already placed: one record.
+                order.append(("moving", slot, part))
+                continue
             known = held.get(slot)
             if known is not None and _same_record(known, record):
                 record = known
             placed = records.get(slot)
             if placed is not None and not _same_record(placed, record):
                 raise Unable(
-                    f"render.unable: a {type(leaf).__name__} drawn two ways in one"
+                    f"render.unable: a {type(mob).__name__} drawn two ways in one"
                     " capture"
                 )
             records[slot] = record if placed is None else placed
-            order.append(("moving", slot, 0))
+            order.append(("moving", slot, part))
         delta = stream._delta(view, records, order, uploads, objects, self.instant)
         stream.keep_only(set(records))
         return painter.draw(delta)
@@ -1466,6 +1496,110 @@ def _produced(
     return pre
 
 
+def _face_groups(
+    made: list[tuple[Any, Record]], owners: list[Any], uploads: dict[bytes, Any]
+) -> dict[int, tuple[Any, int, Record]]:
+    """The leaves of ``made`` (each with the record its capture's reads made)
+    that are faces of a surface drawn as one face group, as the record's
+    frames group them (``extract._faces``), by leaf id: the surface, the
+    face's index among its uv faces, and the group's record. A surface
+    groups only where each of its uv faces is drawn in the capture. Its
+    surfaces are found by their submobjects (no method of theirs runs).
+    """
+    if not any(hasattr(leaf, "u_index") for leaf, _ in made):
+        return {}
+    from arachne.mobject.three_d.three_dimensions import Surface
+
+    drawn: dict[int, Record] = {}
+    for leaf, record in made:
+        drawn.setdefault(id(leaf), record)
+    found: dict[int, tuple[Any, int, Record]] = {}
+    seen: set[int] = set()
+    stack = list(owners)
+    while stack:
+        owner = stack.pop()
+        if id(owner) in seen:
+            continue
+        seen.add(id(owner))
+        stack.extend(owner.submobjects)
+        if not isinstance(owner, Surface):
+            continue
+        faces = _uv_faces(owner)
+        records = [drawn.get(id(face)) for face in faces]
+        if not faces or any(record is None for record in records):
+            continue
+        group = _folded(owner, faces, records, uploads)  # type: ignore[arg-type]
+        if group is not None:
+            for index, face in enumerate(faces):
+                found[id(face)] = (owner, index, group)
+    return found
+
+
+#: Path fields a face of a group has of its own: the group takes its
+#: points and colours face by face, and the first face's gradient.
+_FACE_OWN = frozenset({"shape", "fill", "stroke", "gradient"})
+#: Path fields no face of a group carries.
+_NOT_FACE = frozenset({"fill_image", "features", "pre_projected"})
+
+
+def _folded(
+    surface: Any, faces: list[Any], records: list[Record], uploads: dict[bytes, Any]
+) -> Record | None:
+    """The face group ``surface``'s uv faces ``faces`` draw as, from the
+    records their capture made (``records``), as the record's frames make it
+    (``FrameStream._face_group``): the faces' points in turn, their fill and
+    stroke rows, their uv indices and the surface's grid, and the first
+    face's style and depth. ``None`` where they do not draw as one group:
+    one point count, one style but their colours, each one stop.
+    """
+    first = records[0].fields
+    points: list[np.ndarray] = []
+    fills: list[np.ndarray] = []
+    strokes: list[np.ndarray] = []
+    for record in records:
+        fields = record.fields
+        if record.kind != "path" or fields.keys() != first.keys():
+            return None
+        if _NOT_FACE & fields.keys():
+            return None
+        if any(
+            not _same(fields[name], value)
+            for name, value in first.items()
+            if name not in _FACE_OWN
+        ):
+            return None
+        fill, stroke = fields["fill"], fields["stroke"]
+        if not all(
+            isinstance(rows, np.ndarray) and len(rows) == 1 for rows in (fill, stroke)
+        ):
+            return None
+        data = np.asarray(uploads[fields["shape"]].data)
+        if len(data) == 0 or (points and len(data) != len(points[0])):
+            return None
+        points.append(data)
+        fills.append(fill)
+        strokes.append(stroke)
+    fields = {"shape": _path_shape(np.concatenate(points), uploads)}
+    fields.update((name, value) for name, value in first.items() if name != "shape")
+    face_fill = PaintTable(np.concatenate(fills))
+    face_stroke = PaintTable(np.concatenate(strokes))
+    uploads[face_fill.key] = face_fill
+    uploads[face_stroke.key] = face_stroke
+    fields["fill"] = None
+    fields["stroke"] = None
+    fields["face_fill"] = face_fill.key
+    fields["face_stroke"] = face_stroke.key
+    fields["uv"] = np.array(
+        [[face.u_index, face.v_index] for face in faces], dtype=np.uint32
+    )
+    resolution = surface.resolution
+    u_res, v_res = (
+        (resolution, resolution) if isinstance(resolution, int) else resolution
+    )
+    fields["grid"] = (int(u_res), int(v_res))
+    return Record("face_group", fields)
+
+
 def _same_record(a: Record, b: Record) -> bool:
     if a.kind != b.kind or a.fields.keys() != b.fields.keys():
         return False
@@ -1485,6 +1619,7 @@ def live(
     play: Any = None,
     *,
     reset: bool = False,
+    roots: Sequence[Any] = (),
 ) -> Iterator[LivePainter | None]:
     """Within: ``camera`` captures through the draw path ``draw_path`` (the
     option of that name, unless given), each capture a frame at the scene's
@@ -1492,7 +1627,9 @@ def live(
     known). On ``cairo`` nothing changes. ``reset`` says the camera was
     reset just before, nothing written into its array since: its first
     capture begins on that reset (:attr:`.CorePainter.whole`), as one reset
-    within does.
+    within does. ``roots`` are the scene's mobjects: a surface among their
+    families draws its faces as one face group though a capture's list
+    holds its faces alone.
     """
     from .painter import DRAW_PATHS, camera_path
 
@@ -1511,7 +1648,9 @@ def live(
         # draws the picture (its real draw would only be thrown away).
         found = (pid, LivePainter(draw=path != "core", path=path))
         _LIVE[camera] = found
-    with found[1].around(camera, t, play, draw_path, reset=reset) as painter:
+    with found[1].around(
+        camera, t, play, draw_path, reset=reset, roots=roots
+    ) as painter:
         yield painter
 
 
