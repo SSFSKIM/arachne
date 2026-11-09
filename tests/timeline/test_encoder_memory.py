@@ -13,10 +13,12 @@ import textwrap
 
 import pytest
 
-#: Twice the peak measured when this test was written (about 1 GB, the
-#: process's whole resident size), and far below the gigabytes an encoder
-#: that kept its frames would reach over a scene this long.
-CEILING_MB = 2048
+#: The whole process's peak resident size, measured when this test was
+#: written, was about 0.9 GB on macOS and 2.1 to 2.3 GB on Linux, the same
+#: with gaps as without (so not the encoder's). The ceiling sits above both,
+#: and far below the 14 GB an encoder that kept this scene's 1680 frames
+#: would hold.
+CEILING_MB = 4096
 
 SCRIPT = textwrap.dedent(
     """
