@@ -66,7 +66,7 @@ fn cubics(path: &BezPath) -> Vec<[Point; 4]> {
 /// The carried decision `mitres` for the join from the first cubic of `path` into the second.
 fn deciding(path: &BezPath, mitres: bool) -> Decided {
     let c = cubics(path);
-    HashMap::from([(join_mask::key(c[0], c[1], false), vec![mitres])])
+    HashMap::from([(join_mask::key(c[0], c[1], false), vec![Some(mitres)])])
 }
 
 fn direction(degrees: f64) -> Vec2 {
@@ -187,7 +187,7 @@ fn carried_decisions_kurbo_agrees_with_change_nothing() {
         let mut decided = deciding(&path, kurbo_mitres);
         if closed {
             let c = cubics(&path);
-            decided.insert(join_mask::key(c[2], c[0], true), vec![true]);
+            decided.insert(join_mask::key(c[2], c[0], true), vec![Some(true)]);
         }
         let (got, edits) = join_mask::apply(drawn.clone(), path.elements(), &s, TOL, &decided);
         assert_eq!(edits, Edits::default(), "{turn} {arm}");
@@ -218,8 +218,8 @@ fn each_copy_of_a_repeated_subpath_takes_its_own_decision_in_its_own_contour() {
     let bevel = stroked(&one, &style(1.0, Join::Bevel));
     let miter = stroked(&one, &s);
     for (decisions, dropped, expected) in [
-        (vec![false, false], 2, [&bevel, &bevel]),
-        (vec![false, true], 1, [&bevel, &miter]),
+        (vec![Some(false), Some(false)], 2, [&bevel, &bevel]),
+        (vec![Some(false), Some(true)], 1, [&bevel, &miter]),
     ] {
         let decided = HashMap::from([(join_mask::key(c[0], c[1], false), decisions)]);
         let (got, edits) =

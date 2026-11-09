@@ -645,14 +645,22 @@ fn outline(shown: &[[f64; 3]]) -> BezPath {
 
 /// The decisions a record's `joins` (XF 1.4: one byte per cubic of its points) carries for the
 /// joins of [`outline`]`(shown)` as kurbo's stroker makes them, by join ([`join_mask::key`]: the
-/// cubic it leaves and the one it enters): the join into each cubic where bit 0 is set, mitred
-/// where bit 1 is; the first cubic's byte of a closed subpath, its closing join. A cubic whose
+/// cubic it leaves and the one it enters), one per occurrence: the join into each cubic mitred
+/// where bit 1 is set, where bit 0 is; undecided (`None`) where bit 0 is clear (Cairo makes no
+/// join there) or the record holds no byte for it, which keeps its place among the occurrences
+/// of its points; the first cubic's byte of a closed subpath, its closing join. A cubic whose
 /// points are one the stroker skips: the join is from the cubic before it, and the closing join
 /// into the first it strokes.
-fn decided_joins(shown: &[[f64; 3]], joins: &[u8]) -> join_mask::Decided {
+pub fn decided_joins(shown: &[[f64; 3]], joins: &[u8]) -> join_mask::Decided {
     let mut out = HashMap::new();
     let pt = |p: [f64; 3]| Point::new(p[0], p[1]);
-    let byte = |i: usize| joins.get(i / 4).copied().filter(|b| b & 1 != 0);
+    let byte = |i: usize| {
+        joins
+            .get(i / 4)
+            .copied()
+            .filter(|b| b & 1 != 0)
+            .map(|b| b & 2 != 0)
+    };
     for (start, end) in subpaths(shown) {
         if end - start < 4 {
             continue;
@@ -675,18 +683,16 @@ fn decided_joins(shown: &[[f64; 3]], joins: &[u8]) -> join_mask::Decided {
             let this = [p0, p1, p2, p3];
             match last {
                 Some(from) => {
-                    if let Some(b) = byte(i).filter(|_| i != start) {
-                        let key = join_mask::key(from, this, false);
-                        out.entry(key).or_insert_with(Vec::new).push(b & 2 != 0);
-                    }
+                    let key = join_mask::key(from, this, false);
+                    out.entry(key).or_insert_with(Vec::new).push(byte(i));
                 }
                 None => first = Some(this),
             }
             (last, p0) = (Some(this), p3);
         }
-        if let (true, Some(from), Some(into), Some(b)) = (closed, last, first, byte(start)) {
+        if let (true, Some(from), Some(into)) = (closed, last, first) {
             let key = join_mask::key(from, into, true);
-            out.entry(key).or_insert_with(Vec::new).push(b & 2 != 0);
+            out.entry(key).or_insert_with(Vec::new).push(byte(start));
         }
     }
     out

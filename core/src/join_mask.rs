@@ -210,8 +210,9 @@ fn line_after(els: &[PathEl], within: std::ops::Range<usize>, after: Point) -> O
 }
 
 /// The carried decisions, by join ([`key`]): for joins whose elements are the same points, one per
-/// occurrence, in the order the path holds them.
-pub type Decided = HashMap<JoinKey, Vec<bool>>;
+/// occurrence, in the order the path holds them; `None` for an occurrence decided nothing, left as
+/// kurbo strokes it.
+pub type Decided = HashMap<JoinKey, Vec<Option<bool>>>;
 
 /// `stroked`, kurbo's stroke of `path` in `style` at `tolerance` (`kurbo::stroke`), with each of its
 /// miter joins whose carried decision (`decided`) differs from kurbo's edited to it.
@@ -232,13 +233,13 @@ pub fn apply(
     let mut seen: HashMap<JoinKey, usize> = HashMap::new();
     for j in joins {
         let occurrence = seen.entry(j.key).or_default();
-        let Some(&mitres) = decided.get(&j.key).and_then(|d| d.get(*occurrence)) else {
+        let Some(&carried) = decided.get(&j.key).and_then(|d| d.get(*occurrence)) else {
             continue;
         };
         *occurrence += 1;
-        if mitres == j.mitres {
+        let Some(mitres) = carried.filter(|&m| m != j.mitres) else {
             continue;
-        }
+        };
         // The join's own subpath in kurbo's outline: its contours, each begun by a move.
         let moves: Vec<usize> = (0..els.len())
             .filter(|&i| matches!(els[i], PathEl::MoveTo(_)))
