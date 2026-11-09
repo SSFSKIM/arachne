@@ -343,6 +343,103 @@ def test_a_frame_read_from_the_camera_is_one_process_s(tmp_path):
     assert two["movie"]["frames"] == one["drawn"]
 
 
+# ── the configuration a waiting play is drawn under ──────────────────────────
+
+#: Read through ``draw_reuse``'s getter (with the levers off, every lever
+#: reads as its scalar); the snapshot holds ``draw_reuse`` resolved.
+THROUGH_DRAW_REUSE = frozenset({"speed_levers"})
+#: The configured pixel shape, which sets how thick a point is drawn: a
+#: change refuses the record's plays from then on (``PIXEL_SHAPE_CHANGED``),
+#: which are drawn as they run.
+PIXEL_SHAPE = frozenset({"pixel_width", "pixel_height"})
+
+#: Scenes drawn by the invariant below: flat, moving and 3D cameras, the
+#: static layer off, gaps, a skipped section, text and an image, points.
+DRAWN = [
+    pytest.param("Steps", {}, id="flat"),
+    pytest.param("Steps", {"static_layer": False}, id="no_static_layer"),
+    pytest.param("Steps", {"hold_gaps": True}, id="gaps"),
+    pytest.param("Zoomed", {}, id="moving_camera"),
+    pytest.param("Turned3D", {}, id="three_d"),
+    pytest.param("SkippedCentre", {}, id="skipped_section"),
+    pytest.param("TextAndImage", {}, id="text_and_image"),
+    pytest.param("Points", {}, id="points"),
+]
+
+
+@pytest.mark.parametrize(("scene", "config"), DRAWN)
+def test_a_waiting_play_is_drawn_under_the_configuration_it_ran_under(
+    tmp_path, scene, config
+):
+    """Drawn after the scene ran, in this process or by a worker, a play
+    reads no configuration but what it took as it ran (``_DrawConfig``) and
+    what the record guards.
+    """
+    from dataclasses import fields
+
+    from arachne.renderer.cairo_renderer import _DrawConfig
+
+    here, forked = renders(
+        tmp_path,
+        scene,
+        [
+            {**at(2, **config), "thread": True, "config_reads": True},
+            {**at(2, **config), "config_reads": True},
+        ],
+    )
+    drawn_here(here)
+    drawn_by_workers(forked, 2)
+    taken = frozenset(f.name for f in fields(_DrawConfig))
+    allowed = taken | THROUGH_DRAW_REUSE | PIXEL_SHAPE
+    reads = {"this process": here["config_reads"]["here"]} | {
+        f"worker {n}": keys for n, keys in enumerate(forked["config_reads"]["workers"])
+    }
+    assert len(reads) == 3
+    for where, keys in reads.items():
+        unknown = sorted(set(keys) - allowed)
+        assert not unknown, (
+            f"Drawing a play that waited for the workers, {where} read the"
+            f" configuration's {unknown}, which the play did not take as it"
+            " ran. Add each to _DrawConfig (cairo_renderer.py), the"
+            " configuration a waiting play carries, or make a change of it"
+            " during the render a reason to draw the render in its own"
+            " process."
+        )
+
+
+#: A frame read, or not, after the static layer is turned off midway.
+LAYER_CHANGED = [
+    pytest.param("LayerChanged", "LayerChangedUnread", id="after_a_play"),
+    pytest.param(
+        "LayerChangedSkipped", "LayerChangedSkippedUnread", id="after_a_skipped_one"
+    ),
+]
+
+
+@pytest.mark.parametrize(("scene", "unread"), LAYER_CHANGED)
+def test_each_play_is_drawn_under_the_configuration_it_ran_under(
+    tmp_path, scene, unread
+):
+    one, two = renders(tmp_path, scene, [at(1), at(2)])
+    drawn_here(one)
+    drawn_here(two)
+    assert READ in two["fallback"]
+    assert two["movie"]["frames"] == one["drawn"]
+    # Read no frame, the same scene is drawn by the workers.
+    one, two = renders(tmp_path, unread, [at(1), at(2)])
+    drawn_by_workers(two, 2)
+    assert two["movie"]["frames"] == one["drawn"]
+
+
+def test_plays_drawn_on_another_path_midway_are_drawn_on_it_by_workers(tmp_path):
+    pytest.importorskip("arachne_core")
+    one, two, three = renders(tmp_path, "DrawPathChanged", [at(1), at(2), at(3)])
+    drawn_here(one)
+    for found, count in ((two, 2), (three, 3)):
+        drawn_by_workers(found, count)
+        assert found["movie"]["frames"] == one["drawn"]
+
+
 # ── a worker that fails ──────────────────────────────────────────────────────
 
 

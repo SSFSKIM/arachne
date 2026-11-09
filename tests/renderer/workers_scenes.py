@@ -10,21 +10,29 @@ import numpy as np
 
 from arachne import (
     BLUE,
+    DEGREES,
     LEFT,
+    OUT,
     PI,
     RED,
     RIGHT,
     UP,
     Camera,
     Circle,
+    Cube,
     Dot,
+    Dot3D,
     FadeIn,
     ImageMobject,
     MovingCameraScene,
+    PointCloudDot,
     Rotate,
     Scene,
     Square,
+    Text,
+    ThreeDScene,
     ZoomedScene,
+    config,
 )
 from tests.timeline.soundness_scenes import CountingFill, play_fill_between
 
@@ -305,3 +313,101 @@ class SkippedStaticNotRead(SkippedStaticFrameGot):
 
     def then(self):
         self.wait(0.4)
+
+
+class Turned3D(ThreeDScene):
+    """A cube turning under a 3D camera that moves."""
+
+    def construct(self):
+        self.set_camera_orientation(phi=60 * DEGREES, theta=30 * DEGREES)
+        cube = Cube(side_length=1.5)
+        self.add(cube, Dot3D(OUT))
+        self.play(Rotate(cube, PI / 4, axis=UP), run_time=0.4)
+        self.move_camera(theta=60 * DEGREES, run_time=0.4)
+        self.wait(0.4)
+
+
+class TextAndImage(Scene):
+    """Text moving past an image."""
+
+    def construct(self):
+        text = Text("ab")
+        self.add(text, ImageMobject(np.full((8, 8, 4), 200, dtype=np.uint8)))
+        self.play(text.animate.shift(RIGHT), run_time=0.4)
+        self.wait(0.4)
+
+
+class Points(Scene):
+    """A point cloud, drawn as thick as the configured pixel shape makes it."""
+
+    def construct(self):
+        cloud = PointCloudDot(radius=0.8)
+        self.add(cloud)
+        self.play(cloud.animate.shift(RIGHT), run_time=0.4)
+        self.wait(0.4)
+
+
+class LayerChanged(Scene):
+    """A frozen frame drawn with the static layer on, then, with it off, the
+    script reads a frame drawn over the frozen frame's static picture, and
+    shows it with the layer on again.
+    """
+
+    skipped = False
+
+    def construct(self):
+        circle = Circle(radius=0.6)
+        self.add(circle)
+        self.wait(0.4)
+        if self.skipped:
+            self.next_section(skip_animations=True)
+            circle.shift(RIGHT * 2)
+            self.wait(0.4)
+            self.next_section(skip_animations=False)
+        config.static_layer = False
+        self.clear()
+        self.middle()
+        config.static_layer = True
+        self.wait(0.4)
+
+    def middle(self):
+        self.renderer.update_frame(self)
+        image = ImageMobject(self.renderer.get_frame())
+        image.height = self.camera.frame_height
+        self.add(image)
+
+
+class LayerChangedSkipped(LayerChanged):
+    """:class:`LayerChanged` with a frozen frame in a skipped section first."""
+
+    skipped = True
+
+
+class LayerChangedUnread(LayerChanged):
+    """:class:`LayerChanged` reading no frame: a square where it shows one."""
+
+    def middle(self):
+        self.add(Square(side_length=1))
+
+
+class LayerChangedSkippedUnread(LayerChangedUnread):
+    """:class:`LayerChangedUnread` with a frozen frame in a skipped section
+    first.
+    """
+
+    skipped = True
+
+
+class DrawPathChanged(Scene):
+    """Plays drawn on Cairo, then on the core, then on Cairo again."""
+
+    def construct(self):
+        dot = Dot(LEFT * 2)
+        self.add(Square(side_length=1.5), Circle(radius=0.5).shift(RIGHT))
+        config.draw_path = "cairo"
+        self.play(dot.animate.shift(RIGHT), run_time=0.4)
+        config.draw_path = "core"
+        self.play(dot.animate.shift(UP), run_time=0.4)
+        self.wait(0.4)
+        config.draw_path = "cairo"
+        self.play(dot.animate.shift(RIGHT), run_time=0.4)

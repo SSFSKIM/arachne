@@ -28,7 +28,10 @@ the render did and wrote:
 A run may ``inject`` a failure into the drawing of play ``play`` in a
 worker (``how``: ``raise``, ``kill`` or ``unable``), a thread alive through
 the render (``thread``), or a memory reader that reads the process id
-(``rss_pid``); and ``repeat`` the render, reporting each.
+(``rss_pid``); and ``repeat`` the render, reporting each. With
+``config_reads`` in the run, ``config_reads`` reports the configuration
+keys read while the plays that waited for the workers were drawn: ``here``,
+in this process, and ``workers``, one list per worker.
 """
 
 from __future__ import annotations
@@ -115,6 +118,89 @@ def inject_failure(how: str, at: int):
 
     cairo_renderer.CairoRenderer._draw_play = failing
     return lambda: setattr(cairo_renderer.CairoRenderer, "_draw_play", draw)
+
+
+class _ReadsRecorded(dict):
+    """A configuration store that records each key read from it; ``*`` for a
+    read of every key.
+    """
+
+    def __init__(self, store: dict, reads: set[str]) -> None:
+        super().__init__(store)
+        self.reads = reads
+
+    def __getitem__(self, key):
+        self.reads.add(key)
+        return super().__getitem__(key)
+
+    def get(self, key, default=None):
+        self.reads.add(key)
+        return super().get(key, default)
+
+    def __contains__(self, key):
+        self.reads.add(key)
+        return super().__contains__(key)
+
+    def __iter__(self):
+        self.reads.add("*")
+        return super().__iter__()
+
+    def items(self):
+        self.reads.add("*")
+        return super().items()
+
+    def values(self):
+        self.reads.add("*")
+        return super().values()
+
+
+def _recording(function, reads: set[str]):
+    """``function``, adding every configuration key it reads to ``reads``."""
+    from arachne import config
+
+    def recorded(*args, **kwargs):
+        store = config._d
+        config._d = _ReadsRecorded(store, reads)
+        try:
+            return function(*args, **kwargs)
+        finally:
+            config._d = store
+
+    return recorded
+
+
+def record_config_reads(found: dict):
+    """Record the configuration keys read while waiting plays are drawn:
+    in this process into ``found["here"]``, in each worker into
+    ``found["workers"]``. Returns the undo.
+    """
+    from arachne.renderer import cairo_renderer, workers
+
+    renderer = cairo_renderer.CairoRenderer
+    in_order, in_range, run = renderer._draw_in_order, renderer._draw_range, workers.run
+    here: set[str] = set()
+    found["here"], found["workers"] = here, []
+
+    def draw_range(self, *args, **kwargs):
+        reads: set[str] = set()
+        result = _recording(in_range, reads)(self, *args, **kwargs)
+        return {**result, "config_reads": sorted(reads)}
+
+    def run_workers(tasks):
+        results = run(tasks)
+        found["workers"].extend(each.pop("config_reads") for each in results)
+        return results
+
+    renderer._draw_in_order = _recording(in_order, here)
+    renderer._draw_range = draw_range
+    workers.run = run_workers
+
+    def undo() -> None:
+        renderer._draw_in_order = in_order
+        renderer._draw_range = in_range
+        workers.run = run
+
+    return undo
 
 
 def children() -> set[int]:
@@ -243,6 +329,9 @@ def main() -> int:
             reader = registry._rss_mb
             registry._rss_mb = lambda: float(os.getpid())
             undo.append(lambda reader=reader: setattr(registry, "_rss_mb", reader))
+        reads: dict = {}
+        if run.get("config_reads"):
+            undo.append(record_config_reads(reads))
         held = threading.Event()
         if run.get("thread"):
             threading.Thread(target=held.wait, name="held", daemon=True).start()
@@ -251,6 +340,11 @@ def main() -> int:
                 media = Path(spec["media"]) / f"run-{index}-{repeat}"
                 settings = {**spec["config"], **run["config"], "media_dir": str(media)}
                 results.append(render(scene_class, settings, run))
+                if reads:
+                    results[-1]["config_reads"] = {
+                        "here": sorted(reads["here"]),
+                        "workers": list(reads["workers"]),
+                    }
         finally:
             held.set()
             for each in undo:

@@ -35,18 +35,37 @@ __all__ = ["CairoRenderer"]
 
 
 @dataclass(frozen=True)
+class _DrawConfig:
+    """The configuration a play's frames are drawn under, as it is when the
+    play runs: a play drawn later, in this process or by a worker, is drawn
+    under the configuration it ran under. Every other configuration a draw
+    reads is guarded by the record (the pixel shape).
+    """
+
+    static_layer: bool
+    draw_path: str
+    draw_reuse: bool
+
+    @classmethod
+    def now(cls) -> _DrawConfig:
+        return cls(config.static_layer, config.draw_path, config.draw_reuse)
+
+
+@dataclass(frozen=True)
 class _Deferred:
     """A play of a render whose frames wait to be drawn by its workers:
     ``number``, its index in the render; ``play`` and ``frames``, the play
     and its instants of the frame grid, ``None`` and none when it draws
     nothing; ``still``, a frozen frame whose frames are not drawn but whose
-    static picture is (:meth:`CairoRenderer._draw_still`).
+    static picture is (:meth:`CairoRenderer._draw_still`); ``drawing``, the
+    configuration it ran under.
     """
 
     number: int
     play: PlayRecord | None
     frames: list[Fraction]
-    still: PlayRecord | None = None
+    still: PlayRecord | None
+    drawing: _DrawConfig
 
 
 def _stop_progress_monitor() -> None:
@@ -288,6 +307,7 @@ class CairoRenderer:
             and bool(play.static)
             and scene._arachne_timeline.draws
         )
+        drawing = _DrawConfig.now()
         if self._deferred is not None:
             # Drawn once the scene has run, by the render's workers or here,
             # in order; a skipped frame's static picture here, in its place.
@@ -297,24 +317,35 @@ class CairoRenderer:
                     play if draw else None,
                     frames if draw else [],
                     play if still else None,
+                    drawing,
                 )
             )
         elif draw:
-            static = self._draw_play(scene, play, frames)
+            static = self._draw_play(scene, play, frames, drawing)
         elif still:
-            static = self._draw_still(scene, play)
-        # As in CE, a frozen frame's static picture stays the renderer's
-        # background after it (what update_frame draws over), and no other
-        # play's does; with the static layer off, none does.
-        self.static_image = static if play.held and config.static_layer else None
+            static = self._draw_still(scene, play, drawing)
+        self._keep_static(static if play.held else None, drawing)
         self.num_plays += 1
 
-    def _draw_still(self, scene: Scene, play: PlayRecord) -> PixelArray | None:
-        """Draw the static picture of a frozen frame whose frames are not
-        drawn, and return it.
+    def _keep_static(self, static: PixelArray | None, drawing: _DrawConfig) -> None:
+        """As in CE, a frozen frame's static picture (``static``) stays the
+        renderer's background after it (what update_frame draws over), and no
+        other play's does; with the static layer off, none does.
         """
-        with Drawing(scene._arachne_timeline.ensure_record()) as drawing:
-            return drawing.static(play)
+        self.static_image = static if drawing.static_layer else None
+
+    def _draw_still(
+        self, scene: Scene, play: PlayRecord, drawing: _DrawConfig
+    ) -> PixelArray | None:
+        """Draw the static picture of a frozen frame whose frames are not
+        drawn, under ``drawing``, and return it.
+        """
+        with Drawing(
+            scene._arachne_timeline.ensure_record(),
+            static_layer=drawing.static_layer,
+            draw_path=drawing.draw_path,
+        ) as painting:
+            return painting.static(play)
 
     def _play_live(
         self,
@@ -396,31 +427,37 @@ class CairoRenderer:
         scene: Scene,
         play: PlayRecord,
         frames: list[Fraction],
+        drawing: _DrawConfig,
         number: int | None = None,
     ) -> PixelArray | None:
         """Draw the play's frames, one per instant of the frame grid in its
-        span, from its recorded samples, and return its static picture.
-        ``number`` is the play's index in the render, by default the play
-        being run.
+        span, from its recorded samples, under ``drawing``, and return its
+        static picture. ``number`` is the play's index in the render, by
+        default the play being run.
         """
         record = scene._arachne_timeline.ensure_record()
         if number is None:
             number = self.num_plays
         self.file_writer.begin_animation(True, animation_index=number)
-        reuse = self.draws if config.draw_reuse else None
+        reuse = self.draws if drawing.draw_reuse else None
         runs: list[int] = []
-        with Drawing(record, reuse=reuse) as drawing:
-            static = drawing.static(play)
+        with Drawing(
+            record,
+            static_layer=drawing.static_layer,
+            draw_path=drawing.draw_path,
+            reuse=reuse,
+        ) as painting:
+            static = painting.static(play)
             if play.held:
-                pixels = drawing.sample(play, play.samples[0], static)
+                pixels = painting.sample(play, play.samples[0], static)
                 self.file_writer.write_frame(pixels, repeat=len(frames))
                 runs.append(len(frames))
             else:
                 for t in frames:
-                    pixels = drawing.sample(play, play.capture_at(t), static)
+                    pixels = painting.sample(play, play.capture_at(t), static)
                     # One write per frame, reused or drawn.
                     self.file_writer.write_frame(pixels)
-                    if runs and drawing.reused:
+                    if runs and painting.reused:
                         runs[-1] += 1
                     else:
                         runs.append(1)
@@ -458,14 +495,16 @@ class CairoRenderer:
         """
         self._map_as_rendered(scene)
         for each in deferred:
+            static = None
             if each.play is not None:
-                static = self._draw_play(scene, each.play, each.frames, each.number)
-                held = each.play.held
+                static = self._draw_play(
+                    scene, each.play, each.frames, each.drawing, each.number
+                )
+                if not each.play.held:
+                    static = None
             elif each.still is not None:
-                static, held = self._draw_still(scene, each.still), True
-            else:
-                static, held = None, False
-            self.static_image = static if held and config.static_layer else None
+                static = self._draw_still(scene, each.still, each.drawing)
+            self._keep_static(static, each.drawing)
 
     def _draw_deferred(self, scene: Scene) -> None:
         """Once the scene has run, draw the frames of its plays: cut into
@@ -589,7 +628,7 @@ class CairoRenderer:
         frames = 0
         for each in deferred:
             assert each.play is not None
-            self._draw_play(scene, each.play, each.frames, each.number)
+            self._draw_play(scene, each.play, each.frames, each.drawing, each.number)
             frames += len(each.frames)
         writer.join_all_encode_jobs()
         return {
