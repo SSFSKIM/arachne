@@ -1414,11 +1414,29 @@ fn each_absent_face_list_reads_as_uniform_whatever_the_other() {
 /// A face group of one face whose points are at one spot (a face not yet drawn), stroked under
 /// `cap` and `dash`: its frame, and the leaves the stream reports it draws as a round cap's dot.
 fn one_spot_face(cap: Cap, dash: Option<Dash>) -> (Vec<u8>, Vec<(u32, u32)>) {
-    let shape = Shape::new(ShapeData::Path {
-        points: vec![[0.25, 0.0, 0.0]; 4],
-    });
-    let fills = Stops::new(vec![[1.0, 0.0, 0.0, 1.0]]);
-    let strokes = Stops::new(vec![[1.0, 1.0, 1.0, 1.0]]);
+    spot_faces(cap, dash, Some([1.0, 1.0, 1.0, 1.0]), Vec::new(), false)
+}
+
+/// A face group under `cap` and `dash`, its faces stroked with `stroke` (none: no stroke table)
+/// at `face_widths`: one face at one spot or, `with_drawn`, a whole square face 0 before it and
+/// only face 0 in the order. Its frame and the leaves the stream reports it draws as a round
+/// cap's dot.
+fn spot_faces(
+    cap: Cap,
+    dash: Option<Dash>,
+    stroke: Option<[f64; 4]>,
+    face_widths: Vec<f64>,
+    with_drawn: bool,
+) -> (Vec<u8>, Vec<(u32, u32)>) {
+    let spot = vec![[0.25, 0.0, 0.0]; 4];
+    let (points, faces, face_ends) = if with_drawn {
+        ([common::square_points(0.5), spot].concat(), 2, vec![16, 20])
+    } else {
+        (spot, 1, Vec::new())
+    };
+    let shape = Shape::new(ShapeData::Path { points });
+    let fills = Stops::new(vec![[1.0, 0.0, 0.0, 1.0]; faces]);
+    let strokes = stroke.map(|row| Stops::new(vec![row; faces]));
     let mut face = Record::new(RecordKind::FaceGroup, 1, 101);
     face.geometry.shape_a = Some(shape.key());
     face.depth.space = Space::World;
@@ -1426,17 +1444,17 @@ fn one_spot_face(cap: Cap, dash: Option<Dash>) -> (Vec<u8>, Vec<(u32, u32)>) {
     face.paint.cap = cap;
     face.dash = dash;
     face.body = Body::FaceGroup(FaceGroup {
-        uv: vec![[0, 0]],
-        grid: [1, 1],
+        uv: (0..faces as u32).map(|u| [u, 0]).collect(),
+        grid: [faces as u32, 1],
         fill: fills.key(),
-        stroke: Some(strokes.key()),
-        face_ends: Vec::new(),
-        face_widths: Vec::new(),
+        stroke: strokes.as_ref().map(Stops::key),
+        face_ends,
+        face_widths,
     });
     let mut d = delta(0);
     d.view = Some(common::three_d_view(64, 36));
     d.upload = vec![shape];
-    d.upload_paints = vec![fills, strokes];
+    d.upload_paints = [Some(fills), strokes].into_iter().flatten().collect();
     d.set = vec![face];
     d.order = Some(vec![entry(1)]);
     let mut s = Stream::new();
@@ -1471,4 +1489,59 @@ fn a_face_at_one_spot_under_a_round_cap_is_a_dot_only_where_its_dash_is_on() {
     assert_eq!(dashed(0.75), nothing, "dashed in a gap at its start");
     // Where the offset meets the dash's end, Cairo has turned the dash off.
     assert_eq!(dashed(0.5), nothing, "dashed in a gap at its start");
+}
+
+#[test]
+fn a_dash_whose_gap_is_under_cairo_s_least_length_is_solid_for_the_dot() {
+    // `_cairo_gstate_set_dash` strokes a dash solid when its gaps total less than
+    // CAIRO_FIXED_ERROR_DOUBLE (1/512): a face at one spot under such a dash is the dot, wherever
+    // its phase falls; a gap just above that stays a gap.
+    let nothing = (one_spot_face(Cap::Butt, None).0, Vec::new());
+    let undashed = one_spot_face(Cap::Round, None);
+    let dashed = |duty: f64, phase: f64| {
+        one_spot_face(
+            Cap::Round,
+            Some(Dash {
+                period: 1.0,
+                duty,
+                phase,
+            }),
+        )
+    };
+    assert_eq!(dashed(0.999, 0.9995), undashed, "a gap of 0.001: solid");
+    assert_eq!(dashed(0.9975, 0.999), nothing, "a gap of 0.0025: in it");
+    assert_eq!(dashed(0.9975, 0.5), undashed, "a gap of 0.0025: on");
+}
+
+#[test]
+fn a_face_at_one_spot_whose_stroke_is_not_drawn_is_reported_as_no_dot() {
+    // The stream reports a dot only where the drawer strokes the face: not for a face of no
+    // width without a background stroke, with no stroke paint, or with a stroke of no alpha.
+    let nothing = (one_spot_face(Cap::Butt, None).0, Vec::new());
+    let white = Some([1.0, 1.0, 1.0, 1.0]);
+    for (name, stroke, widths) in [
+        ("no width", white, vec![0.0]),
+        ("no stroke paint", None, Vec::new()),
+        ("no alpha", Some([1.0, 1.0, 1.0, 0.0]), Vec::new()),
+    ] {
+        assert_eq!(
+            spot_faces(Cap::Round, None, stroke, widths, false),
+            nothing,
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn a_face_the_order_does_not_draw_is_reported_as_no_dot() {
+    // Only face 0 of a group of two is in the order: its face 1, at one spot under a round cap,
+    // is not drawn and not reported.
+    let (_, dots) = spot_faces(
+        Cap::Round,
+        None,
+        Some([1.0, 1.0, 1.0, 1.0]),
+        Vec::new(),
+        true,
+    );
+    assert_eq!(dots, Vec::<(u32, u32)>::new());
 }
