@@ -1044,6 +1044,8 @@ fn a_face_group_draws_each_face_as_the_path_of_that_face() {
             grid: [2, 1],
             fill: fills.key(),
             stroke: Some(strokes.key()),
+            face_ends: Vec::new(),
+            face_widths: Vec::new(),
         });
         style(&mut faces);
         let mut d = delta(0);
@@ -1101,6 +1103,8 @@ fn a_face_group_whose_points_do_not_divide_into_its_faces_is_refused() {
         grid: [2, 1],
         fill: fills.key(),
         stroke: None,
+        face_ends: Vec::new(),
+        face_widths: Vec::new(),
     });
     let mut d = delta(0);
     d.view = Some(common::three_d_view(16, 9));
@@ -1114,4 +1118,217 @@ fn a_face_group_whose_points_do_not_divide_into_its_faces_is_refused() {
         panic!("drawn")
     };
     assert!(u.reason.contains("divide"), "{}", u.reason);
+}
+
+#[test]
+fn a_face_group_draws_faces_of_their_own_lengths_and_widths_as_their_paths() {
+    // A surface partly drawn (`Create`) holds faces of different lengths, and one mid-`Write`
+    // strokes each face at a width of its own: each face is the path of its own run of the points,
+    // ending at its face end, stroked at its own width.
+    let points = two_faces();
+    let (left, right) = points.split_at(16);
+    let right = &right[..8];
+    let shape = Shape::new(ShapeData::Path {
+        points: [left, right].concat(),
+    });
+    let fills = Stops::new(vec![[1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]]);
+    let strokes = Stops::new(vec![[1.0, 1.0, 1.0, 1.0], [0.0, 1.0, 0.0, 1.0]]);
+    let widths = [2.0, 0.75];
+    for shading in [false, true] {
+        let mut view = common::three_d_view(64, 36);
+        let Camera::ThreeD(c) = &mut view.camera else {
+            unreachable!()
+        };
+        c.should_apply_shading = shading;
+        let style = |r: &mut Record, width: f64| {
+            r.depth.space = Space::World;
+            r.depth.shade_in_3d = true;
+            r.paint.stroke_width = width;
+        };
+        let mut faces = Record::new(RecordKind::FaceGroup, 1, 101);
+        faces.geometry.shape_a = Some(shape.key());
+        faces.body = Body::FaceGroup(FaceGroup {
+            uv: vec![[0, 0], [1, 0]],
+            grid: [2, 1],
+            fill: fills.key(),
+            stroke: Some(strokes.key()),
+            face_ends: vec![16, 24],
+            face_widths: widths.to_vec(),
+        });
+        style(&mut faces, widths[0]);
+        let mut d = delta(0);
+        d.view = Some(view.clone());
+        d.upload = vec![shape.clone()];
+        d.upload_paints = vec![fills.clone(), strokes.clone()];
+        d.set = vec![faces];
+        d.order = Some(
+            [1, 0]
+                .map(|part| OrderEntry {
+                    layer: Layer::Moving,
+                    slot: 1,
+                    part,
+                })
+                .to_vec(),
+        );
+        let mut s = Stream::new();
+        s.apply(&d).unwrap();
+        let grouped = s.draw(64, 36, 1).unwrap();
+
+        let mut d = delta(0);
+        d.view = Some(view);
+        let mut set = Vec::new();
+        for (slot, face, row) in [(2, right, 1), (3, left, 0)] {
+            let face = Shape::new(ShapeData::Path {
+                points: face.to_vec(),
+            });
+            let mut r = path_record(slot, &face);
+            r.paint.fill = Paint::One(fills.rows()[row]);
+            r.paint.stroke = Paint::One(strokes.rows()[row]);
+            style(&mut r, widths[row]);
+            d.upload.push(face);
+            set.push(r);
+        }
+        d.set = set;
+        d.order = Some(vec![entry(2), entry(3)]);
+        let mut s = Stream::new();
+        s.apply(&d).unwrap();
+        assert_eq!(grouped, s.draw(64, 36, 1).unwrap(), "shading {shading}");
+    }
+}
+
+/// A delta setting a face group of `faces` faces over `points` of the two faces' points, with
+/// `face_ends` and `face_widths`.
+fn faces_with_ends(
+    faces: usize,
+    points: usize,
+    face_ends: Vec<u32>,
+    face_widths: Vec<f64>,
+) -> Delta {
+    let shape = Shape::new(ShapeData::Path {
+        points: two_faces()[..points].to_vec(),
+    });
+    let fills = Stops::new(vec![[1.0, 0.0, 0.0, 1.0]; faces]);
+    let mut record = Record::new(RecordKind::FaceGroup, 1, 101);
+    record.geometry.shape_a = Some(shape.key());
+    record.body = Body::FaceGroup(FaceGroup {
+        uv: (0..faces as u32).map(|u| [u, 0]).collect(),
+        grid: [faces as u32, 1],
+        fill: fills.key(),
+        stroke: None,
+        face_ends,
+        face_widths,
+    });
+    let mut d = delta(0);
+    d.view = Some(common::three_d_view(16, 9));
+    d.upload = vec![shape];
+    d.upload_paints = vec![fills];
+    d.set = vec![record];
+    d.order = Some(vec![entry(1)]);
+    d
+}
+
+/// The reason `apply` refuses `d` with, which must be the record's own.
+fn invalid(d: &Delta) -> String {
+    let mut s = Stream::new();
+    match refused(&mut s, d) {
+        StreamError::Invalid(reason) => reason,
+        other => panic!("refused otherwise: {other}"),
+    }
+}
+
+#[test]
+fn a_face_group_s_face_ends_are_accepted_as_one_run_per_face_ending_at_its_points() {
+    let mut s = Stream::new();
+    s.apply(&faces_with_ends(
+        3,
+        24,
+        vec![4, 16, 24],
+        vec![1.0, 2.0, 0.0],
+    ))
+    .unwrap();
+    s.apply(&faces_with_ends(2, 24, Vec::new(), Vec::new()))
+        .unwrap();
+}
+
+#[test]
+fn a_face_group_whose_face_ends_fall_back_is_refused() {
+    let reason = invalid(&faces_with_ends(3, 24, vec![16, 8, 24], Vec::new()));
+    assert!(reason.contains("face ends"), "{reason}");
+    // A face end equal to the one before: a face of no points.
+    let reason = invalid(&faces_with_ends(3, 24, vec![8, 8, 24], Vec::new()));
+    assert!(reason.contains("face ends"), "{reason}");
+}
+
+#[test]
+fn a_face_group_whose_last_face_end_is_not_its_points_count_is_refused() {
+    let reason = invalid(&faces_with_ends(2, 24, vec![16, 20], Vec::new()));
+    assert!(reason.contains("face ends"), "{reason}");
+    let reason = invalid(&faces_with_ends(2, 24, vec![16, 28], Vec::new()));
+    assert!(reason.contains("face ends"), "{reason}");
+}
+
+#[test]
+fn a_face_group_with_face_ends_other_than_one_per_face_is_refused() {
+    let reason = invalid(&faces_with_ends(2, 24, vec![24], Vec::new()));
+    assert!(reason.contains("face ends"), "{reason}");
+    let reason = invalid(&faces_with_ends(2, 24, vec![8, 16, 24], Vec::new()));
+    assert!(reason.contains("face ends"), "{reason}");
+}
+
+#[test]
+fn a_face_group_with_face_widths_other_than_one_per_face_is_refused() {
+    let reason = invalid(&faces_with_ends(2, 24, Vec::new(), vec![1.0]));
+    assert!(reason.contains("face widths"), "{reason}");
+    for width in [-1.0, f64::NAN, f64::INFINITY] {
+        let reason = invalid(&faces_with_ends(2, 24, Vec::new(), vec![1.0, width]));
+        assert!(reason.contains("face widths"), "{reason}");
+    }
+}
+
+#[test]
+fn a_face_group_read_without_face_ends_draws_equal_runs_at_the_record_s_width() {
+    // A face group of an earlier minor carries neither list: read back from its bytes, it draws
+    // as the same faces stating equal runs and the record's width for each.
+    use arachne_core::xf::wire;
+    let shape = Shape::new(ShapeData::Path {
+        points: two_faces(),
+    });
+    let fills = Stops::new(vec![[1.0, 0.0, 0.0, 0.5], [0.0, 0.0, 1.0, 0.5]]);
+    let strokes = Stops::new(vec![[1.0, 1.0, 1.0, 1.0], [0.0, 1.0, 0.0, 1.0]]);
+    let drawn = |face_ends: Vec<u32>, face_widths: Vec<f64>| {
+        let mut faces = Record::new(RecordKind::FaceGroup, 1, 101);
+        faces.geometry.shape_a = Some(shape.key());
+        faces.depth.space = Space::World;
+        faces.paint.stroke_width = 1.5;
+        faces.body = Body::FaceGroup(FaceGroup {
+            uv: vec![[0, 0], [1, 0]],
+            grid: [2, 1],
+            fill: fills.key(),
+            stroke: Some(strokes.key()),
+            face_ends,
+            face_widths,
+        });
+        let mut d = delta(0);
+        d.view = Some(common::three_d_view(64, 36));
+        d.upload = vec![shape.clone()];
+        d.upload_paints = vec![fills.clone(), strokes.clone()];
+        d.set = vec![faces];
+        d.order = Some(
+            [0, 1]
+                .map(|part| OrderEntry {
+                    layer: Layer::Moving,
+                    slot: 1,
+                    part,
+                })
+                .to_vec(),
+        );
+        let read = wire::decode_delta(&wire::encode_delta(&d)).unwrap();
+        let mut s = Stream::new();
+        s.apply(&read).unwrap();
+        (read.version, s.draw(64, 36, 1).unwrap())
+    };
+    let (old, legacy) = drawn(Vec::new(), Vec::new());
+    let (new, stated) = drawn(vec![16, 32], vec![1.5, 1.5]);
+    assert!(old.1 < 3 && new == (1, 3), "{old:?} {new:?}");
+    assert_eq!(legacy, stated);
 }

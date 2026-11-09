@@ -305,6 +305,8 @@ fn pre_projected_is_invalid_on_face_groups() {
         grid: [0, 0],
         fill: Key([0xb2; 16]),
         stroke: None,
+        face_ends: Vec::new(),
+        face_widths: Vec::new(),
     });
     let raw = raw_pre_projected(wire::encode_record(&record));
     assert!(matches!(
@@ -462,4 +464,35 @@ fn the_snapped_canonical_samples_bytes_are_pinned() {
         "217cef58ae3b74302edc0d74b1740fd16264efb2780b8694f56b24c79585a866"
     );
     assert_eq!(wire::decode_file(&bytes).unwrap(), vec![delta]);
+}
+
+#[test]
+fn the_face_ends_canonical_samples_bytes_are_pinned() {
+    let delta = common::face_ends_sample();
+    let bytes = wire::encode_file(std::slice::from_ref(&delta));
+    assert_eq!(&bytes[4..8], &[1, 0, 3, 0]);
+    assert_eq!(
+        sha256_hex(&bytes),
+        "7588b900c5535131e9ae39e07f0b5bcdd45769e0714c1e04d6c7a094c67d00f1"
+    );
+    assert_eq!(wire::decode_file(&bytes).unwrap(), vec![delta]);
+}
+
+#[test]
+fn a_face_group_without_face_ends_is_written_and_read_at_its_earlier_minor() {
+    // The canonical sample's face groups carry neither list: their deltas are written at the
+    // minor they were (their bytes pinned, `the_canonical_samples_bytes_are_pinned`), and read
+    // back with neither.
+    let deltas = common::sample_deltas();
+    let mut groups = 0;
+    for d in &deltas {
+        assert!(wire::encoded_version(d).1 < 3);
+        for r in &wire::decode_delta(&wire::encode_delta(d)).unwrap().set {
+            if let Body::FaceGroup(f) = &r.body {
+                assert!(f.face_ends.is_empty() && f.face_widths.is_empty());
+                groups += 1;
+            }
+        }
+    }
+    assert_eq!(groups, 2);
 }

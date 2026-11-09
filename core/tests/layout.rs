@@ -180,7 +180,7 @@ fn a_delta_lays_out_its_sections_in_order() {
         },
         0x0102_0304_0506_0708,
     );
-    d.version = (1, 3);
+    d.version = (1, 4);
     d.view = Some(view);
     d.objects = vec![ObjectInfo {
         object: 0x0a0b_0c0d,
@@ -229,7 +229,7 @@ fn a_delta_lays_out_its_sections_in_order() {
     ];
     let fields = vec![
         (0, "major", u16(1)),
-        (2, "minor", u16(3)),
+        (2, "minor", u16(4)),
         (4, "t_num", i64(-7)),
         (12, "t_den", i64(9_000_000_000)),
         (20, "seq", u64(0x0102_0304_0506_0708)),
@@ -817,6 +817,8 @@ fn a_face_group_with_and_without_strokes() {
         grid: [4, 5],
         fill: KB,
         stroke: Some(KC),
+        face_ends: Vec::new(),
+        face_widths: Vec::new(),
     });
     let mut fields = plain_fields(2, 0, 0, 0);
     fields.extend([
@@ -836,6 +838,23 @@ fn a_face_group_with_and_without_strokes() {
     f.stroke = None;
     fields.truncate(fields.len() - 2);
     fields.push((253, "has stroke", u8(0)));
+    record_both_ways(&r, &fields);
+
+    // XF 1.3: each face's end in the points and its stroke width, after XF 1.2's planes and
+    // normals (here empty lists: not carried).
+    let Body::FaceGroup(f) = &mut r.body else {
+        unreachable!()
+    };
+    f.face_ends = vec![16, 24];
+    f.face_widths = vec![2.0, 0.75];
+    fields.extend([
+        (254, "planes count (XF 1.2)", u32(0)),
+        (258, "normals count (XF 1.2)", u32(0)),
+        (262, "face end count (XF 1.3)", u32(2)),
+        (266, "face ends", u32s(&[16, 24])),
+        (274, "face width count", u32(2)),
+        (278, "face widths", f64s(&[2.0, 0.75])),
+    ]);
     record_both_ways(&r, &fields);
 }
 

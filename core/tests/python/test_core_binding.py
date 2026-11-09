@@ -32,7 +32,7 @@ def background_delta(width: int, height: int, rgba) -> ac.FrameDelta:
 
 
 def test_the_version_is_xf_1():
-    assert ac.XF_VERSION == (1, 2)
+    assert ac.XF_VERSION == (1, 3)
 
 
 def test_mapping_centre_defaults_to_the_live_frame_center():
@@ -795,6 +795,67 @@ def test_snapped_canonical_sample_is_pinned_separately(tmp_path):
     assert contents["view"]["input_grid"] == 1 / 32768
     assert contents["set"][0][3]["planes"] == (1, 6, 0)
     assert contents["set"][0][3]["normals"][:2] == ((0, 0.6, 0.8), (0, 0, 0))
+
+
+def face_ends_sample():
+    """XF 1.3's canonical sample, as ``core/tests/common/mod.rs`` builds it."""
+    delta = ac.FrameDelta(t=(5, 15), seq=6)
+    delta.set_view(pixel_width=32, pixel_height=18, camera="three_d", **FRAME)
+    shape = delta.upload_path(np.concatenate([square(), square(0.5)[:8]]))
+    fills = delta.upload_paint([(0.2, 0.4, 0.6, 0.32), (0.6, 0.4, 0.2, 0.32)])
+    delta.set_record(
+        "face_group",
+        13,
+        113,
+        shape=shape,
+        uv=[(0, 0), (1, 0)],
+        grid=(2, 1),
+        face_fill=fills,
+        stroke_width=2.0,
+        face_ends=[16, 24],
+        face_widths=[2.0, 0.5],
+    )
+    return delta
+
+
+def test_a_face_group_s_face_ends_and_widths_are_xf_1_3_and_read_back():
+    delta = face_ends_sample()
+    assert delta.version == (1, 3)
+    back = ac.FrameDelta.from_bytes(delta.to_bytes())
+    assert back.to_bytes() == delta.to_bytes()
+    record = back.contents()["set"][0][3]
+    assert record["face_ends"] == (16, 24)
+    assert record["face_widths"] == (2.0, 0.5)
+    for bad in ({"face_ends": [16, 8]}, {"face_widths": [1.0]}):
+        refused = ac.FrameDelta()
+        fields = {
+            "shape": refused.upload_path(np.concatenate([square(), square(0.5)[:8]])),
+            "uv": [(0, 0), (1, 0)],
+            "grid": (2, 1),
+            "face_fill": refused.upload_paint(np.ones((2, 4))),
+            **bad,
+        }
+        refused.set_record("face_group", 1, 1, **fields)
+        with pytest.raises(ac.XfError):
+            ac.Stream().apply(refused)
+
+
+def test_a_face_group_without_face_ends_stays_at_its_minor_and_carries_neither():
+    delta = ac.FrameDelta(t=(0, 1), seq=0)
+    delta.set_view(pixel_width=4, pixel_height=4, camera="three_d", **FRAME)
+    delta.set_record(
+        "face_group",
+        1,
+        1,
+        shape=delta.upload_path(np.concatenate([square(), square()])),
+        uv=[(0, 0), (1, 0)],
+        grid=(2, 1),
+        face_fill=delta.upload_paint(np.ones((2, 4))),
+    )
+    record = delta.contents()["set"][0][3]
+    assert "face_ends" not in record
+    assert "face_widths" not in record
+    assert delta.version == (1, 0)
 
 
 def test_an_unsnapped_delta_carries_neither_field_and_stays_below_1_2():
