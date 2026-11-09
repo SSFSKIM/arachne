@@ -1048,7 +1048,9 @@ class Drawing:
         if not play.static:
             return None
         capture = self.record._captures[play.static_seq]
-        self.show(capture, play.static)
+        # The scene's mobjects too: the static list is flattened to leaves,
+        # and a face's surface is found among their families.
+        self.show(capture, [*capture.draw_list(), *play.static])
         camera = self.camera
         if self.static_painter is not None:
             pixels = self.static_painter.paint(
