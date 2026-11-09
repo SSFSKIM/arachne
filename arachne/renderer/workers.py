@@ -83,8 +83,9 @@ def ranges(costs: Sequence[int], workers: int) -> list[tuple[int, int]]:
     """Contiguous ranges ``(start, stop)`` of the items whose costs are
     ``costs`` (each at least 1), in order, at most ``workers`` of them and
     none empty, balanced by cost: with the whole cost cut in ``workers``
-    equal parts, an item belongs to the part its middle falls in. Fewer
-    items than workers make a range each.
+    equal parts, an item belongs to the part its middle falls in. Items of
+    equal cost no more than the workers make a range each; with costs apart,
+    items a costly one outweighs share a range, however many workers.
     """
     total = sum(costs)
     parts: list[int] = []
