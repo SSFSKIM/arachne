@@ -64,6 +64,19 @@ use std::sync::Arc;
 /// Cairo's default tolerance for flattening curves, in pixels.
 pub const TOLERANCE: f64 = 0.1;
 
+/// The share of a stroke's half width its sides may stray by, where that is tighter than
+/// [`TOLERANCE`].
+const HALF_WIDTH_SHARE: f64 = 0.25;
+
+/// The tolerance a stroke of `width` pixels is stroked at, in pixels. Cairo flattens the centreline
+/// at [`TOLERANCE`] and offsets each point it reaches by the exact half width, so its band keeps its
+/// width however thin; kurbo fits each side's offset to within the tolerance it is given, which at
+/// a half width under [`TOLERANCE`] lets both sides settle near the centreline and the band
+/// collapse. So a thin stroke's sides are fitted to a share of its half width instead.
+fn stroke_tolerance(width: f64) -> f64 {
+    TOLERANCE.min(HALF_WIDTH_SHARE * width / 2.0)
+}
+
 /// Cairo's default miter limit, which CE never changes (kurbo's default is 4).
 pub const MITER_LIMIT: f64 = 10.0;
 
@@ -1609,7 +1622,7 @@ impl<'v> Lowering<'v> {
                         elements.iter().copied(),
                         &style,
                         &kurbo::StrokeOpts::default(),
-                        TOLERANCE / scale,
+                        stroke_tolerance(w * scale) / scale,
                     );
                     // Joins carried as Cairo decided them (XF 1.4): kurbo's stroke, edited at those
                     // it decided otherwise.
