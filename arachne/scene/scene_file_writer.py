@@ -45,6 +45,8 @@ from .section import DefaultSectionType, Section
 from .video_segment_encoder import VideoSegmentEncoder
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
+
     from arachne.typing import RGBAPixelArray, StrPath
 
 
@@ -427,6 +429,59 @@ class SceneFileWriter:
             return
         self._stream_job = None
         self._retire(job)
+
+    def cut_streams_before(self, plays: Collection[int]) -> None:
+        """Plan the streams of the plays registered so far, none of them
+        written yet, so that each play in ``plays`` begins a stream of its
+        own, named after it as a cut before it would have named it: streams
+        that are written apart (:meth:`take_stream`, by a render's workers)
+        and joined in play order by :meth:`finish` as any are.
+        """
+        if self._stream_job is not None or self._current_encode_job is not None:
+            raise RuntimeError("A stream being written can't be cut again.")
+        planned: list[str | None] = []
+        streams: set[str] = set()
+        # The stream the play before was planned in, and its new name.
+        was: str | None = None
+        name: str | None = None
+        for index, path in enumerate(self.partial_movie_files):
+            if path is None:
+                # A play with no segment leaves the stream open.
+                planned.append(None)
+                continue
+            if path not in self._streams:
+                # A segment of its own ends the stream.
+                was = None
+                planned.append(path)
+                continue
+            if path != was or index in plays:
+                name = str(self.output_plan.segment_path(f"{uncached_key(index)}_on"))
+                streams.add(name)
+            was = path
+            planned.append(name)
+        names = iter(planned)
+        for section in self.sections:
+            section.partial_movie_files = [
+                next(names) for _ in section.partial_movie_files
+            ]
+        self.partial_movie_files = planned
+        self._streams = streams
+        self._open_stream = None
+
+    def take_stream(self, play: int) -> None:
+        """Write the stream planned for ``play`` in this process from here:
+        each play planned in it keeps it open as it is written, until the
+        encoders are joined (:meth:`join_all_encode_jobs`).
+        """
+        self._open_stream = self.partial_movie_files[play]
+
+    def discard_streams(self) -> None:
+        """Remove each planned stream's file, whatever wrote it: a render
+        whose streams were written apart, and that failed.
+        """
+        for path in self._streams:
+            with suppress(FileNotFoundError):
+                Path(path).unlink()
 
     # Sound
     def init_audio(self) -> None:

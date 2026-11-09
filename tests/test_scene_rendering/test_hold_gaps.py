@@ -591,3 +591,88 @@ def test_one_encoder_keeps_the_settings():
     assert with_thread_share(spec, workers=1, cores=8) == spec
     asked = _mp4(options={"threads": "6"})
     assert with_thread_share(asked, workers=1, cores=8) == asked
+
+
+# ── streams planned, then written apart ──────────────────────────────────────
+
+
+def _names(paths: list[str | None]) -> list[str | None]:
+    return [None if path is None else Path(path).name for path in paths]
+
+
+def test_streams_are_cut_before_the_plays_named_once_registered(tmp_path):
+    """Plays registered with nothing written are planned again in streams
+    that begin at the plays named, each named as a cut there would have; a
+    play with no segment stays in the stream around it, and a segment of
+    its own ends one.
+    """
+    keys = [uncached_key(0), None, uncached_key(2), "cached", uncached_key(4)]
+    keys.append(uncached_key(5))
+    writer = writer_for(tmp_path, **LOSSLESS["qtrle"])
+    for key in keys:
+        writer.add_partial_movie_file(key)
+    writer.cut_streams_before({2, 5})
+    assert _names(writer.partial_movie_files) == [
+        f"{uncached_key(0)}_on.mov",
+        None,
+        f"{uncached_key(2)}_on.mov",
+        "cached.mov",
+        f"{uncached_key(4)}_on.mov",
+        f"{uncached_key(5)}_on.mov",
+    ]
+    assert writer.sections[-1].partial_movie_files == writer.partial_movie_files
+    # The neighbour: cut nowhere, the plan is the one registered.
+    again = writer_for(tmp_path / "again", **LOSSLESS["qtrle"])
+    for key in keys:
+        again.add_partial_movie_file(key)
+    registered = list(again.partial_movie_files)
+    again.cut_streams_before(set())
+    assert again.partial_movie_files == registered
+    assert _names(registered)[:3] == [f"{uncached_key(0)}_on.mov", None] + [
+        f"{uncached_key(0)}_on.mov"
+    ]
+
+
+@pytest.mark.parametrize("encoding", sorted(LOSSLESS))
+def test_streams_written_apart_join_with_every_frame_s_time(tmp_path, encoding):
+    """Each planned stream taken and written on its own, the later first,
+    as a render's workers write them, joins into the movie its plays make
+    written in one.
+    """
+    plays = [P1, P0, P1, P0]
+    writer = writer_for(tmp_path, hold_gaps=True, **LOSSLESS[encoding])
+    for index in range(len(plays)):
+        writer.add_partial_movie_file(uncached_key(index))
+    writer.cut_streams_before({0, 2})
+    for first, last in ((2, 3), (0, 1)):
+        writer.take_stream(first)
+        for index in range(first, last + 1):
+            writer.begin_animation(True, animation_index=index)
+            for pixels, repeat in plays[index]:
+                writer.write_frame(pixels.copy(), repeat=repeat)
+            writer.end_animation(True)
+        writer.join_all_encode_jobs()
+    writer.finish()
+    movie = decoded(Path(writer.movie_file_path))
+    assert_frames(on_grid(movie), expanded(plays))
+    pieces = [
+        p
+        for p in writer.partial_movie_directory.iterdir()
+        if not p.name.endswith(".txt")
+    ]
+    assert len(pieces) == 2
+
+
+def test_discarded_streams_leave_no_file(tmp_path):
+    writer = writer_for(tmp_path, **LOSSLESS["png"])
+    for index in range(3):
+        writer.add_partial_movie_file(uncached_key(index))
+    writer.cut_streams_before({0, 1, 2})
+    writer.take_stream(1)
+    writer.begin_animation(True, animation_index=1)
+    writer.write_frame(picture(0), repeat=2)
+    writer.end_animation(True)
+    writer.join_all_encode_jobs()
+    assert Path(writer.partial_movie_files[1]).exists()
+    writer.discard_streams()
+    assert not any(Path(p).exists() for p in writer.partial_movie_files)
