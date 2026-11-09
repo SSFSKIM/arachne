@@ -42,6 +42,7 @@ from arachne import (
 from arachne.frame_ir.canonical import canonical_order, frame_grid
 from arachne.frame_ir.core_painter import CorePainter
 from arachne.frame_ir.extract import FrameStream
+from arachne.frame_ir.live import live_painter
 from arachne.frame_ir.painter import painter_for
 from arachne.frame_ir.xf import StreamState
 from arachne.mobject.three_d.three_dimensions import ThreeDVMobject
@@ -310,3 +311,125 @@ def test_a_surface_of_uv_faces_alone_keeps_its_record_bytes(handed):
         digest.hexdigest()
         == "92d8a1e77b6a9009e414ee425a86ba08e38c2fd45b93c30cf6ae2cc5b4b8497c"
     )
+
+
+# Drawn as the scene runs: one painter per scene, so a solid drawn live is
+# described as the record describes it, its uv faces one face group.
+
+
+class TurningSolids(ThreeDScene):
+    """A surface, a cone (with two points) and a cylinder (with two caps),
+    each turning. ``live``: beside them a square whose stroke width is the
+    scene's own code, so the scene is drawn as it runs.
+    """
+
+    live = True
+
+    def construct(self):
+        from .scenes import WideStroke
+
+        self.set_camera_orientation(phi=65 * PI / 180, theta=-45 * PI / 180)
+        self.surface = _wave()
+        self.cone = Cone(base_radius=0.6, height=1.2, resolution=8)
+        self.cone.shift(LEFT * 3)
+        self.cylinder = Cylinder(radius=0.5, height=1.2, resolution=(6, 8))
+        self.cylinder.shift(RIGHT * 3)
+        self.add(self.surface, self.cone, self.cylinder)
+        if self.live:
+            self.add(WideStroke(0.5, color=YELLOW).shift(DOWN * 3))
+        self.play(
+            Rotate(self.surface, PI / 3, axis=OUT),
+            Rotate(self.cone, PI / 3, axis=RIGHT),
+            Rotate(self.cylinder, PI / 3, axis=RIGHT),
+            run_time=0.4,
+        )
+
+
+class TurningSolidsRecorded(TurningSolids):
+    live = False
+
+
+def _painted(scene_class, monkeypatch, *, live):
+    """The scene drawn on the core, and each frame its painter drew, live
+    or recorded: its instant, its records as made with the mobject each slot
+    is, and its order.
+    """
+    made = []
+    draw = CorePainter.draw
+
+    def keep(self, delta, *args, **kwargs):
+        slots = {slot: mob for mob, slot in self.stream._slots.values()}
+        made.append((self, delta, slots))
+        return draw(self, delta, *args, **kwargs)
+
+    monkeypatch.setattr(CorePainter, "draw", keep)
+    scene, _ = render(scene_class, FPS, draw_path="core", **MEDIUM)
+    if live:
+        painter = live_painter(scene.renderer.camera).painter(scene.renderer.camera)
+    else:
+        painter = painter_for(scene.timeline.record, "core")
+    state = StreamState()
+    mobs = {}
+    frames = []
+    for _, delta, slots in (entry for entry in made if entry[0] is painter):
+        state.apply(delta)
+        mobs.update(slots)
+        records = {slot: (mobs[slot], r) for slot, r in state.records.items()}
+        frames.append((delta.t, records, list(state.order)))
+    assert frames
+    return scene, frames
+
+
+def test_a_solid_drawn_live_is_one_face_group_and_its_other_parts_their_own(
+    monkeypatch,
+):
+    scene, frames = _painted(TurningSolids, monkeypatch, live=True)
+    assert scene.timeline.record.refusal is not None, "drawn live"
+    # Each frame's static capture draws nothing: every mobject moves.
+    frames = [frame for frame in frames if frame[2]]
+    assert len(frames) > 2
+    for frame in frames:
+        for solid in (scene.surface, scene.cone, scene.cylinder):
+            _assert_grouped(frame, solid)
+        _, records, order = frame
+        slots = {id(mob): slot for slot, (mob, _) in records.items()}
+        for cap in (scene.cylinder.base_top, scene.cylinder.base_bottom):
+            assert records[slots[id(cap)]][1].kind == "path"
+        for part in (*scene.cylinder.submobjects[-2:], *scene.cone.submobjects[-2:]):
+            assert [p for _, s, p in order if s == slots[id(part)]] == [0]
+
+
+def test_a_solid_s_face_group_is_the_same_drawn_live_or_recorded(monkeypatch):
+    """The scene's last frame drawn live and drawn from the record: each
+    solid's face group is the same record, but where any live record differs
+    from a recorded one: it carries no sort point (its order is the
+    capture's), and no background stroke where the capture read none (its
+    width is 0).
+    """
+    live, live_frames = _painted(TurningSolids, monkeypatch, live=True)
+    recorded, recorded_frames = _painted(TurningSolidsRecorded, monkeypatch, live=False)
+    assert recorded.timeline.record.refusal is None, "drawn from the record"
+
+    def groups(scene, frame):
+        _, records, _ = frame
+        found = {}
+        for name in ("surface", "cone", "cylinder"):
+            solid = getattr(scene, name)
+            [record] = [r for mob, r in records.values() if mob is solid]
+            found[name] = record
+        return found
+
+    a = groups(live, live_frames[-1])
+    b = groups(recorded, recorded_frames[-1])
+    for name in a:
+        assert a[name].kind == b[name].kind == "face_group", name
+        fields = {k: v for k, v in b[name].fields.items() if k != "sort_point"}
+        assert fields["background_stroke_width"] == 0.0
+        fields["background_stroke"] = None
+        assert a[name].fields.keys() == fields.keys(), name
+        for key, value in fields.items():
+            other = a[name].fields[key]
+            if isinstance(value, np.ndarray):
+                np.testing.assert_array_equal(other, value, err_msg=f"{name} {key}")
+            else:
+                assert other == value, (name, key)
