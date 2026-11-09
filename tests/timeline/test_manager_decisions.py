@@ -95,3 +95,28 @@ def test_an_execution_again_finds_the_tex_template_the_first_found():
         config.tex_template = TexTemplate()
         manager._reconfigure(configured)
         assert config.tex_template.preamble == template.preamble
+
+
+@pytest.mark.parametrize("custom", [True, False], ids=["set", "default"])
+def test_a_template_an_execution_added_to_is_not_the_one_the_next_starts_from(custom):
+    """Each execution again gets its own copy of the template the first found:
+    what one adds to its preamble is gone from the snapshot and from the
+    executions after it, whether the template was set or was the default.
+    """
+    from arachne import TexTemplate
+
+    settings = {**SMALL, "dry_run": True}
+    if custom:
+        settings["tex_template"] = TexTemplate(preamble="\\newcommand{\\mine}{x}")
+    with tempconfig(settings):
+        manager = Manager(Refused())
+        configured = config.copy()
+        before = configured.tex_template.preamble
+        manager._reconfigure(configured)
+        config.tex_template.add_to_preamble("\\usepackage{one}")
+        manager._reconfigure(configured)
+        assert config.tex_template.preamble == before
+        config.tex_template.add_to_preamble("\\usepackage{two}")
+        manager._reconfigure(configured)
+        assert config.tex_template.preamble == before
+        assert configured.tex_template.preamble == before

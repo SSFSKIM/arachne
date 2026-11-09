@@ -489,7 +489,10 @@ class ManimConfig(MutableMapping):
         if isinstance(obj, ManimConfig):
             self._d.update(obj._d)
             if obj.tex_template:
-                self.tex_template = obj.tex_template
+                # A copy, never the object itself: a configuration restored
+                # from a snapshot more than once must not hand later users
+                # what an earlier one added to the template.
+                self.tex_template = copy.deepcopy(obj.tex_template)
 
         elif isinstance(obj, dict):
             # First update the underlying _d, then update other properties
