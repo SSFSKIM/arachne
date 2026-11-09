@@ -433,10 +433,119 @@ def test_each_play_is_drawn_under_the_configuration_it_ran_under(
 
 def test_plays_drawn_on_another_path_midway_are_drawn_on_it_by_workers(tmp_path):
     pytest.importorskip("arachne_core")
-    one, two, three = renders(tmp_path, "DrawPathChanged", [at(1), at(2), at(3)])
+    one, two, three, held = renders(
+        tmp_path,
+        "DrawPathChanged",
+        [at(1), at(2), at(3), {**at(2), "thread": True}],
+    )
     drawn_here(one)
     for found, count in ((two, 2), (three, 3)):
         drawn_by_workers(found, count)
+        assert found["movie"]["frames"] == one["drawn"]
+    # Drawn here once the scene has run, the path back on Cairo.
+    drawn_here(held)
+    assert "thread" in held["fallback"]
+    assert held["movie"]["frames"] == one["drawn"]
+
+
+def asked(found: dict) -> list[list]:
+    """What each play's frames or static picture were asked to be drawn
+    under (``render_child.record_drawings``), wherever drawn, by play.
+    """
+    each = found["drawings"]["here"] + [
+        drawing for worker in found["drawings"]["workers"] for drawing in worker
+    ]
+    return sorted(each, key=lambda drawing: drawing[1])
+
+
+#: A run reporting what its plays were asked to be drawn under, painted on
+#: Cairo whatever path was asked (the core need not be there).
+ASKED = {"drawings": True, "paint_on": "cairo"}
+
+
+#: The routes a play's frames are drawn by: as it runs, here once the scene
+#: has run, by workers.
+ROUTES = {
+    "as_it_runs": at(1),
+    "here_after": {**at(2), "thread": True},
+    "by_workers": at(2),
+}
+
+
+@pytest.mark.parametrize(
+    ("scene", "expected"),
+    [
+        pytest.param(
+            "LayerOffThenOn",
+            # [what, play, static_layer, draw_path, reuse]
+            [
+                ["_draw_play", 0, False, "cairo", False],
+                ["_draw_play", 1, False, "cairo", False],
+                ["_draw_still", 2, False, "cairo", False],
+                ["_draw_play", 3, True, "cairo", False],
+            ],
+            id="static_layer",
+        ),
+        pytest.param(
+            "DrawPathChanged",
+            [
+                ["_draw_play", 0, True, "cairo", False],
+                ["_draw_play", 1, True, "core", False],
+                ["_draw_play", 2, True, "core", False],
+                ["_draw_still", 3, True, "core", False],
+                ["_draw_play", 4, True, "cairo", False],
+            ],
+            id="draw_path",
+        ),
+        pytest.param(
+            "ReuseChanged",
+            [
+                ["_draw_play", 0, True, "cairo", True],
+                ["_draw_play", 1, True, "cairo", False],
+            ],
+            id="draw_reuse",
+        ),
+    ],
+)
+def test_each_play_is_asked_of_the_configuration_it_ran_under(
+    tmp_path, scene, expected
+):
+    """Whichever route draws a play, it is drawn under the configuration
+    it ran under, not the one the scene left. A worker draws no skipped
+    frame's static picture.
+    """
+    runs = [{**run, **ASKED} for run in ROUTES.values()]
+    found = dict(zip(ROUTES, renders(tmp_path, scene, runs), strict=True))
+    drawn_here(found["as_it_runs"])
+    drawn_here(found["here_after"])
+    assert "thread" in found["here_after"]["fallback"]
+    drawn_by_workers(found["by_workers"], 2)
+    painted = [drawing for drawing in expected if drawing[0] == "_draw_play"]
+    wanted = {"as_it_runs": expected, "here_after": expected, "by_workers": painted}
+    otherwise = {
+        route: asked(found[route])
+        for route in ROUTES
+        if asked(found[route]) != wanted[route]
+    }
+    assert not otherwise, otherwise
+
+
+def test_plays_are_reused_as_they_ran_whoever_draws_them(tmp_path):
+    """Draw reuse turned off midway: the first wait's frames are reused,
+    the second's each drawn, whoever draws them.
+    """
+    one, held, two = renders(
+        tmp_path, "ReuseChanged", [at(1), {**at(2), "thread": True}, at(2)]
+    )
+    drawn_here(one)
+    first, second = (one["frame_runs"][str(n)] for n in (0, 1))
+    assert max(first) > 1
+    assert set(second) == {1}
+    drawn_here(held)
+    assert "thread" in held["fallback"]
+    drawn_by_workers(two, 2)
+    for found in (held, two):
+        assert found["frame_runs"] == one["frame_runs"]
         assert found["movie"]["frames"] == one["drawn"]
 
 

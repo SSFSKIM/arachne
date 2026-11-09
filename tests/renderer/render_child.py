@@ -31,7 +31,9 @@ the render (``thread``), or a memory reader that reads the process id
 (``rss_pid``); and ``repeat`` the render, reporting each. With
 ``config_reads`` in the run, ``config_reads`` reports the configuration
 keys read while the plays that waited for the workers were drawn: ``here``,
-in this process, and ``workers``, one list per worker.
+in this process, and ``workers``, one list per worker. With ``drawings``,
+``drawings`` reports likewise what each play was asked to be drawn under
+(:func:`record_drawings`), painted on ``paint_on`` when the run names one.
 """
 
 from __future__ import annotations
@@ -203,6 +205,56 @@ def record_config_reads(found: dict):
     return undo
 
 
+def record_drawings(found: dict, paint_on: str | None = None):
+    """Record what each play's frames or static picture were asked to be
+    drawn under, ``[what, play, static_layer, draw_path, reuse]``, in this
+    process into ``found["here"]``, in each worker into ``found["workers"]``;
+    with ``paint_on``, paint them on that path whatever was asked. Returns
+    the undo.
+    """
+    from arachne.renderer import cairo_renderer, workers
+
+    renderer = cairo_renderer.CairoRenderer
+    drawing, in_range, run = cairo_renderer.Drawing, renderer._draw_range, workers.run
+    found["here"], found["workers"] = [], []
+    into = [found["here"]]
+
+    def asked(record, **kwargs):
+        caller = sys._getframe(1)
+        into[0].append(
+            [
+                caller.f_code.co_name,
+                caller.f_locals["play"].index,
+                kwargs["static_layer"],
+                kwargs["draw_path"],
+                kwargs.get("reuse") is not None,
+            ]
+        )
+        if paint_on is not None:
+            kwargs["draw_path"] = paint_on
+        return drawing(record, **kwargs)
+
+    def draw_range(self, *args, **kwargs):
+        into[0] = []
+        return {**in_range(self, *args, **kwargs), "drawings": into[0]}
+
+    def run_workers(tasks):
+        results = run(tasks)
+        found["workers"].extend(each.pop("drawings") for each in results)
+        return results
+
+    cairo_renderer.Drawing = asked
+    renderer._draw_range = draw_range
+    workers.run = run_workers
+
+    def undo() -> None:
+        cairo_renderer.Drawing = drawing
+        renderer._draw_range = in_range
+        workers.run = run
+
+    return undo
+
+
 def children() -> set[int]:
     """The processes alive whose parent is this one."""
     ps = subprocess.Popen(
@@ -332,6 +384,9 @@ def main() -> int:
         reads: dict = {}
         if run.get("config_reads"):
             undo.append(record_config_reads(reads))
+        drawings: dict = {}
+        if run.get("drawings"):
+            undo.append(record_drawings(drawings, run.get("paint_on")))
         held = threading.Event()
         if run.get("thread"):
             threading.Thread(target=held.wait, name="held", daemon=True).start()
@@ -345,9 +400,14 @@ def main() -> int:
                         "here": sorted(reads["here"]),
                         "workers": list(reads["workers"]),
                     }
+                if drawings:
+                    results[-1]["drawings"] = {
+                        "here": list(drawings["here"]),
+                        "workers": list(drawings["workers"]),
+                    }
         finally:
             held.set()
-            for each in undo:
+            for each in reversed(undo):
                 each()
     Path(sys.argv[2]).write_text(json.dumps(results))
     return 0

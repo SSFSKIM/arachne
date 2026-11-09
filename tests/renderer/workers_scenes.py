@@ -399,7 +399,9 @@ class LayerChangedSkippedUnread(LayerChangedUnread):
 
 
 class DrawPathChanged(Scene):
-    """Plays drawn on Cairo, then on the core, then on Cairo again."""
+    """Plays drawn on Cairo, then on the core (a frozen frame in a skipped
+    section among them), then on Cairo again.
+    """
 
     def construct(self):
         dot = Dot(LEFT * 2)
@@ -409,5 +411,42 @@ class DrawPathChanged(Scene):
         config.draw_path = "core"
         self.play(dot.animate.shift(UP), run_time=0.4)
         self.wait(0.4)
+        self.next_section(skip_animations=True)
+        self.wait(0.4)
+        self.next_section(skip_animations=False)
         config.draw_path = "cairo"
         self.play(dot.animate.shift(RIGHT), run_time=0.4)
+
+
+class ReuseChanged(Scene):
+    """Two waits whose updater changes nothing, every frame of each showing
+    one state, the first with draw reuse on, the second with it off: the
+    first's frames are drawn once and reused, the second's each drawn.
+    """
+
+    def construct(self):
+        square = Square(side_length=1.5, fill_opacity=0.5)
+        square.add_updater(lambda m, dt: None)
+        self.add(square)
+        config.draw_reuse = True
+        self.wait(0.4)
+        config.draw_reuse = False
+        self.wait(0.4)
+
+
+class LayerOffThenOn(Scene):
+    """A play and a frozen frame with the static layer off, a frozen frame
+    in a skipped section, then a play with the layer on.
+    """
+
+    def construct(self):
+        dot = Dot(LEFT * 2)
+        self.add(Square(side_length=1.5))
+        config.static_layer = False
+        self.play(dot.animate.shift(RIGHT), run_time=0.4)
+        self.wait(0.4)
+        self.next_section(skip_animations=True)
+        self.wait(0.4)
+        self.next_section(skip_animations=False)
+        config.static_layer = True
+        self.play(dot.animate.shift(UP), run_time=0.4)
