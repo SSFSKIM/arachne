@@ -1309,3 +1309,92 @@ def test_an_extended_precision_scalar_keeps_its_precision_and_has_a_json_form():
     assert type(_leaf(np.float16(1.5))) is float
     for value in (np.longdouble(1.5), np.clongdouble(1 + 2j), np.float16(1.5)):
         assert json.dumps(_leaf_json(_leaf(value))), value
+
+
+_DEPTH = (
+    HEADER
+    + """
+def _squares():
+    red = Square(color=RED, fill_opacity=1, stroke_width=0, shade_in_3d=True)
+    blue = Square(color=BLUE, fill_opacity=1, stroke_width=0, shade_in_3d=True)
+    return red, blue
+
+
+class OffTreeGroup(ThreeDScene):
+    # Red is sorted by a point the scene does not hold.
+    def construct(self):
+        self.camera.should_apply_shading = False
+        red, blue = _squares()
+        z = float((HERE / "data.txt").read_text())
+        red.z_index_group = VectorizedPoint([0.0, 0.0, z])
+        self.add(red, blue)
+        self.wait(0.5)
+
+
+class MovedLate(ThreeDScene):
+    # The point moves after the instants a forward run over the start reaches.
+    def construct(self):
+        self.camera.should_apply_shading = False
+        red, blue = _squares()
+        point = VectorizedPoint([0.0, 0.0, -1.0])
+        red.z_index_group = point
+        self.add(red, blue)
+        self.wait(0.5)
+        point.shift(OUT * float((HERE / "data.txt").read_text()))
+        self.wait(0.5)
+
+
+class SceneGroup(ThreeDScene):
+    # The group is a VGroup the scene holds.
+    def construct(self):
+        self.camera.should_apply_shading = False
+        red, blue = _squares()
+        group = VGroup(red, blue)
+        group.set_shade_in_3d(True, z_index_as_group=True)
+        self.add(group)
+        self.wait(0.5)
+"""
+)
+
+
+def test_the_depth_point_a_frame_is_sorted_by_is_part_of_what_it_shows(scene_dir):
+    """Two overlapping opaque squares are drawn in the order their depth
+    sort puts them in, which an off-tree point of one (its ``z_index_group``,
+    a mobject no list holds) decides: behind in one execution and in front in
+    the other, they are two executions, though nothing drawn is different.
+    """
+    data = _write(scene_dir, "data.txt", "-1")
+    scene = _write(scene_dir, "scene.py", _DEPTH)
+    one, two = _summaries(scene, "OffTreeGroup", data, "-1", "1")
+    divergence = compare(one, two)
+    assert divergence is not None
+    assert "depth" in divergence.reason
+    again = _open(scene, "OffTreeGroup").summary()
+    assert compare(two, again) is None
+
+
+def test_a_depth_point_the_script_moves_after_the_compared_span_is_not_compared(
+    scene_dir,
+):
+    """The point is the one the sort read at each capture, not the group's
+    state at the end of the script: a run that stops at the start agrees with
+    the whole execution through it, whatever the script does to the point
+    later.
+    """
+    data = _write(scene_dir, "data.txt", "1")
+    scene = _write(scene_dir, "scene.py", _DEPTH)
+    one, two = _summaries(scene, "MovedLate", data, "1", "3")
+    assert compare(one, two, until=Fraction(1, 4)) is None
+    assert compare(one, two) is not None
+
+
+def test_a_group_the_scene_holds_agrees_with_its_own_execution(scene_dir):
+    """A depth group that is a VGroup in the scene (``z_index_as_group``) is a
+    node of the walk: the same execution agrees with itself.
+    """
+    _write(scene_dir, "data.txt", "0")
+    scene = _write(scene_dir, "scene.py", _DEPTH)
+    first = _open(scene, "SceneGroup").summary()
+    again = _open(scene, "SceneGroup").summary()
+    assert compare(first, again) is None
+    assert compare(first, ExecutionSummary.from_json(again.to_json())) is None

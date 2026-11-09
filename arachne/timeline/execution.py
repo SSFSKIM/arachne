@@ -367,7 +367,11 @@ def summarize(record: Record) -> ExecutionSummary:
     captured, shown by no drawn state within the span compared, is not
     compared. Its state reaches a frame only through a drawn mobject, whose
     state is compared at every instant both executions kept, and which
-    field refers to which place is compared at each capture.
+    field refers to which place is compared at each capture. The depth sort's
+    reference points (a ``z_index_group``'s centre, which can be such a
+    mobject's) are part of what a frame shows: each capture's, as the sort
+    read it then (``Capture.references``), are in its state, never read of
+    the group as the summary is made.
     """
     from .draw import camera_nodes
 
@@ -449,6 +453,8 @@ def summarize(record: Record) -> ExecutionSummary:
         ]
         if capture.camera is not None:
             drawing.extend(_camera_leaves("camera", capture.camera, at))
+        if capture.references:
+            drawing.extend(_depth_leaves(capture.references, at))
         digest = hashlib.blake2b(digest_size=16)
         for number, held, referred in zip(indices, children, references, strict=True):
             digest.update(node_keys[number])
@@ -856,6 +862,24 @@ def _camera_leaves(
         yield f"{prefix}.displays", at(extras.displays)
     for number, (_, sub) in enumerate(extras.sub_cameras):
         yield from _camera_leaves(f"{prefix}.sub{number}", sub, at)
+
+
+def _depth_leaves(
+    references: Sequence[tuple[Mobject, Any]], at: Callable[..., np.ndarray]
+) -> Iterator[tuple[str, Leaf]]:
+    """The points a ThreeDCamera's depth sort placed mobjects by at a capture
+    (``Capture.references``: a ``z_index_group``'s centre, as the sort read
+    it then), with the places of the mobjects sorted by them. Pairs are
+    taken by place, as a lookup, not a draw order.
+    """
+    positions = at(mob for mob, _ in references)
+    centers = np.array([reference.center for _, reference in references], dtype=float)
+    order = sorted(
+        range(len(positions)),
+        key=lambda k: (int(positions[k]), tuple(centers[k].ravel().tolist())),
+    )
+    yield "depth.references", positions[order]
+    yield "depth.reference_points", centers[order]
 
 
 def _paint_leaf(value: Any) -> Leaf:
