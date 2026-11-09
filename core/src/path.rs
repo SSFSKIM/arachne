@@ -1438,17 +1438,28 @@ impl<'v> Lowering<'v> {
                     let pattern = [d.period * d.duty, d.period * (1.0 - d.duty)];
                     dashed(&user, d.phase * d.period, &pattern, area)
                 });
-                let stroked = kurbo::stroke(
-                    dashes
-                        .as_ref()
-                        .unwrap_or(&guarded)
-                        .elements()
-                        .iter()
-                        .copied(),
-                    &style,
-                    &kurbo::StrokeOpts::default(),
-                    TOLERANCE / scale,
-                );
+                // A face of a surface not yet drawn (`Create`) is its points at one spot: Cairo
+                // strokes that closed subpath of no length as a dot under a round cap, and as
+                // nothing under a butt or square one.
+                let dot = draw.surface
+                    && rec.paint.cap == Cap::Round
+                    && shown.iter().all(|p| p[..2] == shown[0][..2]);
+                let stroked = if dot {
+                    kurbo::Circle::new(Point::new(shown[0][0], shown[0][1]), w / 2.0)
+                        .to_path(TOLERANCE / scale)
+                } else {
+                    kurbo::stroke(
+                        dashes
+                            .as_ref()
+                            .unwrap_or(&guarded)
+                            .elements()
+                            .iter()
+                            .copied(),
+                        &style,
+                        &kurbo::StrokeOpts::default(),
+                        TOLERANCE / scale,
+                    )
+                };
                 mapped(&stroked, &self.map)
             };
             // A stroke's body reaches half its width from the curve; a fill has none.

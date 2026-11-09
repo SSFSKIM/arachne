@@ -203,16 +203,20 @@ class CorePainter:
         """The leaves the last frame composites at each pixel of ``box``,
         bottom first (:mod:`.contributors`): the core's, in depth order per
         sub-sample, under the overlay's, which Cairo paints over them in CE's
-        order (each overlay leaf drawn again alone). Nothing the painter
-        draws next changes. Refused (``LiveFrame``) unless the last frame is
-        :attr:`whole`.
+        order (each overlay leaf drawn again alone). A face a round cap
+        strokes as a dot carries its reason (:data:`.contributors.ROUND_CAP_DOT`).
+        Nothing the painter draws next changes. Refused (``LiveFrame``) unless
+        the last frame is :attr:`whole`.
         """
         if not self.whole:
             raise LiveFrame(
                 "contributors: the last capture was drawn over an earlier"
                 " picture; attribute the frame from its state extracted whole"
             )
-        found = contributors.from_core(self.core.contributors(*box), self.state.objects)
+        found = contributors.with_reasons(
+            contributors.from_core(self.core.contributors(*box), self.state.objects),
+            contributors.round_cap_dots(self.state),
+        )
         overlay = self.core.overlay_entries()
         if not overlay:
             return found

@@ -198,6 +198,12 @@ fn record<'py>(py: Python<'py>, r: &Record) -> PyResult<Bound<'py, PyDict>> {
             if let Some(k) = f.stroke {
                 out.set_item("face_stroke", key(py, k))?;
             }
+            if !f.face_ends.is_empty() {
+                out.set_item("face_ends", PyTuple::new(py, &f.face_ends)?)?;
+            }
+            if !f.face_widths.is_empty() {
+                out.set_item("face_widths", PyTuple::new(py, &f.face_widths)?)?;
+            }
         }
         Body::Points(p) => {
             out.set_item("colors", key(py, p.colors))?;

@@ -181,6 +181,46 @@ fn missing_key(what: &str, key: &Key, slot: Option<u32>) -> StreamError {
     }
 }
 
+/// Refuses a face group's XF 1.3 lists that would cut its `points` points otherwise than into
+/// one run per face: face ends not one per face, not rising (a face of no points), or the last
+/// not the points' count; face widths not one per face, or one not a finite width of at least 0.
+/// Empty lists are a group of an earlier minor (equal runs, the record's width).
+fn face_lists(slot: u32, f: &FaceGroup, points: usize) -> Result<(), StreamError> {
+    let refuse = |what: String| Err(StreamError::Invalid(format!("slot {slot}: {what}")));
+    let faces = f.uv.len();
+    if !f.face_ends.is_empty() {
+        if f.face_ends.len() != faces {
+            return refuse(format!("{} face ends for {faces} faces", f.face_ends.len()));
+        }
+        let mut before = 0;
+        for &end in &f.face_ends {
+            if end <= before {
+                return refuse(format!("face ends {:?} do not rise", f.face_ends));
+            }
+            before = end;
+        }
+        if before as usize != points {
+            return refuse(format!("face ends end at {before}, of {points} points"));
+        }
+    }
+    if !f.face_widths.is_empty() {
+        if f.face_widths.len() != faces {
+            return refuse(format!(
+                "{} face widths for {faces} faces",
+                f.face_widths.len()
+            ));
+        }
+        if let Some(w) = f
+            .face_widths
+            .iter()
+            .find(|w| !(w.is_finite() && **w >= 0.0))
+        {
+            return refuse(format!("face widths hold {w}, not a width"));
+        }
+    }
+    Ok(())
+}
+
 fn shape_kind_name(data: &ShapeData) -> &'static str {
     match data {
         ShapeData::Path { .. } => "path",
@@ -382,6 +422,7 @@ impl After<'_> {
                 if let Some(stroke) = &f.stroke {
                     self.needs_table(rec, stroke, f.uv.len())?;
                 }
+                face_lists(rec.slot, f, points)?;
             }
             Body::Points(p) => self.needs_table(rec, &p.colors, points)?,
             Body::Instances(i) => {
@@ -1440,7 +1481,10 @@ fn refusal(
         } else if let (Body::FaceGroup(faces), Some(ShapeData::Path { points })) =
             (&rec.body, prototype)
         {
-            if !faces.uv.is_empty() && points.len() % faces.uv.len() == 0 {
+            // Face ends cut the points as `apply` checked them; without, into equal runs.
+            if !faces.uv.is_empty()
+                && (!faces.face_ends.is_empty() || points.len() % faces.uv.len() == 0)
+            {
                 return None;
             }
             "a face group whose points do not divide into its faces".into()

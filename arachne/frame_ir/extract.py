@@ -712,6 +712,12 @@ class FrameStream:
             fields["uv"] = np.array(
                 [[face.u_index, face.v_index] for face in faces], dtype=np.uint32
             )
+            fields.update(
+                _face_lists(
+                    [len(face.points) for face in faces],
+                    [float(face.get_stroke_width()) for face in faces],
+                )
+            )
             resolution = surface.resolution
             u_res, v_res = (
                 (resolution, resolution) if isinstance(resolution, int) else resolution
@@ -913,17 +919,36 @@ def _uv_faces(surface: Any) -> list[Any]:
     ]
 
 
+def _face_lists(counts: list[int], widths: list[float]) -> dict[str, np.ndarray]:
+    """What a face group carries of its faces, of ``counts`` points and
+    stroke ``widths``, beyond their colours, where they differ: each face's
+    end in the group's points (``face_ends``), and its stroke width
+    (``face_widths``). Faces alike in either carry nothing of it, as before
+    either was carried: equal runs, each at the record's (the first face's)
+    width.
+    """
+    found: dict[str, np.ndarray] = {}
+    if len(set(counts)) > 1:
+        found["face_ends"] = np.cumsum(counts, dtype=np.uint32)
+    if len(set(widths)) > 1:
+        found["face_widths"] = np.array(widths, dtype=np.float64)
+    return found
+
+
 def _one_group(faces: list[Any]) -> bool:
-    """Whether the uv faces ``faces`` draw as one face group: one point
-    count, one style but their fill and stroke colours, each one stop.
+    """Whether the uv faces ``faces`` draw as one face group: one style but
+    what each face carries of its own (its points, however many, its fill
+    and stroke colours, each one stop, and its stroke width). A face holds
+    points, though as few as four at one spot: a surface partly drawn
+    (``Create``) holds faces of different lengths, and one written
+    (``Write``) strokes each face at its own phase's width, and neither
+    makes a face anything but a face of its surface.
     """
     if not faces:
         return False
-    first = faces[0]
-    count = len(first.points)
     reference = None
     for face in faces:
-        if len(face.points) != count or count == 0:
+        if len(face.points) == 0 or not _non_negative(face.get_stroke_width()):
             return False
         if len(face.get_fill_rgbas()) != 1 or len(face.get_stroke_rgbas()) != 1:
             return False
@@ -932,7 +957,6 @@ def _one_group(faces: list[Any]) -> bool:
         ):
             return False
         style = (
-            face.get_stroke_width(),
             face.get_stroke_width(True),
             face.joint_type,
             face.cap_style,

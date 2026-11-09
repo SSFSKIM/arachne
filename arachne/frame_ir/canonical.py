@@ -103,6 +103,23 @@ _STEPS_EXPONENT = 9
 #: snap.
 _PATH_KINDS = ("path", "face_group", "instances")
 
+#: A way a record draws a shape's points (:func:`_way`): as that many paths
+#: in equal runs, or as paths split at those indices.
+Way = int | tuple[int, ...]
+
+
+def _way(record: Record) -> Way:
+    """How ``record`` draws its shape's points: a face group as its faces,
+    each its own run (to its face end, or one of equal runs where it states
+    none); anything else as the points whole.
+    """
+    if record.kind != "face_group":
+        return 1
+    ends = record.fields.get("face_ends")
+    if ends is None:
+        return len(record.fields["uv"])
+    return tuple(int(end) for end in ends[:-1])
+
 
 def snap(values: Any, grid: float) -> Any:
     """``values`` (a number, a sequence or an array) on ``grid``, as given:
@@ -283,6 +300,8 @@ _RECORD: dict[str, Callable[[Any, float], Any]] = {
     "grid": _as_given,
     "face_fill": _as_given,
     "face_stroke": _as_given,
+    "face_ends": _as_given,
+    "face_widths": _as_given,
     "colors": _as_given,
     "radius": _as_given,
     "resampling": _as_given,
@@ -341,7 +360,7 @@ class Canonical:
         #: Each stream shape held, by its own key: the ways of drawing it its
         #: point equality was measured for at the grid held (as
         #: :meth:`_hold`'s ``uses``).
-        self._measured: dict[bytes, set[int]] = {}
+        self._measured: dict[bytes, set[Way]] = {}
         #: Each holder's snapped shape key: a stream shape's key, or
         #: ``("slot", slot)`` for a record made into points.
         self._snapped: dict[Any, bytes] = {}
@@ -393,15 +412,12 @@ class Canonical:
         if self._view is not None and (delta.view is not None or regrid):
             found.view = self._view_of(self._view)
         # How each held record draws a stream shape's points: a face group as
-        # its faces, one equal run each; anything else as the points whole.
-        uses: dict[bytes, set[int]] = {}
+        # its faces, each its own run; anything else as the points whole.
+        uses: dict[bytes, set[Way]] = {}
         for record in self._records.values():
             key = record.fields.get("shape")
             if isinstance(key, bytes):
-                faces = record.kind == "face_group"
-                uses.setdefault(key, set()).add(
-                    len(record.fields["uv"]) if faces else 1
-                )
+                uses.setdefault(key, set()).add(_way(record))
         uploaded: set[bytes] = set()
         for shape in delta.upload:
             if shape.kind == "image":
@@ -505,12 +521,12 @@ class Canonical:
         }
 
     def _hold(
-        self, holder: Any, points: Any, found: Delta, uses: Set[int] = frozenset({1})
+        self, holder: Any, points: Any, found: Delta, uses: Set[Way] = frozenset({1})
     ) -> bytes:
         """``points`` snapped, held by ``holder`` (instead of what it held);
         their key. Whether the delta uploads them is decided once it is built
-        (:meth:`_settle_shapes`). ``uses``: each way the points are drawn, as
-        that many paths in equal runs (a face group's faces; 1, whole).
+        (:meth:`_settle_shapes`). ``uses``: each way the points are drawn
+        (:data:`Way`: a face group's faces; 1, whole).
         """
         assert self.grid is not None
         shape = Shape("path", _position(points, self.grid))
@@ -673,16 +689,17 @@ def _boundaries(points: np.ndarray, splits: np.ndarray, dims: int) -> np.ndarray
     return np.concatenate([joins, closes])
 
 
-def _measure(points: Any, snapped: np.ndarray, uses: Set[int]) -> None:
+def _measure(points: Any, snapped: np.ndarray, uses: Set[Way]) -> None:
     """Records in :data:`point_equality_disagreements` where ``snapped``,
     ``points`` snapped, is decided otherwise for each of ``uses``: the
-    points drawn as that many paths, in equal runs (a face group's faces;
-    1, whole).
+    points drawn as that many paths in equal runs, or as paths split at
+    those indices (:data:`Way`: a face group's faces; 1, whole).
     """
     made = np.asarray(points, dtype=np.float64)
-    for runs in sorted(uses):
+    for way in sorted(uses, key=repr):
+        cuts = list(way) if isinstance(way, tuple) else way
         for run, snapped_run in zip(
-            np.split(made, runs), np.split(snapped, runs), strict=True
+            np.split(made, cuts), np.split(snapped, cuts), strict=True
         ):
             _count_disagreements(run, snapped_run)
 

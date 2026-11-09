@@ -59,6 +59,7 @@ from .extract import (
     FrameStream,
     Unable,
     _depth_fields,
+    _face_lists,
     _floats,
     _paint,
     _path_shape,
@@ -1541,8 +1542,9 @@ def _face_groups(
 
 
 #: Path fields a face of a group has of its own: the group takes its
-#: points and colours face by face, and the first face's gradient.
-_FACE_OWN = frozenset({"shape", "fill", "stroke", "gradient"})
+#: points, colours and stroke width face by face, and the first face's
+#: gradient and width as the record's.
+_FACE_OWN = frozenset({"shape", "fill", "stroke", "gradient", "stroke_width"})
 #: Path fields no face of a group carries.
 _NOT_FACE = frozenset({"fill_image", "features", "pre_projected"})
 
@@ -1552,12 +1554,13 @@ def _folded(
 ) -> Record | None:
     """The face group ``surface``'s uv faces ``faces`` draw as, from the
     records their capture made (``records``), as the record's frames make it
-    (``FrameStream._face_group``): the faces' points in turn, their fill and
-    stroke rows, their uv indices and the surface's grid, and the first
-    face's style and depth. ``None`` where they do not draw as one group:
-    one point count, one style but their colours, each one stop, and no
-    face stating its own gradient ends, which a face group does not draw
-    (``extract._one_group``).
+    (``FrameStream._face_group``): the faces' points in turn and where each
+    ends, their fill and stroke rows and stroke widths, their uv indices and
+    the surface's grid, and the first face's style and depth. ``None`` where
+    they do not draw as one group: one style but what each face carries of
+    its own (its points, however many, its colours, each one stop, and its
+    stroke width), and no face stating its own gradient ends, which a face
+    group does not draw (``extract._one_group``).
     """
     if any("get_gradient_start_and_end_points" in vars(face) for face in faces):
         return None
@@ -1574,6 +1577,7 @@ def _folded(
     points: list[np.ndarray] = []
     fills: list[np.ndarray] = []
     strokes: list[np.ndarray] = []
+    widths: list[float] = []
     for fields in completed:
         assert fields is not None
         if fields.keys() != first.keys():
@@ -1592,11 +1596,12 @@ def _folded(
         ):
             return None
         data = np.asarray(uploads[fields["shape"]].data)
-        if len(data) == 0 or (points and len(data) != len(points[0])):
+        if len(data) == 0:
             return None
         points.append(data)
         fills.append(fill)
         strokes.append(stroke)
+        widths.append(float(fields["stroke_width"]))
     fields = {"shape": _path_shape(np.concatenate(points), uploads)}
     fields.update((name, value) for name, value in first.items() if name != "shape")
     face_fill = PaintTable(np.concatenate(fills))
@@ -1610,6 +1615,7 @@ def _folded(
     fields["uv"] = np.array(
         [[face.u_index, face.v_index] for face in faces], dtype=np.uint32
     )
+    fields.update(_face_lists([len(data) for data in points], widths))
     resolution = surface.resolution
     u_res, v_res = (
         (resolution, resolution) if isinstance(resolution, int) else resolution

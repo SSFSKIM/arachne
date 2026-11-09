@@ -367,11 +367,16 @@ fn body_of(kind: RecordKind, fields: &Fields) -> PyResult<Body> {
             if uv.ncols() != 2 {
                 return Err(PyValueError::new_err("uv must have shape (faces, 2)"));
             }
+            let face_ends: Option<PyArrayLike1<u32, AllowTypeChange>> = fields.get("face_ends")?;
+            let face_widths: Option<PyArrayLike1<f64, AllowTypeChange>> =
+                fields.get("face_widths")?;
             Body::FaceGroup(FaceGroup {
                 uv: uv.rows().into_iter().map(|r| [r[0], r[1]]).collect(),
                 grid: fields.need("grid")?,
                 fill: need_key(fields, "face_fill")?,
                 stroke: key_field(fields, "face_stroke")?,
+                face_ends: face_ends.map_or_else(Vec::new, |a| a.as_array().to_vec()),
+                face_widths: face_widths.map_or_else(Vec::new, |a| a.as_array().to_vec()),
             })
         }
         RecordKind::Points => Body::Points(Points {

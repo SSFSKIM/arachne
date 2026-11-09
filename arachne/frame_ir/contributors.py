@@ -30,6 +30,7 @@ colours. It is the geometry a difference at an edge is measured against.
 from __future__ import annotations
 
 __all__ = [
+    "ROUND_CAP_DOT",
     "Box",
     "Leaf",
     "LiveFrame",
@@ -42,6 +43,7 @@ __all__ = [
 
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from typing import Any
 
 import numpy as np
 
@@ -49,6 +51,12 @@ import numpy as np
 #: ``y0 <= y < y1``.
 Box = tuple[int, int, int, int]
 RGBA = tuple[int, int, int, int]
+
+#: A leaf's :attr:`Leaf.reason`: a face of a surface not yet drawn, its
+#: points at one spot, which CE's camera strokes as a dot under a round cap.
+#: The dot is its stroke alone and has no extent to be ordered by: it stands
+#: in no order a reader takes from the pixel.
+ROUND_CAP_DOT = "round_cap_dot"
 
 
 class LiveFrame(RuntimeError):
@@ -82,6 +90,8 @@ class Leaf:
     leaf: one behind an opaque front, or seen through a sliver of the pixel,
     keeps its whole colour in both while the pixel barely moves. ``painter`` is ``"core"`` or
     ``"cairo"``: on the core path, the overlay's leaves are Cairo's.
+    ``reason`` names why a leaf, though it paints, stands in no order a
+    reader takes from the pixel: :data:`ROUND_CAP_DOT`, else ``None``.
     """
 
     object: int
@@ -93,6 +103,7 @@ class Leaf:
     coverage: int | None = None
     colour: RGBA | None = None
     covers: bool = False
+    reason: str | None = None
 
     @property
     def key(self) -> tuple[str | int, int]:
@@ -168,6 +179,53 @@ class Outline:
     subpaths: tuple[Subpath, ...]
     join: str = ""
     cap: str = ""
+
+
+def with_reasons(
+    found: Mapping[tuple[int, int], PixelContributors],
+    reasons: Mapping[tuple[int, int], str],
+) -> dict[tuple[int, int], PixelContributors]:
+    """``found`` with each leaf ``(object, part)`` of ``reasons`` given its
+    :attr:`Leaf.reason`.
+    """
+    if not reasons:
+        return dict(found)
+    return {
+        at: replace(
+            pixel,
+            leaves=tuple(
+                replace(leaf, reason=reasons[(leaf.object, leaf.part)])
+                if (leaf.object, leaf.part) in reasons
+                else leaf
+                for leaf in pixel.leaves
+            ),
+        )
+        for at, pixel in found.items()
+    }
+
+
+def round_cap_dots(state: Any) -> dict[tuple[int, int], str]:
+    """The faces of ``state``'s face groups, by ``(slot, part)``, that a round
+    cap strokes as a dot (:data:`ROUND_CAP_DOT`): a face not yet drawn, its
+    points at one spot.
+    """
+    found: dict[tuple[int, int], str] = {}
+    for slot, record in state.records.items():
+        fields = record.fields
+        if record.kind != "face_group" or fields.get("cap") != "round":
+            continue
+        points = np.asarray(state.shapes[fields["shape"]].data)
+        count = len(fields["uv"])
+        ends = fields.get("face_ends")
+        if ends is None:
+            ends = [len(points) // count * (i + 1) for i in range(count)]
+        start = 0
+        for part, end in enumerate(ends):
+            run = points[start : int(end)]
+            if len(run) and (run == run[0]).all():
+                found[(slot, part)] = ROUND_CAP_DOT
+            start = int(end)
+    return found
 
 
 def from_core(
