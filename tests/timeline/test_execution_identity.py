@@ -20,6 +20,7 @@ import textwrap
 import warnings
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 import arachne
@@ -28,6 +29,7 @@ from arachne.timeline import inputs
 from arachne.timeline.execution import (
     ExecutionSummary,
     Incomparable,
+    _leaf_json,
     compare,
     summarize,
 )
@@ -1181,3 +1183,20 @@ class Nested(Scene):
     again = _open(scene, "Nested").summary()
     assert compare(first, again) is None
     assert compare(first, ExecutionSummary.from_json(again.to_json())) is None
+
+
+def test_an_extended_precision_scalar_keeps_its_precision_and_has_a_json_form():
+    """``np.longdouble(...).item()`` is a NumPy scalar again, which JSON can't
+    carry: a scalar whose Python value isn't a Python scalar goes through the
+    array path, at its own dtype. The kinds beside it (complex of the same
+    width, half precision) are leaves as before.
+    """
+    from arachne.timeline.execution import _leaf
+
+    wide = _leaf(np.longdouble(1.5))
+    assert isinstance(wide, np.ndarray)
+    assert wide.dtype == np.dtype(np.longdouble)
+    assert _leaf(np.clongdouble(1 + 2j)).dtype == np.dtype(np.clongdouble)
+    assert type(_leaf(np.float16(1.5))) is float
+    for value in (np.longdouble(1.5), np.clongdouble(1 + 2j), np.float16(1.5)):
+        assert json.dumps(_leaf_json(_leaf(value))), value
