@@ -297,11 +297,22 @@ fn frame_of(view: &View, p: [f64; 2]) -> [f64; 3] {
 }
 
 fn draw(view: &View, points: Vec<[f64; 3]>, width: f64, joins: Option<Vec<u8>>) -> Vec<u8> {
+    draw_jointed(view, points, width, joins, Joint::Auto)
+}
+
+fn draw_jointed(
+    view: &View,
+    points: Vec<[f64; 3]>,
+    width: f64,
+    joins: Option<Vec<u8>>,
+    joint: Joint,
+) -> Vec<u8> {
     let shape = Shape::new(ShapeData::Path { points });
     let mut r = Record::new(RecordKind::Path, 1, 101);
     r.geometry.shape_a = Some(shape.key());
     r.paint.stroke = Paint::One([1.0, 1.0, 1.0, 1.0]);
     r.paint.stroke_width = width;
+    r.paint.joint = joint;
     r.joins = joins;
     let d = arachne_core::probes::first_delta(view.clone(), &[(shape, r)], &[1]);
     let mut s = Stream::new();
@@ -403,4 +414,57 @@ fn a_closing_join_after_a_skipped_cubic_takes_its_carried_decision() {
     );
     let bevelled = draw(&view, points, width, Some(vec![1, 3, 3, 3]));
     assert_eq!(lit_right_of(&bevelled, x0), 0);
+}
+
+/// Two straight cubics in pixels, as CE's points: arriving at `j` along +x and leaving it turned
+/// by `turn` degrees, each 30 px long.
+fn bent(view: &View, j: [f64; 2], turn: f64) -> Vec<[f64; 3]> {
+    let r = turn.to_radians();
+    let start = [j[0] - 30.0, j[1]];
+    let end = [j[0] + 30.0 * libm::cos(r), j[1] - 30.0 * libm::sin(r)];
+    let line = |p: [f64; 2], q: [f64; 2]| {
+        let at = |t: f64| [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t];
+        [p, at(1.0 / 3.0), at(2.0 / 3.0), q]
+    };
+    let mut points = line(start, j).to_vec();
+    points.extend(line(j, end));
+    points.iter().map(|p| frame_of(view, *p)).collect()
+}
+
+/// A stroke under 0.8 px is stroked at a quarter of its half width, not at the flattening
+/// tolerance, and kurbo leaves a turn unjoined by the tolerance it strokes at (a turn whose sine is
+/// under twice the tolerance over the width): the joins are read at that same tolerance. A turn
+/// kurbo joins at it, carried as a bevel, draws the bevel-jointed stroke's bytes (read at the
+/// flattening tolerance, a turn under 90 degrees on a 0.2 px stroke is taken for one kurbo did not
+/// join, and its miter stays); and joins on each side of the limit, carried as decided, draw the
+/// bytes without the field.
+#[test]
+fn a_thin_stroke_s_joins_are_read_at_the_tolerance_it_is_stroked_at() {
+    let view = flat_view(W, H, [0.0, 0.0, 0.0, 1.0]);
+    let per_px = map(&view).xx * view.cairo_line_width_multiple;
+    let mut shows = 0;
+    for w_px in [0.2, 0.3, 0.5, 0.7] {
+        let width = w_px / per_px;
+        for turn in [20.0, 40.0, 60.0, 85.0] {
+            for j in [[100.3, 45.2], [80.55, 40.7], [60.81, 50.35]] {
+                let points = bent(&view, j, turn);
+                let bevel = draw_jointed(&view, points.clone(), width, None, Joint::Bevel);
+                let carried = draw(&view, points.clone(), width, Some(vec![0, 1]));
+                assert!(
+                    carried == bevel,
+                    "{w_px} px, {turn} degrees at {j:?}: a carried bevel is not the bevel"
+                );
+                shows += (draw(&view, points, width, None) != bevel) as u32;
+            }
+        }
+        let j = [100.3, 45.2];
+        for (turn, mitres) in [(168.0f64, true), (169.0, false)] {
+            let points = bent(&view, j, turn);
+            let plain = draw(&view, points.clone(), width, None);
+            let byte = 1 | if mitres { 2 } else { 0 };
+            let carried = draw(&view, points, width, Some(vec![0, byte]));
+            assert!(plain == carried, "{w_px} px, {turn} degrees");
+        }
+    }
+    assert!(shows > 0, "no miter of these differs from its bevel");
 }
