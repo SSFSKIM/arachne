@@ -221,6 +221,32 @@ fn face_lists(slot: u32, f: &FaceGroup, points: usize) -> Result<(), StreamError
     Ok(())
 }
 
+/// Refuses a record's XF 1.4 joins that do not describe the path it draws: carried by a kind
+/// other than a path, or not one byte per cubic of the points it draws (`drawn`: the shape it
+/// draws, its shape's or its pre-projected tail's, and the reveal window cut from it; a placement
+/// and a blend keep the count).
+fn joins_fit(
+    rec: &Record,
+    drawn: (Option<&ShapeData>, Option<(f64, f64)>),
+    joins: &[u8],
+) -> Result<(), StreamError> {
+    let refuse = |what: String| Err(StreamError::Invalid(format!("slot {}: {what}", rec.slot)));
+    if rec.kind != RecordKind::Path {
+        return refuse(format!("joins on a {} record", rec.kind.name()));
+    }
+    let points = match drawn.0 {
+        Some(ShapeData::Path { points }) => match drawn.1 {
+            Some((lo, hi)) => crate::geometry::revealed(points, lo, hi).len(),
+            None => points.len(),
+        },
+        _ => 0,
+    };
+    if joins.len() != points / 4 {
+        return refuse(format!("{} joins for {} cubics", joins.len(), points / 4));
+    }
+    Ok(())
+}
+
 fn shape_kind_name(data: &ShapeData) -> &'static str {
     match data {
         ShapeData::Path { .. } => "path",
@@ -438,6 +464,14 @@ impl After<'_> {
                 self.needs_table(rec, &i.stroke, n)?;
             }
             Body::None | Body::Image(_) | Body::Opaque(_) => {}
+        }
+        if let Some(joins) = &rec.joins {
+            // A pre-projected path draws its tail's points as they are.
+            let drawn = match &rec.pre_projected {
+                Some(tail) => (self.needs_shape(rec, Some(&tail.points), &["path"])?, None),
+                None => (a, rec.geometry.reveal),
+            };
+            joins_fit(rec, drawn, joins)?;
         }
         Ok(())
     }

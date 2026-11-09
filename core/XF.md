@@ -87,7 +87,9 @@ the first cubic of a closed subpath, the closing join (none where Cairo strokes 
 first). The drawer strokes as before and, at a join whose carried decision differs from its own,
 drops its miter or puts one in, its tip at the miter limit's length (on parallel tangents, where no
 tip can be placed, the bevel stays). Without `joins`, or for a join the record does not decide, the
-drawer decides from the points it is handed. An XF 1.2 reader skips the field.
+drawer decides from the points it is handed. Only a path record carries `joins`, one byte per cubic
+of the points it draws (its shape's cut to its reveal window, or its pre-projected tail's); `apply`
+refuses them on any other kind or at any other count. An XF 1.3 reader skips the field.
 
 This build draws the background (a colour, or an image cropped to the frame as CE crops it); `mesh`
 records filled with one colour; `path` records, their paints one colour or a linear gradient between
