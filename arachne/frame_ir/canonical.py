@@ -388,17 +388,23 @@ class Canonical:
         self.grid = grid
         if self._view is not None and (delta.view is not None or regrid):
             found.view = self._view_of(self._view)
+        # A face group's shape is its faces' points, one equal run each.
+        runs = {
+            record.fields["shape"]: len(record.fields["uv"])
+            for record in self._records.values()
+            if record.kind == "face_group"
+        }
         for shape in delta.upload:
             if shape.kind == "image":
                 found.upload.append(shape)
             elif shape.kind == "path":
                 self._shapes[shape.key] = shape
-                self._hold(shape.key, shape.data, found)
+                self._hold(shape.key, shape.data, found, runs.get(shape.key, 1))
             else:
                 raise ValueError(f"canonical: a {shape.kind} shape is not classified")
         if regrid:
             for key, shape in self._shapes.items():
-                self._hold(key, shape.data, found)
+                self._hold(key, shape.data, found, runs.get(key, 1))
         found.upload_paints = list(delta.upload_paints)
         for key in delta.release:
             if self._shapes.pop(key, None) is None:
@@ -474,14 +480,19 @@ class Canonical:
             for slot, normals in self._decider.normals(slots, grid).items()
         }
 
-    def _hold(self, holder: Any, points: Any, found: Delta) -> bytes:
+    def _hold(self, holder: Any, points: Any, found: Delta, runs: int = 1) -> bytes:
         """``points`` snapped, held by ``holder`` (instead of what it held);
         their key. Whether the delta uploads them is decided once it is built
-        (:meth:`_settle_shapes`).
+        (:meth:`_settle_shapes`). ``runs``: the paths the points are, in
+        equal runs (a face group's faces).
         """
         assert self.grid is not None
         shape = Shape("path", _position(points, self.grid))
-        _count_disagreements(np.asarray(points, dtype=np.float64), shape.data)
+        made = np.asarray(points, dtype=np.float64)
+        for run, snapped in zip(
+            np.split(made, runs), np.split(shape.data, runs), strict=True
+        ):
+            _count_disagreements(run, snapped)
         if self._snapped.get(holder) == shape.key:
             return shape.key
         holders = self._holders.setdefault(shape.key, set())

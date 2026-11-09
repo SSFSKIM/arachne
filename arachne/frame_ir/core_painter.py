@@ -104,17 +104,19 @@ class CorePainter:
         *,
         t: Fraction = Fraction(0),
         terms: Mapping[int, Term] | None = None,
+        roots: Sequence[Any] = (),
     ) -> np.ndarray:
         """The frame the camera draws from ``groups`` (each a layer and the
-        list one capture is handed), drawn by the core from its XF
-        description, the overlay by Cairo. The frame's grid is decided once
-        (:func:`~.canonical.frame_grid`): the camera's depth sort is taken on
-        keys snapped by it (:func:`~.canonical.canonical_order`), and the
-        geometry is snapped to it.
+        list one capture is handed) of a scene holding ``roots``, drawn by
+        the core from its XF description, the overlay by Cairo. The frame's
+        grid is decided once (:func:`~.canonical.frame_grid`): the camera's
+        depth sort is taken on keys snapped by it
+        (:func:`~.canonical.canonical_order`), and the geometry is snapped
+        to it.
         """
         grid = frame_grid(camera)
         with canonical_order(camera, grid):
-            delta = self.stream.frame(camera, groups, t=t, terms=terms)
+            delta = self.stream.frame(camera, groups, t=t, terms=terms, roots=roots)
         self.canonical.frame_grid = grid
         try:
             return self.draw(delta)

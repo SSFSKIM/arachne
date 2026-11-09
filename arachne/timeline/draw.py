@@ -694,7 +694,10 @@ class Drawing:
         camera = self.camera
         if self.static_painter is not None:
             pixels = self.static_painter.paint(
-                camera, [("static", list(play.static))], t=capture.instant
+                camera,
+                [("static", list(play.static))],
+                t=capture.instant,
+                roots=capture.draw_list(),
             )
             self._painted_by = self.static_painter
             camera.set_pixel_array(pixels)
@@ -851,6 +854,7 @@ class Drawing:
             [("static", listed), ("moving", targets)],
             t=capture.instant if instant is None else instant,
             terms=terms,
+            roots=capture.draw_list(),
         )
         self._painted_by = painter
         camera.set_pixel_array(pixels)

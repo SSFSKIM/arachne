@@ -248,6 +248,8 @@ class FrameStream:
         self._seq = 0
         #: The blend records of the frame being extracted, by leaf id.
         self._blends: dict[int, Record] = {}
+        #: The scene's mobjects at the frame being extracted.
+        self._roots: list[Any] = []
         #: Each display of the last frame's MultiCamera, with the sub-frame of
         #: its last capture: what CE leaves in the display's camera.
         self.last_sub_frames: list[tuple[Any, Any]] = []
@@ -280,11 +282,15 @@ class FrameStream:
         *,
         t: Fraction = Fraction(0),
         terms: Mapping[int, Term] | None = None,
+        roots: Sequence[Mobject] = (),
     ) -> Delta:
         """The delta of the frame the camera draws from ``groups`` (each a
         layer and the list one capture of the camera is handed, in order), as
         the mobjects and the camera hold it now. ``terms`` gives, by mobject
-        id, the leaves a straight-path blend states.
+        id, the leaves a straight-path blend states. ``roots`` are the
+        scene's mobjects: a surface in their families draws its faces as one
+        face group though a list holds its faces alone (a play's static list
+        is flattened to the mobjects with points).
         """
         kind = _camera_kind(camera)
         for attr, default in (
@@ -295,6 +301,7 @@ class FrameStream:
             if getattr(camera, attr) != default:
                 raise Unable(f"render.unable: the camera's {attr} is not {default}")
         self._blends = {}
+        self._roots = list(roots)
         objects: list[tuple[int, str, str]] = []
         uploads: dict[bytes, Any] = {}
         records: dict[int, Record] = {}
@@ -645,7 +652,9 @@ class FrameStream:
         self, mobjects: Sequence[Mobject], leaves: list[Mobject]
     ) -> dict[int, tuple[Any, int]]:
         """The leaves that are faces of a surface drawn as one face group,
-        each with its surface and its index there.
+        each with its surface and its index among the surface's uv faces.
+        The surface is looked for in the scene's families as well as in
+        ``mobjects``: a flattened list holds its faces without it.
         """
         if not any(hasattr(leaf, "u_index") for leaf in leaves):
             return {}
@@ -653,10 +662,10 @@ class FrameStream:
         from arachne.utils.family import extract_mobject_family_members
 
         found: dict[int, tuple[Any, int]] = {}
-        for owner in extract_mobject_family_members(list(mobjects)):
-            if not isinstance(owner, Surface) or id(owner) in found:
+        for owner in extract_mobject_family_members([*self._roots, *mobjects]):
+            if not isinstance(owner, Surface):
                 continue
-            faces = list(owner.submobjects)
+            faces = _uv_faces(owner)
             if _one_group(faces):
                 for index, face in enumerate(faces):
                     found[id(face)] = (owner, index)
@@ -667,7 +676,7 @@ class FrameStream:
     ) -> Record:
         from arachne.timeline.record import NodeState
 
-        faces = list(surface.submobjects)
+        faces = _uv_faces(surface)
         cached = self._cache.get(id(surface))
         if (
             cached is None
@@ -891,20 +900,29 @@ def _depth_fields(extras: tuple[Any, ...]) -> dict[str, Any]:
     return fields
 
 
-def _one_group(faces: list[Any]) -> bool:
-    """Whether ``faces`` draw as one face group: uv faces of one kind and
-    point count, one style but their fill and stroke colours, each one stop.
+def _uv_faces(surface: Any) -> list[Any]:
+    """The submobjects of ``surface`` that are its uv faces: a solid's other
+    parts (caps, points, a child cone) are drawn as records of their own.
     """
     from arachne.mobject.three_d.three_dimensions import ThreeDVMobject
 
+    return [
+        face
+        for face in surface.submobjects
+        if type(face) is ThreeDVMobject and hasattr(face, "u_index")
+    ]
+
+
+def _one_group(faces: list[Any]) -> bool:
+    """Whether the uv faces ``faces`` draw as one face group: one point
+    count, one style but their fill and stroke colours, each one stop.
+    """
     if not faces:
         return False
     first = faces[0]
     count = len(first.points)
     reference = None
     for face in faces:
-        if type(face) is not ThreeDVMobject or not hasattr(face, "u_index"):
-            return False
         if len(face.points) != count or count == 0:
             return False
         if len(face.get_fill_rgbas()) != 1 or len(face.get_stroke_rgbas()) != 1:
