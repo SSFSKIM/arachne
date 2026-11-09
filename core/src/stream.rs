@@ -640,6 +640,64 @@ impl Stream {
         Ok(out)
     }
 
+    /// What the resolve composited at every pixel of `x0..x1` by `y0..y1` (clipped to the view's
+    /// frame), from the frame [`Stream::render_under_overlay`] draws, the same passes resolved
+    /// again: a diagnostic report (`diagnostics.rs`), not a supported interface, which composites
+    /// again to each pixel drawn. The overlay's entries are Cairo's and are not reported. With
+    /// `decisions`, each pixel also holds the pairwise orders its ranks read. Refused as drawing
+    /// refuses.
+    pub fn diagnostic_resolves(
+        &self,
+        x0: u32,
+        y0: u32,
+        x1: u32,
+        y1: u32,
+        decisions: bool,
+    ) -> Result<BTreeMap<(u32, u32), crate::diagnostics::Pixel>, DrawError> {
+        let view = self.view.as_ref().ok_or(DrawError::NoView)?;
+        let (width, height) = (view.pixel_width, view.pixel_height);
+        let keep = composite::Rect {
+            x0: x0.min(width),
+            y0: y0.min(height),
+            x1: x1.min(width),
+            y1: y1.min(height),
+        };
+        let mut out = BTreeMap::new();
+        self.with_producers(width, height, &[], true, |frame, producers| {
+            if keep.x0 >= keep.x1 || keep.y0 >= keep.y1 {
+                return;
+            }
+            let stride = width as usize * 4;
+            for rect in tiles::tile_rects(width, height) {
+                if rect.x1 <= keep.x0
+                    || rect.x0 >= keep.x1
+                    || rect.y1 <= keep.y0
+                    || rect.y0 >= keep.y1
+                {
+                    continue;
+                }
+                let mut background = Vec::with_capacity(rect.pixels() * 4);
+                for y in rect.y0..rect.y1 {
+                    let row = y as usize * stride;
+                    background.extend_from_slice(
+                        &frame.rgba()[row + rect.x0 as usize * 4..row + rect.x1 as usize * 4],
+                    );
+                }
+                tiles::passes(rect, producers).trace_pixels(
+                    keep,
+                    &background,
+                    decisions,
+                    |x, y, frags, trace, bg, emission| {
+                        let leaf = |f: &composite::Fragment| self.leaf_of(f);
+                        let pixel = crate::diagnostics::Pixel::of(frags, trace, bg, emission, leaf);
+                        out.insert((x, y), pixel);
+                    },
+                );
+            }
+        })?;
+        Ok(out)
+    }
+
     /// The edges the rasterizer consumes for every leaf [`Stream::contributors`] reports with
     /// an exact area in the same box, from the same pass: per leaf `(object, part)`, each of its
     /// layers once (a fill, a stroke's outline after the stroker), as `[x0, y0, x1, y1, dir]` in

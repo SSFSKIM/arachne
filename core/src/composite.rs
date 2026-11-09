@@ -1112,6 +1112,50 @@ impl<'a> TransparentPass<'a> {
         out
     }
 
+    /// Resolves each pixel of the rectangle inside `keep` as [`Self::resolve`] does, over its
+    /// background (the rectangle's bytes, row by row), and hands `visit` the pixel's fragments,
+    /// what the resolve composited ([`ResolveTrace`]), its background, and the emitted light
+    /// added after it, if any: the diagnostic report's read (`diagnostics.rs`). Nothing is drawn.
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn trace_pixels(
+        mut self,
+        keep: Rect,
+        background: &[u8],
+        decisions: bool,
+        mut visit: impl FnMut(u32, u32, &[Fragment], ResolveTrace, [u8; 4], Option<[f64; 3]>),
+    ) {
+        let pixels = self.rect.pixels();
+        assert_eq!(background.len(), pixels * 4);
+        let transparent = ByPixel::new(std::mem::take(&mut self.fragments), pixels);
+        let mut scratch = Scratch::default();
+        let w = self.rect.width();
+        for i in 0..pixels {
+            let (x, y) = (self.rect.x0 + i as u32 % w, self.rect.y0 + i as u32 / w);
+            if x < keep.x0 || x >= keep.x1 || y < keep.y0 || y >= keep.y1 {
+                continue;
+            }
+            scratch.fragments.clear();
+            scratch.fragments.extend_from_slice(self.opaque.at(i));
+            scratch.fragments.extend_from_slice(transparent.at(i));
+            let bg: [u8; 4] = background[i * 4..i * 4 + 4].try_into().unwrap();
+            let mut trace = ResolveTrace::empty(decisions);
+            if !scratch.fragments.is_empty() {
+                resolve_pixel_traced(
+                    &mut scratch,
+                    bg,
+                    |_, f| self.sample_coverage(f, x, y),
+                    |_, f| Depths::of(self.producers, f, x, y),
+                    Some(&mut trace),
+                );
+            }
+            let emission = match self.emission.get(i) {
+                Some(e) if *e != [0.0; 3] => Some(*e),
+                _ => None,
+            };
+            visit(x, y, &scratch.fragments, trace, bg, emission);
+        }
+    }
+
     /// Counts, at pixel `(x, y)` holding `frags`, the sub-samples where two fragments are one
     /// depth only by the near-parallel rule (`order::near_parallel`: both cover the sub-sample, they
     /// share no identity, their keys as the pixel's order reads them lie within the term and not
@@ -1302,19 +1346,152 @@ impl SampleRanks {
 /// gives them: by depth only where two cover one sub-sample, by paint order everywhere else.
 /// The contributor report calls it on one leaf's fragments alone, so what a leaf draws is what
 /// this resolve makes of it.
-// The sub-sample `k` indexes each fragment's coverage and depth rows.
-#[allow(clippy::needless_range_loop)]
 pub(crate) fn resolve_pixel(
     s: &mut Scratch,
     bg: [u8; 4],
     sample_coverage: impl Fn(usize, &Fragment) -> [u8; SAMPLES],
     sample_depth: impl Fn(usize, &Fragment) -> Depths,
 ) -> (Resolve, [u8; 4]) {
+    resolve_pixel_traced(s, bg, sample_coverage, sample_depth, None)
+}
+
+/// What one pixel's resolve composited, as the diagnostic report reads it
+/// ([`crate::diagnostics`]): enough to composite the pixel again with [`blend`] alone.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolveTrace {
+    pub resolve: Resolve,
+    /// Each fragment's 8-bit coverage at every sub-sample, as the sample resolve composites it.
+    pub coverage: Vec<[u8; SAMPLES]>,
+    /// The fast and coverage resolves: the units blended over the background, back to front,
+    /// each its fragments (front first), its colour and its 8-bit coverage.
+    pub units: Vec<(Vec<usize>, [u8; 4], u8)>,
+    /// Each sub-sample's fragments covering it, front first: as the sample resolve composites
+    /// them, and for the fast and coverage resolves in their units' order.
+    pub samples: Vec<Vec<usize>>,
+    /// Whether to record the pairwise orders below; a trace without it records none.
+    pub decisions: bool,
+    /// Every pair of the pixel's fragments as its rank ([`crate::order::rank`]) read it:
+    /// `order::Shared::decided`, or paint order on a flat pixel. Empty for one fragment.
+    pub pairs: Vec<PairOrder>,
+    /// Whether the sub-samples were ranked ([`crate::order::rank_sample`]): then
+    /// [`Self::sample_pairs`]`[k]` holds every pair of the fragments sub-sample `k` ranked;
+    /// otherwise every pair of those it composited ([`Self::samples`]`[k]`).
+    pub sample_ranked: bool,
+    /// Each sub-sample's pairwise orders, as the sub-sample ranks read them (`front_at` and
+    /// `strong_at` in [`resolve_pixel_traced`]): depth where depth decides, paint between a path's
+    /// fill and its own stroke ([`crate::order::own_layers`]), a tie otherwise.
+    pub sample_pairs: Vec<Vec<PairOrder>>,
+}
+
+/// One pair's order as a rank read it: fragments `a < b`, the one in front (`None` where
+/// neither is), and how the order was decided.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PairOrder {
+    pub a: usize,
+    pub b: usize,
+    pub front: Option<usize>,
+    pub how: crate::order::Decided,
+}
+
+impl ResolveTrace {
+    fn of_units(
+        resolve: Resolve,
+        coverage: Vec<[u8; SAMPLES]>,
+        units: Vec<(Vec<usize>, [u8; 4], u8)>,
+    ) -> ResolveTrace {
+        let samples = (0..SAMPLES)
+            .map(|k| {
+                units
+                    .iter()
+                    .rev()
+                    .flat_map(|u| u.0.iter().copied())
+                    .filter(|i| coverage[*i][k] != 0)
+                    .collect()
+            })
+            .collect();
+        ResolveTrace {
+            resolve,
+            coverage,
+            units,
+            samples,
+            ..ResolveTrace::empty(false)
+        }
+    }
+
+    /// A trace of no fragment, recording pairwise orders where `decisions`.
+    pub(crate) fn empty(decisions: bool) -> ResolveTrace {
+        ResolveTrace {
+            resolve: Resolve::Background,
+            coverage: Vec::new(),
+            units: Vec::new(),
+            samples: vec![Vec::new(); SAMPLES],
+            decisions,
+            pairs: Vec::new(),
+            sample_ranked: false,
+            sample_pairs: Vec::new(),
+        }
+    }
+
+    /// Takes what `r` composited, keeping the pairwise orders recorded.
+    fn record(&mut self, r: ResolveTrace) {
+        self.resolve = r.resolve;
+        self.coverage = r.coverage;
+        self.units = r.units;
+        self.samples = r.samples;
+    }
+
+    fn of_samples(coverage: Vec<[u8; SAMPLES]>, ranks: &SampleRanks) -> ResolveTrace {
+        ResolveTrace {
+            resolve: Resolve::Sample,
+            coverage,
+            units: Vec::new(),
+            samples: (0..SAMPLES).map(|k| ranks.at(k).to_vec()).collect(),
+            ..ResolveTrace::empty(false)
+        }
+    }
+}
+
+/// Every fragment's coverage at each sub-sample, for a trace.
+fn coverage_rows(
+    frags: &[Fragment],
+    sample_coverage: impl Fn(usize, &Fragment) -> [u8; SAMPLES],
+) -> Vec<[u8; SAMPLES]> {
+    frags
+        .iter()
+        .enumerate()
+        .map(|(i, f)| sample_coverage(i, f))
+        .collect()
+}
+
+/// [`resolve_pixel`], recording in `trace`, when given, what it composited. Nothing it
+/// composites depends on the trace.
+// The sub-sample `k` indexes each fragment's coverage and depth rows.
+#[allow(clippy::needless_range_loop)]
+pub(crate) fn resolve_pixel_traced(
+    s: &mut Scratch,
+    bg: [u8; 4],
+    sample_coverage: impl Fn(usize, &Fragment) -> [u8; SAMPLES],
+    sample_depth: impl Fn(usize, &Fragment) -> Depths,
+    mut trace: Option<&mut ResolveTrace>,
+) -> (Resolve, [u8; 4]) {
     use crate::order;
     let frags = &s.fragments;
     if let [f] = frags.as_slice() {
         if f.is_opaque() && f.is_full() {
+            if let Some(t) = trace {
+                let rows = coverage_rows(frags, &sample_coverage);
+                t.record(ResolveTrace::of_units(
+                    Resolve::Fast,
+                    rows,
+                    vec![(vec![0], f.colour, 255)],
+                ));
+            }
             return (Resolve::Fast, f.colour);
+        }
+        if let Some(t) = trace {
+            let rows = coverage_rows(frags, &sample_coverage);
+            let unit = (vec![0], f.colour, f.coverage8());
+            t.record(ResolveTrace::of_units(Resolve::Coverage, rows, vec![unit]));
         }
         return (Resolve::Coverage, blend(f.colour, f.coverage8(), bg));
     }
@@ -1378,6 +1555,16 @@ pub(crate) fn resolve_pixel(
             s.fronts[b * n + a] = o == Ordering::Greater;
             s.strong[a * n + b] = how.is_strong();
             s.strong[b * n + a] = how.is_strong();
+            if let Some(t) = trace.as_deref_mut()
+                && t.decisions
+            {
+                let front = match o {
+                    Ordering::Less => Some(a),
+                    Ordering::Greater => Some(b),
+                    Ordering::Equal => None,
+                };
+                t.pairs.push(PairOrder { a, b, front, how });
+            }
         }
     }
     let (fronts, strong) = (&s.fronts, &s.strong);
@@ -1408,6 +1595,47 @@ pub(crate) fn resolve_pixel(
             order::strong_at(&frags[a], da[k], ea, &frags[b], db[k], eb)
         }
     };
+    // The sub-sample ranks' pairwise orders, for a trace recording them: every pair of the
+    // fragments each sub-sample ranked, or where none was ranked, of those it composited.
+    let sample_pairs = |t: &mut ResolveTrace, ranks: &SampleRanks| {
+        if !t.decisions {
+            return;
+        }
+        t.sample_ranked = ranks.is_ranked();
+        let pairs = (0..SAMPLES)
+            .map(|k| {
+                let items = if ranks.is_ranked() {
+                    ranks.at(k)
+                } else {
+                    &t.samples[k][..]
+                };
+                let mut v = Vec::new();
+                for (p, &i) in items.iter().enumerate() {
+                    for &j in &items[p + 1..] {
+                        let (a, b) = (i.min(j), i.max(j));
+                        let front = if front_at(a, b, k) {
+                            Some(a)
+                        } else if front_at(b, a, k) {
+                            Some(b)
+                        } else {
+                            None
+                        };
+                        let how = if strong_at(a, b, k) {
+                            order::Decided::Depth
+                        } else if order::own_layers(&frags[a], &frags[b]) {
+                            order::Decided::Paint
+                        } else {
+                            order::Decided::Tie
+                        };
+                        v.push(PairOrder { a, b, front, how });
+                    }
+                }
+                v.sort_by_key(|p| (p.a, p.b));
+                v
+            })
+            .collect();
+        t.sample_pairs = pairs;
+    };
     s.covering.clear();
     s.covering.extend(0..n);
     let how = order::rank(
@@ -1422,6 +1650,13 @@ pub(crate) fn resolve_pixel(
     if how == order::Ranked::Strong {
         s.samples
             .rank(cov, &s.covering, front_at, strong_at, painted);
+        if let Some(t) = trace {
+            t.record(ResolveTrace::of_samples(
+                coverage_rows(frags, &sample_coverage),
+                &s.samples,
+            ));
+            sample_pairs(t, &s.samples);
+        }
         return (Resolve::Sample, s.samples.composite(frags, cov, bg));
     }
 
@@ -1451,6 +1686,12 @@ pub(crate) fn resolve_pixel(
         if let &[o] = s.order.as_slice()
             && covers_whole(o)
         {
+            if let Some(t) = trace {
+                let rows = coverage_rows(frags, &sample_coverage);
+                let unit = (vec![o], frags[o].colour, 255);
+                t.record(ResolveTrace::of_units(Resolve::Fast, rows, vec![unit]));
+                sample_pairs(t, &s.samples);
+            }
             return (Resolve::Fast, frags[o].colour);
         }
     }
@@ -1552,6 +1793,7 @@ pub(crate) fn resolve_pixel(
                 .all(|(p, u)| units[p + 1..].iter().all(|v| before(*u, *v, k)))
         });
     if one_order {
+        let mut traced = trace.is_some().then(Vec::new);
         let mut px = bg;
         for u in units.iter().rev() {
             let (colour, coverage) = if u.1 - u.0 == 1 {
@@ -1578,7 +1820,15 @@ pub(crate) fn resolve_pixel(
                     mask_coverage(union),
                 )
             };
+            if let Some(v) = traced.as_mut() {
+                v.push((order[u.0..u.1].to_vec(), colour, coverage));
+            }
             px = blend(colour, coverage, px);
+        }
+        if let (Some(t), Some(units)) = (trace, traced) {
+            let rows = coverage_rows(frags, &sample_coverage);
+            t.record(ResolveTrace::of_units(Resolve::Coverage, rows, units));
+            sample_pairs(t, &s.samples);
         }
         return (Resolve::Coverage, px);
     }
@@ -1594,6 +1844,13 @@ pub(crate) fn resolve_pixel(
     // covering the sub-sample whole, which blends over it exactly.
     if !s.samples.is_ranked() {
         s.samples.rank(cov, &s.order, front_at, strong_at, painted);
+    }
+    if let Some(t) = trace {
+        t.record(ResolveTrace::of_samples(
+            coverage_rows(frags, &sample_coverage),
+            &s.samples,
+        ));
+        sample_pairs(t, &s.samples);
     }
     (Resolve::Sample, s.samples.composite(frags, cov, bg))
 }

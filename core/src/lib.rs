@@ -21,6 +21,8 @@
 //! - [`tiles`]: a frame cut into tiles, drawn on threads scoped to the draw call.
 //! - [`contributors`]: per pixel, the drawn leaves its colour is made of, read from the passes the
 //!   resolves read (`Stream::contributors`).
+//! - [`diagnostics`]: internal, not a supported interface: per pixel, what its resolve composited,
+//!   enough to composite it again (`Stream::diagnostic_resolves`).
 //! - `counters`: call counts of the depth read along curves, in a build with the `counters`
 //!   feature only.
 //! - [`probes`]: the class probes, the parity kit's fixtures (`parity/probes.rs`).
@@ -51,6 +53,7 @@ pub mod contributors;
 #[cfg(feature = "counters")]
 pub mod counters;
 pub mod depth;
+pub mod diagnostics;
 pub mod geometry;
 pub mod gradient;
 pub mod instance;
