@@ -569,3 +569,69 @@ def test_a_face_drawn_twice_in_a_capture_is_drawn_one_way(fill):
         [(_, record)] = painter.stream._held.items()
         assert record.kind == "face_group"
         assert sorted(part for _, _, part in painter.stream._order) == [0, 0, 1, 2, 3]
+
+
+def _drawn_live(surface):
+    """The kinds of the records a live capture of ``surface``'s faces held,
+    on the core.
+    """
+    from fractions import Fraction
+
+    from arachne import tempconfig
+    from arachne.frame_ir.live import live
+
+    with tempconfig(MEDIUM):
+        camera = ThreeDCamera()
+        with live(camera, Fraction(0), draw_path="core", roots=[surface]):
+            camera.reset()
+            camera.capture_mobjects(list(surface.submobjects))
+        painter = live_painter(camera).painter(camera)
+        return sorted(record.kind for record in painter.stream._held.values())
+
+
+@pytest.mark.parametrize("owner", ["VMobject", "ThreeDVMobject"])
+def test_a_stroke_accessor_replaced_on_a_class_leaves_a_live_surface_as_paths(
+    owner, monkeypatch
+):
+    """A surface stroked 0 wide, its faces' ``get_stroke_rgbas`` replaced on
+    their class (here giving two stops where their paint holds one): the
+    record reads the accessor and leaves the surface as paths, and a live
+    capture, which reads no stroke colour at that width, does too rather
+    than give the faces their paint's.
+    """
+    from arachne.mobject.types.vectorized_mobject import VMobject
+
+    cls = {"VMobject": VMobject, "ThreeDVMobject": ThreeDVMobject}[owner]
+    engine = VMobject.get_stroke_rgbas
+
+    def two_stops(self, background=False):
+        return np.repeat(np.asarray(engine(self, background))[:1], 2, axis=0)
+
+    monkeypatch.setattr(cls, "get_stroke_rgbas", two_stops)
+    surface = _wave((2, 2)).set_stroke(width=0)
+    recorded = FrameStream().frame(ThreeDCamera(), [("static", [surface])])
+    assert {record.kind for _, record in recorded.set} == {"path"}
+    assert _drawn_live(surface) == ["path"] * 4
+
+
+def test_a_paint_property_on_the_face_class_never_runs_for_a_live_surface(
+    monkeypatch,
+):
+    """CE reads no stroke colour of a face stroked 0 wide, so a live capture
+    never runs a property the face's class puts over its stroke colours: it
+    leaves the surface as paths.
+    """
+    from arachne.mobject.types.vectorized_mobject import VMobject
+
+    engine = VMobject.stroke_rgbas
+    reads = []
+
+    def counted(self):
+        reads.append(None)
+        return engine.fget(self)
+
+    surface = _wave((2, 2)).set_stroke(width=0)
+    monkeypatch.setattr(ThreeDVMobject, "stroke_rgbas", property(counted, engine.fset))
+    kinds = _drawn_live(surface)
+    assert reads == []
+    assert kinds == ["path"] * 4
