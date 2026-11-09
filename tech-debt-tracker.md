@@ -594,6 +594,12 @@ lifted.
   entry until the child ends. Direction: end the scene's children on the way out, and check the entry's pid against
   the lock's holder (or take the lock in a process the scene can't fork from), if a scene that forks long-lived
   children turns up.
+- **A session render drawn by workers outlives a server killed outright.** A render with `workers` above 1 runs in
+  a process the server starts in a session of its own (`server/render.py`), so its workers are forked away from the
+  server's threads and locks. A deadline ends that process's group with the server (`Dispatcher.abandon`), but a
+  server killed outright (`SIGKILL`, the host's memory budget) leaves the render running to its end, and its
+  directory beside `out` stays. Direction: the render's process checks that its parent is still the server between
+  plays and while it waits on its workers, and ends its group when it is not.
 - **The reading thread's queue has no bound.** `serve._reading` queues every line read while a request runs, so a
   client flooding lines grows the server's memory without limit. Direction: bound the queue and stop reading a
   channel while it is full, so the flood waits in the socket instead.
