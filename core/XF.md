@@ -8,11 +8,11 @@ meaning and the binary form (`src/xf/wire.rs`), which fixtures and dumped stream
 
 ## Versions and refusal
 
-The version is (major, minor). This build is **XF 1.3**. From here the layout is append-only:
+The version is (major, minor). This build is **XF 1.4**. From here the layout is append-only:
 a new field or kind bumps the minor, and nothing removes or retypes a field. A writer emits the
 lowest supported version that carries a delta's content: **1.0 without a pre-projected tail, 1.1
 with one, 1.2 with an input grid (on the view or a sub-frame's view) or a record's planes or normals,
-1.3 with a face group's face ends or face widths**. A file's version is the highest version its deltas need (1.0 for an empty file).
+1.3 with a face group's face ends or face widths, 1.4 with a record's joins**. A file's version is the highest version its deltas need (1.0 for an empty file).
 Explicit foreign or newer version declarations are retained, since this writer cannot determine
 what their content requires. `XF_VERSION` names the build's supported version, not every delta's.
 
@@ -76,6 +76,18 @@ lights that corner by the face's Newell normal over the points it is handed (whe
 too, CE's normal from them). Without `normals` the drawer
 finds them from its points, as before XF 1.2. `Stream.normals(slots, grid)` gives them for records
 a stream holds. An XF 1.1 reader skips these fields under its newer-minor rule.
+
+So does a stroke's miter join (XF 1.4). Cairo decides each join from slopes between CE's points
+rounded to its 24.8 fixed point (`_cairo_spline_init`'s slopes, `outer_join`'s
+`2 <= ml² (1 + in · out)`); where a control arm is a few 1/256 px long, or the turn is near the
+miter limit, the snap's step moves that decision. The writer decides each join of a path that has
+such a join on the values as made and carries the decisions as the record's `joins`: one byte per
+cubic of its points, bit 0 set where Cairo joins into the cubic, bit 1 where it mitres there; for
+the first cubic of a closed subpath, the closing join (none where Cairo strokes a closing line
+first). The drawer strokes as before and, at a join whose carried decision differs from its own,
+drops its miter or puts one in, its tip at the miter limit's length (on parallel tangents, where no
+tip can be placed, the bevel stays). Without `joins`, or for a join the record does not decide, the
+drawer decides from the points it is handed. An XF 1.2 reader skips the field.
 
 This build draws the background (a colour, or an image cropped to the frame as CE crops it); `mesh`
 records filled with one colour; `path` records, their paints one colour or a linear gradient between
@@ -326,9 +338,12 @@ record    u8 kind  u64 features  u32 slot  u32 object
             count (f64 x3)*   (two normals per path the record draws)
           face ends and face widths (XF 1.3, face_group only), after the planes and normals
           (written, as empty lists, when the record carries neither), both when the record
-          carries either (an empty list: not carried):
+          carries either or joins follow (an empty list: not carried):
             count u32*   (per face, one past its last point: rising, the last the points' count)
             count f64*   (per face, its stroke width: finite, at least 0)
+          joins (XF 1.4), after the planes and normals and a face group's face lists (written,
+          empty, when the record carries none of them), when the record carries them:
+            count u8*   (one per cubic of the record's points: bit 0 joined, bit 1 mitred)
           (anything after the known fields belongs to a newer minor and is skipped)
 paint     u8 0 (none) | u8 1  f64 x4 | u8 2  f64 x8 | u8 3  key
 view      u32 pixel_width  u32 pixel_height  f64 frame_width  f64 frame_height

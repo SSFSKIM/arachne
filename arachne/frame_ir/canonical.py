@@ -42,7 +42,11 @@ normals each shaded path is lit by at its two lit corners
 ``normals`` and snapped to :data:`RATIO_GRID`. On a finely sampled curve
 that normal is the cross product of two nearly opposite chords, which the
 snap's step would turn by tens of degrees. The view carries the grid as its
-``input_grid`` (XF 1.2).
+``input_grid`` (XF 1.2). So are a stroked path's miter joins: Cairo decides
+each from slopes between CE's points rounded to its 24.8 fixed point, which a
+control arm a few 1/256 px long or a turn near the miter limit leaves to the
+last bits the snap moves (:mod:`.joins`); a path with such a join carries
+Cairo's decisions as its ``joins`` (XF 1.4).
 
 Whether a path's cubics join and whether its subpaths close are decided by
 the core on the snapped points, by CE's point-equality rule (each coordinate
@@ -85,6 +89,7 @@ from typing import Any
 
 import numpy as np
 
+from .joins import joins as cairo_joins
 from .xf import Delta, Record, Shape
 
 #: The fixed grid of positions that order, not place: the camera's depth
@@ -309,6 +314,22 @@ _RECORD: dict[str, Callable[[Any, float], Any]] = {
 }
 
 
+_placer: dict[str, Any] = {}
+
+
+def _placed(view: Mapping[str, Any], points: np.ndarray) -> np.ndarray:
+    """A world-space path's points as CE's 3D camera places them for Cairo
+    (``ThreeDCamera.project_points``), the camera set from ``view`` as the
+    Cairo drawer sets it.
+    """
+    if "drawer" not in _placer:
+        from .cairo_painter import CairoDrawer
+
+        _placer["drawer"] = CairoDrawer()
+    camera = _placer["drawer"]._camera(view, "joins")
+    return camera.project_points(points)
+
+
 def shades(view: Mapping[str, Any] | None) -> bool:
     """Whether ``view``'s camera shades what it draws in 3D."""
     return (
@@ -383,6 +404,10 @@ class Canonical:
         self.frame_grid: float | None = None
         #: Each held record's planarity codes, by slot.
         self._planes: dict[int, tuple[int, ...]] = {}
+        #: Each held record's joins as last handed to the core, by slot: they
+        #: follow the view (:meth:`_joins`), so a view that moves them sets the
+        #: record again.
+        self._joins_sent: dict[int, tuple[int, ...] | None] = {}
         self._decider: Any = None
         if planes:
             import arachne_core
@@ -403,6 +428,7 @@ class Canonical:
         for slot in delta.remove:
             self._records.pop(slot, None)
             self._planes.pop(slot, None)
+            self._joins_sent.pop(slot, None)
         self._decide(delta)
         grid = self.frame_grid
         if grid is None:
@@ -467,6 +493,16 @@ class Canonical:
                 if slot not in setting
                 and record.kind in _PATH_KINDS
                 and record.fields.get("shade_in_3d")
+            )
+        if delta.view is not None and not regrid:
+            # A path's joins are decided through the view: each held path
+            # whose joins the new view moves is set again with them.
+            setting.update(
+                (slot, record)
+                for slot, record in sorted(self._records.items())
+                if slot not in setting
+                and record.kind == "path"
+                and self._joins(record) != self._joins_sent.get(slot)
             )
         normals = self._normals(setting, grid)
         found.set = [
@@ -652,7 +688,60 @@ class Canonical:
             snapped["planes"] = self._planes[slot]
         if normals is not None:
             snapped["normals"] = normals
+        decided = self._joins(record)
+        self._joins_sent[slot] = decided
+        if decided is not None:
+            snapped["joins"] = decided
         return Record(record.kind, snapped)
+
+    def _joins(self, record: Record) -> tuple[int, ...] | None:
+        """A stroked path's miter joins as Cairo decides them on its points as
+        made (:func:`.joins.joins`), where a drawer handed them snapped could
+        decide otherwise; ``None`` elsewhere.
+        """
+        fields = dict(record.fields)
+        view = self._view
+        if record.kind != "path" or view is None:
+            return None
+        # The points drawn: a reveal's or a blend's, made from its shapes as
+        # the core makes them.
+        made = self._points(fields)
+        if fields.get("joint", "auto") not in ("auto", "miter"):
+            return None
+        # Stroked at either end of a paint blend.
+        if not any(
+            block.get(paint) is not None and block.get(width)
+            for block in (fields, fields.get("paint_b") or {})
+            for paint, width in (
+                ("stroke", "stroke_width"),
+                ("background_stroke", "background_stroke_width"),
+            )
+        ):
+            return None
+        # A placed path, or one the camera keeps facing it, is placed by the
+        # drawer otherwise than here: not decided.
+        place = fields.get("place")
+        if fields.get("fixed_orientation_centre") is not None or (
+            place is not None and not np.array_equal(place, _IDENTITY)
+        ):
+            return None
+        pre = fields.get("pre_projected")
+        if made is not None:
+            points = made
+        else:
+            shape = self._shapes.get(
+                pre["points"] if pre is not None else fields.get("shape")
+            )
+            if shape is None:
+                return None
+            points = shape.data
+        if pre is None and view.get("camera") == "three_d":
+            # The camera places a world-space path's points before Cairo
+            # strokes them; a path in any other space is not decided here.
+            if fields.get("space", "world") != "world":
+                return None
+            points = _placed(view, points)
+        return cairo_joins(points, view)
 
 
 #: CE's ``tolerance_for_point_equality`` and the relative tolerance of its

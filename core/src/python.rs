@@ -764,6 +764,7 @@ impl PyFrameDelta {
         record.body = body_of(kind, &fields)?;
         record.planes = fields.get::<Vec<u8>>("planes")?;
         record.normals = fields.get::<Vec<[f64; 3]>>("normals")?;
+        record.joins = fields.get::<Vec<u8>>("joins")?;
         fields.finish()?;
         self.delta.set.push(record);
         self.delta.version = wire::encoded_version(&self.delta);

@@ -14,7 +14,7 @@ pub use key::Key;
 ///
 /// From XF 1 the layout is append-only: a new field or kind bumps the minor, and nothing removes
 /// or retypes a field.
-pub const XF_VERSION: (u16, u16) = (1, 3);
+pub const XF_VERSION: (u16, u16) = (1, 4);
 
 /// CE's background-image fill: paint the path into a separate array and multiply by an image.
 /// Carried by XF, drawn by Cairo only in this build.
@@ -580,6 +580,12 @@ pub struct Record {
     /// face's own normal. Carried for records the camera shades. `None` when the writer did not
     /// decide: the drawer finds them from the points it is handed.
     pub normals: Option<Vec<[f64; 3]>>,
+    /// A path record's miter joins as Cairo decides them on the points as made (XF 1.4): one byte
+    /// per cubic of its points, bit 0 set where Cairo joins into the cubic and bit 1 where it
+    /// mitres there; for the first cubic of a closed subpath, its closing join. `None` when the
+    /// writer did not decide: the drawer decides from the points it is handed
+    /// ([`crate::join_mask`]).
+    pub joins: Option<Vec<u8>>,
 }
 
 impl Record {
@@ -602,6 +608,7 @@ impl Record {
             pre_projected: None,
             planes: None,
             normals: None,
+            joins: None,
         }
     }
 

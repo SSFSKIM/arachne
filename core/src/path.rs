@@ -52,11 +52,13 @@ use crate::composite::{
 };
 use crate::depth::{Boundary, Centreline, Flat, Planarity, Registry, WorldPlane};
 use crate::gradient::{self, Linear};
+use crate::join_mask;
 use crate::project::{FrameMap, Placement, Projection, placement, pre_display, produced_key};
 use crate::scanline::{self, Edge, Scratch};
 use crate::tiles::{TILE, tile_index, tiles_across};
 use crate::xf::*;
 use kurbo::{BezPath, ParamCurve as _, ParamCurveArclen as _, PathEl, PathSeg, Point, Shape as _};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Cairo's default tolerance for flattening curves, in pixels.
@@ -639,6 +641,55 @@ fn outline(shown: &[[f64; 3]]) -> BezPath {
         }
     }
     path
+}
+
+/// The decisions a record's `joins` (XF 1.4: one byte per cubic of its points) carries for the
+/// joins of [`outline`]`(shown)` as kurbo's stroker makes them, by join ([`join_mask::key`]: the
+/// cubic it leaves and the one it enters): the join into each cubic where bit 0 is set, mitred
+/// where bit 1 is; the first cubic's byte of a closed subpath, its closing join. A cubic whose
+/// points are one the stroker skips: the join is from the cubic before it, and the closing join
+/// into the first it strokes.
+fn decided_joins(shown: &[[f64; 3]], joins: &[u8]) -> join_mask::Decided {
+    let mut out = HashMap::new();
+    let pt = |p: [f64; 3]| Point::new(p[0], p[1]);
+    let byte = |i: usize| joins.get(i / 4).copied().filter(|b| b & 1 != 0);
+    for (start, end) in subpaths(shown) {
+        if end - start < 4 {
+            continue;
+        }
+        let (a, b) = (shown[start], shown[end - 1]);
+        let closed = close(a[0], b[0]) && close(a[1], b[1]);
+        let mut p0 = pt(a);
+        let (mut first, mut last): (Option<[Point; 4]>, Option<[Point; 4]>) = (None, None);
+        for i in (start..=end - 4).step_by(4) {
+            // As `outline` writes it: a closed subpath ends exactly at its start.
+            let end_point = if closed && i + 4 == end {
+                a
+            } else {
+                shown[i + 3]
+            };
+            let (p1, p2, p3) = (pt(shown[i + 1]), pt(shown[i + 2]), pt(end_point));
+            if p1 == p0 && p2 == p0 && p3 == p0 {
+                continue;
+            }
+            let this = [p0, p1, p2, p3];
+            match last {
+                Some(from) => {
+                    if let Some(b) = byte(i).filter(|_| i != start) {
+                        let key = join_mask::key(from, this, false);
+                        out.entry(key).or_insert_with(Vec::new).push(b & 2 != 0);
+                    }
+                }
+                None => first = Some(this),
+            }
+            (last, p0) = (Some(this), p3);
+        }
+        if let (true, Some(from), Some(into), Some(b)) = (closed, last, first, byte(start)) {
+            let key = join_mask::key(from, into, true);
+            out.entry(key).or_insert_with(Vec::new).push(b & 2 != 0);
+        }
+    }
+    out
 }
 
 /// A path through the frame mapping (an affine map of each point).
@@ -1456,6 +1507,7 @@ impl<'v> Lowering<'v> {
         if user.elements().is_empty() {
             return;
         }
+        let decided = rec.joins.as_deref().map(|j| decided_joins(&shown, j));
         // The strokes' depth and the fill's.
         let (strokes, fill, ids, fill_snap, plane_rows) = match keyed {
             Some(plane) => (
@@ -1542,21 +1594,36 @@ impl<'v> Lowering<'v> {
                     let pattern = dash_entries(&d);
                     dashed(&user, d.phase * d.period, &pattern, area)
                 });
+                let elements = dashes.as_ref().unwrap_or(&guarded).elements();
                 let stroked = if strokes_as_dot(draw, &shown) {
                     kurbo::Circle::new(Point::new(shown[0][0], shown[0][1]), w / 2.0)
                         .to_path(TOLERANCE / scale)
                 } else {
-                    kurbo::stroke(
-                        dashes
-                            .as_ref()
-                            .unwrap_or(&guarded)
-                            .elements()
-                            .iter()
-                            .copied(),
+                    let stroked = kurbo::stroke(
+                        elements.iter().copied(),
                         &style,
                         &kurbo::StrokeOpts::default(),
                         TOLERANCE / scale,
-                    )
+                    );
+                    // Joins carried as Cairo decided them (XF 1.4): kurbo's stroke, edited at those
+                    // it decided otherwise.
+                    match &decided {
+                        Some(decided) => {
+                            let (edited, _edits) = join_mask::apply(
+                                stroked,
+                                elements,
+                                &style,
+                                TOLERANCE / scale,
+                                decided,
+                            );
+                            count!(JOINS_DROPPED, _edits.dropped as usize);
+                            count!(JOINS_INSERTED, _edits.inserted as usize);
+                            count!(JOINS_PARALLEL, _edits.parallel as usize);
+                            count!(JOINS_UNMATCHED, _edits.unmatched as usize);
+                            edited
+                        }
+                        None => stroked,
+                    }
                 };
                 mapped(&stroked, &self.map)
             };

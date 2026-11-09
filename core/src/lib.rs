@@ -12,6 +12,8 @@
 //! - [`mesh`]: the triangle rasterizer, a producer of mask fragments with depth.
 //! - [`path`]: the path rasterizer (fills, strokes, dashes, glyphs), a producer of
 //!   exact-area fragments with depth, on [`scanline`]'s exact nonzero coverage.
+//! - [`join_mask`]: a stroke's miter joins decided as Cairo decides them, where a path record
+//!   carries its `joins`.
 //! - [`geometry`]: a path record's reveal, blend and paint blend made into what is drawn.
 //! - [`gradient`]: linear gradients, coloured as Cairo's pattern and pixman's fetch colour them.
 //! - [`depth`]: canonical planes, so coplanar things tie exactly, and depth along curves.
@@ -57,6 +59,7 @@ pub mod diagnostics;
 pub mod geometry;
 pub mod gradient;
 pub mod instance;
+pub mod join_mask;
 pub mod mesh;
 pub mod order;
 pub mod path;
