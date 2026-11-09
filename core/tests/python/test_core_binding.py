@@ -32,7 +32,16 @@ def background_delta(width: int, height: int, rgba) -> ac.FrameDelta:
 
 
 def test_the_version_is_xf_1():
-    assert ac.XF_VERSION == (1, 3)
+    assert ac.XF_VERSION == (1, 4)
+
+
+def test_a_record_s_joins_are_carried_and_read_back():
+    delta = ac.FrameDelta()
+    delta.set_view(pixel_width=4, pixel_height=4, **FRAME)
+    delta.set_record("path", slot=1, object=1, joins=(0, 1, 3))
+    assert delta.version == (1, 4)
+    back = ac.FrameDelta.from_bytes(delta.to_bytes())
+    assert back.contents()["set"][0][3]["joins"] == (0, 1, 3)
 
 
 def test_mapping_centre_defaults_to_the_live_frame_center():

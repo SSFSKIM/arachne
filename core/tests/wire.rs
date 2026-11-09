@@ -159,6 +159,8 @@ fn trailing_fields_of_a_newer_minor_are_skipped() {
     let mut record = Record::new(RecordKind::Path, 3, 4);
     record.opacity = 0.25;
     record.planes = Some(vec![1]);
+    // The fields of XF 1.4, the last this build knows: a newer minor's bytes follow them.
+    record.joins = Some(vec![1, 3]);
     let mut raw = wire::encode_record(&record);
     raw.extend_from_slice(&[1, 2, 3, 4, 5]);
     let delta = wire::decode_delta(&delta_with_raw_record(&raw)).unwrap();
@@ -166,15 +168,17 @@ fn trailing_fields_of_a_newer_minor_are_skipped() {
 }
 
 /// XF 1.2's normals follow the planes, both written when either is carried; an empty list reads
-/// as one not carried. A newer minor's bytes after them are skipped.
+/// as one not carried. A newer minor's bytes after them (and after XF 1.4's joins) are skipped.
 #[test]
 fn a_records_normals_follow_its_planes() {
     let mut record = Record::new(RecordKind::Path, 3, 4);
     record.normals = Some(vec![[0.0, 0.6, 0.8], [0.0; 3]]);
+    record.joins = Some(vec![]);
     let mut raw = wire::encode_record(&record);
     raw.extend_from_slice(&[1, 2, 3]);
     let delta = wire::decode_delta(&delta_with_raw_record(&raw)).unwrap();
     assert_eq!(delta.set[0], record);
+    record.joins = None;
     record.planes = Some(vec![1]);
     let delta = wire::decode_delta(&delta_with_raw_record(&wire::encode_record(&record))).unwrap();
     assert_eq!(delta.set[0], record);
@@ -385,15 +389,17 @@ fn bytes_after_a_tail_are_still_skipped_and_do_not_shift_the_next_record() {
         .unwrap()
         .set
         .remove(0);
-    // XF 1.2's planes and normals (none) follow the tail; a newer minor's bytes follow them.
+    // XF 1.2's planes and normals (none) follow the tail, then XF 1.4's joins; a newer minor's
+    // bytes follow them.
     let mut planned = raw.clone();
-    planned.extend_from_slice(&[1, 0, 0, 0, 1, 0, 0, 0, 0]);
+    planned.extend_from_slice(&[1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 3]);
     let mut expected_planned = expected.clone();
     expected_planned.planes = Some(vec![1]);
+    expected_planned.joins = Some(vec![3]);
     let mut extended = planned.clone();
     extended.extend_from_slice(&[0xff, 0xfe, 0xfd]);
     let mut bytes = delta_with_raw_record(&extended);
-    bytes[2..4].copy_from_slice(&3u16.to_le_bytes());
+    bytes[2..4].copy_from_slice(&5u16.to_le_bytes());
     assert_eq!(wire::decode_delta(&bytes).unwrap().set[0], expected_planned);
 
     let mut d = Delta::new(Time { num: 0, den: 1 }, 0);
@@ -430,7 +436,19 @@ fn the_writer_uses_the_lowest_minor_that_carries_the_content() {
     view.input_grid = 1.0 / 32768.0;
     gridded.view = Some(view);
     assert_eq!(&wire::encode_delta(&gridded)[..4], &[1, 0, 2, 0]);
-    assert_eq!(&wire::encode_file(&[d, gridded])[4..8], &[1, 0, 2, 0]);
+    assert_eq!(
+        &wire::encode_file(&[d.clone(), gridded])[4..8],
+        &[1, 0, 2, 0]
+    );
+    // XF 1.4: a record's joins, alone or after planes; read back as written.
+    for planes in [None, Some(vec![1])] {
+        let mut joined = d.clone();
+        joined.set[0].planes = planes;
+        joined.set[0].joins = Some(vec![0, 1, 3]);
+        let bytes = wire::encode_delta(&joined);
+        assert_eq!(&bytes[..4], &[1, 0, 4, 0]);
+        assert_eq!(wire::decode_delta(&bytes).unwrap().set, joined.set);
+    }
 }
 
 #[test]
