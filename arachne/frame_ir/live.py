@@ -1624,9 +1624,10 @@ def _inactive_strokes(
     """``fields`` with each stroke drawn 0 wide given the paint the record's
     frames give it. CE reads no stroke colour at that width
     (``Camera.apply_stroke``); the record reads the face's own
-    (``VMobject.get_stroke_rgbas``), here off the face's state, no method of
-    it run. ``None`` where the face states its stroke colours by its own
-    method.
+    (``VMobject.get_stroke_rgbas``). Here it is read off the face's paint,
+    its state, and nothing of the face or its class runs: only where the
+    accessor, the colours' property and the paint's storage are each the
+    engine's own (:func:`_engine_paint`). ``None`` otherwise.
     """
     found = dict(fields)
     for name, width, attribute in (
@@ -1635,15 +1636,40 @@ def _inactive_strokes(
     ):
         if found.get(name) is not None or found.get(width) != 0:
             continue
-        if "get_stroke_rgbas" in vars(face):
+        paint = _engine_paint(face, attribute)
+        if paint is None:
             return None
-        try:
-            # A field of the face's paint (its state), as the method reads it.
-            rows = getattr(face, attribute)
-        except AttributeError:
-            rows = np.zeros((1, 4))
-        found[name] = _paint(rows, uploads)
+        # As the property reads the field, and the accessor a missing one.
+        rows = vars(paint).get(attribute)
+        found[name] = _paint(np.zeros((1, 4)) if rows is None else rows, uploads)
     return found
+
+
+def _engine_paint(face: Any, attribute: str) -> Any:
+    """``face``'s paint (:class:`~.values.Paint`), off its own state, where
+    ``get_stroke_rgbas`` reads ``attribute`` of it by the engine's code
+    alone: neither the face nor its class puts another accessor, property
+    or paint over the engine's (each compared by identity, no descriptor
+    run, with what the engine's ``VMobject`` held when the engine was
+    imported). ``None`` otherwise.
+    """
+    import inspect
+
+    from arachne.mobject.types.vectorized_mobject import VMobject
+    from arachne.mobject.values import Paint
+    from arachne.timeline.frozen import class_members
+
+    engine = class_members(VMobject)
+    own = vars(face)
+    missing = object()
+    for member in ("get_stroke_rgbas", attribute, "_paint"):
+        if member != "_paint" and member in own:
+            return None
+        held = inspect.getattr_static(type(face), member, missing)
+        if held is missing or held is not engine.get(member, missing):
+            return None
+    paint = own.get("_paint")
+    return paint if type(paint) is Paint else None
 
 
 def _same_record(a: Record, b: Record) -> bool:
