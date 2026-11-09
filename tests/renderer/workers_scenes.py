@@ -219,7 +219,6 @@ class FrameRead(Scene):
     """
 
     def construct(self):
-        self.first()
         circle = Circle(radius=0.6)
         self.add(circle)
         self.wait(0.4)
@@ -227,9 +226,6 @@ class FrameRead(Scene):
         self.middle()
         self.add(circle)
         self.play(circle.animate.shift(LEFT), run_time=0.4)
-
-    def first(self):
-        pass
 
     def middle(self):
         show(self, self.read())
@@ -259,11 +255,53 @@ class FrameNotRead(FrameRead):
         self.wait(0.4)
 
 
-class FrameReadFirst(FrameNotRead):
-    """:class:`FrameNotRead` whose script reads a frame before its first
-    play.
+class FrameReadFirst(Scene):
+    """The script draws a frame of what it shows before its first play,
+    then moves the frame centre: its paths map around the centre that frame
+    froze.
     """
 
+    def construct(self):
+        circle = Circle(radius=0.6)
+        self.add(circle)
+        self.first()
+        self.camera.frame_center = np.array([1.0, 0.5, 0.0])
+        self.wait(0.4)
+        self.play(circle.animate.shift(LEFT), run_time=0.4)
+
     def first(self):
-        drawn_now(self)
-        self.renderer.get_frame()
+        self.renderer.update_frame(self)
+
+
+class FrameNotReadFirst(FrameReadFirst):
+    """:class:`FrameReadFirst` drawing no frame before its first play."""
+
+    def first(self):
+        pass
+
+
+class SkippedStaticFrameGot(Scene):
+    """A frozen frame, then a frozen frame of another picture in a skipped
+    section, then the script reads the frame as the renderer holds it, the
+    skipped frame's static picture, and shows it.
+    """
+
+    def construct(self):
+        circle = Circle(radius=0.6)
+        self.add(circle)
+        self.wait(0.4)
+        self.next_section(skip_animations=True)
+        circle.shift(RIGHT * 2)
+        self.wait(0.4)
+        self.next_section(skip_animations=False)
+        self.then()
+
+    def then(self):
+        show(self, self.renderer.get_frame())
+
+
+class SkippedStaticNotRead(SkippedStaticFrameGot):
+    """:class:`SkippedStaticFrameGot` with a wait where it reads a frame."""
+
+    def then(self):
+        self.wait(0.4)

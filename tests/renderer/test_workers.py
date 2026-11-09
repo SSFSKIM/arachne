@@ -296,58 +296,50 @@ def test_plays_drawn_by_workers_after_a_skipped_static_map_as_one_process_does(
     assert two["movie"]["frames"] == one["drawn"]
 
 
-def test_a_skipped_static_picture_drawn_while_plays_wait_maps_as_one_process_does(
-    tmp_path,
-):
-    """The script draws a frame over a skipped frame's static picture, drawn
-    while the plays before it wait for the workers, and shows it.
-    """
-    one, two = renders(tmp_path, "SkippedCentreSnapshot", [at(1), at(2)])
-    drawn_here(one)
-    drawn_here(two)
-    assert READ in two["fallback"]
-    assert two["movie"]["frames"] == one["drawn"]
-
-
-#: Why a render whose script reads a frame while plays wait for the workers
-#: draws them here, and every play after them.
+#: Why a render whose script reads a frame through the renderer draws every
+#: play in its own process from then on.
 READ = "reads a frame"
 
+#: Scenes whose script reads a frame through the renderer, each beside the
+#: same scene reading none.
+READS = [
+    pytest.param("FrameRead", "FrameNotRead", id="drawn_after_a_play"),
+    pytest.param("FrameGot", "FrameNotRead", id="held_after_a_play"),
+    pytest.param("FrameReadFirst", "FrameNotReadFirst", id="drawn_before_any_play"),
+    pytest.param(
+        "SkippedStaticFrameGot", "SkippedStaticNotRead", id="held_after_a_skipped_one"
+    ),
+    pytest.param(
+        "SkippedCentreSnapshot", "SkippedCentre", id="drawn_over_a_skipped_one"
+    ),
+]
 
-@pytest.mark.parametrize(
-    "scene",
-    [
-        "FrameRead",
-        "FrameGot",
-        pytest.param(
-            "CameraImageGot",
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason="a frame read from the camera itself does not reach the"
-                " renderer (tech-debt-tracker.md, Render workers)",
-            ),
-        ),
-    ],
-)
-def test_a_frame_read_while_plays_wait_draws_the_render_here(tmp_path, scene):
-    """Drawn now (``update_frame``), or as the renderer or the camera holds
-    it, the frame the script reads is one process's.
+
+@pytest.mark.parametrize(("scene", "unread"), READS)
+def test_a_frame_the_script_reads_is_one_process_s(tmp_path, scene, unread):
+    """Drawn now (``update_frame``) or as the renderer holds it
+    (``get_frame``), whenever it is read, the frame the script reads is one
+    process's, and so is every frame after it.
     """
     one, two = renders(tmp_path, scene, [at(1), at(2)])
     drawn_here(one)
     drawn_here(two)
     assert READ in two["fallback"]
     assert two["movie"]["frames"] == one["drawn"]
-
-
-@pytest.mark.parametrize("scene", ["FrameNotRead", "FrameReadFirst"])
-def test_a_render_reading_no_frame_while_plays_wait_is_drawn_by_workers(
-    tmp_path, scene
-):
-    """No frame read, or one read before any play waits."""
-    one, two = renders(tmp_path, scene, [at(1), at(2)])
-    drawn_here(one)
+    # The same scene reading no frame is drawn by the workers.
+    one, two = renders(tmp_path, unread, [at(1), at(2)])
     drawn_by_workers(two, 2)
+    assert two["movie"]["frames"] == one["drawn"]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="a frame read from the camera itself does not reach the renderer"
+    " (tech-debt-tracker.md, Render workers)",
+)
+def test_a_frame_read_from_the_camera_is_one_process_s(tmp_path):
+    one, two = renders(tmp_path, "CameraImageGot", [at(1), at(2)])
+    drawn_here(one)
     assert two["movie"]["frames"] == one["drawn"]
 
 

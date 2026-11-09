@@ -664,11 +664,11 @@ lifted.
 
 - **A frame the script reads from the camera itself while plays wait for the workers is not one process's.** With
   `render_workers` above 1, a drawn play's frames wait until the scene has run. A frame read through the renderer
-  (`update_frame`, `show_frame`, `render`, `get_frame`, `freeze_current_frame`) draws the waiting plays here first,
-  and the render goes on in this process. A read from the camera does not reach the renderer: `camera.get_image()`,
-  `camera.pixel_array`, a mobject drawn into the scene's camera (`capture_mobject`, `Mobject.get_image(camera)`)
-  read or draw over a pixel array the waiting plays have not been drawn into, mapped around the frame centre of that
-  moment. Reproduced by `CameraImageGot` (`tests/renderer/test_workers.py`, an expected failure). Direction: a
+  (`update_frame`, `show_frame`, `render`, `get_frame`, `freeze_current_frame`), whenever it comes, draws the render
+  in this process from then on, the waiting plays first. A read from the camera does not reach the renderer:
+  `camera.get_image()`, `camera.pixel_array`, a mobject drawn into the scene's camera (`capture_mobject`,
+  `Mobject.get_image(camera)`) read or draw over a pixel array the waiting plays have not been drawn into, mapped
+  around the frame centre of that moment. Reproduced by `CameraImageGot` (`tests/renderer/test_workers.py`, an expected failure). Direction: a
   camera told by its renderer that plays wait, which hands the read to it first, and leaves the record's own draws
   alone.
 

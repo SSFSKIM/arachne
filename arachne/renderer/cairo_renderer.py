@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import functools
+import weakref
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
@@ -38,14 +39,14 @@ class _Deferred:
     """A play of a render whose frames wait to be drawn by its workers:
     ``number``, its index in the render; ``play`` and ``frames``, the play
     and its instants of the frame grid, ``None`` and none when it draws
-    nothing; ``static``, the static picture the renderer kept after it, for
-    a play that draws nothing.
+    nothing; ``still``, a frozen frame whose frames are not drawn but whose
+    static picture is (:meth:`CairoRenderer._draw_still`).
     """
 
     number: int
     play: PlayRecord | None
     frames: list[Fraction]
-    static: PixelArray | None
+    still: PlayRecord | None = None
 
 
 def _stop_progress_monitor() -> None:
@@ -129,7 +130,7 @@ class CairoRenderer:
         #: ``None`` when each play is drawn as the render reaches it.
         self._deferred: list[_Deferred] | None = None
         #: The scene being rendered (:meth:`init_scene`).
-        self._scene: Scene | None = None
+        self._scene: weakref.ref[Scene] | None = None
         self.drawn_by: tuple[workers.WorkerReport, ...] = ()
         self.worker_fallback: str | None = None
 
@@ -150,7 +151,7 @@ class CairoRenderer:
         file_writer_settings: _SceneFileWriterSettings,
     ) -> None:
         self.file_writer: Any = self._file_writer_class(file_writer_settings)
-        self._scene = scene
+        self._scene = weakref.ref(scene)
         self._deferred = None
         if config.render_workers > 1:
             reason = self._no_workers(self.file_writer.output_spec)
@@ -280,33 +281,40 @@ class CairoRenderer:
             {"h": str(self.animations_hashes[:5])},
         )
         static = None
-        deferred = draw and self._deferred is not None
-        if deferred:
-            # Drawn by the render's workers once the scene has run.
-            pass
+        # CE draws a frozen frame's static picture whatever it skips.
+        still = (
+            not draw
+            and play.held
+            and bool(play.static)
+            and scene._arachne_timeline.draws
+        )
+        if self._deferred is not None:
+            # Drawn once the scene has run, by the render's workers or here,
+            # in order; a skipped frame's static picture here, in its place.
+            self._deferred.append(
+                _Deferred(
+                    self.num_plays,
+                    play if draw else None,
+                    frames if draw else [],
+                    play if still else None,
+                )
+            )
         elif draw:
             static = self._draw_play(scene, play, frames)
-        elif play.held and play.static and scene._arachne_timeline.draws:
-            # CE draws a frozen frame's static picture whatever it skips.
-            if self._deferred is not None:
-                # Drawn before the plays waiting for the workers.
-                self._map_as_rendered(scene)
-            with Drawing(scene._arachne_timeline.ensure_record()) as drawing:
-                static = drawing.static(play)
+        elif still:
+            static = self._draw_still(scene, play)
         # As in CE, a frozen frame's static picture stays the renderer's
         # background after it (what update_frame draws over), and no other
         # play's does; with the static layer off, none does.
         self.static_image = static if play.held and config.static_layer else None
-        if self._deferred is not None:
-            self._deferred.append(
-                _Deferred(
-                    self.num_plays,
-                    play if deferred else None,
-                    frames if deferred else [],
-                    self.static_image,
-                )
-            )
         self.num_plays += 1
+
+    def _draw_still(self, scene: Scene, play: PlayRecord) -> PixelArray | None:
+        """Draw the static picture of a frozen frame whose frames are not
+        drawn, and return it.
+        """
+        with Drawing(scene._arachne_timeline.ensure_record()) as drawing:
+            return drawing.static(play)
 
     def _play_live(
         self,
@@ -434,30 +442,30 @@ class CairoRenderer:
         self._draw_in_order(scene, deferred)
 
     def _frame_read(self) -> None:
-        """The scene's code reads a frame through the renderer: if plays
-        wait for the workers, draw them here first, and every play after
-        them, so that the frame it reads is the one a render drawing each
-        play as it runs holds.
+        """The scene's code reads a frame through the renderer while the
+        render's plays wait for its workers: draw the render here from now
+        on, those plays first, so that the frame it reads, and every frame
+        after it, are the ones a render drawing each play as it runs draws.
         """
-        if self._deferred and any(each.play is not None for each in self._deferred):
-            assert self._scene is not None
-            self._draw_here(
-                self._scene,
-                "the scene's code reads a frame while plays wait for the workers",
-            )
+        scene = self._scene() if self._scene is not None else None
+        assert scene is not None
+        self._draw_here(scene, "the scene's code reads a frame")
 
     def _draw_in_order(self, scene: Scene, deferred: Sequence[_Deferred]) -> None:
-        """Draw the frames of ``deferred`` in this process, in order,
-        leaving the renderer as drawing each as it ran would have.
+        """Draw the frames of ``deferred`` in this process, in order, and
+        the static pictures drawn as they ran, leaving the renderer and its
+        camera as drawing each as it ran would have.
         """
         self._map_as_rendered(scene)
         for each in deferred:
-            if each.play is None:
-                self.static_image = each.static
-                continue
-            static = self._draw_play(scene, each.play, each.frames, each.number)
-            held = each.play.held and config.static_layer
-            self.static_image = static if held else None
+            if each.play is not None:
+                static = self._draw_play(scene, each.play, each.frames, each.number)
+                held = each.play.held
+            elif each.still is not None:
+                static, held = self._draw_still(scene, each.still), True
+            else:
+                static, held = None, False
+            self.static_image = static if held and config.static_layer else None
 
     def _draw_deferred(self, scene: Scene) -> None:
         """Once the scene has run, draw the frames of its plays: cut into
@@ -550,9 +558,9 @@ class CairoRenderer:
         """Make the camera map paths around the centre the render's first
         path draw froze (:func:`.timeline.mapping.freeze_mapping_centre`),
         whatever this process drew first. Frames drawn out of the render's
-        order (a worker's range, the plays that waited for the workers, a
-        skipped frame's static picture drawn while they wait) then map as
-        one process drawing every frame in order maps them.
+        order (a worker's range, the plays that waited for the workers once
+        the camera has drawn) then map as one process drawing every frame in
+        order maps them.
         """
         from ..timeline.mapping import freeze_mapping_centre
 
@@ -665,7 +673,8 @@ class CairoRenderer:
         """
         if self.skip_animations and not ignore_skipping:
             return
-        self._frame_read()
+        if self._deferred is not None:
+            self._frame_read()
         if not mobjects:
             mobjects = list_update(
                 scene.mobjects,
@@ -703,7 +712,8 @@ class CairoRenderer:
             NumPy array of pixel values of each pixel in screen.
             The shape of the array is height x width x 3.
         """
-        self._frame_read()
+        if self._deferred is not None:
+            self._frame_read()
         return self.camera.pixel_array.copy()
 
     def add_frame(self, frame: PixelArray, num_frames: int = 1) -> None:
