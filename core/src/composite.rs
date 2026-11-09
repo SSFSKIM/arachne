@@ -1676,6 +1676,64 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_trace_reports_each_pair_s_order_as_the_rank_decided_it() {
+        use crate::order::Decided;
+        // Painted X, W, F, T, every one over the whole pixel and translucent; X nearest, W and F
+        // 0.00015 behind it, T 0.0003 behind, each depth within 1e-4: only X against T lies
+        // beyond the two bounds, so only it is strong, and the weak orders (paint order) yield to
+        // it. Back to front: T, X, W, F.
+        let at = |z: f64, order: u32| {
+            let depth = Plane {
+                err: 1e-4,
+                ..Plane::constant(z)
+            };
+            Fragment::new(depth, [60, 30, 0, 128], Coverage::Mask(FULL), order, 0)
+        };
+        let (x, w, f, t) = (0, 1, 2, 3);
+        let frags = [at(0.0, 1), at(0.00015, 2), at(0.00015, 3), at(0.0003, 4)];
+        let traced = |decisions: bool| {
+            let mut s = Scratch::default();
+            s.fragments.extend_from_slice(&frags);
+            let mut trace = ResolveTrace::empty(decisions);
+            let drawn = resolve_pixel_traced(
+                &mut s,
+                [0, 0, 0, 255],
+                |_, _| [255; SAMPLES],
+                |_, f| Depths::of_plane(f, 0, 0),
+                Some(&mut trace),
+            );
+            (drawn, trace)
+        };
+        let (drawn, trace) = traced(true);
+        let pair = |a, b, front, how| PairOrder {
+            a,
+            b,
+            front: Some(front),
+            how,
+        };
+        let weak = |a, b, front| pair(a, b, front, Decided::Tie);
+        let expected = vec![
+            weak(x, w, w),
+            weak(x, f, f),
+            pair(x, t, x, Decided::Depth),
+            weak(w, f, f),
+            weak(w, t, t),
+            weak(f, t, t),
+        ];
+        assert_eq!(trace.pairs, expected);
+        assert!(trace.sample_ranked);
+        for k in 0..SAMPLES {
+            assert_eq!(trace.sample_pairs[k], expected, "sub-sample {k}");
+            assert_eq!(trace.samples[k], [f, w, x, t], "sub-sample {k}");
+        }
+        // Not asked for, none is recorded, and the pixel and what it composited are the same.
+        let (plain, bare) = traced(false);
+        assert_eq!(plain, drawn);
+        assert!(bare.pairs.is_empty() && bare.sample_pairs.is_empty());
+        assert_eq!((bare.resolve, bare.samples), (trace.resolve, trace.samples));
+    }
+
+    #[test]
     fn the_byte_products_round_within_their_stated_errors() {
         // Every pair of bytes: the widest `|255 mul(a, b) - a b|`, which is 255 times the error.
         let widest = |f: fn(u8, u8) -> u8| {
