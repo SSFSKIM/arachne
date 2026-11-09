@@ -105,6 +105,15 @@ class SurfaceInGroup(ThreeDScene):
         self.play(dot.animate.shift(UP), run_time=0.4)
 
 
+class SurfaceCutLater(StaticSurface):
+    """The static surface of the play loses faces once the play is over."""
+
+    def construct(self):
+        super().construct()
+        self.surface.remove(*self.surface.submobjects[:8])
+        self.wait(0.2)
+
+
 class Solids(ThreeDScene):
     """A cone (with two points), a cylinder and a 3D line (with two caps)
     and a 3D arrow (two caps, a point and a cone), static while a dot moves.
@@ -228,6 +237,29 @@ def test_a_static_surface_is_one_face_group_while_another_mobject_moves(
     for frame in _mid_play(scene, frames):
         _assert_grouped(frame, scene.surface)
     _assert_grouped(frames[-1], scene.surface)
+
+
+def test_a_static_picture_drawn_after_the_scene_groups_the_faces_it_held():
+    """A play's static picture drawn from the record once the scene has run
+    (as a render whose plays wait for its workers draws it) groups the
+    surface's faces as the play held them, not as the scene left them.
+    """
+    from arachne import tempconfig
+    from arachne.timeline.draw import Drawing
+
+    scene, _ = render(SurfaceCutLater, FPS, draw_path="core", **MEDIUM)
+    record = scene.timeline.record
+    play = record.plays[0]
+    assert len(_uv_faces(scene.surface)) == 56, "the scene cut the surface"
+    with (
+        tempconfig(MEDIUM),
+        Drawing(record, static_layer=True, draw_path="core") as painting,
+    ):
+        painting.static(play)
+    state = painter_for(record, "core", "static").state
+    groups = [r for r in state.records.values() if r.kind == "face_group"]
+    assert [len(group.fields["uv"]) for group in groups] == [64]
+    assert {r.kind for r in state.records.values()} == {"face_group"}
 
 
 @pytest.mark.parametrize("when", ["last frame", "play"])
