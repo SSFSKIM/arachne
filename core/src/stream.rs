@@ -1100,15 +1100,18 @@ impl Stream {
     }
 
     /// The leaves, as `(object, part)` like [`Stream::contributors`]' leaves, whose strokes the
-    /// drawer draws as a round cap's dot ([`path::Lowering::round_cap_dot`]): faces of the face
-    /// groups the order draws, decided as drawing decides it. Nothing is drawn.
+    /// drawer draws as a round cap's dot ([`path::Lowering::round_cap_dot`]): the faces of face
+    /// groups the order draws (its `(slot, part)` entries), decided as drawing decides it.
+    /// Nothing is drawn.
     pub fn round_cap_dots(&self) -> Result<std::collections::BTreeSet<(u32, u32)>, DrawError> {
-        let slots: std::collections::BTreeSet<u32> = self
+        let ordered: std::collections::BTreeSet<(u32, u32)> = self
             .order
             .iter()
-            .map(|e| e.slot)
-            .filter(|slot| self.records[slot].kind == RecordKind::FaceGroup)
+            .filter(|e| self.records[&e.slot].kind == RecordKind::FaceGroup)
+            .map(|e| (e.slot, e.part))
             .collect();
+        let slots: std::collections::BTreeSet<u32> =
+            ordered.iter().map(|(slot, _)| *slot).collect();
         let slots: Vec<u32> = slots.into_iter().collect();
         let found = self.each_paths(&slots, |lowering, paths| {
             let parts: Vec<u32> = paths
@@ -1122,7 +1125,11 @@ impl Stream {
             .into_iter()
             .flat_map(|(slot, parts)| {
                 let object = self.records[&slot].object;
-                parts.into_iter().map(move |part| (object, part))
+                let ordered = &ordered;
+                parts
+                    .into_iter()
+                    .filter(move |part| ordered.contains(&(slot, *part)))
+                    .map(move |part| (object, part))
             })
             .collect())
     }

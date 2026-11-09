@@ -147,6 +147,17 @@ fn drawn_world(draw: &PathDraw<'_>) -> Option<Vec<[f64; 3]>> {
     Some(world)
 }
 
+/// Cairo's least length (`CAIRO_FIXED_ERROR_DOUBLE`, 1/512): `_cairo_gstate_set_dash` makes a
+/// dash whose gaps total less than this solid.
+const SOLID_DASH_GAP: f64 = 1.0 / 512.0;
+
+/// The dash `rec` is stroked with, as Cairo takes it: none where it has none, its duty is 1, or
+/// its gap is shorter than Cairo's least length ([`SOLID_DASH_GAP`]), which Cairo strokes solid.
+fn drawn_dash(rec: &Record) -> Option<Dash> {
+    rec.dash
+        .filter(|d| d.duty < 1.0 && d.period * (1.0 - d.duty) >= SOLID_DASH_GAP)
+}
+
 /// Whether `draw`'s strokes are a round cap's dot, as Cairo strokes a closed subpath of no
 /// length: a face of a surface (one not yet drawn, `Create`, is its points at one spot) whose
 /// points `shown` are at one spot as the camera shows them, under a round cap (a butt or square
@@ -155,7 +166,7 @@ fn drawn_world(draw: &PathDraw<'_>) -> Option<Vec<[f64; 3]>> {
 /// or passes, and dots the subpath only when the dash it lands in is on (`dash_starts_on`).
 fn strokes_as_dot(draw: &PathDraw<'_>, shown: &[[f64; 3]]) -> bool {
     let rec = draw.record;
-    let on_at_start = match rec.dash.filter(|d| d.duty < 1.0) {
+    let on_at_start = match drawn_dash(rec) {
         None => true,
         Some(d) => (d.phase * d.period).rem_euclid(d.period) < d.period * d.duty,
     };
@@ -1328,14 +1339,82 @@ impl<'v> Lowering<'v> {
         }
     }
 
-    /// Whether [`Lowering::path`] strokes `draw` as a round cap's dot ([`strokes_as_dot`]), from
-    /// its points as this frame's camera shows them. Nothing is drawn.
+    /// What each layer of `draw` (background stroke, fill, stroke) paints, as [`Lowering::path`]
+    /// draws it: its paint and its width in CE's units, `None` for a layer it draws nothing of (no
+    /// paint, a gradient without ends, a solid paint of no alpha, a stroke of no width); and
+    /// whether the fill has paint at all. `shown` is `world` as `placement` shows it. CE's
+    /// lighting (`ThreeDCamera.modified_rgbas`): a shaded path's paint becomes two stops, lit at
+    /// its start and end corners. Its gradient runs, as any path's does, between the ends the
+    /// mobject gives (`get_gradient_start_and_end_points`, the record's): for a shaded path its
+    /// corners, unless it gives others, as `ThreeDAxes` gives every piece of an axis the axis's own
+    /// ends. A shaded path with no ends recorded (a face of a surface, an instance) runs between
+    /// its corners.
+    fn layers(
+        &self,
+        draw: &PathDraw<'_>,
+        world: &[[f64; 3]],
+        shown: &[[f64; 3]],
+        placement: Placement,
+    ) -> ([Option<(PaintSpec, f64)>; 3], bool) {
+        let corners = [0, (world.len() - 1) / 6 * 3];
+        let lit = self.light(draw);
+        let ends = match (draw.ends, lit) {
+            (Some(ends), _) if draw.pre_projected => Some(ends),
+            (Some(ends), _) => {
+                let shown_ends = pre_display(&ends, self.projection.as_ref(), placement);
+                Some([shown_ends[0], shown_ends[1]])
+            }
+            (None, Some(_)) => Some(corners.map(|i| shown[i])),
+            (None, None) => None,
+        };
+        let [background_rows, fill_rows, stroke_rows] = self.layer_rows(draw, world, lit);
+        let fill_drawn = fill_rows.is_some();
+        let multiple = self.view.cairo_line_width_multiple;
+        let layer = |k: usize, rows: Option<Vec<[f64; 4]>>, width: f64| {
+            let rows = rows?;
+            let spec = match (rows.as_slice(), ends) {
+                ([one], _) => PaintSpec::Solid(premultiply(*one)),
+                (stops, Some([p1, p2])) if stops.len() > 1 => {
+                    PaintSpec::Gradient(stops.to_vec(), [p1[0], p1[1]], [p2[0], p2[1]])
+                }
+                // Rows without ends are refused before drawing.
+                _ => return None,
+            };
+            if let PaintSpec::Solid(colour) = spec
+                && colour[3] == 0
+            {
+                return None;
+            }
+            let w = width * multiple;
+            if k != 1 && (w.is_nan() || w <= 0.0) {
+                return None;
+            }
+            Some((spec, width))
+        };
+        (
+            [
+                layer(0, background_rows, draw.background_stroke_width),
+                layer(1, fill_rows, 0.0),
+                layer(2, stroke_rows, draw.stroke_width),
+            ],
+            fill_drawn,
+        )
+    }
+
+    /// Whether [`Lowering::path`] strokes `draw` as a round cap's dot ([`strokes_as_dot`]): a
+    /// stroke of it is drawn ([`Lowering::layers`]) and its points as this frame's camera shows
+    /// them are at one spot. Nothing is drawn.
     pub fn round_cap_dot(&self, draw: &PathDraw<'_>) -> bool {
         let Some(world) = drawn_world(draw) else {
             return false;
         };
-        let shown = pre_display(&world, self.projection.as_ref(), self.placed(draw).0);
-        !outline(&shown).elements().is_empty() && strokes_as_dot(draw, &shown)
+        let placement = self.placed(draw).0;
+        let shown = pre_display(&world, self.projection.as_ref(), placement);
+        if outline(&shown).elements().is_empty() || !strokes_as_dot(draw, &shown) {
+            return false;
+        }
+        let ([background, _, stroke], _) = self.layers(draw, &world, &shown, placement);
+        background.is_some() || stroke.is_some()
     }
 
     pub fn path(&mut self, draw: &PathDraw<'_>, plane: Option<Keyed>) {
@@ -1418,58 +1497,20 @@ impl<'v> Lowering<'v> {
             Some(area) => culled(&user, area),
             None => user.clone(),
         };
-        // CE's lighting (`ThreeDCamera.modified_rgbas`): a shaded path's paint becomes two stops,
-        // lit at its start and end corners. Its gradient runs, as any path's does, between the
-        // ends the mobject gives (`get_gradient_start_and_end_points`, the record's): for a shaded
-        // path its corners, unless it gives others, as `ThreeDAxes` gives every piece of an axis
-        // the axis's own ends. A shaded path with no ends recorded (a face of a surface, an
-        // instance) runs between its corners.
-        let corners = [0, (world.len() - 1) / 6 * 3];
-        let lit = self.light(draw);
-        let ends = match (draw.ends, lit) {
-            (Some(ends), _) if draw.pre_projected => Some(ends),
-            (Some(ends), _) => {
-                let shown_ends = pre_display(&ends, self.projection.as_ref(), placement);
-                Some([shown_ends[0], shown_ends[1]])
-            }
-            (None, Some(_)) => Some(corners.map(|i| shown[i])),
-            (None, None) => None,
-        };
-        let [background_rows, fill_rows, stroke_rows] = self.layer_rows(draw, &world, lit);
-        // A stroke drawn after a fill read on the stroke's own curve may be resolved at the fill's key.
-        let fill_drawn = fill_rows.is_some();
-        for (k, rows, width) in [
-            (0, background_rows, draw.background_stroke_width),
-            (1, fill_rows, 0.0),
-            (2, stroke_rows, draw.stroke_width),
-        ] {
-            let Some(rows) = rows else { continue };
-            let spec = match (rows.as_slice(), ends) {
-                ([one], _) => PaintSpec::Solid(premultiply(*one)),
-                (stops, Some([p1, p2])) if stops.len() > 1 => {
-                    PaintSpec::Gradient(stops.to_vec(), [p1[0], p1[1]], [p2[0], p2[1]])
-                }
-                // Rows without ends are refused before drawing.
-                _ => continue,
-            };
-            if let PaintSpec::Solid(colour) = spec
-                && colour[3] == 0
-            {
-                continue;
-            }
+        let (layers, fill_drawn) = self.layers(draw, &world, &shown, placement);
+        for (k, layer) in layers.into_iter().enumerate() {
+            let Some((spec, width)) = layer else { continue };
+            let k = k as u32;
             let outline_px = if k == 1 {
                 mapped(&guarded, &self.map)
             } else {
                 let w = width * self.view.cairo_line_width_multiple;
-                if w.is_nan() || w <= 0.0 {
-                    continue;
-                }
                 let style = kurbo::Stroke::new(w)
                     .with_join(kurbo_join(rec.paint.joint))
                     .with_caps(kurbo_cap(rec.paint.cap))
                     .with_miter_limit(MITER_LIMIT);
                 // Dashes are laid on the whole outline, then culled, so culling never moves them.
-                let dashes = rec.dash.filter(|d| d.duty < 1.0).map(|d| {
+                let dashes = drawn_dash(rec).map(|d| {
                     let pattern = [d.period * d.duty, d.period * (1.0 - d.duty)];
                     dashed(&user, d.phase * d.period, &pattern, area)
                 });
