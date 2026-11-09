@@ -697,11 +697,15 @@ class IrCairoPainter:
         *,
         t: Fraction = Fraction(0),
         terms: Mapping[int, Term] | None = None,
+        roots: Sequence[Any] = (),
     ) -> np.ndarray:
         """The frame the camera draws from ``groups`` (each a layer and the
-        list one capture is handed), from its XF description alone.
+        list one capture is handed) of a scene holding ``roots``, from its XF
+        description alone.
         """
-        return self.draw(self.stream.frame(camera, groups, t=t, terms=terms))
+        return self.draw(
+            self.stream.frame(camera, groups, t=t, terms=terms, roots=roots)
+        )
 
     def draw(self, delta: Delta) -> np.ndarray:
         """The frame ``delta`` brings the stream to, drawn from XF alone."""

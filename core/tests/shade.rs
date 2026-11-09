@@ -377,6 +377,8 @@ fn a_face_groups_faces_have_their_own_stops_in_order() {
         grid: [2, 1],
         fill: fills.key(),
         stroke: None,
+        face_ends: Vec::new(),
+        face_widths: Vec::new(),
     });
     let s = stream_with(shading_view(true), vec![shape], vec![fills.clone()], r);
     let want: Vec<_> = [(&left, 0), (&right, 1)]

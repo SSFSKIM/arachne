@@ -42,7 +42,11 @@ normals each shaded path is lit by at its two lit corners
 ``normals`` and snapped to :data:`RATIO_GRID`. On a finely sampled curve
 that normal is the cross product of two nearly opposite chords, which the
 snap's step would turn by tens of degrees. The view carries the grid as its
-``input_grid`` (XF 1.2).
+``input_grid`` (XF 1.2). So are a stroked path's miter joins: Cairo decides
+each from slopes between CE's points rounded to its 24.8 fixed point, which a
+control arm a few 1/256 px long or a turn near the miter limit leaves to the
+last bits the snap moves (:mod:`.joins`); a path with such a join carries
+Cairo's decisions as its ``joins`` (XF 1.4).
 
 Whether a path's cubics join and whether its subpaths close are decided by
 the core on the snapped points, by CE's point-equality rule (each coordinate
@@ -80,11 +84,12 @@ __all__ = [
 
 import contextlib
 import math
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence, Set
 from typing import Any
 
 import numpy as np
 
+from .joins import joins as cairo_joins
 from .xf import Delta, Record, Shape
 
 #: The fixed grid of positions that order, not place: the camera's depth
@@ -102,6 +107,23 @@ _STEPS_EXPONENT = 9
 #: The record kinds that draw paths, whose flatness is decided before the
 #: snap.
 _PATH_KINDS = ("path", "face_group", "instances")
+
+#: A way a record draws a shape's points (:func:`_way`): as that many paths
+#: in equal runs, or as paths split at those indices.
+Way = int | tuple[int, ...]
+
+
+def _way(record: Record) -> Way:
+    """How ``record`` draws its shape's points: a face group as its faces,
+    each its own run (to its face end, or one of equal runs where it states
+    none); anything else as the points whole.
+    """
+    if record.kind != "face_group":
+        return 1
+    ends = record.fields.get("face_ends")
+    if ends is None:
+        return len(record.fields["uv"])
+    return tuple(int(end) for end in ends[:-1])
 
 
 def snap(values: Any, grid: float) -> Any:
@@ -283,11 +305,29 @@ _RECORD: dict[str, Callable[[Any, float], Any]] = {
     "grid": _as_given,
     "face_fill": _as_given,
     "face_stroke": _as_given,
+    "face_ends": _as_given,
+    "face_widths": _as_given,
     "colors": _as_given,
     "radius": _as_given,
     "resampling": _as_given,
     "image_opacity": _as_given,
 }
+
+
+_placer: dict[str, Any] = {}
+
+
+def _placed(view: Mapping[str, Any], points: np.ndarray) -> np.ndarray:
+    """A world-space path's points as CE's 3D camera places them for Cairo
+    (``ThreeDCamera.project_points``), the camera set from ``view`` as the
+    Cairo drawer sets it.
+    """
+    if "drawer" not in _placer:
+        from .cairo_painter import CairoDrawer
+
+        _placer["drawer"] = CairoDrawer()
+    camera = _placer["drawer"]._camera(view, "joins")
+    return camera.project_points(points)
 
 
 def shades(view: Mapping[str, Any] | None) -> bool:
@@ -338,6 +378,10 @@ class Canonical:
         #: Each path shape of the stream held, by its own key, as the scene
         #: made it.
         self._shapes: dict[bytes, Shape] = {}
+        #: Each stream shape held, by its own key: the ways of drawing it its
+        #: point equality was measured for at the grid held (as
+        #: :meth:`_hold`'s ``uses``).
+        self._measured: dict[bytes, set[Way]] = {}
         #: Each holder's snapped shape key: a stream shape's key, or
         #: ``("slot", slot)`` for a record made into points.
         self._snapped: dict[Any, bytes] = {}
@@ -360,6 +404,10 @@ class Canonical:
         self.frame_grid: float | None = None
         #: Each held record's planarity codes, by slot.
         self._planes: dict[int, tuple[int, ...]] = {}
+        #: Each held record's joins as last handed to the core, by slot: they
+        #: follow the view (:meth:`_joins`), so a view that moves them sets the
+        #: record again.
+        self._joins_sent: dict[int, tuple[int, ...] | None] = {}
         self._decider: Any = None
         if planes:
             import arachne_core
@@ -380,6 +428,7 @@ class Canonical:
         for slot in delta.remove:
             self._records.pop(slot, None)
             self._planes.pop(slot, None)
+            self._joins_sent.pop(slot, None)
         self._decide(delta)
         grid = self.frame_grid
         if grid is None:
@@ -388,19 +437,42 @@ class Canonical:
         self.grid = grid
         if self._view is not None and (delta.view is not None or regrid):
             found.view = self._view_of(self._view)
+        # How each held record draws a stream shape's points: a face group as
+        # its faces, each its own run; anything else as the points whole.
+        uses: dict[bytes, set[Way]] = {}
+        for record in self._records.values():
+            key = record.fields.get("shape")
+            if isinstance(key, bytes):
+                uses.setdefault(key, set()).add(_way(record))
+        uploaded: set[bytes] = set()
         for shape in delta.upload:
             if shape.kind == "image":
                 found.upload.append(shape)
             elif shape.kind == "path":
                 self._shapes[shape.key] = shape
-                self._hold(shape.key, shape.data, found)
+                self._measured[shape.key] = set(uses.get(shape.key, {1}))
+                self._hold(shape.key, shape.data, found, self._measured[shape.key])
+                uploaded.add(shape.key)
             else:
                 raise ValueError(f"canonical: a {shape.kind} shape is not classified")
         if regrid:
             for key, shape in self._shapes.items():
-                self._hold(key, shape.data, found)
+                self._measured[key] = set(uses.get(key, {1}))
+                self._hold(key, shape.data, found, self._measured[key])
+        else:
+            # A shape held from an earlier delta that a record begins to draw
+            # another way: measured that way now.
+            for key, wanted in uses.items():
+                if key in uploaded or key not in self._shapes:
+                    continue
+                new = wanted - self._measured.setdefault(key, set())
+                if new:
+                    points = self._shapes[key].data
+                    _measure(points, _position(points, grid), new)
+                    self._measured[key] |= new
         found.upload_paints = list(delta.upload_paints)
         for key in delta.release:
+            self._measured.pop(key, None)
             if self._shapes.pop(key, None) is None:
                 found.release.append(key)
             else:
@@ -421,6 +493,16 @@ class Canonical:
                 if slot not in setting
                 and record.kind in _PATH_KINDS
                 and record.fields.get("shade_in_3d")
+            )
+        if delta.view is not None and not regrid:
+            # A path's joins are decided through the view: each held path
+            # whose joins the new view moves is set again with them.
+            setting.update(
+                (slot, record)
+                for slot, record in sorted(self._records.items())
+                if slot not in setting
+                and record.kind == "path"
+                and self._joins(record) != self._joins_sent.get(slot)
             )
         normals = self._normals(setting, grid)
         found.set = [
@@ -474,14 +556,17 @@ class Canonical:
             for slot, normals in self._decider.normals(slots, grid).items()
         }
 
-    def _hold(self, holder: Any, points: Any, found: Delta) -> bytes:
+    def _hold(
+        self, holder: Any, points: Any, found: Delta, uses: Set[Way] = frozenset({1})
+    ) -> bytes:
         """``points`` snapped, held by ``holder`` (instead of what it held);
         their key. Whether the delta uploads them is decided once it is built
-        (:meth:`_settle_shapes`).
+        (:meth:`_settle_shapes`). ``uses``: each way the points are drawn
+        (:data:`Way`: a face group's faces; 1, whole).
         """
         assert self.grid is not None
         shape = Shape("path", _position(points, self.grid))
-        _count_disagreements(np.asarray(points, dtype=np.float64), shape.data)
+        _measure(points, shape.data, uses)
         if self._snapped.get(holder) == shape.key:
             return shape.key
         holders = self._holders.setdefault(shape.key, set())
@@ -603,7 +688,59 @@ class Canonical:
             snapped["planes"] = self._planes[slot]
         if normals is not None:
             snapped["normals"] = normals
+        decided = self._joins(record)
+        self._joins_sent[slot] = decided
+        if decided is not None:
+            snapped["joins"] = decided
         return Record(record.kind, snapped)
+
+    def _joins(self, record: Record) -> tuple[int, ...] | None:
+        """A stroked path's miter joins as Cairo decides them on its points as
+        made (:func:`.joins.joins`), where a drawer handed them snapped could
+        decide otherwise; ``None`` elsewhere.
+        """
+        fields = dict(record.fields)
+        view = self._view
+        if record.kind != "path" or view is None:
+            return None
+        # The points drawn: a reveal's or a blend's, made from its shapes as
+        # the core makes them.
+        made = self._points(fields)
+        if fields.get("joint", "auto") not in ("auto", "miter"):
+            return None
+        # Stroked at either end of a paint blend.
+        if not any(
+            block.get(paint) is not None and block.get(width)
+            for block in (fields, fields.get("paint_b") or {})
+            for paint, width in (
+                ("stroke", "stroke_width"),
+                ("background_stroke", "background_stroke_width"),
+            )
+        ):
+            return None
+        # A placed path, or one the camera keeps facing it, is placed by the
+        # drawer otherwise than here: not decided.
+        place = fields.get("place")
+        if fields.get("fixed_orientation_centre") is not None or (
+            place is not None and not np.array_equal(place, _IDENTITY)
+        ):
+            return None
+        pre = fields.get("pre_projected")
+        if made is not None:
+            points = made
+        else:
+            key = pre["points"] if pre is not None else fields.get("shape")
+            shape = None if key is None else self._shapes.get(key)
+            if shape is None:
+                return None
+            points = shape.data
+        if pre is None and view.get("camera") == "three_d":
+            # The camera places a world-space path's points before Cairo
+            # strokes them; a path in any other space is not decided here.
+            if fields.get("space", "world") != "world":
+                return None
+            points = _placed(view, points)
+        return cairo_joins(points, view)
 
 
 #: CE's ``tolerance_for_point_equality`` and the relative tolerance of its
@@ -638,6 +775,21 @@ def _boundaries(points: np.ndarray, splits: np.ndarray, dims: int) -> np.ndarray
     long = ends - starts >= 4
     closes = _equal(points[starts[long]], points[ends[long] - 1], dims)
     return np.concatenate([joins, closes])
+
+
+def _measure(points: Any, snapped: np.ndarray, uses: Set[Way]) -> None:
+    """Records in :data:`point_equality_disagreements` where ``snapped``,
+    ``points`` snapped, is decided otherwise for each of ``uses``: the
+    points drawn as that many paths in equal runs, or as paths split at
+    those indices (:data:`Way`: a face group's faces; 1, whole).
+    """
+    made = np.asarray(points, dtype=np.float64)
+    for way in sorted(uses, key=repr):
+        cuts = list(way) if isinstance(way, tuple) else way
+        for run, snapped_run in zip(
+            np.split(made, cuts), np.split(snapped, cuts), strict=True
+        ):
+            _count_disagreements(run, snapped_run)
 
 
 def _count_disagreements(made: np.ndarray, snapped: np.ndarray) -> None:

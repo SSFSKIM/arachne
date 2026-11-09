@@ -402,14 +402,32 @@ pub fn encode_record(r: &Record) -> Vec<u8> {
             write_paint(w, &p.background_stroke);
         }
         // XF 1.2: planes, then normals, both written when either is carried (an empty list
-        // stands for one not carried), so a newer minor's fields follow at a known place.
-        if r.planes.is_some() || r.normals.is_some() {
+        // stands for one not carried), so a newer minor's fields follow at a known place. XF 1.3: a
+        // face group's face lists follow them, written when carried or when joins follow; XF 1.4:
+        // then the record's joins, written when carried.
+        let faces = match &r.body {
+            Body::FaceGroup(f) if f.carries_face_lists() || r.joins.is_some() => Some(f),
+            _ => None,
+        };
+        if r.planes.is_some() || r.normals.is_some() || faces.is_some() || r.joins.is_some() {
             let planes = r.planes.as_deref().unwrap_or_default();
             w.count(planes.len());
             planes.iter().for_each(|code| w.u8(*code));
             let normals = r.normals.as_deref().unwrap_or_default();
             w.count(normals.len());
             normals.iter().for_each(|n| w.f64s(n));
+        }
+        // XF 1.3: a face group's face ends, then its face widths, both written when either is
+        // carried (an empty list stands for one not carried).
+        if let Some(f) = faces {
+            w.count(f.face_ends.len());
+            f.face_ends.iter().for_each(|end| w.u32(*end));
+            w.count(f.face_widths.len());
+            w.f64s(&f.face_widths);
+        }
+        if let Some(joins) = &r.joins {
+            w.count(joins.len());
+            joins.iter().for_each(|b| w.u8(*b));
         }
     })
 }
@@ -430,7 +448,15 @@ pub fn encoded_version(d: &Delta) -> (u16, u16) {
         || d.set
             .iter()
             .any(|r| r.planes.is_some() || r.normals.is_some());
-    let minor = if snapped {
+    let face_lists = d
+        .set
+        .iter()
+        .any(|r| matches!(&r.body, Body::FaceGroup(f) if f.carries_face_lists()));
+    let minor = if d.set.iter().any(|r| r.joins.is_some()) {
+        4
+    } else if face_lists {
+        3
+    } else if snapped {
         2
     } else {
         u16::from(
@@ -856,6 +882,8 @@ fn decode_record(r: &mut R) -> Result<Record> {
                 grid,
                 fill,
                 stroke,
+                face_ends: Vec::new(),
+                face_widths: Vec::new(),
             })
         }
         RecordKind::Points => Body::Points(Points {
@@ -929,6 +957,20 @@ fn decode_record(r: &mut R) -> Result<Record> {
         let n = r.count(24)?;
         let normals = (0..n).map(|_| r.f64s()).collect::<Result<Vec<_>>>()?;
         rec.normals = (!normals.is_empty()).then_some(normals);
+    }
+    // XF 1.3: a face group's face ends, then its face widths (an empty list: not carried).
+    if r.at < r.b.len()
+        && let Body::FaceGroup(f) = &mut rec.body
+    {
+        let n = r.count(4)?;
+        f.face_ends = (0..n).map(|_| r.u32()).collect::<Result<Vec<_>>>()?;
+        let n = r.count(8)?;
+        f.face_widths = (0..n).map(|_| r.f64()).collect::<Result<Vec<_>>>()?;
+    }
+    // XF 1.4: the record's joins, when it carries them.
+    if r.at < r.b.len() {
+        let n = r.count(1)?;
+        rec.joins = Some((0..n).map(|_| r.u8()).collect::<Result<Vec<_>>>()?);
     }
     // Whatever follows belongs to a newer minor version: skipped.
     Ok(rec)

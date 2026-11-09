@@ -33,7 +33,7 @@ from arachne import (
 from arachne.frame_ir import canonical
 from arachne.frame_ir.canonical import Canonical
 from arachne.frame_ir.core_painter import CorePainter
-from arachne.frame_ir.xf import Delta, Record, Shape, StreamState
+from arachne.frame_ir.xf import Delta, PaintTable, Record, Shape, StreamState
 
 from ..timeline.conftest import render
 from . import core_scenes
@@ -428,6 +428,68 @@ def test_a_closing_gap_in_the_band_is_counted(gap, decided_otherwise):
     found = bool(canonical.point_equality_disagreements)
     canonical.point_equality_disagreements.clear()
     assert found == decided_otherwise
+
+
+def _two_faces(shape: Shape) -> tuple[Record, list[PaintTable]]:
+    """A face group of two square faces, its points ``shape``."""
+    fills = PaintTable(np.array([[1.0, 0, 0, 1], [0, 0, 1, 1]]))
+    strokes = PaintTable(np.array([[1.0, 1, 1, 1], [1, 1, 1, 1]]))
+    record = Record(
+        "face_group",
+        {
+            "shape": shape.key,
+            "fill": None,
+            "stroke": None,
+            "background_stroke": None,
+            "stroke_width": 1.0,
+            "background_stroke_width": 0.0,
+            "joint": "auto",
+            "cap": "auto",
+            "face_fill": fills.key,
+            "face_stroke": strokes.key,
+            "uv": np.array([[0, 0], [1, 0]], dtype=np.uint32),
+            "grid": (2, 1),
+            "space": "screen",
+            "z_index": 0.0,
+            "shade_in_3d": False,
+        },
+    )
+    return record, [fills, strokes]
+
+
+@pytest.mark.parametrize(
+    "drawn", ["faces", "faces and a path", "faces, then a path in a later delta"]
+)
+def test_a_face_group_s_shape_is_measured_by_each_use(drawn):
+    """Two closed squares, the second 2e-6 to the right of the first: CE
+    leaves the first's end and the second's start apart (its tolerance at
+    the origin is 1e-6), and snapped to 2^-16 they meet. As a face group's
+    two faces that join draws nothing, so it is not counted; a path drawing
+    the same points joins there, so it is, whatever else draws them, and
+    whenever it begins to draw them (the shape held, uploaded no more).
+    """
+    first = _square_closing(0.0)
+    points = np.concatenate([first, first + [2e-6, 0, 0]])
+    shape = Shape("path", points)
+    group, tables = _two_faces(shape)
+    view = {**_FLAT_VIEW, "pixel_width": 1920, "pixel_height": 1080}
+    delta = Delta(seq=0, view=view, upload=[shape], upload_paints=tables)
+    delta.set = [(0, group)]
+    fields = dict(_revealing(shape).fields)
+    del fields["reveal"]
+    path = Record("path", fields)
+    deltas = [delta]
+    if drawn == "faces and a path":
+        delta.set.append((1, path))
+    elif drawn != "faces":
+        deltas.append(Delta(seq=1, set=[(1, path)]))
+    canonical.point_equality_disagreements.clear()
+    snapper = Canonical(planes=False)
+    for each in deltas:
+        snapper(each)
+    found = list(canonical.point_equality_disagreements)
+    canonical.point_equality_disagreements.clear()
+    assert bool(found) == (drawn != "faces"), found
 
 
 #: A flat view of the configured frame at 192x108.

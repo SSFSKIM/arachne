@@ -12,6 +12,8 @@
 //! - [`mesh`]: the triangle rasterizer, a producer of mask fragments with depth.
 //! - [`path`]: the path rasterizer (fills, strokes, dashes, glyphs), a producer of
 //!   exact-area fragments with depth, on [`scanline`]'s exact nonzero coverage.
+//! - [`join_mask`]: a stroke's miter joins decided as Cairo decides them, where a path record
+//!   carries its `joins`.
 //! - [`geometry`]: a path record's reveal, blend and paint blend made into what is drawn.
 //! - [`gradient`]: linear gradients, coloured as Cairo's pattern and pixman's fetch colour them.
 //! - [`depth`]: canonical planes, so coplanar things tie exactly, and depth along curves.
@@ -21,6 +23,8 @@
 //! - [`tiles`]: a frame cut into tiles, drawn on threads scoped to the draw call.
 //! - [`contributors`]: per pixel, the drawn leaves its colour is made of, read from the passes the
 //!   resolves read (`Stream::contributors`).
+//! - [`diagnostics`]: internal, not a supported interface: per pixel, what its resolve composited,
+//!   enough to composite it again (`Stream::diagnostic_resolves`).
 //! - `counters`: call counts of the depth read along curves, in a build with the `counters`
 //!   feature only.
 //! - [`probes`]: the class probes, the parity kit's fixtures (`parity/probes.rs`).
@@ -51,9 +55,11 @@ pub mod contributors;
 #[cfg(feature = "counters")]
 pub mod counters;
 pub mod depth;
+pub mod diagnostics;
 pub mod geometry;
 pub mod gradient;
 pub mod instance;
+pub mod join_mask;
 pub mod mesh;
 pub mod order;
 pub mod path;

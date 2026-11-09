@@ -78,8 +78,22 @@ pub static NEAR_PARALLEL_SAMPLES: AtomicU64 = AtomicU64::new(0);
 pub static NEAR_PARALLEL_PX: AtomicU64 = AtomicU64::new(0);
 /// Of those, the ones where a pair tied so has a dihedral beyond 1e-2 radians.
 pub static NEAR_PARALLEL_WIDE_PX: AtomicU64 = AtomicU64::new(0);
+/// Bands of a scanline row with no crossing recorded inside them where two edges swapped order
+/// all the same, their crossing rounding to the band's top or bottom (`scanline::interval`): wound
+/// in their order at the band's middle, not at its top.
+pub static GRAZING_BANDS: AtomicU64 = AtomicU64::new(0);
+/// Of those, the ones whose boundary that changes: the order at the top would have filled them
+/// otherwise.
+pub static GRAZING_RETOLD: AtomicU64 = AtomicU64::new(0);
+/// Stroked layers' joins whose carried decision (a record's `joins`) differed from kurbo's
+/// (`join_mask::apply`): miters dropped, miters inserted at the limit's length, carried miters
+/// left bevelled on parallel tangents, and joins whose vertices were not found.
+pub static JOINS_DROPPED: AtomicU64 = AtomicU64::new(0);
+pub static JOINS_INSERTED: AtomicU64 = AtomicU64::new(0);
+pub static JOINS_PARALLEL: AtomicU64 = AtomicU64::new(0);
+pub static JOINS_UNMATCHED: AtomicU64 = AtomicU64::new(0);
 
-const ALL: [(&str, &AtomicU64); 32] = [
+const ALL: [(&str, &AtomicU64); 38] = [
     ("near", &NEAR),
     ("bounds_tested", &BOUNDS_TESTED),
     ("key_under", &KEY_UNDER),
@@ -112,6 +126,12 @@ const ALL: [(&str, &AtomicU64); 32] = [
     ("near_parallel_samples", &NEAR_PARALLEL_SAMPLES),
     ("near_parallel_px", &NEAR_PARALLEL_PX),
     ("near_parallel_wide_px", &NEAR_PARALLEL_WIDE_PX),
+    ("grazing_bands", &GRAZING_BANDS),
+    ("grazing_retold", &GRAZING_RETOLD),
+    ("joins_dropped", &JOINS_DROPPED),
+    ("joins_inserted", &JOINS_INSERTED),
+    ("joins_parallel", &JOINS_PARALLEL),
+    ("joins_unmatched", &JOINS_UNMATCHED),
 ];
 
 /// Adds `n` to `counter`.

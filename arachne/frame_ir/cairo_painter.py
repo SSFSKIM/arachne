@@ -526,7 +526,15 @@ class CairoDrawer:
         fills = state.paints[f["face_fill"]].rows
         strokes = state.paints[f["face_stroke"]].rows
         count = len(f["uv"])
-        size = len(points) // count
+        # Each face's run of the points: to its face end, or one of equal runs.
+        ends = f.get("face_ends")
+        if ends is None:
+            size = len(points) // count
+            ends = [size * (i + 1) for i in range(count)]
+        starts = [0, *ends[:-1]]
+        widths = f.get("face_widths")
+        if widths is None:
+            widths = [f["stroke_width"]] * count
         back = _rows(f.get("background_stroke"), state)
         common = {
             "n_points_per_cubic_curve": 4,
@@ -535,7 +543,6 @@ class CairoDrawer:
             "joint_type": LineJointType[f["joint"].upper()],
             "cap_style": CapStyleType[f["cap"].upper()],
             "_xf_background": back,
-            "_xf_width": f["stroke_width"],
             "_xf_background_width": f["background_stroke_width"],
             "_xf_image": None,
             "_xf_gradient": None,
@@ -545,10 +552,11 @@ class CairoDrawer:
         return [
             _bare(
                 _PathProxy,
-                _points=points[i * size : (i + 1) * size],
+                _points=points[int(starts[i]) : int(ends[i])],
                 submobjects=[],
                 _xf_fill=fills[i : i + 1],
                 _xf_stroke=strokes[i : i + 1],
+                _xf_width=float(widths[i]),
                 _xf_normals=None if normals is None else normals[2 * i : 2 * i + 2],
                 **common,
             )

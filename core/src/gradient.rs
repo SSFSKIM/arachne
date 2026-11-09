@@ -224,7 +224,8 @@ fn to_pixman(matrix: &Matrix, xc: f64, yc: f64) -> (Transform, i64, i64) {
 /// What a gradient paints: one colour, or a linear gradient.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Source {
-    /// Premultiplied RGBA, as Cairo stores a solid source.
+    /// Premultiplied RGBA, as Cairo stores a solid source; `[0; 4]` for a clear gradient, which
+    /// Cairo draws nothing from.
     Solid([u8; 4]),
     Linear(Linear),
 }
@@ -262,6 +263,13 @@ pub fn source(
     assert!(rgbas.len() >= 2, "a gradient has two stops or more");
     let clamped: Vec<[f64; 4]> = rgbas.iter().map(|c| c.map(|v| v.clamp(0.0, 1.0))).collect();
     let shorts: Vec<[u16; 4]> = clamped.iter().map(|c| c.map(short)).collect();
+    // Clear: Cairo draws nothing from it under OVER (`_cairo_pattern_is_clear`). A linear
+    // gradient under pad, its ends meeting or not, is clear when every stop's alpha short is at
+    // most 0xff (`_gradient_is_clear`, `CAIRO_ALPHA_SHORT_IS_CLEAR`). Drawn as a gradient, it
+    // would paint up to alpha 1, and lay a layer that takes part in depth order everywhere.
+    if shorts.iter().all(|s| s[3] <= 0x00ff) {
+        return Source::Solid([0; 4]);
+    }
     if (p1[0] - p2[0]).abs() < f64::EPSILON && (p1[1] - p2[1]).abs() < f64::EPSILON {
         // Degenerate under pad: the average of the first and last stops.
         let (a, z) = (clamped[0], clamped[clamped.len() - 1]);

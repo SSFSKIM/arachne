@@ -32,7 +32,16 @@ def background_delta(width: int, height: int, rgba) -> ac.FrameDelta:
 
 
 def test_the_version_is_xf_1():
-    assert ac.XF_VERSION == (1, 2)
+    assert ac.XF_VERSION == (1, 4)
+
+
+def test_a_record_s_joins_are_carried_and_read_back():
+    delta = ac.FrameDelta()
+    delta.set_view(pixel_width=4, pixel_height=4, **FRAME)
+    delta.set_record("path", slot=1, object=1, joins=(0, 1, 3))
+    assert delta.version == (1, 4)
+    back = ac.FrameDelta.from_bytes(delta.to_bytes())
+    assert back.contents()["set"][0][3]["joins"] == (0, 1, 3)
 
 
 def test_mapping_centre_defaults_to_the_live_frame_center():
@@ -170,6 +179,54 @@ def test_a_path_draws_its_fill_and_stroke():
     side = int((-1.0 + FRAME["frame_width"] / 2) * width / FRAME["frame_width"])
     assert rgba[height // 2, side, 2] > 0
     assert (resolves == ac.RESOLVES.index("coverage")).sum() > 0
+
+
+def shaded_stroke_frame(alpha: float | None) -> np.ndarray:
+    """A bent square stroked at ``alpha`` and shaded as CE shades it: lit at its start
+    and end corners into two stops of different colours, both at ``alpha``. ``None``
+    draws only the background.
+    """
+    width, height = 64, 36
+    delta = ac.FrameDelta(t=(0, 1), seq=0)
+    delta.set_view(
+        pixel_width=width,
+        pixel_height=height,
+        background=(0, 0, 0, 1),
+        camera="three_d",
+        phi=1.25,
+        theta=-0.75,
+        light_model="ce",
+        **FRAME,
+    )
+    order = []
+    if alpha is not None:
+        bent = square(1.0)
+        bent[4:12, 2] = [0, 1 / 3, 2 / 3, 1, 1, 2 / 3, 1 / 3, 0]
+        key = delta.upload_path(bent)
+        delta.set_record(
+            "path",
+            1,
+            11,
+            shape=key,
+            stroke=(0.4, 0.6, 0.8, alpha),
+            stroke_width=20.0,
+            space="world",
+            shade_in_3d=True,
+        )
+        order = [("moving", 1, 0)]
+    delta.set_order(order)
+    stream = ac.Stream()
+    stream.apply(delta)
+    return stream.draw(width, height)
+
+
+def test_a_shaded_stroke_whose_stops_cairo_finds_clear_leaves_the_frame_untouched():
+    # A stop's alpha as Cairo's short is int(a * 65535 + 0.5): 233 here. A gradient
+    # whose every stop is at most 0xff is clear to Cairo, which draws nothing from it;
+    # at 0x100 it draws.
+    background = shaded_stroke_frame(None)
+    assert (shaded_stroke_frame(0.003548) == background).all()
+    assert (shaded_stroke_frame(0x100 / 65535) != background).any()
 
 
 def test_a_reserved_kind_is_refused_and_nothing_is_drawn():
@@ -747,6 +804,111 @@ def test_snapped_canonical_sample_is_pinned_separately(tmp_path):
     assert contents["view"]["input_grid"] == 1 / 32768
     assert contents["set"][0][3]["planes"] == (1, 6, 0)
     assert contents["set"][0][3]["normals"][:2] == ((0, 0.6, 0.8), (0, 0, 0))
+
+
+def face_ends_sample():
+    """XF 1.3's canonical sample, as ``core/tests/common/mod.rs`` builds it."""
+    delta = ac.FrameDelta(t=(5, 15), seq=6)
+    delta.set_view(pixel_width=32, pixel_height=18, camera="three_d", **FRAME)
+    shape = delta.upload_path(np.concatenate([square(), square(0.5)[:8]]))
+    fills = delta.upload_paint([(0.2, 0.4, 0.6, 0.32), (0.6, 0.4, 0.2, 0.32)])
+    delta.set_record(
+        "face_group",
+        13,
+        113,
+        shape=shape,
+        uv=[(0, 0), (1, 0)],
+        grid=(2, 1),
+        face_fill=fills,
+        stroke_width=2.0,
+        face_ends=[16, 24],
+        face_widths=[2.0, 0.5],
+    )
+    return delta
+
+
+def test_a_face_group_s_face_ends_and_widths_are_xf_1_3_and_read_back():
+    delta = face_ends_sample()
+    assert delta.version == (1, 3)
+    back = ac.FrameDelta.from_bytes(delta.to_bytes())
+    assert back.to_bytes() == delta.to_bytes()
+    record = back.contents()["set"][0][3]
+    assert record["face_ends"] == (16, 24)
+    assert record["face_widths"] == (2.0, 0.5)
+    for bad in ({"face_ends": [16, 8]}, {"face_widths": [1.0]}):
+        refused = ac.FrameDelta()
+        fields = {
+            "shape": refused.upload_path(np.concatenate([square(), square(0.5)[:8]])),
+            "uv": [(0, 0), (1, 0)],
+            "grid": (2, 1),
+            "face_fill": refused.upload_paint(np.ones((2, 4))),
+            **bad,
+        }
+        refused.set_record("face_group", 1, 1, **fields)
+        with pytest.raises(ac.XfError):
+            ac.Stream().apply(refused)
+
+
+def test_a_face_group_without_face_ends_stays_at_its_minor_and_carries_neither():
+    delta = ac.FrameDelta(t=(0, 1), seq=0)
+    delta.set_view(pixel_width=4, pixel_height=4, camera="three_d", **FRAME)
+    delta.set_record(
+        "face_group",
+        1,
+        1,
+        shape=delta.upload_path(np.concatenate([square(), square()])),
+        uv=[(0, 0), (1, 0)],
+        grid=(2, 1),
+        face_fill=delta.upload_paint(np.ones((2, 4))),
+    )
+    record = delta.contents()["set"][0][3]
+    assert "face_ends" not in record
+    assert "face_widths" not in record
+    assert delta.version == (1, 0)
+
+
+@pytest.mark.parametrize(
+    ("ends", "widths"),
+    [(None, None), ([16, 24], None), (None, [2.0, 0.5]), ([16, 24], [2.0, 0.5])],
+    ids=["neither", "ends alone", "widths alone", "both"],
+)
+def test_each_absent_face_list_reads_as_uniform_whatever_the_other(ends, widths):
+    """Each list a face group may carry is read back as sent, an absent one
+    absent, and draws as the group stating it uniform: equal runs, the
+    record's width.
+    """
+    points = np.concatenate([square(), square(0.5)[: 8 if ends else 16]])
+
+    def drawn(face_ends, face_widths):
+        delta = ac.FrameDelta(t=(0, 1), seq=0)
+        delta.set_view(pixel_width=32, pixel_height=18, camera="three_d", **FRAME)
+        fields = {
+            "shape": delta.upload_path(points),
+            "uv": [(0, 0), (1, 0)],
+            "grid": (2, 1),
+            "face_fill": delta.upload_paint([(1, 0, 0, 0.5), (0, 0, 1, 0.5)]),
+            "face_stroke": delta.upload_paint([(1, 1, 1, 1), (0, 1, 0, 1)]),
+            "stroke_width": 1.5,
+            "space": "world",
+        }
+        if face_ends is not None:
+            fields["face_ends"] = face_ends
+        if face_widths is not None:
+            fields["face_widths"] = face_widths
+        delta.set_record("face_group", 1, 1, **fields)
+        delta.set_order([("moving", 1, 0), ("moving", 1, 1)])
+        back = ac.FrameDelta.from_bytes(delta.to_bytes())
+        stream = ac.Stream()
+        stream.apply(back)
+        return back, stream.draw(32, 18)
+
+    back, frame = drawn(ends, widths)
+    record = back.contents()["set"][0][3]
+    assert record.get("face_ends") == (None if ends is None else tuple(ends))
+    assert record.get("face_widths") == (None if widths is None else tuple(widths))
+    assert (back.version == (1, 3)) == (ends is not None or widths is not None)
+    _, stated = drawn(ends or [16, 32], widths or [1.5, 1.5])
+    np.testing.assert_array_equal(frame, stated)
 
 
 def test_an_unsnapped_delta_carries_neither_field_and_stays_below_1_2():

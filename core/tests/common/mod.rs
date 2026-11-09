@@ -190,6 +190,8 @@ pub fn sample_deltas() -> Vec<Delta> {
         grid: [2, 1],
         fill: per_face.key(),
         stroke: Some(face_strokes.key()),
+        face_ends: Vec::new(),
+        face_widths: Vec::new(),
     });
 
     let cloud_shape = Shape::new(ShapeData::Path {
@@ -352,6 +354,8 @@ pub fn sample_deltas() -> Vec<Delta> {
         grid: [2, 1],
         fill: per_face.key(),
         stroke: None,
+        face_ends: Vec::new(),
+        face_widths: Vec::new(),
     });
     third.set = vec![bare_faces];
 
@@ -413,6 +417,33 @@ pub fn snapped_sample() -> Delta {
         [1.0, 0.0, 0.0],
     ]);
     d.upload = vec![shape];
+    d.set = vec![r];
+    d
+}
+
+/// XF 1.3's canonical sample: a face group whose faces hold runs of points and stroke widths of
+/// their own (a surface partly drawn), separate so the earlier samples retain their exact bytes.
+pub fn face_ends_sample() -> Delta {
+    let mut d = Delta::new(Time { num: 5, den: 15 }, 6);
+    d.version = (1, 3);
+    d.view = Some(three_d_view(32, 18));
+    let shape = Shape::new(ShapeData::Path {
+        points: [square_points(1.0), square_points(0.5)[..8].to_vec()].concat(),
+    });
+    let fills = Stops::new(vec![[0.2, 0.4, 0.6, 0.32], [0.6, 0.4, 0.2, 0.32]]);
+    let mut r = Record::new(RecordKind::FaceGroup, 13, 113);
+    r.geometry.shape_a = Some(shape.key());
+    r.paint.stroke_width = 2.0;
+    r.body = Body::FaceGroup(FaceGroup {
+        uv: vec![[0, 0], [1, 0]],
+        grid: [2, 1],
+        fill: fills.key(),
+        stroke: None,
+        face_ends: vec![16, 24],
+        face_widths: vec![2.0, 0.5],
+    });
+    d.upload = vec![shape];
+    d.upload_paints = vec![fills];
     d.set = vec![r];
     d
 }

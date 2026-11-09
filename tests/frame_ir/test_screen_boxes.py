@@ -121,8 +121,8 @@ def test_a_changed_camera_s_records_are_boxed_where_it_placed_them(
     found: list[tuple] = []
     describe = live_module.LivePainter._describe
 
-    def described(self, camera, drawn, centres, background):
-        pixels = describe(self, camera, drawn, centres, background)
+    def described(self, camera, *args):
+        pixels = describe(self, camera, *args)
         with untraced():
             painter = self.painter(camera)
             view = projection.view_of(

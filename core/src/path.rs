@@ -52,11 +52,13 @@ use crate::composite::{
 };
 use crate::depth::{Boundary, Centreline, Flat, Planarity, Registry, WorldPlane};
 use crate::gradient::{self, Linear};
+use crate::join_mask;
 use crate::project::{FrameMap, Placement, Projection, placement, pre_display, produced_key};
 use crate::scanline::{self, Edge, Scratch};
 use crate::tiles::{TILE, tile_index, tiles_across};
 use crate::xf::*;
 use kurbo::{BezPath, ParamCurve as _, ParamCurveArclen as _, PathEl, PathSeg, Point, Shape as _};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Cairo's default tolerance for flattening curves, in pixels.
@@ -145,6 +147,63 @@ fn drawn_world(draw: &PathDraw<'_>) -> Option<Vec<[f64; 3]>> {
         return None;
     }
     Some(world)
+}
+
+/// Cairo's least length (`CAIRO_FIXED_ERROR_DOUBLE`, 1/512): `_cairo_gstate_set_dash` makes a
+/// dash whose gaps total less than this solid.
+const SOLID_DASH_GAP: f64 = 1.0 / 512.0;
+
+/// A dash's two entries, on and off, as they are handed to Cairo (`set_dash`).
+fn dash_entries(d: &Dash) -> [f64; 2] {
+    [d.period * d.duty, d.period * (1.0 - d.duty)]
+}
+
+/// The dash `rec` is stroked with, as Cairo takes it: none where it has none, its duty is 1, or
+/// its gap is shorter than Cairo's least length ([`SOLID_DASH_GAP`]), which Cairo strokes solid.
+/// The gap is Cairo's own sums (`_cairo_gstate_set_dash`): the entries' total less the on length.
+fn drawn_dash(rec: &Record) -> Option<Dash> {
+    rec.dash.filter(|d| {
+        let [on, off] = dash_entries(d);
+        let total = on + off;
+        d.duty < 1.0 && total - on >= SOLID_DASH_GAP
+    })
+}
+
+/// Whether Cairo's dashed stroker starts a subpath in a dash that is on (`dash_starts_on`): the
+/// offset taken within the entries' total (`_cairo_gstate_set_dash`), then stepped past each
+/// entry it reaches or passes (`_cairo_stroker_dash_start`).
+fn dash_starts_on(d: &Dash) -> bool {
+    let entries = dash_entries(d);
+    let total = entries[0] + entries[1];
+    let mut offset = (d.phase * d.period) % total;
+    if offset < 0.0 {
+        offset += total;
+    }
+    let (mut on, mut i) = (true, 0);
+    while offset >= entries[i] {
+        offset -= entries[i];
+        on = !on;
+        i = (i + 1) % 2;
+    }
+    on
+}
+
+/// Whether `draw`'s strokes are a round cap's dot, as Cairo strokes a closed subpath of no
+/// length: a face of a surface (one not yet drawn, `Create`, is its points at one spot) whose
+/// points `shown` are at one spot as the camera shows them, under a round cap (a butt or square
+/// one strokes nothing of it), undashed or dashed on at the subpath's start. Cairo's dashed
+/// stroker starts each subpath at the dash's offset, stepping past each dash the offset reaches
+/// or passes, and dots the subpath only when the dash it lands in is on (`dash_starts_on`).
+fn strokes_as_dot(draw: &PathDraw<'_>, shown: &[[f64; 3]]) -> bool {
+    let rec = draw.record;
+    let on_at_start = match drawn_dash(rec) {
+        None => true,
+        Some(d) => dash_starts_on(&d),
+    };
+    draw.surface
+        && rec.paint.cap == Cap::Round
+        && on_at_start
+        && shown.iter().all(|p| p[..2] == shown[0][..2])
 }
 
 /// Where a layer's fragments sit in depth.
@@ -582,6 +641,61 @@ fn outline(shown: &[[f64; 3]]) -> BezPath {
         }
     }
     path
+}
+
+/// The decisions a record's `joins` (XF 1.4: one byte per cubic of its points) carries for the
+/// joins of [`outline`]`(shown)` as kurbo's stroker makes them, by join ([`join_mask::key`]: the
+/// cubic it leaves and the one it enters), one per occurrence: the join into each cubic mitred
+/// where bit 1 is set, where bit 0 is; undecided (`None`) where bit 0 is clear (Cairo makes no
+/// join there) or the record holds no byte for it, which keeps its place among the occurrences
+/// of its points; the first cubic's byte of a closed subpath, its closing join. A cubic whose
+/// points are one the stroker skips: the join is from the cubic before it, and the closing join
+/// into the first it strokes.
+pub fn decided_joins(shown: &[[f64; 3]], joins: &[u8]) -> join_mask::Decided {
+    let mut out = HashMap::new();
+    let pt = |p: [f64; 3]| Point::new(p[0], p[1]);
+    let byte = |i: usize| {
+        joins
+            .get(i / 4)
+            .copied()
+            .filter(|b| b & 1 != 0)
+            .map(|b| b & 2 != 0)
+    };
+    for (start, end) in subpaths(shown) {
+        if end - start < 4 {
+            continue;
+        }
+        let (a, b) = (shown[start], shown[end - 1]);
+        let closed = close(a[0], b[0]) && close(a[1], b[1]);
+        let mut p0 = pt(a);
+        let (mut first, mut last): (Option<[Point; 4]>, Option<[Point; 4]>) = (None, None);
+        for i in (start..=end - 4).step_by(4) {
+            // As `outline` writes it: a closed subpath ends exactly at its start.
+            let end_point = if closed && i + 4 == end {
+                a
+            } else {
+                shown[i + 3]
+            };
+            let (p1, p2, p3) = (pt(shown[i + 1]), pt(shown[i + 2]), pt(end_point));
+            if p1 == p0 && p2 == p0 && p3 == p0 {
+                continue;
+            }
+            let this = [p0, p1, p2, p3];
+            match last {
+                Some(from) => {
+                    let key = join_mask::key(from, this, false);
+                    out.entry(key).or_insert_with(Vec::new).push(byte(i));
+                }
+                None => first = Some(this),
+            }
+            (last, p0) = (Some(this), p3);
+        }
+        if let (true, Some(from), Some(into)) = (closed, last, first) {
+            let key = join_mask::key(from, into, true);
+            out.entry(key).or_insert_with(Vec::new).push(byte(start));
+        }
+    }
+    out
 }
 
 /// A path through the frame mapping (an affine map of each point).
@@ -1293,12 +1407,11 @@ impl<'v> Lowering<'v> {
 
     /// Lowers one path into up to three layers, `plane` where it is keyed ([`Lowering::coplanar`]),
     /// or `None` for its curve's depth off the registry.
-    pub fn path(&mut self, draw: &PathDraw<'_>, plane: Option<Keyed>) {
+    /// How `draw`'s points are placed for display and keyed for depth: a pre-projected path's as
+    /// its camera produced them, any other's by this frame's camera.
+    fn placed(&self, draw: &PathDraw<'_>) -> (Placement, Option<Plane>) {
         let rec = draw.record;
-        let Some(world) = drawn_world(draw) else {
-            return;
-        };
-        let (placement, keyed) = if draw.pre_projected {
+        if draw.pre_projected {
             let key = produced_key(self.axes.as_ref(), &self.map, rec.depth.space, draw.pivot);
             (Placement::Flat, key)
         } else {
@@ -1308,12 +1421,99 @@ impl<'v> Lowering<'v> {
                 rec.depth.space,
                 rec.depth.fixed_orientation_centre,
             )
+        }
+    }
+
+    /// What each layer of `draw` (background stroke, fill, stroke) paints, as [`Lowering::path`]
+    /// draws it: its paint and its width in CE's units, `None` for a layer it draws nothing of (no
+    /// paint, a gradient without ends, a solid paint of no alpha, a stroke of no width); and
+    /// whether the fill has paint at all. `shown` is `world` as `placement` shows it. CE's
+    /// lighting (`ThreeDCamera.modified_rgbas`): a shaded path's paint becomes two stops, lit at
+    /// its start and end corners. Its gradient runs, as any path's does, between the ends the
+    /// mobject gives (`get_gradient_start_and_end_points`, the record's): for a shaded path its
+    /// corners, unless it gives others, as `ThreeDAxes` gives every piece of an axis the axis's own
+    /// ends. A shaded path with no ends recorded (a face of a surface, an instance) runs between
+    /// its corners.
+    fn layers(
+        &self,
+        draw: &PathDraw<'_>,
+        world: &[[f64; 3]],
+        shown: &[[f64; 3]],
+        placement: Placement,
+    ) -> ([Option<(PaintSpec, f64)>; 3], bool) {
+        let corners = [0, (world.len() - 1) / 6 * 3];
+        let lit = self.light(draw);
+        let ends = match (draw.ends, lit) {
+            (Some(ends), _) if draw.pre_projected => Some(ends),
+            (Some(ends), _) => {
+                let shown_ends = pre_display(&ends, self.projection.as_ref(), placement);
+                Some([shown_ends[0], shown_ends[1]])
+            }
+            (None, Some(_)) => Some(corners.map(|i| shown[i])),
+            (None, None) => None,
         };
+        let [background_rows, fill_rows, stroke_rows] = self.layer_rows(draw, world, lit);
+        let fill_drawn = fill_rows.is_some();
+        let multiple = self.view.cairo_line_width_multiple;
+        let layer = |k: usize, rows: Option<Vec<[f64; 4]>>, width: f64| {
+            let rows = rows?;
+            let spec = match (rows.as_slice(), ends) {
+                ([one], _) => PaintSpec::Solid(premultiply(*one)),
+                (stops, Some([p1, p2])) if stops.len() > 1 => {
+                    PaintSpec::Gradient(stops.to_vec(), [p1[0], p1[1]], [p2[0], p2[1]])
+                }
+                // Rows without ends are refused before drawing.
+                _ => return None,
+            };
+            if let PaintSpec::Solid(colour) = spec
+                && colour[3] == 0
+            {
+                return None;
+            }
+            let w = width * multiple;
+            if k != 1 && (w.is_nan() || w <= 0.0) {
+                return None;
+            }
+            Some((spec, width))
+        };
+        (
+            [
+                layer(0, background_rows, draw.background_stroke_width),
+                layer(1, fill_rows, 0.0),
+                layer(2, stroke_rows, draw.stroke_width),
+            ],
+            fill_drawn,
+        )
+    }
+
+    /// Whether [`Lowering::path`] strokes `draw` as a round cap's dot ([`strokes_as_dot`]): a
+    /// stroke of it is drawn ([`Lowering::layers`]) and its points as this frame's camera shows
+    /// them are at one spot. Nothing is drawn.
+    pub fn round_cap_dot(&self, draw: &PathDraw<'_>) -> bool {
+        let Some(world) = drawn_world(draw) else {
+            return false;
+        };
+        let placement = self.placed(draw).0;
+        let shown = pre_display(&world, self.projection.as_ref(), placement);
+        if outline(&shown).elements().is_empty() || !strokes_as_dot(draw, &shown) {
+            return false;
+        }
+        let ([background, _, stroke], _) = self.layers(draw, &world, &shown, placement);
+        background.is_some() || stroke.is_some()
+    }
+
+    pub fn path(&mut self, draw: &PathDraw<'_>, plane: Option<Keyed>) {
+        let rec = draw.record;
+        let Some(world) = drawn_world(draw) else {
+            return;
+        };
+        let (placement, keyed) = self.placed(draw);
         let shown = pre_display(&world, self.projection.as_ref(), placement);
         let user = outline(&shown);
         if user.elements().is_empty() {
             return;
         }
+        let decided = rec.joins.as_deref().map(|j| decided_joins(&shown, j));
         // The strokes' depth and the fill's.
         let (strokes, fill, ids, fill_snap, plane_rows) = match keyed {
             Some(plane) => (
@@ -1383,72 +1583,54 @@ impl<'v> Lowering<'v> {
             Some(area) => culled(&user, area),
             None => user.clone(),
         };
-        // CE's lighting (`ThreeDCamera.modified_rgbas`): a shaded path's paint becomes two stops,
-        // lit at its start and end corners. Its gradient runs, as any path's does, between the
-        // ends the mobject gives (`get_gradient_start_and_end_points`, the record's): for a shaded
-        // path its corners, unless it gives others, as `ThreeDAxes` gives every piece of an axis
-        // the axis's own ends. A shaded path with no ends recorded (a face of a surface, an
-        // instance) runs between its corners.
-        let corners = [0, (world.len() - 1) / 6 * 3];
-        let lit = self.light(draw);
-        let ends = match (draw.ends, lit) {
-            (Some(ends), _) if draw.pre_projected => Some(ends),
-            (Some(ends), _) => {
-                let shown_ends = pre_display(&ends, self.projection.as_ref(), placement);
-                Some([shown_ends[0], shown_ends[1]])
-            }
-            (None, Some(_)) => Some(corners.map(|i| shown[i])),
-            (None, None) => None,
-        };
-        let [background_rows, fill_rows, stroke_rows] = self.layer_rows(draw, &world, lit);
-        // A stroke drawn after a fill read on the stroke's own curve may be resolved at the fill's key.
-        let fill_drawn = fill_rows.is_some();
-        for (k, rows, width) in [
-            (0, background_rows, draw.background_stroke_width),
-            (1, fill_rows, 0.0),
-            (2, stroke_rows, draw.stroke_width),
-        ] {
-            let Some(rows) = rows else { continue };
-            let spec = match (rows.as_slice(), ends) {
-                ([one], _) => PaintSpec::Solid(premultiply(*one)),
-                (stops, Some([p1, p2])) if stops.len() > 1 => {
-                    PaintSpec::Gradient(stops.to_vec(), [p1[0], p1[1]], [p2[0], p2[1]])
-                }
-                // Rows without ends are refused before drawing.
-                _ => continue,
-            };
-            if let PaintSpec::Solid(colour) = spec
-                && colour[3] == 0
-            {
-                continue;
-            }
+        let (layers, fill_drawn) = self.layers(draw, &world, &shown, placement);
+        for (k, layer) in layers.into_iter().enumerate() {
+            let Some((spec, width)) = layer else { continue };
+            let k = k as u32;
             let outline_px = if k == 1 {
                 mapped(&guarded, &self.map)
             } else {
                 let w = width * self.view.cairo_line_width_multiple;
-                if w.is_nan() || w <= 0.0 {
-                    continue;
-                }
                 let style = kurbo::Stroke::new(w)
                     .with_join(kurbo_join(rec.paint.joint))
                     .with_caps(kurbo_cap(rec.paint.cap))
                     .with_miter_limit(MITER_LIMIT);
                 // Dashes are laid on the whole outline, then culled, so culling never moves them.
-                let dashes = rec.dash.filter(|d| d.duty < 1.0).map(|d| {
-                    let pattern = [d.period * d.duty, d.period * (1.0 - d.duty)];
+                let dashes = drawn_dash(rec).map(|d| {
+                    let pattern = dash_entries(&d);
                     dashed(&user, d.phase * d.period, &pattern, area)
                 });
-                let stroked = kurbo::stroke(
-                    dashes
-                        .as_ref()
-                        .unwrap_or(&guarded)
-                        .elements()
-                        .iter()
-                        .copied(),
-                    &style,
-                    &kurbo::StrokeOpts::default(),
-                    TOLERANCE / scale,
-                );
+                let elements = dashes.as_ref().unwrap_or(&guarded).elements();
+                let stroked = if strokes_as_dot(draw, &shown) {
+                    kurbo::Circle::new(Point::new(shown[0][0], shown[0][1]), w / 2.0)
+                        .to_path(TOLERANCE / scale)
+                } else {
+                    let stroked = kurbo::stroke(
+                        elements.iter().copied(),
+                        &style,
+                        &kurbo::StrokeOpts::default(),
+                        TOLERANCE / scale,
+                    );
+                    // Joins carried as Cairo decided them (XF 1.4): kurbo's stroke, edited at those
+                    // it decided otherwise.
+                    match &decided {
+                        Some(decided) => {
+                            let (edited, _edits) = join_mask::apply(
+                                stroked,
+                                elements,
+                                &style,
+                                TOLERANCE / scale,
+                                decided,
+                            );
+                            count!(JOINS_DROPPED, _edits.dropped as usize);
+                            count!(JOINS_INSERTED, _edits.inserted as usize);
+                            count!(JOINS_PARALLEL, _edits.parallel as usize);
+                            count!(JOINS_UNMATCHED, _edits.unmatched as usize);
+                            edited
+                        }
+                        None => stroked,
+                    }
+                };
                 mapped(&stroked, &self.map)
             };
             // A stroke's body reaches half its width from the curve; a fill has none.

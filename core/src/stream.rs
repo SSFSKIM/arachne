@@ -181,6 +181,72 @@ fn missing_key(what: &str, key: &Key, slot: Option<u32>) -> StreamError {
     }
 }
 
+/// Refuses a face group's XF 1.3 lists that would cut its `points` points otherwise than into
+/// one run per face: face ends not one per face, not rising (a face of no points), or the last
+/// not the points' count; face widths not one per face, or one not a finite width of at least 0.
+/// Empty lists are a group of an earlier minor (equal runs, the record's width).
+fn face_lists(slot: u32, f: &FaceGroup, points: usize) -> Result<(), StreamError> {
+    let refuse = |what: String| Err(StreamError::Invalid(format!("slot {slot}: {what}")));
+    let faces = f.uv.len();
+    if !f.face_ends.is_empty() {
+        if f.face_ends.len() != faces {
+            return refuse(format!("{} face ends for {faces} faces", f.face_ends.len()));
+        }
+        let mut before = 0;
+        for &end in &f.face_ends {
+            if end <= before {
+                return refuse(format!("face ends {:?} do not rise", f.face_ends));
+            }
+            before = end;
+        }
+        if before as usize != points {
+            return refuse(format!("face ends end at {before}, of {points} points"));
+        }
+    }
+    if !f.face_widths.is_empty() {
+        if f.face_widths.len() != faces {
+            return refuse(format!(
+                "{} face widths for {faces} faces",
+                f.face_widths.len()
+            ));
+        }
+        if let Some(w) = f
+            .face_widths
+            .iter()
+            .find(|w| !(w.is_finite() && **w >= 0.0))
+        {
+            return refuse(format!("face widths hold {w}, not a width"));
+        }
+    }
+    Ok(())
+}
+
+/// Refuses a record's XF 1.4 joins that do not describe the path it draws: carried by a kind
+/// other than a path, or not one byte per cubic of the points it draws (`drawn`: the shape it
+/// draws, its shape's or its pre-projected tail's, and the reveal window cut from it; a placement
+/// and a blend keep the count).
+fn joins_fit(
+    rec: &Record,
+    drawn: (Option<&ShapeData>, Option<(f64, f64)>),
+    joins: &[u8],
+) -> Result<(), StreamError> {
+    let refuse = |what: String| Err(StreamError::Invalid(format!("slot {}: {what}", rec.slot)));
+    if rec.kind != RecordKind::Path {
+        return refuse(format!("joins on a {} record", rec.kind.name()));
+    }
+    let points = match drawn.0 {
+        Some(ShapeData::Path { points }) => match drawn.1 {
+            Some((lo, hi)) => crate::geometry::revealed(points, lo, hi).len(),
+            None => points.len(),
+        },
+        _ => 0,
+    };
+    if joins.len() != points / 4 {
+        return refuse(format!("{} joins for {} cubics", joins.len(), points / 4));
+    }
+    Ok(())
+}
+
 fn shape_kind_name(data: &ShapeData) -> &'static str {
     match data {
         ShapeData::Path { .. } => "path",
@@ -382,6 +448,7 @@ impl After<'_> {
                 if let Some(stroke) = &f.stroke {
                     self.needs_table(rec, stroke, f.uv.len())?;
                 }
+                face_lists(rec.slot, f, points)?;
             }
             Body::Points(p) => self.needs_table(rec, &p.colors, points)?,
             Body::Instances(i) => {
@@ -397,6 +464,14 @@ impl After<'_> {
                 self.needs_table(rec, &i.stroke, n)?;
             }
             Body::None | Body::Image(_) | Body::Opaque(_) => {}
+        }
+        if let Some(joins) = &rec.joins {
+            // A pre-projected path draws its tail's points as they are.
+            let drawn = match &rec.pre_projected {
+                Some(tail) => (self.needs_shape(rec, Some(&tail.points), &["path"])?, None),
+                None => (a, rec.geometry.reveal),
+            };
+            joins_fit(rec, drawn, joins)?;
         }
         Ok(())
     }
@@ -636,6 +711,64 @@ impl Stream {
                 (x, y),
                 crate::contributors::of_pixel(frags, coverage, depths, &leaf),
             );
+        })?;
+        Ok(out)
+    }
+
+    /// What the resolve composited at every pixel of `x0..x1` by `y0..y1` (clipped to the view's
+    /// frame), from the frame [`Stream::render_under_overlay`] draws, the same passes resolved
+    /// again: a diagnostic report (`diagnostics.rs`), not a supported interface, which composites
+    /// again to each pixel drawn. The overlay's entries are Cairo's and are not reported. With
+    /// `decisions`, each pixel also holds the pairwise orders its ranks read. Refused as drawing
+    /// refuses.
+    pub fn diagnostic_resolves(
+        &self,
+        x0: u32,
+        y0: u32,
+        x1: u32,
+        y1: u32,
+        decisions: bool,
+    ) -> Result<BTreeMap<(u32, u32), crate::diagnostics::Pixel>, DrawError> {
+        let view = self.view.as_ref().ok_or(DrawError::NoView)?;
+        let (width, height) = (view.pixel_width, view.pixel_height);
+        let keep = composite::Rect {
+            x0: x0.min(width),
+            y0: y0.min(height),
+            x1: x1.min(width),
+            y1: y1.min(height),
+        };
+        let mut out = BTreeMap::new();
+        self.with_producers(width, height, &[], true, |frame, producers| {
+            if keep.x0 >= keep.x1 || keep.y0 >= keep.y1 {
+                return;
+            }
+            let stride = width as usize * 4;
+            for rect in tiles::tile_rects(width, height) {
+                if rect.x1 <= keep.x0
+                    || rect.x0 >= keep.x1
+                    || rect.y1 <= keep.y0
+                    || rect.y0 >= keep.y1
+                {
+                    continue;
+                }
+                let mut background = Vec::with_capacity(rect.pixels() * 4);
+                for y in rect.y0..rect.y1 {
+                    let row = y as usize * stride;
+                    background.extend_from_slice(
+                        &frame.rgba()[row + rect.x0 as usize * 4..row + rect.x1 as usize * 4],
+                    );
+                }
+                tiles::passes(rect, producers).trace_pixels(
+                    keep,
+                    &background,
+                    decisions,
+                    |x, y, frags, trace, bg, emission| {
+                        let leaf = |f: &composite::Fragment| self.leaf_of(f);
+                        let pixel = crate::diagnostics::Pixel::of(frags, trace, bg, emission, leaf);
+                        out.insert((x, y), pixel);
+                    },
+                );
+            }
         })?;
         Ok(out)
     }
@@ -998,6 +1131,41 @@ impl Stream {
             let found: Vec<_> = paths.iter().map(|d| lowering.face_stops(d)).collect();
             found.iter().any(Option::is_some).then_some(found)
         })
+    }
+
+    /// The leaves, as `(object, part)` like [`Stream::contributors`]' leaves, whose strokes the
+    /// drawer draws as a round cap's dot ([`path::Lowering::round_cap_dot`]): the faces of face
+    /// groups the order draws (its `(slot, part)` entries), decided as drawing decides it.
+    /// Nothing is drawn.
+    pub fn round_cap_dots(&self) -> Result<std::collections::BTreeSet<(u32, u32)>, DrawError> {
+        let ordered: std::collections::BTreeSet<(u32, u32)> = self
+            .order
+            .iter()
+            .filter(|e| self.records[&e.slot].kind == RecordKind::FaceGroup)
+            .map(|e| (e.slot, e.part))
+            .collect();
+        let slots: std::collections::BTreeSet<u32> =
+            ordered.iter().map(|(slot, _)| *slot).collect();
+        let slots: Vec<u32> = slots.into_iter().collect();
+        let found = self.each_paths(&slots, |lowering, paths| {
+            let parts: Vec<u32> = paths
+                .iter()
+                .filter(|d| lowering.round_cap_dot(d))
+                .map(|d| d.which as u32)
+                .collect();
+            (!parts.is_empty()).then_some(parts)
+        })?;
+        Ok(found
+            .into_iter()
+            .flat_map(|(slot, parts)| {
+                let object = self.records[&slot].object;
+                let ordered = &ordered;
+                parts
+                    .into_iter()
+                    .filter(move |part| ordered.contains(&(slot, *part)))
+                    .map(move |part| (object, part))
+            })
+            .collect())
     }
 
     /// `answer(lowering, paths)` per slot of `slots` holding a record that draws paths the drawer
@@ -1382,7 +1550,10 @@ fn refusal(
         } else if let (Body::FaceGroup(faces), Some(ShapeData::Path { points })) =
             (&rec.body, prototype)
         {
-            if !faces.uv.is_empty() && points.len() % faces.uv.len() == 0 {
+            // Face ends cut the points as `apply` checked them; without, into equal runs.
+            if !faces.uv.is_empty()
+                && (!faces.face_ends.is_empty() || points.len() % faces.uv.len() == 0)
+            {
                 return None;
             }
             "a face group whose points do not divide into its faces".into()

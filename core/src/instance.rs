@@ -147,9 +147,10 @@ pub fn path_members<'a>(
 }
 
 /// Face `part` of a `face_group` record, as CE draws each face of a surface: the record's points
-/// cut into one equal run per face, face `part`'s run through the record's placement, filled and
-/// stroked by row `part` of the face tables (found by `table`), with the record's background
-/// stroke and widths; a face of a surface for depth ([`PathDraw::surface`]).
+/// cut into one run per face ([`FaceGroup::run`]: at its face ends, or equal runs), face
+/// `part`'s run through the record's placement, filled and stroked by row `part` of the face
+/// tables (found by `table`) at its own stroke width ([`FaceGroup::width`]), with the record's
+/// background stroke and its width; a face of a surface for depth ([`PathDraw::surface`]).
 pub fn face<'a, 't>(
     record: &'a Record,
     points: &'a [[f64; 3]],
@@ -158,12 +159,11 @@ pub fn face<'a, 't>(
     table: impl Fn(&Key) -> &'t Stops + Copy,
     order: u32,
 ) -> PathDraw<'a> {
-    let size = points.len() / faces.uv.len();
     let i = part as usize;
     let p = &record.paint;
     PathDraw {
         record,
-        points: Cow::Borrowed(&points[i * size..(i + 1) * size]),
+        points: Cow::Borrowed(&points[faces.run(points.len(), i)]),
         place: record.geometry.place_a,
         places: [IDENTITY, record.geometry.place_a],
         fill: Some(vec![table(&faces.fill).rows()[i]]),
@@ -173,7 +173,7 @@ pub fn face<'a, 't>(
         surface: true,
         pre_projected: false,
         pivot: None,
-        stroke_width: p.stroke_width,
+        stroke_width: faces.width(p.stroke_width, i),
         background_stroke_width: p.background_stroke_width,
         order,
         sub: 0,

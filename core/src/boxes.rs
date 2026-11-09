@@ -60,11 +60,18 @@ pub fn record_box<'a>(
                 return None;
             }
             let all = placed(points, place_a);
-            let size = all.len() / count;
-            if size == 0 {
-                return None;
+            if !faces.face_ends.is_empty() {
+                // Each face's own run, at its face end (checked when the record was applied).
+                (0..count)
+                    .map(|i| all[faces.run(all.len(), i)].to_vec())
+                    .collect()
+            } else {
+                let size = all.len() / count;
+                if size == 0 {
+                    return None;
+                }
+                all.chunks(size).map(<[_]>::to_vec).collect()
             }
-            all.chunks(size).map(<[_]>::to_vec).collect()
         }
         (RecordKind::Points, Some(ShapeData::Path { points }), _) => vec![placed(points, place_a)],
         (RecordKind::Mesh, Some(ShapeData::Mesh { positions, .. }), _) => {

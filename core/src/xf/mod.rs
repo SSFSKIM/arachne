@@ -14,7 +14,7 @@ pub use key::Key;
 ///
 /// From XF 1 the layout is append-only: a new field or kind bumps the minor, and nothing removes
 /// or retypes a field.
-pub const XF_VERSION: (u16, u16) = (1, 2);
+pub const XF_VERSION: (u16, u16) = (1, 4);
 
 /// CE's background-image fill: paint the path into a separate array and multiply by an image.
 /// Carried by XF, drawn by Cairo only in this build.
@@ -448,6 +448,38 @@ pub struct FaceGroup {
     pub fill: Key,
     /// Per-face stroke colours (one row per face), when the faces are stroked.
     pub stroke: Option<Key>,
+    /// XF 1.3: per face, the end of its run of the points (one past its last point), rising, the
+    /// last the points' count: a surface partly drawn holds faces of different lengths. Empty:
+    /// the points cut into one equal run per face, as before XF 1.3.
+    pub face_ends: Vec<u32>,
+    /// XF 1.3: per face, its stroke width: each face of a surface written stroked at its own
+    /// phase's width. Empty: every face at the record's stroke width.
+    pub face_widths: Vec<f64>,
+}
+
+impl FaceGroup {
+    /// Face `i`'s run of the record's `len` points: from the face end before it to its own, or
+    /// with no face ends one of equal runs. The stream checks a record's face ends, or that its
+    /// points divide into its faces, before reading them.
+    pub fn run(&self, len: usize, i: usize) -> std::ops::Range<usize> {
+        if self.face_ends.is_empty() {
+            let size = len / self.uv.len();
+            i * size..(i + 1) * size
+        } else {
+            let start = i.checked_sub(1).map_or(0, |j| self.face_ends[j] as usize);
+            start..self.face_ends[i] as usize
+        }
+    }
+
+    /// Face `i`'s stroke width: its own, or `width`, the record's, where the faces state none.
+    pub fn width(&self, width: f64, i: usize) -> f64 {
+        self.face_widths.get(i).copied().unwrap_or(width)
+    }
+
+    /// Whether it carries an XF 1.3 list.
+    pub fn carries_face_lists(&self) -> bool {
+        !self.face_ends.is_empty() || !self.face_widths.is_empty()
+    }
 }
 
 /// A point cloud: positions are the record's path-kind shape.
@@ -548,6 +580,12 @@ pub struct Record {
     /// face's own normal. Carried for records the camera shades. `None` when the writer did not
     /// decide: the drawer finds them from the points it is handed.
     pub normals: Option<Vec<[f64; 3]>>,
+    /// A path record's miter joins as Cairo decides them on the points as made (XF 1.4): one byte
+    /// per cubic of its points, bit 0 set where Cairo joins into the cubic and bit 1 where it
+    /// mitres there; for the first cubic of a closed subpath, its closing join. `None` when the
+    /// writer did not decide: the drawer decides from the points it is handed
+    /// ([`crate::join_mask`]).
+    pub joins: Option<Vec<u8>>,
 }
 
 impl Record {
@@ -570,6 +608,7 @@ impl Record {
             pre_projected: None,
             planes: None,
             normals: None,
+            joins: None,
         }
     }
 

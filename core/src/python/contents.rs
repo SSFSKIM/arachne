@@ -166,6 +166,10 @@ fn record<'py>(py: Python<'py>, r: &Record) -> PyResult<Bound<'py, PyDict>> {
     if let Some(k) = r.fill_image {
         out.set_item("fill_image", key(py, k))?;
     }
+    if let Some(joins) = &r.joins {
+        let bytes: Vec<u32> = joins.iter().map(|b| u32::from(*b)).collect();
+        out.set_item("joins", PyTuple::new(py, bytes)?)?;
+    }
     if let Some(planes) = &r.planes {
         let codes: Vec<u32> = planes.iter().map(|c| u32::from(*c)).collect();
         out.set_item("planes", PyTuple::new(py, codes)?)?;
@@ -197,6 +201,12 @@ fn record<'py>(py: Python<'py>, r: &Record) -> PyResult<Bound<'py, PyDict>> {
             out.set_item("face_fill", key(py, f.fill))?;
             if let Some(k) = f.stroke {
                 out.set_item("face_stroke", key(py, k))?;
+            }
+            if !f.face_ends.is_empty() {
+                out.set_item("face_ends", PyTuple::new(py, &f.face_ends)?)?;
+            }
+            if !f.face_widths.is_empty() {
+                out.set_item("face_widths", PyTuple::new(py, &f.face_widths)?)?;
             }
         }
         Body::Points(p) => {

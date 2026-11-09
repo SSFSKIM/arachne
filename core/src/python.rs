@@ -367,11 +367,16 @@ fn body_of(kind: RecordKind, fields: &Fields) -> PyResult<Body> {
             if uv.ncols() != 2 {
                 return Err(PyValueError::new_err("uv must have shape (faces, 2)"));
             }
+            let face_ends: Option<PyArrayLike1<u32, AllowTypeChange>> = fields.get("face_ends")?;
+            let face_widths: Option<PyArrayLike1<f64, AllowTypeChange>> =
+                fields.get("face_widths")?;
             Body::FaceGroup(FaceGroup {
                 uv: uv.rows().into_iter().map(|r| [r[0], r[1]]).collect(),
                 grid: fields.need("grid")?,
                 fill: need_key(fields, "face_fill")?,
                 stroke: key_field(fields, "face_stroke")?,
+                face_ends: face_ends.map_or_else(Vec::new, |a| a.as_array().to_vec()),
+                face_widths: face_widths.map_or_else(Vec::new, |a| a.as_array().to_vec()),
             })
         }
         RecordKind::Points => Body::Points(Points {
@@ -759,6 +764,7 @@ impl PyFrameDelta {
         record.body = body_of(kind, &fields)?;
         record.planes = fields.get::<Vec<u8>>("planes")?;
         record.normals = fields.get::<Vec<[f64; 3]>>("normals")?;
+        record.joins = fields.get::<Vec<u8>>("joins")?;
         fields.finish()?;
         self.delta.set.push(record);
         self.delta.version = wire::encoded_version(&self.delta);
@@ -894,6 +900,17 @@ impl PyStream {
     /// filled through a background image.
     fn overlay_entries(&self) -> Vec<(&'static str, u32, u32)> {
         contents::order(&self.stream.overlay_entries())
+    }
+
+    /// The leaves ``(object, part)``, as :meth:`contributors` reports them, whose strokes the
+    /// drawer draws as a round cap's dot: faces of a face group at one spot as the camera shows
+    /// them, under a round cap, undashed or dashed on at their start. Nothing is drawn.
+    fn round_cap_dots(&self, py: Python<'_>) -> PyResult<Vec<(u32, u32)>> {
+        let found = self
+            .stream
+            .round_cap_dots()
+            .map_err(|e| draw_error(py, e))?;
+        Ok(found.into_iter().collect())
     }
 
     /// Per slot of ``slots`` holding a record that draws paths, how each of them lies, decided
@@ -1173,6 +1190,119 @@ impl PyStream {
                 .reshape([h, w])?
                 .into_any(),
         ))
+    }
+
+    /// Internal, for diagnostics; not a supported interface. What the resolve composited at
+    /// every pixel of the box ``x0 <= x < x1``, ``y0 <= y < y1``, from the frame
+    /// ``draw(overlay=False)`` draws: ``{(x, y): pixel}``, each ``pixel`` a dict of
+    ///
+    /// - ``resolve``: ``"background"``, ``"fast"``, ``"coverage"`` or ``"sample"``;
+    /// - ``background``: ``(r, g, b, a)``, the pixel beneath every fragment;
+    /// - ``entries``: every fragment there, culled or not, as ``(object, part, layer, order,
+    ///   sub, colour, coverage)``: its leaf, its layer (``"background_stroke"``, ``"fill"``,
+    ///   ``"stroke"``, ``"surface"`` or ``"mask"``), its draw-order index and part, its
+    ///   premultiplied ``(r, g, b, a)`` and its 8-bit coverage at each of the 16 sub-samples;
+    /// - ``samples``: per sub-sample, the indices into ``entries`` covering it, front first, as
+    ///   the sample resolve composites them (for the fast and coverage resolves, in their units'
+    ///   order);
+    /// - ``units``: for the fast and coverage resolves, the units blended, back to front, as
+    ///   ``(members, colour, coverage)`` (members front first, the colour and 8-bit coverage it
+    ///   was blended with); empty otherwise;
+    /// - ``emission``: ``(r, g, b)`` linear light added after the resolve, or ``None``.
+    ///
+    /// With ``decisions=True`` each pixel also holds the pairwise orders its ranks read, each
+    /// ``(a, b, front, kind)``: ``a < b`` indices into ``entries``, ``front`` the one in front (or
+    /// ``None``), ``kind`` one of ``"paint"``, ``"tie"``, ``"depth"``, ``"majority"``:
+    /// - ``pairs``: every pair as the pixel's rank read it (empty for one entry);
+    /// - ``sample_ranked``: whether the sub-samples were ranked;
+    /// - ``sample_pairs``: per sub-sample, every pair of the entries it ranked (if
+    ///   ``sample_ranked``, else of those it composited), a sub-sample having no majority.
+    ///
+    /// Composited again with the resolves' arithmetic (``diagnostics.rs``), each gives back the
+    /// pixel drawn.
+    #[allow(clippy::type_complexity)]
+    #[pyo3(name = "_resolve_trace", signature = (x0, y0, x1, y1, *, decisions = false))]
+    fn resolve_trace<'py>(
+        &self,
+        py: Python<'py>,
+        x0: i64,
+        y0: i64,
+        x1: i64,
+        y1: i64,
+        decisions: bool,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        use crate::diagnostics::Layer;
+        let side = |v: i64| v.clamp(0, u32::MAX as i64) as u32;
+        let (x0, y0, x1, y1) = (side(x0), side(y0), side(x1), side(y1));
+        let stream = &self.stream;
+        let found = py
+            .detach(|| stream.diagnostic_resolves(x0, y0, x1, y1, decisions))
+            .map_err(|e| draw_error(py, e))?;
+        let rgba = |[r, g, b, a]: [u8; 4]| (r, g, b, a);
+        let pair = |p: &crate::diagnostics::PairOrder| {
+            let kind = match p.how {
+                crate::order::Decided::Paint => "paint",
+                crate::order::Decided::Tie => "tie",
+                crate::order::Decided::Depth => "depth",
+                crate::order::Decided::Majority => "majority",
+            };
+            (p.a, p.b, p.front, kind)
+        };
+        let out = PyDict::new(py);
+        for ((x, y), p) in found {
+            let d = PyDict::new(py);
+            d.set_item(
+                "resolve",
+                ["background", "fast", "coverage", "sample"][p.resolve as usize],
+            )?;
+            d.set_item("background", rgba(p.background))?;
+            let entries: Vec<(u32, u32, &str, u32, u32, Rgba8, Vec<u8>)> = p
+                .entries
+                .iter()
+                .map(|e| {
+                    let layer = match e.layer {
+                        Layer::BackgroundStroke => "background_stroke",
+                        Layer::Fill => "fill",
+                        Layer::Stroke => "stroke",
+                        Layer::Surface => "surface",
+                        Layer::Mask => "mask",
+                    };
+                    let (object, part) = e.leaf;
+                    let coverage = e.coverage.to_vec();
+                    (
+                        object,
+                        part,
+                        layer,
+                        e.order,
+                        e.sub,
+                        rgba(e.colour),
+                        coverage,
+                    )
+                })
+                .collect();
+            d.set_item("entries", entries)?;
+            d.set_item("samples", p.samples)?;
+            let units: Vec<(Vec<usize>, Rgba8, u8)> = p
+                .units
+                .into_iter()
+                .map(|u| (u.members, rgba(u.colour), u.coverage))
+                .collect();
+            d.set_item("units", units)?;
+            d.set_item("emission", p.emission.map(|[r, g, b]| (r, g, b)))?;
+            if decisions {
+                let pairs: Vec<_> = p.pairs.iter().map(pair).collect();
+                d.set_item("pairs", pairs)?;
+                d.set_item("sample_ranked", p.sample_ranked)?;
+                let sample_pairs: Vec<Vec<_>> = p
+                    .sample_pairs
+                    .iter()
+                    .map(|k| k.iter().map(pair).collect())
+                    .collect();
+                d.set_item("sample_pairs", sample_pairs)?;
+            }
+            out.set_item((x, y), d)?;
+        }
+        Ok(out)
     }
 }
 

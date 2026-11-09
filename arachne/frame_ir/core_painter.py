@@ -104,17 +104,19 @@ class CorePainter:
         *,
         t: Fraction = Fraction(0),
         terms: Mapping[int, Term] | None = None,
+        roots: Sequence[Any] = (),
     ) -> np.ndarray:
         """The frame the camera draws from ``groups`` (each a layer and the
-        list one capture is handed), drawn by the core from its XF
-        description, the overlay by Cairo. The frame's grid is decided once
-        (:func:`~.canonical.frame_grid`): the camera's depth sort is taken on
-        keys snapped by it (:func:`~.canonical.canonical_order`), and the
-        geometry is snapped to it.
+        list one capture is handed) of a scene holding ``roots``, drawn by
+        the core from its XF description, the overlay by Cairo. The frame's
+        grid is decided once (:func:`~.canonical.frame_grid`): the camera's
+        depth sort is taken on keys snapped by it
+        (:func:`~.canonical.canonical_order`), and the geometry is snapped
+        to it.
         """
         grid = frame_grid(camera)
         with canonical_order(camera, grid):
-            delta = self.stream.frame(camera, groups, t=t, terms=terms)
+            delta = self.stream.frame(camera, groups, t=t, terms=terms, roots=roots)
         self.canonical.frame_grid = grid
         try:
             return self.draw(delta)
@@ -201,16 +203,20 @@ class CorePainter:
         """The leaves the last frame composites at each pixel of ``box``,
         bottom first (:mod:`.contributors`): the core's, in depth order per
         sub-sample, under the overlay's, which Cairo paints over them in CE's
-        order (each overlay leaf drawn again alone). Nothing the painter
-        draws next changes. Refused (``LiveFrame``) unless the last frame is
-        :attr:`whole`.
+        order (each overlay leaf drawn again alone). A face a round cap
+        strokes as a dot carries its reason (:data:`.contributors.ROUND_CAP_DOT`).
+        Nothing the painter draws next changes. Refused (``LiveFrame``) unless
+        the last frame is :attr:`whole`.
         """
         if not self.whole:
             raise LiveFrame(
                 "contributors: the last capture was drawn over an earlier"
                 " picture; attribute the frame from its state extracted whole"
             )
-        found = contributors.from_core(self.core.contributors(*box), self.state.objects)
+        found = contributors.with_reasons(
+            contributors.from_core(self.core.contributors(*box), self.state.objects),
+            contributors.round_cap_dots(self.core),
+        )
         overlay = self.core.overlay_entries()
         if not overlay:
             return found

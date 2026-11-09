@@ -37,8 +37,10 @@ import numpy as np
 
 #: The newest XF version this module knows. A delta is written at the lowest
 #: version its content needs: 1.1 when it carries a pre-projected record, 1.2
-#: when it carries snapped geometry (an input grid, a record's planes).
-XF_VERSION = (1, 2)
+#: when it carries snapped geometry (an input grid, a record's planes), 1.3
+#: when a face group carries its faces' ends or stroke widths, 1.4 when a
+#: record carries its joins.
+XF_VERSION = (1, 4)
 #: The record's paint is CE's background-image fill (Cairo only).
 FEATURE_BACKGROUND_IMAGE = 1
 #: The record carries what a camera of the scene's own made of it
@@ -124,11 +126,17 @@ class PaintTable:
         self.key = paint_key(rows) if key is None else key
 
 
+#: A face group's lists that, empty, are not carried (``core/XF.md``): a
+#: record holds none empty, so each reader finds the list absent.
+EMPTY_IS_ABSENT = ("face_ends", "face_widths")
+
+
 class Record:
     """One drawn object: a kind and XF's fields, by the names the core's
     binding takes. Never changed once made; a frame that draws an object
     differently makes a new record. ``keys`` are the shapes and paint tables
-    it refers to (``sub_frame`` views' backgrounds included).
+    it refers to (``sub_frame`` views' backgrounds included). A list of
+    :data:`EMPTY_IS_ABSENT` given empty is left out.
     """
 
     __slots__ = ("fields", "keys", "kind")
@@ -136,6 +144,10 @@ class Record:
     def __init__(self, kind: str, fields: Mapping[str, Any]) -> None:
         self.kind = kind
         self.fields: dict[str, Any] = dict(fields)
+        for name in EMPTY_IS_ABSENT:
+            value = self.fields.get(name)
+            if value is not None and len(value) == 0:
+                del self.fields[name]
         self.keys = tuple(_references(self.fields))
 
     def __repr__(self) -> str:
