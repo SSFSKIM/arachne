@@ -887,9 +887,9 @@ def _out(name: str, value: Any) -> Path:
 
 def _workers(name: str, value: Any) -> int | str:
     """How many processes draw a render: a positive count, or ``auto``."""
-    if value == "auto" or (
-        isinstance(value, int) and not isinstance(value, bool) and value >= 1
-    ):
+    if value == "auto":
+        return "auto"
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
         return value
     raise _invalid(f"{name} is a positive count of processes, or 'auto'.")
 

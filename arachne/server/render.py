@@ -308,11 +308,12 @@ def _raised(pickled: bytes) -> BaseException:
     """
     found = pickle.loads(pickled)
     try:
-        error = pickle.loads(found["error"])
+        made = pickle.loads(found["error"])
     except Exception:  # noqa: BLE001 (none, or a class this process can't make)
-        error = None
-    if not isinstance(error, BaseException):
-        error = RenderFailed(found["message"])
+        made = None
+    error: BaseException = (
+        made if isinstance(made, BaseException) else RenderFailed(found["message"])
+    )
     if found["explained"] is not None:
         vars(error)["scene_error"] = SceneError(**found["explained"])
     return error
