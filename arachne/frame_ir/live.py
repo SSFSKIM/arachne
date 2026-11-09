@@ -1503,16 +1503,20 @@ def _face_groups(
     that are faces of a surface drawn as one face group, as the record's
     frames group them (``extract._faces``), by leaf id: the surface, the
     face's index among its uv faces, and the group's record. A surface
-    groups only where each of its uv faces is drawn in the capture. Its
-    surfaces are found by their submobjects (no method of theirs runs).
+    groups only where each of its uv faces is in ``made``, every draw of a
+    face one way (a face drawn two ways is left to be refused as a path
+    is). Its surfaces are found by their submobjects (no method of theirs
+    runs).
     """
     if not any(hasattr(leaf, "u_index") for leaf, _ in made):
         return {}
     from arachne.mobject.three_d.three_dimensions import Surface
 
-    drawn: dict[int, Record] = {}
+    drawn: dict[int, Record | None] = {}
     for leaf, record in made:
-        drawn.setdefault(id(leaf), record)
+        held = drawn.setdefault(id(leaf), record)
+        if held is not None and held is not record and not _same_record(held, record):
+            drawn[id(leaf)] = None
     found: dict[int, tuple[Any, int, Record]] = {}
     seen: set[int] = set()
     stack = list(owners)
@@ -1527,6 +1531,7 @@ def _face_groups(
         faces = _uv_faces(owner)
         records = [drawn.get(id(face)) for face in faces]
         if not faces or any(record is None for record in records):
+            # Not every face drawn, or one drawn two ways.
             continue
         group = _folded(owner, faces, records, uploads)  # type: ignore[arg-type]
         if group is not None:
@@ -1550,15 +1555,28 @@ def _folded(
     (``FrameStream._face_group``): the faces' points in turn, their fill and
     stroke rows, their uv indices and the surface's grid, and the first
     face's style and depth. ``None`` where they do not draw as one group:
-    one point count, one style but their colours, each one stop.
+    one point count, one style but their colours, each one stop, and no
+    face stating its own gradient ends, which a face group does not draw
+    (``extract._one_group``).
     """
-    first = records[0].fields
+    if any("get_gradient_start_and_end_points" in vars(face) for face in faces):
+        return None
+    if any(record.kind != "path" for record in records):
+        return None
+    completed = [
+        _inactive_strokes(face, record.fields, uploads)
+        for face, record in zip(faces, records, strict=True)
+    ]
+    if any(fields is None for fields in completed):
+        return None
+    first = completed[0]
+    assert first is not None
     points: list[np.ndarray] = []
     fills: list[np.ndarray] = []
     strokes: list[np.ndarray] = []
-    for record in records:
-        fields = record.fields
-        if record.kind != "path" or fields.keys() != first.keys():
+    for fields in completed:
+        assert fields is not None
+        if fields.keys() != first.keys():
             return None
         if _NOT_FACE & fields.keys():
             return None
@@ -1598,6 +1616,34 @@ def _folded(
     )
     fields["grid"] = (int(u_res), int(v_res))
     return Record("face_group", fields)
+
+
+def _inactive_strokes(
+    face: Any, fields: dict[str, Any], uploads: dict[bytes, Any]
+) -> dict[str, Any] | None:
+    """``fields`` with each stroke drawn 0 wide given the paint the record's
+    frames give it. CE reads no stroke colour at that width
+    (``Camera.apply_stroke``); the record reads the face's own
+    (``VMobject.get_stroke_rgbas``), here off the face's state, no method of
+    it run. ``None`` where the face states its stroke colours by its own
+    method.
+    """
+    found = dict(fields)
+    for name, width, attribute in (
+        ("stroke", "stroke_width", "stroke_rgbas"),
+        ("background_stroke", "background_stroke_width", "background_stroke_rgbas"),
+    ):
+        if found.get(name) is not None or found.get(width) != 0:
+            continue
+        if "get_stroke_rgbas" in vars(face):
+            return None
+        try:
+            # A field of the face's paint (its state), as the method reads it.
+            rows = getattr(face, attribute)
+        except AttributeError:
+            rows = np.zeros((1, 4))
+        found[name] = _paint(rows, uploads)
+    return found
 
 
 def _same_record(a: Record, b: Record) -> bool:
