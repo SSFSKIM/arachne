@@ -1511,6 +1511,18 @@ fn a_dash_whose_gap_is_under_cairo_s_least_length_is_solid_for_the_dot() {
     assert_eq!(dashed(0.999, 0.9995), undashed, "a gap of 0.001: solid");
     assert_eq!(dashed(0.9975, 0.999), nothing, "a gap of 0.0025: in it");
     assert_eq!(dashed(0.9975, 0.5), undashed, "a gap of 0.0025: on");
+    // Cairo sums the dash's entries as they are handed to it (on = period · duty, off =
+    // period · (1 − duty)) and tests the total less the on length: here exactly 1/512, which
+    // is no less than its least length, so the dash stays, and phase 0.999 starts in its gap.
+    let at_least = one_spot_face(
+        Cap::Round,
+        Some(Dash {
+            period: 0.3,
+            duty: 0.993_489_583_333_333_4,
+            phase: 0.999,
+        }),
+    );
+    assert_eq!(at_least, nothing, "a gap of 1/512 in Cairo's sums: in it");
 }
 
 #[test]
