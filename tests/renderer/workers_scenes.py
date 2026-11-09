@@ -4,6 +4,8 @@ worker's range can start.
 
 from __future__ import annotations
 
+import functools
+
 import numpy as np
 
 from arachne import (
@@ -13,13 +15,16 @@ from arachne import (
     RED,
     RIGHT,
     UP,
+    Camera,
     Circle,
     Dot,
     FadeIn,
+    ImageMobject,
     MovingCameraScene,
     Rotate,
     Scene,
     Square,
+    ZoomedScene,
 )
 from tests.timeline.soundness_scenes import CountingFill, play_fill_between
 
@@ -112,3 +117,93 @@ class Pairs(Scene):
         dot = Dot(LEFT)
         self.play(dot.animate.shift(RIGHT), run_time=0.4)
         self.play(dot.animate.shift(UP), run_time=0.4)
+
+
+class SkippedCentre(Scene):
+    """A frozen frame, the frame centre moved, a frozen frame in a skipped
+    section, then a play. The skipped frame's static picture is drawn as
+    the scene runs, before the frames waiting for the workers; every path
+    still maps around the centre of the first frame.
+    """
+
+    def construct(self):
+        circle = Circle(radius=0.6)
+        self.add(circle)
+        self.wait(0.4)
+        self.camera.frame_center = np.array([1.0, 0.5, 0.0])
+        self.next_section(skip_animations=True)
+        self.wait(0.4)
+        self.next_section(skip_animations=False)
+        self.then(circle)
+
+    def then(self, circle):
+        self.play(circle.animate.shift(LEFT), run_time=0.4)
+
+
+class SkippedCentreOnePlay(SkippedCentre):
+    """:class:`SkippedCentre` with nothing after the skipped section: one
+    play to draw.
+    """
+
+    def then(self, circle):
+        pass
+
+
+class SkippedCentreLiveLater(SkippedCentre):
+    """:class:`SkippedCentre` whose last play a mobject the record can't
+    draw joins midway: from it on, the scene is drawn as it runs.
+    """
+
+    def then(self, circle):
+        CountingFill.colour = RED
+        play_fill_between(self, 0.3, 0.6)
+
+
+class SkippedCentreCameraCode(SkippedCentre):
+    """:class:`SkippedCentre` whose camera's depth order is the scene's
+    code, set on the camera, which does what the engine's does.
+    """
+
+    def construct(self):
+        self.camera.get_mobjects_to_display = functools.partial(
+            Camera.get_mobjects_to_display, self.camera
+        )
+        super().construct()
+
+
+class SkippedCentreCameraCodeUndone(SkippedCentreCameraCode):
+    """:class:`SkippedCentreCameraCode` whose code leaves the camera as the
+    engine made it once the scene has run.
+    """
+
+    def construct(self):
+        super().construct()
+        del self.camera.get_mobjects_to_display
+
+
+class SkippedCentreZoomed(ZoomedScene, SkippedCentre):
+    """:class:`SkippedCentre` through a zoomed scene's camera, whose
+    display is never shown.
+    """
+
+
+def show_a_snapshot(scene):
+    """The scene's frame drawn now, over the renderer's static picture,
+    shown full size in place of what it shows, held.
+    """
+    scene.renderer.update_frame(scene)
+    image = ImageMobject(np.array(scene.camera.get_image()))
+    image.height = scene.camera.frame_height
+    image.move_to(scene.camera.frame_center)
+    scene.clear()
+    scene.add(image)
+    scene.wait(0.4)
+
+
+class SkippedCentreSnapshot(SkippedCentre):
+    """:class:`SkippedCentre` whose script draws a frame after the skipped
+    section, over its static picture, and shows it.
+    """
+
+    def then(self, circle):
+        show_a_snapshot(self)

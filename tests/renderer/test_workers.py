@@ -116,6 +116,9 @@ def test_ranges_are_never_more_than_the_items():
     assert workers.ranges([5, 5, 5], 3) == [(0, 1), (1, 2), (2, 3)]
     assert workers.ranges([10], 4) == [(0, 1)]
     assert workers.ranges([], 4) == []
+    # Fewer items than workers, but one outweighs the two after it, which
+    # share a range.
+    assert workers.ranges([100, 1, 1], 4) == [(0, 1), (1, 3)]
 
 
 # ── equal to one process ─────────────────────────────────────────────────────
@@ -253,6 +256,63 @@ def test_a_thread_alive_at_fork_time_is_refused(tmp_path):
     # Without the thread, the same render forks its workers.
     drawn_by_workers(free, 2)
     assert free["movie"]["frames"] == held["drawn"]
+
+
+#: Each way a render whose plays wait for its workers draws them in its own
+#: process instead, on a scene that drew a skipped frame's static picture
+#: while they waited, after its frame centre moved.
+SKIPPED_CENTRE = [
+    pytest.param("SkippedCentre", {"thread": True}, "thread", id="thread"),
+    pytest.param("SkippedCentreOnePlay", {}, "one play", id="one_play"),
+    pytest.param("SkippedCentreLiveLater", {}, "drawn as it runs", id="live_later"),
+    pytest.param("SkippedCentreZoomed", {}, "MultiCamera", id="multi_camera"),
+    pytest.param("SkippedCentreCameraCode", {}, "draws through", id="camera_code"),
+    pytest.param(
+        "SkippedCentreCameraCodeUndone",
+        {},
+        "replaced its camera's",
+        id="camera_code_undone",
+    ),
+]
+
+
+@pytest.mark.parametrize(("scene", "run", "reason"), SKIPPED_CENTRE)
+def test_plays_drawn_here_after_waiting_map_as_one_process_does(
+    tmp_path, scene, run, reason
+):
+    one, two = renders(tmp_path, scene, [at(1), {**at(2), **run}])
+    drawn_here(one)
+    drawn_here(two)
+    assert reason in two["fallback"]
+    assert two["movie"]["frames"] == one["drawn"]
+
+
+def test_plays_drawn_by_workers_after_a_skipped_static_map_as_one_process_does(
+    tmp_path,
+):
+    one, two = renders(tmp_path, "SkippedCentre", [at(1), at(2)])
+    drawn_here(one)
+    drawn_by_workers(two, 2)
+    assert two["movie"]["frames"] == one["drawn"]
+
+
+def test_a_skipped_static_picture_drawn_while_plays_wait_maps_as_one_process_does(
+    tmp_path,
+):
+    """The script draws a frame over a skipped frame's static picture, drawn
+    while the plays before it wait for the workers, and shows it.
+    """
+    one, two, held = renders(
+        tmp_path,
+        "SkippedCentreSnapshot",
+        [at(1), at(2), {**at(2), "thread": True}],
+    )
+    drawn_here(one)
+    drawn_by_workers(two, 2)
+    assert two["movie"]["frames"] == one["drawn"]
+    drawn_here(held)
+    assert "thread" in held["fallback"]
+    assert held["movie"]["frames"] == one["drawn"]
 
 
 # ── a worker that fails ──────────────────────────────────────────────────────

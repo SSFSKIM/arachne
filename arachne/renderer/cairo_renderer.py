@@ -285,6 +285,9 @@ class CairoRenderer:
             static = self._draw_play(scene, play, frames)
         elif play.held and play.static and scene._arachne_timeline.draws:
             # CE draws a frozen frame's static picture whatever it skips.
+            if self._deferred is not None:
+                # Drawn before the plays waiting for the workers.
+                self._map_as_rendered(scene)
             with Drawing(scene._arachne_timeline.ensure_record()) as drawing:
                 static = drawing.static(play)
         # As in CE, a frozen frame's static picture stays the renderer's
@@ -431,6 +434,7 @@ class CairoRenderer:
         """Draw the frames of ``deferred`` in this process, in order,
         leaving the renderer as drawing each as it ran would have.
         """
+        self._map_as_rendered(scene)
         for each in deferred:
             if each.play is None:
                 self.static_image = each.static
@@ -526,6 +530,18 @@ class CairoRenderer:
             return f"the scene's code replaced its camera's {names}"
         return None
 
+    def _map_as_rendered(self, scene: Scene) -> None:
+        """Make the camera map paths around the centre the render's first
+        path draw froze (:func:`.timeline.mapping.freeze_mapping_centre`),
+        whatever this process drew first. Frames drawn out of the render's
+        order (a worker's range, the plays that waited for the workers, a
+        skipped frame's static picture drawn while they wait) then map as
+        one process drawing every frame in order maps them.
+        """
+        from ..timeline.mapping import freeze_mapping_centre
+
+        freeze_mapping_centre(scene._arachne_timeline.ensure_record())
+
     def _draw_range(
         self, scene: Scene, deferred: Sequence[_Deferred], count: int
     ) -> dict[str, Any]:
@@ -536,18 +552,14 @@ class CairoRenderer:
 
         The worker begins where the render left off, the scene run: each
         play's frames, and its static picture, are drawn from the record
-        alone. Paths map around the centre the render's first path draw
-        froze, as a frame drawn after the scene ran always does
-        (:mod:`.timeline.mapping`): a worker whose range begins after the
-        camera moved draws as a process that drew every frame before it.
+        alone, mapped as the render maps them (:meth:`_map_as_rendered`).
         """
         from ..frame_ir.lint import raised
         from ..server import registry
-        from ..timeline.mapping import freeze_mapping_centre
 
         writer = self.file_writer
         writer.video_encoder = with_thread_share(writer.video_encoder, count)
-        freeze_mapping_centre(scene._arachne_timeline.ensure_record())
+        self._map_as_rendered(scene)
         found = len(raised)
         writer.take_stream(deferred[0].number)
         frames = 0
