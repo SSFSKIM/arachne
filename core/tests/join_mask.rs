@@ -239,6 +239,52 @@ fn each_copy_of_a_repeated_subpath_takes_its_own_decision_in_its_own_contour() {
     }
 }
 
+/// A join Cairo does not make (its byte without `JOINED`) keeps its place among the occurrences of
+/// its points: decided nothing, it is left as kurbo strokes it, and the next occurrence takes its
+/// own decision. Two copies of one corner, Cairo joining only the second and bevelling it: kurbo's
+/// miter at the first, its bevel at the second.
+#[test]
+fn a_join_cairo_does_not_make_keeps_its_place_among_its_points_occurrences() {
+    let one = corner(
+        Point::new(2.0, 1.0),
+        direction(0.0),
+        direction(150.0),
+        9.0,
+        3.0,
+        false,
+    );
+    let mut twice = one.clone();
+    for el in one.elements() {
+        twice.push(*el);
+    }
+    let shown: Vec<[f64; 3]> = cubics(&twice)
+        .iter()
+        .flat_map(|c| c.map(|p| [p.x, p.y, 0.0]))
+        .collect();
+    let decided = arachne_core::path::decided_joins(&shown, &[0, 0, 0, 1]);
+    let c = cubics(&one);
+    assert_eq!(
+        decided,
+        HashMap::from([(join_mask::key(c[0], c[1], false), vec![None, Some(false)])])
+    );
+    let s = style(1.0, Join::Miter);
+    let (got, edits) = join_mask::apply(stroked(&twice, &s), twice.elements(), &s, TOL, &decided);
+    assert_eq!(
+        edits,
+        Edits {
+            dropped: 1,
+            ..Edits::default()
+        }
+    );
+    let bevel = stroked(&one, &style(1.0, Join::Bevel));
+    let miter = stroked(&one, &s);
+    let whole: Vec<PathEl> = [&miter, &bevel]
+        .iter()
+        .flat_map(|p| p.elements().to_vec())
+        .collect();
+    assert_eq!(got.elements(), whole);
+}
+
 // --- drawn through a Stream ---
 
 fn map(view: &View) -> FrameMap {
