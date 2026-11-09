@@ -660,6 +660,22 @@ lifted.
   terms (`PlayRecord.leaf_terms`) are evaluated by the animations themselves, as without the lever. Direction: the
   same treatment for arc paths, whose formula is CE's `path_along_arc`, once the share they take is measured.
 
+## Render workers (`arachne/renderer/cairo_renderer.py`)
+
+- **A frame the script draws itself while plays wait for the workers is drawn without their state.** With
+  `render_workers` above 1, a drawn play's frames wait until the scene has run, so a frame the script draws through
+  the renderer meanwhile (`renderer.update_frame`, `show_frame`) starts on no static picture where one process has
+  the last frozen frame's, and maps paths around the frame centre of that moment where one process keeps its first
+  frame's. A scene that draws a frozen frame, moves its frame centre, then draws a frame itself and shows its pixels
+  reproduces it. A skipped frame's static picture drawn while plays wait is mapped as one process maps it.
+  Direction: draw the waiting held play's static picture, and map as rendered, when the script asks for a frame.
+
+## Test output
+
+- **The macOS lane's test run prints warnings nobody acts on.** Dependencies' deprecations and invalid escape
+  sequences, a measuring test's reports and a graphical test's within-tolerance pixel mismatch fill its warnings
+  summary, so a new warning there is easy to miss. Direction: filter or fix the known ones, then fail on new ones.
+
 ## Speed: measured and not built
 
 Measured on a sample of scenes, each opened in a session, edited to make its last play 0.5 s longer, and executed
