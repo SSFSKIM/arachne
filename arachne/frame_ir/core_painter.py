@@ -215,7 +215,7 @@ class CorePainter:
             )
         found = contributors.with_reasons(
             contributors.from_core(self.core.contributors(*box), self.state.objects),
-            contributors.round_cap_dots(self.state),
+            contributors.round_cap_dots(self.core),
         )
         overlay = self.core.overlay_entries()
         if not overlay:

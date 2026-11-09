@@ -147,6 +147,24 @@ fn drawn_world(draw: &PathDraw<'_>) -> Option<Vec<[f64; 3]>> {
     Some(world)
 }
 
+/// Whether `draw`'s strokes are a round cap's dot, as Cairo strokes a closed subpath of no
+/// length: a face of a surface (one not yet drawn, `Create`, is its points at one spot) whose
+/// points `shown` are at one spot as the camera shows them, under a round cap (a butt or square
+/// one strokes nothing of it), undashed or dashed on at the subpath's start. Cairo's dashed
+/// stroker starts each subpath at the dash's offset, stepping past each dash the offset reaches
+/// or passes, and dots the subpath only when the dash it lands in is on (`dash_starts_on`).
+fn strokes_as_dot(draw: &PathDraw<'_>, shown: &[[f64; 3]]) -> bool {
+    let rec = draw.record;
+    let on_at_start = match rec.dash.filter(|d| d.duty < 1.0) {
+        None => true,
+        Some(d) => (d.phase * d.period).rem_euclid(d.period) < d.period * d.duty,
+    };
+    draw.surface
+        && rec.paint.cap == Cap::Round
+        && on_at_start
+        && shown.iter().all(|p| p[..2] == shown[0][..2])
+}
+
 /// Where a layer's fragments sit in depth.
 #[derive(Clone, Copy, Debug)]
 enum LayerDepth {
@@ -1293,12 +1311,11 @@ impl<'v> Lowering<'v> {
 
     /// Lowers one path into up to three layers, `plane` where it is keyed ([`Lowering::coplanar`]),
     /// or `None` for its curve's depth off the registry.
-    pub fn path(&mut self, draw: &PathDraw<'_>, plane: Option<Keyed>) {
+    /// How `draw`'s points are placed for display and keyed for depth: a pre-projected path's as
+    /// its camera produced them, any other's by this frame's camera.
+    fn placed(&self, draw: &PathDraw<'_>) -> (Placement, Option<Plane>) {
         let rec = draw.record;
-        let Some(world) = drawn_world(draw) else {
-            return;
-        };
-        let (placement, keyed) = if draw.pre_projected {
+        if draw.pre_projected {
             let key = produced_key(self.axes.as_ref(), &self.map, rec.depth.space, draw.pivot);
             (Placement::Flat, key)
         } else {
@@ -1308,7 +1325,25 @@ impl<'v> Lowering<'v> {
                 rec.depth.space,
                 rec.depth.fixed_orientation_centre,
             )
+        }
+    }
+
+    /// Whether [`Lowering::path`] strokes `draw` as a round cap's dot ([`strokes_as_dot`]), from
+    /// its points as this frame's camera shows them. Nothing is drawn.
+    pub fn round_cap_dot(&self, draw: &PathDraw<'_>) -> bool {
+        let Some(world) = drawn_world(draw) else {
+            return false;
         };
+        let shown = pre_display(&world, self.projection.as_ref(), self.placed(draw).0);
+        !outline(&shown).elements().is_empty() && strokes_as_dot(draw, &shown)
+    }
+
+    pub fn path(&mut self, draw: &PathDraw<'_>, plane: Option<Keyed>) {
+        let rec = draw.record;
+        let Some(world) = drawn_world(draw) else {
+            return;
+        };
+        let (placement, keyed) = self.placed(draw);
         let shown = pre_display(&world, self.projection.as_ref(), placement);
         let user = outline(&shown);
         if user.elements().is_empty() {
@@ -1438,13 +1473,7 @@ impl<'v> Lowering<'v> {
                     let pattern = [d.period * d.duty, d.period * (1.0 - d.duty)];
                     dashed(&user, d.phase * d.period, &pattern, area)
                 });
-                // A face of a surface not yet drawn (`Create`) is its points at one spot: Cairo
-                // strokes that closed subpath of no length as a dot under a round cap, and as
-                // nothing under a butt or square one.
-                let dot = draw.surface
-                    && rec.paint.cap == Cap::Round
-                    && shown.iter().all(|p| p[..2] == shown[0][..2]);
-                let stroked = if dot {
+                let stroked = if strokes_as_dot(draw, &shown) {
                     kurbo::Circle::new(Point::new(shown[0][0], shown[0][1]), w / 2.0)
                         .to_path(TOLERANCE / scale)
                 } else {

@@ -1395,7 +1395,11 @@ fn each_absent_face_list_reads_as_uniform_whatever_the_other() {
     ] {
         let carried = !ends.is_empty() || !sent_widths.is_empty();
         let (version, lists, frame) = drawn(shape, ends.clone(), sent_widths.clone());
-        assert_eq!(lists, (ends, sent_widths.clone()), "{name}: read back as sent");
+        assert_eq!(
+            lists,
+            (ends, sent_widths.clone()),
+            "{name}: read back as sent"
+        );
         assert_eq!(version.1 == 3, carried, "{name}: {version:?}");
         let stated_widths = if sent_widths.is_empty() {
             vec![record_width; 2]
@@ -1408,8 +1412,8 @@ fn each_absent_face_list_reads_as_uniform_whatever_the_other() {
 }
 
 /// A face group of one face whose points are at one spot (a face not yet drawn), stroked under
-/// `cap` and `dash`: its frame.
-fn one_spot_face(cap: Cap, dash: Option<Dash>) -> Vec<u8> {
+/// `cap` and `dash`: its frame, and the leaves the stream reports it draws as a round cap's dot.
+fn one_spot_face(cap: Cap, dash: Option<Dash>) -> (Vec<u8>, Vec<(u32, u32)>) {
     let shape = Shape::new(ShapeData::Path {
         points: vec![[0.25, 0.0, 0.0]; 4],
     });
@@ -1437,7 +1441,8 @@ fn one_spot_face(cap: Cap, dash: Option<Dash>) -> Vec<u8> {
     d.order = Some(vec![entry(1)]);
     let mut s = Stream::new();
     s.apply(&d).unwrap();
-    s.draw(64, 36, 1).unwrap()
+    let dots = s.round_cap_dots().unwrap().into_iter().collect();
+    (s.draw(64, 36, 1).unwrap(), dots)
 }
 
 #[test]
@@ -1445,9 +1450,12 @@ fn a_face_at_one_spot_under_a_round_cap_is_a_dot_only_where_its_dash_is_on() {
     // Cairo's dashed stroker starts each subpath at the dash's offset, and strokes a subpath of
     // no length as a round cap's dot only when the dash is on there (`dash_starts_on`): a face at
     // one spot is the dot undashed or dashed on at its start, and nothing dashed in a gap there.
-    let nothing = one_spot_face(Cap::Butt, None);
+    // The stream reports the dot's leaf where it draws one, and only there.
+    let dot = vec![(101, 0)];
+    let nothing = (one_spot_face(Cap::Butt, None).0, Vec::new());
     let undashed = one_spot_face(Cap::Round, None);
-    assert_ne!(undashed, nothing, "a round cap's dot");
+    assert_ne!(undashed.0, nothing.0, "a round cap's dot");
+    assert_eq!(undashed.1, dot);
     let dashed = |phase: f64| {
         one_spot_face(
             Cap::Round,

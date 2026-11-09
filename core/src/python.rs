@@ -901,6 +901,17 @@ impl PyStream {
         contents::order(&self.stream.overlay_entries())
     }
 
+    /// The leaves ``(object, part)``, as :meth:`contributors` reports them, whose strokes the
+    /// drawer draws as a round cap's dot: faces of a face group at one spot as the camera shows
+    /// them, under a round cap, undashed or dashed on at their start. Nothing is drawn.
+    fn round_cap_dots(&self, py: Python<'_>) -> PyResult<Vec<(u32, u32)>> {
+        let found = self
+            .stream
+            .round_cap_dots()
+            .map_err(|e| draw_error(py, e))?;
+        Ok(found.into_iter().collect())
+    }
+
     /// Per slot of ``slots`` holding a record that draws paths, how each of them lies, decided
     /// from the points the stream holds: a tuple of planarity codes in the order of the record's
     /// ``planes`` (``core/XF.md``). A writer that snaps a record's geometry decides on the values

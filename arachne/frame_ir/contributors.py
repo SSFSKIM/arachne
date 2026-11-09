@@ -204,28 +204,13 @@ def with_reasons(
     }
 
 
-def round_cap_dots(state: Any) -> dict[tuple[int, int], str]:
-    """The faces of ``state``'s face groups, by ``(slot, part)``, that a round
-    cap strokes as a dot (:data:`ROUND_CAP_DOT`): a face not yet drawn, its
-    points at one spot.
+def round_cap_dots(core: Any) -> dict[tuple[int, int], str]:
+    """The leaves ``(object, part)`` the core strokes as a round cap's dot
+    (:data:`ROUND_CAP_DOT`), as the core decides it when it draws them
+    (``Stream.round_cap_dots``): a face of a surface at one spot as the
+    camera shows it, under a round cap, undashed or dashed on at its start.
     """
-    found: dict[tuple[int, int], str] = {}
-    for slot, record in state.records.items():
-        fields = record.fields
-        if record.kind != "face_group" or fields.get("cap") != "round":
-            continue
-        points = np.asarray(state.shapes[fields["shape"]].data)
-        count = len(fields["uv"])
-        ends = fields.get("face_ends")
-        if ends is None:
-            ends = [len(points) // count * (i + 1) for i in range(count)]
-        start = 0
-        for part, end in enumerate(ends):
-            run = points[start : int(end)]
-            if len(run) and (run == run[0]).all():
-                found[(slot, part)] = ROUND_CAP_DOT
-            start = int(end)
-    return found
+    return dict.fromkeys(map(tuple, core.round_cap_dots()), ROUND_CAP_DOT)
 
 
 def from_core(

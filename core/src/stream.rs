@@ -1099,6 +1099,34 @@ impl Stream {
         })
     }
 
+    /// The leaves, as `(object, part)` like [`Stream::contributors`]' leaves, whose strokes the
+    /// drawer draws as a round cap's dot ([`path::Lowering::round_cap_dot`]): faces of the face
+    /// groups the order draws, decided as drawing decides it. Nothing is drawn.
+    pub fn round_cap_dots(&self) -> Result<std::collections::BTreeSet<(u32, u32)>, DrawError> {
+        let slots: std::collections::BTreeSet<u32> = self
+            .order
+            .iter()
+            .map(|e| e.slot)
+            .filter(|slot| self.records[slot].kind == RecordKind::FaceGroup)
+            .collect();
+        let slots: Vec<u32> = slots.into_iter().collect();
+        let found = self.each_paths(&slots, |lowering, paths| {
+            let parts: Vec<u32> = paths
+                .iter()
+                .filter(|d| lowering.round_cap_dot(d))
+                .map(|d| d.which as u32)
+                .collect();
+            (!parts.is_empty()).then_some(parts)
+        })?;
+        Ok(found
+            .into_iter()
+            .flat_map(|(slot, parts)| {
+                let object = self.records[&slot].object;
+                parts.into_iter().map(move |part| (object, part))
+            })
+            .collect())
+    }
+
     /// `answer(lowering, paths)` per slot of `slots` holding a record that draws paths the drawer
     /// would not refuse, `paths` those it draws, in order; a `None` answer has no entry.
     fn each_paths<T>(
