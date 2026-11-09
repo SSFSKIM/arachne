@@ -30,6 +30,8 @@ import json
 import math
 import os
 import shutil
+import signal
+import subprocess
 import traceback
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -50,6 +52,7 @@ from ..timeline.inputs import Inputs, engine_dirs, file_digests, source_files
 from ..timeline.routes import RecordRefused, Unavailable
 from . import render as rendering
 from .protocol import (
+    ENDING_S,
     INTERNAL_ERROR,
     INVALID_PARAMS,
     MAX_DEADLINE_S,
@@ -287,6 +290,8 @@ class Dispatcher:
         self._linted: tuple[int | None, str] | None = None
         #: The directory a render writes into while it runs.
         self._scratch: Path | None = None
+        #: The process a render runs in while it runs, when not this one.
+        self._rendering: subprocess.Popen[bytes] | None = None
         #: The files the session's code read as its execution ran, as its
         #: modules loaded too: ``(path relative to the scene's directory,
         #: sha256)``. A file read only as a module loads is no input of the
@@ -494,13 +499,18 @@ class Dispatcher:
         ]
 
     def render(
-        self, quality: str | None, plays: tuple[int, int] | None, out: Path
+        self,
+        quality: str | None,
+        plays: tuple[int, int] | None,
+        out: Path,
+        workers: int | str | None = None,
     ) -> rendering.Rendered:
         """Render the session's scene afresh, ``plays`` of it (first and
         last) or every play, at ``quality``, to ``out``, checked against the
         summary of the session's execution at the render's frame rate and
         pixel aspect: the store's, kept as it executed, else the session's
-        own when it was executed so.
+        own when it was executed so. ``workers`` draw it (by default, as the
+        session's configuration says): above 1, in a process of its own.
         """
         assert self._opened is not None
         file, scene, _ = self._opened
@@ -525,6 +535,8 @@ class Dispatcher:
             scratch=self._scratching,
             publish=self._published,
             linted=self._linted == (self.generation, key),
+            workers=workers,
+            running=self._running,
         )
 
     def _execution_key(self, config: dict[str, Any]) -> str:
@@ -548,8 +560,20 @@ class Dispatcher:
     def _scratching(self, directory: Path | None) -> None:
         self._scratch = directory
 
+    def _running(self, process: subprocess.Popen[bytes] | None) -> None:
+        self._rendering = process
+
     def abandon(self) -> None:
-        """Remove what a render running now has written: the server ends."""
+        """End the process a render running now runs in, if not this one,
+        with every process it started, and remove what the render has
+        written: the server ends.
+        """
+        process = self._rendering
+        if process is not None:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(process.pid, signal.SIGKILL)
+            with contextlib.suppress(Exception):
+                process.wait(ENDING_S)
         if self._scratch is not None:
             shutil.rmtree(self._scratch, ignore_errors=True)
 
@@ -861,6 +885,15 @@ def _out(name: str, value: Any) -> Path:
     return found
 
 
+def _workers(name: str, value: Any) -> int | str:
+    """How many processes draw a render: a positive count, or ``auto``."""
+    if value == "auto" or (
+        isinstance(value, int) and not isinstance(value, bool) and value >= 1
+    ):
+        return value
+    raise _invalid(f"{name} is a positive count of processes, or 'auto'.")
+
+
 def _plays(name: str, value: Any) -> tuple[int, int]:
     """Plays by index, a contiguous ascending run: the first and last."""
     if (
@@ -885,6 +918,7 @@ def _clip(server: Dispatcher, params: Params) -> dict[str, Any]:
         raise _invalid("A clip's t0 is not after its t1.")
     quality = params.get("quality", _quality, None)
     out = params.get("out", _out)
+    workers = params.get("workers", _workers, None)
     params.done()
     spans = server.spans()
     plays = rendering.plays_meeting(spans, t0, t1)
@@ -893,19 +927,24 @@ def _clip(server: Dispatcher, params: Params) -> dict[str, Any]:
         raise _invalid(
             f"No play meets [{float(t0):g}, {float(t1):g}] s: the scene runs {end:g} s."
         )
-    return server.answer(clip=api_json.render(server.render(quality, plays, out)))
+    return server.answer(
+        clip=api_json.render(server.render(quality, plays, out, workers))
+    )
 
 
 def _render(server: Dispatcher, params: Params) -> dict[str, Any]:
     plays = params.get("plays", _plays, None)
     quality = params.get("quality", _quality, None)
     out = params.get("out", _out)
+    workers = params.get("workers", _workers, None)
     params.done()
     if plays is not None:
         count = len(server.spans())
         if plays[1] >= count:
             raise _invalid(f"The scene has {count} plays, 0 to {count - 1}.")
-    return server.answer(render=api_json.render(server.render(quality, plays, out)))
+    return server.answer(
+        render=api_json.render(server.render(quality, plays, out, workers))
+    )
 
 
 def _ping(server: Dispatcher, params: Params) -> dict[str, Any]:

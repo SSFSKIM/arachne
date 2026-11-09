@@ -269,7 +269,7 @@ def render(found: Rendered) -> dict[str, Any]:
     form: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "path": os.fspath(found.path),
-        "timeline": [_play(play) for play in found.record.plays],
+        "timeline": found.timeline,
         "self_check": {
             "status": found.self_check.status,
             "reason": found.self_check.reason,
@@ -302,6 +302,11 @@ def scene_error(error: SceneError) -> dict[str, Any]:
 
 
 # The record
+
+
+def timeline(record: Record) -> list[dict[str, Any]]:
+    """Every play ``record`` holds, in order."""
+    return [_play(play) for play in record.plays]
 
 
 def _play(play: PlayRecord) -> dict[str, Any]:

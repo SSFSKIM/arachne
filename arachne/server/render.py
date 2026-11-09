@@ -14,15 +14,24 @@ it leaves out executed all the same, as ``-n first,last`` executes them.
 With a typesetting directory named, it typesets nothing the session's
 execution did; with none, it typesets into its own media directory, as the
 command line does.
+
+A render drawn by workers (``workers`` above 1) runs in a process started
+for it (:mod:`.render_child`), which forks them: a server keeps threads and
+holds the registry's locks, beside which no process is forked. It writes
+into the same directory and is checked the same way; a deadline that ends
+the server ends it too.
 """
 
 from __future__ import annotations
 
-__all__ = ["SelfCheck", "Rendered", "plays_meeting", "render"]
+__all__ = ["RenderFailed", "SelfCheck", "Rendered", "plays_meeting", "render"]
 
 import dataclasses
+import json
 import os
+import pickle
 import shutil
+import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
@@ -31,16 +40,22 @@ from fractions import Fraction
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .. import api_json
 from .._config import config as global_config
 from .._config import tempconfig
 from ..constants import QUALITIES
-from ..errors import explain_on
+from ..errors import SceneError, explain_on
 from ..session import execute
-from ..timeline.execution import Divergence, Incomparable, compare, summarize
+from ..timeline.execution import (
+    Divergence,
+    ExecutionSummary,
+    Incomparable,
+    compare,
+    summarize,
+)
 
 if TYPE_CHECKING:
     from ..scene.scene import Scene
-    from ..timeline.execution import ExecutionSummary
     from ..timeline.record import Record
 
 
@@ -67,13 +82,14 @@ class SelfCheck:
 
 @dataclass(frozen=True)
 class Rendered:
-    """A render written: ``path``, ``out``; ``record``, its execution's
-    record; ``self_check``, whether it was checked; ``divergence``, where it
-    differs from the summary it was checked against, if it does.
+    """A render written: ``path``, ``out``; ``timeline``, every play its
+    execution played (:func:`~arachne.api_json.timeline`); ``self_check``,
+    whether it was checked; ``divergence``, where it differs from the
+    summary it was checked against, if it does.
     """
 
     path: Path
-    record: Record
+    timeline: list[dict[str, Any]]
     self_check: SelfCheck
     divergence: Divergence | None
 
@@ -122,6 +138,8 @@ def render(
     scratch: Callable[[Path | None], None],
     publish: Callable[[Callable[[], None]], bool],
     linted: bool = False,
+    workers: int | str | None = None,
+    running: Callable[[subprocess.Popen[bytes] | None], None] = lambda _: None,
 ) -> Rendered:
     """Render ``scene`` of ``file`` (a real path, ``named`` so by the
     caller) under ``config`` (the session's), at ``quality`` (else the
@@ -133,7 +151,9 @@ def render(
     rename onto ``out`` once the request has claimed its answer, false
     when the request's deadline passed first and the rename never ran.
     ``linted``: whether ``reference`` is the execution a lint in the
-    session judged.
+    session judged. ``workers``: how many processes draw it (by default,
+    as ``config`` says); above 1, it runs in a process of its own, which
+    ``running`` is told of while it runs, and ``None`` once it has ended.
     """
     out.parent.mkdir(parents=True, exist_ok=True)
     media = Path(tempfile.mkdtemp(prefix=f".{out.name}.", dir=out.parent))
@@ -156,12 +176,17 @@ def render(
             options["format"] = "mp4"
         if plays is not None:
             options["from_animation_number"], options["upto_animation_number"] = plays
+        if workers is not None:
+            options["render_workers"] = workers
         with tempconfig(options):
-            settings = global_config.copy()
-        with tempconfig(settings):
-            made, record = _execute(Path(file), scene, settings, named)
-            summary = summarize(record)
-        video = Path(made.renderer.file_writer.movie_file_path)
+            count = global_config.render_workers
+        options["render_workers"] = count
+        if count > 1:
+            video, timeline, summary = _in_a_process(
+                file, scene, options, named, media, running
+            )
+        else:
+            video, timeline, summary = rendered(Path(file), scene, options, named)
         checked, divergence = _check(summary, reference, plays)
         if checked.status == "checked":
             judged = "lint" if linted else "own"
@@ -170,10 +195,127 @@ def render(
             raise RuntimeError(
                 "The request's deadline passed before its render was written."
             )
-        return Rendered(out, record, checked, divergence)
+        return Rendered(out, timeline, checked, divergence)
     finally:
         shutil.rmtree(media, ignore_errors=True)
         scratch(None)
+
+
+def rendered(
+    path: Path, scene: str, options: dict[str, Any], named: str
+) -> tuple[Path, list[dict[str, Any]], ExecutionSummary]:
+    """Render ``scene`` of ``path`` under ``options``, in this process: its
+    video, the plays its execution played and the summary of it.
+    """
+    with tempconfig(options):
+        settings = global_config.copy()
+    with tempconfig(settings):
+        made, record = _execute(path, scene, settings, named)
+        summary = summarize(record)
+    video = Path(made.renderer.file_writer.movie_file_path)
+    return video, api_json.timeline(record), summary
+
+
+def _in_a_process(
+    file: str,
+    scene: str,
+    options: dict[str, Any],
+    named: str,
+    media: Path,
+    running: Callable[[subprocess.Popen[bytes] | None], None],
+) -> tuple[Path, list[dict[str, Any]], ExecutionSummary]:
+    """:func:`rendered`, in a process started for it, in a session of its
+    own (so that its group, its workers among it, can be ended at once):
+    what it raised is raised here, as the server's own render would have
+    raised it.
+    """
+    result = media / ".rendered.json"
+    failure = media / ".failed.pickle"
+    request = {
+        "file": file,
+        "scene": scene,
+        "options": options,
+        "named": named,
+        "result": os.fspath(result),
+        "failure": os.fspath(failure),
+    }
+    # Its standard output is the server's standard error, as the scene's
+    # prints are in the server; its input carries the request alone.
+    process = subprocess.Popen(
+        [sys.executable, "-m", "arachne.server.render_child"],
+        stdin=subprocess.PIPE,
+        start_new_session=True,
+    )
+    running(process)
+    try:
+        process.communicate(json.dumps(request).encode())
+    finally:
+        running(None)
+    if process.returncode == 0 and result.is_file():
+        found = json.loads(result.read_text())
+        return (
+            Path(found["video"]),
+            found["timeline"],
+            ExecutionSummary.from_json(found["summary"]),
+        )
+    if failure.is_file():
+        raise _raised(failure.read_bytes())
+    raise RuntimeError(
+        f"The render's process ended with status {process.returncode} and said"
+        " nothing of why."
+    )
+
+
+class RenderFailed(RuntimeError):
+    """What a render's process raised, where the error's own class can't be
+    made again in the server: its class's name and its message.
+    """
+
+
+def failure(error: BaseException) -> bytes:
+    """``error``, raised by a render's process, as the server reads it
+    (:func:`_raised`): the error pickled where it can be, its class's name
+    and message, and its explanation's fields
+    (:class:`~arachne.errors.SceneError`, which pickles only as fields).
+    """
+    state = vars(error) if hasattr(error, "__dict__") else {}
+    explained = state.pop("scene_error", None)
+    try:
+        pickled: bytes | None = pickle.dumps(error)
+    except Exception:  # noqa: BLE001 (an error that does not pickle)
+        pickled = None
+    finally:
+        if explained is not None:
+            state["scene_error"] = explained
+    fields = (
+        {f.name: getattr(explained, f.name) for f in dataclasses.fields(explained)}
+        if isinstance(explained, SceneError)
+        else None
+    )
+    return pickle.dumps(
+        {
+            "error": pickled,
+            "message": f"{type(error).__name__}: {error}",
+            "explained": fields,
+        }
+    )
+
+
+def _raised(pickled: bytes) -> BaseException:
+    """What a render's process raised (:func:`failure`): the error itself,
+    or a :class:`RenderFailed` where it can't be made again here, with its
+    explanation.
+    """
+    found = pickle.loads(pickled)
+    try:
+        error = pickle.loads(found["error"])
+    except Exception:  # noqa: BLE001 (none, or a class this process can't make)
+        error = None
+    if not isinstance(error, BaseException):
+        error = RenderFailed(found["message"])
+    if found["explained"] is not None:
+        vars(error)["scene_error"] = SceneError(**found["explained"])
+    return error
 
 
 def _execute(path: Path, scene: str, settings: Any, named: str) -> tuple[Scene, Record]:

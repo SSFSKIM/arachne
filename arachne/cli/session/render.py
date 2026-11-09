@@ -29,6 +29,7 @@ from ..asking import (
     render_options,
     seconds,
 )
+from ..render.speed_options import validate_workers
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -77,6 +78,15 @@ def _rendering(command: F) -> F:
             help="The media file to write, once the render is whole.",
         ),
         cloup.option(
+            "--workers",
+            callback=validate_workers,
+            default=None,
+            metavar="N|auto",
+            help="How many processes draw and encode the render (above 1, it"
+            " runs in a process of its own); else as the session's"
+            " configuration says.",
+        ),
+        cloup.option(
             "--strict",
             is_flag=True,
             help="Exit 1 when the render was not checked, or diverged.",
@@ -107,6 +117,7 @@ def render(
     plays: tuple[int, int | None] | None,
     quality: str | None,
     output: Path,
+    workers: int | str | None,
     strict: bool,
 ) -> None:
     """Render SCENE of FILE through its session, every play or those
@@ -114,7 +125,11 @@ def render(
     """
 
     def params(opened: dict[str, Any]) -> dict[str, Any]:
-        asked: dict[str, Any] = {"out": str(output.resolve()), **_quality(quality)}
+        asked: dict[str, Any] = {
+            "out": str(output.resolve()),
+            **_quality(quality),
+            **_workers(workers),
+        }
         if plays is not None:
             asked["plays"] = _run(plays, len(opened["record"]["plays"]))
         return asked
@@ -160,6 +175,7 @@ def clip(
     t1: float | str,
     quality: str | None,
     output: Path,
+    workers: int | str | None,
     strict: bool,
 ) -> None:
     """Render the plays of SCENE in FILE that meet T0 to T1, through its
@@ -173,7 +189,13 @@ def clip(
         deadline_s=deadline_s,
         as_json=as_json,
         method="clip",
-        params={"t0": t0, "t1": t1, "out": str(output.resolve()), **_quality(quality)},
+        params={
+            "t0": t0,
+            "t1": t1,
+            "out": str(output.resolve()),
+            **_quality(quality),
+            **_workers(workers),
+        },
     )
     _done(answer, "clip", as_json, strict)
 
@@ -192,6 +214,10 @@ def _run(plays: tuple[int, int | None], count: int) -> list[int]:
             f"Invalid value for '--plays': play {first} is past the end; {where}."
         )
     return list(range(first, count if last is None else min(last, count - 1) + 1))
+
+
+def _workers(workers: int | str | None) -> dict[str, Any]:
+    return {} if workers is None else {"workers": workers}
 
 
 def _quality(flag: str | None) -> dict[str, Any]:
