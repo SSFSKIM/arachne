@@ -78,8 +78,15 @@ pub static NEAR_PARALLEL_SAMPLES: AtomicU64 = AtomicU64::new(0);
 pub static NEAR_PARALLEL_PX: AtomicU64 = AtomicU64::new(0);
 /// Of those, the ones where a pair tied so has a dihedral beyond 1e-2 radians.
 pub static NEAR_PARALLEL_WIDE_PX: AtomicU64 = AtomicU64::new(0);
+/// Bands of a scanline row with no crossing recorded inside them where two edges swapped order
+/// all the same, their crossing rounding to the band's top or bottom (`scanline::interval`): wound
+/// in their order at the band's middle, not at its top.
+pub static GRAZING_BANDS: AtomicU64 = AtomicU64::new(0);
+/// Of those, the ones whose boundary that changes: the order at the top would have filled them
+/// otherwise.
+pub static GRAZING_RETOLD: AtomicU64 = AtomicU64::new(0);
 
-const ALL: [(&str, &AtomicU64); 32] = [
+const ALL: [(&str, &AtomicU64); 34] = [
     ("near", &NEAR),
     ("bounds_tested", &BOUNDS_TESTED),
     ("key_under", &KEY_UNDER),
@@ -112,6 +119,8 @@ const ALL: [(&str, &AtomicU64); 32] = [
     ("near_parallel_samples", &NEAR_PARALLEL_SAMPLES),
     ("near_parallel_px", &NEAR_PARALLEL_PX),
     ("near_parallel_wide_px", &NEAR_PARALLEL_WIDE_PX),
+    ("grazing_bands", &GRAZING_BANDS),
+    ("grazing_retold", &GRAZING_RETOLD),
 ];
 
 /// Adds `n` to `counter`.

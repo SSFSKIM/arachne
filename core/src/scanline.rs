@@ -160,9 +160,13 @@ fn interval(edges: &[Edge], ya: f64, yb: f64, lo: f64, hi: f64, s: &mut Scratch)
     s.spanning
         .sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
     // Insertion-sort by x at the bottom: every swap is a pair that crosses inside the interval.
+    // A pair whose crossing rounds to the interval's top or bottom (two edges from points a few
+    // ulps apart) records none, and its order at the top need not hold inside: the bands then
+    // take their order at their middles, as they do between crossings.
     s.by_bottom.clear();
     s.by_bottom.extend_from_slice(&s.spanning);
     s.crossings.clear();
+    let mut grazing = false;
     for i in 1..s.by_bottom.len() {
         let mut j = i;
         while j > 0 && s.by_bottom[j - 1].1 > s.by_bottom[j].1 {
@@ -172,12 +176,21 @@ fn interval(edges: &[Edge], ya: f64, yb: f64, lo: f64, hi: f64, s: &mut Scratch)
             let yc = ya + d0 / (d0 - d1) * (yb - ya);
             if yc > ya && yc < yb {
                 s.crossings.push(yc);
+            } else {
+                grazing = true;
             }
             s.by_bottom.swap(j - 1, j);
             j -= 1;
         }
     }
-    if s.crossings.is_empty() {
+    if s.crossings.is_empty() && grazing {
+        count!(GRAZING_BANDS);
+        #[cfg(feature = "counters")]
+        if retold(edges, &s.spanning, ya, yb) {
+            count!(GRAZING_RETOLD);
+        }
+    }
+    if s.crossings.is_empty() && !grazing {
         // One band: the order at the top holds throughout.
         let mut winding = 0;
         for &(xa, xb, i) in &s.spanning {
@@ -224,6 +237,34 @@ fn interval(edges: &[Edge], ya: f64, yb: f64, lo: f64, hi: f64, s: &mut Scratch)
         }
         ba = bb;
     }
+}
+
+/// Whether the band `ya..yb`'s boundary (the edges where the winding becomes or stops being
+/// nonzero, with their signs) differs between the edges' order at its top, `spanning`'s, and their
+/// order at its middle.
+#[cfg(feature = "counters")]
+fn retold(edges: &[Edge], spanning: &[(f64, f64, u32)], ya: f64, yb: f64) -> bool {
+    let boundary = |order: &[u32]| {
+        let mut winding = 0;
+        let mut out = Vec::new();
+        for &i in order {
+            let before = winding;
+            winding += edges[i as usize].dir;
+            if let Some(sign) = transition(before, winding) {
+                out.push((i, sign));
+            }
+        }
+        out
+    };
+    let top: Vec<u32> = spanning.iter().map(|&(_, _, i)| i).collect();
+    let mid = 0.5 * (ya + yb);
+    let mut middle = top.clone();
+    middle.sort_by(|&a, &b| {
+        edges[a as usize]
+            .x_at(mid)
+            .total_cmp(&edges[b as usize].x_at(mid))
+    });
+    boundary(&top) != boundary(&middle)
 }
 
 /// +1 where the winding becomes nonzero, -1 where it returns to zero.
