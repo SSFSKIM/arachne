@@ -356,9 +356,20 @@ def summarize(record: Record) -> ExecutionSummary:
 
     The camera's own mobjects are those the camera holds when the summary
     is made, as the record's frames are drawn with it.
+
+    Two summaries agree on what a frame can show. A mobject a field refers to
+    that no list holds is keyed by the state the record held of it at that
+    capture when it ever captured it (it was in the scene once), and by its
+    presence and type alone when it never did: its state is never read as
+    the summary is made, which is its state by the end of the script, not at
+    the instant (a run that stops early would see an earlier one than the
+    whole execution). The limit: the state of a mobject the record never
+    captured, shown by no drawn state within the span compared, is not
+    compared. Its state reaches a frame only through a drawn mobject, whose
+    state is compared at every instant both executions kept, and which
+    field refers to which place is compared at each capture.
     """
     from .draw import camera_nodes
-    from .record import NodeState
 
     nodes: list[NodeValues] = []
     node_keys: list[bytes] = []
@@ -367,8 +378,6 @@ def summarize(record: Record) -> ExecutionSummary:
     numbers: dict[tuple[int, int], tuple[int, tuple[Mobject | Unordered, ...]]] = {}
     camera = record._scene.renderer.camera
     owned = tuple(camera_nodes(camera))
-    # The states, as the summary is made, of mobjects only a field refers to.
-    live: dict[int, NodeState] = {}
 
     def state_values(
         capture: Capture, lists: tuple[tuple[str, Sequence[Mobject]], ...]
@@ -385,11 +394,12 @@ def summarize(record: Record) -> ExecutionSummary:
         indices: list[int] = []
         children: list[tuple[int, ...]] = []
         references: list[tuple[int, ...]] = []
-        # A walk reaches a mobject by the submobjects' lists; one a field
-        # refers to that no list holds has no state in the record. It is
-        # keyed by its state as the summary is made (as the camera's own
-        # mobjects are), never as only its type, which equal states of
-        # unlike values agree on. Its submobjects and references follow.
+        # A walk reaches a mobject by the submobjects' lists. One a field
+        # refers to that no list holds is placed after the walk with the
+        # state the record held of it at this capture, if it ever captured
+        # it. One it never captured stays outside the walk (``-1``), keyed
+        # by its type alone: the state of it that no drawn state shows within
+        # the span compared is not compared (see :func:`summarize`).
         added: set[int] = set()
 
         def _placed(held: Mobject) -> int:
@@ -397,9 +407,7 @@ def summarize(record: Record) -> ExecutionSummary:
             if found is None:
                 node = record.node_state(held, capture)
                 if node is None:
-                    node = live.get(id(held))
-                    if node is None:
-                        node = live[id(held)] = NodeState.of(held)
+                    return -1
                 positions[id(held)] = found = len(walked)
                 added.add(id(held))
                 walked.append((held, node))

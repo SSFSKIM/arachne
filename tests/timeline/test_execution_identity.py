@@ -18,6 +18,7 @@ import subprocess
 import sys
 import textwrap
 import warnings
+from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
@@ -1083,34 +1084,142 @@ class NumberThenFormula(Scene):
     assert compare(first, again) is None
 
 
-def test_a_mobject_held_outside_the_walk_is_keyed_by_its_own_state(scene_dir):
-    """A dot holds a tracker that nothing draws, so no walk reaches it. Its
-    value is state the dot's frame depends on: two executions whose trackers
-    differ are not the same execution, and one's summary says so.
+def _summaries(scene: Path, name: str, data: Path, first: str, second: str):
+    """The summaries of two executions of ``name`` with ``data`` holding
+    ``first`` and ``second``.
     """
-    data = _write(scene_dir, "data.txt", "1")
-    scene = _write(
-        scene_dir,
-        "scene.py",
-        HEADER
-        + """
+    data.write_text(first)
+    one = _open(scene, name).summary()
+    data.write_text(second)
+    two = _open(scene, name).summary()
+    return one, two
+
+
+_OFF_TREE = (
+    HEADER
+    + """
 class Holder(Dot):
     def __init__(self):
         super().__init__()
-        self.tracker = ValueTracker(float((HERE / "data.txt").read_text()))
+        self.tracker = ValueTracker(0)
 
 
-class Held(Scene):
+class Late(Scene):
+    # The script changes what the holder refers to after the instants a
+    # forward run over the first half reaches.
     def construct(self):
-        self.add(Holder())
+        holder = Holder()
+        self.add(holder)
         self.wait(0.5)
-""",
-    )
-    divergence = _diverged_after_editing(scene, "Held", data, "2")
-    assert divergence is not None
-    assert divergence.code == "replay.diverged"
-    again = _diverged_after_editing(scene, "Held", data, "1")
-    assert again is None, "the same value is the same execution"
+        holder.tracker.set_value(float((HERE / "data.txt").read_text()))
+        self.wait(0.5)
+
+
+class Animated(Scene):
+    # Each animate leaves the dot a ``target`` no list holds.
+    def construct(self):
+        dot = Dot()
+        self.add(dot)
+        self.play(dot.animate.shift(RIGHT), run_time=0.5)
+        self.play(dot.animate.shift(UP), run_time=0.5)
+        self.play(
+            dot.animate.shift(float((HERE / "data.txt").read_text()) * LEFT),
+            run_time=0.5,
+        )
+
+
+class Hidden(Scene):
+    # The tracker is held in a field and read by nothing that is drawn.
+    def construct(self):
+        holder = Holder()
+        holder.tracker.set_value(float((HERE / "data.txt").read_text()))
+        self.add(holder)
+        self.wait(0.5)
+
+
+class Drawn(Scene):
+    # The same tracker, an updater of the drawn dot reading it.
+    def construct(self):
+        holder = Holder()
+        holder.tracker.set_value(float((HERE / "data.txt").read_text()))
+        holder.add_updater(
+            lambda mob, dt: mob.shift(holder.tracker.get_value() * dt * RIGHT)
+        )
+        self.add(holder)
+        self.wait(0.5)
+
+
+class Seen(Scene):
+    def construct(self):
+        tracker = ValueTracker(float((HERE / "data.txt").read_text()))
+        holder = Holder()
+        holder.tracker = tracker
+        self.add(holder, tracker)
+        self.wait(0.5)
+        self.remove(tracker)
+        self.wait(0.25)
+"""
+)
+
+
+@pytest.mark.parametrize("name", ["Late", "Animated"])
+def test_what_the_script_changes_off_the_tree_after_the_compared_span_is_not_read_back(
+    scene_dir, name
+):
+    """A mobject a field refers to that no list holds (a tracker, the target
+    a dot's animate leaves) keeps no state of its own in the record, and one
+    read as the summary is made is its state by the end of the script: a
+    forward run that stops early would see an earlier one than the whole
+    execution. Two executions that agree through the instants compared agree,
+    whatever the script does to it after.
+    """
+    data = _write(scene_dir, "data.txt", "1")
+    scene = _write(scene_dir, "scene.py", _OFF_TREE)
+    one, two = _summaries(scene, name, data, "1", "2")
+    assert compare(one, two, until=Fraction(1, 4)) is None
+
+
+def test_several_animates_on_one_dot_give_a_forward_run_no_divergence(scene_dir):
+    """The common case of an off-tree reference: ``dot.animate`` plays one
+    after another, each leaving a new ``target``, and a run that stops in the
+    first play agrees with the whole execution through it, however the last
+    play differs.
+    """
+    data = _write(scene_dir, "data.txt", "1")
+    scene = _write(scene_dir, "scene.py", _OFF_TREE)
+    one, two = _summaries(scene, "Animated", data, "1", "3")
+    assert compare(one, two, until=Fraction(1, 4)) is None
+    assert compare(one, two, until=Fraction(3, 4)) is None
+    # The changed play is told apart, by what it draws.
+    assert compare(one, two) is not None
+    # The same execution is itself, though every play left a target.
+    assert compare(two, _open(scene, "Animated").summary()) is None
+
+
+def test_a_mobject_the_record_captured_is_keyed_by_the_state_it_held_then(scene_dir):
+    """A mobject a field refers to that the record did capture (it was in the
+    scene once) is as the record held it, not as it is when the summary is
+    made: the same executions agree, and a value the record held differs.
+    """
+    data = _write(scene_dir, "data.txt", "1")
+    scene = _write(scene_dir, "scene.py", _OFF_TREE)
+    assert _diverged_after_editing(scene, "Seen", data, "1") is None
+    assert _diverged_after_editing(scene, "Seen", data, "2") is not None
+
+
+def test_a_mobject_the_record_never_captured_is_compared_through_what_draws_it(
+    scene_dir,
+):
+    """The limit of an off-tree reference: the state of a mobject that was
+    never captured is not compared where nothing drawn shows it. A tracker no
+    drawn state reads agrees whatever its value; one a drawn dot's updater
+    reads is told apart by the dot, which is compared at every instant.
+    """
+    data = _write(scene_dir, "data.txt", "1")
+    scene = _write(scene_dir, "scene.py", _OFF_TREE)
+    assert _diverged_after_editing(scene, "Hidden", data, "2") is None
+    assert _diverged_after_editing(scene, "Drawn", data, "2") is not None
+    assert _diverged_after_editing(scene, "Drawn", data, "1") is None
 
 
 def test_a_numpy_scalar_a_field_holds_has_a_json_form_whatever_its_kind(scene_dir):
