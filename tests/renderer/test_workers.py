@@ -276,6 +276,36 @@ def test_a_failed_worker_fails_the_render_and_leaves_nothing(tmp_path, how, play
     assert not found["children"]
 
 
+#: x264 asked for B-frames, which a video with gaps refuses once its encoder
+#: is opened: in each worker, on the worker's own stream.
+B_FRAMES = {
+    "video_codec": "libx264",
+    "pixel_format": "yuv420p",
+    "video_encoder_options": {"bf": "2"},
+}
+
+
+def test_a_worker_s_encoder_that_writes_b_frames_under_gaps_fails_the_render(
+    tmp_path,
+):
+    refused, taken = renders(
+        tmp_path,
+        "Steps",
+        [at(3, hold_gaps=True, **B_FRAMES), at(3, hold_gaps=False, **B_FRAMES)],
+    )
+    assert refused["error_type"] == "WorkerFailed", refused["error"]
+    assert "B-frames" in refused["error"]
+    assert refused["forks"] == 3
+    assert not refused["movie_exists"]
+    assert refused["left"] == []
+    assert not refused["children"]
+    # Without gaps the same encoder is taken, by the same workers.
+    assert taken["error"] is None, taken["error"]
+    assert taken["fallback"] is None
+    assert taken["forks"] == 3 == len(taken["workers"])
+    assert taken["movie_exists"]
+
+
 def test_a_frame_the_core_cannot_draw_in_a_worker_draws_the_scene_on_cairo(
     tmp_path,
 ):
