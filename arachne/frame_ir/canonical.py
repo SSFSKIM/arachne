@@ -338,6 +338,10 @@ class Canonical:
         #: Each path shape of the stream held, by its own key, as the scene
         #: made it.
         self._shapes: dict[bytes, Shape] = {}
+        #: Each stream shape held, by its own key: the ways of drawing it its
+        #: point equality was measured for at the grid held (as
+        #: :meth:`_hold`'s ``uses``).
+        self._measured: dict[bytes, set[int]] = {}
         #: Each holder's snapped shape key: a stream shape's key, or
         #: ``("slot", slot)`` for a record made into points.
         self._snapped: dict[Any, bytes] = {}
@@ -398,19 +402,35 @@ class Canonical:
                 uses.setdefault(key, set()).add(
                     len(record.fields["uv"]) if faces else 1
                 )
+        uploaded: set[bytes] = set()
         for shape in delta.upload:
             if shape.kind == "image":
                 found.upload.append(shape)
             elif shape.kind == "path":
                 self._shapes[shape.key] = shape
-                self._hold(shape.key, shape.data, found, uses.get(shape.key, {1}))
+                self._measured[shape.key] = set(uses.get(shape.key, {1}))
+                self._hold(shape.key, shape.data, found, self._measured[shape.key])
+                uploaded.add(shape.key)
             else:
                 raise ValueError(f"canonical: a {shape.kind} shape is not classified")
         if regrid:
             for key, shape in self._shapes.items():
-                self._hold(key, shape.data, found, uses.get(key, {1}))
+                self._measured[key] = set(uses.get(key, {1}))
+                self._hold(key, shape.data, found, self._measured[key])
+        else:
+            # A shape held from an earlier delta that a record begins to draw
+            # another way: measured that way now.
+            for key, wanted in uses.items():
+                if key in uploaded or key not in self._shapes:
+                    continue
+                new = wanted - self._measured.setdefault(key, set())
+                if new:
+                    points = self._shapes[key].data
+                    _measure(points, _position(points, grid), new)
+                    self._measured[key] |= new
         found.upload_paints = list(delta.upload_paints)
         for key in delta.release:
+            self._measured.pop(key, None)
             if self._shapes.pop(key, None) is None:
                 found.release.append(key)
             else:
@@ -494,12 +514,7 @@ class Canonical:
         """
         assert self.grid is not None
         shape = Shape("path", _position(points, self.grid))
-        made = np.asarray(points, dtype=np.float64)
-        for runs in sorted(uses):
-            for run, snapped in zip(
-                np.split(made, runs), np.split(shape.data, runs), strict=True
-            ):
-                _count_disagreements(run, snapped)
+        _measure(points, shape.data, uses)
         if self._snapped.get(holder) == shape.key:
             return shape.key
         holders = self._holders.setdefault(shape.key, set())
@@ -656,6 +671,20 @@ def _boundaries(points: np.ndarray, splits: np.ndarray, dims: int) -> np.ndarray
     long = ends - starts >= 4
     closes = _equal(points[starts[long]], points[ends[long] - 1], dims)
     return np.concatenate([joins, closes])
+
+
+def _measure(points: Any, snapped: np.ndarray, uses: Set[int]) -> None:
+    """Records in :data:`point_equality_disagreements` where ``snapped``,
+    ``points`` snapped, is decided otherwise for each of ``uses``: the
+    points drawn as that many paths, in equal runs (a face group's faces;
+    1, whole).
+    """
+    made = np.asarray(points, dtype=np.float64)
+    for runs in sorted(uses):
+        for run, snapped_run in zip(
+            np.split(made, runs), np.split(snapped, runs), strict=True
+        ):
+            _count_disagreements(run, snapped_run)
 
 
 def _count_disagreements(made: np.ndarray, snapped: np.ndarray) -> None:
