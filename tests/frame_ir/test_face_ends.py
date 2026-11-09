@@ -33,6 +33,7 @@ from arachne import (
 from arachne.frame_ir.core_painter import CorePainter
 from arachne.frame_ir.extract import FrameStream
 from arachne.frame_ir.live import live, live_painter
+from arachne.frame_ir.xf import Record
 from arachne.mobject.three_d.three_dimensions import ThreeDVMobject
 
 pytest.importorskip("arachne_core")
@@ -287,7 +288,9 @@ def test_a_part_of_one_curved_cubic_fills_and_strokes_where_ce_does():
     ce_neither = _ce(surface, LARGE)
     ce_fill_px = _changed(ce_fill, ce_neither)
     assert ce_fill_px, "CE fills the sliver"
+    assert core_fill, "the core fills the sliver"
     assert core_fill <= _near(ce_fill_px)
+    assert ce_fill_px <= _near(core_fill)
 
     face.set_stroke(opacity=1)
     ce_stroke_px = _changed(_ce(surface, LARGE), ce_neither)
@@ -363,3 +366,134 @@ def test_an_undrawn_face_under_a_round_cap_is_ce_s_dot_with_its_reason():
     assert dots
     assert ce_dots <= _near(dots)
     assert dots <= _near(ce_dots)
+
+
+#: A surface whose group carries neither list, its face ends alone, its face
+#: widths alone, and both: its maker, the animation and alpha, and the lists.
+LISTS = {
+    "neither": (_ellipsoid, Create, 1.0, set()),
+    "ends alone": (_ellipsoid, Create, 0.5, {"face_ends"}),
+    "widths alone": (Sphere, Write, 0.998, {"face_widths"}),
+    "both": (Sphere, Write, 0.5, {"face_ends", "face_widths"}),
+}
+
+
+def _uniform(delta):
+    """``delta`` with each face group stating both lists, an absent one in
+    its uniform form: equal runs, the record's width.
+    """
+    from dataclasses import replace
+
+    shapes = {shape.key: shape for shape in delta.upload}
+    found = []
+    for slot, record in delta.set:
+        fields = dict(record.fields)
+        if record.kind == "face_group":
+            count = len(fields["uv"])
+            size = len(shapes[fields["shape"]].data) // count
+            fields.setdefault(
+                "face_ends", np.arange(1, count + 1, dtype=np.uint32) * size
+            )
+            fields.setdefault(
+                "face_widths", np.full(count, float(fields["stroke_width"]))
+            )
+        found.append((slot, Record(record.kind, fields)))
+    return replace(delta, set=found)
+
+
+@pytest.mark.parametrize("case", LISTS)
+def test_each_absent_face_list_is_read_as_uniform_whatever_the_other(case):
+    """The frame_ir readers read each list a face group may carry on its own:
+    the Cairo route draws the group from XF as CE's camera draws the
+    surface, and the core draws it as the group stating both lists.
+    """
+    from arachne.frame_ir.painter import IrCairoPainter
+
+    make, animation, alpha, lists = LISTS[case]
+    surface = _at(make(), animation, alpha)
+    with tempconfig(SMALL):
+        delta = FrameStream().frame(_camera(), [("moving", [surface])], roots=[surface])
+    [record] = [r for _, r in delta.set if r.kind == "face_group"]
+    assert {"face_ends", "face_widths"} & record.fields.keys() == lists
+    with tempconfig(SMALL):
+        drawn = IrCairoPainter().draw(delta)
+    np.testing.assert_array_equal(drawn, _ce(surface))
+    sent, stated = CorePainter(), CorePainter()
+    with tempconfig(SMALL):
+        np.testing.assert_array_equal(sent.draw(delta), stated.draw(_uniform(delta)))
+
+
+def _emptied(delta):
+    """``delta`` with each face group stating each list it does not carry as
+    an empty one, as a Python writer may.
+    """
+    from dataclasses import replace
+
+    found = []
+    for slot, record in delta.set:
+        fields = dict(record.fields)
+        if record.kind == "face_group":
+            fields.setdefault("face_ends", [])
+            fields.setdefault("face_widths", [])
+        found.append((slot, Record(record.kind, fields)))
+    return replace(delta, set=found)
+
+
+@pytest.mark.parametrize("case", LISTS)
+def test_an_empty_face_list_is_the_absent_one_to_every_reader(case):
+    """An empty list is a list not carried, to every reader of a Python
+    delta: the record carries what it would without it, the Cairo route
+    still draws CE's surface, the core the frame the record without it
+    draws, and the writer's snap reads the same faces.
+    """
+    from arachne.frame_ir import canonical
+    from arachne.frame_ir.painter import IrCairoPainter
+
+    make, animation, alpha, _ = LISTS[case]
+    surface = _at(make(), animation, alpha)
+    with tempconfig(SMALL):
+        delta = FrameStream().frame(_camera(), [("moving", [surface])], roots=[surface])
+    emptied = _emptied(delta)
+    [(record, as_sent)] = [
+        (r, e)
+        for (_, r), (_, e) in zip(delta.set, emptied.set, strict=True)
+        if r.kind == "face_group"
+    ]
+    assert as_sent.fields.keys() == record.fields.keys()
+    assert canonical._way(as_sent) == canonical._way(record)
+    with tempconfig(SMALL):
+        np.testing.assert_array_equal(IrCairoPainter().draw(emptied), _ce(surface))
+        np.testing.assert_array_equal(
+            CorePainter().draw(emptied), CorePainter().draw(delta)
+        )
+
+
+def test_a_face_the_camera_sees_end_on_is_reported_as_the_dot_the_core_draws():
+    """A face of one cubic along the camera's axis is points at one spot as
+    the camera shows them, though not in the world: the core strokes it as a
+    round cap's dot, and reports its leaf with that reason.
+    """
+    from arachne.frame_ir.contributors import ROUND_CAP_DOT
+
+    surface = _ellipsoid((8, 16))
+    face = _faces(surface)[CUT]
+    face.points = np.array([[0.0, 0.0, z] for z in (-0.3, -0.1, 0.1, 0.3)])
+    surface.set_stroke(width=4)
+    for each in surface.submobjects:
+        each.cap_style = CapStyleType.ROUND
+    with tempconfig(LARGE):
+        camera = ThreeDCamera()
+        camera.set_phi(0)
+        camera.set_theta(-90 * DEGREES)
+        painter = CorePainter()
+        painter.paint(camera, [("moving", [surface])], roots=[surface])
+    slot, _ = _group(painter, surface)
+    view = painter.state.view
+    found = painter.contributors((0, 0, view["pixel_width"], view["pixel_height"]))
+    reasons = {
+        leaf.reason
+        for pixel in found.values()
+        for leaf in pixel.leaves
+        if leaf.object == slot and leaf.part == CUT
+    }
+    assert reasons == {ROUND_CAP_DOT}

@@ -858,6 +858,50 @@ def test_a_face_group_without_face_ends_stays_at_its_minor_and_carries_neither()
     assert delta.version == (1, 0)
 
 
+@pytest.mark.parametrize(
+    ("ends", "widths"),
+    [(None, None), ([16, 24], None), (None, [2.0, 0.5]), ([16, 24], [2.0, 0.5])],
+    ids=["neither", "ends alone", "widths alone", "both"],
+)
+def test_each_absent_face_list_reads_as_uniform_whatever_the_other(ends, widths):
+    """Each list a face group may carry is read back as sent, an absent one
+    absent, and draws as the group stating it uniform: equal runs, the
+    record's width.
+    """
+    points = np.concatenate([square(), square(0.5)[: 8 if ends else 16]])
+
+    def drawn(face_ends, face_widths):
+        delta = ac.FrameDelta(t=(0, 1), seq=0)
+        delta.set_view(pixel_width=32, pixel_height=18, camera="three_d", **FRAME)
+        fields = {
+            "shape": delta.upload_path(points),
+            "uv": [(0, 0), (1, 0)],
+            "grid": (2, 1),
+            "face_fill": delta.upload_paint([(1, 0, 0, 0.5), (0, 0, 1, 0.5)]),
+            "face_stroke": delta.upload_paint([(1, 1, 1, 1), (0, 1, 0, 1)]),
+            "stroke_width": 1.5,
+            "space": "world",
+        }
+        if face_ends is not None:
+            fields["face_ends"] = face_ends
+        if face_widths is not None:
+            fields["face_widths"] = face_widths
+        delta.set_record("face_group", 1, 1, **fields)
+        delta.set_order([("moving", 1, 0), ("moving", 1, 1)])
+        back = ac.FrameDelta.from_bytes(delta.to_bytes())
+        stream = ac.Stream()
+        stream.apply(back)
+        return back, stream.draw(32, 18)
+
+    back, frame = drawn(ends, widths)
+    record = back.contents()["set"][0][3]
+    assert record.get("face_ends") == (None if ends is None else tuple(ends))
+    assert record.get("face_widths") == (None if widths is None else tuple(widths))
+    assert (back.version == (1, 3)) == (ends is not None or widths is not None)
+    _, stated = drawn(ends or [16, 32], widths or [1.5, 1.5])
+    np.testing.assert_array_equal(frame, stated)
+
+
 def test_an_unsnapped_delta_carries_neither_field_and_stays_below_1_2():
     delta = ac.FrameDelta(t=(0, 1), seq=0)
     delta.set_view(pixel_width=4, pixel_height=4, **FRAME)

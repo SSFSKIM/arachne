@@ -1332,3 +1332,135 @@ fn a_face_group_read_without_face_ends_draws_equal_runs_at_the_record_s_width() 
     assert!(old.1 < 3 && new == (1, 3), "{old:?} {new:?}");
     assert_eq!(legacy, stated);
 }
+
+#[test]
+fn each_absent_face_list_reads_as_uniform_whatever_the_other() {
+    // Neither list, face ends alone, face widths alone, both: each absent list is read as its
+    // uniform form (equal runs; the record's width) on its own, so each group, read back from its
+    // bytes, carries what it was sent and draws as the same faces stating both lists.
+    use arachne_core::xf::wire;
+    let points = two_faces();
+    let (left, right) = points.split_at(16);
+    let fills = Stops::new(vec![[1.0, 0.0, 0.0, 0.5], [0.0, 0.0, 1.0, 0.5]]);
+    let strokes = Stops::new(vec![[1.0, 1.0, 1.0, 1.0], [0.0, 1.0, 0.0, 1.0]]);
+    let record_width = 1.5;
+    let drawn = |shape: &Shape, face_ends: Vec<u32>, face_widths: Vec<f64>| {
+        let mut faces = Record::new(RecordKind::FaceGroup, 1, 101);
+        faces.geometry.shape_a = Some(shape.key());
+        faces.depth.space = Space::World;
+        faces.paint.stroke_width = record_width;
+        faces.body = Body::FaceGroup(FaceGroup {
+            uv: vec![[0, 0], [1, 0]],
+            grid: [2, 1],
+            fill: fills.key(),
+            stroke: Some(strokes.key()),
+            face_ends,
+            face_widths,
+        });
+        let mut d = delta(0);
+        d.view = Some(common::three_d_view(64, 36));
+        d.upload = vec![shape.clone()];
+        d.upload_paints = vec![fills.clone(), strokes.clone()];
+        d.set = vec![faces];
+        d.order = Some(
+            [0, 1]
+                .map(|part| OrderEntry {
+                    layer: Layer::Moving,
+                    slot: 1,
+                    part,
+                })
+                .to_vec(),
+        );
+        let read = wire::decode_delta(&wire::encode_delta(&d)).unwrap();
+        let Body::FaceGroup(f) = &read.set[0].body else {
+            unreachable!()
+        };
+        let lists = (f.face_ends.clone(), f.face_widths.clone());
+        let mut s = Stream::new();
+        s.apply(&read).unwrap();
+        (read.version, lists, s.draw(64, 36, 1).unwrap())
+    };
+    let whole = Shape::new(ShapeData::Path {
+        points: points.clone(),
+    });
+    let partial = Shape::new(ShapeData::Path {
+        points: [left, &right[..8]].concat(),
+    });
+    let widths = vec![2.0, 0.75];
+    for (name, shape, ends, sent_widths, uniform_ends) in [
+        ("neither", &whole, vec![], vec![], vec![16, 32]),
+        ("ends alone", &partial, vec![16, 24], vec![], vec![16, 24]),
+        ("widths alone", &whole, vec![], widths.clone(), vec![16, 32]),
+        ("both", &partial, vec![16, 24], widths.clone(), vec![16, 24]),
+    ] {
+        let carried = !ends.is_empty() || !sent_widths.is_empty();
+        let (version, lists, frame) = drawn(shape, ends.clone(), sent_widths.clone());
+        assert_eq!(lists, (ends, sent_widths.clone()), "{name}: read back as sent");
+        assert_eq!(version.1 == 3, carried, "{name}: {version:?}");
+        let stated_widths = if sent_widths.is_empty() {
+            vec![record_width; 2]
+        } else {
+            sent_widths
+        };
+        let (_, _, stated) = drawn(shape, uniform_ends, stated_widths);
+        assert_eq!(frame, stated, "{name}");
+    }
+}
+
+/// A face group of one face whose points are at one spot (a face not yet drawn), stroked under
+/// `cap` and `dash`: its frame.
+fn one_spot_face(cap: Cap, dash: Option<Dash>) -> Vec<u8> {
+    let shape = Shape::new(ShapeData::Path {
+        points: vec![[0.25, 0.0, 0.0]; 4],
+    });
+    let fills = Stops::new(vec![[1.0, 0.0, 0.0, 1.0]]);
+    let strokes = Stops::new(vec![[1.0, 1.0, 1.0, 1.0]]);
+    let mut face = Record::new(RecordKind::FaceGroup, 1, 101);
+    face.geometry.shape_a = Some(shape.key());
+    face.depth.space = Space::World;
+    face.paint.stroke_width = 8.0;
+    face.paint.cap = cap;
+    face.dash = dash;
+    face.body = Body::FaceGroup(FaceGroup {
+        uv: vec![[0, 0]],
+        grid: [1, 1],
+        fill: fills.key(),
+        stroke: Some(strokes.key()),
+        face_ends: Vec::new(),
+        face_widths: Vec::new(),
+    });
+    let mut d = delta(0);
+    d.view = Some(common::three_d_view(64, 36));
+    d.upload = vec![shape];
+    d.upload_paints = vec![fills, strokes];
+    d.set = vec![face];
+    d.order = Some(vec![entry(1)]);
+    let mut s = Stream::new();
+    s.apply(&d).unwrap();
+    s.draw(64, 36, 1).unwrap()
+}
+
+#[test]
+fn a_face_at_one_spot_under_a_round_cap_is_a_dot_only_where_its_dash_is_on() {
+    // Cairo's dashed stroker starts each subpath at the dash's offset, and strokes a subpath of
+    // no length as a round cap's dot only when the dash is on there (`dash_starts_on`): a face at
+    // one spot is the dot undashed or dashed on at its start, and nothing dashed in a gap there.
+    let nothing = one_spot_face(Cap::Butt, None);
+    let undashed = one_spot_face(Cap::Round, None);
+    assert_ne!(undashed, nothing, "a round cap's dot");
+    let dashed = |phase: f64| {
+        one_spot_face(
+            Cap::Round,
+            Some(Dash {
+                period: 1.0,
+                duty: 0.5,
+                phase,
+            }),
+        )
+    };
+    assert_eq!(dashed(0.0), undashed, "dashed on at its start");
+    assert_eq!(dashed(0.25), undashed, "dashed on at its start");
+    assert_eq!(dashed(0.75), nothing, "dashed in a gap at its start");
+    // Where the offset meets the dash's end, Cairo has turned the dash off.
+    assert_eq!(dashed(0.5), nothing, "dashed in a gap at its start");
+}
