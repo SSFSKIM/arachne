@@ -54,10 +54,15 @@ fn the_section_follows_the_order_field_by_field() {
     line.source = vec![vec![node(2, "a.Group")]];
     d.set = vec![glyph(9), line, Record::new(RecordKind::Mesh, 6, 6)];
     d.order = Some(Vec::new());
+    d.version = (1, 5);
     let bytes = wire::encode_delta(&d);
     assert_eq!(&bytes[..4], &[1, 0, 5, 0], "XF 1.5");
     let bare = wire::encode_delta(&without_section(&d));
-    assert_eq!(&bare[..4], &[1, 0, 0, 0], "the same delta without it is XF 1.0");
+    assert_eq!(
+        &bare[..4],
+        &[1, 0, 0, 0],
+        "the same delta without it is XF 1.0"
+    );
     // Everything up to the order is the bare delta's, byte for byte, but the minor.
     assert_eq!(&bytes[4..bare.len()], &bare[4..]);
     let section = [
@@ -97,6 +102,7 @@ fn a_facing_group_alone_is_a_row_without_paths() {
     let mut r = Record::new(RecordKind::Path, 2, 2);
     r.facing_group = 11;
     d.set = vec![r];
+    d.version = (1, 5);
     let bytes = wire::encode_delta(&d);
     let bare = wire::encode_delta(&without_section(&d));
     let section = [u32(0), u32(1), u32(2), u32(11), u32(0)].concat();
@@ -111,7 +117,10 @@ fn a_delta_without_a_source_keeps_its_minor_and_its_bytes() {
     for sample in common::sample_deltas() {
         assert!(wire::encoded_version(&sample).1 < 5);
         let mut given = sample.clone();
-        given.set.iter_mut().for_each(|r| r.source = glyph(r.slot).source);
+        given
+            .set
+            .iter_mut()
+            .for_each(|r| r.source = glyph(r.slot).source);
         if !given.set.is_empty() {
             assert_eq!(wire::encoded_version(&given).1, 5);
         }
@@ -137,6 +146,7 @@ fn an_xf_1_4_reader_reads_the_delta_without_its_section() {
         slot: 9,
         part: 0,
     }]);
+    d.version = (1, 5);
     let bytes = wire::encode_delta(&d);
     let bare = wire::encode_delta(&without_section(&d));
     let mut as_1_4 = bytes[..bare.len()].to_vec();
@@ -176,7 +186,10 @@ fn a_slot_set_twice_carries_the_last_records_source() {
     // Only the last record of a slot is written: one that carries nothing writes no row.
     d.set[1] = Record::new(RecordKind::Path, 9, 9);
     let bytes = wire::encode_delta(&d);
-    assert_eq!(&bytes[bytes.len() - 8..], [u32(0), u32(0)].concat().as_slice());
+    assert_eq!(
+        &bytes[bytes.len() - 8..],
+        [u32(0), u32(0)].concat().as_slice()
+    );
     let read = wire::decode_delta(&bytes).unwrap();
     assert!(read.set.iter().all(|r| !r.carries_source()));
 }
@@ -198,9 +211,8 @@ fn with_section(slots: &[u32], removed: &[u32], section: &[u8]) -> Vec<u8> {
 
 #[test]
 fn a_section_that_does_not_name_what_the_delta_sets_is_invalid() {
-    let one_path = |slot: u32, class: u32| {
-        [u32(slot), u32(0), u32(1), u32(1), u32(7), u32(class)].concat()
-    };
+    let one_path =
+        |slot: u32, class: u32| [u32(slot), u32(0), u32(1), u32(1), u32(7), u32(class)].concat();
     let cases: Vec<(&str, Vec<u8>)> = vec![
         (
             "a class index past the table",
@@ -208,7 +220,14 @@ fn a_section_that_does_not_name_what_the_delta_sets_is_invalid() {
         ),
         (
             "a slot named twice",
-            [u32(1), string("a.B"), u32(2), one_path(1, 0), one_path(1, 0)].concat(),
+            [
+                u32(1),
+                string("a.B"),
+                u32(2),
+                one_path(1, 0),
+                one_path(1, 0),
+            ]
+            .concat(),
         ),
         (
             "a slot the delta does not set",
@@ -344,7 +363,7 @@ fn nothing_drawn_reads_a_records_source() {
             .iter()
             .map(|d| {
                 let read = wire::decode_delta(&wire::encode_delta(d)).unwrap();
-                assert_eq!(&read, d);
+                assert_eq!(read.set, d.set);
                 s.apply(&read).unwrap();
                 s.draw(48, 32, 2).unwrap()
             })

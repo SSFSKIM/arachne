@@ -53,8 +53,10 @@ def test_a_record_s_source_and_facing_group_are_xf_1_5_and_read_back():
     (_, _, _, one), (_, _, _, two), (_, _, _, three) = back.contents()["set"]
     assert one["source"] == GLYPH_SOURCE
     assert one["facing_group"] == 3
-    assert "source" not in two and two["facing_group"] == 9
-    assert "source" not in three and "facing_group" not in three
+    assert "source" not in two
+    assert two["facing_group"] == 9
+    assert "source" not in three
+    assert "facing_group" not in three
     # Given empty, or a facing group of 0, neither is carried: the delta stays at its minor.
     bare = ac.FrameDelta()
     bare.set_record("path", slot=1, object=1, source=(), facing_group=0)

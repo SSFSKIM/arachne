@@ -1098,8 +1098,11 @@ fn read_source(r: &mut R, set: &mut [Record]) -> Result<()> {
         }
         classes.push(class);
     }
-    let mut unread: HashMap<u32, usize> =
-        set.iter().enumerate().map(|(i, rec)| (rec.slot, i)).collect();
+    let mut unread: HashMap<u32, usize> = set
+        .iter()
+        .enumerate()
+        .map(|(i, rec)| (rec.slot, i))
+        .collect();
     let rows = r.count(12)?;
     for _ in 0..rows {
         let slot = r.u32()?;
