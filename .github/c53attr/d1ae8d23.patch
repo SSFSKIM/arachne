@@ -1,0 +1,40 @@
+commit 86a475121515a22288ebb22518236c1b10fc2d87
+Author: SSFSKIM <145154405+SSFSKIM@users.noreply.github.com>
+Date:   Mon Nov 9 12:44:11 2026 -0800
+
+    A captured frame over a kept static picture gives the scene's roots their state
+    
+    A frame described from the camera's own captures finds a drawn face's
+    surface among the scene's roots, walking every root's family. Over a static
+    picture that still holds, the frame gave only its moving mobjects their
+    recorded state, so the walk read the other roots as the last drawing left
+    them. Where the picture was kept by an earlier drawing (a session's next
+    frame of the same play), that is the scene as it ended: a still surface
+    that loses faces after the play was seen with its later faces.
+    
+    On a captured frame whose picture holds, the capture's draw list is shown
+    with its moving mobjects, as a frame painted from the record and a static
+    picture already are. Frames drawn on Cairo itself, which walk no roots,
+    still show only what moves.
+    
+    (cherry picked from commit d1ae8d23833809ab510832a49ebf2a59167e525f)
+
+diff --git a/arachne/timeline/draw.py b/arachne/timeline/draw.py
+index a223889a..017aa965 100644
+--- a/arachne/timeline/draw.py
++++ b/arachne/timeline/draw.py
+@@ -799,7 +799,13 @@ class Drawing:
+         shown = capture.instant if instant is None else instant
+         with self._captures(shown, play.index, capture):
+             if self.static_layer and self._picture_holds(play, capture):
+-                self.show(capture, targets)
++                # A frame described from the camera's captures finds a drawn
++                # face's surface among the scene's roots: they hold their
++                # state at this capture, whichever drawing kept the picture.
++                self.show(
++                    capture,
++                    [*capture.draw_list(), *targets] if self.captured else targets,
++                )
+                 if prepare is not None:
+                     prepare(self)
+                 if static is not None:
