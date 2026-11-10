@@ -80,7 +80,7 @@ def test_a_held_record_s_new_source_is_a_row_of_its_own_and_read_back():
     delta.set_source(4, source=GLYPH_SOURCE, facing_group=3)
     delta.set_source(5, facing_group=9)
     assert delta.version == (1, 5)
-    assert not delta.is_empty()
+    assert not delta.is_empty
     back = ac.FrameDelta.from_bytes(delta.to_bytes())
     assert back.contents()["source"] == [(4, GLYPH_SOURCE, 3), (5, (), 9)]
     assert back.contents()["set"] == []

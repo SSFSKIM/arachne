@@ -518,7 +518,10 @@ impl Stream {
             self.records.remove(slot);
         }
         for row in &delta.source {
-            let held = self.records.get_mut(&row.slot).expect("checked: the slot is held");
+            let held = self
+                .records
+                .get_mut(&row.slot)
+                .expect("checked: the slot is held");
             held.source = row.source.clone();
             held.facing_group = row.facing_group;
         }
@@ -1323,15 +1326,9 @@ fn same_content(held: &ShapeData, uploaded: &ShapeData) -> bool {
 /// The longest side of a frame this build draws, in pixels.
 pub const MAX_SIDE: u32 = 16384;
 
-/// A shape that contradicts itself: a triangle naming a vertex the mesh lacks, normals that are not
-/// one per vertex, or an image whose pixels are not its width times its height.
 /// XF 1.5's rows for held records: each names, once, a slot the stream holds and the delta neither
 /// sets nor removes, with no path of no objects.
-fn check_source_rows(
-    stream: &Stream,
-    delta: &Delta,
-    after: &After<'_>,
-) -> Result<(), StreamError> {
+fn check_source_rows(stream: &Stream, delta: &Delta, after: &After<'_>) -> Result<(), StreamError> {
     let mut rowed = HashSet::new();
     for row in &delta.source {
         let slot = row.slot;
@@ -1357,6 +1354,8 @@ fn check_source_rows(
     Ok(())
 }
 
+/// A shape that contradicts itself: a triangle naming a vertex the mesh lacks, normals that are not
+/// one per vertex, or an image whose pixels are not its width times its height.
 fn check_shape(shape: &Shape) -> Result<(), StreamError> {
     let invalid = |why: String| {
         Err(StreamError::Invalid(format!(

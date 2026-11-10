@@ -36,6 +36,8 @@ def rebuild(contents: dict) -> ac.FrameDelta:
         delta.remove(slot)
     if contents["order"] is not None:
         delta.set_order(contents["order"])
+    for slot, source, facing_group in contents["source"]:
+        delta.set_source(slot, source=source, facing_group=facing_group)
     return delta
 
 
@@ -55,7 +57,9 @@ def test_canonical_contents_rebuild_the_decoded_wire_byte_for_byte():
             "set",
             "remove",
             "order",
+            "source",
         }
+        assert contents["source"] == []
         assert contents["version"] == (1, 0)
         assert rebuild(contents).to_bytes() == delta.to_bytes()
 
@@ -71,6 +75,7 @@ def test_a_record_s_source_rebuilds_from_its_contents_byte_for_byte():
     )
     delta.set_record("points", 2, 2, colors=b"\xa1" * 16, radius=2.0, facing_group=4)
     delta.set_order([("moving", 1, 0), ("moving", 2, 0)])
+    delta.set_source(5, source=(((3, "a.Label"),),), facing_group=3)
     decoded = ac.FrameDelta.from_bytes(delta.to_bytes())
     contents = decoded.contents()
     assert contents["version"] == (1, 5)
