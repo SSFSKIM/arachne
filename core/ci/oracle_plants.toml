@@ -434,3 +434,93 @@ file = "core/oracle/src/joins.rs"
 find = "let d = *list.get(*next)?;"
 replace = "let d = *list.last()?;"
 red = ["stroke_fixtures::join_occurrences_each_occurrence_takes_its_own_decision"]
+
+[[plant]]
+name = "dash-gap-off-entry"
+item = "§8"
+check = "a dash's gap is the total less the on length, not its off entry"
+file = "core/oracle/src/flatten.rs"
+find = "if (a + b) - a < SOLID_DASH_GAP {"
+replace = "if b < SOLID_DASH_GAP {"
+red = ["dashes::the_gap_is_the_total_less_the_on_length_not_the_off_entry"]
+
+[[plant]]
+name = "dash-gap-exact-solid"
+item = "§8"
+check = "a gap of exactly 1/512 is dashed"
+file = "core/oracle/src/flatten.rs"
+find = "if (a + b) - a < SOLID_DASH_GAP {"
+replace = "if (a + b) - a <= SOLID_DASH_GAP {"
+red = ["dashes::a_gap_of_exactly_the_least_length_is_dashed", "dashes::a_gap_of_exactly_the_least_length_strokes_dashed_and_one_just_under_strokes_solid"]
+
+[[plant]]
+name = "dash-gap-never-solid"
+item = "§8"
+check = "a gap under 1/512 strokes solid"
+file = "core/oracle/src/flatten.rs"
+find = "if (a + b) - a < SOLID_DASH_GAP {"
+replace = "if false && (a + b) - a < SOLID_DASH_GAP {"
+red = ["dashes::a_gap_just_under_the_least_length_is_solid", "dashes::a_gap_clearly_under_the_least_length_strokes_solid", "dashes::no_dash_and_a_duty_of_one_have_no_entries"]
+
+[[plant]]
+name = "dash-off-entry-from-period"
+item = "§8"
+check = "the off entry is period times one less the duty, not the period less the on entry"
+file = "core/oracle/src/flatten.rs"
+find = "let b = d.period * (1.0 - d.duty);"
+replace = "let b = d.period - a;"
+red = ["dashes::the_entries_are_period_times_duty_and_period_times_one_less_the_duty"]
+
+[[plant]]
+name = "dash-offset-phase-only"
+item = "§8"
+check = "a dash starts phase times period into its pattern"
+file = "core/oracle/src/flatten.rs"
+find = "libm::fmod(d.phase * d.period, total)"
+replace = "libm::fmod(d.phase, total)"
+red = ["dashes::a_dashed_dot_is_drawn_only_where_the_dash_starts_on", "dashes::an_offset_inside_an_entry_keeps_its_side"]
+
+[[plant]]
+name = "dash-modulus-period"
+item = "§8"
+check = "the offset is taken modulo the entries' total, not the period"
+file = "core/oracle/src/flatten.rs"
+find = "let total = entries[0] + entries[1];"
+replace = "let total = d.period;"
+red = ["dashes::the_offset_is_taken_modulo_the_entries_total_not_the_period"]
+
+[[plant]]
+name = "dash-negative-not-raised"
+item = "§8"
+check = "a negative offset is raised by the total"
+file = "core/oracle/src/flatten.rs"
+find = "if o < 0.0 {"
+replace = "if false && o < 0.0 {"
+red = ["dashes::a_negative_phase_is_taken_by_fmod_then_raised_by_the_total", "dashes::a_dashed_dot_at_an_entry_boundary_or_a_negative_phase_follows_cairos_start"]
+
+[[plant]]
+name = "dash-negative-without-fmod"
+item = "§8"
+check = "the offset is taken by fmod before a negative one is raised"
+file = "core/oracle/src/flatten.rs"
+find = "libm::fmod(d.phase * d.period, total)"
+replace = "(d.phase * d.period)"
+red = ["dashes::a_negative_phase_is_taken_by_fmod_then_raised_by_the_total"]
+
+[[plant]]
+name = "dash-entry-equal-stays"
+item = "§8"
+check = "an offset equal to an entry steps past it"
+file = "core/oracle/src/flatten.rs"
+find = "while o > 0.0 && o >= entries[i] {"
+replace = "while o > 0.0 && o > entries[i] {"
+red = ["dashes::an_offset_equal_to_an_entry_steps_past_it", "dashes::a_negative_offset_that_rounds_up_to_the_total_steps_past_both_entries", "dashes::a_dashed_dot_at_an_entry_boundary_or_a_negative_phase_follows_cairos_start"]
+
+[[plant]]
+name = "dash-zero-offset-steps"
+item = "§8"
+check = "a zero offset steps past no entry, an empty one included"
+file = "core/oracle/src/flatten.rs"
+find = "while o > 0.0 && o >= entries[i] {"
+replace = "while o >= entries[i] {"
+red = ["dashes::an_on_entry_of_zero_starts_on_only_at_offset_zero"]
