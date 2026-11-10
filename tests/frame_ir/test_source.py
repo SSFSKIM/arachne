@@ -41,6 +41,11 @@ from arachne.frame_ir.extract import Blend, FrameStream, Reveal, library_class
 from arachne.frame_ir.geometry import revealed
 from arachne.frame_ir.painter import IrCairoPainter
 from arachne.frame_ir.xf import Delta, Record
+from arachne.mobject.construction_caches import (
+    construction_caches,
+    forget_construction_caches,
+    restore_construction_caches,
+)
 from arachne.utils.bezier import interpolate
 
 from ..timeline import camera_scenes
@@ -437,15 +442,25 @@ def test_frames_and_the_older_minor_are_the_bytes_sent_without_a_source(monkeypa
         found = []
         for case in cases:
             sent = []
+            # From empty caches, as a fresh process renders: a cache hit builds
+            # objects otherwise than a miss does (their stable ids among what
+            # differs), and each render here would fill them for the next.
+            forget_construction_caches()
             with monkeypatch.context() as patched:
                 patched.setattr(CorePainter, "draw", _keeping(CorePainter.draw, sent))
                 frames = render(case, FPS, draw_path="core", **MEDIUM)[1]
             found.append((frames, [_older_minor(delta) for delta in sent]))
         return found
 
-    carried = drawn()
-    monkeypatch.setattr(FrameStream, "_sourced", lambda self, slot, record, *_: record)
-    bare = drawn()
+    kept = construction_caches()
+    try:
+        carried = drawn()
+        monkeypatch.setattr(
+            FrameStream, "_sourced", lambda self, slot, record, *_: record
+        )
+        bare = drawn()
+    finally:
+        restore_construction_caches(kept)
     for case, (ours, our_bytes), (theirs, their_bytes) in zip(
         cases, carried, bare, strict=True
     ):
