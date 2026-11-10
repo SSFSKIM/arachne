@@ -1,0 +1,32 @@
+# Scratch (C5.3 attribution, never merged): renders the core's frames of the failing goldens at this
+# head in the docs-examples gate's environment and uploads them.
+name: c53-attr
+on:
+  push:
+    branches: ['ci/c53-second-attr-**']
+permissions:
+  contents: read
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      UV_PYTHON: "3.14"
+      OPENBLAS_CORETYPE: Haswell
+      OPENBLAS_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Apply the CI environment
+        uses: SSFSKIM/ci-kit/setup@v1
+      - name: Install
+        run: pipx install uv==0.12.3 && uv sync --all-extras --locked
+      - name: Render
+        run: bash .github/c53attr/run.sh out
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: c53-attr
+          path: out/
+          if-no-files-found: error
