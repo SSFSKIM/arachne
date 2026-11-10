@@ -147,7 +147,7 @@ Elsewhere, Cairo's rules that this text relies on are restated in full.
 | `paint_rows@1` | 9 | which colour rows a layer paints with, and how a paint blend mixes them | |
 | `cairo_linear_gradient@1` | 9 | a gradient's bytes at a pixel | |
 | `ce_shading@1` | 9 | CE's two lit stops of a shaded path; lit mesh corners | |
-| `label_placement@1` | 10 | where a camera-facing label sits among what covers it | `label_rule_open`, by sub-class or cause (§10) |
+| `label_placement@2` | 10 | where a camera-facing label sits among what covers it (replaces @1; the change is stated in §10) | `label_rule_open`, by cause (§10) |
 | `label_classes@2` | 10 | which sources are lines and which are surfaces (replaces @1; the change is stated in §10) | `label_rule_open`, by cause (§10) |
 
 How the counted rules are counted:
@@ -2050,7 +2050,7 @@ pivot. Every fragment of it lies on the camera-facing plane through its centre. 
 policies order it like any other fragment, so something nearer can cut it, and a surface crossing
 the label's depth splits it there.
 
-### `label_placement@1`: the rule
+### `label_placement@2`: the rule
 
 *A camera-facing label goes under a filled surface nearer than its centre and stays over everything
 else, lines and arrows included.* Lines and arrows never push a label back on their own, but a line
@@ -2069,70 +2069,154 @@ in front of a surface the label sits behind is in front of the label too.
   read as XF 1.4 after its first record. In a stream read under XF 1.5's rules, a camera-facing
   record with no facing group belongs to no label the oracle can name: it is `label_ungrouped`
   (below).
-- **Its footprint** is every sample its fragments cover (§3, §4), antialias and stroke included.
+- **Its outline** is its records' outlines on screen: each fill's outline and each stroke's outline
+  (the stroke as §8 draws it).
 - **Its depth** is its centre's key on its facing plane (§5), with that key's interval (§6). The
   label has one depth: no glyph is tested on its own.
-- **A sheet** is a connected part of one source surface whose faces all face one way relative to
-  the camera (front or back; their normals need not be equal) and which is single-valued on screen
-  over the label's footprint. A front-facing and a back-facing part are two sheets. The unit is
-  never one face of a triangulation. A sheet's footprint is every sample its fill covers with alpha
-  above 0; its strokes never form or widen a sheet.
-- **Classes** come from `label_classes@2` below: a sheet qualifies only if its record's outcome
-  is a surface. A line's or arrow's parts never qualify.
+- **The order points** are the 16 sub-sample points of each pixel (§1, *Sample positions*), the
+  points at which the resolve orders fragments. In any one pixel column `x` they sit at
+  `x + (2k + 1) / 32`, `k = 0 .. 15`, and likewise in each row.
+- **A fill's alpha at a point** (an order point, or the label's projected centre) is that of the
+  fill's colour at the pixel holding the point, as the frame paints it (§9): one colour per pixel,
+  never the paint evaluated at the point itself. It is read as the frame stores it: premultiplied,
+  8 bits, after pixman's rounding, with the record's group opacity applied, and it is **positive**
+  at 1/255 or more. For a linear gradient the colour depends on the composite run the pixel is in
+  as well as on the pixel (§9), and past a gradient's clear end pad extend gives exactly 0 whatever
+  the run.
+  - **The pixel box.** A fill's pixel box is, of its outline's extent in frame pixels, the columns
+    `floor(x_min)` to `ceil(x_max)` and the rows `floor(y_min)` to `ceil(y_max) − 1`, within the
+    frame. Where the point's pixel lies outside the box (a centre exactly on the fill's bottom edge,
+    its largest `y`, at a whole pixel, or beyond the frame), the alpha is read at the box's nearest
+    pixel.
+  - **The oracle's reading.** For a gradient, the oracle reads the alpha at the pixel as the range
+    of the alphas of the colours it admits there (§9, *Oracle reading for gradients*), which spans
+    every run start the row allows. Where that range holds both 0 and a value of 1/255 or more, the
+    pixel is oracle-unable: it is reported as `label_alpha_straddle` (§12), and never agrees. Past
+    a clear end, only the last visible pixel before it can be such a pixel.
+- **A sheet** is a connected part of one **surface object**, read from its fills on screen:
+  - The surface object of a record is the outermost node of its first source path whose outcome
+    under `label_classes@2`, read at that node, is a surface: a cube's faces belong to the cube and
+    a sphere's to the sphere. A cylinder counts only where the cylinder rule makes it a surface;
+    one left open (inside a group, say) does not, and its faces fall to the next node out with a
+    surface outcome. Where the path has none, the object is the path's first node, the record's
+    maker.
+  - In a stream read as XF 1.4, where no source names an object, each record is its own object:
+    its fills join only one another, and no sheet of it is ever disconnected.
+  - Only the object's fills are read. Strokes never form or widen a sheet, and a record whose
+    class (`label_classes@2`, below) is not a surface never forms one.
+  - A fill's **winding** is the sign of the signed area of its flattened outline on screen (§4's
+    flattening, in frame pixels): positive or negative, or neither where the area's magnitude is at
+    most `1e-9` px².
+  - Two fills of one object **join** where they have the same winding, and it is not neither, and
+    share at least two distinct corners of their flattened outlines on screen, each coordinate `v`
+    compared as `round(v · 4096)`. Joining is transitive: a sheet is a class of the union. A fill
+    wound neither way is a sheet on its own.
+  - A front-facing and a back-facing part of one solid are wound opposite ways, so they are two
+    sheets.
+- **An open sheet** is one no label goes behind, whatever its source:
+  - a sheet drawn as a mesh, whose faces are not read;
+  - in a frame that draws a facing group, a record kept facing the camera (it carries a
+    fixed-orientation centre) whose facing group is none (`label_ungrouped`, below). Its label is
+    unknown, never another kind, so it is an open sheet of its own. Its object is read as any
+    record's is, above.
+- **A sheet holds a point** where one of its fills whose alpha at the point is positive holds it by
+  the nonzero rule. Qualification counts with this predicate, the centre test reads the same alpha,
+  and insertion anchors with the same predicate.
+- **The overlap** of a label and a sheet `S` is its set of **counted** order points. An order point
+  is counted where it lies inside an outline of one of the label's records by the nonzero rule and
+  `S` holds it. A sliver of either between order points holds none. A pair of the label and `S` is
+  made only where at least one point is counted: a sheet that counts none does not overlap the
+  label, even where it holds the label's centre.
+- **A label drawn otherwise.** A label that has a record that is not a path placed at a fixed
+  orientation (a pre-projected record, a mesh, points, or a record with no carried centre) is read
+  over the whole frame: it meets `S` wherever a fragment of any of its records and `S` hold one
+  order point.
+- **Classes** come from `label_classes@2` below: a sheet qualifies only if its records' outcome is
+  a surface. A line's or arrow's parts never qualify.
 
-**Qualification: one decision per label and sheet.** It is made once over the whole frame, before
-any tile, and never retested at a pixel or a glyph. Let `O` be the samples both footprints hold.
+**Qualification: one decision per pair.** It is made once over the whole frame, before any tile,
+and never retested at a pixel or a glyph. Each pair (a label and a sheet `S` with at least one
+counted point) is decided by the first of these that applies:
 
-1. Where `O` is empty, or the sheet's alpha is 0, the sheet does not cover the label.
-2. **The sheet covers the label's centre** (its outline holds the centre's screen point): compare
-   the sheet's key on the ray through the centre with the label's depth. Wholly nearer (the
-   intervals apart) qualifies the whole pair, even where the sheet crosses behind the label's depth
-   elsewhere in `O`. Wholly farther, or exactly equal in every scenario, does not qualify. Where the
-   intervals meet, the pair is `label_unsettled`.
-3. **The centre is missed:** the sheet qualifies only where it is wholly nearer than the label's
-   depth at every sample of `O` (its key at the sample, not an extended plane). Where it is wholly
-   farther or exactly equal at some sample of `O`, it does not qualify. A **genuine straddle**,
-   nearer at some samples and settled farther at others, therefore does not qualify, and the label
-   stays on top: a ruled outcome. Where no sample of `O` is settled farther or equal but some are
-   unsettled, the pair is `label_unsettled` (an interval straddle).
+1. **`label`, of the label.** The label is drawn otherwise (Terms, above). Every pair of that label
+   is open.
+2. **An open sheet.** `S` is a record kept facing the camera whose label is unknown: the pair is
+   open with cause `label`, even where `S` is also drawn as a mesh, since `label` comes before
+   `mesh`. Otherwise, where `S` is drawn as a mesh, the pair is open with cause `mesh`.
+3. **`folded`.** Two fills of `S` hold one counted point. The pair is open.
+4. **`disconnected`.** `S` shares its surface object and its winding with another sheet that also
+   counts a point with the label. Every such sheet's pair is open, not only the second one's.
+5. **By the centre.** Where `S` covers the label's centre: one of its fills whose alpha at the
+   centre is positive holds the centre's screen point by the nonzero rule, a point on the fill's
+   outline counting as held, on any of its segments, its horizontal ones included, whatever the
+   fill's depth is keyed on. Compare that fill's own plane, read on the ray through the centre (its
+   key there, §5, with its interval, §6), with the label's depth. Wholly nearer qualifies the whole
+   pair, even where `S` crosses behind the label's depth elsewhere in the overlap. Wholly farther,
+   or at the label's depth, does not qualify, and the label stays in front. The pair is open
+   (`interval`) where the intervals meet, where the fill is on no one plane (its depth keyed on its
+   curve, so it has no plane to read at the centre), or where two fills of `S` hold the centre and
+   their comparisons disagree.
+6. **By the points.** Otherwise `S` qualifies only where it is wholly nearer than the label's depth
+   at every counted point, its depth there the plane of the fill holding the point, read at the
+   point, with its interval (never an extended plane). Where it is wholly farther or at the label's
+   depth at some counted point, it does not qualify: a **genuine straddle** the points can see, a
+   decided outcome, and the label stays in front. Where no point is decided farther or equal but
+   some point's interval meets the label's, the pair is open (`interval`).
+
+The cost of reading at the points: a farther sliver of `S` that holds no order point drops out, so
+`S` can qualify and hide the label at the points where it is nearer. The depth split that implies
+lies below the sampling and cannot show. A straddle the points can see still lets the label show
+through.
 
 **Placement at a sample.** At each sample `k` the label covers:
 
 - take the ordinary order (§7) of the fragments at `k` other than labels;
-- among the qualifying sheets of the label covering `k`, take the rearmost in that order, and
-  insert the label immediately behind it;
-- where no qualifying sheet covers `k`, the label is in front of every fragment there.
+- among the qualifying sheets of the label that **cover** `k`, take the rearmost in that order, and
+  insert the label immediately behind it. A sheet covers `k` exactly where it holds `k`'s order
+  point (Terms, above), the predicate qualification counts with: a qualifying sheet that covers
+  some of `k`'s cell but not its order point, or whose fill's alpha there is 0, does not anchor the
+  label there;
+- where no qualifying sheet covers `k`, the label is in front of every fragment there but the
+  overlay.
 
-So a qualifying sheet hides or dims the label only where it overlaps it (**partial cover**), and
-anything in front of that sheet is in front of the label. Labels whose insertion is the same place
-keep CE's order, which is paint order. Otherwise placement decides between labels, whatever their
-paint order. Every fragment composites at its own alpha, once: a label behind a translucent sheet is
-seen through it, and a label between two translucent sheets of one source (a translucent box's front
-and back) sits between them.
+So a qualifying sheet hides or dims the label only where it holds the order points (**partial
+cover**), and anything in front of that sheet is in front of the label. A pixel where a label meets
+a sheet it goes behind is resolved sample by sample, each fragment compositing its own coverage of
+the sample's cell. Labels whose insertion is the same place keep CE's order, which is paint order.
+Otherwise placement decides between labels, whatever their paint order. Every fragment composites
+at its own alpha, once: a label behind a translucent sheet is seen through it, and a label between
+two translucent sheets of one source (a translucent box's front and back) sits between them.
 
 **The admissible orders** at `k` are the orders this insertion gives over every admissible ordinary
 order of the other fragments (§7): an ordinary tie may change which qualifying sheet is rearmost.
 
-**Open cases.** `label_rule_open` is counted by name: three placement cases, and the open
-outcomes of `label_classes@2`, each with its cause:
+**Open cases.** `label_rule_open` is counted by name, on two separate axes:
 
-- **`label_unsettled`:** a pair whose qualification the intervals cannot settle (2 or 3 above).
-- **`label_sheet_irregular`:** a source whose part over the label is folded, overlaps itself on
-  screen, or is disconnected there, so that no sheet is single-valued over the footprint.
-- **A class left open** (`label_classes@2`, below): a sheet whose record's outcome is
-  `label_rule_open`, by its cause: `unmapped` (a class the table does not place), `generic_only`
-  (a source generic all the way up), `paths_disagree`, `no_source`, `cylinder_grouped` or
-  `point_cloud`.
-- **`label_ungrouped`:** in a stream read under XF 1.5's rules at the frame (Terms, above), a
-  camera-facing record (one with a fixed-orientation centre) that has no facing group: set with no
-  row, set by a delta of an older minor, or given a facing group of 0 by a row. It is not thereby outside every label: whether it
-  belongs to one is unknown, so the oracle counts it under this name and never as a record of
-  another kind. Its drawing is unaffected, and its fragments' coverage is judged as usual; the
-  order at every sample they share with another fragment is counted here. No reader refuses it.
+- **A pair left open,** by its pair cause from the qualification above: `label`, `mesh`,
+  `folded`, `disconnected` or `interval`. These are the rule's open cases; `label_ungrouped`
+  (below) is a reason under `label`, never a cause of its own.
+- **A class left open** (`label_classes@2`, below), by its class cause: a record whose outcome is
+  `label_rule_open` is never a surface, never forms a sheet and never qualifies, and the order at
+  the samples it shares with a label is counted under its class cause: `unmapped` (a class the
+  table does not place), `generic_only` (a source generic all the way up), `paths_disagree`,
+  `no_source`, `cylinder_grouped` or `point_cloud`.
+
+**`label_ungrouped`.** In a stream read under XF 1.5's rules at the frame (Terms, above), a
+camera-facing record (one with a fixed-orientation centre) that has no facing group: set with no
+row, set by a delta of an older minor, or given a facing group of 0 by a row. It is not thereby
+outside every label: its label is unknown, never another kind. Its drawing is unaffected, and no
+reader refuses it.
+
+- In a frame that draws a facing group, it is an open sheet of its own (Terms, above): every pair a
+  label makes with it is open with cause `label`, reported under `label`, `label_ungrouped` being
+  only the reason.
+- In a frame that draws no facing group, the frame is drawn as it would be without its source
+  (*What XF states*, below), and the oracle judges it as it judges a frame read as XF 1.4 (Terms,
+  above).
 
 An open pair does not push the label back; the rendering it expects is the label on top of that
 sheet, and other sheets still qualify and place it. The oracle blesses neither order for the
-samples the open pair decides: they are reported under its sub-class or cause, outside the promise, never
+samples the open pair decides: they are reported under its cause, outside the promise, never
 `mismatch` and never agreement.
 
 **`label_kind_unknown`.** In a stream read as XF 1.4 at the frame (Terms, above), a face of a face
@@ -2154,7 +2238,101 @@ beside `zero_alpha_fragment`, and never routed to `label_rule_open` (witnesses W
 
 **Rejects:** a label drawn over an opaque filled polygon that qualifies by covering its centre
 wholly nearer (W5); a label hidden by a nearer line it is not behind a surface for (W18); and each
-planted failure of W19 to W26 (§12).
+planted failure of W19 to W26 and of the witnesses of the point reading (§12).
+
+**Where the rule comes from.** Restated from the label design's addendum, SHA-256
+`9529f44c870153f8c0902ea2418e7db907099dcdad5b5525e24fdbd6e245e3d6`, read with its correction 1,
+SHA-256 `361d0280ca2a86ffc360ce5ff1e6f4138f7a56b137830801d76f7b7b16efc7ee`, which withdraws a
+count of open cases: the rule states none.
+
+**Change from `label_placement@1`.**
+
+- The overlap is read at the order points: a point counts inside both a record of the label and a
+  fill of the sheet whose alpha at the point is positive, by the nonzero rule, where @1 read every
+  sample both footprints covered, antialias included. A sheet counting no point makes no pair, even
+  where it holds the centre, and the centre is consulted only for a pair.
+- A fill's alpha at a point is the painted pixel's, 8 bits and premultiplied; the centre test,
+  qualification and insertion all read it, and a gradient pixel whose admitted alpha straddles 0
+  and 1/255 is `label_alpha_straddle`.
+- Insertion anchors a label only at the samples whose order point a qualifying sheet holds, where
+  @1 anchored it wherever the sheet covered the sample.
+- A sheet is joined from fills of one surface object by winding and two shared corners at a
+  quantum of 1/4096 px, where @1 named a sheet by the way its faces face.
+- The centre is held on any segment of a fill's outline, horizontal ones included, and a fill on
+  no one plane leaves the pair open (`interval`).
+- The open cases `label_unsettled` and `label_sheet_irregular` are replaced by the causes
+  `interval`, `folded` and `disconnected`, and the causes `label` and `mesh` are new. `label`
+  opens every pair of a label drawn otherwise, which is read over the whole frame, and every pair
+  with an ungrouped record kept facing the camera, an open sheet. A pair is decided by `label`,
+  then an open sheet (`label`, then `mesh`), `folded`, `disconnected`, then the centre or else the
+  points.
+- Every sheet sharing its object and winding with another sheet that meets the label is open, not
+  only the second.
+- `label_ungrouped` is no longer counted on its own: in a frame that draws a facing group its pairs
+  are open with cause `label`, and a frame that draws none is judged as one read as XF 1.4.
+
+**What XF states.** Quoted from `core/XF.md` at `30538b2e9c977092a0deb8480d4d791932a46e66`. The
+source paragraph and the drawing bullet match that text exactly, and the fixture sentences match it
+once whitespace is normalised. The rule above restates these for the oracle.
+
+The source paragraph:
+
+> XF 1.5 says which objects a record was drawn from, for readers that classify what a record is (a
+> label, a line, a surface) by its objects rather than its geometry. A record's `source` is one or
+> more paths of containment, each the record's owner first (the leaf, or the surface a face group
+> draws), then the objects that contain it, outermost last; a child shared by two parents has a path
+> through each. Each node is a token the writer keeps for that object across the stream, and the
+> object's nearest library class, fully qualified (a scene's own subclass is named by the library
+> class it derives from; no address and no name of the scene's own is written). A record's
+> `facing_group` is a token its writer gives a camera-facing label: the records of one label share
+> it, and two labels never do (0: none). The scene lowering writes both. A drawer may read them to
+> place camera-facing labels (this core does: `label_plan.rs`); a frame with no facing group is
+> the same bytes with them or without. A record set again replaces both, and a record
+> set without them has neither: they never outlive their record. When a record's objects move (it is
+> reparented) and its drawing does not, its writer does not set it again: a row for a slot the delta
+> neither sets nor removes gives the held record its new source and facing group, so the bytes an
+> older minor carries do not move. They are carried in a section after the delta's order, keyed by
+> slot, its class names stated once per delta, so an XF 1.4 reader, which stops after the order,
+> reads the delta as it was. A reader of XF 1.4 that writes the delta again writes it without them.
+
+The drawing bullet:
+
+> - **Camera-facing labels (XF 1.5).** The records sharing a `facing_group` are one label, placed
+>   whole and never split by depth; every other record is read from its `source` as a line, a
+>   surface or `label_rule_open` (`label_class.rs`), and only a surface can go in front of a label. A
+>   label's depth is its centre's: the camera-facing plane through it, read at the centre's
+>   projection, with its error bound. A sheet is a connected part of one surface object (the
+>   outermost surface or cylinder on a face's first path) whose fills are wound one way on screen
+>   (by the sign of their flattened outline's area), two fills sharing two corners of their flattened
+>   outlines on screen, each rounded to 1/4096 pixel, joined; a fill wound neither way is a sheet
+>   alone, and strokes are never part of a sheet. A sheet goes
+>   in front of a label when it is shown nearer: where one of its fills holds the label's projected
+>   centre (a point on an edge held), on the ray through it, by that fill's plane read there; else at
+>   every order point of their overlap, by the plane of the fill holding the point read there; each
+>   depth with its error bound. The order points are the 16 sub-sample points of each pixel, where
+>   the resolve orders fragments: pixel `(x, y)`'s point `s` is
+>   `(x + 1/2 + (dx + 1/2)/16, y + 1/2 + (dy + 1/2)/16)` for `[dx, dy]` the `s`-th of
+>   `SAMPLE_OFFSETS`: `[-8, -7]`, `[-1, -8]`, `[3, -6]`, `[5, -5]`, `[-6, -1]`, `[-4, -4]`, `[0, -3]`,
+>   `[6, -2]`, `[-7, 2]`, `[-2, 0]`, `[2, 3]`, `[4, 1]`, `[-5, 5]`, `[-3, 4]`, `[1, 7]`, `[7, 6]`. The
+>   overlap is the order points inside both a record of the label (a fill or a stroke's outline) and
+>   a fill of the sheet in a colour not wholly transparent, each by the nonzero rule: a sliver of
+>   either between points holds none, and a sheet holding no point of the label's does not overlap
+>   it. A sheet shown farther or at the label's depth there leaves the label in front; one the bounds
+>   cannot place, one two of whose fills hold one point of the overlap (folded), one sharing its
+>   object and its winding with another sheet that meets the label, one drawn as a mesh, and every
+>   sheet against a label not drawn wholly as engine-placed paths is open, and leaves the label in
+>   front too. At each sub-sample the label is inserted immediately behind the rearmost sheet it goes
+>   behind that covers the sub-sample, in the order everything else takes there, or, with none, in
+>   front of everything but the overlay; labels at one place keep draw order. A pixel where a label
+>   meets a sheet it goes behind takes the sample resolve. A frame with no facing group draws as it
+>   would without its `source`.
+
+The fixture sentences of the binary form:
+
+> XF streams are generated by code, never committed, except the SOURCE fixtures under
+> `tests/fixtures/xf15/` that readers outside the core read (their STREAMS.md); the core's test
+> regenerates them and checks them byte for byte. A reader may refuse the whole file where this
+> text refuses a delta; it must never apply a delta this text refuses.
 
 ### Source classes (`label_classes@2`)
 
@@ -2214,11 +2392,11 @@ The record's outcome is its paths' outcome where they all agree. Where they diff
 cause `no_source`.
 
 **What a class decides.** Only a surface changes where a label goes: a sheet qualifies only if its
-record's outcome is a surface, and a sheet is the record's filled footprint of alpha above 0 (§10,
+record's outcome is a surface, and a sheet is read from the record's fills of alpha above 0 (§10,
 Terms). Its strokes never form or widen a sheet, so a surface record drawn by strokes alone never
-qualifies, a decided outcome that changes no class. A line never qualifies. An open record is an
-open case (`label_rule_open` with its cause): the label is expected on top of it, and the oracle
-blesses neither order for the samples the pair decides.
+qualifies, a decided outcome that changes no class. A line never qualifies. An open record never
+forms a sheet; the label is expected on top of it, and the order at the samples it shares with a
+label is counted `label_rule_open` with its cause.
 
 | Class | Outcome | Decided by |
 |---|---|---|
@@ -2489,7 +2667,7 @@ no `near_parallel@1` (dihedral `atan(1/2) ≈ 26.6°` against `θ_A + θ_B` unde
 `lines@1` (no strokes); the keys part by `0.028` against bands under `10^-5`. `E = {strong Q}`.
 Defect: at its 16 samples, `T` in front. Escapes: two fragments; no label.
 
-**W5, `label_under_surface`.** Set: `label_placement@1`, a sheet covering the centre (§10). View C.
+**W5, `label_under_surface`.** Set: `label_placement@2`, a sheet covering the centre (§10). View C.
 A square polygon `G` = `[−3, 3]²` at `z = 2`, fill blue, alpha 1, not a face of a face group, then a
 camera-facing label `L`: a square glyph `[−1.5, 1.5]²` with a fixed-orientation centre at the
 origin, fill white. `G` is a path's fill, a surface (the interim trade), one sheet; it covers `L`'s
@@ -2622,7 +2800,7 @@ the discrimination rests on which records are offered.
   polygon is a flat record passing the width test with each line, so the pair may share through a
   flat identity and every edge is admitted, the injected one included.
 
-**W18, `label_over_line`.** Set: `label_placement@1`, a line never pushes a label back (§10). View
+**W18, `label_over_line`.** Set: `label_placement@2`, a line never pushes a label back (§10). View
 C. The label `L` of W5 (a square glyph `[−1.5, 1.5]²`, fixed-orientation centre at the origin,
 fill white), then an open line from `(−3.1875, 0, 2)` to `(3.1875, 0, 2)`, stroke green, width
 `0.5` (2 px). Pixel `(32, 32)` is covered whole by both: `L`'s depth is `−1`, the line keys
@@ -2670,11 +2848,11 @@ is in front everywhere. Defect: at pixel `(35, 32)` (`S` at `z ≈ 0.43` to `0.8
 front, the plate model's order: on the core this contract describes, that pixel is `mismatch`
 counted `label_plate_model`.
 
-**W23, `label_interval_straddle`.** Verdict `label_unsettled`, not `mismatch`: the intervals cannot
+**W23, `label_interval_straddle`.** Verdict `label_rule_open` with cause `interval`, not `mismatch`: the intervals cannot
 settle the pair, so the oracle blesses neither order. A polygon `S` = `[0.5, 1.5] × [−1.5, 1.5]` at
-`z = 2^-30`, fill blue: nearer than `L` by far less than either interval at every sample of the
-overlap, and missing its centre. Expected: the overlap's samples counted `label_rule_open` under
-`label_unsettled`, whatever order is reported. Beside W22 it separates a decided straddle from an
+`z = 2^-30`, fill blue: nearer than `L` by far less than either interval at every counted point of
+the overlap, and missing its centre. Expected: the overlap's samples counted `label_rule_open`
+with cause `interval`, whatever order is reported. Beside W22 it separates a decided straddle from an
 open one.
 
 **W24, `label_placement_over_order`.** Planted: CE's order applied across placements. A polygon `S` =
@@ -2767,14 +2945,16 @@ carries is well formed unless stated; expected: frames 2 to 4
 **`held_row_clears_group`.** W27's scene, `L` set in delta 1 with a row of facing group 7 and its
 source. Delta 2 carries a held row for `L`'s slot with facing group 0 and the same source path.
 Expected: frame 1 judged as usual. From frame 2, `L`'s facing group is none and its source is the
-row's, and its drawing is as delta 1 set it: `L` is `label_ungrouped`, its coverage judged as
-usual and the order at pixel `(32, 32)`'s samples, which it shares with `G`, counted
-`label_rule_open` under `label_ungrouped`, neither `mismatch` nor agreement.
+row's, and its drawing is as delta 1 set it. Frame 2 draws no facing group, so it is judged as one
+read as XF 1.4 (§10, `label_ungrouped`): `L`, a camera-facing record, is a label by its centre,
+`G` a surface by the interim trade that covers its centre nearer, and at pixel `(32, 32)` `G` in
+front of `L` is the only admissible order, which the core's plate model also draws: agreement.
 
 **`label_ungrouped_no_row`.** The scene of W5 in one delta of XF 1.5: `G` set with a row (facing
-group 0, the source path `[(g, arachne.mobject.geometry.polygram.Polygon)]`), `L` set with no row. Expected: no refusal; `L`'s
-coverage judged as usual; the order at every sample `L` shares with `G` counted `label_rule_open`
-under `label_ungrouped`, never read as `L` being outside a label or a record of another kind.
+group 0, the source path `[(g, arachne.mobject.geometry.polygram.Polygon)]`), `L` set with no
+row. Expected: no refusal. The frame draws no facing group, so it is judged as one read as XF 1.4:
+at pixel `(32, 32)`, `G` in front of `L`, agreement. With a facing group drawn, the same record is
+`ungrouped_sheet_open`'s.
 
 **`class_cylinder_grouped`.** The scene of W5 in one delta of XF 1.5: `L` set with a row of facing
 group 1 and its source, and `G` set with a row of facing group 0 and the source path
@@ -2792,6 +2972,135 @@ Expected: the walk of rule 3 stops at the cylinder, whose outcome where it stand
 surface, is open: `G` is `label_rule_open` with cause `cylinder_grouped`, counted as in
 `class_cylinder_grouped`. Following the surface past the cylinder would make `G` a surface that
 qualifies, with `L` behind it.
+
+**Witnesses of the point reading (`label_placement@2`, §10).** Each is one delta of XF 1.5. A
+label `L` is set with a row of facing group 1 and its source, and every other record with a row of
+facing group 0 and the source path given. `Polygon` below is
+`arachne.mobject.geometry.polygram.Polygon` and `Surface` is
+`arachne.mobject.three_d.three_dimensions.Surface`. All use View C unless a witness says otherwise.
+
+**`label_points_sliver`.** Set: the overlap is read at the order points. View O: 128 × 64 px, the
+3D camera of View C with focal distance `10^6`, in effect orthographic: `xx = 4`, `yy = −4`,
+`x0 = 64`, `y0 = 32`, so a point near `z = 0` lands within `10^-4` px of `(64 + 4x, 32 − 4y)`.
+`L` is a rectangle glyph over screen `x` 70 to 110 and `y` 28 to 36, at `z = 0`, fill white, its
+fixed-orientation centre at `(4, 0, 0)` (screen `x` 80). `S`, source `[(s, Polygon)]`, fill blue,
+alpha 1, spans screen `x` 90 to `e` and `y` 30 to 34, on the plane whose depth at screen `x = p` is
+`z = (c − p) / 40`: nearer than `L` left of `c`, farther right of it. `S` misses `L`'s centre, so
+it is decided by the points. The order points of pixel column 100 sit at `100 + (2k + 1) / 32`.
+Three variants, `(c, e)`:
+
+| Farther sliver, screen `x` | Order points it holds | Expected |
+|---|---|---|
+| `c = 100.10` to `e = 100.15` | none (the points are at 100.09375 and 100.15625) | `S` qualifies |
+| `c = 100.08` to `e = 100.12` | 100.09375 | `S` does not qualify |
+| `c = 100.225` to `e = 100.275`, across the cell boundary at 100.25 | none (the points are at 100.21875 and 100.28125) | `S` qualifies |
+
+Expected: where `S` qualifies, `L` is behind `S` at every sample both cover (at pixel `(95, 32)`,
+`S` in front); where it does not, `L` is in front everywhere. Rejects: reading the overlap by area,
+so that a sliver between points still counts, which leaves `L` in front of `S` in the first and
+third variants.
+
+**`sheet_join_quantum`.** Set: fills join at two shared corners, rounded to 1/4096 px. `L` is the
+glyph of W5 with its centre at `(0, 0, −4)` (depth `−20/24 ≈ −0.833`). Two fills of one surface
+object, at `z = 0` (key `−1`, nearer), fill blue, alpha 1: `F1` through `(−2, −1, 0)`, `(0, −1, 0)`,
+`(0, 1, 0)`, source `[(f1, Polygon), (o, Surface)]`, and `F2` through `(0, −1, 0)`, `(2, 0, 0)`,
+`(0, 1 + δ, 0)`, source `[(f2, Polygon), (o, Surface)]`, wound the same way. On screen they share
+the corner `(32, 36)` exactly, and `F2`'s third corner `(32, 28 − 4δ)` meets `F1`'s `(32, 28)`.
+With `δ = 2^-16` (`4δ = 2^-14` px, a quarter of the quantum) both round to the same corner, so
+`F1` and `F2` join into one sheet, which holds `L`'s centre on their shared edge and is nearer:
+it qualifies. Expected: `L` behind the sheet at every sample both cover (at pixel `(30, 32)`, the
+sheet in front).
+
+**`sheet_join_near_miss`.** As `sheet_join_quantum` with `δ = 3 · 2^-16` (`4δ` is three quarters
+of the quantum): the corners round to neighbouring values, so `F1` and `F2` are two sheets of one
+object, wound the same way, each counting points with `L`. Expected: both pairs open with cause
+`disconnected`, `L` expected in front, and the samples each pair decides counted
+`label_rule_open` with cause `disconnected`, at pixel `(30, 32)` (in `F1`) as at pixel `(34, 32)`
+(in `F2`). Rejects: leaving the first sheet decided and only the second open, which puts `L`
+behind `F1` at pixel `(30, 32)`.
+
+**`sheets_opposite_winding`.** As `sheet_join_quantum` with `δ = 0` and `F2`'s corners listed the
+other way round, so it is wound opposite to `F1`: two sheets of one object that never join and are
+not disconnected, each decided on its own. Both hold `L`'s centre on their shared edge and are
+nearer: both qualify. Expected: `L` behind each sheet where it covers. Rejects: reading the two as
+disconnected, which leaves `L` in front, counted open.
+
+**`no_pair_centre_without_points`.** Set: no counted point, no pair, even over the centre. `L` is a
+square ring glyph at `z = −4`, its centre at `(0, 0, −4)`: outer square `[−1.5, 1.5]²`, inner hole
+`[−0.5, 0.5]²` wound the other way, so on screen it covers `x` and `y` from 27 to 37 outside the
+hole from about 30.33 to 33.67. Two fills of one surface object at `z = 0`, wound the same way and
+sharing no corner, fill blue, alpha 1: `S1` = `[−0.25, 0.25]²` (screen 31 to 33 in both axes),
+source `[(s1, Polygon), (o, Surface)]`, which holds `L`'s centre but whose order points all lie in
+the hole; and `S2` = `[1, 1.25] × [−0.25, 0.25]` (screen `x` 36 to 37, `y` 31 to 33), source
+`[(s2, Polygon), (o, Surface)]`, inside the ring, nearer, missing the centre. Expected: `S1` counts
+no point and makes no pair; `S2` alone meets `L`, is decided by its points and qualifies: at pixel
+`(36, 32)`, `S2` in front of `L`. Rejects: making a pair of `S1` because it holds the centre, which
+makes `S1` and `S2` disconnected and leaves pixel `(36, 32)` counted open.
+
+**`pair_cause_mesh`.** The scene of W5 with `G` drawn as a mesh of two triangles over
+`[−3, 3]²` at `z = 2`, fill blue, alpha 1, source `[(g, Surface)]`: a surface that covers `L`'s
+centre nearer and would qualify. Expected: the pair is open with cause `mesh`: `L` expected in
+front, and the samples of pixel `(32, 32)` counted `label_rule_open` with cause `mesh`.
+
+**`pair_cause_label`.** The scene of W5, `G` a polygon with source `[(g, Polygon)]`, and `L`
+carrying, in its facing group, one more record: a pre-projected path. Expected: every pair of `L`
+is open with cause `label`; `G`, which would qualify, leaves `L` expected in front, and the samples
+of pixel `(32, 32)` are counted `label_rule_open` with cause `label`.
+
+**`pair_cause_precedence`.** `pair_cause_mesh`'s `G` with `pair_cause_label`'s `L`: both causes
+apply, and `label` comes first. Expected: the pair open with cause `label`, counted under `label`
+and never under `mesh`.
+
+**`insertion_at_points`.** Set: insertion anchors only where the sheet holds the order point.
+`label_points_sliver`'s third variant (`c = 100.225`, `e = 100.275`), where `S` qualifies. At pixel
+`(100, 32)`, `S` covers the first cell column whole and a tenth of each cell of the second column,
+whose order points (at `x = 100.28125`) it does not hold. Expected: at the four samples of the
+first column, `S` in front of `L`; at the four of the second, `L` in front of `S`. Rejects:
+anchoring the label wherever the sheet covers part of a sample's cell, which puts `L` behind `S`
+at the second column's samples too.
+
+**`gradient_clear_point`.** Set: a fill's alpha at a point is the painted pixel's. The scene of
+W5, `G` with source `[(g, Polygon)]` and its fill a linear gradient from opaque blue at `x = −3` to
+clear at `x = −0.5`, pad extend, so its alpha is exactly 0 for `x` past `−0.5`. `G` does not cover
+`L`'s centre, whose pixel's alpha is 0, so it is decided by the points: it counts only the points
+where its alpha is positive (`x` below about `−0.5`), is nearer at all of them, and qualifies.
+Expected: at pixel `(28, 32)` (`x ≈ −0.9`), `G` in front of `L`; at pixel `(36, 32)` (`x ≈ 1`,
+alpha 0), `L` in front: `G` neither counts nor anchors there. Rejects: reading the outline without
+the alpha, which holds the centre and anchors `L` behind `G`'s clear part.
+
+**`gradient_alpha_straddle`.** Set: the oracle's reading of a gradient's alpha. As
+`gradient_clear_point`, with the clear end placed so that the last visible pixel `q` before it, in
+`L`'s overlap, has an admitted alpha range (§9, *Oracle reading for gradients*) that holds both 0
+and a value of 1/255 or more: some run start the row allows paints it clear, another does not.
+Expected: `q` is oracle-unable, its samples reported as `label_alpha_straddle`, never agreement,
+whatever the core reports there; the other pixels are judged as in `gradient_clear_point`.
+
+**`centre_on_horizontal_edge`.** Set: the centre test holds a point on a horizontal edge. `S`
+through `(−3, 0, 2)`, `(3, 0, 2)`, `(3, 3, −7)`, `(−3, 3, −7)` (on the plane `z = 2 − 3y`), source
+`[(s, Polygon)]`, fill blue, alpha 1; then `L` of W5, its centre at the origin. On screen `S`'s
+bottom edge, at `y = 0`, is horizontal and passes through `L`'s centre `(32, 32)`, a whole pixel,
+so its alpha is read at the pixel box's nearest pixel `(32, 31)`, where it is positive. `S` holds
+the centre, nearer there (`z = 2`): it qualifies the whole pair, though it lies farther than `L`
+above `y ≈ 0.67`. Expected: `L` behind `S` at every sample `S` holds, at pixel `(32, 31)` as at
+pixel `(32, 28)` (`S` farther there). Rejects: leaving the horizontal edge unheld, which decides
+`S` by the points, finds the straddle and leaves `L` in front.
+
+**`ungrouped_sheet_open`.** Set: an ungrouped record kept facing the camera is an open sheet. View
+C. `U`, a square glyph `[−3, 3]²` with a fixed-orientation centre at `(0, 0, 2)`, fill blue, alpha
+1, set with a row of facing group 0 and the source path `[(u, Polygon)]`; then `L` of W5, without
+W5's `G`, so `U` is the only record that could hide `L`. The frame draws a facing group (`L`'s).
+`U` covers `L`'s centre, nearer, and would qualify as a polygon. Expected: the pair of `L` and `U`
+is open with cause `label`, and no sheet qualifies, so `L` is drawn in front of `U` at every sample
+of pixel `(32, 32)`, those samples counted `label_rule_open` with cause `label`. Rejects: reading
+`U` by its source as a surface, which qualifies it by the centre and puts `L` behind it.
+
+**`label_drawn_otherwise`.** Set: a label not drawn wholly as placed paths is read over the whole
+frame. `L` of W5 with one more record in its facing group: a points record at `(2.5, 0, 0)`.
+`S` = `[2, 3] × [−0.5, 0.5]` at `z = 2`, source `[(s, Polygon)]`, fill blue, alpha 1, which meets
+`L`'s point block and not its glyph. Expected: `L` meets `S` where the point block's fragments and
+`S` hold one order point, and the pair is open with cause `label`: the label expected in front,
+those samples counted `label_rule_open` with cause `label`. Rejects: reading the label by its
+path outlines alone, which makes no pair and counts nothing.
 
 ### Soundness fixtures
 
@@ -2872,9 +3181,12 @@ These are reported by class for a human to view, never counted as ties:
 - **Far gradient ends.** Gradient layers with an end or a pixel's point beyond the fit limit
   (`gradient_far_ends`, §9). They are `truth_unable` for that layer's pixels.
 - **Open label cases.** Samples counted `label_rule_open` (§10), only by its named cases: the
-  sub-classes `label_unsettled`, `label_sheet_irregular` and `label_ungrouped`, and a class left
-  open by `label_classes@2` under its cause (`unmapped`, `generic_only`, `paths_disagree`,
+  pair causes `label`, `mesh`, `folded`, `disconnected` and `interval`, and, on the other axis, a
+  class left open by `label_classes@2` under its class cause (`unmapped`, `generic_only`, `paths_disagree`,
   `no_source`, `cylinder_grouped`, `point_cloud`).
+- **A sheet's alpha the oracle cannot place.** Pixels where the label rule reads a gradient
+  fill's alpha and the range the oracle admits holds both 0 and a value of 1/255 or more
+  (`label_alpha_straddle`, §10). They are named and never agree.
 - **Label against an object of unknown kind.** Samples where a face of a face group or a mesh
   triangle, which a stream read as XF 1.4 cannot place on the line or the surface
   side, decides a label's placement (`label_kind_unknown`, §10). The orders of both readings are
