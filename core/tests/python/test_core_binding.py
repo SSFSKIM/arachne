@@ -75,6 +75,22 @@ def test_a_source_path_names_at_least_one_object_and_tokens_are_u32():
     assert delta.contents()["set"] == []
 
 
+def test_a_held_record_s_new_source_is_a_row_of_its_own_and_read_back():
+    delta = ac.FrameDelta()
+    delta.set_source(4, source=GLYPH_SOURCE, facing_group=3)
+    delta.set_source(5, facing_group=9)
+    assert delta.version == (1, 5)
+    assert not delta.is_empty()
+    back = ac.FrameDelta.from_bytes(delta.to_bytes())
+    assert back.contents()["source"] == [(4, GLYPH_SOURCE, 3), (5, (), 9)]
+    assert back.contents()["set"] == []
+    with pytest.raises(ac.XfError):
+        delta.set_source(6, source=((),))
+    with pytest.raises(ac.XfError):
+        delta.set_source(6)
+    assert len(delta.contents()["source"]) == 2
+
+
 def test_a_record_s_joins_are_carried_and_read_back():
     delta = ac.FrameDelta()
     delta.set_view(pixel_width=4, pixel_height=4, **FRAME)

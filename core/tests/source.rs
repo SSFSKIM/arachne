@@ -37,9 +37,19 @@ fn glyph(slot: u32) -> Record {
     r
 }
 
+/// A held record's new source, its drawing unchanged: a row of its own.
+fn held_row(slot: u32, facing_group: u32, source: Vec<Vec<SourceNode>>) -> SourceRow {
+    SourceRow {
+        slot,
+        facing_group,
+        source,
+    }
+}
+
 /// The delta's bytes up to and including its order: what an XF 1.4 reader reads of it.
 fn without_section(d: &Delta) -> Delta {
     let mut bare = d.clone();
+    bare.source = Vec::new();
     for r in &mut bare.set {
         r.source = Vec::new();
         r.facing_group = 0;
@@ -94,6 +104,60 @@ fn the_section_follows_the_order_field_by_field() {
     .concat();
     assert_eq!(&bytes[bare.len()..], section.as_slice());
     assert_eq!(wire::decode_delta(&bytes).unwrap(), d);
+}
+
+#[test]
+fn a_held_records_new_source_is_a_row_for_a_slot_the_delta_does_not_set() {
+    // A record whose drawing is unchanged is not set again when only its source moves: its new
+    // source is a row of its own, after the rows of the records the delta sets, and the bytes
+    // before the section are the delta's without it.
+    let mut d = empty();
+    d.set = vec![glyph(9)];
+    d.source = vec![held_row(4, 0, vec![vec![node(2, "a.Group")]])];
+    d.version = (1, 5);
+    let bytes = wire::encode_delta(&d);
+    assert_eq!(&bytes[..4], &[1, 0, 5, 0], "XF 1.5");
+    let bare = wire::encode_delta(&without_section(&d));
+    assert_eq!(&bytes[4..bare.len()], &bare[4..]);
+    let section = [
+        u32(3),
+        string("a.Glyph"),
+        string("a.Group"),
+        string("a.Ünïcødé€"),
+        u32(2), // rows: the records the delta sets, then the held ones
+        u32(9),
+        u32(3),
+        u32(2),
+        u32(2),
+        u32(7),
+        u32(0),
+        u32(3),
+        u32(1),
+        u32(2),
+        u32(7),
+        u32(0),
+        u32(5),
+        u32(2),
+        u32(4), // a held slot
+        u32(0),
+        u32(1),
+        u32(1),
+        u32(2),
+        u32(1),
+    ]
+    .concat();
+    assert_eq!(&bytes[bare.len()..], section.as_slice());
+    assert_eq!(wire::decode_delta(&bytes).unwrap(), d);
+    // Alone, a row makes the delta XF 1.5 though it sets nothing, and not empty.
+    let mut alone = empty();
+    alone.source = vec![held_row(4, 6, Vec::new())];
+    assert_eq!(wire::encoded_version(&alone), (1, 5));
+    assert!(!alone.is_empty());
+    alone.version = (1, 5);
+    assert_eq!(
+        wire::decode_delta(&wire::encode_delta(&alone)).unwrap(),
+        alone
+    );
 }
 
 #[test]
@@ -230,8 +294,15 @@ fn a_section_that_does_not_name_what_the_delta_sets_is_invalid() {
             .concat(),
         ),
         (
-            "a slot the delta does not set",
-            [u32(1), string("a.B"), u32(1), one_path(3, 0)].concat(),
+            "a held slot named twice",
+            [
+                u32(1),
+                string("a.B"),
+                u32(2),
+                one_path(3, 0),
+                one_path(3, 0),
+            ]
+            .concat(),
         ),
         (
             "a slot the delta removes",
@@ -258,6 +329,14 @@ fn a_section_that_does_not_name_what_the_delta_sets_is_invalid() {
             wire::decode_delta(&bytes)
         );
     }
+    // A slot the delta neither sets nor removes is a held record's new source.
+    let held = [u32(1), string("a.B"), u32(1), one_path(3, 0)].concat();
+    let read = wire::decode_delta(&with_section(&[1], &[2], &held)).unwrap();
+    assert_eq!(
+        read.source,
+        vec![held_row(3, 0, vec![vec![node(7, "a.B")]])]
+    );
+    assert!(!read.set[0].carries_source());
     let not_utf8 = [u32(1), u32(2), vec![0xc3, 0x28], u32(0)].concat();
     assert!(matches!(
         wire::decode_delta(&with_section(&[1], &[], &not_utf8)),
@@ -329,6 +408,78 @@ fn a_stream_keeps_a_records_source_until_it_is_set_again() {
 }
 
 #[test]
+fn a_row_gives_a_held_record_its_new_source_and_nothing_else() {
+    let shape = Shape::new(ShapeData::Path {
+        points: common::square_points(1.0),
+    });
+    let mut s = Stream::new();
+    let mut d = empty();
+    d.view = Some(common::flat_view(8, 8, [0.0, 0.0, 0.0, 1.0]));
+    d.upload = vec![shape.clone()];
+    let mut sourced = square_at(1, &shape);
+    sourced.source = glyph(1).source;
+    sourced.facing_group = 3;
+    d.set = vec![sourced.clone()];
+    d.order = Some(vec![entry(1)]);
+    s.apply(&d).unwrap();
+    let drawn = s.draw(8, 8, 1).unwrap();
+    let mut moved = Delta::new(Time { num: 1, den: 15 }, 1);
+    let other = vec![vec![node(8, "a.Other")]];
+    moved.source = vec![held_row(1, 0, other.clone())];
+    s.apply(&moved).unwrap();
+    let mut expected = sourced.clone();
+    expected.source = other;
+    expected.facing_group = 0;
+    assert_eq!(s.record(1), Some(&expected));
+    assert_eq!(s.draw(8, 8, 1).unwrap(), drawn);
+    // Refused, changing nothing: a row for a slot not held, for one the delta sets or removes, with
+    // a path of no objects, or a second row for one slot.
+    let refused = [
+        (
+            "not held",
+            vec![held_row(5, 0, glyph(5).source)],
+            vec![],
+            vec![],
+        ),
+        (
+            "set",
+            vec![held_row(1, 0, glyph(1).source)],
+            vec![square_at(1, &shape)],
+            vec![],
+        ),
+        (
+            "removed",
+            vec![held_row(1, 0, glyph(1).source)],
+            vec![],
+            vec![1],
+        ),
+        (
+            "no objects",
+            vec![held_row(1, 0, vec![Vec::new()])],
+            vec![],
+            vec![],
+        ),
+        (
+            "twice",
+            vec![
+                held_row(1, 0, glyph(1).source),
+                held_row(1, 2, Vec::new()),
+            ],
+            vec![],
+            vec![],
+        ),
+    ];
+    for (why, rows, set, remove) in refused {
+        let mut d = Delta::new(Time { num: 2, den: 15 }, 2);
+        d.source = rows;
+        d.set = set;
+        d.remove = remove;
+        assert!(s.apply(&d).is_err(), "{why}");
+        assert_eq!(s.record(1), Some(&expected), "{why}");
+    }
+}
+
+#[test]
 fn nothing_drawn_reads_a_records_source() {
     // A label kept facing the camera, half behind a slanted sheet, and the sheet: drawn from deltas
     // carrying a source and a facing group, and from the same deltas without, through the wire.
@@ -357,6 +508,9 @@ fn nothing_drawn_reads_a_records_source() {
     let mut second = Delta::new(Time { num: 1, den: 15 }, 1);
     label.source = vec![vec![node(7, "a.Glyph")]];
     second.set = vec![label];
+    // The third moves it again, through a row: the record is not set again.
+    let mut third = Delta::new(Time { num: 2, den: 15 }, 2);
+    third.source = vec![held_row(1, 3, vec![vec![node(9, "a.Other")]])];
     let frames = |deltas: &[Delta]| {
         let mut s = Stream::new();
         deltas
@@ -364,12 +518,13 @@ fn nothing_drawn_reads_a_records_source() {
             .map(|d| {
                 let read = wire::decode_delta(&wire::encode_delta(d)).unwrap();
                 assert_eq!(read.set, d.set);
+                assert_eq!(read.source, d.source);
                 s.apply(&read).unwrap();
                 s.draw(48, 32, 2).unwrap()
             })
             .collect::<Vec<_>>()
     };
-    let deltas = [first, second];
+    let deltas = [first, second, third];
     let bare: Vec<Delta> = deltas.iter().map(without_section).collect();
     let drawn = frames(&deltas);
     assert!(drawn[0].chunks(4).any(|px| px != [0, 0, 0, 255]));

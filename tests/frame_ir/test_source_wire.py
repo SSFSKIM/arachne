@@ -5,6 +5,8 @@ both on as they were given.
 
 from __future__ import annotations
 
+from fractions import Fraction
+
 import numpy as np
 import pytest
 
@@ -71,3 +73,32 @@ def test_the_canonical_snap_hands_a_record_s_source_on_as_given():
     [(_, record)] = Canonical()(_delta()).set
     assert record.fields["source"] == SOURCE
     assert record.fields["facing_group"] == 2
+
+
+OTHER = (((6, "arachne.mobject.types.vectorized_mobject.VGroup"),),)
+
+
+def test_a_held_record_s_new_source_is_carried_alone_to_the_core_and_back():
+    import arachne_core
+
+    delta = Delta(source=[(3, SOURCE, 0), (5, (), 4)])
+    assert not delta.is_empty
+    core = delta.to_core()
+    assert core.version == (1, 5)
+    read = arachne_core.FrameDelta.from_bytes(core.to_bytes())
+    back = Delta.from_contents(read.contents())
+    assert back.source == [(3, SOURCE, 0), (5, (), 4)]
+    assert back.set == []
+
+
+def test_the_canonical_snap_hands_a_held_record_s_new_source_on():
+    canonical = Canonical()
+    canonical(_delta())
+    moved = canonical(Delta(t=Fraction(1, 15), seq=1, source=[(0, OTHER, 0)]))
+    assert moved.source == [(0, OTHER, 0)]
+    assert not moved.set
+    # What it holds of the record is the record with its new source: a record
+    # it sets again carries it.
+    held = canonical._records[0]
+    assert held.fields["source"] == OTHER
+    assert "facing_group" not in held.fields
