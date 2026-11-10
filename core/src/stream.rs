@@ -357,7 +357,7 @@ impl After<'_> {
     fn check_record(&self, rec: &Record) -> Result<(), StreamError> {
         if rec.source.iter().any(Vec::is_empty) {
             return Err(StreamError::Invalid(format!(
-                "slot {}'s source has a path of no objects",
+                "path_empty: slot {}'s source has a path of no objects",
                 rec.slot
             )));
         }
@@ -1326,29 +1326,30 @@ fn same_content(held: &ShapeData, uploaded: &ShapeData) -> bool {
 /// The longest side of a frame this build draws, in pixels.
 pub const MAX_SIDE: u32 = 16384;
 
-/// XF 1.5's rows for held records: each names, once, a slot the stream holds and the delta neither
-/// sets nor removes, with no path of no objects.
+/// XF 1.5's rows: each names a slot once, one the delta does not remove, and carries a path of
+/// objects or a facing group; a row for a slot the delta does not set names one the stream holds
+/// before it. A refusal is the first of these, by its code.
 fn check_source_rows(stream: &Stream, delta: &Delta, after: &After<'_>) -> Result<(), StreamError> {
     let mut rowed = HashSet::new();
     for row in &delta.source {
         let slot = row.slot;
-        let why = if !rowed.insert(slot) {
-            "is given two"
-        } else if after.set.contains_key(&slot) {
-            "the delta sets"
+        let code = if !rowed.insert(slot) {
+            "slot_named_twice"
         } else if delta.remove.contains(&slot) {
-            "the delta removes"
+            "slot_removed"
+        } else if row.source.is_empty() && row.facing_group == 0 {
+            "row_empty"
         } else if row.source.iter().any(Vec::is_empty) {
-            "names a path of no objects"
-        } else if !stream.records.contains_key(&slot) {
+            "path_empty"
+        } else if !after.set.contains_key(&slot) && !stream.records.contains_key(&slot) {
             return Err(StreamError::Missing(format!(
-                "a source row for slot {slot}, which is not set"
+                "slot_not_held: a source row for slot {slot}, which the stream does not hold"
             )));
         } else {
             continue;
         };
         return Err(StreamError::Invalid(format!(
-            "a source row for slot {slot}, which {why}"
+            "{code}: the source row for slot {slot}"
         )));
     }
     Ok(())

@@ -133,7 +133,7 @@ fn source_of(py: Python<'_>, paths: Vec<Vec<(u32, String)>>) -> PyResult<Vec<Vec
     if source.iter().any(Vec::is_empty) {
         return Err(xf_error(
             py,
-            "a source path names at least one object".into(),
+            "path_empty: a source path names at least one object".into(),
         ));
     }
     Ok(source)
@@ -806,7 +806,7 @@ impl PyFrameDelta {
         if source.is_empty() && facing_group == 0 {
             return Err(xf_error(
                 py,
-                "a source row carries a source or a facing group".into(),
+                "row_empty: a source row carries a source or a facing group".into(),
             ));
         }
         self.delta.source.push(SourceRow {

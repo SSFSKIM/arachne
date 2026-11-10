@@ -602,9 +602,8 @@ fn a_readers_refusal_comes_before_apply_s_slot_not_held() {
 fn the_reader_refuses_a_row_for_a_removed_slot_or_a_slot_named_twice() {
     // The delta sets slot 1 and removes slot 2; slot 3 is held.
     let row = |slot: u32| [u32(slot), u32(0), u32(1), u32(1), u32(7), u32(0)].concat();
-    let section = |rows: &[Vec<u8>]| {
-        [u32(1), string("a.B"), u32(rows.len() as u32), rows.concat()].concat()
-    };
+    let section =
+        |rows: &[Vec<u8>]| [u32(1), string("a.B"), u32(rows.len() as u32), rows.concat()].concat();
     for (code, rows) in [
         ("slot_removed", vec![row(2)]),
         ("slot_named_twice", vec![row(3), row(3)]),

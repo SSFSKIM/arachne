@@ -109,11 +109,24 @@ neither sets nor removes gives the held record its new source and facing group, 
 older minor carries do not move. They are carried in a section after the delta's order, keyed by
 slot, its class names stated once per delta, so an XF 1.4 reader, which stops after the order,
 reads the delta as it was. A reader of XF 1.4 that writes the delta again writes it without them.
-A reader refuses the delta (invalid XF) when the section names a class twice or one past its
-names, names a slot twice or one the delta removes, or has a path of no objects or a row carrying
-neither field; `apply` refuses a path of no objects, and a row for a slot the stream does not
-hold. A newer minor that appends after the section writes it, empty, when no record carries
-either.
+
+What a row is. A row is keyed by its slot alone, and a reader does not depend on the rows' order. A
+row whose slot the delta sets is that record's source and facing group (of a slot set more than
+once, its last record's); a record the delta sets with no row has neither. Any other row is a held
+row: it replaces both fields of the record the stream holds in that slot (a field the row does not
+carry, a facing group of 0 or no paths, becomes none), and leaves its drawing as it was. The section
+is present, and the delta is XF 1.5, when it holds at least one row of either kind.
+
+Refusals, each by its code. A reader refuses the delta (invalid XF) with `class_named_twice` when
+the section's class names hold one name twice; then, reading the rows in the order written, at the
+first row that offends, with the first of these that applies to it: `slot_named_twice` (a slot an
+earlier row named), `slot_removed` (a slot the delta removes), `row_empty` (a facing group of 0 and
+no paths), `path_empty` (a path of no objects), `class_out_of_range` (a class index at or past the
+section's names). `apply` refuses the delta with `slot_not_held` for a held row whose slot the
+stream does not hold before the delta. A reader's refusal is decided before `apply` runs, so a delta
+has exactly one refusal: the first, in this order. A refused delta is not applied.
+
+A newer minor that appends after the section writes it, empty, when no record carries either.
 
 This build draws the background (a colour, or an image cropped to the frame as CE crops it); `mesh`
 records filled with one colour; `path` records, their paints one colour or a linear gradient between

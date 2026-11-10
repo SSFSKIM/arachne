@@ -524,14 +524,16 @@ fn carries_source(d: &Delta) -> bool {
 /// XF 1.5's section, after the order: the class names its rows use, each once, in the order the
 /// rows first use them; then a row for each record carrying a source or a facing group, in the
 /// order the delta sets them (of a slot set more than once, its last record's alone), then a row
-/// for each held record given a new one.
+/// for each held record given a new one (of a slot the delta also sets, in place of the record's).
 fn write_source(w: &mut W, d: &Delta) {
     let set = &d.set;
     let last: HashMap<u32, usize> = set.iter().enumerate().map(|(i, r)| (r.slot, i)).collect();
+    // A row the delta gives a slot it sets is that record's, in its place.
+    let given: HashSet<u32> = d.source.iter().map(|h| h.slot).collect();
     let rows: Vec<(u32, u32, &[Vec<SourceNode>])> = set
         .iter()
         .enumerate()
-        .filter(|(i, r)| r.carries_source() && last[&r.slot] == *i)
+        .filter(|(i, r)| r.carries_source() && last[&r.slot] == *i && !given.contains(&r.slot))
         .map(|(_, r)| (r.slot, r.facing_group, r.source.as_slice()))
         .chain(
             d.source
@@ -1104,14 +1106,17 @@ pub fn decode_delta(bytes: &[u8]) -> Result<Delta> {
 /// delta sets, or, for a slot it neither sets nor removes, a held record's new one; the whole
 /// section read and checked before the delta is returned.
 fn read_source(r: &mut R, d: &mut Delta) -> Result<()> {
-    let invalid = |why: String| XfError::Invalid(format!("a delta's source: {why}"));
+    let refuse = |code: &str, why: String| {
+        XfError::Invalid(format!("a delta's source: {code}: {why}"))
+    };
     let n = r.count(4)?;
     let mut classes = Vec::with_capacity(n);
     let mut named = HashSet::new();
     for _ in 0..n {
         let class = r.str()?;
         if !named.insert(class.clone()) {
-            return Err(invalid(format!("the class {class:?} is named twice")));
+            let why = format!("the class {class:?} is named twice");
+            return Err(refuse("class_named_twice", why));
         }
         classes.push(class);
     }
@@ -1127,37 +1132,50 @@ fn read_source(r: &mut R, d: &mut Delta) -> Result<()> {
         let slot = r.u32()?;
         let facing_group = r.u32()?;
         let paths = r.count(4)?;
-        let mut source = Vec::with_capacity(paths);
+        let mut read = Vec::with_capacity(paths);
         for _ in 0..paths {
             let nodes = r.count(8)?;
-            if nodes == 0 {
-                return Err(invalid(format!("slot {slot} has a path of no objects")));
-            }
             let mut path = Vec::with_capacity(nodes);
             for _ in 0..nodes {
-                let token = r.u32()?;
-                let at = r.u32()? as usize;
-                let class = classes.get(at).ok_or_else(|| {
-                    invalid(format!("slot {slot} names class {at} of {}", classes.len()))
-                })?;
-                path.push(SourceNode {
+                path.push((r.u32()?, r.u32()?));
+            }
+            read.push(path);
+        }
+        // The whole row is read; its refusal is the first in the stated order.
+        if !rowed.insert(slot) {
+            let why = format!("slot {slot} is named by an earlier row");
+            return Err(refuse("slot_named_twice", why));
+        }
+        if d.remove.contains(&slot) {
+            let why = format!("slot {slot} is removed by the delta");
+            return Err(refuse("slot_removed", why));
+        }
+        if read.is_empty() && facing_group == 0 {
+            let why = format!("the row of slot {slot} carries nothing");
+            return Err(refuse("row_empty", why));
+        }
+        if read.iter().any(Vec::is_empty) {
+            let why = format!("slot {slot} has a path of no objects");
+            return Err(refuse("path_empty", why));
+        }
+        let mut source = Vec::with_capacity(read.len());
+        for path in read {
+            let mut nodes = Vec::with_capacity(path.len());
+            for (token, at) in path {
+                let Some(class) = classes.get(at as usize) else {
+                    let why = format!("slot {slot} names class {at} of {}", classes.len());
+                    return Err(refuse("class_out_of_range", why));
+                };
+                nodes.push(SourceNode {
                     token,
                     class: class.clone(),
                 });
             }
-            source.push(path);
-        }
-        if source.is_empty() && facing_group == 0 {
-            return Err(invalid(format!("the row of slot {slot} carries nothing")));
-        }
-        if !rowed.insert(slot) {
-            return Err(invalid(format!("slot {slot} is named twice")));
+            source.push(nodes);
         }
         if let Some(&i) = set.get(&slot) {
             d.set[i].source = source;
             d.set[i].facing_group = facing_group;
-        } else if d.remove.contains(&slot) {
-            return Err(invalid(format!("slot {slot} is removed by the delta")));
         } else {
             d.source.push(SourceRow {
                 slot,
