@@ -110,21 +110,38 @@ older minor carries do not move. They are carried in a section after the delta's
 slot, its class names stated once per delta, so an XF 1.4 reader, which stops after the order,
 reads the delta as it was. A reader of XF 1.4 that writes the delta again writes it without them.
 
-What a row is. A row is keyed by its slot alone, and a reader does not depend on the rows' order. A
-row whose slot the delta sets is that record's source and facing group (of a slot set more than
-once, its last record's); a record the delta sets with no row has neither. Any other row is a held
-row: it replaces both fields of the record the stream holds in that slot (a field the row does not
-carry, a facing group of 0 or no paths, becomes none), and leaves its drawing as it was. The section
-is present, and the delta is XF 1.5, when it holds at least one row of either kind.
+What a row is. A row is keyed by its slot alone. A row whose slot the delta sets is that record's
+source and facing group (of a slot set more than once, its last record's); a record the delta sets
+with no row has neither. Any other row is a held row: it replaces both fields of the record the
+stream holds in that slot (a field the row does not carry, a facing group of 0 or no paths, becomes
+none), and leaves its drawing as it was. The section is present, and the delta is XF 1.5, when it
+holds at least one row of either kind. The order of the rows decides only which code a refused delta
+reports; the state a valid delta leaves does not depend on it.
+
+Facing groups. A writer of XF 1.5 gives every record it sets with a fixed-orientation centre a
+facing group, the records of one camera-facing label sharing it, and gives a held one a row whenever
+its group changes; scene lowering sets no fixed-orientation record outside such a label, and writes
+the section in the first delta that sets a record. A stream is read under these rules at a frame
+once a delta at or before that frame has carried the section; a reader decides this in stream order
+and never from a later delta. Until then the stream is read as XF 1.4 reads it, and its records
+carry no facing group. In a stream read under these rules, a fixed-orientation record that has no
+facing group (set with no row, by a delta of an older minor, or given 0 by a row) is not thereby
+outside every label: whether it belongs to one is unknown, and a reader that classifies labels
+counts it as unknown, never as a record of another kind. Its drawing is unaffected, and no reader
+refuses it.
 
 Refusals, each by its code. A reader refuses the delta (invalid XF) with `class_named_twice` when
 the section's class names hold one name twice; then, reading the rows in the order written, at the
 first row that offends, with the first of these that applies to it: `slot_named_twice` (a slot an
-earlier row named), `slot_removed` (a slot the delta removes), `row_empty` (a facing group of 0 and
-no paths), `path_empty` (a path of no objects), `class_out_of_range` (a class index at or past the
-section's names). `apply` refuses the delta with `slot_not_held` for a held row whose slot the
-stream does not hold before the delta. A reader's refusal is decided before `apply` runs, so a delta
-has exactly one refusal: the first, in this order. A refused delta is not applied.
+earlier row named), `slot_removed` (a slot the delta removes, whether or not it also sets it),
+`row_empty` (a row of either kind with a facing group of 0 and no paths: a writer with nothing to
+carry for a slot writes no row), `path_empty` (a path of no objects), `class_out_of_range` (a class
+index at or past the section's names). `apply` refuses the delta with `slot_not_held` for a held row
+whose slot the stream does not hold before the delta. A delta has exactly one refusal, the first of
+all XF's checks in this order: the reader's, in the order of the delta's bytes (so a refusal of
+anything written before the section is the delta's refusal, not one of these codes, and the
+section's codes come in the order above); then `apply`'s other checks; then `slot_not_held`, which
+is the delta's refusal only when nothing else in it is refused. A refused delta is not applied.
 
 A newer minor that appends after the section writes it, empty, when no record carries either.
 
@@ -140,6 +157,74 @@ cannot read; CE's lighting under another light model; a mesh with a stroke, a gr
 dash; and the reserved kinds. `image` records, records fixed in frame and background-image fills
 are drawn by Cairo over the core's frame, in CE's order (the overlay). How records are drawn is
 described under "Drawing" below.
+
+### Where each check is made
+
+Besides the section's codes, the core refuses a delta for each of these, whole. In Python every
+refusal of either kind is `arachne_core.XfError`, carrying the Rust error's text.
+
+**Decode** (`wire::decode_delta`), in the order of the delta's bytes, each an `XfError`:
+
+- anywhere: bytes that end inside a field or an item, or a count of items longer than the bytes left
+  (`Truncated`); a bool byte other than 0 or 1, a string that is not UTF-8 (`Invalid`);
+- the version: a major other than the build's (`Version`);
+- the time: a denominator of 0 or less (`Invalid`);
+- the view: a background or camera code the build does not know (`Invalid`); a light model code it
+  does not know is kept, and drawing refuses it;
+- each uploaded shape: an image whose width × height × 4 overflows (`Invalid`); for a path, mesh,
+  image, volume or field shape, a key other than its content's (`KeyMismatch`); a shape code the
+  build does not know is kept, its key unchecked;
+- each paint table: a key other than its rows' (`KeyMismatch`);
+- each record: geometry flags outside `0b111`; a paint, joint, cap, space or image-source code the
+  build does not know; the `background_image` bit and the `fill_image` field disagreeing; the
+  `pre_projected` bit on a kind other than `path`, `points` or `image` (each `Invalid`). A record
+  kind the build does not know is kept, its body unread and unchecked;
+- the order: a layer code the build does not know (`Invalid`);
+- the section: its codes, above.
+
+A file (`wire::decode_file`) is refused for its magic (`BadMagic`) or its major (`Version`) before
+its deltas are read. The reader checks nothing against what a stream holds, and, but for the
+section's codes, no part of a delta against another: a record or a view naming a shape or a paint
+table the delta does not upload, an order drawing a slot the delta does not set, a removal or a
+release of what is not there, are all read; whether they are there is known only against the stream,
+by `apply`.
+
+**Apply** (`Stream::apply`), against the stream's state and the delta as a whole, in this order,
+each a `StreamError`:
+
+1. a major other than the build's (`Version`), as the reader's first check;
+2. the section's codes, for a delta built in memory (`Invalid`, by its code; a delta the reader read
+   has passed them);
+3. a key uploaded twice in the delta, as two shapes, two paint tables or one of each (`Invalid`);
+4. each uploaded shape: a mesh triangle naming a vertex past its vertices, mesh normals other than
+   one per vertex, an image whose bytes are not width × height × 4; a key the stream holds as a
+   paint table, or as a shape of other content (each `Invalid`);
+5. each uploaded paint table: a key the stream holds as a shape (`Invalid`);
+6. a release of a key the stream does not hold and the delta does not upload (`Missing`);
+7. a removal of a slot the stream does not hold and the delta does not set (`Missing`);
+8. a release of a key that a record the delta leaves, or the view, still uses (`InUse`);
+9. when the delta removes or sets a record, the order of every sub-frame display it leaves, checked
+   as in 12;
+10. each record the delta sets and does not remove, but one of a kind the build does not know: the
+    `background_image` bit and `fill_image` disagreeing, the `pre_projected` bit and its tail
+    disagreeing, the tail on a kind other than `path`, `points` or `image` (the reader's checks
+    again, which only a delta built in memory reaches), a kind that needs a shape given none, a
+    shape of a kind the record cannot take, a sub-frame display given a shape, a body of another
+    kind's (each `Invalid`); a shape (its own, its blend's, its clip's, its fill image, its tail's
+    points) or a paint table the stream would not hold after the delta: neither held nor uploaded,
+    or released by it (`Missing`); a sub-frame's view and order, as in 11 and 12; a face group's,
+    points record's or instances record's table of other than one row per face, point or placement,
+    an instances record whose placements and objects differ in number, a face group's face ends or
+    widths (XF 1.3) and joins (XF 1.4), as described above (each `Invalid`);
+11. the delta's view: soft diffuse light outside its ranges, a background image that is not an image
+    shape (`Invalid`) or that the stream would not hold after the delta (`Missing`);
+12. the order, the delta's or, when it has none, the stream's: a slot not set (`Missing`); two
+    displays sharing a capture rank in one layer, a part past the record's parts (each `Invalid`);
+13. `slot_not_held` (`Missing`).
+
+So a shape key that a record names and that the delta neither uploads nor finds held is refused by
+`apply` (10), never by the reader. An order entry names a slot, not a key: a slot not set is refused
+by `apply` (12), and a layer code the build does not know by the reader.
 
 ## Content keys
 

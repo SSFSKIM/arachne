@@ -355,12 +355,6 @@ impl After<'_> {
     }
 
     fn check_record(&self, rec: &Record) -> Result<(), StreamError> {
-        if rec.source.iter().any(Vec::is_empty) {
-            return Err(StreamError::Invalid(format!(
-                "path_empty: slot {}'s source has a path of no objects",
-                rec.slot
-            )));
-        }
         if let RecordKind::Unknown(_) = rec.kind {
             return Ok(()); // Nothing in it can be read; drawing refuses it.
         }
@@ -488,8 +482,10 @@ impl Stream {
         Stream::default()
     }
 
-    /// Applies a delta: the view, objects, uploads, records set, records removed, keys released,
-    /// then the order. Everything is checked first; a refused delta changes nothing.
+    /// Applies a delta: the view, objects, uploads, records set, records removed, held records'
+    /// new sources, keys released, then the order. Everything is checked first, XF 1.5's section
+    /// codes before the rest and `slot_not_held` last (XF.md, "Where each check is made"); a
+    /// refused delta changes nothing.
     pub fn apply(&mut self, delta: &Delta) -> Result<ApplyStats, StreamError> {
         if delta.version.0 != XF_VERSION.0 {
             return Err(StreamError::Version(format!(
@@ -539,6 +535,8 @@ impl Stream {
     }
 
     fn check(&self, delta: &Delta) -> Result<(), StreamError> {
+        let after = After::new(self, delta);
+        check_source_rows(delta, &after)?;
         let mut uploaded = HashSet::new();
         for key in delta
             .upload
@@ -573,7 +571,6 @@ impl Stream {
                 return held_with_other(stops.key());
             }
         }
-        let after = After::new(self, delta);
         for key in &delta.release {
             let held = self.shapes.contains_key(key)
                 || self.paints.contains_key(key)
@@ -593,7 +590,6 @@ impl Stream {
                 )));
             }
         }
-        check_source_rows(self, delta, &after)?;
         let view = delta.view.as_ref().or(self.view.as_ref());
         if !after.released.is_empty() {
             let in_use = |key: &Key, by: String| {
@@ -634,7 +630,8 @@ impl Stream {
         if let Some(view) = &delta.view {
             after.check_view(view, None)?;
         }
-        after.check_order(delta.order.as_deref().unwrap_or(&self.order))
+        after.check_order(delta.order.as_deref().unwrap_or(&self.order))?;
+        check_rows_held(self, delta, &after)
     }
 
     /// Draws the frame at `width x height` pixels, its tiles spread over `threads` threads.
@@ -1326,31 +1323,56 @@ fn same_content(held: &ShapeData, uploaded: &ShapeData) -> bool {
 /// The longest side of a frame this build draws, in pixels.
 pub const MAX_SIDE: u32 = 16384;
 
-/// XF 1.5's rows: each names a slot once, one the delta does not remove, and carries a path of
-/// objects or a facing group; a row for a slot the delta does not set names one the stream holds
-/// before it. A refusal is the first of these, by its code.
-fn check_source_rows(stream: &Stream, delta: &Delta, after: &After<'_>) -> Result<(), StreamError> {
+/// XF 1.5's section codes, the reader's and so checked before the rest of `apply`'s: each row (a
+/// record the delta sets carrying a source or a facing group, then each held row) names a slot
+/// once, one the delta does not remove, and carries a path of objects or a facing group, no path
+/// empty. A refusal is the first of these, by its code.
+fn check_source_rows(delta: &Delta, after: &After<'_>) -> Result<(), StreamError> {
+    let refuse = |code: &str, slot: u32| {
+        Err(StreamError::Invalid(format!(
+            "{code}: the source row for slot {slot}"
+        )))
+    };
+    for rec in after.set.values() {
+        if rec.source.is_empty() && rec.facing_group == 0 {
+            continue; // No row.
+        }
+        if after.removed.contains(&rec.slot) {
+            return refuse("slot_removed", rec.slot);
+        }
+        if rec.source.iter().any(Vec::is_empty) {
+            return refuse("path_empty", rec.slot);
+        }
+    }
     let mut rowed = HashSet::new();
     for row in &delta.source {
         let slot = row.slot;
-        let code = if !rowed.insert(slot) {
-            "slot_named_twice"
-        } else if delta.remove.contains(&slot) {
-            "slot_removed"
-        } else if row.source.is_empty() && row.facing_group == 0 {
-            "row_empty"
-        } else if row.source.iter().any(Vec::is_empty) {
-            "path_empty"
-        } else if !after.set.contains_key(&slot) && !stream.records.contains_key(&slot) {
+        if !rowed.insert(slot) {
+            return refuse("slot_named_twice", slot);
+        }
+        if after.removed.contains(&slot) {
+            return refuse("slot_removed", slot);
+        }
+        if row.source.is_empty() && row.facing_group == 0 {
+            return refuse("row_empty", slot);
+        }
+        if row.source.iter().any(Vec::is_empty) {
+            return refuse("path_empty", slot);
+        }
+    }
+    Ok(())
+}
+
+/// The last of `apply`'s checks: a held row names a slot the stream holds before the delta, or one
+/// the delta sets.
+fn check_rows_held(stream: &Stream, delta: &Delta, after: &After<'_>) -> Result<(), StreamError> {
+    for row in &delta.source {
+        if !after.set.contains_key(&row.slot) && !stream.records.contains_key(&row.slot) {
             return Err(StreamError::Missing(format!(
-                "slot_not_held: a source row for slot {slot}, which the stream does not hold"
+                "slot_not_held: a source row for slot {}, which the stream does not hold",
+                row.slot
             )));
-        } else {
-            continue;
-        };
-        return Err(StreamError::Invalid(format!(
-            "{code}: the source row for slot {slot}"
-        )));
+        }
     }
     Ok(())
 }
