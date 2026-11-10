@@ -171,10 +171,12 @@ def test_a_surface_mid_write_is_one_face_group_each_face_at_its_own_width(make):
 
 
 #: The core's frame of the ellipsoid undrawn and whole, as it drew them
-#: before a group carried its faces' ends or widths.
+#: before a group carried its faces' ends or widths; the whole one as it
+#: draws once a stroke under 0.8 px is stroked at a share of its half width
+#: (its faces' strokes are about 0.07 px wide here).
 FRAMES = {
     0.0: "fc779d8b138f5c8d0e3a0a2a4e901c6a4f6d3945ee4cdc7a63edee0f2ef02456",
-    1.0: "97eab4a83cf951c225fcb5a36c90fd10f446a5c49d5cabb11e8886b54083345d",
+    1.0: "8126cfcdd1d7b97f1c017c1abe26c12f419a34b94f1a1265c23cfe61a9f89835",
 }
 
 
