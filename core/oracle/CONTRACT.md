@@ -2090,6 +2090,10 @@ planted failure of W19 to W26 (§12).
 
 ### Source classes (`label_classes@1`)
 
+**Status.** The table below is an inventory written independently of the core's own mapping. It
+has not yet been checked against the classes real scenes use. A class it does not map falls to
+`label_source_unmapped`, which fails closed: the oracle blesses no order for that pair.
+
 Read from the record's source once the wire carries it. A record's source lists, for each of its
 paths, the containment chain from the object that made the record outward, each node's nearest library class
 (a user's subclass maps to the library class it derives from). The class of the record:
