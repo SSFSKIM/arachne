@@ -23,6 +23,6 @@ if [ -z "${CI:-}" ]; then
   python3 ../ci/oracle_isolated.py --from-git HEAD
 fi
 shopt -s nullglob
-for t in tests/contract*.rs; do
+for t in tests/contract*.rs tests/probes.rs; do
   cargo test --release --locked --test "$(basename "$t" .rs)"
 done

@@ -686,3 +686,12 @@ file = "core/oracle/src/keys.rs"
 find = "                    let o = reads[k].key;\n"
 replace = "                    let o = 2.0 * reads[k].key;\n"
 red = ["closed_form_depth::a_stroke_crossing_a_surface_is_in_front_on_its_near_side_and_ties_only_at_the_crossing"]
+
+[[plant]]
+name = "order-strong-edge"
+item = "§7"
+check = "strong a-front only where min I_a < max I_b"
+file = "core/oracle/src/order.rs"
+find = "        a_front: a.lo() < b.hi(),\n"
+replace = "        a_front: true,\n"
+red = ["probes::every_class_probe_check_holds_in_the_oracle_s_admissible_orders"]

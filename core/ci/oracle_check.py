@@ -50,11 +50,13 @@ ISOLATED_CHECKOUT: tuple[str, ...] = (
     "core/ci/toolchain.sh",
 )
 
-#: Inside the list, the test files that may reach the core: they never enter the isolated checkout,
-#: and run in the normal tree.
+#: Inside the list, the test files that may reach the core, and the one that builds streams through
+#: them (``probes.rs`` holds ``common/fixtures.rs``): they never enter the isolated checkout, and run
+#: in the normal tree.
 ISOLATED_EXCLUDED: tuple[str, ...] = (
     "core/oracle/tests/contract*.rs",
     "core/oracle/tests/common/fixtures.rs",
+    "core/oracle/tests/probes.rs",
 )
 
 #: What a build adds to a checkout, never part of it (``core/src/lib.rs`` the build writes as
@@ -99,9 +101,15 @@ def check_isolated_checkout(root: Path) -> tuple[list[str], list[str]]:
     return problems, files
 
 
-#: Sources outside ``src/`` that may name core paths beyond ``xf``: contract tests, which hold the
-#: core to the contract through its public interface.
-CORE_PATHS_ALLOWED_IN: tuple[str, ...] = ("tests/contract_join_hypot.rs",)
+#: The test files that may name core paths beyond ``xf``, as patterns from the oracle's root: the
+#: contract tests, which read the core's report, and the module that builds streams through the
+#: core's probe kit. No source under ``src/`` may (``check_oracle`` asserts it).
+CORE_PATHS_ALLOWED_IN: tuple[str, ...] = ("tests/contract*.rs", "tests/common/fixtures.rs")
+
+
+def core_paths_allowed(rel: str) -> bool:
+    """Whether the oracle file ``rel`` (POSIX, from the oracle's root) may name core paths."""
+    return any(Path(rel).match(pattern) for pattern in CORE_PATHS_ALLOWED_IN)
 
 CRATE = re.compile(r"\barachne_core\b")
 INCLUDE = re.compile(r"\b(include|include_str|include_bytes)\s*!\s*\(\s*")
@@ -271,7 +279,7 @@ def check_oracle(oracle: Path) -> tuple[list[str], list[str]]:
         text, bare = blank(path.read_text(encoding="utf-8"))
         names = core_paths(bare)
         for line, shown, ok in names:
-            if not ok and rel not in CORE_PATHS_ALLOWED_IN:
+            if not ok and not core_paths_allowed(rel):
                 problems.append(
                     f"{rel}:{line}: names {shown}, outside arachne_core::xf"
                 )
@@ -279,6 +287,11 @@ def check_oracle(oracle: Path) -> tuple[list[str], list[str]]:
             allowed.append(rel)
         for line, what in outside_reaches(path, text, bare, oracle):
             problems.append(f"{rel}:{line}: {what}")
+    problems += [
+        f"CORE_PATHS_ALLOWED_IN: {pattern} reaches into src/"
+        for pattern in CORE_PATHS_ALLOWED_IN
+        if not pattern.startswith("tests/")
+    ]
     manifest = oracle / "Cargo.toml"
     if re.search(r'package\s*=\s*"arachne-core"', manifest.read_text(encoding="utf-8")):
         problems.append('Cargo.toml: the core is renamed (package = "arachne-core")')
