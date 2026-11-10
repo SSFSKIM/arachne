@@ -2,7 +2,10 @@ name: ci
 on:
   pull_request:
   push:
-    branches: ['ci/**']
+    branches: ['ci/**', main]
+  schedule:
+    - cron: '23 0 * * 1'
+    - cron: '47 6 * * 1'
   workflow_dispatch:
     inputs:
       gates: {description: 'comma list of gate names; empty = all', required: false, default: ''}
