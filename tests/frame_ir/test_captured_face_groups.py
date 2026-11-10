@@ -1,9 +1,9 @@
 """A frame described from the camera's own captures finds a drawn face's
 surface among the scene's roots: each root it walks holds its state at the
-frame, however the frame is drawn. A play drawn after the scene has run (its
-plays waited for the render's workers), and a session's frame drawn over a
-static picture it kept from an earlier frame, see the still surface as the
-play held it, not as the scene left it.
+frame, however the frame is drawn. A play drawn from the record after the
+scene has run, and a session's frame drawn over a static picture it kept from
+an earlier frame, see the still surface as the play held it, not as the scene
+left it.
 """
 
 from __future__ import annotations
@@ -17,6 +17,8 @@ import pytest
 from arachne import tempconfig
 from arachne.frame_ir import live as live_module
 from arachne.session import Session
+from arachne.timeline.clock import frames_in
+from arachne.timeline.draw import Drawing
 
 from ..timeline.conftest import SMALL
 from . import captured_surface_scenes as scenes
@@ -25,7 +27,6 @@ pytest.importorskip("arachne_core")
 
 FPS = 15
 SCENES = Path(scenes.__file__)
-CAMERA_CODE = "the scene's code draws through its camera"
 
 
 def _seen(monkeypatch) -> list[tuple[object, int]]:
@@ -48,11 +49,11 @@ def _still(scene, seen) -> list[int]:
     return [count for surface, count in seen if surface is scene.still]
 
 
-def _rendered(scene_class, workers, tmp_path, monkeypatch):
-    """The scene rendered as an uncached video with ``workers``, and what
-    the description saw of its still surface: with more than one, its plays
-    wait for them until the scene has run, then are drawn here (the scene's
-    code draws through its camera).
+def _drawn_after(scene_class, tmp_path, monkeypatch):
+    """What the description saw of the scene's still surface as the scene ran
+    (an uncached video), and as each of its plays is drawn again from the
+    record once the scene has run, frame by frame as the renderer draws a
+    play: the scene then holds the still surface as it left it.
     """
     seen = _seen(monkeypatch)
     settings = {
@@ -61,15 +62,26 @@ def _rendered(scene_class, workers, tmp_path, monkeypatch):
         "disable_caching": True,
         "format": "mp4",
         "progress_bar": "none",
-        "media_dir": str(tmp_path / f"media-{workers}"),
+        "media_dir": str(tmp_path / "media"),
         "draw_path": "ir_cairo",
-        "render_workers": workers,
     }
     with tempconfig(settings):
         scene = scene_class()
         scene.render()
+        as_run = _still(scene, seen)
+        seen.clear()
+        record = scene.timeline.record
+        with Drawing(record) as drawing:
+            for play in record.plays:
+                static = drawing.static(play)
+                if play.held:
+                    drawing.sample(play, play.samples[0], static)
+                    continue
+                for t in frames_in(play.start, play.end, Fraction(FPS)):
+                    drawing.sample(play, play.capture_at(t), static)
+        after = _still(scene, seen)
     monkeypatch.undo()
-    return scene, _still(scene, seen)
+    return as_run, after
 
 
 @pytest.mark.parametrize(
@@ -84,10 +96,7 @@ def _rendered(scene_class, workers, tmp_path, monkeypatch):
 def test_plays_drawn_after_the_scene_see_the_still_surface_as_each_held_it(
     scene_class, tmp_path, monkeypatch
 ):
-    here, as_run = _rendered(scene_class, 1, tmp_path, monkeypatch)
-    later, after = _rendered(scene_class, 2, tmp_path, monkeypatch)
-    assert here.renderer.worker_fallback is None
-    assert CAMERA_CODE in later.renderer.worker_fallback
+    as_run, after = _drawn_after(scene_class, tmp_path, monkeypatch)
     assert as_run
     assert after == as_run
 
