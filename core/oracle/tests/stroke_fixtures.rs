@@ -71,15 +71,29 @@ fn stroke(
     vec![delta(1, Some(view_f()), vec![shape], vec![r])]
 }
 
-const P: [f64; 2] = [-4.0, -3.0];
-const Q: [f64; 2] = [4.0, -3.0];
-const R: [f64; 2] = [0.0, 3.0];
+/// Where `join_occurrences`'s spikes start, in frame `x`.
+///
+/// Known exposed case: at `-7`, the scene as the contract states it today, each spike's first
+/// cubic is 6 px long, on a step of its centreline count, so the witness does not clear
+/// `curve_recut` (§6) as §12 requires. Starting each spike at `-7.1` clears it and changes neither
+/// corner, nor its tip, nor any pixel asserted here (each 7 units or more from the start caps);
+/// the scene moves when the contract's text does.
+const SPIKE_X: f64 = -7.0;
 
-/// `join_occurrences`: the triangle `p q r` traced twice as one open path, five cubics.
-fn occurrences(joint: Joint, joins: Option<Vec<u8>>) -> Vec<Delta> {
-    stroke(lines(&[P, Q, R, P, Q, R]), joint, joins, None)
+/// `join_occurrences`'s two spikes, each drawn twice, as four open subpaths of two straight
+/// cubics: the upper from `(SPIKE_X, 4)` to `(-1, 4)` and back to `(-7, 5)`, twice; the lower the
+/// same 8 units lower, twice.
+fn spikes() -> Vec<[f64; 3]> {
+    let spike = |y: f64| lines(&[[SPIKE_X, y], [-1.0, y], [-7.0, y + 1.0]]);
+    [spike(4.0), spike(4.0), spike(-4.0), spike(-4.0)].concat()
 }
-const OCCURRENCE_BYTES: [u8; 5] = [0, 0b01, 0, 0, 0b11];
+
+/// `join_occurrences`: each spike's corner one key met twice; the upper key's decisions miter then
+/// bevel, the lower key's bevel then miter.
+fn occurrences(joint: Joint, joins: Option<Vec<u8>>) -> Vec<Delta> {
+    stroke(spikes(), joint, joins, None)
+}
+const OCCURRENCE_BYTES: [u8; 8] = [0, 0b11, 0, 0b01, 0, 0b01, 0, 0b11];
 
 const SQUARE: [[f64; 2]; 5] = [
     [-4.0, -4.0],
@@ -142,14 +156,26 @@ fn fixtures() -> Vec<Fixture> {
             name: "join_occurrences",
             rules: &["join_mask@1"],
             scene: occurrences(Joint::Miter, Some(OCCURRENCE_BYTES.to_vec())),
-            wrong_reading: "the first occurrence's decision (a bevel) applied to both",
-            checks: vec![Check {
-                pixel: [12, 11],
-                samples: &[5, 6],
-                cell_bytes: &[255, 255],
-                wrong_reading: &[0, 0],
-                what: "cells wholly inside the miter tip at q beyond the bevel, tip near (12.94, 11.5)",
-            }],
+            wrong_reading: "one decision per key applied to both its occurrences: the first \
+                            bevels the lower spike, the last the upper",
+            checks: vec![
+                Check {
+                    pixel: [8, 4],
+                    samples: &[0, 1, 2, 3, 8, 9, 10, 11, 12, 13, 14, 15],
+                    cell_bytes: &[255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0],
+                    wrong_reading: &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                    what: "the upper spike's tip, drawn by its first occurrence's miter, over \
+                           frame y above about 3.52; uncovered under each key's last decision",
+                },
+                Check {
+                    pixel: [8, 12],
+                    samples: &[0, 1, 2, 3, 8, 9, 10, 11, 12, 13, 14, 15],
+                    cell_bytes: &[255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0],
+                    wrong_reading: &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                    what: "the lower spike's tip, drawn by its second occurrence's miter; \
+                           uncovered under each key's first decision",
+                },
+            ],
         },
         Fixture {
             name: "join_closing",
@@ -332,14 +358,23 @@ fn join_occurrences_each_occurrence_takes_its_own_decision() {
     let f = fixture("join_occurrences");
     let d = decided(f.name);
     agrees(&f, &d);
-    // The mitred corner's cell bytes: the stroke as kurbo mitres it with no joins carried.
-    let mitred = decide_at(&occurrences(Joint::Miter, None), 1, None).unwrap();
-    let bevelled = decide_at(&occurrences(Joint::Bevel, None), 1, None).unwrap();
-    let row = stroke_row(&d, [12, 11]).expect("the corner's pixel");
-    let m = stroke_row(&mitred, [12, 11]).unwrap();
-    assert_eq!((row.cell_lo, row.cell_hi), (m.cell_lo, m.cell_hi));
-    let b = stroke_row(&bevelled, [12, 11]).unwrap();
-    assert_ne!((row.cell_lo, row.cell_hi), (b.cell_lo, b.cell_hi));
+    // Each tip covers its pixel over the area of the triangle closed by the bevel's ends, about
+    // 0.4736 by §12's coordinates, which it rounds to 5 places.
+    for pixel in [[8, 4], [8, 12]] {
+        let row = stroke_row(&d, pixel).expect("the tip's pixel");
+        assert!(
+            (row.pixel_area - 0.4736).abs() < 1e-3,
+            "{pixel:?}: area {}",
+            row.pixel_area
+        );
+    }
+    // With no joins carried kurbo bevels both corners, so neither pixel is reached: what covers
+    // them is the carried decisions alone.
+    let bevelled = decide_at(&occurrences(Joint::Miter, None), 1, None).unwrap();
+    for pixel in [[8, 4], [8, 12]] {
+        let area = stroke_row(&bevelled, pixel).map_or(0.0, |r| r.pixel_area);
+        assert_eq!(area, 0.0, "{pixel:?} without joins");
+    }
 }
 
 #[test]
