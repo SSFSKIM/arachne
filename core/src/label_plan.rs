@@ -29,7 +29,9 @@
 //! ([`Open::Folded`]), and so is each of two sheets of one object facing one way that both meet
 //! the label ([`Open::Disconnected`]). A label whose records are not all paths placed by the
 //! engine is open against everything ([`Open::Label`]), and so is a sheet drawn as a mesh
-//! ([`Open::Mesh`]). An open pair never moves the label: only sheets that qualify do.
+//! ([`Open::Mesh`]). A record kept facing the camera outside every label (its label not known) is
+//! never a sheet: a label meeting it is open ([`Open::Label`]). An open pair never moves the
+//! label: only sheets that qualify do.
 
 use crate::composite::{Coverage, Fragment, Plane, Producer, SAMPLES};
 use crate::label_class::{self, LabelClass};
@@ -64,7 +66,8 @@ pub enum Open {
     Disconnected,
     /// The sheet is drawn as a mesh, whose faces this planner does not read.
     Mesh,
-    /// The label has a record that is not a path placed by the engine at a fixed orientation.
+    /// The label has a record that is not a path placed by the engine at a fixed orientation, or
+    /// the sheet is a record kept facing the camera whose label is not known.
     Label,
 }
 
@@ -284,6 +287,13 @@ fn compare(d: f64, e: f64, label: &Label) -> Cmp {
     }
 }
 
+/// Whether `r` is kept facing the camera outside every label. In a frame drawing a facing group
+/// (a stream read under XF 1.5's rules), such a record's label is not known (XF.md's "Facing
+/// groups"): it is never a sheet, and a label meeting it is open.
+fn unknown_label(r: &Record) -> bool {
+    r.facing_group == 0 && r.depth.fixed_orientation_centre.is_some() && !is_overlay(r)
+}
+
 /// Whether point `p` lies on the segment from `a` to `b`.
 fn on_segment(a: [f64; 2], b: [f64; 2], p: [f64; 2]) -> bool {
     let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
@@ -396,7 +406,9 @@ pub fn plan(
     let mut surface: Vec<Option<u32>> = vec![None; entries.len()];
     for (at, record) in entries.iter().enumerate() {
         let Some(record) = record else { continue };
-        if label_class::label_class(&record.source, record.facing_group) == LabelClass::Surface {
+        if label_class::label_class(&record.source, record.facing_group) == LabelClass::Surface
+            && !unknown_label(record)
+        {
             surface[at] = label_class::surface_owner(&record.source);
         }
     }
@@ -424,14 +436,27 @@ pub fn plan(
     }
     let sheet = sheets(&faces);
     let n_sheets = sheet.iter().map(|s| s + 1).max().unwrap_or(0) as usize;
-    // Meshes read as surfaces are open sheets of their own, numbered after the paths' sheets.
-    let mut mesh_sheet: HashMap<u32, u32> = HashMap::new();
+    // Meshes read as surfaces, and records kept facing the camera whose label is not known, are
+    // open sheets of their own, numbered after the paths' sheets: by order entry, each with its
+    // number, its cause and its object.
+    let mut open_sheet: HashMap<u32, (u32, Open, u32)> = HashMap::new();
     for (at, record) in entries.iter().enumerate() {
-        if surface[at].is_some() && record.is_some_and(|r| r.kind == RecordKind::Mesh) {
-            let next = (n_sheets + mesh_sheet.len()) as u32;
-            mesh_sheet.insert(at as u32, next);
+        let Some(r) = record else { continue };
+        let open = if unknown_label(r) {
+            let owner = label_class::surface_owner(&r.source)
+                .or_else(|| r.source.first().and_then(|p| p.first()).map(|n| n.token));
+            Some((Open::Label, owner.unwrap_or(0)))
+        } else if r.kind == RecordKind::Mesh {
+            surface[at].map(|owner| (Open::Mesh, owner))
+        } else {
+            None
+        };
+        if let Some((cause, owner)) = open {
+            let next = (n_sheets + open_sheet.len()) as u32;
+            open_sheet.insert(at as u32, (next, cause, owner));
         }
     }
+    let open_of = |s: u32| open_sheet.values().find(|(x, _, _)| *x == s);
     let owner_of = |s: u32| -> u32 {
         if (s as usize) < n_sheets {
             let f = sheet
@@ -440,11 +465,7 @@ pub fn plan(
                 .expect("a sheet has a face");
             faces[f].owner
         } else {
-            let (at, _) = mesh_sheet
-                .iter()
-                .find(|(_, x)| **x == s)
-                .expect("a mesh sheet");
-            surface[*at as usize].expect("a mesh sheet's record is a surface")
+            open_of(s).expect("an open sheet").2
         }
     };
     // What each label sees of each sheet, pixel by pixel of its box.
@@ -486,7 +507,7 @@ pub fn plan(
                 // Per sheet met here, how many of its fills hold each order point.
                 let mut held: BTreeMap<u32, [u32; SAMPLES]> = BTreeMap::new();
                 for (i, f) in frags.iter().enumerate() {
-                    let s = if let Some(&s) = mesh_sheet.get(&f.order) {
+                    let s = if let Some(&(s, _, _)) = open_sheet.get(&f.order) {
                         s
                     } else if is_fill(f)
                         && let Some(&face) = face_at.get(&(f.order, f.sub))
@@ -584,8 +605,8 @@ pub fn plan(
         let centre = centre_of(*g, *s);
         let outcome = if !labels[*g as usize].readable {
             Outcome::Open(Open::Label)
-        } else if mesh_sheet.values().any(|m| m == s) {
-            Outcome::Open(Open::Mesh)
+        } else if let Some(&(_, cause, _)) = open_of(*s) {
+            Outcome::Open(cause)
         } else if v.folded {
             Outcome::Open(Open::Folded)
         } else if facing != 0 && met[&(*g, owner, facing)] > 1 {
