@@ -6,11 +6,16 @@ are the bytes they were without them.
 
 from __future__ import annotations
 
+import importlib
+import pkgutil
+import re
 from fractions import Fraction
+from pathlib import Path
 
 import numpy as np
 import pytest
 
+import arachne
 from arachne import (
     DOWN,
     LEFT,
@@ -112,6 +117,37 @@ def test_a_class_is_named_by_the_nearest_library_class_it_derives_from():
                 assert cls.startswith("arachne.")
                 assert "Badge" not in cls
                 assert "Board" not in cls
+
+
+def _named(kind: type) -> str:
+    return f"{kind.__module__}.{kind.__qualname__}"
+
+
+def _library_subclasses(base: type) -> set[str]:
+    """The names of ``base`` and of every class of the library deriving from
+    it, with every module of the library imported first.
+    """
+    for module in pkgutil.walk_packages(arachne.__path__, "arachne."):
+        if not module.name.endswith("__main__"):
+            importlib.import_module(module.name)
+    found, todo = set(), [base]
+    while todo:
+        kind = todo.pop()
+        if kind not in found:
+            found.add(kind)
+            todo.extend(kind.__subclasses__())
+    return {_named(kind) for kind in found if library_class(kind) == _named(kind)}
+
+
+def test_the_core_s_point_clouds_are_the_library_s_point_mobjects():
+    """The core reads a record whose class ``POINT_CLOUD_CLASSES`` names as a
+    point cloud: the table names ``PMobject`` and every library class deriving
+    from it, so none is read as unmapped.
+    """
+    rust = (Path(__file__).parents[2] / "core/src/label_class.rs").read_text()
+    table = r"pub const POINT_CLOUD_CLASSES: &\[&str\] = &\[(.*?)\];"
+    body = re.search(table, rust, re.S).group(1)
+    assert set(re.findall(r'"([^"]+)"', body)) == _library_subclasses(PMobject)
 
 
 def test_a_vector_s_tip_names_the_vector_that_holds_it():
