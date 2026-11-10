@@ -7,6 +7,7 @@
 
 mod common;
 
+use arachne_core::composite::{background_pixel, blend, premultiply};
 use arachne_core::label_plan::{Open, Outcome, Pair};
 use arachne_core::stream::Stream;
 use arachne_core::xf::*;
@@ -313,4 +314,231 @@ fn two_sheets_of_one_surface_facing_one_way_are_open() {
             .iter()
             .all(|p| p.outcome == Outcome::Open(Open::Disconnected))
     );
+}
+
+// Placement: what the frame draws once the plan is made. Pixel (80, 45) is the label's centre's,
+// inside every glyph here; pixel (93, 45) lies 1.2 units to its right.
+
+fn px(frame: &[u8], x: u32, y: u32) -> [u8; 4] {
+    let i = (y * W + x) as usize * 4;
+    frame[i..i + 4].try_into().unwrap()
+}
+
+fn drawn(items: &[(Shape, Record)]) -> Vec<u8> {
+    stream(items).draw(W, H, 1).expect("the frame draws")
+}
+
+fn background() -> [u8; 4] {
+    background_pixel([0.0, 0.0, 0.0, 1.0])
+}
+
+/// `layers`, front first, each covering the pixel whole, over the background.
+fn stacked(layers: &[[f64; 4]]) -> [u8; 4] {
+    layers
+        .iter()
+        .rev()
+        .fold(background(), |under, c| blend(premultiply(*c), 255, under))
+}
+
+/// A line of class `Line` along y = 0 at depth `z`, its stroke 4.5 pixels wide.
+fn line_at(slot: u32, z: f64, rgba: [f64; 4]) -> (Shape, Record) {
+    let shape = Shape::new(ShapeData::Path {
+        points: polygon(&[[-2.0, 0.0, z], [2.0, 0.0, z]])[..4].to_vec(),
+    });
+    let mut r = Record::new(RecordKind::Path, slot, 100 + slot);
+    r.geometry.shape_a = Some(shape.key());
+    r.paint.stroke = Paint::One(rgba);
+    r.paint.stroke_width = 40.0;
+    r.depth.space = Space::World;
+    r.source = vec![vec![node(10 + slot, LINE)]];
+    (shape, r)
+}
+
+#[test]
+fn a_label_behind_a_nearer_sheet_is_hidden_where_the_sheet_covers_it() {
+    let behind = drawn(&[
+        label([0.0, 0.0, 0.0], [0.5, 0.3]),
+        square_at(2, 1.0, true, 1),
+    ]);
+    assert_eq!(px(&behind, 80, 45), stacked(&[BLUE]));
+    let front = drawn(&[
+        label([0.0, 0.0, 0.0], [0.5, 0.3]),
+        square_at(2, -1.0, true, 1),
+    ]);
+    assert_eq!(px(&front, 80, 45), stacked(&[WHITE]));
+}
+
+/// "No depth-induced split": a sheet nearer on the centre ray hides the whole label, also where it
+/// passes behind the label's depth, which the plate model drew the label in front of.
+#[test]
+fn a_qualifying_sheet_hides_the_label_also_where_it_crosses_behind_its_depth() {
+    let sheet = rect([-1.5, 1.5], [-1.0, 1.0], true, |x, _| 0.3 - 0.4 * x);
+    let frame = drawn(&[
+        label([0.0, 0.0, 0.0], [1.4, 0.3]),
+        face(2, &sheet, BLUE, &[(12, SQUARE)]),
+    ]);
+    assert_eq!(px(&frame, 80, 45), stacked(&[BLUE]));
+    assert_eq!(px(&frame, 93, 45), stacked(&[BLUE]));
+}
+
+/// "Distinguish a label inside a translucent cube from one behind it."
+#[test]
+fn a_label_inside_a_translucent_cube_draws_between_its_sheets_and_one_behind_it_under_both() {
+    let glass = [0.2, 0.3, 0.9, 0.5];
+    let red = [0.9, 0.2, 0.1, 0.5];
+    let cube = |z: f64| {
+        drawn(&[
+            label([0.0, 0.0, z], [0.5, 0.3]),
+            face(
+                2,
+                &rect([-1.0, 1.0], [-1.0, 1.0], true, |_, _| 1.0),
+                glass,
+                &[(12, SQUARE), (1, CUBE)],
+            ),
+            face(
+                3,
+                &rect([-1.0, 1.0], [-1.0, 1.0], false, |_, _| -1.0),
+                red,
+                &[(13, SQUARE), (1, CUBE)],
+            ),
+        ])
+    };
+    assert_eq!(px(&cube(0.0), 80, 45), stacked(&[glass, WHITE]));
+    let translucent = [1.0, 1.0, 1.0, 0.6];
+    let behind = drawn(&[
+        {
+            let (s, mut r) = label([0.0, 0.0, -2.0], [0.5, 0.3]);
+            r.paint.fill = Paint::One(translucent);
+            (s, r)
+        },
+        face(
+            2,
+            &rect([-1.0, 1.0], [-1.0, 1.0], true, |_, _| 1.0),
+            glass,
+            &[(12, SQUARE), (1, CUBE)],
+        ),
+        face(
+            3,
+            &rect([-1.0, 1.0], [-1.0, 1.0], false, |_, _| -1.0),
+            red,
+            &[(13, SQUARE), (1, CUBE)],
+        ),
+    ]);
+    assert_eq!(px(&behind, 80, 45), stacked(&[glass, red, translucent]));
+}
+
+/// "An unbacked label wrongly hidden by a line must fail": lines never push a label back.
+#[test]
+fn a_nearer_line_never_hides_a_label_no_sheet_backs() {
+    let orange = [1.0, 0.5, 0.0, 1.0];
+    let frame = drawn(&[label([0.0, 0.0, 0.0], [0.5, 0.3]), line_at(2, 1.0, orange)]);
+    assert_eq!(px(&frame, 80, 45), stacked(&[WHITE]));
+}
+
+/// "A surface-backed label incorrectly drawn over a line above that surface must fail": the line
+/// over the sheet the label goes behind covers the label; a line under that sheet does not.
+#[test]
+fn a_label_behind_a_sheet_takes_the_sheet_s_place_among_lines() {
+    let orange = [1.0, 0.5, 0.0, 1.0];
+    let glass = [0.2, 0.3, 0.9, 0.5];
+    let plane = face(
+        2,
+        &rect([-1.0, 1.0], [-1.0, 1.0], true, |_, _| 1.0),
+        glass,
+        &[(12, SQUARE)],
+    );
+    let over = drawn(&[
+        label([0.0, 0.0, 0.0], [0.5, 0.3]),
+        plane.clone(),
+        line_at(3, 2.0, orange),
+    ]);
+    assert_eq!(px(&over, 80, 45), stacked(&[orange]));
+    let under = drawn(&[
+        label([0.0, 0.0, 0.0], [0.5, 0.3]),
+        plane,
+        line_at(3, 0.5, orange),
+    ]);
+    assert_eq!(px(&under, 80, 45), stacked(&[glass, WHITE]));
+}
+
+/// "L1 behind S and L2 in front of S override their former CE ordering": where the two labels
+/// overlap on the sheet, the one the sheet backs is behind it though drawn later.
+#[test]
+fn placement_overrides_the_labels_draw_order() {
+    let yellow = [1.0, 0.9, 0.1, 1.0];
+    let (shape, mut l2) = glyph(1, 8, [0.0, 0.0, 2.0], [0.0, 0.0], [0.5, 0.3]);
+    l2.paint.fill = Paint::One(yellow);
+    let l1 = glyph(3, 7, [0.0, 0.0, 0.0], [0.0, 0.0], [0.5, 0.3]);
+    let sheet = face(
+        2,
+        &rect([-1.0, 1.0], [-1.0, 1.0], true, |_, _| 1.0),
+        BLUE,
+        &[(12, SQUARE)],
+    );
+    // L2 is nearer than the sheet: it stays in front of the world, L1 behind the sheet, though
+    // L1 is drawn after it.
+    let frame = drawn(&[(shape, l2), sheet, l1]);
+    assert_eq!(px(&frame, 80, 45), stacked(&[yellow]));
+}
+
+#[test]
+fn a_placed_frame_is_the_same_on_any_number_of_threads() {
+    let sheet = rect([-1.5, 1.5], [-1.0, 1.0], true, |x, _| 0.3 - 0.4 * x);
+    let s = stream(&[
+        label([0.0, 0.0, 0.0], [1.4, 0.3]),
+        face(2, &sheet, [0.2, 0.3, 0.9, 0.5], &[(12, SQUARE)]),
+        line_at(3, 2.0, [1.0, 0.5, 0.0, 1.0]),
+    ]);
+    let one = s.draw(W, H, 1).unwrap();
+    for threads in [2, 4, 7] {
+        assert_eq!(s.draw(W, H, threads).unwrap(), one, "{threads} threads");
+    }
+}
+
+/// "SOURCE-only changes must preserve every RGBA byte, including label scenes with the new policy
+/// disabled": placement off, a label scene draws what it draws without its facing groups.
+#[test]
+fn placement_off_draws_the_frame_without_facing_groups() {
+    let sheet = rect([-1.5, 1.5], [-1.0, 1.0], true, |x, _| 0.3 - 0.4 * x);
+    let items = |grouped: bool| {
+        let (shape, mut r) = label([0.0, 0.0, 0.0], [1.4, 0.3]);
+        if !grouped {
+            r.facing_group = 0;
+        }
+        [(shape, r), face(2, &sheet, BLUE, &[(12, SQUARE)])]
+    };
+    let mut off = stream(&items(true));
+    off.set_label_placement(false);
+    assert!(off.label_plan(W, H).unwrap().is_none());
+    let plain = stream(&items(false)).draw(W, H, 1).unwrap();
+    assert_eq!(off.draw(W, H, 1).unwrap(), plain);
+    assert_ne!(stream(&items(true)).draw(W, H, 1).unwrap(), plain);
+}
+
+/// "Both resolves, contributors and diagnostics must use the same insertion policy": the
+/// contributor report lists the label under the sheet it goes behind, over one it does not, and
+/// over a nearer line.
+#[test]
+fn the_contributor_report_reads_the_placement_the_frame_is_drawn_by() {
+    let top = |items: &[(Shape, Record)]| {
+        let found = stream(items).contributors(80, 45, 81, 46).unwrap();
+        let pixel = &found[&(80, 45)];
+        pixel.leaves.last().expect("a leaf").object
+    };
+    let label_object = 101;
+    let behind = [
+        label([0.0, 0.0, 0.0], [0.5, 0.3]),
+        square_at(2, 1.0, true, 1),
+    ];
+    assert_eq!(top(&behind), 102);
+    let front = [
+        label([0.0, 0.0, 0.0], [0.5, 0.3]),
+        square_at(2, -1.0, true, 1),
+    ];
+    assert_eq!(top(&front), label_object);
+    let line = [
+        label([0.0, 0.0, 0.0], [0.5, 0.3]),
+        line_at(2, 1.0, [1.0, 0.5, 0.0, 1.0]),
+    ];
+    assert_eq!(top(&line), label_object);
 }

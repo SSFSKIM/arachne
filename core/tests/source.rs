@@ -809,8 +809,10 @@ fn the_reader_refuses_a_row_for_a_removed_slot_or_a_slot_named_twice() {
     assert_eq!(read.unwrap().source.len(), 1);
 }
 
+/// With the labels' placement off, nothing drawn reads a record's source or facing group; with it
+/// on (a new stream's), the label they make is placed.
 #[test]
-fn nothing_drawn_reads_a_records_source() {
+fn nothing_drawn_reads_a_records_source_but_the_labels_placement() {
     // A label kept facing the camera, half behind a slanted sheet, and the sheet: drawn from deltas
     // carrying a source and a facing group, and from the same deltas without, through the wire.
     let flat = Shape::new(ShapeData::Path {
@@ -841,8 +843,9 @@ fn nothing_drawn_reads_a_records_source() {
     // The third moves it again, through a row: the record is not set again.
     let mut third = Delta::new(Time { num: 2, den: 15 }, 2);
     third.source = vec![held_row(1, 3, vec![vec![node(9, "a.Other")]])];
-    let frames = |deltas: &[Delta]| {
+    let frames = |deltas: &[Delta], placed: bool| {
         let mut s = Stream::new();
+        s.set_label_placement(placed);
         deltas
             .iter()
             .map(|d| {
@@ -856,7 +859,9 @@ fn nothing_drawn_reads_a_records_source() {
     };
     let deltas = [first, second, third];
     let bare: Vec<Delta> = deltas.iter().map(without_section).collect();
-    let drawn = frames(&deltas);
+    let drawn = frames(&deltas, false);
     assert!(drawn[0].chunks(4).any(|px| px != [0, 0, 0, 255]));
-    assert_eq!(drawn, frames(&bare));
+    assert_eq!(drawn, frames(&bare, false));
+    assert_eq!(frames(&bare, true), frames(&bare, false));
+    assert_ne!(frames(&deltas, true), drawn);
 }

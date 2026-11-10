@@ -81,14 +81,28 @@ pub struct PixelContributors {
 
 /// The report of a pixel from its fragments, their coverage and depth at each sub-sample (and
 /// depth at its centre), and the leaf each belongs to.
-// The sub-sample `k` indexes each fragment's coverage and depth rows.
-#[allow(clippy::needless_range_loop)]
+#[cfg(test)]
 pub(crate) fn of_pixel(
     frags: &[Fragment],
     coverage: &[[u8; SAMPLES]],
     depths: &[Depths],
     leaf_of: &dyn Fn(&Fragment) -> (u32, u32),
 ) -> PixelContributors {
+    of_pixel_placed(frags, coverage, depths, leaf_of, None)
+}
+
+/// [`of_pixel`], the frame's labels placed by `plan`, if any, as the resolve places them
+/// ([`crate::label_plan`]).
+// The sub-sample `k` indexes each fragment's coverage and depth rows.
+#[allow(clippy::needless_range_loop)]
+pub(crate) fn of_pixel_placed(
+    frags: &[Fragment],
+    coverage: &[[u8; SAMPLES]],
+    depths: &[Depths],
+    leaf_of: &dyn Fn(&Fragment) -> (u32, u32),
+    plan: Option<&crate::label_plan::LabelPlan>,
+) -> PixelContributors {
+    let placing = plan.filter(|p| crate::label_plan::holds_label(p, frags));
     // Leaves by first appearance among the fragments, and each fragment's leaf.
     let mut ids: Vec<(u32, u32)> = Vec::new();
     let of: Vec<usize> = frags
@@ -123,7 +137,18 @@ pub(crate) fn of_pixel(
             err,
         }
     };
-    let pair = |a: usize, b: usize| order::pair(seen(a, b), seen(b, a));
+    let pair = |a: usize, b: usize| {
+        placing
+            .and_then(|p| {
+                crate::label_plan::placed_pair(
+                    p,
+                    &frags[a],
+                    &frags[b],
+                    order::painted(&frags[a], &frags[b]),
+                )
+            })
+            .unwrap_or_else(|| order::pair(seen(a, b), seen(b, a)))
+    };
     let painted = |a: usize, b: usize| order::painted(&frags[a], &frags[b]);
     let mut covered = vec![false; n];
     let mut sums = vec![0u32; n];
@@ -140,19 +165,25 @@ pub(crate) fn of_pixel(
         // The sub-sample's fragments as the sample resolve ranks them.
         ranked.clear();
         ranked.extend((0..frags.len()).filter(|i| coverage[*i][k] != 0));
-        order::rank_sample(
-            &ranked,
-            |a, b| {
-                let ((da, ea), (db, eb)) = (read(a, b), read(b, a));
-                a != b && order::at_sample(&frags[a], da[k], ea, &frags[b], db[k], eb).is_lt()
-            },
-            |a, b| {
-                let ((da, ea), (db, eb)) = (read(a, b), read(b, a));
-                order::strong_at(&frags[a], da[k], ea, &frags[b], db[k], eb)
-            },
-            painted,
-            &mut at_k,
-        );
+        let rank = |items: &[usize], out: &mut Vec<usize>| {
+            order::rank_sample(
+                items,
+                |a, b| {
+                    let ((da, ea), (db, eb)) = (read(a, b), read(b, a));
+                    a != b && order::at_sample(&frags[a], da[k], ea, &frags[b], db[k], eb).is_lt()
+                },
+                |a, b| {
+                    let ((da, ea), (db, eb)) = (read(a, b), read(b, a));
+                    order::strong_at(&frags[a], da[k], ea, &frags[b], db[k], eb)
+                },
+                painted,
+                out,
+            );
+        };
+        match placing {
+            Some(p) => crate::label_plan::rank_placed(p, frags, &ranked, rank, painted, &mut at_k),
+            None => rank(&ranked, &mut at_k),
+        }
         // Front to back: runs of one leaf's fragments, each with its greatest coverage here.
         let mut seq: Vec<(usize, u8)> = Vec::new();
         let mut seen = vec![false; n];

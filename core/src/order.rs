@@ -84,6 +84,9 @@ pub enum Decided {
     /// The sub-samples both cover disagree (they cross inside the pixel): the one in front at more
     /// of them, paint order where as many put each in front.
     Majority,
+    /// A camera-facing label against anything but another label: its placement decided
+    /// ([`crate::label_plan`]), whatever their depths.
+    Placed,
 }
 
 impl Decided {
@@ -93,7 +96,7 @@ impl Decided {
     /// convention for a pair whose inputs say nothing of the depth between them, which yields to
     /// depth where they disagree.
     pub fn is_strong(self) -> bool {
-        matches!(self, Decided::Depth | Decided::Majority)
+        matches!(self, Decided::Depth | Decided::Majority | Decided::Placed)
     }
 }
 

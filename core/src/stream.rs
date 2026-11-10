@@ -19,6 +19,9 @@ pub struct Stream {
     records: BTreeMap<u32, Record>,
     view: Option<View>,
     order: Vec<OrderEntry>,
+    /// Labels not placed: drawn by depth as every other record is
+    /// ([`Stream::set_label_placement`]).
+    plain_labels: bool,
 }
 
 /// What one delta changed.
@@ -482,6 +485,13 @@ impl Stream {
         Stream::default()
     }
 
+    /// Whether the frame's camera-facing labels are placed ([`crate::label_plan`]): on, as a
+    /// new stream is; off, each label's records are drawn by depth as every other record is,
+    /// the frames a stream without facing groups draws.
+    pub fn set_label_placement(&mut self, on: bool) {
+        self.plain_labels = !on;
+    }
+
     /// Applies a delta: the view, objects, uploads, records set, records removed, held records'
     /// new sources, keys released, then the order. Everything is checked first, XF 1.5's section
     /// codes before the rest and `slot_not_held` last (XF.md, "Where each check is made"); a
@@ -704,8 +714,8 @@ impl Stream {
             height,
             extra,
             without_overlay,
-            |frame, producers, _| {
-                tiles::render(frame, producers, threads)
+            |frame, producers, plan| {
+                tiles::render_placed(frame, producers, plan, threads)
                     .map_err(|e| DrawError::Threads(e.to_string()))
             },
         )?
@@ -737,10 +747,10 @@ impl Stream {
     ) -> Result<BTreeMap<(u32, u32), crate::contributors::PixelContributors>, DrawError> {
         let mut out = BTreeMap::new();
         let leaf = |f: &composite::Fragment| self.leaf_of(f);
-        self.visit_contributors(x0, y0, x1, y1, |x, y, frags, coverage, depths, _| {
+        self.visit_placed(x0, y0, x1, y1, |x, y, frags, coverage, depths, _, plan| {
             out.insert(
                 (x, y),
-                crate::contributors::of_pixel(frags, coverage, depths, &leaf),
+                crate::contributors::of_pixel_placed(frags, coverage, depths, &leaf, plan),
             );
         })?;
         Ok(out)
@@ -799,7 +809,7 @@ impl Stream {
             y1: y1.min(height),
         };
         let mut out = BTreeMap::new();
-        self.with_producers(width, height, &[], true, |frame, producers, _| {
+        self.with_producers(width, height, &[], true, |frame, producers, plan| {
             if keep.x0 >= keep.x1 || keep.y0 >= keep.y1 {
                 return;
             }
@@ -819,7 +829,7 @@ impl Stream {
                         &frame.rgba()[row + rect.x0 as usize * 4..row + rect.x1 as usize * 4],
                     );
                 }
-                tiles::passes(rect, producers).trace_pixels(
+                tiles::passes_placed(rect, producers, plan).trace_pixels(
                     keep,
                     &background,
                     decisions,
@@ -913,6 +923,35 @@ impl Stream {
             &[&dyn Producer],
         ),
     ) -> Result<(), DrawError> {
+        self.visit_placed(
+            x0,
+            y0,
+            x1,
+            y1,
+            |x, y, frags, coverage, depths, producers, _| {
+                visit(x, y, frags, coverage, depths, producers)
+            },
+        )
+    }
+
+    /// [`Stream::visit_contributors`], `visit` also handed the frame's labels' plan, if any.
+    #[allow(clippy::type_complexity)]
+    fn visit_placed(
+        &self,
+        x0: u32,
+        y0: u32,
+        x1: u32,
+        y1: u32,
+        mut visit: impl FnMut(
+            u32,
+            u32,
+            &[composite::Fragment],
+            &[[u8; composite::SAMPLES]],
+            &[composite::Depths],
+            &[&dyn Producer],
+            Option<&crate::label_plan::LabelPlan>,
+        ),
+    ) -> Result<(), DrawError> {
         let view = self.view.as_ref().ok_or(DrawError::NoView)?;
         let (width, height) = (view.pixel_width, view.pixel_height);
         let keep = composite::Rect {
@@ -921,7 +960,7 @@ impl Stream {
             x1: x1.min(width),
             y1: y1.min(height),
         };
-        self.with_producers(width, height, &[], true, |_, producers, _| {
+        self.with_producers(width, height, &[], true, |_, producers, plan| {
             if keep.x0 >= keep.x1 || keep.y0 >= keep.y1 {
                 return;
             }
@@ -933,10 +972,12 @@ impl Stream {
                 {
                     continue;
                 }
-                tiles::passes(rect, producers)
-                    .visit_pixels(keep, |x, y, frags, coverage, depths| {
-                        visit(x, y, frags, coverage, depths, producers)
-                    });
+                tiles::passes(rect, producers).visit_pixels(
+                    keep,
+                    |x, y, frags, coverage, depths| {
+                        visit(x, y, frags, coverage, depths, producers, plan)
+                    },
+                );
             }
         })
     }
@@ -1139,7 +1180,9 @@ impl Stream {
             .iter()
             .map(|e| drawn(e).then(|| &self.records[&e.slot]))
             .collect();
-        let plan = crate::label_plan::plan(view, width, height, &entries, &paths, &producers);
+        let plan = (!self.plain_labels)
+            .then(|| crate::label_plan::plan(view, width, height, &entries, &paths, &producers))
+            .flatten();
         Ok(f(frame, &producers, plan.as_ref()))
     }
 

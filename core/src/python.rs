@@ -1061,8 +1061,9 @@ impl PyStream {
     /// ``rule`` one of ``"paint"`` (no sub-sample both cover), ``"tie"`` (their depths equal
     /// within the key arithmetic's error wherever both cover, or, on one registered plane, within
     /// that and what the input grid's snap can move each from one plane),
-    /// ``"depth"`` or ``"majority"``
-    /// (their depths cross inside the pixel) (``order.rs``). Nothing is drawn.
+    /// ``"depth"``, ``"majority"``
+    /// (their depths cross inside the pixel) or ``"placed"`` (a camera-facing label's placement,
+    /// ``label_plan.rs``) (``order.rs``). Nothing is drawn.
     #[allow(clippy::type_complexity)]
     fn contributors(
         &self,
@@ -1090,6 +1091,7 @@ impl PyStream {
             crate::order::Decided::Tie => "tie",
             crate::order::Decided::Depth => "depth",
             crate::order::Decided::Majority => "majority",
+            crate::order::Decided::Placed => "placed",
         };
         let found = py
             .detach(|| stream.contributors(x0, y0, x1, y1))
@@ -1260,7 +1262,8 @@ impl PyStream {
     ///
     /// With ``decisions=True`` each pixel also holds the pairwise orders its ranks read, each
     /// ``(a, b, front, kind)``: ``a < b`` indices into ``entries``, ``front`` the one in front (or
-    /// ``None``), ``kind`` one of ``"paint"``, ``"tie"``, ``"depth"``, ``"majority"``:
+    /// ``None``), ``kind`` one of ``"paint"``, ``"tie"``, ``"depth"``, ``"majority"``,
+    /// ``"placed"``:
     /// - ``pairs``: every pair as the pixel's rank read it (empty for one entry);
     /// - ``sample_ranked``: whether the sub-samples were ranked;
     /// - ``sample_pairs``: per sub-sample, every pair of the entries it ranked (if
@@ -1325,6 +1328,7 @@ impl PyStream {
                 crate::order::Decided::Tie => "tie",
                 crate::order::Decided::Depth => "depth",
                 crate::order::Decided::Majority => "majority",
+                crate::order::Decided::Placed => "placed",
             };
             (p.a, p.b, p.front, kind)
         };
