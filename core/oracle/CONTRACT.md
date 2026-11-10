@@ -30,18 +30,37 @@ Three things are written from this text alone, never from the core's source:
 
 ### What the oracle may admit
 
+**Judged from the inputs.** The oracle judges each of the core's decisions by what the inputs
+admit, never by a class some other comparison assigns to a difference from a reference render. A
+difference such a comparison would call immaterial is still a `mismatch` where the core's decision
+is not admissible, and a difference is no finding where the decision is.
+
 Where the inputs or the arithmetic leave a decision open, the oracle admits a **conservative set**
 of outcomes rather than transcribing the core. Every such set carries two proofs, and both are
 tested:
 
-- **Soundness.** The core's own decisions fall inside the set. The contract tests check this. An
-  excess is a finding about the core, listed by class, and the set is never widened to fit it.
-- **Discrimination.** A named injected defect falls outside the set and is a `mismatch`, never a
-  tie and never `Either`. Each set names its defect beside it (**Rejects:**), and §12 collects them.
+- **Soundness.** The core's own decisions fall inside the set. The contract tests check this.
+- **Discrimination.** A named injected defect falls outside the set and gets its named verdict,
+  `mismatch` unless §12 names another with its reason; never a tie and never `Either`. Each set
+  names its defect beside it (**Rejects:**), and §12 collects them with their witness fixtures.
 
 A class of decisions that no set narrow enough to discriminate can contain is named in §12 as
 outside what the oracle promises. Its samples are reported by class for a human to view. They are
 never counted as ties.
+
+**When the contract is proven.** A bound in this text is a claim until the executable proof
+passes, and the proof has two parts:
+
+1. every witness fixture of §12 yields its named verdict against the oracle (each mutation's
+   verdict, and agreement on each soundness fixture);
+2. on the real corpus, the core's reported error, shares and decisions never leave the band and
+   sets this text gives, with each violation triaged by name as a contract defect (the text is
+   wrong, and is corrected by a new version) or a core defect (the core is wrong).
+
+Until both pass, the rule that a mismatch of any size fails does not bind: an excess or a mismatch
+is evidence to triage, not yet a verdict on the core. Once both pass, the sets are frozen at their
+versions, an excess is a finding about the core listed by class, and no set is widened to fit
+it.
 
 ### Names and versions
 
@@ -662,8 +681,9 @@ Mesh triangles are keyed as follows, under a 3D camera:
 
 - **Fixed-orientation meshes** take their facing plane (below), with no registry handle.
 - **Offered triangles.** A projected triangle in world space whose three placed corners are all
-  keyed planar is **offered** to the frame's registry (§7), whether or not it has a plane of its
-  own.
+  keyed planar, and whose alpha byte is not 0 (§1), is **offered** to the frame's registry (§7),
+  whether or not it has a plane of its own. (Below, under Paths: the core offers it whatever its
+  alpha, the deviation `invisible_registry_offer`.)
   - **Its plane.** It is the axis plane through its first corner where the corners share a
     coordinate within `max(tol, g)`, with `g` the view's `input_grid`. Otherwise it is the
     canonical plane of `(c1 − c0) × (c2 − c0)` through the first corner. It has no plane where that
@@ -686,10 +706,28 @@ Mesh triangles are keyed as follows, under a 3D camera:
 
 - it is under a 3D camera, projected (not fixed-orientation, not pre-projected);
 - every placed point is keyed planar;
-- its planarity is not `Nearest`.
+- its planarity is not `Nearest`;
+- **it paints something:** some layer of it has a fragment under `alpha_round@1` (§1).
 
 It is offered **flat** when its planarity is Newell, Widest or Axis, its points are not on a line,
 and the fit finds a plane. Otherwise it is offered with no plane of its own.
+
+**Only painting records are offered.** The same holds for a triangle: one whose alpha byte is 0
+(§1) is never offered. A record that paints nothing has no depth anyone sees, so it may neither
+join nor split the identities of records that do. An invisible record on the plane of two visible
+ones changes neither their order nor their ties.
+
+**Deviation (`invisible_registry_offer`).** The core this contract describes offers a path to the
+registry before it drops its layers that paint nothing, and offers every mesh triangle whatever its
+alpha (`Lowering::coplanar`, `mesh::lower`). An invisible record offered there takes part in the
+partition: its flat identity can attach a visible record and so take it out of an identity it
+shared with another, or bring two visible records into one, and either can turn a tie into a
+depth decision or the reverse. Under a 3D camera, two exactly collinear lines on `z = 0` are an
+`ExactTie` decided by paint order; an invisible polygon on their plane attaches one of them, the
+pair is then decided by depth, and the lines' visible pixels change (witness W17, §12). The oracle
+builds its sets (§7) from painting records alone, so such a relation is a `mismatch`. Where the
+reported relation is inside the sets built with the invisible records offered too, the mismatch is
+counted under the name `invisible_registry_offer`, beside `zero_alpha_fragment`.
 
 **What it retains:**
 
@@ -946,6 +984,22 @@ This follows from the writer's rules: positions and translations snap to multipl
     `d + 2ε`.
   - This bounds the reads across nearest-segment and body switches, the discontinuities a local
     gradient misses.
+  - **Where the centreline itself may be rebuilt (`curve_recut`).** The twin argument holds only
+    while input motion keeps every cubic's count `n` and every joint's join. Two changes break it,
+    and a read exposed to either is `truth_unable`, never bounded (`ε̂` and `room` as `lines@1`
+    defines them, §7):
+    - **A count change.** A cubic's `L` moves by at most `6ε` under input motion, so its `n` may
+      change where the cubic is exposed as `lines@1` defines it (§7):
+      `|L − 2 clamp(round(L / 2), 1, 63)| <= 6ε̂ (1 + 1e-9) + 2 room(L)`. A read is exposed where
+      such a cubic's control hull lies within `r` of `P`.
+    - **A join flip.** CE's equality test that joins a cubic to the one before it, or splits them,
+      may flip where, on either screen axis, the two points' separation is within
+      `(2 + 10^-5) ε̂ + room(0)` of that axis's tolerance in pixels. A flip swaps the joint's
+      vertex between the previous cubic's last vertex and the cubic's own first point, whose keys
+      may differ by any amount (§5). A read is exposed where either point lies within `r` of `P`.
+
+    Both need the scene precision to bring a boundary within a few `ε`, so the class is rare; it is
+    counted under its own name.
 - **On a facing plane.**
   - For a label: `S⁻ = S⁺ = (|o| + R) ds(Δ_c)`, where `Δ_c = (g/2) |R_2|_1` for a label's centre
     as carried.
@@ -1036,12 +1090,21 @@ plus `hypot(b, c) · 0.1` for the flattening.
 On every probe fixture, at every pixel and sample where the core reports a fragment with a finite
 key:
 
-- the core's own error bound, for its own row and for every pair-dependent row, is at most
-  `R_f(k)`;
+- the core's own error bound, for its own row and for every pair-dependent row the oracle derives
+  from XF, is at most `R_f(k)`;
 - its key lies within `2 R_f(k)` of `o_f(k)`.
 
-For keys of `−∞`, the test asserts equality. An excess is a finding about the core, listed by
-class. The band is never widened to fit it.
+**Scope.** The rows tested are the fragment's own row and each row read on a plane the oracle
+settles from XF alone: an own plane, a flat path's fill plane, and a registered plane both records
+share in every scenario (§7). A **planeless record that may share** a registered plane (§7, the
+may-share set) has attached rows whose plane depends on which identity the registry settles; the
+oracle does not settle it and the test never reads the core's choice. Those rows are left out of
+the numeric test, and their pairs are covered by the class that admits every edge (§7). Their own
+rows stay in.
+
+For keys of `−∞`, the test asserts equality. Once the band is proven (How to read it), an excess is
+a finding about the core, listed by class, and the band is never widened to fit it. Before then, an
+excess is triaged by name as a contract defect or a core defect.
 
 **Rejects:** a mesh face whose plane is shifted, against a surface it shares no registered plane
 with, by more than its interval (snap precision plus arithmetic), so that the order at a crossing
@@ -1144,13 +1207,19 @@ the attach bound.
 identity where both records are registry-offered, both may retain an identity (§5), and one of these
 holds:
 
-1. **Width.** `w(A ∪ B) <= 2 max(τ⁺_A, τ⁺_B) (1 + 2^-40)`, where `w` is the minimum width of the
-   two records' points together. An implementation may use any lower bound of `w`; that only grows
-   the set.
-2. **A third record.** For a record with no plane of its own: some flat registry-offered record `M`
-   passes (1) with each of them. `M` may be either of them.
+1. **Width.** For a pair at least one of whose records is flat:
+   `w(A ∪ B) <= 2 max(τ⁺_A, τ⁺_B) (1 + 2^-40)`, where `w` is the minimum width of the two records'
+   points together. An implementation may use any lower bound of `w`; that only grows the set. It
+   must still fail the test on every §12 witness that relies on failing it (W4, W9, W10, W11, W12,
+   W16, and W17's second form), whose true widths are at least 1 frame unit against tolerances
+   under `10^-4`; any lower bound within a factor 2 of `w` does.
+2. **A third record.** For a pair with a record of no plane of its own: some flat registry-offered
+   record `M` passes (1) with each of them. `M` may be either of them.
 3. **The axis rule.** Both lie on one axis plane by the axis rule above: the same axis, and first
    points equal on it.
+
+Only flat records found identities, so two records with no plane of their own share one only
+through a flat record, (2), or by the axis rule, (3); the width test alone never joins them.
 
 Why this contains every outcome:
 
@@ -1171,9 +1240,15 @@ Why this contains every outcome:
     applies.
 
   The admitted edges are the union over both scenarios.
-- **A record with no plane of its own.** Its rows lie on identity planes that the partition fixes.
-  So the oracle admits every edge (weak, and strong either way) for such a pair that may share, and
-  labels it `Policy(one_plane@1)`. This class is outside what the oracle promises (§12).
+- **A record with no plane of its own, through a flat identity** ((1) or (2)). Its rows lie on
+  identity planes that the partition fixes. So the oracle admits every edge (weak, and strong either
+  way) for such a pair, and labels it `Policy(one_plane@1)`. This class is outside what the oracle
+  promises (§12).
+- **Records with no plane of their own, by the axis rule alone** ((3), and no flat record passes
+  (1) with either). The axis rule then holds in every scenario, and its plane is the axis plane
+  itself, which the oracle computes exactly: each reads its row on that plane at the sample, and
+  the term is `within_term` with their axis shares. Two such rows read at one sample are one
+  computation, so the pair is an `ExactTie` (§7) wherever both rows are read there.
 
 **Rejects:** a line crossing a surface beyond the width test (its points standing off the surface's
 plane by more than twice the larger tolerance), drawn over the surface where it is behind it.
@@ -1250,29 +1325,74 @@ It states two limits:
 [Rests on: `order::lines`, `lines_term`, `Paths::own_at`, `Centreline::slides_among`,
 `slide_under`, `step`, `slack`.]
 
-**Oracle reading.** The oracle bounds the share from XF:
+**Oracle reading.** The oracle bounds the core's reported share from above, from XF, term by term
+along the core's bound on a read's move. Write `ε̂ = ε (1 + 2^-40)` and `σ̂ = σ (1 + 2^-40)`, with
+`ε` the record's screen shift and `σ` its depth share (§6), and `room(x) = 128u max(scale, x, 1)`,
+where `scale` is the largest screen coordinate magnitude of the centreline's vertices (§5).
 
-    O⁺ = σ + (1 + 2^-40) W / L
+- **Joints.** Every cubic but the path's first starts a joint with the cubic before it in the point
+  list. Its `gap` is the screen distance from the previous cubic's last vertex to the cubic's own
+  first point, its `tol` is `hypot((1e-6 + 1e-5 |S_0|) |xx|, (1e-6 + 1e-5 |S_1|) |yy|) (1 + 1e-9)`
+  at that first point `S`, and its `keygap` is the two points' key difference. CE's test (§4) on
+  the shown points says whether the drawn frame joins or splits them; the oracle evaluates it as
+  the core does, on the same shown points.
+- **Reach.** `slack⁺` is the largest `gap + 2·10^-5 ε̂` over the joints that are joined, and the
+  split ones with `gap − tol <= (2 + 2·10^-5) ε̂ + 2^-30 (gap + tol)`; 0 where there are none.
+  For pixel `(x, y)`, `reach⁺ = ε̂ + slack⁺ + room(max(x, y) + 1)`.
+- **The segments a read may take.** For each of the 17 reads `P` and each segment `s`: `d_s` is
+  `P`'s distance from it, `κ_s` its key at `P`'s foot clamped to its ends, `spread_s` its two keys'
+  difference and `kmax_s` their larger magnitude. With `d_min` the least `d_s`,
+  `Σ(P) = { s : d_s <= max(h + reach⁺, d_min + 2 reach⁺) + room(max(x, y) + 1) }`.
+  This holds every segment the core's bound reads at `P`: its holders, the ones that may hold `P`
+  after the move, and the near-nearest, for the stroke's read and the own fill's alike.
+- **A segment's move.**
+  `moves⁺_s = (1 + σ̂) spread_s + σ̂ kmax_s + slack_s + step⁺_s`, where `slack_s` is
+  `(1 + σ̂) keygap` for a segment that starts a joint and 0 otherwise.
+- **A step of a cubic's count (`step⁺_s`).** For a segment that is a piece of a cubic, take the
+  cubic's control points on screen `X_0..X_3` and keys `k_0..k_3`; its `L` (§5); its chord
+  `v = |X_3 − X_0|`; `far`, the larger of `|X_1 − X_0|` and `|X_2 − X_0|`; for `j = 1, 2`,
+  `along_j = ((X_j − X_0) · (X_3 − X_0)) / v²` and `r_j = k_j − k_0 − (k_3 − k_0) along_j`
+  (both 0 where `v = 0`); `low` and `high`, the least and most of 0, `r_1` and `r_2`;
+  `kmax = max |k_j|`, `kends = |k_3 − k_0|`, `span = max k_j − min k_j`; `E = σ̂ (1 + σ̂) kmax`
+  and `lean = 2ε̂`.
+  - The cubic is **exposed** where `|L − 2 clamp(round(L / 2), 1, 63)| <= 6ε̂ (1 + 1e-9) +
+    2 room(L)`. Otherwise `step⁺_s = 0`, and for a segment of no cubic it is 0.
+  - For an exposed cubic, `step⁺_s = (1 + 16u)(max(A, B, C) + 72u (kmax + span))(1 + 2^-40)`:
+    - `A = span + 2E`;
+    - where `v > 2 lean`, `B = max(1 + σ̂, 2)(high − low + eps)` with
+      `eps = 128u (kmax + kends (1 + max_j |along_j|)(1 + scale / v))`, and
+      `C = high − low + 2 (2E (1 + wide) + kends du)` with `short = v − lean`,
+      `du = (lean (v + far) + lean²) / short² + far v (2v + lean) lean / (v² short²)` and
+      `wide = max_j |along_j| + du`;
+    - where `v <= 2 lean`, `B = C = 0`.
 
-- `W` is the largest, over the 17 reads, of
-  `(1 + σ)(max K' − min K') + (1 + σ) Sp + σ max |K'| + (1 + σ) J + 2 χ`.
-- `K'` is the keys of the centreline within `max(h, d) + 2ρ` of the read, with
-  `ρ = ε + χ + g_j`.
-- `Sp` is the largest key spread of a segment within that radius.
-- `J` is the largest key gap of a joint.
-- `g_j` is the largest screen gap of a joint.
-- `χ` is the largest chord deviation, in position and in key, between any cubic and its polyline at
-  any piece count `n` reachable within `6ε` of its control polygon's length:
-  `6 · max(|c_0 − 2c_1 + c_2|, |c_1 − 2c_2 + c_3|) / (8 n²)` of its control points' screen positions,
-  and likewise of their keys.
-- `L` is the least magnitude over the 17 reads' `K'`.
+    These are the core's three charges (a chord short enough to turn freely, a cubic collinear in
+    place and key, and the band), each taken whichever branch the core takes. The core's choice of
+    the lesser of the band and the adjacent-count departure never exceeds the band. The extra `8u`
+    in the rounding term covers last-bit differences between conforming evaluations of `r_j`.
+- **A read's bound.** `slide⁺(P) = ((1 + σ̂)(J(P) + 8u max_Σ |κ|) + M(P))(1 + 64u)`, where `J(P)`
+  is the most less the least `κ_s` over `Σ(P)` and `M(P)` the largest `moves⁺_s` there.
+- **The share.** With `L⁻` the least `|κ_s|` over every read's `Σ(P)`,
+
+      O⁺ = (σ̂ + (1 + 4u) max_P slide⁺(P) / L⁻)(1 + 2^-40)
+
+  infinite where `L⁻ = 0`.
+
+Why it bounds the core's share: each term is the core's own charge with every condition that
+lowers it dropped, at the oracle's values of the same quantities widened by their last bits; the
+core's read and its low and high keys are keys of segments in `Σ(P)`, so its jump is at most `J`;
+and its magnitude is a key in `Σ(P)`, at least `L⁻`. On a straight cubic of four keys `−1`,
+controls 6 px apart, unplaced, the core charges `320u (1 + 16u)` at the step, and `B` gives
+`step⁺ >= 328u` (witness `lines_straight_cubic_step`, §12).
 
 The pair admits the weak edge where it is eligible and
 
     |o_a − o_b| <= β_a + β_b + (|o_a| + 2R_a) O⁺_a + (|o_b| + 2R_b) O⁺_b
 
-where `β_f = max(S⁻, S⁺) + 3R`. The contract test checks the core's reported share against `O⁺`. An
-excess is listed as `share_beyond_bound`.
+where `β_f = max(S⁻, S⁺) + 3R`. The contract test checks the core's reported share against `O⁺`.
+Once the band is proven (How to read it), an excess is the core finding `share_beyond_bound`.
+Before then, an excess is first a question about this bound: it is triaged by name as a contract
+defect (the bound misses a charge) or a core defect (the core charges what it does not need).
 
 **Rejects:** two lines crossing at depths apart by more than their bounds, their order reversed.
 
@@ -1338,9 +1458,15 @@ writes a set `E` of admitted edges, drawn from: weak (paint order), strong `a`-f
      of one coordinate, with their records' first points equal on it, and each is read at the sample
      itself in every scenario. A fragment is read at the sample itself when it is a triangle, or the
      sample lies inside its outline by the point-in-outline test, or its plane's key is constant on
-     screen.
-3. **A pair that may share an identity with a record of no plane of its own:** every edge
-   (`one_plane@1`, above).
+     screen;
+   - or both are records with no plane of their own sharing an axis plane by the axis rule alone,
+     each read on its row on that plane at the sample (above). Two collinear lines on `z = 0` are
+     this case.
+
+   These bullets are examples. The sentence above them is the rule, and any other pair whose keys
+   are one computation in every scenario is an `ExactTie` too.
+3. **A pair that may share an identity with a record of no plane of its own, through a flat
+   identity:** every edge (`one_plane@1`, above).
 4. **Otherwise**, `E` is the union, over every scenario of §5's pair-dependent reads that §7's sets
    allow (rows or own keys), of three parts, each computed with that scenario's keys and intervals:
    - **strong `a`-front** where `min I_a < max I_b`, and likewise for `b`;
@@ -1434,6 +1560,10 @@ mapped (§4).
   area or not:
   - **Runs.** A **run** is a maximal sequence of consecutive pieces that do not miss the area. A
     closed subpath's closing line is a piece, if its ends differ.
+  - **No piece misses.** A subpath none of whose pieces misses the area is dashed whole by kurbo's
+    `dash` at offset `phase · period`, as one path of all its pieces that keeps its `ClosePath`
+    where the subpath is closed, so the dash runs on across the seam as it does without the guard.
+    This holds even where another subpath of the record brought the guard into force.
   - **Dashing a run.** Each run is dashed on its own by kurbo's `dash`. Its offset is
     `phase · period + at`, where `at` is the summed `arclen(1e-6)` of every piece before it in its
     subpath, missing or not. Pieces that miss are measured and never dashed.
@@ -1519,9 +1649,27 @@ mapped (§4).
 - The recompute takes the **resolve class and unit membership the core recorded** as explicit
   inputs. Per-sample sequences do not determine them: the selection also reads the pixel's pair
   votes and strengths, and fragments absent from every sequence.
-- **The selection is tested apart.** The rule above is applied to the core's recorded pair votes,
-  strengths and fragments. Where it does not give the recorded class and units, the result is
-  `report_inconsistent`, never a tie.
+- **The selection is tested apart.** The selection check reads exactly these recorded quantities,
+  per pixel:
+  - the fragments: identity, producer and surface, mask or cell bytes, coverage byte, colour, and
+    whether each is opaque and full;
+  - the trace's pre-drop per-sample pair relations and strengths: for every ordered pair of
+    fragments covering a sample, whether the first is in front of the second there, behind it, or
+    neither, and whether depth decides there (a strong relation), recorded before any drop;
+  - the pixel's pair votes and strengths (`majority@1`'s result);
+  - the recorded class and units.
+
+  It then checks, in order:
+  1. every per-sample relation is one §7 admits for that pair at that sample: a strong relation
+     only where the strong edge is admitted, a weak one only where the weak edge is. A relation
+     outside the admitted set is `mismatch`;
+  2. `majority@1` over the per-sample relations gives the recorded votes and strengths;
+  3. the rule above, from those relations and votes, gives the sample ranks, the drops of
+     `opaque_drop@1` and `unit_merge@1`, the units and the class, its "behind" read from the
+     per-sample relations.
+
+  A disagreement in step 2 or 3 is `report_inconsistent`, never a tie. The relations are recorded
+  only under the trace's opt-in flag, as one additive key beside the pixel votes.
 
 **Rejects:** a recorded class that the rule, applied to the recorded votes, does not give.
 
@@ -1603,41 +1751,87 @@ background-stroke widths.
 
 **`cairo_linear_gradient@1`.** The normative definition is Cairo 1.18's `cairo.LinearGradient`
 filling or stroking the layer's outline on an ARGB32 image surface whose colours pixman 0.42
-computes. This chain includes:
+computes. The context matrix is the frame mapping (§2), which is diagonal. The chain, in Cairo's
+and pixman's own steps:
 
-- stops at `np.linspace(0, 1, n)`, clamped, kept as 16-bit shorts and not premultiplied;
-- a solid where every stop is one colour or the ends meet;
-- the inverse of the context matrix;
-- 16.16 fixed point;
-- pixman's linear fetch and its pad walker in single precision.
+1. **Stops.** Offsets are `i / (n − 1)`, the last exactly 1, as `np.linspace(0, 1, n)` gives them.
+   Each is converted to 16.16 by `_cairo_fixed_16_16_from_double`: add `1.5 · 2^36` in binary64
+   and keep the low 32 bits of the result's bit pattern as a signed integer, which rounds to the
+   nearest 16.16 value with ties to even. Colours are clamped to `[0, 1]` and kept straight as the
+   16-bit shorts `trunc(c · 65535 + 0.5)`.
+2. **Solids.** A gradient every one of whose alpha shorts is at most `0xff` is clear and paints
+   nothing. Ends closer than binary64's epsilon in both coordinates paint the average of the first
+   and last stops. Stops whose shorts are all equal paint the first stop. Each solid is
+   premultiplied by `cairo_premultiply@1`.
+3. **The pattern matrix** is `cairo_matrix_invert` of the context matrix: for a diagonal matrix,
+   negate the translation, then for each axis whose scale is not 1 take its reciprocal and multiply
+   that axis's translation by it.
+4. **To pixman.** `_cairo_matrix_to_pixman_matrix_offset` about the middle `(xc, yc)` of the
+   composite extents, with no offset given: the integer-translation shortcut for a unit linear
+   part; otherwise the translation split between the matrix and an integer pixel offset
+   `(ix, iy)` (the candidate of least magnitude over `i, j ∈ {−1, 1}`, floored); the 16.16 entries
+   by the step-1 conversion; then, unless the matrix has unity scale (Cairo's test at `1/256`), up
+   to five fix iterations that move the translation until the fixed matrix agrees with the
+   floating one at `(xc, yc)`.
+5. **The ends** are the record's ends shown for display (§2), converted to 16.16 by step 1:
+   `p1`, `p2`, with `d = p2 − p1` and `l = d_x² + d_y²`.
+6. **The parameter.** Pixel `(x, y)` is the 16.16 point `v = pixman_transform_point_31_16_3d` of
+   `((x + ix) · 2^16 + 2^15, (y + iy) · 2^16 + 2^15, 2^16)`. pixman's linear fetch evaluates
+   `t = (d · v − d · p1) · 2^32 / (l · v_2)` in binary64 at a composite run's first pixel, its
+   step `inc` likewise, and gives pixel `i` of the run the position `trunc(t) + trunc(inc · i)`.
+7. **The colour** at a position is `pixman_gradient_walker_pixel_32` under pad extend, in single
+   precision, as pixman 0.42 writes it.
 
-The core deviates from it in four ways:
+The exact real parameter `τ(x, y) = 2^16 (d_x (v_0 − p1_x) + d_y (v_1 − p1_y)) / l` follows from
+the integers of steps 4–6 alone; `v_2 = 2^16` for these matrices.
 
-1. **Composite runs.**
-   - The core takes the composite runs from its own coverage spans in the row, not from Cairo's
-     rasterizer spans.
-   - A run starts at the first covered pixel. A fully covered span at least 256 pixels long is a run
-     on its own. Otherwise spans are gathered, and a gap longer than one pixel cuts the gathered
-     run once it is longer than 256 pixels. A one-pixel gap never cuts.
-   - Each pixel's parameter is stepped from its run's start as `t + trunc(inc · i)`.
-2. **Agreement.** Against Cairo's own renders, the core agrees on all but about 1 in 60,000 interior
-   pixels, and those by one level.
-3. **The middle of the extents.** It comes from the outline's box in 24.8 fixed point, rounded out
-   and cut to the frame.
-4. **The ends.** They are the record's ends, shown for display.
+The core deviates from this chain in three ways:
 
-[Rests on: `gradient.rs` module doc, `source`, `Linear::at`; `path::composite_runs`, `RUN_LENGTH`;
-`tests/gradient.rs`.]
+1. **The ends are not fitted.** Cairo first applies `_cairo_gradient_pattern_fit_to_range` with a
+   limit of 16383: where every end coordinate is at most 16383 in magnitude the fit is the
+   identity, and beyond it Cairo rescales the ends and the matrix. The core never fits, and takes
+   pixman's 64-bit products of the unfitted ends in 128 bits. Within the limit the two chains are
+   one.
+2. **Composite runs.** The core takes them from its own coverage spans in the row, not from Cairo's
+   rasterizer spans. A run starts at the first covered pixel. A fully covered span at least 256
+   pixels long is a run of its own. Otherwise spans are gathered, and a gap longer than one pixel
+   cuts the gathered run once it is longer than 256 pixels. A one-pixel gap never cuts.
+3. **The middle of the extents** comes from the outline's box in 24.8 fixed point, rounded out and
+   cut to the frame, where Cairo uses its approximate path extents.
 
-**Oracle reading for gradients.** The oracle computes each gradient pixel's parameter directly at
-the pixel's centre and admits every byte within one level of that colour.
+[Rests on: `gradient.rs` module doc, `source`, `to_pixman`, `Linear::parameter`, `Linear::at`;
+`path::composite_runs`, `RUN_LENGTH`; `tests/gradient.rs`.]
 
-- A run start moves a pixel's parameter by less than one 16.16 unit, which is under a level.
-- The core's stated disagreement with Cairo is one level.
+**Oracle reading for gradients.** The oracle reproduces steps 1–5 and 7 exactly, at the middle of
+its own outline's box (deviation 3's definition). It does not reproduce the runs. It computes
+`τ` exactly from the integers, in rational arithmetic, and admits every integer position `p` with
 
-The recompute with the oracle's colours compares gradient fragments with this ±1 tolerance.
+    |p − τ| <= 2.5 + Δ_box,   Δ_box = 2^16 (|d_x| (|e_x| + 1) + |d_y| (|e_y| + 1)) / l
 
-**Rejects:** a gradient pixel two or more levels from its parameter's colour.
+where `e_x` and `e_y` are the fixed matrix's linear entries minus `2^16` times the floating ones.
+The admitted colours are the walker's at each admitted position.
+
+- **Why the run need not be known.** For a diagonal matrix the rounding term of
+  `pixman_transform_point_31_16_3d` does not depend on `x`, so `v` is exactly linear along a row
+  and a run's start enters only through the two truncations, which move the position by less than
+  2. Binary64 evaluation adds less than 1/2 while every end and every pixel's point is within the
+  fit limit.
+- **Why `Δ_box`.** The oracle's box and the core's agree except where an edge of the outline lies
+  within reach of a pixel boundary, and a one-pixel move of the box moves the fixed translation by
+  at most `|e| + 1` units per axis.
+- **Why this holds for any stops.** The walker is evaluated at the positions themselves, so stop
+  count and colour slope do not enter the bound. With 1,025 alternating black and white stops,
+  run start and pixel centre give positions 16383 and 16384, colours about 4 and 0, and both are
+  admitted (fixture `gradient_dense_stops`, §12).
+- **Outside the promise.** An end, or a gradient pixel's point in pattern space, beyond 16383 in
+  magnitude is `gradient_far_ends`: the oracle reports `truth_unable` for that layer's pixels.
+
+The recompute carries each gradient fragment as the per-channel range of its admitted colours, by
+interval arithmetic: every blend step is monotone in each operand.
+
+**Rejects:** a gradient fragment's colour outside the walker's colours at every admitted position.
+A shift of two levels in a two-stop gradient whose window spans less than one level is rejected
+(witness W14, §12).
 
 **`ce_shading@1`.**
 
@@ -1654,8 +1848,9 @@ The recompute with the oracle's colours compares gradient fragments with this ±
   - **CE's corner normal** at point `i` of a face of `n` points:
     - it is `(0, 1, 0)` where the face has at most two anchors, the anchor count being
       `2 · min(ceil(n / 4), (n − 4) div 4 + 1)` for `n >= 4`;
-    - otherwise take `v1 = p[i + 3] − p[i]` and `v2 = p[i − 3] − p[i]`, where `i + 3` wraps to 3
-      past `n − 4` and `i − 3` wraps to `n − 4` below 3. Each is divided by its largest
+    - otherwise take `v1 = p[j] − p[i]` and `v2 = p[k] − p[i]`, where the conditions read the
+      original index `i`: `j = i + 3` if `i < n − 3`, else `j = 3`; `k = i − 3` if `i > 2`, else
+      `k = n − 4`. (For `n = 8`, the corner `i = 3` reads points 6 and 0.) Each is divided by its largest
       magnitude; where both are zero the normal is `(0, −1, 0)`, and where one is zero the other is
       used alone as `u`;
     - their cross product, where its length exceeds `1e-6`, divided by its length, is the normal;
@@ -1674,8 +1869,9 @@ The recompute with the oracle's colours compares gradient fragments with this ±
   - **Lighting.** Each corner is lit at its placed position.
     - Under CE's model, the corner takes the shading above of the encoded colour, then is clamped to
       `[0, 1]`.
-    - Under soft diffuse (light model 1), the colour is first decoded by the sRGB transfer function:
-      `c / 12.92` for `c <= 0.04045`, else `pow((c + 0.055) / 1.055, 2.4)`. The normal is turned to
+    - Under soft diffuse (light model 1), each encoded channel is first clamped to `[0, 1]`, then
+      decoded by the sRGB transfer function: `c / 12.92` for `c <= 0.04045`, else
+      `pow((c + 0.055) / 1.055, 2.4)`. The normal is turned to
       face the eye, `frame_center + d R_2`, where its dot product with the direction to the eye is
       negative. The linear colour is then scaled by
       `ambient + (1 − ambient) max((n · l + wrap) / (1 + wrap), 0)`, where `l` is the unit vector
@@ -1753,25 +1949,32 @@ policies order it like any other fragment, so something nearer can cut it.
 - **`G` a stroke or background stroke, or a point block:** `L` in front.
 - **`G` the fill of a path that is not a face of a face group** (a filled plane or polygon, always a
   surface):
-  - `G` in front where it is nearer than `L`'s centre key, compared both at the sample and at the
-    centre's screen point (where `G`'s key is defined there). Where the two comparisons differ,
-    both orders (case 1).
-  - `L` in front where it is not nearer.
+  - "Nearer" compares `G`'s interval (§6) with the interval of `L`'s centre key. `G` is nearer
+    where its interval lies wholly in front, and not nearer where wholly behind. Where the two
+    meet, both orders, as a band tie (`TieBand`): a precision matter, not an open case.
+  - `G` in front where it is nearer, compared both at the sample and at the centre's screen point
+    (where `G`'s key is defined there). Where the two comparisons differ, both orders (case 1).
+  - `L` in front where it is not nearer by both comparisons.
   - Where `G`'s alpha byte is below 255, both orders (case 2).
 - **`G` a face of a face group, or a mesh triangle:** as the previous case, and also `L` in front
   (case 3, read as no surface).
 
 Then:
 
-- Where `P` and `W` are each one order, and the same order, the pair's relation stands as §7 gives
-  it.
-- Otherwise both orders are admissible at that sample, and the sample counts `label_rule_open`.
+- **The ruled case.** Where `W` is one order, no open case applies, and that order is the only
+  admissible one at the sample. `P` does not widen it. A camera-facing label sits whole, under an
+  opaque filled surface nearer at the sample and at the centre, and over everything else; a
+  reported order other than `W`'s there is `mismatch`, never `label_rule_open`.
+- **The open cases.** Where `W` holds both orders by case 1, 2 or 3, both orders are admissible at
+  that sample, and the sample counts `label_rule_open`. Only those three cases count it.
+- **A band tie** in the nearer comparison admits both orders as `TieBand`, under §7's rules.
 
 The rule ends when the open cases are settled and the whole-label rule is drawn. Its replacement is
 a new version.
 
 **Rejects:** a camera-facing label drawn over an opaque filled polygon (not a face of a face group)
-that is nearer than the label at the sample and at the label's centre.
+whose interval lies wholly in front of the label's centre key, at the sample and at the centre's
+point (witness W5, §12).
 
 ## 11. What the oracle refuses
 
@@ -1821,42 +2024,226 @@ Each refusal names the slot, the object, and the kind or bit.
 
 ## 12. Cases the contract must reject
 
-### Injected defects
+### Fixtures
 
-Each entry is an injected defect that the oracle must report as `mismatch` at the samples it changes,
-never as a tie and never `Either`. Defect 13 is the exception, reported as `report_inconsistent`.
-Each is named beside the set it bounds, and each is committed as a mutation test.
+Each case below is a **witness**: a concrete scene, a fixture under
+`core/oracle/tests/fixtures/<name>/`, and the verdict the oracle must give. A fixture directory
+holds:
 
-| # | Injected defect | Set it bounds |
-|---|---|---|
-| 1 | Two overlapping 2D layers (keys `−∞`), paint order reversed | `ExactTie` (§7) |
-| 2 | Two glyph fills on one axis plane, inside both outlines, paint order reversed | `ExactTie` (§7) |
-| 3 | A stroke 0.3 px wide or less, dropped where it covers a cell by at least `1/510 + μ` | presence band `μ` (§4) |
-| 4 | A mesh face's plane shifted by more than its interval against a crossing surface it shares no plane with | intervals `S` and `R` (§6) |
-| 5 | A camera-facing label drawn over an opaque filled polygon nearer than it at the sample and at its centre | `label_interim@1` (§10) |
-| 6 | A fill whose alpha rounds to zero, counted as present | `alpha_round@1` (§1) |
-| 7 | A mesh triangle missing at a sample farther than `m = ε + 1/256` inside it | mesh margin `m` (§3) |
-| 8 | A cell byte outside its admitted interval | presence band `μ` (§4) |
-| 9 | A line moved through a surface by more than its curve interval | curve `S` (§6) |
-| 10 | A line crossing a surface beyond the width test, drawn over it where behind | may-share set (§7) |
-| 11 | Two faces at a dihedral well past `θ_A + θ_B`, reversed beyond their intervals | `near_parallel@1` margin (§7) |
-| 12 | Two crossing lines whose depths part by more than `O⁺`, reversed | `lines@1` bound `O⁺` (§7) |
-| 13 | A recorded resolve class the rule does not give from the recorded votes (`report_inconsistent`) | resolve inputs (§9) |
-| 14 | A gradient pixel two or more levels from its parameter's colour | gradient ±1 (§9) |
-| 15 | A stroke drawn under its own fill | `own_layers@1` (§7) |
-| 16 | An order breaking a strong edge where a weak edge could yield | completions (§7) |
+- `scene.xf`, the scene as the witness gives it;
+- for a mutation, `defect.json`: the one recorded quantity the defect changes (which quantity, at
+  which pixel and samples, and its injected value), applied to the conforming core's report of
+  `scene.xf`. Every other recorded quantity is that report's own, so the fixture differs from the
+  conforming case by the defect alone;
+- `expected.json`: the verdict, the pixels and samples it falls on, and the label or count name
+  it carries.
+
+A mutation's verdict is `mismatch` unless its row names another, with its reason. A soundness
+fixture's verdict is agreement: the conforming report passes. Each witness's trace below gives
+every pair's `E` at the samples it names, so that no admitted route (a policy, a may-share pair, a
+label case, a cycle) can absorb the defect.
+
+### The views
+
+Every scene uses one of two views, an input grid of `2^-20`, no placement, a black background, and
+opaque colours unless a witness says otherwise. A line from `p` to `q` is one cubic with controls
+`p`, `(2p + q) / 3`, `(p + 2q) / 3`, `q`; every coordinate below is a
+value given exactly, and control points are written in binary64 as the nearest values to
+the thirds. A polygon's edges are such lines, its subpath closed.
+
+- **View F** (flat camera). 16 × 16 px, frame 16 × 16 units, mapping centre `(0, 0)`: `xx = 1`,
+  `yy = −1`, `x0 = y0 = 8`. Pixel `(i, j)` holds the points `x ∈ [i − 8, i − 7]`,
+  `y ∈ [7 − j, 8 − j]`. Every key is `−∞`.
+- **View C** (3D camera). 64 × 64 px, frame 16 × 16 units centred at the origin, `phi = 0`,
+  `theta = −90°`, `gamma = 0` (the rotation is the identity), focal distance 20, zoom 1: `xx = 4`,
+  `yy = −4`, `x0 = y0 = 32`. A point `(x, y, z)` has factor `f = 20 / (20 − z)` and key `−f`, and
+  lands at `(32 + 4 f x, 32 − 4 f y)`. At `z = 0`, pixel `(i, j)` holds
+  `x ∈ [(i − 32) / 4, (i − 31) / 4]`, `y ∈ [(31 − j) / 4, (32 − j) / 4]`.
+
+Every curve below is kept clear of `curve_recut`: each cubic's `L` lies at least 0.06 px from a step
+of its count, and no joint is near a flip, against `6ε̂` under `10^-5` px.
+
+### Mutations
+
+**W1, `exact_tie_2d`.** Set: `ExactTie` (§7). View F. Square `A` = `[−4, 2]²`, fill red, then
+square `B` = `[−2, 4]²`, fill blue. Pixel `(8, 8)` (points `[0, 1] × [−1, 0]`) is inside both.
+Trace: both keys `−∞`, `E = {weak}`, `B` in front. Defect: at its 16 samples, `A` in front.
+Escapes: two fragments, so no cycle; no label; `ExactTie` admits no strong edge.
+
+**W2, `exact_tie_axis_fills`.** Set: `ExactTie` (§7). View C. Squares `A` = `[−4, 2]²` and
+`B` = `[−2, 4]²` at `z = 0`, each coded on the axis plane `z`, fills red then blue. Pixel
+`(32, 32)` (points `[0, 0.25] × [−0.25, 0]`) is inside both outlines. Trace: both read the axis
+plane at the sample in every scenario, so `E = {weak}`, `B` in front. Defect: at its 16 samples,
+`A` in front. Escapes: as W1.
+
+**W3, `thin_stroke_present`.** Set: presence band `μ` (§4). View F. An open line from
+`(−6, −0.5)` to `(6, −0.5)`, stroke black, width `0.25`, no fill. In pixel `(8, 8)` it covers the
+cell rows `y ∈ [−0.75, −0.5]` and `[−0.5, −0.25]` by `0.5` each, far above `1/510 + μ`. Trace:
+`Yes` at the 8 samples of those rows. Defect: the fragment absent there. Escapes: `Either` needs a
+cell within `μ` of `1/510`.
+
+**W4, `mesh_face_reversed`.** Set: intervals `S` and `R` (§6). View C. A mesh triangle `T` with
+corners `(−6, −6, 0)`, `(6, −6, 0)`, `(0, 6, 0)`, red, then a polygon `Q` on the plane `z = x / 2`
+with corners `(−6, −6, −3)`, `(6, −6, 3)`, `(6, 6, 3)`, `(−6, 6, −3)`, fill blue. Pixel
+`(36, 32)`: `T` keys `−1`; `Q` lies at `x ≈ 1.094`, `z ≈ 0.547`, keys about `−1.028`. Trace: no
+shared plane (the union is at least 1 unit wide; no third record; `T` is flat, so no axis rule);
+no `near_parallel@1` (dihedral `atan(1/2) ≈ 26.6°` against `θ_A + θ_B` under `10^-5`); no
+`lines@1` (no strokes); the keys part by `0.028` against bands under `10^-5`. `E = {strong Q}`.
+Defect: at its 16 samples, `T` in front. Escapes: two fragments; no label.
+
+**W5, `label_under_surface`.** Set: `label_interim@1`, the ruled case (§10). View C. A square
+polygon `G` = `[−3, 3]²` at `z = 2`, fill blue, alpha 1, not a face of a face group, then a
+camera-facing label `L`: a square glyph `[−1.5, 1.5]²` with a fixed-orientation centre at the origin,
+fill white. Pixel `(32, 32)`: `L` keys `−1` (its centre's), `G` keys `−20/18 ≈ −1.111`, at the
+sample and at the centre's point. Trace: `W = {G in front}` (opaque, a path's fill, nearer by both
+comparisons with intervals wholly apart), so `G` in front is the only admissible order; `P` agrees.
+Defect: at its 16 samples, `L` in front. Escapes: case 1 needs the two comparisons to differ,
+case 2 an alpha below 1, case 3 a face or mesh triangle; the keys part by `0.111`, so no band tie;
+two fragments.
+
+**W6, `alpha_rounds_to_zero`.** Set: `alpha_round@1` (§1). View F. Square `[−4, 4]²`, fill
+`(1, 0, 0, 0.003)`: `trunc(0.003 · 65535 + 0.5) >> 8 = 0`. Trace: no fragment anywhere. Defect: a
+fragment of it reported at pixel `(8, 8)`, full mask.
+
+**W7, `mesh_inside_margin`.** Set: mesh margin `m = ε + 1/256` (§3). View F. One mesh triangle
+with corners `(−6, −6, 0)`, `(6, −6, 0)`, `(0, 6, 0)`, red. Every sample of pixel `(8, 8)` lies at
+least 1.9 px inside the unrounded triangle, so `Yes`. Defect: the fragment absent at its 16
+samples.
+
+**W8, `cell_byte_outside`.** Set: presence band `μ` (§4). View F. Polygon `[21/32, 4] × [−4, 4]`,
+fill white. In pixel `(8, 8)` the cell column `x ∈ [0.5, 0.75]` is covered `0.375`, cell byte
+`floor(0.375 · 255 + 0.5) = 96`, and `μ` admits only 96. Defect: those four cell bytes reported as
+104.
+
+**W9, `line_before_surface`.** Set: curve `S` (§6). View C. A polygon `[−6, 6]²` at `z = 0`, fill
+blue, then an open line from `(−4.5, 0, 1)` to `(4.5, 0, 1)`, stroke white, width `0.5` (2 px).
+Pixel `(32, 31)`: the line keys `−20/19 ≈ −1.053`, the surface `−1`. Trace: no shared plane (the
+union is 1 unit wide, and the only flat record fails the width test with the line, so no third
+record; the line holds `y = 0` and `z = 1` exactly, the surface neither); not two strokes, so no
+`lines@1`; `E = {strong line}`. Defect: at the samples both cover, the surface in front. Escapes:
+two fragments; the line's `L ≈ 37.9` px is 0.1 px from a step.
+
+**W10, `line_through_surface`.** Set: the may-share set (§7). View C. A polygon `[−6, 6]²` at
+`z = 0`, fill blue, then an open line from `(−4.5, 0, −1.5)` to `(4.5, 0, 1.5)`, stroke white,
+width `0.5`. At world `x = −3` the line lies at `z = −1`, keys `−20/21 ≈ −0.952`, on screen at
+`x ≈ 20.57`: pixel `(20, 31)`, where the surface keys `−1`. Trace: the union is at least 1.2 units
+wide, the surface is the only flat record and fails with the line, and the line holds `y = 0`
+alone, so no route shares; `E = {strong surface}`. Defect: at the samples both cover, the line in
+front. Escapes: no third flat record in the frame; two fragments.
+
+**W11, `faces_past_parallel`.** Set: `near_parallel@1` (§7). View C. A polygon `[−6, 6]²` at
+`z = 0`, fill red, then a polygon on `z = x / 4` with corners `(−6, −6, −1.5)`, `(6, −6, 1.5)`,
+`(6, 6, 1.5)`, `(−6, 6, −1.5)`, fill blue. Pixel `(40, 32)`: red keys `−1`; blue lies at
+`x ≈ 2.07`, `z ≈ 0.518`, keys about `−1.027`. Trace: no shared plane (union at least 1 unit wide,
+no third record); dihedral `atan(1/4) ≈ 14°` far past `θ_A + θ_B`; `E = {strong blue}`. Defect: at
+its 16 samples, red in front.
+
+**W12, `lines_crossing_apart`.** Set: `lines@1` bound `O⁺` (§7). View C. Line `A` from
+`(−3.1875, 0, 0)` to `(3.1875, 0, 0)`, then line `B` from `(0, −3.1875, 1)` to `(0, 3.1875, 1)`,
+strokes white then green, width `0.5`. Pixel `(32, 32)` is covered by both: `A` keys `−1`, `B`
+`−20/19`. Trace: two strokes of paths with no plane of their own; neither cubic is near a step
+(`L = 25.5` and `≈ 26.84` px), there are no joints, every key along `A` is `−1` and along `B`
+`−20/19`, so `J = 0` and each `O⁺` is under `10^-6`; the policy's term fails by `0.05`; no shared
+plane (two such records share only through a flat record, of which there is none, or by the axis
+rule, and `A`'s `z = 0` and `B`'s `z = 1` differ); `E = {strong B}`. Defect: at the samples both
+cover, `A` in front.
+
+**W13, `resolve_class_inconsistent`.** Verdict `report_inconsistent`: the recorded class does not
+follow from the recorded relations, which says the report contradicts itself, not that the scene
+admits no rendering. Set: the selection check (§9). Scene as W1. Pixel `(8, 8)`: both fragments
+opaque and full, `B` in front, so `opaque_drop@1` keeps `B` alone and the class is `Fast`. Defect:
+the recorded class `Coverage`.
+
+**W14, `gradient_shifted`.** Set: `cairo_linear_gradient@1` (§9). View F. Polygon
+`[−8, 8] × [−2, 2]`, fill a gradient of two stops, black `(0, 0, 0, 1)` to white `(1, 1, 1, 1)`,
+ends `(−8, 0)` and `(8, 0)`. At pixel `(8, 8)` the admitted positions span under one level, so at
+most two adjacent bytes per channel are admitted. Defect: the fragment's colour, and the pixel's,
+raised by 2 levels in each colour channel.
+
+**W15, `stroke_under_own_fill`.** Set: `own_layers@1` (§7). View C. Polygon `[−4, 4]²` at `z = 0`,
+fill red, stroke blue, width `0.5`. Pixel `(47, 32)` (points `[3.75, 4] × [−0.25, 0]`) is covered
+whole by the fill and by the stroke along `x = 4`, and by nothing else. Trace: `E = {weak}`, the
+stroke in front. Defect: at its 16 samples, the fill in front. Escapes: two fragments, so no cycle
+in which the weak edge could yield.
+
+**W16, `cycle_breaks_strong`.** Set: completions and `cycle_rank@1` (§7). View C. A closed polygon
+`P` through `(−3.1875, 0, 1.5)`, `(3.1875, 0, 1.5)`, `(3.1875, 3/64, −1.5)`,
+`(−3.1875, 3/64, −1.5)`, coded `planes` Curve (no plane of its own), fill green, background
+stroke red of width `0.25` (1 px), no stroke; then a polygon `B` = `[−6, 6]²` at `z = 0`, coded on
+the axis plane `z`, fill `(0, 0, 1, 0.5)`. On screen `P`'s near edge lies at `y = 32` and its far
+edge at `y ≈ 31.826`. At the four samples of pixel `(32, 31)` on the row `y = 31.875`:
+
+- the background stroke `A` is held by both edges and reads the near one, key `−20/18.5 ≈ −1.081`;
+- the fill `C` reads its nearest edge, the far one, key `−20/21.5 ≈ −0.930`;
+- `B` keys `−1`.
+
+Trace: `E(A, C) = {weak}` with `C` in front (`own_layers@1`: the background stroke under its
+fill); `E(A, B) = {strong A}` and `E(B, C) = {strong B}` (no shared plane: the union with `B` is
+over 2 units wide, `B` is the only flat record, and `P` holds no axis coordinate). The one
+completion cycles, and `cycle_rank@1` lets the weak edge yield: the order is `A, B, C`, and the
+conforming report passes by that route. Nothing is opaque and full there, so nothing is dropped.
+Defect: at those samples the order `C, A, B`, which keeps the weak edge and breaks `B` over `C`; no
+completion gives it.
+
+**W17, `invisible_registry_offer`.** Set: registry eligibility (§5). Two forms.
+
+- **Primary, the reference scene.** 160 × 90 px under a 3D camera at `phi = 0.8`: a red line, then
+  a blue line, collinear on `z = 0`, each of width 60 at opacity 0.5, and a polygon whose fill and
+  stroke opacities are both 0. The two lines are an `ExactTie` (axis rule, every key one
+  computation), decided by paint order. The core this contract describes offers the invisible
+  polygon; its identity attaches one line, and the pair is decided by depth: 408 visible pixels
+  change, among them `(80, 45)`, from `[64, 0, 128]` to `[128, 0, 64]`, though Cairo paints the
+  frame byte for byte the same with and without the polygon. Verdict on that core: `mismatch` at
+  those pixels' samples, counted `invisible_registry_offer`. The fixture holds the scene and the
+  core's report; it needs no `defect.json`.
+- **Second, synthetic.** View C. Line `R` from `(−4.25, 0, 0)` to `(2.125, 0, 0)`, stroke
+  `(1, 0, 0, 0.5)`, then line `U` from `(−2.125, 0, 0)` to `(4.25, 0, 0)`, stroke `(0, 0, 1, 0.5)`,
+  both width `0.5`, then a polygon `[−6, 6]²` at `z = 0` with fill and stroke `(0, 1, 0, 0)`.
+  Pixel `(32, 32)`: both lines cover it whole. Trace: the polygon paints nothing and is not
+  offered, so the lines share by the axis rule alone, `E = {weak}`, `U` in front. Defect: at its
+  16 samples, `R` in front by a strong relation. Verdict `mismatch`, counted
+  `invisible_registry_offer` because the sets built with the polygon offered admit it.
+
+### Soundness fixtures
+
+**`gradient_dense_stops`.** View F. Polygon `[−8, 8] × [−2, 2]`, fill a gradient of 1,025 opaque
+stops alternating black and white (stop 0 black), ends `(−8, 0)` and `(2, 0)`: device `x` 0 to 10.
+A run starting at pixel 0 gives pixel 2 the position 16383 (colour about 4); its centre gives 16384
+(colour 0). Both are admitted, so the core's colour passes, whatever its run. A tolerance of one
+level would reject it.
+
+**`lines_straight_cubic_step`.** View C, input grid 0. An open line from `(−0.75, 0, 0)` to
+`(0.75, 0, 0)` (controls 6 px apart end to end, every key `−1`), stroke white, width `0.5`. Its
+cubic sits on a step (`L = 6`), so the core charges `320u (1 + 16u)` there. Expected: the core's
+reported share is at most `O⁺` (§7: `B` gives at least `328u`), no `share_beyond_bound`.
+
+**`selection_relations`.** Scene as W16. The selection check (§9) reads the trace's pre-drop
+per-sample pair relations and strengths there and derives the recorded votes, ranks, units and
+class. Expected: agreement.
 
 ### Classes outside what the oracle promises
 
 These are reported by class for a human to view, never counted as ties:
 
-- **One plane, no plane of its own.** Orders between a record with no plane of its own and a record
-  it may share a registered plane with. The oracle admits every order (`Policy(one_plane@1)`),
+- **One plane, through a flat identity.** Orders between a record with no plane of its own and a
+  record it may share a flat identity with. The oracle admits every order (`Policy(one_plane@1)`),
   because the partition fixes those rows.
 - **Unbounded bands.** Samples whose band is unbounded (`band_unbounded`, §6). They are
   `truth_unable` per sample.
-- **Open label cases.** Samples counted `label_rule_open` (§10).
-- **Gradients.** Gradient bytes within one level of the oracle's colour.
+- **Rebuilt centrelines.** Reads exposed to a change of a cubic's count or of a joint's join
+  (`curve_recut`, §6). They are `truth_unable` per sample.
+- **Far gradient ends.** Gradient layers with an end or a pixel's point beyond the fit limit
+  (`gradient_far_ends`, §9). They are `truth_unable` for that layer's pixels.
+- **Open label cases.** Samples counted `label_rule_open` (§10), and only by its three cases.
+
+### Findings counted under their own names
+
+These are `mismatch` or failing results that name a known way the core departs from this text:
+
+- `zero_alpha_fragment` (§1): a mesh fragment whose alpha byte is 0.
+- `invisible_registry_offer` (§5): a relation admitted only with records that paint nothing offered.
+- `share_beyond_bound` (§7): a reported `lines@1` share above `O⁺`, a core finding once the
+  contract is proven, and until then triaged by name.
 
 The share of samples in each tie label and each class above is reported per case, so the cost of
 conservatism is measured on real scenes.

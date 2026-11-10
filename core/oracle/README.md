@@ -16,7 +16,10 @@ a frame from an XF stream.
     contract's resolve text.
 - `read.py`, to come. It reads the oracle's verdicts beside the core's recorded decisions.
 - The contract tests, to come. They hold the core to the contract's text: each conservative set
-  must contain the core's decisions, and each named mutation must be rejected.
+  must contain the core's decisions, and each named mutation must get its named verdict. Their
+  witness fixtures go under `tests/fixtures/`, one directory per witness the contract's §12 names.
+  Until those fixtures and a run on the real corpus pass, the contract's bounds are claims to be
+  triaged, not verdicts on the core.
 
 Status: only the contract exists. No code in this directory yet.
 
