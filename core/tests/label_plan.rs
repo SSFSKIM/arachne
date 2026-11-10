@@ -717,3 +717,37 @@ fn a_label_drawn_as_a_mesh_is_open_against_the_sheet_it_meets() {
     assert_eq!(found.len(), 1, "{found:?}");
     assert_eq!(found[0].outcome, Outcome::Open(Open::Label));
 }
+
+/// A sheet of `rgba` at the ends `from` (alpha `1`) to `to` (alpha `0`): a linear gradient,
+/// transparent from `to` on.
+fn fading(slot: u32, corners: &[[f64; 3]], from: [f64; 3], to: [f64; 3]) -> (Shape, Record) {
+    let (shape, mut r) = face(slot, corners, BLUE, &[(10 + slot, SQUARE)]);
+    let mut clear = BLUE;
+    clear[3] = 0.0;
+    r.paint.fill = Paint::Two([BLUE, clear]);
+    r.paint.gradient = Some([from, to]);
+    (shape, r)
+}
+
+/// A sheet qualifying where its gradient is opaque backs no label where its colour is clear: there
+/// the label is in front, as where no sheet is, so a nearer line does not hide it. Where the sheet
+/// is opaque the line covers the label behind it.
+#[test]
+fn a_sheet_backs_a_label_only_where_its_fill_has_positive_alpha() {
+    let orange = [1.0, 0.5, 0.0, 1.0];
+    let sheet = fading(
+        2,
+        &rect([-1.5, 1.5], [-1.0, 1.0], true, |_, _| 1.0),
+        [-1.5, 0.0, 1.0],
+        [0.0, 0.0, 1.0],
+    );
+    let items = [
+        label([-0.5, 0.0, 0.0], [1.4, 0.3]),
+        sheet,
+        line_at(3, 2.0, orange),
+    ];
+    assert_eq!(one(&items), (Outcome::Qualifies, true));
+    let frame = drawn(&items);
+    assert_eq!(px(&frame, 69, 45), stacked(&[orange]));
+    assert_eq!(px(&frame, 86, 45), stacked(&[WHITE]));
+}
