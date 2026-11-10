@@ -63,6 +63,7 @@ pub mod gradient;
 pub mod instance;
 pub mod join_mask;
 pub mod label_class;
+pub mod label_plan;
 pub mod mesh;
 pub mod order;
 pub mod path;
