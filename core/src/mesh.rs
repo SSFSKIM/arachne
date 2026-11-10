@@ -242,7 +242,8 @@ pub fn lower(
                 .map(|n| transform_normal(&draw.place, *n))
                 .collect()
         });
-        let opaque = premultiply([0.0, 0.0, 0.0, alpha])[3] == 255;
+        let alpha8 = premultiply([0.0, 0.0, 0.0, alpha])[3];
+        let opaque = alpha8 == 255;
         for (sub, t) in draw.triangles.iter().enumerate() {
             let idx = t.map(|i| i as usize);
             let px = idx.map(|i| corners[i].0);
@@ -291,6 +292,12 @@ pub fn lower(
                 }
                 _ => (through(), 0, f64::INFINITY),
             };
+            // Of no alpha, Cairo paints nothing of it, as a path's solid layer
+            // ([`crate::path::Lowering::layers`]): offered to the registry as such a path is, it
+            // lays no fragment.
+            if alpha8 == 0 {
+                continue;
+            }
             let colour = match &light {
                 None => TriangleColour::flat(rgb, alpha),
                 Some(light) => light.triangle(
