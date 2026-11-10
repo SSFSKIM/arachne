@@ -104,7 +104,8 @@ The oracle shares exactly these with the core. Each is named with its version:
   oracle. A second flattening would differ from the core's by up to the tolerance at every curved
   edge, so the flattening is part of the definition.
 - **libm 0.2.16.** It supplies `sin`, `cos`, `exp`, `pow`, `atan2` and `hypot`. Square roots are
-  IEEE `sqrt`. §8's join test alone uses the platform's `hypot` instead, as kurbo does.
+  IEEE `sqrt`. It supplies `hypot` for §8's join test too: kurbo 0.13.1 is built without `std`, so
+  its float functions are libm's.
 
 The pinned external definition is **Cairo 1.18's ARGB32 image surface, with pixman 0.42 computing
 its colours**. It defines a linear gradient's bytes (§9), with the core's deviations stated there.
@@ -1605,9 +1606,11 @@ width` and `limit² = pow(10, 2)`:
   the tangent arriving and `cd` the one leaving, and `h = hypot(ab × cd, ab · cd)`, kurbo **joins**
   only where `ab · cd <= 0` or `|ab × cd| >= h · join_thresh`; a slighter turn makes no join and is
   suppressed. A join kurbo makes **mitres** where `2 h < (h + ab · cd) limit²`. Here `hypot` is
-  the platform's `hypot`, as kurbo's `do_join` calls it (`f64::hypot`), not libm's. A join or miter
-  decision that falls exactly at its boundary may therefore differ between platforms, as the
-  core's own does, and the oracle computes it with the same call on the platform it runs on.
+  libm 0.2.16's `hypot`, which kurbo's `do_join` reaches through its float functions, kurbo 0.13.1
+  being built without `std`. A join or miter decision is therefore the same on every platform, at
+  its boundary too, and the oracle computes it with the same function. A contract test against the
+  core's output on Linux and macOS holds the core to libm's decision at corners where libm's
+  `hypot` and the platform's disagree.
 - **Its key** is its two elements' points, as above, and whether it is the closing join. A join
   with an element of no key (a quadratic, a closing line) has none.
 - **Joins inside a near-straight cubic.** A cubic kurbo finds nearly collinear and possibly cusped
@@ -3134,9 +3137,14 @@ alone; the conforming report agrees, and the named wrong reading would not.
 
 - **`join_occurrences`.** View F. One path record, stroke white, width 1, joint miter, cap butt,
   no fill, of four open subpaths of two straight cubics each. Subpaths 1 and 2 are the same spike,
-  `(−7, 4)` to `(−1, 4)` and back to `(−7, 5)`; subpaths 3 and 4 the same spike 8 units lower,
-  `(−7, −4)` to `(−1, −4)` and back to `(−7, −3)`. `joins` bytes per cubic
+  `(−7.1, 4)` to `(−1, 4)` and back to `(−7, 5)`; subpaths 3 and 4 the same spike 8 units lower,
+  `(−7.1, −4)` to `(−1, −4)` and back to `(−7, −3)`. `joins` bytes per cubic
   `0, 0b11, 0, 0b01, 0, 0b01, 0, 0b11`.
+  - **Clear of `curve_recut`.** Each spike starts at `x = −7.1`, not `−7`. From `x = −7` its first
+    cubic had `L = 6`, on a step, 0 px from it, and so exposed; from `−7.1` it has `L = 6.1`, 0.1 px
+    clear of the step 6. Its second cubic keeps `L = √37 ≈ 6.083`, 0.083 px clear of 6. Both clear
+    the 0.06 px every curve here keeps. The legs keep their directions, so the corner, its miter
+    point and the tips below are unchanged.
   - **The keys.** Each spike's join at its corner is one key, met twice, once in each of its
     subpaths. The upper key's decisions are miter, then bevel; the lower key's are bevel, then
     miter. The corner is sharp (an angle of about 9.5° between the legs), so kurbo bevels it: its
