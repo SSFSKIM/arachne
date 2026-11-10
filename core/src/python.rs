@@ -1251,7 +1251,8 @@ impl PyStream {
     ///   premultiplied ``(r, g, b, a)`` and its 8-bit coverage at each of the 16 sub-samples;
     /// - ``samples``: per sub-sample, the indices into ``entries`` covering it, front first, as
     ///   the sample resolve composites them (for the fast and coverage resolves, in their units'
-    ///   order);
+    ///   order); the sample resolve's may hold what the opaque drop removed behind a layer opaque
+    ///   and covering the pixel whole, which blends over them exactly;
     /// - ``units``: for the fast and coverage resolves, the units blended, back to front, as
     ///   ``(members, colour, coverage)`` (members front first, the colour and 8-bit coverage it
     ///   was blended with); empty otherwise;
@@ -1265,10 +1266,35 @@ impl PyStream {
     /// - ``sample_pairs``: per sub-sample, every pair of the entries it ranked (if
     ///   ``sample_ranked``, else of those it composited), a sub-sample having no majority.
     ///
+    /// With ``reads=True`` each pixel also holds what the order and the resolves read of each
+    /// entry, by entry index (``diagnostics.rs``, ``Reads``); without it, none of these keys:
+    ///
+    /// - ``coverage8``: each entry's 8-bit coverage of the whole pixel (a path's exact area
+    ///   rounded once, never its sub-samples' bytes summed), what the fast and coverage resolves
+    ///   blend a unit of it alone with;
+    /// - ``depths``: each entry's depth at the 16 sub-samples as the order reads it (a stroke
+    ///   taking its own fill's depth where both cover and the fill is nearer);
+    /// - ``err``: each entry's depth error bound, as the order reads it;
+    /// - ``samples_all``: per sub-sample, every entry covering it, front first, as its rank
+    ///   orders them before any cull: ``samples`` and the entries the opaque drop removed;
+    /// - with ``decisions=True`` too, ``against``: ``(entry, other, depths, err)`` for every read
+    ///   of an entry's depths against another that is not its own row (on a plane both lie on);
+    /// - with ``decisions=True`` too, ``flat``: whether the resolve took the flat path (one depth
+    ///   row for every entry: paint order decides every pair, and ``relations`` is empty);
+    /// - with ``decisions=True`` too, ``relations``: every pair of entries ``a < b`` sharing a
+    ///   sub-sample, as ``(a, b, covered, a_nearer, b_nearer, ab_front, ab_behind, ab_strong,
+    ///   ba_front, ba_behind, ba_strong)``, each after ``a, b`` a 16-bit mask whose bit ``k`` is
+    ///   sub-sample ``k``: where both cover, where each is the nearer, and ``a`` against ``b`` and
+    ///   ``b`` against ``a`` in front, behind and strongly so, as the resolve read them before any
+    ///   rank or cull. ``pairs`` is decided from them; the sub-sample ranks and the cull read them.
+    ///
     /// Composited again with the resolves' arithmetic (``diagnostics.rs``), each gives back the
     /// pixel drawn.
-    #[allow(clippy::type_complexity)]
-    #[pyo3(name = "_resolve_trace", signature = (x0, y0, x1, y1, *, decisions = false))]
+    #[allow(clippy::type_complexity, clippy::too_many_arguments)]
+    #[pyo3(
+        name = "_resolve_trace",
+        signature = (x0, y0, x1, y1, *, decisions = false, reads = false)
+    )]
     fn resolve_trace<'py>(
         &self,
         py: Python<'py>,
@@ -1277,13 +1303,20 @@ impl PyStream {
         x1: i64,
         y1: i64,
         decisions: bool,
+        reads: bool,
     ) -> PyResult<Bound<'py, PyDict>> {
         use crate::diagnostics::Layer;
         let side = |v: i64| v.clamp(0, u32::MAX as i64) as u32;
         let (x0, y0, x1, y1) = (side(x0), side(y0), side(x1), side(y1));
         let stream = &self.stream;
         let found = py
-            .detach(|| stream.diagnostic_resolves(x0, y0, x1, y1, decisions))
+            .detach(|| {
+                if reads {
+                    stream.resolve_trace(x0, y0, x1, y1, decisions)
+                } else {
+                    stream.diagnostic_resolves(x0, y0, x1, y1, decisions)
+                }
+            })
             .map_err(|e| draw_error(py, e))?;
         let rgba = |[r, g, b, a]: [u8; 4]| (r, g, b, a);
         let pair = |p: &crate::diagnostics::PairOrder| {
@@ -1346,6 +1379,45 @@ impl PyStream {
                     .map(|k| k.iter().map(pair).collect())
                     .collect();
                 d.set_item("sample_pairs", sample_pairs)?;
+            }
+            if let Some(r) = p.reads {
+                // Lists of ints, as JSON holds them, where a `Vec<u8>` would become bytes.
+                let coverage8: Vec<u32> = r.coverage8.iter().map(|c| *c as u32).collect();
+                d.set_item("coverage8", coverage8)?;
+                let depths: Vec<Vec<f64>> = r.depths.iter().map(|row| row.to_vec()).collect();
+                d.set_item("depths", depths)?;
+                d.set_item("err", r.err)?;
+                d.set_item("samples_all", r.samples_all)?;
+                if decisions {
+                    let against: Vec<(usize, usize, Vec<f64>, f64)> = r
+                        .against
+                        .iter()
+                        .map(|a| (a.entry, a.other, a.depths.to_vec(), a.err))
+                        .collect();
+                    d.set_item("against", against)?;
+                    d.set_item("flat", r.flat)?;
+                    let relations: Vec<_> = r
+                        .relations
+                        .iter()
+                        .map(|q| {
+                            let s = &q.shared;
+                            (
+                                q.a,
+                                q.b,
+                                s.covered,
+                                s.a_nearer,
+                                s.b_nearer,
+                                s.ab.front,
+                                s.ab.behind,
+                                s.ab.strong,
+                                s.ba.front,
+                                s.ba.behind,
+                                s.ba.strong,
+                            )
+                        })
+                        .collect();
+                    d.set_item("relations", relations)?;
+                }
             }
             out.set_item((x, y), d)?;
         }
