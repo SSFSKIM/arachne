@@ -1,0 +1,12 @@
+{
+  "fixture": "guarded_seam",
+  "kind": "stroke_behaviour",
+  "rules": ["guard_chords@1", "dash_start_least_length@1"],
+  "verdict": "agreement",
+  "seq": 1,
+  "fragment": {"object": 100, "part": 0, "layer": "stroke", "sub": 2},
+  "wrong_reading": "the runs dashed apart, leaving two butt caps at (-4, -4)",
+  "checks": [
+    {"pixel": [3, 12], "samples": [2, 3, 6, 7], "cell_bytes": [255, 255, 255, 255], "wrong_reading": [0, 0, 0, 0], "what": "the outer corner square of (-4, -4), stroked as a mitred join across the seam"}
+  ]
+}

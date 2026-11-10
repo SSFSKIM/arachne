@@ -1,0 +1,13 @@
+{
+  "fixture": "join_occurrences",
+  "kind": "stroke_behaviour",
+  "rules": ["join_mask@1"],
+  "verdict": "agreement",
+  "seq": 1,
+  "fragment": {"object": 100, "part": 0, "layer": "stroke", "sub": 2},
+  "wrong_reading": "one decision per key applied to both its occurrences: the first bevels the lower spike, the last the upper",
+  "checks": [
+    {"pixel": [8, 4], "samples": [0, 1, 2, 3, 8, 9, 10, 11, 12, 13, 14, 15], "cell_bytes": [255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0], "wrong_reading": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "what": "the upper spike's tip, drawn by its first occurrence's miter, over frame y above about 3.52; uncovered under each key's last decision"},
+    {"pixel": [8, 12], "samples": [0, 1, 2, 3, 8, 9, 10, 11, 12, 13, 14, 15], "cell_bytes": [255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0], "wrong_reading": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "what": "the lower spike's tip, drawn by its second occurrence's miter; uncovered under each key's first decision"}
+  ]
+}

@@ -1,0 +1,29 @@
+[package]
+name = "arachne-oracle"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+description = "What Arachne's core should decide at every sub-sample of a frame, from the XF stream alone"
+repository = "https://github.com/SSFSKIM/arachne"
+publish = false
+
+[lib]
+name = "arachne_oracle"
+
+[[bin]]
+name = "arachne-oracle"
+path = "src/main.rs"
+
+[dependencies]
+# The XF reader only: `ci/oracle_check.py` fails the build if the oracle names any other core
+# module. The core's Python binding stays off.
+arachne-core = { path = "..", default-features = false }
+# Shared with the core as the contract's flattening and stroker, built as the core builds it
+# (without `std`, on the pure-Rust libm).
+kurbo = { version = "0.13.1", default-features = false, features = ["libm"] }
+# Transcendental functions in pure Rust, never the platform's: the same decisions on every machine.
+libm = "0.2.16"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"

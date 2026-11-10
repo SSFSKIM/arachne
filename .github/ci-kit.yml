@@ -90,3 +90,29 @@ gates:
     paths: ["core/**", ".github/ci-kit.yml"]
     run: bash core/ci/test.sh && bash core/ci/binding.sh 3.14
     timeout: 30
+  # The truth oracle (core/oracle): what the core should decide, from the XF stream alone. Its own
+  # Cargo package; ci/oracle_check.py keeps it from naming any core module but the XF schema.
+  - name: core-oracle
+    setup: false
+    paths: ["core/**", ".github/ci-kit.yml"]
+    run: bash core/ci/oracle.sh
+    timeout: 20
+  - name: core-oracle-macos
+    lane: hosted-macos
+    setup: false
+    paths: ["core/**", ".github/ci-kit.yml"]
+    run: bash core/ci/oracle.sh test
+    timeout: 20
+  # The oracle's independence, structurally: the job deletes from its own checkout everything
+  # outside oracle_check.ISOLATED_CHECKOUT, .git included, before anything is built, and prints
+  # what is left; then the oracle is built and tested there, and five plants reaching for core
+  # files must fail to build because the files are absent.
+  - name: core-oracle-isolated
+    setup: false
+    paths: ["core/**", ".github/ci-kit.yml"]
+    run: >-
+      python3 core/ci/oracle_isolated.py --prune . &&
+      python3 core/ci/oracle_check.py --isolated-checkout . &&
+      bash core/ci/toolchain.sh &&
+      python3 core/ci/oracle_isolated.py --tree .
+    timeout: 20
