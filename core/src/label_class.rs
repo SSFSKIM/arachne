@@ -1,24 +1,26 @@
 //! The class a camera-facing label's rule reads a record as, from what the record was drawn from
-//! (its XF 1.5 `source` and `facing_group`) and nothing else: a label, a line, a surface, or open.
+//! (its XF 1.5 `source` and `facing_group`) and nothing else: a label, a line, a surface, or
+//! `label_rule_open` with its cause.
 //!
-//! A record with a facing group is a label, whatever it was drawn from. Any other record is read
-//! path by path, and a record whose paths disagree is open. A path is read from its outermost
-//! container inwards, each node by its class and its owner's reading, its owner being the nearest
-//! container whose class is not generic:
+//! A record is read by these rules, in order, each path on its own:
 //!
-//! - a line class ([`LINE_CLASSES`]: lines, curves, arrows, tips and axes) is a line;
-//! - a surface class ([`SURFACE_CLASSES`]: surfaces, solids and filled planar shapes) is a line
-//!   when its owner reads as one, as its owner reads when its owner is surface-like (a solid's
-//!   face, a cylinder's or a cone's cap), and a surface otherwise;
-//! - a [`CYLINDER`] is a line when its owner reads as one (a shaft), a surface when nothing
-//!   contains it (a solid), and open otherwise: a cylinder in a plain group or in any other
-//!   object may be a shaft its user built, and its thinness is never inferred;
-//! - a generic class ([`GENERIC_CLASSES`]) reads as its owner, and is open with none;
-//! - any other class (text without a facing group, images, point clouds, braces, tables, a class
-//!   these tables do not name) is open.
-//!
-//! An owner of another class stops a line's ancestry: a plate inside a labelled line's label is
-//! owned by the label, so it is a surface.
+//! 1. A record with a facing group is a label, whatever it was drawn from.
+//! 2. A path with a line class ([`LINE_CLASSES`]: lines, curves, arrows, tips and axes) anywhere
+//!    on it, the record's owner or any container, is a line, whatever lies between.
+//! 3. A generic class ([`GENERIC_CLASSES`]) reads as its nearest container whose class is not
+//!    generic, and is open ([`OpenCause::GenericOnly`]) with none.
+//! 4. A surface class ([`SURFACE_CLASSES`]: surfaces, solids and filled planar shapes) whose
+//!    nearest non-generic container is surface-like (a solid's face, a cylinder's or a cone's
+//!    cap) reads as that container does.
+//! 5. A [`CYLINDER`] that nothing contains is a solid, a surface; inside any container it is open
+//!    ([`OpenCause::CylinderGrouped`]): it may be a shaft its user built, and its thinness is
+//!    never inferred.
+//! 6. Otherwise the class itself decides: a surface class is a surface, a point cloud
+//!    ([`POINT_CLOUD_CLASSES`]) is open ([`OpenCause::PointCloud`]), and any class the inventory
+//!    does not name (text without a facing group, images, braces, tables) is open
+//!    ([`OpenCause::Unmapped`]).
+//! 7. A record whose paths read differently is open ([`OpenCause::PathsDisagree`]), and so is a
+//!    record with no source ([`OpenCause::NoSource`]).
 //!
 //! A surface class qualifies by its fill. The class does not say whether a record is filled, so
 //! a record drawn only by its outline stroke still reads as a surface here, and its planner, which
@@ -33,13 +35,43 @@ use crate::xf::SourceNode;
 pub enum LabelClass {
     /// A camera-facing label: a record with a facing group.
     Label,
-    /// A line, a curve or axes, with its shafts, cones, caps and tips.
+    /// A line, a curve or axes, with all they hold.
     Line,
     /// A surface, a solid or a filled planar shape.
     Surface,
-    /// `label_rule_open`: generic or conflicting provenance, a cylinder neither alone nor owned by
-    /// a line, or a class the rule does not name.
-    Open,
+    /// `label_rule_open`: the rule decides no order, for this cause.
+    LabelRuleOpen(OpenCause),
+}
+
+/// Why a record is `label_rule_open`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpenCause {
+    /// Its class is not in the inventory.
+    Unmapped,
+    /// Generic classes alone, all the way up its path.
+    GenericOnly,
+    /// Its paths read differently.
+    PathsDisagree,
+    /// It carries no source.
+    NoSource,
+    /// A cylinder inside a container that is not a line, or a part of one.
+    CylinderGrouped,
+    /// A point cloud.
+    PointCloud,
+}
+
+impl OpenCause {
+    /// The cause's name, as counts report it.
+    pub fn name(self) -> &'static str {
+        match self {
+            OpenCause::Unmapped => "unmapped",
+            OpenCause::GenericOnly => "generic_only",
+            OpenCause::PathsDisagree => "paths_disagree",
+            OpenCause::NoSource => "no_source",
+            OpenCause::CylinderGrouped => "cylinder_grouped",
+            OpenCause::PointCloud => "point_cloud",
+        }
+    }
 }
 
 /// The line classes: lines, curves, arrows, tips and axes.
@@ -156,6 +188,16 @@ pub const GENERIC_CLASSES: &[&str] = &[
     "arachne.mobject.types.vectorized_mobject.VectorizedPoint",
 ];
 
+/// The point clouds.
+pub const POINT_CLOUD_CLASSES: &[&str] = &[
+    "arachne.mobject.types.point_cloud_mobject.Mobject1D",
+    "arachne.mobject.types.point_cloud_mobject.Mobject2D",
+    "arachne.mobject.types.point_cloud_mobject.PGroup",
+    "arachne.mobject.types.point_cloud_mobject.PMobject",
+    "arachne.mobject.types.point_cloud_mobject.Point",
+    "arachne.mobject.types.point_cloud_mobject.PointCloudDot",
+];
+
 /// What a node's class says of it, before its owner is read.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -163,6 +205,7 @@ enum Kind {
     Surface,
     Cylinder,
     Generic,
+    PointCloud,
     Other,
 }
 
@@ -175,6 +218,8 @@ fn kind(class: &str) -> Kind {
         Kind::Cylinder
     } else if GENERIC_CLASSES.contains(&class) {
         Kind::Generic
+    } else if POINT_CLOUD_CLASSES.contains(&class) {
+        Kind::PointCloud
     } else {
         Kind::Other
     }
@@ -188,27 +233,34 @@ pub fn label_class(source: &[Vec<SourceNode>], facing_group: u32) -> LabelClass 
     }
     let mut classes = source.iter().map(|path| path_class(path.as_slice()));
     match classes.next() {
+        None => LabelClass::LabelRuleOpen(OpenCause::NoSource),
         Some(first) if classes.all(|class| class == first) => first,
-        _ => LabelClass::Open,
+        Some(_) => LabelClass::LabelRuleOpen(OpenCause::PathsDisagree),
     }
 }
 
-/// The class of a path's first node, each node read after its containers.
+/// The class of a path's first node.
 fn path_class(path: &[SourceNode]) -> LabelClass {
-    // The nearest container of the node at hand whose class is not generic: its kind and class.
+    if path.iter().any(|node| kind(&node.class) == Kind::Line) {
+        return LabelClass::Line;
+    }
+    let open = LabelClass::LabelRuleOpen;
+    // Each node read after its containers. The nearest container of the node at hand whose class
+    // is not generic: its kind and class.
     let mut owner: Option<(Kind, LabelClass)> = None;
-    let mut class = LabelClass::Open;
+    let mut class = open(OpenCause::GenericOnly);
     for (at, node) in path.iter().enumerate().rev() {
         let kind = kind(&node.class);
         class = match (kind, owner) {
-            (Kind::Line, _) => LabelClass::Line,
-            (Kind::Surface | Kind::Cylinder, Some((_, LabelClass::Line))) => LabelClass::Line,
-            (Kind::Surface, Some((Kind::Surface | Kind::Cylinder, owned))) => owned,
-            (Kind::Surface, _) => LabelClass::Surface,
-            (Kind::Cylinder, None) if at + 1 == path.len() => LabelClass::Surface,
-            (Kind::Cylinder, _) => LabelClass::Open,
             (Kind::Generic, Some((_, owned))) => owned,
-            (Kind::Generic, None) | (Kind::Other, _) => LabelClass::Open,
+            (Kind::Generic, None) => open(OpenCause::GenericOnly),
+            (Kind::Surface, Some((Kind::Surface | Kind::Cylinder, owned))) => owned,
+            (Kind::Cylinder, None) if at + 1 == path.len() => LabelClass::Surface,
+            (Kind::Cylinder, _) => open(OpenCause::CylinderGrouped),
+            (Kind::Surface, _) => LabelClass::Surface,
+            (Kind::PointCloud, _) => open(OpenCause::PointCloud),
+            (Kind::Other, _) => open(OpenCause::Unmapped),
+            (Kind::Line, _) => unreachable!("a path with a line class is a line"),
         };
         if kind != Kind::Generic {
             owner = Some((kind, class));
