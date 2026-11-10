@@ -515,32 +515,51 @@ pub fn encode_delta(d: &Delta) -> Vec<u8> {
     })
 }
 
-/// Whether the delta holds a row: a held record's, or a set slot's whose last record carries a
-/// source or a facing group (a slot's earlier records have none).
+/// Whether the delta holds a row ([`source_rows`]).
 fn carries_source(d: &Delta) -> bool {
-    let last: HashMap<u32, &Record> = d.set.iter().map(|r| (r.slot, r)).collect();
-    !d.source.is_empty() || last.values().any(|r| r.carries_source())
+    !source_rows(d).is_empty()
 }
 
-/// XF 1.5's section, after the order: the class names its rows use, each once, in the order the
-/// rows first use them; then a row for each record carrying a source or a facing group, in the
-/// order the delta sets them (of a slot set more than once, its last record's alone), then a row
-/// for each held record given a new one (of a slot the delta also sets, in place of the record's).
-fn write_source(w: &mut W, d: &Delta) {
+/// One row of XF 1.5's section: a slot's source and facing group.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Row<'a> {
+    pub slot: u32,
+    pub facing_group: u32,
+    pub source: &'a [Vec<SourceNode>],
+}
+
+/// The rows the delta's section holds, in the order they are written: one for each record the
+/// delta sets carrying a source or a facing group, in the order it sets them (of a slot set more
+/// than once, its last record's alone), then one for each held row (one for a slot the delta also
+/// sets is that record's, in place of the record's own). What the writer writes and what `apply`
+/// checks.
+pub(crate) fn source_rows(d: &Delta) -> Vec<Row<'_>> {
     let set = &d.set;
     let last: HashMap<u32, usize> = set.iter().enumerate().map(|(i, r)| (r.slot, i)).collect();
     // A row the delta gives a slot it sets is that record's, in its place.
     let given: HashSet<u32> = d.source.iter().map(|h| h.slot).collect();
-    let rows: Vec<(u32, u32, &[Vec<SourceNode>])> = set
-        .iter()
+    set.iter()
         .enumerate()
         .filter(|(i, r)| r.carries_source() && last[&r.slot] == *i && !given.contains(&r.slot))
-        .map(|(_, r)| (r.slot, r.facing_group, r.source.as_slice()))
-        .chain(
-            d.source
-                .iter()
-                .map(|h| (h.slot, h.facing_group, h.source.as_slice())),
-        )
+        .map(|(_, r)| Row {
+            slot: r.slot,
+            facing_group: r.facing_group,
+            source: &r.source,
+        })
+        .chain(d.source.iter().map(|h| Row {
+            slot: h.slot,
+            facing_group: h.facing_group,
+            source: &h.source,
+        }))
+        .collect()
+}
+
+/// XF 1.5's section, after the order: the class names its rows use, each once, in the order the
+/// rows first use them; then its rows ([`source_rows`]).
+fn write_source(w: &mut W, d: &Delta) {
+    let rows: Vec<(u32, u32, &[Vec<SourceNode>])> = source_rows(d)
+        .into_iter()
+        .map(|r| (r.slot, r.facing_group, r.source))
         .collect();
     let mut classes: Vec<&str> = Vec::new();
     let mut index: HashMap<&str, u32> = HashMap::new();

@@ -1425,29 +1425,18 @@ fn same_content(held: &ShapeData, uploaded: &ShapeData) -> bool {
 /// The longest side of a frame this build draws, in pixels.
 pub const MAX_SIDE: u32 = 16384;
 
-/// XF 1.5's section codes, the reader's and so checked before the rest of `apply`'s: each row (a
-/// record the delta sets carrying a source or a facing group, then each held row) names a slot
-/// once, one the delta does not remove, and carries a path of objects or a facing group, no path
-/// empty. A refusal is the first of these, by its code.
+/// XF 1.5's section codes, the reader's and so checked before the rest of `apply`'s, on the rows
+/// the delta writes, in their order ([`wire::source_rows`]): each names a slot no earlier row
+/// names, one the delta does not remove, and carries a path of objects or a facing group, no path
+/// empty. A refusal is the first row that offends, by the first of these it offends.
 fn check_source_rows(delta: &Delta, after: &After<'_>) -> Result<(), StreamError> {
     let refuse = |code: &str, slot: u32| {
         Err(StreamError::Invalid(format!(
             "{code}: the source row for slot {slot}"
         )))
     };
-    for rec in after.set.values() {
-        if rec.source.is_empty() && rec.facing_group == 0 {
-            continue; // No row.
-        }
-        if after.removed.contains(&rec.slot) {
-            return refuse("slot_removed", rec.slot);
-        }
-        if rec.source.iter().any(Vec::is_empty) {
-            return refuse("path_empty", rec.slot);
-        }
-    }
     let mut rowed = HashSet::new();
-    for row in &delta.source {
+    for row in wire::source_rows(delta) {
         let slot = row.slot;
         if !rowed.insert(slot) {
             return refuse("slot_named_twice", slot);
