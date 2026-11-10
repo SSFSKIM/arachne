@@ -156,8 +156,43 @@ fn the_generic_classes_are_closed() {
     assert_eq!(class(&[SQUARE, VDICT]), LabelClass::Surface);
     assert_eq!(class(&[VDICT]), open(OpenCause::GenericOnly));
     assert_eq!(class(&[POINT]), open(OpenCause::Unmapped));
-    assert_eq!(class(&[POINT, SQUARE]), open(OpenCause::Unmapped));
     assert_eq!(class(&[GLYPH]), open(OpenCause::Unmapped));
+}
+
+/// Rules 2 and 4 read every record, whatever its own class: a point or a glyph's path is a line
+/// under axes, its surface-like owner's under a surface, and open under an unmapped owner or alone.
+#[test]
+fn a_piece_of_any_class_reads_as_its_line_or_surface_owner() {
+    let (line, surface) = (LabelClass::Line, LabelClass::Surface);
+    for piece in [POINT, GLYPH, CLOUD] {
+        assert_eq!(class(&[piece, NUMBER_LINE, AXES]), line, "{piece}");
+        assert_eq!(class(&[piece, SQUARE]), surface, "{piece}");
+        assert_eq!(class(&[piece, VGROUP, SPHERE]), surface, "{piece}");
+        assert_eq!(class(&[piece, CONE, CYLINDER]), surface, "{piece}");
+        let grouped = open(OpenCause::CylinderGrouped);
+        assert_eq!(class(&[piece, CYLINDER, VGROUP]), grouped, "{piece}");
+        // Under an unmapped owner or alone, its own class decides.
+        let own = if piece == CLOUD {
+            OpenCause::PointCloud
+        } else {
+            OpenCause::Unmapped
+        };
+        assert_eq!(class(&[piece, TEXT]), open(own), "{piece}");
+        assert_eq!(class(&[piece]), open(own), "{piece}");
+        // The nearest surface-like container counts, past an unmapped one.
+        assert_eq!(class(&[piece, IMAGE, SQUARE]), surface, "{piece}");
+    }
+    assert_eq!(class(&[GLYPH, TEXT, SQUARE]), surface);
+    assert_eq!(class(&[VMOBJECT, TEXT, SQUARE]), surface);
+}
+
+/// Every point cloud of the library, by its own name: a point cloud's cause wherever it stands
+/// alone.
+#[test]
+fn every_library_point_cloud_is_one() {
+    let proxy = "arachne.frame_ir.cairo_painter._PointsProxy";
+    assert_eq!(class(&[proxy]), open(OpenCause::PointCloud));
+    assert_eq!(POINT_CLOUD_CLASSES.len(), 7);
 }
 
 /// "Vector and its filled tip have distinct classes": both are the vector's.
