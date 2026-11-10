@@ -1,113 +1,169 @@
-"""The oracle's independence, proven by the compiler: the oracle builds and passes its tests in a tree
-that holds no core source but the XF schema.
+"""The oracle's independence, proven by absence: the oracle builds and passes its tests in a checkout
+that holds no core source but the XF schema, so there is nothing else for it to reach.
 
-``python3 ci/oracle_isolated.py [--plant path|include] [--keep]``
+``python3 ci/oracle_isolated.py --tree ROOT``
+``python3 ci/oracle_isolated.py --from-git REV``
 
-It builds, in a fresh temporary directory:
+``--tree ROOT`` takes a checkout that holds exactly ``oracle_check.ISOLATED_CHECKOUT`` (a sparse
+checkout, or a directory ``git archive`` filled with those paths alone). ``--from-git REV`` makes
+one in a fresh temporary directory, by ``git archive`` of the list at ``REV`` from this repository.
+Then, in ``ROOT``:
 
-- ``core/oracle/``: the oracle's manifest, lock, sources, tests and other files, less ``target/``
-  and the test files that may reach the core (``tests/contract*.rs``, ``tests/common/fixtures.rs``),
-  which run in the normal tree;
-- ``core/``: a stand-in ``arachne-core`` package, the core's own manifest with a ``src/`` of exactly
-  ``src/xf/**`` and a ``lib.rs`` of ``pub mod xf;``, and the core's toolchain and lint files;
-- ``core/ci/``: the oracle's checker, which its tests run.
+1. ``ROOT/core/ci/oracle_check.py --isolated-checkout ROOT`` asserts the checkout holds exactly the
+   list, before anything is built;
+2. ``core/src/lib.rs`` is written as ``pub mod xf;``, so the core's own manifest builds a stand-in
+   ``arachne-core`` of the schema alone;
+3. ``cargo test --release --locked`` runs in ``core/oracle``;
+4. each plant reaches for a core file the full checkout would hold at ``ROOT`` — a ``#[path]`` and an
+   ``include_str!`` with escaped literals, an absolute ``include_str!``, a ``cfg_attr(path)`` and an
+   ``include_str!`` renamed by ``use`` — and passes only if the library then fails to build because
+   the file is not there.
 
-Then ``cargo test --release --locked`` there. Whatever reaches into the core — a ``#[path]`` or an
-``include!`` to a core file however its literal is spelled, a ``arachne_core::`` path outside
-``xf``, a path dependency, a build script that reads the core — has nothing to reach and fails to
-compile. The ``--plant`` forms prove it: each plants an escaped reach into a core file in the
-isolated copy, builds the library, and passes only if the build fails.
-
-``CARGO_TARGET_DIR`` defaults to the oracle's ``target/isolated``.
+The proof is only as strong as the checkout: where the full tree exists on the same machine (an
+interim run from a full checkout), an absolute reach into it still builds. The CI job that proves it
+runs in a checkout holding the list alone.
 """
 
 from __future__ import annotations
 
 import argparse
+import io
 import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 from pathlib import Path
 
-CORE = Path(__file__).resolve().parent.parent
-ORACLE = CORE / "oracle"
+REPO = Path(__file__).resolve().parent.parent.parent
 
-#: Test files the contract permits core access in: run in the normal tree, never in the isolated one.
-NORMAL_TREE_TESTS = ("tests/contract*.rs", "tests/common/fixtures.rs")
-
-#: An escaped reach into a core file, per form: `..` spelt `\\x2e\\x2e`, which a lexical check reads
-#: as other characters and the compiler reads as `..`.
-PLANTS = {
-    "path": '#[path = "\\x2e\\x2e/\\x2e\\x2e/src/composite.rs"]\nmod reached;\n',
-    "include": 'pub const REACHED: &str = include_str!("\\x2e\\x2e/\\x2e\\x2e/src/path.rs");\n',
-}
+#: The messages the compiler gives for a file that is not there.
+ABSENT = ("No such file or directory", "couldn't find file", "couldn't read")
 
 
-def excluded(rel: str) -> bool:
-    return any(Path(rel).match(pattern) for pattern in NORMAL_TREE_TESTS)
+def plants(root: Path) -> dict[str, str]:
+    """Each plant's Rust, appended to the oracle's ``lib.rs``: a reach into the core files a full
+    checkout at ``root`` holds.
+    """
+    core = (root / "core" / "src").resolve().as_posix()
+    return {
+        "escaped-path": '#[path = "\\x2e\\x2e/\\x2e\\x2e/src/composite.rs"]\nmod reached;\n',
+        "escaped-include": 'pub const REACHED: &str = include_str!("\\x2e\\x2e/\\x2e\\x2e/src/path.rs");\n',
+        "absolute-include": f'pub const REACHED: &str = include_str!("{core}/path.rs");\n',
+        "cfg-attr-path": f'#[cfg_attr(all(), path = "{core}/composite.rs")]\nmod reached;\n',
+        "aliased-include": f'use std::include_str as read_core;\npub const REACHED: &str = read_core!("{core}/path.rs");\n',
+    }
 
 
-def build_tree(root: Path) -> Path:
-    """The isolated tree under ``root``; returns its oracle directory."""
-    core = root / "core"
-    (core / "src").mkdir(parents=True)
-    shutil.copytree(CORE / "src" / "xf", core / "src" / "xf")
-    (core / "src" / "lib.rs").write_text("pub mod xf;\n", encoding="utf-8")
-    for name in ("Cargo.toml", "rust-toolchain.toml", "clippy.toml"):
-        shutil.copy2(CORE / name, core / name)
-    (core / "ci").mkdir()
-    for name in ("oracle_check.py", "tree_check.py"):
-        shutil.copy2(CORE / "ci" / name, core / "ci" / name)
-    oracle = core / "oracle"
-    for path in sorted(ORACLE.rglob("*")):
-        rel = path.relative_to(ORACLE).as_posix()
-        if rel.split("/")[0] == "target" or path.is_dir() or excluded(rel):
-            continue
-        dest = oracle / rel
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, dest)
-    return oracle
+def pathspecs() -> list[str]:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from oracle_check import ISOLATED_CHECKOUT, ISOLATED_EXCLUDED
+
+    specs = [e.rstrip("/") for e in ISOLATED_CHECKOUT]
+    specs += [f":(exclude,glob){pattern}" for pattern in ISOLATED_EXCLUDED]
+    return specs
 
 
-def cargo(oracle: Path, *args: str) -> subprocess.CompletedProcess:
+def from_git(rev: str, root: Path) -> None:
+    """Fills ``root`` with the list's paths at ``rev``, and nothing else."""
+    tar = subprocess.run(
+        ["git", "archive", "--format=tar", rev, "--", *pathspecs()],
+        cwd=REPO,
+        capture_output=True,
+        check=True,
+    ).stdout
+    with tarfile.open(fileobj=io.BytesIO(tar)) as t:
+        t.extractall(root, filter="data")
+
+
+def cargo(root: Path, *args: str) -> subprocess.CompletedProcess:
     env = dict(os.environ)
-    env.setdefault("CARGO_TARGET_DIR", str(ORACLE / "target" / "isolated"))
-    return subprocess.run(["cargo", *args], cwd=oracle, env=env, capture_output=True, text=True)
+    env.pop("CARGO_TARGET_DIR", None)
+    return subprocess.run(
+        ["cargo", *args],
+        cwd=root / "core" / "oracle",
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+
+def prove(root: Path) -> int:
+    listed = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            str(root / "core" / "ci" / "oracle_check.py"),
+            "--isolated-checkout",
+            str(root),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    sys.stdout.write(listed.stdout)
+    if listed.returncode != 0:
+        print("isolated: FAIL the checkout does not hold exactly its list", flush=True)
+        return 1
+    (root / "core" / "src" / "lib.rs").write_text("pub mod xf;\n", encoding="utf-8")
+    run = cargo(root, "test", "--release", "--locked")
+    if run.returncode != 0:
+        sys.stdout.write(run.stdout)
+        sys.stderr.write(run.stderr)
+        print(
+            "isolated: FAIL the oracle does not build and pass with the XF schema alone",
+            flush=True,
+        )
+        return 1
+    passed = [
+        line for line in run.stdout.splitlines() if line.startswith("test result:")
+    ]
+    print(
+        f"isolated: the oracle builds and passes its tests with the XF schema alone ({len(passed)} targets)"
+    )
+    lib = root / "core" / "oracle" / "src" / "lib.rs"
+    text = lib.read_text(encoding="utf-8")
+    failed = 0
+    for name, rust in plants(root).items():
+        lib.write_text(text + rust, encoding="utf-8")
+        try:
+            run = cargo(root, "build", "--release", "--locked", "--lib")
+        finally:
+            lib.write_text(text, encoding="utf-8")
+        errors = [line for line in run.stderr.splitlines() if line.startswith("error")]
+        if run.returncode != 0 and any(a in run.stderr for a in ABSENT):
+            print(
+                f"isolated: the {name} plant does not build: the file is absent ({errors[0]})"
+            )
+        else:
+            failed += 1
+            why = (
+                "it built"
+                if run.returncode == 0
+                else f"it failed otherwise ({errors[0] if errors else '?'})"
+            )
+            print(f"isolated: FAIL the {name} plant: {why}", flush=True)
+    return 1 if failed else 0
 
 
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--plant", choices=sorted(PLANTS), help="plant an escaped reach; pass if the build fails")
-    ap.add_argument("--keep", action="store_true", help="keep the isolated tree and print where it is")
+    where = ap.add_mutually_exclusive_group(required=True)
+    where.add_argument(
+        "--tree", type=Path, metavar="ROOT", help="a checkout holding exactly the list"
+    )
+    where.add_argument(
+        "--from-git", metavar="REV", help="make one by git archive of the list at REV"
+    )
     args = ap.parse_args(argv)
+    if args.tree:
+        return prove(args.tree.resolve())
     root = Path(tempfile.mkdtemp(prefix="oracle-isolated-"))
     try:
-        oracle = build_tree(root)
-        if args.keep:
-            print(f"isolated: tree at {root}")
-        if args.plant:
-            lib = oracle / "src" / "lib.rs"
-            lib.write_text(lib.read_text(encoding="utf-8") + PLANTS[args.plant], encoding="utf-8")
-            run = cargo(oracle, "build", "--release", "--locked", "--lib")
-            if run.returncode == 0:
-                print(f"isolated: FAIL the planted {args.plant} reach built", flush=True)
-                return 1
-            errors = [line for line in run.stderr.splitlines() if line.startswith("error")]
-            print(f"isolated: the planted {args.plant} reach does not build ({errors[0] if errors else 'error'})")
-            return 0
-        run = cargo(oracle, "test", "--release", "--locked")
-        sys.stdout.write(run.stdout)
-        sys.stderr.write(run.stderr)
-        if run.returncode != 0:
-            print("isolated: FAIL the oracle does not build and pass with the XF schema alone", flush=True)
-            return 1
-        print("isolated: the oracle builds and passes its tests with the XF schema alone")
-        return 0
+        from_git(args.from_git, root)
+        return prove(root)
     finally:
-        if not args.keep:
-            shutil.rmtree(root, ignore_errors=True)
+        shutil.rmtree(root, ignore_errors=True)
 
 
 if __name__ == "__main__":
