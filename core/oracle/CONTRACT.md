@@ -2140,8 +2140,9 @@ counted point) is decided by the first of these that applies:
 
 1. **`label`, of the label.** The label is drawn otherwise (Terms, above). Every pair of that label
    is open.
-2. **An open sheet.** `S` is drawn as a mesh: the pair is open with cause `mesh`. `S` is a record
-   kept facing the camera whose label is unknown: the pair is open with cause `label`.
+2. **An open sheet.** `S` is a record kept facing the camera whose label is unknown: the pair is
+   open with cause `label`, even where `S` is also drawn as a mesh, since `label` comes before
+   `mesh`. Otherwise, where `S` is drawn as a mesh, the pair is open with cause `mesh`.
 3. **`folded`.** Two fills of `S` hold one counted point. The pair is open.
 4. **`disconnected`.** `S` shares its surface object and its winding with another sheet that also
    counts a point with the label. Every such sheet's pair is open, not only the second one's.
@@ -2263,7 +2264,7 @@ count of open cases: the rule states none.
   `interval`, `folded` and `disconnected`, and the causes `label` and `mesh` are new. `label`
   opens every pair of a label drawn otherwise, which is read over the whole frame, and every pair
   with an ungrouped record kept facing the camera, an open sheet. A pair is decided by `label`,
-  then an open sheet (`mesh`, `label`), `folded`, `disconnected`, then the centre or else the
+  then an open sheet (`label`, then `mesh`), `folded`, `disconnected`, then the centre or else the
   points.
 - Every sheet sharing its object and winding with another sheet that meets the label is open, not
   only the second.
@@ -3084,13 +3085,14 @@ above `y ≈ 0.67`. Expected: `L` behind `S` at every sample `S` holds, at pixel
 pixel `(32, 28)` (`S` farther there). Rejects: leaving the horizontal edge unheld, which decides
 `S` by the points, finds the straddle and leaves `L` in front.
 
-**`ungrouped_sheet_open`.** Set: an ungrouped record kept facing the camera is an open sheet. The
-scene of W5 with one more record before `L`: `U`, a square glyph `[−3, 3]²` with a
-fixed-orientation centre at `(0, 0, 2)`, fill blue, alpha 1, set with a row of facing group 0 and
-the source path `[(u, Polygon)]`. The frame draws a facing group (`L`'s). `U` covers `L`'s centre,
-nearer, and would qualify as a polygon. Expected: the pair of `L` and `U` is open with cause
-`label`: `L` expected in front, the samples of pixel `(32, 32)` counted `label_rule_open` with cause
-`label`. Rejects: reading `U` by its source as a surface, which puts `L` behind it.
+**`ungrouped_sheet_open`.** Set: an ungrouped record kept facing the camera is an open sheet. View
+C. `U`, a square glyph `[−3, 3]²` with a fixed-orientation centre at `(0, 0, 2)`, fill blue, alpha
+1, set with a row of facing group 0 and the source path `[(u, Polygon)]`; then `L` of W5, without
+W5's `G`, so `U` is the only record that could hide `L`. The frame draws a facing group (`L`'s).
+`U` covers `L`'s centre, nearer, and would qualify as a polygon. Expected: the pair of `L` and `U`
+is open with cause `label`, and no sheet qualifies, so `L` is drawn in front of `U` at every sample
+of pixel `(32, 32)`, those samples counted `label_rule_open` with cause `label`. Rejects: reading
+`U` by its source as a surface, which qualifies it by the centre and puts `L` behind it.
 
 **`label_drawn_otherwise`.** Set: a label not drawn wholly as placed paths is read over the whole
 frame. `L` of W5 with one more record in its facing group: a points record at `(2.5, 0, 0)`.
