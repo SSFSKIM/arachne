@@ -84,13 +84,36 @@ pub fn outline(shown: &[[f64; 3]]) -> BezPath {
 /// The dash a record strokes with (`dash_start_least_length@1`): `None` where it strokes solid
 /// (no dash, a duty of 1, or a gap under Cairo's least length), else its two entries.
 pub fn dash_entries(dash: Option<Dash>) -> Option<[f64; 2]> {
-    todo!("rewritten from §8")
+    let d = dash?;
+    let a = d.period * d.duty;
+    let b = d.period * (1.0 - d.duty);
+    // The gap is the total less the on length, never `b` itself; strictly below 1/512 is solid,
+    // exactly 1/512 dashed. A duty of 1 makes `b` 0 and so the gap 0 (the period is finite, §11).
+    if (a + b) - a < SOLID_DASH_GAP {
+        return None;
+    }
+    Some([a, b])
 }
 
 /// Whether Cairo's dashed stroker starts a subpath in an `on` dash: the offset `phase · period`
 /// taken modulo the entries' total, then stepped past every entry it reaches or passes.
 pub fn dash_starts_on(d: &Dash, entries: [f64; 2]) -> bool {
-    todo!("rewritten from §8")
+    let total = entries[0] + entries[1];
+    let mut o = libm::fmod(d.phase * d.period, total);
+    if o < 0.0 {
+        o += total;
+    }
+    // Cairo then sets an offset at most 0 to 0. Here that is only ±0 (`fmod` leaves `|o|` under
+    // the total, so a raised offset is above 0), and a zero offset, −0 included, steps past no
+    // entry: the walk below starts on either way.
+    let mut on = true;
+    let mut i = 0;
+    while o > 0.0 && o >= entries[i] {
+        o -= entries[i];
+        on = !on;
+        i = 1 - i;
+    }
+    on
 }
 
 fn kurbo_join(joint: Joint) -> kurbo::Join {
