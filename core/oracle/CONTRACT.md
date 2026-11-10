@@ -104,7 +104,7 @@ The oracle shares exactly these with the core. Each is named with its version:
   oracle. A second flattening would differ from the core's by up to the tolerance at every curved
   edge, so the flattening is part of the definition.
 - **libm 0.2.16.** It supplies `sin`, `cos`, `exp`, `pow`, `atan2` and `hypot`. Square roots are
-  IEEE `sqrt`.
+  IEEE `sqrt`. §8's join test alone uses the platform's `hypot` instead, as kurbo does.
 
 The pinned external definition is **Cairo 1.18's ARGB32 image surface, with pixman 0.42 computing
 its colours**. It defines a linear gradient's bytes (§9), with the core's deviations stated there.
@@ -495,13 +495,20 @@ A layer draws nothing in any of these cases:
 The guard works in frame units, with `reach = w_max * 10`, the widest stroke's width times the
 miter limit:
 
-- **When it applies.** The guard band is the frame widened by `65536` px on every side. The guard
-  applies when some point of the outline (a move, line or curve point) lies within `reach` of the
-  band's edge, or beyond it.
-- **The area.** It is then the frame's box widened by `reach + 1`.
+- **The band.** The guard band is the frame's pixel box `[0, W] × [0, H]` widened by `65536` px on
+  every side, mapped back to frame units through the frame mapping (§2) axis by axis: `x` from
+  `(−65536 − x0) / xx` to `(W + 65536 − x0) / xx`, `y` from `(−65536 − y0) / yy` to
+  `(H + 65536 − y0) / yy`, each pair taken low to high.
+- **When it applies.** The guard applies when some point of the outline lies within `reach` of the
+  band's edge, or beyond it: on some axis, its coordinate is at most the band's low end plus
+  `reach`, or at least its high end less `reach`. Every point counts: each move, and every point of
+  every curve element, its control points included.
+- **The area.** It is then the frame's box in frame units (the pixel box `[0, W] × [0, H]` mapped
+  back as above) widened by `reach + 1` frame units on every side.
 - **Splitting.** Each cubic is cut into pieces by a recursive split with depth limit 40:
-  - a piece whose four control points all lie beyond one side of the area misses it, and is kept
-    as is;
+  - a piece whose four control points all lie strictly beyond one side of the area (every `x`
+    below the area's low `x`, or every `x` above its high `x`, or likewise in `y`) misses it, and
+    is kept as is;
   - a piece whose `CubicBez::bounding_box` has its larger side at most `64 * size` (`size` the
     area's larger side) is kept as is;
   - a piece at depth 0 is kept as is;
@@ -1595,12 +1602,21 @@ width` and `limit² = pow(10, 2)`:
 - **A join** is made between each element and the one before it in its subpath, and, at a
   `ClosePath`, first at the closing line where the subpath does not end at its start (a line that
   carries no key), then at the subpath's start, from its last element into its first. With `ab`
-  the tangent arriving and `cd` the one leaving, kurbo **joins** only where `ab · cd <= 0` or
-  `|ab × cd| >= hypot(ab × cd, ab · cd) · join_thresh`; a slighter turn makes no join and is
-  suppressed. A join kurbo makes **mitres** where `2 h < (h + ab · cd) limit²`, with
-  `h = hypot(ab × cd, ab · cd)`.
+  the tangent arriving and `cd` the one leaving, and `h = hypot(ab × cd, ab · cd)`, kurbo **joins**
+  only where `ab · cd <= 0` or `|ab × cd| >= h · join_thresh`; a slighter turn makes no join and is
+  suppressed. A join kurbo makes **mitres** where `2 h < (h + ab · cd) limit²`. Here `hypot` is
+  the platform's `hypot`, as kurbo's `do_join` calls it (`f64::hypot`), not libm's. A join or miter
+  decision that falls exactly at its boundary may therefore differ between platforms, as the
+  core's own does, and the oracle computes it with the same call on the platform it runs on.
 - **Its key** is its two elements' points, as above, and whether it is the closing join. A join
   with an element of no key (a quadratic, a closing line) has none.
+- **Joins inside a near-straight cubic.** A cubic kurbo finds nearly collinear and possibly cusped
+  is stroked as lines with round joins of its own (kurbo 0.13.1, `stroke.rs`: `do_cubic`'s linear
+  test, then `do_linear`): from its start tangent into its first line, at each cusp inside it, and
+  from its last line into its end tangent. These joins are round whatever the style, carry no key
+  and are not occurrences, and they are drawn as kurbo draws them; their lines and arcs belong to
+  the contours an edit searches. The joins into and out of such a cubic are made with its start
+  and end tangents, as for any cubic.
 - **Contours.** kurbo's outline holds each stroked subpath's contours in turn, each begun by a move:
   one for an open subpath, two for a closed one.
 
@@ -1611,37 +1627,59 @@ an occurrence that decides nothing.
 
 **The edits**, where a decision differs from kurbo's own, within the join's subpath's contours (the
 elements from its first contour's move to the next subpath's first move). With `p0` the join's
-point, `norm(t) = (0.5 width / |t|) (−t_y, t_x)`, `n_a = norm(ab)`, `n = norm(cd)`,
-`c = ab × cd`, `s = −1` where `c > 0` else `1`, and the miter point
-`m = (p0 + s n) − cd · (ab × ((p0 + s n) − (p0 + s n_a))) / c`:
+point, and these quantities computed as kurbo's `do_join` computes them (`stroke.rs`):
+
+- `|v| = sqrt(v_x · v_x + v_y · v_y)`, kurbo's `Vec2::hypot`, not libm's `hypot` (the edit's
+  `|m − p0|` too);
+- `norm(t) = (0.5 width / |t|) (−t_y, t_x)`: the scalar first, then each coordinate times it;
+  `n_a = norm(ab)`, `n = norm(cd)`;
+- `c = ab × cd`, and `s = −1` where `c > 0`, else `1`;
+- `f_a = p0 + s n_a` and `f = p0 + s n` (that is, `p0 − n_a` and `p0 − n` where `s = −1`);
+- the miter point `m = f − cd · k`, with `k = (ab × (f − f_a)) / c` computed first and `cd` then
+  multiplied by it coordinate by coordinate.
+
+The edits:
 
 - **Parallel tangents** (`c = 0`): no edit, mitring or not; a carried miter there stays bevelled.
 - **A carried bevel where kurbo mitred.** Find the one line to `m` and the one line to `p0` among
   those elements; drop both. kurbo's bevel remains.
 - **A carried miter where kurbo bevelled.** The tip is `p0 + (m − p0) · (10 · 0.5 width / |m − p0|)`,
-  on the bisector at the limit's length. The forward place is the one line to `p0 − n`; the
+  on the bisector at the limit's length: the scalar left to right, `((10 · 0.5) · width) / |m − p0|`,
+  then each coordinate of `m − p0` times it, then added to `p0`. The tip is a vertex the edit
+  inserts, never one it looks for. The forward place is the one line to `p0 − n`; the
   backward place is the one line whose element before it ends at `p0 + n`. The outer place is the
   forward one where `c > 0`, else the backward one; the inner place is the other. Insert a line to
   the tip before the outer place and a line to `p0` before the inner place, the later place first.
 - **Not found.** Where a line the edit needs is absent, or not the only one, the join is left as
   kurbo drew it.
+- **Everything else is kurbo's.** An edit changes only the lines it drops or inserts in its join's
+  subpath's contours. Every other element, and every contour the walk accounts for no edited join
+  in (a cap, a dot, the round joins inside a near-straight cubic, the contours of a subpath with no
+  edit), is left as kurbo drew it.
 
-All of this arithmetic is binary64 in the order written, so the edited vertices are found by value.
+All of this arithmetic is binary64 in the order written, so the vertices an edit looks for (`m`,
+`p0`, `p0 − n`, `p0 + n`) are found by value.
 
 [Rests on: `join_mask.rs` module doc and `apply`, `path::decided_joins`; `tests/join_mask.rs`.]
 
 **`dash_start_least_length@1`.**
 
+- **The entries.** A dash's entries are `a = period · duty` and `b = period · (1 − duty)`.
 - **Solid.** A dash of duty 1 strokes solid. So does a dash whose gap is under Cairo's least length,
-  `1/512`. The gap is the entries' total less the on length.
-- **The pattern.** Any other dash is the pattern `[period · duty, period · (1 − duty)]`. Each
-  subpath starts `phase · period` into it.
+  `1/512` (half of one unit of Cairo's 24.8 fixed point). The gap is `(a + b) − a`: the total is
+  summed first and the on length taken from it, never `b` itself. A gap strictly below `1/512` is
+  solid; a gap of exactly `1/512` is dashed. (Cairo 1.18, `cairo-gstate.c`,
+  `_cairo_gstate_set_dash`: `dash_total - on_total < CAIRO_FIXED_ERROR_DOUBLE`, the total summing
+  the entries that are not 0.)
+- **The pattern.** Any other dash is the pattern `[a, b]`. Each subpath starts `phase · period`
+  into it.
 - **Without the guard,** kurbo's `dash` lays the pattern on the whole unguarded outline, and the
   stroke follows.
 - **Where the guard applies (§4),** each subpath is cut into §4's pieces, each marked as missing the
   area or not:
   - **Runs.** A **run** is a maximal sequence of consecutive pieces that do not miss the area. A
-    closed subpath's closing line is a piece, if its ends differ.
+    closed subpath has no closing-line piece: §4 ends it exactly at its first point, so its
+    `ClosePath` adds no line.
   - **No piece misses.** A subpath none of whose pieces misses the area is dashed whole by kurbo's
     `dash` at offset `phase · period`, as one path of all its pieces that keeps its `ClosePath`
     where the subpath is closed, so the dash runs on across the seam as it does without the guard.
@@ -1650,9 +1688,15 @@ All of this arithmetic is binary64 in the order written, so the edited vertices 
     `phase · period + at`, where `at` is the summed `arclen(1e-6)` of every piece before it in its
     subpath, missing or not. Pieces that miss are measured and never dashed.
   - **The closing seam.** Take a closed subpath with more than one run whose first and last pieces
-    both do not miss. A dash of the first run that starts at the subpath's start is joined onto the
-    last run's dash that ends within `1e-9 (1 + max(|x|, |y|))` of that start.
-  - **Order.** The dashes are emitted in run order.
+    both do not miss, and `(x, y)` its first point. Where the first run's first dash starts exactly
+    at `(x, y)` (its move equal in both coordinates), it is joined onto the last dash of the last
+    run that ends near `(x, y)`: within `tol = 1e-9 (1 + max(|x|, |y|))` of it in each coordinate,
+    `|e_x − x| <= tol` and `|e_y − y| <= tol`. Joining appends the opening dash's elements, without
+    its move, after that dash's last element. The joined dash is emitted where that dash is, and
+    the opening dash is not emitted on its own. Where no dash of the last run ends near `(x, y)`,
+    nothing is joined.
+  - **Order.** The dashes are emitted in run order, the opening dash of a joined seam inside the
+    last run's dash.
 
 [Rests on: `path::drawn_dash`, `dashed`, `dash_subpath`, `DASH_ACCURACY`;
 `tests/path.rs::a_dashed_stroke_follows_its_period_duty_and_phase`,
@@ -1661,9 +1705,16 @@ All of this arithmetic is binary64 in the order written, so the edited vertices 
 **`round_cap_dot@1`.**
 
 - **When it applies.** To a face of a face group whose shown points are all at one spot in `x` and
-  `y`, under a round cap, and either undashed or dashed on at its subpath's start. Cairo's dash
-  start is the offset `phase · period` taken modulo the total and stepped past every entry it
-  reaches or passes.
+  `y`, under a round cap, and either undashed or dashed on at its subpath's start.
+- **Cairo's dash start** (Cairo 1.18, `cairo-gstate.c`, `_cairo_gstate_set_dash`, then
+  `cairo-stroke-dash.c`, `_cairo_stroker_dash_start`), with `a` and `b` the entries above and
+  `total = a + b`:
+  - the offset `o = phase · period` becomes `fmod(o, total)` (C's `fmod`, exact); where that is
+    below 0, `total` is added; where it is then at most 0, `o` is 0, so `−0` is 0;
+  - the start is on, at entry `a`. While `o > 0` and `o` is at least the current entry, `o` loses
+    the entry, on and off swap, and the next entry is taken (after `b`, `a` again);
+  - the dash is on at the subpath's start where this ends on. An offset exactly equal to an entry
+    steps past it: at `o = a` the start is off, at `o = 0` it is on.
 - **What it strokes.** A circle of radius `w / 2` about its first shown point, made by kurbo's
   `Circle::to_path` at `0.1 / s`.
 - Under a butt or square cap, the face strokes nothing.
@@ -2294,10 +2345,12 @@ Each case below is a **witness**: a concrete scene, a fixture under
 `core/oracle/tests/fixtures/<name>/`, and the verdict the oracle must give. A fixture directory
 holds:
 
-- `scene.xf`, the scene as the witness gives it;
+- `scene.sha256`, the SHA-256 of the XF stream bytes the fixture's test code builds for the scene
+  the witness gives. The scene is built in code and never committed as a binary file; the hash
+  pins the bytes, so a change to the builder or to the wire shows as a changed hash;
 - for a mutation, `defect.json`: the one recorded quantity the defect changes (which quantity, at
   which pixel and samples, and its injected value), applied to the conforming core's report of
-  `scene.xf`. Every other recorded quantity is that report's own, so the fixture differs from the
+  that scene. Every other recorded quantity is that report's own, so the fixture differs from the
   conforming case by the defect alone;
 - `expected.json`: the verdict, the pixels and samples it falls on, and the label or count name
   it carries.
@@ -2668,13 +2721,28 @@ rule. Expected: agreement with the recorded votes, ranks, units and class.
 **Stroke behaviour fixtures (§8).** Each holds a scene whose expected coverage follows from §8
 alone; the conforming report agrees, and the named wrong reading would not.
 
-- **`join_occurrences`.** View F. One open path, the triangle `p = (−4, −3)`, `q = (4, −3)`,
-  `r = (0, 3)` traced twice, `p q r p q r` as five straight cubics, stroke width 1, joint miter,
-  `joins` bytes per cubic `0, 0b01, 0, 0, 0b11`. The join at `q` from `p q` into `q r` occurs
-  twice, one key: kurbo mitres both (an angle near 56°, within the limit), the first occurrence
-  takes the bevel and the second the miter. Expected: pixel `(12, 11)`'s cell bytes are the mitred
-  corner's, the miter tip near pixel coordinates `(12.94, 11.5)` covered. Applying the first
-  occurrence's decision to both would bevel the corner.
+- **`join_occurrences`.** View F. One path record, stroke white, width 1, joint miter, cap butt,
+  no fill, of four open subpaths of two straight cubics each. Subpaths 1 and 2 are the same spike,
+  `(−7, 4)` to `(−1, 4)` and back to `(−7, 5)`; subpaths 3 and 4 the same spike 8 units lower,
+  `(−7, −4)` to `(−1, −4)` and back to `(−7, −3)`. `joins` bytes per cubic
+  `0, 0b11, 0, 0b01, 0, 0b01, 0, 0b11`.
+  - **The keys.** Each spike's join at its corner is one key, met twice, once in each of its
+    subpaths. The upper key's decisions are miter, then bevel; the lower key's are bevel, then
+    miter. The corner is sharp (an angle of about 9.5° between the legs), so kurbo bevels it: its
+    miter point `m`, about `(5.04138, 3.5)` for the upper spike, lies about 6.06 units from the
+    corner, beyond the limit's 5.
+  - **Each edit alone in its subpath.** A carried miter inserts the tip in its own subpath's
+    contour, where its lines are the only ones, so no edit is voided. The two copies of a spike
+    are drawn over each other, so a spike shows the tip when either of its occurrences mitres.
+  - **The tips.** The upper tip is about `(3.98296, 3.58760)`, its triangle closed by the bevel's
+    ends `(−1, 3.5)` and `(−0.91780, 4.49320)`; the lower is the same 8 units lower.
+  - **Expected** (both tips drawn): pixel `(8, 4)` (points `[0, 1] × [3, 4]`) covered over about
+    0.474 of its area, its upper half above frame `y` ≈ 3.52, by the upper tip; pixel `(8, 12)`
+    (points `[0, 1] × [−5, −4]`) the same by the lower tip. No other part of the record reaches
+    either pixel.
+  - **Rejects.** Applying each key's first decision to both occurrences bevels the lower spike:
+    pixel `(8, 12)` uncovered, every cell byte 0. Applying each key's last decision to both bevels
+    the upper spike: pixel `(8, 4)` uncovered.
 - **`join_closing`.** View F. A closed square through `(−4, −4)`, `(4, −4)`, `(4, 4)`, `(−4, 4)`,
   stroke width 1, joint miter, bytes `0b01, 0b11, 0b11, 0b11`. The closing join at `(−4, −4)` takes
   the first cubic's byte, a bevel; the other three corners mitre. Expected: the outer corner square
