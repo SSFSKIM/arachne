@@ -507,7 +507,13 @@ def test_frames_and_the_older_minor_are_the_bytes_sent_without_a_source(monkeypa
 
     # The cases drawing a facing group, each held with placement off only; the
     # streams themselves must agree.
-    labelled = {scenes.Lit3D, camera_scenes.PureCentre, LabelledArrow, Solids}
+    labelled = {
+        scenes.Lit3D,
+        scenes.Watched,
+        camera_scenes.PureCentre,
+        LabelledArrow,
+        Solids,
+    }
 
     def drawn(placed=True):
         found = []
