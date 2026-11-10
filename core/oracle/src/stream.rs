@@ -373,8 +373,8 @@ impl State {
                 .find(|t| t.key() == *k)
                 .or_else(|| self.paints.get(k))
         };
-        // 9. When the delta sets or removes a record, the order of every display it leaves. (So a
-        // display the delta sets has its order checked here, before 10.)
+        // 9. When the delta sets or removes a record, the order of every display it leaves (the
+        // last set in each slot; 10 reads every display set).
         if !(d.set.is_empty() && d.remove.is_empty()) {
             for r in records.values() {
                 if let Body::Image(ImageSource::SubFrame { order, .. }) = &r.body
@@ -391,7 +391,7 @@ impl State {
             .iter()
             .filter(|r| !removed.contains(&r.slot) && !matches!(r.kind, RecordKind::Unknown(_)))
         {
-            if let Some(what) = record_problem(r, &shape, &table) {
+            if let Some(what) = record_problem(r, &shape, &table, &records) {
                 return bad(format!("slot {}: {what}", r.slot));
             }
         }
@@ -683,14 +683,15 @@ fn view_problem<'a>(
 /// bits and their fields, a tail on a kind that takes none); a kind that needs a shape given none,
 /// or a shape of a kind it cannot take (its own and its blend's; a fill image that is not an image,
 /// a tail's points that are not a path); a sub-frame display given a shape; a body of another
-/// kind's; a shape or paint table the stream would not hold; a display's view; a table of other than
-/// one row per face, point or placement, placements and objects differing in number; a face group's
-/// face ends and widths, and joins. (A display's order is apply's check 9, which every delta that
-/// sets a record makes first.)
+/// kind's; a shape or paint table the stream would not hold; a display's view and its order against
+/// `records`, what the delta leaves (a display set and then set again in its slot is one check 9
+/// does not read); a table of other than one row per face, point or placement, placements and
+/// objects differing in number; a face group's face ends and widths, and joins.
 fn record_problem<'a>(
     r: &Record,
     shape: &dyn Fn(&Key) -> Option<&'a Shape>,
     table: &dyn Fn(&Key) -> Option<&'a Stops>,
+    records: &BTreeMap<u32, &Record>,
 ) -> Option<String> {
     let kind = r.kind.name();
     if (r.features & FEATURE_BACKGROUND_IMAGE != 0) != r.fill_image.is_some() {
@@ -774,10 +775,13 @@ fn record_problem<'a>(
             return Some(format!("names paint table {} it lacks", k.hex()));
         }
     }
-    if let Body::Image(ImageSource::SubFrame { view, .. }) = &r.body
-        && let Some(what) = view_problem("its display", view, shape)
-    {
-        return Some(what);
+    if let Body::Image(ImageSource::SubFrame { view, order, .. }) = &r.body {
+        if let Some(what) = view_problem("its display", view, shape) {
+            return Some(what);
+        }
+        if let Some(what) = order_problem(order, records) {
+            return Some(format!("its display's order: {what}"));
+        }
     }
     // Every table named is held, by the check above.
     let one_per = |name: &str, k: &Key, n: usize, per: &str| -> Option<String> {

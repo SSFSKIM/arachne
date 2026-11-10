@@ -888,6 +888,19 @@ fn apply_10_checks_each_record_set_not_only_the_last_in_its_slot() {
 }
 
 #[test]
+fn apply_10_checks_the_order_of_a_display_set_and_set_again() {
+    // Slot 1 set twice: first a display whose own order draws slot 7, which no record holds, then
+    // one drawing nothing. Check 9 reads only the last; check 10 reads each.
+    let lost = display(1, 0, vec![at(XfLayer::Moving, 7)]);
+    let whole = display(1, 0, vec![]);
+    assert_refused_for(
+        held(),
+        wired(next(vec![], vec![lost, whole])),
+        "its display's order: it names slot 7 it lacks",
+    );
+}
+
+#[test]
 fn apply_10_comes_before_the_view_and_the_order() {
     // A record's fault (item 10) beside the delta's view's (11) and the order's (12): the
     // record's is the refusal.
