@@ -517,6 +517,11 @@ impl Stream {
         for slot in &delta.remove {
             self.records.remove(slot);
         }
+        for row in &delta.source {
+            let held = self.records.get_mut(&row.slot).expect("checked: the slot is held");
+            held.source = row.source.clone();
+            held.facing_group = row.facing_group;
+        }
         for key in &delta.release {
             self.shapes.remove(key);
             self.paints.remove(key);
@@ -585,6 +590,7 @@ impl Stream {
                 )));
             }
         }
+        check_source_rows(self, delta, &after)?;
         let view = delta.view.as_ref().or(self.view.as_ref());
         if !after.released.is_empty() {
             let in_use = |key: &Key, by: String| {
@@ -1319,6 +1325,38 @@ pub const MAX_SIDE: u32 = 16384;
 
 /// A shape that contradicts itself: a triangle naming a vertex the mesh lacks, normals that are not
 /// one per vertex, or an image whose pixels are not its width times its height.
+/// XF 1.5's rows for held records: each names, once, a slot the stream holds and the delta neither
+/// sets nor removes, with no path of no objects.
+fn check_source_rows(
+    stream: &Stream,
+    delta: &Delta,
+    after: &After<'_>,
+) -> Result<(), StreamError> {
+    let mut rowed = HashSet::new();
+    for row in &delta.source {
+        let slot = row.slot;
+        let why = if !rowed.insert(slot) {
+            "is given two"
+        } else if after.set.contains_key(&slot) {
+            "the delta sets"
+        } else if delta.remove.contains(&slot) {
+            "the delta removes"
+        } else if row.source.iter().any(Vec::is_empty) {
+            "names a path of no objects"
+        } else if !stream.records.contains_key(&slot) {
+            return Err(StreamError::Missing(format!(
+                "a source row for slot {slot}, which is not set"
+            )));
+        } else {
+            continue;
+        };
+        return Err(StreamError::Invalid(format!(
+            "a source row for slot {slot}, which {why}"
+        )));
+    }
+    Ok(())
+}
+
 fn check_shape(shape: &Shape) -> Result<(), StreamError> {
     let invalid = |why: String| {
         Err(StreamError::Invalid(format!(

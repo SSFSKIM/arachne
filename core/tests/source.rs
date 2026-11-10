@@ -461,10 +461,7 @@ fn a_row_gives_a_held_record_its_new_source_and_nothing_else() {
         ),
         (
             "twice",
-            vec![
-                held_row(1, 0, glyph(1).source),
-                held_row(1, 2, Vec::new()),
-            ],
+            vec![held_row(1, 0, glyph(1).source), held_row(1, 2, Vec::new())],
             vec![],
             vec![],
         ),

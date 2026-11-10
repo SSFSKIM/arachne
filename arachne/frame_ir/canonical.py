@@ -432,6 +432,10 @@ class Canonical:
             self._records.pop(slot, None)
             self._planes.pop(slot, None)
             self._joins_sent.pop(slot, None)
+        for slot, source, group in delta.source:
+            # What is held of a record carries its new source, so that the
+            # record set again does.
+            self._records[slot] = self._records[slot].with_source(source, group)
         self._decide(delta)
         grid = self.frame_grid
         if grid is None:
@@ -517,6 +521,8 @@ class Canonical:
         self._settle_shapes(held, found)
         found.remove = list(delta.remove)
         found.order = None if delta.order is None else list(delta.order)
+        # A record set again here carries its new source itself.
+        found.source = [row for row in delta.source if row[0] not in setting]
         return found
 
     def _views(self) -> list[Mapping[str, Any]]:

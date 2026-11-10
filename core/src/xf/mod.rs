@@ -558,6 +558,16 @@ pub struct SourceNode {
     pub class: String,
 }
 
+/// A held record's new source and facing group (XF 1.5), its drawing unchanged: a row for a slot
+/// the delta neither sets nor removes, so the record is not set again and what an older minor
+/// carries does not move.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceRow {
+    pub slot: u32,
+    pub facing_group: u32,
+    pub source: Vec<Vec<SourceNode>>,
+}
+
 /// One drawn object.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Record {
@@ -817,6 +827,8 @@ pub struct Delta {
     pub set: Vec<Record>,
     pub remove: Vec<u32>,
     pub order: Option<Vec<OrderEntry>>,
+    /// Held records' new sources (XF 1.5).
+    pub source: Vec<SourceRow>,
 }
 
 impl Delta {
@@ -834,6 +846,7 @@ impl Delta {
             set: Vec::new(),
             remove: Vec::new(),
             order: None,
+            source: Vec::new(),
         }
     }
 
@@ -847,5 +860,6 @@ impl Delta {
             && self.set.is_empty()
             && self.remove.is_empty()
             && self.order.is_none()
+            && self.source.is_empty()
     }
 }

@@ -89,16 +89,20 @@ fn paints(out: &Bound<'_, PyDict>, p: &PaintB) -> PyResult<()> {
     out.set_item("background_stroke_width", p.background_stroke_width)
 }
 
+/// A source as Python reads it: a tuple of paths, each a tuple of (token, class).
+fn source<'py>(py: Python<'py>, paths: &[Vec<SourceNode>]) -> PyResult<Bound<'py, PyTuple>> {
+    let paths = paths
+        .iter()
+        .map(|path| PyTuple::new(py, path.iter().map(|n| (n.token, n.class.as_str()))))
+        .collect::<PyResult<Vec<_>>>()?;
+    PyTuple::new(py, paths)
+}
+
 fn record<'py>(py: Python<'py>, r: &Record) -> PyResult<Bound<'py, PyDict>> {
     let out = PyDict::new(py);
     out.set_item("features", r.features)?;
     if !r.source.is_empty() {
-        let paths = r
-            .source
-            .iter()
-            .map(|path| PyTuple::new(py, path.iter().map(|n| (n.token, n.class.as_str()))))
-            .collect::<PyResult<Vec<_>>>()?;
-        out.set_item("source", PyTuple::new(py, paths)?)?;
+        out.set_item("source", source(py, &r.source)?)?;
     }
     if r.facing_group != 0 {
         out.set_item("facing_group", r.facing_group)?;
@@ -336,5 +340,10 @@ pub(super) fn delta<'py>(py: Python<'py>, d: &Delta) -> PyResult<Bound<'py, PyDi
         Some(entries) => out.set_item("order", order(entries))?,
         None => out.set_item("order", py.None())?,
     }
+    let held = PyList::empty(py);
+    for row in &d.source {
+        held.append((row.slot, source(py, &row.source)?, row.facing_group))?;
+    }
+    out.set_item("source", held)?;
     Ok(out)
 }

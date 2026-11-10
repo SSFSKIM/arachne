@@ -155,6 +155,17 @@ class Record:
     def __repr__(self) -> str:
         return f"Record({self.kind}, {sorted(self.fields)})"
 
+    def with_source(self, source: Any, facing_group: int) -> Record:
+        """This record with another source and facing group (XF 1.5): a held
+        record's, given a row of :attr:`Delta.source`.
+        """
+        fields = dict(self.fields)
+        fields["source"] = source
+        fields.pop("facing_group", None)
+        if facing_group:
+            fields["facing_group"] = facing_group
+        return Record(self.kind, fields)
+
 
 def _references(fields: Mapping[str, Any]) -> Iterable[bytes]:
     for name in ("shape", "colors", "face_fill", "face_stroke", "fill_image"):
@@ -201,6 +212,9 @@ class Delta:
     set: list[tuple[int, Record]] = field(default_factory=list)
     remove: list[int] = field(default_factory=list)
     order: list[tuple[str, int, int]] | None = None
+    #: Held records' new sources (XF 1.5), their drawing unchanged: (slot,
+    #: source, facing group) for slots the delta neither sets nor removes.
+    source: list[tuple[int, Any, int]] = field(default_factory=list)
 
     @property
     def is_empty(self) -> bool:
@@ -213,6 +227,7 @@ class Delta:
             or self.set
             or self.remove
             or self.order is not None
+            or self.source
         )
 
     def to_core(self) -> Any:
@@ -241,6 +256,8 @@ class Delta:
             core.remove(slot)
         if self.order is not None:
             core.set_order(self.order)
+        for slot, source, facing_group in self.source:
+            core.set_source(slot, source=source, facing_group=facing_group)
         return core
 
     @classmethod
@@ -275,6 +292,7 @@ class Delta:
         delta.remove = list(contents["remove"])
         if contents["order"] is not None:
             delta.order = [tuple(entry) for entry in contents["order"]]
+        delta.source = [(slot, path, group) for slot, path, group in contents["source"]]
         return delta
 
 
@@ -353,6 +371,8 @@ class StreamState:
             self.records[slot] = record
         for slot in delta.remove:
             self.records.pop(slot, None)
+        for slot, source, group in delta.source:
+            self.records[slot] = self.records[slot].with_source(source, group)
         for key in delta.release:
             self.shapes.pop(key, None)
             self.paints.pop(key, None)

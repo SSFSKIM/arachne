@@ -120,6 +120,25 @@ fn key_of(value: &Bound<'_, PyAny>) -> PyResult<Key> {
     Ok(Key(array))
 }
 
+/// A source from Python's paths of (token, class): each path names at least one object.
+fn source_of(py: Python<'_>, paths: Vec<Vec<(u32, String)>>) -> PyResult<Vec<Vec<SourceNode>>> {
+    let source: Vec<Vec<SourceNode>> = paths
+        .into_iter()
+        .map(|path| {
+            path.into_iter()
+                .map(|(token, class)| SourceNode { token, class })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    if source.iter().any(Vec::is_empty) {
+        return Err(xf_error(
+            py,
+            "a source path names at least one object".into(),
+        ));
+    }
+    Ok(source)
+}
+
 fn key_field(fields: &Fields, name: &str) -> PyResult<Option<Key>> {
     fields.take(name)?.map(|v| key_of(&v)).transpose()
 }
@@ -765,24 +784,36 @@ impl PyFrameDelta {
         record.planes = fields.get::<Vec<u8>>("planes")?;
         record.normals = fields.get::<Vec<[f64; 3]>>("normals")?;
         record.joins = fields.get::<Vec<u8>>("joins")?;
-        record.source = fields
-            .or::<Vec<Vec<(u32, String)>>>("source", Vec::new())?
-            .into_iter()
-            .map(|path| {
-                path.into_iter()
-                    .map(|(token, class)| SourceNode { token, class })
-                    .collect::<Vec<_>>()
-            })
-            .collect();
-        if record.source.iter().any(Vec::is_empty) {
-            return Err(xf_error(
-                py,
-                "a source path names at least one object".into(),
-            ));
-        }
+        record.source = source_of(py, fields.or("source", Vec::new())?)?;
         record.facing_group = fields.or("facing_group", 0u32)?;
         fields.finish()?;
         self.delta.set.push(record);
+        self.delta.version = wire::encoded_version(&self.delta);
+        Ok(())
+    }
+
+    /// Gives the record held in `slot` a new source and facing group (XF 1.5), its drawing
+    /// unchanged: a row for a slot the delta neither sets nor removes.
+    #[pyo3(signature = (slot, source=Vec::new(), facing_group=0))]
+    fn set_source(
+        &mut self,
+        py: Python<'_>,
+        slot: u32,
+        source: Vec<Vec<(u32, String)>>,
+        facing_group: u32,
+    ) -> PyResult<()> {
+        let source = source_of(py, source)?;
+        if source.is_empty() && facing_group == 0 {
+            return Err(xf_error(
+                py,
+                "a source row carries a source or a facing group".into(),
+            ));
+        }
+        self.delta.source.push(SourceRow {
+            slot,
+            facing_group,
+            source,
+        });
         self.delta.version = wire::encoded_version(&self.delta);
         Ok(())
     }

@@ -454,7 +454,7 @@ pub fn encoded_version(d: &Delta) -> (u16, u16) {
         .set
         .iter()
         .any(|r| matches!(&r.body, Body::FaceGroup(f) if f.carries_face_lists()));
-    let minor = if d.set.iter().any(Record::carries_source) {
+    let minor = if carries_source(d) {
         5
     } else if d.set.iter().any(|r| r.joins.is_some()) {
         4
@@ -509,26 +509,42 @@ pub fn encode_delta(d: &Delta) -> Vec<u8> {
         if let Some(order) = &d.order {
             write_order(w, order);
         }
-        if d.set.iter().any(Record::carries_source) {
-            write_source(w, &d.set);
+        if carries_source(d) {
+            write_source(w, d);
         }
     })
 }
 
+/// Whether the delta carries anything of XF 1.5's section: a record carrying a source or a facing
+/// group, or a held record's new one.
+fn carries_source(d: &Delta) -> bool {
+    !d.source.is_empty() || d.set.iter().any(Record::carries_source)
+}
+
 /// XF 1.5's section, after the order: the class names its rows use, each once, in the order the
 /// rows first use them; then a row for each record carrying a source or a facing group, in the
-/// order the delta sets them (of a slot set more than once, its last record's alone).
-fn write_source(w: &mut W, set: &[Record]) {
+/// order the delta sets them (of a slot set more than once, its last record's alone), then a row
+/// for each held record given a new one.
+fn write_source(w: &mut W, d: &Delta) {
+    let set = &d.set;
     let last: HashMap<u32, usize> = set.iter().enumerate().map(|(i, r)| (r.slot, i)).collect();
-    let rows: Vec<&Record> = set
+    let rows: Vec<(u32, u32, &[Vec<SourceNode>])> = set
         .iter()
         .enumerate()
         .filter(|(i, r)| r.carries_source() && last[&r.slot] == *i)
-        .map(|(_, r)| r)
+        .map(|(_, r)| (r.slot, r.facing_group, r.source.as_slice()))
+        .chain(
+            d.source
+                .iter()
+                .map(|h| (h.slot, h.facing_group, h.source.as_slice())),
+        )
         .collect();
     let mut classes: Vec<&str> = Vec::new();
     let mut index: HashMap<&str, u32> = HashMap::new();
-    for node in rows.iter().flat_map(|r| r.source.iter().flatten()) {
+    for node in rows
+        .iter()
+        .flat_map(|(_, _, source)| source.iter().flatten())
+    {
         index.entry(node.class.as_str()).or_insert_with(|| {
             classes.push(node.class.as_str());
             u32::try_from(classes.len() - 1).expect("an XF count fits in u32")
@@ -537,11 +553,11 @@ fn write_source(w: &mut W, set: &[Record]) {
     w.count(classes.len());
     classes.iter().for_each(|c| w.str(c));
     w.count(rows.len());
-    for r in rows {
-        w.u32(r.slot);
-        w.u32(r.facing_group);
-        w.count(r.source.len());
-        for path in &r.source {
+    for (slot, facing_group, source) in rows {
+        w.u32(slot);
+        w.u32(facing_group);
+        w.count(source.len());
+        for path in source {
             assert!(!path.is_empty(), "a source path names at least one object");
             w.count(path.len());
             for node in path {
@@ -1078,15 +1094,16 @@ pub fn decode_delta(bytes: &[u8]) -> Result<Delta> {
     }
     // XF 1.5: the records' sources, when the delta carries them.
     if r.at < r.b.len() {
-        read_source(&mut r, &mut d.set)?;
+        read_source(&mut r, &mut d)?;
     }
     // Whatever follows belongs to a newer minor version: skipped.
     Ok(d)
 }
 
 /// XF 1.5's section: each row's source and facing group set on the last record of its slot the
-/// delta sets, the whole section read and checked before the delta is returned.
-fn read_source(r: &mut R, set: &mut [Record]) -> Result<()> {
+/// delta sets, or, for a slot it neither sets nor removes, a held record's new one; the whole
+/// section read and checked before the delta is returned.
+fn read_source(r: &mut R, d: &mut Delta) -> Result<()> {
     let invalid = |why: String| XfError::Invalid(format!("a delta's source: {why}"));
     let n = r.count(4)?;
     let mut classes = Vec::with_capacity(n);
@@ -1098,11 +1115,13 @@ fn read_source(r: &mut R, set: &mut [Record]) -> Result<()> {
         }
         classes.push(class);
     }
-    let mut unread: HashMap<u32, usize> = set
+    let set: HashMap<u32, usize> = d
+        .set
         .iter()
         .enumerate()
         .map(|(i, rec)| (rec.slot, i))
         .collect();
+    let mut rowed = HashSet::new();
     let rows = r.count(12)?;
     for _ in 0..rows {
         let slot = r.u32()?;
@@ -1131,13 +1150,21 @@ fn read_source(r: &mut R, set: &mut [Record]) -> Result<()> {
         if source.is_empty() && facing_group == 0 {
             return Err(invalid(format!("the row of slot {slot} carries nothing")));
         }
-        let Some(i) = unread.remove(&slot) else {
-            return Err(invalid(format!(
-                "slot {slot} is not set by the delta, or is named twice"
-            )));
-        };
-        set[i].source = source;
-        set[i].facing_group = facing_group;
+        if !rowed.insert(slot) {
+            return Err(invalid(format!("slot {slot} is named twice")));
+        }
+        if let Some(&i) = set.get(&slot) {
+            d.set[i].source = source;
+            d.set[i].facing_group = facing_group;
+        } else if d.remove.contains(&slot) {
+            return Err(invalid(format!("slot {slot} is removed by the delta")));
+        } else {
+            d.source.push(SourceRow {
+                slot,
+                facing_group,
+                source,
+            });
+        }
     }
     Ok(())
 }

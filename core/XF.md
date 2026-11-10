@@ -13,7 +13,7 @@ a new field or kind bumps the minor, and nothing removes or retypes a field. A w
 lowest supported version that carries a delta's content: **1.0 without a pre-projected tail, 1.1
 with one, 1.2 with an input grid (on the view or a sub-frame's view) or a record's planes or normals,
 1.3 with a face group's face ends or face widths, 1.4 with a record's joins, 1.5 with a record's
-source or facing group**. A file's version is the highest version its deltas need (1.0 for an empty file).
+source or facing group, or a held record's new one**. A file's version is the highest version its deltas need (1.0 for an empty file).
 Explicit foreign or newer version declarations are retained, since this writer cannot determine
 what their content requires. `XF_VERSION` names the build's supported version, not every delta's.
 
@@ -103,13 +103,17 @@ class it derives from; no address and no name of the scene's own is written). A 
 `facing_group` is a token its writer gives a camera-facing label: the records of one label share
 it, and two labels never do (0: none). The scene lowering writes both; nothing drawn reads either,
 so a frame is the same bytes with them or without. A record set again replaces both, and a record
-set without them has neither: they never outlive their record. They are carried in a section
-after the delta's order, keyed by slot, its class names stated once per delta, so an XF 1.4
-reader, which stops after the order, reads the delta as it was. A reader of XF 1.4 that writes
-the delta again writes it without them. A reader refuses the delta (invalid XF) when the section
-names a class twice or one past its names, names a slot twice or one the delta does not set, or
-has a path of no objects or a row carrying neither field; `apply` refuses a path of no objects.
-A newer minor that appends after the section writes it, empty, when no record carries either.
+set without them has neither: they never outlive their record. When a record's objects move (it is
+reparented) and its drawing does not, its writer does not set it again: a row for a slot the delta
+neither sets nor removes gives the held record its new source and facing group, so the bytes an
+older minor carries do not move. They are carried in a section after the delta's order, keyed by
+slot, its class names stated once per delta, so an XF 1.4 reader, which stops after the order,
+reads the delta as it was. A reader of XF 1.4 that writes the delta again writes it without them.
+A reader refuses the delta (invalid XF) when the section names a class twice or one past its
+names, names a slot twice or one the delta removes, or has a path of no objects or a row carrying
+neither field; `apply` refuses a path of no objects, and a row for a slot the stream does not
+hold. A newer minor that appends after the section writes it, empty, when no record carries
+either.
 
 This build draws the background (a colour, or an image cropped to the frame as CE crops it); `mesh`
 records filled with one colour; `path` records, their paints one colour or a linear gradient between
@@ -325,10 +329,13 @@ delta     u16 major  u16 minor  i64 t_num  i64 t_den (> 0)  u64 seq
           count u32*                   (removed slots)
           [count (u8 layer  u32 slot  u32 part)*]?     (the order; layer 0 static, 1 moving, 2 overlay)
           source                       (XF 1.5, when a record the delta sets carries a source or a
-                                        facing group; anything after it belongs to a newer minor)
+                                        facing group, or a held record is given a new one; anything
+                                        after it belongs to a newer minor)
 source    count str*                   (class names: each once, in the order the rows first use them)
           count row*                   (one per record carrying either, in the order set; of a slot
-                                        set more than once, its last record's alone)
+                                        set more than once, its last record's alone; then one per
+                                        held record given a new one, for a slot the delta neither
+                                        sets nor removes)
 row       u32 slot  u32 facing_group (0: none)  count path*
 path      count (u32 token  u32 class)*   (the record's owner first, then the objects containing it;
                                         class indexes the section's class names)
@@ -428,13 +435,17 @@ and face widths not one per face or not finite and at least 0.
 XF 1.5: `set_record(..., source=[[(token, class), ...], ...], facing_group=g)` carries the
 record's source paths, each `(token, class)` pairs owner first, and its facing group (omitted,
 empty or 0: not carried). A path of no objects raises `XfError`; tokens and the group are u32.
+`set_source(slot, source=..., facing_group=g)` gives the record held in `slot` a new source and
+facing group, its drawing unchanged; a row carrying neither raises `XfError`.
 
 ## Python read-back
 
 `FrameDelta.from_bytes(raw).contents()` returns the decoded delta held by the core, not a
 reconstruction from drawing state. Its keys are `version`, `t` (both pairs), `seq`, `view` (a dict
 or `None`), `objects` (a list of `(ref, stable_id, source)` tuples), `upload`, `upload_paints`,
-`release` (key bytes), `set`, `remove` (slots), and `order` (a list or `None`).
+`release` (key bytes), `set`, `remove` (slots), `order` (a list or `None`), and `source` (a list
+of `(slot, source, facing_group)` rows: the held records given a new source, `source` in a record's
+form).
 
 - A view dictionary uses `set_view`'s keyword names. `camera` is `flat`, `moving` or `three_d`, with
   the 3D parameters present only for `three_d`; `background` is an RGBA 4-tuple or image key bytes;

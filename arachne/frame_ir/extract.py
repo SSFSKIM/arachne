@@ -121,6 +121,10 @@ _TOLERANCE = 1e-6
 #: A record's source (XF 1.5): a path per way its object is contained, each
 #: ``(token, class)`` pairs, the object first and its outermost container last.
 Source = tuple[tuple[tuple[int, str], ...], ...]
+#: A slot's record as made, what was added to it, the record sent, and the
+#: record sent before it for the same record as made (its source moved, its
+#: drawing not), else ``None``.
+_Sent = tuple[Record, tuple[Source, int], Record, Record | None]
 
 #: The library whose classes name a record's objects.
 _LIBRARY = "arachne"
@@ -300,8 +304,8 @@ class FrameStream:
         #: The frame's sources and facing groups, by object id, once found.
         self._sources: dict[int, Source] = {}
         self._groups: dict[tuple[int, int], int] = {}
-        #: By slot: the record as made, what was added to it, the record sent.
-        self._sent: dict[int, tuple[Record, tuple[Source, int], Record]] = {}
+        #: What each slot was sent (:data:`_Sent`).
+        self._sent: dict[int, _Sent] = {}
 
     # Slots
 
@@ -419,7 +423,9 @@ class FrameStream:
         slot draws, and where the record is kept facing the camera, the label
         of ``facing`` (the object whose depth it states) under
         ``orientation``, the camera's. The record sent stays the same object
-        while ``record`` and what was added to it do.
+        while ``record`` and what was added to it do; when only what was
+        added moves, the record it replaces is kept, so that its new source
+        is sent alone (:meth:`_delta`) and no record is set again.
         """
         group = 0
         if orientation and record.fields.get("fixed_orientation_centre") is not None:
@@ -433,7 +439,8 @@ class FrameStream:
         if group:
             fields["facing_group"] = group
         sent = Record(record.kind, fields)
-        self._sent[slot] = (record, added, sent)
+        replaced = held[2] if held is not None and held[0] is record else None
+        self._sent[slot] = (record, added, sent, replaced)
         return sent
 
     # Frames
@@ -1016,7 +1023,20 @@ class FrameStream:
                 else:
                     delta.upload_paints.append(item)
         for slot, record in records.items():
-            if self._held.get(slot) is not record:
+            held = self._held.get(slot)
+            if held is record:
+                continue
+            sent = self._sent.get(slot)
+            if (
+                held is not None
+                and sent is not None
+                and sent[2] is record
+                and sent[3] is held
+            ):
+                # Its drawing is the held record's: its new source alone.
+                group = record.fields.get("facing_group", 0)
+                delta.source.append((slot, record.fields["source"], group))
+            else:
                 delta.set.append((slot, record))
         delta.remove = [slot for slot in self._held if slot not in records]
         delta.release = [key for key in self._held_keys if key not in used]
