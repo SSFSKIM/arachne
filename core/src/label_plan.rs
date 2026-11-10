@@ -30,6 +30,7 @@
 
 use crate::composite::{Fragment, Plane, Producer, SAMPLES};
 use crate::label_class::{self, LabelClass};
+use crate::order::Decided;
 use crate::path::{LayerView, Paths};
 use crate::project::{FrameMap, Projection};
 use crate::scanline::Edge;
@@ -603,4 +604,94 @@ pub fn plan(
         behind,
         pairs,
     })
+}
+
+/// `items`, the fragments covering one sub-sample, front first into `out`, with the labels
+/// placed: the others ranked by `rank` (as the sample resolve ranks them, into its second
+/// argument), then each label inserted immediately behind the rearmost of them that is a fill of a
+/// sheet it goes behind, or, with none, behind the overlay's and in front of everything else.
+/// Labels at one place keep paint order (`painted`, `Less` for the first in front).
+pub(crate) fn rank_placed(
+    plan: &LabelPlan,
+    frags: &[Fragment],
+    items: &[usize],
+    rank: impl FnOnce(&[usize], &mut Vec<usize>),
+    painted: impl Fn(usize, usize) -> std::cmp::Ordering,
+    out: &mut Vec<usize>,
+) {
+    let (labels, others): (Vec<usize>, Vec<usize>) = items
+        .iter()
+        .partition(|i| matches!(plan.role(&frags[**i]), Role::Label(_)));
+    let mut ranked = Vec::with_capacity(others.len());
+    rank(&others, &mut ranked);
+    let behind = |found: Option<usize>| found.map_or(0, |p| p + 1);
+    let overlay = behind(
+        ranked
+            .iter()
+            .rposition(|i| plan.role(&frags[*i]) == Role::Overlay),
+    );
+    // Each label with the place in `ranked` it goes before.
+    let mut placed: Vec<(usize, usize)> = labels
+        .iter()
+        .map(|&l| {
+            let Role::Label(g) = plan.role(&frags[l]) else {
+                unreachable!("partitioned as a label")
+            };
+            let place = match ranked.iter().rposition(|i| plan.backs(g, &frags[*i])) {
+                Some(p) => p + 1,
+                None => overlay,
+            };
+            (place, l)
+        })
+        .collect();
+    placed.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| painted(a.1, b.1)));
+    out.clear();
+    let mut next = placed.iter().peekable();
+    for (p, &i) in ranked.iter().enumerate() {
+        while let Some(&&(place, l)) = next.peek()
+            && place == p
+        {
+            out.push(l);
+            next.next();
+        }
+        out.push(i);
+    }
+    out.extend(next.map(|(_, l)| *l));
+}
+
+/// The pixel's order of `a` against `b` where either is a label: two labels in paint order
+/// (`painted`), the overlay in front of a label, and a label behind a fill of a sheet it goes
+/// behind and in front of everything else, the placement deciding ([`Decided::Placed`]).
+/// `None` where neither is a label. A pixel where a sheet a label goes behind covers a
+/// sub-sample composites sample by sample ([`rank_placed`]); there this order breaks ties alone.
+pub(crate) fn placed_pair(
+    plan: &LabelPlan,
+    a: &Fragment,
+    b: &Fragment,
+    painted: std::cmp::Ordering,
+) -> Option<(std::cmp::Ordering, Decided)> {
+    use std::cmp::Ordering::{Greater, Less};
+    let placed = |front: bool| Some((if front { Less } else { Greater }, Decided::Placed));
+    match (plan.role(a), plan.role(b)) {
+        (Role::Label(_), Role::Label(_)) => Some((painted, Decided::Paint)),
+        (Role::Label(_), Role::Overlay) => placed(false),
+        (Role::Overlay, Role::Label(_)) => placed(true),
+        (Role::Label(g), Role::Ordinary) => placed(!plan.backs(g, b)),
+        (Role::Ordinary, Role::Label(g)) => placed(plan.backs(g, a)),
+        _ => None,
+    }
+}
+
+/// Whether a label among `frags` meets a fill of a sheet it goes behind: the pixel composites
+/// sample by sample ([`rank_placed`]).
+pub(crate) fn backed(plan: &LabelPlan, frags: &[Fragment]) -> bool {
+    frags.iter().any(|l| match plan.role(l) {
+        Role::Label(g) => frags.iter().any(|f| plan.backs(g, f)),
+        _ => false,
+    })
+}
+
+/// Whether `frags` hold a label.
+pub(crate) fn holds_label(plan: &LabelPlan, frags: &[Fragment]) -> bool {
+    frags.iter().any(|f| matches!(plan.role(f), Role::Label(_)))
 }

@@ -7,6 +7,7 @@
 use crate::composite::{
     Frame, OpaquePass, Producer, Rect, Rendered, ResolveCounts, TransparentPass,
 };
+use crate::label_plan::LabelPlan;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// A tile's side in pixels.
@@ -39,6 +40,15 @@ pub(crate) fn tile_rects(width: u32, height: u32) -> Vec<Rect> {
 
 /// A tile's opaque and transparent passes, every producer's fragments added, not yet resolved.
 pub(crate) fn passes<'a>(rect: Rect, producers: &'a [&'a dyn Producer]) -> TransparentPass<'a> {
+    passes_placed(rect, producers, None)
+}
+
+/// [`passes`], whose resolves place the frame's labels by `plan`, if any.
+pub(crate) fn passes_placed<'a>(
+    rect: Rect,
+    producers: &'a [&'a dyn Producer],
+    plan: Option<&'a LabelPlan>,
+) -> TransparentPass<'a> {
     let mut opaque = OpaquePass::new(rect, producers);
     for (i, p) in producers.iter().enumerate() {
         opaque.source = i as u16;
@@ -49,11 +59,17 @@ pub(crate) fn passes<'a>(rect: Rect, producers: &'a [&'a dyn Producer]) -> Trans
         pass.source = i as u16;
         p.transparent(&mut pass);
     }
+    pass.plan = plan;
     pass
 }
 
-fn draw_tile(rect: Rect, frame: &Frame, producers: &[&dyn Producer]) -> Rendered {
-    let pass = passes(rect, producers);
+fn draw_tile(
+    rect: Rect,
+    frame: &Frame,
+    producers: &[&dyn Producer],
+    plan: Option<&LabelPlan>,
+) -> Rendered {
+    let pass = passes_placed(rect, producers, plan);
     let stride = frame.width() as usize * 4;
     let mut background = Vec::with_capacity(rect.pixels() * 4);
     for y in rect.y0..rect.y1 {
@@ -82,12 +98,29 @@ pub fn render(
     producers: &[&dyn Producer],
     threads: usize,
 ) -> std::io::Result<Rendered> {
-    render_spawning(background, producers, threads, std::thread::Builder::new)
+    render_placed(background, producers, None, threads)
+}
+
+/// [`render`], the frame's labels placed by `plan`, if any ([`crate::label_plan`]).
+pub fn render_placed(
+    background: Frame,
+    producers: &[&dyn Producer],
+    plan: Option<&LabelPlan>,
+    threads: usize,
+) -> std::io::Result<Rendered> {
+    render_spawning(
+        background,
+        producers,
+        plan,
+        threads,
+        std::thread::Builder::new,
+    )
 }
 
 fn render_spawning(
     background: Frame,
     producers: &[&dyn Producer],
+    plan: Option<&LabelPlan>,
     threads: usize,
     builder: impl Fn() -> std::thread::Builder,
 ) -> std::io::Result<Rendered> {
@@ -102,7 +135,7 @@ fn render_spawning(
             let Some(rect) = rects.get(i) else {
                 return done;
             };
-            done.push((i, draw_tile(*rect, &background, producers)));
+            done.push((i, draw_tile(*rect, &background, producers, plan)));
         }
     };
     let tiles = std::thread::scope(|s| {
@@ -170,9 +203,9 @@ mod tests {
         // A stack larger than any address space: the system refuses the thread.
         let refused = || std::thread::Builder::new().stack_size(1 << 50);
         let frame = Frame::filled(4 * TILE, TILE, [0, 0, 0, 255]);
-        assert!(render_spawning(frame.clone(), &[], 4, refused).is_err());
+        assert!(render_spawning(frame.clone(), &[], None, 4, refused).is_err());
         // One thread starts none.
-        let drawn = render_spawning(frame.clone(), &[], 1, refused).unwrap();
+        let drawn = render_spawning(frame.clone(), &[], None, 1, refused).unwrap();
         assert_eq!(drawn.rgba, frame.rgba());
     }
 }
