@@ -751,3 +751,19 @@ fn a_sheet_backs_a_label_only_where_its_fill_has_positive_alpha() {
     assert_eq!(px(&frame, 69, 45), stacked(&[orange]));
     assert_eq!(px(&frame, 86, 45), stacked(&[WHITE]));
 }
+
+/// A sheet whose gradient is clear on the label's centre does not cover the centre: the pair is
+/// decided over the overlap where its colour has positive alpha, where it crosses behind the
+/// label's depth, so it does not qualify and the label is in front where the sheet is nearer.
+#[test]
+fn a_sheet_clear_on_the_centre_does_not_cover_it() {
+    let sheet = fading(
+        2,
+        &rect([-1.5, 1.5], [-1.0, 1.0], true, |x, _| 0.3 - 0.4 * x),
+        [1.5, 0.0, -0.3],
+        [0.2, 0.0, 0.22],
+    );
+    let items = [label([0.0, 0.0, 0.0], [1.4, 0.3]), sheet];
+    assert_eq!(one(&items), (Outcome::NotNearer, false));
+    assert_eq!(px(&drawn(&items), 85, 45), stacked(&[WHITE]));
+}
