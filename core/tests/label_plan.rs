@@ -647,3 +647,21 @@ fn a_camera_facing_record_outside_every_label_is_no_sheet() {
     let frame = s.draw(W, H, 1).expect("the frame draws");
     assert_eq!(px(&frame, 80, 45), stacked(&[WHITE]));
 }
+
+/// A label drawn as a mesh meets a sheet wherever its geometry does, not only where it has paths:
+/// open against it, as against every sheet it meets.
+#[test]
+fn a_label_drawn_as_a_mesh_is_open_against_the_sheet_it_meets() {
+    let shape = common::meshes::quad([
+        [-0.5, -0.3, 0.0],
+        [0.5, -0.3, 0.0],
+        [0.5, 0.3, 0.0],
+        [-0.5, 0.3, 0.0],
+    ]);
+    let mut r = common::meshes::mesh_record(1, &shape, WHITE, Space::World);
+    r.facing_group = 7;
+    r.source = vec![vec![node(51, GLYPH), node(97, TEX)]];
+    let found = pairs(&[(shape, r), square_at(2, 1.0, true, 1)]);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].outcome, Outcome::Open(Open::Label));
+}
