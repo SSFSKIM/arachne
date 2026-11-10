@@ -1,0 +1,342 @@
+"""The scene lowering writes each record's source (XF 1.5): the objects it was
+drawn from, by containment, each named by a token and its nearest library
+class; and a camera-facing label's group. Nothing drawn reads either: frames
+are the bytes they were without them.
+"""
+
+from __future__ import annotations
+
+from fractions import Fraction
+
+import numpy as np
+import pytest
+
+from arachne import (
+    DOWN,
+    LEFT,
+    OUT,
+    RIGHT,
+    UP,
+    Arrow3D,
+    Circle,
+    ImageMobject,
+    PMobject,
+    Square,
+    Surface,
+    ThreeDScene,
+    Vector,
+    VGroup,
+    tempconfig,
+)
+from arachne.camera.camera import Camera
+from arachne.camera.three_d_camera import ThreeDCamera
+from arachne.frame_ir.core_painter import CorePainter
+from arachne.frame_ir.extract import Blend, FrameStream, Reveal, library_class
+from arachne.frame_ir.geometry import revealed
+from arachne.frame_ir.painter import IrCairoPainter
+from arachne.utils.bezier import interpolate
+
+from ..timeline import camera_scenes
+from ..timeline.conftest import render
+from . import scenes
+
+FPS = 15
+MEDIUM = {"pixel_width": 192, "pixel_height": 108}
+
+SQUARE = "arachne.mobject.geometry.polygram.Square"
+CIRCLE = "arachne.mobject.geometry.arc.Circle"
+VGROUP = "arachne.mobject.types.vectorized_mobject.VGroup"
+VECTOR = "arachne.mobject.geometry.line.Vector"
+TIP = "arachne.mobject.geometry.tips.ArrowTriangleFilledTip"
+SOLIDS = "arachne.mobject.three_d.three_dimensions"
+
+
+class Badge(Square):
+    """A scene's own square."""
+
+
+class Board(VGroup):
+    """A scene's own group."""
+
+
+def _framed(camera, mobjects, *, stream=None, **kwargs):
+    """One frame of ``mobjects`` (the scene's, in one static list), and the
+    record each mobject's slot holds, by the mobject's id.
+    """
+    stream = FrameStream() if stream is None else stream
+    delta = stream.frame(camera, [("static", mobjects)], roots=mobjects, **kwargs)
+    return stream, delta, _by_mobject(stream)
+
+
+def _by_mobject(stream):
+    held = stream._held
+    return {id(m): held[slot] for m, slot in stream._slots.values() if slot in held}
+
+
+def _classes(record):
+    return [[cls for _, cls in path] for path in record.fields["source"]]
+
+
+def _token(record):
+    """The token of the object a record draws: its source's first node's."""
+    return record.fields["source"][0][0][0]
+
+
+def test_a_class_is_named_by_the_nearest_library_class_it_derives_from():
+    assert library_class(Square) == SQUARE
+    assert library_class(Badge) == SQUARE
+    assert library_class(Board) == VGROUP
+    badge, inner = Badge(), Circle()
+    board = Board(badge, VGroup(inner))
+    _, delta, records = _framed(Camera(), [board])
+    assert _classes(records[id(badge)]) == [[SQUARE, VGROUP]]
+    assert _classes(records[id(inner)]) == [[CIRCLE, VGROUP, VGROUP]]
+    for _, record in delta.set:
+        for path in record.fields["source"]:
+            for token, cls in path:
+                assert isinstance(token, int)
+                assert token > 0
+                assert cls.startswith("arachne.")
+                assert "Badge" not in cls
+                assert "Board" not in cls
+
+
+def test_a_vector_s_tip_names_the_vector_that_holds_it():
+    vector = Vector(RIGHT * 2)
+    tip = vector.tip
+    _, _, records = _framed(Camera(), [vector])
+    assert _classes(records[id(tip)]) == [[TIP, VECTOR]]
+    assert _classes(records[id(vector)]) == [[VECTOR]]
+    assert records[id(tip)].fields["source"][0][1][0] == _token(records[id(vector)])
+
+
+def test_an_arrow3d_s_cone_and_shaft_name_the_arrow():
+    arrow = Arrow3D(LEFT, RIGHT + UP, resolution=8)
+    _, _, records = _framed(ThreeDCamera(), [arrow])
+    shaft, cone = records[id(arrow)], records[id(arrow.cone)]
+    assert shaft.kind == cone.kind == "face_group"
+    assert _classes(shaft) == [[f"{SOLIDS}.Arrow3D"]]
+    assert _classes(cone) == [[f"{SOLIDS}.Cone", f"{SOLIDS}.Arrow3D"]]
+    assert cone.fields["source"][0][1][0] == _token(shaft)
+
+
+def test_a_face_group_names_its_surface_however_its_faces_are_handed_over():
+    for handed in ("listed", "flattened"):
+        owner = Surface(
+            lambda u, v: np.array([u, v, 0.0]),
+            u_range=(-1, 1),
+            v_range=(-1, 1),
+            resolution=(3, 3),
+        )
+        if handed == "listed":
+            groups = [("static", [owner])]
+        else:
+            groups = [("static", list(owner.submobjects))]
+        stream = FrameStream()
+        delta = stream.frame(ThreeDCamera(), groups, roots=[owner])
+        [(_, record)] = delta.set
+        assert record.kind == "face_group"
+        assert _classes(record) == [[f"{SOLIDS}.Surface"]], handed
+        assert _token(record) == stream._token(owner)
+
+
+def test_moving_a_leaf_to_another_parent_sets_its_record_again():
+    camera = Camera()
+    square = Square()
+    a, b = VGroup(square), VGroup()
+    stream = FrameStream()
+    stream.frame(camera, [("static", [a, b])], roots=[a, b])
+    first = _by_mobject(stream)[id(square)]
+    held = stream.frame(camera, [("static", [a, b])], roots=[a, b])
+    assert not held.set, "nothing changed"
+    a.remove(square)
+    b.add(square)
+    moved = stream.frame(camera, [("static", [a, b])], roots=[a, b])
+    [(_, record)] = moved.set
+    assert not moved.upload, "its geometry is unchanged"
+    assert record.fields["shape"] == first.fields["shape"]
+    assert first.fields["source"][0][1][0] == stream._token(a)
+    assert record.fields["source"][0][1][0] == stream._token(b)
+
+
+def test_a_shared_leaf_carries_a_path_through_each_parent():
+    square = Square()
+    a, b = VGroup(square), VGroup(square)
+    outer = VGroup(b)
+    stream, _, records = _framed(Camera(), [a, outer])
+    paths = records[id(square)].fields["source"]
+    tokens = [[token for token, _ in path] for path in paths]
+    assert tokens == [
+        [stream._token(square), stream._token(a)],
+        [stream._token(square), stream._token(b), stream._token(outer)],
+    ]
+
+
+def test_a_blend_s_and_a_reveal_s_records_name_the_leaf_drawn():
+    start, end = Square(), Square().shift(RIGHT)
+    blended = start.copy()
+    blended.points = interpolate(start.points, end.points, 0.5)
+    whole = Square()
+    part = Square()
+    part.points = revealed(whole.points, 0.0, 0.5)
+    terms = {
+        id(blended): Blend(start, end, 0.5),
+        id(part): Reveal(whole, 0.0, 0.5),
+    }
+    _, _, records = _framed(Camera(), [VGroup(blended, part)], terms=terms)
+    assert "blend" in records[id(blended)].fields
+    assert "reveal" in records[id(part)].fields
+    for leaf in (blended, part):
+        assert _classes(records[id(leaf)]) == [[SQUARE, VGROUP]]
+
+
+def test_a_point_cloud_s_and_an_image_s_records_name_their_objects():
+    cloud = PMobject().add_points([[0.0, 0.0, 0.0], [1.0, 0.5, 0.0]])
+    image = ImageMobject(np.full((2, 3, 4), 255, dtype=np.uint8))
+    _, _, records = _framed(Camera(), [cloud, image])
+    assert records[id(cloud)].kind == "points"
+    assert _classes(records[id(cloud)]) == [
+        ["arachne.mobject.types.point_cloud_mobject.PMobject"]
+    ]
+    assert records[id(image)].kind == "image"
+    assert _classes(records[id(image)]) == [
+        ["arachne.mobject.types.image_mobject.ImageMobject"]
+    ]
+
+
+def _centre():
+    return OUT
+
+
+def test_a_label_s_glyphs_share_a_facing_group_and_two_labels_never_do():
+    camera = ThreeDCamera()
+    one = VGroup(Square(0.2), Circle(0.1).shift(RIGHT * 0.3))
+    two = VGroup(Square(0.2), Circle(0.1)).shift(DOWN)
+    # Two more, registered apart with one centre function: one centre.
+    three, four = VGroup(Square(0.1)), VGroup(Circle(0.1))
+    plain = Square().shift(LEFT * 2)
+    camera.add_fixed_orientation_mobjects(one, two)
+    camera.add_fixed_orientation_mobjects(three, center_func=_centre)
+    camera.add_fixed_orientation_mobjects(four, center_func=_centre)
+    _, _, records = _framed(camera, [one, two, three, four, plain])
+
+    def group(mob):
+        return records[id(mob)].fields.get("facing_group")
+
+    assert group(one[0]) == group(one[1]) != 0
+    assert group(two[0]) == group(two[1]) != 0
+    assert len({group(one[0]), group(two[0]), group(three[0]), group(four[0])}) == 4
+    assert group(plain) is None
+    for record in records.values():
+        centred = record.fields.get("fixed_orientation_centre") is not None
+        assert centred == ("facing_group" in record.fields)
+
+
+def test_registering_a_glyph_again_splits_it_from_its_label():
+    camera = ThreeDCamera()
+    label = VGroup(Square(0.2), Circle(0.1).shift(RIGHT * 0.3), Square(0.1))
+    camera.add_fixed_orientation_mobjects(label)
+    stream, _, records = _framed(camera, [label])
+    before = {records[id(glyph)].fields["facing_group"] for glyph in label}
+    assert len(before) == 1
+    camera.add_fixed_orientation_mobjects(label[2], use_static_center_func=True)
+    delta = stream.frame(camera, [("static", [label])], roots=[label])
+    after = _by_mobject(stream)
+    assert [slot for slot, _ in delta.set] == [stream._slots[id(label[2])][1]]
+    kept = after[id(label[0])].fields["facing_group"]
+    split = after[id(label[2])].fields["facing_group"]
+    assert kept == before.pop()
+    assert split not in (0, kept)
+
+
+def test_a_record_drawn_live_carries_the_source_the_record_path_writes():
+    pytest.importorskip("arachne_core")
+    from arachne.frame_ir.live import live, live_painter
+
+    square = Square()
+    holder = VGroup(square)
+    with tempconfig({"pixel_width": 32, "pixel_height": 18}):
+        camera = ThreeDCamera()
+        camera.add_fixed_orientation_mobjects(holder)
+        with live(camera, Fraction(0), draw_path="core", roots=[holder]):
+            camera.reset()
+            camera.capture_mobjects([holder])
+        stream = live_painter(camera).painter(camera).stream
+        [made] = stream._held.values()
+        _, _, records = _framed(camera, [holder])
+    assert _classes(made) == [[SQUARE, VGROUP]]
+    assert made.fields["source"] == records[id(square)].fields["source"]
+    assert made.fields["facing_group"] == stream._token(holder)
+    assert made.fields["facing_group"] == records[id(square)].fields["facing_group"]
+
+
+def _keeping(draw, sent):
+    def kept(self, delta, **kwargs):
+        sent.append(delta)
+        return draw(self, delta, **kwargs)
+
+    return kept
+
+
+#: Scenes whose frames are drawn through XF on each creation path: a blend,
+#: reveals, a point cloud and an image, displays, face groups and labels kept
+#: facing the camera, and leaves drawn live.
+DRAWN = [
+    scenes.Morph,
+    scenes.Reveals,
+    scenes.Clouds,
+    scenes.Lit3D,
+    scenes.Watched,
+    scenes.LiveOverride,
+    camera_scenes.DisplayLeaves,
+]
+
+
+@pytest.mark.parametrize("scene_class", DRAWN, ids=lambda c: c.__name__)
+@pytest.mark.parametrize("draw_path", ["ir_cairo", "core"])
+def test_every_record_sent_carries_its_source(scene_class, draw_path, monkeypatch):
+    pytest.importorskip("arachne_core")
+    sent = []
+    for painter_class in (CorePainter, IrCairoPainter):
+        monkeypatch.setattr(painter_class, "draw", _keeping(painter_class.draw, sent))
+    render(scene_class, FPS, draw_path=draw_path, **MEDIUM)
+    records = [record for delta in sent for _, record in delta.set]
+    assert records, "drawn through XF"
+    for record in records:
+        source = record.fields.get("source")
+        assert source, record
+        for path in source:
+            assert path, record
+            assert all(cls.startswith("arachne.") for _, cls in path), path
+
+
+def test_frames_are_the_bytes_drawn_without_a_source(monkeypatch):
+    """The depth resolver reads no source: a scene's frames on the core are
+    the bytes drawn when lowering carries none.
+    """
+    pytest.importorskip("arachne_core")
+    cases = [
+        scenes.Lit3D,
+        scenes.Watched,
+        scenes.LiveOverride,
+        camera_scenes.PureCentre,
+        LabelledArrow,
+    ]
+    carried = [render(case, FPS, draw_path="core", **MEDIUM)[1] for case in cases]
+    monkeypatch.setattr(FrameStream, "_sourced", lambda self, slot, record, *_: record)
+    bare = [render(case, FPS, draw_path="core", **MEDIUM)[1] for case in cases]
+    for case, ours, theirs in zip(cases, carried, bare, strict=True):
+        assert len(ours) == len(theirs) > 0, case.__name__
+        for index, (a, b) in enumerate(zip(ours, theirs, strict=True)):
+            np.testing.assert_array_equal(a, b, err_msg=f"{case.__name__} {index}")
+
+
+class LabelledArrow(ThreeDScene):
+    """Labels kept facing the camera beside an arrow, under a turn."""
+
+    def construct(self):
+        self.set_camera_orientation(phi=1.1, theta=-0.8)
+        labels = [Square(0.3).shift(RIGHT * x + OUT) for x in (-1, 1)]
+        self.add(Arrow3D(LEFT * 2, RIGHT * 2, resolution=6), *labels)
+        self.add_fixed_orientation_mobjects(*labels)
+        self.move_camera(theta=-0.5, run_time=0.3)
