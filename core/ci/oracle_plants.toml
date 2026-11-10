@@ -416,3 +416,21 @@ file = "core/oracle/src/cover.rs"
 find = "corners.map(|p| p.map(|v| libm::ldexp(v, -e)))"
 replace = "corners.map(|p| p.map(|v| v * libm::ldexp(1.0, -e)))"
 red = ["lib::cover::tests::a_triangle_of_subnormal_corners_keeps_its_winding_and_its_inradius"]
+
+[[plant]]
+name = "join-first-to-both"
+item = "§8"
+check = "each occurrence of a join key takes the next unused decision, not its first"
+file = "core/oracle/src/joins.rs"
+find = "let d = *list.get(*next)?;"
+replace = "let d = *list.first()?;"
+red = ["stroke_fixtures::join_occurrences_each_occurrence_takes_its_own_decision"]
+
+[[plant]]
+name = "join-last-to-both"
+item = "§8"
+check = "each occurrence of a join key takes the next unused decision, not its last"
+file = "core/oracle/src/joins.rs"
+find = "let d = *list.get(*next)?;"
+replace = "let d = *list.last()?;"
+red = ["stroke_fixtures::join_occurrences_each_occurrence_takes_its_own_decision"]
