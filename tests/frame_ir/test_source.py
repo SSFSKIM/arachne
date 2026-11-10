@@ -263,6 +263,31 @@ def test_registering_a_glyph_again_splits_it_from_its_label():
     assert split not in (0, kept)
 
 
+def test_regrouping_a_held_label_s_glyph_sends_its_new_facing_group():
+    """A glyph moved from one label into another kept facing the camera by
+    the same centre function joins that label: its drawing unchanged, its
+    new facing group is carried.
+    """
+    camera = ThreeDCamera()
+    one, two = VGroup(Square(0.1)), VGroup(Circle(0.1), Square(0.1).shift(RIGHT))
+    camera.add_fixed_orientation_mobjects(one, center_func=_centre)
+    camera.add_fixed_orientation_mobjects(two, center_func=_centre)
+    stream, _, records = _framed(camera, [one, two])
+    glyph = two[0]
+    slot = stream._slots[id(glyph)][1]
+    before = records[id(glyph)].fields["facing_group"]
+    assert before == stream._token(two)
+    two.remove(glyph)
+    one.add(glyph)
+    delta = stream.frame(camera, [("static", [one, two])], roots=[one, two])
+    carried = {s: r.fields.get("facing_group", 0) for s, r in delta.set}
+    carried.update((s, group) for s, _, group in delta.source)
+    assert carried[slot] == stream._token(one) != before
+    assert slot in {s for s, _, _ in delta.source}, "its drawing is unchanged"
+    assert _by_mobject(stream)[id(glyph)].fields["facing_group"] == carried[slot]
+    assert _by_mobject(stream)[id(two[0])].fields["facing_group"] == before
+
+
 def test_a_record_drawn_live_carries_the_source_the_record_path_writes():
     pytest.importorskip("arachne_core")
     from arachne.frame_ir.live import live, live_painter
