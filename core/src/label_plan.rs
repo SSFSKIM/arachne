@@ -434,6 +434,14 @@ pub fn plan(
             faces.push(face_of(*owner, layer));
         }
     }
+    // A label not drawn wholly as paths placed by the engine has geometry the paths' layers do not
+    // bound (a mesh, points, a pre-projected record): it is read over the whole frame, so it meets
+    // every sheet its fragments do.
+    for l in &mut labels {
+        if !l.readable {
+            l.bbox = [0, 0, width, height];
+        }
+    }
     let sheet = sheets(&faces);
     let n_sheets = sheet.iter().map(|s| s + 1).max().unwrap_or(0) as usize;
     // Meshes read as surfaces, and records kept facing the camera whose label is not known, are
