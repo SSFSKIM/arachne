@@ -116,11 +116,15 @@ pub const LINE_CLASSES: &[&str] = &[
     "arachne.mobject.graphing.functions.ParametricFunction",
     "arachne.mobject.graphing.number_line.NumberLine",
     "arachne.mobject.graphing.number_line.UnitInterval",
+    "arachne.mobject.graphing.probability.BarChart",
     "arachne.mobject.three_d.three_dimensions.Arrow3D",
     "arachne.mobject.three_d.three_dimensions.Line3D",
     "arachne.mobject.types.vectorized_mobject.CurvesAsSubmobjects",
     "arachne.mobject.types.vectorized_mobject.DashedVMobject",
+    "arachne.mobject.vector_field.ArrowVectorField",
     "arachne.mobject.vector_field.StreamLine",
+    "arachne.mobject.vector_field.StreamLines",
+    "arachne.mobject.vector_field.VectorField",
 ];
 
 /// The surface classes: surfaces, solids and filled planar shapes.
@@ -175,17 +179,15 @@ pub const SURFACE_CLASSES: &[&str] = &[
 /// The cylinder: a solid alone, a shaft owned by a line, open anywhere else.
 pub const CYLINDER: &str = "arachne.mobject.three_d.three_dimensions.Cylinder";
 
-/// The generic classes: groups, points and the faces and path pieces other objects are made of,
+/// The generic classes, and no others: groups and the faces and paths other objects are made of,
 /// which carry no class of their own and read as their owner.
 pub const GENERIC_CLASSES: &[&str] = &[
     "arachne.mobject.mobject.Group",
     "arachne.mobject.mobject.Mobject",
-    "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath",
     "arachne.mobject.three_d.three_dimensions.ThreeDVMobject",
     "arachne.mobject.types.vectorized_mobject.VDict",
     "arachne.mobject.types.vectorized_mobject.VGroup",
     "arachne.mobject.types.vectorized_mobject.VMobject",
-    "arachne.mobject.types.vectorized_mobject.VectorizedPoint",
 ];
 
 /// The point clouds.
