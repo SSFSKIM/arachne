@@ -1,6 +1,7 @@
 # The truth contract
 
-Version 1, written against the core at commit `3ce63425` (XF 1.4).
+Version 1, written against the core at commit `3ce63425` (XF 1.4). The oracle's reading of the
+wire is stated through XF 1.5.
 
 This contract defines what it means for Arachne's CPU core to have **decided right** when it draws
 a frame from an XF stream. At each of the 16 sub-samples of every pixel, a decision is which
@@ -2124,7 +2125,9 @@ paths, the containment chain from the object that made the record outward, each 
 **How the wire carries a source (XF 1.5).** A delta's source tail follows its order and lists rows
 by slot. A slot's set carries one row, that record's metadata. A **source-only row** is any other
 row. It is valid only for a held slot: one the stream holds before the delta, which the delta
-neither sets nor removes (§11 refuses the rest).
+neither sets nor removes (§11 refuses the rest). This reading of what a row is (a set carries
+exactly one row, its own metadata, and any other row is source-only) is still to be confirmed by
+the wire's text.
 
 - **Set.** Setting a slot replaces its metadata with its row's; a slot set with no row has its
   metadata cleared.
@@ -2211,7 +2214,8 @@ exactly four cases, the four causes of `StreamRefused { at_seq, cause }`:
   with its set.
 
 `at_seq` is the refused delta's sequence number. Where a delta falls under more than one cause, the
-cause is the first that applies in the order above.
+cause is the first that applies in the order above; that precedence is still to be confirmed by the
+wire's text.
 
 The two refusals sit side by side:
 
