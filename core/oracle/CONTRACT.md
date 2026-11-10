@@ -415,16 +415,32 @@ one mesh drawn form one **surface**, and they may merge into one unit (§9).
 
 **Oracle reading.**
 
-- The oracle computes each mask by the rules above. The corners are the core's to the last bit
-  (§2), so the masks are exact.
-- **`Either` zone.** A sample is `Either` where it lies within `ε` of an edge of the unrounded
-  triangle. `ε` is the triangle's screen shift (§6), the larger at the edge's two corners: how far
-  the input grid lets the corners move.
-- A block pixel is `Yes` at every sample. Where a point's screen coordinate lies within `ε` of an
-  integer, the block's pixels along that side are `Either`.
+- **The margin.** Let `m = ε + 1/256` px, where `ε` is the triangle's screen shift (§6): how far the
+  input grid lets the corners move, the larger at an edge's two corners.
+  - Any input within the snap moves each unrounded corner by at most `ε`.
+  - The rounding to 1/256 px then moves it by at most `√2/512 < 1/256` more. So every rounded edge
+    a conforming input can produce lies, over the triangle, within `m` of the nominal unrounded
+    edge, whichever way a coordinate near a half-step rounds.
+  - Edge ownership decides only samples on a rounded edge, which lie within `m` of the unrounded
+    one.
+- **The presence verdicts.** Taking distances from the sample to the nominal triangle's unrounded
+  edges:
+  - **`Yes`** where the sample lies inside the unrounded triangle at distance greater than `m` from
+    each of its edges' lines.
+  - **Absent** where it lies outside the triangle by more than `m`. That is, it lies outside some
+    edge's line by more than `m`, or farther than `m` from the triangle.
+  - **`Either`** otherwise.
+  - A triangle with no point farther than `m` from all its edges is `Either` wherever it is not
+    absent.
+  - The nominal fixed-point mask lies inside this verdict. The oracle may also compute it exactly by
+    the rules above, but a verdict never depends on which way a rounding near a half-step went.
+- **Point blocks.**
+  - A block pixel is `Yes` at every sample.
+  - Where a point's screen coordinate lies within `ε` of an integer, the block's pixels along that
+    side are `Either`. Its truncation can then move by a pixel.
 
-**Rejects:** a mesh triangle missing from the core's fragments at a sample farther than `ε` inside
-it.
+**Rejects:** a mesh triangle missing from the core's fragments at a sample farther than `m` inside
+it (witness W7, §12).
 
 ## 4. Path coverage
 
@@ -1819,7 +1835,7 @@ Each is named beside the set it bounds, and each is committed as a mutation test
 | 4 | A mesh face's plane shifted by more than its interval against a crossing surface it shares no plane with | intervals `S` and `R` (§6) |
 | 5 | A camera-facing label drawn over an opaque filled polygon nearer than it at the sample and at its centre | `label_interim@1` (§10) |
 | 6 | A fill whose alpha rounds to zero, counted as present | `alpha_round@1` (§1) |
-| 7 | A mesh triangle missing at a sample farther than `ε` inside it | mesh `Either` zone (§3) |
+| 7 | A mesh triangle missing at a sample farther than `m = ε + 1/256` inside it | mesh margin `m` (§3) |
 | 8 | A cell byte outside its admitted interval | presence band `μ` (§4) |
 | 9 | A line moved through a surface by more than its curve interval | curve `S` (§6) |
 | 10 | A line crossing a surface beyond the width test, drawn over it where behind | may-share set (§7) |
