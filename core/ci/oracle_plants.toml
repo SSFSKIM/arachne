@@ -695,3 +695,21 @@ file = "core/oracle/src/order.rs"
 find = "        a_front: a.lo() < b.hi(),\n"
 replace = "        a_front: true,\n"
 red = ["probes::every_class_probe_check_holds_in_the_oracle_s_admissible_orders"]
+
+[[plant]]
+name = "band-r-plane"
+item = "§6"
+check = "R of a world plane's key: the region's bound, rho and nu"
+file = "core/oracle/src/keys.rs"
+find = "let r = r0 + extra + key.rho(px, py) + nu(omax);"
+replace = "let r = 0.0 * (r0 + extra + key.rho(px, py) + nu(omax));"
+red = ["contract::core_err_within_band"]
+
+[[plant]]
+name = "stroke-on-own-fill"
+item = "§5"
+check = "stroke_on_own_fill@1: the nearer of the stroke's and its fill's keys"
+file = "core/oracle/src/pairs.rs"
+find = "            next[s] = on_own_fill(own[i][s], own[j][s], cs == 1 && cf == 1);\n"
+replace = ""
+red = ["contract::core_err_within_band"]
