@@ -179,6 +179,26 @@ impl Line {
     }
 }
 
+/// The winding of the corners `a, b, c` where their reading settles it: the sign of
+/// `(b − a) × (c − a)`, read on the corners scaled by the power of two that brings the largest
+/// coordinate into `[1/2, 1)`, so that no difference or product can overflow whatever the corners
+/// are, with a bound on the reading's rounding (and on the scaling's, where it makes a coordinate
+/// subnormal). `None` where the bound does not settle the sign: the corners are collinear, or too
+/// nearly so for binary64 to tell.
+fn winding(corners: [[f64; 2]; 3]) -> Option<f64> {
+    let big = corners.iter().flatten().fold(0.0f64, |m, v| m.max(v.abs()));
+    if big == 0.0 || !big.is_finite() {
+        return None;
+    }
+    let s = libm::ldexp(1.0, -libm::frexp(big).1);
+    let q = corners.map(|p| p.map(|v| v * s));
+    let (d1, d2) = (sub(q[1], q[0]), sub(q[2], q[0]));
+    let (t1, t2) = (d1[0] * d2[1], d1[1] * d2[0]);
+    let det = t1 - t2;
+    let err = 4.0 * U * (t1.abs() + t2.abs()) + 16.0 * f64::from_bits(1);
+    (det.abs() > err).then_some(det.signum())
+}
+
 /// A mesh triangle's verdicts at every sample of the window (contract §3, oracle reading): its
 /// nominal corners in pixels and each corner's screen shift `ε` in pixels, all finite (a triangle
 /// with an infinite one is unbounded, which the caller writes).
@@ -211,10 +231,7 @@ pub fn triangle(corners: [[f64; 2]; 3], eps: [f64; 3], window: Window) -> Vec<Pi
         return Vec::new();
     };
     let lines: [Line; 3] = std::array::from_fn(|e| Line::new(corners[e], corners[(e + 1) % 3]));
-    // The winding: the side of edge 0 its opposite corner lies on, where the reading settles it.
-    let winding = lines[0]
-        .read(corners[2])
-        .and_then(|(side, _)| (side.v.abs() > side.err).then_some(side.v.signum()));
+    let winding = winding(corners);
     let guard = |p: [f64; 2]| -> Cover {
         let out = (p[0].abs() - GUARD).max(p[1].abs() - GUARD);
         if out > 1.0 / 256.0 {
@@ -230,25 +247,33 @@ pub fn triangle(corners: [[f64; 2]; 3], eps: [f64; 3], window: Window) -> Vec<Pi
             .iter()
             .map(|l| l.distance_below(p))
             .fold(f64::INFINITY, f64::min);
-        let readings = winding.and_then(|sign| {
-            let r: [Option<Bounded>; 3] = std::array::from_fn(|e| {
+        // The verdict were the triangle wound by `sign`: each edge's distance, positive inside (an
+        // edge whose corners coincide constrains nothing).
+        let wound = |sign: f64| -> Cover {
+            let d: [Option<Bounded>; 3] = std::array::from_fn(|e| {
                 lines[e].read(p).map(|(side, _)| Bounded {
                     v: sign * side.v,
                     err: side.err,
                 })
             });
-            Some([r[0]?, r[1]?, r[2]?])
-        });
-        let own = match readings {
-            // A triangle whose winding the corners do not settle covers nothing for sure.
-            None if near > reach => Cover::Absent,
-            None => Cover::Either,
-            Some(d) => {
-                if (0..3).all(|e| d[e].v - d[e].err > margins[e]) {
-                    Cover::Yes
-                } else if (0..3).any(|e| d[e].v + d[e].err < -margins[e])
-                    || ((0..3).any(|e| d[e].v + d[e].err < 0.0) && near > reach)
-                {
+            let beyond =
+                |e: usize, f: &dyn Fn(Bounded, f64) -> bool| d[e].is_some_and(|d| f(d, margins[e]));
+            if (0..3).all(|e| beyond(e, &|d, m| d.v - d.err > m)) {
+                Cover::Yes
+            } else if (0..3).any(|e| beyond(e, &|d, m| d.v + d.err < -m))
+                || ((0..3).any(|e| beyond(e, &|d, _| d.v + d.err < 0.0)) && near > reach)
+            {
+                Cover::Absent
+            } else {
+                Cover::Either
+            }
+        };
+        let own = match winding {
+            Some(sign) => wound(sign),
+            // A winding the corners do not settle: collinear, or numerically unresolved. A sample
+            // is absent only where it is absent under both windings, and never sure.
+            None => {
+                if wound(1.0) == Cover::Absent && wound(-1.0) == Cover::Absent {
                     Cover::Absent
                 } else {
                     Cover::Either

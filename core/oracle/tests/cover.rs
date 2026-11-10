@@ -534,10 +534,10 @@ fn a_triangle_with_corners_far_out_keeps_its_verdicts() {
     // Pixel row 11's samples lie 1/32 px and more above the edge: inside by more than 1/256.
     assert_eq!(at(&rows, 9, 11), Some([YES; 16]));
     assert_eq!(at(&rows, 5, 12), None);
-    // Corners 10^200 and 10^300 px out: an edge read from a corner that far carries that corner's
-    // rounding, so a verdict may be Either, but a sample inside is never absent and one outside
-    // never Yes.
-    for far in [1e200, 1e300] {
+    // Corners 10^200 px out and up to binary64's largest: an edge read from a corner that far
+    // carries that corner's rounding, so a verdict may be Either, but a sample inside is never
+    // absent and one outside never Yes.
+    for far in [1e200, 1e300, 1e307, 1e308, f64::MAX] {
         let rows = tri(far);
         for y in 0..16u32 {
             for x in 0..16u32 {
@@ -564,6 +564,35 @@ fn a_triangle_with_corners_far_out_keeps_its_verdicts() {
     );
     assert_eq!(d.covers.len(), 256);
     assert!(d.covers.iter().all(|c| c.cover == [EITHER; 16]));
+}
+
+#[test]
+fn a_triangle_whose_corners_differ_past_binary64_keeps_its_winding() {
+    // Corner differences overflow (2e308), so the winding is read on the corners scaled. The
+    // window lies about 5e299 px inside every edge, past a margin of 8.9e292 px (an input rounding
+    // of that order), so it is covered whole.
+    let corners = [[-1e308, -1e300], [1e308, -1e300], [1e308, 2e300]];
+    let margin = 8.9e292;
+    for c in [corners, [corners[0], corners[2], corners[1]]] {
+        let rows = arachne_oracle::cover::triangle(c, [margin; 3], [0, 0, 16, 16]);
+        assert_eq!(rows.len(), 256);
+        assert!(rows.iter().all(|r| r.cover == [YES; 16]));
+    }
+    // Collinear corners (a winding no reading settles) cover nothing for sure: absent away from
+    // their line, Either on it, never Yes. The line runs through sample 9 of pixel row 8.
+    let y9 = sample_point(0, 8, 9)[1];
+    let line = arachne_oracle::cover::triangle(
+        [[-100.0, y9], [0.0, y9], [100.0, y9]],
+        [0.0; 3],
+        [0, 0, 16, 16],
+    );
+    assert_eq!(line.len(), 16);
+    for r in &line {
+        assert_eq!(r.y, 8);
+        let mut want = [ABSENT; 16];
+        want[9] = EITHER;
+        assert_eq!(r.cover, want);
+    }
 }
 
 #[test]
