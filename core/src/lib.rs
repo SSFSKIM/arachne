@@ -17,6 +17,8 @@
 //! - [`geometry`]: a path record's reveal, blend and paint blend made into what is drawn.
 //! - [`gradient`]: linear gradients, coloured as Cairo's pattern and pixman's fetch colour them.
 //! - [`depth`]: canonical planes, so coplanar things tie exactly, and depth along curves.
+//! - [`label_class`]: what a camera-facing label's rule reads a record as (a label, a line, a
+//!   surface, or open), from the objects it was drawn from alone; nothing drawn calls it.
 //! - [`instance`]: `instances` and `points` records drawn as their members; [`points`], point
 //!   clouds as CE's square blocks.
 //! - [`boxes`]: where each record lands on the frame, found without drawing (`screen_boxes`).
@@ -60,6 +62,7 @@ pub mod geometry;
 pub mod gradient;
 pub mod instance;
 pub mod join_mask;
+pub mod label_class;
 pub mod mesh;
 pub mod order;
 pub mod path;
