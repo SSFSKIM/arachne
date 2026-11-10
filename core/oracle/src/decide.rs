@@ -34,10 +34,12 @@ fn refused(r: &Refusal) -> Refused {
     Refused {
         reason: r.reason.code(),
         kind: r.kind.unwrap_or(0xff),
+        cause: r.stream.map_or(0, |(_, cause)| cause as u8),
         entry: r.entry.unwrap_or(NONE_U32),
         slot: r.slot.unwrap_or(NONE_U32),
         object: r.object.unwrap_or(NONE_U32),
         bits: r.bits,
+        at_seq: r.stream.map_or(u64::MAX, |(seq, _)| seq),
         detail: r.detail.clone(),
     }
 }
@@ -113,6 +115,7 @@ pub fn decide(state: &State, xf: (u16, u16), seq: u64, window: Option<Window>) -
             object: None,
             kind: None,
             bits: 0,
+            stream: None,
             detail: format!("the frame's delta is XF {}.{}", xf.0, xf.1),
         });
     }

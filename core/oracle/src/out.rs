@@ -15,7 +15,7 @@ pub const DIRECTORY_ENTRY: usize = 24;
 pub const FRAGMENT_SIZE: usize = 64;
 pub const COVER_SIZE: usize = 456;
 pub const PIXEL_SIZE: usize = 12;
-pub const REFUSAL_SIZE: usize = 32;
+pub const REFUSAL_SIZE: usize = 40;
 /// Written where a field holds nothing.
 pub const NONE_U32: u32 = u32::MAX;
 
@@ -87,10 +87,14 @@ pub struct Refused {
     pub reason: u8,
     /// The record kind code, 0xff where none.
     pub kind: u8,
+    /// For `stream_refused`, the refused delta's source-row code (`StreamCause`); else 0.
+    pub cause: u8,
     pub entry: u32,
     pub slot: u32,
     pub object: u32,
     pub bits: u64,
+    /// For `stream_refused`, the seq of the delta that refused the stream; else `u64::MAX`.
+    pub at_seq: u64,
     pub detail: String,
 }
 
@@ -187,9 +191,10 @@ pub fn write(d: &Decisions) -> Vec<u8> {
     let mut text = Vec::new();
     let mut refu = Vec::with_capacity(d.refused.len() * REFUSAL_SIZE);
     for r in &d.refused {
-        refu.extend([r.reason, r.kind, 0, 0]);
+        refu.extend([r.reason, r.kind, r.cause, 0]);
         u32s(&mut refu, &[r.entry, r.slot, r.object]);
         refu.extend(r.bits.to_le_bytes());
+        refu.extend(r.at_seq.to_le_bytes());
         u32s(&mut refu, &[text.len() as u32, r.detail.len() as u32]);
         text.extend(r.detail.as_bytes());
     }
@@ -409,9 +414,10 @@ pub fn read(b: &[u8]) -> Result<Decisions, String> {
                 b,
                 at: off + i * size,
             };
-            let (reason, kind) = (r.u8()?, r.u8()?);
-            r.at += 2;
+            let (reason, kind, cause) = (r.u8()?, r.u8()?, r.u8()?);
+            r.at += 1;
             let (entry, slot, object, bits) = (r.u32()?, r.u32()?, r.u32()?, r.u64()?);
+            let at_seq = r.u64()?;
             let (start, len) = (r.u32()? as usize, r.u32()? as usize);
             let detail = text
                 .get(start..start + len)
@@ -419,10 +425,12 @@ pub fn read(b: &[u8]) -> Result<Decisions, String> {
             d.refused.push(Refused {
                 reason,
                 kind,
+                cause,
                 entry,
                 slot,
                 object,
                 bits,
+                at_seq,
                 detail: String::from_utf8_lossy(detail).into_owned(),
             });
         }
@@ -514,8 +522,8 @@ pub fn canonical(d: &Decisions) -> String {
     for r in &d.refused {
         let _ = writeln!(
             s,
-            "refused reason={} kind={} entry={} slot={} object={} bits={} detail={}",
-            r.reason, r.kind, r.entry, r.slot, r.object, r.bits, r.detail
+            "refused reason={} kind={} cause={} entry={} slot={} object={} bits={} at_seq={} detail={}",
+            r.reason, r.kind, r.cause, r.entry, r.slot, r.object, r.bits, r.at_seq, r.detail
         );
     }
     s

@@ -99,15 +99,31 @@ fn sample() -> Decisions {
             },
         ],
         covers: vec![row(1, 0, 0), row(2, 0, 0), row(2, 0, 1), row(3, 2, 1)],
-        refused: vec![Refused {
-            reason: 8,
-            kind: 1,
-            entry: 4,
-            slot: 5,
-            object: 6,
-            bits: 1 << 63,
-            detail: "a clip — refused".into(),
-        }],
+        refused: vec![
+            Refused {
+                reason: 8,
+                kind: 1,
+                cause: 0,
+                entry: 4,
+                slot: 5,
+                object: 6,
+                bits: 1 << 63,
+                at_seq: u64::MAX,
+                detail: "a clip — refused".into(),
+            },
+            // The stream-wide refusal: the seq of the delta that refused the stream, and its code.
+            Refused {
+                reason: arachne_oracle::stream::Reason::StreamRefused.code(),
+                kind: 0xff,
+                cause: arachne_oracle::stream::StreamCause::SlotNotHeld as u8,
+                entry: u32::MAX,
+                slot: 7,
+                object: u32::MAX,
+                bits: 0,
+                at_seq: (1 << 40) - 3,
+                detail: "a held row for slot 7, which the stream does not hold".into(),
+            },
+        ],
     }
 }
 
@@ -211,7 +227,7 @@ fn a_refused_frame_writes_its_refusal() {
     let text = read_py(&file);
     assert!(text.contains("status=truth_unable"), "{text}");
     assert!(
-        text.contains("refused reason=2 kind=66 entry=0 slot=3 object=30"),
+        text.contains("refused reason=2 kind=66 cause=0 entry=0 slot=3 object=30"),
         "{text}"
     );
 }

@@ -2,7 +2,13 @@
 
 Dependency-free: the standard library only. ``read(path)`` returns a dictionary::
 
-    {"header": {...}, "fragments": [...], "covers": [...], "pixels": [...], "refused": [...]}
+    {
+        "header": {...},
+        "fragments": [...],
+        "covers": [...],
+        "pixels": [...],
+        "refused": [...],
+    }
 
 ``DTYPES`` gives each fixed-size section's layout as a numpy dtype description, so a caller with
 numpy reads a section whole: ``numpy.fromfile(path, numpy.dtype(DTYPES["COVR"]), count, offset=...)``
@@ -36,6 +42,17 @@ REASON = {
     6: "invalid_delta",
     7: "no_view",
     8: "core_refuses",
+    9: "stream_refused",
+}
+#: Why a stream is refused from a delta on (``stream_refused``): the delta's source-row refusal code.
+CAUSE = {
+    1: "class_named_twice",
+    2: "slot_named_twice",
+    3: "slot_removed",
+    4: "row_empty",
+    5: "path_empty",
+    6: "class_out_of_range",
+    7: "slot_not_held",
 }
 #: Fragment flags: unbounded, ``truth_unable`` at every sample of the window (no cover rows).
 FLAG_UNBOUNDED = 1
@@ -76,11 +93,13 @@ DTYPES = {
     "REFU": [
         ("reason", "u1"),
         ("kind", "u1"),
-        ("pad", "u1", (2,)),
+        ("cause", "u1"),
+        ("pad", "u1"),
         ("entry", "<u4"),
         ("slot", "<u4"),
         ("object", "<u4"),
         ("bits", "<u8"),
+        ("at_seq", "<u8"),
         ("text_start", "<u4"),
         ("text_len", "<u4"),
     ],
@@ -90,8 +109,8 @@ _FRAG = struct.Struct("<6I2BHId4i2I")
 _COVR_HEAD = struct.Struct("<3I16s16s16s2B2x")
 _F16 = struct.Struct("<16d")
 _PIXL = struct.Struct("<QI")
-_REFU = struct.Struct("<2B2x3IQ2I")
-_SIZES = {"FRAG": 64, "COVR": 456, "PIXL": 12, "REFU": 32}
+_REFU = struct.Struct("<3Bx3I2Q2I")
+_SIZES = {"FRAG": 64, "COVR": 456, "PIXL": 12, "REFU": 40}
 
 
 class FormatError(ValueError):
@@ -101,7 +120,9 @@ class FormatError(ValueError):
 def _header(b: bytes) -> tuple[dict, list[tuple[str, int, int, int]]]:
     if b[:4] != MAGIC:
         raise FormatError("not an oracle decisions file")
-    fmt, header_size, xf_major, xf_minor, width, height = struct.unpack_from("<4H2I", b, 4)
+    fmt, header_size, xf_major, xf_minor, width, height = struct.unpack_from(
+        "<4H2I", b, 4
+    )
     if fmt != ORACLE_FORMAT:
         raise FormatError(f"ORACLE_FORMAT {fmt} is not one this reader knows")
     window = list(struct.unpack_from("<4I", b, 20))
@@ -132,7 +153,10 @@ def sections(path: str) -> dict[str, dict]:
     with open(path, "rb") as f:
         b = f.read()
     _, directory = _header(b)
-    return {tag: {"offset": off, "count": n, "record_size": size} for tag, size, off, n in directory}
+    return {
+        tag: {"offset": off, "count": n, "record_size": size}
+        for tag, size, off, n in directory
+    }
 
 
 def read_bytes(b: bytes) -> dict:
@@ -140,7 +164,9 @@ def read_bytes(b: bytes) -> dict:
     found = {tag: (size, off, n) for tag, size, off, n in directory}
     for tag, size in _SIZES.items():
         if tag in found and found[tag][0] != size:
-            raise FormatError(f"section {tag} has records of {found[tag][0]} bytes, not {size}")
+            raise FormatError(
+                f"section {tag} has records of {found[tag][0]} bytes, not {size}"
+            )
     out = {"header": header, "fragments": [], "covers": [], "pixels": [], "refused": []}
     if "FRAG" in found:
         size, off, n = found["FRAG"]
@@ -195,16 +221,21 @@ def read_bytes(b: bytes) -> dict:
     if "REFU" in found:
         size, off, n = found["REFU"]
         for i in range(n):
-            reason, kind, entry, slot, obj, bits, start, length = _REFU.unpack_from(b, off + i * size)
+            reason, kind, cause, entry, slot, obj, bits, at_seq, start, length = (
+                _REFU.unpack_from(b, off + i * size)
+            )
             out["refused"].append(
                 {
                     "reason": reason,
                     "reason_name": REASON.get(reason, "unknown"),
                     "kind": kind,
+                    "cause": cause,
+                    "cause_name": CAUSE.get(cause),
                     "entry": entry,
                     "slot": slot,
                     "object": obj,
                     "bits": bits,
+                    "at_seq": at_seq,
                     "detail": text[start : start + length].decode("utf-8", "replace"),
                 }
             )
@@ -233,25 +264,25 @@ def canonical(d: dict) -> str:
         f"window={_list(h['window'])} status={h['status']} seq={h['seq']}",
         "offsets " + " ".join(f"{o[0]},{o[1]}" for o in h["offsets"]),
     ]
-    for f in d["fragments"]:
-        lines.append(
-            f"fragment id={f['id']} entry={f['entry']} slot={f['slot']} object={f['object']} "
-            f"part={f['part']} sub={f['sub']} layer={f['layer']} kind={f['kind']} flags={f['flags']} "
-            f"group={f['group']} plane={f['plane']} epsilon={_hex(f['epsilon'])} bbox={_list(f['bbox'])}"
-        )
-    for c in d["covers"]:
-        cells = ",".join(f"{lo}-{hi}" for lo, hi in zip(c["cell_lo"], c["cell_hi"]))
-        lines.append(
-            f"cover x={c['x']} y={c['y']} fragment={c['fragment']} cover={_list(c['cover'])} "
-            f"cell={cells} pixel={c['pixel_lo']}-{c['pixel_hi']} area={_hex(c['pixel_area'])} "
-            f"cells={_list(_hex(v) for v in c['cell_area'])} depth={_list(_hex(v) for v in c['depth'])} "
-            f"band={_list(_hex(v) for v in c['band'])}"
-        )
-    for r in d["refused"]:
-        lines.append(
-            f"refused reason={r['reason']} kind={r['kind']} entry={r['entry']} slot={r['slot']} "
-            f"object={r['object']} bits={r['bits']} detail={r['detail']}"
-        )
+    lines.extend(
+        f"fragment id={f['id']} entry={f['entry']} slot={f['slot']} object={f['object']} "
+        f"part={f['part']} sub={f['sub']} layer={f['layer']} kind={f['kind']} flags={f['flags']} "
+        f"group={f['group']} plane={f['plane']} epsilon={_hex(f['epsilon'])} bbox={_list(f['bbox'])}"
+        for f in d["fragments"]
+    )
+    lines.extend(
+        f"cover x={c['x']} y={c['y']} fragment={c['fragment']} cover={_list(c['cover'])} "
+        f"cell={','.join(f'{lo}-{hi}' for lo, hi in zip(c['cell_lo'], c['cell_hi'], strict=True))} "
+        f"pixel={c['pixel_lo']}-{c['pixel_hi']} area={_hex(c['pixel_area'])} "
+        f"cells={_list(_hex(v) for v in c['cell_area'])} depth={_list(_hex(v) for v in c['depth'])} "
+        f"band={_list(_hex(v) for v in c['band'])}"
+        for c in d["covers"]
+    )
+    lines.extend(
+        f"refused reason={r['reason']} kind={r['kind']} cause={r['cause']} entry={r['entry']} "
+        f"slot={r['slot']} object={r['object']} bits={r['bits']} at_seq={r['at_seq']} detail={r['detail']}"
+        for r in d["refused"]
+    )
     return "".join(line + "\n" for line in lines)
 
 

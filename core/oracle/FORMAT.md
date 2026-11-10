@@ -41,7 +41,7 @@ cell `((dx + 8) div 4, (dy + 8) div 4)` of the pixel's 4 x 4 grid.
 | `FRAG` | 64 bytes | one per fragment that has a row, or is unbounded |
 | `COVR` | 456 bytes | one per fragment at a pixel, sorted by `(y, x, fragment)` |
 | `PIXL` | 12 bytes | one per pixel of the window, row by row: its first `COVR` row and their count |
-| `REFU` | 32 bytes | one per refusal; empty when the frame is decided |
+| `REFU` | 40 bytes | one per refusal; empty when the frame is decided |
 | `TEXT` | 1 byte | the refusals' words, UTF-8 |
 
 ### `FRAG`
@@ -87,14 +87,27 @@ f64 pixel_area  f64 cell_area[16]  f64 depth[16]  f64 band[16]
 ### `REFU`
 
 ```
-u8 reason  u8 kind (0xff: none)  2 bytes pad  u32 entry  u32 slot  u32 object (0xffffffff: none)
-u64 bits (unknown feature bits)  u32 text start  u32 text length (into TEXT)
+u8 reason  u8 kind (0xff: none)  u8 cause (0: none)  1 byte pad
+u32 entry  u32 slot  u32 object (0xffffffff: none)
+u64 bits (unknown feature bits)  u64 at_seq (0xffffffffffffffff: none)
+u32 text start  u32 text length (into TEXT)
 ```
 
 Reasons: 1 `unknown_kind`, 2 `reserved_kind`, 3 `unknown_feature`, 4 `unknown_light_model`,
-5 `xf_newer` (a delta of an XF minor above 4 at or before the frame), 6 `invalid_delta` (the frame's
-delta is not valid XF; the stream keeps what it held), 7 `no_view`, 8 `core_refuses` (a refusal of
-the core's own list).
+5 `xf_newer` (a delta of an XF minor above 4 at or before the frame), 6 `invalid_delta`, 7 `no_view`,
+8 `core_refuses` (a refusal of the core's own list), 9 `stream_refused`.
+
+- **`invalid_delta`**: the frame's delta is not valid XF and is not applied; the stream keeps what it
+  held, and the next frame is judged as usual. It is per frame, on a stream not yet refused.
+- **`stream_refused`** is `StreamRefused { at_seq, cause }`: the delta at `at_seq` was refused by one
+  of XF 1.5's source-row codes, its `cause`: 1 `class_named_twice`, 2 `slot_named_twice`,
+  3 `slot_removed`, 4 `row_empty`, 5 `path_empty`, 6 `class_out_of_range`, 7 `slot_not_held`.
+  That delta's frame and every later frame of the stream are `truth_unable` under it, with no
+  verdict. No later delta clears it: a refused stream does not resume. A later delta that would
+  itself be refused adds nothing; every frame keeps the first refused delta's `at_seq` and `cause`.
+- **One refusal per delta.** A delta's refusal is the first of all XF's checks in the order `XF.md`
+  ("Where each check is made") gives them. One of the seven codes above makes it
+  `stream_refused`; any other check makes it `invalid_delta`.
 
 ## A worked example
 

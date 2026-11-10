@@ -76,19 +76,7 @@ fn run() -> Result<(), String> {
             .refused
             .iter()
             .map(|r| {
-                let name = [
-                    Reason::UnknownKind,
-                    Reason::ReservedKind,
-                    Reason::UnknownFeature,
-                    Reason::UnknownLightModel,
-                    Reason::XfNewer,
-                    Reason::InvalidDelta,
-                    Reason::NoView,
-                    Reason::CoreRefuses,
-                ]
-                .into_iter()
-                .find(|k| k.code() == r.reason)
-                .map_or("unknown", Reason::name);
+                let name = Reason::from_code(r.reason).map_or("unknown", Reason::name);
                 format!("{name}: {}", r.detail)
             })
             .collect();

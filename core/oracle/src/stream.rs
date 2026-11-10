@@ -45,6 +45,38 @@ pub enum Reason {
     NoView = 7,
     /// The core refuses the frame (contract §11's list): there is nothing to judge.
     CoreRefuses = 8,
+    /// A delta at or before the frame refused the stream by a source-row code (XF 1.5): that
+    /// delta's frame and every later one are `truth_unable` under it, and no later delta clears it.
+    /// The refusal carries the delta's seq and its [`StreamCause`].
+    StreamRefused = 9,
+}
+
+/// Why a stream is refused from a delta on: the delta's source-row refusal code (`XF.md`,
+/// "Refusals, each by its code"). Codes are `ORACLE_FORMAT`'s.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum StreamCause {
+    ClassNamedTwice = 1,
+    SlotNamedTwice = 2,
+    SlotRemoved = 3,
+    RowEmpty = 4,
+    PathEmpty = 5,
+    ClassOutOfRange = 6,
+    SlotNotHeld = 7,
+}
+
+impl StreamCause {
+    pub fn name(self) -> &'static str {
+        match self {
+            StreamCause::ClassNamedTwice => "class_named_twice",
+            StreamCause::SlotNamedTwice => "slot_named_twice",
+            StreamCause::SlotRemoved => "slot_removed",
+            StreamCause::RowEmpty => "row_empty",
+            StreamCause::PathEmpty => "path_empty",
+            StreamCause::ClassOutOfRange => "class_out_of_range",
+            StreamCause::SlotNotHeld => "slot_not_held",
+        }
+    }
 }
 
 impl Reason {
@@ -62,7 +94,25 @@ impl Reason {
             Reason::InvalidDelta => "invalid_delta",
             Reason::NoView => "no_view",
             Reason::CoreRefuses => "core_refuses",
+            Reason::StreamRefused => "stream_refused",
         }
+    }
+
+    /// The reason a file's code names, if it names one.
+    pub fn from_code(code: u8) -> Option<Reason> {
+        [
+            Reason::UnknownKind,
+            Reason::ReservedKind,
+            Reason::UnknownFeature,
+            Reason::UnknownLightModel,
+            Reason::XfNewer,
+            Reason::InvalidDelta,
+            Reason::NoView,
+            Reason::CoreRefuses,
+            Reason::StreamRefused,
+        ]
+        .into_iter()
+        .find(|r| r.code() == code)
     }
 }
 
@@ -78,6 +128,8 @@ pub struct Refusal {
     pub kind: Option<u8>,
     /// The feature bits refused (unknown ones), else 0.
     pub bits: u64,
+    /// For [`Reason::StreamRefused`], the refused delta's seq and code.
+    pub stream: Option<(u64, StreamCause)>,
     /// What exactly, in words.
     pub detail: String,
 }
@@ -91,6 +143,7 @@ impl Refusal {
             object: None,
             kind: None,
             bits: 0,
+            stream: None,
             detail: detail.into(),
         }
     }
