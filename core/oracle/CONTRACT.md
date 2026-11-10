@@ -2191,13 +2191,19 @@ first of these that applies:
 2. **Generic nodes read through.** Where the maker is generic, the path is read from its nearest
    container that is not generic, as if that container had made the record. Where every node is
    generic, the outcome is `label_rule_open` with cause `generic_only`.
-3. **Parts follow a surface-like container.** Where a container of the node read is surface-like, the
-   outcome is the nearest such container's own outcome, read by rules 4 and 5 at that container: a
-   cap of a cylinder is a surface or open with its cylinder.
+3. **Parts follow a surface-like container.** Where the node read is not a cylinder (rule 4
+   decides a cylinder itself), walk up from it through its containers to the nearest surface-like
+   one. The walk passes over generic nodes and over nodes whose class is open (`unmapped` or
+   `point_cloud`), and stops at the first cylinder it meets, never passing over one. Where it finds
+   one, the outcome is that container's own: a surface for a surface class, and for a cylinder what
+   rule 4 gives it where it stands. So a cap of a cylinder is a surface or open with its cylinder,
+   even where a surface holds the cylinder, and a part under an open node inside a surface is a
+   surface.
 4. **The cylinder rule.** A node of class `arachne.mobject.three_d.three_dimensions.Cylinder` with
    no container is a surface: a solid. Inside any container (one that is not a line, which rule 1
-   has taken), it is `label_rule_open` with cause `cylinder_grouped`. Nothing reads its shape: a
-   shaft added to the scene ungrouped is read as a solid and can hide a label.
+   has taken), a surface-like one included, it is `label_rule_open` with cause `cylinder_grouped`:
+   a cylinder is never read through its container by rule 3. Nothing reads its shape: a shaft
+   added to the scene ungrouped is read as a solid and can hide a label.
 5. **The node's own class,** from the table: a line, a surface, or open with the cause the table
    gives. A class the table does not list is not generic by default, a container class included:
    its outcome is decided when the class is added to the table, and until then it falls closed to
@@ -2769,6 +2775,23 @@ usual and the order at pixel `(32, 32)`'s samples, which it shares with `G`, cou
 group 0, the source path `[(g, arachne.mobject.geometry.polygram.Polygon)]`), `L` set with no row. Expected: no refusal; `L`'s
 coverage judged as usual; the order at every sample `L` shares with `G` counted `label_rule_open`
 under `label_ungrouped`, never read as `L` being outside a label or a record of another kind.
+
+**`class_cylinder_grouped`.** The scene of W5 in one delta of XF 1.5: `L` set with a row of facing
+group 1 and its source, and `G` set with a row of facing group 0 and the source path
+`[(y, arachne.mobject.three_d.three_dimensions.Cylinder), (b, arachne.mobject.three_d.three_dimensions.Cube)]`, a cylinder's own
+record inside a cube. Expected: `G` is `label_rule_open` with cause `cylinder_grouped` (rule 4;
+rule 3 never reads a cylinder through its container), so `L` is expected on top and the samples of
+pixel `(32, 32)`, which the pair decides, are counted `label_rule_open` with cause
+`cylinder_grouped`, neither `mismatch` nor agreement. Reading the cube as the cylinder's owner would
+make `G` a surface that qualifies, with `L` behind it.
+
+**`class_part_follows_cylinder`.** As `class_cylinder_grouped`, with `G`'s source path
+`[(c, arachne.mobject.geometry.arc.Circle), (y, arachne.mobject.three_d.three_dimensions.Cylinder),
+(f, arachne.mobject.three_d.three_dimensions.Surface)]`: a cap under a cylinder under a surface.
+Expected: the walk of rule 3 stops at the cylinder, whose outcome where it stands, inside the
+surface, is open: `G` is `label_rule_open` with cause `cylinder_grouped`, counted as in
+`class_cylinder_grouped`. Following the surface past the cylinder would make `G` a surface that
+qualifies, with `L` behind it.
 
 ### Soundness fixtures
 
