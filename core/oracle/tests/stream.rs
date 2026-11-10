@@ -1,0 +1,185 @@
+//! The stream state and what the oracle refuses (contract §11): a frame it cannot judge is
+//! `truth_unable` whole, never drawn partly.
+
+mod common;
+
+use arachne_core::xf::{Body, Key, LightModel, Record, RecordKind, Space, XF_VERSION};
+use arachne_oracle::out::{STATUS_DECIDED, STATUS_UNABLE};
+use arachne_oracle::stream::{KNOWN_XF, Reason, State};
+use common::*;
+
+/// A filled square path in slot `slot` and its shape.
+fn square(slot: u32) -> (arachne_core::xf::Shape, Record) {
+    let v = view(16, 16);
+    let s = path_shape(polygon(&[
+        frame(&v, [2.0, 2.0]),
+        frame(&v, [10.0, 2.0]),
+        frame(&v, [10.0, 10.0]),
+        frame(&v, [2.0, 10.0]),
+    ]));
+    let r = path(slot, s.key(), true, None);
+    (s, r)
+}
+
+fn opaque(kind: RecordKind, slot: u32) -> Record {
+    let mut r = Record::new(kind, slot, 100 + slot);
+    r.body = Body::Opaque(vec![1, 2, 3]);
+    r
+}
+
+#[test]
+fn the_oracle_reads_the_xf_version_the_core_writes() {
+    // An XF change updates the oracle in the same change: this fails until it does.
+    assert_eq!(KNOWN_XF, XF_VERSION);
+}
+
+#[test]
+fn a_judged_frame_is_decided() {
+    let (s, r) = square(0);
+    let d = decide(&[delta(1, Some(view(16, 16)), vec![s], vec![r])]);
+    assert_eq!(d.header.status, STATUS_DECIDED);
+    assert!(d.refused.is_empty());
+    assert!(!d.fragments.is_empty());
+}
+
+#[test]
+fn an_unknown_kind_in_the_order_is_truth_unable_for_the_whole_frame() {
+    let (s, r) = square(0);
+    let d = decide(&[delta(
+        1,
+        Some(view(16, 16)),
+        vec![s],
+        vec![r, opaque(RecordKind::Unknown(99), 1)],
+    )]);
+    assert_eq!(d.header.status, STATUS_UNABLE);
+    // Nothing is drawn partly: the square, which the oracle could judge, has no fragment.
+    assert!(d.fragments.is_empty() && d.covers.is_empty());
+    assert_eq!(d.refused.len(), 1);
+    let r = &d.refused[0];
+    assert_eq!(
+        (r.reason, r.kind, r.entry, r.slot, r.object),
+        (Reason::UnknownKind.code(), 99, 1, 1, 101)
+    );
+}
+
+#[test]
+fn an_unknown_kind_outside_the_order_is_not_refused() {
+    let (s, r) = square(0);
+    let mut d = delta(
+        1,
+        Some(view(16, 16)),
+        vec![s],
+        vec![r, opaque(RecordKind::Unknown(99), 1)],
+    );
+    d.order = Some(vec![entry(0)]);
+    let out = decide(&[d]);
+    assert_eq!(out.header.status, STATUS_DECIDED);
+}
+
+#[test]
+fn reserved_kinds_unknown_bits_and_light_models_are_refused_by_name() {
+    let (s, r) = square(0);
+    let reserved = decide(&[delta(
+        1,
+        Some(view(16, 16)),
+        vec![s.clone()],
+        vec![r.clone(), opaque(RecordKind::Volume, 1)],
+    )]);
+    assert_eq!(reserved.refused[0].reason, Reason::ReservedKind.code());
+
+    let mut bits = r.clone();
+    bits.features = 4;
+    let unknown = decide(&[delta(1, Some(view(16, 16)), vec![s.clone()], vec![bits])]);
+    assert_eq!(unknown.header.status, STATUS_UNABLE);
+    assert_eq!(
+        (unknown.refused[0].reason, unknown.refused[0].bits),
+        (Reason::UnknownFeature.code(), 4)
+    );
+
+    let mut v = view(16, 16);
+    v.light = LightModel::Other {
+        code: 7,
+        params: vec![],
+    };
+    let light = decide(&[delta(1, Some(v), vec![s], vec![r])]);
+    assert_eq!(light.refused[0].reason, Reason::UnknownLightModel.code());
+}
+
+#[test]
+fn what_the_core_refuses_is_refused_and_the_overlay_is_not() {
+    let (s, mut r) = square(0);
+    r.clip = Some((s.key(), arachne_core::xf::IDENTITY));
+    let clipped = decide(&[delta(
+        1,
+        Some(view(16, 16)),
+        vec![s.clone()],
+        vec![r.clone()],
+    )]);
+    assert_eq!(clipped.refused[0].reason, Reason::CoreRefuses.code());
+    // The same record in overlay space is Cairo's: neither drawn nor refused.
+    r.depth.space = Space::Overlay;
+    let overlay = decide(&[delta(1, Some(view(16, 16)), vec![s], vec![r])]);
+    assert_eq!(overlay.header.status, STATUS_DECIDED);
+    assert!(overlay.fragments.is_empty());
+}
+
+#[test]
+fn a_newer_xf_minor_refuses_its_frame_and_every_frame_after() {
+    let (s, r) = square(0);
+    let mut first = delta(1, Some(view(16, 16)), vec![s], vec![r]);
+    first.version = (1, 5);
+    let mut held = delta(2, None, vec![], vec![]);
+    held.order = None;
+    let at_first = decide(std::slice::from_ref(&first));
+    assert_eq!(at_first.refused[0].reason, Reason::XfNewer.code());
+    let after = decide(&[first, held]);
+    assert_eq!(after.header.status, STATUS_UNABLE);
+    assert_eq!(after.refused[0].reason, Reason::XfNewer.code());
+}
+
+#[test]
+fn a_delta_that_is_not_valid_xf_changes_nothing_and_its_frame_is_refused() {
+    let (s, r) = square(0);
+    let good = delta(1, Some(view(16, 16)), vec![s], vec![r]);
+    // A record naming a shape the stream lacks.
+    let mut bad = delta(2, None, vec![], vec![path(1, Key([7; 16]), true, None)]);
+    bad.order = Some(vec![entry(0), entry(1)]);
+    let mut held = delta(3, None, vec![], vec![]);
+    held.order = None;
+    let deltas = [good.clone(), bad, held];
+    let at_bad = arachne_oracle::decide::decide_at(&deltas, 2, None).unwrap();
+    assert_eq!(at_bad.header.status, STATUS_UNABLE);
+    assert_eq!(at_bad.refused[0].reason, Reason::InvalidDelta.code());
+    // The next frame draws the stream as the good delta left it.
+    let after = decide(&deltas);
+    let before = decide(&[good]);
+    assert_eq!(cover_lines(&after), cover_lines(&before));
+    let mut state = State::new();
+    assert!(state.apply(&deltas[0]).is_ok());
+    assert!(state.apply(&deltas[1]).is_err());
+    assert_eq!(state.records.len(), 1);
+}
+
+#[test]
+fn records_set_removed_and_reordered_apply_in_xfs_order() {
+    let (s, r) = square(0);
+    let mut state = State::new();
+    state
+        .apply(&delta(
+            1,
+            Some(view(16, 16)),
+            vec![s.clone()],
+            vec![r.clone()],
+        ))
+        .unwrap();
+    // A slot set and removed in one delta is removed.
+    let mut d = delta(2, None, vec![], vec![r.clone()]);
+    d.remove = vec![0];
+    d.order = Some(vec![]);
+    state.apply(&d).unwrap();
+    assert!(state.records.is_empty());
+    // A key still used cannot be released.
+    let mut d = delta(3, None, vec![], vec![r]);
+    d.release = vec![s.key()];
+    assert!(state.apply(&d).is_err());
+}

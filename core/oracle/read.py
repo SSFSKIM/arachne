@@ -1,0 +1,267 @@
+"""The reader of the oracle's decisions files (``ORACLE_FORMAT`` 1, ``FORMAT.md`` beside this file).
+
+Dependency-free: the standard library only. ``read(path)`` returns a dictionary::
+
+    {"header": {...}, "fragments": [...], "covers": [...], "pixels": [...], "refused": [...]}
+
+``DTYPES`` gives each fixed-size section's layout as a numpy dtype description, so a caller with
+numpy reads a section whole: ``numpy.fromfile(path, numpy.dtype(DTYPES["COVR"]), count, offset=...)``
+with the offset and count that ``sections(path)`` returns.
+
+``python3 read.py --canonical <file>`` prints the decisions as canonical text (floats as the hex of
+their bits), the same text the oracle's own tests produce from the decisions they wrote.
+"""
+
+from __future__ import annotations
+
+import struct
+import sys
+
+ORACLE_FORMAT = 1
+MAGIC = b"AROR"
+HEADER_SIZE = 88
+NONE_U32 = 0xFFFFFFFF
+
+#: A sample's coverage verdict.
+COVER = {0: "absent", 1: "yes", 2: "either", 3: "unbounded"}
+#: A fragment's layer.
+LAYER = {0: "background_stroke", 1: "fill", 2: "stroke", 3: "mesh", 4: "points"}
+#: Why a frame is ``truth_unable``.
+REASON = {
+    1: "unknown_kind",
+    2: "reserved_kind",
+    3: "unknown_feature",
+    4: "unknown_light_model",
+    5: "xf_newer",
+    6: "invalid_delta",
+    7: "no_view",
+    8: "core_refuses",
+}
+#: Fragment flags.
+FLAG_UNBOUNDED = 1
+
+DTYPES = {
+    "FRAG": [
+        ("id", "<u4"),
+        ("entry", "<u4"),
+        ("slot", "<u4"),
+        ("object", "<u4"),
+        ("part", "<u4"),
+        ("sub", "<u4"),
+        ("layer", "u1"),
+        ("kind", "u1"),
+        ("flags", "<u2"),
+        ("group", "<u4"),
+        ("epsilon", "<f8"),
+        ("bbox", "<i4", (4,)),
+        ("plane", "<u4"),
+        ("reserved", "<u4"),
+    ],
+    "COVR": [
+        ("x", "<u4"),
+        ("y", "<u4"),
+        ("fragment", "<u4"),
+        ("cover", "u1", (16,)),
+        ("cell_lo", "u1", (16,)),
+        ("cell_hi", "u1", (16,)),
+        ("pixel_lo", "u1"),
+        ("pixel_hi", "u1"),
+        ("pad", "u1", (2,)),
+        ("pixel_area", "<f8"),
+        ("cell_area", "<f8", (16,)),
+        ("depth", "<f8", (16,)),
+        ("band", "<f8", (16,)),
+    ],
+    "PIXL": [("first", "<u8"), ("count", "<u4")],
+    "REFU": [
+        ("reason", "u1"),
+        ("kind", "u1"),
+        ("pad", "u1", (2,)),
+        ("entry", "<u4"),
+        ("slot", "<u4"),
+        ("object", "<u4"),
+        ("bits", "<u8"),
+        ("text_start", "<u4"),
+        ("text_len", "<u4"),
+    ],
+}
+
+_FRAG = struct.Struct("<6I2BHId4i2I")
+_COVR_HEAD = struct.Struct("<3I16s16s16s2B2x")
+_F16 = struct.Struct("<16d")
+_PIXL = struct.Struct("<QI")
+_REFU = struct.Struct("<2B2x3IQ2I")
+_SIZES = {"FRAG": 64, "COVR": 456, "PIXL": 12, "REFU": 32}
+
+
+class FormatError(ValueError):
+    """The file is not an oracle decisions file this reader knows."""
+
+
+def _header(b: bytes) -> tuple[dict, list[tuple[str, int, int, int]]]:
+    if b[:4] != MAGIC:
+        raise FormatError("not an oracle decisions file")
+    fmt, header_size, xf_major, xf_minor, width, height = struct.unpack_from("<4H2I", b, 4)
+    if fmt != ORACLE_FORMAT:
+        raise FormatError(f"ORACLE_FORMAT {fmt} is not one this reader knows")
+    window = list(struct.unpack_from("<4I", b, 20))
+    status = b[36]
+    (seq,) = struct.unpack_from("<Q", b, 40)
+    raw = struct.unpack_from("<32b", b, 48)
+    offsets = [[raw[2 * i], raw[2 * i + 1]] for i in range(16)]
+    (count,) = struct.unpack_from("<I", b, 80)
+    directory = []
+    for i in range(count):
+        tag, size, off, n = struct.unpack_from("<4sIQQ", b, header_size + 24 * i)
+        directory.append((tag.decode("ascii"), size, off, n))
+    header = {
+        "format": fmt,
+        "xf": [xf_major, xf_minor],
+        "width": width,
+        "height": height,
+        "window": window,
+        "status": "decided" if status == 0 else "truth_unable",
+        "seq": seq,
+        "offsets": offsets,
+    }
+    return header, directory
+
+
+def sections(path: str) -> dict[str, dict]:
+    """Each section's tag mapped to its ``offset``, ``count`` and ``record_size``."""
+    with open(path, "rb") as f:
+        b = f.read()
+    _, directory = _header(b)
+    return {tag: {"offset": off, "count": n, "record_size": size} for tag, size, off, n in directory}
+
+
+def read_bytes(b: bytes) -> dict:
+    header, directory = _header(b)
+    found = {tag: (size, off, n) for tag, size, off, n in directory}
+    for tag, size in _SIZES.items():
+        if tag in found and found[tag][0] != size:
+            raise FormatError(f"section {tag} has records of {found[tag][0]} bytes, not {size}")
+    out = {"header": header, "fragments": [], "covers": [], "pixels": [], "refused": []}
+    if "FRAG" in found:
+        size, off, n = found["FRAG"]
+        for i in range(n):
+            v = _FRAG.unpack_from(b, off + i * size)
+            out["fragments"].append(
+                {
+                    "id": v[0],
+                    "entry": v[1],
+                    "slot": v[2],
+                    "object": v[3],
+                    "part": v[4],
+                    "sub": v[5],
+                    "layer": v[6],
+                    "kind": v[7],
+                    "flags": v[8],
+                    "group": v[9],
+                    "epsilon": v[10],
+                    "bbox": list(v[11:15]),
+                    "plane": v[15],
+                }
+            )
+    if "COVR" in found:
+        size, off, n = found["COVR"]
+        for i in range(n):
+            at = off + i * size
+            x, y, fragment, cover, lo, hi, plo, phi = _COVR_HEAD.unpack_from(b, at)
+            (area,) = struct.unpack_from("<d", b, at + 64)
+            out["covers"].append(
+                {
+                    "x": x,
+                    "y": y,
+                    "fragment": fragment,
+                    "cover": list(cover),
+                    "cell_lo": list(lo),
+                    "cell_hi": list(hi),
+                    "pixel_lo": plo,
+                    "pixel_hi": phi,
+                    "pixel_area": area,
+                    "cell_area": list(_F16.unpack_from(b, at + 72)),
+                    "depth": list(_F16.unpack_from(b, at + 200)),
+                    "band": list(_F16.unpack_from(b, at + 328)),
+                }
+            )
+    if "PIXL" in found:
+        size, off, n = found["PIXL"]
+        out["pixels"] = [list(_PIXL.unpack_from(b, off + i * size)) for i in range(n)]
+    text = b""
+    if "TEXT" in found:
+        _, off, n = found["TEXT"]
+        text = b[off : off + n]
+    if "REFU" in found:
+        size, off, n = found["REFU"]
+        for i in range(n):
+            reason, kind, entry, slot, obj, bits, start, length = _REFU.unpack_from(b, off + i * size)
+            out["refused"].append(
+                {
+                    "reason": reason,
+                    "reason_name": REASON.get(reason, "unknown"),
+                    "kind": kind,
+                    "entry": entry,
+                    "slot": slot,
+                    "object": obj,
+                    "bits": bits,
+                    "detail": text[start : start + length].decode("utf-8", "replace"),
+                }
+            )
+    return out
+
+
+def read(path: str) -> dict:
+    """The decisions file at ``path``."""
+    with open(path, "rb") as f:
+        return read_bytes(f.read())
+
+
+def _hex(v: float) -> str:
+    return struct.pack("<d", v)[::-1].hex()
+
+
+def _list(vs) -> str:
+    return ",".join(str(v) for v in vs)
+
+
+def canonical(d: dict) -> str:
+    """The decisions as canonical text, one line per item."""
+    h = d["header"]
+    lines = [
+        f"header format={h['format']} xf={h['xf'][0]}.{h['xf'][1]} size={h['width']}x{h['height']} "
+        f"window={_list(h['window'])} status={h['status']} seq={h['seq']}",
+        "offsets " + " ".join(f"{o[0]},{o[1]}" for o in h["offsets"]),
+    ]
+    for f in d["fragments"]:
+        lines.append(
+            f"fragment id={f['id']} entry={f['entry']} slot={f['slot']} object={f['object']} "
+            f"part={f['part']} sub={f['sub']} layer={f['layer']} kind={f['kind']} flags={f['flags']} "
+            f"group={f['group']} plane={f['plane']} epsilon={_hex(f['epsilon'])} bbox={_list(f['bbox'])}"
+        )
+    for c in d["covers"]:
+        cells = ",".join(f"{lo}-{hi}" for lo, hi in zip(c["cell_lo"], c["cell_hi"]))
+        lines.append(
+            f"cover x={c['x']} y={c['y']} fragment={c['fragment']} cover={_list(c['cover'])} "
+            f"cell={cells} pixel={c['pixel_lo']}-{c['pixel_hi']} area={_hex(c['pixel_area'])} "
+            f"cells={_list(_hex(v) for v in c['cell_area'])} depth={_list(_hex(v) for v in c['depth'])} "
+            f"band={_list(_hex(v) for v in c['band'])}"
+        )
+    for r in d["refused"]:
+        lines.append(
+            f"refused reason={r['reason']} kind={r['kind']} entry={r['entry']} slot={r['slot']} "
+            f"object={r['object']} bits={r['bits']} detail={r['detail']}"
+        )
+    return "".join(line + "\n" for line in lines)
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) != 2 or argv[0] != "--canonical":
+        print("usage: read.py --canonical <file>", file=sys.stderr)
+        return 2
+    sys.stdout.write(canonical(read(argv[1])))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
