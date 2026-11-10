@@ -367,7 +367,9 @@ impl Fragment<'_> {
         }
     }
 
-    fn coverage8(&self) -> u8 {
+    /// Its 8-bit coverage of the whole pixel, which the fast and coverage resolves blend a unit of
+    /// it alone with: a mask's count, a path's exact area rounded once.
+    pub(crate) fn coverage8(&self) -> u8 {
         match self.coverage {
             Coverage::Mask(m) => mask_coverage(m),
             Coverage::Area { area, .. } => area_coverage(area),
@@ -1114,20 +1116,24 @@ impl<'a> TransparentPass<'a> {
 
     /// Resolves each pixel of the rectangle inside `keep` as [`Self::resolve`] does, over its
     /// background (the rectangle's bytes, row by row), and hands `visit` the pixel's fragments,
-    /// what the resolve composited ([`ResolveTrace`]), its background, and the emitted light
-    /// added after it, if any: the diagnostic report's read (`diagnostics.rs`). Nothing is drawn.
+    /// what the resolve composited ([`ResolveTrace`]), with `reads` each fragment's depths as the
+    /// passes give them (before a stroke takes its own fill's depth: [`strokes_on_own_fills`];
+    /// empty without), its background, and the emitted light added after it, if any: the
+    /// diagnostic report's read (`diagnostics.rs`). Nothing is drawn.
     #[allow(clippy::type_complexity)]
     pub(crate) fn trace_pixels(
         mut self,
         keep: Rect,
         background: &[u8],
         decisions: bool,
-        mut visit: impl FnMut(u32, u32, &[Fragment], ResolveTrace, [u8; 4], Option<[f64; 3]>),
+        reads: bool,
+        mut visit: impl FnMut(u32, u32, &[Fragment], ResolveTrace, &[Depths], [u8; 4], Option<[f64; 3]>),
     ) {
         let pixels = self.rect.pixels();
         assert_eq!(background.len(), pixels * 4);
         let transparent = ByPixel::new(std::mem::take(&mut self.fragments), pixels);
         let mut scratch = Scratch::default();
+        let mut depths = Vec::new();
         let w = self.rect.width();
         for i in 0..pixels {
             let (x, y) = (self.rect.x0 + i as u32 % w, self.rect.y0 + i as u32 / w);
@@ -1138,21 +1144,48 @@ impl<'a> TransparentPass<'a> {
             scratch.fragments.extend_from_slice(self.opaque.at(i));
             scratch.fragments.extend_from_slice(transparent.at(i));
             let bg: [u8; 4] = background[i * 4..i * 4 + 4].try_into().unwrap();
+            if reads {
+                depths.clear();
+                depths.extend(
+                    scratch
+                        .fragments
+                        .iter()
+                        .map(|f| Depths::of(self.producers, f, x, y)),
+                );
+            }
             let mut trace = ResolveTrace::empty(decisions);
-            if !scratch.fragments.is_empty() {
+            trace.reads = reads;
+            let returned = if scratch.fragments.is_empty() {
+                (Resolve::Background, bg)
+            } else {
                 resolve_pixel_traced(
                     &mut scratch,
                     bg,
                     |_, f| self.sample_coverage(f, x, y),
                     |_, f| Depths::of(self.producers, f, x, y),
                     Some(&mut trace),
-                );
-            }
+                )
+            };
             let emission = match self.emission.get(i) {
                 Some(e) if *e != [0.0; 3] => Some(*e),
                 _ => None,
             };
-            visit(x, y, &scratch.fragments, trace, bg, emission);
+            #[cfg(test)]
+            TRACED_RETURNS.with_borrow_mut(|r| {
+                if let Some(r) = r {
+                    let rgba = emission.map_or(returned.1, |e| add_emission(returned.1, e));
+                    r.push(TracedReturn {
+                        x,
+                        y,
+                        resolve: returned.0,
+                        rgba,
+                        flat: trace.flat,
+                    });
+                }
+            });
+            #[cfg(not(test))]
+            let _ = returned;
+            visit(x, y, &scratch.fragments, trace, &depths, bg, emission);
         }
     }
 
@@ -1381,6 +1414,27 @@ pub struct ResolveTrace {
     /// `strong_at` in [`resolve_pixel_traced`]): depth where depth decides, paint between a path's
     /// fill and its own stroke ([`crate::order::own_layers`]), a tie otherwise.
     pub sample_pairs: Vec<Vec<PairOrder>>,
+    /// Whether to record the pair relations ([`Self::relations`], [`Self::flat`]) where
+    /// [`Self::decisions`] is set too.
+    pub reads: bool,
+    /// Asked for with the reads and the decisions: whether the resolve took the flat path (one
+    /// depth row for every fragment, so paint order decides every pair and no pair's orders are
+    /// read at its sub-samples). False otherwise, and for a pixel of one fragment.
+    pub flat: bool,
+    /// Asked for with the reads and the decisions: every pair `a < b` of the pixel's fragments
+    /// sharing a sub-sample, with its orders there as the resolve read them, before any rank or
+    /// cull (`order::shared`): what the pixel's order and its sub-sample orders are read from.
+    /// Empty on a flat pixel, and otherwise.
+    pub relations: Vec<Relation>,
+}
+
+/// One pair's orders at each sub-sample both cover, as the resolve read them
+/// ([`ResolveTrace::relations`]): fragments `a < b`, and `order::shared` of `a` against `b`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Relation {
+    pub a: usize,
+    pub b: usize,
+    pub shared: crate::order::Shared,
 }
 
 /// One pair's order as a rank read it: fragments `a < b`, the one in front (`None` where
@@ -1429,6 +1483,9 @@ impl ResolveTrace {
             pairs: Vec::new(),
             sample_ranked: false,
             sample_pairs: Vec::new(),
+            reads: false,
+            flat: false,
+            relations: Vec::new(),
         }
     }
 
@@ -1461,6 +1518,26 @@ fn coverage_rows(
         .enumerate()
         .map(|(i, f)| sample_coverage(i, f))
         .collect()
+}
+
+/// Test builds only: what the traced resolve returned at one pixel [`TransparentPass::trace_pixels`]
+/// traced, its emitted light added, and whether it took the flat path. The trace itself holds no
+/// colour; this lets the tests compare what the traced resolve returned with what drawing writes.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TracedReturn {
+    pub x: u32,
+    pub y: u32,
+    pub resolve: Resolve,
+    pub rgba: [u8; 4],
+    pub flat: bool,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// While set, every [`TracedReturn`] on this thread, in the order traced.
+    pub(crate) static TRACED_RETURNS: std::cell::RefCell<Option<Vec<TracedReturn>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// [`resolve_pixel`], recording in `trace`, when given, what it composited. Nothing it
@@ -1506,6 +1583,12 @@ pub(crate) fn resolve_pixel_traced(
         .rows
         .iter()
         .all(|d| d.samples == first && d.rows().all(|(on, _)| *on == first));
+    if let Some(t) = trace.as_deref_mut()
+        && t.decisions
+        && t.reads
+    {
+        t.flat = flat;
+    }
     s.coverage.clear();
     if !flat {
         s.coverage
@@ -1549,6 +1632,14 @@ pub(crate) fn resolve_pixel_traced(
             } else {
                 let shared = order::shared(seen(a, b), seen(b, a));
                 (s.at[a * n + b], s.at[b * n + a]) = (shared.ab, shared.ba);
+                // A copy of what was read, for a trace asking for it; the resolve reads on.
+                if let Some(t) = trace.as_deref_mut()
+                    && t.decisions
+                    && t.reads
+                    && shared.covered != 0
+                {
+                    t.relations.push(Relation { a, b, shared });
+                }
                 shared.decided(&frags[a], &frags[b])
             };
             s.fronts[a * n + b] = o == Ordering::Less;
@@ -1988,6 +2079,61 @@ mod tests {
         assert_eq!(plain, drawn);
         assert!(bare.pairs.is_empty() && bare.sample_pairs.is_empty());
         assert_eq!((bare.resolve, bare.samples), (trace.resolve, trace.samples));
+    }
+
+    #[test]
+    fn a_trace_with_its_reads_records_the_flat_path_and_each_pair_s_orders_as_the_resolve_read_them()
+     {
+        let at = |z: f64, order: u32| {
+            let depth = Plane {
+                err: 1e-4,
+                ..Plane::constant(z)
+            };
+            Fragment::new(depth, [60, 30, 0, 128], Coverage::Mask(FULL), order, 0)
+        };
+        let resolve = |frags: &[Fragment], trace: Option<&mut ResolveTrace>| {
+            let mut s = Scratch::default();
+            s.fragments.extend_from_slice(frags);
+            resolve_pixel_traced(
+                &mut s,
+                [0, 0, 0, 255],
+                |_, _| [255; SAMPLES],
+                |_, f| Depths::of_plane(f, 0, 0),
+                trace,
+            )
+        };
+        // Traced as asked, the pixel resolved as with no trace at all.
+        let traced = |frags: &[Fragment], decisions: bool, reads: bool| {
+            let mut trace = ResolveTrace::empty(decisions);
+            trace.reads = reads;
+            assert_eq!(resolve(frags, Some(&mut trace)), resolve(frags, None));
+            trace
+        };
+        // One depth for both: the flat path, and no pair read at a sub-sample.
+        let one_depth = [at(0.0, 1), at(0.0, 2)];
+        let t = traced(&one_depth, true, true);
+        assert!(t.flat && t.relations.is_empty(), "{t:?}");
+        // Apart: not flat, and the pair's orders as `order::shared` read them, nearer first.
+        let apart = [at(0.0, 1), at(0.5, 2)];
+        let t = traced(&apart, true, true);
+        assert!(!t.flat);
+        let [r] = t.relations.as_slice() else {
+            panic!("{:?}", t.relations)
+        };
+        let all = u16::MAX;
+        assert_eq!((r.a, r.b), (0, 1));
+        let s = r.shared;
+        assert_eq!((s.covered, s.a_nearer, s.b_nearer), (all, all, 0));
+        assert_eq!((s.ab.front, s.ab.behind, s.ab.strong), (all, 0, all));
+        assert_eq!((s.ba.front, s.ba.behind, s.ba.strong), (0, all, all));
+        assert_eq!(s.decided(&apart[0], &apart[1]).0, Ordering::Less);
+        // Asked for apart from either flag, none of it.
+        for frags in [&one_depth, &apart] {
+            for (decisions, reads) in [(true, false), (false, true), (false, false)] {
+                let t = traced(frags, decisions, reads);
+                assert!(!t.flat && t.relations.is_empty(), "{decisions} {reads}");
+            }
+        }
     }
 
     #[test]
