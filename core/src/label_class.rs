@@ -9,16 +9,16 @@
 //!    on it, the record's owner or any container, is a line, whatever lies between.
 //! 3. A generic class ([`GENERIC_CLASSES`]) reads as its nearest container whose class is not
 //!    generic, and is open ([`OpenCause::GenericOnly`]) with none.
-//! 4. A surface class ([`SURFACE_CLASSES`]: surfaces, solids and filled planar shapes) whose
-//!    nearest non-generic container is surface-like (a solid's face, a cylinder's or a cone's
-//!    cap) reads as that container does.
+//! 4. A record of any class but the cylinder with a surface-like container (a surface class,
+//!    below, or the cylinder) reads as the nearest such container does: a solid's face, a
+//!    cylinder's or a cone's cap, a point or a glyph's path drawn from a surface.
 //! 5. A [`CYLINDER`] that nothing contains is a solid, a surface; inside any container it is open
 //!    ([`OpenCause::CylinderGrouped`]): it may be a shaft its user built, and its thinness is
 //!    never inferred.
-//! 6. Otherwise the class itself decides: a surface class is a surface, a point cloud
-//!    ([`POINT_CLOUD_CLASSES`]) is open ([`OpenCause::PointCloud`]), and any class the inventory
-//!    does not name (text without a facing group, images, braces, tables) is open
-//!    ([`OpenCause::Unmapped`]).
+//! 6. Otherwise the class itself decides: a surface class ([`SURFACE_CLASSES`]: surfaces, solids
+//!    and filled planar shapes) is a surface, a point cloud ([`POINT_CLOUD_CLASSES`]) is open
+//!    ([`OpenCause::PointCloud`]), and any class the inventory does not name (text without a
+//!    facing group, images, braces, tables) is open ([`OpenCause::Unmapped`]).
 //! 7. A record whose paths read differently is open ([`OpenCause::PathsDisagree`]), and so is a
 //!    record with no source ([`OpenCause::NoSource`]).
 //!
@@ -190,8 +190,9 @@ pub const GENERIC_CLASSES: &[&str] = &[
     "arachne.mobject.types.vectorized_mobject.VMobject",
 ];
 
-/// The point clouds.
+/// The point clouds: `PMobject` and every library class deriving from it.
 pub const POINT_CLOUD_CLASSES: &[&str] = &[
+    "arachne.frame_ir.cairo_painter._PointsProxy",
     "arachne.mobject.types.point_cloud_mobject.Mobject1D",
     "arachne.mobject.types.point_cloud_mobject.Mobject2D",
     "arachne.mobject.types.point_cloud_mobject.PGroup",
@@ -247,25 +248,28 @@ fn path_class(path: &[SourceNode]) -> LabelClass {
         return LabelClass::Line;
     }
     let open = LabelClass::LabelRuleOpen;
-    // Each node read after its containers. The nearest container of the node at hand whose class
-    // is not generic: its kind and class.
-    let mut owner: Option<(Kind, LabelClass)> = None;
+    // Each node read after its containers: the class of its nearest container whose class is not
+    // generic, and of its nearest surface-like container.
+    let mut owner: Option<LabelClass> = None;
+    let mut surface: Option<LabelClass> = None;
     let mut class = open(OpenCause::GenericOnly);
     for (at, node) in path.iter().enumerate().rev() {
         let kind = kind(&node.class);
-        class = match (kind, owner) {
-            (Kind::Generic, Some((_, owned))) => owned,
-            (Kind::Generic, None) => open(OpenCause::GenericOnly),
-            (Kind::Surface, Some((Kind::Surface | Kind::Cylinder, owned))) => owned,
-            (Kind::Cylinder, None) if at + 1 == path.len() => LabelClass::Surface,
+        class = match (kind, surface) {
+            (Kind::Generic, _) => owner.unwrap_or(open(OpenCause::GenericOnly)),
+            (Kind::Cylinder, _) if at + 1 == path.len() => LabelClass::Surface,
             (Kind::Cylinder, _) => open(OpenCause::CylinderGrouped),
-            (Kind::Surface, _) => LabelClass::Surface,
-            (Kind::PointCloud, _) => open(OpenCause::PointCloud),
-            (Kind::Other, _) => open(OpenCause::Unmapped),
-            (Kind::Line, _) => unreachable!("a path with a line class is a line"),
+            (_, Some(owned)) => owned,
+            (Kind::Surface, None) => LabelClass::Surface,
+            (Kind::PointCloud, None) => open(OpenCause::PointCloud),
+            (Kind::Other, None) => open(OpenCause::Unmapped),
+            (Kind::Line, None) => unreachable!("a path with a line class is a line"),
         };
         if kind != Kind::Generic {
-            owner = Some((kind, class));
+            owner = Some(class);
+        }
+        if matches!(kind, Kind::Surface | Kind::Cylinder) {
+            surface = Some(class);
         }
     }
     class
