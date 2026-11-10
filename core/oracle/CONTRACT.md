@@ -2171,11 +2171,14 @@ may come from.
 Read from the record's source, which the wire carries from XF 1.5 (below). A record's source lists,
 for each of its paths, the containment chain from the object that made the record (its **maker**)
 outward through its **containers**, each node's nearest library class (a user's subclass maps to
-the library class it derives from). A node is **generic** when its class is
+the library class it derives from). A node is **generic** when its class is one of these six:
 `arachne.mobject.mobject.Mobject`, `arachne.mobject.mobject.Group`,
 `arachne.mobject.types.vectorized_mobject.VMobject`,
-`arachne.mobject.types.vectorized_mobject.VGroup` or
-`arachne.mobject.three_d.three_dimensions.ThreeDVMobject`. A node is **surface-like** when the
+`arachne.mobject.types.vectorized_mobject.VGroup`,
+`arachne.mobject.types.vectorized_mobject.VDict` or
+`arachne.mobject.three_d.three_dimensions.ThreeDVMobject`, a user's subclass of one of them
+included. The list is closed: no other class is generic, whatever it contains. A node is
+**surface-like** when the
 table makes its class a surface or gives it the cylinder rule. Each path gives an outcome, by the
 first of these that applies:
 
@@ -2194,7 +2197,9 @@ first of these that applies:
    has taken), it is `label_rule_open` with cause `cylinder_grouped`. Nothing reads its shape: a
    shaft added to the scene ungrouped is read as a solid and can hide a label.
 5. **The node's own class,** from the table: a line, a surface, or open with the cause the table
-   gives. A class the table does not list is `label_rule_open` with cause `unmapped`.
+   gives. A class the table does not list is not generic by default, a container class included:
+   its outcome is decided when the class is added to the table, and until then it falls closed to
+   `label_rule_open` with cause `unmapped`.
 
 The record's outcome is its paths' outcome where they all agree. Where they differ, it is
 `label_rule_open` with cause `paths_disagree`; a record with no source is `label_rule_open` with
@@ -2211,32 +2216,31 @@ blesses neither order for the samples the pair decides.
 |---|---|---|
 | `arachne.mobject.three_d.three_dimensions.Arrow3D`, `arachne.mobject.three_d.three_dimensions.Line3D` | line | rule 5: 3D lines, shafts, caps and tips included |
 | `arachne.mobject.geometry.line.Angle`, `arachne.mobject.geometry.line.Elbow`, `arachne.mobject.geometry.line.RightAngle` | line | rule 5: angle marks |
-| `arachne.mobject.geometry.arc.Arc`, `arachne.mobject.geometry.arc.ArcBetweenPoints`, `arachne.mobject.geometry.arc.CurvedArrow`, `arachne.mobject.geometry.arc.CurvedDoubleArrow`, `arachne.mobject.geometry.arc.TangentialArc` | line | rule 5: the arc family |
 | `arachne.mobject.geometry.tips.ArrowCircleFilledTip`, `arachne.mobject.geometry.tips.ArrowCircleTip`, `arachne.mobject.geometry.tips.ArrowSquareFilledTip`, `arachne.mobject.geometry.tips.ArrowSquareTip`, `arachne.mobject.geometry.tips.ArrowTip`, `arachne.mobject.geometry.tips.ArrowTriangleFilledTip`, `arachne.mobject.geometry.tips.ArrowTriangleTip`, `arachne.mobject.geometry.tips.StealthTip` | line | rule 5: arrow tips, filled or not |
-| `arachne.mobject.geometry.arc.CubicBezier`, `arachne.mobject.graphing.functions.FunctionGraph`, `arachne.mobject.graphing.functions.ImplicitFunction`, `arachne.mobject.graphing.functions.ParametricFunction`, `arachne.mobject.types.vectorized_mobject.DashedVMobject`, `arachne.mobject.vector_field.StreamLine` | line | rule 5: curves |
-| `arachne.animation.changing.TracedPath` | line | rule 5: curves |
+| `arachne.animation.changing.AnimatedBoundary`, `arachne.animation.changing.TracedPath`, `arachne.mobject.geometry.arc.CubicBezier`, `arachne.mobject.graphing.functions.FunctionGraph`, `arachne.mobject.graphing.functions.ImplicitFunction`, `arachne.mobject.graphing.functions.ParametricFunction`, `arachne.mobject.types.vectorized_mobject.CurvesAsSubmobjects`, `arachne.mobject.types.vectorized_mobject.DashedVMobject`, `arachne.mobject.vector_field.StreamLine` | line | rule 5: curves |
+| `arachne.mobject.vector_field.ArrowVectorField`, `arachne.mobject.vector_field.StreamLines`, `arachne.mobject.vector_field.VectorField` | line | rule 5: fields, drawn as curves and arrows |
 | `arachne.mobject.geometry.labeled.LabeledArrow`, `arachne.mobject.geometry.labeled.LabeledLine`, `arachne.mobject.geometry.line.Arrow`, `arachne.mobject.geometry.line.DashedLine`, `arachne.mobject.geometry.line.DoubleArrow`, `arachne.mobject.geometry.line.Line`, `arachne.mobject.geometry.line.TangentLine`, `arachne.mobject.geometry.line.Vector`, `arachne.mobject.geometry.shape_matchers.Cross`, `arachne.mobject.geometry.shape_matchers.Underline` | line | rule 5: lines and arrows |
+| `arachne.mobject.geometry.arc.Arc`, `arachne.mobject.geometry.arc.ArcBetweenPoints`, `arachne.mobject.geometry.arc.CurvedArrow`, `arachne.mobject.geometry.arc.CurvedDoubleArrow`, `arachne.mobject.geometry.arc.TangentialArc` | line | rule 5: the arc family |
+| `arachne.mobject.geometry.arc.TipableVMobject` | line | rule 5: the base of curves that take tips |
 | `arachne.mobject.graphing.coordinate_systems.Axes`, `arachne.mobject.graphing.coordinate_systems.ComplexPlane`, `arachne.mobject.graphing.coordinate_systems.NumberPlane`, `arachne.mobject.graphing.coordinate_systems.PolarPlane`, `arachne.mobject.graphing.coordinate_systems.ThreeDAxes`, `arachne.mobject.graphing.number_line.NumberLine`, `arachne.mobject.graphing.number_line.UnitInterval` | line | rule 5: the plane and axes family |
+| `arachne.mobject.graphing.probability.BarChart` | line | rule 5: the plane and axes family; its bars are lines by rule 1 |
 | `arachne.mobject.geometry.arc.ArcPolygon`, `arachne.mobject.geometry.arc.ArcPolygonFromArcs` | surface | rule 5: arc polygons |
 | `arachne.mobject.geometry.shape_matchers.BackgroundRectangle`, `arachne.mobject.geometry.shape_matchers.SurroundingRectangle` | surface | rule 5: background and surrounding rectangles |
-| `arachne.mobject.geometry.arc.AnnotationDot`, `arachne.mobject.geometry.arc.Annulus`, `arachne.mobject.geometry.arc.Circle`, `arachne.mobject.geometry.arc.Dot`, `arachne.mobject.geometry.arc.Ellipse`, `arachne.mobject.geometry.arc.LabeledDot` | surface | rule 5: the circle and dot family |
 | `arachne.mobject.graphing.probability.SampleSpace` | surface | rule 5: filled planar shapes |
 | `arachne.mobject.frame.FullScreenRectangle`, `arachne.mobject.frame.ScreenRectangle` | surface | rule 5: screen rectangles |
 | `arachne.mobject.three_d.polyhedra.ConvexHull3D`, `arachne.mobject.three_d.polyhedra.Dodecahedron`, `arachne.mobject.three_d.polyhedra.Icosahedron`, `arachne.mobject.three_d.polyhedra.Octahedron`, `arachne.mobject.three_d.polyhedra.Polyhedron`, `arachne.mobject.three_d.polyhedra.Tetrahedron`, `arachne.mobject.three_d.three_dimensions.Cone`, `arachne.mobject.three_d.three_dimensions.Cube`, `arachne.mobject.three_d.three_dimensions.Dot3D`, `arachne.mobject.three_d.three_dimensions.Prism`, `arachne.mobject.three_d.three_dimensions.Sphere`, `arachne.mobject.three_d.three_dimensions.Surface`, `arachne.mobject.three_d.three_dimensions.Torus` | surface | rule 5: surfaces and solids |
 | `arachne.mobject.geometry.boolean_ops.Difference`, `arachne.mobject.geometry.boolean_ops.Exclusion`, `arachne.mobject.geometry.boolean_ops.Intersection`, `arachne.mobject.geometry.boolean_ops.Union`, `arachne.mobject.geometry.boolean_ops._BooleanOps` | surface | rule 5: the boolean operations |
+| `arachne.mobject.geometry.arc.AnnotationDot`, `arachne.mobject.geometry.arc.Annulus`, `arachne.mobject.geometry.arc.Circle`, `arachne.mobject.geometry.arc.Dot`, `arachne.mobject.geometry.arc.Ellipse`, `arachne.mobject.geometry.arc.LabeledDot` | surface | rule 5: the circle and dot family |
 | `arachne.mobject.geometry.labeled.LabeledPolygram`, `arachne.mobject.geometry.polygram.ConvexHull`, `arachne.mobject.geometry.polygram.Cutout`, `arachne.mobject.geometry.polygram.Polygon`, `arachne.mobject.geometry.polygram.Polygram`, `arachne.mobject.geometry.polygram.Rectangle`, `arachne.mobject.geometry.polygram.RegularPolygon`, `arachne.mobject.geometry.polygram.RegularPolygram`, `arachne.mobject.geometry.polygram.RoundedRectangle`, `arachne.mobject.geometry.polygram.Square`, `arachne.mobject.geometry.polygram.Star`, `arachne.mobject.geometry.polygram.Triangle` | surface | rule 5: the polygram family |
 | `arachne.mobject.geometry.arc.AnnularSector`, `arachne.mobject.geometry.arc.Sector` | surface | rule 5: the sectors |
 | `arachne.mobject.three_d.three_dimensions.Cylinder` | the cylinder rule | rule 4 |
-| `arachne.mobject.mobject.Group`, `arachne.mobject.mobject.Mobject`, `arachne.mobject.three_d.three_dimensions.ThreeDVMobject`, `arachne.mobject.types.vectorized_mobject.VGroup`, `arachne.mobject.types.vectorized_mobject.VMobject` | generic, read through | rule 2 |
+| `arachne.mobject.mobject.Group`, `arachne.mobject.mobject.Mobject`, `arachne.mobject.three_d.three_dimensions.ThreeDVMobject`, `arachne.mobject.types.vectorized_mobject.VDict`, `arachne.mobject.types.vectorized_mobject.VGroup`, `arachne.mobject.types.vectorized_mobject.VMobject` | generic, read through | rule 2 |
 | `arachne.frame_ir.cairo_painter._PointsProxy`, `arachne.mobject.types.point_cloud_mobject.Mobject1D`, `arachne.mobject.types.point_cloud_mobject.Mobject2D`, `arachne.mobject.types.point_cloud_mobject.PGroup`, `arachne.mobject.types.point_cloud_mobject.PMobject`, `arachne.mobject.types.point_cloud_mobject.Point`, `arachne.mobject.types.point_cloud_mobject.PointCloudDot` | open, `point_cloud` | rule 5: a cloud of points is not a sheet |
 | `arachne.frame_ir.cairo_painter._ImageProxy`, `arachne.frame_ir.cairo_painter._PathProxy`, `arachne.frame_ir.geometry._Path`, `arachne.mobject.geometry.labeled.Label`, `arachne.mobject.graph.DiGraph`, `arachne.mobject.graph.GenericGraph`, `arachne.mobject.graph.Graph`, `arachne.mobject.logo.ManimBanner`, `arachne.mobject.matrix.DecimalMatrix`, `arachne.mobject.matrix.IntegerMatrix`, `arachne.mobject.matrix.Matrix`, `arachne.mobject.matrix.MobjectMatrix`, `arachne.mobject.svg.brace.ArcBrace`, `arachne.mobject.svg.brace.Brace`, `arachne.mobject.svg.brace.BraceBetweenPoints`, `arachne.mobject.svg.brace.BraceLabel`, `arachne.mobject.svg.brace.BraceText`, `arachne.mobject.svg.svg_mobject.SVGMobject`, `arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath`, `arachne.mobject.table.DecimalTable`, `arachne.mobject.table.IntegerTable`, `arachne.mobject.table.MathTable`, `arachne.mobject.table.MobjectTable`, `arachne.mobject.table.Table`, `arachne.mobject.text.code_mobject.Code`, `arachne.mobject.text.numbers.DecimalNumber`, `arachne.mobject.text.numbers.Integer`, `arachne.mobject.text.numbers.Variable`, `arachne.mobject.text.tex_mobject.BulletedList`, `arachne.mobject.text.tex_mobject.MathTex`, `arachne.mobject.text.tex_mobject.MathTexPart`, `arachne.mobject.text.tex_mobject.SingleStringMathTex`, `arachne.mobject.text.tex_mobject.Tex`, `arachne.mobject.text.tex_mobject.Title`, `arachne.mobject.text.text_mobject.MarkupText`, `arachne.mobject.text.text_mobject.Paragraph`, `arachne.mobject.text.text_mobject.Text`, `arachne.mobject.text.typst_mobject.MathTypst`, `arachne.mobject.text.typst_mobject.Typst`, `arachne.mobject.types.image_mobject.AbstractImageMobject`, `arachne.mobject.types.image_mobject.ImageMobject`, `arachne.mobject.types.image_mobject.ImageMobjectFromCamera`, `arachne.mobject.types.vectorized_mobject.VectorizedPoint`, `arachne.mobject.value_tracker.ComplexValueTracker`, `arachne.mobject.value_tracker.ValueTracker` | open, `unmapped` | rule 5: neither a line nor a surface |
-| `arachne.animation.changing.AnimatedBoundary`, `arachne.mobject.geometry.arc.TipableVMobject`, `arachne.mobject.graphing.probability.BarChart`, `arachne.mobject.types.vectorized_mobject.CurvesAsSubmobjects`, `arachne.mobject.types.vectorized_mobject.VDict`, `arachne.mobject.vector_field.ArrowVectorField`, `arachne.mobject.vector_field.StreamLines`, `arachne.mobject.vector_field.VectorField` | open, `unmapped` | undecided: fail-closed until this text places it |
 
 - The key is the nearest library class itself, never membership of a base class:
   `arachne.mobject.geometry.arc.Circle` derives from `arachne.mobject.geometry.arc.Arc` and is a
   surface; `arachne.mobject.geometry.arc.Dot` is read as itself.
-- The eight classes marked undecided are ones this text does not yet place; they take the
-  fail-closed outcome until it does.
 - The table is the oracle's own and is written from this text alone.
 
 **Change from `label_classes@1`.**
