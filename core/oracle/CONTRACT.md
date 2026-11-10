@@ -2219,11 +2219,21 @@ in these cases (overlay entries excluded):
 
 Each refusal names the slot, the object, and the kind or bit.
 
-**Invalid XF is not a frame.** A delta is validated whole before any of it applies, as the XF
-specification states, by the XF reader both sides share: among its checks, a reference (from a
-record, an order entry or the view, such as a background image key) to a missing shape, table or
-slot, and two display records drawn in the same layer of one view's order with the same capture
-rank. A delta that fails is refused atomically: nothing of it applies, and the stream stands as
+**Invalid XF is not a frame.** A delta is validated whole before any of it applies, in the two
+places the XF specification's *Where each check is made* lists, in its order:
+
+- **Decode**, by the XF reader both sides share, in the order of the delta's bytes: among its
+  checks, bytes that end inside a field, a code the build does not know in the view or a record,
+  a shape uploaded under a key other than its content's, an order entry's layer code the build
+  does not know, and the section's codes. The reader checks nothing against what a stream holds,
+  and, but for the section's codes, no part of a delta against another.
+- **Apply**, against the stream and the delta as a whole: among its checks, a record or the view
+  (a background image, say) naming a shape or paint table the stream would not hold after the
+  delta, a removal or release of what is not there, an order drawing a slot not set, two display
+  records drawn in the same layer of one view's order with the same capture rank, and last
+  `slot_not_held`.
+
+A delta that fails is refused atomically: nothing of it applies, and the stream stands as
 before it. The oracle never judges a frame built from part of one, and reports the delta's refusal
 by its reason, `invalid_delta`. The source section's seven checks (below) are XF's too, but a delta
 whose one refusal is one of them is the stream's refusal, not `invalid_delta`.
@@ -2241,17 +2251,20 @@ whose one refusal is one of them is the stream's refusal, not `invalid_delta`.
 3. `slot_not_held`, at apply: a held row whose slot the stream does not hold before the delta.
 
 **One refusal per delta, the first of all XF's checks.** A delta has exactly one refusal, the first
-of all XF's checks in this order:
+of all XF's checks in this order, each check made where *Where each check is made* places it:
 
-1. the reader's checks, in the order of the delta's bytes: a refusal of anything written before
-   the section is the delta's ordinary refusal, not one of the seven codes, and the section's own
-   codes come in the order above (1, then 2);
+1. decode's checks, in the order of the delta's bytes: a refusal of anything written before the
+   section is the delta's ordinary refusal, not one of the seven codes, and the section's own codes
+   come in the order above (1, then 2);
 2. then apply's other checks;
 3. then `slot_not_held`, which is the delta's refusal only when nothing else in it is refused.
 
-So a missing shape caught as the reader decodes the bytes before the section is an ordinary
-refusal, even where the section would also be refused; a reference apply finds to no shape loses to
-any of the section's reader codes, `slot_removed` among them. The order of the rows decides only
+So three precedences follow. A decode refusal of bytes before the section, such as an order
+entry's unknown layer code, is the delta's ordinary refusal even where the section would also be
+refused. A section code wins over every ordinary refusal apply makes: a record naming a shape the
+delta neither uploads nor finds held is refused by apply, never by the reader, so a delta that
+carries both is refused by the section's code. An ordinary refusal apply makes, such as an order
+drawing a slot not set, wins over `slot_not_held`. The order of the rows decides only
 which code is reported. A refused delta is not applied. This order is the wire's rule, and the
 oracle states it whatever the core does.
 
@@ -2600,17 +2613,17 @@ carries is well formed unless stated; expected: frames 2 to 4
 - **`refused_reading_before_apply`:** delta 2's first row is a held row for `u`, never set, and its
   second row has a path of no objects. Expected `path_empty`: the reader's codes come before
   apply's, and `slot_not_held` comes last.
-- **`refused_apply_before_slot_not_held`:** delta 2's order names a shape key no shape holds, a
-  check apply makes, and its one row is a held row for `u`, never set. Expected the ordinary
+- **`refused_apply_before_slot_not_held`:** delta 2's order draws a slot `x` no delta has set,
+  which apply refuses, and its one row is a held row for `u`, never set. Expected the ordinary
   refusal, not `slot_not_held`: apply's other checks come before it. Frame 2 is `truth_unable`
   under `invalid_delta`, and frames 3 and 4 are judged on the stream as delta 1 left it.
-- **`refused_section_before_apply`:** delta 2 removes `s`, its order names a shape key no shape
-  holds, a check apply makes, and it carries a row for `s`. Expected `slot_removed`: the reader's
-  codes come before apply's other checks.
-- **`refused_decode_before_section`:** delta 2 holds, before its source section, a reference the
-  reader refuses as it decodes (a record naming a missing shape), and its section lists one class
-  name twice. Expected the ordinary refusal: the reader's checks run in the order of the delta's
-  bytes, and the record comes first. Frame 2 is `truth_unable` under `invalid_delta`; the stream is
+- **`refused_section_before_apply`:** delta 2 removes `s`, sets `t` again naming a shape the
+  delta neither uploads nor finds held, which apply refuses, and carries a row for `s`. Expected
+  `slot_removed`: a section code comes before apply's ordinary checks.
+- **`refused_decode_before_section`:** delta 2's order holds an entry whose layer code the build
+  does not know, which the reader refuses as it decodes, and its section lists one class name
+  twice. Expected the ordinary refusal: decode runs in the order of the delta's bytes, and the
+  order comes before the section. Frame 2 is `truth_unable` under `invalid_delta`; the stream is
   not refused, and frames 3 and 4 are judged on the stream as delta 1 left it.
 
 **`held_row_clears_group`.** W27's scene, `L` set in delta 1 with a row of facing group 7 and its
