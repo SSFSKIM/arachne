@@ -3,10 +3,14 @@ that holds no core source but the XF schema, so there is nothing else for it to 
 
 ``python3 ci/oracle_isolated.py --tree ROOT``
 ``python3 ci/oracle_isolated.py --from-git REV``
+``python3 ci/oracle_isolated.py --prune ROOT``
 
-``--tree ROOT`` takes a checkout that holds exactly ``oracle_check.ISOLATED_CHECKOUT`` (a sparse
-checkout, or a directory ``git archive`` filled with those paths alone). ``--from-git REV`` makes
-one in a fresh temporary directory, by ``git archive`` of the list at ``REV`` from this repository.
+``--tree ROOT`` takes a checkout that holds exactly ``oracle_check.ISOLATED_CHECKOUT`` and no
+``.git`` (a directory ``git archive`` filled with those paths alone, or a checkout ``--prune``
+emptied of the rest). ``--from-git REV`` makes one in a fresh temporary directory, by
+``git archive`` of the list at ``REV`` from this repository: the local run. ``--prune ROOT``, the
+CI gate's first step, deletes from a GitHub-hosted job's own checkout every file the list does not
+hold, ``.git`` included, prints what is left and passes only if that is the list exactly.
 Then, in ``ROOT``:
 
 1. ``ROOT/core/ci/oracle_check.py --isolated-checkout ROOT`` asserts the checkout holds exactly the
@@ -19,9 +23,9 @@ Then, in ``ROOT``:
    ``include_str!`` renamed by ``use`` — and passes only if the library then fails to build because
    the file is not there.
 
-The proof is only as strong as the checkout: where the full tree exists on the same machine (an
-interim run from a full checkout), an absolute reach into it still builds. The CI job that proves it
-runs in a checkout holding the list alone.
+The proof is only as strong as the checkout: where the full tree exists on the same machine (the
+local ``--from-git`` run beside a full checkout), an absolute reach into it still builds. The CI
+gate ``core-oracle-isolated`` proves it in a job whose checkout, pruned, holds the list alone.
 """
 
 from __future__ import annotations
@@ -56,13 +60,71 @@ def plants(root: Path) -> dict[str, str]:
     }
 
 
-def pathspecs() -> list[str]:
+def oracle_check():
+    """The list's module, imported without writing bytecode into the checkout it describes."""
+    sys.dont_write_bytecode = True
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from oracle_check import ISOLATED_CHECKOUT, ISOLATED_EXCLUDED
+    import oracle_check
 
-    specs = [e.rstrip("/") for e in ISOLATED_CHECKOUT]
-    specs += [f":(exclude,glob){pattern}" for pattern in ISOLATED_EXCLUDED]
+    return oracle_check
+
+
+def pathspecs() -> list[str]:
+    check = oracle_check()
+    specs = [e.rstrip("/") for e in check.ISOLATED_CHECKOUT]
+    specs += [f":(exclude,glob){pattern}" for pattern in check.ISOLATED_EXCLUDED]
     return specs
+
+
+def prune(root: Path) -> int:
+    """Deletes from ``root`` every file the list does not hold, ``.git`` first, and prints what is
+    left; passes only if what is left is the list exactly. It runs before anything is built.
+    """
+    if os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted":
+        print(
+            "isolated: --prune deletes the checkout it is given; it runs only in a GitHub-hosted job",
+            flush=True,
+        )
+        return 2
+    check = oracle_check()
+    git = root / ".git"
+    if git.is_dir() and not git.is_symlink():
+        shutil.rmtree(git)
+    elif git.exists() or git.is_symlink():
+        git.unlink()
+    for dirpath, dirnames, filenames in os.walk(root, topdown=False):
+        here = Path(dirpath)
+        for name in filenames:
+            p = here / name
+            if not check.isolated_listed(p.relative_to(root).as_posix()):
+                p.unlink()
+        for name in dirnames:
+            p = here / name
+            if p.is_symlink():
+                if not check.isolated_listed(p.relative_to(root).as_posix()):
+                    p.unlink()
+            elif not any(p.iterdir()):
+                p.rmdir()
+    left = sorted(
+        p.relative_to(root).as_posix()
+        for p in root.rglob("*")
+        if p.is_file() or p.is_symlink()
+    )
+    print(f"isolated: the checkout after pruning holds {len(left)} files:")
+    for rel in left:
+        print(f"  {rel}")
+    problems, _ = check.check_isolated_checkout(root)
+    problems += [
+        f"{rel}: left by the pruning, outside the list"
+        for rel in left
+        if not check.isolated_listed(rel)
+    ]
+    for p in problems:
+        print(f"isolated: FAIL {p}", flush=True)
+    if problems:
+        return 1
+    print("isolated: what is left is the isolated checkout's list exactly", flush=True)
+    return 0
 
 
 def from_git(rev: str, root: Path) -> None:
@@ -155,7 +217,15 @@ def main(argv: list[str]) -> int:
     where.add_argument(
         "--from-git", metavar="REV", help="make one by git archive of the list at REV"
     )
+    where.add_argument(
+        "--prune",
+        type=Path,
+        metavar="ROOT",
+        help="delete from a CI job's checkout all the list does not hold, .git included",
+    )
     args = ap.parse_args(argv)
+    if args.prune:
+        return prune(args.prune.resolve())
     if args.tree:
         return prove(args.tree.resolve())
     root = Path(tempfile.mkdtemp(prefix="oracle-isolated-"))

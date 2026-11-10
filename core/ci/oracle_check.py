@@ -19,7 +19,7 @@ Fails (exit 1, each problem on its own line) when:
 A lexical check cannot be closed against every spelling; it is a courtesy pass. The proof is
 ``ci/oracle_isolated.py``, which builds the oracle in a checkout holding no core source but the
 schema. ``--isolated-checkout ROOT`` asserts that checkout holds exactly ``ISOLATED_CHECKOUT``: every
-entry present, and no file outside it (``.git`` and the build's ``target/`` aside).
+entry present, and no file outside it, ``.git`` included (the build's ``target/`` aside).
 
 Prints what it allowed. Defaults: the oracle at ``core/oracle``, the schema at ``core/src/xf``.
 """
@@ -57,8 +57,9 @@ ISOLATED_EXCLUDED: tuple[str, ...] = (
 )
 
 #: What a build adds to a checkout, never part of it (``core/src/lib.rs`` the build writes as
-#: ``pub mod xf;``, over whatever stood there).
-ISOLATED_IGNORED: tuple[str, ...] = (".git/", "core/oracle/target/", "core/src/lib.rs")
+#: ``pub mod xf;``, over whatever stood there). A ``.git`` is not among them: the checkout holds
+#: no repository a build could read the core's history from.
+ISOLATED_IGNORED: tuple[str, ...] = ("core/oracle/target/", "core/src/lib.rs")
 
 
 def isolated_listed(rel: str) -> bool:
