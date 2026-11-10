@@ -8,11 +8,15 @@ Fails (exit 1, each problem on its own line) when:
   ``arachne_core::xf``, or names the crate bare or renamed (``use arachne_core as …``), which would let
   a later path reach any module;
 - the oracle's ``Cargo.toml`` renames the core (``package = "arachne-core"``);
-- a ``#[path]`` attribute or an ``include!`` macro reaches outside the oracle's directory;
+- a ``#[path]`` attribute or an ``include!`` macro reaches outside the oracle's directory, or its file
+  is not a plain relative literal (an escape, an absolute path, a macro);
 - the core's ``src/xf/`` names another core module (``crate::`` outside ``crate::xf``, ``super::`` out
   of the module), the self-containment the oracle's independence rests on;
 - the oracle's dependency tree holds a GPU crate, or kurbo built with ``std`` (``tree_check.py``'s
   rules; skipped with ``--no-tree``).
+
+A lexical check cannot be closed against every spelling; it is the fast first pass. The proof is
+``ci/oracle_isolated.py``, which builds the oracle in a tree holding no core source but the schema.
 
 Prints what it allowed. Defaults: the oracle at ``core/oracle``, the schema at ``core/src/xf``.
 """
@@ -160,6 +164,12 @@ def outside_reaches(path: Path, text: str, bare: str, root: Path) -> list[tuple[
             line = line_of(text, m.start())
             if not lit:
                 bad.append((line, "a #[path] or include! whose file is not a literal"))
+                continue
+            if "\\" in lit.group(1):
+                bad.append((line, "a #[path] or include! whose literal holds an escape"))
+                continue
+            if Path(lit.group(1)).is_absolute():
+                bad.append((line, f"reaches {lit.group(1)!r}, an absolute path"))
                 continue
             target = (path.parent / lit.group(1)).resolve()
             if not target.is_relative_to(root.resolve()):

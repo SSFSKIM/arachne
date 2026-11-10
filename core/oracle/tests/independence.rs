@@ -86,6 +86,22 @@ fn a_planted_core_module_fails_the_check() {
             "src/draw.rs",
             "const _: &str = include_str!(\"../../src/path.rs\");",
         ),
+        // Escaped and absolute spellings, which the compiler reads as plain reaches.
+        (
+            "escaped-path",
+            "src/lib.rs",
+            "#[path = \"\\x2e\\x2e/\\x2e\\x2e/src/composite.rs\"]\nmod composite;",
+        ),
+        (
+            "escaped-include",
+            "src/draw.rs",
+            "const _: &str = include_str!(\"\\x2e\\x2e/\\x2e\\x2e/src/path.rs\");",
+        ),
+        (
+            "absolute",
+            "src/draw.rs",
+            "const _: &str = include_str!(\"/etc/hosts\");",
+        ),
     ] {
         let dir = copy_of_oracle(tag);
         plant(&dir, file, line);
