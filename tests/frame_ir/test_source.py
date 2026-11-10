@@ -20,10 +20,13 @@ from arachne import (
     Arrow3D,
     Circle,
     ImageMobject,
+    MathTex,
     PMobject,
+    Scene,
     Square,
     Surface,
     ThreeDScene,
+    TransformMatchingTex,
     Vector,
     VGroup,
     tempconfig,
@@ -34,11 +37,13 @@ from arachne.frame_ir.core_painter import CorePainter
 from arachne.frame_ir.extract import Blend, FrameStream, Reveal, library_class
 from arachne.frame_ir.geometry import revealed
 from arachne.frame_ir.painter import IrCairoPainter
+from arachne.frame_ir.xf import Delta, Record
 from arachne.utils.bezier import interpolate
 
 from ..timeline import camera_scenes
 from ..timeline.conftest import render
 from . import scenes
+from .camera_scenes import Solids
 
 FPS = 15
 MEDIUM = {"pixel_width": 192, "pixel_height": 108}
@@ -140,7 +145,10 @@ def test_a_face_group_names_its_surface_however_its_faces_are_handed_over():
         assert _token(record) == stream._token(owner)
 
 
-def test_moving_a_leaf_to_another_parent_sets_its_record_again():
+def test_moving_a_leaf_to_another_parent_sends_its_new_source_and_sets_nothing():
+    """A record whose drawing is unchanged is not set again when only its
+    source moves: the older minor's bytes stay what they were.
+    """
     camera = Camera()
     square = Square()
     a, b = VGroup(square), VGroup()
@@ -152,11 +160,17 @@ def test_moving_a_leaf_to_another_parent_sets_its_record_again():
     a.remove(square)
     b.add(square)
     moved = stream.frame(camera, [("static", [a, b])], roots=[a, b])
-    [(_, record)] = moved.set
-    assert not moved.upload, "its geometry is unchanged"
-    assert record.fields["shape"] == first.fields["shape"]
+    assert not moved.set, "its drawing is unchanged"
+    assert not moved.upload
+    [(slot, source, group)] = moved.source
+    assert slot == stream._slots[id(square)][1]
+    assert group == 0
     assert first.fields["source"][0][1][0] == stream._token(a)
-    assert record.fields["source"][0][1][0] == stream._token(b)
+    assert source[0][1][0] == stream._token(b)
+    assert _by_mobject(stream)[id(square)].fields["source"] == source
+    again = stream.frame(camera, [("static", [a, b])], roots=[a, b])
+    assert not again.set
+    assert not again.source
 
 
 def test_a_shared_leaf_carries_a_path_through_each_parent():
@@ -310,9 +324,40 @@ def test_every_record_sent_carries_its_source(scene_class, draw_path, monkeypatc
             assert all(cls.startswith("arachne.") for _, cls in path), path
 
 
-def test_frames_are_the_bytes_drawn_without_a_source(monkeypatch):
-    """The depth resolver reads no source: a scene's frames on the core are
-    the bytes drawn when lowering carries none.
+_STRIPPED = ("source", "facing_group")
+
+
+def _older_minor(delta):
+    """``delta``'s bytes without its sources: what an older minor carries."""
+    bare = Delta(
+        t=delta.t,
+        seq=delta.seq,
+        view=delta.view,
+        objects=delta.objects,
+        upload=delta.upload,
+        upload_paints=delta.upload_paints,
+        release=delta.release,
+        set=[
+            (
+                slot,
+                Record(
+                    record.kind,
+                    {k: v for k, v in record.fields.items() if k not in _STRIPPED},
+                ),
+            )
+            for slot, record in delta.set
+        ],
+        remove=delta.remove,
+        order=delta.order,
+    )
+    return bytes(bare.to_core().to_bytes())
+
+
+def test_frames_and_the_older_minor_are_the_bytes_sent_without_a_source(monkeypatch):
+    """The depth resolver reads no source, and a source moves no byte an
+    older minor carries: a scene's frames on the core, and each delta it is
+    handed without its sources, are the bytes of lowering that carries none,
+    whatever is reparented.
     """
     pytest.importorskip("arachne_core")
     cases = [
@@ -321,14 +366,56 @@ def test_frames_are_the_bytes_drawn_without_a_source(monkeypatch):
         scenes.LiveOverride,
         camera_scenes.PureCentre,
         LabelledArrow,
+        Regrouped,
+        MatchedTex,
+        Solids,
     ]
-    carried = [render(case, FPS, draw_path="core", **MEDIUM)[1] for case in cases]
+
+    def drawn():
+        found = []
+        for case in cases:
+            sent = []
+            with monkeypatch.context() as patched:
+                patched.setattr(CorePainter, "draw", _keeping(CorePainter.draw, sent))
+                frames = render(case, FPS, draw_path="core", **MEDIUM)[1]
+            found.append((frames, [_older_minor(delta) for delta in sent]))
+        return found
+
+    carried = drawn()
     monkeypatch.setattr(FrameStream, "_sourced", lambda self, slot, record, *_: record)
-    bare = [render(case, FPS, draw_path="core", **MEDIUM)[1] for case in cases]
-    for case, ours, theirs in zip(cases, carried, bare, strict=True):
+    bare = drawn()
+    for case, (ours, our_bytes), (theirs, their_bytes) in zip(
+        cases, carried, bare, strict=True
+    ):
         assert len(ours) == len(theirs) > 0, case.__name__
         for index, (a, b) in enumerate(zip(ours, theirs, strict=True)):
             np.testing.assert_array_equal(a, b, err_msg=f"{case.__name__} {index}")
+        assert len(our_bytes) == len(their_bytes) > 0, case.__name__
+        for index, (a, b) in enumerate(zip(our_bytes, their_bytes, strict=True)):
+            assert a == b, f"{case.__name__}: delta {index} moves the older minor"
+
+
+class Regrouped(Scene):
+    """A square moved from one group to another, its drawing unchanged."""
+
+    def construct(self):
+        square = Square()
+        a, b = VGroup(square), VGroup()
+        self.add(a, b)
+        self.wait(0.2)
+        a.remove(square)
+        b.add(square)
+        self.wait(0.2)
+
+
+class MatchedTex(Scene):
+    """Glyphs regrouped by a matching transform."""
+
+    def construct(self):
+        start = MathTex("A", "+", "B", "=", "C")
+        end = MathTex("C", "=", "B", "-", "A")
+        self.add(start)
+        self.play(TransformMatchingTex(start, end), run_time=0.4)
 
 
 class LabelledArrow(ThreeDScene):
