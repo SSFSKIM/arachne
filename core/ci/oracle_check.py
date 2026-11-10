@@ -98,8 +98,9 @@ def check_isolated_checkout(root: Path) -> tuple[list[str], list[str]]:
     return problems, files
 
 
-#: Sources outside ``src/`` that may name core paths beyond ``xf`` (none yet).
-CORE_PATHS_ALLOWED_IN: tuple[str, ...] = ()
+#: Sources outside ``src/`` that may name core paths beyond ``xf``: contract tests, which hold the
+#: core to the contract through its public interface.
+CORE_PATHS_ALLOWED_IN: tuple[str, ...] = ("tests/contract_join_hypot.rs",)
 
 CRATE = re.compile(r"\barachne_core\b")
 INCLUDE = re.compile(r"\b(include|include_str|include_bytes)\s*!\s*\(\s*")
