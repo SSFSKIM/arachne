@@ -741,6 +741,36 @@ impl Stream {
         y1: u32,
         decisions: bool,
     ) -> Result<BTreeMap<(u32, u32), crate::diagnostics::Pixel>, DrawError> {
+        self.traced(x0, y0, x1, y1, decisions, false)
+    }
+
+    /// [`Stream::diagnostic_resolves`], each pixel also holding what the order and the resolves
+    /// read of each of its entries ([`crate::diagnostics::Reads`]: its coverage of the whole
+    /// pixel, its depths and their bound, with `decisions` its depths against another entry where
+    /// they are not its own, and each sub-sample's rank of every entry before any cull). Read
+    /// apart, so a report not asked for them costs what it did. Nothing drawn changes.
+    pub fn resolve_trace(
+        &self,
+        x0: u32,
+        y0: u32,
+        x1: u32,
+        y1: u32,
+        decisions: bool,
+    ) -> Result<BTreeMap<(u32, u32), crate::diagnostics::Pixel>, DrawError> {
+        self.traced(x0, y0, x1, y1, decisions, true)
+    }
+
+    /// The diagnostic report of `x0..x1` by `y0..y1`, with `reads` each pixel's
+    /// [`crate::diagnostics::Pixel::reads`].
+    fn traced(
+        &self,
+        x0: u32,
+        y0: u32,
+        x1: u32,
+        y1: u32,
+        decisions: bool,
+        reads: bool,
+    ) -> Result<BTreeMap<(u32, u32), crate::diagnostics::Pixel>, DrawError> {
         let view = self.view.as_ref().ok_or(DrawError::NoView)?;
         let (width, height) = (view.pixel_width, view.pixel_height);
         let keep = composite::Rect {
@@ -774,9 +804,12 @@ impl Stream {
                     keep,
                     &background,
                     decisions,
-                    |x, y, frags, trace, bg, emission| {
+                    reads,
+                    |x, y, frags, trace, depths, bg, emission| {
                         let leaf = |f: &composite::Fragment| self.leaf_of(f);
-                        let pixel = crate::diagnostics::Pixel::of(frags, trace, bg, emission, leaf);
+                        let depths = reads.then_some(depths);
+                        let pixel =
+                            crate::diagnostics::Pixel::of(frags, trace, depths, bg, emission, leaf);
                         out.insert((x, y), pixel);
                     },
                 );
@@ -1680,6 +1713,55 @@ fn refusal(
 mod tests {
     use super::*;
     use crate::order;
+
+    /// What the traced resolve itself returned at every pixel of every probe frame, traced with
+    /// its reads, with and without the decisions: the class and the bytes drawing writes there
+    /// (the frame without its overlay), each resolve class and the flat path met.
+    #[test]
+    fn the_traced_resolve_returns_at_every_pixel_the_class_and_bytes_drawing_writes() {
+        use crate::composite::{TRACED_RETURNS, TracedReturn};
+        let (mut classes, mut flat) = ([0usize; 4], 0usize);
+        for probe in crate::probes::all() {
+            let (w, h) = (probe.width, probe.height);
+            let mut stream = Stream::new();
+            for (frame, delta) in probe.deltas.iter().enumerate() {
+                stream.apply(delta).unwrap();
+                let drawn = stream.render_under_overlay(w, h, 2).unwrap();
+                for decisions in [false, true] {
+                    TRACED_RETURNS.set(Some(Vec::new()));
+                    let read = stream.resolve_trace(0, 0, w, h, decisions).unwrap();
+                    let returned = TRACED_RETURNS.take().unwrap();
+                    assert_eq!(returned.len(), (w * h) as usize);
+                    for TracedReturn {
+                        x,
+                        y,
+                        resolve,
+                        rgba,
+                        flat: took_flat,
+                    } in returned
+                    {
+                        let i = (y * w + x) as usize;
+                        let at = format!(
+                            "{} frame {frame} ({x}, {y}) decisions {decisions}",
+                            probe.name
+                        );
+                        assert_eq!(resolve as u8, drawn.resolves[i], "{at}");
+                        assert_eq!(rgba[..], drawn.rgba[i * 4..i * 4 + 4], "{at}");
+                        assert_eq!(read[&(x, y)].resolve, resolve, "{at}: the trace's class");
+                        classes[resolve as usize] += 1;
+                        flat += took_flat as usize;
+                    }
+                }
+            }
+        }
+        eprintln!(
+            "traced returns by resolve (background, fast, coverage, sample) {classes:?}, flat {flat}"
+        );
+        assert!(
+            classes.iter().all(|&n| n > 0) && flat > 0,
+            "{classes:?} flat {flat}"
+        );
+    }
 
     /// A closed polygon's outline through `corners` in CE's cubic layout.
     fn ring(corners: &[[f64; 3]]) -> Vec<[f64; 3]> {
