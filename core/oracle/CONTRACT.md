@@ -1916,27 +1916,35 @@ fixed-orientation centre in world space under a 3D camera, or a pre-projected re
 pivot. Every fragment of it lies on the camera-facing plane through its centre. Depth, ties and
 policies order it like any other fragment, so something nearer can cut it.
 
-**The whole-label rule** (to be drawn by a later version of this rule).
+**The whole-label rule.** The rule is: *a camera-facing label goes under a filled surface nearer
+than its centre and stays over everything else, lines and arrows included.*
 
 - A camera-facing label is drawn whole.
-- It goes under a filled surface that is nearer than the label's centre, and over one that is not.
-- Against lines, arrows and cylinder shafts the rule is not yet drawn (open case 3).
-- Labels among themselves keep paint order.
-- Line3D, Arrow3D, Vector and cylinder shafts count as lines and arrows. Surfaces, solids and filled
-  planes or polygons count as surfaces.
+- **Lines and arrows** are Line3D, Arrow3D, Vector and their cylinder shafts. Line3D is built from a
+  cylinder, so shafts sit on the line side.
+- **Surfaces** are surfaces, solids, filled planes and polygons.
+- Labels among themselves keep CE's order, which is paint order.
 
-**The open label cases.** The rule above does not yet settle these:
+**The classes in XF's terms.** XF carries a record's kind and layers, not the object it came from:
 
-1. **Partial overlap away from the centre (`label_partial_overlap`).** A filled surface may be nearer than the label at some
-   of the label's samples but not at its centre, or nearer at its centre but not at a sample. It is
-   open whether the surface's depth is compared with the label's centre at the sample, or at the
-   centre's point.
-2. **Translucent surfaces (`label_translucent`).** It is open whether a nearer surface that is not opaque counts as a
-   surface the label goes under.
-3. **What counts as a surface (`label_vs_line`).** Whether a label goes over or under a line, an
-   arrow or a cylinder shaft, which are not filled surfaces, is open. So is which a face group's
-   face or a mesh triangle is: XF does not say, and either may be a shaft or an arrow's tip as well
-   as a surface. A point block is no filled surface either, and falls here too.
+- a path's **stroke or background stroke** is a line or arrow;
+- a path's **fill** (not a face of a face group) is a filled plane or polygon, a surface;
+- a **face of a face group** or a **mesh triangle** may be a surface or a solid, or a line's or
+  arrow's cylinder shaft or tip: XF does not tell a shaft cylinder from a solid one. The oracle
+  reads it both ways, the named case `label_kind_unknown`;
+- a **point block** is neither a line or arrow nor a filled surface.
+
+**The open label cases.** The rule leaves exactly three cases open, each counted under its own
+sub-class of `label_rule_open`:
+
+1. **Partial overlap away from the centre (`label_partial_overlap`).** A filled surface may be
+   nearer than the label at some of the label's samples but not at its centre, or nearer at its
+   centre but not at a sample. It is open whether the surface's depth is compared with the label's
+   centre at the sample, or at the centre's point.
+2. **Translucent surfaces (`label_translucent`).** It is open whether a nearer surface that is not
+   opaque counts as a surface the label goes under.
+3. **Other objects (`label_other_object`).** An object that is neither a line or arrow nor a filled
+   surface, such as a point block.
 
 **`label_interim@1`.** At a sample covered by a fragment `L` of a camera-facing label and a fragment
 `G` of another leaf, the oracle forms two sets:
@@ -1944,34 +1952,42 @@ policies order it like any other fragment, so something nearer can cut it.
 - `P`, the orders admissible under the plate model (§7);
 - `W`, the orders the whole-label rule gives under every reading of the open cases.
 
-`W` is formed as follows:
+"Nearer" compares `G`'s interval (§6) with the interval of `L`'s centre key, at the sample and at
+the centre's screen point (where `G`'s key is defined there). `G` is nearer where its interval lies
+wholly in front by both comparisons, and not nearer where wholly behind by both. Where the
+intervals meet, both orders, as a band tie (`TieBand`): a precision matter, not an open case. `W`
+is formed as follows:
 
 - **`G` of another camera-facing label:** paint order.
-- **`G` a stroke or background stroke, or a point block:** both orders (case 3).
-- **`G` the fill of a path that is not a face of a face group** (a filled plane or polygon, always a
-  surface):
-  - "Nearer" compares `G`'s interval (§6) with the interval of `L`'s centre key. `G` is nearer
-    where its interval lies wholly in front, and not nearer where wholly behind. Where the two
-    meet, both orders, as a band tie (`TieBand`): a precision matter, not an open case.
-  - `G` in front where it is nearer, compared both at the sample and at the centre's screen point
-    (where `G`'s key is defined there). Where the two comparisons differ, both orders (case 1).
-  - `L` in front where it is not nearer by both comparisons.
-  - Where `G`'s alpha byte is below 255, both orders (case 2).
-- **`G` a face of a face group, or a mesh triangle:** as the previous case, and also `L` in front
-  (case 3, read as no surface).
+- **`G` a stroke or background stroke (a line or arrow):** `L` in front.
+- **`G` the fill of a path that is not a face of a face group (a surface):**
+  - `G` in front where it is nearer, `L` in front where it is not nearer;
+  - where the two comparisons differ, both orders (case 1);
+  - where `G`'s alpha byte is below 255, both orders (case 2).
+- **`G` a face of a face group, or a mesh triangle (`label_kind_unknown`):** read as a surface, as
+  the previous case, and as a line or arrow, `L` in front. Where `G` is not nearer the two readings
+  agree, `L` in front, and the sample is ruled. Where `G` is nearer they part, and both orders are
+  admitted under `label_kind_unknown`.
+- **`G` a point block:** both orders (case 3).
 
 Then:
 
-- **The ruled case.** Where `W` is one order, no open case applies, and that order is the only
-  admissible one at the sample. `P` does not widen it. It binds only against filled surfaces (a
-  path's fill that is not a face of a face group) and other labels: a camera-facing label sits
-  whole, under an opaque filled surface nearer at the sample and at the centre, and over one that
-  is not nearer; labels among themselves keep paint order. A reported order other than `W`'s there
-  is `mismatch`, never `label_rule_open`.
+- **The ruled case.** Where `W` is one order, that order is the only admissible one at the sample.
+  `P` does not widen it. A reported order other than `W`'s there is `mismatch`, never
+  `label_rule_open`.
 - **The open cases.** Where `W` holds both orders by case 1, 2 or 3, both orders are admissible at
-  that sample, and the sample counts `label_rule_open` under its sub-class: `label_partial_overlap`,
-  `label_translucent` or `label_vs_line`, each counted by name. Only those three cases count it.
+  that sample, and the sample counts `label_rule_open` under its sub-class:
+  `label_partial_overlap`, `label_translucent` or `label_other_object`. Only those three cases
+  count it.
+- **`label_kind_unknown`** admits both orders where its two readings part. It is a class outside
+  what the oracle promises (§12), never `label_rule_open`.
 - **A band tie** in the nearer comparison admits both orders as `TieBand`, under §7's rules.
+
+**Deviation (`label_plate_model`).** The core this contract describes orders a label by the plate
+model, so it draws a nearer line or arrow over the label, where the rule keeps the label over it. At
+a sample where `W` puts `L` in front of a stroke and the core reports the stroke in front, the
+result is a `mismatch`, counted under the name `label_plate_model` beside `zero_alpha_fragment`,
+and never routed to `label_rule_open` (witness W18, §12).
 
 The rule ends when the open cases are settled and the whole-label rule is drawn. Its replacement is
 a new version.
@@ -2102,9 +2118,9 @@ fill white. Pixel `(32, 32)`: `L` keys `−1` (its centre's), `G` keys `−20/18
 sample and at the centre's point. Trace: `W = {G in front}` (opaque, a path's fill, nearer by both
 comparisons with intervals wholly apart), so `G` in front is the only admissible order; `P` agrees.
 Defect: at its 16 samples, `L` in front. Escapes: case 1 needs the two comparisons to differ,
-case 2 an alpha below 1, case 3 a line, point block, face or mesh triangle, where `G` is a path's
-fill; the keys part by `0.111`, so no band tie;
-two fragments.
+case 2 an alpha below 1, case 3 an object neither line nor surface, and `label_kind_unknown` a
+face or mesh triangle, where `G` is a path's fill; the keys part by `0.111`, so no band tie; two
+fragments.
 
 **W6, `alpha_rounds_to_zero`.** Set: `alpha_round@1` (§1). View F. Square `[−4, 4]²`, fill
 `(1, 0, 0, 0.003)`: `trunc(0.003 · 65535 + 0.5) >> 8 = 0`. Trace: no fragment anywhere. Defect: a
@@ -2209,6 +2225,16 @@ completion gives it.
   16 samples, `R` in front by a strong relation. Verdict `mismatch`, counted
   `invisible_registry_offer` because the sets built with the polygon offered admit it.
 
+**W18, `label_over_line`.** Set: `label_interim@1`, the ruled case against a line (§10). View C.
+The label `L` of W5 (a square glyph `[−1.5, 1.5]²`, fixed-orientation centre at the origin, fill
+white), then an open line from `(−3.1875, 0, 2)` to `(3.1875, 0, 2)`, stroke green, width `0.5`
+(2 px). Pixel `(32, 32)` is covered whole by both: `L` keys `−1`, the line `−20/18 ≈ −1.111`,
+nearer. Trace: `G` is a stroke, a line, so `W = {L in front}`, the only admissible order; the
+plate model's `P = {line in front}` does not widen it; the line's `L ≈ 28.3` px lies 0.33 px from a
+step. Verdict on the core this contract describes, which draws the line over the label: `mismatch`
+at the 16 samples, counted `label_plate_model`. The fixture holds the scene and that core's report;
+it needs no `defect.json`. A core keeping the rule agrees.
+
 ### Soundness fixtures
 
 **`gradient_dense_stops`.** View F. Polygon `[−8, 8] × [−2, 2]`, fill a gradient of 1,025 opaque
@@ -2240,8 +2266,10 @@ These are reported by class for a human to view, never counted as ties:
 - **Far gradient ends.** Gradient layers with an end or a pixel's point beyond the fit limit
   (`gradient_far_ends`, §9). They are `truth_unable` for that layer's pixels.
 - **Open label cases.** Samples counted `label_rule_open` (§10), only by its three cases, each
-  under its sub-class: `label_partial_overlap`, `label_translucent`, `label_vs_line` (a label
-  against a line, arrow, shaft, point block, face or mesh triangle).
+  under its sub-class: `label_partial_overlap`, `label_translucent`, `label_other_object`.
+- **Label against an object of unknown kind.** Samples where a face of a face group or a mesh
+  triangle is nearer than a label, which XF cannot place on the line or the surface side
+  (`label_kind_unknown`, §10). Both orders are admitted.
 
 ### Findings counted under their own names
 
@@ -2249,6 +2277,7 @@ These are `mismatch` or failing results that name a known way the core departs f
 
 - `zero_alpha_fragment` (§1): a mesh fragment whose alpha byte is 0.
 - `invisible_registry_offer` (§5): a relation admitted only with records that paint nothing offered.
+- `label_plate_model` (§10): a nearer line or arrow drawn over a camera-facing label.
 - `share_beyond_bound` (§7): a reported `lines@1` share above `O⁺`, a core finding once the
   contract is proven, and until then triaged by name.
 
