@@ -71,14 +71,9 @@ fn stroke(
     vec![delta(1, Some(view_f()), vec![shape], vec![r])]
 }
 
-/// Where `join_occurrences`'s spikes start, in frame `x`.
-///
-/// Known exposed case: at `-7`, the scene as the contract states it today, each spike's first
-/// cubic is 6 px long, on a step of its centreline count, so the witness does not clear
-/// `curve_recut` (§6) as §12 requires. Starting each spike at `-7.1` clears it and changes neither
-/// corner, nor its tip, nor any pixel asserted here (each 7 units or more from the start caps);
-/// the scene moves when the contract's text does.
-const SPIKE_X: f64 = -7.0;
+/// Where `join_occurrences`'s spikes start, in frame `x`: each spike's first cubic is then 6.1 px
+/// long, 0.1 px from a step of its centreline count, clear of `curve_recut` (§6) as §12 requires.
+const SPIKE_X: f64 = -7.1;
 
 /// `join_occurrences`'s two spikes, each drawn twice, as four open subpaths of two straight
 /// cubics: the upper from `(SPIKE_X, 4)` to `(-1, 4)` and back to `(-7, 5)`, twice; the lower the
