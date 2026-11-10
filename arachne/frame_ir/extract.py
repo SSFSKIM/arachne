@@ -443,6 +443,14 @@ class FrameStream:
         self._sent[slot] = (record, added, sent, replaced)
         return sent
 
+    def _redrawn_as(self, slot: int, record: Record, held: Record) -> None:
+        """``record``, sent for ``slot``, draws as ``held``, the record the
+        slot holds, does: its new source is sent alone (:meth:`_delta`).
+        """
+        made, added, sent, _ = self._sent[slot]
+        assert sent is record
+        self._sent[slot] = (made, added, sent, held)
+
     # Frames
 
     def frame(

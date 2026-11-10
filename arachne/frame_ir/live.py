@@ -1280,6 +1280,9 @@ class LivePainter:
             known = held.get(slot)
             if known is not None and _same_record(known, record):
                 record = known
+            elif known is not None and _same_drawing(known, record):
+                # Its objects moved, its drawing did not: its new source alone.
+                stream._redrawn_as(slot, record, known)
             placed = records.get(slot)
             if placed is not None and not _same_record(placed, record):
                 raise Unable(
@@ -1688,6 +1691,20 @@ def _same_record(a: Record, b: Record) -> bool:
     if a.kind != b.kind or a.fields.keys() != b.fields.keys():
         return False
     return all(_same(a.fields[k], b.fields[k]) for k in a.fields)
+
+
+#: A record's fields that say what it was drawn from (XF 1.5), not how.
+_SOURCE_FIELDS = frozenset({"source", "facing_group"})
+
+
+def _same_drawing(a: Record, b: Record) -> bool:
+    """Whether ``a`` and ``b`` draw the same: the same record but for what
+    they say they were drawn from.
+    """
+    drawn = a.fields.keys() - _SOURCE_FIELDS
+    if a.kind != b.kind or drawn != b.fields.keys() - _SOURCE_FIELDS:
+        return False
+    return all(_same(a.fields[k], b.fields[k]) for k in drawn)
 
 
 _LIVE: weakref.WeakKeyDictionary[Any, tuple[int, LivePainter]] = (

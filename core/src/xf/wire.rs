@@ -1106,9 +1106,8 @@ pub fn decode_delta(bytes: &[u8]) -> Result<Delta> {
 /// delta sets, or, for a slot it neither sets nor removes, a held record's new one; the whole
 /// section read and checked before the delta is returned.
 fn read_source(r: &mut R, d: &mut Delta) -> Result<()> {
-    let refuse = |code: &str, why: String| {
-        XfError::Invalid(format!("a delta's source: {code}: {why}"))
-    };
+    let refuse =
+        |code: &str, why: String| XfError::Invalid(format!("a delta's source: {code}: {why}"));
     let n = r.count(4)?;
     let mut classes = Vec::with_capacity(n);
     let mut named = HashSet::new();
