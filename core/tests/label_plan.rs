@@ -542,3 +542,73 @@ fn the_contributor_report_reads_the_placement_the_frame_is_drawn_by() {
     ];
     assert_eq!(top(&line), label_object);
 }
+
+// The overlap is the order points both hold (main's ruling on per-cell overlap). Pixel column 100
+// holds order points at x = 100 + (2k + 1) / 32 for k = 0..15, one in each row; a vertical strip
+// between two of them holds none. A camera this far away draws almost orthographically, so a
+// world x lands where its frame mapping puts it.
+
+/// The camera of [`view`], `focal_distance` away.
+fn far_view() -> View {
+    let mut v = view();
+    if let Camera::ThreeD(c) = &mut v.camera {
+        c.focal_distance = 1e6;
+    }
+    v
+}
+
+/// The world x the frame mapping puts at pixel x `px`.
+fn world_x(px: f64) -> f64 {
+    let v = view();
+    (px - W as f64 / 2.0) * v.frame_width / W as f64
+}
+
+/// The plan, under the far camera, of a wide label at depth 0 and a sheet over pixels 90..`end`
+/// at the label's depth where x is the pixel x `cross`, nearer to its left and farther to its right.
+fn sliver(cross: f64, end: f64) -> Vec<Pair> {
+    let (c, e) = (world_x(cross), world_x(end));
+    let sheet = rect([world_x(90.0), e], [-1.0, 1.0], true, |x, _| 0.5 * (c - x));
+    let items = [
+        label([0.0, 0.0, 0.0], [3.0, 0.3]),
+        face(2, &sheet, BLUE, &[(12, SQUARE)]),
+    ];
+    let order: Vec<u32> = items.iter().map(|(_, r)| r.slot).collect();
+    let d = arachne_core::probes::first_delta(far_view(), &items, &order);
+    let mut s = Stream::new();
+    s.apply(&d).expect("the delta applies");
+    s.label_plan(W, H).unwrap().expect("a label").pairs
+}
+
+/// "A farther sliver narrower than the sample spacing and lying between order points qualifies."
+#[test]
+fn a_farther_sliver_between_order_points_leaves_the_sheet_qualifying() {
+    let found = sliver(100.10, 100.15);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(
+        (found[0].outcome, found[0].centre),
+        (Outcome::Qualifies, false)
+    );
+}
+
+/// "A farther sliver covering one order point does not qualify."
+#[test]
+fn a_farther_sliver_holding_an_order_point_keeps_the_label_in_front() {
+    let found = sliver(100.08, 100.12);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(
+        (found[0].outcome, found[0].centre),
+        (Outcome::NotNearer, false)
+    );
+}
+
+/// A farther sliver across the boundary of two sub-sample cells (x = 100.25), holding neither
+/// cell's order point: no point of the overlap is farther.
+#[test]
+fn a_farther_sliver_across_a_cell_boundary_holding_no_order_point_is_no_overlap() {
+    let found = sliver(100.225, 100.275);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(
+        (found[0].outcome, found[0].centre),
+        (Outcome::Qualifies, false)
+    );
+}
