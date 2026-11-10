@@ -186,17 +186,25 @@ impl Line {
 /// subnormal). `None` where the bound does not settle the sign: the corners are collinear, or too
 /// nearly so for binary64 to tell.
 fn winding(corners: [[f64; 2]; 3]) -> Option<f64> {
-    let big = corners.iter().flatten().fold(0.0f64, |m, v| m.max(v.abs()));
-    if big == 0.0 || !big.is_finite() {
-        return None;
-    }
-    let s = libm::ldexp(1.0, -libm::frexp(big).1);
-    let q = corners.map(|p| p.map(|v| v * s));
+    let (q, _) = scaled(corners)?;
     let (d1, d2) = (sub(q[1], q[0]), sub(q[2], q[0]));
     let (t1, t2) = (d1[0] * d2[1], d1[1] * d2[0]);
     let det = t1 - t2;
     let err = 4.0 * U * (t1.abs() + t2.abs()) + 16.0 * f64::from_bits(1);
     (det.abs() > err).then_some(det.signum())
+}
+
+/// The corners scaled by `2^-e`, the power of two that brings the largest coordinate into
+/// `[1/2, 1)`, and `e`; `None` where every coordinate is 0 or one is not finite. Each coordinate is
+/// scaled on its own (`2^-e` itself lies past binary64 for a largest coordinate below `2^-1022`),
+/// exactly but where it lands subnormal, there within one subnormal unit.
+fn scaled(corners: [[f64; 2]; 3]) -> Option<([[f64; 2]; 3], i32)> {
+    let big = corners.iter().flatten().fold(0.0f64, |m, v| m.max(v.abs()));
+    if big == 0.0 || !big.is_finite() {
+        return None;
+    }
+    let e = libm::frexp(big).1;
+    Some((corners.map(|p| p.map(|v| libm::ldexp(v, -e))), e))
 }
 
 /// An upper bound on how far a point inside the triangle `corners` can lie from its edges: its
@@ -210,12 +218,9 @@ fn inradius_above(corners: [[f64; 2]; 3]) -> f64 {
     if big == 0.0 {
         return 0.0;
     }
-    if !big.is_finite() {
+    let Some((q, e)) = scaled(corners) else {
         return f64::INFINITY;
-    }
-    let e = libm::frexp(big).1;
-    let s = libm::ldexp(1.0, -e);
-    let q = corners.map(|p| p.map(|v| v * s));
+    };
     let (d1, d2) = (sub(q[1], q[0]), sub(q[2], q[0]));
     let (t1, t2) = (d1[0] * d2[1], d1[1] * d2[0]);
     let det = (t1 - t2).abs() + 4.0 * U * (t1.abs() + t2.abs()) + 16.0 * f64::from_bits(1);
@@ -792,5 +797,25 @@ fn cell_row(edges: &[Edge], ya: f64, yb: f64, c0: i64, row: &mut [f64]) {
                 row[(c - c0) as usize] += a;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_triangle_of_subnormal_corners_keeps_its_winding_and_its_inradius() {
+        // Its largest coordinate is 2^-1025: the factor 2^1025 that scales it lies past binary64,
+        // though no scaled coordinate does.
+        let l = libm::ldexp(1.0, -1025);
+        let corners = [[0.0, 0.0], [l, 0.0], [0.0, l]];
+        // A right triangle of legs l, wound positively: inradius l (2 − √2) / 2.
+        let r = l * (2.0 - std::f64::consts::SQRT_2) / 2.0;
+        let (sign, bound) = (winding(corners), inradius_above(corners));
+        assert!(
+            sign == Some(1.0) && bound.is_finite() && bound >= r,
+            "winding {sign:?}, inradius at most {bound:e} against {r:e}"
+        );
     }
 }
