@@ -180,7 +180,7 @@ fn a_delta_lays_out_its_sections_in_order() {
         },
         0x0102_0304_0506_0708,
     );
-    d.version = (1, 5);
+    d.version = (1, 6);
     d.view = Some(view);
     d.objects = vec![ObjectInfo {
         object: 0x0a0b_0c0d,
@@ -229,7 +229,7 @@ fn a_delta_lays_out_its_sections_in_order() {
     ];
     let fields = vec![
         (0, "major", u16(1)),
-        (2, "minor", u16(5)),
+        (2, "minor", u16(6)),
         (4, "t_num", i64(-7)),
         (12, "t_den", i64(9_000_000_000)),
         (20, "seq", u64(0x0102_0304_0506_0708)),

@@ -32,7 +32,45 @@ def background_delta(width: int, height: int, rgba) -> ac.FrameDelta:
 
 
 def test_the_version_is_xf_1():
-    assert ac.XF_VERSION == (1, 4)
+    assert ac.XF_VERSION == (1, 5)
+
+
+GLYPH_SOURCE = (
+    ((7, "arachne.mobject.text.tex_mobject.SingleStringMathTex"), (3, "a.Gröup€")),
+    ((7, "arachne.mobject.text.tex_mobject.SingleStringMathTex"), (5, "a.Shared")),
+)
+
+
+def test_a_record_s_source_and_facing_group_are_xf_1_5_and_read_back():
+    delta = ac.FrameDelta()
+    delta.set_view(pixel_width=4, pixel_height=4, **FRAME)
+    delta.set_record("path", slot=1, object=1, source=GLYPH_SOURCE, facing_group=3)
+    delta.set_record("path", slot=2, object=2, facing_group=9)
+    delta.set_record("path", slot=3, object=3)
+    assert delta.version == (1, 5)
+    back = ac.FrameDelta.from_bytes(delta.to_bytes())
+    assert back.version == (1, 5)
+    (_, _, _, one), (_, _, _, two), (_, _, _, three) = back.contents()["set"]
+    assert one["source"] == GLYPH_SOURCE
+    assert one["facing_group"] == 3
+    assert "source" not in two and two["facing_group"] == 9
+    assert "source" not in three and "facing_group" not in three
+    # Given empty, or a facing group of 0, neither is carried: the delta stays at its minor.
+    bare = ac.FrameDelta()
+    bare.set_record("path", slot=1, object=1, source=(), facing_group=0)
+    assert bare.version == (1, 0)
+    assert "source" not in bare.contents()["set"][0][3]
+
+
+def test_a_source_path_names_at_least_one_object_and_tokens_are_u32():
+    delta = ac.FrameDelta()
+    with pytest.raises(ac.XfError):
+        delta.set_record("path", slot=1, object=1, source=((),))
+    with pytest.raises((TypeError, OverflowError)):
+        delta.set_record("path", slot=1, object=1, source=(((-1, "a.B"),),))
+    with pytest.raises((TypeError, OverflowError)):
+        delta.set_record("path", slot=1, object=1, facing_group=2**32)
+    assert delta.contents()["set"] == []
 
 
 def test_a_record_s_joins_are_carried_and_read_back():

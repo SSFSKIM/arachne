@@ -60,6 +60,28 @@ def test_canonical_contents_rebuild_the_decoded_wire_byte_for_byte():
         assert rebuild(contents).to_bytes() == delta.to_bytes()
 
 
+def test_a_record_s_source_rebuilds_from_its_contents_byte_for_byte():
+    delta = ac.FrameDelta(t=(1, 15), seq=2)
+    delta.set_record(
+        "path",
+        1,
+        1,
+        source=(((9, "a.Glÿph"), (4, "a.Label")), ((9, "a.Glÿph"),)),
+        facing_group=4,
+    )
+    delta.set_record("points", 2, 2, colors=b"\xa1" * 16, radius=2.0, facing_group=4)
+    delta.set_order([("moving", 1, 0), ("moving", 2, 0)])
+    decoded = ac.FrameDelta.from_bytes(delta.to_bytes())
+    contents = decoded.contents()
+    assert contents["version"] == (1, 5)
+    first = contents["set"][0][3]
+    assert all(
+        type(path) is tuple and all(type(node) is tuple for node in path)
+        for path in first["source"]
+    )
+    assert rebuild(contents).to_bytes() == delta.to_bytes()
+
+
 def test_contents_values_have_the_documented_types_and_shapes():
     first = ac.FrameDelta.from_bytes(canonical_sample()[0].to_bytes()).contents()
     view = first["view"]
