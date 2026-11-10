@@ -624,3 +624,26 @@ fn a_centre_on_a_sheet_s_horizontal_edge_is_held() {
     ];
     assert_eq!(one(&items), (Outcome::Qualifies, true));
 }
+
+/// A record kept facing the camera whose facing group a held row set to 0 belongs to a label not
+/// known (XF.md's "Facing groups"): never a sheet, whatever its source, so it hides no label; the
+/// pair is open, the label staying in front.
+#[test]
+fn a_camera_facing_record_outside_every_label_is_no_sheet() {
+    let (shape, mut nearer) = glyph(2, 8, [0.0, 0.0, 1.0], [0.0, 0.0], [0.6, 0.4]);
+    nearer.paint.fill = Paint::One(BLUE);
+    let items = [label([0.0, 0.0, 0.0], [0.5, 0.3]), (shape, nearer)];
+    let mut s = stream(&items);
+    let mut d = Delta::new(Time { num: 1, den: 15 }, 1);
+    d.source = vec![SourceRow {
+        slot: 2,
+        facing_group: 0,
+        source: vec![vec![node(12, SQUARE)]],
+    }];
+    s.apply(&d).expect("the row applies");
+    let found = s.label_plan(W, H).unwrap().expect("a label").pairs;
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].outcome, Outcome::Open(Open::Label));
+    let frame = s.draw(W, H, 1).expect("the frame draws");
+    assert_eq!(px(&frame, 80, 45), stacked(&[WHITE]));
+}
