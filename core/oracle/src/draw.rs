@@ -258,11 +258,13 @@ impl Layer {
 }
 
 /// The points one placing puts in the world, for the screen shift: a shape's points under the
-/// record's placements, outer first (contract §6, "The snap's departure").
+/// record's placements, outer first (contract §6, "The snap's departure"), and the coefficient
+/// the drawn points take them with: 1, or a shape blend's `1 − t` and `t`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Placing {
     pub places: [Affine; 2],
     pub points: Vec<[f64; 3]>,
+    pub weight: f64,
 }
 
 /// What every drawn thing of one record shares: where it is in the order and how it is shown.
@@ -390,6 +392,7 @@ pub fn items<'a>(
                         let placing = Placing {
                             places: [IDENTITY, IDENTITY],
                             points: pts.to_vec(),
+                            weight: 1.0,
                         };
                         (pts.to_vec(), paint, vec![placing])
                     }
@@ -401,11 +404,15 @@ pub fn items<'a>(
                             continue;
                         };
                         let g = &rec.geometry;
+                        // A blend takes each point as `(1 − t) p + t q`, `t` unbounded: each
+                        // placing moves the drawn point by its own departure times `|coefficient|`.
+                        let t = g.blend.as_ref().map(|b| b.t);
                         let mut placings = Vec::new();
                         if let Some(a) = g.shape_a.as_ref().and_then(|k| path_shape(shapes, k)) {
                             placings.push(Placing {
                                 places: [IDENTITY, g.place_a],
                                 points: a.to_vec(),
+                                weight: t.map_or(1.0, |t| (1.0 - t).abs()),
                             });
                         }
                         if let Some(b) = g.blend.as_ref()
@@ -414,6 +421,7 @@ pub fn items<'a>(
                             placings.push(Placing {
                                 places: [IDENTITY, b.place_b],
                                 points: q.to_vec(),
+                                weight: b.t.abs(),
                             });
                         }
                         (world, paint, placings)
@@ -455,6 +463,7 @@ pub fn items<'a>(
                 let placing = Placing {
                     places: [IDENTITY, rec.geometry.place_a],
                     points: run.to_vec(),
+                    weight: 1.0,
                 };
                 if let Some(item) = path_item(
                     view,
@@ -493,6 +502,7 @@ pub fn items<'a>(
                         let placing = Placing {
                             places: [*member, rec.geometry.place_a],
                             points: points.clone(),
+                            weight: 1.0,
                         };
                         let object = body.objects.get(i).copied().unwrap_or(rec.object);
                         if let Some(item) = path_item(
@@ -530,6 +540,7 @@ pub fn items<'a>(
                         let placing = Placing {
                             places: [*member, rec.geometry.place_a],
                             points: positions.clone(),
+                            weight: 1.0,
                         };
                         let object = body.objects.get(i).copied().unwrap_or(rec.object);
                         if let Some(item) = mesh_item(
@@ -565,6 +576,7 @@ pub fn items<'a>(
                 let placing = Placing {
                     places: [IDENTITY, rec.geometry.place_a],
                     points: positions.clone(),
+                    weight: 1.0,
                 };
                 if let Some(item) = mesh_item(
                     view,
@@ -594,6 +606,7 @@ pub fn items<'a>(
                 let placing = Placing {
                     places,
                     points: positions.to_vec(),
+                    weight: 1.0,
                 };
                 let c = common(rec.object, vec![placing]);
                 let side = block_side(body.radius);

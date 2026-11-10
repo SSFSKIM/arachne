@@ -38,7 +38,7 @@ cell `((dx + 8) div 4, (dy + 8) div 4)` of the pixel's 4 x 4 grid.
 
 | Tag | Record | What |
 |---|---|---|
-| `FRAG` | 64 bytes | one per fragment that has a row |
+| `FRAG` | 64 bytes | one per fragment that has a row, or is unbounded |
 | `COVR` | 456 bytes | one per fragment at a pixel, sorted by `(y, x, fragment)` |
 | `PIXL` | 12 bytes | one per pixel of the window, row by row: its first `COVR` row and their count |
 | `REFU` | 32 bytes | one per refusal; empty when the frame is decided |
@@ -60,8 +60,11 @@ f64 epsilon (screen shift, px)  i32 x0, y0, x1, y1 (its rows' pixel box)  u32 pl
 - **`group`**: the drawn path a layer belongs to (its three layers share it); `0xffffffff` for a
   mesh triangle or a point block. **`plane`**: the registered plane identity, `0xffffffff` until
   depth is written.
-- **`flags`**: bit 0, *unbounded*: the record's screen shift is infinite, so its samples are
-  `truth_unable` (its rows mark every sample `3`).
+- **`flags`**: bit 0, *unbounded*: the fragment's screen shift is infinite (or its nominal
+  geometry is not finite), so it may stand anywhere: it is `truth_unable` at every sample of the
+  window, never absent. Its `epsilon` is infinite, its box the window, and it has no `COVR` rows; a
+  reader treats it as present-unknown at every pixel. An unbounded point has one fragment, the
+  `sub` of its first block offset.
 
 ### `COVR`
 
@@ -71,7 +74,7 @@ u8 cover[16]  u8 cell_lo[16]  u8 cell_hi[16]  u8 pixel_lo  u8 pixel_hi  2 bytes 
 f64 pixel_area  f64 cell_area[16]  f64 depth[16]  f64 band[16]
 ```
 
-- **`cover[s]`** at sample `s`: 0 absent, 1 `Yes`, 2 `Either`, 3 unbounded (`truth_unable`).
+- **`cover[s]`** at sample `s`: 0 absent, 1 `Yes`, 2 `Either`.
 - **`cell_lo[s]`, `cell_hi[s]`**: the cell bytes admitted at `s` (a mask: `255, 255` for `Yes`,
   `0, 255` for `Either`).
 - **`pixel_lo`, `pixel_hi`**: the whole-pixel coverage bytes admitted.

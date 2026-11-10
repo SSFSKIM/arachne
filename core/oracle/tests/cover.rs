@@ -1,5 +1,6 @@
 //! Coverage against closed forms (contract §3 and §4): cell areas of half-planes, a disc, strokes
-//! of known width, a mesh edge's margin, point blocks, and a thin line dropped and restored.
+//! of known width, a mesh edge's margin, point blocks, and a thin line dropped and restored; an
+//! unbounded triangle, one with corners far out, the guard, and a blend beyond its shapes.
 
 mod common;
 
@@ -444,4 +445,175 @@ fn the_sample_pattern_is_n_rooks_with_one_sample_per_cell() {
         assert_eq!(p[0] * 256.0, (128 + 16 * dx as i32 + 8) as f64);
         assert_eq!(p[1] * 256.0, (128 + 16 * dy as i32 + 8) as f64);
     }
+}
+
+/// A 3D view looking straight down the z axis (theta −90°, no tilt: the identity rotation) from
+/// focal distance 20, its frame units pixels, under the grid `grid`.
+fn view_3d(grid: f64) -> arachne_core::xf::View {
+    let mut v = view(16, 16);
+    v.camera = arachne_core::xf::Camera::ThreeD(arachne_core::xf::ThreeDCamera {
+        phi: 0.0,
+        theta: -std::f64::consts::FRAC_PI_2,
+        gamma: 0.0,
+        focal_distance: 20.0,
+        zoom: 1.0,
+        exponential_projection: false,
+        light_source: [-7.0, -9.0, 10.0],
+        shading_factor: 0.2,
+        should_apply_shading: false,
+    });
+    v.input_grid = grid;
+    v
+}
+
+/// A world-space mesh of the one triangle `corners`, filled white, decided over `window`.
+fn world_triangle(
+    v: arachne_core::xf::View,
+    corners: [[f64; 3]; 3],
+    window: Option<[u32; 4]>,
+) -> Decisions {
+    let mesh = Shape::new(ShapeData::Mesh {
+        positions: corners.to_vec(),
+        triangles: vec![[0, 1, 2]],
+        normals: None,
+    });
+    let mut m = Record::new(RecordKind::Mesh, 0, 100);
+    m.geometry.shape_a = Some(mesh.key());
+    m.paint.fill = Paint::One([1.0, 1.0, 1.0, 1.0]);
+    m.depth.space = Space::World;
+    arachne_oracle::decide::decide_at(&[delta(1, Some(v), vec![mesh], vec![m])], 1, window).unwrap()
+}
+
+#[test]
+fn a_triangle_through_the_eye_is_unable_over_the_window_never_absent() {
+    // One corner at the eye's depth: the depth share is infinite, so the screen shift is, and the
+    // triangle may stand anywhere. Its nominal corners all lie far right of and below the window.
+    let corners = [
+        [100.0, -100.0, 0.0],
+        [120.0, -100.0, 0.0],
+        [110.0, -120.0, 20.0],
+    ];
+    for (window, bbox) in [(None, [0, 0, 16, 16]), (Some([0, 0, 2, 2]), [0, 0, 2, 2])] {
+        let d = world_triangle(view_3d(1.0 / 1_048_576.0), corners, window);
+        assert_eq!(d.fragments.len(), 1, "{:?}", d.fragments);
+        let f = &d.fragments[0];
+        assert_eq!(f.flags & arachne_oracle::out::FLAG_UNBOUNDED, 1);
+        assert!(f.epsilon.is_infinite());
+        // Present but unjudged at every sample of the window: its box is the window, and it has
+        // no rows that could say absent anywhere.
+        assert_eq!(f.bbox, bbox);
+        assert!(d.covers.is_empty());
+    }
+    // In front of the eye the same triangle is bounded and, off the window, has no fragment.
+    let near = [
+        [100.0, -100.0, 0.0],
+        [120.0, -100.0, 0.0],
+        [110.0, -120.0, 5.0],
+    ];
+    let d = world_triangle(view_3d(1.0 / 1_048_576.0), near, None);
+    assert!(d.fragments.is_empty(), "{:?}", d.fragments);
+}
+
+#[test]
+fn a_triangle_with_corners_far_out_keeps_its_verdicts() {
+    // Its lower edge runs along y = 12; the third corner lies far above. Inside above the edge,
+    // absent below it.
+    let tri = |far: f64| {
+        arachne_oracle::cover::triangle(
+            [[-far, 12.0], [far, 12.0], [0.0, -far]],
+            [0.0; 3],
+            [0, 0, 16, 16],
+        )
+    };
+    let at = |rows: &[arachne_oracle::cover::PixelCover], x: u32, y: u32| {
+        rows.iter().find(|r| (r.x, r.y) == (x, y)).map(|r| r.cover)
+    };
+    // Corners 10^6 px out, past the guard: the readings are exact to far below the margin.
+    let rows = tri(1e6);
+    assert_eq!(at(&rows, 5, 3), Some([YES; 16]));
+    // Pixel row 11's samples lie 1/32 px and more above the edge: inside by more than 1/256.
+    assert_eq!(at(&rows, 9, 11), Some([YES; 16]));
+    assert_eq!(at(&rows, 5, 12), None);
+    // Corners 10^200 and 10^300 px out: an edge read from a corner that far carries that corner's
+    // rounding, so a verdict may be Either, but a sample inside is never absent and one outside
+    // never Yes.
+    for far in [1e200, 1e300] {
+        let rows = tri(far);
+        for y in 0..16u32 {
+            for x in 0..16u32 {
+                let cover = at(&rows, x, y).unwrap_or([ABSENT; 16]);
+                for (s, c) in cover.iter().enumerate() {
+                    let inside = sample_point(x as i64, y as i64, s)[1] < 12.0;
+                    let wrong = if inside { ABSENT } else { YES };
+                    assert_ne!(*c, wrong, "far {far}, pixel ({x}, {y}) sample {s}");
+                }
+            }
+        }
+    }
+    // Drawn, such a triangle's corners carry their own placing's rounding, `8u` of 10^200 px:
+    // every sample of the window is within that of an edge, so none is absent and none is sure.
+    let v = view(16, 16);
+    let d = world_triangle(
+        v.clone(),
+        [
+            frame(&v, [-1e200, 12.0]),
+            frame(&v, [1e200, 12.0]),
+            frame(&v, [0.0, -1e200]),
+        ],
+        None,
+    );
+    assert_eq!(d.covers.len(), 256);
+    assert!(d.covers.iter().all(|c| c.cover == [EITHER; 16]));
+}
+
+#[test]
+fn the_guard_clips_a_triangle_at_65536_px() {
+    let rows = arachne_oracle::cover::triangle(
+        [[-1e9, 4.0], [1e9, 4.0], [0.0, -1e9]],
+        [0.0; 3],
+        [65_530, 0, 65_540, 2],
+    );
+    let at = |x: u32| rows.iter().find(|r| (r.x, r.y) == (x, 1)).map(|r| r.cover);
+    assert_eq!(at(65_534), Some([YES; 16]));
+    assert_eq!(at(65_535), Some([YES; 16]));
+    // Past the guard by more than 1/256 px: clipped away.
+    assert_eq!(at(65_536), None);
+    assert_eq!(at(65_539), None);
+}
+
+#[test]
+fn a_blend_beyond_its_shapes_moves_by_each_coefficient() {
+    // `(1 − t) p + t q` with t = 2 is `−p + 2q`: under the grid each of p and q moves by up to
+    // the grid's half, so the drawn point by three halves; at t = 1/2, by one.
+    let grid = 1.0 / 1024.0;
+    let eps_at = |t: f64| {
+        let mut v = view(16, 16);
+        v.input_grid = grid;
+        let sq = |x0: f64| {
+            path_shape(polygon(&[
+                frame(&v, [x0, 4.0]),
+                frame(&v, [x0 + 4.0, 4.0]),
+                frame(&v, [x0 + 4.0, 8.0]),
+                frame(&v, [x0, 8.0]),
+            ]))
+        };
+        let (a, b) = (sq(4.0), sq(5.0));
+        let mut r = path(0, a.key(), true, None);
+        r.geometry.blend = Some(arachne_core::xf::Blend {
+            shape_b: b.key(),
+            place_b: arachne_core::xf::IDENTITY,
+            t,
+        });
+        let d = decide(&[delta(1, Some(v), vec![a, b], vec![r])]);
+        d.fragments[0].epsilon
+    };
+    let one = grid / 2.0 * std::f64::consts::SQRT_2;
+    let (mid, out) = (eps_at(0.5), eps_at(2.0));
+    assert!((mid - one).abs() < one * 1e-6, "{mid} against {one}");
+    assert!(out >= 3.0 * one, "{out} against {}", 3.0 * one);
+    assert!(
+        (out - 3.0 * one).abs() < one * 1e-6,
+        "{out} against {}",
+        3.0 * one
+    );
 }

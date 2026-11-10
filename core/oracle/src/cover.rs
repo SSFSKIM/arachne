@@ -102,31 +102,93 @@ fn pixels_of(b: [f64; 4], w: Window) -> Option<(std::ops::Range<i64>, std::ops::
     (!xs.is_empty() && !ys.is_empty()).then_some((xs, ys))
 }
 
-fn cross(a: [f64; 2], b: [f64; 2]) -> f64 {
-    a[0] * b[1] - a[1] * b[0]
-}
-
 fn sub(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
     [a[0] - b[0], a[1] - b[1]]
 }
 
-fn dist_to_segment(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
-    let ab = sub(b, a);
-    let len2 = ab[0] * ab[0] + ab[1] * ab[1];
-    let t = if len2 > 0.0 {
-        (((p[0] - a[0]) * ab[0] + (p[1] - a[1]) * ab[1]) / len2).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    let q = [a[0] + ab[0] * t, a[1] + ab[1] * t];
-    libm::hypot(p[0] - q[0], p[1] - q[1])
+/// The unit roundoff of binary64.
+const U: f64 = f64::EPSILON / 2.0;
+
+/// The guard: a triangle reaching past `±GUARD` px is clipped there (contract §3).
+const GUARD: f64 = 65536.0;
+
+/// An edge's nominal line, read at a sample with a bound on the reading's own rounding, so that a
+/// verdict never rests on an error the arithmetic made. Its direction comes from the corners
+/// scaled by a quarter (exact), so corners anywhere in binary64's range neither overflow nor lose
+/// the edge.
+struct Line {
+    a: [f64; 2],
+    b: [f64; 2],
+    /// The unit direction `a → b`; `None` where the corners coincide.
+    u: Option<[f64; 2]>,
+    /// The edge's length.
+    len: f64,
+}
+
+/// A reading and the most its rounding may have moved it.
+#[derive(Clone, Copy)]
+struct Bounded {
+    v: f64,
+    err: f64,
+}
+
+impl Line {
+    fn new(a: [f64; 2], b: [f64; 2]) -> Line {
+        let q = [0.25 * b[0] - 0.25 * a[0], 0.25 * b[1] - 0.25 * a[1]];
+        let l = libm::hypot(q[0], q[1]);
+        let u = (l > 0.0 && l.is_finite()).then(|| [q[0] / l, q[1] / l]);
+        Line {
+            a,
+            b,
+            u,
+            len: 4.0 * l,
+        }
+    }
+
+    /// The signed distance of `p` from the line (positive on one side, the same for every edge of
+    /// one winding) and its position along the edge from `a`. The unit direction is within `4u`
+    /// per coordinate of the exact one and `p − a` within `u` relative, so each reading is within
+    /// `10u (|p − a|₀ + |p − a|₁)` of its exact value.
+    fn read(&self, p: [f64; 2]) -> Option<(Bounded, Bounded)> {
+        let u = self.u?;
+        let pa = sub(p, self.a);
+        let err = 10.0 * U * (pa[0].abs() + pa[1].abs());
+        let side = Bounded {
+            v: u[0] * pa[1] - u[1] * pa[0],
+            err,
+        };
+        let along = Bounded {
+            v: u[0] * pa[0] + u[1] * pa[1],
+            err,
+        };
+        Some((side, along))
+    }
+
+    /// A lower bound on the distance from `p` to the segment.
+    fn distance_below(&self, p: [f64; 2]) -> f64 {
+        let to = |q: [f64; 2]| libm::hypot(p[0] - q[0], p[1] - q[1]) * (1.0 - 4.0 * U);
+        let ends = to(self.a).min(to(self.b));
+        match self.read(p) {
+            Some((side, along))
+                if along.v + along.err >= 0.0 && along.v - along.err <= self.len =>
+            {
+                ends.min(side.v.abs() - side.err)
+            }
+            _ => ends,
+        }
+    }
 }
 
 /// A mesh triangle's verdicts at every sample of the window (contract §3, oracle reading): its
-/// nominal corners in pixels, and each corner's screen shift `ε` in pixels.
+/// nominal corners in pixels and each corner's screen shift `ε` in pixels, all finite (a triangle
+/// with an infinite one is unbounded, which the caller writes).
+///
+/// A distance counts beyond the margin only when it is beyond it by more than its reading's error
+/// bound, so corners anywhere in binary64's range keep their verdicts. The guard clip acts as four
+/// more edges: a sample farther than `1/256` px outside `±65536` is absent, one within it `Either`.
+/// The clipped corners lie on the nominal edges, and their rounding to the 1/256 px grid is within
+/// the margin as the triangle's own corners' is.
 pub fn triangle(corners: [[f64; 2]; 3], eps: [f64; 3], window: Window) -> Vec<PixelCover> {
-    let unbounded = eps.iter().any(|e| !e.is_finite());
-    let eps = if unbounded { [0.0; 3] } else { eps };
     let margins: [f64; 3] = std::array::from_fn(|e| eps[e].max(eps[(e + 1) % 3]) + 1.0 / 256.0);
     let reach = margins.iter().copied().fold(0.0, f64::max);
     let lo = |k: usize| corners.iter().map(|c| c[k]).fold(f64::INFINITY, f64::min);
@@ -136,41 +198,67 @@ pub fn triangle(corners: [[f64; 2]; 3], eps: [f64; 3], window: Window) -> Vec<Pi
             .map(|c| c[k])
             .fold(f64::NEG_INFINITY, f64::max)
     };
+    let clip = |v: f64| v.clamp(-GUARD - reach, GUARD + reach);
     let Some((xs, ys)) = pixels_of(
-        [lo(0) - reach, lo(1) - reach, hi(0) + reach, hi(1) + reach],
+        [
+            clip(lo(0) - reach),
+            clip(lo(1) - reach),
+            clip(hi(0) + reach),
+            clip(hi(1) + reach),
+        ],
         window,
     ) else {
         return Vec::new();
     };
-    let area2 = cross(sub(corners[1], corners[0]), sub(corners[2], corners[0]));
-    let sign = area2.signum();
-    let edges: [([f64; 2], [f64; 2]); 3] =
-        std::array::from_fn(|e| (corners[e], corners[(e + 1) % 3]));
-    let verdict = |p: [f64; 2]| -> Cover {
-        let outside = edges
-            .iter()
-            .map(|(a, b)| dist_to_segment(p, *a, *b))
-            .fold(f64::INFINITY, f64::min);
-        if area2 == 0.0 || !area2.is_finite() {
-            return if outside > reach {
-                Cover::Absent
-            } else {
-                Cover::Either
-            };
-        }
-        let d: [f64; 3] = std::array::from_fn(|e| {
-            let (a, b) = edges[e];
-            let ab = sub(b, a);
-            sign * cross(ab, sub(p, a)) / libm::hypot(ab[0], ab[1])
-        });
-        if (0..3).all(|e| d[e] > margins[e]) {
-            Cover::Yes
-        } else if (0..3).any(|e| d[e] < -margins[e])
-            || ((0..3).any(|e| d[e] < 0.0) && outside > reach)
-        {
+    let lines: [Line; 3] = std::array::from_fn(|e| Line::new(corners[e], corners[(e + 1) % 3]));
+    // The winding: the side of edge 0 its opposite corner lies on, where the reading settles it.
+    let winding = lines[0]
+        .read(corners[2])
+        .and_then(|(side, _)| (side.v.abs() > side.err).then_some(side.v.signum()));
+    let guard = |p: [f64; 2]| -> Cover {
+        let out = (p[0].abs() - GUARD).max(p[1].abs() - GUARD);
+        if out > 1.0 / 256.0 {
             Cover::Absent
-        } else {
+        } else if out >= -1.0 / 256.0 {
             Cover::Either
+        } else {
+            Cover::Yes
+        }
+    };
+    let verdict = |p: [f64; 2]| -> Cover {
+        let near = lines
+            .iter()
+            .map(|l| l.distance_below(p))
+            .fold(f64::INFINITY, f64::min);
+        let readings = winding.and_then(|sign| {
+            let r: [Option<Bounded>; 3] = std::array::from_fn(|e| {
+                lines[e].read(p).map(|(side, _)| Bounded {
+                    v: sign * side.v,
+                    err: side.err,
+                })
+            });
+            Some([r[0]?, r[1]?, r[2]?])
+        });
+        let own = match readings {
+            // A triangle whose winding the corners do not settle covers nothing for sure.
+            None if near > reach => Cover::Absent,
+            None => Cover::Either,
+            Some(d) => {
+                if (0..3).all(|e| d[e].v - d[e].err > margins[e]) {
+                    Cover::Yes
+                } else if (0..3).any(|e| d[e].v + d[e].err < -margins[e])
+                    || ((0..3).any(|e| d[e].v + d[e].err < 0.0) && near > reach)
+                {
+                    Cover::Absent
+                } else {
+                    Cover::Either
+                }
+            }
+        };
+        match (own, guard(p)) {
+            (Cover::Absent, _) | (_, Cover::Absent) => Cover::Absent,
+            (Cover::Yes, Cover::Yes) => Cover::Yes,
+            _ => Cover::Either,
         }
     };
     let mut out = Vec::new();
@@ -180,11 +268,6 @@ pub fn triangle(corners: [[f64; 2]; 3], eps: [f64; 3], window: Window) -> Vec<Pi
             if cover.iter().all(|&c| c == Cover::Absent as u8) {
                 continue;
             }
-            let cover = if unbounded {
-                cover.map(|_| Cover::Unbounded as u8)
-            } else {
-                cover
-            };
             out.push(PixelCover::mask(x as u32, y as u32, cover));
         }
     }
@@ -200,27 +283,29 @@ pub struct BlockPixel {
     pub offset: (i64, i64),
 }
 
-/// The pixels a block covers in the frame `size`, per candidate truncation.
+/// The pixels a block covers in the frame `size`, per candidate truncation, for a finite `eps`
+/// (a point with an infinite one is unbounded, which the caller writes).
 pub fn block(at: [f64; 2], eps: f64, side: i64, size: [u32; 2], window: Window) -> Vec<BlockPixel> {
-    let unbounded = !eps.is_finite();
-    let e = if unbounded { 0.0 } else { eps };
     let trunc = |v: f64| v.trunc() as i64;
-    let xs = trunc(at[0] - e)..=trunc(at[0] + e);
-    let ys = trunc(at[1] - e)..=trunc(at[1] + e);
-    let moves = xs.clone().count() > 1 || ys.clone().count() > 1;
     let lo = (-side as f64 / 2.0).floor() as i64 + 1;
-    let code = if unbounded {
-        Cover::Unbounded
-    } else if moves {
-        Cover::Either
-    } else {
-        Cover::Yes
-    };
     let (w0, h0) = (window[0] as i64, window[1] as i64);
     let (w1, h1) = (
         (window[2].min(size[0])) as i64,
         (window[3].min(size[1])) as i64,
     );
+    let (xs, ys) = (
+        trunc(at[0] - eps)..=trunc(at[0] + eps),
+        trunc(at[1] - eps)..=trunc(at[1] + eps),
+    );
+    let moves = xs.start() != xs.end() || ys.start() != ys.end();
+    let code = if moves { Cover::Either } else { Cover::Yes };
+    // Only the candidates whose block reaches the window: a wide `eps` lists no more than it shows.
+    let reaching = |r: std::ops::RangeInclusive<i64>, w0: i64, w1: i64| {
+        *r.start()
+            .max(&(w0.saturating_sub(lo).saturating_sub(side) + 1))
+            ..=*r.end().min(&(w1.saturating_sub(lo).saturating_sub(1)))
+    };
+    let (xs, ys) = (reaching(xs, w0, w1), reaching(ys, h0, h1));
     let mut out = Vec::new();
     for bx in xs {
         for by in ys.clone() {
@@ -369,12 +454,9 @@ fn reach(rings: &[Vec<[f64; 2]>], n: usize, boxes: &Boxes) -> Reach {
 }
 
 /// A path layer's verdicts over the window (contract §4, oracle reading): its rings in pixels and
-/// its screen shift `eps`.
+/// its screen shift `eps`, all finite (a layer with an infinite one is unbounded, which the caller
+/// writes).
 pub fn path_layer(rings: &[Vec<[f64; 2]>], eps: f64, window: Window) -> Vec<PixelCover> {
-    let rings: Vec<&Vec<[f64; 2]>> = rings
-        .iter()
-        .filter(|r| r.iter().flatten().all(|v| v.is_finite()))
-        .collect();
     let all: Vec<Edge> = rings
         .iter()
         .flat_map(|r| {
@@ -387,8 +469,6 @@ pub fn path_layer(rings: &[Vec<[f64; 2]>], eps: f64, window: Window) -> Vec<Pixe
     if all.is_empty() {
         return Vec::new();
     }
-    let unbounded = !eps.is_finite();
-    let eps = if unbounded { 0.0 } else { eps };
     let lo = |k: usize| {
         all.iter()
             .map(|e| e.a[k].min(e.b[k]))
@@ -405,7 +485,6 @@ pub fn path_layer(rings: &[Vec<[f64; 2]>], eps: f64, window: Window) -> Vec<Pixe
         return Vec::new();
     };
     let areas: Vec<Edge> = all.iter().copied().filter(|e| e.a[1] != e.b[1]).collect();
-    let owned: Vec<Vec<[f64; 2]>> = rings.iter().map(|r| r.to_vec()).collect();
     let (x0, nx) = (xs.start, (xs.end - xs.start) as usize);
     let mut out = Vec::new();
     for py in ys {
@@ -473,8 +552,8 @@ pub fn path_layer(rings: &[Vec<[f64; 2]>], eps: f64, window: Window) -> Vec<Pixe
                     .collect()
             };
             (
-                Some(reach(&owned, 16 * nx, &cell_boxes)),
-                Some(reach(&owned, nx, &pixel_boxes)),
+                Some(reach(rings, 16 * nx, &cell_boxes)),
+                Some(reach(rings, nx, &pixel_boxes)),
             )
         } else {
             (None, None)
@@ -518,18 +597,14 @@ pub fn path_layer(rings: &[Vec<[f64; 2]>], eps: f64, window: Window) -> Vec<Pixe
             if pixel_hi == 0 && cover.iter().all(|&c| c == Cover::Absent as u8) {
                 continue;
             }
-            if unbounded {
-                cover = [Cover::Unbounded as u8; 16];
-                (cell_lo, cell_hi) = ([0; 16], [255; 16]);
-            }
             out.push(PixelCover {
                 x: (x0 + px as i64) as u32,
                 y: py as u32,
                 cover,
                 cell_lo,
                 cell_hi,
-                pixel_lo: if unbounded { 0 } else { pixel_lo },
-                pixel_hi: if unbounded { 255 } else { pixel_hi },
+                pixel_lo,
+                pixel_hi,
                 pixel_area,
                 cell_area,
             });

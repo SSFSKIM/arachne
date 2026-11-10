@@ -23,7 +23,7 @@ HEADER_SIZE = 88
 NONE_U32 = 0xFFFFFFFF
 
 #: A sample's coverage verdict.
-COVER = {0: "absent", 1: "yes", 2: "either", 3: "unbounded"}
+COVER = {0: "absent", 1: "yes", 2: "either"}
 #: A fragment's layer.
 LAYER = {0: "background_stroke", 1: "fill", 2: "stroke", 3: "mesh", 4: "points"}
 #: Why a frame is ``truth_unable``.
@@ -37,7 +37,7 @@ REASON = {
     7: "no_view",
     8: "core_refuses",
 }
-#: Fragment flags.
+#: Fragment flags: unbounded, ``truth_unable`` at every sample of the window (no cover rows).
 FLAG_UNBOUNDED = 1
 
 DTYPES = {

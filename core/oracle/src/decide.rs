@@ -132,11 +132,23 @@ pub fn decide(state: &State, xf: (u16, u16), seq: u64, window: Option<Window>) -
     );
     let mut fragments = Vec::new();
     let mut covers = Vec::new();
-    let mut add = |fragment: Fragment, rows: Vec<PixelCover>| {
+    // A fragment and its rows; `None` for an unbounded one, which is `truth_unable` at every
+    // sample of the window and carries no rows (contract §6: never absent, never bounded).
+    let mut add = |fragment: Fragment, rows: Option<Vec<PixelCover>>| {
+        let id = fragments.len() as u32;
+        let Some(rows) = rows else {
+            fragments.push(Fragment {
+                id,
+                flags: fragment.flags | FLAG_UNBOUNDED,
+                epsilon: f64::INFINITY,
+                bbox: window.map(|v| v as i32),
+                ..fragment
+            });
+            return;
+        };
         if rows.is_empty() {
             return;
         }
-        let id = fragments.len() as u32;
         let mut bbox = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
         for r in &rows {
             bbox = [
@@ -177,10 +189,19 @@ pub fn decide(state: &State, xf: (u16, u16), seq: u64, window: Option<Window>) -
                     let Some(layer_rings) = layer_rings else {
                         continue;
                     };
+                    if layer_rings.iter().all(|r| r.is_empty()) {
+                        continue;
+                    }
                     let layer = [Layer::BackgroundStroke, Layer::Fill, Layer::Stroke][k];
+                    let bounded = eps.is_finite()
+                        && layer_rings
+                            .iter()
+                            .flatten()
+                            .flatten()
+                            .all(|v| v.is_finite());
                     add(
                         fragment(c, layer, 3 * p.index + k as u32, group, eps),
-                        cover::path_layer(layer_rings, eps, window),
+                        bounded.then(|| cover::path_layer(layer_rings, eps, window)),
                     );
                 }
                 group += 1;
@@ -193,9 +214,11 @@ pub fn decide(state: &State, xf: (u16, u16), seq: u64, window: Option<Window>) -
                     let corners = t.map(|q| map(&m.map, q));
                     let eps = t.map(|q| shift.at(q));
                     let worst = eps.iter().copied().fold(0.0, f64::max);
+                    let bounded =
+                        worst.is_finite() && corners.iter().flatten().all(|v| v.is_finite());
                     add(
                         fragment(c, Layer::Mesh, m.sub + i as u32, NONE_U32, worst),
-                        cover::triangle(corners, eps, window),
+                        bounded.then(|| cover::triangle(corners, eps, window)),
                     );
                 }
             }
@@ -206,15 +229,22 @@ pub fn decide(state: &State, xf: (u16, u16), seq: u64, window: Option<Window>) -
                 let shift = Shift::of(c, view, &map, &shown);
                 let (t, n) = (pts.side, pts.count as i64);
                 let lo = (-t as f64 / 2.0).floor() as i64 + 1;
-                for q in &pts.points {
+                // A side below 1 draws no block (contract §3).
+                let points = if t < 1 { &[][..] } else { &pts.points[..] };
+                for q in points {
                     let eps = shift.at(q.shown);
+                    if !(eps.is_finite() && q.at.iter().all(|v| v.is_finite())) {
+                        // Its truncation is not bounded: one fragment, its first offset's `sub`.
+                        add(fragment(c, Layer::Points, q.index, NONE_U32, eps), None);
+                        continue;
+                    }
                     for b in cover::block(q.at, eps, t, size, window) {
                         let (o, o2) = b.offset;
                         let index = (o - lo) * t + (o2 - lo);
                         let sub = (index * n + q.index as i64) as u32;
                         add(
                             fragment(c, Layer::Points, sub, NONE_U32, eps),
-                            vec![b.cover],
+                            Some(vec![b.cover]),
                         );
                     }
                 }

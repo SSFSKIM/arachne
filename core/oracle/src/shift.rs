@@ -66,12 +66,13 @@ pub fn departure(g: f64, n: [f64; 3], placing: &Placing) -> f64 {
     total + 8.0 * U * rounding
 }
 
-/// The largest departure over a record's placings.
+/// A record's departure: its placings' departures, each times the coefficient the drawn points
+/// take it with. A blend's point `(1 − t) p + t q` moves by `|1 − t| Δ_p + |t| Δ_q` whatever `t`
+/// is, `t = 2` included (`−p + 2q`, three departures). The sum also holds the blend's own
+/// rounding, within `4u (|1 − t| |p| + |t| |q|)`: each placing's rounding term is `8u` of its
+/// points, taken with the same coefficients.
 pub fn departure_of(g: f64, n: [f64; 3], placings: &[Placing]) -> f64 {
-    placings
-        .iter()
-        .map(|p| departure(g, n, p))
-        .fold(0.0, f64::max)
+    placings.iter().map(|p| p.weight * departure(g, n, p)).sum()
 }
 
 /// The depth share `ds(δ)` along the sight axis for points at rotated depths `zs`: the largest

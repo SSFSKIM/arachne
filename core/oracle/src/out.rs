@@ -26,11 +26,10 @@ pub enum Cover {
     Absent = 0,
     Yes = 1,
     Either = 2,
-    /// `truth_unable` at the sample: the fragment's band is unbounded (contract §6).
-    Unbounded = 3,
 }
 
-/// A fragment flag: its screen shift is infinite, so its samples are `truth_unable`.
+/// A fragment flag: its screen shift is infinite (contract §6, "Unbounded keys"), so it is
+/// `truth_unable` at every sample of the window. Such a fragment carries no cover rows.
 pub const FLAG_UNBOUNDED: u16 = 1;
 
 /// One fragment the frame draws: one layer of one path, one mesh triangle, or one point block's
