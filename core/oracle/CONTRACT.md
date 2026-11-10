@@ -146,7 +146,8 @@ Elsewhere, Cairo's rules that this text relies on are restated in full.
 | `paint_rows@1` | 9 | which colour rows a layer paints with, and how a paint blend mixes them | |
 | `cairo_linear_gradient@1` | 9 | a gradient's bytes at a pixel | |
 | `ce_shading@1` | 9 | CE's two lit stops of a shaded path; lit mesh corners | |
-| `label_interim@1` | 10 | a contested sample of a camera-facing label | `label_rule_open`, by sub-class (§10) |
+| `label_placement@1` | 10 | where a camera-facing label sits among what covers it | `label_rule_open`, by sub-class (§10) |
+| `label_classes@1` | 10 | which sources are lines and which are surfaces | |
 
 How the counted rules are counted:
 
@@ -506,7 +507,9 @@ miter limit:
   - otherwise the piece is halved by `CubicBez::subdivide`, and each half is split again with the
     limit one lower.
 - **Chords.** A piece that misses the area is drawn as a line to its end. Others are drawn as
-  curves. A quadratic is raised to a cubic first.
+  curves. A quadratic is raised to a cubic first. The guarded outline is the outline with each
+  piece in place: every move, line and `ClosePath` is kept, so a closed subpath stays closed and
+  its closing join is stroked as before.
 - **Which layers.** The fill and the undashed strokes use this outline. A dashed stroke is laid by
   §8's dash rule on the unguarded outline.
 
@@ -557,7 +560,11 @@ interval is `[A − μ, A + μ]`, where
 
 - `α = 2^-30 (1 + n_e)` bounds the difference between two binary64 integrations. `n_e` is the
   number of ring edges meeting the cell's band of rows.
-- `2^-24` covers binary32 storage.
+- `2^-24` covers binary32 storage. The step from the stored area to the byte needs no term of its
+  own: it widens the binary32 area to binary64 exactly, then clamps, multiplies by 255, adds `1/2`
+  and truncates in binary64, whose rounding is under `2^-44` of a byte, far inside the `2^-24`
+  term. A sample whose area lies within `μ` of a half-byte boundary is admitted at both bytes by
+  the interval rule below.
 - `μ_ε` bounds the area that moving the flattened outline by up to `ε` (its screen shift, §6) can
   bring into or take out of the cell, as a fraction of the cell. That area lies within the outline's
   `ε`-neighbourhood:
@@ -722,7 +729,7 @@ registry before it drops its layers that paint nothing, and offers every mesh tr
 alpha (`Lowering::coplanar`, `mesh::lower`). An invisible record offered there takes part in the
 partition: its flat identity can attach a visible record and so take it out of an identity it
 shared with another, or bring two visible records into one, and either can turn a tie into a
-depth decision or the reverse. Under a 3D camera, two exactly collinear lines on `z = 0` are an
+depth decision or the reverse. Under a 3D camera, two overlapping lines on `z = 0` are an
 `ExactTie` decided by paint order; an invisible polygon on their plane attaches one of them, the
 pair is then decided by depth, and the lines' visible pixels change (witness W17, §12). The oracle
 builds its sets (§7) from painting records alone, so such a relation is a `mismatch`. Where the
@@ -914,6 +921,11 @@ shift `ε`, or a key reach `kr` is infinite, for example when a plane passes wit
 the eye. The fragment's samples are then `truth_unable` (class `band_unbounded`). They are never
 counted as ties.
 
+An infinite `ε` also bounds no presence. The mesh margin (§3) and the presence band (§4) never read
+it as absence, and never as `Either`: every sample of the record within the window the oracle is
+asked to judge is `truth_unable`, class `band_unbounded`. A move of unbounded size can bring the
+record anywhere in the window, so no sample there is known to be clear of it.
+
 ### The snap's departure
 
 Write `g` for `input_grid` (0 when the view states none), and write the record's placements as
@@ -932,6 +944,13 @@ Write `g` for `input_grid` (0 when the view states none), and write the record's
 
 This follows from the writer's rules: positions and translations snap to multiples of `g` (within
 `g/2`), and a placement's linear entries snap to multiples of `2^-24` (within `2^-25`).
+
+**A shape blend.** XF does not constrain a blend's `t`, and the oracle does not refuse one outside
+`[0, 1]`. A blended point `(1 − t) p + t q` (§2) departs by at most `|1 − t| Δ_p + |t| Δ_q`, where
+`Δ_p` is the departure of `p` through the record's placements and `Δ_q` that of `q` through the
+blend's own, both along the same normal; the same coefficients scale `Δ⁺`. The blend's own rounding
+adds `4u (|1 − t| |p| + |t| |q|)`. Extrapolation therefore widens the bound by the coefficients'
+size and never leaves it unstated.
 
 **`Δ⁺`, the departure along any normal.** It is `Δ` with each `|C^T n|_1` replaced by
 `√3 ‖C‖_F`, and the rounding term by the largest length of `|outer| (|inner| |p|)`, all times
@@ -996,7 +1015,10 @@ This follows from the writer's rules: positions and translations snap to multipl
       may flip where, on either screen axis, the two points' separation is within
       `(2 + 10^-5) ε̂ + room(0)` of that axis's tolerance in pixels. A flip swaps the joint's
       vertex between the previous cubic's last vertex and the cubic's own first point, whose keys
-      may differ by any amount (§5). A read is exposed where either point lies within `r` of `P`.
+      may differ by any amount (§5), and so changes the key along the cubic's whole first segment.
+      A read is exposed where either version of that segment lies within `r + ε̂ + room(0)` of
+      `P`: the segment from the previous cubic's last vertex to the cubic's `t = 1/n` vertex, and
+      the segment from the cubic's own first point to that vertex.
 
     Both need the scene precision to bring a boundary within a few `ε`, so the class is rare; it is
     counted under its own name.
@@ -1210,9 +1232,11 @@ holds:
 1. **Width.** For a pair at least one of whose records is flat:
    `w(A ∪ B) <= 2 max(τ⁺_A, τ⁺_B) (1 + 2^-40)`, where `w` is the minimum width of the two records'
    points together. An implementation may use any lower bound of `w`; that only grows the set. It
-   must still fail the test on every §12 witness that relies on failing it (W4, W9, W10, W11, W12,
-   W16, and W17's second form), whose true widths are at least 1 frame unit against tolerances
-   under `10^-4`; any lower bound within a factor 2 of `w` does.
+   must still fail the test on every §12 witness that relies on failing it (W4, W9, W10, W11, W12
+   and W16), whose true widths are at least 1 frame unit against tolerances under `10^-4`; any
+   lower bound within a factor 2 of `w` does. (W17 relies on the opposite: its records all lie on
+   `z = 0`, so the width test passes wherever it is evaluated, and its discrimination rests on
+   which records are offered.)
 2. **A third record.** For a pair with a record of no plane of its own: some flat registry-offered
    record `M` passes (1) with each of them. `M` may be either of them.
 3. **The axis rule.** Both lie on one axis plane by the axis rule above: the same axis, and first
@@ -1460,8 +1484,8 @@ writes a set `E` of admitted edges, drawn from: weak (paint order), strong `a`-f
      sample lies inside its outline by the point-in-outline test, or its plane's key is constant on
      screen;
    - or both are records with no plane of their own sharing an axis plane by the axis rule alone,
-     each read on its row on that plane at the sample (above). Two collinear lines on `z = 0` are
-     this case.
+     each read on its row on that plane at the sample (above). Two overlapping lines on `z = 0`
+     are this case.
 
    These bullets are examples. The sentence above them is the rule, and any other pair whose keys
    are one computation in every scenario is an `ExactTie` too.
@@ -1530,21 +1554,78 @@ mapped (§4).
 **`join_mask@1`.**
 
 - **The joins field.** A path record may carry the XF 1.4 `joins` field: one byte per cubic of its
-  points. Bit 0 means Cairo joins into the cubic; bit 1 means it mitres there. For a closed
-  subpath, the first cubic's byte is its closing join.
+  points, cubic `c` being points `4c .. 4c + 3` of the whole record. Bit 0 means Cairo joins into
+  the cubic; bit 1 means it mitres there. A byte with bit 0 clear, or a cubic with no byte, decides
+  nothing.
 - **When edits apply.** Only to a stroke whose style is kurbo's miter, that is, joints `auto` and
-  `miter`. A round or bevel stroke is never edited.
-- **The edits.** For a miter stroke, kurbo's stroke is edited at each join whose carried decision
-  differs from kurbo's own:
-  - a carried bevel where kurbo mitred drops the miter's two vertices, leaving kurbo's bevel;
-  - a carried miter where kurbo bevelled inserts the miter's vertices, with the tip on the bisector
-    at the miter limit's length. Where kurbo's tangents are parallel, the bevel stays.
-- **Left as kurbo drew them:**
-  - a join whose vertices are not found in kurbo's outline;
-  - a join the record does not decide (bit 0 clear, or no byte);
-  - a cubic whose points are all one point, which is skipped (the join then comes from the cubic
-    before).
-- **Matching.** Joins are matched by their two cubics' points' bits, one decision per occurrence.
+  `miter`, and only where the record carries the field. A round or bevel stroke is never edited.
+
+**The carried decisions.** They are read from the outline as §4 builds it (each subpath of at
+least four points, a closed one ending exactly at its first point). For each subpath, walk its
+cubics in order, keeping `p0`, the end of the last cubic kept (at first the subpath's first point):
+
+1. A cubic is `[p0, c1, c2, c3]`, with `c3` the subpath's first point for a closed subpath's last
+   cubic. A cubic whose `c1`, `c2` and `c3` all equal `p0` is skipped: it makes no join, and the
+   join after it is from the cubic before it.
+2. The first cubic kept is the subpath's **first**. Each later one makes the join **from** the
+   last cubic kept **into** it, decided by its own byte.
+3. A closed subpath also makes its **closing join**, from its last cubic kept into its first,
+   decided by the byte of the subpath's first cubic (its first in the points, kept or not).
+
+A join's **key** is the bit patterns of its two cubics' eight points (`x` and `y`, the four points
+of the one it leaves, then the four of the one it enters) and whether it is a closing join. The
+decisions of one key form a list, one per occurrence, in the order the walk meets them; an
+undecided occurrence keeps its place in the list.
+
+**The joins kurbo makes.** The stroke is kurbo's `stroke` of the path handed to it: the guarded
+outline, or the dashes (§4, and the dash rule below), in frame units at tolerance `0.1 / s`. The
+oracle walks that path's elements as kurbo's stroker does, with `join_thresh = 2 · tolerance /
+width` and `limit² = pow(10, 2)`:
+
+- **Elements and their tangents.**
+  - A line to its own start, and a cubic all of whose points equal its start, are skipped.
+  - A line's tangent at both ends is its end less its start; its points as a key are `[p0, p0, p0,
+    p1]`.
+  - A cubic's start tangent is `c1 − p0`, or where that has squared length at most `10^-12`,
+    `c2 − p0`, or where that does too, `c3 − p0`. Its end tangent is `c3 − c2`, or `c3 − c1`, or
+    `c3 − p0`, by the same threshold.
+  - A quadratic's start tangent is `c1 − p0`, else `c2 − p0`; its end tangent `c2 − c1`, else
+    `c2 − p0`, by the same threshold. A quadratic carries no key.
+- **A join** is made between each element and the one before it in its subpath, and, at a
+  `ClosePath`, first at the closing line where the subpath does not end at its start (a line that
+  carries no key), then at the subpath's start, from its last element into its first. With `ab`
+  the tangent arriving and `cd` the one leaving, kurbo **joins** only where `ab · cd <= 0` or
+  `|ab × cd| >= hypot(ab × cd, ab · cd) · join_thresh`; a slighter turn makes no join and is
+  suppressed. A join kurbo makes **mitres** where `2 h < (h + ab · cd) limit²`, with
+  `h = hypot(ab × cd, ab · cd)`.
+- **Its key** is its two elements' points, as above, and whether it is the closing join. A join
+  with an element of no key (a quadratic, a closing line) has none.
+- **Contours.** kurbo's outline holds each stroked subpath's contours in turn, each begun by a move:
+  one for an open subpath, two for a closed one.
+
+**Matching.** The oracle takes the joins kurbo makes in order. For each with a key, the next unused
+decision of its key's list applies, and is then used; occurrences are counted only over the joins
+kurbo makes. A join whose key has no list, or whose list is used up, is left as kurbo drew it, as is
+an occurrence that decides nothing.
+
+**The edits**, where a decision differs from kurbo's own, within the join's subpath's contours (the
+elements from its first contour's move to the next subpath's first move). With `p0` the join's
+point, `norm(t) = (0.5 width / |t|) (−t_y, t_x)`, `n_a = norm(ab)`, `n = norm(cd)`,
+`c = ab × cd`, `s = −1` where `c > 0` else `1`, and the miter point
+`m = (p0 + s n) − cd · (ab × ((p0 + s n) − (p0 + s n_a))) / c`:
+
+- **Parallel tangents** (`c = 0`): no edit, mitring or not; a carried miter there stays bevelled.
+- **A carried bevel where kurbo mitred.** Find the one line to `m` and the one line to `p0` among
+  those elements; drop both. kurbo's bevel remains.
+- **A carried miter where kurbo bevelled.** The tip is `p0 + (m − p0) · (10 · 0.5 width / |m − p0|)`,
+  on the bisector at the limit's length. The forward place is the one line to `p0 − n`; the
+  backward place is the one line whose element before it ends at `p0 + n`. The outer place is the
+  forward one where `c > 0`, else the backward one; the inner place is the other. Insert a line to
+  the tip before the outer place and a line to `p0` before the inner place, the later place first.
+- **Not found.** Where a line the edit needs is absent, or not the only one, the join is left as
+  kurbo drew it.
+
+All of this arithmetic is binary64 in the order written, so the edited vertices are found by value.
 
 [Rests on: `join_mask.rs` module doc and `apply`, `path::decided_joins`; `tests/join_mask.rs`.]
 
@@ -1909,92 +1990,132 @@ A shift of two levels in a two-stop gradient whose window spans less than one le
 - **Colours from XF.** With the oracle's colours, it computes them by the rules above from XF.
 - **Alpha.** Every Cairo-painted op's alpha goes through `alpha_round@1`.
 
-## 10. The interim label rule
+## 10. Camera-facing labels
 
 **Core rule (the plate model, `facing_plane@1`, §5).** A camera-facing label is a record with a
 fixed-orientation centre in world space under a 3D camera, or a pre-projected record keyed at its
 pivot. Every fragment of it lies on the camera-facing plane through its centre. Depth, ties and
-policies order it like any other fragment, so something nearer can cut it.
+policies order it like any other fragment, so something nearer can cut it, and a surface crossing
+the label's depth splits it there.
 
-**The whole-label rule.** The rule is: *a camera-facing label goes under a filled surface nearer
-than its centre and stays over everything else, lines and arrows included.*
+### `label_placement@1`: the rule
 
-- A camera-facing label is drawn whole.
-- **Lines and arrows** are Line3D, Arrow3D, Vector and their cylinder shafts. Line3D is built from a
-  cylinder, so shafts sit on the line side.
-- **Surfaces** are surfaces, solids, filled planes and polygons.
-- Labels among themselves keep CE's order, which is paint order.
+*A camera-facing label goes under a filled surface nearer than its centre and stays over everything
+else, lines and arrows included.* Lines and arrows never push a label back on their own, but a line
+in front of a surface the label sits behind is in front of the label too.
 
-**The classes in XF's terms.** XF carries a record's kind and layers, not the object it came from:
+**Terms.**
 
-- a path's **stroke or background stroke** is a line or arrow;
-- a path's **fill** (not a face of a face group) is a filled plane or polygon, a surface;
-- a **face of a face group** or a **mesh triangle** may be a surface or a solid, or a line's or
-  arrow's cylinder shaft or tip: XF does not tell a shaft cylinder from a solid one. The oracle
-  reads it both ways, the named case `label_kind_unknown`;
-- a **point block** is neither a line or arrow nor a filled surface.
+- **A label** is the family of camera-facing records drawn as one: the records sharing one
+  `facing_group`. Until the wire carries that field, a label is a run of consecutive
+  camera-facing records in the order whose carried centres are bit-identical. Two labels drawn
+  next to each other with one centre are then judged as one, a stated limit.
+- **Its footprint** is every sample its fragments cover (§3, §4), antialias and stroke included.
+- **Its depth** is its centre's key on its facing plane (§5), with that key's interval (§6). The
+  label has one depth: no glyph is tested on its own.
+- **A sheet** is a connected part of one source surface whose faces all face one way relative to
+  the camera (front or back; their normals need not be equal) and which is single-valued on screen
+  over the label's footprint. A front-facing and a back-facing part are two sheets. The unit is
+  never one face of a triangulation. A sheet's footprint is every sample it covers with alpha above
+  0.
+- **Classes** come from the source table below: a sheet qualifies only if its source is a
+  surface. A line's or arrow's parts never qualify.
 
-**The open label cases.** The rule leaves exactly three cases open, each counted under its own
-sub-class of `label_rule_open`:
+**Qualification: one decision per label and sheet.** It is made once over the whole frame, before
+any tile, and never retested at a pixel or a glyph. Let `O` be the samples both footprints hold.
 
-1. **Partial overlap away from the centre (`label_partial_overlap`).** A filled surface may be
-   nearer than the label at some of the label's samples but not at its centre, or nearer at its
-   centre but not at a sample. It is open whether the surface's depth is compared with the label's
-   centre at the sample, or at the centre's point.
-2. **Translucent surfaces (`label_translucent`).** It is open whether a nearer surface that is not
-   opaque counts as a surface the label goes under.
-3. **Other objects (`label_other_object`).** An object that is neither a line or arrow nor a filled
-   surface, such as a point block.
+1. Where `O` is empty, or the sheet's alpha is 0, the sheet does not cover the label.
+2. **The sheet covers the label's centre** (its outline holds the centre's screen point): compare
+   the sheet's key on the ray through the centre with the label's depth. Wholly nearer (the
+   intervals apart) qualifies the whole pair, even where the sheet crosses behind the label's depth
+   elsewhere in `O`. Wholly farther, or exactly equal in every scenario, does not qualify. Where the
+   intervals meet, the pair is `label_unsettled`.
+3. **The centre is missed:** the sheet qualifies only where it is wholly nearer than the label's
+   depth at every sample of `O` (its key at the sample, not an extended plane). Where it is wholly
+   farther or exactly equal at some sample of `O`, it does not qualify. A **genuine straddle**,
+   nearer at some samples and settled farther at others, therefore does not qualify, and the label
+   stays on top: a ruled outcome. Where no sample of `O` is settled farther or equal but some are
+   unsettled, the pair is `label_unsettled` (an interval straddle).
 
-**`label_interim@1`.** At a sample covered by a fragment `L` of a camera-facing label and a fragment
-`G` of another leaf, the oracle forms two sets:
+**Placement at a sample.** At each sample `k` the label covers:
 
-- `P`, the orders admissible under the plate model (§7);
-- `W`, the orders the whole-label rule gives under every reading of the open cases.
+- take the ordinary order (§7) of the fragments at `k` other than labels;
+- among the qualifying sheets of the label covering `k`, take the rearmost in that order, and
+  insert the label immediately behind it;
+- where no qualifying sheet covers `k`, the label is in front of every fragment there.
 
-"Nearer" compares `G`'s interval (§6) with the interval of `L`'s centre key, at the sample and at
-the centre's screen point (where `G`'s key is defined there). `G` is nearer where its interval lies
-wholly in front by both comparisons, and not nearer where wholly behind by both. Where the
-intervals meet, both orders, as a band tie (`TieBand`): a precision matter, not an open case. `W`
-is formed as follows:
+So a qualifying sheet hides or dims the label only where it overlaps it (**partial cover**), and
+anything in front of that sheet is in front of the label. Labels whose insertion is the same place
+keep CE's order, which is paint order. Otherwise placement decides between labels, whatever their
+paint order. Every fragment composites at its own alpha, once: a label behind a translucent sheet is
+seen through it, and a label between two translucent sheets of one source (a translucent box's front
+and back) sits between them.
 
-- **`G` of another camera-facing label:** paint order.
-- **`G` a stroke or background stroke (a line or arrow):** `L` in front.
-- **`G` the fill of a path that is not a face of a face group (a surface):**
-  - `G` in front where it is nearer, `L` in front where it is not nearer;
-  - where the two comparisons differ, both orders (case 1);
-  - where `G`'s alpha byte is below 255, both orders (case 2).
-- **`G` a face of a face group, or a mesh triangle (`label_kind_unknown`):** read as a surface, as
-  the previous case, and as a line or arrow, `L` in front. Where `G` is not nearer the two readings
-  agree, `L` in front, and the sample is ruled. Where `G` is nearer they part, and both orders are
-  admitted under `label_kind_unknown`.
-- **`G` a point block:** both orders (case 3).
+**The admissible orders** at `k` are the orders this insertion gives over every admissible ordinary
+order of the other fragments (§7): an ordinary tie may change which qualifying sheet is rearmost.
 
-Then:
+**Open cases.** `label_rule_open` keeps exactly three, each counted by name:
 
-- **The ruled case.** Where `W` is one order, that order is the only admissible one at the sample.
-  `P` does not widen it. A reported order other than `W`'s there is `mismatch`, never
-  `label_rule_open`.
-- **The open cases.** Where `W` holds both orders by case 1, 2 or 3, both orders are admissible at
-  that sample, and the sample counts `label_rule_open` under its sub-class:
-  `label_partial_overlap`, `label_translucent` or `label_other_object`. Only those three cases
-  count it.
-- **`label_kind_unknown`** admits both orders where its two readings part. It is a class outside
-  what the oracle promises (§12), never `label_rule_open`.
-- **A band tie** in the nearer comparison admits both orders as `TieBand`, under §7's rules.
+- **`label_unsettled`:** a pair whose qualification the intervals cannot settle (2 or 3 above).
+- **`label_sheet_irregular`:** a source whose part over the label is folded, overlaps itself on
+  screen, or is disconnected there, so that no sheet is single-valued over the footprint.
+- **`label_source_unmapped`:** a source whose class the table does not give: no source, a class
+  outside the table, conflicting classes over its paths, or a bare cylinder (below).
+
+An open pair does not push the label back; the rendering it expects is the label on top of that
+sheet, and other sheets still qualify and place it. The oracle blesses neither order for the
+samples the open pair decides: they are reported under the sub-class, outside the promise, never
+`mismatch` and never agreement.
+
+**`label_kind_unknown`.** While the wire carries no source, a face of a face group and a mesh
+triangle may be a surface, a solid, or a line's or arrow's shaft or tip. The oracle reads each
+both ways, as a qualifying surface sheet and as a line, and admits the orders of both readings
+where they part. It is a class outside the promise (§12), not `label_rule_open`, and it ends when
+the wire carries each record's source, from which the table decides.
+
+**The interim trade.** Until then the oracle reads a path by its layers: its strokes and
+background strokes are lines, and its fill (not a face of a face group) is a surface. A 2D arrow's
+filled tip is such a fill, so it is read as a surface, a sheet that can put a label behind it,
+until the wire says otherwise. A point block is no surface and never qualifies.
 
 **Deviation (`label_plate_model`).** The core this contract describes orders a label by the plate
-model, so it draws a nearer line or arrow over the label, where the rule keeps the label over it. At
-a sample where `W` puts `L` in front of a stroke and the core reports the stroke in front, the
-result is a `mismatch`, counted under the name `label_plate_model` beside `zero_alpha_fragment`,
-and never routed to `label_rule_open` (witness W18, §12).
+model: it draws a nearer line or arrow over the label, and lets a surface crossing the label's
+depth split it. At a label sample where the reported order is outside the admissible orders, and is
+the plate model's order, the result is a `mismatch` counted under the name `label_plate_model`,
+beside `zero_alpha_fragment`, and never routed to `label_rule_open` (witnesses W18, W22, §12).
 
-The rule ends when the open cases are settled and the whole-label rule is drawn. Its replacement is
-a new version.
+**Rejects:** a label drawn over an opaque filled polygon that qualifies by covering its centre
+wholly nearer (W5); a label hidden by a nearer line it is not behind a surface for (W18); and each
+planted failure of W19 to W26 (§12).
 
-**Rejects:** a camera-facing label drawn over an opaque filled polygon (not a face of a face group)
-whose interval lies wholly in front of the label's centre key, at the sample and at the centre's
-point (witness W5, §12).
+### Source classes (`label_classes@1`)
+
+Read from the record's source once the wire carries it. A record's source lists, for each of its
+paths, the containment chain from the object that made the record outward, each node's nearest library class
+(a user's subclass maps to the library class it derives from). The class of the record:
+
+1. **A line** where any node of any of its paths is a line class: an enclosing line or arrow
+   decides over a child's surface-like class (a cone, a cylinder or a filled tip inside an arrow).
+2. Otherwise the class of the object that made the record, from the table.
+3. `label_source_unmapped` where that class is absent from the table, where its paths give
+   different classes, or where the record has no source.
+
+| Nearest library class | Class |
+|---|---|
+| `Line`, `DashedLine`, `TangentLine`, `Arrow`, `DoubleArrow`, `Vector`, `CurvedArrow`, `CurvedDoubleArrow` | line |
+| `Line3D`, `Arrow3D` (shaft, cone and caps included) | line |
+| `NumberLine`, `UnitInterval`, `Axes`, `ThreeDAxes`, `NumberPlane` (axes, ticks and tips included) | line |
+| `ParametricFunction`, `FunctionGraph` (curves) | line |
+| `ArrowTip` and its subclasses, filled or not | line |
+| `Surface`, `Sphere`, `Torus`, `Cube`, `Prism`, `Cone`, `Polyhedron`, `Tetrahedron`, `Octahedron`, `Icosahedron`, `Dodecahedron` | surface |
+| `Polygon`, `RegularPolygon`, `Triangle`, `Square`, `Rectangle`, `RoundedRectangle`, `Circle`, `Ellipse`, `Annulus`, `Sector`, `Star` | surface by its fill alone |
+| `Cylinder` with no line or arrow enclosing it | `label_source_unmapped` |
+| `DotCloud`, `PMobject` and other point clouds | never qualifies |
+
+- A surface qualifies only through its filled faces; its outline strokes alone are lines.
+- A `Cylinder` inside a `Line3D` or an arrow is a shaft by rule 1. A bare one carries no intent: it
+  may be a solid or a shaft drawn by hand, and is never judged thin from its shape.
+- The table is the oracle's own and is written from this text alone.
 
 ## 11. What the oracle refuses
 
@@ -2038,9 +2159,18 @@ in these cases (overlay entries excluded):
 - the view names a light model it does not know (it knows CE's, code 0, and soft diffuse, code 1);
 - the core refuses the frame (there is nothing to judge);
 - the stream is a delta of a newer XF minor version than 4. It reads deltas of XF major 1 up to
-  minor 4, and cannot know the meaning of a newer minor's skipped fields.
+  minor 4, and cannot know the meaning of a newer minor's skipped fields;
+- the view's background is an image smaller than the frame in either dimension (§1).
 
 Each refusal names the slot, the object, and the kind or bit.
+
+**Invalid XF is not a frame.** A delta is validated whole before any of it applies, as the XF
+specification states, by the XF reader both sides share: among its checks, a reference (from a
+record, an order entry or the view, such as a background image key) to a missing shape, table or
+slot, and two display records drawn in the same layer of one view's order with the same capture
+rank. A delta that fails is refused atomically: nothing of it applies, and the stream stands as
+before it. The oracle never judges a frame built from part of one, and reports the delta's refusal
+by its reason.
 
 ## 12. Cases the contract must reject
 
@@ -2111,16 +2241,15 @@ no `near_parallel@1` (dihedral `atan(1/2) ≈ 26.6°` against `θ_A + θ_B` unde
 `lines@1` (no strokes); the keys part by `0.028` against bands under `10^-5`. `E = {strong Q}`.
 Defect: at its 16 samples, `T` in front. Escapes: two fragments; no label.
 
-**W5, `label_under_surface`.** Set: `label_interim@1`, the ruled case (§10). View C. A square
-polygon `G` = `[−3, 3]²` at `z = 2`, fill blue, alpha 1, not a face of a face group, then a
-camera-facing label `L`: a square glyph `[−1.5, 1.5]²` with a fixed-orientation centre at the origin,
-fill white. Pixel `(32, 32)`: `L` keys `−1` (its centre's), `G` keys `−20/18 ≈ −1.111`, at the
-sample and at the centre's point. Trace: `W = {G in front}` (opaque, a path's fill, nearer by both
-comparisons with intervals wholly apart), so `G` in front is the only admissible order; `P` agrees.
-Defect: at its 16 samples, `L` in front. Escapes: case 1 needs the two comparisons to differ,
-case 2 an alpha below 1, case 3 an object neither line nor surface, and `label_kind_unknown` a
-face or mesh triangle, where `G` is a path's fill; the keys part by `0.111`, so no band tie; two
-fragments.
+**W5, `label_under_surface`.** Set: `label_placement@1`, a sheet covering the centre (§10). View C.
+A square polygon `G` = `[−3, 3]²` at `z = 2`, fill blue, alpha 1, not a face of a face group, then a
+camera-facing label `L`: a square glyph `[−1.5, 1.5]²` with a fixed-orientation centre at the
+origin, fill white. `G` is a path's fill, a surface (the interim trade), one sheet; it covers `L`'s
+centre, where it keys `−20/18 ≈ −1.111` against `L`'s depth `−1`, intervals apart: it qualifies.
+Pixel `(32, 32)`: the ordinary order is `G` alone, `L` goes immediately behind it, so `G` in front
+is the only admissible order. Defect: at its 16 samples, `L` in front. Escapes: no open case (the
+intervals are apart, `G` is one flat sheet, its class is given), `G` is no face or mesh triangle,
+so no `label_kind_unknown`; two fragments.
 
 **W6, `alpha_rounds_to_zero`.** Set: `alpha_round@1` (§1). View F. Square `[−4, 4]²`, fill
 `(1, 0, 0, 0.003)`: `trunc(0.003 · 65535 + 0.5) >> 8 = 0`. Trace: no fragment anywhere. Defect: a
@@ -2192,48 +2321,130 @@ in which the weak edge could yield.
 `(−3.1875, 3/64, −1.5)`, coded `planes` Curve (no plane of its own), fill green, background
 stroke red of width `0.25` (1 px), no stroke; then a polygon `B` = `[−6, 6]²` at `z = 0`, coded on
 the axis plane `z`, fill `(0, 0, 1, 0.5)`. On screen `P`'s near edge lies at `y = 32` and its far
-edge at `y ≈ 31.826`. At the four samples of pixel `(32, 31)` on the row `y = 31.875`:
+edge at `y ≈ 31.8256`. In pixel `(32, 31)` the fill covers the bottom cell row (`y ∈ [31.75, 32]`,
+about 0.70 of each cell), so it is present at samples 12, 13, 14 and 15, whose `y` (§1) are
+31.84375, 31.78125, 31.96875 and 31.90625. The background stroke `A` (both edges' bodies, `y` from
+about 31.33 to 32.5) covers them too, and `B` covers every sample.
 
-- the background stroke `A` is held by both edges and reads the near one, key `−20/18.5 ≈ −1.081`;
-- the fill `C` reads its nearest edge, the far one, key `−20/21.5 ≈ −0.930`;
-- `B` keys `−1`.
+- **Samples 12, 13 and 15** lie nearer the far edge than the near one. `A` is held by both edges
+  and reads the near one, key `−20/18.5 ≈ −1.081`; the fill `C` reads its nearest edge, the far
+  one, key `−20/21.5 ≈ −0.930`; `B` keys `−1`.
+- **Sample 14** (`y = 31.96875`) lies nearer the near edge, so `C` reads it too, key `−1.081`.
 
-Trace: `E(A, C) = {weak}` with `C` in front (`own_layers@1`: the background stroke under its
-fill); `E(A, B) = {strong A}` and `E(B, C) = {strong B}` (no shared plane: the union with `B` is
-over 2 units wide, `B` is the only flat record, and `P` holds no axis coordinate). The one
-completion cycles, and `cycle_rank@1` lets the weak edge yield: the order is `A, B, C`, and the
-conforming report passes by that route. Nothing is opaque and full there, so nothing is dropped.
-Defect: at those samples the order `C, A, B`, which keeps the weak edge and breaks `B` over `C`; no
-completion gives it.
+Trace at samples 12, 13 and 15: `E(A, C) = {weak}` with `C` in front (`own_layers@1`: the
+background stroke under its fill); `E(A, B) = {strong A}` and `E(B, C) = {strong B}` (no shared
+plane: the union with `B` is over 2 units wide, `B` is the only flat record, and `P` holds no axis
+coordinate). The one completion cycles, and `cycle_rank@1` lets the weak edge yield: the order is
+`A, B, C`, and the conforming report passes by that route. At sample 14, `E(C, B) = {strong C}`,
+the completion does not cycle, and the order is `C, A, B`. Nothing is opaque and full there, so
+nothing is dropped. Defect: at samples 12, 13 and 15 the order `C, A, B`, which keeps the weak edge
+and breaks `B` over `C`; no completion gives it there. Sample 14 already has that order and is not
+part of the defect.
 
-**W17, `invisible_registry_offer`.** Set: registry eligibility (§5). Two forms.
+**W17, `invisible_registry_offer`.** Set: registry eligibility (§5). Two forms. Neither relies on
+the width test failing: every record lies on `z = 0`, so the width test passes for every pair, and
+the discrimination rests on which records are offered.
 
-- **Primary, the reference scene.** 160 × 90 px under a 3D camera at `phi = 0.8`: a red line, then
-  a blue line, collinear on `z = 0`, each of width 60 at opacity 0.5, and a polygon whose fill and
-  stroke opacities are both 0. The two lines are an `ExactTie` (axis rule, every key one
-  computation), decided by paint order. The core this contract describes offers the invisible
-  polygon; its identity attaches one line, and the pair is decided by depth: 408 visible pixels
-  change, among them `(80, 45)`, from `[64, 0, 128]` to `[128, 0, 64]`, though Cairo paints the
-  frame byte for byte the same with and without the polygon. Verdict on that core: `mismatch` at
-  those pixels' samples, counted `invisible_registry_offer`. The fixture holds the scene and the
-  core's report; it needs no `defect.json`.
+- **Primary, the reference scene.** The view: 160 × 90 px, frame `128/9 × 8` units centred at the
+  origin (mapping centre the origin), a 3D camera at `phi = 0.8`, `theta = −π/2`, `gamma = 0`,
+  focal distance 20, zoom 1, no shading, `cairo_line_width_multiple = 0.01`, input grid `2^-12`, the
+  angles and frame sizes as XF carries them (binary32-snapped: `phi = 0.800000011920929`,
+  `theta = −1.5707963109016418`, frame width `14.222222328186035`). The records, in draw order:
+  - a line from `(−3, −0.1, 0)` to `(3, −0.1, 0)`, stroke `(1, 0, 0, 0.5)`, width 60 (0.6 frame
+    units);
+  - a line from `(−3, 0.1, 0)` to `(3, 0.1, 0)`, stroke `(0, 0, 1, 0.5)`, width 60;
+  - a polygon through `(−4, −1, 0)`, `(4, −1, 0)`, `(4, 0, 0)`, `(−4, 0, 0)`, fill opacity 0, stroke
+    width 0 and stroke opacity 0.
+
+  Where both strokes cover a pixel the two lines are an `ExactTie` (both on the axis plane
+  `z = 0` by the axis rule, every key one computation), decided by paint order. The core this
+  contract describes offers the invisible polygon; its identity attaches one line, and the pair is
+  decided by depth: 408 pixels change, among them `(80, 45)`, from `[64, 0, 128]` to
+  `[128, 0, 64]`, though Cairo paints the frame byte for byte the same with and without the
+  polygon. Verdict on that core: `mismatch` at those pixels' samples, counted
+  `invisible_registry_offer`. The fixture holds the scene and that core's report; it needs no
+  `defect.json`.
 - **Second, synthetic.** View C. Line `R` from `(−4.25, 0, 0)` to `(2.125, 0, 0)`, stroke
   `(1, 0, 0, 0.5)`, then line `U` from `(−2.125, 0, 0)` to `(4.25, 0, 0)`, stroke `(0, 0, 1, 0.5)`,
   both width `0.5`, then a polygon `[−6, 6]²` at `z = 0` with fill and stroke `(0, 1, 0, 0)`.
   Pixel `(32, 32)`: both lines cover it whole. Trace: the polygon paints nothing and is not
   offered, so the lines share by the axis rule alone, `E = {weak}`, `U` in front. Defect: at its
   16 samples, `R` in front by a strong relation. Verdict `mismatch`, counted
-  `invisible_registry_offer` because the sets built with the polygon offered admit it.
+  `invisible_registry_offer`: in the counterfactual sets built with the polygon offered, the
+  polygon is a flat record passing the width test with each line, so the pair may share through a
+  flat identity and every edge is admitted, the injected one included.
 
-**W18, `label_over_line`.** Set: `label_interim@1`, the ruled case against a line (§10). View C.
-The label `L` of W5 (a square glyph `[−1.5, 1.5]²`, fixed-orientation centre at the origin, fill
-white), then an open line from `(−3.1875, 0, 2)` to `(3.1875, 0, 2)`, stroke green, width `0.5`
-(2 px). Pixel `(32, 32)` is covered whole by both: `L` keys `−1`, the line `−20/18 ≈ −1.111`,
-nearer. Trace: `G` is a stroke, a line, so `W = {L in front}`, the only admissible order; the
-plate model's `P = {line in front}` does not widen it; the line's `L ≈ 28.3` px lies 0.33 px from a
-step. Verdict on the core this contract describes, which draws the line over the label: `mismatch`
-at the 16 samples, counted `label_plate_model`. The fixture holds the scene and that core's report;
-it needs no `defect.json`. A core keeping the rule agrees.
+**W18, `label_over_line`.** Set: `label_placement@1`, a line never pushes a label back (§10). View
+C. The label `L` of W5 (a square glyph `[−1.5, 1.5]²`, fixed-orientation centre at the origin,
+fill white), then an open line from `(−3.1875, 0, 2)` to `(3.1875, 0, 2)`, stroke green, width
+`0.5` (2 px). Pixel `(32, 32)` is covered whole by both: `L`'s depth is `−1`, the line keys
+`−20/18 ≈ −1.111`, nearer. Trace: the line is a stroke, a line, so it never qualifies; no sheet
+covers `L`, which is in front of everything: `L` in front is the only admissible order. The
+line's `L ≈ 28.3` px lies 0.33 px from a step. Verdict on the core this contract describes, which
+draws the line over the label: `mismatch` at the 16 samples, counted `label_plate_model`. The
+fixture holds the scene and that core's report; it needs no `defect.json`.
+
+**Label witnesses W19 to W26.** Each plants one of the failures the rule must catch. Their
+conforming report is the one a core keeping §10 gives; the core this contract describes keeps the
+plate model, so each fixture's `defect.json` applies to a report built by the rule. All use View C
+and the label `L` of W5 unless a witness says otherwise, and every polygon is a path's fill (a
+surface by the interim trade) except in W20.
+
+**W19, `label_backed_under_line`.** Planted: a surface-backed label drawn over a line above that
+surface. A polygon `S` = `[−3, 3]²` at `z = 2`, fill `(0, 0, 1, 0.5)`; then a line from
+`(−3.1875, 0, 2.5)` to `(3.1875, 0, 2.5)`, stroke green, width `0.5`; then `L`. `S` covers `L`'s
+centre, keys `−1.111` against `−1`: it qualifies. Pixel `(32, 32)`: the ordinary order is the line
+(`−20/17.5 ≈ −1.143`), then `S`; `L` goes behind `S`: line, `S`, `L`. Defect: at the samples the
+line covers, `L` in front of the line. The line's `L ≈ 29.1` px lies 0.86 px from a step.
+
+**W20, `label_inside_box`.** Planted: a wrong sheet partition. It needs the wire's source field
+(until then its faces are `label_kind_unknown`), and is built once the wire carries it. A cube of
+side 4 centred at the origin, a face group whose source is `Cube`, fill `(0, 0, 1, 0.5)`; `L` at its
+centre. Its front face (`z = 2`) and back face (`z = −2`) are two sheets; the side faces are edge-on.
+The front sheet covers `L`'s centre and is nearer: it qualifies; the back sheet is farther: it does
+not. Pixel `(32, 32)`: front, `L`, back. Defect: front, back, `L`, as if the box were one occluder.
+Its soundness twin `label_behind_box` puts `L`'s centre at `(0, 0, −4)`: both sheets qualify, and
+front, back, `L` is the expected order.
+
+**W21, `label_off_centre_farther`.** Planted: a wrong qualification, by an extended plane. A polygon
+`S` through `(0.5, −1.5, −0.25)`, `(1.5, −1.5, −2.25)`, `(1.5, 1.5, −2.25)`, `(0.5, 1.5, −0.25)` (on
+the plane `z = 0.75 − 2x`), fill blue. `S` misses `L`'s centre; over the overlap it lies at
+`z <= −0.25`, farther than `L`: it does not qualify, though its plane extended to the centre would be
+nearer. Pixel `(36, 32)` (`S` at `x ≈ 1`, `z ≈ −1.25`): `L` in front. Defect: there, `S` in front.
+
+**W22, `label_genuine_straddle`.** Planted: a straddle treated as cover. A polygon `S` through
+`(0.5, −1.5, 1.2)`, `(2.5, −1.5, −2)`, `(2.5, 1.5, −2)`, `(0.5, 1.5, 1.2)` (on `z = 2 − 1.6x`), fill
+blue. `S` misses `L`'s centre; over the overlap it is nearer where `x < 1.25` and settled farther
+where `x > 1.25` (the samples of pixel `(37, 32)`, `z < 0` by far more than either interval): a
+genuine straddle, which does not qualify. `L`
+is in front everywhere. Defect: at pixel `(35, 32)` (`S` at `z ≈ 0.43` to `0.85`, nearer), `S` in
+front, the plate model's order: on the core this contract describes, that pixel is `mismatch`
+counted `label_plate_model`.
+
+**W23, `label_interval_straddle`.** Verdict `label_unsettled`, not `mismatch`: the intervals cannot
+settle the pair, so the oracle blesses neither order. A polygon `S` = `[0.5, 1.5] × [−1.5, 1.5]` at
+`z = 2^-30`, fill blue: nearer than `L` by far less than either interval at every sample of the
+overlap, and missing its centre. Expected: the overlap's samples counted `label_rule_open` under
+`label_unsettled`, whatever order is reported. Beside W22 it separates a decided straddle from an
+open one.
+
+**W24, `label_placement_over_order`.** Planted: CE's order applied across placements. A polygon `S` =
+`[−3, 3]²` at `z = 2`, fill `(0, 0, 1, 0.5)`; then a label `L2`, the glyph of `L` with its centre at
+`(0, 0, 3)`; then `L`. `S` is farther than `L2`'s depth (`−20/17 ≈ −1.176`) and does not qualify
+for it; it qualifies for `L`. Pixel `(32, 32)`: `L2`, `S`, `L`, although `L` is painted after `L2`.
+Defect: `L`, `L2`, `S`.
+
+**W25, `label_through_translucent`.** Planted: a translucent sheet composited twice. Scene as W5
+with `G`'s fill `(0, 0, 1, 0.5)`. Pixel `(32, 32)`: `G`, then `L`; the colour is `G` blended once
+over `L` over the background. Defect: the pixel's recorded colour as `G` blended twice over `L`,
+every recorded fragment unchanged.
+
+**W26, `label_cross_tile`.** Planted: a pair decided per tile. A wider View C, 128 × 64 px and
+frame 32 × 16 units (`x0 = 64`), so a tile edge falls between pixel columns 63 and 64. `L` with its
+centre at `(−1, 0, 0)`; a polygon `S` = `[−0.75, 2] × [−3, 3]` at `z = 1`, fill blue, which misses
+`L`'s centre and is nearer over the whole overlap (screen `x` from about 60.8 to 66): it qualifies,
+and `L` is behind `S` at both pixels `(63, 32)` and `(64, 32)`. Defect: at pixel `(64, 32)`, `L` in
+front of `S`.
 
 ### Soundness fixtures
 
@@ -2248,10 +2459,43 @@ level would reject it.
 cubic sits on a step (`L = 6`), so the core charges `320u (1 + 16u)` there. Expected: the core's
 reported share is at most `O⁺` (§7: `B` gives at least `328u`), no `share_beyond_bound`.
 
-**`selection_relations`.** Scene as W16. The selection check (§9) reads the trace's pre-drop
-per-sample pair relations and strengths there and derives the recorded votes, ranks, units and
-class. Expected: agreement.
+**`selection_relations`.** Scene as W16, pixel `(32, 31)`, the conforming report. The selection
+check (§9) reads the trace's pre-drop per-sample pair relations and strengths there:
 
+- `A` against `B`: strong, `A` in front, at every sample both cover (the cells `A` covers, rows 1
+  to 3);
+- `B` against `C`: strong, `B` in front, at samples 12, 13 and 15; strong, `C` in front, at sample
+  14;
+- `A` against `C`: weak (`own_layers@1`), `C` in front, at samples 12 to 15.
+
+It checks each against its `E` (W16's trace), then derives the pixel's votes (`A` over `B` by
+`Depth`; `B` over `C` by `Majority`, three samples to one; `A` and `C` by `Paint`), the rank
+`A, B, C` (the weak edge yields in the cycle), and from them the drops, units and class by §9's
+rule. Expected: agreement with the recorded votes, ranks, units and class.
+
+**Stroke behaviour fixtures (§8).** Each holds a scene whose expected coverage follows from §8
+alone; the conforming report agrees, and the named wrong reading would not.
+
+- **`join_occurrences`.** View F. One open path, the triangle `p = (−4, −3)`, `q = (4, −3)`,
+  `r = (0, 3)` traced twice, `p q r p q r` as five straight cubics, stroke width 1, joint miter,
+  `joins` bytes per cubic `0, 0b01, 0, 0, 0b11`. The join at `q` from `p q` into `q r` occurs
+  twice, one key: kurbo mitres both (an angle near 56°, within the limit), the first occurrence
+  takes the bevel and the second the miter. Expected: pixel `(12, 11)`'s cell bytes are the mitred
+  corner's, the miter tip near pixel coordinates `(12.94, 11.5)` covered. Applying the first
+  occurrence's decision to both would bevel the corner.
+- **`join_closing`.** View F. A closed square through `(−4, −4)`, `(4, −4)`, `(4, 4)`, `(−4, 4)`,
+  stroke width 1, joint miter, bytes `0b01, 0b11, 0b11, 0b11`. The closing join at `(−4, −4)` takes
+  the first cubic's byte, a bevel; the other three corners mitre. Expected: the outer corner square
+  of `(−4, −4)` (pixel `(3, 12)`, its cells beyond the bevel) uncovered, the other three outer
+  corners covered. Reading the closing join from the last cubic's byte would mitre it.
+- **`guarded_seam`.** View F. A closed subpath through `(−4, −4)`, `(4, −4)`, `(100000, −4)`,
+  `(100000, 4)`, `(−4, 4)` and back, as straight cubics, stroke width 1, joint miter, dashed with
+  period 2, duty 0.75 and phase 0.25. Its far points bring the guard into force; the pieces beyond
+  the area miss and are measured, so the subpath has two runs, and its first and last pieces do
+  not miss. Its length, 200024, puts the pattern on at both ends of the subpath, so the last run's
+  final dash is joined onto the first run's opening dash at `(−4, −4)`. Expected: that corner
+  stroked as a mitred join (pixel `(3, 12)`'s outer cells covered), as without the guard. Dashing
+  the runs apart would leave two butt caps there.
 ### Classes outside what the oracle promises
 
 These are reported by class for a human to view, never counted as ties:
@@ -2266,10 +2510,11 @@ These are reported by class for a human to view, never counted as ties:
 - **Far gradient ends.** Gradient layers with an end or a pixel's point beyond the fit limit
   (`gradient_far_ends`, §9). They are `truth_unable` for that layer's pixels.
 - **Open label cases.** Samples counted `label_rule_open` (§10), only by its three cases, each
-  under its sub-class: `label_partial_overlap`, `label_translucent`, `label_other_object`.
+  under its sub-class: `label_unsettled`, `label_sheet_irregular`, `label_source_unmapped`.
 - **Label against an object of unknown kind.** Samples where a face of a face group or a mesh
-  triangle is nearer than a label, which XF cannot place on the line or the surface side
-  (`label_kind_unknown`, §10). Both orders are admitted.
+  triangle, which XF cannot yet place on the line or the surface side, decides a label's
+  placement (`label_kind_unknown`, §10). The orders of both readings are admitted. The class ends
+  when the wire carries each record's source.
 
 ### Findings counted under their own names
 
@@ -2277,7 +2522,9 @@ These are `mismatch` or failing results that name a known way the core departs f
 
 - `zero_alpha_fragment` (§1): a mesh fragment whose alpha byte is 0.
 - `invisible_registry_offer` (§5): a relation admitted only with records that paint nothing offered.
-- `label_plate_model` (§10): a nearer line or arrow drawn over a camera-facing label.
+- `label_plate_model` (§10): a label sample ordered as the plate model orders it and not as the
+  rule does, such as a nearer line or arrow drawn over a label, or a label split by a surface
+  crossing its depth.
 - `share_beyond_bound` (§7): a reported `lines@1` share above `O⁺`, a core finding once the
   contract is proven, and until then triaged by name.
 
