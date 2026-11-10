@@ -767,3 +767,22 @@ fn a_sheet_clear_on_the_centre_does_not_cover_it() {
     assert_eq!(one(&items), (Outcome::NotNearer, false));
     assert_eq!(px(&drawn(&items), 85, 45), stacked(&[WHITE]));
 }
+
+/// A sheet on no one plane is keyed on its curve; a centre on its horizontal edge is held there
+/// as on a flat sheet's, and with no plane to read the centre's depth on, the pair is open by name,
+/// the label in front.
+#[test]
+fn a_centre_on_a_curve_keyed_sheet_s_horizontal_edge_is_held() {
+    let corners = [
+        [-1.5, 0.0, 0.725],
+        [1.5, 0.0, 0.275],
+        [1.5, 1.0, 0.725],
+        [-1.5, 1.0, 0.275],
+    ];
+    let items = [
+        label([0.0, 0.0, 0.0], [1.4, 0.3]),
+        face(2, &corners, BLUE, &[(12, SQUARE)]),
+    ];
+    assert_eq!(one(&items), (Outcome::Open(Open::Interval), true));
+    assert_eq!(px(&drawn(&items), 80, 43), stacked(&[WHITE]));
+}
