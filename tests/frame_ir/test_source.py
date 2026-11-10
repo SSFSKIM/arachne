@@ -477,6 +477,15 @@ def _older_minor(delta):
     return bytes(bare.to_core().to_bytes())
 
 
+def _gives_a_facing_group(sent):
+    """Whether a delta of ``sent`` gives a record a facing group, set or held."""
+    return any(
+        record.fields.get("facing_group", 0) != 0
+        for delta in sent
+        for _, record in delta.set
+    ) or any(group != 0 for delta in sent for *_, group in delta.source)
+
+
 def test_frames_and_the_older_minor_are_the_bytes_sent_without_a_source(monkeypatch):
     """The depth resolver reads no source, and a source moves no byte an
     older minor carries: a scene's frames on the core, and each delta it is
@@ -496,7 +505,9 @@ def test_frames_and_the_older_minor_are_the_bytes_sent_without_a_source(monkeypa
         Solids,
     ]
 
-    labelled = {LabelledArrow, Solids}
+    # The cases drawing a facing group, each held with placement off only; the
+    # streams themselves must agree.
+    labelled = {scenes.Lit3D, camera_scenes.PureCentre, LabelledArrow, Solids}
 
     def drawn(placed=True):
         found = []
@@ -510,7 +521,13 @@ def test_frames_and_the_older_minor_are_the_bytes_sent_without_a_source(monkeypa
                 keeping = _keeping(CorePainter.draw, sent, placed=placed)
                 patched.setattr(CorePainter, "draw", keeping)
                 frames = render(case, FPS, draw_path="core", **MEDIUM)[1]
-            found.append((frames, [_older_minor(delta) for delta in sent]))
+            found.append(
+                (
+                    frames,
+                    [_older_minor(delta) for delta in sent],
+                    _gives_a_facing_group(sent),
+                )
+            )
         return found
 
     kept = construction_caches()
@@ -523,10 +540,12 @@ def test_frames_and_the_older_minor_are_the_bytes_sent_without_a_source(monkeypa
         bare = drawn()
     finally:
         restore_construction_caches(kept)
-    for case, (placed, our_bytes), (unplaced, _), (theirs, their_bytes) in zip(
+    facing = {case for case, (*_, gives) in zip(cases, carried, strict=True) if gives}
+    assert {c.__name__ for c in labelled} == {c.__name__ for c in facing}
+    for case, (placed, our_bytes, _), (unplaced, *_), (theirs, their_bytes, _) in zip(
         cases, carried, plain, bare, strict=True
     ):
-        held = [unplaced] if case in labelled else [placed, unplaced]
+        held = [unplaced] if case in facing else [placed, unplaced]
         for ours in held:
             assert len(ours) == len(theirs) > 0, case.__name__
             for index, (a, b) in enumerate(zip(ours, theirs, strict=True)):
