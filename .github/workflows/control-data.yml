@@ -15,7 +15,9 @@ jobs:
     timeout-minutes: 60
     env:
       UV_PYTHON: "3.14"
-      # As the docs-examples gate: one BLAS kernel and one thread.
+      # As the docs-examples gate: hash randomization off (tests/conftest.py refuses a session
+      # with it on), one BLAS kernel and one thread.
+      PYTHONHASHSEED: "0"
       OPENBLAS_CORETYPE: Haswell
       OPENBLAS_NUM_THREADS: "1"
     steps:
