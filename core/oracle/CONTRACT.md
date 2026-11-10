@@ -2011,7 +2011,8 @@ in front of a surface the label sits behind is in front of the label too.
   `facing_group` (§10, the source section). In a stream without that section (before XF 1.5), a
   label is a run of consecutive camera-facing records in the order whose carried centres are
   bit-identical. Two labels drawn next to each other with one centre are then judged as one, a
-  stated limit.
+  stated limit. In a stream that carries the section, a camera-facing record with no facing group
+  belongs to no label the oracle can name: it is `label_ungrouped` (below).
 - **Its footprint** is every sample its fragments cover (§3, §4), antialias and stroke included.
 - **Its depth** is its centre's key on its facing plane (§5), with that key's interval (§6). The
   label has one depth: no glyph is tested on its own.
@@ -2056,13 +2057,19 @@ and back) sits between them.
 **The admissible orders** at `k` are the orders this insertion gives over every admissible ordinary
 order of the other fragments (§7): an ordinary tie may change which qualifying sheet is rearmost.
 
-**Open cases.** `label_rule_open` keeps exactly three, each counted by name:
+**Open cases.** `label_rule_open` keeps exactly four, each counted by name:
 
 - **`label_unsettled`:** a pair whose qualification the intervals cannot settle (2 or 3 above).
 - **`label_sheet_irregular`:** a source whose part over the label is folded, overlaps itself on
   screen, or is disconnected there, so that no sheet is single-valued over the footprint.
 - **`label_source_unmapped`:** a source whose class the table does not give: no source, a class
   outside the table, conflicting classes over its paths, or a bare cylinder (below).
+- **`label_ungrouped`:** in a stream that carries the source section, a camera-facing record (one
+  with a fixed-orientation centre) that has no facing group: set with no row, set by an older
+  writer, or given a facing group of 0 by a row. It is not thereby outside every label: whether it
+  belongs to one is unknown, so the oracle counts it under this name and never as a record of
+  another kind. Its drawing is unaffected, and its fragments' coverage is judged as usual; the
+  order at every sample they share with another fragment is counted here. No reader refuses it.
 
 An open pair does not push the label back; the rendering it expects is the label on top of that
 sheet, and other sheets still qualify and place it. The oracle blesses neither order for the
@@ -2128,7 +2135,8 @@ section: its class names, then its rows. Each row is `u32 slot`, `u32 facing_gro
 then the paths, each a list of nodes `(object token, class index)` into the section's class names.
 A row carries both fields, the record's source and its facing group.
 
-- **Keyed by slot.** A row is keyed by its slot alone, and no reading depends on the rows' order.
+- **Keyed by slot.** A row is keyed by its slot alone. The order of the rows decides only which
+  code a refused delta reports (§11); the state a valid delta leaves does not depend on it.
 - **A set's row.** A row whose slot the delta sets is that record's source and facing group; of a
   slot set more than once in the delta, its last record's. A record the delta sets with no row has
   neither source nor facing group.
@@ -2142,7 +2150,13 @@ A row carries both fields, the record's source and its facing group.
   section.
 - **What a writer sends.** A held slot whose source or facing group changes while its drawing does
   not travels as a held row: a reparent, a change of facing group alone, or both. A changed drawing
-  travels as a set, carrying both fields in its row.
+  travels as a set, carrying both fields in its row. A writer with nothing to carry for a slot
+  writes no row for it.
+- **Facing groups.** A writer of XF 1.5 gives every record it sets with a fixed-orientation centre
+  a facing group, the records of one camera-facing label sharing it, and gives a held one a row
+  whenever its group changes; scene lowering sets no fixed-orientation record outside such a label.
+  A fixed-orientation record that has no facing group is not thereby outside every label: it is
+  `label_ungrouped` (above), its drawing unaffected, and no reader refuses it.
 
 **The source a decision reads.** A label decision for a frame reads each record's source and facing
 group as the stream holds them at that frame: the slot's latest set or held row, in delta order. A
@@ -2214,15 +2228,16 @@ section with exactly one code, the first that applies in this order:
 2. Then, reading the rows in the order written, at the first row that offends, the first of these
    that applies to it:
    - `slot_named_twice`: a slot an earlier row named;
-   - `slot_removed`: a slot the delta removes;
-   - `row_empty`: a facing group of 0 and no paths;
+   - `slot_removed`: a slot the delta removes, whether or not it also sets it;
+   - `row_empty`: a row of either kind with a facing group of 0 and no paths;
    - `path_empty`: a path of no objects;
    - `class_out_of_range`: a class index at or past the section's names.
 3. Then, when the delta applies, `slot_not_held`: a held row whose slot the stream does not hold
    before the delta.
 
 The reading's refusals are decided before the delta applies, so a delta has exactly one refusal,
-the first in this order. A refused delta is not applied. The oracle reports it as
+the first in this order. The order of the rows decides only which code it reports. A refused delta
+is not applied. The oracle reports it as
 `StreamRefused { at_seq, cause }`, where `at_seq` is the refused delta's sequence number and
 `cause` is one of these seven codes. The code is diagnostic, since the stream is `truth_unable`
 whichever code applies, but the oracle and the core must report the same one.
@@ -2519,8 +2534,8 @@ front of `S`.
 section. View C, a stream of two deltas over the scene of W5 (`G` = `[−3, 3]²` at `z = 2`, opaque,
 then `L`):
 
-- **Delta 1** sets `G` with a row: facing group 0, the source path `[(g, Polygon), (v, Vector)]`.
-  `G` is made by a polygon inside a vector, so it is a line by rule 1 and never qualifies. Frame 1,
+- **Delta 1** sets `G` with a row: facing group 0, the source path `[(g, Polygon), (v, Vector)]`;
+  and `L` with a row of facing group 1 and its source. `G` is made by a polygon inside a vector, so it is a line by rule 1 and never qualifies. Frame 1,
   pixel `(32, 32)`: `L` in front of `G`.
 - **Delta 2** sets nothing and removes nothing, and carries one held row for `G`'s slot: facing
   group 0, the source path `[(g, Polygon)]`, the polygon reparented out of the vector. Its drawing
@@ -2538,14 +2553,18 @@ Expected: frame 1 judged as usual; frames 2, 3 and 4 all `truth_unable` under
 `StreamRefused { at_seq: 2, cause: slot_not_held }`, none with a verdict, the valid deltas after it
 clearing nothing.
 
-**Refusals, one per code.** Each has W28's shape, delta 2 being the refused one, and every row it
+**Refusals, by code.** Each has W28's shape, delta 2 being the refused one, and every row it
 carries is well formed unless stated; expected: frames 2 to 4
 `StreamRefused { at_seq: 2, cause }` with the code named.
 
 - **`refused_class_named_twice`** (`class_named_twice`): delta 2's class names list `Polygon` twice.
 - **`refused_slot_named_twice`** (`slot_named_twice`): delta 2 carries two rows for `s`.
 - **`refused_slot_removed`** (`slot_removed`): delta 2 removes `s` and carries a row for `s`.
+- **`refused_set_and_removed`** (`slot_removed`): delta 2 sets a new slot `w`, removes `w`, and
+  carries a row for `w`: a slot the delta removes, though it also sets it.
 - **`refused_row_empty`** (`row_empty`): delta 2's row for `s` has facing group 0 and no paths.
+- **`refused_set_row_empty`** (`row_empty`): delta 2 sets a new slot `w` with a row of facing
+  group 0 and no paths: the code holds for a set's row as for a held one.
 - **`refused_path_empty`** (`path_empty`): delta 2's row for `s` has a path of no objects.
 - **`refused_class_out_of_range`** (`class_out_of_range`): delta 2's row for `s` names class index
   `k`, where the section holds `k` names.
@@ -2565,10 +2584,17 @@ carries is well formed unless stated; expected: frames 2 to 4
   second row has a path of no objects. Expected `path_empty`: the reading refuses before the delta
   applies, where `slot_not_held` would be found.
 
-**`held_row_clears_group`.** Verdict: agreement. W27's scene, `L` set in delta 1 with a row of
-facing group 7 and its source. Delta 2 carries a held row for `L`'s slot with facing group 0 and
-the same source path. Expected: from frame 2, `L`'s facing group is none and its source is the
-row's, and its drawing is as delta 1 set it; frame 2's decisions are judged with those fields.
+**`held_row_clears_group`.** W27's scene, `L` set in delta 1 with a row of facing group 7 and its
+source. Delta 2 carries a held row for `L`'s slot with facing group 0 and the same source path.
+Expected: frame 1 judged as usual. From frame 2, `L`'s facing group is none and its source is the
+row's, and its drawing is as delta 1 set it: `L` is `label_ungrouped`, its coverage judged as
+usual and the order at pixel `(32, 32)`'s samples, which it shares with `G`, counted
+`label_rule_open` under `label_ungrouped`, neither `mismatch` nor agreement.
+
+**`label_ungrouped_no_row`.** The scene of W5 in one delta of XF 1.5: `G` set with a row (facing
+group 0, the source path `[(g, Polygon)]`), `L` set with no row. Expected: no refusal; `L`'s
+coverage judged as usual; the order at every sample `L` shares with `G` counted `label_rule_open`
+under `label_ungrouped`, never read as `L` being outside a label or a record of another kind.
 
 ### Soundness fixtures
 
@@ -2633,8 +2659,9 @@ These are reported by class for a human to view, never counted as ties:
   (`curve_recut`, §6). They are `truth_unable` per sample.
 - **Far gradient ends.** Gradient layers with an end or a pixel's point beyond the fit limit
   (`gradient_far_ends`, §9). They are `truth_unable` for that layer's pixels.
-- **Open label cases.** Samples counted `label_rule_open` (§10), only by its three cases, each
-  under its sub-class: `label_unsettled`, `label_sheet_irregular`, `label_source_unmapped`.
+- **Open label cases.** Samples counted `label_rule_open` (§10), only by its four cases, each
+  under its sub-class: `label_unsettled`, `label_sheet_irregular`, `label_source_unmapped`,
+  `label_ungrouped`.
 - **Label against an object of unknown kind.** Samples where a face of a face group or a mesh
   triangle, which a stream without the source section cannot place on the line or the surface
   side, decides a label's placement (`label_kind_unknown`, §10). The orders of both readings are
