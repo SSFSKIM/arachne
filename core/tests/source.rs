@@ -407,8 +407,8 @@ fn a_stream_keeps_a_records_source_until_it_is_set_again() {
     assert!(matches!(s.apply(&d), Err(StreamError::Invalid(_))));
 }
 
-#[test]
-fn a_row_gives_a_held_record_its_new_source_and_nothing_else() {
+/// A stream holding a square in slot 1, carrying a source and a facing group; and its shape.
+fn holding_a_sourced_square() -> (Stream, Shape, Record) {
     let shape = Shape::new(ShapeData::Path {
         points: common::square_points(1.0),
     });
@@ -422,18 +422,29 @@ fn a_row_gives_a_held_record_its_new_source_and_nothing_else() {
     d.set = vec![sourced.clone()];
     d.order = Some(vec![entry(1)]);
     s.apply(&d).unwrap();
+    (s, shape, sourced)
+}
+
+#[test]
+fn a_row_gives_a_held_record_its_new_source_and_nothing_else() {
+    let (mut s, _, sourced) = holding_a_sourced_square();
     let drawn = s.draw(8, 8, 1).unwrap();
     let mut moved = Delta::new(Time { num: 1, den: 15 }, 1);
     let other = vec![vec![node(8, "a.Other")]];
     moved.source = vec![held_row(1, 0, other.clone())];
     s.apply(&moved).unwrap();
-    let mut expected = sourced.clone();
+    let mut expected = sourced;
     expected.source = other;
     expected.facing_group = 0;
     assert_eq!(s.record(1), Some(&expected));
     assert_eq!(s.draw(8, 8, 1).unwrap(), drawn);
-    // Refused, changing nothing: a row for a slot not held, for one the delta sets or removes, with
-    // a path of no objects, or a second row for one slot.
+}
+
+#[test]
+fn apply_refuses_a_row_for_a_slot_not_held_or_one_the_delta_sets() {
+    // Refused, changing nothing: a row for a slot the stream does not hold, for one the delta sets
+    // or removes, with a path of no objects, or a second row for one slot.
+    let (mut s, shape, sourced) = holding_a_sourced_square();
     let refused = [
         (
             "not held",
@@ -472,8 +483,28 @@ fn a_row_gives_a_held_record_its_new_source_and_nothing_else() {
         d.set = set;
         d.remove = remove;
         assert!(s.apply(&d).is_err(), "{why}");
-        assert_eq!(s.record(1), Some(&expected), "{why}");
+        assert_eq!(s.record(1), Some(&sourced), "{why}");
     }
+}
+
+#[test]
+fn the_reader_refuses_a_row_for_a_removed_slot_or_a_slot_named_twice() {
+    // The delta sets slot 1 and removes slot 2; slot 3 is held.
+    let row = |slot: u32| [u32(slot), u32(0), u32(1), u32(1), u32(7), u32(0)].concat();
+    let section = |rows: &[Vec<u8>]| {
+        [u32(1), string("a.B"), u32(rows.len() as u32), rows.concat()].concat()
+    };
+    for (why, rows) in [
+        ("a removed slot", vec![row(2)]),
+        ("a held slot named twice", vec![row(3), row(3)]),
+        ("a set slot named twice", vec![row(1), row(1)]),
+        ("a set slot and its row again", vec![row(1), row(3), row(1)]),
+    ] {
+        let read = wire::decode_delta(&with_section(&[1], &[2], &section(&rows)));
+        assert!(matches!(read, Err(XfError::Invalid(_))), "{why}: {read:?}");
+    }
+    let read = wire::decode_delta(&with_section(&[1], &[2], &section(&[row(1), row(3)])));
+    assert_eq!(read.unwrap().source.len(), 1);
 }
 
 #[test]
