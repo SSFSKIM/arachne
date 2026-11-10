@@ -1,8 +1,6 @@
 name: ci
+# Scratch commit (C5.3 attribution): no push trigger, so its ci/ branch runs c53-attr alone.
 on:
-  pull_request:
-  push:
-    branches: ['ci/**']
   workflow_dispatch:
     inputs:
       gates: {description: 'comma list of gate names; empty = all', required: false, default: ''}

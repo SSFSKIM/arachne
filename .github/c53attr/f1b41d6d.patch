@@ -1,0 +1,35 @@
+commit 9a53ae2a78473ba6d51db40ed6d897b131272f19
+Author: SSFSKIM <145154405+SSFSKIM@users.noreply.github.com>
+Date:   Mon Nov 9 10:51:38 2026 -0800
+
+    A play's static picture gives the scene's mobjects their state at its capture
+    
+    The static list is flattened to the leaves with points, so a surface's
+    faces arrive without their surface, which the frame description now finds
+    among the scene's roots: it reads the surface's faces, grid and state.
+    Drawing the static picture gave only the static list its recorded state,
+    so those reads took the surface as the scene holds it when the picture is
+    drawn. A picture drawn once the scene has run (plays that waited for the
+    render's workers) grouped the faces the scene left, not the ones the play
+    held, and the draw-reads tracer reported every such read.
+    
+    The static picture now shows the capture's draw list as well as its static
+    list, as a frame painted from the record already does.
+    
+    (cherry picked from commit f1b41d6d0bf05f5f1237e686b74fc7bbb3e43fba)
+
+diff --git a/arachne/timeline/draw.py b/arachne/timeline/draw.py
+index 1c46d9a3..a223889a 100644
+--- a/arachne/timeline/draw.py
++++ b/arachne/timeline/draw.py
+@@ -690,7 +690,9 @@ class Drawing:
+         if not play.static:
+             return None
+         capture = self.record._captures[play.static_seq]
+-        self.show(capture, play.static)
++        # The scene's mobjects too: the static list is flattened to leaves,
++        # and a face's surface is found among their families.
++        self.show(capture, [*capture.draw_list(), *play.static])
+         camera = self.camera
+         if self.static_painter is not None:
+             pixels = self.static_painter.paint(
