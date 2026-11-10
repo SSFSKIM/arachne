@@ -747,12 +747,24 @@ impl Stream {
     ) -> Result<BTreeMap<(u32, u32), crate::contributors::PixelContributors>, DrawError> {
         let mut out = BTreeMap::new();
         let leaf = |f: &composite::Fragment| self.leaf_of(f);
-        self.visit_placed(x0, y0, x1, y1, |x, y, frags, coverage, depths, _, plan| {
-            out.insert(
-                (x, y),
-                crate::contributors::of_pixel_placed(frags, coverage, depths, &leaf, plan),
-            );
-        })?;
+        self.visit_placed(
+            x0,
+            y0,
+            x1,
+            y1,
+            |x, y, frags, coverage, depths, producers, plan| {
+                let placing = plan.map(|plan| crate::label_plan::Placing {
+                    plan,
+                    producers,
+                    x,
+                    y,
+                });
+                out.insert(
+                    (x, y),
+                    crate::contributors::of_pixel_placed(frags, coverage, depths, &leaf, placing),
+                );
+            },
+        )?;
         Ok(out)
     }
 
