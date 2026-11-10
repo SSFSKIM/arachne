@@ -289,6 +289,9 @@ pub struct PathItem<'a> {
     pub index: u32,
     /// Its shown points, in frame units.
     pub shown: Vec<[f64; 3]>,
+    /// Its drawn points before display: placed, cut to its reveal window and blended (a
+    /// pre-projected tail's points as produced). Depth reads them (contract §5).
+    pub world: Vec<[f64; 3]>,
     /// Per layer (background stroke, fill, stroke): drawn or not, and the stroke's width in frame
     /// units (0 for the fill).
     pub layers: [Option<f64>; 3],
@@ -310,6 +313,8 @@ pub struct MeshItem<'a> {
     pub sub: u32,
     /// Per triangle, its shown corners.
     pub triangles: Vec<[[f64; 3]; 3]>,
+    /// Per triangle, its placed corners (before display).
+    pub placed: Vec<[[f64; 3]; 3]>,
     pub map: FrameMap,
 }
 
@@ -703,6 +708,7 @@ fn path_item<'a>(
     Some(PathItem {
         index,
         shown,
+        world,
         layers,
         joint: rec.paint.joint,
         cap: rec.paint.cap,
@@ -731,13 +737,13 @@ fn mesh_item<'a>(
         .iter()
         .map(|p| common.placement.show(common.projection.as_ref(), *p))
         .collect();
-    let triangles = triangles
-        .iter()
-        .map(|t| t.map(|v| shown[v as usize]))
-        .collect();
+    let corners = |t: &[u32; 3], of: &[[f64; 3]]| t.map(|v| of[v as usize]);
+    let placed_corners = triangles.iter().map(|t| corners(t, &placed)).collect();
+    let triangles = triangles.iter().map(|t| corners(t, &shown)).collect();
     Some(MeshItem {
         sub,
         triangles,
+        placed: placed_corners,
         map: FrameMap::of_paths(view),
         common,
     })

@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use arachne_oracle::out::{
-    CoverRow, Decisions, Fragment, Header, Refused, STATUS_UNABLE, canonical, read, write,
+    BandRow, CoverRow, Decisions, Fragment, Header, PairRow, Refused, STATUS_UNABLE, canonical,
+    read, write,
 };
 use common::*;
 
@@ -99,6 +100,50 @@ fn sample() -> Decisions {
             },
         ],
         covers: vec![row(1, 0, 0), row(2, 0, 0), row(2, 0, 1), row(3, 2, 1)],
+        bands: vec![
+            BandRow {
+                x: 2,
+                y: 0,
+                fragment: 1,
+                which: 0,
+                o: std::array::from_fn(|s| -1.0 - s as f64 / 64.0),
+                r: [1.0 / 1_099_511_627_776.0; 16],
+                s_minus: [0.25; 16],
+                s_plus: std::array::from_fn(|s| if s == 3 { f64::NAN } else { 0.5 }),
+                status: std::array::from_fn(|s| (s % 4) as u8),
+            },
+            BandRow {
+                x: 2,
+                y: 0,
+                fragment: 1,
+                which: 1,
+                o: [f64::NEG_INFINITY; 16],
+                r: [0.0; 16],
+                s_minus: [0.0; 16],
+                s_plus: [0.0; 16],
+                status: [1; 16],
+            },
+        ],
+        pairs: vec![
+            PairRow {
+                x: 2,
+                y: 0,
+                a: 0,
+                b: 1,
+                sample: 0,
+                edges: 1,
+                label: 5,
+            },
+            PairRow {
+                x: 2,
+                y: 0,
+                a: 0,
+                b: 1,
+                sample: 15,
+                edges: 7,
+                label: 0,
+            },
+        ],
         refused: vec![
             Refused {
                 reason: 8,
@@ -148,7 +193,10 @@ fn every_section_starts_where_numpy_can_read_it_and_the_pixel_index_counts_rows(
         let off = u64::from_le_bytes(b[at + 8..at + 16].try_into().unwrap());
         assert_eq!(off % 8, 0);
     }
-    assert_eq!(tags, ["FRAG", "COVR", "PIXL", "REFU", "TEXT"]);
+    assert_eq!(
+        tags,
+        ["FRAG", "COVR", "PIXL", "BAND", "PAIR", "REFU", "TEXT"]
+    );
     // The window is 3 x 3 pixels; pixel (2, 0) holds rows 1 and 2.
     let pixl = 88 + 24 * 2;
     let off = u64::from_le_bytes(b[pixl + 8..pixl + 16].try_into().unwrap()) as usize;

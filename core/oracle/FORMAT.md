@@ -4,7 +4,8 @@
 XF file's deltas in order, from an empty stream, up to and including the delta whose `seq` is given,
 and writes what the frame drawn there should hold: every fragment the draw order draws and its
 coverage verdict at each of the 16 samples of every pixel of the window (the whole frame by
-default), or why the frame is `truth_unable`. It carries decisions, never pixel bytes.
+default), with each present fragment's depth band and each present pair's admitted edges and
+label at every sample, or why the frame is `truth_unable`. It carries decisions, never pixel bytes.
 
 `read.py` beside this file is the one reader for other programs (standard library only); its
 `DTYPES` give each section's layout as a numpy dtype, so a section also reads whole with
@@ -17,8 +18,7 @@ input error (an XF file that does not read, a `seq` it does not hold).
 
 Little-endian throughout. A fixed header of 88 bytes, a directory of sections, then each section
 on an 8-byte boundary. Sections are arrays of fixed-size records; a reader skips a tag it does not
-know, and treats a section that is absent as empty. Later sections (pairwise relations, colours)
-arrive as new tags.
+know, and treats a section that is absent as empty. Later sections (colours) arrive as new tags.
 
 ```
 header     4s  magic "AROR"
@@ -41,6 +41,8 @@ cell `((dx + 8) div 4, (dy + 8) div 4)` of the pixel's 4 x 4 grid.
 | `FRAG` | 64 bytes | one per fragment that has a row, or is unbounded |
 | `COVR` | 456 bytes | one per fragment at a pixel, sorted by `(y, x, fragment)` |
 | `PIXL` | 12 bytes | one per pixel of the window, row by row: its first `COVR` row and their count |
+| `BAND` | 544 bytes | one per `COVR` row, in its order (its own row), then one more where the fragment has a row on its record's plane |
+| `PAIR` | 24 bytes | one per pair of fragments present at a sample, sorted by `(y, x, sample, a, b)` |
 | `REFU` | 40 bytes | one per refusal; empty when the frame is decided |
 | `TEXT` | 1 byte | the refusals' words, UTF-8 |
 
@@ -58,8 +60,10 @@ f64 epsilon (screen shift, px)  i32 x0, y0, x1, y1 (its rows' pixel box)  u32 pl
   shape (`t i` plus it for member `i` of a `t`-triangle prototype), a point block pixel's
   `(offset index) · n + i`. An instance's fragments carry the instance's object.
 - **`group`**: the drawn path a layer belongs to (its three layers share it); `0xffffffff` for a
-  mesh triangle or a point block. **`plane`**: the registered plane identity, `0xffffffff` until
-  depth is written.
+  mesh triangle or a point block. **`plane`**: the index, in the frame, of the registry-offered
+  record the fragment belongs to (a path's layers share it), else `0xffffffff`. The oracle does
+  not settle the registry's identities; which records may share one is in `PAIR`'s labels
+  (contract §7).
 - **`flags`**: bit 0, *unbounded*: the fragment's screen shift is infinite (or its nominal
   geometry is not finite), so it may stand anywhere: it is `truth_unable` at every sample of the
   window, never absent. Its `epsilon` is infinite, its box the window, and it has no `COVR` rows; a
@@ -81,8 +85,46 @@ f64 pixel_area  f64 cell_area[16]  f64 depth[16]  f64 band[16]
 - **`pixel_area`, `cell_area[s]`**: a path layer's exact nonzero-rule area of the pixel and of
   sample `s`'s cell, each as a fraction of it (1 covered whole); NaN for a mesh triangle or a point
   block, whose verdicts are masks.
-- **`depth`, `band`**: NaN in this version.
+- **`depth[s]`, `band[s]`**: the fragment's own key `o` and arithmetic bound `R` at sample `s`
+  (contract §5, §6), as its own `BAND` row holds them; NaN where it is absent or its key is not
+  bounded.
 - A row is written where some sample is not absent or the admitted pixel bytes reach above 0.
+
+### `BAND`
+
+```
+u32 x  u32 y  u32 fragment  u8 which  3 bytes pad
+f64 o[16]  f64 r[16]  f64 s_minus[16]  f64 s_plus[16]  u8 status[16]
+```
+
+A fragment's band at each sample: `I = [o − S⁻ − 3R, o + S⁺ + 3R]` (contract §6), `I = {−∞}` for a
+key of `−∞`.
+
+- **`which`**: 0, its own row: its own key, a stroke's adjusted on its own fill where both cover
+  (`stroke_on_own_fill@1`; where either coverage is `Either`, the hull with its unadjusted key);
+  1, its row on its record's plane (`shared_plane_read@1`), read against a fragment that may share
+  it. A fragment has at most one of each at a pixel, its own first.
+- **`status[s]`**: 0 absent, 1 bounded, 2 `band_unbounded`, 3 `curve_recut` (the sample is
+  `truth_unable`, contract §6). The floats are NaN unless the status is 1.
+
+### `PAIR`
+
+```
+u32 x  u32 y  u32 a  u32 b  u8 sample  u8 edges  u8 label  1 byte pad  u32 reserved
+```
+
+Every pair of fragments present (`Yes` or `Either`) at a sample, `a < b` by fragment id (contract
+§7, "the edges a pair admits").
+
+- **`edges`**: bit 0 weak (paint order: the later in the order, then the higher `sub`, in front),
+  bit 1 strong `a` in front, bit 2 strong `b` in front.
+- **`label`**: 1 `Depth(a)`, 2 `Depth(b)`, 3 `TieBand`, 4 `ExactTie`, 5 `own_layers@1`,
+  6 `one_plane@1`, 7 `lines@1`, 8 `near_parallel@1`; 0 where a read of either is not bounded
+  (`truth_unable`, every edge).
+- **Admissible orders** of the fragments present at a sample are the ranks (`cycle_rank@1`) of the
+  completions that pick one edge per pair; an order every pair agrees with is one.
+- An unbounded fragment (`FRAG` flag bit 0) has no rows and no pairs: it is `truth_unable`
+  everywhere.
 
 ### `REFU`
 

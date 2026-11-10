@@ -7,10 +7,13 @@ use crate::camera::FrameMap;
 use crate::cover::{self, PixelCover, SAMPLE_OFFSETS, Window};
 use crate::draw::{self, Item, Layer};
 use crate::flatten;
+use crate::keys::{self, Model, Offered};
+use crate::order::{Frag, Scene};
 use crate::out::{
     CoverRow, Decisions, FLAG_UNBOUNDED, Fragment, Header, NONE_U32, Refused, STATUS_DECIDED,
     STATUS_UNABLE,
 };
+use crate::pairs;
 use crate::shift::Shift;
 use crate::source::WireDelta;
 use crate::stream::{Reason, Refusal, State};
@@ -114,6 +117,8 @@ fn unable(
         },
         fragments: Vec::new(),
         covers: Vec::new(),
+        bands: Vec::new(),
+        pairs: Vec::new(),
         refused: refusals.iter().map(refused).collect(),
     }
 }
@@ -149,11 +154,19 @@ pub fn decide(state: &State, xf: (u16, u16), seq: u64, window: Option<Window>) -
     );
     let mut fragments = Vec::new();
     let mut covers = Vec::new();
-    // A fragment and its rows; `None` for an unbounded one, which is `truth_unable` at every
-    // sample of the window and carries no rows (contract §6: never absent, never bounded).
-    let mut add = |fragment: Fragment, rows: Option<Vec<PixelCover>>| {
+    let mut frags: Vec<Frag> = Vec::new();
+    let mut offered: Vec<Offered> = Vec::new();
+    // A fragment, its depth and its rows; `None` for an unbounded one, which is `truth_unable` at
+    // every sample of the window and carries no rows (contract §6: never absent, never bounded).
+    let mut add = |fragment: Fragment, depth: Frag, rows: Option<Vec<PixelCover>>| {
         let id = fragments.len() as u32;
         let Some(rows) = rows else {
+            frags.push(Frag {
+                model: Model::Unbounded,
+                row: None,
+                lines: None,
+                ..depth
+            });
             fragments.push(Fragment {
                 id,
                 flags: fragment.flags | FLAG_UNBOUNDED,
@@ -166,6 +179,7 @@ pub fn decide(state: &State, xf: (u16, u16), seq: u64, window: Option<Window>) -
         if rows.is_empty() {
             return;
         }
+        frags.push(depth);
         let mut bbox = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
         for r in &rows {
             bbox = [
@@ -202,6 +216,12 @@ pub fn decide(state: &State, xf: (u16, u16), seq: u64, window: Option<Window>) -
                 let c = &p.common;
                 let eps = Shift::of(c, view, &p.map, &p.shown).of_points(&p.shown);
                 let rings = flatten::layer_rings(p, size);
+                let pd = keys::path_depth(view, p, &rings);
+                let reg = pd.offered.clone().map(|o| {
+                    offered.push(o);
+                    offered.len() - 1
+                });
+                let planeless = pd.offered.as_ref().is_some_and(|o| o.flat.is_none());
                 for (k, layer_rings) in rings.iter().enumerate() {
                     let Some(layer_rings) = layer_rings else {
                         continue;
@@ -210,6 +230,20 @@ pub fn decide(state: &State, xf: (u16, u16), seq: u64, window: Option<Window>) -
                         continue;
                     }
                     let layer = [Layer::BackgroundStroke, Layer::Fill, Layer::Stroke][k];
+                    let sub = 3 * p.index + k as u32;
+                    let model = pd.layers[k].clone();
+                    let depth = Frag {
+                        entry: c.entry,
+                        sub,
+                        layer,
+                        group,
+                        lines: (planeless && k != 1)
+                            .then(|| pairs::lines_of(&model))
+                            .flatten(),
+                        model,
+                        row: pd.row.clone(),
+                        offered: reg,
+                    };
                     let bounded = eps.is_finite()
                         && layer_rings
                             .iter()
@@ -217,7 +251,8 @@ pub fn decide(state: &State, xf: (u16, u16), seq: u64, window: Option<Window>) -
                             .flatten()
                             .all(|v| v.is_finite());
                     add(
-                        fragment(c, layer, 3 * p.index + k as u32, group, eps),
+                        fragment(c, layer, sub, group, eps),
+                        depth,
                         bounded.then(|| cover::path_layer(layer_rings, eps, window)),
                     );
                 }
@@ -233,8 +268,24 @@ pub fn decide(state: &State, xf: (u16, u16), seq: u64, window: Option<Window>) -
                     let worst = eps.iter().copied().fold(0.0, f64::max);
                     let bounded =
                         worst.is_finite() && corners.iter().flatten().all(|v| v.is_finite());
+                    let (model, o) = keys::triangle_depth(view, m, i);
+                    let reg = o.map(|o| {
+                        offered.push(o);
+                        offered.len() - 1
+                    });
+                    let depth = Frag {
+                        entry: c.entry,
+                        sub: m.sub + i as u32,
+                        layer: Layer::Mesh,
+                        group: NONE_U32,
+                        model,
+                        row: None,
+                        offered: reg,
+                        lines: None,
+                    };
                     add(
                         fragment(c, Layer::Mesh, m.sub + i as u32, NONE_U32, worst),
+                        depth,
                         bounded.then(|| cover::triangle(corners, eps, window)),
                     );
                 }
@@ -249,10 +300,25 @@ pub fn decide(state: &State, xf: (u16, u16), seq: u64, window: Option<Window>) -
                 // A side below 1 draws no block (contract §3).
                 let points = if t < 1 { &[][..] } else { &pts.points[..] };
                 for q in points {
+                    let model = keys::point_depth(view, pts, q.placed);
+                    let depth = |sub: u32| Frag {
+                        entry: c.entry,
+                        sub,
+                        layer: Layer::Points,
+                        group: NONE_U32,
+                        model: model.clone(),
+                        row: None,
+                        offered: None,
+                        lines: None,
+                    };
                     let eps = shift.at(q.shown);
                     if !(eps.is_finite() && q.at.iter().all(|v| v.is_finite())) {
                         // Its truncation is not bounded: one fragment, its first offset's `sub`.
-                        add(fragment(c, Layer::Points, q.index, NONE_U32, eps), None);
+                        add(
+                            fragment(c, Layer::Points, q.index, NONE_U32, eps),
+                            depth(q.index),
+                            None,
+                        );
                         continue;
                     }
                     for b in cover::block(q.at, eps, t, size, window) {
@@ -261,6 +327,7 @@ pub fn decide(state: &State, xf: (u16, u16), seq: u64, window: Option<Window>) -
                         let sub = (index * n + q.index as i64) as u32;
                         add(
                             fragment(c, Layer::Points, sub, NONE_U32, eps),
+                            depth(sub),
                             Some(vec![b.cover]),
                         );
                     }
@@ -269,10 +336,17 @@ pub fn decide(state: &State, xf: (u16, u16), seq: u64, window: Option<Window>) -
         }
     }
     covers.sort_by_key(|c| (c.y, c.x, c.fragment));
+    for (f, d) in fragments.iter_mut().zip(&frags) {
+        f.plane = d.offered.map_or(NONE_U32, |i| i as u32);
+    }
+    let scene = Scene::new(frags, offered);
+    let (bands, pairs) = pairs::frame(&scene, &mut covers);
     Decisions {
         header,
         fragments,
         covers,
+        bands,
+        pairs,
         refused: Vec::new(),
     }
 }

@@ -623,3 +623,66 @@ file = "core/oracle/src/stream.rs"
 find = "            self.rules15 = true;\n"
 replace = ""
 red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states"]
+
+[[plant]]
+name = "order-meet"
+item = "§7"
+check = "weak where the intervals meet"
+file = "core/oracle/src/order.rs"
+find = "        weak: a.lo() <= b.hi() && b.lo() <= a.hi(),\n"
+replace = "        weak: false,\n"
+red = ["order::the_nontransitive_triple_ties_its_neighbours_and_orders_its_ends", "order::intervals_that_only_touch_still_meet"]
+
+[[plant]]
+name = "order-own-layers"
+item = "§7"
+check = "own_layers@1 keeps paint order"
+file = "core/oracle/src/order.rs"
+find = "        if own_layers(fa, fb) {\n"
+replace = "        if false && own_layers(fa, fb) {\n"
+red = ["order::a_fill_and_its_own_stroke_keep_paint_order_whatever_their_keys"]
+
+[[plant]]
+name = "order-exact-tie"
+item = "§7"
+check = "two keys of minus infinity are an ExactTie"
+file = "core/oracle/src/order.rs"
+find = "        if oa.o == f64::NEG_INFINITY && ob.o == f64::NEG_INFINITY {\n"
+replace = "        if false && oa.o == f64::NEG_INFINITY && ob.o == f64::NEG_INFINITY {\n"
+red = ["order::keys_of_minus_infinity_tie_exactly_and_meet_any_finite_key_by_depth"]
+
+[[plant]]
+name = "cycle-rank-ties"
+item = "§7"
+check = "cycle_rank@1: the later painted on equal wins"
+file = "core/oracle/src/order.rs"
+find = "(wins, paint(x))"
+replace = "(wins, std::cmp::Reverse(paint(x)))"
+red = ["order::an_all_strong_cycle_is_ranked_by_wins_then_paint_order"]
+
+[[plant]]
+name = "cycle-rank-weak-yields"
+item = "§7"
+check = "cycle_rank@1: free of strong edges, so weak edges yield"
+file = "core/oracle/src/order.rs"
+find = ".filter(|&x| !left.iter().any(|&y| y != x && strong[y][x]))"
+replace = ".filter(|&x| !left.iter().any(|&y| y != x && front[y][x]))"
+red = ["order::a_cycle_through_a_weak_order_keeps_every_strong_order"]
+
+[[plant]]
+name = "band-s-world-plane"
+item = "§6"
+check = "S on a world plane: (|o| + R) kr(P, δ)"
+file = "core/oracle/src/keys.rs"
+find = "(o.abs() + r) * kr(w.big_d, delta)"
+replace = "0.0 * (o.abs() + r) * kr(w.big_d, delta)"
+red = ["closed_form_depth::two_planes_meeting_on_a_line_are_ordered_by_depth_off_a_tie_band_as_wide_as_s6_predicts"]
+
+[[plant]]
+name = "curve-key"
+item = "§5"
+check = "curve_key@1: the key along the centreline"
+file = "core/oracle/src/keys.rs"
+find = "                    let o = reads[k].key;\n"
+replace = "                    let o = 2.0 * reads[k].key;\n"
+red = ["closed_form_depth::a_stroke_crossing_a_surface_is_in_front_on_its_near_side_and_ties_only_at_the_crossing"]

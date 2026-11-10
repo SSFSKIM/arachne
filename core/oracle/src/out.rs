@@ -16,6 +16,10 @@ pub const FRAGMENT_SIZE: usize = 64;
 pub const COVER_SIZE: usize = 456;
 pub const PIXEL_SIZE: usize = 12;
 pub const REFUSAL_SIZE: usize = 40;
+pub const BAND_SIZE: usize = 544;
+pub const PAIR_SIZE: usize = 24;
+/// A pair's label where a read is not bounded: `truth_unable`, every edge.
+pub const LABEL_UNABLE: u8 = 0;
 /// Written where a field holds nothing.
 pub const NONE_U32: u32 = u32::MAX;
 
@@ -75,10 +79,43 @@ pub struct CoverRow {
     pub pixel_area: f64,
     /// A path layer's exact area of each sample's cell (NaN for a mask).
     pub cell_area: [f64; 16],
-    /// The fragment's key at each sample (NaN until depth is written).
+    /// The fragment's own key `o` at each sample (adjusted on its own fill); NaN where absent or
+    /// not bounded.
     pub depth: [f64; 16],
-    /// Its band at each sample (NaN until depth is written).
+    /// Its arithmetic bound `R` there; NaN where absent or not bounded.
     pub band: [f64; 16],
+}
+
+/// One fragment's band at one pixel, on its own row (`which` 0) or its row on its record's plane
+/// (`which` 1): `I = [o − S⁻ − 3R, o + S⁺ + 3R]` at each sample.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BandRow {
+    pub x: u32,
+    pub y: u32,
+    pub fragment: u32,
+    pub which: u8,
+    pub o: [f64; 16],
+    pub r: [f64; 16],
+    pub s_minus: [f64; 16],
+    pub s_plus: [f64; 16],
+    /// 0 absent, 1 bounded, 2 `band_unbounded`, 3 `curve_recut`.
+    pub status: [u8; 16],
+}
+
+/// One pair of fragments present at one sample: its admitted edges and its label.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PairRow {
+    pub x: u32,
+    pub y: u32,
+    /// The pair, `a < b` by fragment id.
+    pub a: u32,
+    pub b: u32,
+    pub sample: u8,
+    /// Bit 0 weak (paint order), bit 1 strong `a` in front, bit 2 strong `b` in front.
+    pub edges: u8,
+    /// 0 `truth_unable`, 1 `Depth(a)`, 2 `Depth(b)`, 3 `TieBand`, 4 `ExactTie`, 5 `own_layers@1`,
+    /// 6 `one_plane@1`, 7 `lines@1`, 8 `near_parallel@1`.
+    pub label: u8,
 }
 
 /// A refusal as the file holds it.
@@ -118,6 +155,10 @@ pub struct Decisions {
     pub fragments: Vec<Fragment>,
     /// Sorted by `(y, x, fragment)`.
     pub covers: Vec<CoverRow>,
+    /// Sorted as their cover rows, own row before plane row.
+    pub bands: Vec<BandRow>,
+    /// Sorted by `(y, x, sample, a, b)`.
+    pub pairs: Vec<PairRow>,
     pub refused: Vec<Refused>,
 }
 
@@ -198,6 +239,21 @@ pub fn write(d: &Decisions) -> Vec<u8> {
         u32s(&mut refu, &[text.len() as u32, r.detail.len() as u32]);
         text.extend(r.detail.as_bytes());
     }
+    let mut band = Vec::with_capacity(d.bands.len() * BAND_SIZE);
+    for r in &d.bands {
+        u32s(&mut band, &[r.x, r.y, r.fragment]);
+        band.extend([r.which, 0, 0, 0]);
+        for v in [&r.o, &r.r, &r.s_minus, &r.s_plus] {
+            f64s(&mut band, v);
+        }
+        band.extend(r.status);
+    }
+    let mut pair = Vec::with_capacity(d.pairs.len() * PAIR_SIZE);
+    for r in &d.pairs {
+        u32s(&mut pair, &[r.x, r.y, r.a, r.b]);
+        pair.extend([r.sample, r.edges, r.label, 0]);
+        u32s(&mut pair, &[0]);
+    }
     let pixl = pixel_index(d);
     let sections = [
         Section {
@@ -217,6 +273,18 @@ pub fn write(d: &Decisions) -> Vec<u8> {
             record_size: PIXEL_SIZE as u32,
             count: (pixl.len() / PIXEL_SIZE) as u64,
             bytes: pixl,
+        },
+        Section {
+            tag: *b"BAND",
+            record_size: BAND_SIZE as u32,
+            count: d.bands.len() as u64,
+            bytes: band,
+        },
+        Section {
+            tag: *b"PAIR",
+            record_size: PAIR_SIZE as u32,
+            count: d.pairs.len() as u64,
+            bytes: pair,
         },
         Section {
             tag: *b"REFU",
@@ -355,8 +423,49 @@ pub fn read(b: &[u8]) -> Result<Decisions, String> {
         },
         fragments: Vec::new(),
         covers: Vec::new(),
+        bands: Vec::new(),
+        pairs: Vec::new(),
         refused: Vec::new(),
     };
+    if let Some((_, size, off, count)) = section(b"BAND") {
+        for i in 0..count {
+            let mut r = Reader {
+                b,
+                at: off + i * size,
+            };
+            let (x, y, fragment) = (r.u32()?, r.u32()?, r.u32()?);
+            let which = r.u8()?;
+            r.at += 3;
+            d.bands.push(BandRow {
+                x,
+                y,
+                fragment,
+                which,
+                o: r.f64s()?,
+                r: r.f64s()?,
+                s_minus: r.f64s()?,
+                s_plus: r.f64s()?,
+                status: r.take::<16>()?,
+            });
+        }
+    }
+    if let Some((_, size, off, count)) = section(b"PAIR") {
+        for i in 0..count {
+            let mut r = Reader {
+                b,
+                at: off + i * size,
+            };
+            d.pairs.push(PairRow {
+                x: r.u32()?,
+                y: r.u32()?,
+                a: r.u32()?,
+                b: r.u32()?,
+                sample: r.u8()?,
+                edges: r.u8()?,
+                label: r.u8()?,
+            });
+        }
+    }
     if let Some((_, size, off, count)) = section(b"FRAG") {
         for i in 0..count {
             let mut r = Reader {
@@ -517,6 +626,28 @@ pub fn canonical(d: &Decisions) -> String {
             list(c.cell_area.iter().map(|v| hex(*v))),
             list(c.depth.iter().map(|v| hex(*v))),
             list(c.band.iter().map(|v| hex(*v)))
+        );
+    }
+    for r in &d.bands {
+        let _ = writeln!(
+            s,
+            "band x={} y={} fragment={} which={} o={} r={} s_minus={} s_plus={} status={}",
+            r.x,
+            r.y,
+            r.fragment,
+            r.which,
+            list(r.o.iter().map(|v| hex(*v))),
+            list(r.r.iter().map(|v| hex(*v))),
+            list(r.s_minus.iter().map(|v| hex(*v))),
+            list(r.s_plus.iter().map(|v| hex(*v))),
+            list(r.status)
+        );
+    }
+    for r in &d.pairs {
+        let _ = writeln!(
+            s,
+            "pair x={} y={} sample={} a={} b={} edges={} label={}",
+            r.x, r.y, r.sample, r.a, r.b, r.edges, r.label
         );
     }
     for r in &d.refused {

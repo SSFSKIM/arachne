@@ -7,6 +7,8 @@ Dependency-free: the standard library only. ``read(path)`` returns a dictionary:
         "fragments": [...],
         "covers": [...],
         "pixels": [...],
+        "bands": [...],
+        "pairs": [...],
         "refused": [...],
     }
 
@@ -54,6 +56,22 @@ CAUSE = {
     6: "class_out_of_range",
     7: "slot_not_held",
 }
+#: A band row's status at a sample.
+BAND_STATUS = {0: "absent", 1: "bounded", 2: "band_unbounded", 3: "curve_recut"}
+#: A pair's label at a sample.
+LABEL = {
+    0: "truth_unable",
+    1: "depth_a",
+    2: "depth_b",
+    3: "tie_band",
+    4: "exact_tie",
+    5: "own_layers@1",
+    6: "one_plane@1",
+    7: "lines@1",
+    8: "near_parallel@1",
+}
+#: A pair's edge bits.
+EDGE_WEAK, EDGE_A_FRONT, EDGE_B_FRONT = 1, 2, 4
 #: Fragment flags: unbounded, ``truth_unable`` at every sample of the window (no cover rows).
 FLAG_UNBOUNDED = 1
 
@@ -90,6 +108,29 @@ DTYPES = {
         ("band", "<f8", (16,)),
     ],
     "PIXL": [("first", "<u8"), ("count", "<u4")],
+    "BAND": [
+        ("x", "<u4"),
+        ("y", "<u4"),
+        ("fragment", "<u4"),
+        ("which", "u1"),
+        ("pad", "u1", (3,)),
+        ("o", "<f8", (16,)),
+        ("r", "<f8", (16,)),
+        ("s_minus", "<f8", (16,)),
+        ("s_plus", "<f8", (16,)),
+        ("status", "u1", (16,)),
+    ],
+    "PAIR": [
+        ("x", "<u4"),
+        ("y", "<u4"),
+        ("a", "<u4"),
+        ("b", "<u4"),
+        ("sample", "u1"),
+        ("edges", "u1"),
+        ("label", "u1"),
+        ("pad", "u1"),
+        ("reserved", "<u4"),
+    ],
     "REFU": [
         ("reason", "u1"),
         ("kind", "u1"),
@@ -110,7 +151,9 @@ _COVR_HEAD = struct.Struct("<3I16s16s16s2B2x")
 _F16 = struct.Struct("<16d")
 _PIXL = struct.Struct("<QI")
 _REFU = struct.Struct("<3Bx3I2Q2I")
-_SIZES = {"FRAG": 64, "COVR": 456, "PIXL": 12, "REFU": 40}
+_BAND_HEAD = struct.Struct("<3IB3x")
+_PAIR = struct.Struct("<4I3Bx4x")
+_SIZES = {"FRAG": 64, "COVR": 456, "PIXL": 12, "BAND": 544, "PAIR": 24, "REFU": 40}
 
 
 class FormatError(ValueError):
@@ -167,7 +210,15 @@ def read_bytes(b: bytes) -> dict:
             raise FormatError(
                 f"section {tag} has records of {found[tag][0]} bytes, not {size}"
             )
-    out = {"header": header, "fragments": [], "covers": [], "pixels": [], "refused": []}
+    out = {
+        "header": header,
+        "fragments": [],
+        "covers": [],
+        "pixels": [],
+        "bands": [],
+        "pairs": [],
+        "refused": [],
+    }
     if "FRAG" in found:
         size, off, n = found["FRAG"]
         for i in range(n):
@@ -214,6 +265,40 @@ def read_bytes(b: bytes) -> dict:
     if "PIXL" in found:
         size, off, n = found["PIXL"]
         out["pixels"] = [list(_PIXL.unpack_from(b, off + i * size)) for i in range(n)]
+    if "BAND" in found:
+        size, off, n = found["BAND"]
+        for i in range(n):
+            at = off + i * size
+            x, y, fragment, which = _BAND_HEAD.unpack_from(b, at)
+            out["bands"].append(
+                {
+                    "x": x,
+                    "y": y,
+                    "fragment": fragment,
+                    "which": which,
+                    "o": list(_F16.unpack_from(b, at + 16)),
+                    "r": list(_F16.unpack_from(b, at + 144)),
+                    "s_minus": list(_F16.unpack_from(b, at + 272)),
+                    "s_plus": list(_F16.unpack_from(b, at + 400)),
+                    "status": list(b[at + 528 : at + 544]),
+                }
+            )
+    if "PAIR" in found:
+        size, off, n = found["PAIR"]
+        for i in range(n):
+            x, y, a, b_, sample, edges, label = _PAIR.unpack_from(b, off + i * size)
+            out["pairs"].append(
+                {
+                    "x": x,
+                    "y": y,
+                    "a": a,
+                    "b": b_,
+                    "sample": sample,
+                    "edges": edges,
+                    "label": label,
+                    "label_name": LABEL.get(label, "unknown"),
+                }
+            )
     text = b""
     if "TEXT" in found:
         _, off, n = found["TEXT"]
@@ -277,6 +362,18 @@ def canonical(d: dict) -> str:
         f"cells={_list(_hex(v) for v in c['cell_area'])} depth={_list(_hex(v) for v in c['depth'])} "
         f"band={_list(_hex(v) for v in c['band'])}"
         for c in d["covers"]
+    )
+    lines.extend(
+        f"band x={r['x']} y={r['y']} fragment={r['fragment']} which={r['which']} "
+        f"o={_list(_hex(v) for v in r['o'])} r={_list(_hex(v) for v in r['r'])} "
+        f"s_minus={_list(_hex(v) for v in r['s_minus'])} "
+        f"s_plus={_list(_hex(v) for v in r['s_plus'])} status={_list(r['status'])}"
+        for r in d["bands"]
+    )
+    lines.extend(
+        f"pair x={r['x']} y={r['y']} sample={r['sample']} a={r['a']} b={r['b']} "
+        f"edges={r['edges']} label={r['label']}"
+        for r in d["pairs"]
     )
     lines.extend(
         f"refused reason={r['reason']} kind={r['kind']} cause={r['cause']} entry={r['entry']} "
