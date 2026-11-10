@@ -10,7 +10,10 @@
 //! - [`camera`] places, projects and maps points (contract §2).
 //! - [`draw`] turns the order's entries into what they draw: meshes' triangles, paths' layers and
 //!   point blocks, each with its fragment identity.
-//! - [`flatten`] makes a path layer's outline and rings through kurbo (contract §4, §8).
+//! - [`flatten`] makes a path layer's outline and rings through kurbo (contract §4, §8); [`guard`]
+//!   draws curves far beyond the frame as chords and lays dashes under that guard (§4's
+//!   `guard_chords@1`, §8's dashes), and [`joins`] applies the join decisions a record carries to
+//!   kurbo's stroke (§8's `join_mask@1`).
 //! - [`shift`] bounds how far the input grid may move a record on screen (contract §6, the screen
 //!   shift `ε` that §3's and §4's margins read).
 //! - [`cover`] decides coverage at every sample (contract §3, §4).
@@ -22,6 +25,8 @@ pub mod cover;
 pub mod decide;
 pub mod draw;
 pub mod flatten;
+pub mod guard;
+pub mod joins;
 pub mod out;
 pub mod shift;
 pub mod stream;

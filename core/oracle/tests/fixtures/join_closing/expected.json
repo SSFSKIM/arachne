@@ -1,0 +1,15 @@
+{
+  "fixture": "join_closing",
+  "kind": "stroke_behaviour",
+  "rules": ["join_mask@1"],
+  "verdict": "agreement",
+  "seq": 1,
+  "fragment": {"object": 100, "part": 0, "layer": "stroke", "sub": 2},
+  "wrong_reading": "the closing join read from the last cubic's byte (a miter)",
+  "checks": [
+    {"pixel": [3, 12], "samples": [2, 3, 6, 7], "cell_bytes": [128, 255, 0, 128], "wrong_reading": [255, 255, 255, 255], "what": "the outer corner square of (-4, -4), cut by the closing join's bevel"},
+    {"pixel": [12, 12], "samples": [5], "cell_bytes": [255], "wrong_reading": [255], "what": "the outermost cell of (4, -4)'s mitred corner"},
+    {"pixel": [12, 3], "samples": [9], "cell_bytes": [255], "wrong_reading": [255], "what": "the outermost cell of (4, 4)'s mitred corner"},
+    {"pixel": [3, 3], "samples": [10], "cell_bytes": [255], "wrong_reading": [255], "what": "the outermost cell of (-4, 4)'s mitred corner"}
+  ]
+}

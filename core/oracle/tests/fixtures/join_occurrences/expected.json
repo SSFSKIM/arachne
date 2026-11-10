@@ -1,0 +1,12 @@
+{
+  "fixture": "join_occurrences",
+  "kind": "stroke_behaviour",
+  "rules": ["join_mask@1"],
+  "verdict": "agreement",
+  "seq": 1,
+  "fragment": {"object": 100, "part": 0, "layer": "stroke", "sub": 2},
+  "wrong_reading": "the first occurrence's decision (a bevel) applied to both",
+  "checks": [
+    {"pixel": [12, 11], "samples": [5, 6], "cell_bytes": [255, 255], "wrong_reading": [0, 0], "what": "cells wholly inside the miter tip at q beyond the bevel, tip near (12.94, 11.5)"}
+  ]
+}
