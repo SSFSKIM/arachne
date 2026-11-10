@@ -595,6 +595,62 @@ fn a_triangle_whose_corners_differ_past_binary64_keeps_its_winding() {
     }
 }
 
+/// The distance from `p` to the segment `a b` (a point where `a = b`).
+fn to_segment(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    let (d, q) = ([b[0] - a[0], b[1] - a[1]], [p[0] - a[0], p[1] - a[1]]);
+    let len2 = d[0] * d[0] + d[1] * d[1];
+    let t = if len2 > 0.0 {
+        ((q[0] * d[0] + q[1] * d[1]) / len2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    libm::hypot(q[0] - t * d[0], q[1] - t * d[1])
+}
+
+/// Every sample a degenerate triangle's rows do not say absent lies within the margin of one of
+/// its edges: it has no area, so it is present nowhere farther out.
+fn assert_present_only_on(corners: [[f64; 2]; 3]) {
+    let rows = arachne_oracle::cover::triangle(corners, [0.0; 3], [0, 0, 16, 16]);
+    for r in &rows {
+        for (s, &c) in r.cover.iter().enumerate() {
+            let p = sample_point(r.x as i64, r.y as i64, s);
+            let near = (0..3)
+                .map(|e| to_segment(p, corners[e], corners[(e + 1) % 3]))
+                .fold(f64::INFINITY, f64::min);
+            assert!(
+                c == ABSENT || near <= 1.0 / 256.0 + 1e-12,
+                "pixel ({}, {}) sample {s} is {c}, {near} px from the triangle",
+                r.x,
+                r.y
+            );
+        }
+    }
+}
+
+#[test]
+fn a_triangle_whose_corners_coincide_is_absent_past_the_margin() {
+    // Every sample of pixel (0, 0) lies at least 1/32 px from (0.5, 0.5), past 1/256.
+    let point = [[0.5, 0.5]; 3];
+    assert_present_only_on(point);
+    let rows = arachne_oracle::cover::triangle(point, [0.0; 3], [0, 0, 1, 1]);
+    assert!(rows.is_empty(), "{rows:?}");
+    // Two corners coinciding: a segment, present only along it.
+    assert_present_only_on([[2.0, 3.0], [2.0, 3.0], [9.0, 7.0]]);
+}
+
+#[test]
+fn a_collinear_triangle_is_absent_past_its_segments_ends() {
+    // The line runs through sample 9 of pixel row 8 and ends inside pixel 5, at x = 5.3: the
+    // samples on it past x = 5.3 + 1/256 are outside the triangle by more than the margin.
+    let y9 = sample_point(0, 8, 9)[1];
+    let corners = [[1.0, y9], [3.0, y9], [5.3, y9]];
+    assert_present_only_on(corners);
+    let rows = arachne_oracle::cover::triangle(corners, [0.0; 3], [0, 0, 16, 16]);
+    assert!(rows.iter().all(|r| r.x <= 5), "{rows:?}");
+    // A slanted one, its third corner the others' midpoint.
+    assert_present_only_on([[1.0, 1.0], [5.3, 9.7], [3.15, 5.35]]);
+}
+
 #[test]
 fn the_guard_clips_a_triangle_at_65536_px() {
     let rows = arachne_oracle::cover::triangle(

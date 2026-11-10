@@ -199,6 +199,43 @@ fn winding(corners: [[f64; 2]; 3]) -> Option<f64> {
     (det.abs() > err).then_some(det.signum())
 }
 
+/// An upper bound on how far a point inside the triangle `corners` can lie from its edges: its
+/// inradius, `2A / P <= |(b − a) × (c − a)| / (2 L)` with `L` its longest edge (its perimeter is at
+/// least `2 L`). Read on the corners scaled as `winding` scales them, so nothing overflows; the
+/// scaled bound is scaled back up, to infinity where binary64 cannot hold it, which bounds
+/// nothing. A triangle with no area has none, and this is what bounds its interior by its edges
+/// whatever its winding reads.
+fn inradius_above(corners: [[f64; 2]; 3]) -> f64 {
+    let big = corners.iter().flatten().fold(0.0f64, |m, v| m.max(v.abs()));
+    if big == 0.0 {
+        return 0.0;
+    }
+    if !big.is_finite() {
+        return f64::INFINITY;
+    }
+    let e = libm::frexp(big).1;
+    let s = libm::ldexp(1.0, -e);
+    let q = corners.map(|p| p.map(|v| v * s));
+    let (d1, d2) = (sub(q[1], q[0]), sub(q[2], q[0]));
+    let (t1, t2) = (d1[0] * d2[1], d1[1] * d2[0]);
+    let det = (t1 - t2).abs() + 4.0 * U * (t1.abs() + t2.abs()) + 16.0 * f64::from_bits(1);
+    // Each scaled coordinate is within one subnormal unit of the exact one, so an edge within
+    // four of its reading.
+    let longest = (0..3)
+        .map(|i| {
+            let d = sub(q[(i + 1) % 3], q[i]);
+            libm::hypot(d[0], d[1]) * (1.0 - 4.0 * U)
+        })
+        .fold(0.0f64, f64::max)
+        - 4.0 * f64::from_bits(1);
+    if longest <= 0.0 {
+        // The corners lie within a few subnormal units of one another, scaled: the triangle
+        // within that of each corner.
+        return libm::ldexp(8.0 * f64::from_bits(1), e);
+    }
+    libm::ldexp(det / (2.0 * longest) * (1.0 + 4.0 * U), e)
+}
+
 /// A mesh triangle's verdicts at every sample of the window (contract §3, oracle reading): its
 /// nominal corners in pixels and each corner's screen shift `ε` in pixels, all finite (a triangle
 /// with an infinite one is unbounded, which the caller writes).
@@ -232,6 +269,7 @@ pub fn triangle(corners: [[f64; 2]; 3], eps: [f64; 3], window: Window) -> Vec<Pi
     };
     let lines: [Line; 3] = std::array::from_fn(|e| Line::new(corners[e], corners[(e + 1) % 3]));
     let winding = winding(corners);
+    let inside = inradius_above(corners);
     let guard = |p: [f64; 2]| -> Cover {
         let out = (p[0].abs() - GUARD).max(p[1].abs() - GUARD);
         if out > 1.0 / 256.0 {
@@ -247,6 +285,12 @@ pub fn triangle(corners: [[f64; 2]; 3], eps: [f64; 3], window: Window) -> Vec<Pi
             .iter()
             .map(|l| l.distance_below(p))
             .fold(f64::INFINITY, f64::min);
+        // Farther from every edge than any point inside can lie, and than the margin: outside by
+        // more than the margin, whatever the winding. Where the triangle has no area (its corners
+        // coincide or lie on one line) this is what says absent off its segments.
+        if near > reach && near > inside {
+            return Cover::Absent;
+        }
         // The verdict were the triangle wound by `sign`: each edge's distance, positive inside (an
         // edge whose corners coincide constrains nothing).
         let wound = |sign: f64| -> Cover {
