@@ -296,8 +296,8 @@ pub fn lower(
                 _ => (through(), 0, f64::INFINITY),
             };
             // Of no alpha, Cairo paints nothing of it, as a path's solid layer
-            // ([`crate::path::Lowering::layers`]): offered to the registry as such a path is, it
-            // lays no fragment.
+            // ([`crate::path::Lowering::layers`]): not offered to the registry (`paints` above),
+            // as such a path is not, it lays no fragment either.
             if alpha8 == 0 {
                 continue;
             }
