@@ -153,9 +153,11 @@ impl LabelPlan {
         }
     }
 
-    /// Whether `f` is a fill of a sheet label `label` goes behind.
+    /// Whether `f` is a fill of a sheet label `label` goes behind, painted at positive alpha: where
+    /// its colour is clear (a gradient's clear part) it backs nothing, as qualification counts it.
     pub fn backs(&self, label: u32, f: &Fragment) -> bool {
         is_fill(f)
+            && f.colour[3] > 0
             && self
                 .sheet_of
                 .get(&(f.order, f.sub))
