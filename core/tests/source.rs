@@ -446,13 +446,21 @@ fn apply_refuses_a_held_row_by_its_code() {
     // slot, a row for a slot the delta removes, a row carrying nothing, a path of no objects.
     let (mut s, _, sourced) = holding_a_sourced_square();
     let refused = [
-        ("slot_not_held", vec![held_row(5, 0, glyph(5).source)], vec![]),
+        (
+            "slot_not_held",
+            vec![held_row(5, 0, glyph(5).source)],
+            vec![],
+        ),
         (
             "slot_named_twice",
             vec![held_row(1, 0, glyph(1).source), held_row(1, 2, Vec::new())],
             vec![],
         ),
-        ("slot_removed", vec![held_row(1, 0, glyph(1).source)], vec![1]),
+        (
+            "slot_removed",
+            vec![held_row(1, 0, glyph(1).source)],
+            vec![1],
+        ),
         ("row_empty", vec![held_row(1, 0, Vec::new())], vec![]),
         ("path_empty", vec![held_row(1, 0, vec![Vec::new()])], vec![]),
         // The first in the stated order: a row carrying nothing, for a slot not held.
@@ -470,8 +478,8 @@ fn apply_refuses_a_held_row_by_its_code() {
 
 #[test]
 fn a_row_for_a_slot_the_delta_sets_is_that_records_metadata() {
-    // Not a refusal: the row is the set record's own source and facing group, for a slot held before
-    // the delta or not, and it is written as that record's row.
+    // Not a refusal: the row is the set record's own source and facing group, for a slot held
+    // before the delta or not, and it is written as that record's row.
     let (mut s, shape, _) = holding_a_sourced_square();
     let mut d = Delta::new(Time { num: 1, den: 15 }, 1);
     d.set = vec![square_at(1, &shape), square_at(6, &shape)];
@@ -555,18 +563,60 @@ fn the_reader_reports_the_first_refusal_in_order() {
     let one = &["a.B"];
     let held = || row_bytes(3, 0, &[&[(7, 0)]]);
     let removed = || row_bytes(2, 0, &[&[(7, 0)]]);
-    refused_with("class_named_twice", "slot_named_twice", &["a.B", "a.B"], &[held(), held()]);
+    refused_with(
+        "class_named_twice",
+        "slot_named_twice",
+        &["a.B", "a.B"],
+        &[held(), held()],
+    );
     // A slot named twice and a removed slot are never one row's: the first row that offends.
-    refused_with("slot_named_twice", "slot_removed", one, &[held(), held(), removed()]);
-    refused_with("slot_removed", "slot_named_twice", one, &[removed(), held(), held()]);
+    refused_with(
+        "slot_named_twice",
+        "slot_removed",
+        one,
+        &[held(), held(), removed()],
+    );
+    refused_with(
+        "slot_removed",
+        "slot_named_twice",
+        one,
+        &[removed(), held(), held()],
+    );
     refused_with("slot_removed", "row_empty", one, &[row_bytes(2, 0, &[])]);
-    refused_with("slot_removed", "class_out_of_range", one, &[row_bytes(2, 0, &[&[(7, 9)]])]);
+    // A set slot's row carrying nothing is refused as a held one's is.
+    refused_with("row_empty", "slot_removed", one, &[row_bytes(1, 0, &[])]);
+    refused_with(
+        "slot_removed",
+        "class_out_of_range",
+        one,
+        &[row_bytes(2, 0, &[&[(7, 9)]])],
+    );
     // A row carrying nothing has no path to be empty: the first row that offends.
-    refused_with("row_empty", "path_empty", one, &[row_bytes(4, 0, &[]), row_bytes(5, 0, &[&[]])]);
+    refused_with(
+        "row_empty",
+        "path_empty",
+        one,
+        &[row_bytes(4, 0, &[]), row_bytes(5, 0, &[&[]])],
+    );
     // An empty path before a class past the names, wherever each is in the row.
-    refused_with("path_empty", "class_out_of_range", one, &[row_bytes(3, 0, &[&[(7, 5)], &[]])]);
-    refused_with("path_empty", "class_out_of_range", one, &[row_bytes(3, 0, &[&[], &[(7, 5)]])]);
-    refused_with("class_out_of_range", "path_empty", one, &[row_bytes(3, 0, &[&[(7, 1)]])]);
+    refused_with(
+        "path_empty",
+        "class_out_of_range",
+        one,
+        &[row_bytes(3, 0, &[&[(7, 5)], &[]])],
+    );
+    refused_with(
+        "path_empty",
+        "class_out_of_range",
+        one,
+        &[row_bytes(3, 0, &[&[], &[(7, 5)]])],
+    );
+    refused_with(
+        "class_out_of_range",
+        "path_empty",
+        one,
+        &[row_bytes(3, 0, &[&[(7, 1)]])],
+    );
     // The rows' order does not change what a row is: a set slot's row after a held one's.
     let read = wire::decode_delta(&with_section(
         &[1],
@@ -575,7 +625,29 @@ fn the_reader_reports_the_first_refusal_in_order() {
     ))
     .unwrap();
     assert_eq!(read.set[0].facing_group, 4);
-    assert_eq!(read.source, vec![held_row(3, 0, vec![vec![node(7, "a.B")]])]);
+    assert_eq!(
+        read.source,
+        vec![held_row(3, 0, vec![vec![node(7, "a.B")]])]
+    );
+}
+
+#[test]
+fn a_row_for_a_slot_the_delta_sets_and_removes_is_refused_as_removed() {
+    // The delta sets slot 1 and removes it, as XF's apply removes a slot set and removed.
+    let row = row_bytes(1, 0, &[&[(7, 0)]]);
+    let bytes = with_section(&[1], &[1], &section_bytes(&["a.B"], &[row]));
+    match wire::decode_delta(&bytes) {
+        Err(XfError::Invalid(why)) => assert!(why.contains("slot_removed"), "{why}"),
+        other => panic!("not refused as invalid: {other:?}"),
+    }
+    let (mut s, shape, sourced) = holding_a_sourced_square();
+    let mut d = Delta::new(Time { num: 1, den: 15 }, 1);
+    d.set = vec![square_at(1, &shape)];
+    d.remove = vec![1];
+    d.source = vec![held_row(1, 4, Vec::new())];
+    let why = s.apply(&d).unwrap_err().to_string();
+    assert!(why.contains("slot_removed"), "{why}");
+    assert_eq!(s.record(1), Some(&sourced));
 }
 
 #[test]
@@ -586,7 +658,10 @@ fn a_readers_refusal_comes_before_apply_s_slot_not_held() {
     let both = section_bytes(&["a.B"], &[not_held.clone(), row_bytes(4, 0, &[])]);
     match wire::decode_delta(&with_section(&[], &[], &both)) {
         Err(XfError::Invalid(why)) => {
-            assert!(why.contains("row_empty") && !why.contains("slot_not_held"), "{why}")
+            assert!(
+                why.contains("row_empty") && !why.contains("slot_not_held"),
+                "{why}"
+            )
         }
         other => panic!("not refused as invalid: {other:?}"),
     }

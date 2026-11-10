@@ -19,14 +19,17 @@ from arachne import (
     UP,
     Arrow3D,
     Circle,
+    Dot,
     ImageMobject,
     MathTex,
     PMobject,
     Scene,
     Square,
     Surface,
+    Text,
     ThreeDScene,
     TransformMatchingTex,
+    Triangle,
     Vector,
     VGroup,
     tempconfig,
@@ -288,6 +291,40 @@ def test_regrouping_a_held_label_s_glyph_sends_its_new_facing_group():
     assert _by_mobject(stream)[id(two[0])].fields["facing_group"] == before
 
 
+def test_a_leaf_reparented_between_live_frames_sends_its_new_source_alone(
+    monkeypatch,
+):
+    """Drawn live, too: a held record whose objects move and whose drawing
+    does not is not set again.
+    """
+    pytest.importorskip("arachne_core")
+    from arachne.frame_ir.live import live, live_painter
+
+    sent = []
+    monkeypatch.setattr(CorePainter, "draw", _keeping(CorePainter.draw, sent))
+    square = Square()
+    a, b = VGroup(square), VGroup()
+    with tempconfig({"pixel_width": 32, "pixel_height": 18}):
+        camera = ThreeDCamera()
+        for index in range(2):
+            if index:
+                a.remove(square)
+                b.add(square)
+            with live(camera, Fraction(index, FPS), draw_path="core", roots=[a, b]):
+                camera.reset()
+                camera.capture_mobjects([a, b])
+        stream = live_painter(camera).painter(camera).stream
+    [slot] = stream._held
+    first, second = sent[-2:]
+    assert [s for s, _ in first.set] == [slot]
+    assert not second.set, "its drawing is unchanged"
+    [(row_slot, source, group)] = second.source
+    assert row_slot == slot
+    assert group == 0
+    assert source[0][1][0] == stream._token(b)
+    assert stream._held[slot].fields["source"] == source
+
+
 def test_a_record_drawn_live_carries_the_source_the_record_path_writes():
     pytest.importorskip("arachne_core")
     from arachne.frame_ir.live import live, live_painter
@@ -452,3 +489,48 @@ class LabelledArrow(ThreeDScene):
         self.add(Arrow3D(LEFT * 2, RIGHT * 2, resolution=6), *labels)
         self.add_fixed_orientation_mobjects(*labels)
         self.move_camera(theta=-0.5, run_time=0.3)
+
+
+class FacingFamilies(ThreeDScene):
+    """Kept facing the camera under a turn: a dot, a shape, and a family
+    mixing text and a shape.
+    """
+
+    def construct(self):
+        self.set_camera_orientation(phi=1.0, theta=-0.7)
+        dot = Dot([1.0, 1.0, 0.0])
+        shape = Triangle().scale(0.3).shift(LEFT * 2)
+        mixed = VGroup(Text("x", font_size=24), Square(0.2)).arrange(RIGHT)
+        mixed.shift(DOWN)
+        self.add(dot, shape, mixed)
+        self.add_fixed_orientation_mobjects(dot, shape, mixed)
+        self.move_camera(theta=-0.4, run_time=0.3)
+
+
+#: Scenes keeping records facing the camera: labels of shapes, a label of text,
+#: a dot, a shape and a family mixing text and a shape.
+FACING = [LabelledArrow, Solids, FacingFamilies]
+
+
+@pytest.mark.parametrize("scene_class", FACING, ids=lambda c: c.__name__)
+@pytest.mark.parametrize("draw_path", ["ir_cairo", "core"])
+def test_every_record_set_facing_the_camera_has_a_facing_group(
+    scene_class, draw_path, monkeypatch
+):
+    """Scene lowering sets no record kept facing the camera outside a label:
+    each carries a facing group.
+    """
+    pytest.importorskip("arachne_core")
+    sent = []
+    for painter_class in (CorePainter, IrCairoPainter):
+        monkeypatch.setattr(painter_class, "draw", _keeping(painter_class.draw, sent))
+    render(scene_class, FPS, draw_path=draw_path, **MEDIUM)
+    facing = [
+        record
+        for delta in sent
+        for _, record in delta.set
+        if record.fields.get("fixed_orientation_centre") is not None
+    ]
+    assert facing, "kept facing the camera"
+    for record in facing:
+        assert record.fields.get("facing_group", 0) != 0, record
