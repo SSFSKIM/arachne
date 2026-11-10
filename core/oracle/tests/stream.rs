@@ -4,8 +4,9 @@
 mod common;
 
 use arachne_core::xf::{
-    Background, Body, Delta, ImageSource, Key, Layer as XfLayer, LightModel, OrderEntry, Record,
-    RecordKind, Shape, ShapeData, Space, Stops, XF_VERSION, wire,
+    Background, Body, Delta, FEATURE_BACKGROUND_IMAGE, FEATURE_PRE_PROJECTED, FaceGroup,
+    ImageSource, Instances, Key, Layer as XfLayer, LightModel, OrderEntry, Paint, Points,
+    PreProjected, Record, RecordKind, Shape, ShapeData, Space, Stops, XF_VERSION, wire,
 };
 use arachne_oracle::out::{STATUS_DECIDED, STATUS_UNABLE};
 use arachne_oracle::stream::{KNOWN_XF, Reason, State};
@@ -220,8 +221,8 @@ fn image(w: u32, h: u32, extra: usize) -> Shape {
 
 /// A delta that is refused whole leaves the stream as it was: its frame is `invalid_delta`, and
 /// the next frame draws what the delta before it left (here the square, never the square `bad`
-/// moves along with its fault).
-fn assert_refused_whole(good: Delta, mut bad: Delta) {
+/// moves along with its fault). Gives the refusal's detail.
+fn assert_refused_whole(good: Delta, mut bad: Delta) -> String {
     let (moved, r) = {
         let v = view(16, 16);
         let s = path_shape(polygon(&[
@@ -245,6 +246,7 @@ fn assert_refused_whole(good: Delta, mut bad: Delta) {
     let after = decide(&deltas);
     assert_eq!(after.header.status, STATUS_DECIDED);
     assert_eq!(cover_lines(&after), cover_lines(&decide(&[good])));
+    at_bad.refused[0].detail.clone()
 }
 
 #[test]
@@ -485,4 +487,480 @@ fn a_paint_table_uploaded_under_a_key_the_stream_holds_as_a_shape_refuses_the_de
     bad.upload_paints = vec![table];
     bad.order = Some(vec![entry(0)]);
     assert_refused_whole(good, bad);
+}
+
+// One test per check `apply` makes (XF.md, "Where each check is made", Apply), each naming the
+// refusal it expects by its detail, so that the check's absence fails it even where a later check
+// would still refuse the delta. Each delta a reader can carry goes through the wire first.
+
+/// `d` encoded and read back: a delta the wire carries, past the reader's own checks.
+fn wired(d: Delta) -> Delta {
+    wire::decode_delta(&wire::encode_delta(&d)).unwrap()
+}
+
+/// `bad` refused whole after `good` (see `assert_refused_whole`), for a fault its detail names.
+fn assert_refused_for(good: Delta, bad: Delta, detail: &str) {
+    let got = assert_refused_whole(good, bad);
+    assert!(got.contains(detail), "refused for {got:?}, not {detail:?}");
+}
+
+/// The square in slot 0, drawn.
+fn held() -> Delta {
+    let (s, r) = square(0);
+    delta(1, Some(view(16, 16)), vec![s], vec![r])
+}
+
+/// A delta at 2 uploading `shapes` and setting `records`, its order the square's alone.
+fn next(shapes: Vec<Shape>, records: Vec<Record>) -> Delta {
+    let mut d = delta(2, None, shapes, records);
+    d.order = Some(vec![entry(0)]);
+    d
+}
+
+/// A triangle path shape, unlike the square's.
+fn triangle() -> Shape {
+    let v = view(16, 16);
+    path_shape(polygon(&[
+        frame(&v, [1.0, 1.0]),
+        frame(&v, [5.0, 1.0]),
+        frame(&v, [1.0, 5.0]),
+    ]))
+}
+
+/// A two-face face group in `slot` over two squares' stacked points, its fill table `fill`.
+fn faces(slot: u32, fill: Key) -> (Shape, Record) {
+    let v = view(16, 16);
+    let mut points = polygon(&[
+        frame(&v, [1.0, 1.0]),
+        frame(&v, [3.0, 1.0]),
+        frame(&v, [3.0, 3.0]),
+        frame(&v, [1.0, 3.0]),
+    ]);
+    points.extend(polygon(&[
+        frame(&v, [5.0, 5.0]),
+        frame(&v, [7.0, 5.0]),
+        frame(&v, [7.0, 7.0]),
+        frame(&v, [5.0, 7.0]),
+    ]));
+    let s = path_shape(points);
+    let mut r = Record::new(RecordKind::FaceGroup, slot, 100 + slot);
+    r.geometry.shape_a = Some(s.key());
+    r.body = Body::FaceGroup(FaceGroup {
+        uv: vec![[0, 0], [1, 0]],
+        grid: [2, 1],
+        fill,
+        stroke: None,
+        face_ends: Vec::new(),
+        face_widths: Vec::new(),
+    });
+    (s, r)
+}
+
+fn rows(n: usize) -> Stops {
+    Stops::new(vec![[1.0, 1.0, 1.0, 1.0]; n])
+}
+
+#[test]
+fn apply_1_a_major_other_than_the_oracles() {
+    let mut bad = next(vec![], vec![]);
+    bad.version = (KNOWN_XF.0 + 1, 0);
+    assert_refused_for(held(), bad, "XF major 2");
+}
+
+#[test]
+fn apply_3_a_key_uploaded_twice() {
+    let bad = next(vec![image(2, 2, 0), image(2, 2, 0)], vec![]);
+    assert_refused_for(held(), wired(bad), "uploaded twice");
+}
+
+#[test]
+fn apply_4_a_mesh_naming_a_vertex_it_lacks() {
+    let mesh = Shape::new(ShapeData::Mesh {
+        positions: vec![[0.0; 3]; 3],
+        triangles: vec![[0, 1, 3]],
+        normals: None,
+    });
+    assert_refused_for(
+        held(),
+        wired(next(vec![mesh], vec![])),
+        "names a vertex it lacks",
+    );
+}
+
+#[test]
+fn apply_4_a_mesh_whose_normals_are_not_one_per_vertex() {
+    // The wire reads one normal per vertex: only a delta built in memory carries this.
+    let mesh = Shape::new(ShapeData::Mesh {
+        positions: vec![[0.0; 3]; 3],
+        triangles: vec![[0, 1, 2]],
+        normals: Some(vec![[0.0, 0.0, 1.0]; 2]),
+    });
+    assert_refused_for(
+        held(),
+        next(vec![mesh], vec![]),
+        "normals not one per vertex",
+    );
+}
+
+/// The square drawn, and in slot 1, outside the order, `extra` drawing `shape`.
+fn held_with(shape: Shape, extra: Record, paints: Vec<Stops>) -> Delta {
+    let mut good = held();
+    good.upload.push(shape);
+    good.set.push(extra);
+    good.upload_paints = paints;
+    good
+}
+
+#[test]
+fn apply_8_a_release_of_a_shape_a_held_record_uses() {
+    let t = triangle();
+    let mut good = held_with(t.clone(), path(1, t.key(), true, None), vec![]);
+    good.order = Some(vec![entry(0)]);
+    let mut bad = next(vec![], vec![]);
+    bad.release = vec![t.key()];
+    assert_refused_for(good, wired(bad), "which slot 1 uses");
+}
+
+#[test]
+fn apply_8_a_release_of_a_paint_table_a_held_record_uses() {
+    let t = triangle();
+    let table = rows(3);
+    let mut r = path(1, t.key(), false, None);
+    r.paint.fill = Paint::Table(table.key());
+    let mut good = held_with(t, r, vec![table.clone()]);
+    good.order = Some(vec![entry(0)]);
+    let mut bad = next(vec![], vec![]);
+    bad.release = vec![table.key()];
+    assert_refused_for(good, wired(bad), "which slot 1 uses");
+}
+
+#[test]
+fn apply_8_a_release_of_a_held_displays_background() {
+    let bg = image(8, 8, 0);
+    let mut shown = display(1, 0, vec![]);
+    if let Body::Image(ImageSource::SubFrame { view, .. }) = &mut shown.body {
+        view.background = Background::Image(bg.key());
+    }
+    let mut good = held_with(bg.clone(), shown, vec![]);
+    good.order = Some(vec![entry(0)]);
+    let mut bad = next(vec![], vec![]);
+    bad.release = vec![bg.key()];
+    assert_refused_for(good, wired(bad), "which slot 1 uses");
+}
+
+#[test]
+fn apply_9_a_held_displays_order_left_naming_a_removed_slot() {
+    let t = triangle();
+    let mut good = held_with(t.clone(), path(2, t.key(), true, None), vec![]);
+    good.set.push(display(1, 0, vec![at(XfLayer::Moving, 2)]));
+    good.order = Some(vec![entry(0)]);
+    // The delta removes slot 2, which the held display's own order draws.
+    let mut bad = next(vec![], vec![]);
+    bad.remove = vec![2];
+    assert_refused_for(good, wired(bad), "slot 1's display's order");
+}
+
+#[test]
+fn apply_10_the_background_image_bit_and_fill_image_disagreeing() {
+    // The reader refuses the disagreement: only a delta built in memory reaches apply with it.
+    let (s, mut r) = square(1);
+    r.features |= FEATURE_BACKGROUND_IMAGE;
+    assert_refused_for(held(), next(vec![s], vec![r]), "background_image bit");
+}
+
+#[test]
+fn apply_10_the_pre_projected_bit_and_its_tail_disagreeing() {
+    let (s, mut r) = square(1);
+    r.features |= FEATURE_PRE_PROJECTED;
+    assert_refused_for(held(), next(vec![s], vec![r]), "pre_projected bit");
+}
+
+#[test]
+fn apply_10_a_pre_projected_tail_on_a_kind_that_takes_none() {
+    let (s, r) = faces(1, rows(2).key());
+    let mut r = r;
+    r.features |= FEATURE_PRE_PROJECTED;
+    r.pre_projected = Some(PreProjected {
+        points: s.key(),
+        gradient: None,
+        fill: Paint::None,
+        stroke: Paint::None,
+        background_stroke: Paint::None,
+    });
+    let mut bad = next(vec![s], vec![r]);
+    bad.upload_paints = vec![rows(2)];
+    assert_refused_for(held(), bad, "tail on a face_group record");
+}
+
+#[test]
+fn apply_10_a_kind_that_needs_a_shape_given_none() {
+    let mut r = path(1, Key([0; 16]), true, None);
+    r.geometry.shape_a = None;
+    assert_refused_for(held(), wired(next(vec![], vec![r])), "given no shape");
+}
+
+#[test]
+fn apply_10_a_shape_of_a_kind_the_record_cannot_take() {
+    let picture = image(2, 2, 0);
+    let r = path(1, picture.key(), true, None);
+    assert_refused_for(held(), wired(next(vec![picture], vec![r])), "cannot take");
+}
+
+#[test]
+fn apply_10_a_sub_frame_display_given_a_shape() {
+    let picture = image(2, 2, 0);
+    let mut r = display(1, 0, vec![]);
+    r.geometry.shape_a = Some(picture.key());
+    assert_refused_for(
+        held(),
+        wired(next(vec![picture], vec![r])),
+        "sub-frame display given a shape",
+    );
+}
+
+#[test]
+fn apply_10_a_body_of_another_kinds() {
+    // The reader reads the body a kind has: only a delta built in memory carries another's.
+    let (s, mut r) = square(1);
+    r.body = Body::Points(Points {
+        colors: rows(1).key(),
+        radius: 1.0,
+    });
+    let mut bad = next(vec![s], vec![r]);
+    bad.upload_paints = vec![rows(1)];
+    assert_refused_for(held(), bad, "another kind's body");
+}
+
+#[test]
+fn apply_10_a_paint_table_the_stream_would_not_hold() {
+    let t = triangle();
+    let mut r = path(1, t.key(), false, None);
+    r.paint.fill = Paint::Table(Key([3; 16]));
+    assert_refused_for(held(), wired(next(vec![t], vec![r])), "names paint table");
+}
+
+#[test]
+fn apply_10_a_sub_frame_view_with_soft_diffuse_light_out_of_range() {
+    let mut r = display(1, 0, vec![]);
+    if let Body::Image(ImageSource::SubFrame { view, .. }) = &mut r.body {
+        view.light = LightModel::SoftDiffuse {
+            ambient: 2.0,
+            wrap: 0.0,
+        };
+    }
+    assert_refused_for(
+        held(),
+        wired(next(vec![], vec![r])),
+        "display's soft diffuse",
+    );
+}
+
+#[test]
+fn apply_10_a_sub_frame_view_naming_a_background_it_lacks() {
+    let mut r = display(1, 0, vec![]);
+    if let Body::Image(ImageSource::SubFrame { view, .. }) = &mut r.body {
+        view.background = Background::Image(Key([9; 16]));
+    }
+    assert_refused_for(
+        held(),
+        wired(next(vec![], vec![r])),
+        "display names background image",
+    );
+}
+
+#[test]
+fn apply_10_a_face_groups_fill_table_not_one_row_per_face() {
+    // Two faces, one row: drawn, the second face would read a row the table lacks.
+    let one = rows(1);
+    let (s, r) = faces(1, one.key());
+    let mut bad = next(vec![s], vec![r]);
+    bad.upload_paints = vec![one];
+    assert_refused_for(held(), wired(bad), "fill table holds 1 rows");
+}
+
+#[test]
+fn apply_10_a_points_records_colour_table_not_one_row_per_point() {
+    let v = view(16, 16);
+    let s = path_shape(vec![frame(&v, [2.0, 2.0]), frame(&v, [4.0, 4.0])]);
+    let one = rows(1);
+    let mut r = Record::new(RecordKind::Points, 1, 101);
+    r.geometry.shape_a = Some(s.key());
+    r.body = Body::Points(Points {
+        colors: one.key(),
+        radius: 1.0,
+    });
+    let mut bad = next(vec![s], vec![r]);
+    bad.upload_paints = vec![one];
+    assert_refused_for(held(), wired(bad), "colour table holds 1 rows");
+}
+
+/// An instances record in slot 1 of the triangle, placed `n` times, its stroke table `stroke`
+/// rows, its objects `objects`.
+fn instances(n: usize, stroke: usize, objects: Vec<u32>) -> Delta {
+    let t = triangle();
+    let (fill, strokes) = (rows(n), rows(stroke));
+    let mut r = Record::new(RecordKind::Instances, 1, 101);
+    r.geometry.shape_a = Some(t.key());
+    r.paint.fill = Paint::One([1.0; 4]);
+    r.body = Body::Instances(Instances {
+        placements: vec![arachne_core::xf::IDENTITY; n],
+        fill: fill.key(),
+        stroke: strokes.key(),
+        objects,
+    });
+    let mut bad = next(vec![t], vec![r]);
+    bad.upload_paints = if n == stroke {
+        vec![fill]
+    } else {
+        vec![fill, strokes]
+    };
+    bad
+}
+
+#[test]
+fn apply_10_an_instances_table_not_one_row_per_placement() {
+    assert_refused_for(
+        held(),
+        wired(instances(2, 1, vec![1, 2])),
+        "stroke table holds 1 rows",
+    );
+}
+
+#[test]
+fn apply_10_an_instances_record_whose_placements_and_objects_differ_in_number() {
+    // The writer refuses to encode it: only a delta built in memory carries it.
+    assert_refused_for(held(), instances(2, 2, vec![1]), "differ in number");
+}
+
+#[test]
+fn apply_10_face_ends_not_rising() {
+    let two = rows(2);
+    let (s, mut r) = faces(1, two.key());
+    if let Body::FaceGroup(f) = &mut r.body {
+        f.face_ends = vec![32, 16];
+    }
+    let mut bad = next(vec![s], vec![r]);
+    bad.upload_paints = vec![two];
+    assert_refused_for(held(), wired(bad), "face ends");
+}
+
+#[test]
+fn apply_10_face_widths_below_0() {
+    let two = rows(2);
+    let (s, mut r) = faces(1, two.key());
+    if let Body::FaceGroup(f) = &mut r.body {
+        f.face_widths = vec![1.0, -1.0];
+    }
+    let mut bad = next(vec![s], vec![r]);
+    bad.upload_paints = vec![two];
+    assert_refused_for(held(), wired(bad), "face widths");
+}
+
+#[test]
+fn apply_10_joins_on_a_record_that_is_not_a_path() {
+    let two = rows(2);
+    let (s, mut r) = faces(1, two.key());
+    r.joins = Some(vec![0; 8]);
+    let mut bad = next(vec![s], vec![r]);
+    bad.upload_paints = vec![two];
+    assert_refused_for(held(), bad, "joins on a record that is not a path");
+}
+
+#[test]
+fn apply_10_joins_not_one_per_cubic() {
+    let t = triangle();
+    let mut r = path(1, t.key(), true, None);
+    r.joins = Some(vec![0]);
+    assert_refused_for(held(), wired(next(vec![t], vec![r])), "one per cubic");
+}
+
+#[test]
+fn apply_10_checks_each_record_set_not_only_the_last_in_its_slot() {
+    // Slot 1 set twice: the first names a shape the stream lacks, the last is whole.
+    let t = triangle();
+    let lost = path(1, Key([7; 16]), true, None);
+    let whole = path(1, t.key(), true, None);
+    assert_refused_for(
+        held(),
+        wired(next(vec![t], vec![lost, whole])),
+        "names shape",
+    );
+}
+
+#[test]
+fn apply_10_comes_before_the_view_and_the_order() {
+    // A record's fault (item 10) beside the delta's view's (11) and the order's (12): the
+    // record's is the refusal.
+    let one = rows(1);
+    let (s, r) = faces(1, one.key());
+    let mut bad = next(vec![s], vec![r]);
+    bad.upload_paints = vec![one];
+    let mut v = view(16, 16);
+    v.light = LightModel::SoftDiffuse {
+        ambient: 2.0,
+        wrap: 0.0,
+    };
+    bad.view = Some(v);
+    bad.order = Some(vec![entry(0), entry(7)]);
+    assert_refused_for(held(), wired(bad), "fill table holds 1 rows");
+}
+
+#[test]
+fn apply_11_the_views_soft_diffuse_light_out_of_range() {
+    let mut v = view(16, 16);
+    v.light = LightModel::SoftDiffuse {
+        ambient: 0.5,
+        wrap: -1.0,
+    };
+    let mut bad = next(vec![], vec![]);
+    bad.view = Some(v);
+    assert_refused_for(held(), wired(bad), "the view's soft diffuse");
+}
+
+#[test]
+fn apply_11_the_views_background_not_an_image_shape() {
+    let (s, _) = square(0);
+    let mut v = view(16, 16);
+    v.background = Background::Image(s.key());
+    let mut bad = next(vec![], vec![]);
+    bad.view = Some(v);
+    assert_refused_for(held(), wired(bad), "not an image shape");
+}
+
+#[test]
+fn apply_12_an_order_entry_naming_a_part_the_record_lacks() {
+    let mut bad = next(vec![], vec![]);
+    bad.order = Some(vec![OrderEntry {
+        layer: XfLayer::Moving,
+        slot: 0,
+        part: 1,
+    }]);
+    assert_refused_for(held(), wired(bad), "names part 1 of slot 0");
+}
+
+#[test]
+fn apply_10_a_fill_image_that_is_not_an_image_shape() {
+    let (s, mut r) = square(1);
+    r.features |= FEATURE_BACKGROUND_IMAGE;
+    r.fill_image = Some(s.key());
+    assert_refused_for(held(), wired(next(vec![s], vec![r])), "cannot take there");
+}
+
+#[test]
+fn apply_10_a_tail_whose_points_are_not_a_path_shape() {
+    let (s, mut r) = square(1);
+    let picture = image(2, 2, 0);
+    r.features |= FEATURE_PRE_PROJECTED;
+    r.pre_projected = Some(PreProjected {
+        points: picture.key(),
+        gradient: None,
+        fill: Paint::None,
+        stroke: Paint::None,
+        background_stroke: Paint::None,
+    });
+    assert_refused_for(
+        held(),
+        wired(next(vec![s, picture], vec![r])),
+        "cannot take there",
+    );
 }

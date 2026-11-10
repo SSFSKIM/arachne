@@ -335,26 +335,20 @@ impl State {
             }
         }
         let view = d.view.as_ref().or(self.view.as_ref());
-        // 8. A release of a key a record the delta leaves, or a view, still uses.
-        let background = |v: &View| match &v.background {
-            Background::Image(k) => Some(*k),
-            Background::Color(_) => None,
-        };
+        // 8. A release of a key a record the delta leaves, or the view, still uses (a record's
+        // keys include its display's background).
         for k in &d.release {
-            let user = records.values().find(|r| {
-                r.shape_keys().contains(k)
-                    || r.paint_keys().contains(k)
-                    || matches!(&r.body, Body::Image(ImageSource::SubFrame { view, .. })
-                        if background(view) == Some(*k))
-            });
-            if let Some(r) = user {
+            if let Some(r) = records
+                .values()
+                .find(|r| r.shape_keys().contains(k) || r.paint_keys().contains(k))
+            {
                 return bad(format!(
                     "the delta releases {}, which slot {} uses",
                     k.hex(),
                     r.slot
                 ));
             }
-            if view.and_then(background) == Some(*k) {
+            if view.is_some_and(|v| v.background == Background::Image(*k)) {
                 return bad(format!(
                     "the delta releases {}, the view's background image",
                     k.hex()
@@ -370,27 +364,17 @@ impl State {
                 .find(|s| s.key() == *k)
                 .or_else(|| self.shapes.get(k))
         };
-        let paint = |k: &Key| -> bool {
-            !released.contains(k)
-                && (d.upload_paints.iter().any(|t| t.key() == *k) || self.paints.contains_key(k))
-        };
-        let view_problem = |name: &str, v: &View| -> Option<String> {
-            let Background::Image(k) = &v.background else {
+        let table = |k: &Key| -> Option<&Stops> {
+            if released.contains(k) {
                 return None;
-            };
-            match shape(k).map(Shape::data) {
-                Some(ShapeData::Image { .. }) => None,
-                Some(_) => Some(format!(
-                    "{name} names {} as its background image, not an image shape",
-                    k.hex()
-                )),
-                None => Some(format!(
-                    "{name} names background image {} it lacks",
-                    k.hex()
-                )),
             }
+            d.upload_paints
+                .iter()
+                .find(|t| t.key() == *k)
+                .or_else(|| self.paints.get(k))
         };
-        // 9. When the delta sets or removes a record, the order of every display it leaves.
+        // 9. When the delta sets or removes a record, the order of every display it leaves. (So a
+        // display the delta sets has its order checked here, before 10.)
         if !(d.set.is_empty() && d.remove.is_empty()) {
             for r in records.values() {
                 if let Body::Image(ImageSource::SubFrame { order, .. }) = &r.body
@@ -400,50 +384,22 @@ impl State {
                 }
             }
         }
-        // 10. Each record the delta sets and leaves: what it names, its display's view and order,
-        // its own lists.
+        // 10. Each record the delta sets and does not remove, but one of a kind the oracle does
+        // not know.
         for r in d
             .set
             .iter()
-            .filter(|r| records.get(&r.slot).is_some_and(|l| std::ptr::eq(*l, *r)))
+            .filter(|r| !removed.contains(&r.slot) && !matches!(r.kind, RecordKind::Unknown(_)))
         {
-            for k in r.shape_keys() {
-                if shape(&k).is_none() {
-                    return bad(format!("slot {} names shape {} it lacks", r.slot, k.hex()));
-                }
-            }
-            for k in r.paint_keys() {
-                if !paint(&k) {
-                    return bad(format!(
-                        "slot {} names paint table {} it lacks",
-                        r.slot,
-                        k.hex()
-                    ));
-                }
-            }
-            if let Body::Image(ImageSource::SubFrame { view, order, .. }) = &r.body {
-                let name = format!("slot {}'s display", r.slot);
-                if let Some(what) = view_problem(&name, view) {
-                    return bad(what);
-                }
-                if let Some(what) = order_problem(order, &records) {
-                    return bad(format!("{name}'s order: {what}"));
-                }
-            }
-            if let Some(what) = record_lists(r, &shape) {
+            if let Some(what) = record_problem(r, &shape, &table) {
                 return bad(format!("slot {}: {what}", r.slot));
             }
         }
         // 11. The delta's view.
-        if let Some(v) = &d.view {
-            if let LightModel::SoftDiffuse { ambient, wrap } = &v.light
-                && !((0.0..=1.0).contains(ambient) && *wrap >= 0.0)
-            {
-                return bad("soft diffuse light parameters out of range".into());
-            }
-            if let Some(what) = view_problem("the view", v) {
-                return bad(what);
-            }
+        if let Some(v) = &d.view
+            && let Some(what) = view_problem("the view", v, &shape)
+        {
+            return bad(what);
         }
         // 12. The order, the delta's or the stream's.
         if let Some(what) = order_problem(d.order.as_ref().unwrap_or(&self.order), &records) {
@@ -689,6 +645,180 @@ impl State {
         }
         None
     }
+}
+
+/// What makes a view invalid XF against what the delta leaves, if anything (`XF.md`, apply's check
+/// 11, and 10 for a display's): soft diffuse light outside its ranges, or a background image that is
+/// not an image shape or that the stream would not hold.
+fn view_problem<'a>(
+    name: &str,
+    v: &View,
+    shape: &dyn Fn(&Key) -> Option<&'a Shape>,
+) -> Option<String> {
+    if let LightModel::SoftDiffuse { ambient, wrap } = &v.light
+        && !((0.0..=1.0).contains(ambient) && *wrap >= 0.0)
+    {
+        return Some(format!(
+            "{name}'s soft diffuse light parameters are out of range"
+        ));
+    }
+    let Background::Image(k) = &v.background else {
+        return None;
+    };
+    match shape(k).map(Shape::data) {
+        Some(ShapeData::Image { .. }) => None,
+        Some(_) => Some(format!(
+            "{name} names {} as its background image, not an image shape",
+            k.hex()
+        )),
+        None => Some(format!(
+            "{name} names background image {} it lacks",
+            k.hex()
+        )),
+    }
+}
+
+/// What makes a record the delta sets invalid XF against what the delta leaves, if anything: the
+/// first fault of `XF.md`'s apply check 10, in its order. The reader's checks again (the feature
+/// bits and their fields, a tail on a kind that takes none); a kind that needs a shape given none,
+/// or a shape of a kind it cannot take (its own and its blend's; a fill image that is not an image,
+/// a tail's points that are not a path); a sub-frame display given a shape; a body of another
+/// kind's; a shape or paint table the stream would not hold; a display's view; a table of other than
+/// one row per face, point or placement, placements and objects differing in number; a face group's
+/// face ends and widths, and joins. (A display's order is apply's check 9, which every delta that
+/// sets a record makes first.)
+fn record_problem<'a>(
+    r: &Record,
+    shape: &dyn Fn(&Key) -> Option<&'a Shape>,
+    table: &dyn Fn(&Key) -> Option<&'a Stops>,
+) -> Option<String> {
+    let kind = r.kind.name();
+    if (r.features & FEATURE_BACKGROUND_IMAGE != 0) != r.fill_image.is_some() {
+        return Some("the background_image bit and fill_image disagree".into());
+    }
+    if (r.features & FEATURE_PRE_PROJECTED != 0) != r.pre_projected.is_some() {
+        return Some("the pre_projected bit and its tail disagree".into());
+    }
+    if r.pre_projected.is_some()
+        && !matches!(
+            r.kind,
+            RecordKind::Path | RecordKind::Points | RecordKind::Image
+        )
+    {
+        return Some(format!("a pre-projected tail on a {kind} record"));
+    }
+    let sub_frame = matches!(r.body, Body::Image(ImageSource::SubFrame { .. }));
+    type Takes = fn(&ShapeData) -> bool;
+    let path: Takes = |s| matches!(s, ShapeData::Path { .. });
+    let image: Takes = |s| matches!(s, ShapeData::Image { .. });
+    // The shapes a kind takes; none for a kind that needs no shape (a sub-frame display, the
+    // reserved kinds).
+    let takes: Option<Takes> = match r.kind {
+        RecordKind::Path | RecordKind::FaceGroup | RecordKind::Points => Some(path),
+        RecordKind::Mesh => Some(|s| matches!(s, ShapeData::Mesh { .. })),
+        RecordKind::Instances => {
+            Some(|s| matches!(s, ShapeData::Path { .. } | ShapeData::Mesh { .. }))
+        }
+        RecordKind::Image if !sub_frame => Some(image),
+        _ => None,
+    };
+    let mut kinds: Vec<(Key, Takes)> = Vec::new();
+    if let Some(takes) = takes {
+        let Some(a) = r.geometry.shape_a else {
+            return Some(format!("a {kind} record given no shape"));
+        };
+        kinds.push((a, takes));
+        kinds.extend(r.geometry.blend.as_ref().map(|b| (b.shape_b, takes)));
+    }
+    kinds.extend(r.fill_image.map(|k| (k, image)));
+    kinds.extend(r.pre_projected.as_ref().map(|t| (t.points, path)));
+    for (k, takes) in kinds {
+        if let Some(s) = shape(&k)
+            && !takes(s.data())
+        {
+            return Some(format!(
+                "shape {} is of a kind a {kind} record cannot take there",
+                k.hex()
+            ));
+        }
+    }
+    if sub_frame && r.geometry.shape_a.is_some() {
+        return Some("a sub-frame display given a shape".into());
+    }
+    let body = match r.kind {
+        RecordKind::Path | RecordKind::Mesh => matches!(r.body, Body::None),
+        RecordKind::FaceGroup => matches!(r.body, Body::FaceGroup(_)),
+        RecordKind::Points => matches!(r.body, Body::Points(_)),
+        RecordKind::Image => matches!(r.body, Body::Image(_)),
+        RecordKind::Instances => matches!(r.body, Body::Instances(_)),
+        _ => matches!(r.body, Body::Opaque(_)),
+    };
+    if !body {
+        return Some(format!("a {kind} record with another kind's body"));
+    }
+    let own = r
+        .geometry
+        .shape_a
+        .into_iter()
+        .chain(r.geometry.blend.as_ref().map(|b| b.shape_b))
+        .chain(r.clip.as_ref().map(|(k, _)| *k))
+        .chain(r.fill_image)
+        .chain(r.pre_projected.as_ref().map(|t| t.points));
+    for k in own {
+        if shape(&k).is_none() {
+            return Some(format!("names shape {} it lacks", k.hex()));
+        }
+    }
+    for k in r.paint_keys() {
+        if table(&k).is_none() {
+            return Some(format!("names paint table {} it lacks", k.hex()));
+        }
+    }
+    if let Body::Image(ImageSource::SubFrame { view, .. }) = &r.body
+        && let Some(what) = view_problem("its display", view, shape)
+    {
+        return Some(what);
+    }
+    // Every table named is held, by the check above.
+    let one_per = |name: &str, k: &Key, n: usize, per: &str| -> Option<String> {
+        let got = table(k).map_or(0, |t| t.rows().len());
+        (got != n).then(|| format!("its {name} table holds {got} rows, not one per {per} ({n})"))
+    };
+    let tables = match &r.body {
+        Body::FaceGroup(f) => one_per("fill", &f.fill, f.uv.len(), "face").or_else(|| {
+            f.stroke
+                .and_then(|k| one_per("stroke", &k, f.uv.len(), "face"))
+        }),
+        Body::Points(p) => {
+            // The points it draws: its tail's when pre-projected, else its shape's.
+            let drawn = r
+                .pre_projected
+                .as_ref()
+                .map(|t| t.points)
+                .or(r.geometry.shape_a)
+                .and_then(|k| shape(&k))
+                .map_or(0, |s| match s.data() {
+                    ShapeData::Path { points } => points.len(),
+                    _ => 0,
+                });
+            one_per("colour", &p.colors, drawn, "point")
+        }
+        Body::Instances(i) => {
+            let n = i.placements.len();
+            one_per("fill", &i.fill, n, "placement")
+                .or_else(|| one_per("stroke", &i.stroke, n, "placement"))
+                .or_else(|| {
+                    (i.objects.len() != n).then(|| {
+                        format!(
+                            "its placements ({n}) and objects ({}) differ in number",
+                            i.objects.len()
+                        )
+                    })
+                })
+        }
+        _ => None,
+    };
+    tables.or_else(|| record_lists(r, shape))
 }
 
 /// What makes a record's own lists invalid XF, if anything: a face group's face ends and widths
