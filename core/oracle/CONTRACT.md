@@ -2171,7 +2171,9 @@ may come from.
 Read from the record's source, which the wire carries from XF 1.5 (below). A record's source lists,
 for each of its paths, the containment chain from the object that made the record (its **maker**)
 outward through its **containers**, each node's nearest library class (a user's subclass maps to
-the library class it derives from). A node is **generic** when its class is one of these six:
+the library class it derives from). A class is named in the source, and in the table below, by the
+string `<defining module>.<qualified name>`: the module that defines the class, then its
+`__qualname__`, for example `arachne.mobject.three_d.three_dimensions.Surface`. A node is **generic** when its class is one of these six:
 `arachne.mobject.mobject.Mobject`, `arachne.mobject.mobject.Group`,
 `arachne.mobject.types.vectorized_mobject.VMobject`,
 `arachne.mobject.types.vectorized_mobject.VGroup`,
