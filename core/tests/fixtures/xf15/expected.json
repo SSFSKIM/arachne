@@ -1,0 +1,1261 @@
+{
+ "schema": "xf15-fixtures/1",
+ "files": [
+  {
+   "name": "01-older-minor.arxf",
+   "sha256": "8e968ef5098a9b0ddd0ac586d14dba332d93b4ac700136dc55e4fe0476ef22f4",
+   "file_minor": 0,
+   "deltas": [
+    {
+     "seq": 0,
+     "minor": 0,
+     "read_under": "1.4",
+     "records": [
+      {
+       "slot": 1,
+       "source": [],
+       "facing_group": 0
+      },
+      {
+       "slot": 2,
+       "source": [],
+       "facing_group": 0
+      }
+     ]
+    },
+    {
+     "seq": 1,
+     "minor": 0,
+     "read_under": "1.4",
+     "records": [
+      {
+       "slot": 1,
+       "source": [],
+       "facing_group": 0
+      }
+     ]
+    },
+    {
+     "seq": 2,
+     "minor": 0,
+     "read_under": "1.4",
+     "records": [
+      {
+       "slot": 1,
+       "source": [],
+       "facing_group": 0
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "02-set-records.arxf",
+   "sha256": "719ad384c540932af25a1576ddd996b58f386714de7a391aa16a09e733896533",
+   "file_minor": 5,
+   "deltas": [
+    {
+     "seq": 0,
+     "minor": 5,
+     "read_under": "1.5",
+     "records": [
+      {
+       "slot": 1,
+       "source": [
+        [
+         [
+          11,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          10,
+          "arachne.mobject.text.tex_mobject.MathTex"
+         ],
+         [
+          3,
+          "arachne.mobject.types.vectorized_mobject.VGroup"
+         ]
+        ],
+        [
+         [
+          11,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          10,
+          "arachne.mobject.text.tex_mobject.MathTex"
+         ],
+         [
+          5,
+          "arachne.Ünïcødé€"
+         ]
+        ]
+       ],
+       "facing_group": 3
+      },
+      {
+       "slot": 2,
+       "source": [
+        [
+         [
+          12,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          10,
+          "arachne.mobject.text.tex_mobject.MathTex"
+         ],
+         [
+          3,
+          "arachne.mobject.types.vectorized_mobject.VGroup"
+         ]
+        ]
+       ],
+       "facing_group": 3
+      },
+      {
+       "slot": 4,
+       "source": [
+        [
+         [
+          20,
+          "arachne.mobject.three_d.three_dimensions.Surface"
+         ]
+        ]
+       ],
+       "facing_group": 0
+      },
+      {
+       "slot": 5,
+       "source": [],
+       "facing_group": 0
+      }
+     ]
+    },
+    {
+     "seq": 1,
+     "minor": 0,
+     "read_under": "1.5",
+     "records": [
+      {
+       "slot": 1,
+       "source": [
+        [
+         [
+          11,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          10,
+          "arachne.mobject.text.tex_mobject.MathTex"
+         ],
+         [
+          3,
+          "arachne.mobject.types.vectorized_mobject.VGroup"
+         ]
+        ],
+        [
+         [
+          11,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          10,
+          "arachne.mobject.text.tex_mobject.MathTex"
+         ],
+         [
+          5,
+          "arachne.Ünïcødé€"
+         ]
+        ]
+       ],
+       "facing_group": 3
+      },
+      {
+       "slot": 2,
+       "source": [
+        [
+         [
+          12,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          10,
+          "arachne.mobject.text.tex_mobject.MathTex"
+         ],
+         [
+          3,
+          "arachne.mobject.types.vectorized_mobject.VGroup"
+         ]
+        ]
+       ],
+       "facing_group": 3
+      },
+      {
+       "slot": 4,
+       "source": [
+        [
+         [
+          20,
+          "arachne.mobject.three_d.three_dimensions.Surface"
+         ]
+        ]
+       ],
+       "facing_group": 0
+      },
+      {
+       "slot": 5,
+       "source": [],
+       "facing_group": 0
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "03-slot-set-twice.arxf",
+   "sha256": "3c390ec4db0d32ffae212fc5c9f8e6c32874f3ff5304e20b266f0c600cb97b72",
+   "file_minor": 5,
+   "deltas": [
+    {
+     "seq": 0,
+     "minor": 5,
+     "read_under": "1.5",
+     "records": [
+      {
+       "slot": 1,
+       "source": [
+        [
+         [
+          8,
+          "arachne.mobject.geometry.arc.Circle"
+         ]
+        ]
+       ],
+       "facing_group": 2
+      }
+     ]
+    },
+    {
+     "seq": 1,
+     "minor": 5,
+     "read_under": "1.5",
+     "records": [
+      {
+       "slot": 1,
+       "source": [],
+       "facing_group": 6
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "04-held-rows.arxf",
+   "sha256": "e152278bfa4d8409f6847544878501267c2c0f381fab07d5bd5f0f6a9fe395b5",
+   "file_minor": 5,
+   "deltas": [
+    {
+     "seq": 0,
+     "minor": 5,
+     "read_under": "1.5",
+     "records": [
+      {
+       "slot": 1,
+       "source": [
+        [
+         [
+          11,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          10,
+          "arachne.mobject.text.tex_mobject.MathTex"
+         ]
+        ]
+       ],
+       "facing_group": 3
+      },
+      {
+       "slot": 2,
+       "source": [
+        [
+         [
+          12,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          10,
+          "arachne.mobject.text.tex_mobject.MathTex"
+         ]
+        ]
+       ],
+       "facing_group": 3
+      }
+     ]
+    },
+    {
+     "seq": 1,
+     "minor": 5,
+     "read_under": "1.5",
+     "records": [
+      {
+       "slot": 1,
+       "source": [
+        [
+         [
+          11,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          13,
+          "arachne.mobject.text.tex_mobject.MathTex"
+         ]
+        ]
+       ],
+       "facing_group": 3
+      },
+      {
+       "slot": 2,
+       "source": [
+        [
+         [
+          12,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          10,
+          "arachne.mobject.text.tex_mobject.MathTex"
+         ]
+        ]
+       ],
+       "facing_group": 5
+      }
+     ]
+    },
+    {
+     "seq": 2,
+     "minor": 5,
+     "read_under": "1.5",
+     "records": [
+      {
+       "slot": 1,
+       "source": [
+        [
+         [
+          11,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          14,
+          "arachne.mobject.types.vectorized_mobject.VGroup"
+         ]
+        ]
+       ],
+       "facing_group": 0
+      },
+      {
+       "slot": 2,
+       "source": [],
+       "facing_group": 6
+      }
+     ]
+    },
+    {
+     "seq": 3,
+     "minor": 0,
+     "read_under": "1.5",
+     "records": [
+      {
+       "slot": 1,
+       "source": [
+        [
+         [
+          11,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          14,
+          "arachne.mobject.types.vectorized_mobject.VGroup"
+         ]
+        ]
+       ],
+       "facing_group": 0
+      },
+      {
+       "slot": 2,
+       "source": [],
+       "facing_group": 6
+      }
+     ]
+    },
+    {
+     "seq": 4,
+     "minor": 0,
+     "read_under": "1.5",
+     "records": [
+      {
+       "slot": 1,
+       "source": [],
+       "facing_group": 0
+      },
+      {
+       "slot": 2,
+       "source": [],
+       "facing_group": 6
+      }
+     ]
+    },
+    {
+     "seq": 5,
+     "minor": 5,
+     "read_under": "1.5",
+     "records": [
+      {
+       "slot": 1,
+       "source": [],
+       "facing_group": 0
+      },
+      {
+       "slot": 2,
+       "source": [
+        [
+         [
+          12,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ]
+        ]
+       ],
+       "facing_group": 0
+      },
+      {
+       "slot": 3,
+       "source": [
+        [
+         [
+          16,
+          "arachne.mobject.three_d.three_dimensions.Surface"
+         ]
+        ]
+       ],
+       "facing_group": 7
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "05-section-mid-stream.arxf",
+   "sha256": "a0787e04d966d9d0f605f4c75c3c6ec438ab31806ea08c8b3133873c597c0806",
+   "file_minor": 5,
+   "deltas": [
+    {
+     "seq": 0,
+     "minor": 0,
+     "read_under": "1.4",
+     "records": [
+      {
+       "slot": 1,
+       "source": [],
+       "facing_group": 0
+      }
+     ]
+    },
+    {
+     "seq": 1,
+     "minor": 0,
+     "read_under": "1.4",
+     "records": [
+      {
+       "slot": 1,
+       "source": [],
+       "facing_group": 0
+      }
+     ]
+    },
+    {
+     "seq": 2,
+     "minor": 5,
+     "read_under": "1.5",
+     "records": [
+      {
+       "slot": 1,
+       "source": [],
+       "facing_group": 0
+      },
+      {
+       "slot": 2,
+       "source": [
+        [
+         [
+          12,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          10,
+          "arachne.mobject.text.tex_mobject.MathTex"
+         ]
+        ]
+       ],
+       "facing_group": 3
+      }
+     ]
+    },
+    {
+     "seq": 3,
+     "minor": 5,
+     "read_under": "1.5",
+     "records": [
+      {
+       "slot": 1,
+       "source": [
+        [
+         [
+          11,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          10,
+          "arachne.mobject.text.tex_mobject.MathTex"
+         ]
+        ]
+       ],
+       "facing_group": 4
+      },
+      {
+       "slot": 2,
+       "source": [
+        [
+         [
+          12,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          10,
+          "arachne.mobject.text.tex_mobject.MathTex"
+         ]
+        ]
+       ],
+       "facing_group": 3
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "06-newer-minor.arxf",
+   "sha256": "6b9e71aa1d1f29259990e87ed58271a4b13cc2172a01695efc073151a795274f",
+   "file_minor": 6,
+   "deltas": [
+    {
+     "seq": 0,
+     "minor": 6,
+     "read_under": "1.5",
+     "records": [
+      {
+       "slot": 1,
+       "source": [
+        [
+         [
+          11,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ]
+        ]
+       ],
+       "facing_group": 3
+      }
+     ]
+    },
+    {
+     "seq": 1,
+     "minor": 0,
+     "read_under": "1.5",
+     "records": [
+      {
+       "slot": 1,
+       "source": [
+        [
+         [
+          11,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ]
+        ]
+       ],
+       "facing_group": 3
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "07-refused-before-the-section.arxf",
+   "sha256": "0fbfae68d4d5f09cdae8ebf9d5c99c08d01b5f5940331617a9bfb5c12deebc7b",
+   "file_minor": 5,
+   "deltas": [
+    {
+     "seq": 0,
+     "minor": 5,
+     "read_under": "1.5",
+     "records": [
+      {
+       "slot": 1,
+       "source": [
+        [
+         [
+          11,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ]
+        ]
+       ],
+       "facing_group": 3
+      }
+     ]
+    },
+    {
+     "refused": {
+      "stage": "decode",
+      "error": "Invalid"
+     },
+     "at_seq": 1
+    },
+    {
+     "seq": 2,
+     "minor": 5,
+     "read_under": "1.5",
+     "records": [
+      {
+       "slot": 1,
+       "source": [
+        [
+         [
+          11,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          10,
+          "arachne.mobject.text.tex_mobject.MathTex"
+         ]
+        ]
+       ],
+       "facing_group": 0
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "08-class-named-twice.arxf",
+   "sha256": "8b72af1551013a6c44f7750ec8a398ebe7333184a268ae62bd5f695a99490b60",
+   "file_minor": 5,
+   "deltas": [
+    {
+     "seq": 0,
+     "minor": 5,
+     "read_under": "1.5",
+     "records": [
+      {
+       "slot": 1,
+       "source": [
+        [
+         [
+          11,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          10,
+          "arachne.mobject.text.tex_mobject.MathTex"
+         ]
+        ]
+       ],
+       "facing_group": 3
+      },
+      {
+       "slot": 2,
+       "source": [
+        [
+         [
+          12,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          10,
+          "arachne.mobject.text.tex_mobject.MathTex"
+         ]
+        ]
+       ],
+       "facing_group": 3
+      }
+     ]
+    },
+    {
+     "refused": "class_named_twice",
+     "at_seq": 1
+    },
+    {
+     "after_refusal": true
+    }
+   ]
+  },
+  {
+   "name": "09-slot-named-twice.arxf",
+   "sha256": "a1fc5f52bf3d333a5bf24c929ed4893197a1854c005cbc7661355ac96bcac17a",
+   "file_minor": 5,
+   "deltas": [
+    {
+     "seq": 0,
+     "minor": 5,
+     "read_under": "1.5",
+     "records": [
+      {
+       "slot": 1,
+       "source": [
+        [
+         [
+          11,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          10,
+          "arachne.mobject.text.tex_mobject.MathTex"
+         ]
+        ]
+       ],
+       "facing_group": 3
+      },
+      {
+       "slot": 2,
+       "source": [
+        [
+         [
+          12,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          10,
+          "arachne.mobject.text.tex_mobject.MathTex"
+         ]
+        ]
+       ],
+       "facing_group": 3
+      }
+     ]
+    },
+    {
+     "refused": "slot_named_twice",
+     "at_seq": 1
+    },
+    {
+     "after_refusal": true
+    }
+   ]
+  },
+  {
+   "name": "10-slot-removed.arxf",
+   "sha256": "40a3fa636b804fc97388b08ee83bda75b55027d51e83e80adf3077998c607595",
+   "file_minor": 5,
+   "deltas": [
+    {
+     "seq": 0,
+     "minor": 5,
+     "read_under": "1.5",
+     "records": [
+      {
+       "slot": 1,
+       "source": [
+        [
+         [
+          11,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          10,
+          "arachne.mobject.text.tex_mobject.MathTex"
+         ]
+        ]
+       ],
+       "facing_group": 3
+      },
+      {
+       "slot": 2,
+       "source": [
+        [
+         [
+          12,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          10,
+          "arachne.mobject.text.tex_mobject.MathTex"
+         ]
+        ]
+       ],
+       "facing_group": 3
+      }
+     ]
+    },
+    {
+     "refused": "slot_removed",
+     "at_seq": 1
+    },
+    {
+     "after_refusal": true
+    }
+   ]
+  },
+  {
+   "name": "11-row-empty.arxf",
+   "sha256": "a20986c0a4c0de0a28e905cbd93acbdd078da62638816d04a307c9431424ea7e",
+   "file_minor": 5,
+   "deltas": [
+    {
+     "seq": 0,
+     "minor": 5,
+     "read_under": "1.5",
+     "records": [
+      {
+       "slot": 1,
+       "source": [
+        [
+         [
+          11,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          10,
+          "arachne.mobject.text.tex_mobject.MathTex"
+         ]
+        ]
+       ],
+       "facing_group": 3
+      },
+      {
+       "slot": 2,
+       "source": [
+        [
+         [
+          12,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          10,
+          "arachne.mobject.text.tex_mobject.MathTex"
+         ]
+        ]
+       ],
+       "facing_group": 3
+      }
+     ]
+    },
+    {
+     "refused": "row_empty",
+     "at_seq": 1
+    },
+    {
+     "after_refusal": true
+    }
+   ]
+  },
+  {
+   "name": "12-path-empty.arxf",
+   "sha256": "09cef264750377bf332c7633651993359ac1ba8b10c1641a3b8c2ca4d1f0d6df",
+   "file_minor": 5,
+   "deltas": [
+    {
+     "seq": 0,
+     "minor": 5,
+     "read_under": "1.5",
+     "records": [
+      {
+       "slot": 1,
+       "source": [
+        [
+         [
+          11,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          10,
+          "arachne.mobject.text.tex_mobject.MathTex"
+         ]
+        ]
+       ],
+       "facing_group": 3
+      },
+      {
+       "slot": 2,
+       "source": [
+        [
+         [
+          12,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          10,
+          "arachne.mobject.text.tex_mobject.MathTex"
+         ]
+        ]
+       ],
+       "facing_group": 3
+      }
+     ]
+    },
+    {
+     "refused": "path_empty",
+     "at_seq": 1
+    },
+    {
+     "after_refusal": true
+    }
+   ]
+  },
+  {
+   "name": "13-class-out-of-range.arxf",
+   "sha256": "3345bc07a99b6fe8b299016af9b2412792efef35ad504cf1a6dcd0d829f9a17e",
+   "file_minor": 5,
+   "deltas": [
+    {
+     "seq": 0,
+     "minor": 5,
+     "read_under": "1.5",
+     "records": [
+      {
+       "slot": 1,
+       "source": [
+        [
+         [
+          11,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          10,
+          "arachne.mobject.text.tex_mobject.MathTex"
+         ]
+        ]
+       ],
+       "facing_group": 3
+      },
+      {
+       "slot": 2,
+       "source": [
+        [
+         [
+          12,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          10,
+          "arachne.mobject.text.tex_mobject.MathTex"
+         ]
+        ]
+       ],
+       "facing_group": 3
+      }
+     ]
+    },
+    {
+     "refused": "class_out_of_range",
+     "at_seq": 1
+    },
+    {
+     "after_refusal": true
+    }
+   ]
+  },
+  {
+   "name": "14-names-before-rows.arxf",
+   "sha256": "eb42bd0d882c28b6c0a47c1648d7b8060421f929ef54ca2d9cf2da8a1fd50b67",
+   "file_minor": 5,
+   "deltas": [
+    {
+     "seq": 0,
+     "minor": 5,
+     "read_under": "1.5",
+     "records": [
+      {
+       "slot": 1,
+       "source": [
+        [
+         [
+          11,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          10,
+          "arachne.mobject.text.tex_mobject.MathTex"
+         ]
+        ]
+       ],
+       "facing_group": 3
+      },
+      {
+       "slot": 2,
+       "source": [
+        [
+         [
+          12,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          10,
+          "arachne.mobject.text.tex_mobject.MathTex"
+         ]
+        ]
+       ],
+       "facing_group": 3
+      }
+     ]
+    },
+    {
+     "refused": "class_named_twice",
+     "at_seq": 1
+    },
+    {
+     "after_refusal": true
+    }
+   ]
+  },
+  {
+   "name": "15-first-row-that-offends.arxf",
+   "sha256": "5fbe85ea9e2e28c3b9af5373284c707056e05fccaca679ab4508288352540b63",
+   "file_minor": 5,
+   "deltas": [
+    {
+     "seq": 0,
+     "minor": 5,
+     "read_under": "1.5",
+     "records": [
+      {
+       "slot": 1,
+       "source": [
+        [
+         [
+          11,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          10,
+          "arachne.mobject.text.tex_mobject.MathTex"
+         ]
+        ]
+       ],
+       "facing_group": 3
+      },
+      {
+       "slot": 2,
+       "source": [
+        [
+         [
+          12,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          10,
+          "arachne.mobject.text.tex_mobject.MathTex"
+         ]
+        ]
+       ],
+       "facing_group": 3
+      }
+     ]
+    },
+    {
+     "refused": "row_empty",
+     "at_seq": 1
+    },
+    {
+     "after_refusal": true
+    }
+   ]
+  },
+  {
+   "name": "16-first-code-of-a-row.arxf",
+   "sha256": "25363e5c29387033f7da7aeea608a4445c471cdd9c65026523dbf7efe79dd249",
+   "file_minor": 5,
+   "deltas": [
+    {
+     "seq": 0,
+     "minor": 5,
+     "read_under": "1.5",
+     "records": [
+      {
+       "slot": 1,
+       "source": [
+        [
+         [
+          11,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          10,
+          "arachne.mobject.text.tex_mobject.MathTex"
+         ]
+        ]
+       ],
+       "facing_group": 3
+      },
+      {
+       "slot": 2,
+       "source": [
+        [
+         [
+          12,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          10,
+          "arachne.mobject.text.tex_mobject.MathTex"
+         ]
+        ]
+       ],
+       "facing_group": 3
+      }
+     ]
+    },
+    {
+     "refused": "slot_removed",
+     "at_seq": 1
+    },
+    {
+     "after_refusal": true
+    }
+   ]
+  },
+  {
+   "name": "17-slot-not-held.arxf",
+   "sha256": "0a33d76e3d28a7024aced12dea035b35336f2259ec452f3f402d586878654768",
+   "file_minor": 5,
+   "deltas": [
+    {
+     "seq": 0,
+     "minor": 5,
+     "read_under": "1.5",
+     "records": [
+      {
+       "slot": 1,
+       "source": [
+        [
+         [
+          11,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          10,
+          "arachne.mobject.text.tex_mobject.MathTex"
+         ]
+        ]
+       ],
+       "facing_group": 3
+      },
+      {
+       "slot": 2,
+       "source": [
+        [
+         [
+          12,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          10,
+          "arachne.mobject.text.tex_mobject.MathTex"
+         ]
+        ]
+       ],
+       "facing_group": 3
+      }
+     ]
+    },
+    {
+     "refused": "slot_not_held",
+     "at_seq": 1
+    },
+    {
+     "after_refusal": true
+    }
+   ]
+  },
+  {
+   "name": "18-reader-before-apply.arxf",
+   "sha256": "c8af207edc1d30df39f1e53f47aae1bfbc4c60a58bc43d9ee1f6ca19e74f6090",
+   "file_minor": 5,
+   "deltas": [
+    {
+     "seq": 0,
+     "minor": 5,
+     "read_under": "1.5",
+     "records": [
+      {
+       "slot": 1,
+       "source": [
+        [
+         [
+          11,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          10,
+          "arachne.mobject.text.tex_mobject.MathTex"
+         ]
+        ]
+       ],
+       "facing_group": 3
+      },
+      {
+       "slot": 2,
+       "source": [
+        [
+         [
+          12,
+          "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath"
+         ],
+         [
+          10,
+          "arachne.mobject.text.tex_mobject.MathTex"
+         ]
+        ]
+       ],
+       "facing_group": 3
+      }
+     ]
+    },
+    {
+     "refused": "row_empty",
+     "at_seq": 1
+    },
+    {
+     "after_refusal": true
+    }
+   ]
+  },
+  {
+   "name": "19-last-record-carries-nothing.arxf",
+   "sha256": "f4ae2e3e435acb0e48fbc8741ccaf76fad1f6fed90c0f9aa3baa578a656ccac0",
+   "file_minor": 0,
+   "deltas": [
+    {
+     "seq": 0,
+     "minor": 0,
+     "read_under": "1.4",
+     "records": [
+      {
+       "slot": 1,
+       "source": [],
+       "facing_group": 0
+      }
+     ]
+    },
+    {
+     "seq": 1,
+     "minor": 0,
+     "read_under": "1.4",
+     "records": [
+      {
+       "slot": 1,
+       "source": [],
+       "facing_group": 0
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
