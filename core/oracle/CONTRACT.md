@@ -2,54 +2,114 @@
 
 Version 1, written against the core at commit `3ce63425` (XF 1.4).
 
-This text states what it means for Arachne's CPU core to have **decided right** when it draws a
-frame from an XF stream: at each of the 16 sub-samples of every pixel, which fragments cover the
-sub-sample and in what order they composite, and how those decisions become the pixel's four bytes.
-Three things are written from this text alone and never from the core's source: the **oracle**
-(which recomputes the decisions from the XF stream by brute force), the **recompute** (a second
-implementation of the compositing arithmetic, which turns decisions and colours into bytes), and the
-**contract tests** (which hold the core to the text).
+This contract defines what it means for Arachne's CPU core to have **decided right** when it draws
+a frame from an XF stream. At each of the 16 sub-samples of every pixel, a decision is which
+fragments cover the sub-sample and in what order they composite. The contract also defines how
+those decisions become the pixel's four bytes.
+
+Three things are written from this text alone, never from the core's source:
+
+- **The oracle** computes, from the XF stream, the set of decisions it admits.
+- **The recompute** is a second implementation of the compositing arithmetic. It turns decisions
+  and colours into bytes.
+- **The contract tests** hold the core to the text.
 
 ## How to read it
 
-- **Core rule** paragraphs state what the core does. Each is true of the core at `3ce63425` and
-  names the module, function and tests it rests on (paths are under `core/`). A change to what the
-  core does is a new version of the rule it changes, never an edit in place.
-- **Oracle reading** paragraphs state how a decision is judged: what the oracle computes, and which
-  of the core's decisions it admits. A reading errs toward admitting. A reading that admits a
-  decision the core could not have made costs sensitivity, never a false verdict; a reading that
-  refuses a decision the core makes under a stated rule is a defect of the reading, and the contract
-  tests exist to find one.
-- Every rule beyond plain depth carries a name and a version, `name@1`. The rules counted per
-  sub-sample (the `per_policy` counts) are listed with ✓ in the table below. A change to a rule's
-  text bumps its version, and every verdict it moves is replayed and reported.
-- The oracle's outputs: per fragment per sub-sample, `Yes`, `Either` or absent (with the fragment's
-  cell area for a path); per pair of present fragments per sub-sample, one relation, `Depth(front)`,
-  `TieBand` or `Policy(name@1)`; per frame, the records it refuses (`truth_unable`).
-- Numbers: `u = 2^-53`, the unit roundoff of IEEE binary64. Arithmetic is binary64 in the order the
-  formulas give, with no fused multiply-add and transcendental functions from a correctly specified
-  pure library (the core uses the `libm` crate); `round(v)` is `f64::round` (half away from zero).
-  A depth **key** is the projection's factor negated, so a smaller key is nearer.
+### Paragraph kinds and citations
+
+- **Core rule** paragraphs state what the core does. Each is true of the core at `3ce63425`. The
+  bracketed **Rests on** lists after them cite the module, function and tests that show it (paths
+  under `core/`).
+- **Oracle reading** paragraphs state how a decision is judged: what the oracle computes from XF,
+  and which of the core's decisions it admits.
+- A definition never points at the core's code. Every rule the oracle needs is stated here in words
+  and formulas, or pinned to one of the external definitions listed below, with each of the core's
+  deviations from it stated. A citation is evidence that the core keeps a rule. It is never where
+  the rule lives.
+
+### What the oracle may admit
+
+Where the inputs or the arithmetic leave a decision open, the oracle admits a **conservative set**
+of outcomes rather than transcribing the core. Every such set carries two proofs, and both are
+tested:
+
+- **Soundness.** The core's own decisions fall inside the set. The contract tests check this. An
+  excess is a finding about the core, listed by class, and the set is never widened to fit it.
+- **Discrimination.** A named injected defect falls outside the set and is a `mismatch`, never a
+  tie and never `Either`. Each set names its defect beside it (**Rejects:**), and §12 collects them.
+
+A class of decisions that no set narrow enough to discriminate can contain is named in §12 as
+outside what the oracle promises. Its samples are reported by class for a human to view. They are
+never counted as ties.
+
+### Names and versions
+
+- Every rule beyond plain depth carries a name and a version, `name@1`.
+- The rules counted per sub-sample are marked ✓ in the table below. Their counts are the
+  `per_policy` counts.
+- A change to what the core does is a new version of the rule it moves, never an edit in place.
+- A change to a rule's text bumps its version, and every verdict it moves is replayed and
+  reported.
+
+### What the oracle writes
+
+- **Per fragment, per sub-sample:** `Yes`, `Either`, absent, or `truth_unable` (§6, an unbounded
+  key). For a path, it also writes the interval of cell bytes it admits.
+- **Per pair of present fragments, per sub-sample:** a relation label (`Depth(front)`, `TieBand`,
+  `ExactTie`, or `Policy(name@1)`) and the set of edges it admits (§7).
+- **Per frame:** `truth_unable` when it refuses the whole frame (§11).
+- **Shares:** the share of samples left in a tie, per label. This measures what conservatism costs.
+
+### Numbers
+
+- `u = 2^-53` is the unit roundoff of IEEE binary64.
+- Arithmetic is binary64, evaluated left to right in the order the formulas give, with no fused
+  multiply-add.
+- `round(v)` rounds half away from zero.
+- `trunc` truncates toward zero.
+- `|v|_1` is a vector's sum of magnitudes.
+- A depth **key** is the projection's perspective factor negated, so a smaller key is nearer.
+- `−∞` is a key, the key of what lies in front of all depth.
+
+### Shared components and pinned external definitions
+
+The oracle shares exactly these with the core. Each is named with its version:
+
+- **The XF reader**, `arachne_core::xf`. It decodes the stream, places points (`place`) and
+  composes placements (`compose`). It is the one core path the oracle uses.
+- **kurbo 0.13.1.** It supplies `flatten`, `stroke` with `StrokeOpts::default()`, `dash`,
+  `CubicBez::subdivide`, `CubicBez::bounding_box`, `ParamCurveArclen::arclen` and
+  `Circle::to_path`. A path's outline is flattened and stroked by kurbo for both the core and the
+  oracle. A second flattening would differ from the core's by up to the tolerance at every curved
+  edge, so the flattening is part of the definition.
+- **libm 0.2.16.** It supplies `sin`, `cos`, `exp`, `pow`, `atan2` and `hypot`. Square roots are
+  IEEE `sqrt`.
+
+The pinned external definition is **Cairo 1.18's ARGB32 image surface, with pixman 0.42 computing
+its colours**. It defines a linear gradient's bytes (§9), with the core's deviations stated there.
+Elsewhere, Cairo's rules that this text relies on are restated in full.
 
 ### The named rules
 
 | Rule | § | What it decides | Counted |
 |---|---|---|---|
+| `alpha_round@1` | 1 | an op whose alpha rounds to zero paints nothing | |
 | `mesh_fixed_point@1` | 3 | triangle corners rounded to 1/256 px before the sample test | |
-| `mesh_edge_ownership@1` | 3 | a sample on a shared edge belongs to one triangle | |
+| `mesh_edge_ownership@1` | 3 | a sample on an edge belongs to one triangle | |
 | `point_blocks@1` | 3 | a point is CE's square block of whole pixels | |
 | `cell_presence@1` | 4 | a path fragment covers a sample where its cell byte is not 0 | |
 | `guard_chords@1` | 4 | curves far beyond the frame drawn as chords | |
 | `curve_key@1` | 5 | the key along a curve's centreline | |
-| `fringe_key@1` | 5 | a plane-keyed layer read at its outline beyond the outline | |
-| `facing_plane@1` | 5 | camera-facing labels and points on the plane facing the camera | |
+| `fringe_key@1` | 5 | a sloped plane-keyed layer read at its outline beyond the outline | |
+| `facing_plane@1` | 5 | camera-facing records and points keyed on the plane facing the camera | |
 | `stroke_on_own_fill@1` | 5 | a stroke at least as near as its own fill where both cover | |
 | `shared_plane_read@1` | 5 | a layer read on a shared identity's plane against what shares it | |
 | `band_input@1` | 6 | how far the input grid's snap may move a key (`S`) | |
 | `band_arith@1` | 6 | how far a conforming computation may stand from the exact key (`R`) | |
 | `own_layers@1` | 7 | a fill against its own strokes keeps paint order | ✓ |
 | `one_plane@1` | 7 | two fragments on one registered plane tie within the snap's term | ✓ |
-| `near_parallel@1` | 7 | two flat records the input cannot tell apart in orientation tie | ✓ |
+| `near_parallel@1` | 7 | two flat records whose input cannot fix their relative tilt tie | ✓ |
 | `lines@1` | 7 | two strokes of paths with no plane of their own tie within their shares | ✓ |
 | `nearest_plane_departure@1` | 7 | a face on no one plane carries its outline's departure | ✓ |
 | `paint_order@1` | 7 | the order where no depth decides: later drawn in front | ✓ |
@@ -64,780 +124,1723 @@ implementation of the compositing arithmetic, which turns decisions and colours 
 | `unit_merge@1` | 9 | one surface's non-overlapping masks composite as one unit | |
 | `resolve_select@1` | 9 | which resolve a pixel takes | |
 | `cairo_premultiply@1` | 9 | a straight colour to premultiplied bytes | |
-| `cairo_linear_gradient@1` | 9 | a gradient's bytes at a pixel, by its composite run | |
+| `paint_rows@1` | 9 | which colour rows a layer paints with, and how a paint blend mixes them | |
+| `cairo_linear_gradient@1` | 9 | a gradient's bytes at a pixel | |
 | `ce_shading@1` | 9 | CE's two lit stops of a shaded path; lit mesh corners | |
-| `label_interim@1` | 10 | a contested sample of a camera-facing label is `Either` | `label_rule_open` |
+| `label_interim@1` | 10 | a contested sample of a camera-facing label | `label_rule_open` |
 
-The stroke policies are counted as the sub-samples covered by a layer whose outline the policy
-changed (a join edited, a dash laid, a dot drawn). `paint_order@1` counts the sub-samples at which a
-pair's relation is `TieBand`; `nearest_plane_departure@1` counts those at which it is `TieBand` only
-by that term; `cycle_rank@1` counts the sub-samples whose admissible orders come from a cycle.
+How the counted rules are counted:
+
+- **Stroke policies:** the sub-samples covered by a layer whose outline the policy changed (a join
+  edited, a dash laid, a dot drawn).
+- **`paint_order@1`:** the sub-samples at which a pair's label is `TieBand` or `ExactTie`.
+- **`nearest_plane_departure@1`:** those at which the label is `TieBand` only by that term.
+- **`cycle_rank@1`:** the sub-samples whose admissible orders include one that only a cycle
+  produces.
 
 ## 1. The frame and its pixels
 
-**Core rule.** A frame of `W x H` pixels is `H * W * 4` bytes, row by row, each pixel R, G, B, A,
-paint premultiplied as Cairo stores it (`composite.rs` module doc). Pixel `(x, y)` spans
-`[x, x+1) x [y, y+1)` in pixel coordinates, `y` down. The frame starts as the background: a colour
-written as CE writes it, each channel `(c * 255)` truncated toward zero and wrapped to a byte, not
-premultiplied (`composite::background_pixel`); or an image's top-left `W x H` corner, refused when the
-image is smaller (`Frame::cropped`). Each pixel holding a fragment is then resolved over it (§9).
+**Core rule.**
 
-The frame judged is the one the core draws without its **overlay** (`Stream::render_under_overlay`,
-Python `draw(overlay=False)`): records in overlay space, `image` records and records with feature bit 0
-are Cairo's, drawn over the core's frame in CE's order (`stream::is_overlay`). Their order entries
-are neither drawn nor refused; every other entry keeps its index in the order, which is its place in
-paint order (§7).
+- **Layout.** A frame of `W x H` pixels is `H * W * 4` bytes, row by row. Each pixel is R, G, B, A,
+  premultiplied as Cairo stores it. Pixel `(x, y)` spans `[x, x+1) x [y, y+1)` in pixel
+  coordinates, with `y` pointing down.
+- **Background.** The frame starts as the background, in one of two forms:
+  - a colour written as CE writes it, each channel `trunc(c * 255)` wrapped to a byte and not
+    premultiplied;
+  - an image's top-left `W x H` corner. An image smaller than the frame is refused.
+
+  Each pixel that holds a fragment is then resolved over the background (§9).
+- **The overlay.** The frame judged is the one the core draws without its overlay, which Python
+  calls with `draw(overlay=False)`. Three kinds of record are Cairo's, drawn over the core's frame
+  in CE's order:
+  - records in overlay space;
+  - `image` records;
+  - records with feature bit 0.
+
+  Their order entries are neither drawn nor refused. Every other entry keeps its index in the
+  order, which is its place in paint order (§7).
+
+[Rests on: `composite.rs` module doc and `background_pixel`; `Frame::cropped`;
+`Stream::render_under_overlay`; `stream::is_overlay`.]
 
 **Sample positions.** Sub-sample `s` (0..16) of pixel `(x, y)` lies at
 
     (x + 1/2 + (dx_s + 1/2) / 16,  y + 1/2 + (dy_s + 1/2) / 16)
 
-for `[dx_s, dy_s] = SAMPLE_OFFSETS[s]`, in sixteenths of a pixel from its centre
-(`composite::SAMPLE_OFFSETS`, `sample_point`):
+where `[dx_s, dy_s]` is the offset below, in sixteenths of a pixel from the pixel's centre:
 
     s:   0      1      2      3      4      5      6      7
         (-8,-7) (-1,-8) (3,-6)  (5,-5)  (-6,-1) (-4,-4) (0,-3)  (6,-2)
     s:   8      9      10     11     12     13     14     15
         (-7,2)  (-2,0)  (2,3)   (4,1)   (-5,5)  (-3,4)  (1,7)   (7,6)
 
-Each row and each column of the 16 x 16 grid holds one sample (n-rooks), and each **cell** of the
-pixel's 4 x 4 grid of 1/4 px cells holds one: sample `s` lies in cell column `(dx_s + 8) div 4`,
-row `(dy_s + 8) div 4` (`composite::sample_cell`). The samples' centroid is the pixel's centre. In the
-1/256 px fixed point the mesh rasterizer uses, sample `s` sits at `128 + 16 dx_s + 8`,
-`128 + 16 dy_s + 8` from the pixel's corner, exactly the same point (`composite::sample_fixed`).
-Tests: `tests/composite.rs::the_sample_pattern_is_stratified_and_centred_on_the_pixel`;
-`tests/python/test_contributor_samples.py` restates the table.
+Properties of the pattern:
 
-**Oracle reading.** The oracle decides at exactly these 16 points and cells, and nowhere else.
+- Each row and each column of the 16 x 16 grid holds one sample (n-rooks).
+- Each **cell** of the pixel's 4 x 4 grid of 1/4 px cells holds one sample: sample `s` lies in cell
+  column `(dx_s + 8) div 4`, row `(dy_s + 8) div 4`.
+- The samples' centroid is the pixel's centre.
+- In 1/256 px fixed point, sample `s` sits at `128 + 16 dx_s + 8`, `128 + 16 dy_s + 8` from the
+  pixel's corner. This is exactly the same point.
+
+[Rests on: `composite::SAMPLE_OFFSETS`, `sample_point`, `sample_cell`, `sample_fixed`;
+`tests/composite.rs::the_sample_pattern_is_stratified_and_centred_on_the_pixel`;
+`tests/python/test_contributor_samples.py`.]
+
+**`alpha_round@1`: what paints.** Presence and drawn-ness are defined from the quantity the
+renderer writes.
+
+- **The rule.** An op that Cairo paints (a path's fill, stroke or background stroke; a mesh
+  triangle) has its alpha written as Cairo writes it:
+
+      alpha_byte = trunc(d * 65535 + 0.5) >> 8
+
+  where `d` is the alpha clamped to `[0, 1]` and already multiplied by the record's group opacity.
+- **Consequence.** An op whose `alpha_byte` is 0, which is every `d < 255.5 / 65535`, paints
+  nothing. It covers no sample and is never a contributor to any pixel. For a gradient, the rule
+  applies to every stop's 16-bit alpha short: a gradient whose every stop's short is at most
+  `0xff` paints nothing (§9).
+- **Point blocks.** They write CE's own truncated bytes, `trunc(255 * a)` (§9, point bytes), and a
+  block whose alpha byte is 0 paints nothing.
+- **Known error.** Taking a Cairo-painted op's alpha by truncation, `trunc(255 * d)`, or counting
+  any `d > 0` as drawn, is a known error. Neither the oracle nor the recompute may use it.
+
+**Core rule.**
+
+- Paths and point blocks keep to `alpha_round@1`: a layer whose solid paint's alpha byte is 0, or
+  whose gradient is clear, makes no fragment.
+- **Deviation.** A mesh triangle whose alpha byte is 0 still makes fragments. They carry the colour
+  `(0, 0, 0, 0)`, take part in the pixel's order and resolve selection, and composite to nothing.
+  Under the contract they are not present. The contract tests list each one the core reports as a
+  finding (`zero_alpha_fragment`).
+
+[Rests on: `Lowering::layers`, `gradient::source`, `points.rs`, and `mesh::lower` (no drop).]
+
+**Oracle reading.** The oracle decides at exactly the 16 points and cells above, and nowhere else.
+It never makes a fragment of an op that paints nothing.
+
+**Rejects:** a fill whose alpha rounds to zero, reported as present.
 
 ## 2. The camera, placement and clipping
 
-All of this is CE's camera arithmetic as `project.rs` restates it, in CE's order of operations; a
-conforming implementation evaluates it in the order given, so its projected points are the core's to
-the last bit.
+Every formula in this section is written in the core's order of operations. A conforming
+implementation evaluates them as written, with the shared libm, so its projected and mapped points
+equal the core's to the last bit. That is what lets the shared kurbo flatten identical input.
 
-**Placement.** A record's point `p` is placed by its 3 x 4 placement `M`:
-`p'_i = M[i][0] p_0 + M[i][1] p_1 + M[i][2] p_2 + M[i][3]` (`xf::place`). Two placements compose
-as `xf::compose(outer, inner)` (each entry a sum of the products, then the outer translation added).
-A path record's drawn points are its shape placed, then cut to its reveal window (CE's
-`pointwise_become_partial`), then blended with its second shape (CE's `interpolate`,
-`(1 - t) p + t q`) (`geometry::path_points`, `geometry::revealed`); an instance's placement composes
-after its record's (`instance.rs`); a face group's face `i` is its run of the record's points
-(`FaceGroup::run`: at the face ends, or equal runs).
+**Why the last bit matters.** kurbo's subdivision count is a step function of its input, so a
+difference in the last bit can, rarely, move every flattened edge of a curve by up to the
+tolerance. No presence band narrow enough to see a 0.3 px stroke could absorb that.
 
-**The 3D projection** (`project::Projection`), under a view whose camera is 3D (phi `φ`, theta `θ`,
-gamma `γ`, focal distance `d`, zoom `z0`, the exponential option), about the view's centre `c`
-(`frame_center`):
+### Placement and drawn points
 
-- `R = Rz(γ) · Rx(-φ) · Rz(-θ - 90°)`, built by multiplying each factor onto the identity from the
-  left in the order `Rz(-θ - 90°)`, `Rx(-φ)`, `Rz(γ)` (`rotation_matrix`); `Rz(a) = [[cos a, -sin a,
-  0], [sin a, cos a, 0], [0, 0, 1]]`; `Rx(a)` is SciPy's rotation vector `a (1, 0, 0)` turned to a
-  matrix through its quaternion, with `sin(|v|/2) / |v|` replaced by `1/2 - |v|²/48 + |v|⁴/3840`
-  where `|v| <= 1e-3` (`rotation_about_axis`); a degree is `τ / 360`.
-- `q = R (p - c)`, each row `q_k = (p - c)_0 R[k][0] + (p - c)_1 R[k][1] + (p - c)_2 R[k][2]`.
-- The factor at depth `z = q_2`: under the exponential option `d / (d - z)` for `z < 0`, else
-  `exp(z / d)`; otherwise CE's **behind-the-eye factor** `10^6` where `d - z < 0`, else `d / (d - z)`
-  (so a point on the eye's plane takes `d / 0`) (`Projection::factor`).
-- The projected point is `(q_0 f z0, q_1 f z0, q_2)`: the depth kept rotated, not scaled.
-- The key of a projected point is `-f`. A point is **keyed planar** when the option is off and
-  `d - q_2 > 0` (`keys_planar_at`); only there is a key affine across a plane on screen.
+- **Placement.** A point is placed by its record's 3 x 4 placement with the XF reader's `place`.
+  An instance's placement composes after its record's by the reader's `compose(member, record)`.
+- **A path record's drawn points** are made in three steps:
+  1. Its shape is placed.
+  2. If it has a reveal window `(lo, hi)`, the window is cut by CE's
+     `pointwise_become_partial`, unless `lo <= 0` and `hi >= 1`:
+     - With `C = len / 4` cubics, the window's ends map to `(i, r)`. Here `i` is `C - 1` and `r` is
+       1 when the value is at least 1, `i = 0` and `r = 0` when it is at most 0, and otherwise
+       `i = trunc(C * v)` and `r = (C * v) mod 1` (the Euclidean remainder).
+     - Where `i_lo = i_hi`, the cut is `partial(c_{i_lo}, r_lo, r_hi)`.
+     - Otherwise it is `partial(c_{i_lo}, r_lo, 1)`, then the whole cubics `i_lo + 1` up to, but not
+       including, `i_hi`, then `partial(c_{i_hi}, 0, r_hi)`.
+     - `partial(c, a, b)` is all four points `c_3` when `a >= 1`. Otherwise it is
+       `head(tail(c, a), (b - a) / (1 - a))`, using `lerp(p, q, t) = p + (q - p) * t` per
+       coordinate:
+       - `tail(c, t) = [lerp(abc, bcd, t), bcd, cd, c_3]`
+       - `head(c, t) = [c_0, ab, abc, lerp(abc, bcd, t)]`
+       - `ab = lerp(c_0, c_1, t)`, `bc = lerp(c_1, c_2, t)`, `cd = lerp(c_2, c_3, t)`,
+         `abc = lerp(ab, bc, t)`, `bcd = lerp(bc, cd, t)`.
+  3. If it has a shape blend, each point `p` is blended with its second shape's point `q`, placed
+     by the blend's own placement, as `(1 - t) * p + t * q` per coordinate.
+- **A face group.** Face `i` is a run of the record's points: from the previous face end (0 for the
+  first) to `face_end_i`. Where the record states no face ends, the runs are equal, of
+  `len / faces` points each.
 
-**Before display** (`project::pre_display`, CE's `transform_points_pre_display`): a mobject with any
-non-finite point is drawn as one point at the origin (for a path, nothing: a path needs four points,
-`path::drawn_world`); points fixed in frame and every point under a flat or moving camera are kept;
-points of a record with a fixed-orientation centre `C` are moved by `project(C) - C`; the rest are
-projected. Which placement a record takes (`project::placement`): a `world` record under a 3D
-camera is projected (fixed-orientation when it has a centre); an `overlay` record is fixed in frame
-(and is the overlay's, §1); a `screen` record, and every record under a flat or moving camera, is
-kept. Records kept or fixed in frame are in front of all depth (key `-inf`, §5).
+### The 3D projection
 
-**The frame mapping** (`project::FrameMap`). From frame units to pixels, CE's Cairo context matrix:
-`xx = W / fw`, `yy = -(H / fh)`, `x0 = W/2 - m_0 (W / fw)`, `y0 = H/2 + m_1 (H / fh)`, applied as
-`x' = (xx x + 0 y) + x0`, `y' = (0 x + yy y) + y0` (`FrameMap::cairo`, `apply`). The centre `m` is
-the view's `mapping_centre` for what CE draws through its Cairo context (paths, face groups' faces,
-meshes, instances) and `frame_center` for point clouds and images (`mapping_centre_of`); point
-clouds map by `subpixel_coords`, `(p_0 - c_0)(W / fw) + W/2`, `(p_1 - c_1)(-(H / fh)) + H/2`. The flat
-and the moving camera map the same way; only the view's numbers differ.
+The projection applies under a view whose camera is 3D. Its inputs are `φ`, `θ`, `γ`, the focal
+distance `d`, zoom `z0` and the exponential option, about the view's `frame_center` `c`. A degree
+is `DEG = τ / 360`.
 
-**Pre-projected records** (feature bit 1, XF 1.1). The tail's points are taken as placed (identity
-placement), its paints and gradient ends as produced, never projected or lit again
-(`instance::produced_path`). Their depth is keyed in the camera's own axes: each shown point is put
-back by `unproject`, `(x / (f(z) z0), y / (f(z) z0), z)`, and keyed through the same projection
-without rotation or centre (`Projection::in_camera_axes`); a fixed-orientation centre is moved as
-the record's first point moved (`project::produced_pivot`). Tests:
-`tests/pre_projected.rs::a_pre_projected_record_never_moves_with_the_view_s_rotation`.
+    Rz(a) = [[cos a, −sin a, 0], [sin a, cos a, 0], [0, 0, 1]]
 
-**Clipping.** Nothing is clipped at the eye: a point behind it takes the factor `10^6` and is drawn
-where that puts it, and a non-finite position drops what it belongs to (a triangle with a non-finite
-corner, a ring with a non-finite point: `mesh::Meshes::push`, `scanline::edges_of`)
-(`tests/projection.rs::a_point_behind_the_eye_takes_ces_large_factor`). Fragments exist only on the
-frame's pixels. Triangles reaching past `±65536` px are clipped there and fanned from the clipped
-polygon's first corner (`mesh::clip_to_guard`), pieces of one triangle. Path curves beyond the guard
-area are drawn as chords (`guard_chords@1`, §4).
+    Rx(a): v = (a·1, a·0, a·0);  N = sqrt((v0·v0 + v1·v1) + v2·v2)
+           κ = N <= 1e-3 ? ((0.5 − n2/48) + (n2·n2)/3840) with n2 = N·N : sin(N/2) / N
+           (x, y, z, w) = (κ·v0, κ·v1, κ·v2, cos(N/2))
+           x2 = x·x, y2 = y·y, z2 = z·z, w2 = w·w
+           xy = x·y, zw = z·w, xz = x·z, yw = y·w, yz = y·z, xw = x·w
+           [[((x2 − y2) − z2) + w2,   2·(xy − zw),             2·(xz + yw)],
+            [2·(xy + zw),             ((−x2 + y2) − z2) + w2,  2·(yz − xw)],
+            [2·(xz − yw),             2·(yz + xw),             ((−x2 − y2) + z2) + w2]]
 
-**Oracle reading.** The oracle projects every record by this text. Its camera is checked against
-closed forms and against the engine's own `arachne.camera.projection` (screen boxes within 1 px).
+    (M·N)[i][j] = (M[i][0]·N[0][j] + M[i][1]·N[1][j]) + M[i][2]·N[2][j]
+    R = I; then R = F·R for F in [Rz(−θ − 90·DEG), Rx(−φ), Rz(γ)], in that order
+
+    rotated(p): q = (p0 − c0, p1 − c1, p2 − c2);  r_k = (q0·R[k][0] + q1·R[k][1]) + q2·R[k][2]
+
+    factor(z): exponential:  z < 0 ? d / (d − z) : exp(z / d)
+               otherwise:    d − z < 0 ? 1e6 : d / (d − z)
+
+    project(p):   (x, y, z) = rotated(p);  s = factor(z)·z0;  (x·s, y·s, z)
+    unproject(p): s = factor(p2)·z0;  (p0 / s, p1 / s, p2)
+
+Notes on these formulas:
+
+- `1e6` is CE's **behind-the-eye factor**. A point on the eye's plane takes `d / 0`.
+- The **key** of a projected point is `−factor(z)`.
+- A point is **keyed planar** when the option is off and `d − z > 0`. Only there is a key affine
+  across a plane on screen.
+- **In the camera's own axes,** the same formulas apply with `R = I` and `c = 0`.
+
+[Rests on: `project.rs` (`rotation_about_z`, `rotation_about_axis`, `rotation_matrix`, `matmul`,
+`Projection::rotated`, `project`, `unproject`, `factor`, `keys_planar_at`, `in_camera_axes`).]
+
+### Before display and placement kinds
+
+- **Before display.** A record's placed points become shown points as follows:
+  - Points of a record **kept** or **fixed in frame** are unchanged.
+  - **Projected** points go through `project`.
+  - Points of a **fixed-orientation** record with centre `C` are each moved by `o = project(C) − C`,
+    taken per coordinate, as `p + o`.
+
+  A mobject with any non-finite point would be shown as one point at the origin, but each producer
+  meets non-finite input first (below).
+- **Placement kinds.** Under a 3D camera:
+  - A `world` record is projected, or fixed-orientation where it carries a centre.
+  - An `overlay` record is fixed in frame. It is the overlay's (§1).
+  - A `screen` record is kept.
+
+  Under a flat or a moving camera, every record is kept. Kept and fixed-in-frame records are in
+  front of all depth: key `−∞` (§5).
+
+### Non-finite input, per producer
+
+- **A mesh** with any non-finite placed vertex draws nothing.
+- **A path** with fewer than 4 drawn points, or with any non-finite placed point, draws nothing.
+- **A points record:**
+  - A point whose placed position is not finite is skipped, and the others are drawn.
+  - A point whose screen position is not finite, or whose key is NaN, is skipped.
+  - A point whose screen position exceeds `4e18` in magnitude is skipped.
+
+[Rests on: `mesh::lower`, `path::drawn_world`, `Lowering::depth_points`, `points.rs`.]
+
+### The frame mapping
+
+The mapping from frame units to pixels is CE's Cairo context matrix:
+
+    xx = W / fw;  yy = −(H / fh);  x0 = (W / 2) − m0·(W / fw);  y0 = (H / 2) + m1·(H / fh)
+    map(p) = ((xx·p0 + 0·p1) + x0,  (0·p0 + yy·p1) + y0)
+
+The centre `m` depends on what is drawn:
+
+- **Paths, face groups' faces, meshes and instances** use the view's `mapping_centre`. CE draws
+  these through its Cairo context.
+- **Point clouds and images** use `frame_center`. A point maps as
+
+      ((p0 − c0)·(W / fw) + W / 2,  (p1 − c1)·(−(H / fh)) + H / 2)
+
+The flat camera and the moving camera map the same way. Only the view's numbers differ.
+
+### Pre-projected records and clipping
+
+**Pre-projected records** (feature bit 1, XF 1.1):
+
+- The tail's points are taken as placed (identity placement), and its paints and gradient ends as
+  produced. Nothing is projected or lit again.
+- Their depth is keyed in the camera's own axes. Each shown point is put back by `unproject` and
+  keyed there.
+- A fixed-orientation pivot is the pivot as produced, moved as the record's first point moved.
+
+[Rests on: `instance::produced_path`, `project::produced_key`, `produced_pivot`;
+`tests/pre_projected.rs::a_pre_projected_record_never_moves_with_the_view_s_rotation`.]
+
+**Clipping.**
+
+- Nothing is clipped at the eye. A point behind the eye takes the factor `1e6` and is drawn where
+  that puts it.
+- Fragments exist only on the frame's pixels.
+- A triangle is clipped at `±65536` px (§3).
+- A path's curves beyond the guard band are drawn as chords (`guard_chords@1`, §4).
+
+[Rests on: `tests/projection.rs::a_point_behind_the_eye_takes_ces_large_factor`.]
+
+**Oracle reading.** The oracle projects every record by this text and checks its camera against
+closed forms, and against the engine's `arachne.camera.projection` (screen boxes within 1 px).
 
 ## 3. Mesh coverage
 
-**Core rule** (`mesh.rs` module doc, `Meshes::push`, `Meshes::raster`). A mesh triangle's corners,
-placed, shown (§2) and mapped (`FrameMap`), are rounded to the 1/256 px grid
-(`mesh_fixed_point@1`: `round(v * 256)` per coordinate); a triangle whose rounded corners are
-collinear covers nothing, and one wound clockwise is turned. Each edge `a → b` gives the integer edge
-function `e(p) = dx (p_y - a_y) - dy (p_x - a_x)` (`dx = b_x - a_x`, `dy = b_y - a_y`); a sample is
-inside where every edge function is positive, and on an edge where its function is zero and the
-edge runs up (`dy < 0`) or right along a row (`dy = 0`, `dx > 0`) (`mesh_edge_ownership@1`): a sample
-on an edge two triangles share belongs to exactly one of them. The fragment's coverage is the mask of
-its inside samples (bit `s` for sample `s`); a pixel with an empty mask holds no fragment.
-Tests: `tests/mesh.rs::a_mesh_far_larger_than_the_frame_covers_it_without_cracks`,
+**Core rule.**
+
+- **Corner rounding (`mesh_fixed_point@1`).** A triangle's corners are placed, shown (§2) and
+  mapped. Each coordinate is then rounded to the 1/256 px grid as `round(v * 256)`.
+- **Degenerate and clockwise triangles.** A triangle whose rounded corners are collinear covers
+  nothing. One whose rounded corners wind clockwise is turned.
+- **The edge test.** Each edge `a → b` gives the integer function
+  `e(p) = dx (p_y − a_y) − dy (p_x − a_x)`, where `dx = b_x − a_x` and `dy = b_y − a_y`, evaluated
+  at the sample's fixed-point position (§1). A sample is inside where every edge's function is
+  positive.
+- **Edge ownership (`mesh_edge_ownership@1`).** A sample on an edge (its function is zero) is inside
+  where the edge runs up (`dy < 0`), or runs right along a row (`dy = 0`, `dx > 0`). So a sample on
+  an edge two triangles share belongs to exactly one of them.
+- **Guard clipping.** A triangle reaching past `±65536` px is clipped there. The clipped polygon is
+  fanned from its first corner, and the pieces belong to one triangle.
+- **The fragment.** Its coverage is the mask of its inside samples (bit `s` for sample `s`). A
+  pixel with an empty mask holds no fragment.
+
+[Rests on: `mesh.rs` module doc, `Meshes::push`, `Meshes::raster`, `clip_to_guard`;
+`tests/mesh.rs::a_mesh_far_larger_than_the_frame_covers_it_without_cracks`,
 `::a_meshs_coverage_is_its_exact_area_within_the_sample_patterns_bound`,
-`tests/probes.rs::no_background_shows_through_a_surfaces_internal_edges_opaque_or_transparent`.
+`tests/probes.rs::no_background_shows_through_a_surfaces_internal_edges_opaque_or_transparent`.]
 
-A mesh fragment's identity is `(object, part, mesh, triangle)`: `sub` is the triangle's index in its
-shape, plus `t i` for an instances record's member `i` of a `t`-triangle prototype
-(`instance::mesh_members`). One mesh drawn is one **surface** (`Fragment::surface`): its triangles
-may merge into one unit (§9).
+**Identity of a mesh fragment.** Its `sub` is the triangle's index in its shape. For an instances
+record's member `i` of a `t`-triangle prototype, it is `t i` plus that index. All the triangles of
+one mesh drawn form one **surface**, and they may merge into one unit (§9).
 
-**Point blocks** (`point_blocks@1`, `points.rs` module doc). A `points` record's point `i`, placed
-and shown, maps by `subpixel_coords` and truncates toward zero to the pixel `(X, Y)`. Its block has
-side `t = trunc(1 + (radius - 1))` (none for `t < 1`); it covers whole pixels `X + o`, `Y + o'` for
-`o, o'` in `floor(-t / 2) + 1 .. floor(-t / 2) + 1 + t`, clipped to the frame pixel by pixel, each
-with the full mask. A block pixel's `sub` is `(offset index) * n + i` for `n` points, the offset index
-being `(X + o - X - lo) * t + (Y + o' - Y - lo)` with `lo = floor(-t / 2) + 1`, so where blocks
-overlap at one depth the later write in CE's offset-major order is on top
-(`tests/path.rs::overlapping_blocks_keep_ces_offset_major_write_order`).
+**Point blocks (`point_blocks@1`).** For a `points` record's point `i`:
 
-**Oracle reading.** A mesh fragment is `Yes` at a sample inside the triangle of its projected,
-mapped corners, absent outside, and `Either` within `m` of an edge, where
-`m = ε_in + 1/256 px`: `ε_in` is how far the input grid lets the triangle's corners move on screen
-(§6, the screen shift `ε`, the larger at the edge's two corners) and `1/256` px covers the core's
-corner rounding (at most `√2 / 512` px) and its edge ownership, whichever way the oracle's own
-rounding goes. A triangle thinner than `2m` is `Either` wherever it covers. A point block's pixels
-are `Yes` at every sample, exactly (truncation of an exact coordinate; a coordinate within `ε_in` of
-an integer makes the block's edge pixels `Either`).
+- **Position.** It is placed and shown, mapped as a point cloud (§2), and truncated toward zero to
+  the pixel `(X, Y)`.
+- **The block.** Its side is `t = trunc(1 + (radius − 1))`, with no block for `t < 1`. With
+  `lo = floor(−t / 2) + 1`, it covers the whole pixels `(X + o, Y + o')` for `o, o'` in
+  `lo .. lo + t`, clipped to the frame. Every pixel it covers gets the full mask.
+- **Its `sub`.** It is `(offset index) * n + i` for `n` points. The offset index is
+  `(o − lo) * t + (o' − lo)`. So where blocks overlap at one depth, the later write in CE's
+  offset-major order is on top.
+
+[Rests on: `points.rs` module doc;
+`tests/path.rs::overlapping_blocks_keep_ces_offset_major_write_order`.]
+
+**Oracle reading.**
+
+- The oracle computes each mask by the rules above. The corners are the core's to the last bit
+  (§2), so the masks are exact.
+- **`Either` zone.** A sample is `Either` where it lies within `ε` of an edge of the unrounded
+  triangle. `ε` is the triangle's screen shift (§6), the larger at the edge's two corners: how far
+  the input grid lets the corners move.
+- A block pixel is `Yes` at every sample. Where a point's screen coordinate lies within `ε` of an
+  integer, the block's pixels along that side are `Either`.
+
+**Rejects:** a mesh triangle missing from the core's fragments at a sample farther than `ε` inside
+it.
 
 ## 4. Path coverage
 
-**The outline** (`path::subpaths`, `path::outline`). A path's drawn points, shown and kept in frame
-units, split into CE's subpaths where a cubic's end and the next one's start differ in x or y by more
-than CE's tolerance, `|a - b| <= 1e-6 + 1e-5 |b|` per coordinate meaning equal (`path::close`); a
-subpath of fewer than four points is dropped. Each subpath is a move to its first point and its
-cubics (anchor, handle, handle, anchor); it is closed when its first and last points are equal by
-the same test, its last point then taken as its first, and a close added. The outline is mapped to
-pixels by the frame mapping (`path::mapped`). A path of fewer than four points, or with a non-finite
-point, draws nothing (`path::drawn_world`).
+**The outline.**
+
+- **Subpaths.** A path's drawn points, shown and kept in frame units, split into CE's subpaths. A
+  split falls where a cubic's end and the next cubic's start differ, in `x` or `y`, by more than
+  CE's tolerance: `|a − b| <= 1e-6 + 1e-5 |b|`, per coordinate, means equal. A subpath of fewer
+  than four points is dropped.
+- **Path elements.** Each subpath becomes a kurbo path: a move to its first point, then a curve per
+  cubic (anchor, handle, handle, anchor).
+- **Closing.** A subpath is closed when its first and last points are equal by the same test. Its
+  last point is then taken as its first, and a close is added.
 
 **Layers.** A path paints up to three layers, in this order, as three fragments at a pixel:
-background stroke, fill, stroke (`sub = 3 i + k`, `k` 0, 1, 2, for its record's `i`-th path: an
-instances record's member `i`; a face group's face is its own order entry with `i = 0`). A layer with
-no paint, a solid paint of zero alpha after premultiplying, a clear gradient (every stop's alpha
-short at most `0xff`), or a stroke whose width in frame units is not above 0, draws nothing
-(`Lowering::layers`, `Lowering::push`, `gradient::source`).
+background stroke, fill, stroke. Their `sub` is `3 i + k` (`k` = 0, 1, 2) for the record's
+`i`-th path:
 
-- **Fill:** the mapped outline flattened by kurbo 0.13.1's `flatten` at tolerance `0.1` px (Cairo's
-  default, `path::TOLERANCE`), into closed rings (`path::rings`: a ring of fewer than three points
-  is dropped), filled by the **nonzero** rule.
-- **Strokes:** the outline in frame units stroked by kurbo 0.13.1's `stroke` (§8: width, joins,
-  caps, miter limit, dashes, join decisions, dots) at tolerance `0.1 / s` with
-  `s = max(|xx|, |yy|)`, then mapped and flattened as the fill is, and filled by the nonzero rule
-  (the stroker's outline overlaps itself at caps and inner joins; nonzero covers each point once).
-- **The shared component.** The flattening and the stroker are kurbo's, at the version and
-  tolerances above, for the core and the oracle alike: a second flattening differs from the core's
-  outline by up to the tolerance at every curved edge, which is tenths of a cell. Cairo on 2D
-  witnesses the component.
-- `guard_chords@1`: in frame units, with `reach = w_max * 10` (the widest stroke's width times the
-  miter limit), where some point of the outline lies within `reach` of the edge of the guard band (the
-  frame widened by `65536` px on every side) or beyond it, the area is the frame's box widened by
-  `reach + 1`, and each curve piece whose control hull misses that area is drawn as its chord (pieces
-  split as `path::cull_pieces` splits them), before stroking and filling (`Lowering::guard`,
-  `path::culled`); dashes are laid on the whole outline first (`path::dashed`). A curve and its chord
-  both lie in the hull, so it changes nothing inside the area, and no pixel of the frame.
+- an instances record's member `i`;
+- `i = 0` for a face of a face group, since each face is its own order entry.
 
-**Coverage** (`scanline.rs`). From the flattened rings, horizontal edges are dropped and every other
-edge kept with its winding direction (`scanline::edges_of`). A pixel's area is the exact area of the
-pixel inside the region where the winding number is nonzero, computed in binary64 as trapezoids
-between transition edges within bands cut at every vertex and crossing; a sum within `1e-9` of 0 is 0
-and within `1e-9` of 1 is 1 (`scanline::SNAP`); a pixel whose area is 0 holds no fragment of the layer
-(`scanline::cover`). A cell's area is the same computation over the pixel magnified 4 times about its
-corner, each cell a unit (`scanline::cell_areas`). Areas are stored as binary32: the pixel's
-(`Coverage::Area`) and each cell's (`Producer::cell_areas`). Tests: `tests/scanline.rs` (all four),
-`tests/path.rs::a_fill_covers_each_pixel_by_its_exact_area`,
-`::a_self_crossing_outline_fills_by_the_nonzero_rule`,
-`tests/coverage_bound.rs::a_rasterized_paths_area_lies_within_the_drift_of_its_cells_mean`
-(`|area - mean of cells| <= 1e-6`, `composite::AREA_DRIFT`); the cell area's reference shape is
-`cell_area` in `tests/python/test_contributor_samples.py`.
+A layer draws nothing in any of these cases:
 
-**Presence at a sample** (`cell_presence@1`). A path layer's 8-bit coverage at sample `s` is
-`floor(clamp(A_s, 0, 1) * 255 + 1/2)` of its cell's binary32 area `A_s` (taken back to binary64),
-or 255 at every sample when its pixel area is 1 (`TransparentPass::sample_coverage`,
-`composite::area_coverage`). The fragment **covers** the sample where that byte is not 0, that is
-where `A_s >= 1/510`: every order (§7), resolve (§9) and report reads that byte, never the area
-(`order::shared`, `SampleRanks::rank`, `contributors.rs` module doc). A layer whose pixel area is
-positive may cover no sample.
+- it has no colour rows (`paint_rows@1`, §9);
+- its solid colour paints nothing (`alpha_round@1`);
+- its gradient is clear;
+- it is a stroke whose width in frame units, `w`, is not above 0, or is NaN.
 
-**Oracle reading.** The oracle computes each cell's exact nonzero area of the same flattened,
-stroked rings by its own trapezoid-span area (written from this text, not from `scanline.rs`). A
-path fragment is `Yes` at a sample where the area is at least `1/510 + μ`, absent where at most
-`1/510 - μ`, `Either` between; `μ` is how far the cell's area can move when the outline moves by the
-input grid's screen shift `ε` (§6): `ε` times the length of the outline inside the cell, over the
-cell's area `1/16`, plus binary32's rounding (`2^-24` of the area) and the oracle's own arithmetic
-bound. A fragment's cell byte is the core's formula above applied to the oracle's area, `Either`
-admitting both bytes it straddles.
+### The guard (`guard_chords@1`)
+
+The guard works in frame units, with `reach = w_max * 10`, the widest stroke's width times the
+miter limit:
+
+- **When it applies.** The guard band is the frame widened by `65536` px on every side. The guard
+  applies when some point of the outline (a move, line or curve point) lies within `reach` of the
+  band's edge, or beyond it.
+- **The area.** It is then the frame's box widened by `reach + 1`.
+- **Splitting.** Each cubic is cut into pieces by a recursive split with depth limit 40:
+  - a piece whose four control points all lie beyond one side of the area misses it, and is kept
+    as is;
+  - a piece whose `CubicBez::bounding_box` has its larger side at most `64 * size` (`size` the
+    area's larger side) is kept as is;
+  - a piece at depth 0 is kept as is;
+  - otherwise the piece is halved by `CubicBez::subdivide`, and each half is split again with the
+    limit one lower.
+- **Chords.** A piece that misses the area is drawn as a line to its end. Others are drawn as
+  curves. A quadratic is raised to a cubic first.
+- **Which layers.** The fill and the undashed strokes use this outline. A dashed stroke is laid by
+  §8's dash rule on the unguarded outline.
+
+A piece and its chord both lie inside its control hull, which misses the area, so the guard changes
+nothing inside the area.
+
+[Rests on: `Lowering::guard`, `path::misses`, `cull_pieces`, `culled`.]
+
+### Fill, strokes and coverage
+
+- **Fill.** The outline is mapped to pixels and flattened by kurbo's `flatten` at tolerance `0.1`
+  px (Cairo's default). Each run from a move to a close, or to the next move, is a ring. A ring of
+  fewer than three points is dropped. Rings are filled by the **nonzero** rule.
+- **Strokes.** The outline is stroked in frame units by kurbo's `stroke` at tolerance `0.1 / s`,
+  where `s = max(|xx|, |yy|)` and the style is given by §8. The join edits of §8 are applied, and
+  the result is mapped and flattened as the fill is, then filled by the nonzero rule.
+- **Edges.** In the rings, horizontal edges are dropped, and a ring holding a non-finite point is
+  dropped. Every other edge is kept with its winding direction.
+- **Pixel area.** A pixel's area is the exact area of the pixel inside the region where the winding
+  number is nonzero. A sum within `1e-9` of 0 is 0, and one within `1e-9` of 1 is 1. A pixel whose
+  area is 0 holds no fragment of the layer.
+- **Cell areas.** A cell's area is the same computation over the pixel magnified 4 times about its
+  corner, each cell then a unit square.
+- **Storage.** The core stores each pixel's area and each cell's area as binary32.
+
+[Rests on: `path::subpaths`, `close`, `outline`, `rings`, `TOLERANCE`; `scanline::edges_of`, `SNAP`,
+`cover`, `cell_areas`; `tests/scanline.rs`; `tests/path.rs::a_fill_covers_each_pixel_by_its_exact_area`,
+`::a_self_crossing_outline_fills_by_the_nonzero_rule`; `tests/coverage_bound.rs::a_rasterized_paths_area_lies_within_the_drift_of_its_cells_mean`;
+the reference shape `cell_area` in `tests/python/test_contributor_samples.py`.]
+
+**Presence at a sample (`cell_presence@1`).**
+
+- **The cell byte.** A path layer's 8-bit coverage at sample `s` is
+  `floor(clamp(A_s, 0, 1) * 255 + 1/2)`, where `A_s` is the binary32 area of the sample's cell. It
+  is 255 at every sample when the pixel's area is 1.
+- **Presence.** The layer **covers** the sample where that byte is not 0, that is, where
+  `A_s >= 1/510`. Every order (§7), resolve (§9) and report reads that byte, never the area.
+- A layer whose pixel area is positive may cover no sample.
+
+[Rests on: `TransparentPass::sample_coverage`, `composite::area_coverage`, `order::shared`.]
+
+**Oracle reading.** The oracle computes each cell's exact nonzero area `A` of the same kurbo rings
+(identical input, §2), by its own trapezoid integration written from this text. Its admitted
+interval is `[A − μ, A + μ]`, where
+
+    μ = α + 2^-24 + μ_ε
+    μ_ε = 16 (2 ε L + π ε² m)
+
+- `α = 2^-30 (1 + n_e)` bounds the difference between two binary64 integrations. `n_e` is the
+  number of ring edges meeting the cell's band of rows.
+- `2^-24` covers binary32 storage.
+- `μ_ε` bounds the area that moving the flattened outline by up to `ε` (its screen shift, §6) can
+  bring into or take out of the cell, as a fraction of the cell. That area lies within the outline's
+  `ε`-neighbourhood:
+  - `L` is the length of the rings inside the cell widened by `ε` on every side;
+  - `m` is the number of connected pieces of the rings there;
+  - a piece of length `l` has an `ε`-neighbourhood of area at most `2 ε l + π ε²`;
+  - the factor 16 is the inverse of a cell's area.
+
+  The band models moving the flattened outline. It does not model re-flattening a moved curve:
+  the flattening is part of the definition.
+
+From the interval:
+
+- The layer is `Yes` at the sample where `A − μ >= 1/510`.
+- It is absent where `A + μ < 1/510`.
+- It is `Either` otherwise.
+- The admitted cell bytes are every value of `floor(clamp(v, 0, 1) * 255 + 1/2)` for `v` in the
+  interval.
+- The admitted whole-pixel bytes are found the same way, from the pixel's area and its own `μ`.
+
+**Rejects:** a stroke 0.3 px wide or less, missing from the core's fragments at a sample whose cell
+it covers by at least `1/510 + μ`; and a cell byte outside its admitted interval.
 
 ## 5. Depth
 
-Each fragment carries, at each sample, a key (smaller is nearer) and an error bound (`Depths::err`,
-`order.rs` module doc). What the key is depends on the record (`path.rs`, `mesh.rs`, `points.rs`
-module docs).
+Each fragment carries, at each sample, a key (smaller is nearer) and an error bound. What the key
+is depends on the record.
 
-**Keys in front of all depth.** Every fragment of a record kept or fixed in frame (§2), and every
-fragment under a flat or moving camera, has key `-inf` at every sample: such fragments tie and paint
-in order (`project::placement`; `tests/mesh.rs::under_a_flat_camera_meshes_paint_in_draw_order_whatever_their_z`).
+**In front of all depth.** Every fragment of a kept or fixed-in-frame record (§2), and every
+fragment under a flat or moving camera, has key `−∞` at every sample. Two such fragments tie and
+paint in order. Against a finite key, `−∞` is in front.
 
-**World planes** (`depth.rs` module doc, `WorldPlane`). A plane is made canonical: its normal
-divided by its length, turned so its largest component (by magnitude, the lower axis on equal
-magnitudes) is positive, its offset `unit · p` through its point `p` (bound `4u (|unit| · |p|)`),
-then the normal's components and the offset each rounded to a multiple of `PLANE_GRID = 2^-20`
-(`round(v / 2^-20) * 2^-20`); the unrounded plane is kept beside it (`Direction`, `WorldPlane::rounded`).
-How a path lies is its record's XF 1.2 `planes` code for that path when carried, else decided from
-its placed points (`WorldPlane::decide`): an axis plane where every point shares a coordinate within
-`1e-9 * max(extent, 1)` (z, then y, then x); else Newell's normal through the first point where every
-point lies on it within that tolerance; else the widest triangle's normal on the first point (an
-outline crossing itself); else, for a face of a face group, the plane nearest it (Newell's normal
-through the centroid, `Nearest`); else none (a curve). The decided plane is fitted to the points as
-drawn (`WorldPlane::fit`). Points on a line (to within rounding and twice the snap's reach,
-`depth::on_a_line`, `points_somewhere`) have no plane of their own whatever their code.
+[Rests on: `project::placement`;
+`tests/mesh.rs::under_a_flat_camera_meshes_paint_in_draw_order_whatever_their_z`.]
 
-**A plane's key on screen** (`Projection::key_plane`). For a world plane `n · p = e`, with
-`m = R n`, `D = e - n · c - m_2 d` (the plane's distance from the eye) and the frame map `(xx, yy,
-x0, y0)`, the key across the pixel plane is `a + b x + c y` with `g_x = m_0 / (z0 xx)`,
-`g_y = m_1 / (z0 yy)`, `a = -(-g_x x0 - g_y y0 - m_2 d) / D`, `b = -g_x / D`, `c = -g_y / D`, from the
-rounded plane; its error bound is §6's `R`. It is not formed under the exponential option, at zoom
-0, where `D` is 0 or its unrounded twin lies within its offset's bound of 0, or where the plane is
-seen within `min_cos` of edge-on (`min_cos` 0 for paths, `10^-9` for mesh triangles,
-`mesh::MIN_PLANE_COS`). A plane read at a point is `a + b x + c y + 0.0` (`Plane::at`).
+### World planes
 
-**Mesh triangles** (`mesh::lower`). Under a 3D camera in world space, where every corner is keyed
-planar: the canonical plane through the placed corners (`WorldPlane::of_triangle`; the axis plane
-where the corners share a coordinate within the planarity tolerance or a grid step; none where its
-normal points nowhere), keyed by `key_plane`; where that gives none, the plane on screen through the
-corners' `(x, y, key)` (`Plane::through_with_errors`), as also for a triangle with a corner not keyed
-planar. A fixed-orientation mesh takes its facing plane (below).
+A plane is written `n · p = e`. Its **canonical** form is built in three steps:
 
-**Paths in world space** (`Lowering::coplanar`, `Lowering::world_depth`). A path with every point
-keyed planar, not pre-projected and not a `Nearest` face, is offered to the frame's registry (§7):
-**flat** where its planarity is Newell's, the widest triangle's or an axis plane, its points do not
-lie on a line and the fit finds a plane; otherwise with **no plane of its own** (a curve, or points on
-a line). Its layers are keyed:
+1. Its normal is divided by its length and turned so that its largest component (by magnitude; on
+   equal magnitudes, the lower axis) is positive.
+2. Its offset is `unit · p` through its point `p`, with error bound `4u (|unit| · |p|)`.
+3. The normal's components and the offset are each rounded to a multiple of `PLANE_GRID = 2^-20`
+   as `round(v / 2^-20) * 2^-20`. The unrounded plane is kept beside the rounded one.
 
-- a flat path's **fill** on its own plane's key, however nearly edge-on (min_cos 0), where the camera
-  keys that plane; else along its curve;
-- a `Nearest` face's fill on its fitted plane, its bound carrying the outline's departure
-  (`nearest_plane_departure@1`, §7);
-- every **stroke** and background stroke, and the fill of a path with no plane of its own, along its
-  curve (`curve_key@1`, below);
-- a path with a point not keyed planar: every layer along its curve.
+The **axis plane** of coordinate `k` through `p` has normal `e_k` and offset `p_k`, rounded to the
+grid.
 
-`fringe_key@1` (`path::fringe_depths`): a layer keyed on a sloped plane (`b` or `c` not 0), at a
-sample outside its outline by the point-in-outline test (nonzero winding at the sample point,
-half-open in y, `scanline::mask`), reads the plane at the outline's point nearest the sample
-(`Layer::nearest_on_outline`), not at the sample; inside, at the sample. Tests:
-`tests/path.rs::beside_a_grazing_sliver_its_fill_beyond_its_outline_is_behind_the_nearer_face`.
+**How a path lies (its planarity).** Where its record carries an XF 1.2 `planes` code for the path,
+the code decides. Otherwise it is decided from its points `P`, with `tol = 1e-9 * max(extent, 1)`
+where `extent` is the widest of the points' extents along the axes:
 
-`curve_key@1` (`path::curve_depth`, `depth::Centreline::key_under`). A path's centreline is, per
-subpath and cubic, the polyline through `n = clamp(ceil(L / 2), 1, 64)` equal steps of the cubic's
-parameter (`L` the control polygon's length on screen), each vertex's position and key the
-cubic's Bernstein weights `(1-t)³, 3(1-t)²t, 3(1-t)t², t³` of the control points' mapped positions and
-keys (`-f` of each projected control point). At a point `P`, a layer of body `h` (half the stroke's
-width in pixels, `w |xx| / 2`; 0 for a fill) takes the front-most (least) key among the segments whose
-foot parameter at `P` lies in `[0, 1]` and whose distance from `P` is at most `h`; where none does,
-the key of the nearest segment, clamped to its end where the foot lies past one. A segment's key at
-`P` is its two ends' keys interpolated along it as a plane through the segment, held between the two
-(`depth::key_on`); a segment of no length or of one key is its lesser key. Tests: `tests/centreline.rs`
-(all six), `tests/probes.rs::a_curve_passing_behind_a_surface_is_hidden_there`.
+- **Axis.** It is the axis plane of the first coordinate, in the order z, y, x, that every point
+  shares with the first point within `tol`.
+- **Newell.** Otherwise, Newell's normal through the first point, where every point lies on that
+  plane within `tol`.
+- **Widest.** Otherwise, the normal of the widest triangle on the first point, again where every
+  point lies on it within `tol`. This is the case of an outline crossing itself. The widest triangle
+  is the first point, the point farthest from it, and the point farthest from the line through
+  those two (the last of equals).
+- **Nearest.** Otherwise, for a face of a face group, the plane nearest it: Newell's normal through
+  the centroid.
+- **Curve.** Otherwise none.
 
-`facing_plane@1` (`Projection::facing_plane`). A fixed-orientation record's fragments (paths, meshes,
-point blocks: every camera-facing label) are keyed on the camera-facing plane through its centre: the
-world plane of normal `R`'s third row made canonical through the centre, keyed by `key_plane` read
-over the box `[-|x0|, -|y0|, 3|x0|, 3|y0|]`; where no plane keys (the exponential option, zoom 0, a
-centre not keyed planar), the centre's own key everywhere, with `key_error` as its bound. A
-pre-projected record with a fixed-orientation centre is keyed so in its camera's axes at its pivot.
-Every projected point of a `points` record is keyed on the facing plane through it, so points and
-camera-facing surfaces at one depth tie. Tests:
+The plane is fitted to the points as drawn: the axis plane through the first point, or the canonical
+plane of the chosen normal through the first point (or through the centroid, for `Nearest`).
+
+[Rests on: `WorldPlane::decide`, `fit`, `rounded`, `canonical`, `axis_plane`.]
+
+**The normals.** Take the points relative to the first point `f`.
+
+- **Newell's normal** sums, over each point `a` and the next `b` (the last point's next being the
+  first), the components `(a_y − b_y)(a_z + b_z)`, `(a_z − b_z)(a_x + b_x)` and
+  `(a_x − b_x)(a_y + b_y)`.
+- **The widest normal** is `far × (p − f)` with the largest length over the points, where `far` is
+  the point (relative to `f`) farthest from `f`. On equal lengths, both picks take the last.
+- **Points somewhere.** A normal `n` **points somewhere** when
+  `|n| > max(1e-9 · extent², 4 · g · sqrt(0.75) · perimeter)`. Here `extent` is the points' widest
+  extent along an axis, `perimeter` is their closed polygon's length, and `g` is the snap grid (0
+  where not snapped).
+- **When a plane holds.** Planarity's tests take `g = 0` and a perimeter of 0. A normal's plane
+  holds the points when the normal points somewhere and, for every point `p`, `|û · p − û · f|` is
+  within `tol`, where `û` is the normal divided by its length.
+
+**On a line.** A record's points lie **on a line** when their widest normal does not point
+somewhere, with the record's own grid and perimeter. Points on a line have no plane of their own,
+whatever their code.
+
+[Rests on: `depth::on_a_line`, `points_somewhere`.]
+
+### A plane's key on screen
+
+For a world plane `n · p = e`, its key across the pixel plane, written `key_plane` in what follows,
+is `a + b x + c y`, with:
+
+- `m = R n`;
+- `D = e − n · c − m_2 d`, the plane's distance from the eye;
+- `g_x = m_0 / (z0 xx)` and `g_y = m_1 / (z0 yy)`;
+- `a = −(−g_x x0 − g_y y0 − m_2 d) / D`, `b = −g_x / D` and `c = −g_y / D`, computed from the
+  rounded plane.
+
+The key is not formed in any of these cases:
+
+- under the exponential option;
+- at zoom 0;
+- where `D` is 0;
+- where the unrounded plane's `|D|` is within its offset's bound of 0;
+- where the plane is seen too near edge-on: `|D| / (|m| · |q − (0, 0, d)|) < min_cos`, or NaN,
+  for `q` the rotated first point of the record. `min_cos` is 0 for a path (however nearly edge-on,
+  it is keyed) and `10^-9` for a mesh triangle;
+- where a coefficient is not finite.
+
+A plane read at a point is `a + b x + c y + 0.0`. The `+ 0.0` turns `−0` into `+0`, so equal keys
+compare equal.
+
+[Rests on: `Projection::key_plane`, `Plane::at`, `mesh::MIN_PLANE_COS`.]
+
+### Mesh triangles
+
+Mesh triangles are keyed as follows, under a 3D camera:
+
+- **Fixed-orientation meshes** take their facing plane (below), with no registry handle.
+- **Offered triangles.** A projected triangle in world space whose three placed corners are all
+  keyed planar is **offered** to the frame's registry (§7), whether or not it has a plane of its
+  own.
+  - **Its plane.** It is the axis plane through its first corner where the corners share a
+    coordinate within `max(tol, g)`, with `g` the view's `input_grid`. Otherwise it is the
+    canonical plane of `(c1 − c0) × (c2 − c0)` through the first corner. It has no plane where that
+    normal points nowhere.
+  - **Flat or not.** It is offered **flat** when it has a plane and its corners are not on a line.
+    Otherwise it is offered with no plane of its own, on the axis plane its corners share, if any.
+  - **Its key.** It is keyed on its plane by `key_plane` where that forms. Otherwise it is keyed on
+    the plane on screen through its corners' `(x, y, key)` (§6). A flat triangle keyed this way
+    then carries no identity, though it still took part in the partition and shaped the identities
+    of others. A triangle with no plane of its own keeps its handle, and takes the
+    identities it lies on once the registry settles (§7).
+- **Every other triangle** is keyed on the plane on screen through its corners. This includes a
+  triangle with a corner not keyed planar.
+
+[Rests on: `mesh::lower`, `WorldPlane::of_triangle`, `Registry::offer_triangle`, `Meshes::identify`.]
+
+### Paths
+
+**Paths in world space** (registered). A path is offered to the registry when all of these hold:
+
+- it is under a 3D camera, projected (not fixed-orientation, not pre-projected);
+- every placed point is keyed planar;
+- its planarity is not `Nearest`.
+
+It is offered **flat** when its planarity is Newell, Widest or Axis, its points are not on a line,
+and the fit finds a plane. Otherwise it is offered with no plane of its own.
+
+**What it retains:**
+
+- **A flat path** retains its one identity only where its own plane keys on screen (min_cos 0, over
+  its region). Its fill is keyed on that plane, and every layer's **row** for that identity is that
+  same plane read at the sample (no fringe). Where its plane does not key, it has no identity, and
+  every layer is keyed along its curve.
+- **A path with no plane of its own attached to flat identities** has rows on each attached
+  identity's plane, keyed by `key_plane`:
+  - **The first identity.** Where its row does not form (the eye in that plane), the path has no
+    identities at all.
+  - **A later identity.** Where its row does not form, that identity stays in the list with no
+    row. Against a fragment it shares only on that identity, the path reads its own key.
+- **A path with no plane of its own on axis planes alone** keeps only the axis identities whose
+  rows form. Where none forms, it has no identities.
+
+**A path with no plane of its own** always keys its own fill and strokes along its curve.
+
+**Unregistered planes.** Two kinds of path are never offered. Each takes the plane fitted to its
+own points by its planarity, with no `on a line` test:
+
+- a pre-projected path, fitted in the camera's own axes;
+- a `Nearest` face.
+
+Its fill is keyed on that plane where it keys, and along its curve otherwise. Its strokes are keyed
+along its curve. It has no identity, and takes part in no tie policy that needs one.
+
+**Not keyed planar.** A world path with a point that is not keyed planar keys every layer along its
+curve, and is not offered.
+
+[Rests on: `Lowering::coplanar`, `Lowering::depth_points`, `Lowering::world_depth`,
+`Registry::offer_path`, `composite::Depths::against`.]
+
+### Key rules
+
+**`fringe_key@1`.** This applies to a layer keyed on a sloped plane (`b` or `c` not 0). At a sample
+outside the layer's outline, it reads the plane at the outline's point nearest the sample, not at
+the sample. Outside is decided by the point-in-outline test on its flattened rings: nonzero winding
+at the sample, half-open in `y`. Inside, it reads at the sample.
+
+[Rests on: `path::fringe_depths`, `Layer::nearest_on_outline`, `scanline::mask`;
+`tests/path.rs::beside_a_grazing_sliver_its_fill_beyond_its_outline_is_behind_the_nearer_face`.]
+
+**`curve_key@1`: the centreline.** A path's centreline is built from its shown points. Each point's
+screen position is `map(p)`, and its key is `−factor(p_2)`.
+
+- **Vertices.** For each subpath of at least four points, in order:
+  - The first vertex is the subpath's first point. Its error is `key_error` of that point (§6).
+  - For each cubic with control points `c_0..c_3`: let `L = |X_1 − X_0| + |X_2 − X_1| + |X_3 − X_2|`
+    be the length of its control polygon on screen. Then `n = clamp(ceil(L / 2), 1, 64)`, or
+    `n = 1` where `L` is not finite. Its vertices are `s = 1 .. n`:
+    - `t = s / n`, `v = 1 − t`;
+    - the weights are `(v·v·v, 3·v·v·t, 3·v·t·t, t·t·t)`;
+    - the position and the key are each `((w0·f0 + w1·f1) + w2·f2) + w3·f3` of the control points'
+      values;
+    - every vertex of the cubic carries the error
+      `max_j key_error(c_j) + 4u · max_j |k_j|`.
+- **The joint substitution.** A cubic's own first control point is never a vertex after the
+  subpath's first. So a joined cubic's first piece runs from the previous cubic's last vertex, with
+  that vertex's position, key and error, to its own `t = 1/n` vertex. The CE tolerance that joins
+  two cubics compares `x` and `y` only, so the two points may differ in key by any amount.
+- **Segments.** A segment joins consecutive vertices within a subpath. Its error is the larger of
+  its two vertices' errors. A segment with a non-finite coordinate or key is dropped. If none
+  remains, the centreline is the zero-length segment at its first finite vertex. If there is no
+  finite vertex, every layer read on it has key `−∞`.
+- **The read at a point `P`.** A layer of **body** `h` reads as follows. `h` is half the stroke's
+  width in pixels, `w |xx| / 2`, and 0 for a fill.
+  - For each segment `A → B`, the foot parameter is
+    `t = ((P − A) · (B − A)) / |B − A|²` (0 for a zero-length segment), and the distance is from `P`
+    to the segment's point at `clamp(t, 0, 1)`.
+  - A segment **holds** `P` where `t ∈ [0, 1]` and the squared distance is at most `h²`.
+  - The read is the least key among the holding segments, with error the largest of theirs.
+  - Where none holds, the read is the key of the **nearest** segment (least squared distance; the
+    first on ties).
+- **A segment's key at `P`.** Write `k_A`, `k_B` for its ends' keys and `e` for its error.
+  - Where its length is 0 or `k_A = k_B`, the key is `min(k_A, k_B)`, with error `e + |k_A − k_B|`.
+  - Where `t < 0`, it is `k_A`, with error `e`. Where `t > 1`, it is `k_B`, with error `e`.
+  - Otherwise, with `G = (k_B − k_A) / |B − A|²`, `b_x = G (B − A)_x` and `b_y = G (B − A)_y`, it is
+    the plane `(k_A − b_x A_x − b_y A_y) + b_x x + b_y y` read at `P`, clamped to
+    `[min(k_A, k_B), max(k_A, k_B)]`. Its error is in §6.
+
+[Rests on: `path::curve_depth`, `depth::Centreline` (segments, `key_under`, `find`), `key_on`,
+`foot`; `tests/centreline.rs`; `tests/probes.rs::a_curve_passing_behind_a_surface_is_hidden_there`.]
+
+**`facing_plane@1`.**
+
+- **Fixed-orientation records.** A fixed-orientation record's fragments are keyed on the
+  camera-facing plane through its centre. This covers paths, meshes and point blocks: every
+  camera-facing label. The plane is the canonical plane of normal `R`'s third row through the
+  centre, keyed by `key_plane` with min_cos 0. Where no plane keys (the exponential option, zoom 0,
+  or a centre that is not keyed planar), the centre's own key is used everywhere.
+- **Pre-projected records.** A pre-projected record with a pivot is keyed the same way, in its
+  camera's axes, at its pivot.
+- **Points.** Every projected point of a `points` record is keyed on the facing plane through its
+  own placed position. So points and camera-facing surfaces at one depth tie.
+
+[Rests on: `Projection::facing_plane`, `facing_planes`;
 `tests/mesh.rs::a_fixed_orientation_mesh_is_a_camera_facing_plane_at_its_centres_depth`,
 `::a_fixed_orientation_label_on_a_surface_facing_the_camera_ties_by_draw_order`,
-`::points_at_one_depth_tie_by_draw_order_whether_or_not_fixed_in_orientation`.
+`::points_at_one_depth_tie_by_draw_order_whether_or_not_fixed_in_orientation`.]
 
-**Glyphs.** A glyph is a path (`XF.md`): a glyph of text placed in the world is keyed as any flat path
-on its own plane, and one of a camera-facing label on the label's facing plane. No rule is a glyph's
-alone.
+**Glyphs.** A glyph is a path. A glyph placed in the world is keyed as any path. A glyph of a
+camera-facing label is keyed on the label's facing plane. No rule belongs to glyphs alone.
 
-**The two stroke-depth adjustments.** They are different rules and both apply.
+### The two stroke-depth adjustments
 
-1. `stroke_on_own_fill@1` (`composite::strokes_on_own_fills`). For a path's stroke or background
-   stroke drawn at or after its own fill (same producer, same order entry, same path: `own_layers`
-   eligibility, §7, with the stroke's `sub` not below the fill's), at every sample where both cover,
-   the stroke's key becomes the nearer of its own and the fill's (whatever the fill is keyed on);
-   elsewhere it keeps its own. Its error bound becomes the largest, over the samples, of the bound of
-   the key it took there (both bounds where the two keys tie within them, §7's `tied`), and its own
-   where they do not both cover. The adjusted row is the stroke's own row (`Depths::samples`, `err`);
-   rows on shared planes (below) are not adjusted. Tests: `order.rs`
+They are different rules, and both apply.
+
+1. **`stroke_on_own_fill@1`.** This applies to a path's stroke or background stroke drawn at or
+   after its own fill: same producer, same order entry, same path, with the stroke's `sub` not
+   below the fill's. A background stroke is drawn before its fill, so it is never adjusted.
+   - At every sample where both cover, the stroke's key becomes the nearer of its own and the
+     fill's.
+   - Elsewhere it keeps its own.
+   - Its error bound becomes the largest, over the samples, of the bound of the key it took there.
+     Where the two keys tie within their bounds (§7's `tied`), both bounds count. Where they do not
+     both cover, its own bound counts.
+   - Only the stroke's own row is adjusted. Rows on shared planes are not.
+
+   [Rests on: `composite::strokes_on_own_fills`; `order.rs`
    `inside_its_fill_a_stroke_is_at_least_as_near_as_its_fill`,
    `outside_its_fill_a_stroke_keeps_the_wire_s_depth`,
-   `a_stroke_nearer_than_its_fill_within_their_bounds_is_not_behind_what_the_fill_is_not`.
-   (A background stroke is drawn before its fill: its `sub` is lower, so it is never adjusted.)
-2. `shared_plane_read@1` (`composite::Depths::against`, `Producer::plane_depths`). Against a
-   fragment `b` with which it shares a registered identity (`one_plane`, §7), a path layer `a` is
-   read at each sample on the plane of the first identity in `a`'s own list that `b` holds too, with
-   that row's error bound, instead of its own row: a flat path's row is its own plane's key read at
-   the sample wherever the sample lies (no fringe); a path with no plane of its own has a row per
-   identity it lies on, that identity's plane keyed by `key_plane` (an identity whose plane the
-   camera keys nowhere is dropped from its list). Against every other fragment it keeps its own row.
-   Mesh triangles and point blocks have no rows: they are always read on their own. So a fragment's
-   key and bound at a sample are a function of the pair. Tests:
+   `a_stroke_nearer_than_its_fill_within_their_bounds_is_not_behind_what_the_fill_is_not`.]
+2. **`shared_plane_read@1`.** Against a fragment `b` with which it shares a registered identity
+   (§7), a path layer `a` is read at each sample on its **row** for the first identity in its own
+   list that `b` holds too, with that row's error bound. Where that identity has no row (above), it
+   reads its own key. Against every other fragment it reads its own key. Mesh triangles and point
+   blocks have no rows; they are always read on their own. So a fragment's key and bound at a
+   sample are a function of the pair.
+
+   [Rests on: `composite::Depths::against`, `Producer::plane_depths`;
    `composite.rs::a_stroke_is_read_on_its_path_s_plane_only_against_what_shares_that_plane`,
-   `tests/path.rs::a_stroke_on_a_face_s_registered_plane_ties_it_exactly_and_meets_another_plane_by_depth`.
+   `tests/path.rs::a_stroke_on_a_face_s_registered_plane_ties_it_exactly_and_meets_another_plane_by_depth`.]
 
-**A flat pixel.** Where every fragment's row (own and shared) holds one key for all at every sample
-(a flat scene: every key `-inf`, or every fragment on one plane), paint order decides every pair at the
-pixel whatever they cover (`resolve_pixel_traced`, `flat`).
+**A flat pixel.** Where every fragment's rows, own and shared, hold one key for all fragments at
+every sample, paint order decides every pair at the pixel. This happens when every key is `−∞`, or
+every fragment is read on one plane.
 
-**Oracle reading.** The oracle computes every key and row by this section's model from XF, with the
-band of §6, and applies both adjustments and the pair-dependent read itself.
+**Oracle reading.** The oracle computes every key and row by this section from XF. It applies both
+adjustments and the pair-dependent read. Where the registry decides which identities a pair shares
+or which row it reads, the oracle uses §7's conservative sets.
 
 ## 6. The tie band
 
-The band of a fragment `f` at sample `k` is a formula of the inputs and the position:
+For each fragment `f` at each read point (a sample `k`, or the pixel's centre for curve reads), the
+oracle computes three things from XF:
 
-    β_f(k) = S_f(k) + 3 R_f(k)
+- `o_f(k)`, the key of §5's model;
+- `R_f(k)`, its arithmetic bound (`band_arith@1`);
+- `S_f(k) = (S⁻, S⁺)`, its input bound (`band_input@1`).
 
-`R_f(k)` bounds how far any conforming computation of `f`'s key at `k` (the core's and the
-oracle's alike) may stand from the exact key of §5's model of `f`'s XF inputs. `S_f(k)` bounds how far
-the snap of those inputs to the view's `input_grid` may have moved that exact key from where the
-scene put it. Two fragments are one depth at `k` (`TieBand`) where their oracle keys `o_a`, `o_b`
-satisfy `|o_a - o_b| <= β_a(k) + β_b(k)`.
+These give the fragment's **interval**:
 
-*Why `3 R`:* the core ties two keys `c_a`, `c_b` where `|c_a - c_b| <= e_a + e_b`, its own bounds,
-each at most `R`; each `c` lies within `R` of the exact key and each `o` within `R` of it, so a core tie
-lies within `3 (R_a + R_b)` of the oracle's keys; and beyond that the exact keys part by more than
-`2 (R_a + R_b)`, so the core cannot tie them and its depth order is the exact one. `S` widens the band
-by the inputs' own precision, which the core does not count (`order.rs` module doc: the snap is
-common input).
+    I_f(k) = [o − S⁻ − 3R,  o + S⁺ + 3R]
 
-Keys of `-inf` have `β = 0` and are one depth only with each other. Writing `|v|_1` for the sum of
-magnitudes, `g` for `input_grid` (0 when the view states none), and the record's placements as
-`[outer, inner]` (the identity for none):
+The oracle never reads the core's reported error bounds to form `R` or `S`.
 
-**The snap's departure along a unit normal `n`**, `Δ(n)` (`depth::snap_departure`). With `C^T n`
-starting at `n`, for each placement `M` that is not the identity, outer first: add
-`|C^T n|_1 (g/2 + 2^-25 X_M)` where `X_M` is the largest `|x|_1` over the points `M` places (the
-inner-placed points for the outer placement, the shape's points for the inner), then replace `C^T n`
-by `L_M^T C^T n` (`L_M` its linear part); finally add `(g/2) |C^T n|_1` for the shape's points (when
-`g > 0`; with `g = 0` no placement term is added either) and `8u max_p (|n| · (|outer| (|inner| |p|)))`
-for the core's own placing (absolute values entrywise). It derives from the writer's rules: positions
-and translations snap to multiples of `g` (within `g/2`), a placement's linear entries to multiples of
-`2^-24` (within `2^-25`).
+### Why the band has this shape
 
-**What a departure moves a key by.** On a world plane `P` (unrounded normal `n_P` and offset `e_P`,
-`D_P` its distance from the eye as in §5): `kr(P, δ) = δ / (|D_P| - δ)`, infinite where `|D_P| <= δ`
-(`Projection::key_reach`). Along a sight axis for points at rotated depths `z_i`:
-`ds(δ) = max_i δ / (d - z_i - δ)`, infinite where a denominator is not positive; under the exponential
-option `δ / (d - δ)` (`project::depth_share`). On screen, for a projected point `q` whose inputs move
-by `a_0`, `a_1` along the camera's first two axes and whose factor moves by share `σ`:
-`ε(q) = hypot(|xx| x_0, |yy| y_0)` with `x_k = |f z0| (1 + σ) a_k + |q_k| σ`; for a point not projected
-`x_k = a_k`; times `(1 + 64u)`; infinite for an infinite `σ` (`path::screen_shift`). For a record,
-`ε` is the largest over its points; `a_k = Δ(R_k)` and `σ = ds(Δ(R_2))` with `R_k` the rotation's
-rows (the points' own axes for a record not projected).
+- **`R`** bounds how far any conforming computation of the model's key stands from its exact value
+  on the XF input. This holds for the core's computation and the oracle's alike.
+- **Ties.** Where the core ties two keys `c_a`, `c_b`, it has `|c_a − c_b| <= e_a + e_b` with its
+  own bounds `e <= R` (the contract test below). Each `c` and each `o` lies within `R` of the exact
+  key. So a core tie lies within `3 (R_a + R_b)`: the intervals meet.
+- **Strong orders.** Where the core orders `a` strongly in front, `c_a < c_b` gives
+  `o_a − 2R_a < o_b + 2R_b`. So `a` can be in front only where `I_a` starts below where `I_b` ends.
+- **`S`** widens the interval by the input's own precision. It is what lets CE's order, drawn before
+  the snap, be judged on the same sets. It is not needed to contain the core's decisions: the core
+  decides on the snapped input.
 
-**`S_f(k)`, by key** (`band_input@1`):
+### Non-finite keys
 
-- on a world plane `P` (a flat path's fill and its shared rows, a flat triangle, an identity row):
-  `(|o| + R) kr(P, Δ(n_P) + dep_P)`, `dep_P` the record's points' largest departure from `P`
-  (`depth::departure`: `|n_P · p - e_P|` plus `4u` of its terms, plus the offset's bound);
-- along a curve, or on the plane through a triangle's corners: `(|o| + R) ds(Δ(R_2)) + G ε`, `G` the
-  key's gradient on screen at `k` (the segment's or the plane's) and `ε` the record's screen shift;
-- on a facing plane (labels, points): `(|o| + R) ds(Δ_c)` with `Δ_c = (g/2) |R_2|_1` for the centre or
-  point;
-- for a `Nearest` face: as on a world plane, its own fitted plane.
+- A key of `−∞` has `R = S = 0` and the interval `{−∞}`.
+- Two `−∞` keys are equal, and the label is `ExactTie` (§7).
+- Against a finite key, `−∞` is strictly in front.
 
-**`R_f(k)`, by key** (`band_arith@1`). Each term is the bound the cited constructor derives; read at
-a pixel `(x, y)`, the reading's rounding `ρ(P, x, y) = 4u (|a| + |b x| + |c y|)` is taken at the
-pixel's far corner `(x + 1, y + 1)` and at every point actually read (`Plane::read_error`).
+The contract test asserts that every such key equals the core's exactly, and no bound is asserted
+for it. The core's own bound for a constant `−∞` plane is infinite, and is not compared.
 
-- *A world plane keyed on screen* (`Projection::key_plane_error`): over the region the record is read
-  in (its screen box widened by the stroke's reach and a pixel, `Lowering::region`; the triangle's
-  box; the frame box above for a facing plane), the largest at its four corners `(X, Y)` of
-  `gap + A + shift`, where `gap = |K_r(X, Y) - K_u(X, Y)| + 4u (terms of both reads)` is the
-  difference between the keys of the rounded and the unrounded plane, read there (`PLANE_GRID`'s
-  rounding, as it happened); `A = (dN + f dD) / |D| + 4u f` with
-  `s = ((X - x0) / (z0 xx), (Y - y0) / (z0 yy), d)`, `t_x = g_x (X - x0)`, `t_y = g_y (Y - y0)`,
-  `dn = 8u |m|`, `de = 4u (|e| + |m| |c|)`, `dD = de + dn |eye| + 4u |m_2 d|` (`eye = c + d R_2`),
-  `f = |m_2 d - t_x - t_y| / |D|`, `dN = dn |s| + 4u (|t_x| + |t_y| + |m_2 d|)`, all of the unrounded
-  plane; and `shift = f ε_e / (|D| - ε_e)` for the offset's bound `ε_e`. Plus `ρ`.
-- *A plane through three keyed corners* (`Plane::through_with_errors`): the corners' largest bound;
-  plus, with `e1`, `e2` the edges from the first corner, `det = e1x e2y - e2x e1y`,
-  `g1 = d1 - d0`, `g2 = d2 - d0`: `d_det = 4u (|e1x e2y| + |e2x e1y|)`,
-  `d_b = (4u (|g1 e2y| + |g2 e1y|) + |b| d_det) / |det| + u |b|`, `d_c` likewise, the spread
-  `max(d_b |e1x| + d_c |e1y|, d_b |e2x| + d_c |e2y|)` and `3u (|d0| + |b x0| + |c y0|)`; a constant plane
-  where the corners share one key, their mean with its spread where `det` is 0. Plus `ρ`.
-- *A projected point's key* (`Projection::key_error`): `u (2 |f| + 4 f² / |d| r)` with
-  `r = |z| + hypot(x, y) / |f z0| + |c|`.
-- *A curve's key* (`depth::key_on`, `path::curve_depth`): its segment's ends' bound (the largest of
-  its cubic's control points' `key_error`, plus `4u` of their largest key), plus
-  `4u |k_b - k_a| (1 + t) + 3u (|k_a| + |b_x a_0| + |b_y a_1|) + ρ` at the point (`t` its distance
-  along the segment over the segment's length); for a segment of no length or one key, `|k_a - k_b|`
-  more; the front-most of several, the largest of their bounds; a pixel's samples, the largest over
-  its samples (`Centreline::keys_among`).
-- *A `Nearest` face*: its plane's bound plus its outline's departure (`nearest_plane_departure@1`,
-  §7).
-- *A stroke adjusted on its own fill* (§5): as `stroke_on_own_fill@1` states.
+### Unbounded keys (`truth_unable`)
 
-**Contract test.** On every probe fixture, at every pixel and sample where the core reports a
-fragment, its `Depths::err` for its own row and for every pair-dependent row is at most `R_f(k)`
-(so at most `β_f(k)`), and its key lies within `2 R_f(k)` of the oracle's. An excess is a finding
-about the core, listed by class; the band is never widened to fit it.
+Where `S` or `R` is infinite, the oracle states no bound. This happens where a share `σ`, a screen
+shift `ε`, or a key reach `kr` is infinite, for example when a plane passes within its departure of
+the eye. The fragment's samples are then `truth_unable` (class `band_unbounded`). They are never
+counted as ties.
+
+### The snap's departure
+
+Write `g` for `input_grid` (0 when the view states none), and write the record's placements as
+`[outer, inner]` (the identity for a missing one).
+
+**`Δ(n)`, the departure along a unit normal `n`.**
+
+- Start with `C^T n = n`, and run through each placement `M` that is not the identity, outer first:
+  - add `|C^T n|_1 (g/2 + 2^-25 X_M)`, where `X_M` is the largest `|x|_1` over the points `M`
+    places (the inner-placed points for the outer placement, the shape's points for the inner);
+  - then replace `C^T n` by `L_M^T C^T n`, where `L_M` is `M`'s linear part.
+- Finally add `(g/2) |C^T n|_1` for the shape's points.
+- When `g = 0`, none of these terms is added.
+- In every case, add `8u max_p |n| · (|outer| (|inner| |p|))` (entrywise absolute values) for the
+  placing's own rounding.
+
+This follows from the writer's rules: positions and translations snap to multiples of `g` (within
+`g/2`), and a placement's linear entries snap to multiples of `2^-24` (within `2^-25`).
+
+**`Δ⁺`, the departure along any normal.** It is `Δ` with each `|C^T n|_1` replaced by
+`√3 ‖C‖_F`, and the rounding term by the largest length of `|outer| (|inner| |p|)`, all times
+`(1 + 10^-12)`.
+
+**Tolerance and departure from a plane.**
+
+- `dep_P` is the largest `|n_P · p − e_P| + 4u (|n_P| · |p| + |e_P|)` over the record's points, plus
+  the plane offset's bound. It is computed on the unrounded plane `P`.
+- A record's **tolerance** along `n` is `τ(n) = Δ(n) + dep`, and along any normal
+  `τ⁺ = Δ⁺ + dep`. `dep` is the departure from its own plane for a flat record, and 0 otherwise.
+
+### What a move does to a key
+
+- **Key reach.** On a world plane `P`, `kr(P, δ) = δ / (|D_P| − δ)`, infinite where `|D_P| <= δ`.
+- **Depth share.** Along the sight axis, for points at rotated depths `z_i`,
+  `ds(δ) = max_i δ / (d − z_i − δ)`, infinite where a denominator is not positive. Under the
+  exponential option it is `δ / (d − δ)`.
+- **Screen shift.** Take a point whose inputs move by `a_0`, `a_1` along the camera's first two
+  axes, with factor `f` and factor share `σ`. For a projected point `q`,
+  `x_k = |f z0| (1 + σ) a_k + |q_k| σ`; for a point not projected, `x_k = a_k`. Then:
+  - `ε(q) = hypot(|xx| x_0, |yy| y_0) (1 + 64u)`, infinite for an infinite `σ`;
+  - for a record, `ε` is the largest over its points, with `a_k = Δ(R_k)` and
+    `σ = ds(Δ(R_2))` (`R_k` the rotation's rows, or the points' own axes for a record not
+    projected).
+
+### `S`, the input bound, by key (`band_input@1`)
+
+- **On a world plane `P`.** This covers a flat path's fill, any layer's row on its own plane, a flat
+  triangle, and an unregistered plane. Read at the world point `x` on `P` under the read, the
+  bound is
+  `S⁻ = S⁺ = (|o| + R) kr(P, δ)` with `δ = τ_P(n_P) + θ_P · dist(x, H)`.
+  - `H` is the hull of the record's points on `P`.
+  - `θ_P = 2 τ_P / w_P`, where `w_P` is `H`'s least width.
+  - Reads inside `H` take `dist = 0`. Every fill read is inside `H`, including fringe reads, which
+    land on the outline.
+  - Where a read lies outside `H` and `w_P <= 2 τ_P`, the bound is infinite (above).
+- **On the screen plane through a triangle's corners.**
+  `S⁻ = S⁺ = σ max_i |k_i| + G ε`, where `G` is the plane's gradient on screen. A moved triangle
+  that still covers the sample maps it, by the affine map between the two triangles, to a point
+  within `ε` of it. Where the moved triangle may not cover it, the sample is `Either` (§3).
+- **Along a curve.** Take a read at `P` whose model read is `o`. Let `d` be `P`'s distance from the
+  centreline and `r = max(h, d + ε) + ε`. Let `K` be the keys of every centreline point within `r`
+  of `P`.
+  - Then `S⁻ = o − min K + σ max |K|` and `S⁺ = max K − o + σ max |K|`.
+  - Why this holds: a centreline whose vertices move by at most `ε` on screen, with keys moving by
+    at most `σ` of themselves, reads at `P` the key of a moved point whose unmoved twin (same
+    segment, same parameter) lies within `r` of `P`. A moved segment holding `P` has its twin within
+    `h + ε` of `P`. The moved nearest segment lies within `d + ε` of `P`, so its twin lies within
+    `d + 2ε`.
+  - This bounds the reads across nearest-segment and body switches, the discontinuities a local
+    gradient misses.
+- **On a facing plane.**
+  - For a label: `S⁻ = S⁺ = (|o| + R) ds(Δ_c)`, where `Δ_c = (g/2) |R_2|_1` for a label's centre
+    as carried.
+  - For a point of a `points` record: `Δ_c = Δ(R_2)` through the record's placements. The point is
+    placed before it is keyed.
+- **A `Nearest` face.** As on a world plane, its own fitted plane.
+- **A stroke adjusted on its own fill.** The hull of the two keys' intervals.
+
+### `R`, the arithmetic bound, by key (`band_arith@1`)
+
+**General terms.**
+
+- Every `R` includes `ν = 2^-44 (|o| + 1)`, which covers last-bit differences between conforming
+  evaluations of the formulas below.
+- A plane read at a pixel `(x, y)` adds its reading's rounding,
+  `ρ(x, y) = 4u (|a| + |b x| + |c y|)`, taken at the pixel's far corner `(x + 1, y + 1)`.
+- One `R` serves the whole pixel per fragment. For a curve, it is the largest over the 16 samples
+  and the pixel's centre.
+
+**A world plane keyed on screen.** Take the region the record is read in:
+
+- for a path, the screen box of its shown points widened by `h + 2` px, where `h` is half its
+  widest stroke in pixels;
+- for a triangle, its screen box;
+- for a facing plane, `[−|x0|, −|y0|, 3|x0|, 3|y0|]`.
+
+`R` is the largest, at the region's four corners `(X, Y)`, of `gap + A + shift`:
+
+- **`gap`** is the largest `|K_r(X, Y) − K_u(X, Y)| + 4u (terms of both reads)`, where `K_r` is the
+  key of a rounded plane a conforming computation can produce, and `K_u` is the key of the unrounded
+  plane:
+  - The oracle's own rounding gives one rounded plane.
+  - For any coefficient `v` with `v / 2^-20` within `2^-30` of a half-integer, the other
+    neighbouring grid value is also possible, so a conforming computation may round the other way.
+- **`A`** is `(dN + f dD) / |D| + 4u f`, with:
+  - `s = ((X − x0) / (z0 xx), (Y − y0) / (z0 yy), d)`, `t_x = g_x (X − x0)`, `t_y = g_y (Y − y0)`;
+  - `dn = 8u |m|`, `de = 4u (|e| + |m| |c|)`;
+  - `dD = de + dn |eye| + 4u |m_2 d|`, with `eye = c + d R_2`;
+  - `f = |m_2 d − t_x − t_y| / |D|`;
+  - `dN = dn |s| + 4u (|t_x| + |t_y| + |m_2 d|)`;
+  - all of the unrounded plane.
+- **`shift`** is `f ε_e / (|D| − ε_e)` for the offset's bound `ε_e`.
+
+Then add `ρ`.
+
+**A plane through three keyed corners.** With corner keys `d0`, `d1`, `d2` and corner bounds
+`err_i`, let `in = max err_i`:
+
+- **All three keys equal:** the plane is the constant `d0`, with bound `in`.
+- **A key not finite:** the plane is the constant `min(d0, d1, d2)`, with bound 0. A `−∞` key is
+  then the non-finite case above.
+- **Otherwise,** write `e1 = c1 − c0` and `e2 = c2 − c0` on screen, and
+  `det = e1x e2y − e2x e1y`.
+  - **`det` zero or not finite:** the plane is the constant `mean = ((d0 + d1) + d2) / 3`, with bound
+    `spread + in + 4u |mean|`, where `spread` is the largest `|d_i − mean|`.
+  - **Otherwise:** with `g1 = d1 − d0` and `g2 = d2 − d0`, the bound is
+    `in + max(d_b |e1x| + d_c |e1y|, d_b |e2x| + d_c |e2y|) + 3u (|d0| + |b x0| + |c y0|)`, where:
+    - `d_det = 4u (|e1x e2y| + |e2x e1y|)`;
+    - `d_b = (4u (|g1 e2y| + |g2 e1y|) + |b| d_det) / |det| + u |b|`;
+    - `d_c = (4u (|e1x g2| + |e2x g1|) + |c| d_det) / |det| + u |c|`.
+
+Then add `ρ`.
+
+**A projected point's key**, written `key_error`. It is `u (2 |f| + 4 f² / |d| r)`, where `f` is
+the point's factor, `(x, y, z)` its shown position, and `r = |z| + hypot(x, y) / |f z0| + |c|`.
+
+**A curve's key at a read.** It is the segment's error `e` (its vertices' larger, §5), plus:
+
+- for an interior foot, `4u |k_B − k_A| (1 + t') + 3u (|k_A| + |b_x A_x| + |b_y A_y|)` plus that
+  plane's reading rounding at `P`, where `t'` is `P`'s distance from `A` over the segment's length;
+- for a segment of no length or one key, `|k_A − k_B|`;
+- for the front-most of several holding segments, the largest of their errors.
+
+The pixel's bound is the largest over the 16 samples and the centre. The own-fill adjustment is
+applied after it.
+
+**A `Nearest` face.** It is its plane's bound plus its outline's departure: the largest over its
+subpaths' points `q`, and each closed subpath's closing point read at its first point's position, of
+
+    gap_q + ρ(q) + key_error(q) + 4u |k_q| + u gap_q,    gap_q = |plane(map(q)) − k_q|
+
+plus `hypot(b, c) · 0.1` for the flattening.
+
+**A stroke adjusted on its own fill.** As `stroke_on_own_fill@1` states.
+
+### Contract test (soundness of `R`)
+
+On every probe fixture, at every pixel and sample where the core reports a fragment with a finite
+key:
+
+- the core's own error bound, for its own row and for every pair-dependent row, is at most
+  `R_f(k)`;
+- its key lies within `2 R_f(k)` of `o_f(k)`.
+
+For keys of `−∞`, the test asserts equality. An excess is a finding about the core, listed by
+class. The band is never widened to fit it.
+
+**Rejects:** a mesh face whose plane is shifted, against a surface it shares no registered plane
+with, by more than its interval (snap precision plus arithmetic), so that the order at a crossing
+sample reverses. Also a line moved behind or in front of a surface by more than its curve
+interval.
 
 ## 7. The order at a sample: tie policies
 
-**The relation of a pair at a sample.** For two fragments `a`, `b` both covering sample `k`, read
-at keys `d_a`, `d_b` with bounds `e_a`, `e_b` (each read against the other, §5), the core's order is
-**weak** (paint order decides) where the pair is `own_layers`, where `tied(d_a, e_a, d_b, e_b)`, or
-where `coplanar_tied` holds; otherwise **strong**, the nearer in front (`order::at_sample`,
-`strong_at`). `tied(a, ea, b, eb)` is `a == b`, or both finite and `|a - b| <= ea + eb`; keys that are
-not finite tie only with themselves, tested before any subtraction (`order::tied`;
-`order.rs::depths_that_are_not_finite_tie_only_with_themselves_before_any_subtraction`). At one
-sample the strong orders are strict orders of finite keys and do not cycle on one read, but a
-fragment read two ways (`shared_plane_read@1`) can close a cycle
-(`order.rs::at_one_sub_sample_the_strong_orders_never_cycle`,
-`a_stroke_read_two_ways_settles_a_cycle_at_one_sub_sample_by_wins_then_paint_order`).
+**Core rule: the relation of a pair at a sample.** Take two fragments `a` and `b` both covering
+sample `k`, read at keys `d_a` and `d_b` with bounds `e_a` and `e_b` (each read against the other,
+§5). The core's order between them is **weak** (paint order decides) where:
 
-**`paint_order@1`** (`order::painted`). Of two fragments, the one later in the order is in front;
-on one order entry, the higher `sub`. Every weak order is paint order.
+- the pair is `own_layers`;
+- or `tied(d_a, e_a, d_b, e_b)`;
+- or `coplanar_tied` holds.
 
-**`own_layers@1`** (`order::own_layers`). A path's fill and one of its own strokes or background
-strokes (same producer, same order entry, same path `sub div 3`, different layers, one of them the
-fill) keep paint order whatever their keys: the stroke over its fill, the background stroke under
-it. Two strokes of one path keep depth. Tests:
+Otherwise it is **strong**, with the nearer in front.
+
+`tied(a, ea, b, eb)` holds where `a == b`, or where both are finite and `|a − b| <= ea + eb`. Keys
+that are not finite tie only with themselves, and this is tested before any subtraction.
+
+[Rests on: `order::at_sample`, `strong_at`, `tied`;
+`order.rs::depths_that_are_not_finite_tie_only_with_themselves_before_any_subtraction`,
+`at_one_sub_sample_the_strong_orders_never_cycle`,
+`a_stroke_read_two_ways_settles_a_cycle_at_one_sub_sample_by_wins_then_paint_order`.]
+
+**`paint_order@1`.** Of two fragments, the one later in the order is in front. On one order entry,
+the one with the higher `sub` is in front. Every weak order is paint order. [Rests on:
+`order::painted`.]
+
+**`own_layers@1`.**
+
+- **The rule.** A path's fill and one of its own strokes or background strokes keep paint order
+  whatever their keys: the stroke over its fill, the background stroke under it.
+- **Eligibility.** Same producer, same order entry, same path `sub div 3`, different layers, and one
+  of them is the fill.
+- **Two strokes** of one path keep depth.
+
+[Rests on: `order::own_layers`;
 `order.rs::a_path_s_fill_and_its_own_strokes_keep_paint_order_and_two_strokes_keep_depth`,
-`tests/path.rs::a_grazing_face_s_stroke_is_over_its_own_fill_wherever_the_stroke_covers_a_pixel`.
+`tests/path.rs::a_grazing_face_s_stroke_is_over_its_own_fill_wherever_the_stroke_covers_a_pixel`.]
 
-**`one_plane@1`** (`order::one_plane`, `order::coplanar_tied`, `order::within_term`). The frame's
-**registry** (`depth::Registry`, its doc and `settle`) gives every registry-offered record (§5:
-paths in world space keyed planar, and mesh triangles keyed on a world plane) up to four identities
-(`depth::MOST_IDENTITIES`):
+**Rejects:** a stroke drawn under its own fill at a sample both cover.
 
-- a **flat** record's tolerance along a unit normal `n` is `τ(n) = Δ(n) + dep` (`dep` its points'
-  departure from its own plane); in a canonical order of the flat records (least `spread` first,
-  `depth::canonical`), each joins the first identity, among those whose planes lie in the lookup
-  buckets around its own (`NORMAL_BUCKET = 1/64` of normal component, `OFFSET_BUCKET = 0.5` of
-  offset, at most `MOST_REACH = 2` buckets past its own on each side), for which one plane holds every
-  member's points and its own each within its own tolerance (the identity's plane, or the minimax
-  plane of them all, `Registry::fit`), else founds one; an identity's plane is its founder's until a
-  record joins that it does not hold, then that minimax plane;
-- a record with **no plane of its own** attaches, once the partition is made, to every identity
-  whose plane holds the members' points and its own within their tolerances, which its points stand
-  off by no more than `Reach::bound` (within the members' hull `t + members + (turn + slope)(w +
-  widest)`, growing by `slope` per unit of distance from it), and whose members' hull it enters
-  (`Registry::contains`, `Registry::enters`), the first four of them; one that attaches to none
-  shares an identity with the others on exactly each axis plane it lies on (the one its writer coded,
-  and for a path every coordinate all its points hold exactly), with no tolerance.
+### `one_plane@1`
 
-Two fragments are on **one plane** where their identity lists meet. There they tie (weak) where
-`within_term`: with each one's share `s` (its `wide` where both carry one, else its `snap`),
-`tied(d_a, e_a + (|d_a| + e_a) s_a, d_b, e_b + (|d_b| + e_b) s_b)`, or where either share is infinite.
-The shares (`Fragment::snap`, `Fragment::wide`): a flat path's layers and a flat triangle,
-`kr(P, Δ(n_P) + dep_P)` on its own plane (0 for a flat path content did not make flat); a record with
-no plane of its own attached to flat identities, `snap` the largest over its identities of
-`kr(I, off_members)` and `wide` the largest of `kr(I, off_identity)` (`Registry::off_members`,
-`off_identity`: its tolerance along the identity's normal plus its points' departure from its plane,
-and at most the bound within the members' hull); one on axis planes alone, the largest over the
-axis planes keyed of `kr(A, Δ(n_A) + dep_A)`. Tests: `order.rs::on_one_plane_a_zero_share_parts_beyond_the_errors_and_an_unbounded_one_ties`,
+**Core rule.** The frame's **registry** partitions the registry-offered records (§5) into
+identities.
+
+- **Flat records.**
+  - Each flat record has a tolerance `τ(n)` along every unit normal (§6).
+  - The flat records are taken in a canonical order, least `spread` first.
+  - Each joins the first identity, among those whose planes lie near its own, for which one plane
+    holds every member's points and its own, each within its own tolerance along that plane's
+    normal. That plane is the identity's own, or a minimax plane fitted to them all.
+  - A record that joins no identity founds one.
+- **Records with no plane of its own.** Once the partition is made, each attaches to every flat
+  identity that meets three conditions:
+  - one plane holds its points and every member's, each within its own tolerance;
+  - its points stand off the identity's plane by no more than a bound that grows with distance
+    from the members' hull;
+  - it enters the members' hull.
+
+  Of these identities, it keeps the first four.
+- **The axis rule.** A record with no plane of its own that attaches to none shares an identity
+  with the others on each axis plane it holds, with no tolerance. The plane is:
+  - the one its writer coded, or, for a triangle, the one its corners share within the grid, taken
+    through its first point;
+  - and, for a path, each axis whose coordinate all its points hold exactly.
+
+  Two such records share where the axis is the same and their first points' coordinates on it are
+  equal.
+- **On one plane.** Two fragments are on **one plane** where their identity lists meet.
+- **`within_term`.** There they tie where `within_term` holds. Each one's share `s` is its `wide`
+  where both carry one, and otherwise its `snap`. The term is
+  `tied(d_a, e_a + (|d_a| + e_a) s_a, d_b, e_b + (|d_b| + e_b) s_b)`, or either share is infinite.
+- **The shares.**
+  - A flat record's layers, and a flat triangle: `snap = kr(P, τ_P(n_P))` on its own plane, and no
+    `wide`.
+  - A record with no plane of its own attached to flat identities: `snap` and `wide` come from how
+    far its points stand off each identity's plane, taken in the members' hull for `snap`. Either
+    can be infinite.
+  - One on axis planes alone: the largest over its keyed axis planes of `kr(A, Δ(n_A) + dep_A)`.
+
+The partition's ordering details are the core's means of choosing one partition among those its
+tolerances allow. The contract does not use them, because the oracle's set below contains every
+outcome. Those details are the canonical order's tie-breaks, the lookup buckets, the refit rule and
+the attach bound.
+
+[Rests on: `depth::Registry` (`settle`, `near`, `joins`, `fit`, `contains`, `enters`,
+`off_members`, `off_identity`), `order::one_plane`, `coplanar_tied`, `within_term`;
+`order.rs::on_one_plane_a_zero_share_parts_beyond_the_errors_and_an_unbounded_one_ties`,
 `a_record_with_no_plane_of_its_own_takes_its_whole_share_only_against_another`,
 `tests/path.rs::a_path_on_a_meshs_plane_ties_with_it_by_draw_order`,
 `::a_line_on_a_tilted_plane_ties_with_it_by_draw_order`,
-`tests/mesh.rs::coplanar_meshes_tie_by_draw_order_the_later_on_top`, `depth.rs`
-`each_member_is_held_within_its_own_tolerance`, `the_partition_does_not_depend_on_the_order_offered`.
+`tests/mesh.rs::coplanar_meshes_tie_by_draw_order_the_later_on_top`; `depth.rs`
+`each_member_is_held_within_its_own_tolerance`, `the_partition_does_not_depend_on_the_order_offered`.]
 
-**`near_parallel@1`** (`order::near_parallel`, `depth::near_parallel`, `depth::tested`). Two
-fragments of flat records (each carrying its registry record, which a flat layer keyed with a finite
-share and a flat triangle do) on no one identity tie within `within_term` where their own planes'
-dihedral is within what each record's snap lets its plane turn: with `a` the unit axis
-`n_A × n_B / |n_A × n_B|`, `θ = atan2(|n_A × n_B|, |n_A · n_B|)`, and for each record
-`θ_R = 2 τ_R / L_R`, `τ_R` its tolerance along its own normal and `L_R` its points' extent along
-`n_R × a`, they are near-parallel where `θ <= θ_A + θ_B`, every rounding taken against the test (the
-dihedral rounded up by `16u` of itself and `16u`, each `θ_R` and the sum down by `2u` of themselves,
-the extent widened by the axis's uncertainty `40u / s + 16u` at the farthest point, or twice the
-farthest distance where `s < 32u`). Pairwise and symmetric; it gives no identity and does not chain.
-Tests: `depth.rs::faces_are_near_parallel_up_to_the_turn_their_snaps_allow_and_not_past_it`,
+**Oracle reading: the set of pairs that may share an identity.** Two fragments **may share** an
+identity where both records are registry-offered, both may retain an identity (§5), and one of these
+holds:
+
+1. **Width.** `w(A ∪ B) <= 2 max(τ⁺_A, τ⁺_B) (1 + 2^-40)`, where `w` is the minimum width of the
+   two records' points together. An implementation may use any lower bound of `w`; that only grows
+   the set.
+2. **A third record.** For a record with no plane of its own: some flat registry-offered record `M`
+   passes (1) with each of them. `M` may be either of them.
+3. **The axis rule.** Both lie on one axis plane by the axis rule above: the same axis, and first
+   points equal on it.
+
+Why this contains every outcome:
+
+- Every pair the core puts on one identity passes. Members of one identity are each held by its
+  final plane within their own tolerances, which bounds the width of their union by twice the larger
+  tolerance.
+- An attached record is held together with every member by one plane. That gives (1) with each
+  member, and gives (2) for two records attached to one identity, which need not fit one plane
+  together.
+- Axis-plane sharing is exactly (3).
+
+**Oracle reading: what may share admits.**
+
+- **Two flat records** (paths and triangles). Their rows on a shared identity are their own planes
+  read at the sample, which the oracle computes exactly. Two scenarios are possible:
+  - **Shared:** each reads its row, and the term is `within_term` with the snap shares.
+  - **Not shared:** each reads its own key, with fringe, and `near_parallel@1` or plain depth
+    applies.
+
+  The admitted edges are the union over both scenarios.
+- **A record with no plane of its own.** Its rows lie on identity planes that the partition fixes.
+  So the oracle admits every edge (weak, and strong either way) for such a pair that may share, and
+  labels it `Policy(one_plane@1)`. This class is outside what the oracle promises (§12).
+
+**Rejects:** a line crossing a surface beyond the width test (its points standing off the surface's
+plane by more than twice the larger tolerance), drawn over the surface where it is behind it.
+
+### `near_parallel@1`
+
+**Core rule.** This applies to two fragments of flat registry records (a flat path's layers, a flat
+triangle) that are not on one plane. They tie under `within_term`, with their own keys and snap
+shares, where their own planes are near-parallel.
+
+Take the unrounded normals `n_A` and `n_B`, with `c = n_A × n_B` and `s = |c|`. Then:
+
+- `θ = atan2(s, |n_A · n_B|)`;
+- `high = θ (1 + 16u) + 16u`;
+- `off = 40u / s + 16u` where `s >= 32u`, otherwise infinite;
+- the axis is `a = c / s`.
+
+For each record `R`, with `τ_R` its tolerance along its own normal and `first` its first point:
+
+- `t_p = (p − first) · (n_R × a)` over its points, with `lo` and `hi` their least and greatest, and
+  `far` the largest `|p − first|`;
+- `extent = hi − lo` where `s > 0`, otherwise `2 far`;
+- `read = extent + 2 far (off + 16u)` where `off <= 1`, otherwise infinite;
+- `span = min(read, 2 far) (1 + 8u)`;
+- `θ_R = 2 τ_R / extent` and `θ_R⁻ = (2 τ_R / span)(1 − 2u)`.
+
+They are near-parallel where `high <= (θ_A⁻ + θ_B⁻)(1 − 2u)`. The test is pairwise and symmetric.
+It gives no identity, and it does not chain.
+
+[Rests on: `depth::near_parallel`, `tested`, `order::near_parallel`;
+`depth.rs::faces_are_near_parallel_up_to_the_turn_their_snaps_allow_and_not_past_it`,
 `the_near_parallel_test_is_the_same_whichever_record_comes_first`,
-`a_record_with_no_plane_of_its_own_is_never_tested_for_near_parallel`.
+`a_record_with_no_plane_of_its_own_is_never_tested_for_near_parallel`.]
 
-**`lines@1`** (`order::lines`, `order::lines_term`). Two strokes (or background strokes) of paths
-with no plane of their own, under a 3D camera, on no one identity, tie where
-`tied(d_a, e_a + (|d_a| + e_a) o_a, d_b, e_b + (|d_b| + e_b) o_b)` with each one's own share `o`
-(`Fragment::own`): its path's `ds` of the snap's departure along the axis its depth is read along (the
-camera's sight axis for a projected path, the points' own z otherwise), plus, at the pixel, how far a
-read may slide along the curve and between its pieces where the snap moves the curve on screen by its
-shift, as a share of the least read (`Paths::own_at`, `Centreline::slides_among`); infinite where the
-least read is not positive. `Stream.own_shares` reports each such fragment's share. Fills never carry
-one.
+**Oracle reading.** The oracle evaluates the test as stated. Where the two sides lie within
+`2^-40 (high + 1)` of each other, it admits both outcomes.
 
-`coplanar_tied` is `one_plane && within_term`, else `lines && lines_term`, else (both of flat
-records) `within_term && near_parallel`: the three are disjoint.
+**Rejects:** two faces meeting at a dihedral well past `θ_A + θ_B`, their order reversed at a sample
+beyond their intervals.
 
-**`nearest_plane_departure@1`** (`path::nearest_plane_departure`). A face of a face group on no one
-plane (`Nearest`) is keyed on the plane nearest it and its bound carries how far that plane's key
-stands from its drawn outline's keys wherever its fill is read: the largest over its points (and a
-closed subpath's closing point) of `|key at the point - its own key|` plus each read's rounding, plus
-`hypot(b, c) * 0.1` for the flattening. So it ties with what that plane cannot tell it from. It is
-not offered to the registry.
+### `lines@1`
 
-**One order for the pixel** (`majority@1`, `order::pair`, `Shared::decided`). Each pair's order at
-the pixel comes from the samples both cover: none shared, or a fill against its own stroke: paint
-order (`Paint`); every shared sample tied (`tied` or `coplanar_tied`): paint order (`Tie`); every
-untied shared sample with the same nearer: that one (`Depth`); the untied samples disagreeing: the one
-nearer at more of them, paint order on an even split (`Majority`). `Depth` and `Majority` are strong,
-`Paint` and `Tie` weak. This order is read by the opaque drop, the units and the coverage resolve
-(§9), never by a sample's own order. Tests:
+**Core rule.** Two strokes (or background strokes) of registry-offered paths with no plane of their
+own, not on one plane, tie where
+
+    tied(d_a, e_a + (|d_a| + e_a) o_a, d_b, e_b + (|d_b| + e_b) o_b)
+
+Each fragment's own share `o` at the pixel is
+
+    o = σ + most / least · (1 + 4u)
+
+infinite where `least` is 0. In this formula:
+
+- `σ` is the path's depth share of the snap's departure along its sight axis (`ds(Δ(R_2))`).
+- `most` is the largest, over the pixel's 16 samples and its centre, of how far the core bounds a
+  read's move when the snap moves the curve on screen.
+- `least` is the least **magnitude** among those reads.
+
+Keys are negative, so the magnitude is what divides. Fills never carry a share.
+`Stream.own_shares` reports each fragment's share.
+
+The core's bound on a read's move covers four kinds of move:
+
+- nearest and body switches;
+- the own-fill read;
+- joint slack;
+- a step of a cubic's piece count where the snap may cross one.
+
+It states two limits:
+
+- a cubic curved on screen moves its pieces at a step;
+- under the exponential option the pieces' keys depart from the curve's.
+
+[Rests on: `order::lines`, `lines_term`, `Paths::own_at`, `Centreline::slides_among`,
+`slide_under`, `step`, `slack`.]
+
+**Oracle reading.** The oracle bounds the share from XF:
+
+    O⁺ = σ + (1 + 2^-40) W / L
+
+- `W` is the largest, over the 17 reads, of
+  `(1 + σ)(max K' − min K') + (1 + σ) Sp + σ max |K'| + (1 + σ) J + 2 χ`.
+- `K'` is the keys of the centreline within `max(h, d) + 2ρ` of the read, with
+  `ρ = ε + χ + g_j`.
+- `Sp` is the largest key spread of a segment within that radius.
+- `J` is the largest key gap of a joint.
+- `g_j` is the largest screen gap of a joint.
+- `χ` is the largest chord deviation, in position and in key, between any cubic and its polyline at
+  any piece count `n` reachable within `6ε` of its control polygon's length:
+  `6 · max(|c_0 − 2c_1 + c_2|, |c_1 − 2c_2 + c_3|) / (8 n²)` of its control points' screen positions,
+  and likewise of their keys.
+- `L` is the least magnitude over the 17 reads' `K'`.
+
+The pair admits the weak edge where it is eligible and
+
+    |o_a − o_b| <= β_a + β_b + (|o_a| + 2R_a) O⁺_a + (|o_b| + 2R_b) O⁺_b
+
+where `β_f = max(S⁻, S⁺) + 3R`. The contract test checks the core's reported share against `O⁺`. An
+excess is listed as `share_beyond_bound`.
+
+**Rejects:** two lines crossing at depths apart by more than their bounds, their order reversed.
+
+`coplanar_tied` is `one_plane && within_term`, else `lines && lines_term`, else (both flat records)
+`within_term && near_parallel`. The three cases are disjoint.
+
+### `nearest_plane_departure@1`
+
+A face of a face group on no one plane (`Nearest`) is keyed on the plane nearest it. Its bound
+carries its outline's departure from that plane (§6), so it ties with what that plane cannot tell it
+from. It is never offered to the registry.
+
+[Rests on: `path::nearest_plane_departure`.]
+
+### One order for the pixel (`majority@1`)
+
+**Core rule.** Each pair's order at the pixel comes from the samples both cover:
+
+- **`Paint`** (paint order): none shared, or a fill against its own stroke.
+- **`Tie`** (paint order): every shared sample tied (`tied` or `coplanar_tied`).
+- **`Depth`:** every untied shared sample has the same nearer, and that one is in front.
+- **`Majority`:** the untied samples disagree. The one nearer at more of them is in front, with
+  paint order on an even split.
+
+`Depth` and `Majority` are strong; `Paint` and `Tie` are weak. This order drives the opaque drop,
+the units and the coverage resolve (§9). It never decides a sample's own order.
+
+[Rests on: `order::pair`, `Shared::decided`;
 `order.rs::a_pair_crossing_inside_the_pixel_takes_the_order_most_shared_sub_samples_give`,
-`a_stroke_one_ulp_nearer_where_it_does_not_cover_keeps_paint_order`.
+`a_stroke_one_ulp_nearer_where_it_does_not_cover_keeps_paint_order`.]
 
-**`cycle_rank@1`, the rank** (`order::rank`, `rank_sample`, `rank_through_cycles`). Pairwise orders
-are edges, strong or weak. Where they form one order (inserting each fragment before the first it
-is in front of yields an order every pair agrees with), that order. Otherwise, front first: among the
-fragments no remaining fragment is strongly in front of, the later painted; and where every remaining
-fragment has a strong edge into it (the strong edges alone cycle), at a sample the one in front of the
-most remaining fragments, the later painted on ties. So weak edges yield before any strong edge is
-broken: a paint-order or `own_layers` edge gives way first. At the pixel a strong cycle is not broken:
-the pixel takes the sample resolve (§9). Tests: `order.rs::a_cycle_through_a_weak_order_keeps_every_strong_order`,
+### `cycle_rank@1`: the rank
+
+**Core rule.** Pairwise orders are edges, strong or weak.
+
+1. **One order.** Insert each fragment before the first one it is in front of. Where every pair
+   agrees with the resulting order, that is the order.
+2. **Otherwise,** build it front first:
+   - among the fragments that no remaining fragment is strongly in front of, take the later
+     painted;
+   - where every remaining fragment has a strong edge into it (the strong edges alone cycle), take,
+     at a sample, the one in front of the most remaining fragments, the later painted on ties.
+
+So weak edges yield before any strong edge is broken. A paint-order or `own_layers` edge gives way
+first. At the pixel, a strong cycle is not broken: the pixel takes the sample resolve (§9).
+
+[Rests on: `order::rank`, `rank_sample`, `rank_through_cycles`;
+`order.rs::a_cycle_through_a_weak_order_keeps_every_strong_order`,
 `the_report_breaks_a_cycle_of_strong_orders_by_wins_then_paint_order`,
-`a_pixel_whose_strong_orders_cycle_composites_each_sub_sample_in_its_own_order`.
+`a_pixel_whose_strong_orders_cycle_composites_each_sub_sample_in_its_own_order`.]
 
-**Oracle reading: the relation.** For each pair of fragments present at `k` (each `Yes`, or `Either`
-and present in the core's report), the oracle gives the first of these that holds:
+### Oracle reading: the edges a pair admits
 
-1. `Policy(own_layers@1)`, exactly by the eligibility above: paint order only (a weak edge).
-2. `Policy(one_plane@1)`, `Policy(lines@1)` or `Policy(near_parallel@1)`, in the core's order of the
-   three, where the pair is eligible and its term holds with margin:
-   `|o_a - o_b| <= T_ab + 3 (R_a + R_b)`, `T_ab` the term's right side at the oracle's keys and
-   shares. Eligibility for `one_plane@1` is pairwise: both records registry-offered and one plane holds
-   every point of both within each one's tolerance (for two records with no plane of their own, also
-   where both lie exactly on one axis plane). Every pair the core's partition puts on one identity
-   passes it (each member lies within its tolerance on its identity's final plane; an attached record
-   is held with the members by one plane), so it admits a superset; the shares of a record with no
-   plane of its own are taken on that plane with both records' tolerances. `near_parallel@1`'s test is
-   evaluated as stated, its roundings taken in its favour; `lines@1` is eligible exactly as stated.
-   Both orders are admissible.
-3. `TieBand` where `|o_a - o_b| <= β_a + β_b`: both orders admissible.
-4. Otherwise `Depth(front)`, the nearer: a strong edge.
+For each pair present at `k` (each `Yes`, or `Either` and present in the core's report), the oracle
+writes a set `E` of admitted edges, drawn from: weak (paint order), strong `a`-front, and strong
+`b`-front. It also writes a label.
 
-**Oracle reading: the admissible orders at a sample.** A **completion** of the pairs present at `k`
-gives each `Depth(front)` pair a strong edge to `front`, each `own_layers@1` pair a weak paint-order
-edge, and each other pair one of: a strong edge either way, or a weak paint-order edge. An order of
-the present fragments is **admissible** where the rank (`cycle_rank@1`, through cycles) of some
-completion produces it. Where the `Depth` and `own_layers` edges alone are acyclic, every order that
-keeps all of them is admissible (complete each other pair strongly in that order's direction), which
-a comparator may test first; other orders may be admissible too, through a completion that makes a
-weak edge yield. The check is over every pair, never adjacent pairs alone: bands are not transitive
-(keys 0, 1, 2 with bands 0.6 tie the adjacent pairs while the ends are `Depth`). A sample's order that
-no completion produces is a `mismatch`.
+1. **`own_layers@1`**, exactly by its eligibility: `E = {weak}`.
+2. **`ExactTie`**: `E = {weak}`. This applies where every scenario the sets allow gives the two keys
+   bit for bit:
+   - both keys are `−∞`;
+   - or both fragments are fills of flat paths, or flat triangles, whose planarity is the axis plane
+     of one coordinate, with their records' first points equal on it, and each is read at the sample
+     itself in every scenario. A fragment is read at the sample itself when it is a triangle, or the
+     sample lies inside its outline by the point-in-outline test, or its plane's key is constant on
+     screen.
+3. **A pair that may share an identity with a record of no plane of its own:** every edge
+   (`one_plane@1`, above).
+4. **Otherwise**, `E` is the union, over every scenario of §5's pair-dependent reads that §7's sets
+   allow (rows or own keys), of three parts, each computed with that scenario's keys and intervals:
+   - **strong `a`-front** where `min I_a < max I_b`, and likewise for `b`;
+   - **weak** where `I_a` and `I_b` meet;
+   - **weak** where a policy may hold. With `β_f = max(S⁻, S⁺) + 3R` and the policy's shares `s`,
+     the policy's term is taken as
+     `|o_a − o_b| <= β_a + β_b + (|o_a| + 2R_a) s_a + (|o_b| + 2R_b) s_b`. This is
+     `one_plane@1` with the snap shares, in the shared scenario of a pair that may share; or
+     `near_parallel@1` with the snap shares, where its test may hold; or `lines@1` with `O⁺`.
+
+The label is decided in this order:
+
+- `Depth(front)` where `E` is the single strong edge;
+- `TieBand` where the intervals meet;
+- otherwise `Policy(name@1)`, naming the first policy that admits the weak edge in the core's order
+  (`one_plane`, `lines`, `near_parallel`).
+
+**Rejects:** two overlapping layers whose keys are both `−∞` (a 2D scene), and two glyph fills on one
+axis plane inside both outlines, each pair with its paint order reversed.
+
+### Oracle reading: the admissible orders at a sample
+
+- **Completions.** A **completion** picks one edge from each present pair's `E`.
+- **Admissible orders.** An order of the present fragments is **admissible** where the rank
+  (`cycle_rank@1`, through cycles) of some completion produces it.
+- **A sufficient test.** An order is admissible if every pair agrees with some edge in its `E`. The
+  agreeing edge is a strong edge in that order's direction, or a weak edge whose paint order matches.
+  A comparator may test this first.
+- **Cycles.** Other orders may be admissible through a completion whose weak edges yield in a cycle.
+- **Every pair.** The check covers every pair, not adjacent pairs alone. Intervals are not
+  transitive: keys 0, 1 and 2 with half-widths 0.6 let the adjacent pairs meet while the ends are
+  strong.
+- **Mismatch.** A sample's order that no completion produces is a `mismatch`.
+
+**Rejects:** an order that breaks a strong edge where a weak edge could have yielded.
 
 ## 8. Stroke policies
 
-A path's strokes are kurbo 0.13.1's `stroke` of its outline in frame units at tolerance `0.1 / s`,
-then mapped (`Lowering::path`).
+A path's strokes are kurbo's `stroke` of its outline in frame units, at tolerance `0.1 / s`, then
+mapped (§4).
 
-- `width_in_scene_units@1`: the width is CE's stroke width (the record's, or a face's own, XF 1.3;
-  a paint blend's mix, `geometry::drawn_paint`) times the view's `cairo_line_width_multiple`, in frame
-  units, as Cairo strokes in user space: the frame mapping scales it, the perspective never does. A
-  width not above 0 (or NaN) draws nothing (`tests/path.rs::a_stroke_covers_its_outline_at_ces_width`).
-- `miter_limit_10@1`: joints auto and miter are kurbo's miter, round and bevel its own; caps auto and
-  butt are butt, round and square their own; the miter limit is Cairo's 10 (`path::MITER_LIMIT`,
-  `kurbo_join`, `kurbo_cap`; `tests/path.rs::a_sharp_joint_is_mitred_up_to_cairos_limit`).
-- `join_mask@1` (`join_mask.rs` module doc, `path::decided_joins`, `join_mask::apply`): a path record
-  carrying XF 1.4 `joins` (one byte per cubic of its points: bit 0 Cairo joins into the cubic, bit 1
-  it mitres there; a closed subpath's first cubic's byte its closing join) has kurbo's stroke edited at
-  each join whose carried decision differs from kurbo's own: a carried bevel where kurbo mitred drops
-  the miter's two vertices (leaving kurbo's bevel); a carried miter where kurbo bevelled inserts them,
-  the tip on the bisector at the miter limit's length; where kurbo's tangents are parallel the bevel
-  stays; a join whose vertices are not found in kurbo's outline, a join the record does not decide
-  (bit 0 clear, no byte), and a cubic whose points are all one (skipped: the join is from the cubic
-  before) are left as kurbo drew them. Joins are matched by their two cubics' points' bits, one
-  decision per occurrence. Tests: `tests/join_mask.rs` (all eight).
-- `dash_start_least_length@1` (`path::drawn_dash`, `path::dashed`): a dash of duty 1, or whose gap
-  (the entries' total less the on length) is under Cairo's least length `1/512`, strokes solid; any
-  other is the pattern `[period * duty, period * (1 - duty)]` laid by kurbo's `dash` on the whole
-  outline (each subpath starting `phase * period` into it; a closed subpath's last dash joined to its
-  first where both are on; pieces beyond the guard area measured, not dashed), then stroked. Tests:
-  `tests/path.rs::a_dashed_stroke_follows_its_period_duty_and_phase`,
-  `::a_dashed_stroke_returning_from_far_beyond_the_frame_keeps_its_dash_phase`.
-- `round_cap_dot@1` (`path::strokes_as_dot`): a face of a face group whose shown points are all at one
-  spot in x and y, under a round cap, undashed or dashed on at its subpath's start (Cairo's dash start:
-  the offset `phase * period` taken modulo the total and stepped past every entry it reaches or
-  passes), strokes as a circle of radius `w / 2` about its first point, flattened at `0.1 / s`.
-  Under a butt or square cap it strokes nothing.
+**`width_in_scene_units@1`.**
+
+- The width is CE's stroke width times the view's `cairo_line_width_multiple`, in frame units, as
+  Cairo strokes in user space. CE's stroke width is the record's, a face's own (XF 1.3), or a paint
+  blend's mix (`paint_rows@1`).
+- The frame mapping scales it. The perspective never does.
+- A width not above 0, or NaN, draws nothing.
+
+[Rests on: `tests/path.rs::a_stroke_covers_its_outline_at_ces_width`.]
+
+**`miter_limit_10@1`.**
+
+- Joints `auto` and `miter` are kurbo's miter; `round` and `bevel` are kurbo's own.
+- Caps `auto` and `butt` are butt; `round` and `square` are kurbo's own.
+- The miter limit is Cairo's, 10.
+
+[Rests on: `path::MITER_LIMIT`, `kurbo_join`, `kurbo_cap`;
+`tests/path.rs::a_sharp_joint_is_mitred_up_to_cairos_limit`.]
+
+**`join_mask@1`.**
+
+- **The joins field.** A path record may carry the XF 1.4 `joins` field: one byte per cubic of its
+  points. Bit 0 means Cairo joins into the cubic; bit 1 means it mitres there. For a closed
+  subpath, the first cubic's byte is its closing join.
+- **When edits apply.** Only to a stroke whose style is kurbo's miter, that is, joints `auto` and
+  `miter`. A round or bevel stroke is never edited.
+- **The edits.** For a miter stroke, kurbo's stroke is edited at each join whose carried decision
+  differs from kurbo's own:
+  - a carried bevel where kurbo mitred drops the miter's two vertices, leaving kurbo's bevel;
+  - a carried miter where kurbo bevelled inserts the miter's vertices, with the tip on the bisector
+    at the miter limit's length. Where kurbo's tangents are parallel, the bevel stays.
+- **Left as kurbo drew them:**
+  - a join whose vertices are not found in kurbo's outline;
+  - a join the record does not decide (bit 0 clear, or no byte);
+  - a cubic whose points are all one point, which is skipped (the join then comes from the cubic
+    before).
+- **Matching.** Joins are matched by their two cubics' points' bits, one decision per occurrence.
+
+[Rests on: `join_mask.rs` module doc and `apply`, `path::decided_joins`; `tests/join_mask.rs`.]
+
+**`dash_start_least_length@1`.**
+
+- **Solid.** A dash of duty 1 strokes solid. So does a dash whose gap is under Cairo's least length,
+  `1/512`. The gap is the entries' total less the on length.
+- **The pattern.** Any other dash is the pattern `[period · duty, period · (1 − duty)]`. Each
+  subpath starts `phase · period` into it.
+- **Without the guard,** kurbo's `dash` lays the pattern on the whole unguarded outline, and the
+  stroke follows.
+- **Where the guard applies (§4),** each subpath is cut into §4's pieces, each marked as missing the
+  area or not:
+  - **Runs.** A **run** is a maximal sequence of consecutive pieces that do not miss the area. A
+    closed subpath's closing line is a piece, if its ends differ.
+  - **Dashing a run.** Each run is dashed on its own by kurbo's `dash`. Its offset is
+    `phase · period + at`, where `at` is the summed `arclen(1e-6)` of every piece before it in its
+    subpath, missing or not. Pieces that miss are measured and never dashed.
+  - **The closing seam.** Take a closed subpath with more than one run whose first and last pieces
+    both do not miss. A dash of the first run that starts at the subpath's start is joined onto the
+    last run's dash that ends within `1e-9 (1 + max(|x|, |y|))` of that start.
+  - **Order.** The dashes are emitted in run order.
+
+[Rests on: `path::drawn_dash`, `dashed`, `dash_subpath`, `DASH_ACCURACY`;
+`tests/path.rs::a_dashed_stroke_follows_its_period_duty_and_phase`,
+`::a_dashed_stroke_returning_from_far_beyond_the_frame_keeps_its_dash_phase`.]
+
+**`round_cap_dot@1`.**
+
+- **When it applies.** To a face of a face group whose shown points are all at one spot in `x` and
+  `y`, under a round cap, and either undashed or dashed on at its subpath's start. Cairo's dash
+  start is the offset `phase · period` taken modulo the total and stepped past every entry it
+  reaches or passes.
+- **What it strokes.** A circle of radius `w / 2` about its first shown point, made by kurbo's
+  `Circle::to_path` at `0.1 / s`.
+- Under a butt or square cap, the face strokes nothing.
+
+[Rests on: `path::strokes_as_dot`.]
 
 ## 9. The resolve text and colour
 
-At a pixel the fragments are the opaque pass's (fragments whose colour is opaque wherever they
-paint) then the others, each pass in producer order (meshes, paths, point blocks) and within a
-producer in the order added. `opaque` means alpha 255; **full** means a mask of all 16 samples or an
-area of 1; a fragment's 8-bit **coverage** is `(bits * 255 + 8) div 16` for a mask
-(`mask_coverage`) and `floor(clamp(area, 0, 1) * 255 + 1/2)` of its binary32 area for a path
-(`area_coverage`), never the sum of its cell bytes; its coverage at sample `k` is 255 or 0 for a
-mask, and §4's cell byte for a path (`sample_coverage`).
+**Fragments at a pixel.**
 
-**`resolve_select@1`** (`composite::resolve_pixel_traced`):
+- **Order.** The opaque pass's fragments (those whose colour is opaque wherever they paint) come
+  first, then the others. Each pass is in producer order (meshes, paths, point blocks), and within a
+  producer in the order added.
+- **Opaque and full.** `opaque` means alpha 255. **full** means a mask of all 16 samples, or an
+  area of 1.
+- **Coverage.** A fragment's 8-bit **coverage** is `(bits · 255 + 8) div 16` for a mask, and
+  `floor(clamp(area, 0, 1) · 255 + 1/2)` of its binary32 pixel area for a path. It is never the sum
+  of its cell bytes.
+- **Coverage at a sample.** At sample `k` it is 255 or 0 for a mask, and §4's cell byte for a path.
 
-1. No fragment: the background (`Background`).
-2. One fragment: opaque and full, its colour (`Fast`); otherwise `blend(colour, coverage, bg)`
-   (`Coverage`).
-3. Several: every fragment's keys (§5, both adjustments) and every pair's pixel order
-   (`majority@1`, or paint order on a flat pixel); the pixel's rank (`cycle_rank@1`). Where the strong
-   orders alone cycle: the **sample resolve** over every fragment.
-4. **`opaque_drop@1`**: where the pixel's order holds a fragment opaque and full, at place `p`: on a
-   flat pixel, everything after the first such is dropped; otherwise each sample ranks the fragments
-   covering it (`rank_sample`) and a fragment is kept where some sample's rank reaches it before or
-   at the first opaque, full fragment there, or where it covers no sample and stands before place `p`
-   in the pixel's order; the rest are dropped. A single kept fragment that is opaque and full: `Fast`.
-   Tests: `order.rs::the_cull_keeps_what_the_rank_shows_and_drops_what_it_hides`,
-   `only_a_layer_covering_the_pixel_whole_hides_what_is_behind_it`.
-5. **`unit_merge@1`**: runs, in the pixel's order, of one surface's mask fragments (same producer and
-   surface) whose masks do not overlap form one unit; every other fragment is a unit alone. Where a
-   unit of two or more fragments is opaque and its masks' union is full, every later unit is dropped
-   where no sample's rank shows any fragment of it before an opaque, full fragment or a member of that
-   unit (flat: always).
-6. Count the units whose mask union is partial; if any is, or any path unit's area is below 1, add the
-   full mask units whose members differ in colour. The **coverage resolve** applies where that count
-   is 0, or 1 with no partial path area, and at every sample no fragment of a unit is behind (at that
-   sample's own relation, §7) a fragment of a later unit where both cover it. Otherwise the **sample
-   resolve**. A 2D scene never takes it (`tests/resolve_switch.rs::a_2d_scene_never_takes_the_sample_resolve`).
+### `resolve_select@1`
 
-**The coverage resolve.** Back to front over the units in the pixel's order, `px = blend(colour,
-coverage, px)` from the background. A unit of one fragment blends with that fragment's colour and
-coverage (a path's whole-pixel byte). A merged unit's colour is, per channel,
-`(Σ c_i n_i + N div 2) div N` over its members, `n_i` each one's mask's bit count and `N` their sum, and
-its coverage `mask_coverage` of their union.
+**Core rule.**
 
-**The sample resolve.** Each sample `k` composites, back to front from the background, the fragments
-its rank orders at `k` (the ranks the drops above read where they ranked, else ranked now over the
-kept fragments), each at its coverage there; the pixel is each channel's `(Σ_k + 8) div 16`. A
-fragment the drop removed but a rank kept lies behind an opaque, full cover at every sample, which
-blends over it exactly.
+1. **No fragment:** the background (`Background`).
+2. **One fragment:** if opaque and full, its colour (`Fast`); otherwise
+   `blend(colour, coverage, bg)` (`Coverage`).
+3. **Several fragments:** compute every fragment's keys (§5, both adjustments) and every pair's
+   pixel order (`majority@1`, or paint order on a flat pixel). Rank the pixel (`cycle_rank@1`).
+   Where the strong orders alone cycle, take the **sample resolve** over every fragment.
+4. **`opaque_drop@1`.** Where the pixel's order holds a fragment that is opaque and full, the first
+   such at place `p`:
+   - **On a flat pixel,** everything after `p` is dropped.
+   - **Otherwise,** each sample ranks the fragments covering it. A fragment is kept in either case:
+     - some sample's rank reaches it before, or at, the first opaque, full fragment there;
+     - or it covers no sample and stands before `p`.
 
-**Blend arithmetic** (`composite::blend`, Cairo's ARGB32 image surface): with
-`mul(a, b) = ((t >> 8) + t) >> 8`, `t = a b + 0x80`, and `mul_7f(a, b) = (t + (t >> 8)) >> 8`,
-`t = a b + 0x7f`: an opaque source at coverage 255 replaces the pixel; an opaque source at
-coverage `c` gives `min(mul_7f(s, c) + mul_7f(d, 255 - c), 255)` per channel; any other source is
-first scaled, `s' = mul(s, c)` per channel when `c < 255`, then laid over,
-`min(s' + mul(d, 255 - s'_alpha), 255)`. Tests:
+     The rest are dropped.
+   - If a single fragment is kept and it is opaque and full: `Fast`.
+5. **`unit_merge@1`.**
+   - **Units.** Runs, in the pixel's order, of one surface's mask fragments (same producer and
+     surface) whose masks do not overlap form one unit. Every other fragment is a unit on its own.
+   - **The tile drop.** Take the **first** unit of two or more fragments that is opaque with a full
+     mask union. If, at every sample, the rank shows no fragment of any later unit before the first
+     fragment that is opaque and full or belongs to that unit, then **all** later units are dropped.
+     Otherwise none is. On a flat pixel they are always dropped.
+6. **Counting partials.**
+   - Count the units whose mask union is partial.
+   - If any is, or any path unit's pixel area is below 1, also count the full mask units whose
+     members differ in colour.
+   - The **coverage resolve** applies where the count is 0, or 1 with no partial path area, and at
+     every sample no fragment of a unit is behind a fragment of a later unit where both cover it.
+     "Behind" is that sample's own relation (§7).
+   - Otherwise the **sample resolve** applies.
+   - A frame of paths alone under a flat camera never takes the sample resolve, because it has no
+     partial mask unit. Two partial mask units can take it under any camera.
+
+[Rests on: `composite::resolve_pixel_traced`;
+`order.rs::the_cull_keeps_what_the_rank_shows_and_drops_what_it_hides`,
+`only_a_layer_covering_the_pixel_whole_hides_what_is_behind_it`;
+`tests/resolve_switch.rs::a_2d_scene_never_takes_the_sample_resolve` (no mesh).]
+
+**Oracle reading: inputs to the recompute.**
+
+- The recompute takes the **resolve class and unit membership the core recorded** as explicit
+  inputs. Per-sample sequences do not determine them: the selection also reads the pixel's pair
+  votes and strengths, and fragments absent from every sequence.
+- **The selection is tested apart.** The rule above is applied to the core's recorded pair votes,
+  strengths and fragments. Where it does not give the recorded class and units, the result is
+  `report_inconsistent`, never a tie.
+
+**Rejects:** a recorded class that the rule, applied to the recorded votes, does not give.
+
+### The two resolves
+
+**The coverage resolve.**
+
+- Go back to front over the units in the pixel's order, starting from the background:
+  `px = blend(colour, coverage, px)`.
+- A unit of one fragment blends with that fragment's colour and coverage. For a path, that is the
+  whole-pixel byte.
+- A merged unit's colour is, per channel, `(Σ c_i n_i + N div 2) div N` over its members, where
+  `n_i` is each member's mask bit count and `N` their sum. Its coverage is the mask coverage of
+  their union.
+
+**The sample resolve.**
+
+- Each sample `k` composites, back to front from the background, the fragments its rank orders at
+  `k`, each at its coverage there. Those ranks are the ones the drops above read where they ranked,
+  and otherwise are ranked now over the kept fragments.
+- The pixel is `(Σ_k v_k + 8) div 16` per channel.
+- A fragment that the drop removed may still appear in a sample's sequence, because the rank was
+  read before the drop. It always lies behind an opaque, full cover there, which blends over it
+  exactly.
+
+### Blend arithmetic
+
+This is Cairo's ARGB32 image surface. Define
+
+    mul(a, b)    = ((t >> 8) + t) >> 8,   t = a b + 0x80
+    mul_7f(a, b) = (t + (t >> 8)) >> 8,   t = a b + 0x7f
+
+- **An opaque source at coverage 255** replaces the pixel.
+- **An opaque source at coverage `c`** gives `min(mul_7f(s, c) + mul_7f(d, 255 − c), 255)` per
+  channel.
+- **Any other source** is first scaled, `s' = mul(s, c)` per channel when `c < 255`. It is then
+  laid over the pixel as `min(s' + mul(d, 255 − s'_alpha), 255)`.
+
+The coverage resolve lands within 3 levels of the sample resolve for one partial mask. That is a
+property, not a rule the recompute uses.
+
+[Rests on: `composite::blend`, `mul`, `mul_7f`;
 `tests/composite.rs::two_d_paint_blends_with_cairos_argb32_arithmetic`,
-`composite.rs::the_byte_products_round_within_their_stated_errors`. The coverage resolve lands within
-`composite::coverage_to_sample_bound` (`COVERAGE_TO_SAMPLE_LSB = 3` for one partial mask) of the
-sample resolve, a property, not a rule the recompute uses
-(`tests/coverage_bound.rs`).
+`composite.rs::the_byte_products_round_within_their_stated_errors`; `tests/coverage_bound.rs`.]
 
-**Colour, from XF** (each fragment's premultiplied bytes):
+### Colour, from XF
 
-- `cairo_premultiply@1` (`composite::premultiply`): a straight colour, alpha times the record's
-  group opacity, each channel clamped to `[0, 1]`; channel `k` is `((c_k a) * 65535 + 1/2)`
-  truncated, shifted right 8, and alpha likewise.
-- A path's solid paint: its one row, through `cairo_premultiply@1`. A paint of two or more rows is a
+These rules give each fragment's premultiplied bytes.
+
+**`paint_rows@1`.** A record's paints are background stroke, fill and stroke. Each is no paint, one
+straight RGBA colour, two colours, or a paint table's rows. Its widths are the stroke and
+background-stroke widths.
+
+- **Paint blends.** Under a paint blend toward `paint_b` at `mix`:
+  - each width is `paint_b`'s where `mix = 1`, and otherwise `(1 − mix) a + mix z`;
+  - each paint's rows are `paint_b`'s own where `mix = 1`, even when they are empty;
+  - otherwise rows broadcast as numpy does: an empty side gives no rows, one row stretches to the
+    other's count, and equal counts pair. Each row is `(1 − mix) p_k + mix q_k` per channel. Other
+    counts are refused (§11).
+- **A face** of a face group fills with row `i` of the face fill table, strokes with row `i` of the
+  face stroke table (if it has one) at its own width (or the record's), and background-strokes with
+  the record's rows.
+- **An instances member `i`** fills with row `i` of the member fill table where the record's fill is
+  one colour, and strokes likewise with the member stroke table. Its background stroke is the
+  record's one colour. Otherwise it has no paint.
+- **One row versus several.** A layer with one row is a solid. A layer with two or more rows is a
   gradient between the record's ends shown for display (§2).
-- `cairo_linear_gradient@1` (`gradient.rs` module doc and `source`, `Linear::at`): Cairo's pattern
-  (stops at `np.linspace(0, 1, n)`, colours clamped and kept as 16-bit shorts `(v * 65535 + 1/2)`
-  truncated; all stops one colour, or ends within `f64::EPSILON` in both coordinates, is a solid:
-  the stop's, or the first and last stops' average) under the inverse of the context matrix (Cairo's
-  `cairo_matrix_invert`), handed to pixman as Cairo does (16.16 fixed point by Cairo's magic-number
-  rounding; the matrix's translation split per `_cairo_matrix_to_pixman_matrix_offset` about the
-  middle of the composite's extents, the outline's box in 24.8 fixed point rounded out and cut to the
-  frame); each pixel's parameter taken at the start of its **composite run** (Cairo's in-place span
-  renderer, `RUN_LENGTH = 256`: a full span of at least 256 pixels on its own, the rest gathered from
-  the first pixel and cut at a gap once longer than 256, `path::composite_runs`, from the layer's own
-  coverage in its box row) and stepped `t + trunc(inc * i)` to the pixel; colour by pixman's pad
-  walker in binary32, premultiplied, rounded to bytes. Tests: `tests/gradient.rs` (all five).
-- `ce_shading@1` (`shade.rs`): a `shade_in_3d` path under a 3D camera that shades is lit, per layer,
-  into two stops at its corners `0` and `((n - 1) div 6) 3` by CE's `get_shaded_rgb` (`to_sun` the unit
-  vector to the light, `δ = 0.5 (n · to_sun)³`, halved where negative, added to the encoded colour,
-  unclamped) with the normals its record carries (XF 1.2; a zero normal lit by the face's Newell
-  normal, or CE's where that cancels) or CE's own (`get_3d_vmob_unit_normal`), drawn as a gradient
-  between its recorded ends, else its corners. A lit mesh triangle (`Light::triangle`): each corner lit
-  (CE's model: clamped encoded colour; soft diffuse, light model 1: `ambient + (1 - ambient) *
-  max((n · l + wrap) / (1 + wrap), 0)` on the linear colour, the normal turned toward the eye),
-  interpolated as planes through the three corners on the pixel plane, read at the centroid of the
-  samples the fragment covers, clamped, encoded where linear, then `cairo_premultiply@1`.
-- A point block (`points.rs`): bytes `trunc(255 c)` per channel and alpha (times the group
-  opacity); none where the alpha byte is 0; where it is below 255, each channel `(c a + 127) div 255`.
 
-Nothing a frame of this engine draws emits light (emission records are refused, §11), so the
-emission step (`composite::add_emission`) never applies.
+[Rests on: `geometry::drawn_paint`, `mixed`, `rows`; `instance.rs` (members, faces).]
 
-**Oracle reading.** The recompute reads, per pixel, the core's per-sample sequences after its drops,
-each fragment's colour, whole-pixel coverage byte and cell bytes, selects the resolve by this
-section, and composites by this arithmetic, never through the core's resolve and never from its
-resolved colours. With the oracle's colours it computes them by the rules above from XF.
+**`cairo_premultiply@1`.**
+
+- The record's group opacity multiplies the alpha.
+- Each channel is clamped to `[0, 1]`.
+- Channel `k` is `trunc((c_k a) · 65535 + 0.5) >> 8`, and alpha is `trunc(a · 65535 + 0.5) >> 8`
+  (`alpha_round@1`).
+
+[Rests on: `composite::premultiply`.]
+
+**`cairo_linear_gradient@1`.** The normative definition is Cairo 1.18's `cairo.LinearGradient`
+filling or stroking the layer's outline on an ARGB32 image surface whose colours pixman 0.42
+computes. This chain includes:
+
+- stops at `np.linspace(0, 1, n)`, clamped, kept as 16-bit shorts and not premultiplied;
+- a solid where every stop is one colour or the ends meet;
+- the inverse of the context matrix;
+- 16.16 fixed point;
+- pixman's linear fetch and its pad walker in single precision.
+
+The core deviates from it in four ways:
+
+1. **Composite runs.**
+   - The core takes the composite runs from its own coverage spans in the row, not from Cairo's
+     rasterizer spans.
+   - A run starts at the first covered pixel. A fully covered span at least 256 pixels long is a run
+     on its own. Otherwise spans are gathered, and a gap longer than one pixel cuts the gathered
+     run once it is longer than 256 pixels. A one-pixel gap never cuts.
+   - Each pixel's parameter is stepped from its run's start as `t + trunc(inc · i)`.
+2. **Agreement.** Against Cairo's own renders, the core agrees on all but about 1 in 60,000 interior
+   pixels, and those by one level.
+3. **The middle of the extents.** It comes from the outline's box in 24.8 fixed point, rounded out
+   and cut to the frame.
+4. **The ends.** They are the record's ends, shown for display.
+
+[Rests on: `gradient.rs` module doc, `source`, `Linear::at`; `path::composite_runs`, `RUN_LENGTH`;
+`tests/gradient.rs`.]
+
+**Oracle reading for gradients.** The oracle computes each gradient pixel's parameter directly at
+the pixel's centre and admits every byte within one level of that colour.
+
+- A run start moves a pixel's parameter by less than one 16.16 unit, which is under a level.
+- The core's stated disagreement with Cairo is one level.
+
+The recompute with the oracle's colours compares gradient fragments with this ±1 tolerance.
+
+**Rejects:** a gradient pixel two or more levels from its parameter's colour.
+
+**`ce_shading@1`.**
+
+- **Shaded paths.** A `shade_in_3d` path under a 3D camera that shades is lit per layer into two
+  stops:
+  - **Source colours.** A layer of one row lights that row twice. Otherwise it lights its **first
+    two** rows, and the rest are dropped.
+  - **Where.** At its world points `0` and `((n − 1) div 6) · 3`, as CE's `get_shaded_rgb` lights
+    them. With `to_sun` the unit vector from the point toward the camera's light source,
+    `δ = 0.5 (n · to_sun)³`, halved where negative, is added to each encoded channel, unclamped.
+  - **Normals.** Each lit corner takes the normal its record carries (XF 1.2). A zero carried normal
+    is lit by the face's Newell normal over its points, normalized, or by CE's corner normal where
+    that is zero. A record with no carried normals uses CE's corner normal.
+  - **CE's corner normal** at point `i` of a face of `n` points:
+    - it is `(0, 1, 0)` where the face has at most two anchors, the anchor count being
+      `2 · min(ceil(n / 4), (n − 4) div 4 + 1)` for `n >= 4`;
+    - otherwise take `v1 = p[i + 3] − p[i]` and `v2 = p[i − 3] − p[i]`, where `i + 3` wraps to 3
+      past `n − 4` and `i − 3` wraps to `n − 4` below 3. Each is divided by its largest
+      magnitude; where both are zero the normal is `(0, −1, 0)`, and where one is zero the other is
+      used alone as `u`;
+    - their cross product, where its length exceeds `1e-6`, divided by its length, is the normal;
+    - otherwise `u` is the first of them, and the normal is `(0, −1, 0)` where `|u_x|` and `|u_y|`
+      are both under `1e-6`, else `(−u_x u_z, −u_y u_z, u_x² + u_y²)` divided by its length;
+    - a zero result is replaced by `(0, 1, 0)`.
+  - **Drawing.** The two stops are drawn as a gradient between the recorded ends, or else between
+    the corners.
+- **Lit mesh triangles.**
+  - **Normals.** A carried vertex normal `n` is transformed by the placement's linear part `L`
+    through its cofactors, `n'_i = Σ_j cof(L)_{ij} n_j` with `cof(L)_{ij} = L_{i+1, j+1} L_{i+2, j+2}
+    − L_{i+1, j+2} L_{i+2, j+1}` (indices mod 3), then divided by its length (left as is where the
+    length is 0). A mesh with no normals uses CE's unit normal of `v1 = c1 − c0` and `v2 = c2 − c0`
+    of the placed triangle (the cross-product rule above, from its second step), at all three
+    corners.
+  - **Lighting.** Each corner is lit at its placed position.
+    - Under CE's model, the corner takes the shading above of the encoded colour, then is clamped to
+      `[0, 1]`.
+    - Under soft diffuse (light model 1), the colour is first decoded by the sRGB transfer function:
+      `c / 12.92` for `c <= 0.04045`, else `pow((c + 0.055) / 1.055, 2.4)`. The normal is turned to
+      face the eye, `frame_center + d R_2`, where its dot product with the direction to the eye is
+      negative. The linear colour is then scaled by
+      `ambient + (1 − ambient) max((n · l + wrap) / (1 + wrap), 0)`, where `l` is the unit vector
+      toward the light source.
+  - **Interpolation and bytes.** The corner colours are interpolated as planes through the three
+    corners on the pixel plane (the three-corner plane of §6), and read at the centroid of the
+    samples the fragment covers, which is the pixel's centre for a full mask. The result is clamped
+    to `[0, 1]`, encoded where linear (`12.92 v` for `v <= 0.0031308`, else
+    `1.055 pow(v, 1 / 2.4) − 0.055`), then passed through `cairo_premultiply@1`. Corners of one
+    colour give a solid.
+
+[Rests on: `shade.rs` (`face_stops`, `Light::triangle`), `mesh::transform_normal`.]
+
+**Point bytes.**
+
+- Each channel and the alpha (times the group opacity) is the byte `trunc(255 c)`, as CE writes
+  it.
+- There is no block where the alpha byte is 0.
+- Where the alpha byte is below 255, each channel becomes `(c · a + 127) div 255`.
+
+[Rests on: `points.rs`.]
+
+**Emission.** Nothing a frame of this engine draws emits light: emission records are refused
+(§11).
+
+**Oracle reading for colour.**
+
+- **Inputs.** The recompute reads, per pixel:
+  - the core's recorded class and units;
+  - its per-sample sequences, after the drops;
+  - each fragment's colour, whole-pixel coverage byte and cell bytes.
+
+  It composites by this section's arithmetic, never through the core's resolve, and never from its
+  resolved colours.
+- **Colours from XF.** With the oracle's colours, it computes them by the rules above from XF.
+- **Alpha.** Every Cairo-painted op's alpha goes through `alpha_round@1`.
 
 ## 10. The interim label rule
 
-**Core rule** (`facing_plane@1`, §5). A camera-facing label (a record with a fixed-orientation
-centre under a 3D camera, or a pre-projected record keyed at its pivot) is the **plate model**: every
-fragment of it lies on the camera-facing plane through its centre, and depth, ties and policies order
-it like any other fragment, so something nearer can cut it.
+**Core rule (the plate model, `facing_plane@1`, §5).** A camera-facing label is a record with a
+fixed-orientation centre in world space under a 3D camera, or a pre-projected record keyed at its
+pivot. Every fragment of it lies on the camera-facing plane through its centre. Depth, ties and
+policies order it like any other fragment, so something nearer can cut it.
 
-**The whole-label rule** (to be drawn by a later version of the label rule): a camera-facing label is
-drawn whole. It goes under a filled surface that is nearer than the label's centre, and otherwise
-stays on top of everything, lines and arrows included; labels among themselves keep paint order.
-Line3D, Arrow3D, Vector and cylinder shafts count as lines and arrows; surfaces, solids and filled
-planes or polygons count as surfaces.
+**The whole-label rule** (to be drawn by a later version of this rule).
 
-**The open label cases** (the rule above does not yet settle them):
+- A camera-facing label is drawn whole.
+- It goes under a filled surface that is nearer than the label's centre. Otherwise it stays on top
+  of everything, lines and arrows included.
+- Labels among themselves keep paint order.
+- Line3D, Arrow3D, Vector and cylinder shafts count as lines and arrows. Surfaces, solids and filled
+  planes or polygons count as surfaces.
 
-1. **Partial overlap away from the centre:** a filled surface nearer than the label at some of the
-   label's samples but not at its centre, or nearer at its centre but not at a sample: whether the
-   surface's depth is compared with the label's centre at the sample or at the centre's point.
-2. **Translucent surfaces:** whether a nearer surface that is not opaque counts as a surface the
-   label goes under.
-3. **What counts as a surface:** lines, arrows and cylinder shafts against surfaces, solids and
-   filled planes. XF does not say which a record is: a mesh triangle, a face group's face or a path's
-   fill may be a shaft or an arrow's tip as well as a surface.
+**The open label cases.** The rule above does not yet settle these:
+
+1. **Partial overlap away from the centre.** A filled surface may be nearer than the label at some
+   of the label's samples but not at its centre, or nearer at its centre but not at a sample. It is
+   open whether the surface's depth is compared with the label's centre at the sample, or at the
+   centre's point.
+2. **Translucent surfaces.** It is open whether a nearer surface that is not opaque counts as a
+   surface the label goes under.
+3. **What counts as a surface.** Lines, arrows and cylinder shafts against surfaces, solids and
+   filled planes. XF does not say which a face group's face or a mesh triangle is: either may be a
+   shaft or an arrow's tip as well as a surface.
 
 **`label_interim@1`.** At a sample covered by a fragment `L` of a camera-facing label and a fragment
-`G` of another leaf, the oracle forms `P`, the orders admissible under the plate model (§7), and `W`,
-the orders the whole-label rule gives under every reading of the open cases:
+`G` of another leaf, the oracle forms two sets:
 
-- `G` of another camera-facing label: paint order;
-- `G` a stroke or background stroke, or a point block: `L` in front;
-- `G` a fill (a path's fill, a face, a mesh triangle): `L` in front where `G` is read as no surface
-  (case 3); read as a surface, `G` in front where it is nearer than `L`'s centre key, compared at the
-  sample and at the centre's point (case 1, where `G`'s key there is defined), and `L` in front where
-  it is not; read as translucent (`G`'s alpha below 255) both counting and not (case 2).
+- `P`, the orders admissible under the plate model (§7);
+- `W`, the orders the whole-label rule gives under every reading of the open cases.
 
-Where `P` and `W` are each one order and the same order, the pair's relation stands as §7 gives it.
-Otherwise both orders are admissible at that sample and the sample counts `label_rule_open`. The
-rule ends when the open cases are settled and the whole-label rule is drawn; its replacement is a new
-version.
+`W` is formed as follows:
+
+- **`G` of another camera-facing label:** paint order.
+- **`G` a stroke or background stroke, or a point block:** `L` in front.
+- **`G` the fill of a path that is not a face of a face group** (a filled plane or polygon, always a
+  surface):
+  - `G` in front where it is nearer than `L`'s centre key, compared both at the sample and at the
+    centre's screen point (where `G`'s key is defined there). Where the two comparisons differ,
+    both orders (case 1).
+  - `L` in front where it is not nearer.
+  - Where `G`'s alpha byte is below 255, both orders (case 2).
+- **`G` a face of a face group, or a mesh triangle:** as the previous case, and also `L` in front
+  (case 3, read as no surface).
+
+Then:
+
+- Where `P` and `W` are each one order, and the same order, the pair's relation stands as §7 gives
+  it.
+- Otherwise both orders are admissible at that sample, and the sample counts `label_rule_open`.
+
+The rule ends when the open cases are settled and the whole-label rule is drawn. Its replacement is
+a new version.
+
+**Rejects:** a camera-facing label drawn over an opaque filled polygon (not a face of a face group)
+that is nearer than the label at the sample and at the label's centre.
 
 ## 11. What the oracle refuses
 
-**Core rule** (`stream::refusal`, `stream::field_refusal`; Python `render.unsupported`). The core
-refuses a frame whole, drawing nothing, when an entry of the order it draws (overlay entries excluded,
-§1) holds: a feature bit outside `KNOWN_FEATURES` (bits 0 and 1); an unknown record kind; a reserved
-kind (volume 64, field 65, emission 66); an `image` record; a clip; a blend, reveal or paint blend on
-any kind but a path, or on a pre-projected path; a paint blend of row counts numpy does not
-broadcast (`geometry::drawn_paint`); a mesh (or mesh instance) with a stroke, a gradient
-fill or a dash; a shaded path under a light model other than CE's; a gradient paint without ends on an
-unshaded path, or on an instances record; a dash whose period is not finite and above 0, whose duty
-is not in `(0, 1]` or whose phase is not finite; a path blend of shapes of different lengths; a face
-group whose points do not divide into its faces; an instances record of more than `2^32` parts; a
-points record of more than `2^32` block writes, or a pre-projected one placing other than one point
-per colour. It also refuses a view whose light model is unknown. A record outside the order is not
-drawn and not refused. Tests: `tests/mesh.rs::a_mesh_carrying_what_this_build_does_not_draw_is_refused_whole`,
-`tests/path.rs::what_paths_and_points_do_not_draw_yet_is_refused_whole`.
+**Core rule.** The core refuses a frame whole, drawing nothing, when an entry of the order it draws
+(overlay entries excluded, §1) holds any of these:
+
+- **Unknown or reserved input:**
+  - a feature bit outside bits 0 and 1;
+  - an unknown record kind;
+  - a reserved kind (volume 64, field 65, emission 66);
+  - an `image` record.
+- **Unsupported geometry:**
+  - a clip;
+  - a blend, reveal or paint blend on any kind but a path, or on a pre-projected path;
+  - a paint blend whose row counts numpy does not broadcast;
+  - a mesh (or mesh instance) with a stroke, a gradient fill or a dash;
+  - a path blend of shapes of different lengths;
+  - a face group whose points do not divide into its faces.
+- **Unsupported paint:**
+  - a shaded path under a light model other than CE's;
+  - a gradient paint without ends on an unshaded path, or on an instances record;
+  - a dash whose period is not finite and above 0, whose duty is not in `(0, 1]`, or whose phase is
+    not finite.
+- **Too large:**
+  - an instances record of more than `2^32` parts;
+  - a points record of more than `2^32` block writes;
+  - a pre-projected points record that places other than one point per colour.
+
+It also refuses a view whose light model is unknown. A record outside the order is neither drawn nor
+refused.
+
+[Rests on: `stream::refusal`, `stream::field_refusal`, Python `render.unsupported`;
+`tests/mesh.rs::a_mesh_carrying_what_this_build_does_not_draw_is_refused_whole`,
+`tests/path.rs::what_paths_and_points_do_not_draw_yet_is_refused_whole`.]
 
 **Oracle reading.** The oracle answers `truth_unable` for the whole frame, never drawing it partly,
-when the frame's order (overlay entries excluded) holds a reserved kind (volume, field, emission), a
-kind or a feature bit it does not know, or the view names a light model it does not know (it knows
-CE's, code 0, and soft diffuse, code 1); and wherever the core refuses the frame (there is nothing to
-judge). It reads deltas of XF major 1 up to minor 4 and refuses a delta of a newer minor, whose
-skipped fields it cannot know the meaning of. Each refusal names the slot, the object and the kind or
-bit.
+in these cases (overlay entries excluded):
+
+- the frame's order holds a reserved kind (volume, field, emission), or a kind or feature bit it
+  does not know;
+- the view names a light model it does not know (it knows CE's, code 0, and soft diffuse, code 1);
+- the core refuses the frame (there is nothing to judge);
+- the stream is a delta of a newer XF minor version than 4. It reads deltas of XF major 1 up to
+  minor 4, and cannot know the meaning of a newer minor's skipped fields.
+
+Each refusal names the slot, the object, and the kind or bit.
+
+## 12. Cases the contract must reject
+
+### Injected defects
+
+Each entry is an injected defect that the oracle must report as `mismatch` at the samples it changes,
+never as a tie and never `Either`. Defect 13 is the exception, reported as `report_inconsistent`.
+Each is named beside the set it bounds, and each is committed as a mutation test.
+
+| # | Injected defect | Set it bounds |
+|---|---|---|
+| 1 | Two overlapping 2D layers (keys `−∞`), paint order reversed | `ExactTie` (§7) |
+| 2 | Two glyph fills on one axis plane, inside both outlines, paint order reversed | `ExactTie` (§7) |
+| 3 | A stroke 0.3 px wide or less, dropped where it covers a cell by at least `1/510 + μ` | presence band `μ` (§4) |
+| 4 | A mesh face's plane shifted by more than its interval against a crossing surface it shares no plane with | intervals `S` and `R` (§6) |
+| 5 | A camera-facing label drawn over an opaque filled polygon nearer than it at the sample and at its centre | `label_interim@1` (§10) |
+| 6 | A fill whose alpha rounds to zero, counted as present | `alpha_round@1` (§1) |
+| 7 | A mesh triangle missing at a sample farther than `ε` inside it | mesh `Either` zone (§3) |
+| 8 | A cell byte outside its admitted interval | presence band `μ` (§4) |
+| 9 | A line moved through a surface by more than its curve interval | curve `S` (§6) |
+| 10 | A line crossing a surface beyond the width test, drawn over it where behind | may-share set (§7) |
+| 11 | Two faces at a dihedral well past `θ_A + θ_B`, reversed beyond their intervals | `near_parallel@1` margin (§7) |
+| 12 | Two crossing lines whose depths part by more than `O⁺`, reversed | `lines@1` bound `O⁺` (§7) |
+| 13 | A recorded resolve class the rule does not give from the recorded votes (`report_inconsistent`) | resolve inputs (§9) |
+| 14 | A gradient pixel two or more levels from its parameter's colour | gradient ±1 (§9) |
+| 15 | A stroke drawn under its own fill | `own_layers@1` (§7) |
+| 16 | An order breaking a strong edge where a weak edge could yield | completions (§7) |
+
+### Classes outside what the oracle promises
+
+These are reported by class for a human to view, never counted as ties:
+
+- **One plane, no plane of its own.** Orders between a record with no plane of its own and a record
+  it may share a registered plane with. The oracle admits every order (`Policy(one_plane@1)`),
+  because the partition fixes those rows.
+- **Unbounded bands.** Samples whose band is unbounded (`band_unbounded`, §6). They are
+  `truth_unable` per sample.
+- **Open label cases.** Samples counted `label_rule_open` (§10).
+- **Gradients.** Gradient bytes within one level of the oracle's colour.
+
+The share of samples in each tie label and each class above is reported per case, so the cost of
+conservatism is measured on real scenes.
