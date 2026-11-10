@@ -5,7 +5,7 @@ mod common;
 
 use arachne_core::xf::{
     Background, Body, Delta, ImageSource, Key, Layer as XfLayer, LightModel, OrderEntry, Record,
-    RecordKind, Shape, ShapeData, Space, XF_VERSION,
+    RecordKind, Shape, ShapeData, Space, Stops, XF_VERSION, wire,
 };
 use arachne_oracle::out::{STATUS_DECIDED, STATUS_UNABLE};
 use arachne_oracle::stream::{KNOWN_XF, Reason, State};
@@ -378,4 +378,111 @@ fn a_background_image_smaller_than_the_frame_refuses_the_frame_and_draws_nothing
             assert!(!d.fragments.is_empty());
         }
     }
+}
+
+#[test]
+fn a_delta_releasing_a_key_the_stream_does_not_hold_refuses_the_delta_whole() {
+    let (s, r) = square(0);
+    let good = delta(1, Some(view(16, 16)), vec![s], vec![r]);
+    let mut bad = delta(2, None, vec![], vec![]);
+    bad.release = vec![Key([5; 16])];
+    bad.order = Some(vec![entry(0)]);
+    assert_refused_whole(good, bad);
+}
+
+#[test]
+fn a_delta_removing_a_slot_the_stream_does_not_hold_refuses_the_delta_whole() {
+    let (s, r) = square(0);
+    let good = delta(1, Some(view(16, 16)), vec![s], vec![r]);
+    let mut bad = delta(2, None, vec![], vec![]);
+    bad.remove = vec![9];
+    bad.order = Some(vec![entry(0)]);
+    assert_refused_whole(good, bad);
+}
+
+#[test]
+fn a_key_the_delta_uploads_may_be_released_and_a_slot_it_sets_removed() {
+    let (s, r) = square(0);
+    let mut state = State::new();
+    state
+        .apply(&delta(1, Some(view(16, 16)), vec![s.clone()], vec![r]))
+        .unwrap();
+    let extra = image(2, 2, 0);
+    let mut d = delta(
+        2,
+        None,
+        vec![extra.clone()],
+        vec![path(5, s.key(), true, None)],
+    );
+    d.remove = vec![5];
+    d.release = vec![extra.key()];
+    d.order = Some(vec![entry(0)]);
+    assert!(state.apply(&d).is_ok());
+    assert!(!state.records.contains_key(&5) && !state.shapes.contains_key(&extra.key()));
+}
+
+#[test]
+fn a_delta_faulty_twice_reports_the_fault_xf_checks_first() {
+    // A release of a key neither held nor uploaded (apply's check 6) and an order naming a slot
+    // the stream lacks (check 12): the refusal is the release.
+    let (s, r) = square(0);
+    let good = delta(1, Some(view(16, 16)), vec![s], vec![r]);
+    let mut bad = delta(2, None, vec![], vec![]);
+    bad.release = vec![Key([5; 16])];
+    bad.order = Some(vec![entry(0), entry(7)]);
+    let d = arachne_oracle::decide::decide_at(&[good, bad], 2, None).unwrap();
+    assert_eq!(d.refused[0].reason, Reason::InvalidDelta.code());
+    assert!(
+        d.refused[0].detail.contains("releases"),
+        "{}",
+        d.refused[0].detail
+    );
+}
+
+/// A shape under `key` though its content is other: one of a code the reader does not know, whose
+/// key it keeps unchecked (XF.md, Decode), read off the wire with `key` written in for its own.
+fn forged(key: Key) -> Shape {
+    let own = Shape::new(ShapeData::Reserved {
+        code: 200,
+        payload: vec![1, 2, 3],
+    });
+    let mut bytes = wire::encode_delta(&delta(1, None, vec![own.clone()], vec![]));
+    let at = bytes
+        .windows(17)
+        .position(|w| w[0] == 200 && w[1..] == own.key().0)
+        .unwrap();
+    bytes[at + 1..at + 17].copy_from_slice(&key.0);
+    let shape = wire::decode_delta(&bytes).unwrap().upload.remove(0);
+    assert_eq!(shape.key(), key);
+    shape
+}
+
+#[test]
+fn a_shape_uploaded_under_a_key_the_stream_holds_as_a_paint_table_refuses_the_delta_whole() {
+    let (s, r) = square(0);
+    let table = Stops::new(vec![[1.0, 0.0, 0.0, 1.0]]);
+    let mut good = delta(1, Some(view(16, 16)), vec![s], vec![r]);
+    good.upload_paints = vec![table.clone()];
+    let mut bad = delta(2, None, vec![forged(table.key())], vec![]);
+    bad.order = Some(vec![entry(0)]);
+    assert_refused_whole(good, bad);
+}
+
+#[test]
+fn a_shape_uploaded_under_a_key_the_stream_holds_with_other_content_refuses_the_delta_whole() {
+    let (s, r) = square(0);
+    let mut bad = delta(2, None, vec![forged(s.key())], vec![]);
+    bad.order = Some(vec![entry(0)]);
+    assert_refused_whole(delta(1, Some(view(16, 16)), vec![s], vec![r]), bad);
+}
+
+#[test]
+fn a_paint_table_uploaded_under_a_key_the_stream_holds_as_a_shape_refuses_the_delta_whole() {
+    let (s, r) = square(0);
+    let table = Stops::new(vec![[1.0, 0.0, 0.0, 1.0]]);
+    let good = delta(1, Some(view(16, 16)), vec![s, forged(table.key())], vec![r]);
+    let mut bad = delta(2, None, vec![], vec![]);
+    bad.upload_paints = vec![table];
+    bad.order = Some(vec![entry(0)]);
+    assert_refused_whole(good, bad);
 }

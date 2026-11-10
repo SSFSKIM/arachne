@@ -219,17 +219,23 @@ impl State {
         Ok(())
     }
 
-    /// `d` checked whole against what it would leave: every reference held, nothing in use
-    /// released, every order entry naming a part that exists, and each record's own lists
-    /// consistent.
+    /// `d` checked whole against the stream and what it would leave, in the order `XF.md` gives
+    /// apply's checks ("Where each check is made", Apply), so that a delta faulty twice reports the
+    /// first: the major; a key uploaded twice; each uploaded shape, then paint table; a release of
+    /// a key neither held nor uploaded; a removal of a slot neither held nor set; a release of a key
+    /// still in use; the orders of the displays left, when records are set or removed; each record
+    /// set; the delta's view; the order. (The reader's checks come first and are the wire reader's;
+    /// the source rows are XF 1.5's, which the oracle does not read.)
     fn check(&self, d: &Delta) -> Result<(), Refusal> {
         let bad = |what: String| Err(Refusal::new(Reason::InvalidDelta, what));
+        // 1. The major.
         if d.version.0 != KNOWN_XF.0 {
             return bad(format!(
                 "XF major {} is not one the oracle reads",
                 d.version.0
             ));
         }
+        // 3. A key uploaded twice in the delta, as two shapes, two tables or one of each.
         let mut uploaded = HashSet::new();
         for k in d
             .upload
@@ -241,20 +247,9 @@ impl State {
                 return bad(format!("key {} uploaded twice in one delta", k.hex()));
             }
         }
+        // 4. Each uploaded shape: its own lists, and its key against what the stream holds.
         for s in &d.upload {
-            if let ShapeData::Image {
-                width,
-                height,
-                rgba,
-            } = s.data()
-                && rgba.len() as u128 != *width as u128 * *height as u128 * 4
-            {
-                return bad(format!(
-                    "image {} holds {} bytes, not {width} x {height} x 4",
-                    s.key().hex(),
-                    rgba.len()
-                ));
-            }
+            let k = s.key();
             if let ShapeData::Mesh {
                 positions,
                 triangles,
@@ -266,23 +261,106 @@ impl State {
                     .flatten()
                     .any(|&v| v as usize >= positions.len())
                 {
-                    return bad(format!("mesh {} names a vertex it lacks", s.key().hex()));
+                    return bad(format!("mesh {} names a vertex it lacks", k.hex()));
                 }
                 if normals.as_ref().is_some_and(|n| n.len() != positions.len()) {
-                    return bad(format!(
-                        "mesh {} has normals not one per vertex",
-                        s.key().hex()
-                    ));
+                    return bad(format!("mesh {} has normals not one per vertex", k.hex()));
                 }
             }
+            if let ShapeData::Image {
+                width,
+                height,
+                rgba,
+            } = s.data()
+                && rgba.len() as u128 != *width as u128 * *height as u128 * 4
+            {
+                return bad(format!(
+                    "image {} holds {} bytes, not {width} x {height} x 4",
+                    k.hex(),
+                    rgba.len()
+                ));
+            }
+            if self.paints.contains_key(&k) {
+                return bad(format!(
+                    "shape {} uploaded under a key the stream holds as a paint table",
+                    k.hex()
+                ));
+            }
+            if self.shapes.get(&k).is_some_and(|held| held != s) {
+                return bad(format!(
+                    "shape {} uploaded under a key the stream holds with other content",
+                    k.hex()
+                ));
+            }
         }
-        if let Some(LightModel::SoftDiffuse { ambient, wrap }) = d.view.as_ref().map(|v| &v.light)
-            && !((0.0..=1.0).contains(ambient) && *wrap >= 0.0)
-        {
-            return bad("soft diffuse light parameters out of range".into());
+        // 5. Each uploaded paint table: its key against the stream's shapes.
+        for t in &d.upload_paints {
+            if self.shapes.contains_key(&t.key()) {
+                return bad(format!(
+                    "paint table {} uploaded under a key the stream holds as a shape",
+                    t.key().hex()
+                ));
+            }
+        }
+        // 6. A release of a key the stream does not hold and the delta does not upload.
+        for k in &d.release {
+            if !(self.shapes.contains_key(k) || self.paints.contains_key(k) || uploaded.contains(k))
+            {
+                return bad(format!(
+                    "the delta releases {}, which is neither held nor uploaded",
+                    k.hex()
+                ));
+            }
+        }
+        // 7. A removal of a slot the stream does not hold and the delta does not set.
+        for slot in &d.remove {
+            if !(self.records.contains_key(slot) || d.set.iter().any(|r| r.slot == *slot)) {
+                return bad(format!(
+                    "the delta removes slot {slot}, which is neither held nor set"
+                ));
+            }
         }
         let released: HashSet<Key> = d.release.iter().copied().collect();
         let removed: HashSet<u32> = d.remove.iter().copied().collect();
+        // The records the delta leaves: the last set in each slot, unless removed.
+        let mut records: BTreeMap<u32, &Record> = self
+            .records
+            .iter()
+            .filter(|(slot, _)| !removed.contains(slot))
+            .map(|(slot, r)| (*slot, r))
+            .collect();
+        for r in &d.set {
+            if !removed.contains(&r.slot) {
+                records.insert(r.slot, r);
+            }
+        }
+        let view = d.view.as_ref().or(self.view.as_ref());
+        // 8. A release of a key a record the delta leaves, or a view, still uses.
+        let background = |v: &View| match &v.background {
+            Background::Image(k) => Some(*k),
+            Background::Color(_) => None,
+        };
+        for k in &d.release {
+            let user = records.values().find(|r| {
+                r.shape_keys().contains(k)
+                    || r.paint_keys().contains(k)
+                    || matches!(&r.body, Body::Image(ImageSource::SubFrame { view, .. })
+                        if background(view) == Some(*k))
+            });
+            if let Some(r) = user {
+                return bad(format!(
+                    "the delta releases {}, which slot {} uses",
+                    k.hex(),
+                    r.slot
+                ));
+            }
+            if view.and_then(background) == Some(*k) {
+                return bad(format!(
+                    "the delta releases {}, the view's background image",
+                    k.hex()
+                ));
+            }
+        }
         let shape = |k: &Key| -> Option<&Shape> {
             if released.contains(k) {
                 return None;
@@ -296,19 +374,39 @@ impl State {
             !released.contains(k)
                 && (d.upload_paints.iter().any(|t| t.key() == *k) || self.paints.contains_key(k))
         };
-        // The records the delta leaves: the last set in each slot, unless removed.
-        let mut records: BTreeMap<u32, &Record> = self
-            .records
-            .iter()
-            .filter(|(slot, _)| !removed.contains(slot))
-            .map(|(slot, r)| (*slot, r))
-            .collect();
-        for r in &d.set {
-            if !removed.contains(&r.slot) {
-                records.insert(r.slot, r);
+        let view_problem = |name: &str, v: &View| -> Option<String> {
+            let Background::Image(k) = &v.background else {
+                return None;
+            };
+            match shape(k).map(Shape::data) {
+                Some(ShapeData::Image { .. }) => None,
+                Some(_) => Some(format!(
+                    "{name} names {} as its background image, not an image shape",
+                    k.hex()
+                )),
+                None => Some(format!(
+                    "{name} names background image {} it lacks",
+                    k.hex()
+                )),
+            }
+        };
+        // 9. When the delta sets or removes a record, the order of every display it leaves.
+        if !(d.set.is_empty() && d.remove.is_empty()) {
+            for r in records.values() {
+                if let Body::Image(ImageSource::SubFrame { order, .. }) = &r.body
+                    && let Some(what) = order_problem(order, &records)
+                {
+                    return bad(format!("slot {}'s display's order: {what}", r.slot));
+                }
             }
         }
-        for r in records.values() {
+        // 10. Each record the delta sets and leaves: what it names, its display's view and order,
+        // its own lists.
+        for r in d
+            .set
+            .iter()
+            .filter(|r| records.get(&r.slot).is_some_and(|l| std::ptr::eq(*l, *r)))
+        {
             for k in r.shape_keys() {
                 if shape(&k).is_none() {
                     return bad(format!("slot {} names shape {} it lacks", r.slot, k.hex()));
@@ -323,43 +421,33 @@ impl State {
                     ));
                 }
             }
+            if let Body::Image(ImageSource::SubFrame { view, order, .. }) = &r.body {
+                let name = format!("slot {}'s display", r.slot);
+                if let Some(what) = view_problem(&name, view) {
+                    return bad(what);
+                }
+                if let Some(what) = order_problem(order, &records) {
+                    return bad(format!("{name}'s order: {what}"));
+                }
+            }
             if let Some(what) = record_lists(r, &shape) {
                 return bad(format!("slot {}: {what}", r.slot));
             }
         }
-        // Every view the delta leaves, with the order drawn into it: the stream's, and each
-        // display's own.
-        let mut views: Vec<(String, Option<&View>, &[OrderEntry])> = vec![(
-            "the view".into(),
-            d.view.as_ref().or(self.view.as_ref()),
-            d.order.as_ref().unwrap_or(&self.order),
-        )];
-        for r in records.values() {
-            if let Body::Image(ImageSource::SubFrame { view, order, .. }) = &r.body {
-                views.push((format!("slot {}'s display", r.slot), Some(view), order));
+        // 11. The delta's view.
+        if let Some(v) = &d.view {
+            if let LightModel::SoftDiffuse { ambient, wrap } = &v.light
+                && !((0.0..=1.0).contains(ambient) && *wrap >= 0.0)
+            {
+                return bad("soft diffuse light parameters out of range".into());
+            }
+            if let Some(what) = view_problem("the view", v) {
+                return bad(what);
             }
         }
-        for (name, view, order) in views {
-            if let Some(Background::Image(k)) = view.map(|v| &v.background) {
-                match shape(k).map(Shape::data) {
-                    Some(ShapeData::Image { .. }) => {}
-                    Some(_) => {
-                        return bad(format!(
-                            "{name} names {} as its background image, not an image shape",
-                            k.hex()
-                        ));
-                    }
-                    None => {
-                        return bad(format!(
-                            "{name} names background image {} it lacks",
-                            k.hex()
-                        ));
-                    }
-                }
-            }
-            if let Some(what) = order_problem(order, &records) {
-                return bad(format!("{name}'s order: {what}"));
-            }
+        // 12. The order, the delta's or the stream's.
+        if let Some(what) = order_problem(d.order.as_ref().unwrap_or(&self.order), &records) {
+            return bad(format!("the view's order: {what}"));
         }
         Ok(())
     }
