@@ -48,7 +48,7 @@
 
 use crate::composite::{
     Coverage, FlatRecord, Fragment, OpaquePass, Plane, Producer, Rect, SAMPLES, TransparentPass,
-    premultiply, sample_cell, sample_point,
+    clear, premultiply, sample_cell, sample_point,
 };
 use crate::depth::{Boundary, Centreline, Flat, Planarity, Registry, WorldPlane};
 use crate::gradient::{self, Linear};
@@ -242,6 +242,19 @@ enum PaintSpec {
     Solid([u8; 4]),
     /// Stops (straight RGBA, group opacity applied) between two ends in the frame's units.
     Gradient(Vec<[f64; 4]>, [f64; 2], [f64; 2]),
+}
+
+impl PaintSpec {
+    /// Whether Cairo paints nothing of it ([`clear`]): a solid colour's, or the one colour a
+    /// gradient collapses to ([`gradient::collapsed`]: clear, or meeting ends' average).
+    fn clear(&self) -> bool {
+        match self {
+            PaintSpec::Solid(colour) => clear(*colour),
+            PaintSpec::Gradient(stops, p1, p2) => {
+                gradient::collapsed(*p1, *p2, stops).is_some_and(clear)
+            }
+        }
+    }
 }
 
 /// Cairo's run length for a gradient source (`inplace_renderer_init`): a run of full coverage at
@@ -1334,7 +1347,9 @@ impl<'v> Lowering<'v> {
     }
 
     /// Where each of `draws` (in draw order) is keyed ([`Keyed`]): `None` for a path read by its
-    /// curve's depth that the registry was not offered.
+    /// curve's depth that the registry was not offered, and for one Cairo paints nothing of
+    /// ([`Lowering::paints`]), which is not offered: the identities are a function of the set
+    /// offered, which what draws nothing must not move.
     ///
     /// Every path in the world is offered to the frame's [`Registry`], with its meshes' triangles,
     /// then the registry settles and each takes its identities, whatever the draw order: a flat
@@ -1354,6 +1369,9 @@ impl<'v> Lowering<'v> {
         let mut found = vec![None; draws.len()];
         let mut offered = Vec::new();
         for (i, draw) in draws.iter().enumerate() {
+            if !self.paints(draw) {
+                continue;
+            }
             let Some((points, in_world)) = self.depth_points(draw) else {
                 continue;
             };
@@ -1439,14 +1457,14 @@ impl<'v> Lowering<'v> {
 
     /// What each layer of `draw` (background stroke, fill, stroke) paints, as [`Lowering::path`]
     /// draws it: its paint and its width in CE's units, `None` for a layer it draws nothing of (no
-    /// paint, a gradient without ends, a solid paint of no alpha, a stroke of no width); and
-    /// whether the fill has paint at all. `shown` is `world` as `placement` shows it. CE's
-    /// lighting (`ThreeDCamera.modified_rgbas`): a shaded path's paint becomes two stops, lit at
-    /// its start and end corners. Its gradient runs, as any path's does, between the ends the
-    /// mobject gives (`get_gradient_start_and_end_points`, the record's): for a shaded path its
-    /// corners, unless it gives others, as `ThreeDAxes` gives every piece of an axis the axis's own
-    /// ends. A shaded path with no ends recorded (a face of a surface, an instance) runs between
-    /// its corners.
+    /// paint, a gradient without ends, a paint Cairo paints nothing of ([`PaintSpec::clear`]), a
+    /// stroke of no width); and whether the fill has paint at all. `shown` is `world` as
+    /// `placement` shows it. CE's lighting (`ThreeDCamera.modified_rgbas`): a shaded path's paint
+    /// becomes two stops, lit at its start and end corners. Its gradient runs, as any path's does,
+    /// between the ends the mobject gives (`get_gradient_start_and_end_points`, the record's): for
+    /// a shaded path its corners, unless it gives others, as `ThreeDAxes` gives every piece of an
+    /// axis the axis's own ends. A shaded path with no ends recorded (a face of a surface, an
+    /// instance) runs between its corners.
     fn layers(
         &self,
         draw: &PathDraw<'_>,
@@ -1478,9 +1496,7 @@ impl<'v> Lowering<'v> {
                 // Rows without ends are refused before drawing.
                 _ => return None,
             };
-            if let PaintSpec::Solid(colour) = spec
-                && colour[3] == 0
-            {
+            if spec.clear() {
                 return None;
             }
             let w = width * multiple;
@@ -1513,6 +1529,18 @@ impl<'v> Lowering<'v> {
         }
         let ([background, _, stroke], _) = self.layers(draw, &world, &shown, placement);
         background.is_some() || stroke.is_some()
+    }
+
+    /// Whether [`Lowering::path`] draws a layer of `draw` ([`Lowering::layers`]): whether Cairo
+    /// paints anything of it. Nothing is drawn.
+    fn paints(&self, draw: &PathDraw<'_>) -> bool {
+        let Some(world) = drawn_world(draw) else {
+            return false;
+        };
+        let placement = self.placed(draw).0;
+        let shown = pre_display(&world, self.projection.as_ref(), placement);
+        let (layers, _) = self.layers(draw, &world, &shown, placement);
+        layers.iter().any(Option::is_some)
     }
 
     pub fn path(&mut self, draw: &PathDraw<'_>, plane: Option<Keyed>) {
@@ -2032,8 +2060,8 @@ impl<'v> Lowering<'v> {
                     x0: m.x0,
                     y0: m.y0,
                 };
+                // Never clear: [`Lowering::layers`] drops a clear one ([`PaintSpec::clear`]).
                 match gradient::source(&ctm, p1, p2, &stops, extents) {
-                    gradient::Source::Solid(colour) if colour[3] == 0 => return,
                     gradient::Source::Solid(colour) => solid(colour),
                     gradient::Source::Linear(g) => {
                         let opaque = g.opaque;
