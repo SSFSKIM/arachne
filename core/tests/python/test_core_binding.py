@@ -66,7 +66,7 @@ def test_a_record_s_source_and_facing_group_are_xf_1_5_and_read_back():
 
 def test_a_source_path_names_at_least_one_object_and_tokens_are_u32():
     delta = ac.FrameDelta()
-    with pytest.raises(ac.XfError):
+    with pytest.raises(ac.XfError, match="path_empty"):
         delta.set_record("path", slot=1, object=1, source=((),))
     with pytest.raises((TypeError, OverflowError)):
         delta.set_record("path", slot=1, object=1, source=(((-1, "a.B"),),))
@@ -84,9 +84,9 @@ def test_a_held_record_s_new_source_is_a_row_of_its_own_and_read_back():
     back = ac.FrameDelta.from_bytes(delta.to_bytes())
     assert back.contents()["source"] == [(4, GLYPH_SOURCE, 3), (5, (), 9)]
     assert back.contents()["set"] == []
-    with pytest.raises(ac.XfError):
+    with pytest.raises(ac.XfError, match="path_empty"):
         delta.set_source(6, source=((),))
-    with pytest.raises(ac.XfError):
+    with pytest.raises(ac.XfError, match="row_empty"):
         delta.set_source(6)
     assert len(delta.contents()["source"]) == 2
 

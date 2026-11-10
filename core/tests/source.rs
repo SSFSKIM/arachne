@@ -441,50 +441,161 @@ fn a_row_gives_a_held_record_its_new_source_and_nothing_else() {
 }
 
 #[test]
-fn apply_refuses_a_row_for_a_slot_not_held_or_one_the_delta_sets() {
-    // Refused, changing nothing: a row for a slot the stream does not hold, for one the delta sets
-    // or removes, with a path of no objects, or a second row for one slot.
-    let (mut s, shape, sourced) = holding_a_sourced_square();
+fn apply_refuses_a_held_row_by_its_code() {
+    // Refused, changing nothing: a held row for a slot the stream does not hold, a second row for a
+    // slot, a row for a slot the delta removes, a row carrying nothing, a path of no objects.
+    let (mut s, _, sourced) = holding_a_sourced_square();
     let refused = [
+        ("slot_not_held", vec![held_row(5, 0, glyph(5).source)], vec![]),
         (
-            "not held",
-            vec![held_row(5, 0, glyph(5).source)],
-            vec![],
-            vec![],
-        ),
-        (
-            "set",
-            vec![held_row(1, 0, glyph(1).source)],
-            vec![square_at(1, &shape)],
-            vec![],
-        ),
-        (
-            "removed",
-            vec![held_row(1, 0, glyph(1).source)],
-            vec![],
-            vec![1],
-        ),
-        (
-            "no objects",
-            vec![held_row(1, 0, vec![Vec::new()])],
-            vec![],
-            vec![],
-        ),
-        (
-            "twice",
+            "slot_named_twice",
             vec![held_row(1, 0, glyph(1).source), held_row(1, 2, Vec::new())],
             vec![],
-            vec![],
         ),
+        ("slot_removed", vec![held_row(1, 0, glyph(1).source)], vec![1]),
+        ("row_empty", vec![held_row(1, 0, Vec::new())], vec![]),
+        ("path_empty", vec![held_row(1, 0, vec![Vec::new()])], vec![]),
+        // The first in the stated order: a row carrying nothing, for a slot not held.
+        ("row_empty", vec![held_row(5, 0, Vec::new())], vec![]),
     ];
-    for (why, rows, set, remove) in refused {
+    for (code, rows, remove) in refused {
         let mut d = Delta::new(Time { num: 2, den: 15 }, 2);
         d.source = rows;
-        d.set = set;
         d.remove = remove;
-        assert!(s.apply(&d).is_err(), "{why}");
-        assert_eq!(s.record(1), Some(&sourced), "{why}");
+        let why = s.apply(&d).unwrap_err().to_string();
+        assert!(why.contains(code), "{code}: {why}");
+        assert_eq!(s.record(1), Some(&sourced), "{code}");
     }
+}
+
+#[test]
+fn a_row_for_a_slot_the_delta_sets_is_that_records_metadata() {
+    // Not a refusal: the row is the set record's own source and facing group, for a slot held before
+    // the delta or not, and it is written as that record's row.
+    let (mut s, shape, _) = holding_a_sourced_square();
+    let mut d = Delta::new(Time { num: 1, den: 15 }, 1);
+    d.set = vec![square_at(1, &shape), square_at(6, &shape)];
+    d.source = vec![
+        held_row(1, 4, vec![vec![node(8, "a.Other")]]),
+        held_row(6, 2, Vec::new()),
+    ];
+    s.apply(&d).unwrap();
+    let one = s.record(1).unwrap();
+    assert_eq!(one.source, vec![vec![node(8, "a.Other")]]);
+    assert_eq!(one.facing_group, 4);
+    assert_eq!(s.record(6).unwrap().facing_group, 2);
+    let read = wire::decode_delta(&wire::encode_delta(&d)).unwrap();
+    assert!(read.source.is_empty());
+    assert_eq!(read.set[0].source, vec![vec![node(8, "a.Other")]]);
+    assert_eq!(read.set[0].facing_group, 4);
+    assert_eq!(read.set[1].facing_group, 2);
+}
+
+#[test]
+fn a_held_row_replaces_both_fields_and_one_it_does_not_carry_becomes_none() {
+    let (mut s, _, sourced) = holding_a_sourced_square();
+    let through_the_wire = |d: &Delta| wire::decode_delta(&wire::encode_delta(d)).unwrap();
+    // Paths and a facing group of 0: the record's facing group is cleared.
+    let mut d = Delta::new(Time { num: 1, den: 15 }, 1);
+    d.source = vec![held_row(1, 0, vec![vec![node(8, "a.Other")]])];
+    s.apply(&through_the_wire(&d)).unwrap();
+    let held = s.record(1).unwrap();
+    assert_eq!(held.source, vec![vec![node(8, "a.Other")]]);
+    assert_eq!(held.facing_group, 0);
+    // A facing group and no paths: its source is cleared.
+    let mut d = Delta::new(Time { num: 2, den: 15 }, 2);
+    d.source = vec![held_row(1, 6, Vec::new())];
+    s.apply(&through_the_wire(&d)).unwrap();
+    let held = s.record(1).unwrap();
+    assert!(held.source.is_empty());
+    assert_eq!(held.facing_group, 6);
+    // Its drawing is as it was.
+    let mut drawn = sourced;
+    drawn.source = Vec::new();
+    drawn.facing_group = 6;
+    assert_eq!(s.record(1), Some(&drawn));
+}
+
+/// A row's bytes: its slot, its facing group, then each path's (token, class index) nodes.
+fn row_bytes(slot: u32, facing_group: u32, paths: &[&[(u32, u32)]]) -> Vec<u8> {
+    let mut b = [u32(slot), u32(facing_group), u32(paths.len() as u32)].concat();
+    for path in paths {
+        b.extend(u32(path.len() as u32));
+        for (token, class) in path.iter() {
+            b.extend(u32(*token));
+            b.extend(u32(*class));
+        }
+    }
+    b
+}
+
+/// A section's bytes: its class names, then its rows.
+fn section_bytes(classes: &[&str], rows: &[Vec<u8>]) -> Vec<u8> {
+    let mut b = u32(classes.len() as u32);
+    classes.iter().for_each(|c| b.extend(string(c)));
+    b.extend(u32(rows.len() as u32));
+    rows.iter().for_each(|r| b.extend(r));
+    b
+}
+
+/// The reader's refusal of a delta setting slot 1 and removing slot 2, with this section: it
+/// reports `code`, not `later`.
+fn refused_with(code: &str, later: &str, classes: &[&str], rows: &[Vec<u8>]) {
+    let bytes = with_section(&[1], &[2], &section_bytes(classes, rows));
+    match wire::decode_delta(&bytes) {
+        Err(XfError::Invalid(why)) => {
+            assert!(why.contains(code) && !why.contains(later), "{code}: {why}")
+        }
+        other => panic!("{code}: not refused as invalid: {other:?}"),
+    }
+}
+
+#[test]
+fn the_reader_reports_the_first_refusal_in_order() {
+    let one = &["a.B"];
+    let held = || row_bytes(3, 0, &[&[(7, 0)]]);
+    let removed = || row_bytes(2, 0, &[&[(7, 0)]]);
+    refused_with("class_named_twice", "slot_named_twice", &["a.B", "a.B"], &[held(), held()]);
+    // A slot named twice and a removed slot are never one row's: the first row that offends.
+    refused_with("slot_named_twice", "slot_removed", one, &[held(), held(), removed()]);
+    refused_with("slot_removed", "slot_named_twice", one, &[removed(), held(), held()]);
+    refused_with("slot_removed", "row_empty", one, &[row_bytes(2, 0, &[])]);
+    refused_with("slot_removed", "class_out_of_range", one, &[row_bytes(2, 0, &[&[(7, 9)]])]);
+    // A row carrying nothing has no path to be empty: the first row that offends.
+    refused_with("row_empty", "path_empty", one, &[row_bytes(4, 0, &[]), row_bytes(5, 0, &[&[]])]);
+    // An empty path before a class past the names, wherever each is in the row.
+    refused_with("path_empty", "class_out_of_range", one, &[row_bytes(3, 0, &[&[(7, 5)], &[]])]);
+    refused_with("path_empty", "class_out_of_range", one, &[row_bytes(3, 0, &[&[], &[(7, 5)]])]);
+    refused_with("class_out_of_range", "path_empty", one, &[row_bytes(3, 0, &[&[(7, 1)]])]);
+    // The rows' order does not change what a row is: a set slot's row after a held one's.
+    let read = wire::decode_delta(&with_section(
+        &[1],
+        &[2],
+        &section_bytes(one, &[held(), row_bytes(1, 4, &[])]),
+    ))
+    .unwrap();
+    assert_eq!(read.set[0].facing_group, 4);
+    assert_eq!(read.source, vec![held_row(3, 0, vec![vec![node(7, "a.B")]])]);
+}
+
+#[test]
+fn a_readers_refusal_comes_before_apply_s_slot_not_held() {
+    let (mut s, _, sourced) = holding_a_sourced_square();
+    // A held row for slot 9, which the stream does not hold, and a row carrying nothing.
+    let not_held = row_bytes(9, 0, &[&[(7, 0)]]);
+    let both = section_bytes(&["a.B"], &[not_held.clone(), row_bytes(4, 0, &[])]);
+    match wire::decode_delta(&with_section(&[], &[], &both)) {
+        Err(XfError::Invalid(why)) => {
+            assert!(why.contains("row_empty") && !why.contains("slot_not_held"), "{why}")
+        }
+        other => panic!("not refused as invalid: {other:?}"),
+    }
+    // Without the empty row it is read, and apply refuses it.
+    let alone = section_bytes(&["a.B"], &[not_held]);
+    let read = wire::decode_delta(&with_section(&[], &[], &alone)).unwrap();
+    let why = s.apply(&read).unwrap_err().to_string();
+    assert!(why.contains("slot_not_held"), "{why}");
+    assert_eq!(s.record(1), Some(&sourced));
 }
 
 #[test]
@@ -494,14 +605,17 @@ fn the_reader_refuses_a_row_for_a_removed_slot_or_a_slot_named_twice() {
     let section = |rows: &[Vec<u8>]| {
         [u32(1), string("a.B"), u32(rows.len() as u32), rows.concat()].concat()
     };
-    for (why, rows) in [
-        ("a removed slot", vec![row(2)]),
-        ("a held slot named twice", vec![row(3), row(3)]),
-        ("a set slot named twice", vec![row(1), row(1)]),
-        ("a set slot and its row again", vec![row(1), row(3), row(1)]),
+    for (code, rows) in [
+        ("slot_removed", vec![row(2)]),
+        ("slot_named_twice", vec![row(3), row(3)]),
+        ("slot_named_twice", vec![row(1), row(1)]),
+        ("slot_named_twice", vec![row(1), row(3), row(1)]),
     ] {
         let read = wire::decode_delta(&with_section(&[1], &[2], &section(&rows)));
-        assert!(matches!(read, Err(XfError::Invalid(_))), "{why}: {read:?}");
+        let Err(XfError::Invalid(why)) = read else {
+            panic!("{code}: {read:?}");
+        };
+        assert!(why.contains(code), "{code}: {why}");
     }
     let read = wire::decode_delta(&with_section(&[1], &[2], &section(&[row(1), row(3)])));
     assert_eq!(read.unwrap().source.len(), 1);
