@@ -2008,9 +2008,10 @@ in front of a surface the label sits behind is in front of the label too.
 **Terms.**
 
 - **A label** is the family of camera-facing records drawn as one: the records sharing one
-  `facing_group`. Until the wire carries that field, a label is a run of consecutive
-  camera-facing records in the order whose carried centres are bit-identical. Two labels drawn
-  next to each other with one centre are then judged as one, a stated limit.
+  `facing_group` (§10, the source section). In a stream without that section (before XF 1.5), a
+  label is a run of consecutive camera-facing records in the order whose carried centres are
+  bit-identical. Two labels drawn next to each other with one centre are then judged as one, a
+  stated limit.
 - **Its footprint** is every sample its fragments cover (§3, §4), antialias and stroke included.
 - **Its depth** is its centre's key on its facing plane (§5), with that key's interval (§6). The
   label has one depth: no glyph is tested on its own.
@@ -2068,16 +2069,16 @@ sheet, and other sheets still qualify and place it. The oracle blesses neither o
 samples the open pair decides: they are reported under the sub-class, outside the promise, never
 `mismatch` and never agreement.
 
-**`label_kind_unknown`.** While the wire carries no source, a face of a face group and a mesh
+**`label_kind_unknown`.** In a stream without the source section (before XF 1.5), a face of a face group and a mesh
 triangle may be a surface, a solid, or a line's or arrow's shaft or tip. The oracle reads each
 both ways, as a qualifying surface sheet and as a line, and admits the orders of both readings
-where they part. It is a class outside the promise (§12), not `label_rule_open`, and it ends when
-the wire carries each record's source, from which the table decides.
+where they part. It is a class outside the promise (§12), not `label_rule_open`. It does not
+arise in a stream that carries the section, where the table decides from each record's source.
 
-**The interim trade.** Until then the oracle reads a path by its layers: its strokes and
+**The interim trade.** In such a stream the oracle reads a path by its layers: its strokes and
 background strokes are lines, and its fill (not a face of a face group) is a surface. A 2D arrow's
 filled tip is such a fill, so it is read as a surface, a sheet that can put a label behind it,
-until the wire says otherwise. A point block is no surface and never qualifies.
+there. A point block is no surface and never qualifies.
 
 **Deviation (`label_plate_model`).** The core this contract describes orders a label by the plate
 model: it draws a nearer line or arrow over the label, and lets a surface crossing the label's
@@ -2095,7 +2096,7 @@ planted failure of W19 to W26 (§12).
 has not yet been checked against the classes real scenes use. A class it does not map falls to
 `label_source_unmapped`, which fails closed: the oracle blesses no order for that pair.
 
-Read from the record's source once the wire carries it. A record's source lists, for each of its
+Read from the record's source, which the wire carries from XF 1.5 (below). A record's source lists, for each of its
 paths, the containment chain from the object that made the record outward, each node's nearest library class
 (a user's subclass maps to the library class it derives from). The class of the record:
 
@@ -2122,30 +2123,31 @@ paths, the containment chain from the object that made the record outward, each 
   may be a solid or a shaft drawn by hand, and is never judged thin from its shape.
 - The table is the oracle's own and is written from this text alone.
 
-**How the wire carries a source (XF 1.5).** A delta's source tail follows its order and lists rows
-by slot. A slot's set carries one row, that record's metadata. A **source-only row** is any other
-row. It is valid only for a held slot: one the stream holds before the delta, which the delta
-neither sets nor removes (§11 refuses the rest). This reading of what a row is (a set carries
-exactly one row, its own metadata, and any other row is source-only) is still to be confirmed by
-the wire's text.
+**How the wire carries a source (XF 1.5).** A delta may end, after its order, with a source
+section: its class names, then its rows. Each row is `u32 slot`, `u32 facing_group`, a path count,
+then the paths, each a list of nodes `(object token, class index)` into the section's class names.
+A row carries both fields, the record's source and its facing group.
 
-- **Set.** Setting a slot replaces its metadata with its row's; a slot set with no row has its
-  metadata cleared.
-- **Removed.** Removing a slot deletes its metadata with it.
-- **Source-only row.** It replaces the held slot's source and touches nothing else: not its
-  geometry, its paint, its placement or its place in the order. It is how a reparent reaches the
-  wire without the drawing being sent again.
-- **What a row carries.** A source-only row is expected to carry the record's facing group too,
-  since a reparent under another root can change a slot's group without a set; that is still to be
-  confirmed by the wire's text. Until it is, a source-only row is read as carrying the source alone,
-  and the slot keeps the facing group its last set gave it.
-- **Version.** A delta whose source tail holds a row is minor 5; one with none keeps its minor 4
-  bytes, and a 1.4 reader stops before the tail.
+- **Keyed by slot.** A row is keyed by its slot alone, and no reading depends on the rows' order.
+- **A set's row.** A row whose slot the delta sets is that record's source and facing group; of a
+  slot set more than once in the delta, its last record's. A record the delta sets with no row has
+  neither source nor facing group.
+- **A held row.** Any other row is a held row. It replaces both fields of the record the stream
+  holds in that slot, and a field the row does not carry becomes none: a facing group of 0 makes
+  the held record's facing group none, and no paths make its source none. It leaves the record's
+  drawing as it was: its geometry, paint, placement and place in the order.
+- **Removed.** Removing a slot removes the record and both its fields.
+- **Version.** The section is present, and the delta is XF 1.5, when it holds at least one row of
+  either kind. A delta with none keeps its XF 1.4 bytes, and a 1.4 reader stops before the
+  section.
+- **What a writer sends.** A held slot whose source or facing group changes while its drawing does
+  not travels as a held row: a reparent, a change of facing group alone, or both. A changed drawing
+  travels as a set, carrying both fields in its row.
 
-**The source a decision reads.** A label decision for a frame reads each record's source as the
-stream holds it at that frame: the slot's latest set or source-only row, in delta order. A row
-carries the same source content a set does, and the class rule above reads that content, never how
-it arrived, so `label_classes@1` stands as it is: after a source-only row, the source read is the
+**The source a decision reads.** A label decision for a frame reads each record's source and facing
+group as the stream holds them at that frame: the slot's latest set or held row, in delta order. A
+row carries the same source content a set does, and the class rule above reads that content, never
+how it arrived, so `label_classes@1` stands as it is: after a held row, the source read is the
 row's (witness W27, §12).
 
 ## 11. What the oracle refuses
@@ -2190,7 +2192,7 @@ in these cases (overlay entries excluded):
 - the view names a light model it does not know (it knows CE's, code 0, and soft diffuse, code 1);
 - the core refuses the frame (there is nothing to judge);
 - the stream is a delta of a newer XF minor version than 5. It reads deltas of XF major 1 up to
-  minor 5 (minor 5's source tail, §10), and cannot know the meaning of a newer minor's skipped
+  minor 5 (minor 5's source section, §10), and cannot know the meaning of a newer minor's skipped
   fields;
 - the view's background is an image smaller than the frame in either dimension (§1).
 
@@ -2204,28 +2206,35 @@ rank. A delta that fails is refused atomically: nothing of it applies, and the s
 before it. The oracle never judges a frame built from part of one, and reports the delta's refusal
 by its reason.
 
-**Source-only rows refused (XF 1.5).** The oracle's XF reading refuses a delta's source tail in
-exactly four cases, the four causes of `StreamRefused { at_seq, cause }`:
+**A source section refused (XF 1.5).** The oracle's XF reading refuses a delta for its source
+section with exactly one code, the first that applies in this order:
 
-- **removed slot:** a source-only row for a slot the same delta removes;
-- **slot named twice:** two source-only rows for one slot in the delta;
-- **slot not held:** a source-only row for a slot the stream does not hold before the delta;
-- **slot the delta also sets:** a source-only row for a slot the delta sets, whose metadata travels
-  with its set.
+1. `class_named_twice`: the section's class names hold one name twice.
+2. Then, reading the rows in the order written, at the first row that offends, the first of these
+   that applies to it:
+   - `slot_named_twice`: a slot an earlier row named;
+   - `slot_removed`: a slot the delta removes;
+   - `row_empty`: a facing group of 0 and no paths;
+   - `path_empty`: a path of no objects;
+   - `class_out_of_range`: a class index at or past the section's names.
+3. Then, when the delta applies, `slot_not_held`: a held row whose slot the stream does not hold
+   before the delta.
 
-`at_seq` is the refused delta's sequence number. Where a delta falls under more than one cause, the
-cause is the first that applies in the order above; that precedence is still to be confirmed by the
-wire's text.
+The reading's refusals are decided before the delta applies, so a delta has exactly one refusal,
+the first in this order. A refused delta is not applied. The oracle reports it as
+`StreamRefused { at_seq, cause }`, where `at_seq` is the refused delta's sequence number and
+`cause` is one of these seven codes. The code is diagnostic, since the stream is `truth_unable`
+whichever code applies, but the oracle and the core must report the same one.
 
 The two refusals sit side by side:
 
 - **An invalid delta** (the checks above): its own frame is `truth_unable`, and the frames after it
   are judged on the stream as it stood before it.
 - **`StreamRefused`:** the refused delta's frame and every later frame of the stream are
-  `truth_unable` under this one reason, and none carries a verdict. A later delta never clears it,
-  and a refused stream does not resume. A writer that sends any of these has lost track of which
-  slots it holds and what each carries, so no state after it is one the oracle can trust. It is
-  never a verdict on the core.
+  `truth_unable` under this one reason, whichever code applies, and none carries a verdict. A later
+  delta never clears it, and a refused stream does not resume. A writer that sends any of these has
+  lost track of which slots it holds and what each carries, so no state after it is one the oracle
+  can trust. It is never a verdict on the core.
 
 ## 12. Cases the contract must reject
 
@@ -2452,8 +2461,8 @@ centre, keys `−1.111` against `−1`: it qualifies. Pixel `(32, 32)`: the ordi
 (`−20/17.5 ≈ −1.143`), then `S`; `L` goes behind `S`: line, `S`, `L`. Defect: at the samples the
 line covers, `L` in front of the line. The line's `L ≈ 29.1` px lies 0.86 px from a step.
 
-**W20, `label_inside_box`.** Planted: a wrong sheet partition. It needs the wire's source field
-(until then its faces are `label_kind_unknown`), and is built once the wire carries it. A cube of
+**W20, `label_inside_box`.** Planted: a wrong sheet partition. It needs XF 1.5's source
+section (without it its faces are `label_kind_unknown`). A cube of
 side 4 centred at the origin, a face group whose source is `Cube`, fill `(0, 0, 1, 0.5)`; `L` at its
 centre. Its front face (`z = 2`) and back face (`z = −2`) are two sheets; the side faces are edge-on.
 The front sheet covers `L`'s centre and is nearer: it qualifies; the back sheet is farther: it does
@@ -2502,37 +2511,56 @@ and `L` is behind `S` at both pixels `(63, 32)` and `(64, 32)`. Defect: at pixel
 front of `S`.
 
 **W27, `source_row_reparent`.** Set: the source a decision reads (§10). It needs XF 1.5's source
-tail. View C, a stream of two deltas over the scene of W5 (`G` = `[−3, 3]²` at `z = 2`, opaque,
+section. View C, a stream of two deltas over the scene of W5 (`G` = `[−3, 3]²` at `z = 2`, opaque,
 then `L`):
 
-- **Delta 1** sets `G` with the source path `[(g, Polygon), (v, Vector)]`: `G` is made by a polygon
-  inside a vector, so it is a line by rule 1 and never qualifies. Frame 1, pixel `(32, 32)`: `L` in
-  front of `G`.
-- **Delta 2** sets nothing and removes nothing, and carries one source-only row for `G`'s slot
-  with the source path `[(g, Polygon)]`: the polygon reparented out of the vector. Its geometry,
-  paint and order are untouched. `G` is now a surface; it covers `L`'s centre, nearer: it
-  qualifies. Frame 2, pixel `(32, 32)`: `G` in front of `L`.
+- **Delta 1** sets `G` with a row: facing group 0, the source path `[(g, Polygon), (v, Vector)]`.
+  `G` is made by a polygon inside a vector, so it is a line by rule 1 and never qualifies. Frame 1,
+  pixel `(32, 32)`: `L` in front of `G`.
+- **Delta 2** sets nothing and removes nothing, and carries one held row for `G`'s slot: facing
+  group 0, the source path `[(g, Polygon)]`, the polygon reparented out of the vector. Its drawing
+  is untouched. `G` is now a surface; it covers `L`'s centre, nearer: it qualifies. Frame 2, pixel
+  `(32, 32)`: `G` in front of `L`.
 
 Defect: frame 2's order with `L` in front, the decision read from delta 1's source. Verdict
-`mismatch` at frame 2's 16 samples; frame 1 agrees.
+`mismatch` at frame 2's 16 samples; frame 1 agrees. A change of facing group alone travels the same
+way, as a held row with the drawing untouched (`held_row_clears_group`, below).
 
 **W28, `stream_refused`.** Verdict `StreamRefused`, not `mismatch`. A stream of four deltas over
-W27's scene, seq 1 to 4: delta 1 sets slot `s` (`G`) and slot `t` (`L`); delta 2 carries a
-source-only row for a slot `u` that no delta has set (slot not held); deltas 3 and 4 are valid
-(each moves `L`). Expected: frame 1 judged as usual; frames 2, 3 and 4 all `truth_unable` under
-`StreamRefused { at_seq: 2, cause: slot not held }`, none with a verdict, the valid deltas after it
+W27's scene, seq 1 to 4: delta 1 sets slot `s` (`G`) and slot `t` (`L`), each with a row; delta 2
+carries a held row for a slot `u` that no delta has set; deltas 3 and 4 are valid (each moves `L`).
+Expected: frame 1 judged as usual; frames 2, 3 and 4 all `truth_unable` under
+`StreamRefused { at_seq: 2, cause: slot_not_held }`, none with a verdict, the valid deltas after it
 clearing nothing.
 
-**Row refusals, one per cause.** Each has W28's shape, delta 2 being the refused one; expected:
-frames 2 to 4 `StreamRefused { at_seq: 2, cause }` with the cause named.
+**Refusals, one per code.** Each has W28's shape, delta 2 being the refused one, and every row it
+carries is well formed unless stated; expected: frames 2 to 4
+`StreamRefused { at_seq: 2, cause }` with the code named.
 
-- **`row_refused_removed`** (removed slot): delta 2 removes `s` and carries a source-only row for
-  `s`.
-- **`row_refused_twice`** (slot named twice): delta 2 carries two source-only rows for `s`.
-- **`row_refused_not_held`** (slot not held): delta 2 carries a source-only row for `u`, which no
-  delta has set. This is W28 itself.
-- **`row_refused_set`** (slot the delta also sets): delta 2 sets `s` again with its own metadata and
-  also carries a source-only row for `s`.
+- **`refused_class_named_twice`** (`class_named_twice`): delta 2's class names list `Polygon` twice.
+- **`refused_slot_named_twice`** (`slot_named_twice`): delta 2 carries two rows for `s`.
+- **`refused_slot_removed`** (`slot_removed`): delta 2 removes `s` and carries a row for `s`.
+- **`refused_row_empty`** (`row_empty`): delta 2's row for `s` has facing group 0 and no paths.
+- **`refused_path_empty`** (`path_empty`): delta 2's row for `s` has a path of no objects.
+- **`refused_class_out_of_range`** (`class_out_of_range`): delta 2's row for `s` names class index
+  `k`, where the section holds `k` names.
+- **`refused_slot_not_held`** (`slot_not_held`): W28 itself.
+
+**Precedence.** Each has W28's shape:
+
+- **`refused_class_before_rows`:** delta 2's class names list one name twice, and its first row
+  names a slot it removes. Expected `class_named_twice`: the class names are read first.
+- **`refused_first_offending_row`:** delta 2's first row is for `s`, which it removes, and has
+  facing group 0 and no paths; its second row has a path of no objects. Expected `slot_removed`:
+  the first row offends first, and of its two faults `slot_removed` comes before `row_empty`.
+- **`refused_reading_before_apply`:** delta 2's first row is a held row for `u`, never set, and its
+  second row has a path of no objects. Expected `path_empty`: the reading refuses before the delta
+  applies, where `slot_not_held` would be found.
+
+**`held_row_clears_group`.** Verdict: agreement. W27's scene, `L` set in delta 1 with a row of
+facing group 7 and its source. Delta 2 carries a held row for `L`'s slot with facing group 0 and
+the same source path. Expected: from frame 2, `L`'s facing group is none and its source is the
+row's, and its drawing is as delta 1 set it; frame 2's decisions are judged with those fields.
 
 ### Soundness fixtures
 
@@ -2600,9 +2628,9 @@ These are reported by class for a human to view, never counted as ties:
 - **Open label cases.** Samples counted `label_rule_open` (§10), only by its three cases, each
   under its sub-class: `label_unsettled`, `label_sheet_irregular`, `label_source_unmapped`.
 - **Label against an object of unknown kind.** Samples where a face of a face group or a mesh
-  triangle, which XF cannot yet place on the line or the surface side, decides a label's
-  placement (`label_kind_unknown`, §10). The orders of both readings are admitted. The class ends
-  when the wire carries each record's source.
+  triangle, which a stream without the source section cannot place on the line or the surface
+  side, decides a label's placement (`label_kind_unknown`, §10). The orders of both readings are
+  admitted. The class does not arise in a stream that carries the section.
 
 ### Findings counted under their own names
 
