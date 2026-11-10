@@ -2,7 +2,9 @@
 #
 # The environment mirrors the CI the code was forked with: Cairo built at the version the
 # control frames were rendered with (.github/ci-setup.sh) and TeX for the Tex mobjects. Each
-# gate picks its Python with UV_PYTHON.
+# gate picks its Python with UV_PYTHON. Every gate running pytest sets PYTHONHASHSEED=0: set
+# iteration over str and bytes hashes orders some scenes' drawing, so frames compare at one seed
+# (tests/conftest.py refuses a session at another).
 version: 1
 setup:
   apt:
@@ -29,34 +31,34 @@ setup:
 gates:
   - name: tests-py312
     run: uv run python -m pytest --ignore=tests/test_docs_examples
-    env: {UV_PYTHON: "3.12"}
+    env: {UV_PYTHON: "3.12", PYTHONHASHSEED: "0"}
     timeout: 45
   # Ubuntu 24.04's system Python. Code positions differ between 3.12 patch releases (3.12.3
   # places a lambda's implicit return at column 0), and the timeline reads them.
   - name: tests-py3123
     run: uv run python -m pytest --ignore=tests/test_docs_examples
-    env: {UV_PYTHON: "3.12.3"}
+    env: {UV_PYTHON: "3.12.3", PYTHONHASHSEED: "0"}
     timeout: 45
   - name: tests-py314
     run: uv run python -m pytest --ignore=tests/test_docs_examples
-    env: {UV_PYTHON: "3.14"}
+    env: {UV_PYTHON: "3.14", PYTHONHASHSEED: "0"}
     timeout: 45
   - name: docs-examples
     run: uv run python -m pytest tests/test_docs_examples --dist=load --no-cov
     # One BLAS kernel and one thread, whatever the runner's CPU: an eigenvector in a
     # degenerate eigenspace (a symmetric graph's spectral layout) follows the kernel.
-    env: {UV_PYTHON: "3.14", OPENBLAS_CORETYPE: Haswell, OPENBLAS_NUM_THREADS: "1"}
+    env: {UV_PYTHON: "3.14", PYTHONHASHSEED: "0", OPENBLAS_CORETYPE: Haswell, OPENBLAS_NUM_THREADS: "1"}
     timeout: 45
   - name: macos
     lane: hosted-macos
     run: uv run python -m pytest --ignore=tests/test_docs_examples
-    env: {UV_PYTHON: "3.14"}
+    env: {UV_PYTHON: "3.14", PYTHONHASHSEED: "0"}
     timeout: 60
   - name: doctest
     run: |
       uv run python -m pytest -v --no-cov --doctest-modules arachne
       cd docs && uv run make doctest O=-tskip-manim
-    env: {UV_PYTHON: "3.14"}
+    env: {UV_PYTHON: "3.14", PYTHONHASHSEED: "0"}
   - name: lint
     setup: false
     run: pipx run pre-commit run --all-files --show-diff-on-failure
@@ -78,6 +80,7 @@ gates:
     setup: false
     paths: ["core/**", ".github/ci-kit.yml"]
     run: bash core/ci/binding.sh 3.12 3.14
+    env: {PYTHONHASHSEED: "0"}
     timeout: 20
   - name: core-identity
     setup: false
@@ -89,4 +92,5 @@ gates:
     setup: false
     paths: ["core/**", ".github/ci-kit.yml"]
     run: bash core/ci/test.sh && bash core/ci/binding.sh 3.14
+    env: {PYTHONHASHSEED: "0"}
     timeout: 30

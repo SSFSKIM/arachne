@@ -72,6 +72,14 @@ def pytest_addoption(parser):
 
 
 def pytest_configure(config):
+    # str and bytes hashes are salted per process unless PYTHONHASHSEED is set,
+    # and iterating a set of them orders some scenes' drawing: frames compare
+    # byte for byte only at one seed, which takes effect at interpreter start.
+    if sys.flags.hash_randomization:
+        raise pytest.UsageError(
+            "the test suite runs with hash randomization off: run it as "
+            "PYTHONHASHSEED=0 uv run pytest"
+        )
     config.addinivalue_line("markers", "skip_end_to_end: mark test as end_to_end test")
 
 

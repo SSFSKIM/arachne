@@ -25,7 +25,12 @@ the root directory of the repository, run the test suite with:
 
 .. code-block:: bash
 
-   uv run pytest
+   PYTHONHASHSEED=0 uv run pytest
+
+The suite runs with hash randomization off, and refuses to start otherwise: the
+order in which some scenes draw follows the iteration order of sets of strings,
+which Python varies between processes unless ``PYTHONHASHSEED`` is set, and
+graphical tests compare frames against committed control data.
 
 The following pytest options are particularly useful while developing tests:
 
@@ -47,13 +52,13 @@ example:
 
 .. code-block:: bash
 
-   uv run pytest tests/test_graphical_units/test_geometry.py::test_Circle
+   PYTHONHASHSEED=0 uv run pytest tests/test_graphical_units/test_geometry.py::test_Circle
 
 To run the doctests embedded in Manim's source code, use:
 
 .. code-block:: bash
 
-   uv run pytest --doctest-modules arachne
+   PYTHONHASHSEED=0 uv run pytest --doctest-modules arachne
 
 Types of Tests
 --------------
@@ -197,7 +202,7 @@ control file with ``--set_test``. For example, if you add a new test named
 
 .. code-block:: bash
 
-   uv run pytest tests/test_graphical_units/test_geometry.py::test_NewCircle --set_test -s
+   PYTHONHASHSEED=0 uv run pytest tests/test_graphical_units/test_geometry.py::test_NewCircle --set_test -s
 
 This writes ``tests/test_graphical_units/control_data/geometry/NewCircle.npz``.
 Review the generated frames before committing them. The frame extraction script
@@ -216,7 +221,7 @@ When a graphical test fails against existing control data, rerun it with
 
 .. code-block:: bash
 
-   uv run pytest tests/test_graphical_units/test_geometry.py::test_Circle --show_diff
+   PYTHONHASHSEED=0 uv run pytest tests/test_graphical_units/test_geometry.py::test_Circle --show_diff
 
 The comparison highlights differing pixels, making it easier to tell whether
 the change is intentional or a regression. Inspect the difference before using
