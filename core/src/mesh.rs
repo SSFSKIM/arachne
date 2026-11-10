@@ -26,7 +26,7 @@
 
 use crate::composite::{
     Coverage, FULL, FlatRecord, Fragment, OpaquePass, Plane, Producer, Rect, SAMPLES, SUBPIXEL,
-    TransparentPass, premultiply, sample_fixed,
+    TransparentPass, clear, premultiply, sample_fixed,
 };
 use crate::depth::{Registry, WorldPlane};
 use crate::project::{FrameMap, Projection, placement, pre_display};
@@ -227,6 +227,9 @@ pub fn lower(
             })
             .collect();
         let alpha = fill[3] * rec.opacity;
+        // Of a clear alpha (`composite::clear`), Cairo paints nothing of its triangles: none is
+        // offered to the registry, whose identities what draws nothing must not move.
+        let paints = !clear(premultiply([0.0, 0.0, 0.0, alpha]));
         let rgb = [fill[0], fill[1], fill[2]];
         let light = match camera {
             Some(c) if rec.depth.shade_in_3d && c.should_apply_shading => Some(Light::new(
@@ -272,7 +275,7 @@ pub fn lower(
             // on, and the share they give it ([`Meshes::identify`]), once the registry settles.
             let (depth, handle, snap) = match (keyed, projection.as_ref()) {
                 (Some(plane), _) => (plane, 0, f64::INFINITY),
-                (None, Some(p)) if idx.iter().all(|i| p.keys_planar_at(world[*i])) => {
+                (None, Some(p)) if paints && idx.iter().all(|i| p.keys_planar_at(world[*i])) => {
                     let at = idx.map(|i| world[i]);
                     let own = idx.map(|i| draw.positions[i]);
                     let plane = WorldPlane::of_triangle(at, grid);
