@@ -11,7 +11,7 @@ use arachne_core::composite::premultiply;
 use arachne_core::diagnostics::Pixel;
 use arachne_core::order::Decided;
 use arachne_core::xf::*;
-use common::meshes::stream_of;
+use common::meshes::{mesh_record, quad, stream_of};
 
 const W: u32 = 160;
 const H: u32 = 90;
@@ -283,4 +283,50 @@ fn a_visible_stroke_of_an_invisible_fill_still_takes_part() {
         failures.len(),
         failures[..failures.len().min(8)].join("\n")
     );
+}
+
+/// A mesh Cairo paints nothing of (its alpha, by its fill or its record's opacity, clear), on z = 0
+/// over one end of the first line, is offered to the registry no more than a path is: the lines'
+/// pairs and pixels are the frame's without it wherever it lays no fragment of its own.
+#[test]
+fn a_mesh_cairo_paints_nothing_of_moves_no_pair_of_others() {
+    let (dropped, _) = boundary();
+    let corners = [
+        [-4.0, -1.0, 0.0],
+        [-2.0, -1.0, 0.0],
+        [-2.0, 0.0, 0.0],
+        [-4.0, 0.0, 0.0],
+    ];
+    let shape = quad(corners);
+    let mut failures = Vec::new();
+    for (alpha, opacity) in [(0.0, 1.0), (1.0, 0.0), (dropped, 1.0), (1.0, dropped)] {
+        let mut r = mesh_record(3, &shape, [0.0, 1.0, 0.0, alpha], Space::World);
+        r.opacity = opacity;
+        for order in [[1, 2], [2, 1]] {
+            let without = shown(&lines(), &order);
+            let mut items = lines();
+            items.push((shape.clone(), r.clone()));
+            let with = shown(&items, &[order[0], order[1], 3]);
+            // Where the mesh lays a fragment, the fragment's own resolve is another matter.
+            let own = |at: &(u32, u32)| with.pixels[at].entries.iter().any(|e| e.leaf.0 == 103);
+            let moved = with
+                .pixels
+                .iter()
+                .filter(|(at, p)| {
+                    let i = (at.1 * W + at.0) as usize;
+                    !own(at)
+                        && (**p != without.pixels[*at]
+                            || with.rgba[i * 4..i * 4 + 4] != without.rgba[i * 4..i * 4 + 4]
+                            || with.resolves[i] != without.resolves[i])
+                })
+                .count();
+            if moved > 0 {
+                failures.push(format!(
+                    "alpha {alpha} at opacity {opacity}, lines drawn {order:?}: {moved} pixels \
+                     the mesh lays no fragment in change"
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
