@@ -194,3 +194,23 @@ fn lines_straight_cubic_step_charges_at_least_the_core_s_step() {
         0.0
     );
 }
+
+#[test]
+fn the_nontransitive_triple_admits_its_reversal_through_an_all_strong_cycle() {
+    // Contract §7 read literally: a completion picks any edge of each pair's E. The adjacent pairs
+    // of the triple admit both strong edges, so the completion 0 → 2, 2 → 1, 1 → 0 is an all-strong
+    // cycle; its rank (equal wins, the later painted first) is [2, 1, 0]. That order breaks the
+    // ends' strong edge, and the literal reading admits it. Whether the contract means a tighter
+    // reading is an open question; until it says so, this pins the literal one.
+    let s = three();
+    let r = [band(0.0, 0.6), band(1.0, 0.6), band(2.0, 0.6)];
+    let pair = |a: usize, b: usize| s.pair(a, b, &r[a], &r[b], NONE).unwrap().edges;
+    let e = edges_of([
+        [Edges::default(), pair(0, 1), pair(0, 2)],
+        [Edges::default(), Edges::default(), pair(1, 2)],
+        [Edges::default(); 3],
+    ]);
+    let present = [0, 1, 2];
+    assert_eq!(admissible(&present, &paint, &e, &[0, 1, 2]), Some(true));
+    assert_eq!(admissible(&present, &paint, &e, &[2, 1, 0]), Some(true));
+}
