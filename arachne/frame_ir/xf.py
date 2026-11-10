@@ -39,8 +39,10 @@ import numpy as np
 #: version its content needs: 1.1 when it carries a pre-projected record, 1.2
 #: when it carries snapped geometry (an input grid, a record's planes), 1.3
 #: when a face group carries its faces' ends or stroke widths, 1.4 when a
-#: record carries its joins.
-XF_VERSION = (1, 4)
+#: record carries its joins, 1.5 when a record carries its ``source`` (the
+#: objects it was drawn from) or its ``facing_group``, which nothing drawn
+#: reads.
+XF_VERSION = (1, 5)
 #: The record's paint is CE's background-image fill (Cairo only).
 FEATURE_BACKGROUND_IMAGE = 1
 #: The record carries what a camera of the scene's own made of it

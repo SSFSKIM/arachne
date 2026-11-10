@@ -14,7 +14,7 @@ pub use key::Key;
 ///
 /// From XF 1 the layout is append-only: a new field or kind bumps the minor, and nothing removes
 /// or retypes a field.
-pub const XF_VERSION: (u16, u16) = (1, 4);
+pub const XF_VERSION: (u16, u16) = (1, 5);
 
 /// CE's background-image fill: paint the path into a separate array and multiply by an image.
 /// Carried by XF, drawn by Cairo only in this build.
@@ -548,6 +548,16 @@ pub struct PreProjected {
     pub background_stroke: Paint,
 }
 
+/// One object of a record's source (XF 1.5), in mobject containment: never an address or a name
+/// of the scene's own.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceNode {
+    /// The object, by a token the writer keeps for it across the stream.
+    pub token: u32,
+    /// Its nearest library class, fully qualified: a scene's subclass is named by its base.
+    pub class: String,
+}
+
 /// One drawn object.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Record {
@@ -586,6 +596,13 @@ pub struct Record {
     /// writer did not decide: the drawer decides from the points it is handed
     /// ([`crate::join_mask`]).
     pub joins: Option<Vec<u8>>,
+    /// The objects the record was drawn from (XF 1.5): one path per way it is contained, each the
+    /// record's owner first, then its containment ancestors. Empty: not carried. Nothing drawn
+    /// reads it.
+    pub source: Vec<Vec<SourceNode>>,
+    /// The camera-facing label the record belongs to, by a token its glyphs share (XF 1.5); `0`
+    /// for none. Nothing drawn reads it.
+    pub facing_group: u32,
 }
 
 impl Record {
@@ -609,7 +626,14 @@ impl Record {
             planes: None,
             normals: None,
             joins: None,
+            source: Vec::new(),
+            facing_group: 0,
         }
+    }
+
+    /// Whether it carries an XF 1.5 field: a source or a facing group.
+    pub fn carries_source(&self) -> bool {
+        !self.source.is_empty() || self.facing_group != 0
     }
 
     /// Every shape key the record references.

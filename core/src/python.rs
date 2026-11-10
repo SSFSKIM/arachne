@@ -765,6 +765,22 @@ impl PyFrameDelta {
         record.planes = fields.get::<Vec<u8>>("planes")?;
         record.normals = fields.get::<Vec<[f64; 3]>>("normals")?;
         record.joins = fields.get::<Vec<u8>>("joins")?;
+        record.source = fields
+            .or::<Vec<Vec<(u32, String)>>>("source", Vec::new())?
+            .into_iter()
+            .map(|path| {
+                path.into_iter()
+                    .map(|(token, class)| SourceNode { token, class })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        if record.source.iter().any(Vec::is_empty) {
+            return Err(xf_error(
+                py,
+                "a source path names at least one object".into(),
+            ));
+        }
+        record.facing_group = fields.or("facing_group", 0u32)?;
         fields.finish()?;
         self.delta.set.push(record);
         self.delta.version = wire::encoded_version(&self.delta);

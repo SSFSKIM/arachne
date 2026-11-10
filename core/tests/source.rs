@@ -173,9 +173,12 @@ fn a_slot_set_twice_carries_the_last_records_source() {
     let read = wire::decode_delta(&wire::encode_delta(&d)).unwrap();
     assert_eq!(read.set[1], second);
     assert!(read.set[0].source.is_empty() && read.set[0].facing_group == 0);
-    // Only the last record of a slot is written; one that carries nothing writes no section.
+    // Only the last record of a slot is written: one that carries nothing writes no row.
     d.set[1] = Record::new(RecordKind::Path, 9, 9);
-    assert_eq!(&wire::encode_delta(&d)[..4], &[1, 0, 0, 0]);
+    let bytes = wire::encode_delta(&d);
+    assert_eq!(&bytes[bytes.len() - 8..], [u32(0), u32(0)].concat().as_slice());
+    let read = wire::decode_delta(&bytes).unwrap();
+    assert!(read.set.iter().all(|r| !r.carries_source()));
 }
 
 /// The bytes of a delta setting `slots` (paths, carrying nothing) and removing `removed`,

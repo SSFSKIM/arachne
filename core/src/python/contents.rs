@@ -92,6 +92,17 @@ fn paints(out: &Bound<'_, PyDict>, p: &PaintB) -> PyResult<()> {
 fn record<'py>(py: Python<'py>, r: &Record) -> PyResult<Bound<'py, PyDict>> {
     let out = PyDict::new(py);
     out.set_item("features", r.features)?;
+    if !r.source.is_empty() {
+        let paths = r
+            .source
+            .iter()
+            .map(|path| PyTuple::new(py, path.iter().map(|n| (n.token, n.class.as_str()))))
+            .collect::<PyResult<Vec<_>>>()?;
+        out.set_item("source", PyTuple::new(py, paths)?)?;
+    }
+    if r.facing_group != 0 {
+        out.set_item("facing_group", r.facing_group)?;
+    }
     if let RecordKind::Unknown(_) = r.kind {
         if let Body::Opaque(payload) = &r.body {
             out.set_item("payload", PyBytes::new(py, payload))?;

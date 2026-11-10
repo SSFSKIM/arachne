@@ -3,6 +3,7 @@
 //! `core/XF.md` describes the layout field by field.
 
 use super::*;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::Path;
 
@@ -435,7 +436,8 @@ pub fn encode_record(r: &Record) -> Vec<u8> {
 /// The lowest supported version that carries this delta's content. Foreign and future version
 /// declarations are retained: this writer cannot decide what their content requires. Re-encoding
 /// a delta decoded from a newer minor keeps its version but not what this reader skipped of it
-/// (a record's tail past what it knows): those bytes were dropped on read.
+/// (a record's tail past what it knows, the delta's past its XF 1.5 section): those bytes were
+/// dropped on read.
 pub fn encoded_version(d: &Delta) -> (u16, u16) {
     if d.version.0 != XF_VERSION.0 || d.version.1 > XF_VERSION.1 {
         return d.version;
@@ -452,7 +454,9 @@ pub fn encoded_version(d: &Delta) -> (u16, u16) {
         .set
         .iter()
         .any(|r| matches!(&r.body, Body::FaceGroup(f) if f.carries_face_lists()));
-    let minor = if d.set.iter().any(|r| r.joins.is_some()) {
+    let minor = if d.set.iter().any(Record::carries_source) {
+        5
+    } else if d.set.iter().any(|r| r.joins.is_some()) {
         4
     } else if face_lists {
         3
@@ -505,7 +509,47 @@ pub fn encode_delta(d: &Delta) -> Vec<u8> {
         if let Some(order) = &d.order {
             write_order(w, order);
         }
+        if d.set.iter().any(Record::carries_source) {
+            write_source(w, &d.set);
+        }
     })
+}
+
+/// XF 1.5's section, after the order: the class names its rows use, each once, in the order the
+/// rows first use them; then a row for each record carrying a source or a facing group, in the
+/// order the delta sets them (of a slot set more than once, its last record's alone).
+fn write_source(w: &mut W, set: &[Record]) {
+    let last: HashMap<u32, usize> = set.iter().enumerate().map(|(i, r)| (r.slot, i)).collect();
+    let rows: Vec<&Record> = set
+        .iter()
+        .enumerate()
+        .filter(|(i, r)| r.carries_source() && last[&r.slot] == *i)
+        .map(|(_, r)| r)
+        .collect();
+    let mut classes: Vec<&str> = Vec::new();
+    let mut index: HashMap<&str, u32> = HashMap::new();
+    for node in rows.iter().flat_map(|r| r.source.iter().flatten()) {
+        index.entry(node.class.as_str()).or_insert_with(|| {
+            classes.push(node.class.as_str());
+            u32::try_from(classes.len() - 1).expect("an XF count fits in u32")
+        });
+    }
+    w.count(classes.len());
+    classes.iter().for_each(|c| w.str(c));
+    w.count(rows.len());
+    for r in rows {
+        w.u32(r.slot);
+        w.u32(r.facing_group);
+        w.count(r.source.len());
+        for path in &r.source {
+            assert!(!path.is_empty(), "a source path names at least one object");
+            w.count(path.len());
+            for node in path {
+                w.u32(node.token);
+                w.u32(index[node.class.as_str()]);
+            }
+        }
+    }
 }
 
 /// A file of deltas: the magic, the version its deltas require, then each length-prefixed delta.
@@ -1032,7 +1076,67 @@ pub fn decode_delta(bytes: &[u8]) -> Result<Delta> {
     if r.bool()? {
         d.order = Some(read_order(&mut r)?);
     }
+    // XF 1.5: the records' sources, when the delta carries them.
+    if r.at < r.b.len() {
+        read_source(&mut r, &mut d.set)?;
+    }
+    // Whatever follows belongs to a newer minor version: skipped.
     Ok(d)
+}
+
+/// XF 1.5's section: each row's source and facing group set on the last record of its slot the
+/// delta sets, the whole section read and checked before the delta is returned.
+fn read_source(r: &mut R, set: &mut [Record]) -> Result<()> {
+    let invalid = |why: String| XfError::Invalid(format!("a delta's source: {why}"));
+    let n = r.count(4)?;
+    let mut classes = Vec::with_capacity(n);
+    let mut named = HashSet::new();
+    for _ in 0..n {
+        let class = r.str()?;
+        if !named.insert(class.clone()) {
+            return Err(invalid(format!("the class {class:?} is named twice")));
+        }
+        classes.push(class);
+    }
+    let mut unread: HashMap<u32, usize> =
+        set.iter().enumerate().map(|(i, rec)| (rec.slot, i)).collect();
+    let rows = r.count(12)?;
+    for _ in 0..rows {
+        let slot = r.u32()?;
+        let facing_group = r.u32()?;
+        let paths = r.count(4)?;
+        let mut source = Vec::with_capacity(paths);
+        for _ in 0..paths {
+            let nodes = r.count(8)?;
+            if nodes == 0 {
+                return Err(invalid(format!("slot {slot} has a path of no objects")));
+            }
+            let mut path = Vec::with_capacity(nodes);
+            for _ in 0..nodes {
+                let token = r.u32()?;
+                let at = r.u32()? as usize;
+                let class = classes.get(at).ok_or_else(|| {
+                    invalid(format!("slot {slot} names class {at} of {}", classes.len()))
+                })?;
+                path.push(SourceNode {
+                    token,
+                    class: class.clone(),
+                });
+            }
+            source.push(path);
+        }
+        if source.is_empty() && facing_group == 0 {
+            return Err(invalid(format!("the row of slot {slot} carries nothing")));
+        }
+        let Some(i) = unread.remove(&slot) else {
+            return Err(invalid(format!(
+                "slot {slot} is not set by the delta, or is named twice"
+            )));
+        };
+        set[i].source = source;
+        set[i].facing_group = facing_group;
+    }
+    Ok(())
 }
 
 /// Reads a file of deltas.

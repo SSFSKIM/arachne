@@ -355,6 +355,12 @@ impl After<'_> {
     }
 
     fn check_record(&self, rec: &Record) -> Result<(), StreamError> {
+        if rec.source.iter().any(Vec::is_empty) {
+            return Err(StreamError::Invalid(format!(
+                "slot {}'s source has a path of no objects",
+                rec.slot
+            )));
+        }
         if let RecordKind::Unknown(_) = rec.kind {
             return Ok(()); // Nothing in it can be read; drawing refuses it.
         }
