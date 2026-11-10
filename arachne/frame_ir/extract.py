@@ -350,7 +350,7 @@ class FrameStream:
             mob = stack.pop()
             if id(mob) in seen:
                 continue
-            seen.add(id(mob))
+            seen |= {id(mob)}
             self._token(mob)
             children = list(mob.submobjects)
             for child in children:
@@ -368,7 +368,8 @@ class FrameStream:
         """
         found = self._sources.get(id(mob))
         if found is None:
-            node = (self._token(mob), library_class(type(mob)))
+            kind: type = type(mob)
+            node = (self._token(mob), library_class(kind))
             paths: list[tuple[tuple[int, str], ...]] = []
             for parent in self._parents.get(id(mob), ()):
                 for path in self._source(parent):
@@ -399,7 +400,7 @@ class FrameStream:
             at += 1
             for near in (*self._parents.get(id(each), ()), *each.submobjects):
                 if id(near) not in seen and orientation.get(near) is func:
-                    seen.add(id(near))
+                    seen |= {id(near)}
                     label.append(near)
         group = min(self._token(each) for each in label)
         for each in label:
