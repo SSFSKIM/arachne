@@ -612,3 +612,15 @@ fn a_farther_sliver_across_a_cell_boundary_holding_no_order_point_is_no_overlap(
         (Outcome::Qualifies, false)
     );
 }
+
+/// A centre on a sheet's horizontal edge lies on the sheet, as one on any edge does: the sheet's
+/// depth there decides, and here it is nearer.
+#[test]
+fn a_centre_on_a_sheet_s_horizontal_edge_is_held() {
+    let sheet = rect([-1.5, 1.5], [0.0, 1.0], true, |x, _| 0.3 - 0.4 * x);
+    let items = [
+        label([0.0, 0.0, 0.0], [1.4, 0.3]),
+        face(2, &sheet, BLUE, &[(12, SQUARE)]),
+    ];
+    assert_eq!(one(&items), (Outcome::Qualifies, true));
+}
