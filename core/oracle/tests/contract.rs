@@ -275,3 +275,65 @@ fn core_colours_are_the_oracle_s() {
         &wrong[..wrong.len().min(8)]
     );
 }
+
+#[test]
+fn the_core_paints_at_the_alpha_band_s_edges_as_alpha_round_says() {
+    // `alpha_round@1` (contract §1): an op whose alpha byte, trunc(d · 65535 + 0.5) >> 8, is 0
+    // paints nothing and is no contributor; one whose byte is 1 paints. Just below, at and just
+    // above 255.5 / 65535, a white square over black: the core reports a fragment exactly where the
+    // oracle makes one.
+    use arachne_core::xf::{
+        Background, Camera, Delta, Layer, LightModel, OrderEntry, Paint, Record, RecordKind, Shape,
+        ShapeData, Space, Time, View,
+    };
+    let view = View {
+        pixel_width: 16,
+        pixel_height: 16,
+        frame_width: 16.0,
+        frame_height: 16.0,
+        frame_center: [0.0; 3],
+        mapping_centre: [0.0; 3],
+        background: Background::Color([0.0, 0.0, 0.0, 1.0]),
+        camera: Camera::Flat,
+        cairo_line_width_multiple: 1.0,
+        use_z_index: false,
+        light: LightModel::Ce,
+        input_grid: 0.0,
+    };
+    let corners = [[-4.0, -4.0], [4.0, -4.0], [4.0, 4.0], [-4.0, 4.0]];
+    let mut points = Vec::new();
+    for i in 0..4 {
+        let (a, b) = (corners[i], corners[(i + 1) % 4]);
+        let at = |t: f64| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, 0.0];
+        points.extend([at(0.0), at(1.0 / 3.0), at(2.0 / 3.0), at(1.0)]);
+    }
+    let edge = 255.5 / 65535.0;
+    for d in [edge * (1.0 - 1e-9), edge, edge * (1.0 + 1e-9)] {
+        let byte = ((d * 65535.0 + 0.5) as u32) >> 8;
+        let shape = Shape::new(ShapeData::Path {
+            points: points.clone(),
+        });
+        let mut r = Record::new(RecordKind::Path, 0, 100);
+        r.geometry.shape_a = Some(shape.key());
+        r.paint.fill = Paint::One([1.0, 1.0, 1.0, d]);
+        r.depth.space = Space::Screen;
+        let mut delta = Delta::new(Time { num: 1, den: 1 }, 1);
+        delta.version = (1, 4);
+        delta.view = Some(view.clone());
+        delta.order = Some(vec![OrderEntry {
+            layer: Layer::Moving,
+            slot: 0,
+            part: 0,
+        }]);
+        delta.upload = vec![shape];
+        delta.set = vec![r];
+        let oracle =
+            arachne_oracle::decide::decide_at(std::slice::from_ref(&delta), 1, None).unwrap();
+        let mut core = Stream::new();
+        core.apply(&delta).unwrap();
+        let px = core.resolve_trace(8, 8, 9, 9, false).unwrap();
+        let entries = px.get(&(8, 8)).map_or(0, |p| p.entries.len());
+        assert_eq!(oracle.fragments.is_empty(), byte == 0, "oracle at {d:e}");
+        assert_eq!(entries > 0, byte > 0, "core at {d:e}, byte {byte}");
+    }
+}

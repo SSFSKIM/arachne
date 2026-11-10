@@ -749,3 +749,21 @@ file = "core/oracle/src/draw.rs"
 find = "        .any(|r| alpha_short(r[3] * opacity) > 0xff)"
 replace = "        .any(|r| alpha_short(r[3] * opacity) > 0)"
 red = ["colour::at_the_alpha_band_s_edges_only_an_alpha_byte_above_zero_paints"]
+
+[[plant]]
+name = "lines-step-b"
+item = "§7"
+check = "lines@1 step⁺: B, the cubic collinear in place and key"
+file = "core/oracle/src/lines.rs"
+find = "        let b = (1.0 + sh).max(2.0) * (high - low + eps);\n"
+replace = "        let b = 0.0 * eps;\n"
+red = ["order::lines_straight_cubic_step_charges_at_least_the_core_s_step"]
+
+[[plant]]
+name = "core-alpha-edge"
+item = "§1"
+check = "alpha_round@1 on the oracle's side of the core comparison"
+file = "core/oracle/src/draw.rs"
+find = "pub fn alpha_short(d: f64) -> u32 {\n"
+replace = "pub fn alpha_short(d: f64) -> u32 {\n    let d = d * 2.0;\n"
+red = ["contract::the_core_paints_at_the_alpha_band_s_edges_as_alpha_round_says"]

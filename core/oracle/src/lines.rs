@@ -34,10 +34,12 @@ fn kappa(s: &Segment, p: [f64; 2]) -> (f64, f64) {
     (d, s.a.key + (s.b.key - s.a.key) * t)
 }
 
-/// `step⁺` of a cubic: control points on screen `x`, keys `k`, its `L`.
-fn step_plus(x: &[[f64; 2]; 4], k: &[f64; 4], l: f64, eh: f64, sh: f64, line: &Centreline) -> f64 {
+/// `step⁺` of a cubic (`lines@1`): control points on screen `x`, keys `k`, its `L`, with `ε̂`, `σ̂`
+/// and the centreline's `scale`.
+pub fn step_plus(x: &[[f64; 2]; 4], k: &[f64; 4], l: f64, eh: f64, sh: f64, scale: f64) -> f64 {
+    let room = |v: f64| 128.0 * U * scale.max(v).max(1.0);
     let step = 2.0 * libm::round(l / 2.0).clamp(1.0, 63.0);
-    let exposed = (l - step).abs() <= 6.0 * eh * (1.0 + 1e-9) + 2.0 * line.room(l);
+    let exposed = (l - step).abs() <= 6.0 * eh * (1.0 + 1e-9) + 2.0 * room(l);
     if !exposed {
         return 0.0;
     }
@@ -71,7 +73,7 @@ fn step_plus(x: &[[f64; 2]; 4], k: &[f64; 4], l: f64, eh: f64, sh: f64, line: &C
     let a = span + 2.0 * e;
     let amax = along[0].abs().max(along[1].abs());
     let (b, c) = if v > 2.0 * lean {
-        let eps = 128.0 * U * (kmax + kends * (1.0 + amax) * (1.0 + line.scale / v));
+        let eps = 128.0 * U * (kmax + kends * (1.0 + amax) * (1.0 + scale / v));
         let b = (1.0 + sh).max(2.0) * (high - low + eps);
         let short = v - lean;
         let du = (lean * (v + far) + lean * lean) / (short * short)
@@ -105,7 +107,7 @@ impl LinesBound {
         let steps: Vec<f64> = line
             .cubics
             .iter()
-            .map(|c| step_plus(&c.x, &c.k, c.l, eh, sh, line))
+            .map(|c| step_plus(&c.x, &c.k, c.l, eh, sh, line.scale))
             .collect();
         // A cubic that starts a joint: its keygap charges its first segment.
         let keygap = |cubic: usize| -> f64 {

@@ -175,3 +175,22 @@ fn intervals_that_only_touch_still_meet() {
     assert!(p.edges.weak && p.edges.a_front);
     assert!(!p.edges.b_front, "{:?}", p.edges);
 }
+
+#[test]
+fn lines_straight_cubic_step_charges_at_least_the_core_s_step() {
+    // Contract §12's `lines_straight_cubic_step` (`lines@1`): a straight cubic of four keys −1,
+    // controls 6 px apart, unplaced. Its L = 18 sits on a count step, so it is exposed; the core
+    // charges 320u (1 + 16u) there, and B gives step⁺ >= 328u.
+    let u = 1.0 / 9_007_199_254_740_992.0;
+    let x = [[0.0, 0.0], [6.0, 0.0], [12.0, 0.0], [18.0, 0.0]];
+    let step = arachne_oracle::lines::step_plus(&x, &[-1.0; 4], 18.0, 0.0, 0.0, 18.0);
+    assert!(step >= 328.0 * u, "{}", step / u);
+    assert!(step >= 320.0 * u * (1.0 + 16.0 * u));
+    assert!(step <= 329.0 * u, "{}", step / u);
+    // Off a count step (L = 19, unexposed) nothing is charged.
+    let x = [[0.0, 0.0], [6.0, 0.0], [12.0, 0.0], [19.0, 0.0]];
+    assert_eq!(
+        arachne_oracle::lines::step_plus(&x, &[-1.0; 4], 19.0, 0.0, 0.0, 19.0),
+        0.0
+    );
+}
