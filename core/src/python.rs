@@ -942,6 +942,49 @@ impl PyStream {
             .into_any())
     }
 
+    /// Whether the frame's camera-facing labels are placed (``label_plan.rs``): on, as a new
+    /// stream is; off, each label's records are drawn by depth as every other record is, the
+    /// frames a stream without facing groups draws.
+    fn set_label_placement(&mut self, on: bool) {
+        self.stream.set_label_placement(on);
+    }
+
+    /// The labels' plan for the frame ``draw(width, height, overlay=False)`` draws
+    /// (``label_plan.rs``): every label against every surface sheet it overlaps, as
+    /// ``(group, surface, sheet, centre, outcome, cause)``: the label's facing group, the
+    /// sheet's object by its token, the sheet's index in the frame, whether a fill of the
+    /// sheet holds the label's projected centre, ``outcome`` one of ``"qualifies"`` (the
+    /// label goes behind it), ``"not_nearer"`` or ``"open"``, and an open pair's
+    /// ``cause`` (``"interval"``, ``"folded"``, ``"disconnected"``, ``"mesh"``,
+    /// ``"label"``), else ``None``. Empty where the frame draws no label or labels are not
+    /// placed. Nothing is drawn.
+    #[allow(clippy::type_complexity)]
+    fn label_plan(
+        &self,
+        py: Python<'_>,
+        width: u32,
+        height: u32,
+    ) -> PyResult<Vec<(u32, u32, u32, bool, &'static str, Option<&'static str>)>> {
+        use crate::label_plan::Outcome;
+        let stream = &self.stream;
+        let plan = py
+            .detach(|| stream.label_plan(width, height))
+            .map_err(|e| draw_error(py, e))?;
+        Ok(plan
+            .map(|p| p.pairs)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| {
+                let (outcome, cause) = match p.outcome {
+                    Outcome::Qualifies => ("qualifies", None),
+                    Outcome::NotNearer => ("not_nearer", None),
+                    Outcome::Open(why) => ("open", Some(why.name())),
+                };
+                (p.group, p.surface, p.sheet, p.centre, outcome, cause)
+            })
+            .collect())
+    }
+
     /// The order's entries a 3D scene's frame leaves to Cairo's overlay, in order, as
     /// ``(layer, slot, part)``: records fixed in frame, images (displays included), and paths
     /// filled through a background image.

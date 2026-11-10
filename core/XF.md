@@ -101,8 +101,9 @@ through each. Each node is a token the writer keeps for that object across the s
 object's nearest library class, fully qualified (a scene's own subclass is named by the library
 class it derives from; no address and no name of the scene's own is written). A record's
 `facing_group` is a token its writer gives a camera-facing label: the records of one label share
-it, and two labels never do (0: none). The scene lowering writes both; nothing drawn reads either,
-so a frame is the same bytes with them or without. A record set again replaces both, and a record
+it, and two labels never do (0: none). The scene lowering writes both. A drawer may read them to
+place camera-facing labels (this core does: `label_plan.rs`); a frame with no facing group is
+the same bytes with them or without. A record set again replaces both, and a record
 set without them has neither: they never outlive their record. When a record's objects move (it is
 reparented) and its drawing does not, its writer does not set it again: a row for a slot the delta
 neither sets nor removes gives the held record its new source and facing group, so the bytes an
@@ -355,6 +356,25 @@ shape's and table's key against its content, except for shape kinds it does not 
   flat, or whose plane is within about 3 degrees of edge-on, takes the depth of its own curve: each
   pixel the front-most part of the curve that reaches it (half the widest stroke and a pixel), else
   the nearest.
+- **Camera-facing labels (XF 1.5).** The records sharing a `facing_group` are one label, placed
+  whole and never split by depth; every other record is read from its `source` as a line, a
+  surface or `label_rule_open` (`label_class.rs`), and only a surface can go in front of a label. A
+  label's depth is its centre's: the camera-facing plane through it, read at the centre's
+  projection, with its error bound. A sheet is a connected part of one surface object (the
+  outermost surface or cylinder on a face's first path) whose fills are wound one way on screen,
+  two fills sharing two corners on screen joined. A sheet goes in front of a label when it is shown
+  nearer: on the ray through the label's projected centre where one of its fills holds the centre,
+  else at every sub-sample cell of their overlap (the cells the label's records cover that a fill
+  of the sheet covers in a colour not wholly transparent), each depth with its error bound. A
+  sheet shown farther or at the label's depth there leaves the label in front; one the bounds
+  cannot place, one covering a cell of the overlap twice (folded), one sharing its object and its
+  winding with another sheet that meets the label, one drawn as a mesh, and every sheet against a
+  label not drawn wholly as engine-placed paths is open, and leaves the label in front too. At each
+  sub-sample the label is inserted immediately behind the rearmost sheet it goes behind that covers
+  the sub-sample, in the order everything else takes there, or, with none, in front of everything
+  but the overlay; labels at one place keep draw order. A pixel where a label meets a sheet it goes
+  behind takes the sample resolve. A frame with no facing group draws as it would without its
+  `source`.
 - **Paths.** CE's subpaths (split where a cubic's end and the next one's start differ in x or y by
   more than CE's tolerance; closed when the first and last points are equal within it, the last then
   taken as the first), painted in CE's order as three layers tying in that order: the background

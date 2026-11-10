@@ -311,7 +311,8 @@ _RECORD: dict[str, Callable[[Any, float], Any]] = {
     "radius": _as_given,
     "resampling": _as_given,
     "image_opacity": _as_given,
-    # What the record was drawn from: no geometry, and nothing drawn reads it.
+    # What the record was drawn from: no geometry; only a camera-facing label's
+    # placement reads it.
     "source": _as_given,
     "facing_group": _as_given,
 }

@@ -1,7 +1,8 @@
 """The scene lowering writes each record's source (XF 1.5): the objects it was
 drawn from, by containment, each named by a token and its nearest library
-class; and a camera-facing label's group. Nothing drawn reads either: frames
-are the bytes they were without them.
+class; and a camera-facing label's group. Only the core's placement of
+camera-facing labels reads them: a frame without one, and every frame with
+placement off, is the bytes it was without them.
 """
 
 from __future__ import annotations
@@ -387,9 +388,11 @@ def test_a_record_drawn_live_carries_the_source_the_record_path_writes():
     assert made.fields["facing_group"] == records[id(square)].fields["facing_group"]
 
 
-def _keeping(draw, sent):
+def _keeping(draw, sent, *, placed=True):
     def kept(self, delta, **kwargs):
         sent.append(delta)
+        if not placed:
+            self.core.set_label_placement(False)
         return draw(self, delta, **kwargs)
 
     return kept
@@ -478,7 +481,8 @@ def test_frames_and_the_older_minor_are_the_bytes_sent_without_a_source(monkeypa
     """The depth resolver reads no source, and a source moves no byte an
     older minor carries: a scene's frames on the core, and each delta it is
     handed without its sources, are the bytes of lowering that carries none,
-    whatever is reparented.
+    whatever is reparented. A scene keeping labels facing the camera is held
+    to it with the labels' placement off; one without, with it on as well.
     """
     pytest.importorskip("arachne_core")
     cases = [
@@ -492,7 +496,9 @@ def test_frames_and_the_older_minor_are_the_bytes_sent_without_a_source(monkeypa
         Solids,
     ]
 
-    def drawn():
+    labelled = {LabelledArrow, Solids}
+
+    def drawn(placed=True):
         found = []
         for case in cases:
             sent = []
@@ -501,7 +507,8 @@ def test_frames_and_the_older_minor_are_the_bytes_sent_without_a_source(monkeypa
             # differs), and each render here would fill them for the next.
             forget_construction_caches()
             with monkeypatch.context() as patched:
-                patched.setattr(CorePainter, "draw", _keeping(CorePainter.draw, sent))
+                keeping = _keeping(CorePainter.draw, sent, placed=placed)
+                patched.setattr(CorePainter, "draw", keeping)
                 frames = render(case, FPS, draw_path="core", **MEDIUM)[1]
             found.append((frames, [_older_minor(delta) for delta in sent]))
         return found
@@ -509,18 +516,21 @@ def test_frames_and_the_older_minor_are_the_bytes_sent_without_a_source(monkeypa
     kept = construction_caches()
     try:
         carried = drawn()
+        plain = drawn(placed=False)
         monkeypatch.setattr(
             FrameStream, "_sourced", lambda self, slot, record, *_: record
         )
         bare = drawn()
     finally:
         restore_construction_caches(kept)
-    for case, (ours, our_bytes), (theirs, their_bytes) in zip(
-        cases, carried, bare, strict=True
+    for case, (placed, our_bytes), (unplaced, _), (theirs, their_bytes) in zip(
+        cases, carried, plain, bare, strict=True
     ):
-        assert len(ours) == len(theirs) > 0, case.__name__
-        for index, (a, b) in enumerate(zip(ours, theirs, strict=True)):
-            np.testing.assert_array_equal(a, b, err_msg=f"{case.__name__} {index}")
+        held = [unplaced] if case in labelled else [placed, unplaced]
+        for ours in held:
+            assert len(ours) == len(theirs) > 0, case.__name__
+            for index, (a, b) in enumerate(zip(ours, theirs, strict=True)):
+                np.testing.assert_array_equal(a, b, err_msg=f"{case.__name__} {index}")
         assert len(our_bytes) == len(their_bytes) > 0, case.__name__
         for index, (a, b) in enumerate(zip(our_bytes, their_bytes, strict=True)):
             assert a == b, f"{case.__name__}: delta {index} moves the older minor"
@@ -574,6 +584,40 @@ class FacingFamilies(ThreeDScene):
         self.add(dot, shape, mixed)
         self.add_fixed_orientation_mobjects(dot, shape, mixed)
         self.move_camera(theta=-0.4, run_time=0.3)
+
+
+class UnderPlane(ThreeDScene):
+    """A label kept facing the camera under a nearer filled plane."""
+
+    def construct(self):
+        plane = Square(2).set_fill(opacity=1).shift(OUT)
+        label = Square(0.4).set_fill(opacity=1)
+        self.add(plane, label)
+        self.add_fixed_orientation_mobjects(label)
+        self.wait(0.2)
+
+
+def test_a_label_under_a_nearer_plane_goes_behind_it(monkeypatch):
+    """The source the scene lowering writes is what the core's labels' plan
+    reads: the plane's fill covers the label's centre nearer than it.
+    """
+    pytest.importorskip("arachne_core")
+    plans = []
+    draw = CorePainter.draw
+
+    def planned(self, delta, **kwargs):
+        frame = draw(self, delta, **kwargs)
+        height, width = np.asarray(frame).shape[:2]
+        plans.append(self.core.label_plan(width, height))
+        return frame
+
+    monkeypatch.setattr(CorePainter, "draw", planned)
+    render(UnderPlane, FPS, draw_path="core", **MEDIUM)
+    assert plans
+    for plan in plans:
+        assert [(centre, outcome) for _, _, _, centre, outcome, _ in plan] == [
+            (True, "qualifies")
+        ]
 
 
 #: Scenes keeping records facing the camera: labels of shapes, a label of text,

@@ -607,11 +607,11 @@ pub struct Record {
     /// ([`crate::join_mask`]).
     pub joins: Option<Vec<u8>>,
     /// The objects the record was drawn from (XF 1.5): one path per way it is contained, each the
-    /// record's owner first, then its containment ancestors. Empty: not carried. Nothing drawn
-    /// reads it.
+    /// record's owner first, then its containment ancestors. Empty: not carried. Read only to
+    /// place camera-facing labels ([`crate::label_plan`]).
     pub source: Vec<Vec<SourceNode>>,
     /// The camera-facing label the record belongs to, by a token its glyphs share (XF 1.5); `0`
-    /// for none. Nothing drawn reads it.
+    /// for none. Read only to place camera-facing labels ([`crate::label_plan`]).
     pub facing_group: u32,
 }
 
