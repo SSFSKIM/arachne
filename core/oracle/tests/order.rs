@@ -211,6 +211,21 @@ fn the_nontransitive_triple_admits_its_reversal_through_an_all_strong_cycle() {
         [Edges::default(); 3],
     ]);
     let present = [0, 1, 2];
-    assert_eq!(admissible(&present, &paint, &e, &[0, 1, 2]), Some(true));
-    assert_eq!(admissible(&present, &paint, &e, &[2, 1, 0]), Some(true));
+    // The orders one key per fragment can give (0 is always in front of 2, the ends being strong):
+    // every one is admitted, so the literal reading makes no false failure.
+    let one_key = [[0, 1, 2], [1, 0, 2], [0, 2, 1]];
+    for order in one_key {
+        assert_eq!(
+            admissible(&present, &paint, &e, &order),
+            Some(true),
+            "{order:?}"
+        );
+    }
+    // What the literal reading admits beyond them, through all-strong cycles.
+    let added: Vec<[usize; 3]> = PERMS
+        .into_iter()
+        .filter(|o| !one_key.contains(o))
+        .filter(|o| admissible(&present, &paint, &e, o) == Some(true))
+        .collect();
+    assert_eq!(added, vec![[2, 1, 0]], "{added:?}");
 }
