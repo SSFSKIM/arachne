@@ -247,13 +247,13 @@ fn a_slot_set_twice_carries_the_last_records_source() {
     let read = wire::decode_delta(&wire::encode_delta(&d)).unwrap();
     assert_eq!(read.set[1], second);
     assert!(read.set[0].source.is_empty() && read.set[0].facing_group == 0);
-    // Only the last record of a slot is written: one that carries nothing writes no row.
+    // Only the last record of a slot is written: one that carries nothing writes no row, and a
+    // delta holding no row has no section and is not XF 1.5, whatever the slot's earlier record
+    // carried.
     d.set[1] = Record::new(RecordKind::Path, 9, 9);
     let bytes = wire::encode_delta(&d);
-    assert_eq!(
-        &bytes[bytes.len() - 8..],
-        [u32(0), u32(0)].concat().as_slice()
-    );
+    assert_eq!(wire::encoded_version(&d), (1, 0));
+    assert_eq!(bytes, wire::encode_delta(&without_section(&d)));
     let read = wire::decode_delta(&bytes).unwrap();
     assert!(read.set.iter().all(|r| !r.carries_source()));
 }
