@@ -284,15 +284,32 @@ fn compare(d: f64, e: f64, label: &Label) -> Cmp {
     }
 }
 
-/// Whether the polygons of `edges` (nonzero) hold point `p`, a point on an edge held: a
-/// centre on the edge two faces share lies on the sheet.
-fn holds(edges: &[Edge], p: [f64; 2]) -> bool {
+/// Whether point `p` lies on the segment from `a` to `b`.
+fn on_segment(a: [f64; 2], b: [f64; 2], p: [f64; 2]) -> bool {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let length = dx * dx + dy * dy;
+    let t = if length > 0.0 {
+        (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / length).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let (qx, qy) = (a[0] + t * dx - p[0], a[1] + t * dy - p[1]);
+    qx * qx + qy * qy <= 1e-18
+}
+
+/// Whether the polygons whose outline is `edges` and `flats` (its horizontal segments) hold point
+/// `p` (nonzero), a point on the outline held: a centre on the edge two faces share, or on a
+/// sheet's border, lies on the sheet.
+fn holds(edges: &[Edge], flats: &[[f64; 3]], p: [f64; 2]) -> bool {
+    if flats
+        .iter()
+        .any(|&[y, x0, x1]| on_segment([x0, y], [x1, y], p))
+    {
+        return true;
+    }
     let mut winding = 0;
     for e in edges {
-        let (dx, dy) = (e.x1 - e.x0, e.y1 - e.y0);
-        let t = (((p[0] - e.x0) * dx + (p[1] - e.y0) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
-        let (qx, qy) = (e.x0 + t * dx - p[0], e.y0 + t * dy - p[1]);
-        if qx * qx + qy * qy <= 1e-18 {
+        if on_segment([e.x0, e.y0], [e.x1, e.y1], p) {
             return true;
         }
         if e.y0 <= p[1] && p[1] < e.y1 && e.x_at(p[1]) < p[0] {
@@ -523,7 +540,7 @@ pub fn plan(
             if layer.clear || !near(cx, b[0], b[2]) || !near(cy, b[1], b[3]) {
                 continue;
             }
-            if !holds(layer.edges, label.centre) {
+            if !holds(layer.edges, layer.flats, label.centre) {
                 continue;
             }
             let c = match layer.plane {
