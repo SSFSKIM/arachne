@@ -1,12 +1,13 @@
 //! The diagnostic resolve trace (`Stream::diagnostic_resolves`): re-composited with the resolves'
 //! own arithmetic, each pixel's trace gives back the pixel the core drew, over every pixel of
 //! every frame of the parity kit's fixtures; asked for, its pairwise orders are those its ranks
-//! ranked by.
+//! ranked by. With its reads (`Stream::resolve_trace`), nothing drawn and nothing else the trace
+//! holds changes, and what the reads say is what the resolves read.
 
 use std::cmp::Ordering;
 
 use arachne_core::composite::{Resolve, SAMPLES, add_emission, blend};
-use arachne_core::diagnostics::{PairOrder, Pixel};
+use arachne_core::diagnostics::{Layer, PairOrder, Pixel, Reads};
 use arachne_core::order::{self, Decided, Ranked};
 use arachne_core::probes;
 use arachne_core::stream::Stream;
@@ -177,6 +178,7 @@ fn a_trace_s_pairwise_orders_are_those_its_ranks_ranked_by() {
                 let at = format!("{} frame {frame} ({x}, {y})", probe.name);
                 // Not asked for, nothing is recorded; asked for, nothing else moves.
                 assert!(q.pairs.is_empty() && q.sample_pairs.is_empty() && !q.sample_ranked);
+                assert!(p.reads.is_none() && q.reads.is_none(), "{at}");
                 let mut bare = p.clone();
                 (bare.pairs, bare.sample_pairs, bare.sample_ranked) = (vec![], vec![], false);
                 assert_eq!(&bare, q, "{at}");
@@ -251,4 +253,386 @@ fn a_trace_s_pairwise_orders_are_those_its_ranks_ranked_by() {
             "{kinds:?}"
         );
     }
+}
+
+/// Each frame of every fixture, the stream holding it: `visit(name, frame, stream, width,
+/// height)`.
+fn each_frame(mut visit: impl FnMut(&str, usize, &Stream, u32, u32)) {
+    for probe in probes::all() {
+        let mut stream = Stream::new();
+        for (frame, delta) in probe.deltas.iter().enumerate() {
+            stream.apply(delta).unwrap();
+            visit(probe.name, frame, &stream, probe.width, probe.height);
+        }
+    }
+}
+
+/// A pixel's reads, which `Stream::resolve_trace` always gives.
+fn reads<'p>(p: &'p Pixel, at: &str) -> &'p Reads {
+    p.reads
+        .as_ref()
+        .unwrap_or_else(|| panic!("{at}: a trace with its reads holds none"))
+}
+
+#[test]
+fn the_reads_change_no_byte_drawn_and_nothing_else_the_trace_holds() {
+    each_frame(|name, frame, stream, w, h| {
+        let at = format!("{name} frame {frame}");
+        let whole = stream.render(w, h, 2).unwrap();
+        let under = stream.render_under_overlay(w, h, 2).unwrap();
+        for decisions in [false, true] {
+            let plain = stream.diagnostic_resolves(0, 0, w, h, decisions).unwrap();
+            let read = stream.resolve_trace(0, 0, w, h, decisions).unwrap();
+            assert_eq!(
+                plain.keys().collect::<Vec<_>>(),
+                read.keys().collect::<Vec<_>>(),
+                "{at}"
+            );
+            for ((xy, p), q) in plain.iter().zip(read.values()) {
+                let at = format!("{at} {xy:?} decisions {decisions}");
+                assert!(p.reads.is_none(), "{at}: reads not asked for");
+                let r = reads(q, &at);
+                let n = q.entries.len();
+                assert_eq!(
+                    (r.coverage8.len(), r.depths.len(), r.err.len()),
+                    (n, n, n),
+                    "{at}"
+                );
+                assert_eq!(r.samples_all.len(), SAMPLES, "{at}");
+                if !decisions {
+                    assert!(r.against.is_empty(), "{at}: against without the decisions");
+                }
+                let mut bare = q.clone();
+                bare.reads = None;
+                assert!(bare == *p, "{at}: the reads moved what the trace holds");
+            }
+        }
+        // Drawn again after both traces, every byte and resolve class is the same.
+        assert!(stream.render(w, h, 2).unwrap() == whole, "{at}: render");
+        assert!(
+            stream.render_under_overlay(w, h, 2).unwrap() == under,
+            "{at}: render_under_overlay"
+        );
+    });
+}
+
+#[test]
+fn an_entry_s_coverage8_is_the_byte_the_fast_and_coverage_resolves_blend_it_alone_with() {
+    let mut units = [0usize; 4];
+    each_frame(|name, frame, stream, w, h| {
+        for ((x, y), p) in stream.resolve_trace(0, 0, w, h, false).unwrap() {
+            let at = format!("{name} frame {frame} ({x}, {y})");
+            let r = reads(&p, &at);
+            if !matches!(p.resolve, Resolve::Fast | Resolve::Coverage) {
+                continue;
+            }
+            for u in &p.units {
+                if let &[m] = u.members.as_slice() {
+                    assert_eq!(u.coverage, r.coverage8[m], "{at} entry {m}");
+                    units[p.resolve as usize] += 1;
+                }
+            }
+        }
+    });
+    eprintln!("single-entry units checked (background, fast, coverage, sample): {units:?}");
+    assert!(
+        units[Resolve::Fast as usize] > 0 && units[Resolve::Coverage as usize] > 1000,
+        "{units:?}"
+    );
+}
+
+#[test]
+fn samples_all_holds_every_entry_present_and_keeps_every_order_depth_decided() {
+    let (mut hidden, mut depth_orders, mut against) = (0usize, 0usize, 0usize);
+    let mut composited_under_cover = 0usize;
+    each_frame(|name, frame, stream, w, h| {
+        for ((x, y), p) in stream.resolve_trace(0, 0, w, h, true).unwrap() {
+            let at = format!("{name} frame {frame} ({x}, {y})");
+            let r = reads(&p, &at);
+            against += r.against.len();
+            for a in &r.against {
+                assert!(a.entry != a.other, "{at}: an entry read against itself");
+            }
+            for k in 0..SAMPLES {
+                let all = &r.samples_all[k];
+                let present: Vec<usize> = (0..p.entries.len())
+                    .filter(|&i| p.entries[i].coverage[k] != 0)
+                    .collect();
+                let mut listed = all.clone();
+                listed.sort_unstable();
+                assert_eq!(listed, present, "{at} sub-sample {k}: every entry present");
+                assert!(
+                    p.samples[k].iter().all(|i| all.contains(i)),
+                    "{at} sub-sample {k}: composited {:?}, present {all:?}",
+                    p.samples[k]
+                );
+                // What `samples` lacks the opaque drop removed: each lies behind an entry opaque and
+                // covering the sub-sample whole. The sample resolve's own ranks may still hold such
+                // an entry (they composite it under its cover, exactly).
+                let covered = |i: usize| {
+                    let e = &p.entries[i];
+                    e.colour[3] == 255 && e.coverage[k] == 255
+                };
+                for (place, &i) in all.iter().enumerate() {
+                    let behind_cover = all[..place].iter().any(|&j| covered(j));
+                    if !p.samples[k].contains(&i) {
+                        assert!(
+                            behind_cover,
+                            "{at} sub-sample {k}: entry {i} dropped with no opaque cover in front, \
+                             ranked {all:?}, composited {:?}",
+                            p.samples[k]
+                        );
+                        hidden += 1;
+                    } else if behind_cover && p.resolve == Resolve::Sample {
+                        composited_under_cover += 1;
+                    }
+                }
+            }
+            // Each sub-sample order depth decided (the resolve's own, `sample_pairs`) holds in
+            // `samples_all`, and between the depths each entry is read at against the other: the
+            // nearer, beyond both bounds, is in front.
+            for (k, pairs) in p.sample_pairs.iter().enumerate() {
+                for q in pairs.iter().filter(|q| q.how == Decided::Depth) {
+                    let front = q.front.expect("a depth order has a front");
+                    let back = if front == q.a { q.b } else { q.a };
+                    let all = &r.samples_all[k];
+                    let place = |i: usize| all.iter().position(|j| *j == i);
+                    assert!(
+                        matches!((place(front), place(back)), (Some(f), Some(b)) if f < b),
+                        "{at} sub-sample {k}: {front} in front of {back} by depth, ranked {all:?}"
+                    );
+                    let read = |i: usize, other: usize| {
+                        r.against
+                            .iter()
+                            .find(|a| (a.entry, a.other) == (i, other))
+                            .map_or((r.depths[i][k], r.err[i]), |a| (a.depths[k], a.err))
+                    };
+                    let ((df, ef), (db, eb)) = (read(front, back), read(back, front));
+                    assert!(
+                        df.total_cmp(&db) == Ordering::Less && !order::tied(df, ef, db, eb),
+                        "{at} sub-sample {k}: {front} at {df} (within {ef}) in front of {back} \
+                         at {db} (within {eb})"
+                    );
+                    depth_orders += 1;
+                }
+            }
+        }
+    });
+    eprintln!(
+        "entries dropped from what was composited {hidden}, composited by the sample resolve \
+         under an opaque cover {composited_under_cover}, depth orders checked {depth_orders}, \
+         reads against another entry {against}"
+    );
+    assert!(hidden > 0 && depth_orders > 100, "{hidden} {depth_orders}");
+}
+
+#[test]
+fn a_stream_traced_with_its_reads_and_decisions_draws_every_frame_as_one_never_traced() {
+    // Two streams handed the same deltas, one traced over the whole frame with its reads and
+    // decisions before each draw: every frame's bytes and resolve classes the same, with the
+    // overlay and without.
+    let mut frames = 0usize;
+    for probe in probes::all() {
+        let (w, h) = (probe.width, probe.height);
+        let (mut untraced, mut traced) = (Stream::new(), Stream::new());
+        for (frame, delta) in probe.deltas.iter().enumerate() {
+            untraced.apply(delta).unwrap();
+            traced.apply(delta).unwrap();
+            let read = traced.resolve_trace(0, 0, w, h, true).unwrap();
+            assert_eq!(read.len(), (w * h) as usize);
+            let at = format!("{} frame {frame}", probe.name);
+            assert!(
+                traced.render_under_overlay(w, h, 2).unwrap()
+                    == untraced.render_under_overlay(w, h, 2).unwrap(),
+                "{at}: without the overlay"
+            );
+            assert!(
+                traced.render(w, h, 2).unwrap() == untraced.render(w, h, 2).unwrap(),
+                "{at}: with the overlay"
+            );
+            frames += 1;
+        }
+    }
+    assert!(frames >= 18, "{frames}");
+}
+
+/// `order::painted` of entries `a` and `b`, as a pair's front: the later drawn, `None` for one
+/// paint position.
+fn painted(p: &Pixel, a: usize, b: usize) -> Option<usize> {
+    let (ea, eb) = (&p.entries[a], &p.entries[b]);
+    match eb.order.cmp(&ea.order).then(eb.sub.cmp(&ea.sub)) {
+        Ordering::Less => Some(a),
+        Ordering::Greater => Some(b),
+        Ordering::Equal => None,
+    }
+}
+
+/// `order::own_layers` of entries `a` and `b`, from what the trace says of them: one path's fill
+/// and one of its own strokes (both path layers of one record and one path, a fill among them).
+fn own_layers(p: &Pixel, a: usize, b: usize) -> bool {
+    let path = |l: Layer| matches!(l, Layer::BackgroundStroke | Layer::Fill | Layer::Stroke);
+    let (ea, eb) = (&p.entries[a], &p.entries[b]);
+    path(ea.layer)
+        && path(eb.layer)
+        && ea.leaf == eb.leaf
+        && ea.order == eb.order
+        && ea.sub / 3 == eb.sub / 3
+        && ea.sub != eb.sub
+        && (ea.layer == Layer::Fill || eb.layer == Layer::Fill)
+}
+
+/// The pixel's order of entries `a < b` and how it was decided, from their relation alone (none
+/// where they share no sub-sample), as `order::Shared::decided` decides it.
+fn decided(p: &Pixel, a: usize, b: usize, s: Option<order::Shared>) -> (Option<usize>, Decided) {
+    let s = s.unwrap_or_default();
+    let (shared, an, bn) = (
+        s.covered.count_ones(),
+        s.a_nearer.count_ones(),
+        s.b_nearer.count_ones(),
+    );
+    let paint = painted(p, a, b);
+    if shared > 0 && own_layers(p, a, b) {
+        return (paint, Decided::Paint);
+    }
+    match (shared, an, bn) {
+        (0, _, _) => (paint, Decided::Paint),
+        (_, 0, 0) => (paint, Decided::Tie),
+        (_, _, 0) => (Some(a), Decided::Depth),
+        (_, 0, _) => (Some(b), Decided::Depth),
+        _ => (
+            match an.cmp(&bn) {
+                Ordering::Greater => Some(a),
+                Ordering::Less => Some(b),
+                Ordering::Equal => paint,
+            },
+            Decided::Majority,
+        ),
+    }
+}
+
+#[test]
+fn the_relations_are_the_orders_the_pairs_are_decided_from_and_flat_is_the_flat_path() {
+    let (mut alone, mut even, mut flat, mut ranked) = (0usize, 0usize, 0usize, 0usize);
+    let mut by_how = [0usize; 4];
+    each_frame(|name, frame, stream, w, h| {
+        let read = stream.resolve_trace(0, 0, w, h, true).unwrap();
+        let apart = stream.resolve_trace(0, 0, w, h, false).unwrap();
+        for ((xy, p), q) in read.iter().zip(apart.values()) {
+            let at = format!("{name} frame {frame} {xy:?}");
+            let r = reads(p, &at);
+            // Asked for without the decisions: none of it.
+            let r0 = reads(q, &at);
+            assert!(
+                !r0.flat && r0.relations.is_empty(),
+                "{at}: relations without the decisions"
+            );
+            let n = p.entries.len();
+            let both = |a: usize, b: usize| {
+                (0..SAMPLES).fold(0u16, |m, k| {
+                    let e = &p.entries;
+                    m | (((e[a].coverage[k] != 0 && e[b].coverage[k] != 0) as u16) << k)
+                })
+            };
+            let pairs: Vec<(usize, usize)> = r.relations.iter().map(|q| (q.a, q.b)).collect();
+            let mut sorted = pairs.clone();
+            sorted.sort();
+            sorted.dedup();
+            assert_eq!(pairs, sorted, "{at}: relations a < b, in order, once each");
+            for q in &r.relations {
+                assert!(q.a < q.b && q.b < n, "{at}");
+                assert_eq!(
+                    q.shared.covered,
+                    both(q.a, q.b),
+                    "{at}: covered ({}, {})",
+                    q.a,
+                    q.b
+                );
+            }
+            if r.flat {
+                flat += 1;
+                assert!(r.relations.is_empty(), "{at}: a flat pixel's relations");
+                assert!(
+                    r.depths.windows(2).all(|d| d[0] == d[1]),
+                    "{at}: flat, its entries at more than one depth"
+                );
+                for o in &p.pairs {
+                    assert_eq!(
+                        (o.front, o.how),
+                        (painted(p, o.a, o.b), Decided::Paint),
+                        "{at}: flat ({}, {})",
+                        o.a,
+                        o.b
+                    );
+                }
+                continue;
+            }
+            // Not flat: a relation for exactly the pairs sharing a sub-sample, and each pair's
+            // order decided from its relation as `order::Shared::decided` decides it.
+            let wanted: Vec<(usize, usize)> = (0..n)
+                .flat_map(|a| (a + 1..n).map(move |b| (a, b)))
+                .filter(|&(a, b)| both(a, b) != 0)
+                .collect();
+            assert_eq!(pairs, wanted, "{at}: the pairs sharing a sub-sample");
+            for o in &p.pairs {
+                let q = r.relations.iter().find(|q| (q.a, q.b) == (o.a, o.b));
+                let want = decided(p, o.a, o.b, q.map(|q| q.shared));
+                assert_eq!(
+                    (o.front, o.how),
+                    want,
+                    "{at}: ({}, {}) from {:?}",
+                    o.a,
+                    o.b,
+                    q.map(|q| q.shared)
+                );
+                match q.map(|q| q.shared) {
+                    None => alone += 1,
+                    Some(s) => {
+                        by_how[o.how as usize] += 1;
+                        let (an, bn) = (s.a_nearer.count_ones(), s.b_nearer.count_ones());
+                        even += (o.how == Decided::Majority && an == bn) as usize;
+                    }
+                }
+            }
+            // The sub-sample ranks read the same orders.
+            if p.sample_ranked {
+                for (k, orders) in p.sample_pairs.iter().enumerate() {
+                    for o in orders {
+                        let q = r
+                            .relations
+                            .iter()
+                            .find(|q| (q.a, q.b) == (o.a, o.b))
+                            .unwrap_or_else(|| panic!("{at} sub-sample {k}: ({}, {})", o.a, o.b));
+                        let bit = |m: u16| m >> k & 1 != 0;
+                        let s = q.shared;
+                        assert!(bit(s.covered), "{at} sub-sample {k}");
+                        let front = if bit(s.ab.front) {
+                            Some(o.a)
+                        } else if bit(s.ba.front) {
+                            Some(o.b)
+                        } else {
+                            None
+                        };
+                        assert_eq!(o.front, front, "{at} sub-sample {k}: ({}, {})", o.a, o.b);
+                        assert_eq!(
+                            o.how == Decided::Depth,
+                            bit(s.ab.strong),
+                            "{at} sub-sample {k}"
+                        );
+                        ranked += 1;
+                    }
+                }
+            }
+        }
+    });
+    let rows: usize = by_how.iter().sum();
+    eprintln!(
+        "pair orders read from their relations {rows} (paint, tie, depth, majority {by_how:?}; \
+         {even} majorities on equal votes), pairs sharing no sub-sample {alone}, flat pixels \
+         {flat}, ranked sub-sample orders {ranked}"
+    );
+    assert!(
+        rows > 1000 && alone > 0 && ranked > 100,
+        "{rows} {alone} {ranked}"
+    );
+    assert!(by_how.iter().all(|&n| n > 0), "{by_how:?}");
 }
