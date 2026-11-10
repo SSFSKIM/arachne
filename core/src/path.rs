@@ -357,7 +357,7 @@ struct Layer {
     /// The outline's horizontal segments, which `edges` leaves out ([`scanline::edges_of`]), as
     /// their height and their two ends' x: with `edges`, the whole outline, which a layer keyed on
     /// a sloped plane reads its fringe's depth on ([`fringe_depths`]) and the labels' planner
-    /// tests a point on ([`LayerView::flats`]). Empty for a layer keyed on its curve.
+    /// tests a point on ([`LayerView::flats`]), whatever the layer is keyed on.
     flats: Vec<[f64; 3]>,
     /// Pixels `x0..x1` by `y0..y1`, inside the frame.
     bbox: [u32; 4],
@@ -2008,12 +2008,9 @@ impl<'v> Lowering<'v> {
         if edges.is_empty() {
             return;
         }
-        // A layer keyed on a plane: its whole outline, which a sloped one reads its fringe's
-        // depth on and the labels' planner tests a centre on.
-        let flats = match depth {
-            LayerDepth::Plane(_) => flats_of(rings),
-            LayerDepth::Curve(..) => Vec::new(),
-        };
+        // Its whole outline, which a layer keyed on a sloped plane reads its fringe's depth on and
+        // the labels' planner tests a centre on, on whatever the layer is keyed.
+        let flats = flats_of(rings);
         let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
         for e in &edges {
             x0 = x0.min(e.x_min());
