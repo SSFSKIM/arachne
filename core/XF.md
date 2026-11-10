@@ -361,8 +361,10 @@ shape's and table's key against its content, except for shape kinds it does not 
   surface or `label_rule_open` (`label_class.rs`), and only a surface can go in front of a label. A
   label's depth is its centre's: the camera-facing plane through it, read at the centre's
   projection, with its error bound. A sheet is a connected part of one surface object (the
-  outermost surface or cylinder on a face's first path) whose fills are wound one way on screen,
-  two fills sharing two corners on screen joined; strokes are never part of a sheet. A sheet goes
+  outermost surface or cylinder on a face's first path) whose fills are wound one way on screen
+  (by the sign of their flattened outline's area), two fills sharing two corners of their flattened
+  outlines on screen, each rounded to 1/4096 pixel, joined; a fill wound neither way is a sheet
+  alone, and strokes are never part of a sheet. A sheet goes
   in front of a label when it is shown nearer: where one of its fills holds the label's projected
   centre (a point on an edge held), on the ray through it, by that fill's plane read there; else at
   every order point of their overlap, by the plane of the fill holding the point read there; each
