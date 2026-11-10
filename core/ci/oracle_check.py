@@ -104,12 +104,16 @@ def check_isolated_checkout(root: Path) -> tuple[list[str], list[str]]:
 #: The test files that may name core paths beyond ``xf``, as patterns from the oracle's root: the
 #: contract tests, which read the core's report, and the module that builds streams through the
 #: core's probe kit. No source under ``src/`` may (``check_oracle`` asserts it).
-CORE_PATHS_ALLOWED_IN: tuple[str, ...] = ("tests/contract*.rs", "tests/common/fixtures.rs")
+CORE_PATHS_ALLOWED_IN: tuple[str, ...] = (
+    "tests/contract*.rs",
+    "tests/common/fixtures.rs",
+)
 
 
 def core_paths_allowed(rel: str) -> bool:
     """Whether the oracle file ``rel`` (POSIX, from the oracle's root) may name core paths."""
     return any(Path(rel).match(pattern) for pattern in CORE_PATHS_ALLOWED_IN)
+
 
 CRATE = re.compile(r"\barachne_core\b")
 INCLUDE = re.compile(r"\b(include|include_str|include_bytes)\s*!\s*\(\s*")

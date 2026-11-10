@@ -35,7 +35,8 @@ PLANTS = Path(__file__).resolve().parent / "oracle_plants.toml"
 
 def run_target(target: str) -> tuple[set[str], set[str], str]:
     """The tests of ``target`` that pass and that fail, and the build's error where it does not
-    build."""
+    build.
+    """
     which = ["--lib"] if target == "lib" else ["--test", target]
     env = dict(os.environ)
     env.pop("CARGO_TARGET_DIR", None)
@@ -64,7 +65,8 @@ def failing(target: str) -> tuple[set[str], str]:
 
 def baseline(plants: list[dict]) -> list[str]:
     """Why the unchanged tree cannot carry the plants: each target that does not build, a test of
-    it that fails, or a named test that does not pass. Empty when every target passes."""
+    it that fails, or a named test that does not pass. Empty when every target passes.
+    """
     named: dict[str, set[str]] = {}
     for p in plants:
         for t in p["red"]:
@@ -75,7 +77,9 @@ def baseline(plants: list[dict]) -> list[str]:
         passed, failed, broke = run_target(target)
         if broke:
             problems.append(f"{target}: {broke}")
-        problems += [f"{target}::{t}: fails on the unchanged tree" for t in sorted(failed)]
+        problems += [
+            f"{target}::{t}: fails on the unchanged tree" for t in sorted(failed)
+        ]
         problems += [
             f"{target}::{t}: named by a plant, does not pass on the unchanged tree"
             for t in sorted(named[target] - passed - failed)
@@ -93,7 +97,9 @@ def main(argv: list[str]) -> int:
     if problems:
         for problem in problems:
             print(f"BASE {problem}", flush=True)
-        print("plants: refused, the unchanged tree does not pass every target they name")
+        print(
+            "plants: refused, the unchanged tree does not pass every target they name"
+        )
         return 3
     failed = 0
     for p in plants:
