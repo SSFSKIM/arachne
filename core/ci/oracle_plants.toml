@@ -767,3 +767,21 @@ file = "core/oracle/src/draw.rs"
 find = "pub fn alpha_short(d: f64) -> u32 {\n"
 replace = "pub fn alpha_short(d: f64) -> u32 {\n    let d = d * 2.0;\n"
 red = ["contract::the_core_paints_at_the_alpha_band_s_edges_as_alpha_round_says"]
+
+[[plant]]
+name = "classes-walk-stops-at-cylinder"
+item = "§10"
+check = "label_classes@2 rule 3: the walk stops at the first cylinder"
+file = "core/oracle/src/label_classes.rs"
+find = "            Kind::Cylinder => return cylinder(path, at),\n"
+replace = ""
+red = ["label_classes::the_cylinder_rule_reads_a_cylinder_by_where_it_stands"]
+
+[[plant]]
+name = "classes-paths-disagree"
+item = "§10"
+check = "label_classes@2: paths that disagree are open"
+file = "core/oracle/src/label_classes.rs"
+find = "            Some(prev) if prev != o => return Outcome::Open(Cause::PathsDisagree),\n"
+replace = ""
+red = ["label_classes::a_record_s_paths_agree_or_it_is_open"]

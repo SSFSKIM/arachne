@@ -39,6 +39,7 @@ pub mod flatten;
 pub mod guard;
 pub mod joins;
 pub mod keys;
+pub mod label_classes;
 pub mod lines;
 pub mod order;
 pub mod out;
