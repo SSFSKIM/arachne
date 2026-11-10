@@ -147,8 +147,8 @@ Elsewhere, Cairo's rules that this text relies on are restated in full.
 | `paint_rows@1` | 9 | which colour rows a layer paints with, and how a paint blend mixes them | |
 | `cairo_linear_gradient@1` | 9 | a gradient's bytes at a pixel | |
 | `ce_shading@1` | 9 | CE's two lit stops of a shaded path; lit mesh corners | |
-| `label_placement@1` | 10 | where a camera-facing label sits among what covers it | `label_rule_open`, by sub-class (§10) |
-| `label_classes@1` | 10 | which sources are lines and which are surfaces | |
+| `label_placement@1` | 10 | where a camera-facing label sits among what covers it | `label_rule_open`, by sub-class or cause (§10) |
+| `label_classes@2` | 10 | which sources are lines and which are surfaces (replaces @1; the change is stated in §10) | `label_rule_open`, by cause (§10) |
 
 How the counted rules are counted:
 
@@ -2075,10 +2075,10 @@ in front of a surface the label sits behind is in front of the label too.
 - **A sheet** is a connected part of one source surface whose faces all face one way relative to
   the camera (front or back; their normals need not be equal) and which is single-valued on screen
   over the label's footprint. A front-facing and a back-facing part are two sheets. The unit is
-  never one face of a triangulation. A sheet's footprint is every sample it covers with alpha above
-  0.
-- **Classes** come from the source table below: a sheet qualifies only if its source is a
-  surface. A line's or arrow's parts never qualify.
+  never one face of a triangulation. A sheet's footprint is every sample its fill covers with alpha
+  above 0; its strokes never form or widen a sheet.
+- **Classes** come from `label_classes@2` below: a sheet qualifies only if its record's outcome
+  is a surface. A line's or arrow's parts never qualify.
 
 **Qualification: one decision per label and sheet.** It is made once over the whole frame, before
 any tile, and never retested at a pixel or a glyph. Let `O` be the samples both footprints hold.
@@ -2113,13 +2113,16 @@ and back) sits between them.
 **The admissible orders** at `k` are the orders this insertion gives over every admissible ordinary
 order of the other fragments (§7): an ordinary tie may change which qualifying sheet is rearmost.
 
-**Open cases.** `label_rule_open` keeps exactly four, each counted by name:
+**Open cases.** `label_rule_open` is counted by name: three placement cases, and the open
+outcomes of `label_classes@2`, each with its cause:
 
 - **`label_unsettled`:** a pair whose qualification the intervals cannot settle (2 or 3 above).
 - **`label_sheet_irregular`:** a source whose part over the label is folded, overlaps itself on
   screen, or is disconnected there, so that no sheet is single-valued over the footprint.
-- **`label_source_unmapped`:** a source whose class the table does not give: no source, a class
-  outside the table, conflicting classes over its paths, or a bare cylinder (below).
+- **A class left open** (`label_classes@2`, below): a sheet whose record's outcome is
+  `label_rule_open`, by its cause: `unmapped` (a class the table does not place), `generic_only`
+  (a source generic all the way up), `paths_disagree`, `no_source`, `cylinder_grouped` or
+  `point_cloud`.
 - **`label_ungrouped`:** in a stream read under XF 1.5's rules at the frame (Terms, above), a
   camera-facing record (one with a fixed-orientation centre) that has no facing group: set with no
   row, set by a delta of an older minor, or given a facing group of 0 by a row. It is not thereby outside every label: whether it
@@ -2129,7 +2132,7 @@ order of the other fragments (§7): an ordinary tie may change which qualifying 
 
 An open pair does not push the label back; the rendering it expects is the label on top of that
 sheet, and other sheets still qualify and place it. The oracle blesses neither order for the
-samples the open pair decides: they are reported under the sub-class, outside the promise, never
+samples the open pair decides: they are reported under its sub-class or cause, outside the promise, never
 `mismatch` and never agreement.
 
 **`label_kind_unknown`.** In a stream read as XF 1.4 at the frame (Terms, above), a face of a face
@@ -2153,38 +2156,116 @@ beside `zero_alpha_fragment`, and never routed to `label_rule_open` (witnesses W
 wholly nearer (W5); a label hidden by a nearer line it is not behind a surface for (W18); and each
 planted failure of W19 to W26 (§12).
 
-### Source classes (`label_classes@1`)
+### Source classes (`label_classes@2`)
 
-**Status.** The table below is an inventory written independently of the core's own mapping. It
-has not yet been checked against the classes real scenes use. A class it does not map falls to
-`label_source_unmapped`, which fails closed: the oracle blesses no order for that pair.
+**Status.** The table below is an inventory written independently of the core's own mapping, from
+the library's source at commit `0f8def6e`: every class there that derives from
+`arachne.mobject.mobject.Mobject`, each named by its defining module and qualified name. It has not
+yet been checked against the classes real scenes use. Every open outcome is `label_rule_open` with
+a cause, and fails closed: the oracle blesses no order for the pairs it decides.
 
-Read from the record's source, which the wire carries from XF 1.5 (below). A record's source lists, for each of its
-paths, the containment chain from the object that made the record outward, each node's nearest library class
-(a user's subclass maps to the library class it derives from). The class of the record:
+**Label first.** A record with a facing group (not 0) is a label, and is read by the label rule
+above before any class is read. Everything below classifies the other records, the sources a sheet
+may come from.
 
-1. **A line** where any node of any of its paths is a line class: an enclosing line or arrow
-   decides over a child's surface-like class (a cone, a cylinder or a filled tip inside an arrow).
-2. Otherwise the class of the object that made the record, from the table.
-3. `label_source_unmapped` where that class is absent from the table, where its paths give
-   different classes, or where the record has no source.
+Read from the record's source, which the wire carries from XF 1.5 (below). A record's source lists,
+for each of its paths, the containment chain from the object that made the record (its **maker**)
+outward through its **containers**, each node's nearest library class (a user's subclass maps to
+the library class it derives from). A class is named in the source, and in the table below, by the
+string `<defining module>.<qualified name>`: the module that defines the class, then its
+`__qualname__`, for example `arachne.mobject.three_d.three_dimensions.Surface`. A node is **generic** when its class is one of these six:
+`arachne.mobject.mobject.Mobject`, `arachne.mobject.mobject.Group`,
+`arachne.mobject.types.vectorized_mobject.VMobject`,
+`arachne.mobject.types.vectorized_mobject.VGroup`,
+`arachne.mobject.types.vectorized_mobject.VDict` or
+`arachne.mobject.three_d.three_dimensions.ThreeDVMobject`, a user's subclass of one of them
+included. The list is closed: no other class is generic, whatever it contains. A node is
+**surface-like** when the
+table makes its class a surface or gives it the cylinder rule. Each path gives an outcome, by the
+first of these that applies:
 
-| Nearest library class | Class |
-|---|---|
-| `Line`, `DashedLine`, `TangentLine`, `Arrow`, `DoubleArrow`, `Vector`, `CurvedArrow`, `CurvedDoubleArrow` | line |
-| `Line3D`, `Arrow3D` (shaft, cone and caps included) | line |
-| `NumberLine`, `UnitInterval`, `Axes`, `ThreeDAxes`, `NumberPlane` (axes, ticks and tips included) | line |
-| `ParametricFunction`, `FunctionGraph` (curves) | line |
-| `ArrowTip` and its subclasses, filled or not | line |
-| `Surface`, `Sphere`, `Torus`, `Cube`, `Prism`, `Cone`, `Polyhedron`, `Tetrahedron`, `Octahedron`, `Icosahedron`, `Dodecahedron` | surface |
-| `Polygon`, `RegularPolygon`, `Triangle`, `Square`, `Rectangle`, `RoundedRectangle`, `Circle`, `Ellipse`, `Annulus`, `Sector`, `Star` | surface by its fill alone |
-| `Cylinder` with no line or arrow enclosing it | `label_source_unmapped` |
-| `DotCloud`, `PMobject` and other point clouds | never qualifies |
+1. **Line ancestry.** Where any node of the path, the maker or any container, is a line class, the
+   outcome is line. Nodes of other classes between them do not stop it: a cone, a cylinder or a
+   filled tip inside an arrow is a line, and so is a rectangle behind a label inside a labelled
+   line.
+2. **Generic nodes read through.** Where the maker is generic, the path is read from its nearest
+   container that is not generic, as if that container had made the record. Where every node is
+   generic, the outcome is `label_rule_open` with cause `generic_only`.
+3. **Parts follow a surface-like container.** Where the node read is not a cylinder (rule 4
+   decides a cylinder itself), walk up from it through its containers to the nearest surface-like
+   one. The walk passes over generic nodes and over nodes whose class is open (`unmapped` or
+   `point_cloud`), and stops at the first cylinder it meets, never passing over one. Where it finds
+   one, the outcome is that container's own: a surface for a surface class, and for a cylinder what
+   rule 4 gives it where it stands. So a cap of a cylinder is a surface or open with its cylinder,
+   even where a surface holds the cylinder, and a part under an open node inside a surface is a
+   surface.
+4. **The cylinder rule.** A node of class `arachne.mobject.three_d.three_dimensions.Cylinder` with
+   no container is a surface: a solid. Inside any container (one that is not a line, which rule 1
+   has taken), a surface-like one included, it is `label_rule_open` with cause `cylinder_grouped`:
+   a cylinder is never read through its container by rule 3. Nothing reads its shape: a shaft
+   added to the scene ungrouped is read as a solid and can hide a label.
+5. **The node's own class,** from the table: a line, a surface, or open with the cause the table
+   gives. A class the table does not list is not generic by default, a container class included:
+   its outcome is decided when the class is added to the table, and until then it falls closed to
+   `label_rule_open` with cause `unmapped`.
 
-- A surface qualifies only through its filled faces; its outline strokes alone are lines.
-- A `Cylinder` inside a `Line3D` or an arrow is a shaft by rule 1. A bare one carries no intent: it
-  may be a solid or a shaft drawn by hand, and is never judged thin from its shape.
+The record's outcome is its paths' outcome where they all agree. Where they differ, it is
+`label_rule_open` with cause `paths_disagree`; a record with no source is `label_rule_open` with
+cause `no_source`.
+
+**What a class decides.** Only a surface changes where a label goes: a sheet qualifies only if its
+record's outcome is a surface, and a sheet is the record's filled footprint of alpha above 0 (§10,
+Terms). Its strokes never form or widen a sheet, so a surface record drawn by strokes alone never
+qualifies, a decided outcome that changes no class. A line never qualifies. An open record is an
+open case (`label_rule_open` with its cause): the label is expected on top of it, and the oracle
+blesses neither order for the samples the pair decides.
+
+| Class | Outcome | Decided by |
+|---|---|---|
+| `arachne.mobject.three_d.three_dimensions.Arrow3D`, `arachne.mobject.three_d.three_dimensions.Line3D` | line | rule 5: 3D lines, shafts, caps and tips included |
+| `arachne.mobject.geometry.line.Angle`, `arachne.mobject.geometry.line.Elbow`, `arachne.mobject.geometry.line.RightAngle` | line | rule 5: angle marks |
+| `arachne.mobject.geometry.tips.ArrowCircleFilledTip`, `arachne.mobject.geometry.tips.ArrowCircleTip`, `arachne.mobject.geometry.tips.ArrowSquareFilledTip`, `arachne.mobject.geometry.tips.ArrowSquareTip`, `arachne.mobject.geometry.tips.ArrowTip`, `arachne.mobject.geometry.tips.ArrowTriangleFilledTip`, `arachne.mobject.geometry.tips.ArrowTriangleTip`, `arachne.mobject.geometry.tips.StealthTip` | line | rule 5: arrow tips, filled or not |
+| `arachne.animation.changing.AnimatedBoundary`, `arachne.animation.changing.TracedPath`, `arachne.mobject.geometry.arc.CubicBezier`, `arachne.mobject.graphing.functions.FunctionGraph`, `arachne.mobject.graphing.functions.ImplicitFunction`, `arachne.mobject.graphing.functions.ParametricFunction`, `arachne.mobject.types.vectorized_mobject.CurvesAsSubmobjects`, `arachne.mobject.types.vectorized_mobject.DashedVMobject`, `arachne.mobject.vector_field.StreamLine` | line | rule 5: curves |
+| `arachne.mobject.vector_field.ArrowVectorField`, `arachne.mobject.vector_field.StreamLines`, `arachne.mobject.vector_field.VectorField` | line | rule 5: fields, drawn as curves and arrows |
+| `arachne.mobject.geometry.labeled.LabeledArrow`, `arachne.mobject.geometry.labeled.LabeledLine`, `arachne.mobject.geometry.line.Arrow`, `arachne.mobject.geometry.line.DashedLine`, `arachne.mobject.geometry.line.DoubleArrow`, `arachne.mobject.geometry.line.Line`, `arachne.mobject.geometry.line.TangentLine`, `arachne.mobject.geometry.line.Vector`, `arachne.mobject.geometry.shape_matchers.Cross`, `arachne.mobject.geometry.shape_matchers.Underline` | line | rule 5: lines and arrows |
+| `arachne.mobject.geometry.arc.Arc`, `arachne.mobject.geometry.arc.ArcBetweenPoints`, `arachne.mobject.geometry.arc.CurvedArrow`, `arachne.mobject.geometry.arc.CurvedDoubleArrow`, `arachne.mobject.geometry.arc.TangentialArc` | line | rule 5: the arc family |
+| `arachne.mobject.geometry.arc.TipableVMobject` | line | rule 5: the base of curves that take tips |
+| `arachne.mobject.graphing.coordinate_systems.Axes`, `arachne.mobject.graphing.coordinate_systems.ComplexPlane`, `arachne.mobject.graphing.coordinate_systems.NumberPlane`, `arachne.mobject.graphing.coordinate_systems.PolarPlane`, `arachne.mobject.graphing.coordinate_systems.ThreeDAxes`, `arachne.mobject.graphing.number_line.NumberLine`, `arachne.mobject.graphing.number_line.UnitInterval` | line | rule 5: the plane and axes family |
+| `arachne.mobject.graphing.probability.BarChart` | line | rule 5: the plane and axes family; its bars are lines by rule 1 |
+| `arachne.mobject.geometry.arc.ArcPolygon`, `arachne.mobject.geometry.arc.ArcPolygonFromArcs` | surface | rule 5: arc polygons |
+| `arachne.mobject.geometry.shape_matchers.BackgroundRectangle`, `arachne.mobject.geometry.shape_matchers.SurroundingRectangle` | surface | rule 5: background and surrounding rectangles |
+| `arachne.mobject.graphing.probability.SampleSpace` | surface | rule 5: filled planar shapes |
+| `arachne.mobject.frame.FullScreenRectangle`, `arachne.mobject.frame.ScreenRectangle` | surface | rule 5: screen rectangles |
+| `arachne.mobject.three_d.polyhedra.ConvexHull3D`, `arachne.mobject.three_d.polyhedra.Dodecahedron`, `arachne.mobject.three_d.polyhedra.Icosahedron`, `arachne.mobject.three_d.polyhedra.Octahedron`, `arachne.mobject.three_d.polyhedra.Polyhedron`, `arachne.mobject.three_d.polyhedra.Tetrahedron`, `arachne.mobject.three_d.three_dimensions.Cone`, `arachne.mobject.three_d.three_dimensions.Cube`, `arachne.mobject.three_d.three_dimensions.Dot3D`, `arachne.mobject.three_d.three_dimensions.Prism`, `arachne.mobject.three_d.three_dimensions.Sphere`, `arachne.mobject.three_d.three_dimensions.Surface`, `arachne.mobject.three_d.three_dimensions.Torus` | surface | rule 5: surfaces and solids |
+| `arachne.mobject.geometry.boolean_ops.Difference`, `arachne.mobject.geometry.boolean_ops.Exclusion`, `arachne.mobject.geometry.boolean_ops.Intersection`, `arachne.mobject.geometry.boolean_ops.Union`, `arachne.mobject.geometry.boolean_ops._BooleanOps` | surface | rule 5: the boolean operations |
+| `arachne.mobject.geometry.arc.AnnotationDot`, `arachne.mobject.geometry.arc.Annulus`, `arachne.mobject.geometry.arc.Circle`, `arachne.mobject.geometry.arc.Dot`, `arachne.mobject.geometry.arc.Ellipse`, `arachne.mobject.geometry.arc.LabeledDot` | surface | rule 5: the circle and dot family |
+| `arachne.mobject.geometry.labeled.LabeledPolygram`, `arachne.mobject.geometry.polygram.ConvexHull`, `arachne.mobject.geometry.polygram.Cutout`, `arachne.mobject.geometry.polygram.Polygon`, `arachne.mobject.geometry.polygram.Polygram`, `arachne.mobject.geometry.polygram.Rectangle`, `arachne.mobject.geometry.polygram.RegularPolygon`, `arachne.mobject.geometry.polygram.RegularPolygram`, `arachne.mobject.geometry.polygram.RoundedRectangle`, `arachne.mobject.geometry.polygram.Square`, `arachne.mobject.geometry.polygram.Star`, `arachne.mobject.geometry.polygram.Triangle` | surface | rule 5: the polygram family |
+| `arachne.mobject.geometry.arc.AnnularSector`, `arachne.mobject.geometry.arc.Sector` | surface | rule 5: the sectors |
+| `arachne.mobject.three_d.three_dimensions.Cylinder` | the cylinder rule | rule 4 |
+| `arachne.mobject.mobject.Group`, `arachne.mobject.mobject.Mobject`, `arachne.mobject.three_d.three_dimensions.ThreeDVMobject`, `arachne.mobject.types.vectorized_mobject.VDict`, `arachne.mobject.types.vectorized_mobject.VGroup`, `arachne.mobject.types.vectorized_mobject.VMobject` | generic, read through | rule 2 |
+| `arachne.frame_ir.cairo_painter._PointsProxy`, `arachne.mobject.types.point_cloud_mobject.Mobject1D`, `arachne.mobject.types.point_cloud_mobject.Mobject2D`, `arachne.mobject.types.point_cloud_mobject.PGroup`, `arachne.mobject.types.point_cloud_mobject.PMobject`, `arachne.mobject.types.point_cloud_mobject.Point`, `arachne.mobject.types.point_cloud_mobject.PointCloudDot` | open, `point_cloud` | rule 5: a cloud of points is not a sheet |
+| `arachne.frame_ir.cairo_painter._ImageProxy`, `arachne.frame_ir.cairo_painter._PathProxy`, `arachne.frame_ir.geometry._Path`, `arachne.mobject.geometry.labeled.Label`, `arachne.mobject.graph.DiGraph`, `arachne.mobject.graph.GenericGraph`, `arachne.mobject.graph.Graph`, `arachne.mobject.logo.ManimBanner`, `arachne.mobject.matrix.DecimalMatrix`, `arachne.mobject.matrix.IntegerMatrix`, `arachne.mobject.matrix.Matrix`, `arachne.mobject.matrix.MobjectMatrix`, `arachne.mobject.svg.brace.ArcBrace`, `arachne.mobject.svg.brace.Brace`, `arachne.mobject.svg.brace.BraceBetweenPoints`, `arachne.mobject.svg.brace.BraceLabel`, `arachne.mobject.svg.brace.BraceText`, `arachne.mobject.svg.svg_mobject.SVGMobject`, `arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath`, `arachne.mobject.table.DecimalTable`, `arachne.mobject.table.IntegerTable`, `arachne.mobject.table.MathTable`, `arachne.mobject.table.MobjectTable`, `arachne.mobject.table.Table`, `arachne.mobject.text.code_mobject.Code`, `arachne.mobject.text.numbers.DecimalNumber`, `arachne.mobject.text.numbers.Integer`, `arachne.mobject.text.numbers.Variable`, `arachne.mobject.text.tex_mobject.BulletedList`, `arachne.mobject.text.tex_mobject.MathTex`, `arachne.mobject.text.tex_mobject.MathTexPart`, `arachne.mobject.text.tex_mobject.SingleStringMathTex`, `arachne.mobject.text.tex_mobject.Tex`, `arachne.mobject.text.tex_mobject.Title`, `arachne.mobject.text.text_mobject.MarkupText`, `arachne.mobject.text.text_mobject.Paragraph`, `arachne.mobject.text.text_mobject.Text`, `arachne.mobject.text.typst_mobject.MathTypst`, `arachne.mobject.text.typst_mobject.Typst`, `arachne.mobject.types.image_mobject.AbstractImageMobject`, `arachne.mobject.types.image_mobject.ImageMobject`, `arachne.mobject.types.image_mobject.ImageMobjectFromCamera`, `arachne.mobject.types.vectorized_mobject.VectorizedPoint`, `arachne.mobject.value_tracker.ComplexValueTracker`, `arachne.mobject.value_tracker.ValueTracker` | open, `unmapped` | rule 5: neither a line nor a surface |
+
+- The key is the nearest library class itself, never membership of a base class:
+  `arachne.mobject.geometry.arc.Circle` derives from `arachne.mobject.geometry.arc.Arc` and is a
+  surface; `arachne.mobject.geometry.arc.Dot` is read as itself.
 - The table is the oracle's own and is written from this text alone.
+
+**Change from `label_classes@1`.**
+
+- A facing group makes a record a label before any class is read.
+- Line ancestry is read per path, and paths that disagree are open (`paths_disagree`), where @1
+  made a record a line when any node of any path was one.
+- A generic maker reads through to its nearest non-generic container, where @1 found no class for
+  it.
+- A record under a surface-like container takes that container's outcome.
+- A cylinder with no container is a surface, and one in a container that is not a line is open
+  (`cylinder_grouped`), where @1 left every bare cylinder unmapped.
+- A surface's strokes no longer make it a line: its class comes from its source alone, and its
+  sheet is its filled footprint.
+- Point clouds are open (`point_cloud`), where @1 said they never qualify.
+- `label_source_unmapped` is gone: every open outcome is `label_rule_open` with a cause.
+- Classes are named in full, and the table lists every mobject class of the library.
 
 **How the wire carries a source (XF 1.5).** A delta may end, after its order, with a source
 section: its class names, then its rows. Each row is `u32 slot`, `u32 facing_group`, a path count,
@@ -2219,7 +2300,7 @@ A row carries both fields, the record's source and its facing group.
 **The source a decision reads.** A label decision for a frame reads each record's source and facing
 group as the stream holds them at that frame: the slot's latest set or held row, in delta order. A
 row carries the same source content a set does, and the class rule above reads that content, never
-how it arrived, so `label_classes@1` stands as it is: after a held row, the source read is the
+how it arrived, so `label_classes@2` stands as it is: after a held row, the source read is the
 row's (witness W27, §12).
 
 ## 11. What the oracle refuses
@@ -2566,7 +2647,8 @@ line covers, `L` in front of the line. The line's `L ≈ 29.1` px lies 0.86 px f
 
 **W20, `label_inside_box`.** Planted: a wrong sheet partition. It needs XF 1.5's source
 section (without it its faces are `label_kind_unknown`). A cube of
-side 4 centred at the origin, a face group whose source is `Cube`, fill `(0, 0, 1, 0.5)`; `L` at its
+side 4 centred at the origin, a face group whose source path is
+`[(c, arachne.mobject.three_d.three_dimensions.Cube)]`, fill `(0, 0, 1, 0.5)`; `L` at its
 centre. Its front face (`z = 2`) and back face (`z = −2`) are two sheets; the side faces are edge-on.
 The front sheet covers `L`'s centre and is nearer: it qualifies; the back sheet is farther: it does
 not. Pixel `(32, 32)`: front, `L`, back. Defect: front, back, `L`, as if the box were one occluder.
@@ -2617,11 +2699,13 @@ front of `S`.
 section. View C, a stream of two deltas over the scene of W5 (`G` = `[−3, 3]²` at `z = 2`, opaque,
 then `L`):
 
-- **Delta 1** sets `G` with a row: facing group 0, the source path `[(g, Polygon), (v, Vector)]`;
-  and `L` with a row of facing group 1 and its source. `G` is made by a polygon inside a vector, so it is a line by rule 1 and never qualifies. Frame 1,
+- **Delta 1** sets `G` with a row: facing group 0, the source path
+  `[(g, arachne.mobject.geometry.polygram.Polygon), (v, arachne.mobject.geometry.line.Vector)]`; and `L` with a row of
+  facing group 1 and its source. `G` is made by a polygon inside a vector, so it is a line by
+  line ancestry (rule 1 of `label_classes@2`) and never qualifies. Frame 1,
   pixel `(32, 32)`: `L` in front of `G`.
 - **Delta 2** sets nothing and removes nothing, and carries one held row for `G`'s slot: facing
-  group 0, the source path `[(g, Polygon)]`, the polygon reparented out of the vector. Its drawing
+  group 0, the source path `[(g, arachne.mobject.geometry.polygram.Polygon)]`, the polygon reparented out of the vector. Its drawing
   is untouched. `G` is now a surface; it covers `L`'s centre, nearer: it qualifies. Frame 2, pixel
   `(32, 32)`: `G` in front of `L`.
 
@@ -2640,7 +2724,8 @@ clearing nothing.
 carries is well formed unless stated; expected: frames 2 to 4
 `StreamRefused { at_seq: 2, cause }` with the code named.
 
-- **`refused_class_named_twice`** (`class_named_twice`): delta 2's class names list `Polygon` twice.
+- **`refused_class_named_twice`** (`class_named_twice`): delta 2's class names list
+  `arachne.mobject.geometry.polygram.Polygon` twice.
 - **`refused_slot_named_twice`** (`slot_named_twice`): delta 2 carries two rows for `s`.
 - **`refused_slot_removed`** (`slot_removed`): delta 2 removes `s` and carries a row for `s`.
 - **`refused_set_and_removed`** (`slot_removed`): delta 2 sets a new slot `w`, removes `w`, and
@@ -2687,9 +2772,26 @@ usual and the order at pixel `(32, 32)`'s samples, which it shares with `G`, cou
 `label_rule_open` under `label_ungrouped`, neither `mismatch` nor agreement.
 
 **`label_ungrouped_no_row`.** The scene of W5 in one delta of XF 1.5: `G` set with a row (facing
-group 0, the source path `[(g, Polygon)]`), `L` set with no row. Expected: no refusal; `L`'s
+group 0, the source path `[(g, arachne.mobject.geometry.polygram.Polygon)]`), `L` set with no row. Expected: no refusal; `L`'s
 coverage judged as usual; the order at every sample `L` shares with `G` counted `label_rule_open`
 under `label_ungrouped`, never read as `L` being outside a label or a record of another kind.
+
+**`class_cylinder_grouped`.** The scene of W5 in one delta of XF 1.5: `L` set with a row of facing
+group 1 and its source, and `G` set with a row of facing group 0 and the source path
+`[(y, arachne.mobject.three_d.three_dimensions.Cylinder), (b, arachne.mobject.three_d.three_dimensions.Cube)]`, a cylinder's own
+record inside a cube. Expected: `G` is `label_rule_open` with cause `cylinder_grouped` (rule 4;
+rule 3 never reads a cylinder through its container), so `L` is expected on top and the samples of
+pixel `(32, 32)`, which the pair decides, are counted `label_rule_open` with cause
+`cylinder_grouped`, neither `mismatch` nor agreement. Reading the cube as the cylinder's container would
+make `G` a surface that qualifies, with `L` behind it.
+
+**`class_part_follows_cylinder`.** As `class_cylinder_grouped`, with `G`'s source path
+`[(c, arachne.mobject.geometry.arc.Circle), (y, arachne.mobject.three_d.three_dimensions.Cylinder),
+(f, arachne.mobject.three_d.three_dimensions.Surface)]`: a cap under a cylinder under a surface.
+Expected: the walk of rule 3 stops at the cylinder, whose outcome where it stands, inside the
+surface, is open: `G` is `label_rule_open` with cause `cylinder_grouped`, counted as in
+`class_cylinder_grouped`. Following the surface past the cylinder would make `G` a surface that
+qualifies, with `L` behind it.
 
 ### Soundness fixtures
 
@@ -2769,9 +2871,10 @@ These are reported by class for a human to view, never counted as ties:
   (`curve_recut`, §6). They are `truth_unable` per sample.
 - **Far gradient ends.** Gradient layers with an end or a pixel's point beyond the fit limit
   (`gradient_far_ends`, §9). They are `truth_unable` for that layer's pixels.
-- **Open label cases.** Samples counted `label_rule_open` (§10), only by its four cases, each
-  under its sub-class: `label_unsettled`, `label_sheet_irregular`, `label_source_unmapped`,
-  `label_ungrouped`.
+- **Open label cases.** Samples counted `label_rule_open` (§10), only by its named cases: the
+  sub-classes `label_unsettled`, `label_sheet_irregular` and `label_ungrouped`, and a class left
+  open by `label_classes@2` under its cause (`unmapped`, `generic_only`, `paths_disagree`,
+  `no_source`, `cylinder_grouped`, `point_cloud`).
 - **Label against an object of unknown kind.** Samples where a face of a face group or a mesh
   triangle, which a stream read as XF 1.4 cannot place on the line or the surface
   side, decides a label's placement (`label_kind_unknown`, §10). The orders of both readings are
