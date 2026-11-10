@@ -2121,6 +2121,30 @@ paths, the containment chain from the object that made the record outward, each 
   may be a solid or a shaft drawn by hand, and is never judged thin from its shape.
 - The table is the oracle's own and is written from this text alone.
 
+**How the wire carries a source (XF 1.5).** A delta's source tail follows its order and lists rows
+by slot. A slot's set carries one row, that record's metadata. A **source-only row** is any other
+row. It is valid only for a held slot: one the stream holds before the delta, which the delta
+neither sets nor removes (§11 refuses the rest).
+
+- **Set.** Setting a slot replaces its metadata with its row's; a slot set with no row has its
+  metadata cleared.
+- **Removed.** Removing a slot deletes its metadata with it.
+- **Source-only row.** It replaces the held slot's source and touches nothing else: not its
+  geometry, its paint, its placement or its place in the order. It is how a reparent reaches the
+  wire without the drawing being sent again.
+- **What a row carries.** A source-only row is expected to carry the record's facing group too,
+  since a reparent under another root can change a slot's group without a set; that is still to be
+  confirmed by the wire's text. Until it is, a source-only row is read as carrying the source alone,
+  and the slot keeps the facing group its last set gave it.
+- **Version.** A delta whose source tail holds a row is minor 5; one with none keeps its minor 4
+  bytes, and a 1.4 reader stops before the tail.
+
+**The source a decision reads.** A label decision for a frame reads each record's source as the
+stream holds it at that frame: the slot's latest set or source-only row, in delta order. A row
+carries the same source content a set does, and the class rule above reads that content, never how
+it arrived, so `label_classes@1` stands as it is: after a source-only row, the source read is the
+row's (witness W27, §12).
+
 ## 11. What the oracle refuses
 
 **Core rule.** The core refuses a frame whole, drawing nothing, when an entry of the order it draws
@@ -2162,8 +2186,9 @@ in these cases (overlay entries excluded):
   does not know;
 - the view names a light model it does not know (it knows CE's, code 0, and soft diffuse, code 1);
 - the core refuses the frame (there is nothing to judge);
-- the stream is a delta of a newer XF minor version than 4. It reads deltas of XF major 1 up to
-  minor 4, and cannot know the meaning of a newer minor's skipped fields;
+- the stream is a delta of a newer XF minor version than 5. It reads deltas of XF major 1 up to
+  minor 5 (minor 5's source tail, §10), and cannot know the meaning of a newer minor's skipped
+  fields;
 - the view's background is an image smaller than the frame in either dimension (§1).
 
 Each refusal names the slot, the object, and the kind or bit.
@@ -2175,6 +2200,28 @@ slot, and two display records drawn in the same layer of one view's order with t
 rank. A delta that fails is refused atomically: nothing of it applies, and the stream stands as
 before it. The oracle never judges a frame built from part of one, and reports the delta's refusal
 by its reason.
+
+**Source-only rows refused (XF 1.5).** The oracle's XF reading refuses a delta's source tail in
+exactly four cases, the four causes of `StreamRefused { at_seq, cause }`:
+
+- **removed slot:** a source-only row for a slot the same delta removes;
+- **slot named twice:** two source-only rows for one slot in the delta;
+- **slot not held:** a source-only row for a slot the stream does not hold before the delta;
+- **slot the delta also sets:** a source-only row for a slot the delta sets, whose metadata travels
+  with its set.
+
+`at_seq` is the refused delta's sequence number. Where a delta falls under more than one cause, the
+cause is the first that applies in the order above.
+
+The two refusals sit side by side:
+
+- **An invalid delta** (the checks above): its own frame is `truth_unable`, and the frames after it
+  are judged on the stream as it stood before it.
+- **`StreamRefused`:** the refused delta's frame and every later frame of the stream are
+  `truth_unable` under this one reason, and none carries a verdict. A later delta never clears it,
+  and a refused stream does not resume. A writer that sends any of these has lost track of which
+  slots it holds and what each carries, so no state after it is one the oracle can trust. It is
+  never a verdict on the core.
 
 ## 12. Cases the contract must reject
 
@@ -2449,6 +2496,39 @@ centre at `(−1, 0, 0)`; a polygon `S` = `[−0.75, 2] × [−3, 3]` at `z = 1`
 `L`'s centre and is nearer over the whole overlap (screen `x` from about 60.8 to 66): it qualifies,
 and `L` is behind `S` at both pixels `(63, 32)` and `(64, 32)`. Defect: at pixel `(64, 32)`, `L` in
 front of `S`.
+
+**W27, `source_row_reparent`.** Set: the source a decision reads (§10). It needs XF 1.5's source
+tail. View C, a stream of two deltas over the scene of W5 (`G` = `[−3, 3]²` at `z = 2`, opaque,
+then `L`):
+
+- **Delta 1** sets `G` with the source path `[(g, Polygon), (v, Vector)]`: `G` is made by a polygon
+  inside a vector, so it is a line by rule 1 and never qualifies. Frame 1, pixel `(32, 32)`: `L` in
+  front of `G`.
+- **Delta 2** sets nothing and removes nothing, and carries one source-only row for `G`'s slot
+  with the source path `[(g, Polygon)]`: the polygon reparented out of the vector. Its geometry,
+  paint and order are untouched. `G` is now a surface; it covers `L`'s centre, nearer: it
+  qualifies. Frame 2, pixel `(32, 32)`: `G` in front of `L`.
+
+Defect: frame 2's order with `L` in front, the decision read from delta 1's source. Verdict
+`mismatch` at frame 2's 16 samples; frame 1 agrees.
+
+**W28, `stream_refused`.** Verdict `StreamRefused`, not `mismatch`. A stream of four deltas over
+W27's scene, seq 1 to 4: delta 1 sets slot `s` (`G`) and slot `t` (`L`); delta 2 carries a
+source-only row for a slot `u` that no delta has set (slot not held); deltas 3 and 4 are valid
+(each moves `L`). Expected: frame 1 judged as usual; frames 2, 3 and 4 all `truth_unable` under
+`StreamRefused { at_seq: 2, cause: slot not held }`, none with a verdict, the valid deltas after it
+clearing nothing.
+
+**Row refusals, one per cause.** Each has W28's shape, delta 2 being the refused one; expected:
+frames 2 to 4 `StreamRefused { at_seq: 2, cause }` with the cause named.
+
+- **`row_refused_removed`** (removed slot): delta 2 removes `s` and carries a source-only row for
+  `s`.
+- **`row_refused_twice`** (slot named twice): delta 2 carries two source-only rows for `s`.
+- **`row_refused_not_held`** (slot not held): delta 2 carries a source-only row for `u`, which no
+  delta has set. This is W28 itself.
+- **`row_refused_set`** (slot the delta also sets): delta 2 sets `s` again with its own metadata and
+  also carries a source-only row for `s`.
 
 ### Soundness fixtures
 
