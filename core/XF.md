@@ -211,20 +211,23 @@ each a `StreamError`:
     again, which only a delta built in memory reaches), a kind that needs a shape given none, a
     shape of a kind the record cannot take, a sub-frame display given a shape, a body of another
     kind's (each `Invalid`); a shape (its own, its blend's, its clip's, its fill image, its tail's
-    points) or a paint table the stream would not hold after the delta: neither held nor uploaded,
-    or released by it (`Missing`); a sub-frame's view and order, as in 11 and 12; a face group's,
+    points) or a paint table neither held nor uploaded (`Missing`; one the delta releases is
+    refused by 8 first); a sub-frame's view and order, as in 11 and 12; a face group's,
     points record's or instances record's table of other than one row per face, point or placement,
     an instances record whose placements and objects differ in number, a face group's face ends or
     widths (XF 1.3) and joins (XF 1.4), as described above (each `Invalid`);
 11. the delta's view: soft diffuse light outside its ranges, a background image that is not an image
-    shape (`Invalid`) or that the stream would not hold after the delta (`Missing`);
+    shape (`Invalid`) or neither held nor uploaded (`Missing`);
 12. the order, the delta's or, when it has none, the stream's: a slot not set (`Missing`); two
     displays sharing a capture rank in one layer, a part past the record's parts (each `Invalid`);
 13. `slot_not_held` (`Missing`).
 
 So a shape key that a record names and that the delta neither uploads nor finds held is refused by
 `apply` (10), never by the reader. An order entry names a slot, not a key: a slot not set is refused
-by `apply` (12), and a layer code the build does not know by the reader.
+by `apply` (12), and a layer code the build does not know by the reader. A body of another kind's,
+and an instances record whose placements and objects differ in number, are reached only by a delta
+built in memory: on the wire a record's kind decides its body, and its placements and objects share
+one count.
 
 ## Content keys
 
