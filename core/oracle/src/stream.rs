@@ -10,8 +10,9 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use arachne_core::xf::{
-    Body, Camera, Delta, FEATURE_BACKGROUND_IMAGE, FEATURE_PRE_PROJECTED, Key, LightModel,
-    ObjectInfo, OrderEntry, Record, RecordKind, Shape, ShapeData, Space, Stops, View,
+    Background, Body, Camera, Delta, FEATURE_BACKGROUND_IMAGE, FEATURE_PRE_PROJECTED, ImageSource,
+    Key, LightModel, ObjectInfo, OrderEntry, Record, RecordKind, Shape, ShapeData, Space, Stops,
+    View,
 };
 
 use crate::draw;
@@ -188,6 +189,19 @@ impl State {
             }
         }
         for s in &d.upload {
+            if let ShapeData::Image {
+                width,
+                height,
+                rgba,
+            } = s.data()
+                && rgba.len() as u128 != *width as u128 * *height as u128 * 4
+            {
+                return bad(format!(
+                    "image {} holds {} bytes, not {width} x {height} x 4",
+                    s.key().hex(),
+                    rgba.len()
+                ));
+            }
             if let ShapeData::Mesh {
                 positions,
                 triangles,
@@ -260,27 +274,45 @@ impl State {
                 return bad(format!("slot {}: {what}", r.slot));
             }
         }
-        let order = d.order.as_ref().unwrap_or(&self.order);
-        for e in order {
-            let Some(r) = records.get(&e.slot) else {
-                return bad(format!("the order names slot {} it lacks", e.slot));
-            };
-            let parts = match &r.body {
-                Body::FaceGroup(f) => f.uv.len() as u32,
-                _ => 1,
-            };
-            if e.part >= parts {
-                return bad(format!(
-                    "the order names part {} of slot {}",
-                    e.part, e.slot
-                ));
+        // Every view the delta leaves, with the order drawn into it: the stream's, and each
+        // display's own.
+        let mut views: Vec<(String, Option<&View>, &[OrderEntry])> = vec![(
+            "the view".into(),
+            d.view.as_ref().or(self.view.as_ref()),
+            d.order.as_ref().unwrap_or(&self.order),
+        )];
+        for r in records.values() {
+            if let Body::Image(ImageSource::SubFrame { view, order, .. }) = &r.body {
+                views.push((format!("slot {}'s display", r.slot), Some(view), order));
+            }
+        }
+        for (name, view, order) in views {
+            if let Some(Background::Image(k)) = view.map(|v| &v.background) {
+                match shape(k).map(Shape::data) {
+                    Some(ShapeData::Image { .. }) => {}
+                    Some(_) => {
+                        return bad(format!(
+                            "{name} names {} as its background image, not an image shape",
+                            k.hex()
+                        ));
+                    }
+                    None => {
+                        return bad(format!(
+                            "{name} names background image {} it lacks",
+                            k.hex()
+                        ));
+                    }
+                }
+            }
+            if let Some(what) = order_problem(order, &records) {
+                return bad(format!("{name}'s order: {what}"));
             }
         }
         Ok(())
     }
 
-    /// Every refusal of the frame the state draws now (contract §11), in order; empty when the
-    /// oracle judges it.
+    /// Every refusal of the frame the state draws now (contract §11, and §1's background), in
+    /// order; empty when the oracle judges it.
     pub fn refusals(&self) -> Vec<Refusal> {
         let mut out = Vec::new();
         if let Some(v) = self.newer {
@@ -297,6 +329,21 @@ impl State {
             out.push(Refusal::new(
                 Reason::UnknownLightModel,
                 format!("light model {code}"),
+            ));
+        }
+        // Contract §1: the background is an image's top-left W x H corner; a smaller image is
+        // refused.
+        if let Background::Image(k) = &view.background
+            && let Some(ShapeData::Image { width, height, .. }) =
+                self.shapes.get(k).map(Shape::data)
+            && (*width < view.pixel_width || *height < view.pixel_height)
+        {
+            out.push(Refusal::new(
+                Reason::CoreRefuses,
+                format!(
+                    "the background image is {width} x {height}, smaller than the {} x {} frame",
+                    view.pixel_width, view.pixel_height
+                ),
             ));
         }
         let shading = matches!(&view.camera, Camera::ThreeD(c) if c.should_apply_shading);
@@ -551,6 +598,36 @@ fn record_lists<'a>(r: &Record, shape: &dyn Fn(&Key) -> Option<&'a Shape>) -> Op
         };
         if points.map(|n| n / 4) != Some(joins.len()) {
             return Some("joins not one per cubic of the points the path draws".into());
+        }
+    }
+    None
+}
+
+/// Why an order drawn into one view is not valid XF against the records a delta leaves, if it is
+/// not: an entry naming a slot or part that does not exist, or two displays drawn in one layer
+/// sharing a capture rank (`XF.md`, "Sub-frame capture"; the same rank in another layer or view is
+/// allowed, as is one display drawn twice).
+fn order_problem(order: &[OrderEntry], records: &BTreeMap<u32, &Record>) -> Option<String> {
+    let mut ranks: HashMap<(u8, u32), u32> = HashMap::new();
+    for e in order {
+        let Some(r) = records.get(&e.slot) else {
+            return Some(format!("it names slot {} it lacks", e.slot));
+        };
+        let parts = match &r.body {
+            Body::FaceGroup(f) => f.uv.len() as u32,
+            _ => 1,
+        };
+        if e.part >= parts {
+            return Some(format!("it names part {} of slot {}", e.part, e.slot));
+        }
+        if let Body::Image(ImageSource::SubFrame { rank, .. }) = &r.body
+            && let Some(other) = ranks.insert((e.layer as u8, *rank), e.slot)
+            && other != e.slot
+        {
+            return Some(format!(
+                "displays in slots {other} and {} share capture rank {rank} in layer {}",
+                e.slot, e.layer as u8
+            ));
         }
     }
     None
