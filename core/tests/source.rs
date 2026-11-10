@@ -673,6 +673,117 @@ fn a_readers_refusal_comes_before_apply_s_slot_not_held() {
     assert_eq!(s.record(1), Some(&sourced));
 }
 
+/// Whether `bytes` are refused by the reader as XF's ordinary invalid XF (`XfError::Invalid`)
+/// naming `what`, and with none of the section's codes.
+fn refused_before_the_section(bytes: &[u8], what: &str) {
+    match wire::decode_delta(bytes) {
+        Err(XfError::Invalid(why)) => {
+            assert!(why.contains(what) && !why.contains("row_empty"), "{why}")
+        }
+        other => panic!("not refused as invalid: {other:?}"),
+    }
+}
+
+#[test]
+fn a_refusal_of_anything_written_before_the_section_is_the_deltas() {
+    // Each delta's section holds a row carrying nothing; something written before it is refused
+    // first: the time, its first field after the version, and the order, its last before the
+    // section.
+    let section = section_bytes(&["a.B"], &[row_bytes(4, 0, &[])]);
+    let mut timed = with_section(&[1], &[2], &section);
+    timed[12..20].copy_from_slice(&0i64.to_le_bytes());
+    refused_before_the_section(&timed, "denominator 0");
+    let mut d = empty();
+    d.order = Some(vec![entry(1)]);
+    let mut ordered = wire::encode_delta(&d);
+    let layer = ordered.len() - 9;
+    ordered[layer] = 7;
+    ordered[2..4].copy_from_slice(&5u16.to_le_bytes());
+    ordered.extend_from_slice(&section);
+    refused_before_the_section(&ordered, "7 is not a valid layer");
+}
+
+#[test]
+fn apply_s_other_checks_come_before_slot_not_held() {
+    // Each delta also gives slot 9, which the stream does not hold, a held row; apply's other
+    // refusal is the delta's: a record naming a shape the stream would not hold, and an order
+    // drawing a slot not set, each `StreamError::Missing`.
+    let (mut s, _, sourced) = holding_a_sourced_square();
+    let unheld = Shape::new(ShapeData::Path {
+        points: common::square_points(2.0),
+    });
+    let not_held = || vec![held_row(9, 0, glyph(9).source)];
+    let mut shaped = Delta::new(Time { num: 1, den: 15 }, 1);
+    shaped.set = vec![square_at(2, &unheld)];
+    shaped.source = not_held();
+    let mut ordered = Delta::new(Time { num: 1, den: 15 }, 1);
+    ordered.order = Some(vec![entry(1), entry(7)]);
+    ordered.source = not_held();
+    for (d, what) in [
+        (shaped, "the stream would not hold"),
+        (ordered, "the order draws slot 7"),
+    ] {
+        match s.apply(&d).unwrap_err() {
+            StreamError::Missing(why) => {
+                assert!(why.contains(what) && !why.contains("slot_not_held"), "{why}")
+            }
+            other => panic!("{what}: not refused as missing: {other}"),
+        }
+        assert_eq!(s.record(1), Some(&sourced), "{what}");
+    }
+}
+
+#[test]
+fn a_section_code_comes_before_apply_s_other_checks() {
+    // A delta built in memory, not read: its section's codes are still the reader's, so they come
+    // before apply's other refusals, here a shape uploaded twice (`StreamError::Invalid`) and a
+    // record naming a shape the stream would not hold (`StreamError::Missing`).
+    let (mut s, shape, sourced) = holding_a_sourced_square();
+    let unheld = Shape::new(ShapeData::Path {
+        points: common::square_points(2.0),
+    });
+    let at = || Delta::new(Time { num: 1, den: 15 }, 1);
+    let mut empty_row = at();
+    empty_row.upload = vec![shape.clone(), shape.clone()];
+    empty_row.source = vec![held_row(1, 0, Vec::new())];
+    let mut removed = at();
+    removed.upload = vec![shape.clone(), shape.clone()];
+    removed.remove = vec![1];
+    removed.source = vec![held_row(1, 0, glyph(1).source)];
+    let mut empty_path = at();
+    let mut pathless = square_at(2, &unheld);
+    pathless.source = vec![Vec::new()];
+    empty_path.upload = vec![shape.clone(), shape.clone()];
+    empty_path.set = vec![pathless];
+    // A record the delta sets and removes, carrying a source: its row is refused as removed.
+    let mut set_and_removed = at();
+    set_and_removed.upload = vec![shape.clone(), shape.clone()];
+    set_and_removed.set = vec![sourced.clone()];
+    set_and_removed.remove = vec![1];
+    for (d, code) in [
+        (empty_row, "row_empty"),
+        (removed, "slot_removed"),
+        (empty_path, "path_empty"),
+        (set_and_removed, "slot_removed"),
+    ] {
+        match s.apply(&d).unwrap_err() {
+            StreamError::Invalid(why) => assert!(why.contains(code), "{code}: {why}"),
+            other => panic!("{code}: not refused as invalid: {other}"),
+        }
+        assert_eq!(s.record(1), Some(&sourced), "{code}");
+    }
+    // Read from bytes, the reader refuses it, and apply never sees the delta: a record with no
+    // shape, which apply refuses (`StreamError::Invalid`), and a row carrying nothing.
+    let bare = wire::decode_delta(&with_section(&[1], &[], &[])).unwrap();
+    let why = s.apply(&bare).unwrap_err().to_string();
+    assert!(why.contains("needs a shape"), "{why}");
+    let rowed = with_section(&[1], &[], &section_bytes(&[], &[row_bytes(1, 0, &[])]));
+    match wire::decode_delta(&rowed) {
+        Err(XfError::Invalid(why)) => assert!(why.contains("row_empty"), "{why}"),
+        other => panic!("not refused as invalid: {other:?}"),
+    }
+}
+
 #[test]
 fn the_reader_refuses_a_row_for_a_removed_slot_or_a_slot_named_twice() {
     // The delta sets slot 1 and removes slot 2; slot 3 is held.

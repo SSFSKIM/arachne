@@ -391,6 +391,24 @@ def test_every_record_sent_carries_its_source(scene_class, draw_path, monkeypatc
             assert all(cls.startswith("arachne.") for _, cls in path), path
 
 
+@pytest.mark.parametrize("scene_class", DRAWN, ids=lambda c: c.__name__)
+@pytest.mark.parametrize("draw_path", ["ir_cairo", "core"])
+def test_the_first_delta_setting_a_record_carries_the_section(
+    scene_class, draw_path, monkeypatch
+):
+    """Scene lowering writes XF 1.5's section in the first delta that sets a
+    record, so a reader reads the whole stream under its facing-group rules.
+    """
+    pytest.importorskip("arachne_core")
+    sent = []
+    for painter_class in (CorePainter, IrCairoPainter):
+        monkeypatch.setattr(painter_class, "draw", _keeping(painter_class.draw, sent))
+    render(scene_class, FPS, draw_path=draw_path, **MEDIUM)
+    first = next(delta for delta in sent if delta.set)
+    version = bytes(first.to_core().to_bytes())[:4]
+    assert version == (1).to_bytes(2, "little") + (5).to_bytes(2, "little")
+
+
 _STRIPPED = ("source", "facing_group")
 
 
