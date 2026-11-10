@@ -524,3 +524,102 @@ file = "core/oracle/src/flatten.rs"
 find = "while o > 0.0 && o >= entries[i] {"
 replace = "while o >= entries[i] {"
 red = ["dashes::an_on_entry_of_zero_starts_on_only_at_offset_zero"]
+
+[[plant]]
+name = "xf15-class-named-twice"
+item = "XF 1.5"
+check = "class_named_twice"
+file = "core/oracle/src/source.rs"
+find = "if !names.iter().all(|n| seen.insert(n.as_str())) {"
+replace = "if false && !names.iter().all(|n| seen.insert(n.as_str())) {"
+red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states"]
+
+[[plant]]
+name = "xf15-slot-named-twice"
+item = "XF 1.5"
+check = "slot_named_twice"
+file = "core/oracle/src/source.rs"
+find = "let code = if rows.iter().any(|earlier| earlier.slot == slot) {"
+replace = "let code = if false && rows.iter().any(|earlier| earlier.slot == slot) {"
+red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states"]
+
+[[plant]]
+name = "xf15-slot-removed"
+item = "XF 1.5"
+check = "slot_removed"
+file = "core/oracle/src/source.rs"
+find = "} else if d.remove.contains(&slot) {"
+replace = "} else if false && d.remove.contains(&slot) {"
+red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states"]
+
+[[plant]]
+name = "xf15-row-empty"
+item = "XF 1.5"
+check = "row_empty"
+file = "core/oracle/src/source.rs"
+find = "} else if facing_group == 0 && row.paths.is_empty() {"
+replace = "} else if false && facing_group == 0 && row.paths.is_empty() {"
+red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states"]
+
+[[plant]]
+name = "xf15-path-empty"
+item = "XF 1.5"
+check = "path_empty"
+file = "core/oracle/src/source.rs"
+find = "} else if row.paths.iter().any(Vec::is_empty) {"
+replace = "} else if false && row.paths.iter().any(Vec::is_empty) {"
+red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states"]
+
+[[plant]]
+name = "xf15-class-out-of-range"
+item = "XF 1.5"
+check = "class_out_of_range"
+file = "core/oracle/src/source.rs"
+find = ".any(|&(_, c)| c as usize >= names.len())"
+replace = ".any(|&(_, c)| false && c as usize >= names.len())"
+red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states"]
+
+[[plant]]
+name = "xf15-slot-not-held"
+item = "13"
+check = "slot_not_held, apply's last check"
+file = "core/oracle/src/stream.rs"
+find = "if !set && !self.records.contains_key(&row.slot) {"
+replace = "if false && !set && !self.records.contains_key(&row.slot) {"
+red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states", "xf15_fixtures::xf15_fixtures_a_refused_stream_stays_refused"]
+
+[[plant]]
+name = "xf15-sticky"
+item = "XF 1.5"
+check = "a refused stream stays refused"
+file = "core/oracle/src/stream.rs"
+find = "self.refused = Some((w.seq, *cause));\n                Err(self.stream_refusal().expect(\"just refused\"))"
+replace = "Err(Refusal {\n                    stream: Some((w.seq, *cause)),\n                    ..Refusal::new(Reason::StreamRefused, \"not kept\")\n                })"
+red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states", "xf15_fixtures::xf15_fixtures_a_refused_stream_stays_refused"]
+
+[[plant]]
+name = "xf15-held-row"
+item = "XF 1.5"
+check = "a held row replaces its record's source and group"
+file = "core/oracle/src/stream.rs"
+find = "                if !self.records.contains_key(&row.slot) {\n                    continue;"
+replace = "                if !d.set.iter().any(|r| r.slot == row.slot) {\n                    continue;"
+red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states"]
+
+[[plant]]
+name = "xf15-set-clears"
+item = "XF 1.5"
+check = "a record set with no row has neither field"
+file = "core/oracle/src/stream.rs"
+find = "            self.meta.remove(&r.slot);\n"
+replace = ""
+red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states"]
+
+[[plant]]
+name = "xf15-read-under"
+item = "XF 1.5"
+check = "the 1.5 rules from the first section on"
+file = "core/oracle/src/stream.rs"
+find = "            self.rules15 = true;\n"
+replace = ""
+red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states"]

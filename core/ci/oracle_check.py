@@ -43,6 +43,7 @@ ISOLATED_CHECKOUT: tuple[str, ...] = (
     "core/Cargo.toml",
     "core/rust-toolchain.toml",
     "core/src/xf/",
+    "core/tests/fixtures/xf15/",
     "core/oracle/",
     "core/ci/oracle_check.py",
     "core/ci/oracle_isolated.py",

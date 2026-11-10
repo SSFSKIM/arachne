@@ -6,7 +6,8 @@
 //! (`arachne_core::xf`, the one core path it names), kurbo 0.13.1 (flattening and stroking) and
 //! libm 0.2.16. `ci/oracle_check.py` keeps it so.
 //!
-//! - [`stream`] holds a stream's state across deltas and refuses what the oracle cannot judge.
+//! - [`stream`] holds a stream's state across deltas and refuses what the oracle cannot judge;
+//!   [`source`] reads each delta of a file alone, with XF 1.5's source section and its checks.
 //! - [`camera`] places, projects and maps points (contract §2).
 //! - [`draw`] turns the order's entries into what they draw: meshes' triangles, paths' layers and
 //!   point blocks, each with its fragment identity.
@@ -29,4 +30,5 @@ pub mod guard;
 pub mod joins;
 pub mod out;
 pub mod shift;
+pub mod source;
 pub mod stream;

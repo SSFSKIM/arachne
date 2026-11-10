@@ -34,7 +34,9 @@ fn opaque(kind: RecordKind, slot: u32) -> Record {
 #[test]
 fn the_oracle_reads_the_xf_version_the_core_writes() {
     // An XF change updates the oracle in the same change: this fails until it does.
-    assert_eq!(KNOWN_XF, XF_VERSION);
+    // The oracle reads XF 1.5's source section itself, whatever minor the shared reader writes.
+    assert_eq!(KNOWN_XF, (1, 5));
+    assert!(KNOWN_XF.0 == XF_VERSION.0 && KNOWN_XF.1 >= XF_VERSION.1);
 }
 
 #[test]
@@ -131,7 +133,7 @@ fn what_the_core_refuses_is_refused_and_the_overlay_is_not() {
 fn a_newer_xf_minor_refuses_its_frame_and_every_frame_after() {
     let (s, r) = square(0);
     let mut first = delta(1, Some(view(16, 16)), vec![s], vec![r]);
-    first.version = (1, 5);
+    first.version = (KNOWN_XF.0, KNOWN_XF.1 + 1);
     let mut held = delta(2, None, vec![], vec![]);
     held.order = None;
     let at_first = decide(std::slice::from_ref(&first));
