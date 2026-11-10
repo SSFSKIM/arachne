@@ -1,0 +1,36 @@
+# Scratch (C5.3, never merged): writes the core's XF streams, SOURCE included, of the public corpus
+# at this commit's parent, in the c53-measure gate's environment, and uploads them with their
+# sha256 sums and a manifest.
+name: c53-streams
+on:
+  push:
+    branches: ['ci/c53-streams-**']
+permissions:
+  contents: read
+jobs:
+  streams:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      UV_PYTHON: "3.12"
+      PYTHONHASHSEED: "0"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Apply the CI environment
+        uses: SSFSKIM/ci-kit/setup@v1
+      - name: Install
+        run: pipx install uv==0.12.3 && uv sync --all-extras --locked
+      - name: Write the streams
+        run: bash .github/c53streams/run.sh out
+      - uses: actions/upload-artifact@v7
+        with:
+          name: c53-streams-30538b2e
+          path: |
+            out/xf/
+            out/SHA256SUMS
+            out/manifest.json
+          retention-days: 30
+          if-no-files-found: error
