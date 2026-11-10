@@ -424,6 +424,7 @@ class _LiveStream(FrameStream):
 
     def keep_only(self, slots: set[int]) -> None:
         self._slots = {k: v for k, v in self._slots.items() if v[1] in slots}
+        self._sourced = {k: v for k, v in self._sourced.items() if k in slots}
 
     def _slot(self, mob: Any, objects: list[tuple[int, str, str]]) -> int:
         found = self._slots.get(id(mob))
@@ -1253,6 +1254,8 @@ class LivePainter:
         # The capture itself froze the centre if it drew through the context.
         view = stream._view_of(camera, kind, uploads, background=background)
         held = stream._held
+        stream._contain(owners)
+        orientation = vars(camera).get("fixed_orientation_mobjects")
         made = [
             (
                 recording._xf_leaf,
@@ -1271,6 +1274,9 @@ class LivePainter:
                 # A later face of a group already placed: one record.
                 order.append(("moving", slot, part))
                 continue
+            # A face group's depth is its first face's.
+            facing = leaf if face is None else _uv_faces(mob)[0]
+            record = stream._sourced(slot, record, mob, facing, orientation)
             known = held.get(slot)
             if known is not None and _same_record(known, record):
                 record = known

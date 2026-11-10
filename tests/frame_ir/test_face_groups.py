@@ -307,8 +307,11 @@ def test_a_surface_of_uv_faces_alone_keeps_its_record_bytes(handed):
     (record,) = [r for _, r in delta.set]
     assert record.kind == "face_group"
     assert [part for _, _, part in delta.order] == list(range(16))
+    # What it was drawn from (XF 1.5) is the surface, the stream's first object.
+    surface_class = "arachne.mobject.three_d.three_dimensions.Surface"
+    assert record.fields["source"] == (((1, surface_class),),)
     digest = hashlib.sha256(record.kind.encode())
-    for name in sorted(record.fields):
+    for name in sorted(set(record.fields) - {"source"}):
         value = record.fields[name]
         digest.update(name.encode())
         if isinstance(value, np.ndarray):

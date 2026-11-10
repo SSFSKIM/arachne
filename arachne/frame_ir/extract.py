@@ -21,8 +21,11 @@ Nothing here imports the core.
 
 from __future__ import annotations
 
-__all__ = ["FrameStream", "Unable"]
+__all__ = ["FrameStream", "Unable", "library_class"]
 
+import functools
+import sys
+import weakref
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
@@ -114,6 +117,37 @@ MOBJECT_READS = (
 
 #: CE's default tolerance for closing a subpath (XF assumes it).
 _TOLERANCE = 1e-6
+
+#: A record's source (XF 1.5): a path per way its object is contained, each
+#: ``(token, class)`` pairs, the object first and its outermost container last.
+Source = tuple[tuple[tuple[int, str], ...], ...]
+
+#: The library whose classes name a record's objects.
+_LIBRARY = "arachne"
+
+
+@functools.cache
+def library_class(kind: type) -> str:
+    """The fully qualified name of the nearest class in ``kind``'s method
+    resolution order that the library defines and names (a class of one of
+    its modules, found there by its qualified name): a scene's own subclass
+    is named by the library class it derives from, so no name of the scene's
+    own reaches the stream.
+    """
+    for base in kind.__mro__:
+        if _in_library(base):
+            return f"{base.__module__}.{base.__qualname__}"
+    raise Unable(f"render.unable: a {kind.__name__} derives from no library class")
+
+
+def _in_library(kind: type) -> bool:
+    module = kind.__module__
+    if module != _LIBRARY and not module.startswith(_LIBRARY + "."):
+        return False
+    found: Any = sys.modules.get(module)
+    for name in kind.__qualname__.split("."):
+        found = getattr(found, name, None)
+    return found is kind
 
 
 def _camera_kind(camera: Camera) -> str:
@@ -257,6 +291,17 @@ class FrameStream:
         #: projection's (CE's cached-context offset).
         self.mapping_offset_frames = 0
         self.frames = 0
+        #: Each object's source token, by its id, while the object lives.
+        self._tokens: dict[int, tuple[weakref.ref[Any], int]] = {}
+        self._next_token = 1
+        #: The containment of the frame being extracted: by an object's id,
+        #: the objects whose submobjects hold it.
+        self._parents: dict[int, list[Any]] = {}
+        #: The frame's sources and facing groups, by object id, once found.
+        self._sources: dict[int, Source] = {}
+        self._groups: dict[tuple[int, int], int] = {}
+        #: By slot: the record as made, what was added to it, the record sent.
+        self._sourced: dict[int, tuple[Record, tuple[Source, int], Record]] = {}
 
     # Slots
 
@@ -272,6 +317,123 @@ class FrameStream:
         line = origin.source_line
         objects.append((slot, origin.id, "" if line is None else str(line)))
         return slot
+
+    # Sources (XF 1.5): what each record was drawn from, which nothing drawn
+    # reads.
+
+    def _token(self, mob: Any) -> int:
+        """``mob``'s token: given when first met, kept while it lives."""
+        key = id(mob)
+        held = self._tokens.get(key)
+        if held is not None and held[0]() is mob:
+            return held[1]
+        token = self._next_token
+        self._next_token += 1
+        tokens = self._tokens
+
+        def gone(_: Any) -> None:
+            if tokens.get(key, (None, 0))[1] == token:
+                del tokens[key]
+
+        tokens[key] = (weakref.ref(mob, gone), token)
+        return token
+
+    def _contain(self, owners: Sequence[Any]) -> None:
+        """Note the containment of a frame drawn from the families of
+        ``owners`` (the scene's mobjects, and the lists the frame is drawn
+        from), each object's token given in the order the families are met.
+        """
+        parents: dict[int, list[Any]] = {}
+        seen: set[int] = set()
+        stack = list(reversed(owners))
+        while stack:
+            mob = stack.pop()
+            if id(mob) in seen:
+                continue
+            seen.add(id(mob))
+            self._token(mob)
+            children = list(mob.submobjects)
+            for child in children:
+                found = parents.setdefault(id(child), [])
+                if not any(parent is mob for parent in found):
+                    found.append(mob)
+            stack.extend(reversed(children))
+        self._parents = parents
+        self._sources = {}
+        self._groups = {}
+
+    def _source(self, mob: Any) -> Source:
+        """``mob``'s source: ``mob``, then each chain of the frame's objects
+        containing it, outermost last; a path per chain.
+        """
+        found = self._sources.get(id(mob))
+        if found is None:
+            node = (self._token(mob), library_class(type(mob)))
+            paths: list[tuple[tuple[int, str], ...]] = []
+            for parent in self._parents.get(id(mob), ()):
+                for path in self._source(parent):
+                    if (node, *path) not in paths:
+                        paths.append((node, *path))
+            found = tuple(paths) if paths else ((node,),)
+            self._sources[id(mob)] = found
+        return found
+
+    def _facing_group(self, mob: Any, orientation: Mapping[Any, Any]) -> int:
+        """The label ``mob`` belongs to, kept facing the camera: of the
+        objects connected to it through containment that ``orientation``
+        keeps facing it by one centre function (a family registered at once),
+        the least token. A family registered apart is another label, though
+        it shares the function; one registered again splits from its label.
+        """
+        func = orientation.get(mob)
+        if func is None:
+            return 0
+        found = self._groups.get((id(orientation), id(mob)))
+        if found is not None:
+            return found
+        label = [mob]
+        seen = {id(mob)}
+        at = 0
+        while at < len(label):
+            each = label[at]
+            at += 1
+            for near in (*self._parents.get(id(each), ()), *each.submobjects):
+                if id(near) not in seen and orientation.get(near) is func:
+                    seen.add(id(near))
+                    label.append(near)
+        group = min(self._token(each) for each in label)
+        for each in label:
+            self._groups[(id(orientation), id(each))] = group
+        return group
+
+    def _sourced(
+        self,
+        slot: int,
+        record: Record,
+        mob: Any,
+        facing: Any,
+        orientation: Mapping[Any, Any] | None,
+    ) -> Record:
+        """``record`` as sent: with the source of ``mob``, the object its
+        slot draws, and where the record is kept facing the camera, the label
+        of ``facing`` (the object whose depth it states) under
+        ``orientation``, the camera's. The record sent stays the same object
+        while ``record`` and what was added to it do.
+        """
+        group = 0
+        if orientation and record.fields.get("fixed_orientation_centre") is not None:
+            group = self._facing_group(facing, orientation)
+        added = (self._source(mob), group)
+        held = self._sourced.get(slot)
+        if held is not None and held[0] is record and held[1] == added:
+            return held[2]
+        fields = dict(record.fields)
+        fields["source"] = added[0]
+        if group:
+            fields["facing_group"] = group
+        sent = Record(record.kind, fields)
+        self._sourced[slot] = (record, added, sent)
+        return sent
 
     # Frames
 
@@ -302,6 +464,7 @@ class FrameStream:
                 raise Unable(f"render.unable: the camera's {attr} is not {default}")
         self._blends = {}
         self._roots = list(roots)
+        self._contain([*self._roots, *(m for _, listed in groups for m in listed)])
         objects: list[tuple[int, str, str]] = []
         uploads: dict[bytes, Any] = {}
         records: dict[int, Record] = {}
@@ -409,6 +572,7 @@ class FrameStream:
         from arachne.mobject.types.vectorized_mobject import VMobject
 
         faces = self._faces(mobjects, leaves)
+        orientation = getattr(camera, "fixed_orientation_mobjects", None)
         for leaf in leaves:
             kind = camera.type_or_raise(leaf)
             if kind is VMobject:
@@ -417,7 +581,14 @@ class FrameStream:
                     surface, index = face
                     slot = self._slot(surface, objects)
                     if slot not in records:
-                        records[slot] = self._face_group(camera, surface, uploads)
+                        # Its depth is its first face's.
+                        records[slot] = self._sourced(
+                            slot,
+                            self._face_group(camera, surface, uploads),
+                            surface,
+                            _uv_faces(surface)[0],
+                            orientation,
+                        )
                     order.append((layer, slot, index))
                     continue
                 slot = self._slot(leaf, objects)
@@ -435,9 +606,16 @@ class FrameStream:
                             self._blends[id(leaf)] = record
                 if record is None:
                     record = self._leaf_record(camera, leaf, "path", uploads)
+                record = self._sourced(slot, record, leaf, leaf, orientation)
             elif kind is PMobject:
                 slot = self._slot(leaf, objects)
-                record = self._leaf_record(camera, leaf, "points", uploads)
+                record = self._sourced(
+                    slot,
+                    self._leaf_record(camera, leaf, "points", uploads),
+                    leaf,
+                    leaf,
+                    orientation,
+                )
             elif kind is AbstractImageMobject:
                 slot = self._slot(leaf, objects)
                 if isinstance(leaf, ImageMobjectFromCamera) and id(leaf) in sub_frames:
@@ -446,15 +624,25 @@ class FrameStream:
                         record is None
                         or record.fields.get("sub_frame") is not sub_frames[id(leaf)]
                     ):
-                        record = self._display_record(
-                            camera, leaf, sub_frames[id(leaf)]
+                        record = self._sourced(
+                            slot,
+                            self._display_record(camera, leaf, sub_frames[id(leaf)]),
+                            leaf,
+                            leaf,
+                            orientation,
                         )
                 else:
                     if isinstance(leaf, ImageMobjectFromCamera):
                         # Its pixels are its camera's, which its state does
                         # not hold: never reused.
                         self._cache.pop(id(leaf), None)
-                    record = self._leaf_record(camera, leaf, "image", uploads)
+                    record = self._sourced(
+                        slot,
+                        self._leaf_record(camera, leaf, "image", uploads),
+                        leaf,
+                        leaf,
+                        orientation,
+                    )
             else:
                 continue  # CE draws nothing for a plain Mobject
             held = records.get(slot)
