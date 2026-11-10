@@ -248,6 +248,36 @@ fn short(d: f64) -> u16 {
     (d * 65535.0 + 0.5) as u16
 }
 
+/// The one colour [`source`] makes of `rgbas` between `p1` and `p2` where it makes one,
+/// premultiplied as Cairo stores a solid source; `None` where it makes a linear gradient. Cairo
+/// paints nothing of a gradient whose one colour is clear ([`crate::composite::clear`]).
+pub fn collapsed(p1: [f64; 2], p2: [f64; 2], rgbas: &[[f64; 4]]) -> Option<[u8; 4]> {
+    assert!(rgbas.len() >= 2, "a gradient has two stops or more");
+    let clamped: Vec<[f64; 4]> = rgbas.iter().map(|c| c.map(|v| v.clamp(0.0, 1.0))).collect();
+    let shorts: Vec<[u16; 4]> = clamped.iter().map(|c| c.map(short)).collect();
+    // Clear: Cairo draws nothing from it under OVER (`_cairo_pattern_is_clear`). A linear
+    // gradient under pad, its ends meeting or not, is clear when every stop's alpha short is at
+    // most 0xff (`_gradient_is_clear`, `CAIRO_ALPHA_SHORT_IS_CLEAR`), every stop clear as a solid
+    // source. Drawn as a gradient, it would paint up to alpha 1, and lay a layer that takes part
+    // in depth order everywhere.
+    if clamped
+        .iter()
+        .all(|c| crate::composite::clear(crate::composite::premultiply(*c)))
+    {
+        return Some([0; 4]);
+    }
+    if (p1[0] - p2[0]).abs() < f64::EPSILON && (p1[1] - p2[1]).abs() < f64::EPSILON {
+        // Degenerate under pad: the average of the first and last stops.
+        let (a, z) = (clamped[0], clamped[clamped.len() - 1]);
+        let avg: [f64; 4] = std::array::from_fn(|k| (1.0 * a[k] + 1.0 * z[k]) * 0.5);
+        return Some(crate::composite::premultiply(avg));
+    }
+    if shorts.iter().all(|s| *s == shorts[0]) {
+        return Some(crate::composite::premultiply(clamped[0]));
+    }
+    None
+}
+
 /// The source CE's `set_cairo_context_color` makes of `rgbas` (two or more rows, straight RGBA)
 /// between `p1` and `p2` (the ends' frame coordinates as placed for display), under the
 /// context's matrix `ctm`, for a drawing whose device extents are `extents` (`[x, y, width,
@@ -260,25 +290,11 @@ pub fn source(
     rgbas: &[[f64; 4]],
     extents: [i32; 4],
 ) -> Source {
-    assert!(rgbas.len() >= 2, "a gradient has two stops or more");
+    if let Some(colour) = collapsed(p1, p2, rgbas) {
+        return Source::Solid(colour);
+    }
     let clamped: Vec<[f64; 4]> = rgbas.iter().map(|c| c.map(|v| v.clamp(0.0, 1.0))).collect();
     let shorts: Vec<[u16; 4]> = clamped.iter().map(|c| c.map(short)).collect();
-    // Clear: Cairo draws nothing from it under OVER (`_cairo_pattern_is_clear`). A linear
-    // gradient under pad, its ends meeting or not, is clear when every stop's alpha short is at
-    // most 0xff (`_gradient_is_clear`, `CAIRO_ALPHA_SHORT_IS_CLEAR`). Drawn as a gradient, it
-    // would paint up to alpha 1, and lay a layer that takes part in depth order everywhere.
-    if shorts.iter().all(|s| s[3] <= 0x00ff) {
-        return Source::Solid([0; 4]);
-    }
-    if (p1[0] - p2[0]).abs() < f64::EPSILON && (p1[1] - p2[1]).abs() < f64::EPSILON {
-        // Degenerate under pad: the average of the first and last stops.
-        let (a, z) = (clamped[0], clamped[clamped.len() - 1]);
-        let avg: [f64; 4] = std::array::from_fn(|k| (1.0 * a[k] + 1.0 * z[k]) * 0.5);
-        return Source::Solid(crate::composite::premultiply(avg));
-    }
-    if shorts.iter().all(|s| *s == shorts[0]) {
-        return Source::Solid(crate::composite::premultiply(clamped[0]));
-    }
     let n = rgbas.len();
     // `np.linspace(0, 1, n)`: `i * step`, the last exactly 1.
     let step = 1.0 / (n - 1) as f64;

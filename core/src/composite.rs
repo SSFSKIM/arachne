@@ -392,6 +392,15 @@ pub fn premultiply(rgba: [f64; 4]) -> [u8; 4] {
     [short(r * a), short(g * a), short(b * a), short(a)]
 }
 
+/// Whether Cairo paints nothing of a solid source it stores as `colour` ([`premultiply`]): its
+/// 8-bit alpha is zero, its 16-bit alpha at most 0xff (`CAIRO_ALPHA_SHORT_IS_CLEAR`), a source
+/// Cairo draws nothing from under OVER (`_cairo_pattern_is_clear`). The one rule by which a path's
+/// layer is dropped ([`crate::gradient::collapsed`] for a gradient's), and by which what Cairo
+/// paints nothing of is kept from the frame's plane registry ([`crate::depth::Registry`]).
+pub fn clear(colour: [u8; 4]) -> bool {
+    colour[3] == 0
+}
+
 /// `a * b / 255`, rounded as pixman rounds.
 fn mul(a: u8, b: u8) -> u8 {
     let t = a as u32 * b as u32 + 0x80;
