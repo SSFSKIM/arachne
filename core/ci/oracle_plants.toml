@@ -1,0 +1,418 @@
+# The oracle's plants: each removes one check from the oracle's source, and names the tests
+# that must fail without it. core/ci/oracle_plants.py applies each in turn and restores the
+# source; nothing here is built. `item` is XF.md's apply check ("Where each check is made"),
+# or the contract section the check serves; `find` occurs exactly once in `file`.
+
+[[plant]]
+name = "apply-1"
+item = "1"
+check = "a major other than the build's"
+file = "core/oracle/src/stream.rs"
+find = "if d.version.0 != KNOWN_XF.0 {"
+replace = "if false && d.version.0 != KNOWN_XF.0 {"
+red = ["stream::apply_1_a_major_other_than_the_oracles"]
+
+[[plant]]
+name = "apply-3"
+item = "3"
+check = "a key uploaded twice"
+file = "core/oracle/src/stream.rs"
+find = "if !uploaded.insert(k) {"
+replace = "if !uploaded.insert(k) && false {"
+red = ["stream::apply_3_a_key_uploaded_twice"]
+
+[[plant]]
+name = "apply-4a"
+item = "4"
+check = "a mesh triangle naming a vertex past its vertices"
+file = "core/oracle/src/stream.rs"
+find = "if triangles\n"
+replace = "if false && triangles\n"
+red = ["stream::apply_4_a_mesh_naming_a_vertex_it_lacks"]
+
+[[plant]]
+name = "apply-4b"
+item = "4"
+check = "mesh normals other than one per vertex"
+file = "core/oracle/src/stream.rs"
+find = "if normals.as_ref()"
+replace = "if false && normals.as_ref()"
+red = ["stream::apply_4_a_mesh_whose_normals_are_not_one_per_vertex"]
+
+[[plant]]
+name = "apply-4c"
+item = "4"
+check = "image bytes other than width x height x 4"
+file = "core/oracle/src/stream.rs"
+find = "&& rgba.len() as u128 !="
+replace = "&& false && rgba.len() as u128 !="
+red = ["stream::a_background_image_still_held_cannot_be_released_and_a_short_image_is_not_valid_xf"]
+
+[[plant]]
+name = "apply-4d"
+item = "4"
+check = "a shape under a key held as a paint table"
+file = "core/oracle/src/stream.rs"
+find = "if self.paints.contains_key(&k) {"
+replace = "if false && self.paints.contains_key(&k) {"
+red = ["stream::a_shape_uploaded_under_a_key_the_stream_holds_as_a_paint_table_refuses_the_delta_whole"]
+
+[[plant]]
+name = "apply-4e"
+item = "4"
+check = "a shape under a key held as a shape of other content"
+file = "core/oracle/src/stream.rs"
+find = "if self.shapes.get(&k).is_some_and(|held| held != s) {"
+replace = "if false && self.shapes.get(&k).is_some_and(|held| held != s) {"
+red = ["stream::a_shape_uploaded_under_a_key_the_stream_holds_with_other_content_refuses_the_delta_whole"]
+
+[[plant]]
+name = "apply-5"
+item = "5"
+check = "a paint table under a key held as a shape"
+file = "core/oracle/src/stream.rs"
+find = "if self.shapes.contains_key(&t.key()) {"
+replace = "if false && self.shapes.contains_key(&t.key()) {"
+red = ["stream::a_paint_table_uploaded_under_a_key_the_stream_holds_as_a_shape_refuses_the_delta_whole"]
+
+[[plant]]
+name = "apply-6"
+item = "6"
+check = "a release of a key neither held nor uploaded"
+file = "core/oracle/src/stream.rs"
+find = "if !(self.shapes.contains_key(k) ||"
+replace = "if false && !(self.shapes.contains_key(k) ||"
+red = ["stream::a_delta_releasing_a_key_the_stream_does_not_hold_refuses_the_delta_whole", "stream::a_delta_faulty_twice_reports_the_fault_xf_checks_first"]
+
+[[plant]]
+name = "apply-7"
+item = "7"
+check = "a removal of a slot neither held nor set"
+file = "core/oracle/src/stream.rs"
+find = "if !(self.records.contains_key(slot)"
+replace = "if false && !(self.records.contains_key(slot)"
+red = ["stream::a_delta_removing_a_slot_the_stream_does_not_hold_refuses_the_delta_whole"]
+
+[[plant]]
+name = "apply-8a"
+item = "8"
+check = "a released shape a record left uses (a display's background included)"
+file = "core/oracle/src/stream.rs"
+find = ".find(|r| r.shape_keys().contains(k) || r.paint_keys().contains(k))"
+replace = ".find(|r| r.paint_keys().contains(k))"
+red = ["stream::apply_8_a_release_of_a_shape_a_held_record_uses", "stream::apply_8_a_release_of_a_held_displays_background"]
+
+[[plant]]
+name = "apply-8b"
+item = "8"
+check = "a released paint table a record left uses"
+file = "core/oracle/src/stream.rs"
+find = ".find(|r| r.shape_keys().contains(k) || r.paint_keys().contains(k))"
+replace = ".find(|r| r.shape_keys().contains(k))"
+red = ["stream::apply_8_a_release_of_a_paint_table_a_held_record_uses"]
+
+[[plant]]
+name = "apply-8c"
+item = "8"
+check = "a released key the view uses as its background"
+file = "core/oracle/src/stream.rs"
+find = "if view.is_some_and(|v| v.background == Background::Image(*k)) {"
+replace = "if false && view.is_some_and(|v| v.background == Background::Image(*k)) {"
+red = ["stream::a_background_image_still_held_cannot_be_released_and_a_short_image_is_not_valid_xf"]
+
+[[plant]]
+name = "apply-9"
+item = "9"
+check = "the orders of the displays left, when records are set or removed"
+file = "core/oracle/src/stream.rs"
+find = "if !(d.set.is_empty() && d.remove.is_empty()) {"
+replace = "if false && !(d.set.is_empty() && d.remove.is_empty()) {"
+red = ["stream::apply_9_a_held_displays_order_left_naming_a_removed_slot"]
+
+[[plant]]
+name = "apply-10a"
+item = "10"
+check = "the background_image bit and fill_image disagreeing"
+file = "core/oracle/src/stream.rs"
+find = "if (r.features & FEATURE_BACKGROUND_IMAGE != 0) != r.fill_image.is_some() {"
+replace = "if false && (r.features & FEATURE_BACKGROUND_IMAGE != 0) != r.fill_image.is_some() {"
+red = ["stream::apply_10_the_background_image_bit_and_fill_image_disagreeing"]
+
+[[plant]]
+name = "apply-10b"
+item = "10"
+check = "the pre_projected bit and its tail disagreeing"
+file = "core/oracle/src/stream.rs"
+find = "if (r.features & FEATURE_PRE_PROJECTED != 0) != r.pre_projected.is_some() {"
+replace = "if false && (r.features & FEATURE_PRE_PROJECTED != 0) != r.pre_projected.is_some() {"
+red = ["stream::apply_10_the_pre_projected_bit_and_its_tail_disagreeing"]
+
+[[plant]]
+name = "apply-10c"
+item = "10"
+check = "a tail on a kind other than path, points or image"
+file = "core/oracle/src/stream.rs"
+find = "if r.pre_projected.is_some()\n"
+replace = "if false && r.pre_projected.is_some()\n"
+red = ["stream::apply_10_a_pre_projected_tail_on_a_kind_that_takes_none"]
+
+[[plant]]
+name = "apply-10d"
+item = "10"
+check = "a kind that needs a shape given none"
+file = "core/oracle/src/stream.rs"
+find = "let Some(a) = r.geometry.shape_a else {\n            return Some(format!(\"a {kind} record given no shape\"));\n        };\n        kinds.push((a, takes));"
+replace = "if let Some(a) = r.geometry.shape_a {\n            kinds.push((a, takes));\n        }"
+red = ["stream::apply_10_a_kind_that_needs_a_shape_given_none"]
+
+[[plant]]
+name = "apply-10e"
+item = "10"
+check = "a shape (its own, its blend's) of a kind the record cannot take"
+file = "core/oracle/src/stream.rs"
+find = "kinds.push((a, takes));\n        kinds.extend(r.geometry.blend.as_ref().map(|b| (b.shape_b, takes)));"
+replace = "let _ = (a, takes);"
+red = ["stream::apply_10_a_shape_of_a_kind_the_record_cannot_take"]
+
+[[plant]]
+name = "apply-10f"
+item = "10"
+check = "a fill image that is not an image shape"
+file = "core/oracle/src/stream.rs"
+find = "kinds.extend(r.fill_image.map(|k| (k, image)));"
+replace = "let _ = image;"
+red = ["stream::apply_10_a_fill_image_that_is_not_an_image_shape"]
+
+[[plant]]
+name = "apply-10g"
+item = "10"
+check = "a tail whose points are not a path shape"
+file = "core/oracle/src/stream.rs"
+find = "kinds.extend(r.pre_projected.as_ref().map(|t| (t.points, path)));"
+replace = "let _ = path;"
+red = ["stream::apply_10_a_tail_whose_points_are_not_a_path_shape"]
+
+[[plant]]
+name = "apply-10h"
+item = "10"
+check = "a sub-frame display given a shape"
+file = "core/oracle/src/stream.rs"
+find = "if sub_frame && r.geometry.shape_a.is_some() {"
+replace = "if false && sub_frame && r.geometry.shape_a.is_some() {"
+red = ["stream::apply_10_a_sub_frame_display_given_a_shape"]
+
+[[plant]]
+name = "apply-10i"
+item = "10"
+check = "a body of another kind's"
+file = "core/oracle/src/stream.rs"
+find = "if !body {"
+replace = "if false && !body {"
+red = ["stream::apply_10_a_body_of_another_kinds"]
+
+[[plant]]
+name = "apply-10j"
+item = "10"
+check = "a shape the stream would not hold (own, blend's, clip's, fill image, tail's)"
+file = "core/oracle/src/stream.rs"
+find = "if shape(&k).is_none() {"
+replace = "if false && shape(&k).is_none() {"
+red = ["stream::a_delta_that_is_not_valid_xf_changes_nothing_and_its_frame_is_refused", "stream::apply_10_checks_each_record_set_not_only_the_last_in_its_slot"]
+
+[[plant]]
+name = "apply-10k"
+item = "10"
+check = "a paint table the stream would not hold"
+file = "core/oracle/src/stream.rs"
+find = "if table(&k).is_none() {"
+replace = "if false && table(&k).is_none() {"
+red = ["stream::apply_10_a_paint_table_the_stream_would_not_hold"]
+
+[[plant]]
+name = "apply-10l"
+item = "10"
+check = "a sub-frame display's view (as in 11)"
+file = "core/oracle/src/stream.rs"
+find = "if let Some(what) = view_problem(\"its display\", view, shape) {"
+replace = "if let Some(what) = view_problem(\"its display\", view, shape).filter(|_| false) {"
+red = ["stream::apply_10_a_sub_frame_view_naming_a_background_it_lacks", "stream::apply_10_a_sub_frame_view_with_soft_diffuse_light_out_of_range"]
+
+[[plant]]
+name = "apply-10m"
+item = "10"
+check = "a face group's tables not one row per face"
+file = "core/oracle/src/stream.rs"
+find = "Body::FaceGroup(f) => one_per("
+replace = "Body::FaceGroup(f) if false => one_per("
+red = ["stream::apply_10_a_face_groups_fill_table_not_one_row_per_face", "stream::apply_10_comes_before_the_view_and_the_order"]
+
+[[plant]]
+name = "apply-10n"
+item = "10"
+check = "a points record's table not one row per point"
+file = "core/oracle/src/stream.rs"
+find = "Body::Points(p) => {\n            // The points it draws"
+replace = "Body::Points(p) if false => {\n            // The points it draws"
+red = ["stream::apply_10_a_points_records_colour_table_not_one_row_per_point"]
+
+[[plant]]
+name = "apply-10o"
+item = "10"
+check = "an instances record's tables not one row per placement"
+file = "core/oracle/src/stream.rs"
+find = "one_per(\"fill\", &i.fill, n, \"placement\")\n                .or_else(|| one_per(\"stroke\", &i.stroke, n, \"placement\"))"
+replace = "None::<String>"
+red = ["stream::apply_10_an_instances_table_not_one_row_per_placement"]
+
+[[plant]]
+name = "apply-10p"
+item = "10"
+check = "an instances record's placements and objects differing in number"
+file = "core/oracle/src/stream.rs"
+find = "(i.objects.len() != n).then("
+replace = "(false && i.objects.len() != n).then("
+red = ["stream::apply_10_an_instances_record_whose_placements_and_objects_differ_in_number"]
+
+[[plant]]
+name = "apply-10q"
+item = "10"
+check = "face ends not one per face, rising, ending at the points"
+file = "core/oracle/src/stream.rs"
+find = "if !f.face_ends.is_empty()"
+replace = "if false && !f.face_ends.is_empty()"
+red = ["stream::apply_10_face_ends_not_rising"]
+
+[[plant]]
+name = "apply-10r"
+item = "10"
+check = "face widths not one per face, finite, at least 0"
+file = "core/oracle/src/stream.rs"
+find = "if !f.face_widths.is_empty()"
+replace = "if false && !f.face_widths.is_empty()"
+red = ["stream::apply_10_face_widths_below_0"]
+
+[[plant]]
+name = "apply-10s"
+item = "10"
+check = "joins on a record that is not a path"
+file = "core/oracle/src/stream.rs"
+find = "if r.kind != RecordKind::Path {"
+replace = "if false && r.kind != RecordKind::Path {"
+red = ["stream::apply_10_joins_on_a_record_that_is_not_a_path"]
+
+[[plant]]
+name = "apply-10t"
+item = "10"
+check = "joins not one per cubic of the points drawn"
+file = "core/oracle/src/stream.rs"
+find = "if points.map(|n| n / 4) != Some(joins.len()) {"
+replace = "if false && points.map(|n| n / 4) != Some(joins.len()) {"
+red = ["stream::apply_10_joins_not_one_per_cubic"]
+
+[[plant]]
+name = "apply-10u"
+item = "10"
+check = "each record set, not only the last in its slot"
+file = "core/oracle/src/stream.rs"
+find = ".filter(|r| !removed.contains(&r.slot) && !matches!(r.kind, RecordKind::Unknown(_)))"
+replace = ".filter(|r| records.get(&r.slot).is_some_and(|l| std::ptr::eq(*l, *r)) && !matches!(r.kind, RecordKind::Unknown(_)))"
+red = ["stream::apply_10_checks_each_record_set_not_only_the_last_in_its_slot"]
+
+[[plant]]
+name = "apply-11a"
+item = "10, 11"
+check = "soft diffuse light outside its ranges (view_problem)"
+file = "core/oracle/src/stream.rs"
+find = "&& !((0.0..=1.0).contains(ambient) && *wrap >= 0.0)"
+replace = "&& false"
+red = ["stream::apply_11_the_views_soft_diffuse_light_out_of_range", "stream::apply_10_a_sub_frame_view_with_soft_diffuse_light_out_of_range"]
+
+[[plant]]
+name = "apply-11b"
+item = "11"
+check = "the delta's view, whole"
+file = "core/oracle/src/stream.rs"
+find = "&& let Some(what) = view_problem(\"the view\", v, &shape)"
+replace = "&& let Some(what) = view_problem(\"the view\", v, &shape).filter(|_| false)"
+red = ["stream::apply_11_the_views_soft_diffuse_light_out_of_range", "stream::apply_11_the_views_background_not_an_image_shape"]
+
+[[plant]]
+name = "apply-11c"
+item = "10, 11"
+check = "a background image that is not an image shape (view_problem)"
+file = "core/oracle/src/stream.rs"
+find = "Some(_) => Some(format!(\n            \"{name} names {} as its background image, not an image shape\",\n            k.hex()\n        )),"
+replace = "Some(_) => None,"
+red = ["stream::apply_11_the_views_background_not_an_image_shape"]
+
+[[plant]]
+name = "apply-11d"
+item = "10, 11"
+check = "a background image not held after the delta (view_problem)"
+file = "core/oracle/src/stream.rs"
+find = "None => Some(format!(\n            \"{name} names background image {} it lacks\",\n            k.hex()\n        )),"
+replace = "None => None,"
+red = ["stream::a_view_naming_a_background_it_lacks_refuses_the_delta_whole", "stream::apply_10_a_sub_frame_view_naming_a_background_it_lacks"]
+
+[[plant]]
+name = "apply-12"
+item = "12"
+check = "the order (delta's or stream's), whole"
+file = "core/oracle/src/stream.rs"
+find = "if let Some(what) = order_problem(d.order.as_ref().unwrap_or(&self.order), &records) {"
+replace = "if let Some(what) = order_problem(d.order.as_ref().unwrap_or(&self.order), &records).filter(|_| false) {"
+red = ["stream::apply_12_an_order_entry_naming_a_part_the_record_lacks", "stream::two_displays_sharing_a_rank_in_one_layer_refuse_the_delta_whole"]
+
+[[plant]]
+name = "apply-12a"
+item = "9, 10, 12"
+check = "an order entry naming a slot not set (order_problem)"
+file = "core/oracle/src/stream.rs"
+find = "let Some(r) = records.get(&e.slot) else {\n            return Some(format!(\"it names slot {} it lacks\", e.slot));\n        };"
+replace = "let Some(r) = records.get(&e.slot) else {\n            continue;\n        };"
+red = ["stream::a_display_whose_view_or_order_names_what_the_stream_lacks_refuses_the_delta_whole"]
+
+[[plant]]
+name = "apply-12b"
+item = "9, 10, 12"
+check = "an order entry naming a part past the record's (order_problem)"
+file = "core/oracle/src/stream.rs"
+find = "if e.part >= parts {"
+replace = "if false && e.part >= parts {"
+red = ["stream::apply_12_an_order_entry_naming_a_part_the_record_lacks"]
+
+[[plant]]
+name = "apply-12c"
+item = "9, 10, 12"
+check = "two displays sharing a rank in one layer (order_problem)"
+file = "core/oracle/src/stream.rs"
+find = "&& other != e.slot\n"
+replace = "&& other != e.slot\n            && false\n"
+red = ["stream::two_displays_sharing_a_rank_in_one_layer_refuse_the_delta_whole"]
+
+[[plant]]
+name = "apply-10v"
+item = "10"
+check = "the order of each display set, an overwritten one included"
+file = "core/oracle/src/stream.rs"
+find = "if let Some(what) = order_problem(order, records) {"
+replace = "if let Some(what) = order_problem(order, records).filter(|_| false) {"
+red = ["stream::apply_10_checks_the_order_of_a_display_set_and_set_again"]
+
+[[plant]]
+name = "cover-no-area"
+item = "\u00a73"
+check = "a triangle with no area absent off its segments (the inradius rule)"
+file = "core/oracle/src/cover.rs"
+find = "if near > reach && near > inside {"
+replace = "if false && near > reach && near > inside {"
+red = ["cover::a_triangle_whose_corners_coincide_is_absent_past_the_margin", "cover::a_collinear_triangle_is_absent_past_its_segments_ends"]
+
+[[plant]]
+name = "cover-subnormal"
+item = "\u00a73"
+check = "corners scaled coordinate by coordinate"
+file = "core/oracle/src/cover.rs"
+find = "corners.map(|p| p.map(|v| libm::ldexp(v, -e)))"
+replace = "corners.map(|p| p.map(|v| v * libm::ldexp(1.0, -e)))"
+red = ["lib::cover::tests::a_triangle_of_subnormal_corners_keeps_its_winding_and_its_inradius"]
