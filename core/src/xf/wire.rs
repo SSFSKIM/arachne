@@ -515,10 +515,11 @@ pub fn encode_delta(d: &Delta) -> Vec<u8> {
     })
 }
 
-/// Whether the delta carries anything of XF 1.5's section: a record carrying a source or a facing
-/// group, or a held record's new one.
+/// Whether the delta holds a row: a held record's, or a set slot's whose last record carries a
+/// source or a facing group (a slot's earlier records have none).
 fn carries_source(d: &Delta) -> bool {
-    !d.source.is_empty() || d.set.iter().any(Record::carries_source)
+    let last: HashMap<u32, &Record> = d.set.iter().map(|r| (r.slot, r)).collect();
+    !d.source.is_empty() || last.values().any(|r| r.carries_source())
 }
 
 /// XF 1.5's section, after the order: the class names its rows use, each once, in the order the
