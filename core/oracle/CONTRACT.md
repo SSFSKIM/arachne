@@ -2204,7 +2204,8 @@ record, an order entry or the view, such as a background image key) to a missing
 slot, and two display records drawn in the same layer of one view's order with the same capture
 rank. A delta that fails is refused atomically: nothing of it applies, and the stream stands as
 before it. The oracle never judges a frame built from part of one, and reports the delta's refusal
-by its reason.
+by its reason, `invalid_delta`. The source section's checks (below) are XF's too, but their refusal
+is not `invalid_delta`: it is the stream's.
 
 **A source section refused (XF 1.5).** The oracle's XF reading refuses a delta for its source
 section with exactly one code, the first that applies in this order:
@@ -2226,15 +2227,19 @@ the first in this order. A refused delta is not applied. The oracle reports it a
 `cause` is one of these seven codes. The code is diagnostic, since the stream is `truth_unable`
 whichever code applies, but the oracle and the core must report the same one.
 
-The two refusals sit side by side:
+The two refusals are exclusive: a frame is under one of them at most.
 
-- **An invalid delta** (the checks above): its own frame is `truth_unable`, and the frames after it
-  are judged on the stream as it stood before it.
-- **`StreamRefused`:** the refused delta's frame and every later frame of the stream are
-  `truth_unable` under this one reason, whichever code applies, and none carries a verdict. A later
-  delta never clears it, and a refused stream does not resume. A writer that sends any of these has
-  lost track of which slots it holds and what each carries, so no state after it is one the oracle
-  can trust. It is never a verdict on the core.
+- **`invalid_delta`:** a delta that fails one of the checks of *Invalid XF is not a frame* above,
+  which are not the source section's seven, in a stream not yet refused. Its own frame is
+  `truth_unable` under `invalid_delta`, and the frames after it are judged on the stream as it
+  stood before it.
+- **`StreamRefused`:** a delta that fails one of the source section's seven checks. The refused
+  delta's frame and every later frame of the stream are `truth_unable` under this one reason,
+  whichever code applies, and none carries a verdict. A later delta never clears it, and a refused
+  stream does not resume. A later delta that would be an invalid delta adds nothing and changes
+  nothing: its frame stays under `StreamRefused`, with the refused delta's `at_seq` and `cause`. A
+  writer that sends any of the seven has lost track of which slots it holds and what each carries,
+  so no state after it is one the oracle can trust. It is never a verdict on the core.
 
 ## 12. Cases the contract must reject
 
@@ -2526,7 +2531,7 @@ Defect: frame 2's order with `L` in front, the decision read from delta 1's sour
 `mismatch` at frame 2's 16 samples; frame 1 agrees. A change of facing group alone travels the same
 way, as a held row with the drawing untouched (`held_row_clears_group`, below).
 
-**W28, `stream_refused`.** Verdict `StreamRefused`, not `mismatch`. A stream of four deltas over
+**W28, `stream_refused`.** Refusal reason `StreamRefused`; no verdict. A stream of four deltas over
 W27's scene, seq 1 to 4: delta 1 sets slot `s` (`G`) and slot `t` (`L`), each with a row; delta 2
 carries a held row for a slot `u` that no delta has set; deltas 3 and 4 are valid (each moves `L`).
 Expected: frame 1 judged as usual; frames 2, 3 and 4 all `truth_unable` under
@@ -2553,6 +2558,9 @@ carries is well formed unless stated; expected: frames 2 to 4
 - **`refused_first_offending_row`:** delta 2's first row is for `s`, which it removes, and has
   facing group 0 and no paths; its second row has a path of no objects. Expected `slot_removed`:
   the first row offends first, and of its two faults `slot_removed` comes before `row_empty`.
+- **`refused_twice_before_removed`:** delta 2 removes `t`; its first row is a held row for `s`,
+  well formed; its second row is for `s` again; its third is for `t`. Expected `slot_named_twice`:
+  the second row is the first that offends, so the removed slot's row after it is never reached.
 - **`refused_reading_before_apply`:** delta 2's first row is a held row for `u`, never set, and its
   second row has a path of no objects. Expected `path_empty`: the reading refuses before the delta
   applies, where `slot_not_held` would be found.
