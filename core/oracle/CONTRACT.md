@@ -2782,7 +2782,7 @@ group 1 and its source, and `G` set with a row of facing group 0 and the source 
 record inside a cube. Expected: `G` is `label_rule_open` with cause `cylinder_grouped` (rule 4;
 rule 3 never reads a cylinder through its container), so `L` is expected on top and the samples of
 pixel `(32, 32)`, which the pair decides, are counted `label_rule_open` with cause
-`cylinder_grouped`, neither `mismatch` nor agreement. Reading the cube as the cylinder's owner would
+`cylinder_grouped`, neither `mismatch` nor agreement. Reading the cube as the cylinder's container would
 make `G` a surface that qualifies, with `L` behind it.
 
 **`class_part_follows_cylinder`.** As `class_cylinder_grouped`, with `G`'s source path
