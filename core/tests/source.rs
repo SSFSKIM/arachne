@@ -865,3 +865,38 @@ fn nothing_drawn_reads_a_records_source_but_the_labels_placement() {
     assert_eq!(frames(&bare, true), frames(&bare, false));
     assert_ne!(frames(&deltas, true), drawn);
 }
+
+#[test]
+fn apply_checks_the_rows_the_delta_writes() {
+    // A set record's own source, which a row for its slot replaces, is not a row: applied
+    // directly, the delta does what its bytes do.
+    let (mut s, shape, _) = holding_a_sourced_square();
+    let (mut wired, _, _) = holding_a_sourced_square();
+    let mut d = Delta::new(Time { num: 1, den: 15 }, 1);
+    let mut replaced = square_at(1, &shape);
+    replaced.source = vec![Vec::new()];
+    d.set = vec![replaced];
+    d.source = vec![held_row(1, 4, vec![vec![node(8, "a.Other")]])];
+    wired
+        .apply(&wire::decode_delta(&wire::encode_delta(&d)).unwrap())
+        .unwrap();
+    s.apply(&d).unwrap();
+    assert_eq!(s.record(1), wired.record(1));
+    assert_eq!(s.record(1).unwrap().facing_group, 4);
+    // The refusal is the first row in the order the delta writes them that offends: slot 6's,
+    // set first, with a path of no objects, before slot 3's, whose slot the delta removes.
+    let (mut s, shape, sourced) = holding_a_sourced_square();
+    let mut d = Delta::new(Time { num: 1, den: 15 }, 1);
+    let mut six = square_at(6, &shape);
+    six.source = vec![Vec::new()];
+    let mut three = square_at(3, &shape);
+    three.source = vec![vec![node(8, "a.Other")]];
+    d.set = vec![six, three];
+    d.remove = vec![3];
+    let why = s.apply(&d).unwrap_err().to_string();
+    assert!(
+        why.contains("path_empty") && why.contains("slot 6"),
+        "{why}"
+    );
+    assert_eq!(s.record(1), Some(&sourced));
+}
