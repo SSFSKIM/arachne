@@ -36,6 +36,9 @@ const GLYPH: &str = "arachne.mobject.svg.svg_mobject.VMobjectFromSVGPath";
 const TEXT: &str = "arachne.mobject.text.text_mobject.Text";
 const IMAGE: &str = "arachne.mobject.types.image_mobject.ImageMobject";
 const CLOUD: &str = "arachne.mobject.types.point_cloud_mobject.PMobject";
+const RECTANGLE: &str = "arachne.mobject.geometry.polygram.Rectangle";
+const BAR_CHART: &str = "arachne.mobject.graphing.probability.BarChart";
+const VDICT: &str = "arachne.mobject.types.vectorized_mobject.VDict";
 
 /// `label_rule_open`, for `cause`.
 fn open(cause: OpenCause) -> LabelClass {
@@ -125,6 +128,36 @@ fn an_enclosing_line_decides_over_a_childs_surface_class() {
 fn a_tick_label_under_axes_is_a_line() {
     assert_eq!(class(&[GLYPH, TEXT, NUMBER_LINE, AXES]), LabelClass::Line);
     assert_eq!(class(&[GLYPH, TEXT, VGROUP, NUMBER_LINE]), LabelClass::Line);
+}
+
+/// Addendum r2: a curve that takes tips, a bar chart (axes, so its bars), the vector fields and
+/// stream lines, a curve in pieces and a traced boundary are lines.
+#[test]
+fn the_addendum_s_lines_are_lines() {
+    for named in [
+        "arachne.mobject.geometry.arc.TipableVMobject",
+        BAR_CHART,
+        "arachne.mobject.vector_field.VectorField",
+        "arachne.mobject.vector_field.ArrowVectorField",
+        "arachne.mobject.vector_field.StreamLines",
+        "arachne.mobject.types.vectorized_mobject.CurvesAsSubmobjects",
+        "arachne.animation.changing.AnimatedBoundary",
+    ] {
+        assert_eq!(class(&[named]), LabelClass::Line, "{named}");
+    }
+    assert_eq!(class(&[RECTANGLE, VGROUP, BAR_CHART]), LabelClass::Line);
+}
+
+/// Addendum r2: the generic classes are VMobject, VGroup, VDict, ThreeDVMobject, Mobject and
+/// Group, and no other: a point or a glyph's path is a class of its own, which the inventory does
+/// not name.
+#[test]
+fn the_generic_classes_are_closed() {
+    assert_eq!(class(&[SQUARE, VDICT]), LabelClass::Surface);
+    assert_eq!(class(&[VDICT]), open(OpenCause::GenericOnly));
+    assert_eq!(class(&[POINT]), open(OpenCause::Unmapped));
+    assert_eq!(class(&[POINT, SQUARE]), open(OpenCause::Unmapped));
+    assert_eq!(class(&[GLYPH]), open(OpenCause::Unmapped));
 }
 
 /// "Vector and its filled tip have distinct classes": both are the vector's.
