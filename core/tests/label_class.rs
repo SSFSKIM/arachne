@@ -256,6 +256,20 @@ fn a_cylinder_in_a_plain_group_is_open() {
     assert_eq!(class(&[CONE, VGROUP]), LabelClass::Surface);
 }
 
+/// Addendum r3: rule 4's owner is the nearest Surface or Cylinder, found past generic, unmapped
+/// and other open nodes but never past a Cylinder; rule 5 decides a Cylinder's own record first,
+/// so its parts take the Cylinder's outcome and never reach the surface that holds it.
+#[test]
+fn a_part_reads_as_its_cylinder_never_past_it() {
+    let grouped = open(OpenCause::CylinderGrouped);
+    assert_eq!(class(&[POINT, IMAGE, SQUARE]), LabelClass::Surface);
+    assert_eq!(class(&[CYLINDER, CUBE]), grouped);
+    for cap in [CIRCLE, FACE, POINT] {
+        assert_eq!(class(&[cap, CYLINDER, CUBE]), grouped, "{cap}");
+        assert_eq!(class(&[cap, CYLINDER]), LabelClass::Surface, "{cap}");
+    }
+}
+
 /// "Generic/conflicting provenance also stays label_rule_open."
 #[test]
 fn generic_or_conflicting_provenance_is_open() {
