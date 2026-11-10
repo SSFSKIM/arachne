@@ -104,7 +104,7 @@ The oracle shares exactly these with the core. Each is named with its version:
   oracle. A second flattening would differ from the core's by up to the tolerance at every curved
   edge, so the flattening is part of the definition.
 - **libm 0.2.16.** It supplies `sin`, `cos`, `exp`, `pow`, `atan2` and `hypot`. Square roots are
-  IEEE `sqrt`.
+  IEEE `sqrt`. §8's join test alone uses the platform's `hypot` instead, as kurbo does.
 
 The pinned external definition is **Cairo 1.18's ARGB32 image surface, with pixman 0.42 computing
 its colours**. It defines a linear gradient's bytes (§9), with the core's deviations stated there.
@@ -1602,10 +1602,12 @@ width` and `limit² = pow(10, 2)`:
 - **A join** is made between each element and the one before it in its subpath, and, at a
   `ClosePath`, first at the closing line where the subpath does not end at its start (a line that
   carries no key), then at the subpath's start, from its last element into its first. With `ab`
-  the tangent arriving and `cd` the one leaving, kurbo **joins** only where `ab · cd <= 0` or
-  `|ab × cd| >= hypot(ab × cd, ab · cd) · join_thresh`; a slighter turn makes no join and is
-  suppressed. A join kurbo makes **mitres** where `2 h < (h + ab · cd) limit²`, with
-  `h = hypot(ab × cd, ab · cd)`.
+  the tangent arriving and `cd` the one leaving, and `h = hypot(ab × cd, ab · cd)`, kurbo **joins**
+  only where `ab · cd <= 0` or `|ab × cd| >= h · join_thresh`; a slighter turn makes no join and is
+  suppressed. A join kurbo makes **mitres** where `2 h < (h + ab · cd) limit²`. Here `hypot` is
+  the platform's `hypot`, as kurbo's `do_join` calls it (`f64::hypot`), not libm's. A join or miter
+  decision that falls exactly at its boundary may therefore differ between platforms, as the
+  core's own does, and the oracle computes it with the same call on the platform it runs on.
 - **Its key** is its two elements' points, as above, and whether it is the closing join. A join
   with an element of no key (a quadratic, a closing line) has none.
 - **Joins inside a near-straight cubic.** A cubic kurbo finds nearly collinear and possibly cusped
