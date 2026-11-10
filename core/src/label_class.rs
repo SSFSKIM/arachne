@@ -26,7 +26,7 @@
 //! a record drawn only by its outline stroke still reads as a surface here, and its planner, which
 //! reads the record's paint, does not count that stroke as a qualifying fill.
 //!
-//! Nothing drawn calls it.
+//! The labels' planner (`label_plan.rs`) reads it, and only in a frame that draws a label.
 
 use crate::xf::SourceNode;
 
@@ -240,6 +240,18 @@ pub fn label_class(source: &[Vec<SourceNode>], facing_group: u32) -> LabelClass 
         Some(first) if classes.all(|class| class == first) => first,
         Some(_) => LabelClass::LabelRuleOpen(OpenCause::PathsDisagree),
     }
+}
+
+/// The object a record read as a surface is a face of, by its token: the outermost node of its
+/// first path whose class is surface-like (a surface class or the cylinder), so a cube's faces
+/// and a surface's faces each share their solid's. `None` for a path with no such node.
+pub fn surface_owner(source: &[Vec<SourceNode>]) -> Option<u32> {
+    source
+        .first()?
+        .iter()
+        .rev()
+        .find(|node| matches!(kind(&node.class), Kind::Surface | Kind::Cylinder))
+        .map(|node| node.token)
 }
 
 /// The class of a path's first node.

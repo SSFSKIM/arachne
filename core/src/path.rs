@@ -603,6 +603,20 @@ impl Fine {
     }
 }
 
+/// One layer as the labels' planner reads it ([`Paths::layers`]).
+pub(crate) struct LayerView<'a> {
+    pub order: u32,
+    pub sub: u32,
+    /// Its pixels, `x0..x1` by `y0..y1`, inside the frame.
+    pub bbox: [u32; 4],
+    /// Its outline's edges, but for its horizontal segments, in device pixels.
+    pub edges: &'a [Edge],
+    /// The plane it is keyed on, where it is keyed on one.
+    pub plane: Option<Plane>,
+    /// Its paint is one wholly transparent colour.
+    pub clear: bool,
+}
+
 /// Paths lowered to coverage layers, binned by tile: a producer of area fragments.
 pub struct Paths {
     layers: Vec<Layer>,
@@ -2107,6 +2121,21 @@ impl Paths {
     /// Whether nothing was lowered.
     pub fn is_empty(&self) -> bool {
         self.layers.is_empty()
+    }
+
+    /// What the labels' planner reads of each layer (`label_plan.rs`).
+    pub(crate) fn layers(&self) -> impl Iterator<Item = LayerView<'_>> {
+        self.layers.iter().map(|l| LayerView {
+            order: l.order,
+            sub: l.sub,
+            bbox: l.bbox,
+            edges: &l.edges,
+            plane: match l.depth {
+                LayerDepth::Plane(p) => Some(p),
+                LayerDepth::Curve(..) => None,
+            },
+            clear: matches!(l.paint, LayerPaint::Solid(c) if c[3] == 0),
+        })
     }
 
     fn depth_at(&self, depth: LayerDepth, x: u32, y: u32, near: &mut Vec<u32>) -> Plane {

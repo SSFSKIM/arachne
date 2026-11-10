@@ -699,9 +699,28 @@ impl Stream {
                 "drawing needs at least one thread".into(),
             ));
         }
-        self.with_producers(width, height, extra, without_overlay, |frame, producers| {
-            tiles::render(frame, producers, threads).map_err(|e| DrawError::Threads(e.to_string()))
-        })?
+        self.with_producers(
+            width,
+            height,
+            extra,
+            without_overlay,
+            |frame, producers, _| {
+                tiles::render(frame, producers, threads)
+                    .map_err(|e| DrawError::Threads(e.to_string()))
+            },
+        )?
+    }
+
+    /// The plan of the labels the frame [`Stream::render_under_overlay`] draws at `width x
+    /// height` ([`crate::label_plan::plan`]): which surface sheets each goes behind, and every
+    /// label against every sheet it overlaps. `None` where the frame draws no label. Refused as
+    /// drawing refuses.
+    pub fn label_plan(
+        &self,
+        width: u32,
+        height: u32,
+    ) -> Result<Option<crate::label_plan::LabelPlan>, DrawError> {
+        self.with_producers(width, height, &[], true, |_, _, plan| plan.cloned())
     }
 
     /// The leaves the core composites at each pixel of `x0..x1` by `y0..y1` (clipped to the
@@ -780,7 +799,7 @@ impl Stream {
             y1: y1.min(height),
         };
         let mut out = BTreeMap::new();
-        self.with_producers(width, height, &[], true, |frame, producers| {
+        self.with_producers(width, height, &[], true, |frame, producers, _| {
             if keep.x0 >= keep.x1 || keep.y0 >= keep.y1 {
                 return;
             }
@@ -902,7 +921,7 @@ impl Stream {
             x1: x1.min(width),
             y1: y1.min(height),
         };
-        self.with_producers(width, height, &[], true, |_, producers| {
+        self.with_producers(width, height, &[], true, |_, producers, _| {
             if keep.x0 >= keep.x1 || keep.y0 >= keep.y1 {
                 return;
             }
@@ -946,15 +965,16 @@ impl Stream {
         (record.object, entry.part)
     }
 
-    /// The frame's background and its producers, lowered from the records the order draws (all,
-    /// or all but the overlay's), handed to `f`. Refused as [`Stream::render`] refuses.
+    /// The frame's background, its producers, lowered from the records the order draws (all, or
+    /// all but the overlay's), and its labels' plan ([`crate::label_plan::plan`]: `None` where
+    /// it draws no label), handed to `f`. Refused as [`Stream::render`] refuses.
     fn with_producers<T>(
         &self,
         width: u32,
         height: u32,
         extra: &[&dyn Producer],
         without_overlay: bool,
-        f: impl FnOnce(Frame, &[&dyn Producer]) -> T,
+        f: impl FnOnce(Frame, &[&dyn Producer], Option<&crate::label_plan::LabelPlan>) -> T,
     ) -> Result<T, DrawError> {
         let drawn = |e: &OrderEntry| !(without_overlay && is_overlay(&self.records[&e.slot]));
         check_size(width, height)?;
@@ -1114,7 +1134,13 @@ impl Stream {
         let blocks = points::lower(view, width, height, &clouds);
         let mut producers: Vec<&dyn Producer> = vec![&meshes, &paths, &blocks];
         producers.extend_from_slice(extra);
-        Ok(f(frame, &producers))
+        let entries: Vec<Option<&Record>> = self
+            .order
+            .iter()
+            .map(|e| drawn(e).then(|| &self.records[&e.slot]))
+            .collect();
+        let plan = crate::label_plan::plan(view, width, height, &entries, &paths, &producers);
+        Ok(f(frame, &producers, plan.as_ref()))
     }
 
     /// Per slot of `slots`, how each path its record draws lies, decided from the points the
