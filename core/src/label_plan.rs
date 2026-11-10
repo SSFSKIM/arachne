@@ -11,24 +11,27 @@
 //! of that object sharing two corners on screen and wound the same way are one sheet. A front and
 //! a back of one solid are two sheets, each decided on its own.
 //!
-//! The overlap is where both paint: every sub-sample cell the label's records cover (fills and
-//! strokes, antialiasing included) that a fill of the sheet covers with a colour not wholly
-//! transparent. A sheet decides against the label ([`Outcome`]):
+//! The overlap is the order points both hold: every sub-sample point of the frame
+//! ([`crate::composite::sample_point`], where the resolve orders fragments) inside a record of
+//! the label (a fill or a stroke's outline) and inside a fill of the sheet painted in a colour
+//! not wholly transparent, by the nonzero rule. A sliver of either between points is no overlap.
+//! A sheet decides against the label ([`Outcome`]):
 //!
 //! - where a fill of the sheet covers the label's projected centre, by its depth on that ray
 //!   against the label's, both read with their error bounds: shown nearer, it qualifies; shown
 //!   farther or equal, it does not; else it is open ([`Open::Interval`]);
-//! - elsewhere, by its depth at every cell of the overlap, read as the order reads it there: shown
-//!   nearer at every cell, it qualifies; shown farther or equal at some cell, it does not (a
-//!   genuine straddle, decided: the label stays in front); else it is open ([`Open::Interval`]).
+//! - elsewhere, by its depth at every point of the overlap, its fill's plane read there: shown
+//!   nearer at every point, it qualifies; shown farther or equal at some point, it does not (a
+//!   genuine straddle the points see, decided: the label stays in front); else it is open
+//!   ([`Open::Interval`]). No point counted is no overlap.
 //!
-//! A sheet whose fills cover one cell of the overlap twice (folded over itself on screen) is open
+//! A sheet two of whose fills hold one point of the overlap (folded over itself on screen) is open
 //! ([`Open::Folded`]), and so is each of two sheets of one object facing one way that both meet
 //! the label ([`Open::Disconnected`]). A label whose records are not all paths placed by the
 //! engine is open against everything ([`Open::Label`]), and so is a sheet drawn as a mesh
 //! ([`Open::Mesh`]). An open pair never moves the label: only sheets that qualify do.
 
-use crate::composite::{Fragment, Plane, Producer, SAMPLES};
+use crate::composite::{Coverage, Fragment, Plane, Producer, SAMPLES};
 use crate::label_class::{self, LabelClass};
 use crate::order::Decided;
 use crate::path::{LayerView, Paths};
@@ -55,7 +58,7 @@ pub enum Outcome {
 pub enum Open {
     /// The error bounds cannot settle whether the sheet is nearer.
     Interval,
-    /// The sheet covers a cell of the overlap twice.
+    /// Two fills of the sheet hold one point of the overlap.
     Folded,
     /// Another sheet of the same object, facing the same way, meets the label too.
     Disconnected,
@@ -257,7 +260,7 @@ struct Label {
 #[derive(Default)]
 struct Seen {
     overlap: bool,
-    /// Over the overlap: some cell shown not nearer, some cell undecided.
+    /// Over the overlap: some point shown not nearer, some point undecided.
     not_nearer: bool,
     undecided: bool,
     folded: bool,
@@ -441,27 +444,30 @@ pub fn plan(
         if !boxes.iter().any(|(_, b)| meets(b)) {
             continue;
         }
-        crate::tiles::passes(rect, producers).visit_pixels(rect, |x, y, frags, cov, depths| {
+        // The order points a fragment holds: a mask's, or a path's point-in-outline test.
+        let points = |f: &Fragment, x: u32, y: u32| match f.coverage {
+            Coverage::Mask(m) => m,
+            Coverage::Area { area, .. } if area >= 1.0 => u16::MAX,
+            Coverage::Area { id, .. } => producers[f.source() as usize].mask(id, x, y),
+        };
+        crate::tiles::passes(rect, producers).visit_pixels(rect, |x, y, frags, _, depths| {
             for (g, b) in &boxes {
                 if x < b[0] || x >= b[2] || y < b[1] || y >= b[3] {
                     continue;
                 }
                 let label = &labels[*g as usize];
+                // The order points the label's records hold.
                 let mut mask = 0u16;
-                for (i, f) in frags.iter().enumerate() {
+                for f in frags {
                     if label_of.get(f.order as usize) == Some(&(g + 1)) {
-                        for k in 0..SAMPLES {
-                            if cov[i][k] != 0 {
-                                mask |= 1 << k;
-                            }
-                        }
+                        mask |= points(f, x, y);
                     }
                 }
                 if mask == 0 {
                     continue;
                 }
-                // Per sheet met here, its fills' coverage summed at each cell.
-                let mut sums: BTreeMap<u32, ([u32; SAMPLES], [u32; SAMPLES])> = BTreeMap::new();
+                // Per sheet met here, how many of its fills hold each order point.
+                let mut held: BTreeMap<u32, [u32; SAMPLES]> = BTreeMap::new();
                 for (i, f) in frags.iter().enumerate() {
                     let s = if let Some(&s) = mesh_sheet.get(&f.order) {
                         s
@@ -476,13 +482,13 @@ pub fn plan(
                         continue;
                     }
                     let entry = seen.entry((*g, s)).or_default();
-                    let (sum, count) = sums.entry(s).or_insert(([0; SAMPLES], [0; SAMPLES]));
+                    let count = held.entry(s).or_insert([0; SAMPLES]);
+                    let both = points(f, x, y) & mask;
                     for k in 0..SAMPLES {
-                        if cov[i][k] == 0 || mask & (1 << k) == 0 {
+                        if both & (1 << k) == 0 {
                             continue;
                         }
                         entry.overlap = true;
-                        sum[k] += cov[i][k] as u32;
                         count[k] += 1;
                         match compare(depths[i].samples[k], depths[i].err, label) {
                             Cmp::Nearer => {}
@@ -491,8 +497,8 @@ pub fn plan(
                         }
                     }
                 }
-                for (s, (sum, count)) in sums {
-                    if (0..SAMPLES).any(|k| sum[k] > 255 + count[k]) {
+                for (s, count) in held {
+                    if count.iter().any(|c| *c > 1) {
                         seen.get_mut(&(*g, s)).expect("seen above").folded = true;
                     }
                 }

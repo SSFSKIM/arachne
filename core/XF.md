@@ -362,19 +362,27 @@ shape's and table's key against its content, except for shape kinds it does not 
   label's depth is its centre's: the camera-facing plane through it, read at the centre's
   projection, with its error bound. A sheet is a connected part of one surface object (the
   outermost surface or cylinder on a face's first path) whose fills are wound one way on screen,
-  two fills sharing two corners on screen joined. A sheet goes in front of a label when it is shown
-  nearer: on the ray through the label's projected centre where one of its fills holds the centre,
-  else at every sub-sample cell of their overlap (the cells the label's records cover that a fill
-  of the sheet covers in a colour not wholly transparent), each depth with its error bound. A
-  sheet shown farther or at the label's depth there leaves the label in front; one the bounds
-  cannot place, one covering a cell of the overlap twice (folded), one sharing its object and its
-  winding with another sheet that meets the label, one drawn as a mesh, and every sheet against a
-  label not drawn wholly as engine-placed paths is open, and leaves the label in front too. At each
-  sub-sample the label is inserted immediately behind the rearmost sheet it goes behind that covers
-  the sub-sample, in the order everything else takes there, or, with none, in front of everything
-  but the overlay; labels at one place keep draw order. A pixel where a label meets a sheet it goes
-  behind takes the sample resolve. A frame with no facing group draws as it would without its
-  `source`.
+  two fills sharing two corners on screen joined; strokes are never part of a sheet. A sheet goes
+  in front of a label when it is shown nearer: where one of its fills holds the label's projected
+  centre (a point on an edge held), on the ray through it, by that fill's plane read there; else at
+  every order point of their overlap, by the plane of the fill holding the point read there; each
+  depth with its error bound. The order points are the 16 sub-sample points of each pixel, where
+  the resolve orders fragments: pixel `(x, y)`'s point `s` is
+  `(x + 1/2 + (dx + 1/2)/16, y + 1/2 + (dy + 1/2)/16)` for `[dx, dy]` the `s`-th of
+  `SAMPLE_OFFSETS`: `[-8, -7]`, `[-1, -8]`, `[3, -6]`, `[5, -5]`, `[-6, -1]`, `[-4, -4]`, `[0, -3]`,
+  `[6, -2]`, `[-7, 2]`, `[-2, 0]`, `[2, 3]`, `[4, 1]`, `[-5, 5]`, `[-3, 4]`, `[1, 7]`, `[7, 6]`. The
+  overlap is the order points inside both a record of the label (a fill or a stroke's outline) and
+  a fill of the sheet in a colour not wholly transparent, each by the nonzero rule: a sliver of
+  either between points holds none, and a sheet holding no point of the label's does not overlap
+  it. A sheet shown farther or at the label's depth there leaves the label in front; one the bounds
+  cannot place, one two of whose fills hold one point of the overlap (folded), one sharing its
+  object and its winding with another sheet that meets the label, one drawn as a mesh, and every
+  sheet against a label not drawn wholly as engine-placed paths is open, and leaves the label in
+  front too. At each sub-sample the label is inserted immediately behind the rearmost sheet it goes
+  behind that covers the sub-sample, in the order everything else takes there, or, with none, in
+  front of everything but the overlay; labels at one place keep draw order. A pixel where a label
+  meets a sheet it goes behind takes the sample resolve. A frame with no facing group draws as it
+  would without its `source`.
 - **Paths.** CE's subpaths (split where a cubic's end and the next one's start differ in x or y by
   more than CE's tolerance; closed when the first and last points are equal within it, the last then
   taken as the first), painted in CE's order as three layers tying in that order: the background
