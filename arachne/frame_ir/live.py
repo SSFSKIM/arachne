@@ -424,7 +424,7 @@ class _LiveStream(FrameStream):
 
     def keep_only(self, slots: set[int]) -> None:
         self._slots = {k: v for k, v in self._slots.items() if v[1] in slots}
-        self._sourced = {k: v for k, v in self._sourced.items() if k in slots}
+        self._sent = {k: v for k, v in self._sent.items() if k in slots}
 
     def _slot(self, mob: Any, objects: list[tuple[int, str, str]]) -> int:
         found = self._slots.get(id(mob))

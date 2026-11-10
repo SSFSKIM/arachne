@@ -301,7 +301,7 @@ class FrameStream:
         self._sources: dict[int, Source] = {}
         self._groups: dict[tuple[int, int], int] = {}
         #: By slot: the record as made, what was added to it, the record sent.
-        self._sourced: dict[int, tuple[Record, tuple[Source, int], Record]] = {}
+        self._sent: dict[int, tuple[Record, tuple[Source, int], Record]] = {}
 
     # Slots
 
@@ -424,7 +424,7 @@ class FrameStream:
         if orientation and record.fields.get("fixed_orientation_centre") is not None:
             group = self._facing_group(facing, orientation)
         added = (self._source(mob), group)
-        held = self._sourced.get(slot)
+        held = self._sent.get(slot)
         if held is not None and held[0] is record and held[1] == added:
             return held[2]
         fields = dict(record.fields)
@@ -432,7 +432,7 @@ class FrameStream:
         if group:
             fields["facing_group"] = group
         sent = Record(record.kind, fields)
-        self._sourced[slot] = (record, added, sent)
+        self._sent[slot] = (record, added, sent)
         return sent
 
     # Frames
