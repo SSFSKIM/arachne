@@ -4,19 +4,35 @@
 use arachne_core::xf::{Delta, View};
 
 use crate::camera::FrameMap;
+use crate::colour::{self, Light};
 use crate::cover::{self, PixelCover, SAMPLE_OFFSETS, Window};
 use crate::draw::{self, Item, Layer};
 use crate::flatten;
 use crate::keys::{self, Model, Offered};
 use crate::order::{Frag, Scene};
 use crate::out::{
-    CoverRow, Decisions, FLAG_UNBOUNDED, Fragment, Header, NONE_U32, Refused, STATUS_DECIDED,
+    COLOUR_GRADIENT, COLOUR_PER_PIXEL, COLOUR_SOLID, ColourRow, CoverRow, Decisions,
+    FLAG_UNBOUNDED, Fragment, Header, NONE_U32, PixelColour, Refused, STATUS_DECIDED,
     STATUS_UNABLE,
 };
 use crate::pairs;
 use crate::shift::Shift;
 use crate::source::WireDelta;
 use crate::stream::{Reason, Refusal, State};
+
+/// What a fragment's colour is computed from (contract §9).
+enum Spec {
+    Solid([u8; 4]),
+    /// A lit triangle: its corners' colours, its corners on the pixel plane, its alpha, and
+    /// whether the corners are linear light.
+    Lit {
+        corners: [[f64; 3]; 3],
+        at: [[f64; 2]; 3],
+        alpha: f64,
+        linear: bool,
+    },
+    Gradient,
+}
 
 /// Why the oracle could not decide a frame at all (not a refusal: a usage error).
 #[derive(Debug)]
@@ -119,6 +135,8 @@ fn unable(
         covers: Vec::new(),
         bands: Vec::new(),
         pairs: Vec::new(),
+        colours: Vec::new(),
+        pixel_colours: Vec::new(),
         refused: refusals.iter().map(refused).collect(),
     }
 }
@@ -156,11 +174,13 @@ pub fn decide(state: &State, xf: (u16, u16), seq: u64, window: Option<Window>) -
     let mut covers = Vec::new();
     let mut frags: Vec<Frag> = Vec::new();
     let mut offered: Vec<Offered> = Vec::new();
+    let mut specs: Vec<Spec> = Vec::new();
     // A fragment, its depth and its rows; `None` for an unbounded one, which is `truth_unable` at
     // every sample of the window and carries no rows (contract §6: never absent, never bounded).
-    let mut add = |fragment: Fragment, depth: Frag, rows: Option<Vec<PixelCover>>| {
+    let mut add = |fragment: Fragment, depth: Frag, spec: Spec, rows: Option<Vec<PixelCover>>| {
         let id = fragments.len() as u32;
         let Some(rows) = rows else {
+            specs.push(spec);
             frags.push(Frag {
                 model: Model::Unbounded,
                 row: None,
@@ -180,6 +200,7 @@ pub fn decide(state: &State, xf: (u16, u16), seq: u64, window: Option<Window>) -
             return;
         }
         frags.push(depth);
+        specs.push(spec);
         let mut bbox = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
         for r in &rows {
             bbox = [
@@ -250,9 +271,16 @@ pub fn decide(state: &State, xf: (u16, u16), seq: u64, window: Option<Window>) -
                             .flatten()
                             .flatten()
                             .all(|v| v.is_finite());
+                    let spec = match &p.rows[k] {
+                        Some(r) if r.len() == 1 && !p.shaded => {
+                            Spec::Solid(colour::premultiply(r[0], c.record.opacity))
+                        }
+                        _ => Spec::Gradient,
+                    };
                     add(
                         fragment(c, layer, sub, group, eps),
                         depth,
+                        spec,
                         bounded.then(|| cover::path_layer(layer_rings, eps, window)),
                     );
                 }
@@ -283,9 +311,11 @@ pub fn decide(state: &State, xf: (u16, u16), seq: u64, window: Option<Window>) -
                         offered: reg,
                         lines: None,
                     };
+                    let spec = mesh_spec(view, m, i, corners);
                     add(
                         fragment(c, Layer::Mesh, m.sub + i as u32, NONE_U32, worst),
                         depth,
+                        spec,
                         bounded.then(|| cover::triangle(corners, eps, window)),
                     );
                 }
@@ -300,6 +330,11 @@ pub fn decide(state: &State, xf: (u16, u16), seq: u64, window: Option<Window>) -
                 // A side below 1 draws no block (contract §3).
                 let points = if t < 1 { &[][..] } else { &pts.points[..] };
                 for q in points {
+                    let bytes = pts
+                        .colours
+                        .get(q.index as usize)
+                        .and_then(|rgba| colour::point_bytes(*rgba, c.record.opacity))
+                        .unwrap_or([0; 4]);
                     let model = keys::point_depth(view, pts, q.placed);
                     let depth = |sub: u32| Frag {
                         entry: c.entry,
@@ -317,6 +352,7 @@ pub fn decide(state: &State, xf: (u16, u16), seq: u64, window: Option<Window>) -
                         add(
                             fragment(c, Layer::Points, q.index, NONE_U32, eps),
                             depth(q.index),
+                            Spec::Solid(bytes),
                             None,
                         );
                         continue;
@@ -328,6 +364,7 @@ pub fn decide(state: &State, xf: (u16, u16), seq: u64, window: Option<Window>) -
                         add(
                             fragment(c, Layer::Points, sub, NONE_U32, eps),
                             depth(sub),
+                            Spec::Solid(bytes),
                             Some(vec![b.cover]),
                         );
                     }
@@ -341,14 +378,100 @@ pub fn decide(state: &State, xf: (u16, u16), seq: u64, window: Option<Window>) -
     }
     let scene = Scene::new(frags, offered);
     let (bands, pairs) = pairs::frame(&scene, &mut covers);
+    let (colours, pixel_colours) = colours(&specs, &covers);
     Decisions {
         header,
         fragments,
         covers,
         bands,
         pairs,
+        colours,
+        pixel_colours,
         refused: Vec::new(),
     }
+}
+
+/// A mesh triangle's colour source: a solid, or lit where the camera shades it.
+fn mesh_spec(view: &View, m: &draw::MeshItem, i: usize, at: [[f64; 2]; 3]) -> Spec {
+    let opacity = m.common.record.opacity;
+    let (true, Some(pr), arachne_core::xf::Camera::ThreeD(cam)) =
+        (m.shaded, m.common.projection.as_ref(), &view.camera)
+    else {
+        return Spec::Solid(colour::premultiply(m.fill, opacity));
+    };
+    let light = Light {
+        model: &view.light,
+        source: cam.light_source,
+        eye: colour::eye(pr),
+    };
+    let normals = m.normals.as_ref().map(|n| &n[i]);
+    match colour::lit_corners(&light, m.fill, &m.placed[i], normals) {
+        Some(corners) => Spec::Lit {
+            corners,
+            at,
+            alpha: m.fill[3] * opacity,
+            linear: light.linear(),
+        },
+        None => Spec::Gradient,
+    }
+}
+
+/// Each fragment's colour row, and each lit fragment's bytes at its cover rows: at the centroid of
+/// the samples it covers, or over every sample it may cover where one is `Either`.
+fn colours(specs: &[Spec], covers: &[CoverRow]) -> (Vec<ColourRow>, Vec<PixelColour>) {
+    let rows = specs
+        .iter()
+        .enumerate()
+        .map(|(id, s)| {
+            let (kind, rgba) = match s {
+                Spec::Solid(b) => (COLOUR_SOLID, *b),
+                Spec::Lit { .. } => (COLOUR_PER_PIXEL, [0; 4]),
+                Spec::Gradient => (COLOUR_GRADIENT, [0; 4]),
+            };
+            ColourRow {
+                fragment: id as u32,
+                kind,
+                rgba,
+            }
+        })
+        .collect();
+    let mut pixel = Vec::new();
+    for c in covers {
+        let Spec::Lit {
+            corners,
+            at,
+            alpha,
+            linear,
+        } = &specs[c.fragment as usize]
+        else {
+            continue;
+        };
+        let (x, y) = (c.x as i64, c.y as i64);
+        let point = |s: usize| cover::sample_point(x, y, s);
+        let yes: Vec<usize> = (0..16).filter(|s| c.cover[*s] == 1).collect();
+        let points: Vec<[f64; 2]> = if c.cover.contains(&2) || yes.is_empty() {
+            (0..16).filter(|s| c.cover[*s] != 0).map(point).collect()
+        } else {
+            let n = yes.len() as f64;
+            let sum = yes.iter().fold([0.0, 0.0], |a, s| {
+                let p = point(*s);
+                [a[0] + p[0], a[1] + p[1]]
+            });
+            vec![[sum[0] / n, sum[1] / n]]
+        };
+        if points.is_empty() {
+            continue;
+        }
+        let (lo, hi) = colour::lit_bytes(*linear, corners, *at, *alpha, &points);
+        pixel.push(PixelColour {
+            x: c.x,
+            y: c.y,
+            fragment: c.fragment,
+            lo,
+            hi,
+        });
+    }
+    (rows, pixel)
 }
 
 fn map(m: &FrameMap, q: [f64; 3]) -> [f64; 2] {

@@ -9,6 +9,8 @@ Dependency-free: the standard library only. ``read(path)`` returns a dictionary:
         "pixels": [...],
         "bands": [...],
         "pairs": [...],
+        "colours": [...],
+        "pixel_colours": [...],
         "refused": [...],
     }
 
@@ -70,6 +72,8 @@ LABEL = {
     7: "lines@1",
     8: "near_parallel@1",
 }
+#: A fragment's colour kind (``COLR``): a gradient, not computed; one solid; per pixel (``COLP``).
+COLOUR_KIND = {0: "gradient", 1: "solid", 2: "per_pixel"}
 #: A pair's edge bits.
 EDGE_WEAK, EDGE_A_FRONT, EDGE_B_FRONT = 1, 2, 4
 #: Fragment flags: unbounded, ``truth_unable`` at every sample of the window (no cover rows).
@@ -120,6 +124,15 @@ DTYPES = {
         ("s_plus", "<f8", (16,)),
         ("status", "u1", (16,)),
     ],
+    "COLR": [("fragment", "<u4"), ("kind", "u1"), ("rgba", "u1", (4,)), ("pad", "u1", (3,))],
+    "COLP": [
+        ("x", "<u4"),
+        ("y", "<u4"),
+        ("fragment", "<u4"),
+        ("lo", "u1", (4,)),
+        ("hi", "u1", (4,)),
+        ("reserved", "<u4"),
+    ],
     "PAIR": [
         ("x", "<u4"),
         ("y", "<u4"),
@@ -153,7 +166,18 @@ _PIXL = struct.Struct("<QI")
 _REFU = struct.Struct("<3Bx3I2Q2I")
 _BAND_HEAD = struct.Struct("<3IB3x")
 _PAIR = struct.Struct("<4I3Bx4x")
-_SIZES = {"FRAG": 64, "COVR": 456, "PIXL": 12, "BAND": 544, "PAIR": 24, "REFU": 40}
+_COLR = struct.Struct("<IB4s3x")
+_COLP = struct.Struct("<3I4s4s4x")
+_SIZES = {
+    "FRAG": 64,
+    "COVR": 456,
+    "PIXL": 12,
+    "BAND": 544,
+    "PAIR": 24,
+    "COLR": 12,
+    "COLP": 24,
+    "REFU": 40,
+}
 
 
 class FormatError(ValueError):
@@ -217,6 +241,8 @@ def read_bytes(b: bytes) -> dict:
         "pixels": [],
         "bands": [],
         "pairs": [],
+        "colours": [],
+        "pixel_colours": [],
         "refused": [],
     }
     if "FRAG" in found:
@@ -299,6 +325,25 @@ def read_bytes(b: bytes) -> dict:
                     "label_name": LABEL.get(label, "unknown"),
                 }
             )
+    if "COLR" in found:
+        size, off, n = found["COLR"]
+        for i in range(n):
+            fragment, kind, rgba = _COLR.unpack_from(b, off + i * size)
+            out["colours"].append(
+                {
+                    "fragment": fragment,
+                    "kind": kind,
+                    "kind_name": COLOUR_KIND.get(kind, "unknown"),
+                    "rgba": list(rgba),
+                }
+            )
+    if "COLP" in found:
+        size, off, n = found["COLP"]
+        for i in range(n):
+            x, y, fragment, lo, hi = _COLP.unpack_from(b, off + i * size)
+            out["pixel_colours"].append(
+                {"x": x, "y": y, "fragment": fragment, "lo": list(lo), "hi": list(hi)}
+            )
     text = b""
     if "TEXT" in found:
         _, off, n = found["TEXT"]
@@ -374,6 +419,15 @@ def canonical(d: dict) -> str:
         f"pair x={r['x']} y={r['y']} sample={r['sample']} a={r['a']} b={r['b']} "
         f"edges={r['edges']} label={r['label']}"
         for r in d["pairs"]
+    )
+    lines.extend(
+        f"colour fragment={r['fragment']} kind={r['kind']} rgba={_list(r['rgba'])}"
+        for r in d["colours"]
+    )
+    lines.extend(
+        f"pixel_colour x={r['x']} y={r['y']} fragment={r['fragment']} lo={_list(r['lo'])} "
+        f"hi={_list(r['hi'])}"
+        for r in d["pixel_colours"]
     )
     lines.extend(
         f"refused reason={r['reason']} kind={r['kind']} cause={r['cause']} entry={r['entry']} "

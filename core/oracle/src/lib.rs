@@ -30,6 +30,7 @@
 pub mod band;
 pub mod camera;
 pub mod centreline;
+pub mod colour;
 pub mod cover;
 pub mod decide;
 pub mod depth;

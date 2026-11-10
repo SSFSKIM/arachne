@@ -18,7 +18,7 @@ input error (an XF file that does not read, a `seq` it does not hold).
 
 Little-endian throughout. A fixed header of 88 bytes, a directory of sections, then each section
 on an 8-byte boundary. Sections are arrays of fixed-size records; a reader skips a tag it does not
-know, and treats a section that is absent as empty. Later sections (colours) arrive as new tags.
+know, and treats a section that is absent as empty. Later sections arrive as new tags.
 
 ```
 header     4s  magic "AROR"
@@ -43,6 +43,8 @@ cell `((dx + 8) div 4, (dy + 8) div 4)` of the pixel's 4 x 4 grid.
 | `PIXL` | 12 bytes | one per pixel of the window, row by row: its first `COVR` row and their count |
 | `BAND` | 544 bytes | one per `COVR` row, in its order (its own row), then one more where the fragment has a row on its record's plane |
 | `PAIR` | 24 bytes | one per pair of fragments present at a sample, sorted by `(y, x, sample, a, b)` |
+| `COLR` | 12 bytes | one per fragment, by id: its colour's kind and a solid's bytes |
+| `COLP` | 24 bytes | one per `COVR` row of a per-pixel fragment, in `COVR`'s order |
 | `REFU` | 40 bytes | one per refusal; empty when the frame is decided |
 | `TEXT` | 1 byte | the refusals' words, UTF-8 |
 
@@ -125,6 +127,28 @@ Every pair of fragments present (`Yes` or `Either`) at a sample, `a < b` by frag
   completions that pick one edge per pair; an order every pair agrees with is one.
 - An unbounded fragment (`FRAG` flag bit 0) has no rows and no pairs: it is `truth_unable`
   everywhere.
+
+### `COLR`
+
+```
+u32 fragment  u8 kind  u8 rgba[4]  3 bytes pad
+```
+
+Each fragment's premultiplied colour from XF (contract §9). `kind`: 1 solid (`rgba` at every
+pixel: `cairo_premultiply@1`, or a point block's bytes); 2 per pixel (a lit mesh triangle,
+`ce_shading@1`; its bytes in `COLP`); 0 a gradient (`cairo_linear_gradient@1`, a layer of two or
+more rows or a shaded path), which this oracle does not compute: `rgba` is 0 and a reader takes
+the colour as unknown.
+
+### `COLP`
+
+```
+u32 x  u32 y  u32 fragment  u8 lo[4]  u8 hi[4]  u32 reserved
+```
+
+A per-pixel fragment's bytes at a pixel: the corners' colours interpolated as planes on the pixel
+plane, read at the centroid of the samples it covers (`lo = hi`), or, where one of its samples is
+`Either`, the least and most bytes over every sample it may cover.
 
 ### `REFU`
 

@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use arachne_oracle::out::{
-    BandRow, CoverRow, Decisions, Fragment, Header, PairRow, Refused, STATUS_UNABLE, canonical,
-    read, write,
+    BandRow, ColourRow, CoverRow, Decisions, Fragment, Header, PairRow, PixelColour, Refused,
+    STATUS_UNABLE, canonical, read, write,
 };
 use common::*;
 
@@ -144,6 +144,25 @@ fn sample() -> Decisions {
                 label: 0,
             },
         ],
+        colours: vec![
+            ColourRow {
+                fragment: 0,
+                kind: 1,
+                rgba: [255, 128, 0, 255],
+            },
+            ColourRow {
+                fragment: 1,
+                kind: 2,
+                rgba: [0; 4],
+            },
+        ],
+        pixel_colours: vec![PixelColour {
+            x: 2,
+            y: 0,
+            fragment: 1,
+            lo: [1, 2, 3, 4],
+            hi: [250, 251, 252, 253],
+        }],
         refused: vec![
             Refused {
                 reason: 8,
@@ -195,7 +214,9 @@ fn every_section_starts_where_numpy_can_read_it_and_the_pixel_index_counts_rows(
     }
     assert_eq!(
         tags,
-        ["FRAG", "COVR", "PIXL", "BAND", "PAIR", "REFU", "TEXT"]
+        [
+            "FRAG", "COVR", "PIXL", "BAND", "PAIR", "COLR", "COLP", "REFU", "TEXT"
+        ]
     );
     // The window is 3 x 3 pixels; pixel (2, 0) holds rows 1 and 2.
     let pixl = 88 + 24 * 2;

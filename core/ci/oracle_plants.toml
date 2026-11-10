@@ -713,3 +713,39 @@ file = "core/oracle/src/pairs.rs"
 find = "            next[s] = on_own_fill(own[i][s], own[j][s], cs == 1 && cf == 1);\n"
 replace = ""
 red = ["contract::core_err_within_band"]
+
+[[plant]]
+name = "colour-premultiply"
+item = "§9"
+check = "cairo_premultiply@1: each channel times the alpha"
+file = "core/oracle/src/colour.rs"
+find = "        short_byte(clamp01(c[0]) * a),\n"
+replace = "        short_byte(clamp01(c[0])),\n"
+red = ["colour::a_solid_is_premultiplied_as_cairo_quantises_it", "contract::core_colours_are_the_oracle_s"]
+
+[[plant]]
+name = "colour-shade-halved"
+item = "§9"
+check = "ce_shading@1: a negative shading term is halved"
+file = "core/oracle/src/colour.rs"
+find = "        delta *= 0.5;\n"
+replace = ""
+red = ["colour::a_corner_is_shaded_as_ce_s_get_shaded_rgb_shades_it", "contract::core_colours_are_the_oracle_s"]
+
+[[plant]]
+name = "colour-centroid"
+item = "§9"
+check = "ce_shading@1: read at the centroid of the samples covered"
+file = "core/oracle/src/decide.rs"
+find = "            vec![[sum[0] / n, sum[1] / n]]\n"
+replace = "            vec![point(yes[0])]\n"
+red = ["contract::core_colours_are_the_oracle_s"]
+
+[[plant]]
+name = "alpha-round"
+item = "§1"
+check = "alpha_round@1: an op whose alpha byte is 0 paints nothing"
+file = "core/oracle/src/draw.rs"
+find = "        .any(|r| alpha_short(r[3] * opacity) > 0xff)"
+replace = "        .any(|r| alpha_short(r[3] * opacity) > 0)"
+red = ["colour::at_the_alpha_band_s_edges_only_an_alpha_byte_above_zero_paints"]

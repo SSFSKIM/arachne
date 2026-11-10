@@ -17,6 +17,9 @@ use arachne_oracle::source;
 
 const TILE: u32 = 64;
 
+/// A per-pixel colour's least and most bytes.
+type Admitted = ([u8; 4], [u8; 4]);
+
 fn layer_code(l: &CoreLayer) -> u8 {
     match l {
         CoreLayer::BackgroundStroke => 0,
@@ -207,5 +210,68 @@ fn core_err_within_band() {
          {by_probe:?}; first: {:#?}",
         excess.len(),
         &excess[..excess.len().min(8)]
+    );
+}
+
+#[test]
+fn core_colours_are_the_oracle_s() {
+    // Contract §9: every fragment the core reports carries the colour the oracle computes from
+    // XF: a solid's bytes exactly, a lit triangle's within the bytes the oracle admits there. The
+    // oracle does not compute gradients; their fragments are counted, not compared.
+    let dir = fixtures::scratch("contract-colour");
+    let (mut solid, mut lit, mut gradient) = (0, 0, 0);
+    let mut wrong = Vec::new();
+    for p in fixtures::probe_files(&dir) {
+        let (_, wire) = source::read_file(&p.path).unwrap();
+        let deltas = arachne_core::xf::wire::decode_file(&std::fs::read(&p.path).unwrap()).unwrap();
+        let mut core = Stream::new();
+        for (wd, delta) in wire.iter().zip(&deltas) {
+            core.apply(delta).unwrap();
+            let d = decide_at_wire(&wire, wd.seq, None).unwrap();
+            let ids: HashMap<(u32, u32, u8, u32), u32> = d
+                .fragments
+                .iter()
+                .map(|f| ((f.object, f.part, f.layer, f.sub), f.id))
+                .collect();
+            let per_pixel: HashMap<(u32, u32, u32), Admitted> = d
+                .pixel_colours
+                .iter()
+                .map(|c| ((c.x, c.y, c.fragment), (c.lo, c.hi)))
+                .collect();
+            let (w, h) = (d.header.width, d.header.height);
+            for ((x, y), px) in trace(&core, w, h) {
+                for en in &px.entries {
+                    let key = (en.leaf.0, en.leaf.1, layer_code(&en.layer), en.sub);
+                    let Some(f) = ids.get(&key) else { continue };
+                    let c = &d.colours[*f as usize];
+                    match c.kind {
+                        arachne_oracle::out::COLOUR_SOLID => {
+                            solid += 1;
+                            if en.colour != c.rgba {
+                                wrong.push((p.name, x, y, key, en.colour, c.rgba, c.rgba));
+                            }
+                        }
+                        arachne_oracle::out::COLOUR_PER_PIXEL => {
+                            lit += 1;
+                            let Some((lo, hi)) = per_pixel.get(&(x, y, *f)) else {
+                                continue;
+                            };
+                            if (0..4).any(|k| en.colour[k] < lo[k] || en.colour[k] > hi[k]) {
+                                wrong.push((p.name, x, y, key, en.colour, *lo, *hi));
+                            }
+                        }
+                        _ => gradient += 1,
+                    }
+                }
+            }
+        }
+    }
+    assert!(solid > 10_000 && lit > 1_000, "{solid} {lit} {gradient}");
+    assert!(
+        wrong.is_empty(),
+        "{} of {} fragment colours differ (solid {solid}, lit {lit}); first: {:?}",
+        wrong.len(),
+        solid + lit,
+        &wrong[..wrong.len().min(8)]
     );
 }

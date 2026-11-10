@@ -18,6 +18,12 @@ pub const PIXEL_SIZE: usize = 12;
 pub const REFUSAL_SIZE: usize = 40;
 pub const BAND_SIZE: usize = 544;
 pub const PAIR_SIZE: usize = 24;
+pub const COLOUR_SIZE: usize = 12;
+pub const PIXEL_COLOUR_SIZE: usize = 24;
+/// A fragment's colour kind: not computed (a gradient), one solid, or per pixel (`COLP`).
+pub const COLOUR_GRADIENT: u8 = 0;
+pub const COLOUR_SOLID: u8 = 1;
+pub const COLOUR_PER_PIXEL: u8 = 2;
 /// A pair's label where a read is not bounded: `truth_unable`, every edge.
 pub const LABEL_UNABLE: u8 = 0;
 /// Written where a field holds nothing.
@@ -102,6 +108,24 @@ pub struct BandRow {
     pub status: [u8; 16],
 }
 
+/// One fragment's colour (contract §9): its kind and, for a solid, its premultiplied bytes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ColourRow {
+    pub fragment: u32,
+    pub kind: u8,
+    pub rgba: [u8; 4],
+}
+
+/// A per-pixel fragment's colour at one pixel: the least and most premultiplied bytes admitted.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PixelColour {
+    pub x: u32,
+    pub y: u32,
+    pub fragment: u32,
+    pub lo: [u8; 4],
+    pub hi: [u8; 4],
+}
+
 /// One pair of fragments present at one sample: its admitted edges and its label.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PairRow {
@@ -159,6 +183,10 @@ pub struct Decisions {
     pub bands: Vec<BandRow>,
     /// Sorted by `(y, x, sample, a, b)`.
     pub pairs: Vec<PairRow>,
+    /// One per fragment, by id.
+    pub colours: Vec<ColourRow>,
+    /// One per cover row of a per-pixel fragment, in the cover rows' order.
+    pub pixel_colours: Vec<PixelColour>,
     pub refused: Vec<Refused>,
 }
 
@@ -254,6 +282,20 @@ pub fn write(d: &Decisions) -> Vec<u8> {
         pair.extend([r.sample, r.edges, r.label, 0]);
         u32s(&mut pair, &[0]);
     }
+    let mut colr = Vec::with_capacity(d.colours.len() * COLOUR_SIZE);
+    for r in &d.colours {
+        u32s(&mut colr, &[r.fragment]);
+        colr.push(r.kind);
+        colr.extend(r.rgba);
+        colr.extend([0, 0, 0]);
+    }
+    let mut colp = Vec::with_capacity(d.pixel_colours.len() * PIXEL_COLOUR_SIZE);
+    for r in &d.pixel_colours {
+        u32s(&mut colp, &[r.x, r.y, r.fragment]);
+        colp.extend(r.lo);
+        colp.extend(r.hi);
+        u32s(&mut colp, &[0]);
+    }
     let pixl = pixel_index(d);
     let sections = [
         Section {
@@ -285,6 +327,18 @@ pub fn write(d: &Decisions) -> Vec<u8> {
             record_size: PAIR_SIZE as u32,
             count: d.pairs.len() as u64,
             bytes: pair,
+        },
+        Section {
+            tag: *b"COLR",
+            record_size: COLOUR_SIZE as u32,
+            count: d.colours.len() as u64,
+            bytes: colr,
+        },
+        Section {
+            tag: *b"COLP",
+            record_size: PIXEL_COLOUR_SIZE as u32,
+            count: d.pixel_colours.len() as u64,
+            bytes: colp,
         },
         Section {
             tag: *b"REFU",
@@ -425,8 +479,38 @@ pub fn read(b: &[u8]) -> Result<Decisions, String> {
         covers: Vec::new(),
         bands: Vec::new(),
         pairs: Vec::new(),
+        colours: Vec::new(),
+        pixel_colours: Vec::new(),
         refused: Vec::new(),
     };
+    if let Some((_, size, off, count)) = section(b"COLR") {
+        for i in 0..count {
+            let mut r = Reader {
+                b,
+                at: off + i * size,
+            };
+            d.colours.push(ColourRow {
+                fragment: r.u32()?,
+                kind: r.u8()?,
+                rgba: r.take::<4>()?,
+            });
+        }
+    }
+    if let Some((_, size, off, count)) = section(b"COLP") {
+        for i in 0..count {
+            let mut r = Reader {
+                b,
+                at: off + i * size,
+            };
+            d.pixel_colours.push(PixelColour {
+                x: r.u32()?,
+                y: r.u32()?,
+                fragment: r.u32()?,
+                lo: r.take::<4>()?,
+                hi: r.take::<4>()?,
+            });
+        }
+    }
     if let Some((_, size, off, count)) = section(b"BAND") {
         for i in 0..count {
             let mut r = Reader {
@@ -648,6 +732,26 @@ pub fn canonical(d: &Decisions) -> String {
             s,
             "pair x={} y={} sample={} a={} b={} edges={} label={}",
             r.x, r.y, r.sample, r.a, r.b, r.edges, r.label
+        );
+    }
+    for r in &d.colours {
+        let _ = writeln!(
+            s,
+            "colour fragment={} kind={} rgba={}",
+            r.fragment,
+            r.kind,
+            list(r.rgba)
+        );
+    }
+    for r in &d.pixel_colours {
+        let _ = writeln!(
+            s,
+            "pixel_colour x={} y={} fragment={} lo={} hi={}",
+            r.x,
+            r.y,
+            r.fragment,
+            list(r.lo),
+            list(r.hi)
         );
     }
     for r in &d.refused {
