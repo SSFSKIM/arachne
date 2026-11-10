@@ -356,7 +356,8 @@ struct Layer {
     band_edges: Vec<u32>,
     /// The outline's horizontal segments, which `edges` leaves out ([`scanline::edges_of`]), as
     /// their height and their two ends' x: with `edges`, the whole outline, which a layer keyed on
-    /// a sloped plane reads its fringe's depth on ([`fringe_depths`]). Empty for others.
+    /// a sloped plane reads its fringe's depth on ([`fringe_depths`]) and the labels' planner
+    /// tests a point on ([`LayerView::flats`]). Empty for a layer keyed on its curve.
     flats: Vec<[f64; 3]>,
     /// Pixels `x0..x1` by `y0..y1`, inside the frame.
     bbox: [u32; 4],
@@ -611,6 +612,9 @@ pub(crate) struct LayerView<'a> {
     pub bbox: [u32; 4],
     /// Its outline's edges, but for its horizontal segments, in device pixels.
     pub edges: &'a [Edge],
+    /// Its outline's horizontal segments, as their height and their two ends' x, least first:
+    /// with `edges`, the whole outline.
+    pub flats: &'a [[f64; 3]],
     /// The plane it is keyed on, where it is keyed on one.
     pub plane: Option<Plane>,
     /// Its paint is one wholly transparent colour.
@@ -1992,10 +1996,11 @@ impl<'v> Lowering<'v> {
         if edges.is_empty() {
             return;
         }
-        // A layer keyed on a sloped plane reads its fringe's depth on its whole outline.
+        // A layer keyed on a plane: its whole outline, which a sloped one reads its fringe's
+        // depth on and the labels' planner tests a centre on.
         let flats = match depth {
-            LayerDepth::Plane(p) if p.b != 0.0 || p.c != 0.0 => flats_of(rings),
-            _ => Vec::new(),
+            LayerDepth::Plane(_) => flats_of(rings),
+            LayerDepth::Curve(..) => Vec::new(),
         };
         let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
         for e in &edges {
@@ -2130,6 +2135,7 @@ impl Paths {
             sub: l.sub,
             bbox: l.bbox,
             edges: &l.edges,
+            flats: &l.flats,
             plane: match l.depth {
                 LayerDepth::Plane(p) => Some(p),
                 LayerDepth::Curve(..) => None,
