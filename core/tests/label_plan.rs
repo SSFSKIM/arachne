@@ -563,53 +563,105 @@ fn world_x(px: f64) -> f64 {
     (px - W as f64 / 2.0) * v.frame_width / W as f64
 }
 
-/// The plan, under the far camera, of a wide label at depth 0 and a sheet over pixels 90..`end`
-/// at the label's depth where x is the pixel x `cross`, nearer to its left and farther to its right.
-fn sliver(cross: f64, end: f64) -> Vec<Pair> {
+/// The plan and the frame, under the far camera, of a wide white label at depth 0, a blue sheet
+/// over pixels 90..`end` at the label's depth where x is the pixel x `cross` (nearer to its left,
+/// farther to its right), and `more`.
+fn sliver_with(cross: f64, end: f64, more: &[(Shape, Record)]) -> (Vec<Pair>, Vec<u8>) {
     let (c, e) = (world_x(cross), world_x(end));
     let sheet = rect([world_x(90.0), e], [-1.0, 1.0], true, |x, _| 0.5 * (c - x));
-    let items = [
+    let mut items = vec![
         label([0.0, 0.0, 0.0], [3.0, 0.3]),
         face(2, &sheet, BLUE, &[(12, SQUARE)]),
     ];
+    items.extend_from_slice(more);
     let order: Vec<u32> = items.iter().map(|(_, r)| r.slot).collect();
     let d = arachne_core::probes::first_delta(far_view(), &items, &order);
     let mut s = Stream::new();
     s.apply(&d).expect("the delta applies");
-    s.label_plan(W, H).unwrap().expect("a label").pairs
+    let pairs = s.label_plan(W, H).unwrap().expect("a label").pairs;
+    (pairs, s.draw(W, H, 1).expect("the frame draws"))
 }
 
+fn sliver(cross: f64, end: f64) -> (Vec<Pair>, Vec<u8>) {
+    sliver_with(cross, end, &[])
+}
+
+/// Whether `got` is `under` with `over` composited over `share` of it, each colour channel to 2
+/// levels: a pixel whose sub-samples composite `over` on that share, `under` on the rest.
+fn mixed(got: [u8; 4], under: [u8; 4], over: [u8; 4], share: f64) -> bool {
+    (0..3).all(|c| {
+        let want = under[c] as f64 * (1.0 - share) + over[c] as f64 * share;
+        (got[c] as f64 - want).abs() <= 2.0
+    })
+}
+
+// In pixel (100, 45), sub-samples 0 and 8 (offsets [-8, -7] and [-7, 2]) have their order points
+// at x = 100.03125 and 100.09375; the four of the pixel's first cell column (x 100 to 100.25) at
+// x up to 100.21875; those of its second column at x 100.28125 and beyond. A qualifying sheet
+// anchors the label's insertion at a sub-sample only where it holds its order point: where it
+// covers some of the cell but not the point, the label is in front.
+
 /// "A farther sliver narrower than the sample spacing and lying between order points qualifies."
+/// The sheet ends at 100.15: it holds two order points of pixel 100, whose sub-samples composite
+/// the sheet's 0.6 of their cell over the label; at the rest the label is in front.
 #[test]
 fn a_farther_sliver_between_order_points_leaves_the_sheet_qualifying() {
-    let found = sliver(100.10, 100.15);
+    let (found, frame) = sliver(100.10, 100.15);
     assert_eq!(found.len(), 1, "{found:?}");
     assert_eq!(
         (found[0].outcome, found[0].centre),
         (Outcome::Qualifies, false)
     );
+    let p = px(&frame, 100, 45);
+    let (white, blue) = (stacked(&[WHITE]), stacked(&[BLUE]));
+    assert!(mixed(p, white, blue, 2.0 / 16.0 * 0.6), "{p:?}");
 }
 
-/// "A farther sliver covering one order point does not qualify."
+/// "A farther sliver covering one order point does not qualify": the label is in front.
 #[test]
 fn a_farther_sliver_holding_an_order_point_keeps_the_label_in_front() {
-    let found = sliver(100.08, 100.12);
+    let (found, frame) = sliver(100.08, 100.12);
     assert_eq!(found.len(), 1, "{found:?}");
     assert_eq!(
         (found[0].outcome, found[0].centre),
         (Outcome::NotNearer, false)
     );
+    assert_eq!(px(&frame, 100, 45), stacked(&[WHITE]));
 }
 
 /// A farther sliver across the boundary of two sub-sample cells (x = 100.25), holding neither
-/// cell's order point: no point of the overlap is farther.
+/// cell's order point: no point of the overlap is farther. The sheet holds the four order points
+/// of pixel 100's first cell column, covering their cells whole; it covers 0.1 of the second
+/// column's cells and none of their points, and there the label is in front.
 #[test]
 fn a_farther_sliver_across_a_cell_boundary_holding_no_order_point_is_no_overlap() {
-    let found = sliver(100.225, 100.275);
+    let (found, frame) = sliver(100.225, 100.275);
     assert_eq!(found.len(), 1, "{found:?}");
     assert_eq!(
         (found[0].outcome, found[0].centre),
         (Outcome::Qualifies, false)
+    );
+    let p = px(&frame, 100, 45);
+    assert!(
+        mixed(p, stacked(&[WHITE]), stacked(&[BLUE]), 4.0 / 16.0),
+        "{p:?}"
+    );
+}
+
+/// Insertion reads qualification's predicate: a label goes behind a qualifying sheet at a
+/// sub-sample only where the sheet holds its order point. With an opaque line in front of the
+/// sheet, the line hides the label at the four sub-samples whose points the sheet holds, and
+/// nowhere else: not at the four whose cells the sheet covers a tenth of.
+#[test]
+fn a_label_goes_behind_a_qualifying_sheet_only_where_the_sheet_holds_the_order_point() {
+    let black = [0.0, 0.0, 0.0, 1.0];
+    let (found, frame) = sliver_with(100.225, 100.275, &[line_at(3, 1.0, black)]);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].outcome, Outcome::Qualifies);
+    let p = px(&frame, 100, 45);
+    assert!(
+        mixed(p, stacked(&[WHITE]), stacked(&[black]), 4.0 / 16.0),
+        "{p:?}"
     );
 }
 
