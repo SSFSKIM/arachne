@@ -725,7 +725,10 @@ fn apply_s_other_checks_come_before_slot_not_held() {
     ] {
         match s.apply(&d).unwrap_err() {
             StreamError::Missing(why) => {
-                assert!(why.contains(what) && !why.contains("slot_not_held"), "{why}")
+                assert!(
+                    why.contains(what) && !why.contains("slot_not_held"),
+                    "{why}"
+                )
             }
             other => panic!("{what}: not refused as missing: {other}"),
         }

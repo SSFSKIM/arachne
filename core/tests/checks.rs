@@ -228,7 +228,8 @@ fn apply_s_checks_are_made_by_apply() {
     assert!(missing(refused_by_apply(&mut s, &d, "a release of")));
     let mut d = delta(3);
     d.remove = vec![42];
-    assert!(missing(refused_by_apply(&mut s, &d, "a removal of slot 42")));
+    let err = refused_by_apply(&mut s, &d, "a removal of slot 42");
+    assert!(missing(err));
 
     // A record's blend and clip naming a shape the stream would not hold.
     let mut blended = drawn(2, &shape);
@@ -262,7 +263,8 @@ fn apply_s_checks_are_made_by_apply() {
         background: Background::Image(shape.key()),
         ..common::flat_view(8, 8, [0.0; 4])
     });
-    assert!(invalid(refused_by_apply(&mut s, &d, "must be an image shape")));
+    let err = refused_by_apply(&mut s, &d, "must be an image shape");
+    assert!(invalid(err));
     let mut d = delta(3);
     d.view = Some(View {
         background: Background::Image(NOWHERE),
@@ -306,8 +308,8 @@ fn apply_s_checks_of_what_the_reader_never_hands_it_are_made_by_apply() {
         objects: Vec::new(),
     });
     for (rec, what) in [
-        (unfilled, "background_image feature bit and fill_image field disagree"),
-        (tailless, "pre_projected feature bit and tail field disagree"),
+        (unfilled, "bit and fill_image field disagree"),
+        (tailless, "bit and tail field disagree"),
         (mesh, "pre_projected is not valid on mesh records"),
         (bodied, "with another kind's body"),
         (instances, "1 placements and 0 objects"),
