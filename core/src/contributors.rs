@@ -100,9 +100,13 @@ pub(crate) fn of_pixel_placed(
     coverage: &[[u8; SAMPLES]],
     depths: &[Depths],
     leaf_of: &dyn Fn(&Fragment) -> (u32, u32),
-    plan: Option<&crate::label_plan::LabelPlan>,
+    plan: Option<crate::label_plan::Placing<'_>>,
 ) -> PixelContributors {
-    let placing = plan.filter(|p| crate::label_plan::holds_label(p, frags));
+    let placing = plan.filter(|p| crate::label_plan::holds_label(p.plan, frags));
+    let points: Vec<u16> = match placing {
+        Some(p) => frags.iter().map(|f| p.points(f)).collect(),
+        None => Vec::new(),
+    };
     // Leaves by first appearance among the fragments, and each fragment's leaf.
     let mut ids: Vec<(u32, u32)> = Vec::new();
     let of: Vec<usize> = frags
@@ -141,7 +145,7 @@ pub(crate) fn of_pixel_placed(
         placing
             .and_then(|p| {
                 crate::label_plan::placed_pair(
-                    p,
+                    p.plan,
                     &frags[a],
                     &frags[b],
                     order::painted(&frags[a], &frags[b]),
@@ -181,7 +185,15 @@ pub(crate) fn of_pixel_placed(
             );
         };
         match placing {
-            Some(p) => crate::label_plan::rank_placed(p, frags, &ranked, rank, painted, &mut at_k),
+            Some(p) => crate::label_plan::rank_placed(
+                p.plan,
+                frags,
+                &ranked,
+                |i| points[i] >> k & 1 != 0,
+                rank,
+                painted,
+                &mut at_k,
+            ),
             None => rank(&ranked, &mut at_k),
         }
         // Front to back: runs of one leaf's fragments, each with its greatest coverage here.

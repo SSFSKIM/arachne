@@ -95,6 +95,18 @@ pub fn sample_cell(s: usize) -> [usize; 2] {
     SAMPLE_OFFSETS[s].map(|o| (o as i16 + 8) as usize / 4)
 }
 
+/// The sub-samples of pixel `(x, y)` whose order points ([`sample_point`]) fragment `f` holds: a
+/// mask's own, every one for a path covering the pixel whole, else the point-sampled mask its
+/// producer gives. What the labels' planner counts and their insertion anchors on
+/// ([`crate::label_plan`]).
+pub(crate) fn points_of(producers: &[&dyn Producer], f: &Fragment, x: u32, y: u32) -> u16 {
+    match f.coverage {
+        Coverage::Mask(m) => m,
+        Coverage::Area { area, .. } if area >= 1.0 => FULL,
+        Coverage::Area { id, .. } => producers[f.source as usize].mask(id, x, y),
+    }
+}
+
 /// Sub-sample `s` of pixel `(x, y)` in pixel coordinates (pixel `(x, y)` spans `[x, x + 1)` by
 /// `[y, y + 1)`).
 pub fn sample_point(x: u32, y: u32, s: usize) -> [f64; 2] {
@@ -974,12 +986,18 @@ impl<'a> TransparentPass<'a> {
         self.rect
     }
 
+    /// The labels' placement at pixel `(x, y)`, where the frame places labels.
+    fn placing(&self, x: u32, y: u32) -> Option<crate::label_plan::Placing<'a>> {
+        self.plan.map(|plan| crate::label_plan::Placing {
+            plan,
+            producers: self.producers,
+            x,
+            y,
+        })
+    }
+
     fn mask_of(&self, f: &Fragment, x: u32, y: u32) -> u16 {
-        match f.coverage {
-            Coverage::Mask(m) => m,
-            Coverage::Area { area, .. } if area >= 1.0 => FULL,
-            Coverage::Area { id, .. } => self.producers[f.source as usize].mask(id, x, y),
-        }
+        points_of(self.producers, f, x, y)
     }
 
     /// A fragment's 8-bit coverage at each sub-sample of the sample resolve: all or nothing for a
@@ -1112,7 +1130,7 @@ impl<'a> TransparentPass<'a> {
                     |_, f| self.sample_coverage(f, x, y),
                     |_, f| Depths::of(self.producers, f, x, y),
                     None,
-                    self.plan,
+                    self.placing(x, y),
                 )
             };
             match self.emission.get(i) {
@@ -1178,7 +1196,7 @@ impl<'a> TransparentPass<'a> {
                     |_, f| self.sample_coverage(f, x, y),
                     |_, f| Depths::of(self.producers, f, x, y),
                     Some(&mut trace),
-                    self.plan,
+                    self.placing(x, y),
                 )
             };
             let emission = match self.emission.get(i) {
@@ -1565,7 +1583,7 @@ pub(crate) fn resolve_pixel_traced(
     sample_coverage: impl Fn(usize, &Fragment) -> [u8; SAMPLES],
     sample_depth: impl Fn(usize, &Fragment) -> Depths,
     mut trace: Option<&mut ResolveTrace>,
-    plan: Option<&crate::label_plan::LabelPlan>,
+    plan: Option<crate::label_plan::Placing<'_>>,
 ) -> (Resolve, [u8; 4]) {
     use crate::label_plan;
     use crate::order;
@@ -1596,7 +1614,7 @@ pub(crate) fn resolve_pixel_traced(
     // A label's placement where a label is drawn here ([`crate::label_plan`]): its pairs and
     // sub-sample orders are the placement's, and where a sheet it goes behind meets it, the
     // pixel composites sample by sample.
-    let placing = plan.filter(|p| label_plan::holds_label(p, frags));
+    let placing = plan.filter(|p| label_plan::holds_label(p.plan, frags));
     // One depth row for all (a flat scene, and no label placed): paint order decides every pair
     // whatever they cover, so the coverage rows wait for the sample resolve.
     let first = s.rows[0].samples;
@@ -1662,9 +1680,9 @@ pub(crate) fn resolve_pixel_traced(
                     t.relations.push(Relation { a, b, shared });
                 }
                 let decided = shared.decided(&frags[a], &frags[b]);
-                match placing
-                    .and_then(|p| label_plan::placed_pair(p, &frags[a], &frags[b], painted(a, b)))
-                {
+                match placing.and_then(|p| {
+                    label_plan::placed_pair(p.plan, &frags[a], &frags[b], painted(a, b))
+                }) {
                     Some((o, how)) => {
                         let covered = shared.covered;
                         let strong = if how.is_strong() { covered } else { 0 };
@@ -1709,9 +1727,10 @@ pub(crate) fn resolve_pixel_traced(
     // every pair with a label taking its order from those ranks.
     let mut placed: Option<(Vec<usize>, Vec<usize>)> = None;
     if let Some(p) = placing
-        && label_plan::backed(p, frags)
+        && label_plan::backed(p.plan, frags)
     {
         let bit = |mask: u16, k: usize| mask >> k & 1 != 0;
+        let points: Vec<u16> = frags.iter().map(|f| p.points(f)).collect();
         let (mut ranks, mut ends) = (Vec::new(), Vec::new());
         let mut covering = Vec::new();
         let mut ranked = Vec::new();
@@ -1720,9 +1739,10 @@ pub(crate) fn resolve_pixel_traced(
             covering.extend((0..n).filter(|i| cov[*i][k] != 0));
             let at = &s.at;
             label_plan::rank_placed(
-                p,
+                p.plan,
                 frags,
                 &covering,
+                |i| bit(points[i], k),
                 |items, out| {
                     order::rank_sample(
                         items,
@@ -1738,7 +1758,7 @@ pub(crate) fn resolve_pixel_traced(
             ranks.extend_from_slice(&ranked);
             ends.push(ranks.len());
         }
-        let is_label = |i: usize| matches!(p.role(&frags[i]), label_plan::Role::Label(_));
+        let is_label = |i: usize| matches!(p.plan.role(&frags[i]), label_plan::Role::Label(_));
         for a in 0..n {
             for b in 0..n {
                 if a != b && (is_label(a) || is_label(b)) {

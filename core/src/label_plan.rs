@@ -33,7 +33,7 @@
 //! never a sheet: a label meeting it is open ([`Open::Label`]). An open pair never moves the
 //! label: only sheets that qualify do.
 
-use crate::composite::{Coverage, Fragment, Plane, Producer, SAMPLES};
+use crate::composite::{Fragment, Plane, Producer, SAMPLES};
 use crate::label_class::{self, LabelClass};
 use crate::order::Decided;
 use crate::path::{LayerView, Paths};
@@ -98,6 +98,23 @@ pub struct Pair {
     pub outcome: Outcome,
 }
 
+/// The labels' placement as a pixel's resolve reads it: the frame's plan, and where to read the
+/// order points each fragment holds at pixel `(x, y)` ([`crate::composite::points_of`]).
+#[derive(Clone, Copy)]
+pub(crate) struct Placing<'a> {
+    pub plan: &'a LabelPlan,
+    pub producers: &'a [&'a dyn Producer],
+    pub x: u32,
+    pub y: u32,
+}
+
+impl Placing<'_> {
+    /// The sub-samples whose order points `f` holds at the pixel.
+    pub fn points(&self, f: &Fragment) -> u16 {
+        crate::composite::points_of(self.producers, f, self.x, self.y)
+    }
+}
+
 /// What a fragment is to the labels' placement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
@@ -143,6 +160,14 @@ impl LabelPlan {
                 .sheet_of
                 .get(&(f.order, f.sub))
                 .is_some_and(|s| self.behind[label as usize].binary_search(s).is_ok())
+    }
+
+    /// Whether `f`, holding the sub-sample's order point when `held`, anchors label `label`'s
+    /// insertion there: a fill of a sheet it goes behind that holds the point, as qualification
+    /// counts it. Where a sheet covers some of a sub-sample's cell but not its point, the label
+    /// keeps the place it has where no sheet backs it.
+    pub fn anchors(&self, label: u32, f: &Fragment, held: bool) -> bool {
+        held && self.backs(label, f)
     }
 
     /// The sheets label `label` (an index into `groups`) goes behind.
@@ -491,11 +516,7 @@ pub fn plan(
             continue;
         }
         // The order points a fragment holds: a mask's, or a path's point-in-outline test.
-        let points = |f: &Fragment, x: u32, y: u32| match f.coverage {
-            Coverage::Mask(m) => m,
-            Coverage::Area { area, .. } if area >= 1.0 => u16::MAX,
-            Coverage::Area { id, .. } => producers[f.source() as usize].mask(id, x, y),
-        };
+        let points = |f: &Fragment, x: u32, y: u32| crate::composite::points_of(producers, f, x, y);
         crate::tiles::passes(rect, producers).visit_pixels(rect, |x, y, frags, _, depths| {
             for (g, b) in &boxes {
                 if x < b[0] || x >= b[2] || y < b[1] || y >= b[3] {
@@ -667,6 +688,7 @@ pub(crate) fn rank_placed(
     plan: &LabelPlan,
     frags: &[Fragment],
     items: &[usize],
+    held: impl Fn(usize) -> bool,
     rank: impl FnOnce(&[usize], &mut Vec<usize>),
     painted: impl Fn(usize, usize) -> std::cmp::Ordering,
     out: &mut Vec<usize>,
@@ -689,7 +711,10 @@ pub(crate) fn rank_placed(
             let Role::Label(g) = plan.role(&frags[l]) else {
                 unreachable!("partitioned as a label")
             };
-            let place = match ranked.iter().rposition(|i| plan.backs(g, &frags[*i])) {
+            let place = match ranked
+                .iter()
+                .rposition(|i| plan.anchors(g, &frags[*i], held(*i)))
+            {
                 Some(p) => p + 1,
                 None => overlay,
             };
