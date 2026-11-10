@@ -690,7 +690,9 @@ class Drawing:
         if not play.static:
             return None
         capture = self.record._captures[play.static_seq]
-        self.show(capture, play.static)
+        # The scene's mobjects too: the static list is flattened to leaves,
+        # and a face's surface is found among their families.
+        self.show(capture, [*capture.draw_list(), *play.static])
         camera = self.camera
         if self.static_painter is not None:
             pixels = self.static_painter.paint(
@@ -797,7 +799,13 @@ class Drawing:
         shown = capture.instant if instant is None else instant
         with self._captures(shown, play.index, capture):
             if self.static_layer and self._picture_holds(play, capture):
-                self.show(capture, targets)
+                # A frame described from the camera's captures finds a drawn
+                # face's surface among the scene's roots: they hold their
+                # state at this capture, whichever drawing kept the picture.
+                self.show(
+                    capture,
+                    [*capture.draw_list(), *targets] if self.captured else targets,
+                )
                 if prepare is not None:
                     prepare(self)
                 if static is not None:

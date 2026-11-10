@@ -1030,3 +1030,90 @@ fn points_at_one_depth_tie_by_draw_order_whether_or_not_fixed_in_orientation() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// Whether Cairo paints nothing from a source of alpha `d` (straight, before clamping): its 16-bit
+/// alpha (`_cairo_color_double_to_short`, `d * 65535 + 0.5` truncated) is at most 0xff
+/// (`CAIRO_ALPHA_SHORT_IS_CLEAR`), its 8-bit alpha zero.
+fn cairo_clear(d: f64) -> bool {
+    ((d.clamp(0.0, 1.0) * 65535.0 + 0.5) as u32) <= 0xff
+}
+
+#[test]
+fn a_mesh_triangle_cairo_paints_nothing_of_changes_no_pixel_and_no_resolve() {
+    // The rule's boundary: the largest alpha it drops and the smallest it keeps.
+    let mut dropped: f64 = 255.5 / 65535.0;
+    while !cairo_clear(dropped) {
+        dropped = dropped.next_down();
+    }
+    while cairo_clear(dropped.next_up()) {
+        dropped = dropped.next_up();
+    }
+    let kept = dropped.next_up();
+    assert!(cairo_clear(dropped) && !cairo_clear(kept));
+    assert!((kept - 255.5 / 65535.0).abs() < 1e-15, "{kept}");
+
+    let level = quad(square_at(0.0, 3.0));
+    let tilted = quad([
+        [-3.0, -2.5, -1.2],
+        [3.0, -2.5, 1.2],
+        [3.0, 2.5, 1.2],
+        [-3.0, 2.5, -1.2],
+    ]);
+    // Crosses both quads, in front of each over part of the frame and behind elsewhere.
+    let ghost = Shape::new(ShapeData::Mesh {
+        positions: vec![[-4.0, -3.0, -1.5], [4.0, -2.0, 1.5], [-1.0, 3.5, 0.8]],
+        triangles: vec![[0, 1, 2]],
+        normals: None,
+    });
+    let view = close_view();
+    let scene = |extra: Option<(f64, f64)>, lit: bool| {
+        let mut items = vec![
+            (
+                level.clone(),
+                mesh_record(1, &level, [0.9, 0.1, 0.1, 1.0], Space::World),
+            ),
+            (
+                tilted.clone(),
+                mesh_record(2, &tilted, [0.1, 0.2, 0.9, 0.5], Space::World),
+            ),
+        ];
+        let mut order = vec![1, 2];
+        if let Some((alpha, opacity)) = extra {
+            let mut r = mesh_record(3, &ghost, [0.8, 0.9, 0.3, alpha], Space::World);
+            r.opacity = opacity;
+            r.depth.shade_in_3d = lit;
+            items.push((ghost.clone(), r));
+            order.push(3);
+        }
+        stream_of(view.clone(), &items, &order)
+            .render(W, H, 1)
+            .unwrap()
+    };
+    let without = scene(None, false);
+    let mut failures = Vec::new();
+    for lit in [false, true] {
+        // Alpha zero, by the fill and by the group opacity, and the largest the rule drops.
+        for (alpha, opacity) in [(0.0, 1.0), (1.0, 0.0), (dropped, 1.0), (1.0, dropped)] {
+            let with = scene(Some((alpha, opacity)), lit);
+            let (mut reclassed, mut recoloured) = (0, 0);
+            for y in 0..H {
+                for x in 0..W {
+                    reclassed +=
+                        (class(&with.resolves, x, y) != class(&without.resolves, x, y)) as u32;
+                    recoloured += (px(&with.rgba, x, y) != px(&without.rgba, x, y)) as u32;
+                }
+            }
+            if reclassed + recoloured > 0 || with.counts != without.counts {
+                failures.push(format!(
+                    "alpha {alpha} at opacity {opacity} (lit {lit}): {reclassed} pixels change \
+                     resolve, {recoloured} colour"
+                ));
+            }
+        }
+        // The smallest alpha it keeps is drawn: its fragments take part in the resolve.
+        if scene(Some((kept, 1.0)), lit).resolves == without.resolves {
+            failures.push(format!("alpha {kept} (lit {lit}) drew nothing"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

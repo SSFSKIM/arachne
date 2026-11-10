@@ -248,6 +248,100 @@ fn a_stroke_covers_its_outline_at_ces_width() {
     }
 }
 
+/// A convex polygon's outline offset by `d` along its outward normals, its corners mitred.
+fn offset_polygon(poly: &[[f64; 2]], d: f64) -> Vec<[f64; 2]> {
+    let n = poly.len();
+    let signed: f64 = (0..n)
+        .map(|i| {
+            let (a, b) = (poly[i], poly[(i + 1) % n]);
+            a[0] * b[1] - b[0] * a[1]
+        })
+        .sum();
+    // The outward normal of the edge from `a` to `b`, for either winding.
+    let normal = |a: [f64; 2], b: [f64; 2]| {
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let len = libm::hypot(dx, dy);
+        let s = if signed > 0.0 { 1.0 } else { -1.0 };
+        [s * dy / len, -s * dx / len]
+    };
+    (0..n)
+        .map(|i| {
+            let (prev, p, next) = (poly[(i + n - 1) % n], poly[i], poly[(i + 1) % n]);
+            let (u, v) = (normal(prev, p), normal(p, next));
+            let k = d / (1.0 + u[0] * v[0] + u[1] * v[1]);
+            [p[0] + k * (u[0] + v[0]), p[1] + k * (u[1] + v[1])]
+        })
+        .collect()
+}
+
+/// A stroke thinner than Cairo's 0.1-pixel flattening tolerance on each side, along a closed
+/// outline of straight cubics: Cairo strokes each straight piece at its full width, so every pixel
+/// carries the exact band's area (the outline offset by half the width either side, mitred), and
+/// so does the whole frame. A stroker that fits each side's offset only to within the flattening
+/// tolerance may lay both sides near the centreline and lose most of the band.
+#[test]
+fn a_stroke_thinner_than_the_flattening_tolerance_covers_its_band() {
+    let view = flat_view(W, H, [0.0, 0.0, 0.0, 1.0]);
+    let m = map(&view);
+    // CE's width 1.6 at the line width multiple 0.01 and 11.25 pixels to a frame unit: 0.18 pixels.
+    let width = 1.6;
+    let w_px = width * view.cairo_line_width_multiple * m.xx.abs();
+    assert!((w_px - 0.18).abs() < 1e-12, "{w_px}");
+    let corners = [
+        [-3.1, -2.2, 0.0],
+        [2.7, -2.9, 0.0],
+        [3.6, 0.4, 0.0],
+        [0.3, 3.1, 0.0],
+        [-3.3, 1.2, 0.0],
+    ];
+    let shape = path(ring(&corners));
+    let frame = draw(
+        view.clone(),
+        &[(shape.clone(), stroke(1, &shape, WHITE, width))],
+    );
+    let poly: Vec<[f64; 2]> = corners.iter().map(|p| m.apply(*p)).collect();
+    let (outer, inner) = (
+        offset_polygon(&poly, w_px / 2.0),
+        offset_polygon(&poly, -w_px / 2.0),
+    );
+    let band = |x: u32, y: u32| area_in_pixel(&outer, x, y) - area_in_pixel(&inner, x, y);
+    // Within two steps per byte at every pixel, and the frame's whole coverage within 1% of the
+    // band's area (the perimeter times the width).
+    let (mut drawn, mut want, mut off, mut worst) = (0.0, 0.0, 0, (0, 0, 0));
+    for y in 0..H {
+        for x in 0..W {
+            let a = band(x, y);
+            let (got, exp) = (px(&frame, x, y)[0] as i32, white_at(a)[0] as i32);
+            if (got - exp).abs() > 2 {
+                off += 1;
+            }
+            if (got - exp).abs() > worst.0 {
+                worst = ((got - exp).abs(), x, y);
+            }
+            drawn += got as f64 / 255.0;
+            want += a;
+        }
+    }
+    let perimeter: f64 = (0..poly.len())
+        .map(|i| {
+            let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+            libm::hypot(b[0] - a[0], b[1] - a[1])
+        })
+        .sum();
+    assert!(
+        (want - perimeter * w_px).abs() < 1e-6 * want,
+        "{want} {perimeter}"
+    );
+    assert!(
+        (drawn - want).abs() <= 0.01 * want && off == 0,
+        "drawn {drawn:.3} of the band's {want:.3} square pixels; {off} pixels off by more than 2 \
+         steps, the worst by {} at {},{}",
+        worst.0,
+        worst.1,
+        worst.2
+    );
+}
+
 /// A joint whose miter is 5.8 times the stroke's half width: Cairo's limit of 10 mitres it (kurbo's
 /// own default of 4 would bevel it); a sharper one, past the limit, is bevelled.
 #[test]
