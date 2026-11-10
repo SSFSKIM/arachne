@@ -617,8 +617,20 @@ pub(crate) struct LayerView<'a> {
     pub flats: &'a [[f64; 3]],
     /// The plane it is keyed on, where it is keyed on one.
     pub plane: Option<Plane>,
-    /// Its paint is one wholly transparent colour.
-    pub clear: bool,
+    layer: &'a Layer,
+}
+
+impl LayerView<'_> {
+    /// The premultiplied colour its fragments carry at pixel `(x, y)`, as the layer paints it there:
+    /// at the pixel of its box nearest for one outside the box; clear for a box with no pixel.
+    pub fn colour(&self, x: u32, y: u32) -> [u8; 4] {
+        let b = self.bbox;
+        if b[0] >= b[2] || b[1] >= b[3] {
+            return [0; 4];
+        }
+        self.layer
+            .colour(x.clamp(b[0], b[2] - 1), y.clamp(b[1], b[3] - 1))
+    }
 }
 
 /// Paths lowered to coverage layers, binned by tile: a producer of area fragments.
@@ -2140,7 +2152,7 @@ impl Paths {
                 LayerDepth::Plane(p) => Some(p),
                 LayerDepth::Curve(..) => None,
             },
-            clear: matches!(l.paint, LayerPaint::Solid(c) if c[3] == 0),
+            layer: l,
         })
     }
 

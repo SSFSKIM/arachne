@@ -574,9 +574,10 @@ pub fn plan(
             }
         });
     }
-    // Where a sheet's fill holds the label's projected centre, its depth on that ray: the plane
-    // the fill is keyed on, read there. Fills holding it on two planes that place it apart
-    // leave it undecided.
+    // Where a sheet's fill holds the label's projected centre, its colour at the pixel holding the
+    // centre of positive alpha (as an order point counts), its depth on that ray: the plane the
+    // fill is keyed on, read there. Fills holding it on two planes that place it apart leave it
+    // undecided.
     let mut members: Vec<Vec<usize>> = vec![Vec::new(); n_sheets];
     for (f, s) in sheet.iter().enumerate() {
         members[*s as usize].push(f);
@@ -589,10 +590,12 @@ pub fn plan(
             let layer = &faces[f].layer;
             let b = layer.bbox;
             let near = |v: f64, lo: u32, hi: u32| v >= lo as f64 - 1.0 && v <= hi as f64 + 1.0;
-            if layer.clear || !near(cx, b[0], b[2]) || !near(cy, b[1], b[3]) {
+            if !near(cx, b[0], b[2]) || !near(cy, b[1], b[3]) {
                 continue;
             }
-            if !holds(layer.edges, layer.flats, label.centre) {
+            if !holds(layer.edges, layer.flats, label.centre)
+                || layer.colour(cx.floor() as u32, cy.floor() as u32)[3] == 0
+            {
                 continue;
             }
             let c = match layer.plane {
