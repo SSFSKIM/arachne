@@ -225,6 +225,17 @@ fn unable_status(status: u8) -> Option<&'static str> {
 /// The verdict at sample `s` of the reported pixel.
 pub fn judge(d: &Decisions, rep: &Reported, s: usize) -> Verdict {
     let (x, y) = (rep.x, rep.y);
+    // An unbounded fragment may stand anywhere: it is `truth_unable` at every sample of its box,
+    // the window, whatever the report holds there (FORMAT `flags` bit 0, §6). It has no rows, so
+    // no report can show it absent.
+    let inside = |b: [i32; 4]| (b[0]..b[2]).contains(&(x as i32)) && (b[1]..b[3]).contains(&(y as i32));
+    if d
+        .fragments
+        .iter()
+        .any(|f| f.flags & FLAG_UNBOUNDED != 0 && inside(f.bbox))
+    {
+        return Verdict::Unable("band_unbounded");
+    }
     let (live, zero) = ids(d);
     let rows: Vec<_> = d.covers.iter().filter(|c| (c.x, c.y) == (x, y)).collect();
     let cover_of = |f: u32| rows.iter().find(|c| c.fragment == f);
@@ -240,9 +251,6 @@ pub fn judge(d: &Decisions, rep: &Reported, s: usize) -> Verdict {
                     "mismatch"
                 });
             };
-            if d.fragments[f as usize].flags & FLAG_UNBOUNDED != 0 {
-                return Verdict::Unable("band_unbounded");
-            }
             // Its own key's status at the sample: a fragment with no key bounded is
             // `truth_unable` there, whether or not it makes a pair (§6).
             let own = d

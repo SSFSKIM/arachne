@@ -101,6 +101,55 @@ fn a_lone_fragment_whose_key_states_no_bound_is_unable_not_agreement() {
 }
 
 #[test]
+fn an_unbounded_fragment_is_unable_at_every_sample_whether_reported_or_not() {
+    // FORMAT, `flags` bit 0: an unbounded fragment "is `truth_unable` at every sample of the
+    // window, never absent"; it has no rows, so a reader treats it as present-unknown at every
+    // pixel (§6). Two scenes make one: a square placed at the eye's depth, and a point block just
+    // short of it. Reported with nothing, or with it, every sample of the window is unjudged.
+    let mut square = Build::new(true);
+    square
+        .fill(rect([-6.0, 6.0], [-6.0, 6.0], 0.0), OPAQUE_RED)
+        .geometry
+        .place_a[2][3] = 19.9999999;
+    let mut point = Build::new(true);
+    point.points(vec![[0.0, 0.0, 20.0 - 1e-7]], WHITE, 1.0);
+    for b in [square, point] {
+        let d = decide_at(&[b.delta(1, view_c())], 1, None).unwrap();
+        let f = &d.fragments[0];
+        assert_eq!(f.flags & arachne_oracle::out::FLAG_UNBOUNDED, 1, "{:?}", d.fragments);
+        assert!(d.covers.is_empty());
+        let identity = (f.object, f.part, f.layer, f.sub);
+        for (x, y) in [(32, 32), (0, 0), (63, 63)] {
+            let nothing = Reported {
+                x,
+                y,
+                entries: vec![],
+                order: vec![vec![]; 16],
+            };
+            let it = Reported {
+                x,
+                y,
+                entries: vec![Entry {
+                    identity,
+                    cells: [255; 16],
+                }],
+                order: vec![vec![0]; 16],
+            };
+            for s in 0..16 {
+                for report in [&nothing, &it] {
+                    assert_eq!(
+                        judge(&d, report, s),
+                        Verdict::Unable("band_unbounded"),
+                        "({x}, {y}) sample {s}, {} entries",
+                        report.entries.len()
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn a_fragment_whose_colour_is_unknown_is_still_judged_for_its_order() {
     // `FORMAT.md`, `COLR` kind 0: a shaded path's colour is not computed, its colour verdict
     // alone is open. Its presence and its order stay judged. Two opaque squares as in the first

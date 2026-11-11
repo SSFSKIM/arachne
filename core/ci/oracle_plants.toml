@@ -1376,9 +1376,18 @@ name = "colour-unknown-opens-order"
 item = "§9"
 check = "a fragment whose colour is unknown (COLR kind 0) is still judged for its presence and order"
 file = "core/oracle/tests/common/judge.rs"
-find = "            if d.fragments[f as usize].flags & FLAG_UNBOUNDED != 0 {"
-replace = "            if d.colours[f as usize].kind == 0 || d.fragments[f as usize].flags & FLAG_UNBOUNDED != 0 {"
+find = "            // Its own key's status at the sample: a fragment with no key bounded is\n"
+replace = "            if d.colours[f as usize].kind == 0 {\n                return Verdict::Unable(\"band_unbounded\");\n            }\n            // Its own key's status at the sample: a fragment with no key bounded is\n"
 red = ["judge::a_fragment_whose_colour_is_unknown_is_still_judged_for_its_order"]
+
+[[plant]]
+name = "unbounded-only-where-reported"
+item = "§6"
+check = "an unbounded fragment is truth_unable at every sample of the window, whether reported or not"
+file = "core/oracle/tests/common/judge.rs"
+find = "        .any(|f| f.flags & FLAG_UNBOUNDED != 0 && inside(f.bbox))\n"
+replace = "        .any(|f| {\n            f.flags & FLAG_UNBOUNDED != 0\n                && inside(f.bbox)\n                && rep.entries.iter().any(|e| e.identity == (f.object, f.part, f.layer, f.sub) && e.cells[s] > 0)\n        })\n"
+red = ["judge::an_unbounded_fragment_is_unable_at_every_sample_whether_reported_or_not"]
 
 [[plant]]
 name = "one-colour-rows-solid"
