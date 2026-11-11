@@ -1085,7 +1085,8 @@ this order:
 
 - Newell's normal relative to the first point, its sum taken over `i = 0 .. N − 1` in that order,
   each point with the next (§5); the widest normal and a triangle's normal as the one cross
-  product §5 writes; an axis plane's normal `e_k`;
+  product §5 writes; an axis plane's normal `e_k`; a facing plane's normal, `R`'s third row
+  (`facing_plane@1`);
 - its length `sqrt((n_0 n_0 + n_1 n_1) + n_2 n_2)`, then the unit `n_k / |n|` per component, then
   the unit turned to its canonical sign;
 - the offset `(û_0 p_0 + û_1 p_1) + û_2 p_2` through the plane's point `p` (its first point, or a
@@ -1093,10 +1094,24 @@ this order:
 - `m_i = (R_i0 û_0 + R_i1 û_1) + R_i2 û_2`, and `D = (e − n · c) − m_2 d`, with
   `n · c = (û_0 c_0 + û_1 c_1) + û_2 c_2`.
 
-The one quantity left to any order is a `Nearest` face's point, its centroid (`C`, below).
+The one quantity left to any order is a `Nearest` face's point, its centroid. For every other
+plane, two conforming computations' unrounded planes are the same bits. For a `Nearest` face they
+differ as follows, with `γ_j = j u / (1 − j u)`, infinite where `j u >= 1`:
 
-`R` is the largest, at the region's four corners `(X, Y)`, of `gap + 3A + C + shift`, times
-`(1 + 64u)`:
+- **The point.** A conforming computation may take the centroid of the face's `N` points `p_i` as
+  `Σ p_i / N` or as `p_0 + Σ (p_i − p_0) / N`, in any order. Either lies within
+  `γ_{N+2} (Σ_i |p_ik − p_0k| + Σ_i |p_ik|) / N` of the exact centroid along axis `k`.
+- **`E_k` and `δe`.** `R` takes `E_k = γ_{2N+64} (Σ_i |p_ik − p_0k| + Σ_i |p_ik|) / N` and
+  `δe = 2 Σ_k |û_k| E_k`, both 0 for every plane but a `Nearest` face's. `δe` bounds how far the
+  two computations' offsets can differ, the share of their points and each offset's own bound
+  included. The other computation's offset bound is at most `ε = ε_e + 4u δe`. Why `γ_{2N+64}`
+  suffices where `γ_{N+2}` does not is stated with `(1 + 64u)`, below.
+- **`Dn`** is the nearest the other computation's `D` can stand: `(|D| − δe) − 2 dD` for a
+  `Nearest` face, and `|D|` for every other plane. The two offsets differ by under `δe`, and each
+  computation's `D` lies within its `dD` (as in `A`, below) of the exact `D` through its offset.
+
+`R = (1 + 64u) ((M + ρ) + ν)`, where `M` is the largest, at the region's four corners `(X, Y)`, of
+`gap + 3A + C + shift`:
 
 - **`gap`** is the largest `|K_r(X, Y) − K_u(X, Y)| + 4u (terms of both reads)`, where `K_r` is the
   key of a rounded plane a conforming computation can produce, and `K_u` is the key of the unrounded
@@ -1104,44 +1119,57 @@ The one quantity left to any order is a `Nearest` face's point, its centroid (`C
   - The oracle's own rounding gives one rounded plane.
   - For any coefficient `v` with `v / 2^-20` within `2^-30` of a half-integer, the other
     neighbouring grid value is also possible, so a conforming computation may round the other way.
-- **`A`** is `(dN + f dD) / |D| + 4u f`, with:
+- **`A`** is `(dN + f dD) / Dn + 4u f`, with:
   - `s = ((X − x0) / (z0 xx), (Y − y0) / (z0 yy), d)`, `t_x = g_x (X − x0)`, `t_y = g_y (Y − y0)`;
-  - `dn = 8u |m|`, `de = 4u (|e| + |m| |c|)`;
+  - `dn = 8u |m|`, `de = 4u ((|e| + δe) + |m| |c|)`;
   - `dD = de + dn |eye| + 4u |m_2 d|`, with `eye = c + d R_2`;
-  - `f = |m_2 d − t_x − t_y| / |D|`;
+  - `f = |m_2 d − t_x − t_y| / Dn`;
   - `dN = dn |s| + 4u (|t_x| + |t_y| + |m_2 d|)`;
   - all of the unrounded plane.
-- **`3A`.** `gap` reads `K_u` as one computation gives it, within `A` of exact. Another conforming
-  computation's `K_u` lies within `A` of exact too, so its `gap` may stand `2A` above this one's:
-  `R` carries `2A` beside `gap`'s own `A`.
-- **`C`**, the centroid's term, 0 for every plane but a `Nearest` face's. Its point is the
-  centroid of its `N` points `p_i`, which a conforming computation may take as `Σ p_i / N` or as
-  `p_0 + Σ (p_i − p_0) / N`, in any order. Either lies within
-  `E_k = γ_{N+2} (Σ_i |p_ik − p_0k| + Σ_i |p_ik|) / N` of the exact centroid along axis `k`, with
-  `γ_j = j u / (1 − j u)`, so two computations' points differ by up to `2E_k`. The offset then
-  moves by `δe = 2 Σ_k |û_k| E_k`, `D` by as much, and the key at the corner by
-  `C = f δe / (|D| − δe)`.
-- **`shift`** is `f ε_e / (|D| − ε_e − δe)` for the offset's bound `ε_e`, with `δe` as in `C` (0
-  for every plane but a `Nearest` face's).
-- **`(1 + 64u)`** covers the order of `R`'s own sum. Taking `D`, `f`'s numerator, `|K_r − K_u|` and
-  `|D| − ε_e − δe` as computed (their cancellation is what `A`, `2A` and `C` bound), every other
-  term is a sum or product of non-negative quantities, along a chain of fewer than 24 roundings
-  (the longest runs through `|eye|`, `dD`, `A`, the corner's sum, `ρ` and `ν`). Two orders
-  therefore agree within `γ_24` each way of the exact sum, under `48u` of it, and `64u` covers that.
 
-Then add `ρ`.
+  Taken at `Dn` and `|e| + δe`, `A`, `f` and `dD` are at least the other computation's own, taken
+  at its own `D`.
+- **`3A`.** `gap` reads `K_u` as one computation gives it, within `A` of exact. Another conforming
+  computation's `K_u` lies within its own `A` of its exact key, which lies within `C` of this one's.
+  So its `gap` may stand above this one's by this `A`, `C` and its own `A`, and its bound adds its
+  own `A` once more. Its own `A` is at most this `A`, so `R` carries `2A` beside `gap`'s own `A`.
+- **`C`** is `(f + dN / Dn) δe / Dn`, the most the exact key at the corner moves when the offset
+  moves by `δe`. It is 0 for every plane but a `Nearest` face's.
+- **`shift`** is `f ε / (Dn − ε)`. **Where `Dn <= ε`**, that is where `|D| <= ε + δe + 2 dD` on a
+  `Nearest` face, the key may still form, but `R` is infinite: the fragment's samples are
+  `truth_unable`, class `band_unbounded` (Unbounded keys, above).
+- **`(1 + 64u)`** covers the order of `R`'s own sum. Take `D`, `f`'s numerator, `|K_r − K_u|`, `Dn`
+  and `Dn − ε` as computed (their cancellation is what `A`, `2A` and `C` bound). Count the roundings
+  a quantity's inputs pass through: a sum's count is one more than its larger operand's, a product
+  or quotient's is its operands' counts plus one, and a square root's is one more than its
+  operand's.
+  - **Through `E_k`.** Every path from a point's coordinate through `E_k` to `R` passes at most
+    `N + 32` roundings in the order the formulas give. The longest runs through `E_k`'s first sum,
+    `δe`, `C`'s product, `M`, `ρ`, `ν` and the factor. With `n = N + 32`,
+    `γ_{2n} (1 − γ_n) = 2 γ_n`. So on every such path, `δe` as computed counts for at least
+    `4 γ_{N+32} G`, where `G = Σ_k |û_k| (Σ_i |p_ik − p_0k| + Σ_i |p_ik|) / N`. The two
+    computations' offsets differ by at most `(2 γ_{N+2} + 8u (1 + γ_{N+2})) G`: the share of their
+    points, and each offset's own bound, `4u (1 + γ_{N+2}) G` at most. `4 γ_{N+32} G` covers that
+    wherever `γ_{2N+64}` is finite, that is wherever `(2N + 64) u < 1`. Outside that domain `δe` is
+    infinite, and so is `R`.
+  - **Every other term** reaches `R` through at most 27 roundings in the order the formulas give,
+    the factor's own included. The longest runs through `|eye|`, `dD`, `f dD`, `A`, `3A`, `M`, `ρ`
+    and `ν`. A conforming computation of the same terms, with any of their sums taken in another
+    order, passes each through at most 26. Since `(1 + 64u)(1 − γ_27) >= 1 + γ_26`, `R` stands
+    above every such evaluation.
 
 Why: `R` is compared with the core's own bound, which the core computes from its own plane (the
 contract test, below), so two conforming evaluations of one formula must stay within it. Stating
 the plane's order removes its last-bit differences the way pinning libm's `hypot` removes a
 library's (shared components, above). What stays unpinned is bounded where it arises: the
-unrounded key's evaluation (`2A`), the centroid (`C`), the order of `R`'s own sum (`64u`) and the
-points a read takes (`ρ`).
+unrounded key's evaluation (`2A`), the centroid (`δe`, `Dn` and `C`), the order of `R`'s own sum
+(`64u`) and the points a read takes (`ρ`).
 
-**Change from `band_arith@1`.** @1 left the plane's order unstated, took `ρ` at the far corner
-alone, and left every difference between conforming evaluations to `ν`. `ν` scales with the read's
-key, while the unrounded key's differences scale with the corner keys and `1/|D|`, so a core's own
-bound on a `Nearest` face near the eye could stand about `10^-13` of itself above @1's `R`.
+**Change from `band_arith@1`.** @1 left the plane's order unstated and took `ρ` at the far corner
+alone. It took `A` and `shift` at the computation's own `D`, and left every difference between
+conforming evaluations to `ν`. `ν` scales with the read's key, while the unrounded key's
+differences scale with the corner keys and `1/|D|`. On the `Nearest` fringe reads measured, a
+core's own bound stood `6·10^-14` to `1.05·10^-12` of itself above @1's `R`.
 
 **A plane through three keyed corners.** With corner keys `d0`, `d1`, `d2` and corner bounds
 `err_i`, let `in = max err_i`:
