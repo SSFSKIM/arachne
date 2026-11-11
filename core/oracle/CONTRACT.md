@@ -3327,7 +3327,7 @@ identity, `A` keeps `z = 0` alone, and the pair shares none. Pixel `(32, 31)` is
 strokes: their centrelines lie at screen `y = 32`, with bodies of 1.5 px. `A` keys `−1`, and `B`
 keys between about `−1.05285` and `−1.05242` along its length, nearer by at least `0.0524`. Trace:
 the two strokes share no plane, so `lines@1` applies. Its term fails by about `0.05`: `B`'s keys
-spread `4.4·10^-4` over its whole length, so every share is under `10^-3`. `E = {strong B}`.
+spread `4.3·10^-4` over its whole length, so every share is under `10^-3`. `E = {strong B}`.
 Defect: at its 16 samples, `A` in front, by paint order. Rejects: sharing `y = 0` by the axis rule
 though no row forms on it. That makes the pair an `ExactTie`, decided by paint order. Margins:
 `L = 24.5` (`A`) and `≈ 25.79` (`B`) px, 0.5 and 0.21 px from their steps.
@@ -3357,7 +3357,7 @@ so their union is 0 wide. The pair may therefore share through a flat identity, 
 Expected: agreement. Rejects: requiring the third record to keep its identity. That leaves the pair
 to the axis rule on `x = 1`, where both lie with their first points equal: an `ExactTie` with `B`
 in front by paint order, and the report a `mismatch`. Margins: `L = 16.25` (`A`) and `≈ 15.48`
-(`B`) px, 0.25 and 0.52 px from their steps. `T`'s edges are past 126 px, on the clamped step.
+(`B`) px, 0.25 and 0.52 px from their steps. `T` is a mesh, with no cubic.
 
 **`axis_rule_unless_attached`.** Set: §7, what may share admits, "Records with no plane of their
 own, by the axis rule alone ((3), and no flat record passes (1) with either)." With it, the
@@ -3434,9 +3434,11 @@ from the cycle `F` over `Q`, `Q` over `s`, `s` over `F`, in which the weak own-l
   - Report: at samples 12 and 13, the order `F, Q, s`. Expected: agreement.
   - Rejects: the first case's enclosure taken where the fill's cover is `Either`. That ends `s`'s
     interval at `F`'s far end, gives `E(s, Q) = {strong s}`, and makes the report a `mismatch`.
-  - Margins: every cubic of `P` clears its step by at least 0.82 px against its `6ε̂ ≈ 0.68`, and
-    each of its joints lies more than 11 px from the pixel. `Q`'s edges, `L ≈ 43.17` px, clear
-    their steps by 0.83 px against its `6ε̂ ≈ 0.34`.
+  - Margins: every cubic of `P` clears its step by at least 0.82 px against its `6ε̂ ≈ 0.68`.
+    On this grid every joint of `P` lies within its flip window (`(2 + 10^-5) ε̂ ≈ 0.225` px
+    against a join tolerance near `1.3·10^-4` px), but no version of a joint's segment lies
+    within `r + ε̂ + room(0) ≤ 4.3` px of the pixel: each lies more than 11 px away. `Q`'s
+    edges, `L ≈ 43.17` px, clear their steps by 0.83 px against its `6ε̂ ≈ 0.34`.
 - **The stroke `Either`, the fill covering.** Input grid `2^-6`, `P` as in the second case. `Q` is
   `[−5.375, 5.375]²` at `z = 1.8125`, keyed `−20/18.1875 ≈ −1.09966`, with an interval
   `±4.7·10^-4`.
@@ -3452,8 +3454,9 @@ from the cycle `F` over `Q`, `Q` over `s`, `s` over `F`, in which the weak own-l
   - Defect: at samples 0 to 3, the order `F, Q, s`.
   - Rejects: taking the second case's interval because the stroke's cover is `Either`. That runs to
     `s`'s own far end, `0.1009` behind `Q`'s near end, and admits the defect.
-  - Margins: `P`'s as in the second case; the pixel lies more than 11 px from `P`'s joints. `Q`'s edges, `L ≈ 47.29` px, clear their steps by 0.71 px against its
-    `6ε̂ ≈ 0.38`.
+  - Margins: `P`'s as in the second case, its joints within their flip window and every version
+    of a joint's segment more than 11 px from the pixel, against `r + ε̂ + room(0) ≤ 4.3` px.
+    `Q`'s edges, `L ≈ 47.29` px, clear their steps by 0.71 px against its `6ε̂ ≈ 0.38`.
 
 `R` is under `10^-5` in every case, so it moves no edge.
 
@@ -3601,7 +3604,7 @@ Pixel `(50, 32)` is inside both. At its samples, `T` is nearer than `P` by `7.3�
 `7.7·10^-5` in key.
 
 - Each interval's half-width is about `2.44·10^-5`: `S = |o| kr(P, g/2)`, with `R` under
-  `10^-6`. So the intervals part by at least `2.4·10^-5`.
+  `10^-6`. So the intervals part by `2.4·10^-5` less `6R`, at least `1.8·10^-5`.
 - The snap shares' term reaches about `9.8·10^-5`, which the gap stays under by at least
   `2.0·10^-5`.
 - The pair may share: their union is about `0.00195` wide, under `2τ⁺ ≈ 0.00293`.
@@ -3623,8 +3626,8 @@ the snap shares. View C with input grid `2^-10`, drawn in this order: `T` of
 middle of the first two thresholds below. `T1` keys as `P` did, with the same bound. Its three
 clearances:
 
-- the gap, `7.3·10^-5` to `7.7·10^-5`, clears the intervals' meeting point (at most `4.9·10^-5`,
-  `R` under `10^-6`) by at least `2.4·10^-5`;
+- the gap, `7.3·10^-5` to `7.7·10^-5`, clears the intervals' meeting point (at most `4.9·10^-5`
+  plus `6R`, `R` under `10^-6`) by `2.4·10^-5` less `6R`, at least `1.8·10^-5`;
 - it stays under the snap shares' term (at least `9.8·10^-5`) by at least `2.0·10^-5`;
 - the angle `θ ≈ 3.32·10^-4` clears `θ_T⁻ + θ_{T1}⁻ ≈ 1.66·10^-4` by `1.66·10^-4`, so the pair is
   not near-parallel.
