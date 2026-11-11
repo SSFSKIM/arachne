@@ -1667,3 +1667,21 @@ file = "core/oracle/src/keys.rs"
 find = "            return none(facing_model(pr, &map, *centre, delta_c));\n        }\n        (_, true) => {\n"
 replace = "            let _ = (centre, delta_c);\n        }\n        (_, true) => {\n"
 red = ["pair_rules::a_record_kept_facing_its_centre_never_reaches_a_curve_key"]
+
+[[plant]]
+name = "recut-exact-tie"
+item = "§7"
+check = "a curve_recut read is no bar to an ExactTie where both reads are one computation"
+file = "core/oracle/src/order.rs"
+find = "        let one = not_shared && ra.own_at.is_some() && ra.own_at == rb.own_at;\n"
+replace = "        let one = not_shared && ra.own_at.is_some() && ra.own_at == rb.own_at && ra.own.is_ok() && rb.own.is_ok();\n"
+red = ["order::a_recut_read_of_one_curve_computation_is_an_exact_tie_and_of_another_stays_unable", "pair_rules::recut_reads_of_one_curve_computation_are_an_exact_tie_and_of_two_stay_unable"]
+
+[[plant]]
+name = "recut-exact-tie-identity"
+item = "§7"
+check = "a recut read's ExactTie needs every input of the curve's computation equal: one dropped, two computations pass for one"
+file = "core/oracle/src/keys.rs"
+find = "            widths: [rec.paint.stroke_width, rec.paint.background_stroke_width],\n"
+replace = "            widths: [0.0; 2],\n"
+red = ["pair_rules::recut_reads_of_one_curve_computation_are_an_exact_tie_and_of_two_stay_unable"]

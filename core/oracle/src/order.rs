@@ -588,11 +588,19 @@ impl Scene {
                 }
             }
         }
-        if not_shared {
+        let one = not_shared && ra.own_at.is_some() && ra.own_at == rb.own_at;
+        if one {
+            // One computation: one key bit for bit, so a `curve_recut` read is no bar (§7); the
+            // other classes of `truth_unable` were refused above.
+            if let (Ok(oa), Ok(ob)) = (ra.own, rb.own) {
+                tie_meet |= meet(&oa, &ob);
+            }
+            edges = edges.union(Edges::WEAK);
+            fold(&mut plate, Plate::Tie);
+        } else if not_shared {
             let (oa, ob) = (ra.own?, rb.own?);
-            let one = ra.own_at.is_some() && ra.own_at == rb.own_at;
-            one_computation &= one;
-            let mut e = if one { Edges::WEAK } else { by_depth(&oa, &ob) };
+            one_computation = false;
+            let mut e = by_depth(&oa, &ob);
             let met = e.weak;
             tie_meet |= meet(&oa, &ob);
             if let Some((i, j)) = both {
@@ -614,14 +622,7 @@ impl Scene {
                     policy.get_or_insert(Label::Lines);
                 }
             }
-            fold(
-                &mut plate,
-                if one {
-                    Plate::Tie
-                } else {
-                    Plate::of(&oa, &ob, e.weak && !met)
-                },
-            );
+            fold(&mut plate, Plate::of(&oa, &ob, e.weak && !met));
             edges = edges.union(e);
         }
         let label = if one_computation {

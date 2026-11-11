@@ -337,3 +337,128 @@ fn a_fragment_with_no_key_stated_is_unable_against_its_own_record_s_other_layer(
         Ok(Label::OwnLayers)
     );
 }
+
+/// A curve's computation: one stroke of the line from `(−1, 0, 0)` to `(1, 0, 1)`, in view C's
+/// projection and frame map.
+fn curve_key() -> arachne_oracle::keys::CurveKey {
+    use arachne_oracle::camera::{FrameMap, IDENTITY3, Projection};
+    let points = vec![[-1.0, 0.0, 0.0], [0.0, 0.0, 0.5], [1.0, 0.0, 1.0]];
+    arachne_oracle::keys::CurveKey {
+        kind: arachne_core::xf::RecordKind::Path,
+        placings: vec![arachne_oracle::draw::Placing {
+            places: [arachne_core::xf::IDENTITY; 2],
+            points: points.clone(),
+            weight: 1.0,
+        }],
+        reveal: None,
+        pre_projected: None,
+        space: arachne_core::xf::Space::World,
+        fixed_orientation_centre: None,
+        faces: (Vec::new(), Vec::new()),
+        widths: [0.5, 0.0],
+        paint_b: None,
+        projection: Projection {
+            r: IDENTITY3,
+            c: [0.0; 3],
+            d: 20.0,
+            zoom: 1.0,
+            exponential: false,
+        },
+        map: FrameMap {
+            xx: 4.0,
+            yy: -4.0,
+            x0: 32.0,
+            y0: 32.0,
+        },
+        line_width_multiple: 0.01,
+        shown: points,
+        h: 1.0,
+    }
+}
+
+/// Two strokes of records with no plane of their own and no axis plane, read on their own keys:
+/// `a` as `own` at the computation `at_a`, `b` bounded at `at_b`; the pair's verdict.
+fn curve_pair(
+    own: Result<Band, Unable>,
+    at_a: arachne_oracle::keys::Computation,
+    at_b: arachne_oracle::keys::Computation,
+) -> Result<(Edges, Label), Unable> {
+    let s = Scene::new(
+        vec![frag(0, Layer::Stroke, 0), frag(1, Layer::Stroke, 1)],
+        Vec::new(),
+    );
+    let ra = Reads {
+        own,
+        own_at: Some(at_a),
+        ..band(-1.0, 0.0)
+    };
+    let rb = Reads {
+        own_at: Some(at_b),
+        ..band(-1.0, 0.0)
+    };
+    s.pair(0, 1, &ra, &rb, NONE).map(|p| (p.edges, p.label))
+}
+
+#[test]
+fn a_recut_read_of_one_curve_computation_is_an_exact_tie_and_of_another_stays_unable() {
+    // §7: a read that is `curve_recut` is no bar to an `ExactTie`: two reads of one curve
+    // computation, read at one point, give one key bit for bit however input motion rebuilds the
+    // centreline. Reads of another computation, or at another point, stay unable where a read is
+    // recut; `band_unbounded` and `pivot_unknown` stay unable whatever the identity.
+    use arachne_oracle::keys::Computation;
+    use std::sync::Arc;
+    let at = |k: arachne_oracle::keys::CurveKey, p: [f64; 2]| Computation::Curve(Arc::new(k), p);
+    let p = [32.5, 31.5];
+    let recut = Err(Unable::CurveRecut);
+    assert_eq!(
+        curve_pair(recut, at(curve_key(), p), at(curve_key(), p)),
+        Ok((Edges::WEAK, Label::ExactTie))
+    );
+    for u in [Unable::BandUnbounded, Unable::PivotUnknown] {
+        assert_eq!(
+            curve_pair(Err(u), at(curve_key(), p), at(curve_key(), p)),
+            Err(u),
+            "{u:?}"
+        );
+    }
+    assert_eq!(
+        curve_pair(recut, at(curve_key(), p), at(curve_key(), [32.5, 31.25])),
+        Err(Unable::CurveRecut),
+        "another point"
+    );
+    // Each component of the computation changed alone.
+    type Edit = fn(&mut arachne_oracle::keys::CurveKey);
+    let edits: [(&str, Edit); 16] = [
+        ("kind", |k| k.kind = arachne_core::xf::RecordKind::FaceGroup),
+        ("placings", |k| k.placings[0].points[0][0] = -1.5),
+        ("blend weight", |k| k.placings[0].weight = 0.5),
+        ("reveal", |k| k.reveal = Some((0.0, 1.0))),
+        ("pre-projected", |k| {
+            let shape = arachne_core::xf::ShapeData::Path {
+                points: vec![[0.0; 3]; 4],
+            };
+            k.pre_projected = Some((arachne_core::xf::Shape::new(shape).key(), None))
+        }),
+        ("space", |k| k.space = arachne_core::xf::Space::Screen),
+        ("centre", |k| k.fixed_orientation_centre = Some([0.0; 3])),
+        ("face ends", |k| k.faces.0 = vec![3]),
+        ("face widths", |k| k.faces.1 = vec![0.5]),
+        ("widths", |k| k.widths = [0.5, 1.0]),
+        ("paint blend", |k| k.paint_b = Some([0.5, 0.0, 0.5])),
+        ("projection", |k| k.projection.d = 10.0),
+        ("map", |k| k.map.x0 = 64.0),
+        ("line width multiple", |k| k.line_width_multiple = 0.02),
+        ("shown", |k| k.shown[1][2] = 0.25),
+        ("body", |k| k.h = 2.0),
+    ];
+    for (what, edit) in edits {
+        let mut other = curve_key();
+        edit(&mut other);
+        assert_ne!(other, curve_key(), "{what}");
+        assert_eq!(
+            curve_pair(recut, at(curve_key(), p), at(other, p)),
+            Err(Unable::CurveRecut),
+            "{what}"
+        );
+    }
+}

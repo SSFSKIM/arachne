@@ -1207,3 +1207,72 @@ fn a_path_s_row_on_a_shared_axis_plane_is_read_where_its_own_key_alone_would_ord
         assert_eq!((r.edges, r.label), (7, 0), "({}, {}) sample {s}", r.x, r.y);
     }
 }
+
+/// The pair rows of two records stroking the polyline of `two_strokes_of_one_polyline` in view C,
+/// red then blue, each of stroke width 0.5 over a background stroke of width 1, after `edit`, read
+/// on the red's stroke and the blue's layer `lb`, as `(edges, label, recut)`: `recut` where either
+/// own read is `curve_recut`.
+fn recut_pair(lb: u8, edit: impl Fn(&mut Build)) -> Vec<(u8, u8, bool)> {
+    let pts = open(&[
+        [-2.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [2.0, 1.0, -1.0],
+        [2.0, -1.0, 2.0],
+    ]);
+    let mut b = Build::new(true);
+    for rgba in [OPAQUE_RED, OPAQUE_BLUE] {
+        let r = b.stroke(pts.clone(), rgba, 0.5);
+        r.paint.background_stroke = Paint::One(BLACK);
+        r.paint.background_stroke_width = 1.0;
+    }
+    edit(&mut b);
+    let d = decide(&b, view_c());
+    let (p, q) = (id_of(&d, 0, 2), id_of(&d, 1, lb));
+    let status = |f: u32, x: u32, y: u32, s: usize| {
+        d.bands
+            .iter()
+            .find(|r| (r.fragment, r.x, r.y, r.which) == (f, x, y, 0))
+            .unwrap()
+            .status[s]
+    };
+    pairs_of(&d, p, q)
+        .into_iter()
+        .map(|r| {
+            let s = r.sample as usize;
+            let recut = status(p, r.x, r.y, s) == 3 || status(q, r.x, r.y, s) == 3;
+            (r.edges, r.label, recut)
+        })
+        .collect()
+}
+
+#[test]
+fn recut_reads_of_one_curve_computation_are_an_exact_tie_and_of_two_stay_unable() {
+    // §7: "A read that is `curve_recut` (§6) is no bar to an `ExactTie`": two strokes of one
+    // record input read at one sample are one computation, an `ExactTie` at every pair-sample,
+    // those whose reads are recut included.
+    let one = recut_pair(2, |_| {});
+    assert!(one.iter().any(|e| e.2), "no recut read");
+    assert!(
+        one.iter().all(|e| (e.0, e.1) == (1, 4)),
+        "{:?}",
+        one.iter()
+            .filter(|e| (e.0, e.1) != (1, 4))
+            .take(4)
+            .collect::<Vec<_>>()
+    );
+    // The red's stroke against the blue's background stroke once its widths are swapped: one
+    // body, other width inputs, two computations. A recut read stays unable there.
+    let two = recut_pair(0, |b| {
+        b.records[1].paint.stroke_width = 1.0;
+        b.records[1].paint.background_stroke_width = 0.5;
+    });
+    assert!(two.iter().any(|e| e.2), "no recut read");
+    assert!(
+        two.iter().all(|e| e.1 != 4 && (!e.2 || e.1 == 0)),
+        "{:?}",
+        two.iter()
+            .filter(|e| e.1 == 4 || (e.2 && e.1 != 0))
+            .take(4)
+            .collect::<Vec<_>>()
+    );
+}
