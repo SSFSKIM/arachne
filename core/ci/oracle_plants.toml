@@ -1415,3 +1415,12 @@ file = "core/oracle/src/keys.rs"
 find = "            h: half(k),\n        }),\n"
 replace = "            h: 0.0,\n        }),\n"
 red = ["pair_rules::two_strokes_of_one_curve_read_at_one_point_are_an_exact_tie"]
+
+[[plant]]
+name = "uncovered-fills-join"
+item = "§10"
+check = "a fill that covers no pixel of the frame still joins its object's sheets"
+file = "core/oracle/src/decide.rs"
+find = "            uncovered.push(fragment);\n"
+replace = ""
+red = ["label_sheets::a_fill_outside_the_frame_joins_the_sheets_it_shares_corners_with"]

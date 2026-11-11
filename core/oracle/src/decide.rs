@@ -262,6 +262,8 @@ struct Built {
     path_info: HashMap<(u32, u32), PathInfo>,
     /// The registry facts of the records that paint nothing.
     extra: Vec<Offered>,
+    /// The bounded fragments that cover no pixel of the window, which `fragments` leaves out.
+    uncovered: Vec<Fragment>,
 }
 
 /// Every fragment the frame draws over `window`, with its rows, depth and colour's spec.
@@ -279,6 +281,7 @@ fn build(view: &View, state: &State, window: Window) -> Built {
     let mut frags: Vec<Frag> = Vec::new();
     let mut offered: Vec<Offered> = Vec::new();
     let mut specs: Vec<Spec> = Vec::new();
+    let mut uncovered: Vec<Fragment> = Vec::new();
     // A fragment, its depth and its rows; `None` for an unbounded one, which is `truth_unable` at
     // every sample of the window and carries no rows (contract §6: never absent, never bounded).
     let mut add = |fragment: Fragment, depth: Frag, spec: Spec, rows: Option<Vec<PixelCover>>| {
@@ -301,6 +304,7 @@ fn build(view: &View, state: &State, window: Window) -> Built {
             return;
         };
         if rows.is_empty() {
+            uncovered.push(fragment);
             return;
         }
         frags.push(depth);
@@ -511,6 +515,7 @@ fn build(view: &View, state: &State, window: Window) -> Built {
         outlines,
         path_info,
         extra,
+        uncovered,
     }
 }
 
@@ -555,6 +560,18 @@ fn labels_of(view: &View, state: &State, b: &Built) -> LabelFacts {
             Spec::Gradient { alpha } => *alpha,
         })
         .collect();
+    let uncovered: Vec<label::Uncovered> = b
+        .uncovered
+        .iter()
+        .filter(|f| f.layer == Layer::Fill as u8)
+        .filter_map(|f| {
+            Some(label::Uncovered {
+                slot: f.slot,
+                outline: b.outlines.get(&(f.entry, f.sub))?.clone(),
+                face: info(f).is_some_and(|i| i.1),
+            })
+        })
+        .collect();
     label::place_with_pairs(&label::Input {
         view,
         state,
@@ -565,6 +582,7 @@ fn labels_of(view: &View, state: &State, b: &Built) -> LabelFacts {
         alpha: &alpha,
         centre: &centre,
         face: &face,
+        uncovered: &uncovered,
     })
 }
 

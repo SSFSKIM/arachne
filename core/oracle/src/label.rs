@@ -61,6 +61,18 @@ pub struct Input<'a> {
     pub centre: &'a [Option<[f64; 2]>],
     /// Whether a path fragment is a face of a face group.
     pub face: &'a [bool],
+    /// The fills the frame draws that cover none of its pixels.
+    pub uncovered: &'a [Uncovered],
+}
+
+/// A fill the frame draws that covers none of its pixels: it holds no point, yet it is one of
+/// its object's fills on screen, and joins its sheets (contract §10, Terms).
+pub struct Uncovered {
+    pub slot: u32,
+    /// Its flattened outline on screen, in frame pixels.
+    pub outline: Vec<Ring>,
+    /// Whether it is a face of a face group.
+    pub face: bool,
 }
 
 /// What a record is to the label rule.
@@ -306,7 +318,7 @@ pub fn place_with_pairs(input: &Input) -> (Vec<u32>, Vec<LabelRow>, Vec<PairDeci
         }
     }
     // Each record's class.
-    let class_of = |slot: u32, f: &Fragment, face: bool| -> Class {
+    let class_of = |slot: u32, layer: u8, face: bool| -> Class {
         let rec = &st.records[&slot];
         if rules15 {
             if camera_facing(view, rec) && group_of(slot) == 0 {
@@ -322,12 +334,12 @@ pub fn place_with_pairs(input: &Input) -> (Vec<u32>, Vec<LabelRow>, Vec<PairDeci
             match label_classes::record_outcome(paths) {
                 Outcome::Open(c) => Class::Open(c),
                 Outcome::Line => Class::Front,
-                Outcome::Surface if f.layer == FILL || f.layer == MESH => Class::Surface,
+                Outcome::Surface if layer == FILL || layer == MESH => Class::Surface,
                 Outcome::Surface => Class::Front,
             }
-        } else if f.layer == MESH || (f.layer == FILL && face) {
+        } else if layer == MESH || (layer == FILL && face) {
             Class::KindUnknown
-        } else if f.layer == FILL {
+        } else if layer == FILL {
             Class::Surface
         } else {
             Class::Front
@@ -352,10 +364,12 @@ pub fn place_with_pairs(input: &Input) -> (Vec<u32>, Vec<LabelRow>, Vec<PairDeci
     let mut class = vec![Class::Front; n];
     for (i, f) in input.fragments.iter().enumerate() {
         if label_of[i] == NONE_U32 {
-            class[i] = class_of(f.slot, f, input.face[i]);
+            class[i] = class_of(f.slot, f.layer, input.face[i]);
         }
     }
     // Sheets: fills joined by winding and two shared corners; a mesh object's triangles as one.
+    // A fill that covers none of the frame's pixels holds no point and is no member, yet joins
+    // the fills it shares corners with: its id is `n` on, after every fragment of its object.
     let mut sheets: Vec<Sheet> = Vec::new();
     let mut sheet_of = vec![usize::MAX; n];
     let mut by_object: BTreeMap<((u8, u64), bool), Vec<u32>> = BTreeMap::new();
@@ -365,6 +379,16 @@ pub fn place_with_pairs(input: &Input) -> (Vec<u32>, Vec<LabelRow>, Vec<PairDeci
                 .entry((object_of(f.slot), f.layer == MESH))
                 .or_default()
                 .push(i as u32);
+        }
+    }
+    for (j, u) in input.uncovered.iter().enumerate() {
+        let surface = !label_slots.contains_key(&u.slot)
+            && matches!(
+                class_of(u.slot, FILL, u.face),
+                Class::Surface | Class::KindUnknown
+            );
+        if surface && let Some(ids) = by_object.get_mut(&(object_of(u.slot), false)) {
+            ids.push((n + j) as u32);
         }
     }
     for ((object, mesh), ids) in by_object {
@@ -384,7 +408,10 @@ pub fn place_with_pairs(input: &Input) -> (Vec<u32>, Vec<LabelRow>, Vec<PairDeci
             continue;
         }
         let empty = Vec::new();
-        let rings = |i: u32| input.outlines[i as usize].as_ref().unwrap_or(&empty);
+        let rings = |i: u32| match (i as usize).checked_sub(n) {
+            Some(j) => &input.uncovered[j].outline,
+            None => input.outlines[i as usize].as_ref().unwrap_or(&empty),
+        };
         let wind: Vec<i8> = ids.iter().map(|&i| winding(rings(i))).collect();
         let cs: Vec<BTreeSet<(i64, i64)>> = ids.iter().map(|&i| corners(rings(i))).collect();
         let mut parent: Vec<usize> = (0..ids.len()).collect();
@@ -397,7 +424,7 @@ pub fn place_with_pairs(input: &Input) -> (Vec<u32>, Vec<LabelRow>, Vec<PairDeci
             }
         }
         let mut class_sheet: HashMap<usize, usize> = HashMap::new();
-        for k in 0..ids.len() {
+        for k in (0..ids.len()).filter(|&k| (ids[k] as usize) < n) {
             let root = find(&mut parent, k);
             let s = *class_sheet.entry(root).or_insert_with(|| {
                 sheets.push(Sheet {
