@@ -337,3 +337,112 @@ fn a_plate_relation_the_keys_do_not_establish_names_no_deviation() {
         assert_eq!(plate, 0, "undetermined");
     }
 }
+
+/// The report at `(32, 32)` of the fragments of `slots`, each with cells `cells` (its own cell
+/// interval's high end where `None`), in that order front first at every sample.
+fn report_of(
+    d: &arachne_oracle::out::Decisions,
+    slots: &[u32],
+    cells: Option<[u8; 16]>,
+) -> Reported {
+    let entries: Vec<Entry> = slots
+        .iter()
+        .map(|&slot| {
+            let f = d.fragments.iter().find(|f| f.slot == slot).unwrap();
+            let c = d
+                .covers
+                .iter()
+                .find(|c| (c.x, c.y, c.fragment) == (32, 32, f.id))
+                .unwrap();
+            Entry {
+                identity: (f.object, f.part, f.layer, f.sub),
+                cells: cells.unwrap_or(c.cell_hi),
+            }
+        })
+        .collect();
+    Reported {
+        x: 32,
+        y: 32,
+        order: vec![(0..entries.len()).collect(); 16],
+        entries,
+    }
+}
+
+#[test]
+fn an_either_fragment_left_out_of_the_report_is_absent_from_its_pairs() {
+    // §7: the pairs present at a sample are each `Yes`, or `Either` and present in the core's
+    // report. Two squares, `A` on z = 0 and `B` nearer on z = 2, and a thin line on z = 5 whose
+    // body may or may not reach sample 0 of (32, 32): `Either` there, its reads `curve_recut`. A
+    // report leaving the line out and putting `A` in front is judged on `A` and `B` alone.
+    let mut b = Build::new(true);
+    b.fill(rect([-6.0, 6.0], [-6.0, 6.0], 0.0), OPAQUE_RED);
+    b.fill(rect([-3.0, 3.0], [-3.0, 3.0], 2.0), OPAQUE_BLUE);
+    let sy = (0.125 - 0.25 / 510.0) / (4.0 * (20.0 / 15.0));
+    b.stroke(
+        open(&[[-3.0, sy, 5.0], [3.0, sy, 5.0]]),
+        OPAQUE_GREEN,
+        0.0625,
+    );
+    let d = decide_at(&[b.delta(1, view_c())], 1, None).unwrap();
+    let line = d.fragments.iter().find(|f| f.slot == 2).unwrap().id;
+    let at = d
+        .covers
+        .iter()
+        .find(|c| (c.x, c.y, c.fragment) == (32, 32, line))
+        .unwrap();
+    assert_eq!(at.cover[0], 2, "the line is not Either at sample 0");
+    assert!(
+        d.pairs.iter().any(|p| (p.x, p.y, p.sample) == (32, 32, 0)
+            && (p.a == line || p.b == line)
+            && p.label == arachne_oracle::out::LABEL_UNABLE),
+        "no unable pair of the line at sample 0"
+    );
+    let reversed = report_of(&d, &[0, 1], None);
+    assert_eq!(judge(&d, &reversed, 0), Verdict::Mismatch("mismatch"));
+    let mut right = reversed.clone();
+    right.order = vec![vec![1, 0]; 16];
+    assert_eq!(judge(&d, &right, 0), Verdict::Agree);
+}
+
+#[test]
+fn an_either_fragment_left_out_of_the_report_opens_no_label_pair() {
+    // As above for the label rule: a label about the origin behind `B`, a rectangle on z = 2, and
+    // a square with no source on z = 0 whose edge may or may not reach sample 0 of (32, 32), an
+    // open class there. A report leaving it out and putting the label in front of `B` is judged
+    // on the label and `B` alone: not open.
+    let mut b = Build::new(true);
+    b.fill(rect([-3.0, 3.0], [-3.0, 3.0], 2.0), OPAQUE_BLUE);
+    b.label([0.0; 3]);
+    b.fill(rect([0.062475, 2.0], [-3.0, 3.0], 0.0), OPAQUE_RED);
+    let mut st = arachne_oracle::stream::State::new();
+    let mut v = view_c();
+    v.input_grid = 0.01;
+    st.apply(&b.delta(1, v)).unwrap();
+    st.rules15 = true;
+    let rectangle = "arachne.mobject.geometry.polygram.Rectangle".to_string();
+    st.meta.insert(
+        0,
+        arachne_oracle::stream::Meta {
+            source: vec![vec![(0, rectangle)]],
+            facing_group: 0,
+        },
+    );
+    st.meta.insert(
+        1,
+        arachne_oracle::stream::Meta {
+            source: vec![],
+            facing_group: 1,
+        },
+    );
+    let d = arachne_oracle::decide::decide(&st, (1, 5), 1, None);
+    let square = d.fragments.iter().find(|f| f.slot == 2).unwrap().id;
+    let at = d
+        .covers
+        .iter()
+        .find(|c| (c.x, c.y, c.fragment) == (32, 32, square))
+        .unwrap();
+    assert_eq!(at.cover[0], 2, "the square is not Either at sample 0");
+    let before = report_of(&d, &[1, 0], Some([255; 16]));
+    let v = judge(&d, &before, 0);
+    assert!(matches!(v, Verdict::Mismatch(_)), "{v:?}");
+}

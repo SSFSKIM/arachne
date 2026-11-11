@@ -1496,3 +1496,21 @@ file = "core/oracle/src/decide.rs"
 find = "            .find(|(_, b)| (b[0]..b[2]).contains(&x) && (b[1]..b[3]).contains(&y))\n"
 replace = "            .find(|(_, b)| x < 0 && y < 0 && b[0] < 0)\n"
 red = ["label_window::a_window_s_label_rows_name_the_fragments_present_where_they_stand"]
+
+[[plant]]
+name = "judge-unable-present-pairs"
+item = "§7"
+check = "only a pair of fragments the report holds present decides an unable verdict"
+file = "core/oracle/tests/common/judge.rs"
+find = "            label == LABEL_UNABLE && order.contains(&a) && order.contains(&b)\n"
+replace = "            label == LABEL_UNABLE && (a, b) != (u32::MAX, u32::MAX)\n"
+red = ["judge::an_either_fragment_left_out_of_the_report_is_absent_from_its_pairs"]
+
+[[plant]]
+name = "judge-label-rows-present"
+item = "§7"
+check = "only the label rows of fragments the report holds present open a sample"
+file = "core/oracle/tests/common/judge.rs"
+find = "                && order.contains(&r.fragment)\n                && order\n"
+replace = "                && order\n"
+red = ["judge::an_either_fragment_left_out_of_the_report_opens_no_label_pair"]

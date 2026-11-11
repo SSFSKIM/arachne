@@ -162,10 +162,15 @@ fn label_orders(d: &Decisions, x: u32, y: u32, s: usize, order: &[u32]) -> Vec<V
         .collect();
     labels.sort();
     labels.dedup();
+    // The rows of the labels and fragments the order holds: no other is present (§7).
     let rows: Vec<_> = d
         .labels
         .iter()
-        .filter(|r| (r.x, r.y, r.sample as usize) == (x, y, s))
+        .filter(|r| {
+            (r.x, r.y, r.sample as usize) == (x, y, s)
+                && labels.contains(&r.label)
+                && others.contains(&r.fragment)
+        })
         .collect();
     let unknown: Vec<(u32, u32)> = rows
         .iter()
@@ -299,10 +304,13 @@ pub fn judge(d: &Decisions, rep: &Reported, s: usize) -> Verdict {
         .collect();
     let table = edges_of(d, x, y, s, Set::Edges);
     // A pair `truth_unable` at the sample is named by its fragments' reads there: the class of
-    // the first status among them that states no bound (§6).
+    // the first status among them that states no bound (§6). Only a pair of fragments the report
+    // holds present is present (§7): an `Either` one it leaves out is in no pair.
     let unable: Vec<u32> = table
         .iter()
-        .filter(|(_, (_, label, _))| *label == LABEL_UNABLE)
+        .filter(|&(&(a, b), &(_, label, _))| {
+            label == LABEL_UNABLE && order.contains(&a) && order.contains(&b)
+        })
         .flat_map(|(&(a, b), _)| [a, b])
         .collect();
     if !unable.is_empty() {
@@ -334,10 +342,17 @@ pub fn judge(d: &Decisions, rep: &Reported, s: usize) -> Verdict {
             Some(false) => Verdict::Mismatch("mismatch"),
         };
     }
+    // The label rule's rows of the fragments the report holds present, likewise.
     let lrows: Vec<_> = d
         .labels
         .iter()
-        .filter(|r| (r.x, r.y, r.sample as usize) == (x, y, s))
+        .filter(|r| {
+            (r.x, r.y, r.sample as usize) == (x, y, s)
+                && order.contains(&r.fragment)
+                && order
+                    .iter()
+                    .any(|f| d.fragments[*f as usize].label == r.label)
+        })
         .collect();
     if let Some(r) = lrows.iter().find(|r| r.role == ROLE_OPEN) {
         return Verdict::Open(r.pair_cause, r.class_cause);
