@@ -127,7 +127,7 @@ Elsewhere, Cairo's rules that this text relies on are restated in full.
 | `stroke_on_own_fill@2` | 5 | a stroke at least as near as its own fill where both cover (replaces @1; the change is stated in §5) | |
 | `shared_plane_read@1` | 5 | a layer read on a shared identity's plane against what shares it | |
 | `band_input@2` | 6 | how far the input grid's snap may move a key (`S`) (replaces @1; the change is stated in §6) | |
-| `band_arith@1` | 6 | how far a conforming computation may stand from the exact key (`R`) | |
+| `band_arith@2` | 6 | how far a conforming computation may stand from the exact key (`R`) (replaces @1; the change is stated in §6) | |
 | `own_layers@1` | 7 | a fill against its own strokes keeps paint order | ✓ |
 | `one_plane@1` | 7 | two fragments on one registered plane tie within the snap's term | ✓ |
 | `near_parallel@1` | 7 | two flat records whose input cannot fix their relative tilt tie | ✓ |
@@ -895,7 +895,7 @@ For each fragment `f` at each read point (a sample `k`, or the pixel's centre fo
 oracle computes three things from XF:
 
 - `o_f(k)`, the key of §5's model;
-- `R_f(k)`, its arithmetic bound (`band_arith@1`);
+- `R_f(k)`, its arithmetic bound (`band_arith@2`);
 - `S_f(k) = (S⁻, S⁺)`, its input bound (`band_input@2`).
 
 These give the fragment's **interval**:
@@ -1059,14 +1059,16 @@ size and never leaves it unstated.
   **Change from `band_input@1`.** @1 took the hull of the two intervals, which holds keys the nearer
   of two keys can never take.
 
-### `R`, the arithmetic bound, by key (`band_arith@1`)
+### `R`, the arithmetic bound, by key (`band_arith@2`)
 
 **General terms.**
 
 - Every `R` includes `ν = 2^-44 (|o| + 1)`, which covers last-bit differences between conforming
-  evaluations of the formulas below.
-- A plane read at a pixel `(x, y)` adds its reading's rounding,
-  `ρ(x, y) = 4u (|a| + |b x| + |c y|)`, taken at the pixel's far corner `(x + 1, y + 1)`.
+  evaluations of the formulas below beyond those this section bounds itself.
+- A plane read at a pixel `(x, y)` adds its reading's rounding, `ρ = 4u (|a| + |b x| + |c y|)`,
+  the largest of its values at the pixel's far corner `(x + 1, y + 1)` and at every point the
+  read takes. A fringe read (`fringe_key@1`) takes the outline's nearest point, which may lie
+  outside the pixel.
 - One `R` serves the whole pixel per fragment. For a curve, it is the largest over the 16 samples
   and the pixel's centre.
 
@@ -1077,7 +1079,24 @@ size and never leaves it unstated.
 - for a triangle, its screen box;
 - for a facing plane, `[−|x0|, −|y0|, 3|x0|, 3|y0|]`.
 
-`R` is the largest, at the region's four corners `(X, Y)`, of `gap + A + shift`:
+**The unrounded plane, as evaluated.** `R` holds a conforming computation's key to the key across
+the plane before rounding, so that plane's own last bits are part of the rule. It is evaluated in
+this order:
+
+- Newell's normal relative to the first point, its sum taken over `i = 0 .. N − 1` in that order,
+  each point with the next (§5); the widest normal and a triangle's normal as the one cross
+  product §5 writes; an axis plane's normal `e_k`;
+- its length `sqrt((n_0 n_0 + n_1 n_1) + n_2 n_2)`, then the unit `n_k / |n|` per component, then
+  the unit turned to its canonical sign;
+- the offset `(û_0 p_0 + û_1 p_1) + û_2 p_2` through the plane's point `p` (its first point, or a
+  `Nearest` face's centroid, §5), with its bound `ε_e = 4u (|û| · |p|)`;
+- `m_i = (R_i0 û_0 + R_i1 û_1) + R_i2 û_2`, and `D = (e − n · c) − m_2 d`, with
+  `n · c = (û_0 c_0 + û_1 c_1) + û_2 c_2`.
+
+The one quantity left to any order is a `Nearest` face's point, its centroid (`C`, below).
+
+`R` is the largest, at the region's four corners `(X, Y)`, of `gap + 3A + C + shift`, times
+`(1 + 64u)`:
 
 - **`gap`** is the largest `|K_r(X, Y) − K_u(X, Y)| + 4u (terms of both reads)`, where `K_r` is the
   key of a rounded plane a conforming computation can produce, and `K_u` is the key of the unrounded
@@ -1092,9 +1111,37 @@ size and never leaves it unstated.
   - `f = |m_2 d − t_x − t_y| / |D|`;
   - `dN = dn |s| + 4u (|t_x| + |t_y| + |m_2 d|)`;
   - all of the unrounded plane.
-- **`shift`** is `f ε_e / (|D| − ε_e)` for the offset's bound `ε_e`.
+- **`3A`.** `gap` reads `K_u` as one computation gives it, within `A` of exact. Another conforming
+  computation's `K_u` lies within `A` of exact too, so its `gap` may stand `2A` above this one's:
+  `R` carries `2A` beside `gap`'s own `A`.
+- **`C`**, the centroid's term, 0 for every plane but a `Nearest` face's. Its point is the
+  centroid of its `N` points `p_i`, which a conforming computation may take as `Σ p_i / N` or as
+  `p_0 + Σ (p_i − p_0) / N`, in any order. Either lies within
+  `E_k = γ_{N+2} (Σ_i |p_ik − p_0k| + Σ_i |p_ik|) / N` of the exact centroid along axis `k`, with
+  `γ_j = j u / (1 − j u)`, so two computations' points differ by up to `2E_k`. The offset then
+  moves by `δe = 2 Σ_k |û_k| E_k`, `D` by as much, and the key at the corner by
+  `C = f δe / (|D| − δe)`.
+- **`shift`** is `f ε_e / (|D| − ε_e − δe)` for the offset's bound `ε_e`, with `δe` as in `C` (0
+  for every plane but a `Nearest` face's).
+- **`(1 + 64u)`** covers the order of `R`'s own sum. Taking `D`, `f`'s numerator, `|K_r − K_u|` and
+  `|D| − ε_e − δe` as computed (their cancellation is what `A`, `2A` and `C` bound), every other
+  term is a sum or product of non-negative quantities, along a chain of fewer than 24 roundings
+  (the longest runs through `|eye|`, `dD`, `A`, the corner's sum, `ρ` and `ν`). Two orders
+  therefore agree within `γ_24` each way of the exact sum, under `48u` of it, and `64u` covers that.
 
 Then add `ρ`.
+
+Why: `R` is compared with the core's own bound, which the core computes from its own plane (the
+contract test, below), so two conforming evaluations of one formula must stay within it. Stating
+the plane's order removes its last-bit differences the way pinning libm's `hypot` removes a
+library's (shared components, above). What stays unpinned is bounded where it arises: the
+unrounded key's evaluation (`2A`), the centroid (`C`), the order of `R`'s own sum (`64u`) and the
+points a read takes (`ρ`).
+
+**Change from `band_arith@1`.** @1 left the plane's order unstated, took `ρ` at the far corner
+alone, and left every difference between conforming evaluations to `ν`. `ν` scales with the read's
+key, while the unrounded key's differences scale with the corner keys and `1/|D|`, so a core's own
+bound on a `Nearest` face near the eye could stand about `10^-13` of itself above @1's `R`.
 
 **A plane through three keyed corners.** With corner keys `d0`, `d1`, `d2` and corner bounds
 `err_i`, let `in = max err_i`:
@@ -3437,7 +3484,7 @@ from the cycle `F` over `Q`, `Q` over `s`, `s` over `F`, in which the weak own-l
   - Margins: every cubic of `P` clears its step by at least 0.82 px against its `6ε̂ ≈ 0.68`.
     On this grid every joint of `P` lies within its flip window (`(2 + 10^-5) ε̂ ≈ 0.225` px
     against a join tolerance near `1.3·10^-4` px), but no version of a joint's segment lies
-    within `r + ε̂ + room(0) ≤ 4.3` px of the pixel: each lies more than 11 px away. `Q`'s
+    within `r + ε̂ + room(0) ≈ 4.23` px of the pixel: each lies more than 11 px away. `Q`'s
     edges, `L ≈ 43.17` px, clear their steps by 0.83 px against its `6ε̂ ≈ 0.34`.
 - **The stroke `Either`, the fill covering.** Input grid `2^-6`, `P` as in the second case. `Q` is
   `[−5.375, 5.375]²` at `z = 1.8125`, keyed `−20/18.1875 ≈ −1.09966`, with an interval
@@ -3455,7 +3502,7 @@ from the cycle `F` over `Q`, `Q` over `s`, `s` over `F`, in which the weak own-l
   - Rejects: taking the second case's interval because the stroke's cover is `Either`. That runs to
     `s`'s own far end, `0.1009` behind `Q`'s near end, and admits the defect.
   - Margins: `P`'s as in the second case, its joints within their flip window and every version
-    of a joint's segment more than 11 px from the pixel, against `r + ε̂ + room(0) ≤ 4.3` px.
+    of a joint's segment more than 11 px from the pixel, against `r + ε̂ + room(0) ≈ 4.31` px.
     `Q`'s edges, `L ≈ 47.29` px, clear their steps by 0.71 px against its `6ε̂ ≈ 0.38`.
 
 `R` is under `10^-5` in every case, so it moves no edge.
