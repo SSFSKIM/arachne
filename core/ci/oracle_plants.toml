@@ -1244,3 +1244,30 @@ file = "core/oracle/src/order.rs"
 find = "Err(u @ (Unable::BandUnbounded | Unable::PivotUnknown))"
 replace = "Err(u @ Unable::PivotUnknown)"
 red = ["order::an_axis_only_pair_needs_no_own_read_but_a_fragment_with_no_bound_stays_unable"]
+
+[[plant]]
+name = "unable-before-own-layers"
+item = "§6"
+check = "a fragment with no key stated is unable against its own record's other layer"
+file = "core/oracle/src/order.rs"
+find = "            if let Err(u @ (Unable::BandUnbounded | Unable::PivotUnknown)) = r.own {"
+replace = "            if let Err(u @ (Unable::BandUnbounded | Unable::PivotUnknown)) = r.own\n                && !own_layers(fa, fb)\n            {"
+red = ["order::a_fragment_with_no_key_stated_is_unable_against_its_own_record_s_other_layer", "key_rules::a_pivot_with_no_move_leaves_its_record_s_layers_unable_against_each_other", "key_rules::a_record_whose_keys_have_no_bound_leaves_its_layers_unable_against_each_other"]
+
+[[plant]]
+name = "centre-key-computation"
+item = "§7"
+check = "two facing keys of one centre are one computation where the facing plane does not key"
+file = "core/oracle/src/keys.rs"
+find = "            Model::Const { at, .. } => Some(Computation::Centre(*at)),\n"
+replace = ""
+red = ["pair_rules::two_facing_keys_of_one_centre_are_an_exact_tie_where_the_facing_plane_does_not_key"]
+
+[[plant]]
+name = "centre-key-inputs"
+item = "§7"
+check = "equal facing keys of other centres are not one computation"
+file = "core/oracle/src/keys.rs"
+find = "            frame_centre: pr.c,\n            d: pr.d,\n            exponential: pr.exponential,\n            centre,\n"
+replace = "            frame_centre: pr.c,\n            d: pr.d,\n            exponential: pr.exponential,\n            centre: [0.0, 0.0, centre[2]],\n"
+red = ["pair_rules::two_facing_keys_of_one_centre_are_an_exact_tie_where_the_facing_plane_does_not_key"]
