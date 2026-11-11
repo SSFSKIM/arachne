@@ -63,6 +63,13 @@ fn engine_fill(slot: u32) -> Frag {
         ..fill(slot)
     }
 }
+/// The stroke of the engine's record in `slot`.
+fn engine_stroke(slot: u32) -> Frag {
+    Frag {
+        engine: true,
+        ..stroke(slot)
+    }
+}
 /// Face `part` of the face group in `slot`: its fill.
 fn face(slot: u32, part: u32) -> Frag {
     Frag { part, ..fill(slot) }
@@ -428,6 +435,20 @@ fn depth_witnesses() -> Vec<Witness> {
             registry_reference(),
             (80, 45),
             Samples::Covered(vec![stroke(0), stroke(1)]),
+            None,
+        )
+    });
+    // W17's primary form: its scene as the engine draws it at the label head
+    // (`engine_stream`). The oracle's pair is an `ExactTie`; the core, with the polygon that
+    // paints nothing in its registry, orders the lines by depth.
+    out.push(Witness {
+        twin: Verdict::Mismatch("invisible_registry_offer"),
+        ..witness(
+            "invisible_registry_engine",
+            "registry_eligibility",
+            engine_stream("invisible_registry_engine"),
+            (80, 45),
+            Samples::Covered(vec![engine_stroke(0), engine_stroke(1)]),
             None,
         )
     });
