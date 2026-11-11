@@ -19,7 +19,11 @@ fn view(focal_distance: f64) -> View {
 }
 
 fn decide(b: &Build, v: View) -> Decisions {
-    let d = decide_at(&[b.delta(1, v)], 1, None).unwrap();
+    // Records of one shape upload it once.
+    let mut delta = b.delta(1, v);
+    let mut seen = std::collections::HashSet::new();
+    delta.upload.retain(|s| seen.insert(s.key()));
+    let d = decide_at(&[delta], 1, None).unwrap();
     assert_eq!(d.header.status, 0, "{:?}", d.refused);
     d
 }
@@ -230,4 +234,119 @@ fn a_stroke_adjusted_on_its_own_fill_keeps_the_hull_of_both_intervals() {
         }
     }
     assert!(apart > 0, "no sample where the fill's interval is apart");
+}
+
+#[test]
+fn two_flat_triangles_that_may_share_tie_within_term_though_neither_has_a_row() {
+    // §7, two flat records that may share: in the shared scenario each reads its row, a triangle
+    // its own key (it has none, §5), and the term is `within_term` with the snap shares. At focal
+    // distance 10 and grid 0.001, `B` [(−1, −0.05, 0), (1, −0.05, 0), (0, 0.05, 0.003)] painted
+    // first and `A` the same with its third corner on z = 0: they pass the width test, are not
+    // near-parallel, and at pixel (31, 31) sample 14 their own intervals do not meet while the
+    // shared term holds. Weak and `B` in front are admitted.
+    let mut b = Build::new(true);
+    b.mesh(
+        vec![[-1.0, -0.05, 0.0], [1.0, -0.05, 0.0], [0.0, 0.05, 0.003]],
+        vec![[0, 1, 2]],
+        OPAQUE_BLUE,
+    );
+    b.mesh(
+        vec![[-1.0, -0.05, 0.0], [1.0, -0.05, 0.0], [0.0, 0.05, 0.0]],
+        vec![[0, 1, 2]],
+        OPAQUE_RED,
+    );
+    let d = decide(
+        &b,
+        View {
+            input_grid: 0.001,
+            ..view(10.0)
+        },
+    );
+    let (tb, ta) = (id_of(&d, 0, 3), id_of(&d, 1, 3));
+    let at = pairs_of(&d, tb, ta)
+        .into_iter()
+        .find(|r| (r.x, r.y, r.sample) == (31, 31, 14))
+        .expect("no pair at (31, 31) sample 14");
+    assert_eq!((at.edges, at.label), (3, 6));
+}
+
+/// Two point blocks of radius 2 at (0.125, −0.125, 0), red then blue, with `between` drawn
+/// between them, at focal distance 10 and grid 0: the pair of the two blocks at pixel (32, 32).
+fn two_co_placed_blocks(between: impl FnOnce(&mut Build)) -> Vec<(u8, u8)> {
+    let mut b = Build::new(true);
+    b.points(vec![[0.125, -0.125, 0.0]], OPAQUE_RED, 2.0);
+    between(&mut b);
+    let last = b.records.len() as u32;
+    b.points(vec![[0.125, -0.125, 0.0]], OPAQUE_BLUE, 2.0);
+    let d = decide(
+        &b,
+        View {
+            input_grid: 0.0,
+            ..view(10.0)
+        },
+    );
+    let (p, q) = (id_of(&d, 0, 4), id_of(&d, last, 4));
+    pairs_of(&d, p, q)
+        .into_iter()
+        .filter(|r| (r.x, r.y) == (32, 32))
+        .map(|r| (r.edges, r.label))
+        .collect()
+}
+
+#[test]
+fn two_keys_of_one_computation_in_every_scenario_are_an_exact_tie() {
+    // §7 `ExactTie`: "any other pair whose keys are one computation in every scenario". Two
+    // projected point blocks at one placed position are keyed on one facing plane, their only
+    // scenario: weak alone.
+    let alone = two_co_placed_blocks(|_| {});
+    assert!(!alone.is_empty());
+    assert!(alone.iter().all(|e| *e == (1, 4)), "{alone:?}");
+    // With a triangle on z = −5 painted between them, on no plane of theirs.
+    let apart = two_co_placed_blocks(|b| {
+        b.mesh(
+            vec![[-2.0, -2.0, -5.0], [2.0, -2.0, -5.0], [0.0, 2.0, -5.0]],
+            vec![[0, 1, 2]],
+            OPAQUE_GREEN,
+        );
+    });
+    assert!(!apart.is_empty());
+    assert!(apart.iter().all(|e| *e == (1, 4)), "{apart:?}");
+}
+
+#[test]
+fn an_axis_only_pair_reads_no_own_key() {
+    // §7: two records with no plane of their own sharing an axis plane by the axis rule alone
+    // read their rows on it, one computation: an `ExactTie`, which reads neither own key. Two
+    // strokes of one cubic on z = 0 at focal distance 10, its control polygon 18 px long, on a
+    // count step: their own reads are `curve_recut` (§6, per read), and the pair needs none.
+    let cubic = vec![
+        [-2.25, 0.0, 0.0],
+        [-0.75, 0.0, 0.0],
+        [0.75, 0.0, 0.0],
+        [2.25, 0.0, 0.0],
+    ];
+    let mut b = Build::new(true);
+    b.stroke(cubic.clone(), OPAQUE_GREEN, 0.5);
+    b.stroke(cubic, OPAQUE_RED, 0.5);
+    let d = decide(
+        &b,
+        View {
+            input_grid: 0.0,
+            ..view(10.0)
+        },
+    );
+    let (p, q) = (id_of(&d, 0, 2), id_of(&d, 1, 2));
+    let rows = pairs_of(&d, p, q);
+    let off: Vec<_> = rows
+        .iter()
+        .filter(|r| (r.edges, r.label) != (1, 4))
+        .map(|r| (r.x, r.y, r.sample, r.edges, r.label))
+        .collect();
+    assert!(
+        off.is_empty(),
+        "{} of {}: {:?}",
+        off.len(),
+        rows.len(),
+        &off[..off.len().min(4)]
+    );
 }

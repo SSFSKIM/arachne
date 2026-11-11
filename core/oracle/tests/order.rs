@@ -2,7 +2,7 @@
 //! orders of the present fragments are admissible, through `cycle_rank@1` where edges cycle.
 
 use arachne_oracle::draw::Layer;
-use arachne_oracle::keys::{Band, Model};
+use arachne_oracle::keys::{Band, Model, Offered, Unable};
 use arachne_oracle::order::{Edges, Frag, Label, Reads, Scene, admissible, rank};
 
 fn frag(entry: u32, layer: Layer, group: u32) -> Frag {
@@ -27,7 +27,8 @@ fn band(o: f64, half: f64) -> Reads {
             s_plus: half,
         }),
         row: None,
-        at_sample: false,
+        own_at: None,
+        row_at: None,
     }
 }
 
@@ -229,4 +230,48 @@ fn the_nontransitive_triple_admits_its_reversal_through_an_all_strong_cycle() {
         .filter(|o| admissible(&present, &paint, &e, o) == Some(true))
         .collect();
     assert_eq!(added, vec![[2, 1, 0]], "{added:?}");
+}
+
+/// Two strokes of records with no plane of their own on the axis plane z = 0 alone, `a` read as
+/// `own`: the pair's verdict.
+fn axis_only(own: Result<Band, Unable>) -> Result<(Edges, Label), Unable> {
+    let line = |entry: u32| Frag {
+        offered: Some(entry as usize),
+        ..frag(entry, Layer::Stroke, entry)
+    };
+    let offered = |y: f64| Offered {
+        flat: None,
+        retains: true,
+        points: vec![[-1.0, y, 0.0], [1.0, y, 0.0]],
+        tau_plus: 0.0,
+        tau_own: 0.0,
+        axes: vec![(2, 0.0)],
+        snap: 0.0,
+        path: true,
+    };
+    let s = Scene::new(vec![line(0), line(1)], vec![offered(0.0), offered(0.5)]);
+    let ra = Reads {
+        own,
+        ..band(-1.0, 0.0)
+    };
+    s.pair(0, 1, &ra, &band(-1.0, 0.0), NONE)
+        .map(|p| (p.edges, p.label))
+}
+
+#[test]
+fn an_axis_only_pair_needs_no_own_read_but_a_fragment_with_no_bound_stays_unable() {
+    // §6: `curve_recut` is per read, and the axis-only pair reads neither own key (§7);
+    // `band_unbounded` is per fragment, its samples `truth_unable` whatever the pair reads.
+    assert_eq!(
+        axis_only(band(-1.0, 0.0).own),
+        Ok((Edges::WEAK, Label::ExactTie))
+    );
+    assert_eq!(
+        axis_only(Err(Unable::CurveRecut)),
+        Ok((Edges::WEAK, Label::ExactTie))
+    );
+    assert_eq!(
+        axis_only(Err(Unable::BandUnbounded)),
+        Err(Unable::BandUnbounded)
+    );
 }

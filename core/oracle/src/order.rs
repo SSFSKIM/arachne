@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use crate::band::width_lower_bound;
 use crate::draw::Layer;
-use crate::keys::{Band, Model, Offered, Unable};
+use crate::keys::{Band, Computation, Model, Offered, Unable};
 use crate::shift::U;
 
 /// The edges a pair admits: weak (paint order), strong `a` in front, strong `b` in front.
@@ -132,9 +132,9 @@ pub struct Scene {
 pub struct Reads {
     pub own: Result<Band, Unable>,
     pub row: Option<Result<Band, Unable>>,
-    /// Whether its own key is read at the sample itself (§7, `ExactTie`): a triangle's, or a
-    /// plane's whose key is constant on screen or whose outline holds the sample.
-    pub at_sample: bool,
+    /// What its own read and its row's compute, where each is one computation (§7, `ExactTie`).
+    pub own_at: Option<Computation>,
+    pub row_at: Option<Computation>,
 }
 
 /// How a strong edge is read (contract §7, the completions rule): from the two fragments' own
@@ -451,9 +451,18 @@ impl Scene {
                 Plate::Tie,
             ));
         }
-        let oa = ra.own?;
-        let ob = rb.own?;
-        if oa.o == f64::NEG_INFINITY && ob.o == f64::NEG_INFINITY {
+        // A fragment with no key bounded at all is `truth_unable` whatever the pair reads
+        // (`band_unbounded`, §6, by fragment; a pivot with no move, §2). A `curve_recut` read is
+        // unable only where a scenario reads it (§6, per read).
+        for r in [ra, rb] {
+            if let Err(u @ (Unable::BandUnbounded | Unable::PivotUnknown)) = r.own {
+                return Err(u);
+            }
+        }
+        if let (Ok(x), Ok(y)) = (ra.own, rb.own)
+            && x.o == f64::NEG_INFINITY
+            && y.o == f64::NEG_INFINITY
+        {
             return Ok((
                 PairAt {
                     edges: Edges::WEAK,
@@ -480,31 +489,11 @@ impl Scene {
                 ));
             }
         }
-        // `ExactTie`: two fills of flat paths, or flat triangles, on the axis plane of one
-        // coordinate through equal first points, each read at the sample itself: their keys are
-        // one computation in every scenario, rows or own keys.
-        if let Some((i, j)) = both {
-            let surface = |f: &Frag| matches!(f.layer, Layer::Fill | Layer::Mesh);
-            if surface(fa)
-                && surface(fb)
-                && ra.at_sample
-                && rb.at_sample
-                && exact_axis(&self.offered[i], &self.offered[j])
-            {
-                return Ok((
-                    PairAt {
-                        edges: Edges::WEAK,
-                        label: Label::ExactTie,
-                        via: [Via::Own; 2],
-                    },
-                    Plate::Tie,
-                ));
-            }
-        }
-        // The scenarios §7's sets allow, each giving its edges.
+        // The scenarios §7's sets allow, each giving its edges. Where every scenario reads the two
+        // keys as one computation, the pair is an `ExactTie` (§7): weak alone.
         let mut edges = Edges::default();
         let mut tie_meet = false;
-        let mut exact_rows = false;
+        let mut one_computation = true;
         let mut policy: Option<Label> = None;
         let mut not_shared = true;
         let mut via = [Via::Own; 2];
@@ -514,39 +503,43 @@ impl Scene {
             if ra_.flat.is_some() && rb_.flat.is_some() && self.may_share_flat(i, j) {
                 // Shared: each reads its row, or its own key where it has none (a mesh triangle,
                 // a point block: §5); `within_term` with the snap shares.
-                if let (Some(Err(u)), _) | (_, Some(Err(u))) = (ra.row, rb.row) {
-                    return Err(u);
+                let read = |r: &Reads| match r.row {
+                    Some(w) => w.map(|w| (w, r.row_at)),
+                    None => r.own.map(|o| (o, r.own_at)),
+                };
+                let ((wa, ca), (wb, cb)) = (read(ra)?, read(rb)?);
+                let one = ca.is_some() && ca == cb;
+                one_computation &= one;
+                let mut e = by_depth(&wa, &wb);
+                let mut held = false;
+                if one {
+                    e = Edges::WEAK;
+                } else if policy_term(&wa, snap_of(ra_), &wb, snap_of(rb_)) {
+                    e.weak = true;
+                    held = true;
+                    policy.get_or_insert(Label::OnePlane);
                 }
+                fold(
+                    &mut plate,
+                    if one {
+                        Plate::Tie
+                    } else {
+                        Plate::of(&wa, &wb, held)
+                    },
+                );
+                tie_meet |= meet(&wa, &wb);
                 if ra.row.is_some() || rb.row.is_some() {
-                    let read = |row: Option<Result<Band, Unable>>, own: Band| match row {
-                        Some(Ok(w)) => w,
-                        _ => own,
-                    };
-                    let (wa, wb) = (read(ra.row, oa), read(rb.row, ob));
-                    let mut e = by_depth(&wa, &wb);
-                    let mut held = false;
-                    if exact_axis(ra_, rb_) && wa.o == wb.o {
-                        e = Edges::WEAK;
-                        exact_rows = true;
-                    } else if policy_term(&wa, snap_of(ra_), &wb, snap_of(rb_)) {
-                        e.weak = true;
-                        held = true;
-                        policy.get_or_insert(Label::OnePlane);
-                    }
-                    fold(&mut plate, Plate::of(&wa, &wb, held));
-                    tie_meet |= meet(&wa, &wb);
                     for (v, strong) in via.iter_mut().zip([e.a_front, e.b_front]) {
                         if strong {
                             *v = Via::Row;
                         }
                     }
-                    edges = edges.union(e);
                 }
+                edges = edges.union(e);
             }
             if self.axis_shared(i, j) {
                 // Two axis-plane rows read at one sample are one computation.
                 edges = edges.union(Edges::WEAK);
-                exact_rows = true;
                 fold(&mut plate, Plate::Tie);
                 if !(self.attaches_somewhere(i) || self.attaches_somewhere(j)) {
                     not_shared = false;
@@ -554,7 +547,10 @@ impl Scene {
             }
         }
         if not_shared {
-            let mut e = by_depth(&oa, &ob);
+            let (oa, ob) = (ra.own?, rb.own?);
+            let one = ra.own_at.is_some() && ra.own_at == rb.own_at;
+            one_computation &= one;
+            let mut e = if one { Edges::WEAK } else { by_depth(&oa, &ob) };
             let met = e.weak;
             tie_meet |= meet(&oa, &ob);
             if let Some((i, j)) = both {
@@ -576,13 +572,20 @@ impl Scene {
                     policy.get_or_insert(Label::Lines);
                 }
             }
-            fold(&mut plate, Plate::of(&oa, &ob, e.weak && !met));
+            fold(
+                &mut plate,
+                if one {
+                    Plate::Tie
+                } else {
+                    Plate::of(&oa, &ob, e.weak && !met)
+                },
+            );
             edges = edges.union(e);
         }
-        let label = if edges.count() == 1 && !edges.weak {
-            Label::Depth(edges.a_front)
-        } else if exact_rows && edges == Edges::WEAK {
+        let label = if one_computation {
             Label::ExactTie
+        } else if edges.count() == 1 && !edges.weak {
+            Label::Depth(edges.a_front)
         } else if tie_meet {
             Label::TieBand
         } else {
@@ -592,17 +595,6 @@ impl Scene {
             PairAt { edges, label, via },
             plate.unwrap_or(Plate::Undetermined),
         ))
-    }
-}
-
-/// Two flat fills keyed on one axis plane through equal first points: their rows are one
-/// computation.
-fn exact_axis(a: &Offered, b: &Offered) -> bool {
-    match (a.flat, b.flat) {
-        (Some(pa), Some(pb)) => {
-            pa.axis.is_some() && pa.axis == pb.axis && pa.e == pb.e && pa.n == pb.n
-        }
-        _ => false,
     }
 }
 

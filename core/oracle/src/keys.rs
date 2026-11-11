@@ -104,6 +104,18 @@ pub enum PlaneS {
     },
 }
 
+/// A key read as one computation (contract §7, `ExactTie`): two reads of one computation are
+/// one value bit for bit in every conforming evaluation.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Computation {
+    /// A world plane's key across the pixel plane, read at a point.
+    World(ScreenKey, [f64; 2]),
+    /// The plane on screen through a triangle's corners, read at a point.
+    Screen(ScreenKey, [f64; 2]),
+    /// The key `−∞`.
+    NegInf,
+}
+
 /// A key model.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Model {
@@ -206,14 +218,21 @@ impl Model {
         self.at_points(samples(px, py), px, py, dist_hull)
     }
 
-    /// Whether a key is read at the point `p` itself (contract §7, `ExactTie`): a triangle's
-    /// plane, or a world plane whose key is constant on screen (no fringe) or whose outline holds
-    /// `p`.
-    pub fn read_at(&self, p: [f64; 2]) -> bool {
+    /// What its read at the point `p` computes (contract §7, `ExactTie`), where that is one
+    /// computation named by its inputs: a world plane's key at the point it reads (its fringe's
+    /// outline point outside the outline), a triangle's plane on screen at `p`, or `−∞`.
+    pub fn computation_at(&self, p: [f64; 2]) -> Option<Computation> {
         match self {
-            Model::Tri { .. } => true,
-            Model::Plane { fringe, .. } => fringe.as_ref().is_none_or(|r| inside(r, p)),
-            _ => false,
+            Model::NegInf => Some(Computation::NegInf),
+            Model::Plane { key, fringe, .. } => Some(Computation::World(
+                *key,
+                match fringe {
+                    Some(rings) if !inside(rings, p) => nearest_on(rings, p),
+                    _ => p,
+                },
+            )),
+            Model::Tri { key, .. } => Some(Computation::Screen(*key, p)),
+            _ => None,
         }
     }
 

@@ -3,7 +3,7 @@
 //! (`shared_plane_read@1`), and each present pair's admitted edges and label.
 
 use crate::draw::Layer;
-use crate::keys::{Band, Model, Unable, samples};
+use crate::keys::{Band, Computation, Model, Unable, samples};
 use crate::lines::LinesBound;
 use crate::order::{Plate, Reads, Scene};
 use crate::out::{BandRow, CoverRow, LABEL_UNABLE, PairRow};
@@ -140,6 +140,8 @@ fn pixel(
         .iter()
         .map(|f| scene.frags[*f].model.pixel(px, py, false))
         .collect();
+    // Where a stroke's own key is adjusted on its own fill.
+    let mut on_fill = vec![[false; 16]; rows.len()];
     let row: Vec<Option<[Result<Band, Unable>; 16]>> = frags
         .iter()
         .map(|f| scene.frags[*f].row.as_ref().map(|m| m.pixel(px, py, true)))
@@ -168,6 +170,7 @@ fn pixel(
                 continue;
             }
             next[s] = on_own_fill(own[i][s], own[j][s]);
+            on_fill[i][s] = true;
             adjusted = true;
         }
         if adjusted {
@@ -200,9 +203,28 @@ fn pixel(
     }
     // The `lines@1` shares, read once per fragment where a pair needs them.
     let pts = samples(px, py);
-    let at_sample: Vec<[bool; 16]> = frags
+    // What each read computes: an own key adjusted on its fill is no one model's read.
+    let own_at: Vec<[Option<Computation>; 16]> = frags
         .iter()
-        .map(|f| std::array::from_fn(|s| scene.frags[*f].model.read_at(pts[s])))
+        .enumerate()
+        .map(|(i, f)| {
+            std::array::from_fn(|s| {
+                (!on_fill[i][s])
+                    .then(|| scene.frags[*f].model.computation_at(pts[s]))
+                    .flatten()
+            })
+        })
+        .collect();
+    let row_at: Vec<[Option<Computation>; 16]> = frags
+        .iter()
+        .map(|f| {
+            std::array::from_fn(|s| {
+                scene.frags[*f]
+                    .row
+                    .as_ref()
+                    .and_then(|m| m.computation_at(pts[s]))
+            })
+        })
         .collect();
     let mut shares: Vec<Option<f64>> = vec![None; rows.len()];
     let mut share = |i: usize| -> f64 {
@@ -221,12 +243,14 @@ fn pixel(
                 let ra = Reads {
                     own: own[i][s],
                     row: row[i].map(|r| r[s]),
-                    at_sample: at_sample[i][s],
+                    own_at: own_at[i][s],
+                    row_at: row_at[i][s],
                 };
                 let rb = Reads {
                     own: own[j][s],
                     row: row[j].map(|r| r[s]),
-                    at_sample: at_sample[j][s],
+                    own_at: own_at[j][s],
+                    row_at: row_at[j][s],
                 };
                 let lines_pair = scene.lines_eligible(frags[i], frags[j]);
                 let shares_ij = if lines_pair {
