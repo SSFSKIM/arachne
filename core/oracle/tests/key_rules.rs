@@ -5,7 +5,9 @@
 #[path = "common/scenes.rs"]
 mod scenes;
 
-use arachne_core::xf::{Camera, FEATURE_PRE_PROJECTED, Paint, PreProjected, Shape, ShapeData, View};
+use arachne_core::xf::{
+    Camera, FEATURE_PRE_PROJECTED, Paint, PreProjected, Shape, ShapeData, View,
+};
 use arachne_oracle::cover::sample_point;
 use arachne_oracle::decide::decide_at;
 use arachne_oracle::out::{BandRow, Decisions};
@@ -204,6 +206,77 @@ fn a_pre_projected_pivot_moves_as_the_record_s_first_point_moved() {
         }
     }
     assert!(read > 100, "{read} samples read");
+}
+
+#[test]
+fn a_pre_projected_point_block_s_pivot_moves_as_its_first_point_moved() {
+    // As above, for a point block: its position (0.125, −0.125, 0) about its pivot there, its tail's
+    // point (0.25, −0.25, 5). The pivot moves to (0.25, −0.25, 5), keyed −2 at focal distance 10;
+    // unmoved it keys −1. Against a mesh at z = 2.5 (−4/3), the block is in front.
+    let mut b = Build::new(true);
+    b.mesh(
+        vec![[-1.0, -1.0, 2.5], [1.0, -1.0, 2.5], [0.0, 1.0, 2.5]],
+        vec![[0, 1, 2]],
+        OPAQUE_RED,
+    );
+    let tail = Shape::new(ShapeData::Path {
+        points: vec![[0.25, -0.25, 5.0]],
+    });
+    let key = tail.key();
+    b.shapes.push(tail);
+    let r = b.points(vec![[0.125, -0.125, 0.0]], OPAQUE_GREEN, 2.0);
+    r.depth.fixed_orientation_centre = Some([0.125, -0.125, 0.0]);
+    r.features |= FEATURE_PRE_PROJECTED;
+    r.pre_projected = Some(PreProjected {
+        points: key,
+        gradient: None,
+        fill: Paint::None,
+        stroke: Paint::None,
+        background_stroke: Paint::None,
+    });
+    let d = decide(&b, view(10.0, GRID));
+    let (m, p) = (id_of(&d, 0, 3), id_of(&d, 1, 4));
+    let at: Vec<_> = d
+        .pairs
+        .iter()
+        .filter(|r| (r.a, r.b) == (m, p))
+        .map(|r| r.edges)
+        .collect();
+    assert!(!at.is_empty(), "no pair of the mesh and the block");
+    assert!(at.iter().all(|e| *e == 4), "{at:?}");
+}
+
+#[test]
+fn a_pre_projected_pivot_with_no_first_point_to_move_by_states_no_bound() {
+    // §2 moves a pivot as the record's first point moved; a record whose own shape is empty has
+    // no first point, and its tail still draws. Its key is not stated: `pivot_unknown`.
+    let mut b = Build::new(true);
+    let tail = Shape::new(ShapeData::Path {
+        points: rect([-1.0, 1.0], [-1.0, 1.0], 5.0),
+    });
+    let key = tail.key();
+    b.shapes.push(tail);
+    let r = b.fill(Vec::new(), OPAQUE_BLUE);
+    r.depth.fixed_orientation_centre = Some([0.0; 3]);
+    r.features |= FEATURE_PRE_PROJECTED;
+    r.pre_projected = Some(PreProjected {
+        points: key,
+        gradient: None,
+        fill: Paint::One(OPAQUE_BLUE),
+        stroke: Paint::None,
+        background_stroke: Paint::None,
+    });
+    let d = decide(&b, view(10.0, GRID));
+    let fill = id_of(&d, 0, 1);
+    let rows = own_rows(&d, fill);
+    assert!(!rows.is_empty());
+    for row in rows {
+        for s in 0..16 {
+            if row.status[s] != 0 {
+                assert_eq!(row.status[s], 4, "({}, {}) sample {s}", row.x, row.y);
+            }
+        }
+    }
 }
 
 #[test]

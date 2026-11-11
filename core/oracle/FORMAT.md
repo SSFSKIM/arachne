@@ -118,7 +118,9 @@ key of `−∞`.
   1, its row on its record's plane (`shared_plane_read@1`), read against a fragment that may share
   it. A fragment has at most one of each at a pixel, its own first.
 - **`status[s]`**: 0 absent, 1 bounded, 2 `band_unbounded`, 3 `curve_recut` (the sample is
-  `truth_unable`, contract §6). The floats are NaN unless the status is 1.
+  `truth_unable`, contract §6), 4 `pivot_unknown` (`truth_unable` too: a pre-projected record's
+  pivot moves as its first point moved, §2, and the record or its tail has none). The floats are
+  NaN unless the status is 1.
 
 ### `PAIR`
 

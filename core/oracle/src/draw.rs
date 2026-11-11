@@ -279,9 +279,18 @@ pub struct Common<'a> {
     pub projection: Option<Projection>,
     /// The placings whose departure bounds its screen shift.
     pub placings: Vec<Placing>,
-    /// A pre-projected record's pivot, the carried centre moved as the record's first point moved
-    /// to its tail's first point (contract §2).
-    pub pivot: Option<[f64; 3]>,
+    /// A pre-projected record's pivot (contract §2), where it carries a centre.
+    pub pivot: Option<Pivot>,
+}
+
+/// A pre-projected record's pivot (contract §2).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Pivot {
+    /// The carried centre moved as the record's first point moved to its tail's first point.
+    At([f64; 3]),
+    /// The record or its tail has no first point to move it by: no key is stated
+    /// (`pivot_unknown`).
+    Unknown,
 }
 
 /// One path drawn: a `path` record, a face of a face group, or a path instance's member.
@@ -412,8 +421,8 @@ pub fn items_of<'a>(
                 .and_then(|t| t.first().copied())
                 .zip(path_points(rec, shapes).and_then(|p| p.first().copied()));
             Some(match moved {
-                Some((to, from)) => std::array::from_fn(|k| c[k] + (to[k] - from[k])),
-                None => c,
+                Some((to, from)) => Pivot::At(std::array::from_fn(|k| c[k] + (to[k] - from[k]))),
+                None => Pivot::Unknown,
             })
         });
         let common = |object: u32, placings: Vec<Placing>| Common {

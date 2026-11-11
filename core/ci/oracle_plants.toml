@@ -1187,9 +1187,9 @@ name = "preprojected-pivot-unmoved"
 item = "§2"
 check = "a pre-projected pivot moves as the record's first point moved"
 file = "core/oracle/src/draw.rs"
-find = "                Some((to, from)) => std::array::from_fn(|k| c[k] + (to[k] - from[k])),"
-replace = "                Some(_) => c,"
-red = ["key_rules::a_pre_projected_pivot_moves_as_the_record_s_first_point_moved"]
+find = "Some((to, from)) => Pivot::At(std::array::from_fn(|k| c[k] + (to[k] - from[k]))),"
+replace = "Some(_) => Pivot::At(c),"
+red = ["key_rules::a_pre_projected_pivot_moves_as_the_record_s_first_point_moved", "key_rules::a_pre_projected_point_block_s_pivot_moves_as_its_first_point_moved"]
 
 [[plant]]
 name = "own-fill-meets-for-tied"
@@ -1199,3 +1199,12 @@ file = "core/oracle/src/pairs.rs"
 find = "let r = if tied(&o, &f) { o.r.max(f.r) } else { taken.r };"
 replace = "let r = if o.lo() <= f.hi() && f.lo() <= o.hi() { o.r.max(f.r) } else { taken.r };"
 red = ["lib::pairs::tests::an_adjusted_stroke_takes_both_bounds_only_where_its_keys_are_tied"]
+
+[[plant]]
+name = "pivot-unknown-carried"
+item = "§2"
+check = "a pre-projected pivot with no first point to move it by states no key"
+file = "core/oracle/src/draw.rs"
+find = "                None => Pivot::Unknown,"
+replace = "                None => Pivot::At(c),"
+red = ["key_rules::a_pre_projected_pivot_with_no_first_point_to_move_by_states_no_bound"]

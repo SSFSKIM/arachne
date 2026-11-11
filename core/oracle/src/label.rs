@@ -192,7 +192,7 @@ fn stand(s: &Band, label: &Band) -> Stand {
 /// its read is not bounded.
 fn plane_read(model: &Model, p: [f64; 2]) -> Option<Band> {
     match model {
-        Model::Curve { .. } | Model::Unbounded => None,
+        Model::Curve { .. } | Model::Unbounded | Model::PivotUnknown => None,
         m => m.at(p).ok(),
     }
 }

@@ -112,7 +112,7 @@ pub struct BandRow {
     pub r: [f64; 16],
     pub s_minus: [f64; 16],
     pub s_plus: [f64; 16],
-    /// 0 absent, 1 bounded, 2 `band_unbounded`, 3 `curve_recut`.
+    /// 0 absent, 1 bounded, 2 `band_unbounded`, 3 `curve_recut`, 4 `pivot_unknown`.
     pub status: [u8; 16],
 }
 

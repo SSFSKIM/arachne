@@ -60,7 +60,13 @@ CAUSE = {
     7: "slot_not_held",
 }
 #: A band row's status at a sample.
-BAND_STATUS = {0: "absent", 1: "bounded", 2: "band_unbounded", 3: "curve_recut"}
+BAND_STATUS = {
+    0: "absent",
+    1: "bounded",
+    2: "band_unbounded",
+    3: "curve_recut",
+    4: "pivot_unknown",
+}
 #: A pair's label at a sample.
 LABEL = {
     0: "truth_unable",

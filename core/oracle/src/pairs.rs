@@ -17,6 +17,7 @@ fn status(b: &Result<Band, Unable>) -> u8 {
         Ok(_) => STATUS_BOUNDED,
         Err(Unable::BandUnbounded) => 2,
         Err(Unable::CurveRecut) => 3,
+        Err(Unable::PivotUnknown) => 4,
     }
 }
 

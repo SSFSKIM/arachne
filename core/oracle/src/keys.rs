@@ -11,15 +11,17 @@ use crate::depth::{
     Planarity, ScreenKey, WorldPlane, departure_from, extent, facing_plane, key_error, key_plane,
     nu, on_a_line, planarity, plane_r_region, points_somewhere, three_corner_plane,
 };
-use crate::draw::{MeshItem, PathItem, PointsItem};
+use crate::draw::{MeshItem, PathItem, Pivot, PointsItem};
 use crate::flatten::Ring;
 use crate::shift::{Shift, U, departure_of, depth_share};
 
-/// Why a sample's key is not bounded: `band_unbounded` or `curve_recut` (contract §6).
+/// Why a sample's key is not bounded: `band_unbounded` or `curve_recut` (contract §6), or
+/// `pivot_unknown`: a pre-projected record's pivot with no first point to move it by (§2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unable {
     BandUnbounded,
     CurveRecut,
+    PivotUnknown,
 }
 
 impl Unable {
@@ -27,6 +29,7 @@ impl Unable {
         match self {
             Unable::BandUnbounded => "band_unbounded",
             Unable::CurveRecut => "curve_recut",
+            Unable::PivotUnknown => "pivot_unknown",
         }
     }
 }
@@ -140,6 +143,8 @@ pub enum Model {
     },
     /// No bound can be stated (an infinite screen shift or share).
     Unbounded,
+    /// No key can be stated: a pre-projected pivot with no first point to move it by (§2).
+    PivotUnknown,
 }
 
 /// The pixel `(px, py)`'s 16 sample points.
@@ -230,6 +235,7 @@ impl Model {
         match self {
             Model::NegInf => std::array::from_fn(|_| Ok(Band::exact(f64::NEG_INFINITY))),
             Model::Unbounded => std::array::from_fn(|_| Err(Unable::BandUnbounded)),
+            Model::PivotUnknown => std::array::from_fn(|_| Err(Unable::PivotUnknown)),
             Model::Const { k, r, s } => std::array::from_fn(|_| {
                 if !(s.is_finite() && r.is_finite()) {
                     return Err(Unable::BandUnbounded);
@@ -568,8 +574,10 @@ pub fn path_depth(view: &View, item: &PathItem, rings: &[Option<Vec<Ring>>; 3]) 
         }
         (_, true) => {
             let cam = pr.in_camera_axes();
-            if let Some(pivot) = c.pivot {
-                return none(facing_model(&cam, &map, pivot, 0.0));
+            match c.pivot {
+                Some(Pivot::At(pivot)) => return none(facing_model(&cam, &map, pivot, 0.0)),
+                Some(Pivot::Unknown) => return none(Model::PivotUnknown),
+                None => {}
             }
             let code = rec
                 .planes
@@ -930,7 +938,8 @@ pub fn point_depth(view: &View, item: &PointsItem, placed: [f64; 3]) -> Model {
     if c.record.pre_projected.is_some() {
         let cam = pr.in_camera_axes();
         return match c.pivot {
-            Some(pivot) => facing_model(&cam, &map, pivot, 0.0),
+            Some(Pivot::At(pivot)) => facing_model(&cam, &map, pivot, 0.0),
+            Some(Pivot::Unknown) => Model::PivotUnknown,
             None => facing_model(
                 &cam,
                 &map,
