@@ -269,12 +269,17 @@ pub fn judge(d: &Decisions, rep: &Reported, s: usize) -> Verdict {
         .copied()
         .filter(|f| d.fragments[*f as usize].label == NONE_U32)
         .collect();
-    let ordinary = admits(d, x, y, s, &others, false);
-    if ordinary == Some(true) && label_orders(d, x, y, s, &order).contains(&order) {
+    let Some(ordinary) = admits(d, x, y, s, &others, false) else {
+        return Verdict::Unable("completion_bound");
+    };
+    if ordinary && label_orders(d, x, y, s, &order).contains(&order) {
         return Verdict::Agree;
     }
-    if admits(d, x, y, s, &order, false) == Some(true) {
-        return Verdict::Mismatch("label_plate_model");
+    // Outside the label rule's orders. The plate model's orders are those `PAIR` admits with the
+    // label's pairs included: the test every other sample takes. Past the completion bound the
+    // mismatch is certain and its name is not.
+    match admits(d, x, y, s, &order, false) {
+        Some(true) => Verdict::Mismatch("label_plate_model"),
+        _ => Verdict::Mismatch("mismatch"),
     }
-    Verdict::Mismatch("mismatch")
 }
