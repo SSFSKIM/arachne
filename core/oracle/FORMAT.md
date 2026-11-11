@@ -228,7 +228,8 @@ u32 fragment  u8 kind  u8 rgba[4]  3 bytes pad
 ```
 
 Each fragment's premultiplied colour from XF (contract §9). `kind`: 1 solid (`rgba` at every
-pixel: `cairo_premultiply@1`, or a point block's bytes); 2 per pixel (a lit mesh triangle,
+pixel: `cairo_premultiply@1` of an unshaded layer's one colour, its one row or rows that are all
+that colour bit for bit, or a point block's bytes); 2 per pixel (a lit mesh triangle,
 `ce_shading@1`; its bytes in `COLP`); 0 a gradient (`cairo_linear_gradient@1`, a layer of two or
 more rows or a shaded path), which this oracle does not compute: `rgba` is 0 and a reader takes
 the colour as unknown.

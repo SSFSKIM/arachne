@@ -1370,3 +1370,12 @@ file = "core/oracle/tests/common/judge.rs"
 find = "            if d.fragments[f as usize].flags & FLAG_UNBOUNDED != 0 {"
 replace = "            if d.colours[f as usize].kind == 0 || d.fragments[f as usize].flags & FLAG_UNBOUNDED != 0 {"
 red = ["judge::a_fragment_whose_colour_is_unknown_is_still_judged_for_its_order"]
+
+[[plant]]
+name = "one-colour-rows-solid"
+item = "§9"
+check = "an unshaded layer whose rows are all one colour is that solid (COLR kind 1)"
+file = "core/oracle/src/decide.rs"
+find = "                        Some(r) if one_colour(r) && !p.shaded => {"
+replace = "                        Some(r) if r.len() == 1 && !p.shaded => {"
+red = ["colour::a_layer_whose_rows_are_one_colour_is_that_solid"]

@@ -163,6 +163,19 @@ fn a_layer_of_two_rows_is_a_gradient_the_oracle_does_not_compute() {
 }
 
 #[test]
+fn a_layer_whose_rows_are_one_colour_is_that_solid() {
+    // `COLR` kind 1: a layer whose rows are all one colour, unshaded, paints that colour at
+    // every pixel, as one row does; rows of two colours stay a gradient.
+    let c = [0.2, 0.6, 0.3, 0.5];
+    let dec = square([0.0; 4], Some(Paint::Two([c, c])));
+    assert_eq!(dec.colours.len(), 1, "{:?}", dec.refused);
+    assert_eq!(dec.colours[0].kind, COLOUR_SOLID);
+    assert_eq!(dec.colours[0].rgba, premultiply_by_text(c, 1.0));
+    let dec = square([0.0; 4], Some(Paint::Two([c, [0.2, 0.6, 0.3, 0.75]])));
+    assert_eq!(dec.colours[0].kind, COLOUR_GRADIENT);
+}
+
+#[test]
 fn a_flat_mesh_triangle_is_its_fill_premultiplied() {
     let v = view(16, 16);
     let mesh = Shape::new(ShapeData::Mesh {

@@ -393,7 +393,8 @@ fn build(view: &View, state: &State, window: Window) -> Built {
                             .flatten()
                             .all(|v| v.is_finite());
                     let spec = match &p.rows[k] {
-                        Some(r) if r.len() == 1 && !p.shaded => {
+                        // One colour, unshaded: one row, or rows that are all that colour.
+                        Some(r) if one_colour(r) && !p.shaded => {
                             Spec::Solid(colour::premultiply(r[0], c.record.opacity))
                         }
                         Some(r) => Spec::Gradient {
@@ -661,6 +662,14 @@ fn invisible(
         }
     }
     extra
+}
+
+/// Whether a layer's rows are one colour: at least one row, every row bit for bit the first.
+fn one_colour(rows: &[[f64; 4]]) -> bool {
+    rows.first().is_some_and(|f| {
+        rows.iter()
+            .all(|r| r.iter().zip(f).all(|(a, b)| a.to_bits() == b.to_bits()))
+    })
 }
 
 /// A mesh triangle's colour source: a solid, or lit where the camera shades it.
