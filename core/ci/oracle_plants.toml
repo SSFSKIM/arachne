@@ -1279,7 +1279,7 @@ check = "cycle_rank@2: a cycle through an edge read through a row stays"
 file = "core/oracle/src/order.rs"
 find = "                    own[i][j] = provenance & 3 == 0;"
 replace = "                    own[i][j] = true;"
-red = ["order::an_all_strong_cycle_through_a_row_read_is_ranked_by_wins_then_paint_order"]
+red = ["order::an_all_strong_cycle_through_a_row_read_is_ranked_by_wins_then_paint_order", "contract_mutation::mutation_uncited_witnesses_fail_and_their_twins_agree"]
 
 [[plant]]
 name = "own-fill-pixel-unable"

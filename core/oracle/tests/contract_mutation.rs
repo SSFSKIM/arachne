@@ -1841,6 +1841,37 @@ fn uncited_witnesses() -> Vec<Witness> {
         Samples::All,
         vec![block(0, 0), block(1, 0)],
     ));
+    // cycle_through_row_drawn_first: cycle_through_row's A, P and Q, A drawn first, so A's
+    // strong edge in front of P, read through P's row, is its pair's a-in-front option. Q, A, P:
+    // a completion only while that edge is not read as own-key.
+    let mut b = Build::new(true);
+    b.stroke(open(&[[-4.125, 0.0, 0.0], [4.0, 0.0, 0.0]]), WHITE, 1.5);
+    b.fill(
+        polygon(&[
+            [-6.0, -1.5, -3.0],
+            [6.0, -1.5, -3.0],
+            [6.0, 1.5, 3.0],
+            [-6.0, 1.5, 3.0],
+        ]),
+        OPAQUE_RED,
+    );
+    b.fill(
+        polygon(&[
+            [-6.0, -6.0, -1.25],
+            [6.0, -6.0, 1.75],
+            [6.0, 6.0, 1.75],
+            [-6.0, 6.0, -1.25],
+        ]),
+        OPAQUE_BLUE,
+    );
+    out.push(uncited_report(
+        "cycle_through_row_drawn_first",
+        "cycle_rank@2",
+        one(&b, view_c()),
+        (32, 30),
+        Samples::All,
+        vec![fill(2), stroke(0), fill(1)],
+    ));
     out
 }
 
