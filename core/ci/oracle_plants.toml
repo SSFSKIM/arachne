@@ -712,7 +712,7 @@ check = "stroke_on_own_fill@2: the nearer of the stroke's and its fill's keys"
 file = "core/oracle/src/pairs.rs"
 find = "        next[s] = on_own_fill(own[s], fill[s], fill_cover[s] == 2);\n"
 replace = ""
-red = ["contract::core_err_within_band"]
+red = ["contract::core_err_within_band", "contract::core_err_within_band_on_the_named_reads"]
 
 [[plant]]
 name = "colour-premultiply"
@@ -811,7 +811,7 @@ check = "the counterfactual sets offer the records that paint nothing"
 file = "core/oracle/src/decide.rs"
 find = "let with_invisible = (!extra.is_empty()).then("
 replace = "let with_invisible = (false && !extra.is_empty()).then("
-red = ["format_facts::the_edges_with_the_invisible_records_offered_admit_what_their_flat_identity_allows"]
+red = ["format_facts::the_edges_with_the_invisible_records_offered_admit_what_their_flat_identity_allows", "contract_mutation::mutation_depth_witnesses_fail_and_their_twins_agree"]
 
 [[plant]]
 name = "format-zero-alpha-flag"
