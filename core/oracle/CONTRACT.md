@@ -2677,7 +2677,10 @@ the thirds. A polygon's edges are such lines, its subpath closed.
   `x ∈ [(i − 32) / 4, (i − 31) / 4]`, `y ∈ [(31 − j) / 4, (32 − j) / 4]`.
 
 Every curve below is kept clear of `curve_recut`: each cubic's `L` lies at least 0.06 px from a step
-of its count, and no joint is near a flip, against `6ε̂` under `10^-5` px.
+of its count, and no joint is near a flip, against `6ε̂` under `10^-5` px. A witness on a coarser
+grid states its own `ε̂` and clears it. One exception is declared: a witness whose subject is a
+count step may put a cubic on one, and then says so and names the reads the step exposes. No other
+witness sits on a step.
 
 ### Mutations
 
@@ -3197,6 +3200,376 @@ frame. `L` of W5 with one more record in its facing group: a points record at `(
 `S` hold one order point, and the pair is open with cause `label`: the label expected in front,
 those samples counted `label_rule_open` with cause `label`. Rejects: reading the label by its
 path outlines alone, which makes no pair and counts nothing.
+
+**Read-path witnesses.** Each one pins a read that §2, §5, §6 or §7 states and an implementation
+can skip without failing any witness above. Each names its rule by the sentence it instantiates.
+Every cubic below clears its step by at least the 0.06 px the views require, except in
+`axis_tie_own_reads_recut`, which sits on a step by the views' declared exception. Where a key
+decides, the band edges clear that decision by the margin stated. Each case of the `ExactTie` rule
+has a witness: two `−∞` keys, W1; two flat fills on one axis plane, W2; two records on an axis
+plane by the axis rule alone, W17's second form and `axis_rule_exact_tie`; and the rule's sentence
+beyond its examples, `point_blocks_exact_tie`.
+
+**`pre_projected_unproject`.** Set: §2, pre-projected records, "Each shown point is put back by
+`unproject` and keyed there." View C, no `planes` codes, drawn in this order:
+
+- `T`, a pre-projected path (feature bit 1). Its tail is the closed outline through the shown
+  points `(1, −1.0625, 0)`, `(2, −2.125, 10)`, `(2, 2.125, 10)` and `(1, 1.0625, 0)`, each edge one
+  cubic written `[p, p, q, q]` (controls at its ends), fill red. Put back by `unproject`
+  (`s = 20 / (20 − z)`), every control point lies on `x = 1`, so its plane is the axis plane
+  `x = 1` in the camera's axes, keyed `−(X − 32) / 4` at screen `X`.
+- `W`, a polygon `[−5.5, 5.5]²` at `z = 4.5`, fill blue, keyed `−20/15.5 ≈ −1.29032`.
+
+Pixel `(38, 32)` is inside both (`T` spans screen `y` 25.6 to 38.4 there). At its 16 samples `T`
+keys between about `−1.74219` and `−1.50781`, nearer than `W` by at least `0.2175`. Trace: `T` is
+pre-projected, so it is never offered to the registry and has no shared plane and no
+`near_parallel@1`. There are no strokes, and the bands are under `10^-5`: `E = {strong T}`.
+Defect: at its 16 samples, `W` in front of `T`. Rejects: fitting the shown points as world points.
+That gives the plane `z = 10x − 10`, keyed between about `−1.24740` and `−1.16927` there, at least
+`0.0429` behind `W`, so `W` would be in front. Margins: `T`'s edges clear their steps by at least
+0.16 px, `W`'s by 0.77 px.
+
+**`pre_projected_point_block`.** Set: §2, pre-projected records, "Each shown point is put back by
+`unproject` and keyed there." With it, §5, `facing_plane@1`: "Every projected point of a `points`
+record is keyed on the facing plane through its own placed position." View C, drawn in this order:
+
+- a mesh triangle `(−4, −4, 5)`, `(4, −4, 5)`, `(0, 4, 5)`, fill red, keyed `−20/15 ≈ −1.3333`;
+- a pre-projected points record (feature bit 1) of one shown point `(0.125, 0.125, 0)`, radius
+  3 px, with no pivot, colour white. Put back by `unproject`, the point lies at `z = 0`, and the
+  facing plane through it keys `−1`.
+
+Pixel `(32, 31)` is in the point's block (pixels `31..33 × 30..32`) and well inside the triangle.
+Trace: a points record has no rows, and without a pivot it is no label (§10), so
+`E = {strong mesh}`, the keys `0.333` apart against bands under `10^-5`. Defect: at its 16
+samples, the point in front. Rejects: keying the pre-projected point `−∞`, in front of all depth.
+Margins: no curve is read; the triangle is a mesh and the point a block.
+
+**`pre_projected_pivot_moved`.** Set: §2, pre-projected records, "A fixed-orientation pivot is the
+pivot as produced, moved as the record's first point moved." With it, §5, `facing_plane@1`: "A
+pre-projected record with a pivot is keyed the same way, in its camera's axes, at its pivot", and
+for a point block its Points bullet, "keyed on the facing plane through its own placed position".
+View C. Two cases. In each, a pre-projected record with a pivot is a camera-facing label drawn
+otherwise (§10), so the label in front of the line is the only admissible order, and the label's
+key shows in whether a `mismatch` is counted `label_plate_model`.
+
+- **A path.** A pre-projected path record (feature bit 1) whose own shape is the square
+  `[−1.03125, 1.03125]²` at `z = 0`, placed by the identity, with a fixed-orientation pivot
+  `(0, 0, 0)`, fill white. Its tail is the same square moved to `z = 5`, shown at screen `27.875`
+  to `36.125` on both axes. Its first point moved by `(0, 0, 5)`, so its pivot is `(0, 0, 5)`, and
+  it keys `−20/15 ≈ −1.3333` on the facing plane there.
+- **A point block.** A pre-projected points record (feature bit 1) of one point, its own shape
+  `(0.125, 0.125, 0)`, with a fixed-orientation pivot at that point, radius 3 px, colour white. Its
+  tail is the point moved to `(0.125, 0.125, 5)`, so its pivot moves to `(0.125, 0.125, 5)`, and
+  its block covers pixels `31..33 × 30..32`. It keys `−1.3333`: on its moved pivot's facing plane,
+  and on the facing plane through its own position put back by `unproject`, which lies at the same
+  depth.
+
+In each case, the label is drawn first, then an open line from `(−3.1875, 0.125, 2.5)` to
+`(3.1875, 0.125, 2.5)`, stroke green, width `0.5` (2 px), keyed `−20/17.5 ≈ −1.14286`. The
+line's centreline lies at screen `y ≈ 31.43`, every sample of pixel `(32, 31)` within 0.55 px of
+it. Pixel `(32, 31)` is covered whole by both. Trace: a line never qualifies, so the label in front
+is the only admissible order. Defect: at its 16 samples, the line in front of the label. Expected:
+`mismatch` at the 16 samples, not counted `label_plate_model`. The plate model's order, with the
+label keyed `−1.3333`, puts the label in front, `0.190` nearer than the line against bands under
+`10^-5`. Rejects: keying the label at its pivot as carried, unmoved. That keys it `−1`, `0.143`
+behind the line, so the plate model's order is the line in front and the same report is counted
+`label_plate_model`. Margins: the square's edges are `8.25` px, 0.25 px from a step, and the
+line's `L ≈ 29.14` px lies 0.86 px from one.
+
+**`fixed_orientation_points`.** Set: §5, `facing_plane@1`, "A fixed-orientation record's fragments
+are keyed on the camera-facing plane through its centre. This covers paths, meshes and point
+blocks". View C. A points record of one point at `(0.125, 0.125, 0)`, radius 3 px, with a
+fixed-orientation centre at that point, colour white. It is a camera-facing label drawn otherwise
+(§10). It maps to `(32.5, 31.5)`, so its block covers pixels `31..33 × 30..32`, keyed `−1` on the
+facing plane `z = 0`. Then an open line from `(−3.1875, 0.125, 2)` to `(3.1875, 0.125, 2)`, stroke
+green, width `0.5` (2 px). The line keys `−20/18 ≈ −1.1111` and covers pixel `(32, 31)` whole, its
+centreline at screen `y ≈ 31.44`.
+
+- Trace: a line never qualifies, so the label in front is the only admissible order.
+- Verdict on the core this contract describes, which draws the nearer line over the block:
+  `mismatch` at the 16 samples, counted `label_plate_model`. The plate model's order, with the
+  block keyed `−1`, puts the line in front, the keys `0.111` apart against bands under `10^-5`. The
+  fixture holds the scene and that core's report; it needs no `defect.json`.
+- Rejects: keying the block `−∞`. The plate model's order would then be the block in front, and
+  the same report an uncounted `mismatch`.
+- Margins: the line's `L ≈ 28.33` px lies 0.33 px from a step.
+
+**`axis_rows_that_form`.** Set: §5, a path with no plane of its own on axis planes alone "keeps only
+the axis identities whose rows form. Where none forms, it has no identities." View C, no flat record,
+drawn in this order:
+
+- `B`, an open line from `(−3.0625, 0, 1 − 2^-8)` to `(3.0625, 0, 1 + 2^-8)`, stroke green, width
+  `0.75` (3 px). It holds `y = 0` alone.
+- `A`, an open line from `(−3.0625, 0, 0)` to `(3.0625, 0, 0)`, stroke white, width `0.75`. It
+  holds `y = 0` and `z = 0`.
+
+The axis plane `y = 0` passes through the eye (`D = 0`), so no row forms on it. `B` keeps no
+identity, `A` keeps `z = 0` alone, and the pair shares none. Pixel `(32, 31)` is covered by both
+strokes: their centrelines lie at screen `y = 32`, with bodies of 1.5 px. `A` keys `−1`, and `B`
+keys between about `−1.05285` and `−1.05242` along its length, nearer by at least `0.0524`. Trace:
+the two strokes share no plane, so `lines@1` applies. Its term fails by about `0.05`: `B`'s keys
+spread `4.4·10^-4` over its whole length, so every share is under `10^-3`. `E = {strong B}`.
+Defect: at its 16 samples, `A` in front, by paint order. Rejects: sharing `y = 0` by the axis rule
+though no row forms on it. That makes the pair an `ExactTie`, decided by paint order. Margins:
+`L = 24.5` (`A`) and `≈ 25.79` (`B`) px, 0.5 and 0.21 px from their steps.
+
+**`third_record_without_identity`.** Set: §7, the may-share set, "some flat registry-offered record
+`M` passes (1) with each of them". With it, §5, a flat triangle keyed on the screen "still took part
+in the partition and shaped the identities of others". View C, drawn in this order:
+
+- `T`, a mesh triangle `(1, 10^10, 5)`, `(1, −10^10, 5)`, `(1, 0, 15)`, fill `(0, 1, 0, 0.5)`. It
+  is flat on the axis plane `x = 1` and offered, every corner keyed planar. Its plane does not
+  key: at its first corner, `|D| / (|m| |q − (0, 0, d)|) ≈ 10^-10`, under `min_cos = 10^-9`. So it
+  is keyed on the screen plane through its corners and carries no identity.
+- `A`, an open line from `(1, −2.0625, 0)` to `(1, 2, 0)`, stroke white, width `0.5` (2 px).
+- `B`, an open line from `(1, −2.0625, −1)` to `(1, 2, −1)`, stroke blue, width `0.5`.
+
+Pixel `(35, 32)` is covered by both strokes, whose centrelines lie at screen `x = 36` and
+`x ≈ 35.81`. `T` holds no fragment there in the core's report: its nominal triangle starts at
+screen `x ≈ 37.33`. `T`'s corners make its screen shift large, so the oracle may find it `Either`
+far from its triangle, but an `Either` fragment counts only where the report holds it (§7). `A`
+keys `−1`, `B` `−20/21 ≈ −0.9524`. Trace: `A` and `B` have no plane of their own. `T` is a flat registry-offered
+record that passes the width test with each of them: all three lie in `x = 1`, so their union is 0
+wide. The pair may therefore share through a flat identity, and `E(A, B)` is every edge
+(`Policy(one_plane@1)`). Report: at its 16 samples, `A` in front of `B` by a strong relation.
+Expected: agreement. Rejects: requiring the third record to keep its identity. That leaves the pair
+to the axis rule on `x = 1`, where both lie with their first points equal: an `ExactTie` with `B`
+in front by paint order, and the report a `mismatch`. Margins: `L = 16.25` (`A`) and `≈ 15.48`
+(`B`) px, 0.25 and 0.52 px from their steps. `T`'s edges are past 126 px, on the clamped step.
+
+**`axis_rule_unless_attached`.** Set: §7, what may share admits, "Records with no plane of their
+own, by the axis rule alone ((3), and no flat record passes (1) with either)." With it, the
+may-share set's "some flat registry-offered record `M`", and §5's flat triangle keyed on the screen,
+which "still took part in the partition". View C, no `planes` codes, drawn in this order:
+
+- `T`, a mesh triangle `(2, 10^11, 0)`, `(2, −10^11, 0)`, `(1000, 0, 0)`, fill green. It is flat on
+  the axis plane `z = 0` and offered, every corner keyed planar. Its plane does not key: at its
+  first corner, `|D| / (|m| |q − (0, 0, d)|) ≈ 2·10^-10`, under `min_cos = 10^-9`. So it carries no
+  identity. Its nominal triangle starts at screen `x = 40`.
+- `B`, an open line from `(1, −2.0625, 0.5)` to `(1, 2, 0.5)`, stroke blue, width `0.75` (3 px).
+- `A`, an open line from `(1, −2.0625, 0)` to `(1, 2, 0)`, stroke white, width `0.75`.
+
+`A` holds the axis planes `x = 1` and `z = 0`, `B` holds `x = 1` and `z = 0.5`, so the axis rule
+(3) puts the pair on `x = 1`. `T` passes the width test (1) with `A`, both lying in `z = 0`, and
+fails it with `B`, which stands `0.5` off that plane against `2τ⁺ ≈ 1.8·10^-4`. A flat record
+passes (1) with one of the pair, so the pair is not one by the axis rule alone. Pixel `(35, 32)` is
+covered by both strokes, whose centrelines lie at screen `x = 36` and `x ≈ 36.10`, every sample
+within 1.07 px of each against bodies of 1.5 px. `T` holds no fragment there in the core's report.
+Its corners make its screen shift large, so the oracle may find it `Either` there, but an `Either`
+fragment counts only where the report holds it (§7). `A` keys `−1`, `B` `−20/19.5 ≈ −1.02564`.
+Trace:
+
+- Where `A` holds its axis planes, the two read their rows on `x = 1` at the sample, one
+  computation, and admit the weak edge.
+- Where the sets let `A` take an identity through `T`, it holds no axis plane, and the pair
+  shares none. Each reads its own key, and `B` is nearer by `0.0256`, past both intervals and past
+  `lines@1`'s term, whose shares are under `10^-6` on two lines of constant key.
+
+So `E = {weak, strong B}`. Report: at its 16 samples, `B` in front by a strong relation. Expected:
+agreement. Rejects: taking the pair by the axis rule alone because `T` keeps no identity. That
+leaves `E = {weak}`, `A` in front by paint order, and the report a `mismatch`. Margins:
+`L = 16.25` (`A`) and `≈ 16.67` (`B`) px, 0.25 and 0.67 px from their steps.
+
+**`own_fill_nearer`.** Set: §6, `S` by key, "A stroke adjusted on its own fill. Its interval
+encloses the nearer of its own key and the fill's under input motion", in both its cases: "where
+both cover certainly under input motion, from the nearer of the two intervals' near ends to the
+nearer of their far ends", and "where the fill's cover is `Either` (§4), from the nearer of the two
+near ends to the far end of the stroke's own interval". With it, §5, `stroke_on_own_fill@2`. View
+C, drawn in this order:
+
+- `P`, a polygon on `z = 4y` with corners `(−3.125, 0, 0)`, `(3.125, 0, 0)`, `(2.9375, 2.5, 10)`,
+  `(−2.9375, 2.5, 10)`. Its fill `F` is red. Its stroke `s` is white, of width 2 (8 px, a body of
+  4 px), drawn after its fill. On its plane `F` keys `−(1 + t/20)` at `t` px above the bottom edge
+  (screen `y = 32`), and `s`'s own key along that edge is `−1`.
+- `Q`, a polygon `[−5.5, 5.5]²` at the depth each case gives, fill blue.
+
+In both cases `E(F, s) = {weak}` (`own_layers@1`, the stroke over its fill), and in the paint order
+`F`, `s`, `Q` the order `F, Q, s` is admissible only where `E(s, Q)` admits `Q` in front: it comes
+from the cycle `F` over `Q`, `Q` over `s`, `s` over `F`, in which the weak own-layer edge yields.
+
+- **Both cover.** Input grid `2^-20`. `Q` at `z = 0.9375`, keyed `−20/19.0625 ≈ −1.04918`.
+  - Pixel `(32, 29)`. Its samples lie 2.03 to 2.97 px above `P`'s bottom edge, inside `F` and
+    within `s`'s body, and `P`'s other edges are farther than 4 px: both cover every sample
+    certainly. `F` keys between about `−1.14844` and `−1.10156`. `s`'s interval runs from `F`'s
+    near end to the nearer far end, `F`'s, and `Q` lies behind it by at least `0.0524`.
+  - Trace: `E(F, Q) = {strong F}` and `E(s, Q) = {strong s}`, so `s, F, Q` alone is admissible.
+  - Defect: at its 16 samples, the order `F, Q, s`.
+  - Rejects: the hull of the two intervals, which reaches `−1` and so admits `F, Q, s`.
+  - Margins: `P`'s edges clear their steps by at least 0.82 px, `Q`'s by 0.16 px.
+- **Fill `Either`.** Input grid `2^-6`, so `P`'s screen shift is `ε ≈ 0.113` px. `Q` at
+  `z = 5/64`, keyed `≈ −1.003922`, with an interval `±3.9·10^-4`.
+  - Pixel `(32, 31)`. Its bottom row of cells lies against `P`'s bottom edge, within `ε` of the
+    outline, where `μ_ε ≈ 2.35`: `F`'s cover there is `Either`, though those cells lie wholly
+    inside it, and the report holds `F`. The row above clears the outline by more than `ε` and is
+    `Yes`. Samples 12 and 13 lie in the bottom row, 0.156 and 0.219 px above the edge, where `F`
+    keys `−1.00781` and `−1.01094`, each `±0.0020`. `s`'s own interval is `−1 ± 7.8·10^-4`.
+  - At both samples `Q`'s interval lies behind `F`'s far end, by `0.0015` and `0.0046`, and its
+    near end lies in front of `s`'s own far end by `0.0051`.
+  - Trace: `E(F, Q) = {strong F}`. `s`'s interval runs to its own far end, so `E(s, Q)` is every
+    edge, and both `s, F, Q` and `F, Q, s` are admissible.
+  - Report: at samples 12 and 13, the order `F, Q, s`. Expected: agreement.
+  - Rejects: the both-cover enclosure taken where the fill's cover is `Either`. That ends `s`'s
+    interval at `F`'s far end, gives `E(s, Q) = {strong s}`, and makes the report a `mismatch`.
+  - Margins: every cubic of `P` clears its step by at least 0.82 px against `6ε̂ ≈ 0.68`, and each
+    of its joints lies more than 11 px from the pixel. `Q`'s edges clear their steps by 0.17 px.
+
+`R` is under `10^-5` in both cases, so it moves no edge.
+
+**`outside_hull_unbounded`.** Set: §6, `S` on a world plane, "Where a read lies outside `H` and
+`w_P <= 2 τ_P`, the bound is infinite." View C, drawn in this order:
+
+- `V`, a closed path through `(−3.0625, 0, 0)`, `(3.0625, 0, 0.0234375)`, `(3.0625, 0.03125, 0)` and
+  `(−3.0625, 0.03125, 0.0234375)`, `planes` code 6 (the axis plane `z` through its first point).
+  Fill red, stroke white of width `0.75` (3 px, a body of 1.5 px). Its points depart from `z = 0`
+  by up to `dep = 0.0234375`, so `τ = g/2 + dep ≈ 0.023438`. Its hull on that plane is `0.03125`
+  wide, so `w ≤ 2τ`, by `0.0156`.
+- `B`, a polygon `[−2.0625, 2] × [−1.0625, −0.015625]` at `z = 0`, fill blue.
+
+`V` and `B` may share an identity: their points' union is about `0.0234` wide, under
+`2τ⁺ ≈ 0.0469`. Pixel `(32, 32)` lies below `V`'s outline (screen `y = 32`), within its stroke's
+body, 0.03 to 0.97 px from that edge. `B` covers every sample there but sample 1, its edge lying at
+screen `y = 32.0625`. Trace: in the scenario where they share, `V`'s stroke reads its row on `V`'s
+plane at each of those samples. Each read lies outside `V`'s hull, so its `S` is infinite.
+Expected: `truth_unable`, class `band_unbounded`, at the 15 samples both cover. `V`'s own key along
+its curve stays bounded there: `ε` is under `10^-5` px, and every cubic of `V` and `B` clears its
+step by at least 0.19 px, so no read is `curve_recut`. Rejects: making `θ_P` infinite only at zero
+width. That bounds the read (`θ_P = 2τ / w ≈ 1.5`) and decides the pair.
+
+**`constant_key_overflow`.** Set: §6, unbounded keys, "Where `S` or `R` is infinite, the oracle
+states no bound". View C with the exponential option, focal distance 1 and input grid 0. A glyph
+square `[−1.5625, 1.5625]²` at `z = 400`, with a fixed-orientation centre `(0, 0, 400)`, fill
+white. Under the exponential option no facing plane keys, so every fragment takes the centre's own
+key, `−exp(400) ≈ −5.22·10^173`, which is finite. Its `R` includes the centre's `key_error`,
+`u (2 |f| + 4 f² / |d| r)`, where `f² = exp(800)` overflows. So `R` is infinite, and
+`S = (|o| + R) ds(0)` is not a number. Expected: `truth_unable`, class `band_unbounded`, at the 16
+samples of pixel `(32, 32)`. Rejects: taking a constant key's bound as finite whatever its terms,
+which reports a bounded key with no interval to admit. Margins: the square's edges are 12.5 px,
+0.5 px from a step.
+
+**`planeless_own_strokes`.** Set: §7, the may-share set, "Only flat records found identities, so
+two records with no plane of their own share one only through a flat record, (2), or by the axis
+rule, (3)." View C. One open line from `(−3.0625, 0.5, 0)` to `(3.0625, 0.5, 0)`, with a background
+stroke red of width 1 (4 px), a stroke white of width `0.75` (3 px) and no fill. Nothing else is
+drawn. Pixel `(32, 29)` is covered by both strokes, the centreline at screen `y = 30`. Trace: the
+two layers are not `own_layers@1`, since neither is the fill, and two strokes keep depth. There is
+no flat record, so they share only by the axis rule, each read on its row on `z = 0`. That is an
+`ExactTie`, `E = {weak}`, with the stroke in front by paint order. Defect: at its 16 samples, the
+background stroke in front by a strong relation. Rejects: counting the planeless record as its own
+flat third record, which admits every edge. Margins: `L = 24.5` px, 0.5 px from a step.
+
+**`axis_rule_exact_tie`.** Set: §7, the edges a pair admits, `ExactTie`: "both are records with no
+plane of their own sharing an axis plane by the axis rule alone, each read on its row on that plane
+at the sample". With it, what may share admits: "Two such rows read at one sample are one
+computation, so the pair is an `ExactTie` (§7) wherever both rows are read there." View C, no flat
+record, drawn in this order:
+
+- `R`, an open line from `(−3.0625, 0.25, 0)` to `(3.0625, 0.25, 0)`, stroke red, width `0.75`
+  (3 px);
+- `U`, an open line from `(−3.0625, 0.3125, 0)` to `(3.0625, 0.3125, 0)`, stroke blue, width
+  `0.75`.
+
+They share the axis plane `z = 0` alone, since their `y` planes differ, and no flat record is
+drawn, so the axis rule holds in every scenario. Pixel `(32, 30)` is covered by both: their
+centrelines lie at screen `y = 31` and `30.75`, every sample within 0.97 and 0.72 px of them
+against bodies of 1.5 px. Their own keys are `−1` too. Trace: `E = {weak}`, `U` in front. Defect: at
+its 16 samples, `R` in front by a strong relation. Rejects: taking the union over an own-key
+scenario, which no set allows here: two equal keys, whose intervals meet, admit every edge, the
+defect included. Margins: `L = 24.5` px for each, 0.5 px from a step.
+
+**`axis_tie_own_reads_recut`.** Set: §7, what may share admits, records with no plane of their own
+by the axis rule alone: "each reads its row on that plane at the sample, ... so the pair is an
+`ExactTie` (§7) wherever both rows are read there." With it, §6, `curve_recut`: "a read exposed to
+either is `truth_unable`, never bounded". This witness sits on a count step by the views' declared
+exception. View C with focal distance 10 and input grid 0, no flat record, drawn in this order:
+
+- `A`, an open path of the one cubic `(−2.25, 0, 0)`, `(−0.75, 0, 0)`, `(0.75, 0, 0)`,
+  `(2.25, 0, 0)`, stroke red, width `0.5` (2 px);
+- `B`, a second record of the same cubic, stroke blue, width `0.5`.
+
+Each holds the axis planes `y = 0` and `z = 0`. `y = 0` passes through the eye, so no row forms on
+it (§5), and the pair shares `z = 0` alone, where each row keys `−10/10 = −1`. Pixel `(32, 32)`
+is covered by both, its samples 0.03 to 0.97 px from the centreline at screen `y = 32`, against a
+body of 1 px.
+
+**The step it sits on.** The cubic's `L` is 18 px, exactly on the step between counts 9 and 10.
+Every read of either stroke's own key along the curve within `r` of the cubic's control hull is
+exposed: both strokes' own reads at the 16 samples and the pixel's centre are `curve_recut`. The
+rows on `z = 0` are plane reads and are not exposed.
+
+Trace: the axis rule holds in every scenario, so no scenario reads either own key, and the two rows
+are one computation: `E = {weak}`, label `ExactTie`, `B` in front. Defect: at its 16 samples, `A`
+in front by a strong relation. Expected: `mismatch` at the 16 samples, judged: none is
+`truth_unable`. Rejects: reading every fragment's own key before the pair's scenarios. That makes
+the samples `truth_unable` (`curve_recut`), though no scenario reads those keys.
+
+**`point_blocks_exact_tie`.** Set: §7, the edges a pair admits, `ExactTie`: "This applies where
+every scenario the sets allow gives the two keys bit for bit", and "These bullets are examples. The
+sentence above them is the rule, and any other pair whose keys are one computation in every
+scenario is an `ExactTie` too." View C with input grid 0, drawn in this order:
+
+- `red`, a points record of one point at `(0.125, −0.125, 0)`, radius 2 px, colour red;
+- `blue`, a second points record of the same point, radius 2 px, colour blue.
+
+Each point maps to `(32.5, 32.5)`, so each block covers pixels `32..33 × 32..33`. Point blocks have
+no rows (§5), and each is keyed on the facing plane through its own placed position, `z = 0`: one
+computation on the same input, `−1` in every scenario. Pixel `(32, 32)`. Trace: `E = {weak}`,
+`blue` in front. Defect: at its 16 samples, `red` in front by a strong relation. Rejects: deciding
+the pair by its intervals, which meet and admit every edge, the defect included.
+
+**A record between them.** The same two blocks, with `G` drawn between them: `red`, then `G`, a
+polygon `[−5.375, 5.375]²` at `z = −1`, fill green, then `blue`. `G` keys `−20/21 ≈ −0.95238`,
+`0.0476` behind the blocks, and shares no plane with them, since point blocks are never offered.
+Trace: `E(red, blue) = {weak}`, `blue` in front; `E(red, G) = {strong red}`;
+`E(G, blue) = {strong blue}`. The order `blue, red, G` alone is admissible. Defect: at its 16
+samples, the order `red, blue, G`. Expected: `mismatch`. Rejects: as above. Margins: `G`'s edges
+clear their steps by 0.95 px, and the blocks have no curve.
+
+**`shared_scenario_one_row`.** Set: §7, what may share admits for two flat records, "Shared: each
+reads its row, and the term is `within_term` with the snap shares". With it, §5,
+`shared_plane_read@1`: "Mesh triangles and point blocks have no rows; they are always read on their
+own." View C with input grid `2^-10`, drawn in this order:
+
+- `T`, a mesh triangle `(−5.75, −5.75, −2^-9)`, `(6, −5.75, 2^-9)`, `(6, 6, 2^-9)`, fill blue. It
+  is flat on `z = −2^-9 + s (x + 5.75)`, with `s = 2^-8 / 11.75 ≈ 3.32·10^-4`.
+- `P`, a polygon `[−5.75, 6]²` at `z = 0`, fill red.
+
+Pixel `(50, 32)` is inside both. At its samples, `T` is nearer than `P` by `7.3·10^-5` to
+`7.7·10^-5` in key.
+
+- Each interval's half-width is about `2.44·10^-5`: `S = |o| kr(P, g/2)`, with `R` under
+  `10^-6`. So the intervals part by at least `2.4·10^-5`.
+- The snap shares' term reaches about `9.8·10^-5`, which the gap stays under by at least
+  `2.0·10^-5`.
+- The pair may share: their union is about `0.00195` wide, under `2τ⁺ ≈ 0.00293`.
+- The pair is not near-parallel: `θ ≈ 3.32·10^-4`, against `θ_T⁻ + θ_P⁻ ≈ 1.66·10^-4`.
+
+Trace: not shared, each reads its own key, and plain depth gives `{strong T}`. Shared, `P` reads
+its row (its own plane at the sample) and `T` its own key, and `within_term` admits the weak edge.
+So `E = {strong T, weak}`. Report: at its 16 samples, `P` in front by paint order. Expected:
+agreement. Rejects: dropping the shared scenario because `T` has no row. That leaves
+`{strong T}` and makes the report a `mismatch`. Margins: `P`'s edges clear their steps by 1.0 px,
+`T`'s by 0.47 px.
+
+**`shared_scenario_no_row`.** Set: as `shared_scenario_one_row`, with neither record holding a row.
+§5, `shared_plane_read@1`: "Mesh triangles and point blocks have no rows; they are always read on
+their own." So in the shared scenario each reads its own key, and the term is `within_term` with
+the snap shares. View C with input grid `2^-10`, drawn in this order: `T` of
+`shared_scenario_one_row`, then `T1`, a mesh triangle `(−5.75, −5.75, 0)`, `(6, −5.75, 0)`,
+`(6, 6, 0)`, fill red. Pixel `(50, 32)` is inside both, chosen so that its gap sits near the
+middle of the first two thresholds below. `T1` keys as `P` did, with the same bound. Its three
+clearances:
+
+- the gap, `7.3·10^-5` to `7.7·10^-5`, clears the intervals' meeting point (at most `4.9·10^-5`,
+  `R` under `10^-6`) by at least `2.4·10^-5`;
+- it stays under the snap shares' term (at least `9.8·10^-5`) by at least `2.0·10^-5`;
+- the angle `θ ≈ 3.32·10^-4` clears `θ_T⁻ + θ_{T1}⁻ ≈ 1.66·10^-4` by `1.66·10^-4`, so the pair is
+  not near-parallel.
+
+The pair may share: their union is about `0.00195` wide, under `2τ⁺ ≈ 0.00293`. Trace: not shared,
+plain depth gives `{strong T}`. Shared, each reads its own key, and `within_term` admits the weak
+edge. So `E = {strong T, weak}`. Report: at its 16 samples, `T1` in front by paint order. Expected:
+agreement. Rejects: dropping the shared scenario because neither record has a row. That leaves
+`{strong T}` and makes the report a `mismatch`. Margins: no curve is read.
 
 ### Soundness fixtures
 
