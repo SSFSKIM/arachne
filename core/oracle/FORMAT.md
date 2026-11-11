@@ -122,7 +122,7 @@ key of `−∞`.
 ### `PAIR`
 
 ```
-u32 x  u32 y  u32 a  u32 b  u8 sample  u8 edges  u8 label  u8 provenance  u8 offered  3 bytes pad
+u32 x  u32 y  u32 a  u32 b  u8 sample  u8 edges  u8 label  u8 provenance  u8 offered  u8 plate  2 bytes pad
 ```
 
 Every pair of fragments present (`Yes` or `Either`) at a sample, `a < b` by fragment id (contract
@@ -145,12 +145,17 @@ Every pair of fragments present (`Yes` or `Either`) at a sample, `a < b` by frag
   nothing offered to the registry too (contract §5). Equal to `edges` where the frame has no such
   record. A reported order outside `edges`' admissible orders and inside `offered`'s is counted
   `invisible_registry_offer`.
+- **`plate`**: the pair's edges, in `edges`' bits, as the plate model orders it (§10,
+  `facing_plane@1`): where `a` or `b` belongs to a label (`FRAG` `label`), the same sets read from
+  the two keys without their input bound (`S⁻ = S⁺ = 0`, §6) and with no snap share in a
+  policy's term, since the core reads its keys from the inputs it holds; equal to `edges` for every
+  other pair. The plate model's orders at a sample are those its `plate` sets admit, where it ties
+  a set of more than one. A label 2^-30 behind a line at its depth is inside the snap, so `edges`
+  admits either order, and `plate` the label's in front alone.
 - **Admissible orders** of the fragments present at a sample are the ranks (`cycle_rank@1`) of the
   completions that pick one edge per pair; an order every pair agrees with is one. At a sample
-  that holds a label fragment (`FRAG` `label`), `PAIR` still holds every pair, the label's
-  included, as §7 reads them: these are the plate model's relations (§10, `facing_plane@1`), and
-  an order admissible under them is the plate model's order there. The label rule's order is read
-  through `LABL`.
+  that holds a label fragment, `PAIR` still holds every pair, the label's included, as §7 reads
+  them; the label rule's order is read through `LABL`.
 - An unbounded fragment (`FRAG` flag bit 0) has no rows and no pairs: it is `truth_unable`
   everywhere.
 
@@ -182,8 +187,10 @@ belongs to no label.
   as an anchor and not, and the orders of both readings are admitted. A sample where some row of a
   label is role 2 is counted `label_rule_open` under its causes, and one with a role-4 row is
   `label_alpha_straddle`: neither is a mismatch nor an agreement.
-- A reported order outside the label rule's orders and inside the plate model's (`PAIR`) is a
-  `mismatch` counted `label_plate_model`.
+- A reported order outside the label rule's orders that is one of the plate model's orders
+  (admitted by `PAIR`'s `plate` sets, as `edges` admit the ordinary ones) is a `mismatch` counted
+  `label_plate_model`; any other order outside them is a `mismatch`. Past the completion bound the
+  mismatch is certain and its name is not.
 
 ### `COLR`
 

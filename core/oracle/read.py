@@ -179,7 +179,8 @@ DTYPES = {
         ("label", "u1"),
         ("provenance", "u1"),
         ("offered", "u1"),
-        ("pad", "u1", (3,)),
+        ("plate", "u1"),
+        ("pad", "u1", (2,)),
     ],
     "LABL": [
         ("x", "<u4"),
@@ -212,7 +213,7 @@ _F16 = struct.Struct("<16d")
 _PIXL = struct.Struct("<QI")
 _REFU = struct.Struct("<3Bx3I2Q2I")
 _BAND_HEAD = struct.Struct("<3IB3x")
-_PAIR = struct.Struct("<4I5B3x")
+_PAIR = struct.Struct("<4I6B2x")
 _LABL = struct.Struct("<4I4B")
 _COLR = struct.Struct("<IB4s3x")
 _COLP = struct.Struct("<3I4s4s4x")
@@ -363,8 +364,8 @@ def read_bytes(b: bytes) -> dict:
     if "PAIR" in found:
         size, off, n = found["PAIR"]
         for i in range(n):
-            x, y, a, b_, sample, edges, label, provenance, offered = _PAIR.unpack_from(
-                b, off + i * size
+            x, y, a, b_, sample, edges, label, provenance, offered, plate = (
+                _PAIR.unpack_from(b, off + i * size)
             )
             out["pairs"].append(
                 {
@@ -378,6 +379,7 @@ def read_bytes(b: bytes) -> dict:
                     "label_name": LABEL.get(label, "unknown"),
                     "provenance": provenance,
                     "offered": offered,
+                    "plate": plate,
                 }
             )
     if "LABL" in found:
@@ -493,7 +495,7 @@ def canonical(d: dict) -> str:
     lines.extend(
         f"pair x={r['x']} y={r['y']} sample={r['sample']} a={r['a']} b={r['b']} "
         f"edges={r['edges']} label={r['label']} provenance={r['provenance']} "
-        f"offered={r['offered']}"
+        f"offered={r['offered']} plate={r['plate']}"
         for r in d["pairs"]
     )
     lines.extend(

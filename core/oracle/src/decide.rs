@@ -206,9 +206,11 @@ pub fn decide_with_labels(
         Scene::new(frags.clone(), all)
     });
     let scene = Scene::new(frags, offered);
+    let labelled: Vec<bool> = label_of.iter().map(|l| *l != NONE_U32).collect();
     let (bands, pairs) = pairs::frame(
         &scene,
         with_invisible.as_ref().unwrap_or(&scene),
+        &labelled,
         &mut covers,
     );
     let (colours, pixel_colours) = colours(&specs, &covers);

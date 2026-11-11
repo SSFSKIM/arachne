@@ -350,6 +350,45 @@ impl Scene {
         rb: &Reads,
         lines_share: (f64, f64),
     ) -> Result<PairAt, Unable> {
+        self.pair_with(a, b, ra, rb, lines_share, true)
+    }
+
+    /// The pair's edges as the plate model orders it (contract §10, `facing_plane@1`): the same
+    /// sets read from the keys without the input snap, which the core's own keys are, so that the
+    /// snap's shares in the policies' terms are 0 as well.
+    pub fn plate_pair(
+        &self,
+        a: usize,
+        b: usize,
+        ra: &Reads,
+        rb: &Reads,
+        lines_share: (f64, f64),
+    ) -> Result<PairAt, Unable> {
+        let unsnapped = |r: &Reads| {
+            let keep = |b: Band| Band {
+                s_minus: 0.0,
+                s_plus: 0.0,
+                ..b
+            };
+            Reads {
+                own: r.own.map(keep),
+                row: r.row.map(|w| w.map(keep)),
+                ..*r
+            }
+        };
+        self.pair_with(a, b, &unsnapped(ra), &unsnapped(rb), lines_share, false)
+    }
+
+    fn pair_with(
+        &self,
+        a: usize,
+        b: usize,
+        ra: &Reads,
+        rb: &Reads,
+        lines_share: (f64, f64),
+        snap: bool,
+    ) -> Result<PairAt, Unable> {
+        let snap_of = |o: &Offered| if snap { o.snap } else { 0.0 };
         let (fa, fb) = (&self.frags[a], &self.frags[b]);
         if own_layers(fa, fb) {
             return Ok(PairAt {
@@ -423,7 +462,7 @@ impl Scene {
                     if exact_axis(ra_, rb_) && wa.o == wb.o {
                         e = Edges::WEAK;
                         exact_rows = true;
-                    } else if policy_term(&wa, ra_.snap, &wb, rb_.snap) {
+                    } else if policy_term(&wa, snap_of(ra_), &wb, snap_of(rb_)) {
                         e.weak = true;
                         policy.get_or_insert(Label::OnePlane);
                     }
@@ -454,7 +493,7 @@ impl Scene {
                     && rb_.flat.is_some()
                     && !e.weak
                     && self.near_parallel_may(i, j)
-                    && policy_term(&oa, ra_.snap, &ob, rb_.snap)
+                    && policy_term(&oa, snap_of(ra_), &ob, snap_of(rb_))
                 {
                     e.weak = true;
                     policy.get_or_insert(Label::NearParallel);

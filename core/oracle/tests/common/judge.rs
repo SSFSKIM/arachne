@@ -70,21 +70,28 @@ pub fn ids(d: &Decisions) -> (HashMap<Identity, u32>, HashMap<Identity, u32>) {
     (live, zero)
 }
 
-fn edges_of(
-    d: &Decisions,
-    x: u32,
-    y: u32,
-    s: usize,
-    offered: bool,
-) -> HashMap<(u32, u32), (u8, u8)> {
+/// Which of `PAIR`'s edge sets an order is read against.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Set {
+    /// `edges`: the admissible orders.
+    Edges,
+    /// `offered`: with the records that paint nothing offered too.
+    Offered,
+    /// `plate`: the plate model's orders.
+    Plate,
+}
+
+fn edges_of(d: &Decisions, x: u32, y: u32, s: usize, set: Set) -> HashMap<(u32, u32), (u8, u8)> {
     d.pairs
         .iter()
         .filter(|p| (p.x, p.y, p.sample as usize) == (x, y, s))
         .map(|p| {
-            (
-                (p.a, p.b),
-                (if offered { p.offered } else { p.edges }, p.label),
-            )
+            let bits = match set {
+                Set::Edges => p.edges,
+                Set::Offered => p.offered,
+                Set::Plate => p.plate,
+            };
+            ((p.a, p.b), (bits, p.label))
         })
         .collect()
 }
@@ -97,9 +104,10 @@ fn edges(bits: u8) -> Edges {
     }
 }
 
-/// Whether `order` (fragment ids, front first) is admissible over its own fragments by `PAIR`.
-fn admits(d: &Decisions, x: u32, y: u32, s: usize, order: &[u32], offered: bool) -> Option<bool> {
-    let table = edges_of(d, x, y, s, offered);
+/// Whether `order` (fragment ids, front first) is admissible over its own fragments by `PAIR`'s
+/// `set`.
+fn admits(d: &Decisions, x: u32, y: u32, s: usize, order: &[u32], set: Set) -> Option<bool> {
+    let table = edges_of(d, x, y, s, set);
     let mut present: Vec<usize> = order.iter().map(|f| *f as usize).collect();
     present.sort();
     let frag = |i: usize| &d.fragments[i];
@@ -248,7 +256,7 @@ pub fn judge(d: &Decisions, rep: &Reported, s: usize) -> Verdict {
         .filter(|&&e| rep.entries[e].cells[s] > 0)
         .map(|&e| reported[e].unwrap())
         .collect();
-    let table = edges_of(d, x, y, s, false);
+    let table = edges_of(d, x, y, s, Set::Edges);
     if table.values().any(|(_, label)| *label == LABEL_UNABLE) {
         return Verdict::Unable("truth_unable");
     }
@@ -256,10 +264,10 @@ pub fn judge(d: &Decisions, rep: &Reported, s: usize) -> Verdict {
         .iter()
         .any(|f| d.fragments[*f as usize].label != NONE_U32);
     if !has_label {
-        return match admits(d, x, y, s, &order, false) {
+        return match admits(d, x, y, s, &order, Set::Edges) {
             Some(true) => Verdict::Agree,
             None => Verdict::Unable("completion_bound"),
-            Some(false) if admits(d, x, y, s, &order, true) == Some(true) => {
+            Some(false) if admits(d, x, y, s, &order, Set::Offered) == Some(true) => {
                 Verdict::Mismatch("invisible_registry_offer")
             }
             Some(false) => Verdict::Mismatch("mismatch"),
@@ -281,16 +289,16 @@ pub fn judge(d: &Decisions, rep: &Reported, s: usize) -> Verdict {
         .copied()
         .filter(|f| d.fragments[*f as usize].label == NONE_U32)
         .collect();
-    let Some(ordinary) = admits(d, x, y, s, &others, false) else {
+    let Some(ordinary) = admits(d, x, y, s, &others, Set::Edges) else {
         return Verdict::Unable("completion_bound");
     };
     if ordinary && label_orders(d, x, y, s, &order).contains(&order) {
         return Verdict::Agree;
     }
-    // Outside the label rule's orders. The plate model's orders are those `PAIR` admits with the
-    // label's pairs included: the test every other sample takes. Past the completion bound the
-    // mismatch is certain and its name is not.
-    match admits(d, x, y, s, &order, false) {
+    // Outside the label rule's orders. The plate model's orders are those `PAIR`'s `plate` sets
+    // admit, the label's pairs included. Past the completion bound the mismatch is certain and its
+    // name is not.
+    match admits(d, x, y, s, &order, Set::Plate) {
         Some(true) => Verdict::Mismatch("label_plate_model"),
         _ => Verdict::Mismatch("mismatch"),
     }

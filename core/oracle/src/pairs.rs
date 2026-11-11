@@ -98,6 +98,7 @@ fn on_own_fill(
 pub fn frame(
     scene: &Scene,
     offered: &Scene,
+    labelled: &[bool],
     covers: &mut [CoverRow],
 ) -> (Vec<BandRow>, Vec<PairRow>) {
     let mut bands = Vec::new();
@@ -109,7 +110,14 @@ pub fn frame(
         while i1 < covers.len() && covers[i1].x == x && covers[i1].y == y {
             i1 += 1;
         }
-        pixel(scene, offered, &mut covers[i0..i1], &mut bands, &mut pairs);
+        pixel(
+            scene,
+            offered,
+            labelled,
+            &mut covers[i0..i1],
+            &mut bands,
+            &mut pairs,
+        );
         i0 = i1;
     }
     (bands, pairs)
@@ -118,6 +126,7 @@ pub fn frame(
 fn pixel(
     scene: &Scene,
     offered: &Scene,
+    labelled: &[bool],
     rows: &mut [CoverRow],
     bands: &mut Vec<BandRow>,
     pairs: &mut Vec<PairRow>,
@@ -237,6 +246,15 @@ fn pixel(
                         Err(_) => 7,
                     }
                 };
+                // A label's pair as the plate model orders it; any other pair's sets are its own.
+                let plate = if labelled[frags[i]] || labelled[frags[j]] {
+                    match scene.plate_pair(frags[i], frags[j], &ra, &rb, shares_ij) {
+                        Ok(p) => p.edges.bits(),
+                        Err(_) => 7,
+                    }
+                } else {
+                    edges
+                };
                 pairs.push(PairRow {
                     x,
                     y,
@@ -247,6 +265,7 @@ fn pixel(
                     label,
                     provenance,
                     offered: with_invisible,
+                    plate,
                 });
             }
         }

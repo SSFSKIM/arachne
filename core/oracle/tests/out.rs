@@ -137,6 +137,7 @@ fn sample() -> Decisions {
                 label: 5,
                 provenance: 0,
                 offered: 7,
+                plate: 1,
             },
             PairRow {
                 x: 2,
@@ -148,6 +149,7 @@ fn sample() -> Decisions {
                 label: 6,
                 provenance: 4,
                 offered: 3,
+                plate: 6,
             },
         ],
         colours: vec![

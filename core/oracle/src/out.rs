@@ -154,6 +154,9 @@ pub struct PairRow {
     /// The pair's edges, in `edges`' bits, in the sets built with the records that paint nothing
     /// offered to the registry too (`invisible_registry_offer`, contract §5).
     pub offered: u8,
+    /// The pair's edges, in `edges`' bits, as the plate model orders it (`facing_plane@1`, the
+    /// keys without the input snap): `edges` where neither fragment belongs to a label.
+    pub plate: u8,
 }
 
 /// A label's role toward a fragment at one sample (`LABL`): the label's placement facts (contract
@@ -327,7 +330,7 @@ pub fn write(d: &Decisions) -> Vec<u8> {
     for r in &d.pairs {
         u32s(&mut pair, &[r.x, r.y, r.a, r.b]);
         pair.extend([r.sample, r.edges, r.label, r.provenance]);
-        pair.extend([r.offered, 0, 0, 0]);
+        pair.extend([r.offered, r.plate, 0, 0]);
     }
     let mut colr = Vec::with_capacity(d.colours.len() * COLOUR_SIZE);
     for r in &d.colours {
@@ -626,6 +629,7 @@ pub fn read(b: &[u8]) -> Result<Decisions, String> {
                 label: r.u8()?,
                 provenance: r.u8()?,
                 offered: r.u8()?,
+                plate: r.u8()?,
             });
         }
     }
@@ -811,8 +815,8 @@ pub fn canonical(d: &Decisions) -> String {
     for r in &d.pairs {
         let _ = writeln!(
             s,
-            "pair x={} y={} sample={} a={} b={} edges={} label={} provenance={} offered={}",
-            r.x, r.y, r.sample, r.a, r.b, r.edges, r.label, r.provenance, r.offered
+            "pair x={} y={} sample={} a={} b={} edges={} label={} provenance={} offered={} plate={}",
+            r.x, r.y, r.sample, r.a, r.b, r.edges, r.label, r.provenance, r.offered, r.plate
         );
     }
     for r in &d.labels {
