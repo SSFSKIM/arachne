@@ -1,5 +1,6 @@
 """The plant runner, and its anchor check, fail a plant that does not apply:
-``python3 core/ci/test_oracle_plants.py``."""
+``python3 core/ci/test_oracle_plants.py``.
+"""
 
 from __future__ import annotations
 
@@ -96,7 +97,10 @@ def test_the_anchor_check_fails_a_plant_whose_text_is_gone_by_name() -> None:
 def test_the_anchor_check_fails_a_plant_whose_text_occurs_twice_by_name() -> None:
     code, out = anchors(plant("real", "true"), plant("twice", "e"))
     assert code == 1, out
-    assert "STALE twice [§0] a check: its text occurs 2 times in core/oracle/src/lib.rs" in out
+    assert (
+        "STALE twice [§0] a check: its text occurs 2 times in core/oracle/src/lib.rs"
+        in out
+    )
     assert out.rstrip().endswith("anchors: 1 of 2 plants do not apply"), out
 
 
