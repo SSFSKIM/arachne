@@ -225,7 +225,7 @@ fn pixel(
                 };
                 let (edges, label, provenance) =
                     match scene.pair(frags[i], frags[j], &ra, &rb, shares_ij) {
-                        Ok(p) => (p.edges.bits(), p.label.code(), p.via_row.bits()),
+                        Ok(p) => (p.edges.bits(), p.label.code(), p.provenance()),
                         Err(_) => (7, LABEL_UNABLE, 0),
                     };
                 // With nothing more offered, the sets are the same ones.

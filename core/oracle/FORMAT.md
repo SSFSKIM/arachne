@@ -133,12 +133,14 @@ Every pair of fragments present (`Yes` or `Either`) at a sample, `a < b` by frag
 - **`label`**: 1 `Depth(a)`, 2 `Depth(b)`, 3 `TieBand`, 4 `ExactTie`, 5 `own_layers@1`,
   6 `one_plane@1`, 7 `lines@1`, 8 `near_parallel@1`; 0 where a read of either is not bounded
   (`truth_unable`, every edge).
-- **`provenance`**: of `edges`' strong bits (1 and 2, never bit 0), those that some scenario reads
-  through a §5 row read: the pair's rows on a plane they may share (`shared_plane_read@1`), or a
-  flat identity a record with no plane of its own may share (`one_plane@1`). A strong edge whose
-  bit is clear is read from the two fragments' own keys alone (each one number at the sample,
-  `stroke_on_own_fill@1` included). The completions rule that discards an own-key strong cycle
-  reads it.
+- **`provenance`**: how each strong edge is read, a two-bit code for each: bits 0–1 the edge of
+  `a` in front (`edges` bit 1), bits 2–3 that of `b` in front (`edges` bit 2). 0 *own keys*: every
+  scenario that admits the edge reads both fragments at their own keys (each one number at the
+  sample, `stroke_on_own_fill@1` included), or `edges` holds no such edge; 1 *row read*: some
+  scenario admits it through the pair's rows on a plane they may share (`shared_plane_read@1`);
+  2 *flat identity*: the pair may share a flat identity with a record of no plane of its own
+  (`one_plane@1`, every edge). 3 is not written. The completions rule that discards a strong cycle
+  of own-key edges reads it.
 - **`offered`**: the pair's edges, in `edges`' bits, in the sets built with the records that paint
   nothing offered to the registry too (contract §5). Equal to `edges` where the frame has no such
   record. A reported order outside `edges`' admissible orders and inside `offered`'s is counted

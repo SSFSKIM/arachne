@@ -34,18 +34,33 @@ fn pairs_at(d: &Decisions, x: u32, y: u32, a: u32, b: u32) -> Vec<&PairRow> {
 const FILL: u8 = 1;
 const STROKE: u8 = 2;
 const MESH: u8 = 3;
+const ROW_GAP: f64 = 1.0 / 1_048_576.0;
+
+/// `PAIR`'s provenance codes, `a` in front's then `b` in front's.
+fn via(p: &PairRow) -> (u8, u8) {
+    (p.provenance & 3, p.provenance >> 2)
+}
 
 #[test]
-fn a_strong_edge_read_through_a_shared_identity_is_marked_and_one_from_own_keys_is_not() {
+fn each_strong_edge_names_how_it_is_read() {
     // A flat square on z = 0 and a line lying in it: the line has no plane of its own and may
-    // share the square's flat identity, so every edge is admitted, its strong ones through the row
-    // read (`one_plane@1`).
+    // share the square's flat identity, so every edge is admitted, its strong ones through that
+    // identity (`one_plane@1`): code 2.
     let mut b = Build::new(true);
     b.fill(rect([-6.0, 6.0], [-6.0, 6.0], 0.0), OPAQUE_BLUE);
     b.stroke(open(&[[-3.1875, 0.0, 0.0], [3.1875, 0.0, 0.0]]), WHITE, 0.5);
     let d = decide(&b, view_c());
     for p in pairs_at(&d, 32, 31, id_of(&d, 0, FILL), id_of(&d, 1, STROKE)) {
-        assert_eq!((p.label, p.edges, p.provenance), (6, 7, 6), "{p:?}");
+        assert_eq!((p.label, p.edges, via(p)), (6, 7, (2, 2)), "{p:?}");
+    }
+    // Two flat squares a hair apart: they may share a plane, and the shared scenario reads each
+    // one's row there (`shared_plane_read@1`): code 1.
+    let mut b = Build::new(true);
+    b.fill(rect([-6.0, 6.0], [-6.0, 6.0], 0.0), OPAQUE_BLUE);
+    b.fill(rect([-6.0, 6.0], [-6.0, 6.0], ROW_GAP), OPAQUE_RED);
+    let d = decide(&b, view_c());
+    for p in pairs_at(&d, 32, 31, id_of(&d, 0, FILL), id_of(&d, 1, FILL)) {
+        assert_eq!((p.label, p.edges, via(p)), (3, 7, (1, 1)), "{p:?}");
     }
     // W4's surfaces: no shared plane, so the strong edge is read from the own keys alone.
     let mut b = Build::new(true);
@@ -66,7 +81,7 @@ fn a_strong_edge_read_through_a_shared_identity_is_marked_and_one_from_own_keys_
     let d = decide(&b, view_c());
     let (t, q) = (id_of(&d, 0, MESH), id_of(&d, 1, FILL));
     for p in pairs_at(&d, 36, 32, t, q) {
-        assert_eq!((p.label, p.edges, p.provenance), (2, 4, 0), "{p:?}");
+        assert_eq!((p.label, p.edges, via(p)), (2, 4, (0, 0)), "{p:?}");
     }
 }
 

@@ -148,8 +148,8 @@ pub struct PairRow {
     /// 0 `truth_unable`, 1 `Depth(a)`, 2 `Depth(b)`, 3 `TieBand`, 4 `ExactTie`, 5 `own_layers@1`,
     /// 6 `one_plane@1`, 7 `lines@1`, 8 `near_parallel@1`.
     pub label: u8,
-    /// Of `edges`' strong bits (1 and 2), those some scenario reads through a §5 row read; a
-    /// strong edge whose bit is clear here is read from the two fragments' own keys alone.
+    /// How each strong edge is read ([`crate::order::Via`]'s code): `a` in front's in bits 0–1,
+    /// `b` in front's in bits 2–3.
     pub provenance: u8,
     /// The pair's edges, in `edges`' bits, in the sets built with the records that paint nothing
     /// offered to the registry too (`invisible_registry_offer`, contract §5).

@@ -137,15 +137,43 @@ pub struct Reads {
     pub at_sample: bool,
 }
 
+/// How a strong edge is read (contract §7, the completions rule): from the two fragments' own
+/// keys in every scenario that admits it, or by one of the two reads that are not.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Via {
+    /// Every scenario admitting it reads both fragments at their own keys, or no edge.
+    #[default]
+    Own,
+    /// Some scenario admits it through a §5 row read (`shared_plane_read@1`).
+    Row,
+    /// The pair may share a flat identity with a record of no plane of its own (`one_plane@1`).
+    Flat,
+}
+
+impl Via {
+    pub fn code(self) -> u8 {
+        match self {
+            Via::Own => 0,
+            Via::Row => 1,
+            Via::Flat => 2,
+        }
+    }
+}
+
 /// A pair's verdict at a sample.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PairAt {
     pub edges: Edges,
     pub label: Label,
-    /// Which of its strong edges some scenario reads through a §5 row read (a shared plane's row,
-    /// or a flat identity it may share): `a_front` and `b_front` only, never `weak`. A strong edge
-    /// not set here is read from the two fragments' own keys alone.
-    pub via_row: Edges,
+    /// How its strong edges are read: `a_front`'s, then `b_front`'s.
+    pub via: [Via; 2],
+}
+
+impl PairAt {
+    /// `PAIR`'s `provenance`: `a_front`'s code in bits 0–1, `b_front`'s in bits 2–3.
+    pub fn provenance(&self) -> u8 {
+        self.via[0].code() | self.via[1].code() << 2
+    }
 }
 
 /// `|o_a − o_b| <= β_a + β_b + (|o_a| + 2R_a) s_a + (|o_b| + 2R_b) s_b`: a policy may hold.
@@ -327,7 +355,7 @@ impl Scene {
             return Ok(PairAt {
                 edges: Edges::WEAK,
                 label: Label::OwnLayers,
-                via_row: Edges::default(),
+                via: [Via::Own; 2],
             });
         }
         let oa = ra.own?;
@@ -336,7 +364,7 @@ impl Scene {
             return Ok(PairAt {
                 edges: Edges::WEAK,
                 label: Label::ExactTie,
-                via_row: Edges::default(),
+                via: [Via::Own; 2],
             });
         }
         let (ia, ib) = (fa.offered, fb.offered);
@@ -348,10 +376,7 @@ impl Scene {
                 return Ok(PairAt {
                     edges: Edges::ALL,
                     label: Label::OnePlane,
-                    via_row: Edges {
-                        weak: false,
-                        ..Edges::ALL
-                    },
+                    via: [Via::Flat; 2],
                 });
             }
         }
@@ -369,7 +394,7 @@ impl Scene {
                 return Ok(PairAt {
                     edges: Edges::WEAK,
                     label: Label::ExactTie,
-                    via_row: Edges::default(),
+                    via: [Via::Own; 2],
                 });
             }
         }
@@ -379,7 +404,7 @@ impl Scene {
         let mut exact_rows = false;
         let mut policy: Option<Label> = None;
         let mut not_shared = true;
-        let mut via_row = Edges::default();
+        let mut via = [Via::Own; 2];
         if let Some((i, j)) = both {
             let (ra_, rb_) = (&self.offered[i], &self.offered[j]);
             if ra_.flat.is_some() && rb_.flat.is_some() && self.may_share_flat(i, j) {
@@ -394,7 +419,11 @@ impl Scene {
                         policy.get_or_insert(Label::OnePlane);
                     }
                     tie_meet |= meet(&wa, &wb);
-                    via_row = via_row.union(Edges { weak: false, ..e });
+                    for (v, strong) in via.iter_mut().zip([e.a_front, e.b_front]) {
+                        if strong {
+                            *v = Via::Row;
+                        }
+                    }
                     edges = edges.union(e);
                 } else if let (Some(Err(u)), _) | (_, Some(Err(u))) = (ra.row, rb.row) {
                     return Err(u);
@@ -442,11 +471,7 @@ impl Scene {
         } else {
             policy.unwrap_or(Label::TieBand)
         };
-        Ok(PairAt {
-            edges,
-            label,
-            via_row,
-        })
+        Ok(PairAt { edges, label, via })
     }
 }
 

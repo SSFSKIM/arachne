@@ -789,11 +789,20 @@ red = ["label_classes::a_record_s_paths_agree_or_it_is_open"]
 [[plant]]
 name = "format-provenance-one-plane"
 item = "§7"
-check = "a strong edge admitted through a flat identity is marked as a row read"
+check = "a strong edge admitted through a flat identity is named as that, not as a shared plane's row read"
 file = "core/oracle/src/order.rs"
-find = "                    via_row: Edges {\n                        weak: false,\n                        ..Edges::ALL\n                    },"
-replace = "                    via_row: Edges::default(),"
-red = ["format_facts::a_strong_edge_read_through_a_shared_identity_is_marked_and_one_from_own_keys_is_not"]
+find = "                    via: [Via::Flat; 2],"
+replace = "                    via: [Via::Row; 2],"
+red = ["format_facts::each_strong_edge_names_how_it_is_read"]
+
+[[plant]]
+name = "format-provenance-row-read"
+item = "§7"
+check = "a strong edge some shared-plane scenario admits through its rows is not read as own-key"
+file = "core/oracle/src/order.rs"
+find = "                            *v = Via::Row;"
+replace = "                            *v = Via::Own;"
+red = ["format_facts::each_strong_edge_names_how_it_is_read"]
 
 [[plant]]
 name = "format-offered-invisible"
