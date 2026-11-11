@@ -119,7 +119,12 @@ key of `−∞`.
   the taken one where the fill's cover is `Either`, and every sample of it at the pixel unable
   where an adjusted read is);
   1, its row on its record's plane (`shared_plane_read@1`), read against a fragment that may share
-  it. A fragment has at most one of each at a pixel, its own first.
+  it;
+  2, a stroke adjusted on its own fill: its own key unadjusted, at the samples where it is adjusted
+  and the fill's cover is `Either` (status 0 elsewhere), the key the core may keep there
+  (`stroke_on_own_fill@2`). The soundness test of `R` passes the core's key within `2R` of this
+  key or of the own row's, `R` the own row's.
+  A fragment has at most one of each at a pixel, in that order.
 - **`status[s]`**: 0 absent, 1 bounded, 2 `band_unbounded`, 3 `curve_recut` (the sample is
   `truth_unable`, contract §6), 4 `pivot_unknown` (`truth_unable` too: a pre-projected record's
   pivot moves as its first point moved, §2, and the record or its tail has none). The floats are

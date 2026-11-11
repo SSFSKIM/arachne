@@ -1334,3 +1334,21 @@ file = "core/oracle/tests/common/judge.rs"
 find = "            if let Some(name) = own.and_then(|b| unable_status(b.status[s])) {"
 replace = "            if let Some(name) = own.and(None::<&'static str>) {"
 red = ["judge::a_lone_fragment_whose_key_states_no_bound_is_unable_not_agreement"]
+
+[[plant]]
+name = "either-two-keys"
+item = "§6"
+check = "the soundness test of R passes a stroke's key over an Either fill within 2R of either key"
+file = "core/oracle/tests/contract.rs"
+find = "    let two = unadjusted.filter(|u| own.status[s] == 1 && u.status[s] == 1);"
+replace = "    let two = unadjusted.filter(|_| false);"
+red = ["contract::over_an_either_fill_a_stroke_s_key_passes_within_2r_of_either_key"]
+
+[[plant]]
+name = "unadjusted-row-written"
+item = "§5"
+check = "BAND writes an adjusted stroke's own key unadjusted where its fill's cover is Either"
+file = "core/oracle/src/pairs.rs"
+find = "            bands.push(band_row(x, y, r.fragment, 2, either, before));"
+replace = "            let _ = (either, before);"
+red = ["pair_rules::over_an_either_fill_an_adjusted_stroke_s_own_key_is_written_unadjusted"]

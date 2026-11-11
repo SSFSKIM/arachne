@@ -100,8 +100,10 @@ pub struct CoverRow {
     pub band: [f64; 16],
 }
 
-/// One fragment's band at one pixel, on its own row (`which` 0) or its row on its record's plane
-/// (`which` 1): `I = [o − S⁻ − 3R, o + S⁺ + 3R]` at each sample.
+/// One fragment's band at one pixel, on its own row (`which` 0), its row on its record's plane
+/// (`which` 1), or, for a stroke adjusted on its own fill, its own key unadjusted at the samples
+/// where the fill's cover is `Either` (`which` 2): `I = [o − S⁻ − 3R, o + S⁺ + 3R]` at each
+/// sample.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BandRow {
     pub x: u32,

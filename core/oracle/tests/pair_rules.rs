@@ -255,6 +255,65 @@ fn a_stroke_adjusted_on_its_own_fill_ends_at_the_nearer_far_end_where_both_cover
 }
 
 #[test]
+fn over_an_either_fill_an_adjusted_stroke_s_own_key_is_written_unadjusted() {
+    // §5 `stroke_on_own_fill@2`: where the fill's cover is `Either`, the core may keep the
+    // stroke's own key, which `BAND` writes unadjusted on the stroke's `which` 2 row there, and
+    // nowhere else. A square on z = x / 2 (its plane, the fill's key, nearer than the stroke's
+    // curve on one side), stroked 1 wide, on a grid of 0.05: its edge samples are `Either`.
+    let mut b = Build::new(true);
+    let r = b.fill(
+        polygon(&[
+            [-3.0, -3.0, -1.5],
+            [3.0, -3.0, 1.5],
+            [3.0, 3.0, 1.5],
+            [-3.0, 3.0, -1.5],
+        ]),
+        OPAQUE_BLUE,
+    );
+    r.paint.stroke = Paint::One(WHITE);
+    r.paint.stroke_width = 1.0;
+    let d = decide(
+        &b,
+        View {
+            input_grid: 0.05,
+            ..view(20.0)
+        },
+    );
+    let (fill, stroke) = (id_of(&d, 0, 1), id_of(&d, 0, 2));
+    let cover = |f: u32, x: u32, y: u32| {
+        d.covers
+            .iter()
+            .find(|c| (c.fragment, c.x, c.y) == (f, x, y))
+            .map_or([0; 16], |c| c.cover)
+    };
+    let mut written = 0;
+    for row in d
+        .bands
+        .iter()
+        .filter(|b| b.fragment == stroke && b.which == 0)
+    {
+        let (cs, cf) = (cover(stroke, row.x, row.y), cover(fill, row.x, row.y));
+        let two = d
+            .bands
+            .iter()
+            .find(|b| (b.fragment, b.x, b.y, b.which) == (stroke, row.x, row.y, 2));
+        for k in 0..16 {
+            let either = cs[k] != 0 && cf[k] == 2;
+            let at = format!("({}, {}) sample {k}", row.x, row.y);
+            match two {
+                Some(t) if either => {
+                    assert_ne!(t.status[k], 0, "{at}");
+                    written += 1;
+                }
+                Some(t) => assert_eq!(t.status[k], 0, "{at}"),
+                None => assert!(!either, "{at}: no unadjusted row"),
+            }
+        }
+    }
+    assert!(written > 0, "no sample over an Either fill");
+}
+
+#[test]
 fn two_flat_triangles_that_may_share_tie_within_term_though_neither_has_a_row() {
     // §7, two flat records that may share: in the shared scenario each reads its row, a triangle
     // its own key (it has none, §5), and the term is `within_term` with the snap shares. At focal

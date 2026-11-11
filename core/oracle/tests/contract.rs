@@ -89,6 +89,85 @@ struct Tally {
     own: usize,
     plane: usize,
     unmatched: usize,
+    /// Own reads of a stroke adjusted on its own fill where the fill's cover is `Either`: those the
+    /// stroke's own unadjusted key explains, and those the key it takes does.
+    either_own: usize,
+    either_taken: usize,
+}
+
+/// Which of an adjusted stroke's two keys over an `Either` fill a core's key matched.
+#[derive(Debug, PartialEq)]
+enum Candidate {
+    Taken,
+    Own,
+}
+
+/// The check of an own read against its row `own` at sample `s` (§6's soundness test of `R`),
+/// with `unadjusted` the stroke's own unadjusted key's row where it is adjusted on its own fill
+/// and the fill's cover is `Either`: there the key passes within `2R` of either key, `R` the
+/// row's (the Either bound). `Ok` names the key matched where there are two.
+fn check_own(
+    depth: f64,
+    err: f64,
+    own: &BandRow,
+    unadjusted: Option<&BandRow>,
+    s: usize,
+) -> Result<Option<Candidate>, &'static str> {
+    let two = unadjusted.filter(|u| own.status[s] == 1 && u.status[s] == 1);
+    match (check_read(depth, err, own, s), two) {
+        (None, None) => Ok(None),
+        (None, Some(_)) => Ok(Some(Candidate::Taken)),
+        (Some("key beyond 2R"), Some(u)) => {
+            let near = (depth - u.o[s]).abs().partial_cmp(&(2.0 * own.r[s]));
+            if near.is_some_and(|c| c.is_le()) {
+                Ok(Some(Candidate::Own))
+            } else {
+                Err("key beyond 2R")
+            }
+        }
+        (Some(what), _) => Err(what),
+    }
+}
+
+#[test]
+fn over_an_either_fill_a_stroke_s_key_passes_within_2r_of_either_key() {
+    // §6, the soundness test of `R`, a stroke adjusted on its own fill: where the fill's cover is
+    // `Either`, the core's key passes within `2R` of the stroke's own unadjusted key or of the key
+    // it takes. The taken key −1.0592 (the fill's), R 5e-8; the stroke's own −1.05916.
+    let row = |which: u8, o: f64| BandRow {
+        x: 0,
+        y: 0,
+        fragment: 0,
+        which,
+        o: [o; 16],
+        r: [5e-8; 16],
+        s_minus: [0.0; 16],
+        s_plus: [1e-5; 16],
+        status: [1; 16],
+    };
+    let (own, unadjusted) = (row(0, -1.0592), row(2, -1.05916));
+    assert_eq!(
+        check_own(-1.05916, 5e-8, &own, Some(&unadjusted), 0),
+        Ok(Some(Candidate::Own))
+    );
+    assert_eq!(
+        check_own(-1.0592, 5e-8, &own, Some(&unadjusted), 0),
+        Ok(Some(Candidate::Taken))
+    );
+    // Neither key: an excess; and where the fill covers certainly there is one key.
+    assert_eq!(
+        check_own(-1.0594, 5e-8, &own, Some(&unadjusted), 0),
+        Err("key beyond 2R")
+    );
+    assert_eq!(
+        check_own(-1.05916, 5e-8, &own, None, 0),
+        Err("key beyond 2R")
+    );
+    // The bound is checked as before.
+    assert_eq!(
+        check_own(-1.05916, 1e-7, &own, Some(&unadjusted), 0),
+        Err("err above R")
+    );
 }
 
 fn excesses_of(
@@ -140,13 +219,17 @@ fn excesses_of(
             let Some(own) = bands.get(&(*x, *y, f, 0)) else {
                 continue;
             };
+            let unadjusted = bands.get(&(*x, *y, f, 2)).copied();
             for s in 0..16 {
                 if en.coverage[s] == 0 {
                     continue;
                 }
                 tally.own += 1;
-                if let Some(what) = check_read(r.depths[e][s], r.err[e], own, s) {
-                    push(s, "own", what, (r.depths[e][s], r.err[e]), own);
+                match check_own(r.depths[e][s], r.err[e], own, unadjusted, s) {
+                    Ok(Some(Candidate::Own)) => tally.either_own += 1,
+                    Ok(Some(Candidate::Taken)) => tally.either_taken += 1,
+                    Ok(None) => {}
+                    Err(what) => push(s, "own", what, (r.depths[e][s], r.err[e]), own),
                 }
             }
         }
@@ -456,6 +539,9 @@ struct Measures {
     /// fill `Either`).
     labels: BTreeMap<u8, usize>,
     on_fill: (usize, usize),
+    /// Own reads over an `Either` fill that the stroke's own key explains, and that the taken key
+    /// does.
+    either_kept: (usize, usize),
 }
 
 fn measure(m: &mut Measures, d: &Decisions, excess: usize, tally: &Tally) {
@@ -464,6 +550,8 @@ fn measure(m: &mut Measures, d: &Decisions, excess: usize, tally: &Tally) {
     m.excess += excess;
     m.own_reads += tally.own;
     m.plane_reads += tally.plane;
+    m.either_kept.0 += tally.either_own;
+    m.either_kept.1 += tally.either_taken;
     let frag = |i: u32| &d.fragments[i as usize];
     let mut pairs: HashMap<(u32, u32, u8), Vec<&arachne_oracle::out::PairRow>> = HashMap::new();
     for p in &d.pairs {
@@ -475,7 +563,7 @@ fn measure(m: &mut Measures, d: &Decisions, excess: usize, tally: &Tally) {
         labl.entry((r.x, r.y, r.sample)).or_default().push(r);
     }
     let mut status: HashMap<(u32, u32, u32), Vec<[u8; 16]>> = HashMap::new();
-    for b in &d.bands {
+    for b in d.bands.iter().filter(|b| b.which != 2) {
         status
             .entry((b.x, b.y, b.fragment))
             .or_default()

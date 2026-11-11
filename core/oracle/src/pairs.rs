@@ -198,8 +198,10 @@ fn pixel(
         .iter()
         .map(|f| scene.frags[*f].model.pixel(px, py, false))
         .collect();
-    // Where a stroke's own key is adjusted on its own fill.
+    // Where a stroke's own key is adjusted on its own fill, and, where the fill's cover is
+    // `Either` there, its own key unadjusted: the core may keep it (§5, `stroke_on_own_fill@2`).
     let mut on_fill = vec![[false; 16]; rows.len()];
+    let mut unadjusted: Vec<Option<([u8; 16], SampleBands)>> = vec![None; rows.len()];
     let row: Vec<Option<[Result<Band, Unable>; 16]>> = frags
         .iter()
         .map(|f| scene.frags[*f].row.as_ref().map(|m| m.pixel(px, py, true)))
@@ -223,6 +225,11 @@ fn pixel(
         if let Some((next, adjusted)) =
             on_own_fill_pixel(&own[i], &own[j], &rows[i].cover, &rows[j].cover)
         {
+            let either: [u8; 16] =
+                std::array::from_fn(|s| (adjusted[s] && rows[j].cover[s] == 2) as u8);
+            if either.contains(&1) {
+                unadjusted[i] = Some((either, own[i]));
+            }
             own[i] = next;
             on_fill[i] = adjusted;
         }
@@ -239,6 +246,9 @@ fn pixel(
         bands.push(band_row(x, y, r.fragment, 0, &r.cover, &own[i]));
         if let Some(rw) = &row[i] {
             bands.push(band_row(x, y, r.fragment, 1, &r.cover, rw));
+        }
+        if let Some((either, before)) = &unadjusted[i] {
+            bands.push(band_row(x, y, r.fragment, 2, either, before));
         }
     }
     // The `lines@1` shares, read once per fragment where a pair needs them.
