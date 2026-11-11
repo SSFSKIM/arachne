@@ -441,6 +441,14 @@ impl Scene {
     ) -> Result<(PairAt, Plate), Unable> {
         let snap_of = |o: &Offered| if snap { o.snap } else { 0.0 };
         let (fa, fb) = (&self.frags[a], &self.frags[b]);
+        // A fragment with no key bounded at all is `truth_unable` whatever the pair reads,
+        // its own record's other layer included (`band_unbounded`, §6, by fragment; a pivot with no
+        // move, §2). A `curve_recut` read is unable only where a scenario reads it (§6, per read).
+        for r in [ra, rb] {
+            if let Err(u @ (Unable::BandUnbounded | Unable::PivotUnknown)) = r.own {
+                return Err(u);
+            }
+        }
         if own_layers(fa, fb) {
             return Ok((
                 PairAt {
@@ -450,14 +458,6 @@ impl Scene {
                 },
                 Plate::Tie,
             ));
-        }
-        // A fragment with no key bounded at all is `truth_unable` whatever the pair reads
-        // (`band_unbounded`, §6, by fragment; a pivot with no move, §2). A `curve_recut` read is
-        // unable only where a scenario reads it (§6, per read).
-        for r in [ra, rb] {
-            if let Err(u @ (Unable::BandUnbounded | Unable::PivotUnknown)) = r.own {
-                return Err(u);
-            }
         }
         if let (Ok(x), Ok(y)) = (ra.own, rb.own)
             && x.o == f64::NEG_INFINITY

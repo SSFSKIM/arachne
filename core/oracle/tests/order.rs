@@ -275,3 +275,35 @@ fn an_axis_only_pair_needs_no_own_read_but_a_fragment_with_no_bound_stays_unable
         Err(Unable::BandUnbounded)
     );
 }
+
+#[test]
+fn a_fragment_with_no_key_stated_is_unable_against_its_own_record_s_other_layer() {
+    // §6 `band_unbounded` and §2 `pivot_unknown` are per fragment: its samples are
+    // `truth_unable` whatever the pair reads, its own record's other layer included. One record's
+    // fill and stroke (entry 0, group 0), the fill unable.
+    let s = Scene::new(
+        vec![frag(0, Layer::Fill, 0), frag(0, Layer::Stroke, 0)],
+        Vec::new(),
+    );
+    for u in [Unable::BandUnbounded, Unable::PivotUnknown] {
+        let ra = Reads {
+            own: Err(u),
+            ..band(-1.0, 0.0)
+        };
+        assert_eq!(
+            s.pair(0, 1, &ra, &band(-1.0, 0.0), NONE).map(|p| p.label),
+            Err(u),
+            "{u:?}"
+        );
+    }
+    // A `curve_recut` read is unable only where a scenario reads it, and the record's own layers
+    // read none.
+    let ra = Reads {
+        own: Err(Unable::CurveRecut),
+        ..band(-1.0, 0.0)
+    };
+    assert_eq!(
+        s.pair(0, 1, &ra, &band(-1.0, 0.0), NONE).map(|p| p.label),
+        Ok(Label::OwnLayers)
+    );
+}

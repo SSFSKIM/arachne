@@ -279,6 +279,69 @@ fn a_pre_projected_pivot_with_no_first_point_to_move_by_states_no_bound() {
     }
 }
 
+/// The pair rows of record 0's fill and stroke where both are present: edges and label.
+fn own_layer_pairs(d: &Decisions) -> Vec<(u8, u8)> {
+    let (fill, stroke) = (id_of(d, 0, 1), id_of(d, 0, 2));
+    d.pairs
+        .iter()
+        .filter(|r| (r.a, r.b) == (fill, stroke) || (r.a, r.b) == (stroke, fill))
+        .map(|r| (r.edges, r.label))
+        .collect()
+}
+
+#[test]
+fn a_pivot_with_no_move_leaves_its_record_s_layers_unable_against_each_other() {
+    // §2: the pivot case above with an opaque stroke 0.25 wide on its tail. Both layers state no
+    // key (`pivot_unknown`, per fragment), so where they meet the pair is `truth_unable`: every
+    // edge, label 0, though the two are one record's own layers.
+    let mut b = Build::new(true);
+    let tail = Shape::new(ShapeData::Path {
+        points: rect([-1.0, 1.0], [-1.0, 1.0], 5.0),
+    });
+    let key = tail.key();
+    b.shapes.push(tail);
+    let r = b.fill(Vec::new(), OPAQUE_BLUE);
+    r.paint.stroke = Paint::One(WHITE);
+    r.paint.stroke_width = 0.25;
+    r.depth.fixed_orientation_centre = Some([0.0; 3]);
+    r.features |= FEATURE_PRE_PROJECTED;
+    r.pre_projected = Some(PreProjected {
+        points: key,
+        gradient: None,
+        fill: Paint::One(OPAQUE_BLUE),
+        stroke: Paint::One(WHITE),
+        background_stroke: Paint::None,
+    });
+    let d = decide(&b, view(10.0, GRID));
+    let at = own_layer_pairs(&d);
+    assert!(!at.is_empty(), "no pair of the fill and its stroke");
+    assert!(at.iter().all(|e| *e == (7, 0)), "{at:?}");
+}
+
+#[test]
+fn a_record_whose_keys_have_no_bound_leaves_its_layers_unable_against_each_other() {
+    // §6: `band_unbounded` is per fragment. A fixed-orientation square with an opaque stroke 0.25
+    // wide, its centre at z = 10^300: the facing model through it states no bound, for either
+    // layer, and where they meet the pair is `truth_unable`.
+    let mut b = Build::new(true);
+    let r = b.fill(rect([-1.0, 1.0], [-1.0, 1.0], 0.0), OPAQUE_BLUE);
+    r.paint.stroke = Paint::One(WHITE);
+    r.paint.stroke_width = 0.25;
+    r.depth.fixed_orientation_centre = Some([0.0, 0.0, 1e300]);
+    let d = decide(&b, view(10.0, GRID));
+    let fill = id_of(&d, 0, 1);
+    for row in own_rows(&d, fill) {
+        for s in 0..16 {
+            if row.status[s] != 0 {
+                assert_eq!(row.status[s], 2, "({}, {}) sample {s}", row.x, row.y);
+            }
+        }
+    }
+    let at = own_layer_pairs(&d);
+    assert!(!at.is_empty(), "no pair of the fill and its stroke");
+    assert!(at.iter().all(|e| *e == (7, 0)), "{at:?}");
+}
+
 #[test]
 fn a_row_read_outside_a_hull_no_wider_than_twice_its_tolerance_is_unbounded() {
     // §6 `band_input@1`: where a read lies outside H and w_P <= 2 τ_P, the bound is infinite. A
