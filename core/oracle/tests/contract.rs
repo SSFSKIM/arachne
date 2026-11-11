@@ -695,6 +695,27 @@ fn measure(m: &mut Measures, d: &Decisions, excess: usize, tally: &Tally) {
             .or_default()
             .push(b.status);
     }
+    // The fragments `truth_unable` whatever is read with them (§6): by their own rows' statuses,
+    // and an unbounded one at every sample of its box, the window, rows or none.
+    let own_status: HashMap<(u32, u32, u32), [u8; 16]> = d
+        .bands
+        .iter()
+        .filter(|b| b.which == 0)
+        .map(|b| ((b.x, b.y, b.fragment), b.status))
+        .collect();
+    let unbounded: Vec<[i32; 4]> = d
+        .fragments
+        .iter()
+        .filter(|f| f.flags & arachne_oracle::out::FLAG_UNBOUNDED != 0)
+        .map(|f| f.bbox)
+        .collect();
+    let in_unbounded = |x: u32, y: u32| {
+        let (x, y) = (x as i32, y as i32);
+        unbounded
+            .iter()
+            .any(|b| (b[0]..b[2]).contains(&x) && (b[1]..b[3]).contains(&y))
+    };
+    let mut counted: std::collections::HashSet<(u32, u32, u8)> = Default::default();
     let mut i0 = 0;
     while i0 < d.covers.len() {
         let (x, y) = (d.covers[i0].x, d.covers[i0].y);
@@ -709,6 +730,7 @@ fn measure(m: &mut Measures, d: &Decisions, excess: usize, tally: &Tally) {
                 continue;
             }
             m.samples += 1;
+            counted.insert((x, y, s));
             let ps = pairs.get(&(x, y, s)).map_or(&[][..], |v| &v[..]);
             let tb = ps.iter().any(|p| p.label == 3);
             let ei = present.iter().any(|r| r.cover[s as usize] == 2);
@@ -783,6 +805,20 @@ fn measure(m: &mut Measures, d: &Decisions, excess: usize, tally: &Tally) {
                     why.insert("truth_unable:unnamed".into());
                 }
             }
+            // A present fragment `truth_unable` by its own key, a pair or none.
+            for r in &present {
+                let own = own_status.get(&(x, y, r.fragment)).map(|st| st[s as usize]);
+                if let Some(n) = own.and_then(|st| match st {
+                    2 => Some("band_unbounded"),
+                    4 => Some("pivot_unknown"),
+                    _ => None,
+                }) {
+                    why.insert(format!("truth_unable:{n}"));
+                }
+            }
+            if in_unbounded(x, y) {
+                why.insert("truth_unable:band_unbounded".into());
+            }
             for r in &present {
                 if d.colours[r.fragment as usize].kind == 0 {
                     why.insert("colour_unknown".into());
@@ -832,6 +868,70 @@ fn measure(m: &mut Measures, d: &Decisions, excess: usize, tally: &Tally) {
         }
         i0 = i1;
     }
+    // An unbounded fragment's samples that no row reaches: present there, and unjudged.
+    let frame = [0, 0, d.header.width as i32, d.header.height as i32];
+    let mut beyond: std::collections::HashSet<(u32, u32, u8)> = Default::default();
+    for b in &unbounded {
+        for y in b[1].max(frame[1])..b[3].min(frame[3]) {
+            for x in b[0].max(frame[0])..b[2].min(frame[2]) {
+                for s in 0..16u8 {
+                    let at = (x as u32, y as u32, s);
+                    if !counted.contains(&at) {
+                        beyond.insert(at);
+                    }
+                }
+            }
+        }
+    }
+    m.samples += beyond.len();
+    if !beyond.is_empty() {
+        *m.open
+            .entry("truth_unable:band_unbounded".into())
+            .or_default() += beyond.len();
+    }
+}
+
+/// One frame's measures, decided from `b` under `v`.
+fn measured(b: &scenes::Build, v: arachne_core::xf::View) -> Measures {
+    let d = arachne_oracle::decide::decide_at(&[b.delta(1, v)], 1, None).unwrap();
+    assert_eq!(d.header.status, 0, "{:?}", d.refused);
+    let mut m = Measures::default();
+    measure(&mut m, &d, 0, &Tally::default());
+    m
+}
+
+#[test]
+fn a_fragment_whose_key_states_no_bound_is_counted_unjudged_with_a_pair_or_none() {
+    // §6: a fragment with no key bounded at a sample is `truth_unable` there, whether or not it
+    // makes a pair, and an unbounded fragment at every sample of the window, rows or none (FORMAT
+    // `flags` bit 0). The open share counts each, as the judge leaves each unjudged.
+    use scenes::*;
+    let unbounded = |m: &Measures| m.open.get("truth_unable:band_unbounded").copied();
+    // A lone glyph kept facing the camera about (0, 0, 400), under the exponential option at
+    // focal distance 1: its key is finite, its error overflows.
+    let mut b = Build::new(true);
+    b.glyph(
+        rect([-1.0, 1.0], [-1.0, 1.0], 400.0),
+        OPAQUE_BLUE,
+        [0.0, 0.0, 400.0],
+    );
+    let mut v = arachne_core::xf::View {
+        camera: camera(1.0),
+        input_grid: 0.0,
+        ..view_c()
+    };
+    if let arachne_core::xf::Camera::ThreeD(c) = &mut v.camera {
+        c.exponential_projection = true;
+    }
+    let m = measured(&b, v);
+    assert!(m.samples > 0);
+    assert_eq!(unbounded(&m), Some(m.samples), "{:?}", m.open);
+    // A lone point placed where its key states no bound: no rows, unable over the whole frame.
+    let mut b = Build::new(true);
+    b.points(vec![[0.0, 0.0, 20.0 - 1e-7]], WHITE, 1.0);
+    let m = measured(&b, view_c());
+    assert_eq!(m.samples, 64 * 64 * 16);
+    assert_eq!(unbounded(&m), Some(m.samples), "{:?}", m.open);
 }
 
 /// The measures `soundness.md` records, by case class: `core_err_within_band`'s excess and read

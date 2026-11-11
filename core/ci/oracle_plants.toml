@@ -1514,3 +1514,21 @@ file = "core/oracle/tests/common/judge.rs"
 find = "                && order.contains(&r.fragment)\n                && order\n"
 replace = "                && order\n"
 red = ["judge::an_either_fragment_left_out_of_the_report_opens_no_label_pair"]
+
+[[plant]]
+name = "measure-own-status-unable"
+item = "§6"
+check = "the open share counts a fragment truth_unable by its own key, a pair or none"
+file = "core/oracle/tests/contract.rs"
+find = "                if let Some(n) = own.and_then(|st| match st {\n"
+replace = "                if let Some(n) = own.filter(|_| false).and_then(|st| match st {\n"
+red = ["contract::a_fragment_whose_key_states_no_bound_is_counted_unjudged_with_a_pair_or_none"]
+
+[[plant]]
+name = "measure-unbounded-everywhere"
+item = "§6"
+check = "the open share counts an unbounded fragment at every sample of the window, rows or none"
+file = "core/oracle/tests/contract.rs"
+find = "    m.samples += beyond.len();\n"
+replace = "    beyond.clear();\n    m.samples += beyond.len();\n"
+red = ["contract::a_fragment_whose_key_states_no_bound_is_counted_unjudged_with_a_pair_or_none"]
