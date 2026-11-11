@@ -3317,10 +3317,13 @@ though no row forms on it. That makes the pair an `ExactTie`, decided by paint o
 `M` passes (1) with each of them". With it, §5, a flat triangle keyed on the screen "still took part
 in the partition and shaped the identities of others". View C, drawn in this order:
 
-- `T`, a mesh triangle `(1, 10^10, 5)`, `(1, −10^10, 5)`, `(1, 0, 15)`, fill `(0, 1, 0, 0.5)`. It
-  is flat on the axis plane `x = 1` and offered, every corner keyed planar. Its plane does not
-  key: at its first corner, `|D| / (|m| |q − (0, 0, d)|) ≈ 10^-10`, under `min_cos = 10^-9`. So it
-  is keyed on the screen plane through its corners and carries no identity.
+- `T`, a mesh triangle `(1, 2·10^9, 5)`, `(1, −2·10^9, 5)`, `(1, 0, 15)`, fill `(0, 1, 0, 0.5)`.
+  Its corners share `x` alone: `tol = 1e-9 · 4·10^9 = 4`, under the 10 by which their `z`
+  differs. Its widest normal, `4·10^10`, points somewhere against `1e-9 · extent² = 1.6·10^10`, so
+  its corners are not on a line. It is flat on the axis plane `x = 1` and offered, every corner
+  keyed planar. Its plane does not key: at its first corner,
+  `|D| / (|m| |q − (0, 0, d)|) ≈ 5·10^-10`, under `min_cos = 10^-9`. So it is keyed on the screen
+  plane through its corners and carries no identity.
 - `A`, an open line from `(1, −2.0625, 0)` to `(1, 2, 0)`, stroke white, width `0.5` (2 px).
 - `B`, an open line from `(1, −2.0625, −1)` to `(1, 2, −1)`, stroke blue, width `0.5`.
 
@@ -3328,9 +3331,9 @@ Pixel `(35, 32)` is covered by both strokes, whose centrelines lie at screen `x 
 `x ≈ 35.81`. `T` holds no fragment there in the core's report: its nominal triangle starts at
 screen `x ≈ 37.33`. `T`'s corners make its screen shift large, so the oracle may find it `Either`
 far from its triangle, but an `Either` fragment counts only where the report holds it (§7). `A`
-keys `−1`, `B` `−20/21 ≈ −0.9524`. Trace: `A` and `B` have no plane of their own. `T` is a flat registry-offered
-record that passes the width test with each of them: all three lie in `x = 1`, so their union is 0
-wide. The pair may therefore share through a flat identity, and `E(A, B)` is every edge
+keys `−1`, `B` `−20/21 ≈ −0.9524`. Trace: `A` and `B` have no plane of their own. `T` is a flat
+registry-offered record that passes the width test with each of them: all three lie in `x = 1`,
+so their union is 0 wide. The pair may therefore share through a flat identity, and `E(A, B)` is every edge
 (`Policy(one_plane@1)`). Report: at its 16 samples, `A` in front of `B` by a strong relation.
 Expected: agreement. Rejects: requiring the third record to keep its identity. That leaves the pair
 to the axis rule on `x = 1`, where both lie with their first points equal: an `ExactTie` with `B`
