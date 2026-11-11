@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use arachne_core::xf::{Camera, View};
+use arachne_core::xf::{Body, Camera, Key, RecordKind, Space, View};
 
 use crate::band::{PlaneHull, departure_plus, kr};
 use crate::camera::{FrameMap, Placement, Projection};
@@ -13,7 +13,7 @@ use crate::depth::{
     Planarity, ScreenKey, WorldPlane, departure_from, extent, facing_plane, key_error, key_plane,
     nu, on_a_line, planarity, plane_r_region, points_somewhere, three_corner_plane,
 };
-use crate::draw::{MeshItem, PathItem, Pivot, PointsItem};
+use crate::draw::{MeshItem, PathItem, Pivot, Placing, PointsItem};
 use crate::flatten::Ring;
 use crate::shift::{Shift, U, departure_of, depth_share};
 
@@ -114,17 +114,67 @@ pub enum Computation {
 /// them alike (contract §5): one conforming plane. A plane with two names no one computation.
 pub type Rounded = ([f64; 3], f64);
 
-/// What a curve's key along its centreline is computed from (contract §5, `curve_key@1`): its
-/// drawn points and its shown points, the projection and frame map that key and place them, and
-/// the body `h` its read holds segments by. Two reads of one such input at one point are one
-/// computation; equal keys of other inputs are not.
+/// What a curve's key along its centreline is computed from (contract §5, `curve_key@1`; §7): the
+/// record inputs the core reads to place and key a curve's points, which it places itself, so two
+/// records shown at equal points may still be two computations; the view's projection (the
+/// camera's axes for a pre-projected record), frame map and line-width multiple; and the shown
+/// points and body `h` the oracle's own read takes. Two reads of one such input at one point are
+/// one computation; equal keys of other inputs are not. Compared as values.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CurveKey {
-    pub world: Vec<[f64; 3]>,
-    pub shown: Vec<[f64; 3]>,
+    pub kind: RecordKind,
+    /// Each shape's points under the record's placements, with its blend coefficient: the shape
+    /// contents, the placements and the blend (`shape_b`, `place_b`, `t`).
+    pub placings: Vec<Placing>,
+    /// A pre-projected record's own shape, which its placings (its tail's) do not hold.
+    pub pre_projected_shape: Option<Key>,
+    pub reveal: Option<(f64, f64)>,
+    /// A pre-projected record's tail points.
+    pub pre_projected: Option<Key>,
+    pub space: Space,
+    pub fixed_orientation_centre: Option<[f64; 3]>,
+    /// A face group's face ends and face widths.
+    pub faces: (Vec<u32>, Vec<f64>),
+    /// The stroke and background-stroke widths, and a paint blend's two widths and `mix`.
+    pub widths: [f64; 2],
+    pub paint_b: Option<[f64; 3]>,
     pub projection: Projection,
     pub map: FrameMap,
+    pub line_width_multiple: f64,
+    pub shown: Vec<[f64; 3]>,
     pub h: f64,
+}
+
+impl CurveKey {
+    /// The key of path item `item`'s layer of body `h`, keyed under `pr`, in `view`.
+    fn of(view: &View, item: &PathItem, pr: &Projection, h: f64) -> CurveKey {
+        let rec = item.common.record;
+        let faces = match &rec.body {
+            Body::FaceGroup(f) => (f.face_ends.clone(), f.face_widths.clone()),
+            _ => (Vec::new(), Vec::new()),
+        };
+        CurveKey {
+            kind: rec.kind,
+            placings: item.common.placings.clone(),
+            pre_projected_shape: rec.pre_projected.as_ref().and(rec.geometry.shape_a),
+            reveal: rec.geometry.reveal,
+            pre_projected: rec.pre_projected.as_ref().map(|t| t.points),
+            space: rec.depth.space,
+            fixed_orientation_centre: rec.depth.fixed_orientation_centre,
+            faces,
+            widths: [rec.paint.stroke_width, rec.paint.background_stroke_width],
+            paint_b: rec
+                .paint
+                .paint_b
+                .as_ref()
+                .map(|b| [b.stroke_width, b.background_stroke_width, rec.paint.mix]),
+            projection: pr.clone(),
+            map: item.map,
+            line_width_multiple: view.cairo_line_width_multiple,
+            shown: item.shown.clone(),
+            h,
+        }
+    }
 }
 
 /// What a facing centre's own key `−factor((centre − c) · R₂)` is computed from (contract §5,
@@ -652,13 +702,7 @@ pub fn path_depth(view: &View, item: &PathItem, rings: &[Option<Vec<Ring>>; 3]) 
             &Centreline::of(&item.shown, pr, &map),
         ),
         map,
-        of: Arc::new(CurveKey {
-            world: item.world.clone(),
-            shown: item.shown.clone(),
-            projection: pr.clone(),
-            map,
-            h: half(k),
-        }),
+        of: Arc::new(CurveKey::of(view, item, pr, half(k))),
     };
     match (&c.placement, pre) {
         (Placement::FixedOrientation { centre, .. }, _) => {

@@ -579,6 +579,194 @@ fn two_strokes_of_one_curve_read_at_one_point_are_an_exact_tie() {
     assert!(wider.iter().all(|e| e.1 != 4), "{wider:?}");
 }
 
+/// View C with its rotation the identity exactly (`theta` −90° as the projection's degree), so a
+/// pre-projected record's camera axes are the scene's.
+fn view_c_exact() -> View {
+    let mut v = view_c();
+    if let Camera::ThreeD(c) = &mut v.camera {
+        c.theta = -90.0 * (std::f64::consts::TAU / 360.0);
+    }
+    v
+}
+
+/// The pair rows, as `(edges, label)`, of two world-space records stroking the polyline through
+/// `(−3, 0, 0)`, `(0, 0, 1.5)`, `(3, 1.5, −1.5)` and `(3, −1.5, 3)` (its controls exact) in
+/// `view_c_exact`, red then blue, each stroke of width 0.5 over a background stroke of width 1,
+/// after `edit`; read on the red's layer `la` and the blue's `lb` (0 background stroke, 2
+/// stroke). `pre`: both pre-projected, their tails the polyline. Asserts the two reads key alike:
+/// every pair-sample at which both are bounded reads one key, and some are.
+fn two_curve_records(pre: bool, (la, lb): (u8, u8), edit: impl Fn(&mut Build)) -> Vec<(u8, u8)> {
+    two_curve_reads(pre, (la, lb), edit, true)
+}
+
+/// [`two_curve_records`], asserting the two reads key alike only where `alike`.
+fn two_curve_reads(
+    pre: bool,
+    (la, lb): (u8, u8),
+    edit: impl Fn(&mut Build),
+    alike: bool,
+) -> Vec<(u8, u8)> {
+    let pts = open(&[
+        [-3.0, 0.0, 0.0],
+        [0.0, 0.0, 1.5],
+        [3.0, 1.5, -1.5],
+        [3.0, -1.5, 3.0],
+    ]);
+    let mut b = Build::new(true);
+    for rgba in [OPAQUE_RED, OPAQUE_BLUE] {
+        let r = if pre {
+            b.pre_projected(pts.clone(), rgba)
+        } else {
+            b.path(pts.clone())
+        };
+        if let Some(tail) = &mut r.pre_projected {
+            tail.fill = Paint::None;
+            tail.stroke = Paint::One(rgba);
+            tail.background_stroke = Paint::One(BLACK);
+        }
+        r.paint.stroke = Paint::One(rgba);
+        r.paint.background_stroke = Paint::One(BLACK);
+        r.paint.stroke_width = 0.5;
+        r.paint.background_stroke_width = 1.0;
+    }
+    edit(&mut b);
+    let d = decide(&b, view_c_exact());
+    let (p, q) = (id_of(&d, 0, la), id_of(&d, 1, lb));
+    let rows = pairs_of(&d, p, q);
+    let own = |f: u32, x: u32, y: u32| {
+        d.bands
+            .iter()
+            .find(|r| (r.fragment, r.x, r.y, r.which) == (f, x, y, 0))
+            .unwrap()
+    };
+    let mut bounded = 0;
+    for r in &rows {
+        let s = r.sample as usize;
+        let (a, b) = (own(p, r.x, r.y), own(q, r.x, r.y));
+        if alike && a.status[s] == 1 && b.status[s] == 1 {
+            bounded += 1;
+            assert_eq!(a.o[s].to_bits(), b.o[s].to_bits(), "({}, {}) {s}", r.x, r.y);
+        }
+    }
+    assert!(
+        !alike || bounded > 0,
+        "no pair-sample with both reads bounded"
+    );
+    rows.into_iter().map(|r| (r.edges, r.label)).collect()
+}
+
+/// Asserts `rows` hold pair-samples and none an `ExactTie`.
+fn no_exact_tie(what: &str, rows: &[(u8, u8)]) {
+    assert!(!rows.is_empty(), "{what}: no pair-sample");
+    assert!(
+        rows.iter().all(|e| e.1 != 4),
+        "{what}: {:?}",
+        rows.iter().filter(|e| e.1 == 4).take(4).collect::<Vec<_>>()
+    );
+}
+
+/// Asserts the records as made, read on their strokes, hold an `ExactTie`, and once `edit`
+/// makes one record input differ (the reads keying alike still), none.
+fn not_one_computation(pre: bool, what: &str, edit: impl Fn(&mut Build)) {
+    let control = two_curve_records(pre, (2, 2), |_| {});
+    assert!(control.contains(&(1, 4)), "{what}: control");
+    no_exact_tie(what, &two_curve_records(pre, (2, 2), edit));
+}
+
+#[test]
+fn equal_shown_points_placed_from_another_shape_are_not_one_computation() {
+    // The core keys a curve from its record's inputs, which it places itself: a shape moved by one
+    // placement and a shape moved by another, shown at equal points, are two computations.
+    not_one_computation(false, "placings", |b| {
+        let moved = open(&[
+            [-4.0, 0.0, 0.0],
+            [-1.0, 0.0, 1.5],
+            [2.0, 1.5, -1.5],
+            [2.0, -1.5, 3.0],
+        ]);
+        let shape =
+            arachne_core::xf::Shape::new(arachne_core::xf::ShapeData::Path { points: moved });
+        let r = &mut b.records[1];
+        r.geometry.shape_a = Some(shape.key());
+        r.geometry.place_a = [
+            [1.0, 0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+        ];
+        b.shapes.push(shape);
+    });
+}
+
+#[test]
+fn equal_shown_points_under_a_full_reveal_window_are_not_one_computation() {
+    not_one_computation(false, "reveal", |b| {
+        b.records[1].geometry.reveal = Some((0.0, 1.0));
+    });
+}
+
+#[test]
+fn equal_shown_points_blended_at_another_t_are_not_one_computation() {
+    // Both blended toward their own shape, so the points do not move; `t` differs.
+    not_one_computation(false, "blend t", |b| {
+        for (r, t) in b.records.iter_mut().zip([0.25, 0.5]) {
+            r.geometry.blend = Some(arachne_core::xf::Blend {
+                shape_b: r.geometry.shape_a.unwrap(),
+                place_b: arachne_core::xf::IDENTITY,
+                t,
+            });
+        }
+    });
+}
+
+#[test]
+fn equal_bodies_of_other_stroke_widths_are_not_one_computation() {
+    // The red's stroke against the blue's background stroke, both 0.5 wide once the blue's two
+    // widths are swapped: one body, other width inputs.
+    let control = two_curve_records(false, (2, 2), |_| {});
+    assert!(control.contains(&(1, 4)), "control");
+    let swapped = two_curve_records(false, (2, 0), |b| {
+        b.records[1].paint.stroke_width = 1.0;
+        b.records[1].paint.background_stroke_width = 0.5;
+    });
+    no_exact_tie("widths", &swapped);
+    // A paint blend whose widths are the record's own: one body, other width inputs.
+    let blended = two_curve_records(false, (2, 2), |b| {
+        let p = &mut b.records[1].paint;
+        p.paint_b = Some(arachne_core::xf::PaintB {
+            fill: Paint::None,
+            stroke: p.stroke.clone(),
+            background_stroke: p.background_stroke.clone(),
+            stroke_width: 0.5,
+            background_stroke_width: 1.0,
+        });
+        p.mix = 0.5;
+    });
+    no_exact_tie("paint blend", &blended);
+    // The width inputs equal, the two layers' bodies differ (0.5 against 1), and so may the
+    // segment a read holds.
+    no_exact_tie("body", &two_curve_reads(false, (2, 0), |_| {}, false));
+}
+
+#[test]
+fn equal_tails_of_pre_projected_records_of_other_shapes_are_not_one_computation() {
+    // A pre-projected record is shown at its tail's points; the core reads its own shape too.
+    not_one_computation(true, "pre-projected shape", |b| {
+        let other = arachne_core::xf::Shape::new(arachne_core::xf::ShapeData::Path {
+            points: open(&[[0.0; 3], [1.0, 0.0, 0.0]]),
+        });
+        b.records[1].geometry.shape_a = Some(other.key());
+        b.shapes.push(other);
+    });
+}
+
+#[test]
+fn equal_shown_points_of_another_depth_space_are_not_one_computation() {
+    // Pre-projected records are kept as produced in either space.
+    not_one_computation(true, "depth space", |b| {
+        b.records[1].depth.space = arachne_core::xf::Space::Screen;
+    });
+}
+
 #[test]
 fn an_axis_only_pair_reads_no_own_key() {
     // §7: two records with no plane of their own sharing an axis plane by the axis rule alone

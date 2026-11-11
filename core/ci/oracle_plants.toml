@@ -1410,11 +1410,11 @@ red = ["pair_rules::two_strokes_of_one_curve_read_at_one_point_are_an_exact_tie"
 [[plant]]
 name = "curve-key-inputs"
 item = "§7"
-check = "a curve's computation is named by its body too: strokes of one curve and two widths are not one"
+check = "a curve's computation is named by its body too: two layers of one record input, of two widths, are not one"
 file = "core/oracle/src/keys.rs"
-find = "            h: half(k),\n        }),\n"
-replace = "            h: 0.0,\n        }),\n"
-red = ["pair_rules::two_strokes_of_one_curve_read_at_one_point_are_an_exact_tie"]
+find = "            shown: item.shown.clone(),\n            h,\n"
+replace = "            shown: item.shown.clone(),\n            h: 0.0,\n"
+red = ["pair_rules::equal_bodies_of_other_stroke_widths_are_not_one_computation"]
 
 [[plant]]
 name = "uncovered-fills-join"
@@ -1559,3 +1559,66 @@ file = "core/oracle/src/order.rs"
 find = "                    let read = |r: &Reads| r.axis_row.unwrap_or(r.own);\n"
 replace = "                    let read = |r: &Reads| r.own;\n"
 red = ["pair_rules::a_path_s_row_on_a_shared_axis_plane_is_read_where_its_own_key_alone_would_order_the_pair"]
+
+[[plant]]
+name = "curve-key-placings"
+item = "§7"
+check = "a curve's computation is named by its record's placings: equal shown points placed from another shape are not one"
+file = "core/oracle/src/keys.rs"
+find = "            placings: item.common.placings.clone(),\n"
+replace = "            placings: Vec::new(),\n"
+red = ["pair_rules::equal_shown_points_placed_from_another_shape_are_not_one_computation"]
+
+[[plant]]
+name = "curve-key-blend-t"
+item = "§7"
+check = "a curve's computation is named by its blend's t: equal shown points blended at another t are not one"
+file = "core/oracle/src/keys.rs"
+find = "            placings: item.common.placings.clone(),\n"
+replace = "            placings: item.common.placings.iter().map(|p| Placing { weight: 0.0, ..p.clone() }).collect(),\n"
+red = ["pair_rules::equal_shown_points_blended_at_another_t_are_not_one_computation"]
+
+[[plant]]
+name = "curve-key-reveal"
+item = "§7"
+check = "a curve's computation is named by its reveal window: equal shown points under another window are not one"
+file = "core/oracle/src/keys.rs"
+find = "            reveal: rec.geometry.reveal,\n"
+replace = "            reveal: None,\n"
+red = ["pair_rules::equal_shown_points_under_a_full_reveal_window_are_not_one_computation"]
+
+[[plant]]
+name = "curve-key-space"
+item = "§7"
+check = "a curve's computation is named by its depth space: equal shown points of another space are not one"
+file = "core/oracle/src/keys.rs"
+find = "            space: rec.depth.space,\n"
+replace = "            space: Space::World,\n"
+red = ["pair_rules::equal_shown_points_of_another_depth_space_are_not_one_computation"]
+
+[[plant]]
+name = "curve-key-widths"
+item = "§7"
+check = "a curve's computation is named by its stroke-width inputs: one body of other widths is not one"
+file = "core/oracle/src/keys.rs"
+find = "            widths: [rec.paint.stroke_width, rec.paint.background_stroke_width],\n"
+replace = "            widths: [0.0; 2],\n"
+red = ["pair_rules::equal_bodies_of_other_stroke_widths_are_not_one_computation"]
+
+[[plant]]
+name = "curve-key-paint-blend"
+item = "§7"
+check = "a curve's computation is named by a paint blend's widths and mix: one body under a paint blend is not one"
+file = "core/oracle/src/keys.rs"
+find = "                .map(|b| [b.stroke_width, b.background_stroke_width, rec.paint.mix]),\n"
+replace = "                .and(None::<[f64; 3]>),\n"
+red = ["pair_rules::equal_bodies_of_other_stroke_widths_are_not_one_computation"]
+
+[[plant]]
+name = "curve-key-pre-projected-shape"
+item = "§7"
+check = "a pre-projected curve's computation is named by its record's own shape: equal tails of other shapes are not one"
+file = "core/oracle/src/keys.rs"
+find = "            pre_projected_shape: rec.pre_projected.as_ref().and(rec.geometry.shape_a),\n"
+replace = "            pre_projected_shape: None,\n"
+red = ["pair_rules::equal_tails_of_pre_projected_records_of_other_shapes_are_not_one_computation"]
