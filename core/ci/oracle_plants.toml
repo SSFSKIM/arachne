@@ -532,7 +532,7 @@ check = "class_named_twice"
 file = "core/oracle/src/source.rs"
 find = "if !names.iter().all(|n| seen.insert(n.as_str())) {"
 replace = "if false && !names.iter().all(|n| seen.insert(n.as_str())) {"
-red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states"]
+red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states", "refusal_witnesses::a_refused_delta_refuses_what_its_code_says_and_valid_deltas_after_it_clear_nothing"]
 
 [[plant]]
 name = "xf15-slot-named-twice"
@@ -541,7 +541,7 @@ check = "slot_named_twice"
 file = "core/oracle/src/source.rs"
 find = "let code = if rows.iter().any(|earlier| earlier.slot == slot) {"
 replace = "let code = if false && rows.iter().any(|earlier| earlier.slot == slot) {"
-red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states"]
+red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states", "refusal_witnesses::a_refused_delta_refuses_what_its_code_says_and_valid_deltas_after_it_clear_nothing"]
 
 [[plant]]
 name = "xf15-slot-removed"
@@ -550,7 +550,7 @@ check = "slot_removed"
 file = "core/oracle/src/source.rs"
 find = "} else if d.remove.contains(&slot) {"
 replace = "} else if false && d.remove.contains(&slot) {"
-red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states"]
+red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states", "refusal_witnesses::a_refused_delta_refuses_what_its_code_says_and_valid_deltas_after_it_clear_nothing"]
 
 [[plant]]
 name = "xf15-row-empty"
@@ -559,7 +559,7 @@ check = "row_empty"
 file = "core/oracle/src/source.rs"
 find = "} else if facing_group == 0 && row.paths.is_empty() {"
 replace = "} else if false && facing_group == 0 && row.paths.is_empty() {"
-red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states"]
+red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states", "refusal_witnesses::a_refused_delta_refuses_what_its_code_says_and_valid_deltas_after_it_clear_nothing"]
 
 [[plant]]
 name = "xf15-path-empty"
@@ -568,7 +568,7 @@ check = "path_empty"
 file = "core/oracle/src/source.rs"
 find = "} else if row.paths.iter().any(Vec::is_empty) {"
 replace = "} else if false && row.paths.iter().any(Vec::is_empty) {"
-red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states"]
+red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states", "refusal_witnesses::a_refused_delta_refuses_what_its_code_says_and_valid_deltas_after_it_clear_nothing"]
 
 [[plant]]
 name = "xf15-class-out-of-range"
@@ -577,7 +577,7 @@ check = "class_out_of_range"
 file = "core/oracle/src/source.rs"
 find = ".any(|&(_, c)| c as usize >= names.len())"
 replace = ".any(|&(_, c)| false && c as usize >= names.len())"
-red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states"]
+red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states", "refusal_witnesses::a_refused_delta_refuses_what_its_code_says_and_valid_deltas_after_it_clear_nothing"]
 
 [[plant]]
 name = "xf15-slot-not-held"
@@ -586,7 +586,7 @@ check = "slot_not_held, apply's last check"
 file = "core/oracle/src/stream.rs"
 find = "if !set && !self.records.contains_key(&row.slot) {"
 replace = "if false && !set && !self.records.contains_key(&row.slot) {"
-red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states", "xf15_fixtures::xf15_fixtures_a_refused_stream_stays_refused"]
+red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states", "xf15_fixtures::xf15_fixtures_a_refused_stream_stays_refused", "refusal_witnesses::a_refused_delta_refuses_what_its_code_says_and_valid_deltas_after_it_clear_nothing"]
 
 [[plant]]
 name = "xf15-sticky"
@@ -595,7 +595,7 @@ check = "a refused stream stays refused"
 file = "core/oracle/src/stream.rs"
 find = "self.refused = Some((w.seq, *cause));\n                Err(self.stream_refusal().expect(\"just refused\"))"
 replace = "Err(Refusal {\n                    stream: Some((w.seq, *cause)),\n                    ..Refusal::new(Reason::StreamRefused, \"not kept\")\n                })"
-red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states", "xf15_fixtures::xf15_fixtures_a_refused_stream_stays_refused"]
+red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states", "xf15_fixtures::xf15_fixtures_a_refused_stream_stays_refused", "refusal_witnesses::a_refused_delta_refuses_what_its_code_says_and_valid_deltas_after_it_clear_nothing"]
 
 [[plant]]
 name = "xf15-held-row"
@@ -701,8 +701,8 @@ name = "band-r-plane"
 item = "§6"
 check = "R of a world plane's key: the region's bound, rho and nu"
 file = "core/oracle/src/keys.rs"
-find = "let r = r0 + extra + key.rho(px, py) + nu(omax);"
-replace = "let r = 0.0 * (r0 + extra + key.rho(px, py) + nu(omax));"
+find = "let r = (1.0 + 64.0 * U) * (((r0 + rho) + extra) + nu(omax));"
+replace = "let r = 0.0 * ((1.0 + 64.0 * U) * (((r0 + rho) + extra) + nu(omax)));"
 red = ["contract::core_err_within_band"]
 
 [[plant]]
@@ -800,8 +800,8 @@ name = "format-provenance-row-read"
 item = "§7"
 check = "a strong edge some shared-plane scenario admits through its rows is not read as own-key"
 file = "core/oracle/src/order.rs"
-find = "                            *v = Via::Row;"
-replace = "                            *v = Via::Own;"
+find = "                if ra.row.is_some() || rb.row.is_some() {\n                    for (v, strong) in via.iter_mut().zip([e.a_front, e.b_front]) {\n                        if strong {\n                            *v = Via::Row;"
+replace = "                if ra.row.is_some() || rb.row.is_some() {\n                    for (v, strong) in via.iter_mut().zip([e.a_front, e.b_front]) {\n                        if strong {\n                            *v = Via::Own;"
 red = ["format_facts::each_strong_edge_names_how_it_is_read"]
 
 [[plant]]
@@ -1099,7 +1099,7 @@ check = "a pre-projected path is fitted on its shown points put back by unprojec
 file = "core/oracle/src/keys.rs"
 find = "    let (how, plane) = planarity(&put_back, code, item.face);"
 replace = "    let put_back = item.world.clone();\n            let (how, plane) = planarity(&put_back, code, item.face);"
-red = ["key_rules::a_pre_projected_fill_is_fitted_on_its_points_put_back_by_unproject"]
+red = ["key_rules::a_pre_projected_fill_is_fitted_on_its_points_put_back_by_unproject", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
 
 [[plant]]
 name = "fixed-points-front"
@@ -1108,7 +1108,7 @@ check = "a fixed-orientation point block is keyed on its facing plane"
 file = "core/oracle/src/keys.rs"
 find = "            facing_model(pr, &map, *centre, delta_c)"
 replace = "            let _ = delta_c;\n            Model::NegInf"
-red = ["key_rules::a_fixed_orientation_point_block_is_keyed_on_its_facing_plane"]
+red = ["key_rules::a_fixed_orientation_point_block_is_keyed_on_its_facing_plane", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
 
 [[plant]]
 name = "preprojected-points-front"
@@ -1117,7 +1117,7 @@ check = "a pre-projected point block is keyed in the camera's axes"
 file = "core/oracle/src/keys.rs"
 find = "if c.record.pre_projected.is_some() {"
 replace = "if false {"
-red = ["key_rules::a_pre_projected_point_block_is_keyed_in_the_camera_s_axes"]
+red = ["key_rules::a_pre_projected_point_block_is_keyed_in_the_camera_s_axes", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
 
 [[plant]]
 name = "axis-identity-unformed"
@@ -1126,7 +1126,7 @@ check = "a path on axis planes alone keeps only the axis identities whose rows f
 file = "core/oracle/src/keys.rs"
 find = "            axes.retain(|(k, _)| {\n                key_plane("
 replace = "            axes.retain(|(k, _)| {\n                true || key_plane("
-red = ["pair_rules::an_axis_identity_whose_row_does_not_form_is_not_kept"]
+red = ["pair_rules::an_axis_identity_whose_row_does_not_form_is_not_kept", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
 
 [[plant]]
 name = "third-record-retains"
@@ -1135,7 +1135,7 @@ check = "a flat record that keeps no identity still witnesses a shared one"
 file = "core/oracle/src/order.rs"
 find = "            self.offered[m].flat.is_some()\n                && (m == i || self.width_passes(m, i))"
 replace = "            self.offered[m].flat.is_some()\n                && self.offered[m].retains\n                && (m == i || self.width_passes(m, i))"
-red = ["pair_rules::a_flat_record_that_keeps_no_identity_still_witnesses_a_shared_one"]
+red = ["pair_rules::a_flat_record_that_keeps_no_identity_still_witnesses_a_shared_one", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
 
 [[plant]]
 name = "attach-retains"
@@ -1144,7 +1144,7 @@ check = "a flat record that keeps no identity still takes a record of no plane o
 file = "core/oracle/src/order.rs"
 find = ".any(|m| m != i && self.offered[m].flat.is_some() && self.width_passes(m, i))"
 replace = ".any(|m| m != i && self.offered[m].flat.is_some() && self.offered[m].retains && self.width_passes(m, i))"
-red = ["pair_rules::a_flat_record_that_keeps_no_identity_still_takes_a_line_out_of_the_axis_rule_alone"]
+red = ["pair_rules::a_flat_record_that_keeps_no_identity_still_takes_a_line_out_of_the_axis_rule_alone", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
 
 [[plant]]
 name = "outside-hull-narrow"
@@ -1153,7 +1153,7 @@ check = "a read outside a hull no wider than twice its tolerance is unbounded"
 file = "core/oracle/src/keys.rs"
 find = "let theta = if hull.width > 2.0 * tau {"
 replace = "let theta = if hull.width > 0.0 {"
-red = ["key_rules::a_row_read_outside_a_hull_no_wider_than_twice_its_tolerance_is_unbounded"]
+red = ["key_rules::a_row_read_outside_a_hull_no_wider_than_twice_its_tolerance_is_unbounded", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
 
 [[plant]]
 name = "const-bounds-unchecked"
@@ -1162,7 +1162,7 @@ check = "a key whose bounds are not finite states no bound"
 file = "core/oracle/src/keys.rs"
 find = "            Model::Const { k, r, s, .. } => std::array::from_fn(|_| {\n                if !(s.is_finite() && r.is_finite()) {"
 replace = "            Model::Const { k, r, s, .. } => std::array::from_fn(|_| {\n                if false && !(s.is_finite() && r.is_finite()) {"
-red = ["key_rules::a_facing_key_whose_bounds_overflow_states_no_bound"]
+red = ["key_rules::a_facing_key_whose_bounds_overflow_states_no_bound", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
 
 [[plant]]
 name = "planeless-self-witness"
@@ -1171,7 +1171,7 @@ check = "a record with no plane of its own is no flat witness for itself"
 file = "core/oracle/src/order.rs"
 find = "        if i == j && self.offered[i].flat.is_some() {\n            return self.offered[i].retains;\n        }"
 replace = "        if i == j {\n            return true;\n        }"
-red = ["pair_rules::a_record_with_no_plane_of_its_own_is_no_flat_witness_for_itself"]
+red = ["pair_rules::a_record_with_no_plane_of_its_own_is_no_flat_witness_for_itself", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
 
 [[plant]]
 name = "preprojected-pivot-unmoved"
@@ -1180,7 +1180,7 @@ check = "a pre-projected pivot moves as the record's first point moved"
 file = "core/oracle/src/draw.rs"
 find = "Some((to, from)) => Pivot::At(std::array::from_fn(|k| c[k] + (to[k] - from[k]))),"
 replace = "Some(_) => Pivot::At(c),"
-red = ["key_rules::a_pre_projected_pivot_moves_as_the_record_s_first_point_moved", "key_rules::a_pre_projected_point_block_s_pivot_moves_as_its_first_point_moved"]
+red = ["key_rules::a_pre_projected_pivot_moves_as_the_record_s_first_point_moved", "key_rules::a_pre_projected_point_block_s_pivot_moves_as_its_first_point_moved", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
 
 [[plant]]
 name = "own-fill-meets-for-tied"
@@ -1207,16 +1207,16 @@ check = "two flat records that may share read the shared scenario though neither
 file = "core/oracle/src/order.rs"
 find = "            if ra_.flat.is_some() && rb_.flat.is_some() && self.may_share_flat(i, j) {"
 replace = "            if ra_.flat.is_some() && rb_.flat.is_some() && self.may_share_flat(i, j) && (ra.row.is_some() || rb.row.is_some()) {"
-red = ["pair_rules::two_flat_triangles_that_may_share_tie_within_term_though_neither_has_a_row"]
+red = ["pair_rules::two_flat_triangles_that_may_share_tie_within_term_though_neither_has_a_row", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
 
 [[plant]]
 name = "exact-tie-own-unread"
 item = "§7"
 check = "two keys of one computation in every scenario are an ExactTie"
 file = "core/oracle/src/order.rs"
-find = "            let one = ra.own_at.is_some() && ra.own_at == rb.own_at;"
-replace = "            let one = false;"
-red = ["pair_rules::two_keys_of_one_computation_in_every_scenario_are_an_exact_tie"]
+find = "        let one = not_shared && ra.own_at.is_some() && ra.own_at == rb.own_at;"
+replace = "        let one = false;"
+red = ["pair_rules::two_keys_of_one_computation_in_every_scenario_are_an_exact_tie", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
 
 [[plant]]
 name = "own-keys-read-first"
@@ -1225,7 +1225,7 @@ check = "an own read no scenario uses leaves the pair judged (curve_recut is per
 file = "core/oracle/src/order.rs"
 find = "        for r in [ra, rb] {\n            if let Err(u @ (Unable::BandUnbounded | Unable::PivotUnknown)) = r.own {"
 replace = "        ra.own?;\n        rb.own?;\n        for r in [ra, rb] {\n            if let Err(u @ (Unable::BandUnbounded | Unable::PivotUnknown)) = r.own {"
-red = ["pair_rules::an_axis_only_pair_reads_no_own_key", "order::an_axis_only_pair_needs_no_own_read_but_a_fragment_with_no_bound_stays_unable"]
+red = ["pair_rules::an_axis_only_pair_reads_no_own_key", "order::an_axis_only_pair_needs_no_own_read_but_a_fragment_with_no_bound_stays_unable", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
 
 [[plant]]
 name = "band-unbounded-per-read"
@@ -1252,7 +1252,7 @@ check = "two facing keys of one centre are one computation where the facing plan
 file = "core/oracle/src/keys.rs"
 find = "            Model::Const { at, .. } => Some(Computation::Centre(*at)),\n"
 replace = ""
-red = ["pair_rules::two_facing_keys_of_one_centre_are_an_exact_tie_where_the_facing_plane_does_not_key"]
+red = ["pair_rules::two_facing_keys_of_one_centre_are_an_exact_tie_where_the_facing_plane_does_not_key", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
 
 [[plant]]
 name = "centre-key-inputs"
@@ -1270,7 +1270,7 @@ check = "cycle_rank@2: a choice whose own-key strong edges cycle is not a comple
 file = "core/oracle/src/order.rs"
 find = "        if !cycles(&own) && rank(n, &front, &strong, &|i| paint(present[i])) == target {"
 replace = "        if rank(n, &front, &strong, &|i| paint(present[i])) == target {"
-red = ["order::an_all_strong_cycle_through_a_row_read_is_ranked_by_wins_then_paint_order", "order::the_nontransitive_triple_admits_its_reversal_only_through_a_row_read_cycle"]
+red = ["order::an_all_strong_cycle_through_a_row_read_is_ranked_by_wins_then_paint_order", "order::the_nontransitive_triple_admits_its_reversal_only_through_a_row_read_cycle", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
 
 [[plant]]
 name = "cycle-row-read-stays"
@@ -1306,7 +1306,7 @@ check = "band_input@2: where both cover, an adjusted stroke ends at the nearer f
 file = "core/oracle/src/pairs.rs"
 find = "    let hi = if fill_either {\n        o.hi()\n    } else {\n        o.hi().min(f.hi())\n    };"
 replace = "    let hi = o.hi().max(f.hi());"
-red = ["lib::pairs::tests::where_both_cover_an_adjusted_stroke_ends_at_the_nearer_far_end", "pair_rules::a_stroke_adjusted_on_its_own_fill_ends_at_the_nearer_far_end_where_both_cover"]
+red = ["lib::pairs::tests::where_both_cover_an_adjusted_stroke_ends_at_the_nearer_far_end", "pair_rules::a_stroke_adjusted_on_its_own_fill_ends_at_the_nearer_far_end_where_both_cover", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
 
 [[plant]]
 name = "own-fill-either-far"
@@ -1315,7 +1315,7 @@ check = "band_input@2: where the fill's cover is Either, an adjusted stroke reac
 file = "core/oracle/src/pairs.rs"
 find = "    let hi = if fill_either {\n        o.hi()\n    } else {\n        o.hi().min(f.hi())\n    };"
 replace = "    let hi = o.hi().min(f.hi());"
-red = ["lib::pairs::tests::where_the_fill_s_cover_is_either_an_adjusted_stroke_reaches_its_own_far_end"]
+red = ["lib::pairs::tests::where_the_fill_s_cover_is_either_an_adjusted_stroke_reaches_its_own_far_end", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
 
 [[plant]]
 name = "own-fill-either-bound"
@@ -1342,7 +1342,7 @@ check = "the judge takes truth_unable from a fragment's own BAND status, a pair 
 file = "core/oracle/tests/common/judge.rs"
 find = "            if let Some(name) = own.and_then(|b| unable_status(b.status[s])) {"
 replace = "            if let Some(name) = own.and(None::<&'static str>) {"
-red = ["judge::a_lone_fragment_whose_key_states_no_bound_is_unable_not_agreement"]
+red = ["judge::a_lone_fragment_whose_key_states_no_bound_is_unable_not_agreement", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
 
 [[plant]]
 name = "either-two-keys"
