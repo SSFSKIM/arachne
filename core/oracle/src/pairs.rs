@@ -298,5 +298,9 @@ mod tests {
         // 5e-7 apart: tied, both bounds count.
         let tied = on_own_fill(band(-1.0, 1e-6, 1e-3), band(-1.0000005, 1e-9, 1e-3)).unwrap();
         assert_eq!((tied.o, tied.r), (-1.0000005, 1e-6));
+        // Keys 0.02 apart with R 0.01 and 0.001 and no S: the intervals [−1.03, −0.97] and
+        // [−1.023, −1.017] meet, the keys do not tie, and the nearer fill's 0.001 is taken.
+        let met = on_own_fill(band(-1.0, 0.01, 0.0), band(-1.02, 0.001, 0.0)).unwrap();
+        assert_eq!((met.o, met.r), (-1.02, 0.001));
     }
 }
