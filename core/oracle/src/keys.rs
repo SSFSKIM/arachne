@@ -126,11 +126,10 @@ pub struct CurveKey {
     /// Each shape's points under the record's placements, with its blend coefficient: the shape
     /// contents, the placements and the blend (`shape_b`, `place_b`, `t`).
     pub placings: Vec<Placing>,
-    /// A pre-projected record's own shape, which its placings (its tail's) do not hold.
-    pub pre_projected_shape: Option<Key>,
     pub reveal: Option<(f64, f64)>,
-    /// A pre-projected record's tail points.
-    pub pre_projected: Option<Key>,
+    /// A pre-projected record's tail points, and its own shape, which its placings (its tail's)
+    /// do not hold.
+    pub pre_projected: Option<(Key, Option<Key>)>,
     pub space: Space,
     pub fixed_orientation_centre: Option<[f64; 3]>,
     /// A face group's face ends and face widths.
@@ -156,9 +155,11 @@ impl CurveKey {
         CurveKey {
             kind: rec.kind,
             placings: item.common.placings.clone(),
-            pre_projected_shape: rec.pre_projected.as_ref().and(rec.geometry.shape_a),
             reveal: rec.geometry.reveal,
-            pre_projected: rec.pre_projected.as_ref().map(|t| t.points),
+            pre_projected: rec
+                .pre_projected
+                .as_ref()
+                .map(|t| (t.points, rec.geometry.shape_a)),
             space: rec.depth.space,
             fixed_orientation_centre: rec.depth.fixed_orientation_centre,
             faces,

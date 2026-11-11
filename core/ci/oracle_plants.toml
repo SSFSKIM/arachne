@@ -1619,6 +1619,51 @@ name = "curve-key-pre-projected-shape"
 item = "§7"
 check = "a pre-projected curve's computation is named by its record's own shape: equal tails of other shapes are not one"
 file = "core/oracle/src/keys.rs"
-find = "            pre_projected_shape: rec.pre_projected.as_ref().and(rec.geometry.shape_a),\n"
-replace = "            pre_projected_shape: None,\n"
+find = "                .map(|t| (t.points, rec.geometry.shape_a)),\n"
+replace = "                .map(|t| (t.points, None)),\n"
 red = ["pair_rules::equal_tails_of_pre_projected_records_of_other_shapes_are_not_one_computation"]
+
+[[plant]]
+name = "curve-key-pre-projected"
+item = "§7"
+check = "a curve's computation is named by its pre-projected tail: a pre-projected record and a projected one at equal points are not one"
+file = "core/oracle/src/keys.rs"
+find = "            pre_projected: rec\n                .pre_projected\n                .as_ref()\n                .map(|t| (t.points, rec.geometry.shape_a)),\n"
+replace = "            pre_projected: None,\n"
+red = ["pair_rules::a_pre_projected_record_and_a_projected_one_at_equal_points_are_not_one_computation"]
+
+[[plant]]
+name = "curve-key-kind"
+item = "§7"
+check = "a curve's computation is named by its record's kind: a path and a face group of one face at equal points are not one"
+file = "core/oracle/src/keys.rs"
+find = "            kind: rec.kind,\n"
+replace = "            kind: RecordKind::Path,\n"
+red = ["pair_rules::a_path_and_a_face_group_of_one_face_at_equal_points_are_not_one_computation"]
+
+[[plant]]
+name = "curve-key-face-ends"
+item = "§7"
+check = "a curve's computation is named by its face group's face ends"
+file = "core/oracle/src/keys.rs"
+find = "            Body::FaceGroup(f) => (f.face_ends.clone(), f.face_widths.clone()),\n"
+replace = "            Body::FaceGroup(f) => (Vec::new(), f.face_widths.clone()),\n"
+red = ["pair_rules::face_groups_of_one_run_under_other_face_lists_are_not_one_computation"]
+
+[[plant]]
+name = "curve-key-face-widths"
+item = "§7"
+check = "a curve's computation is named by its face group's face widths"
+file = "core/oracle/src/keys.rs"
+find = "            Body::FaceGroup(f) => (f.face_ends.clone(), f.face_widths.clone()),\n"
+replace = "            Body::FaceGroup(f) => (f.face_ends.clone(), Vec::new()),\n"
+red = ["pair_rules::face_groups_of_one_run_under_other_face_lists_are_not_one_computation"]
+
+[[plant]]
+name = "curve-key-centre-pin"
+item = "§5"
+check = "a record kept facing its centre is keyed by its facing plane, never along its curve"
+file = "core/oracle/src/keys.rs"
+find = "            return none(facing_model(pr, &map, *centre, delta_c));\n        }\n        (_, true) => {\n"
+replace = "            let _ = (centre, delta_c);\n        }\n        (_, true) => {\n"
+red = ["pair_rules::a_record_kept_facing_its_centre_never_reaches_a_curve_key"]

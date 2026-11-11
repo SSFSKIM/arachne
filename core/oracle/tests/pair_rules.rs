@@ -612,6 +612,17 @@ fn two_curve_reads(
         [3.0, 1.5, -1.5],
         [3.0, -1.5, 3.0],
     ]);
+    curve_pair(pts, pre, (la, lb), edit, alike)
+}
+
+/// [`two_curve_reads`] of the curve through the cubic control points `pts`.
+fn curve_pair(
+    pts: Vec<[f64; 3]>,
+    pre: bool,
+    (la, lb): (u8, u8),
+    edit: impl Fn(&mut Build),
+    alike: bool,
+) -> Vec<(u8, u8)> {
     let mut b = Build::new(true);
     for rgba in [OPAQUE_RED, OPAQUE_BLUE] {
         let r = if pre {
@@ -766,6 +777,177 @@ fn equal_shown_points_of_another_depth_space_are_not_one_computation() {
         b.records[1].depth.space = arachne_core::xf::Space::Screen;
     });
 }
+
+/// Record `i` of `b` made a face group of one face, its run the record's points, stroked `rgba`
+/// from its own per-face table and filled with nothing (alpha 0, so no stroke read is adjusted on
+/// its own fill), with `face_ends` and `face_widths` as given.
+fn as_face_group(b: &mut Build, i: usize, rgba: [f64; 4], ends: Vec<u32>, widths: Vec<f64>) {
+    let stroke = arachne_core::xf::Stops::new(vec![rgba]);
+    let fill = arachne_core::xf::Stops::new(vec![[rgba[0], rgba[1], rgba[2], 0.0]]);
+    let (key, fill_key) = (stroke.key(), fill.key());
+    b.paints.push(stroke);
+    b.paints.push(fill);
+    let r = &mut b.records[i];
+    r.kind = arachne_core::xf::RecordKind::FaceGroup;
+    r.body = arachne_core::xf::Body::FaceGroup(arachne_core::xf::FaceGroup {
+        uv: vec![[0, 0]],
+        grid: [1, 1],
+        fill: fill_key,
+        stroke: Some(key),
+        face_ends: ends,
+        face_widths: widths,
+    });
+}
+
+#[test]
+fn a_path_and_a_face_group_of_one_face_at_equal_points_are_not_one_computation() {
+    // XF 1.3: a face group with no face ends cuts its points into one equal run per face, so one
+    // face of no face ends runs over every point, as a path does: the kind alone differs.
+    not_one_computation(false, "kind", |b| {
+        as_face_group(b, 1, OPAQUE_BLUE, Vec::new(), Vec::new())
+    });
+}
+
+#[test]
+fn face_groups_of_one_run_under_other_face_lists_are_not_one_computation() {
+    // One face over all 12 points with no face ends, or with the one face end 12; and of no face
+    // widths, or with the face width the record's own.
+    let both = |ends: Vec<u32>, widths: Vec<f64>| {
+        move |b: &mut Build| {
+            as_face_group(b, 0, OPAQUE_RED, Vec::new(), Vec::new());
+            as_face_group(b, 1, OPAQUE_BLUE, ends.clone(), widths.clone());
+        }
+    };
+    let control = two_curve_records(false, (2, 2), both(Vec::new(), Vec::new()));
+    assert!(control.contains(&(1, 4)), "control");
+    no_exact_tie(
+        "face ends",
+        &two_curve_records(false, (2, 2), both(vec![12], Vec::new())),
+    );
+    no_exact_tie(
+        "face widths",
+        &two_curve_records(false, (2, 2), both(Vec::new(), vec![0.5])),
+    );
+}
+
+#[test]
+fn a_pre_projected_record_and_a_projected_one_at_equal_points_are_not_one_computation() {
+    // Each point on `z = 0` or on the axis `x = y = 0` projects to itself in `view_c_exact`
+    // (factor 1 at `z = 0`), so a world-space record of these points and a pre-projected record
+    // whose tail holds them are shown, placed and keyed alike: only the tail differs. Not planar:
+    // `(0, 0, 1)` lies off `z = 0`.
+    let pts = vec![
+        [-1.0, 0.0, 0.0],
+        [-0.5, 0.0, 0.0],
+        [0.0, 0.0, 0.5],
+        [0.0, 0.0, 1.0],
+        [0.0, 0.0, 1.0],
+        [0.0, 0.0, 0.5],
+        [0.5, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.75, 0.25, 0.0],
+        [0.25, 0.75, 0.0],
+        [0.0, 1.0, 0.0],
+    ];
+    let control = curve_pair(pts.clone(), false, (2, 2), |_| {}, true);
+    assert!(control.contains(&(1, 4)), "control");
+    let tail = curve_pair(
+        pts.clone(),
+        false,
+        (2, 2),
+        |b| {
+            let r = &mut b.records[1];
+            r.features |= arachne_core::xf::FEATURE_PRE_PROJECTED;
+            r.pre_projected = Some(arachne_core::xf::PreProjected {
+                points: r.geometry.shape_a.unwrap(),
+                gradient: None,
+                fill: Paint::None,
+                stroke: r.paint.stroke.clone(),
+                background_stroke: r.paint.background_stroke.clone(),
+            });
+        },
+        true,
+    );
+    no_exact_tie("pre-projected", &tail);
+}
+
+#[test]
+fn a_record_kept_facing_its_centre_never_reaches_a_curve_key() {
+    // §5: a world-space record with a fixed-orientation centre is keyed by its facing plane, a
+    // pre-projected one with a centre by its pivot's facing plane, and a screen-space one keys
+    // −∞, whose pairs are an `ExactTie` by rule (§7: "both keys are `−∞`"; §6: "Two `−∞` keys
+    // are equal, and the label is `ExactTie`"). No curve read carries a centre, so `CurveKey`
+    // compares it for completeness alone; a change that keys a centred record along its curve
+    // fails here.
+    use arachne_oracle::keys::Model;
+    let pts = open(&[
+        [-3.0, 0.0, 0.0],
+        [0.0, 0.0, 1.5],
+        [3.0, 1.5, -1.5],
+        [3.0, -1.5, 3.0],
+    ]);
+    for (world, pre) in [(true, false), (true, true), (false, false)] {
+        let mut b = Build::new(world);
+        let r = if pre {
+            b.pre_projected(pts.clone(), OPAQUE_RED)
+        } else {
+            b.path(pts.clone())
+        };
+        if let Some(tail) = &mut r.pre_projected {
+            tail.stroke = Paint::One(OPAQUE_RED);
+        }
+        r.paint.stroke = Paint::One(OPAQUE_RED);
+        r.paint.stroke_width = 0.5;
+        r.depth.fixed_orientation_centre = Some([0.0, 0.0, 1.0]);
+        let v = view_c_exact();
+        let delta = b.delta(1, v.clone());
+        let mut state = arachne_oracle::stream::State::default();
+        state.apply(&delta).unwrap();
+        let items = arachne_oracle::draw::items(
+            &v,
+            &state.records,
+            &state.order,
+            &state.shapes,
+            &state.paints,
+        );
+        let mut paths = 0;
+        for it in &items {
+            if let arachne_oracle::draw::Item::Path(p) = it {
+                paths += 1;
+                let depth = arachne_oracle::keys::path_depth(&v, p, &[None, None, None]);
+                for m in &depth.layers {
+                    assert!(
+                        !matches!(m, Model::Curve { .. }),
+                        "world {world} pre {pre}: {m:?}"
+                    );
+                }
+                if !world {
+                    assert!(depth.layers.iter().all(|m| matches!(m, Model::NegInf)));
+                }
+            }
+        }
+        assert_eq!(paths, 1, "world {world} pre {pre}");
+    }
+}
+
+// `CurveKey`'s inputs: each above has a scene and a plant (`curve-key-*`), except these, each
+// compared for completeness; no pair differs in it alone:
+// - `projection`: a frame's path items share one projection (draw.rs `items_of`,
+//   `projection(view)`), a pre-projected record's taken in its camera's axes (keys.rs
+//   `path_depth`, `in_camera_axes`): it differs only with the pre-projected tail, compared.
+// - `map`: every path item maps through its view's (draw.rs `path_item`,
+//   `FrameMap::of_paths(view)`), and a frame's pairs are formed within one frame's decision
+//   under its one view (pairs.rs `frame`, over that decision's covers).
+// - `line_width_multiple`: the view's `cairo_line_width_multiple`, one per frame, as above.
+// - `shown`: a path item's shown points are its world points shown by its placement (draw.rs
+//   `path_item`, `Placement::show`); its world points are its placings' points under their
+//   placements and blend, cut to its reveal window (draw.rs `path_points`; a face's run, an
+//   instance member's placement); its placement is fixed by its space, centre and tail
+//   (camera.rs `Placement::of`). Equal compared inputs give equal shown points.
+// - `fixed_orientation_centre`: no curve read carries one
+//   (`a_record_kept_facing_its_centre_never_reaches_a_curve_key`, its plant
+//   `curve-key-centre-pin`).
 
 #[test]
 fn an_axis_only_pair_reads_no_own_key() {
