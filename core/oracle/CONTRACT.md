@@ -1119,6 +1119,9 @@ differ as follows, with `γ_j = j u / (1 − j u)`, infinite where `j u >= 1`:
   - The oracle's own rounding gives one rounded plane.
   - For any coefficient `v` with `v / 2^-20` within `2^-30` of a half-integer, the other
     neighbouring grid value is also possible, so a conforming computation may round the other way.
+    For a `Nearest` face's offset the window is `2^-30 + δe / 2^-20`, since the other
+    computation's offset may lie up to `δe` from this one's. Its normal is the same bits in both
+    computations.
 - **`A`** is `(dN + f dD) / Dn + 4u f`, with:
   - `s = ((X − x0) / (z0 xx), (Y − y0) / (z0 yy), d)`, `t_x = g_x (X − x0)`, `t_y = g_y (Y − y0)`;
   - `dn = 8u |m|`, `de = 4u ((|e| + δe) + |m| |c|)`;
@@ -1166,10 +1169,12 @@ unrounded key's evaluation (`2A`), the centroid (`δe`, `Dn` and `C`), the order
 (`64u`) and the points a read takes (`ρ`).
 
 **Change from `band_arith@1`.** @1 left the plane's order unstated and took `ρ` at the far corner
-alone. It took `A` and `shift` at the computation's own `D`, and left every difference between
-conforming evaluations to `ν`. `ν` scales with the read's key, while the unrounded key's
-differences scale with the corner keys and `1/|D|`. On the `Nearest` fringe reads measured, a
-core's own bound stood `6·10^-14` to `1.05·10^-12` of itself above @1's `R`.
+alone. It took `A` and `shift` at the computation's own `D`. Its rounding window let a `Nearest`
+face's offset round only one way where the other computation's offset may lie up to `δe` away. It
+left every difference between conforming evaluations to `ν`. `ν` scales with the read's key,
+while the unrounded key's differences scale with the corner keys and `1/|D|`. On the `Nearest`
+fringe reads measured, a core's own bound stood `6·10^-14` to `1.05·10^-12` of itself above @1's
+`R`.
 
 **A plane through three keyed corners.** With corner keys `d0`, `d1`, `d2` and corner bounds
 `err_i`, let `in = max err_i`:
@@ -1207,7 +1212,8 @@ subpaths' points `q`, and each closed subpath's closing point read at its first 
 
     gap_q + ρ(q) + key_error(q) + 4u |k_q| + u gap_q,    gap_q = |plane(map(q)) − k_q|
 
-plus `hypot(b, c) · 0.1` for the flattening.
+plus `hypot(b, c) · 0.1` for the flattening. `gap_q` is the largest over the rounded planes `gap`
+admits, as the other computation may hold either.
 
 **A stroke adjusted on its own fill.** As `stroke_on_own_fill@2` states.
 
