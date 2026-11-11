@@ -1091,3 +1091,93 @@ file = "core/oracle/src/order.rs"
 find = "Plate::Undetermined => 0,"
 replace = "Plate::Undetermined => 7,"
 red = ["judge::a_plate_relation_the_keys_do_not_establish_names_no_deviation"]
+
+[[plant]]
+name = "preprojected-fit-on-shown"
+item = "§2"
+check = "a pre-projected path is fitted on its shown points put back by unproject"
+file = "core/oracle/src/keys.rs"
+find = "    let (how, plane) = planarity(&put_back, code, item.face);"
+replace = "    let put_back = item.world.clone();\n            let (how, plane) = planarity(&put_back, code, item.face);"
+red = ["key_rules::a_pre_projected_fill_is_fitted_on_its_points_put_back_by_unproject"]
+
+[[plant]]
+name = "fixed-points-front"
+item = "§5"
+check = "a fixed-orientation point block is keyed on its facing plane"
+file = "core/oracle/src/keys.rs"
+find = "            facing_model(pr, &map, *centre, delta_c)"
+replace = "            let _ = delta_c;\n            Model::NegInf"
+red = ["key_rules::a_fixed_orientation_point_block_is_keyed_on_its_facing_plane"]
+
+[[plant]]
+name = "preprojected-points-front"
+item = "§2"
+check = "a pre-projected point block is keyed in the camera's axes"
+file = "core/oracle/src/keys.rs"
+find = "if c.record.pre_projected.is_some() {"
+replace = "if false {"
+red = ["key_rules::a_pre_projected_point_block_is_keyed_in_the_camera_s_axes"]
+
+[[plant]]
+name = "axis-identity-unformed"
+item = "§5"
+check = "a path on axis planes alone keeps only the axis identities whose rows form"
+file = "core/oracle/src/keys.rs"
+find = "            axes.retain(|(k, _)| {\n                key_plane("
+replace = "            axes.retain(|(k, _)| {\n                true || key_plane("
+red = ["pair_rules::an_axis_identity_whose_row_does_not_form_is_not_kept"]
+
+[[plant]]
+name = "third-record-retains"
+item = "§7"
+check = "a flat record that keeps no identity still witnesses a shared one"
+file = "core/oracle/src/order.rs"
+find = "            self.offered[m].flat.is_some()\n                && (m == i || self.width_passes(m, i))"
+replace = "            self.offered[m].flat.is_some()\n                && self.offered[m].retains\n                && (m == i || self.width_passes(m, i))"
+red = ["pair_rules::a_flat_record_that_keeps_no_identity_still_witnesses_a_shared_one"]
+
+[[plant]]
+name = "attach-retains"
+item = "§7"
+check = "a flat record that keeps no identity still takes a record of no plane of its own out of the axis rule alone"
+file = "core/oracle/src/order.rs"
+find = ".any(|m| m != i && self.offered[m].flat.is_some() && self.width_passes(m, i))"
+replace = ".any(|m| m != i && self.offered[m].flat.is_some() && self.offered[m].retains && self.width_passes(m, i))"
+red = ["pair_rules::a_flat_record_that_keeps_no_identity_still_takes_a_line_out_of_the_axis_rule_alone"]
+
+[[plant]]
+name = "own-fill-nearer-alone"
+item = "§6"
+check = "a stroke adjusted on its own fill keeps the hull of both intervals"
+file = "core/oracle/src/pairs.rs"
+find = "    let (lo, hi) = (o.lo().min(f.lo()), o.hi().max(f.hi()));"
+replace = "    let (lo, hi) = if meets(&o, &f) {\n        (o.lo().min(f.lo()), o.hi().max(f.hi()))\n    } else {\n        (taken.lo(), taken.hi())\n    };"
+red = ["pair_rules::a_stroke_adjusted_on_its_own_fill_keeps_the_hull_of_both_intervals"]
+
+[[plant]]
+name = "outside-hull-narrow"
+item = "§6"
+check = "a read outside a hull no wider than twice its tolerance is unbounded"
+file = "core/oracle/src/keys.rs"
+find = "let theta = if hull.width > 2.0 * tau {"
+replace = "let theta = if hull.width > 0.0 {"
+red = ["key_rules::a_row_read_outside_a_hull_no_wider_than_twice_its_tolerance_is_unbounded"]
+
+[[plant]]
+name = "const-bounds-unchecked"
+item = "§6"
+check = "a key whose bounds are not finite states no bound"
+file = "core/oracle/src/keys.rs"
+find = "            Model::Const { k, r, s } => std::array::from_fn(|_| {\n                if !(s.is_finite() && r.is_finite()) {"
+replace = "            Model::Const { k, r, s } => std::array::from_fn(|_| {\n                if false && !(s.is_finite() && r.is_finite()) {"
+red = ["key_rules::a_facing_key_whose_bounds_overflow_states_no_bound"]
+
+[[plant]]
+name = "planeless-self-witness"
+item = "§7"
+check = "a record with no plane of its own is no flat witness for itself"
+file = "core/oracle/src/order.rs"
+find = "        if i == j && self.offered[i].flat.is_some() {\n            return self.offered[i].retains;\n        }"
+replace = "        if i == j {\n            return true;\n        }"
+red = ["pair_rules::a_record_with_no_plane_of_its_own_is_no_flat_witness_for_itself"]
