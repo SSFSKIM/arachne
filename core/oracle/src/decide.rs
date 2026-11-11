@@ -12,8 +12,8 @@ use crate::keys::{self, Model, Offered};
 use crate::order::{Frag, Scene};
 use crate::out::{
     COLOUR_GRADIENT, COLOUR_PER_PIXEL, COLOUR_SOLID, ColourRow, CoverRow, Decisions,
-    FLAG_UNBOUNDED, Fragment, Header, NONE_U32, PixelColour, Refused, STATUS_DECIDED,
-    STATUS_UNABLE,
+    FLAG_UNBOUNDED, FLAG_ZERO_ALPHA, Fragment, Header, NONE_U32, PixelColour, Refused,
+    STATUS_DECIDED, STATUS_UNABLE,
 };
 use crate::pairs;
 use crate::shift::Shift;
@@ -137,6 +137,7 @@ fn unable(
         pairs: Vec::new(),
         colours: Vec::new(),
         pixel_colours: Vec::new(),
+        labels: Vec::new(),
         refused: refusals.iter().map(refused).collect(),
     }
 }
@@ -372,12 +373,22 @@ pub fn decide(state: &State, xf: (u16, u16), seq: u64, window: Option<Window>) -
             }
         }
     }
+    let extra = invisible(view, state, window, &mut fragments, &mut specs);
     covers.sort_by_key(|c| (c.y, c.x, c.fragment));
     for (f, d) in fragments.iter_mut().zip(&frags) {
         f.plane = d.offered.map_or(NONE_U32, |i| i as u32);
     }
+    // The registry with the records that paint nothing offered too, where there are any.
+    let with_invisible = (!extra.is_empty()).then(|| {
+        let all = offered.iter().cloned().chain(extra).collect();
+        Scene::new(frags.clone(), all)
+    });
     let scene = Scene::new(frags, offered);
-    let (bands, pairs) = pairs::frame(&scene, &mut covers);
+    let (bands, pairs) = pairs::frame(
+        &scene,
+        with_invisible.as_ref().unwrap_or(&scene),
+        &mut covers,
+    );
     let (colours, pixel_colours) = colours(&specs, &covers);
     Decisions {
         header,
@@ -387,8 +398,80 @@ pub fn decide(state: &State, xf: (u16, u16), seq: u64, window: Option<Window>) -
         pairs,
         colours,
         pixel_colours,
+        labels: Vec::new(),
         refused: Vec::new(),
     }
+}
+
+/// What the frame drops for painting nothing (`alpha_round@1`): the registry facts of each such
+/// record, which the counterfactual sets offer (contract §5), and a fragment flagged
+/// [`FLAG_ZERO_ALPHA`] for each mesh triangle whose alpha byte is 0 and that would cover a pixel
+/// of the window (§1, `zero_alpha_fragment`). Those fragments come after every other, carry no
+/// rows and no depth, and their colour is `(0, 0, 0, 0)`.
+fn invisible(
+    view: &View,
+    state: &State,
+    window: Window,
+    fragments: &mut Vec<Fragment>,
+    specs: &mut Vec<Spec>,
+) -> Vec<Offered> {
+    let items = draw::items_of(
+        view,
+        &state.records,
+        &state.order,
+        &state.shapes,
+        &state.paints,
+        draw::Which::Invisible,
+    );
+    let mut extra = Vec::new();
+    for item in &items {
+        match item {
+            Item::Path(p) => {
+                if let Some(o) = keys::path_depth(view, p, &[None, None, None]).offered {
+                    extra.push(o);
+                }
+            }
+            Item::Mesh(m) => {
+                let c = &m.common;
+                let shown: Vec<[f64; 3]> = m.triangles.iter().flatten().copied().collect();
+                let shift = Shift::of(c, view, &m.map, &shown);
+                for (i, t) in m.triangles.iter().enumerate() {
+                    if let (_, Some(o)) = keys::triangle_depth(view, m, i) {
+                        extra.push(o);
+                    }
+                    let corners = t.map(|q| map(&m.map, q));
+                    let eps = t.map(|q| shift.at(q));
+                    let worst = eps.iter().copied().fold(0.0, f64::max);
+                    if !(worst.is_finite() && corners.iter().flatten().all(|v| v.is_finite())) {
+                        continue;
+                    }
+                    let rows = cover::triangle(corners, eps, window);
+                    if rows.is_empty() {
+                        continue;
+                    }
+                    let mut bbox = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
+                    for r in &rows {
+                        bbox = [
+                            bbox[0].min(r.x as i32),
+                            bbox[1].min(r.y as i32),
+                            bbox[2].max(r.x as i32 + 1),
+                            bbox[3].max(r.y as i32 + 1),
+                        ];
+                    }
+                    let sub = m.sub + i as u32;
+                    fragments.push(Fragment {
+                        id: fragments.len() as u32,
+                        flags: FLAG_ZERO_ALPHA,
+                        bbox,
+                        ..fragment(c, Layer::Mesh, sub, NONE_U32, worst)
+                    });
+                    specs.push(Spec::Solid([0; 4]));
+                }
+            }
+            Item::Points(_) => {}
+        }
+    }
+    extra
 }
 
 /// A mesh triangle's colour source: a solid, or lit where the camera shades it.
@@ -493,5 +576,6 @@ fn fragment(c: &draw::Common, layer: Layer, sub: u32, group: u32, eps: f64) -> F
         plane: NONE_U32,
         epsilon: eps,
         bbox: [0; 4],
+        label: NONE_U32,
     }
 }

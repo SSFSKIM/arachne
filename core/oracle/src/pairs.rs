@@ -92,8 +92,14 @@ fn on_own_fill(
 }
 
 /// The frame's bands and pairs over `covers` (sorted by `(y, x, fragment)`), writing each row's
-/// own key and `R` into its `depth` and `band`.
-pub fn frame(scene: &Scene, covers: &mut [CoverRow]) -> (Vec<BandRow>, Vec<PairRow>) {
+/// own key and `R` into its `depth` and `band`. `offered` is the same fragments with the records
+/// that paint nothing offered to the registry too (contract §5, `invisible_registry_offer`): each
+/// pair's edges there are written beside its own.
+pub fn frame(
+    scene: &Scene,
+    offered: &Scene,
+    covers: &mut [CoverRow],
+) -> (Vec<BandRow>, Vec<PairRow>) {
     let mut bands = Vec::new();
     let mut pairs = Vec::new();
     let mut i0 = 0;
@@ -103,13 +109,19 @@ pub fn frame(scene: &Scene, covers: &mut [CoverRow]) -> (Vec<BandRow>, Vec<PairR
         while i1 < covers.len() && covers[i1].x == x && covers[i1].y == y {
             i1 += 1;
         }
-        pixel(scene, &mut covers[i0..i1], &mut bands, &mut pairs);
+        pixel(scene, offered, &mut covers[i0..i1], &mut bands, &mut pairs);
         i0 = i1;
     }
     (bands, pairs)
 }
 
-fn pixel(scene: &Scene, rows: &mut [CoverRow], bands: &mut Vec<BandRow>, pairs: &mut Vec<PairRow>) {
+fn pixel(
+    scene: &Scene,
+    offered: &Scene,
+    rows: &mut [CoverRow],
+    bands: &mut Vec<BandRow>,
+    pairs: &mut Vec<PairRow>,
+) {
     let (x, y) = (rows[0].x, rows[0].y);
     let (px, py) = (x as i64, y as i64);
     let frags: Vec<usize> = rows.iter().map(|r| r.fragment as usize).collect();
@@ -205,9 +217,19 @@ fn pixel(scene: &Scene, rows: &mut [CoverRow], bands: &mut Vec<BandRow>, pairs: 
                 } else {
                     (f64::INFINITY, f64::INFINITY)
                 };
-                let (edges, label) = match scene.pair(frags[i], frags[j], &ra, &rb, shares_ij) {
-                    Ok(p) => (p.edges.bits(), p.label.code()),
-                    Err(_) => (7, LABEL_UNABLE),
+                let (edges, label, provenance) =
+                    match scene.pair(frags[i], frags[j], &ra, &rb, shares_ij) {
+                        Ok(p) => (p.edges.bits(), p.label.code(), p.via_row.bits()),
+                        Err(_) => (7, LABEL_UNABLE, 0),
+                    };
+                // With nothing more offered, the sets are the same ones.
+                let with_invisible = if std::ptr::eq(scene, offered) {
+                    edges
+                } else {
+                    match offered.pair(frags[i], frags[j], &ra, &rb, shares_ij) {
+                        Ok(p) => p.edges.bits(),
+                        Err(_) => 7,
+                    }
                 };
                 pairs.push(PairRow {
                     x,
@@ -217,6 +239,8 @@ fn pixel(scene: &Scene, rows: &mut [CoverRow], bands: &mut Vec<BandRow>, pairs: 
                     sample: s as u8,
                     edges,
                     label,
+                    provenance,
+                    offered: with_invisible,
                 });
             }
         }

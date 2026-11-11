@@ -139,6 +139,10 @@ pub struct Reads {
 pub struct PairAt {
     pub edges: Edges,
     pub label: Label,
+    /// Which of its strong edges some scenario reads through a §5 row read (a shared plane's row,
+    /// or a flat identity it may share): `a_front` and `b_front` only, never `weak`. A strong edge
+    /// not set here is read from the two fragments' own keys alone.
+    pub via_row: Edges,
 }
 
 /// `|o_a − o_b| <= β_a + β_b + (|o_a| + 2R_a) s_a + (|o_b| + 2R_b) s_b`: a policy may hold.
@@ -320,6 +324,7 @@ impl Scene {
             return Ok(PairAt {
                 edges: Edges::WEAK,
                 label: Label::OwnLayers,
+                via_row: Edges::default(),
             });
         }
         let oa = ra.own?;
@@ -328,6 +333,7 @@ impl Scene {
             return Ok(PairAt {
                 edges: Edges::WEAK,
                 label: Label::ExactTie,
+                via_row: Edges::default(),
             });
         }
         let (ia, ib) = (fa.offered, fb.offered);
@@ -339,6 +345,10 @@ impl Scene {
                 return Ok(PairAt {
                     edges: Edges::ALL,
                     label: Label::OnePlane,
+                    via_row: Edges {
+                        weak: false,
+                        ..Edges::ALL
+                    },
                 });
             }
         }
@@ -348,6 +358,7 @@ impl Scene {
         let mut exact_rows = false;
         let mut policy: Option<Label> = None;
         let mut not_shared = true;
+        let mut via_row = Edges::default();
         if let Some((i, j)) = both {
             let (ra_, rb_) = (&self.offered[i], &self.offered[j]);
             if ra_.flat.is_some() && rb_.flat.is_some() && self.may_share_flat(i, j) {
@@ -362,6 +373,7 @@ impl Scene {
                         policy.get_or_insert(Label::OnePlane);
                     }
                     tie_meet |= meet(&wa, &wb);
+                    via_row = via_row.union(Edges { weak: false, ..e });
                     edges = edges.union(e);
                 } else if let (Some(Err(u)), _) | (_, Some(Err(u))) = (ra.row, rb.row) {
                     return Err(u);
@@ -409,7 +421,11 @@ impl Scene {
         } else {
             policy.unwrap_or(Label::TieBand)
         };
-        Ok(PairAt { edges, label })
+        Ok(PairAt {
+            edges,
+            label,
+            via_row,
+        })
     }
 }
 

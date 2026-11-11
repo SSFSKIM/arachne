@@ -11,6 +11,7 @@ Dependency-free: the standard library only. ``read(path)`` returns a dictionary:
         "pairs": [...],
         "colours": [...],
         "pixel_colours": [...],
+        "labels": [...],
         "refused": [...],
     }
 
@@ -76,8 +77,38 @@ LABEL = {
 COLOUR_KIND = {0: "gradient", 1: "solid", 2: "per_pixel"}
 #: A pair's edge bits.
 EDGE_WEAK, EDGE_A_FRONT, EDGE_B_FRONT = 1, 2, 4
-#: Fragment flags: unbounded, ``truth_unable`` at every sample of the window (no cover rows).
+#: Fragment flags: unbounded, ``truth_unable`` at every sample of the window (no cover rows);
+#: a mesh triangle whose alpha byte is 0, not present under the contract (no rows, no pairs).
 FLAG_UNBOUNDED = 1
+FLAG_ZERO_ALPHA = 2
+#: Written where a field holds nothing.
+NONE_U32 = 0xFFFFFFFF
+#: A label's role toward another fragment at a sample (``LABL``).
+LABEL_ROLE = {
+    0: "front",
+    1: "anchor",
+    2: "open",
+    3: "kind_unknown",
+    4: "alpha_straddle",
+}
+#: An open label pair's cause (``LABL``), and an open class's cause.
+PAIR_CAUSE = {
+    0: None,
+    1: "interval",
+    2: "folded",
+    3: "disconnected",
+    4: "mesh",
+    5: "label",
+}
+CLASS_CAUSE = {
+    0: None,
+    1: "unmapped",
+    2: "generic_only",
+    3: "paths_disagree",
+    4: "no_source",
+    5: "cylinder_grouped",
+    6: "point_cloud",
+}
 
 DTYPES = {
     "FRAG": [
@@ -94,7 +125,7 @@ DTYPES = {
         ("epsilon", "<f8"),
         ("bbox", "<i4", (4,)),
         ("plane", "<u4"),
-        ("reserved", "<u4"),
+        ("label", "<u4"),
     ],
     "COVR": [
         ("x", "<u4"),
@@ -146,8 +177,19 @@ DTYPES = {
         ("sample", "u1"),
         ("edges", "u1"),
         ("label", "u1"),
-        ("pad", "u1"),
-        ("reserved", "<u4"),
+        ("provenance", "u1"),
+        ("offered", "u1"),
+        ("pad", "u1", (3,)),
+    ],
+    "LABL": [
+        ("x", "<u4"),
+        ("y", "<u4"),
+        ("label", "<u4"),
+        ("fragment", "<u4"),
+        ("sample", "u1"),
+        ("role", "u1"),
+        ("pair_cause", "u1"),
+        ("class_cause", "u1"),
     ],
     "REFU": [
         ("reason", "u1"),
@@ -170,7 +212,8 @@ _F16 = struct.Struct("<16d")
 _PIXL = struct.Struct("<QI")
 _REFU = struct.Struct("<3Bx3I2Q2I")
 _BAND_HEAD = struct.Struct("<3IB3x")
-_PAIR = struct.Struct("<4I3Bx4x")
+_PAIR = struct.Struct("<4I5B3x")
+_LABL = struct.Struct("<4I4B")
 _COLR = struct.Struct("<IB4s3x")
 _COLP = struct.Struct("<3I4s4s4x")
 _SIZES = {
@@ -181,6 +224,7 @@ _SIZES = {
     "PAIR": 24,
     "COLR": 12,
     "COLP": 24,
+    "LABL": 20,
     "REFU": 40,
 }
 
@@ -248,6 +292,7 @@ def read_bytes(b: bytes) -> dict:
         "pairs": [],
         "colours": [],
         "pixel_colours": [],
+        "labels": [],
         "refused": [],
     }
     if "FRAG" in found:
@@ -269,6 +314,7 @@ def read_bytes(b: bytes) -> dict:
                     "epsilon": v[10],
                     "bbox": list(v[11:15]),
                     "plane": v[15],
+                    "label": v[16],
                 }
             )
     if "COVR" in found:
@@ -317,7 +363,9 @@ def read_bytes(b: bytes) -> dict:
     if "PAIR" in found:
         size, off, n = found["PAIR"]
         for i in range(n):
-            x, y, a, b_, sample, edges, label = _PAIR.unpack_from(b, off + i * size)
+            x, y, a, b_, sample, edges, label, provenance, offered = _PAIR.unpack_from(
+                b, off + i * size
+            )
             out["pairs"].append(
                 {
                     "x": x,
@@ -328,6 +376,27 @@ def read_bytes(b: bytes) -> dict:
                     "edges": edges,
                     "label": label,
                     "label_name": LABEL.get(label, "unknown"),
+                    "provenance": provenance,
+                    "offered": offered,
+                }
+            )
+    if "LABL" in found:
+        size, off, n = found["LABL"]
+        for i in range(n):
+            x, y, label, fragment, sample, role, pc, cc = _LABL.unpack_from(
+                b, off + i * size
+            )
+            out["labels"].append(
+                {
+                    "x": x,
+                    "y": y,
+                    "label": label,
+                    "fragment": fragment,
+                    "sample": sample,
+                    "role": role,
+                    "role_name": LABEL_ROLE.get(role, "unknown"),
+                    "pair_cause": pc,
+                    "class_cause": cc,
                 }
             )
     if "COLR" in found:
@@ -402,7 +471,8 @@ def canonical(d: dict) -> str:
     lines.extend(
         f"fragment id={f['id']} entry={f['entry']} slot={f['slot']} object={f['object']} "
         f"part={f['part']} sub={f['sub']} layer={f['layer']} kind={f['kind']} flags={f['flags']} "
-        f"group={f['group']} plane={f['plane']} epsilon={_hex(f['epsilon'])} bbox={_list(f['bbox'])}"
+        f"group={f['group']} plane={f['plane']} label={f['label']} epsilon={_hex(f['epsilon'])} "
+        f"bbox={_list(f['bbox'])}"
         for f in d["fragments"]
     )
     lines.extend(
@@ -422,8 +492,15 @@ def canonical(d: dict) -> str:
     )
     lines.extend(
         f"pair x={r['x']} y={r['y']} sample={r['sample']} a={r['a']} b={r['b']} "
-        f"edges={r['edges']} label={r['label']}"
+        f"edges={r['edges']} label={r['label']} provenance={r['provenance']} "
+        f"offered={r['offered']}"
         for r in d["pairs"]
+    )
+    lines.extend(
+        f"label x={r['x']} y={r['y']} sample={r['sample']} label={r['label']} "
+        f"fragment={r['fragment']} role={r['role']} pair_cause={r['pair_cause']} "
+        f"class_cause={r['class_cause']}"
+        for r in d["labels"]
     )
     lines.extend(
         f"colour fragment={r['fragment']} kind={r['kind']} rgba={_list(r['rgba'])}"

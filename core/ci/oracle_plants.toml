@@ -785,3 +785,30 @@ file = "core/oracle/src/label_classes.rs"
 find = "            Some(prev) if prev != o => return Outcome::Open(Cause::PathsDisagree),\n"
 replace = ""
 red = ["label_classes::a_record_s_paths_agree_or_it_is_open"]
+
+[[plant]]
+name = "format-provenance-one-plane"
+item = "§7"
+check = "a strong edge admitted through a flat identity is marked as a row read"
+file = "core/oracle/src/order.rs"
+find = "                    via_row: Edges {\n                        weak: false,\n                        ..Edges::ALL\n                    },"
+replace = "                    via_row: Edges::default(),"
+red = ["format_facts::a_strong_edge_read_through_a_shared_identity_is_marked_and_one_from_own_keys_is_not"]
+
+[[plant]]
+name = "format-offered-invisible"
+item = "§5"
+check = "the counterfactual sets offer the records that paint nothing"
+file = "core/oracle/src/decide.rs"
+find = "let with_invisible = (!extra.is_empty()).then("
+replace = "let with_invisible = (false && !extra.is_empty()).then("
+red = ["format_facts::the_edges_with_the_invisible_records_offered_admit_what_their_flat_identity_allows"]
+
+[[plant]]
+name = "format-zero-alpha-flag"
+item = "§1"
+check = "a zero-alpha mesh triangle is written flagged"
+file = "core/oracle/src/decide.rs"
+find = "flags: FLAG_ZERO_ALPHA,"
+replace = "flags: 0,"
+red = ["format_facts::a_mesh_triangle_whose_alpha_byte_is_0_is_written_flagged_with_no_rows", "cover::an_op_whose_alpha_rounds_to_zero_paints_nothing"]

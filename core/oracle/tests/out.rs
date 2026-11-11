@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use arachne_oracle::out::{
-    BandRow, ColourRow, CoverRow, Decisions, Fragment, Header, PairRow, PixelColour, Refused,
-    STATUS_UNABLE, canonical, read, write,
+    BandRow, ColourRow, CoverRow, Decisions, Fragment, Header, LabelRow, PairRow, PixelColour,
+    Refused, STATUS_UNABLE, canonical, read, write,
 };
 use common::*;
 
@@ -82,6 +82,7 @@ fn sample() -> Decisions {
                 plane: u32::MAX,
                 epsilon: f64::INFINITY,
                 bbox: [1, 0, 3, 2],
+                label: u32::MAX,
             },
             Fragment {
                 id: 1,
@@ -97,6 +98,7 @@ fn sample() -> Decisions {
                 plane: 7,
                 epsilon: 1.0 / 256.0,
                 bbox: [-2, -1, 4, 3],
+                label: 2,
             },
         ],
         covers: vec![row(1, 0, 0), row(2, 0, 0), row(2, 0, 1), row(3, 2, 1)],
@@ -133,6 +135,8 @@ fn sample() -> Decisions {
                 sample: 0,
                 edges: 1,
                 label: 5,
+                provenance: 0,
+                offered: 7,
             },
             PairRow {
                 x: 2,
@@ -140,8 +144,10 @@ fn sample() -> Decisions {
                 a: 0,
                 b: 1,
                 sample: 15,
-                edges: 7,
-                label: 0,
+                edges: 6,
+                label: 6,
+                provenance: 4,
+                offered: 3,
             },
         ],
         colours: vec![
@@ -163,6 +169,28 @@ fn sample() -> Decisions {
             lo: [1, 2, 3, 4],
             hi: [250, 251, 252, 253],
         }],
+        labels: vec![
+            LabelRow {
+                x: 2,
+                y: 0,
+                label: 2,
+                fragment: 0,
+                sample: 3,
+                role: 1,
+                pair_cause: 0,
+                class_cause: 0,
+            },
+            LabelRow {
+                x: 2,
+                y: 0,
+                label: 2,
+                fragment: 0,
+                sample: 9,
+                role: 2,
+                pair_cause: 5,
+                class_cause: 6,
+            },
+        ],
         refused: vec![
             Refused {
                 reason: 8,
@@ -215,7 +243,7 @@ fn every_section_starts_where_numpy_can_read_it_and_the_pixel_index_counts_rows(
     assert_eq!(
         tags,
         [
-            "FRAG", "COVR", "PIXL", "BAND", "PAIR", "COLR", "COLP", "REFU", "TEXT"
+            "FRAG", "COVR", "PIXL", "BAND", "PAIR", "COLR", "COLP", "LABL", "REFU", "TEXT"
         ]
     );
     // The window is 3 x 3 pixels; pixel (2, 0) holds rows 1 and 2.

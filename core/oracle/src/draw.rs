@@ -360,6 +360,18 @@ pub enum Item<'a> {
     Points(PointsItem<'a>),
 }
 
+/// Which drawn things [`items_of`] yields: those that paint, or only those dropped for painting
+/// nothing (`alpha_round@1`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Which {
+    Visible,
+    /// A path all of whose layers paint nothing, as one fill of width 0, and a mesh whose alpha
+    /// byte is 0: what the registry is offered beside the painting records in the counterfactual
+    /// sets of `invisible_registry_offer` (contract §5), and the mesh triangles the contract names
+    /// `zero_alpha_fragment` (§1).
+    Invisible,
+}
+
 /// Everything the frame's order draws, in order (overlay entries excluded). The frame is assumed
 /// not refused ([`crate::stream::State::refusals`] empty).
 pub fn items<'a>(
@@ -369,6 +381,19 @@ pub fn items<'a>(
     shapes: &'a HashMap<Key, Shape>,
     tables: &'a HashMap<Key, Stops>,
 ) -> Vec<Item<'a>> {
+    items_of(view, records, order, shapes, tables, Which::Visible)
+}
+
+/// [`items`], or what it drops for painting nothing ([`Which`]).
+pub fn items_of<'a>(
+    view: &'a View,
+    records: &'a std::collections::BTreeMap<u32, Record>,
+    order: &'a [arachne_core::xf::OrderEntry],
+    shapes: &'a HashMap<Key, Shape>,
+    tables: &'a HashMap<Key, Stops>,
+    which: Which,
+) -> Vec<Item<'a>> {
+    let invisible = which == Which::Invisible;
     let mut out = Vec::new();
     let pr = projection(view);
     let shading = matches!(&view.camera, Camera::ThreeD(c) if c.should_apply_shading);
@@ -454,6 +479,7 @@ pub fn items<'a>(
                     rec.joins.clone(),
                     false,
                     shaded,
+                    which,
                 ) {
                     out.push(Item::Path(item));
                 }
@@ -492,6 +518,7 @@ pub fn items<'a>(
                     None,
                     true,
                     shaded,
+                    which,
                 ) {
                     out.push(Item::Path(item));
                 }
@@ -532,6 +559,7 @@ pub fn items<'a>(
                             None,
                             false,
                             shaded,
+                            which,
                         ) {
                             out.push(Item::Path(item));
                         }
@@ -553,7 +581,7 @@ pub fn items<'a>(
                     for (i, member) in body.placements.iter().enumerate() {
                         let row = fill.rows()[i];
                         let alpha = row[3] * rec.opacity;
-                        if alpha_byte(alpha) == 0 {
+                        if (alpha_byte(alpha) == 0) != invisible {
                             continue;
                         }
                         let m = compose(member, &rec.geometry.place_a);
@@ -594,7 +622,7 @@ pub fn items<'a>(
                 let Some(colour) = fill.as_ref().and_then(|r| r.first()) else {
                     continue;
                 };
-                if alpha_byte(colour[3] * rec.opacity) == 0 {
+                if (alpha_byte(colour[3] * rec.opacity) == 0) != invisible {
                     continue;
                 }
                 let placing = Placing {
@@ -694,6 +722,7 @@ fn path_item<'a>(
     joins: Option<Vec<u8>>,
     face: bool,
     shaded: bool,
+    which: Which,
 ) -> Option<PathItem<'a>> {
     if world.len() < 4 || world.iter().flatten().any(|v| !v.is_finite()) {
         return None;
@@ -713,7 +742,7 @@ fn path_item<'a>(
             }
         }
     };
-    let layers = [
+    let mut layers = [
         layer(
             &paint.background_stroke,
             Some(paint.background_stroke_width),
@@ -721,8 +750,12 @@ fn path_item<'a>(
         layer(&paint.fill, None),
         layer(&paint.stroke, Some(paint.stroke_width)),
     ];
-    if layers.iter().all(Option::is_none) {
+    let paints_nothing = layers.iter().all(Option::is_none);
+    if paints_nothing != (which == Which::Invisible) {
         return None;
+    }
+    if paints_nothing {
+        layers = [None, Some(0.0), None];
     }
     let shown = world
         .iter()

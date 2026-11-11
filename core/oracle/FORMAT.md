@@ -38,13 +38,14 @@ cell `((dx + 8) div 4, (dy + 8) div 4)` of the pixel's 4 x 4 grid.
 
 | Tag | Record | What |
 |---|---|---|
-| `FRAG` | 64 bytes | one per fragment that has a row, or is unbounded |
+| `FRAG` | 64 bytes | one per fragment that has a row, or is unbounded, then one per zero-alpha mesh triangle |
 | `COVR` | 456 bytes | one per fragment at a pixel, sorted by `(y, x, fragment)` |
 | `PIXL` | 12 bytes | one per pixel of the window, row by row: its first `COVR` row and their count |
 | `BAND` | 544 bytes | one per `COVR` row, in its order (its own row), then one more where the fragment has a row on its record's plane |
 | `PAIR` | 24 bytes | one per pair of fragments present at a sample, sorted by `(y, x, sample, a, b)` |
 | `COLR` | 12 bytes | one per fragment, by id: its colour's kind and a solid's bytes |
 | `COLP` | 24 bytes | one per `COVR` row of a per-pixel fragment, in `COVR`'s order |
+| `LABL` | 20 bytes | one per camera-facing label and other fragment present at one sample, sorted by `(y, x, sample, label, fragment)` |
 | `REFU` | 40 bytes | one per refusal; empty when the frame is decided |
 | `TEXT` | 1 byte | the refusals' words, UTF-8 |
 
@@ -53,7 +54,7 @@ cell `((dx + 8) div 4, (dy + 8) div 4)` of the pixel's 4 x 4 grid.
 ```
 u32 id  u32 entry (order index)  u32 slot  u32 object  u32 part  u32 sub
 u8 layer  u8 kind (record kind code)  u16 flags  u32 group
-f64 epsilon (screen shift, px)  i32 x0, y0, x1, y1 (its rows' pixel box)  u32 plane  u32 reserved
+f64 epsilon (screen shift, px)  i32 x0, y0, x1, y1 (its rows' pixel box)  u32 plane  u32 label
 ```
 
 - **Identity.** `(object, part, layer, sub)` names a fragment as the core's report does. `layer`:
@@ -70,7 +71,16 @@ f64 epsilon (screen shift, px)  i32 x0, y0, x1, y1 (its rows' pixel box)  u32 pl
   geometry is not finite), so it may stand anywhere: it is `truth_unable` at every sample of the
   window, never absent. Its `epsilon` is infinite, its box the window, and it has no `COVR` rows; a
   reader treats it as present-unknown at every pixel. An unbounded point has one fragment, the
-  `sub` of its first block offset.
+  `sub` of its first block offset. Bit 1, *zero alpha*: a mesh triangle whose alpha byte is 0
+  (contract §1, `alpha_round@1`). The contract makes it not present, so it has no `COVR` rows, no
+  `BAND` rows and no pairs, and its colour is `(0, 0, 0, 0)`; its box is the pixels it would
+  cover. It is written so that a report carrying that fragment is named: a fragment the oracle
+  holds no `COVR` row for is a `mismatch`, and where its identity is a zero-alpha fragment's it is
+  counted `zero_alpha_fragment`. These rows follow every other fragment's.
+- **`label`**: the camera-facing label the fragment belongs to (contract §10,
+  `label_placement@2`: a facing group read under XF 1.5's rules, else a run of camera-facing
+  records with one carried centre), numbered in the frame from 0; `0xffffffff` for a fragment of
+  no label. The order at a sample holding a label is read through `LABL`.
 
 ### `COVR`
 
@@ -112,7 +122,7 @@ key of `−∞`.
 ### `PAIR`
 
 ```
-u32 x  u32 y  u32 a  u32 b  u8 sample  u8 edges  u8 label  1 byte pad  u32 reserved
+u32 x  u32 y  u32 a  u32 b  u8 sample  u8 edges  u8 label  u8 provenance  u8 offered  3 bytes pad
 ```
 
 Every pair of fragments present (`Yes` or `Either`) at a sample, `a < b` by fragment id (contract
@@ -123,10 +133,55 @@ Every pair of fragments present (`Yes` or `Either`) at a sample, `a < b` by frag
 - **`label`**: 1 `Depth(a)`, 2 `Depth(b)`, 3 `TieBand`, 4 `ExactTie`, 5 `own_layers@1`,
   6 `one_plane@1`, 7 `lines@1`, 8 `near_parallel@1`; 0 where a read of either is not bounded
   (`truth_unable`, every edge).
+- **`provenance`**: of `edges`' strong bits (1 and 2, never bit 0), those that some scenario reads
+  through a §5 row read: the pair's rows on a plane they may share (`shared_plane_read@1`), or a
+  flat identity a record with no plane of its own may share (`one_plane@1`). A strong edge whose
+  bit is clear is read from the two fragments' own keys alone (each one number at the sample,
+  `stroke_on_own_fill@1` included). The completions rule that discards an own-key strong cycle
+  reads it.
+- **`offered`**: the pair's edges, in `edges`' bits, in the sets built with the records that paint
+  nothing offered to the registry too (contract §5). Equal to `edges` where the frame has no such
+  record. A reported order outside `edges`' admissible orders and inside `offered`'s is counted
+  `invisible_registry_offer`.
 - **Admissible orders** of the fragments present at a sample are the ranks (`cycle_rank@1`) of the
-  completions that pick one edge per pair; an order every pair agrees with is one.
+  completions that pick one edge per pair; an order every pair agrees with is one. At a sample
+  that holds a label fragment (`FRAG` `label`), `PAIR` still holds every pair, the label's
+  included, as §7 reads them: these are the plate model's relations (§10, `facing_plane@1`), and
+  an order admissible under them is the plate model's order there. The label rule's order is read
+  through `LABL`.
 - An unbounded fragment (`FRAG` flag bit 0) has no rows and no pairs: it is `truth_unable`
   everywhere.
+
+### `LABL`
+
+```
+u32 x  u32 y  u32 label  u32 fragment  u8 sample  u8 role  u8 pair_cause  u8 class_cause
+```
+
+A camera-facing label's placement facts at a sample (contract §10, `label_placement@2`): one row
+for each label with a fragment present at the sample and each other fragment present there that
+belongs to no label.
+
+- **`role`**: 0 *front*: the label goes in front of the fragment unless the fragment is in front of
+  an anchor; 1 *anchor*: the fragment is a fill of a sheet that qualifies for the label and holds
+  the sample's order point; 2 *open*: the pair, or the fragment's class, is open
+  (`label_rule_open`), the causes below; 3 *kind unknown* (`label_kind_unknown`, a stream read as
+  XF 1.4): an anchor under one reading and not under the other; 4 *alpha straddle*
+  (`label_alpha_straddle`): the fill's admitted alpha at the pixel holds 0 and a positive byte, and
+  the oracle cannot place it.
+- **`pair_cause`** (role 2): 1 `interval`, 2 `folded`, 3 `disconnected`, 4 `mesh`, 5 `label`; 0
+  where the class is open instead. **`class_cause`** (role 2): 1 `unmapped`, 2 `generic_only`,
+  3 `paths_disagree`, 4 `no_source`, 5 `cylinder_grouped`, 6 `point_cloud`; 0 where the pair is
+  open instead.
+- **The label rule's order** at the sample. Take the reported order of the fragments of no label;
+  it must be admissible by `PAIR` alone. Each label is inserted immediately behind the rearmost, in
+  that order, of its anchors (role 1), or in front of every fragment where it has none; labels at
+  one place keep paint order, and so do a label's own fragments. A role-3 fragment is read both
+  as an anchor and not, and the orders of both readings are admitted. A sample where some row of a
+  label is role 2 is counted `label_rule_open` under its causes, and one with a role-4 row is
+  `label_alpha_straddle`: neither is a mismatch nor an agreement.
+- A reported order outside the label rule's orders and inside the plate model's (`PAIR`) is a
+  `mismatch` counted `label_plate_model`.
 
 ### `COLR`
 

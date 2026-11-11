@@ -20,6 +20,7 @@ pub const BAND_SIZE: usize = 544;
 pub const PAIR_SIZE: usize = 24;
 pub const COLOUR_SIZE: usize = 12;
 pub const PIXEL_COLOUR_SIZE: usize = 24;
+pub const LABEL_SIZE: usize = 20;
 /// A fragment's colour kind: not computed (a gradient), one solid, or per pixel (`COLP`).
 pub const COLOUR_GRADIENT: u8 = 0;
 pub const COLOUR_SOLID: u8 = 1;
@@ -41,6 +42,10 @@ pub enum Cover {
 /// A fragment flag: its screen shift is infinite (contract §6, "Unbounded keys"), so it is
 /// `truth_unable` at every sample of the window. Such a fragment carries no cover rows.
 pub const FLAG_UNBOUNDED: u16 = 1;
+/// A fragment flag: a mesh triangle whose alpha byte is 0 (contract §1, `alpha_round@1`). The
+/// contract makes it not present, so it has no rows and no pairs; it is written so a report that
+/// carries it is named `zero_alpha_fragment`. Its `bbox` is the pixels it would cover.
+pub const FLAG_ZERO_ALPHA: u16 = 2;
 
 /// One fragment the frame draws: one layer of one path, one mesh triangle, or one point block's
 /// pixel.
@@ -66,6 +71,9 @@ pub struct Fragment {
     pub epsilon: f64,
     /// The pixel box its rows lie in: `[x0, y0, x1, y1)`.
     pub bbox: [i32; 4],
+    /// The camera-facing label it belongs to (contract §10), an index the frame's `LABL` rows
+    /// name, else [`NONE_U32`].
+    pub label: u32,
 }
 
 /// One fragment at one pixel: its verdict and areas at every sample.
@@ -140,6 +148,43 @@ pub struct PairRow {
     /// 0 `truth_unable`, 1 `Depth(a)`, 2 `Depth(b)`, 3 `TieBand`, 4 `ExactTie`, 5 `own_layers@1`,
     /// 6 `one_plane@1`, 7 `lines@1`, 8 `near_parallel@1`.
     pub label: u8,
+    /// Of `edges`' strong bits (1 and 2), those some scenario reads through a §5 row read; a
+    /// strong edge whose bit is clear here is read from the two fragments' own keys alone.
+    pub provenance: u8,
+    /// The pair's edges, in `edges`' bits, in the sets built with the records that paint nothing
+    /// offered to the registry too (`invisible_registry_offer`, contract §5).
+    pub offered: u8,
+}
+
+/// A label's role toward a fragment at one sample (`LABL`): the label's placement facts (contract
+/// §10, `label_placement@2`).
+pub const ROLE_FRONT: u8 = 0;
+/// A qualifying sheet that holds the sample's order point: the label goes immediately behind the
+/// rearmost such fragment in the order of the others.
+pub const ROLE_ANCHOR: u8 = 1;
+/// An open pair or an open class: the sample is `label_rule_open` under the row's causes.
+pub const ROLE_OPEN: u8 = 2;
+/// `label_kind_unknown`: an anchor in one reading, not in the other; both orders are admitted.
+pub const ROLE_KIND_UNKNOWN: u8 = 3;
+/// `label_alpha_straddle`: the fill's admitted alpha holds 0 and a positive byte; oracle-unable.
+pub const ROLE_ALPHA_STRADDLE: u8 = 4;
+
+/// One label and one other fragment, both present at one sample.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LabelRow {
+    pub x: u32,
+    pub y: u32,
+    /// The label (`Fragment::label`).
+    pub label: u32,
+    /// The other fragment, of no label.
+    pub fragment: u32,
+    pub sample: u8,
+    pub role: u8,
+    /// 0 none, 1 `interval`, 2 `folded`, 3 `disconnected`, 4 `mesh`, 5 `label`.
+    pub pair_cause: u8,
+    /// 0 none, 1 `unmapped`, 2 `generic_only`, 3 `paths_disagree`, 4 `no_source`,
+    /// 5 `cylinder_grouped`, 6 `point_cloud`.
+    pub class_cause: u8,
 }
 
 /// A refusal as the file holds it.
@@ -187,6 +232,8 @@ pub struct Decisions {
     pub colours: Vec<ColourRow>,
     /// One per cover row of a per-pixel fragment, in the cover rows' order.
     pub pixel_colours: Vec<PixelColour>,
+    /// Sorted by `(y, x, sample, label, fragment)`.
+    pub labels: Vec<LabelRow>,
     pub refused: Vec<Refused>,
 }
 
@@ -243,7 +290,7 @@ pub fn write(d: &Decisions) -> Vec<u8> {
         for v in f.bbox {
             frag.extend(v.to_le_bytes());
         }
-        u32s(&mut frag, &[f.plane, 0]);
+        u32s(&mut frag, &[f.plane, f.label]);
     }
     let mut cov = Vec::with_capacity(d.covers.len() * COVER_SIZE);
     for c in &d.covers {
@@ -279,8 +326,8 @@ pub fn write(d: &Decisions) -> Vec<u8> {
     let mut pair = Vec::with_capacity(d.pairs.len() * PAIR_SIZE);
     for r in &d.pairs {
         u32s(&mut pair, &[r.x, r.y, r.a, r.b]);
-        pair.extend([r.sample, r.edges, r.label, 0]);
-        u32s(&mut pair, &[0]);
+        pair.extend([r.sample, r.edges, r.label, r.provenance]);
+        pair.extend([r.offered, 0, 0, 0]);
     }
     let mut colr = Vec::with_capacity(d.colours.len() * COLOUR_SIZE);
     for r in &d.colours {
@@ -295,6 +342,11 @@ pub fn write(d: &Decisions) -> Vec<u8> {
         colp.extend(r.lo);
         colp.extend(r.hi);
         u32s(&mut colp, &[0]);
+    }
+    let mut labl = Vec::with_capacity(d.labels.len() * LABEL_SIZE);
+    for r in &d.labels {
+        u32s(&mut labl, &[r.x, r.y, r.label, r.fragment]);
+        labl.extend([r.sample, r.role, r.pair_cause, r.class_cause]);
     }
     let pixl = pixel_index(d);
     let sections = [
@@ -339,6 +391,12 @@ pub fn write(d: &Decisions) -> Vec<u8> {
             record_size: PIXEL_COLOUR_SIZE as u32,
             count: d.pixel_colours.len() as u64,
             bytes: colp,
+        },
+        Section {
+            tag: *b"LABL",
+            record_size: LABEL_SIZE as u32,
+            count: d.labels.len() as u64,
+            bytes: labl,
         },
         Section {
             tag: *b"REFU",
@@ -481,8 +539,27 @@ pub fn read(b: &[u8]) -> Result<Decisions, String> {
         pairs: Vec::new(),
         colours: Vec::new(),
         pixel_colours: Vec::new(),
+        labels: Vec::new(),
         refused: Vec::new(),
     };
+    if let Some((_, size, off, count)) = section(b"LABL") {
+        for i in 0..count {
+            let mut r = Reader {
+                b,
+                at: off + i * size,
+            };
+            d.labels.push(LabelRow {
+                x: r.u32()?,
+                y: r.u32()?,
+                label: r.u32()?,
+                fragment: r.u32()?,
+                sample: r.u8()?,
+                role: r.u8()?,
+                pair_cause: r.u8()?,
+                class_cause: r.u8()?,
+            });
+        }
+    }
     if let Some((_, size, off, count)) = section(b"COLR") {
         for i in 0..count {
             let mut r = Reader {
@@ -547,6 +624,8 @@ pub fn read(b: &[u8]) -> Result<Decisions, String> {
                 sample: r.u8()?,
                 edges: r.u8()?,
                 label: r.u8()?,
+                provenance: r.u8()?,
+                offered: r.u8()?,
             });
         }
     }
@@ -570,6 +649,7 @@ pub fn read(b: &[u8]) -> Result<Decisions, String> {
                 epsilon: r.f64()?,
                 bbox: [r.i32()?, r.i32()?, r.i32()?, r.i32()?],
                 plane: r.u32()?,
+                label: r.u32()?,
             };
             d.fragments.push(f);
         }
@@ -675,7 +755,7 @@ pub fn canonical(d: &Decisions) -> String {
         let _ = writeln!(
             s,
             "fragment id={} entry={} slot={} object={} part={} sub={} layer={} kind={} flags={} \
-             group={} plane={} epsilon={} bbox={}",
+             group={} plane={} label={} epsilon={} bbox={}",
             f.id,
             f.entry,
             f.slot,
@@ -687,6 +767,7 @@ pub fn canonical(d: &Decisions) -> String {
             f.flags,
             f.group,
             f.plane,
+            f.label,
             hex(f.epsilon),
             list(f.bbox)
         );
@@ -730,8 +811,15 @@ pub fn canonical(d: &Decisions) -> String {
     for r in &d.pairs {
         let _ = writeln!(
             s,
-            "pair x={} y={} sample={} a={} b={} edges={} label={}",
-            r.x, r.y, r.sample, r.a, r.b, r.edges, r.label
+            "pair x={} y={} sample={} a={} b={} edges={} label={} provenance={} offered={}",
+            r.x, r.y, r.sample, r.a, r.b, r.edges, r.label, r.provenance, r.offered
+        );
+    }
+    for r in &d.labels {
+        let _ = writeln!(
+            s,
+            "label x={} y={} sample={} label={} fragment={} role={} pair_cause={} class_cause={}",
+            r.x, r.y, r.sample, r.label, r.fragment, r.role, r.pair_cause, r.class_cause
         );
     }
     for r in &d.colours {

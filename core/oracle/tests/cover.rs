@@ -347,10 +347,16 @@ fn an_op_whose_alpha_rounds_to_zero_paints_nothing() {
     let mut m = Record::new(RecordKind::Mesh, 0, 100);
     m.geometry.shape_a = Some(mesh.key());
     m.paint.fill = Paint::One([1.0, 1.0, 1.0, 0.001]);
+    // A zero-alpha mesh triangle is not present: written only as a flagged fragment with no rows,
+    // so that a report carrying it is named (`zero_alpha_fragment`).
+    let d = decide(&[delta(1, Some(v), vec![mesh], vec![m])]);
+    assert!(d.covers.is_empty() && d.pairs.is_empty());
     assert!(
-        decide(&[delta(1, Some(v), vec![mesh], vec![m])])
-            .fragments
-            .is_empty()
+        d.fragments
+            .iter()
+            .all(|f| f.flags & arachne_oracle::out::FLAG_ZERO_ALPHA != 0),
+        "{:?}",
+        d.fragments
     );
 }
 
