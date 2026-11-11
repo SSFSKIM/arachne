@@ -230,7 +230,19 @@ pub fn judge(d: &Decisions, rep: &Reported, s: usize) -> Verdict {
             return Verdict::Mismatch("mismatch");
         }
     }
-    // The order.
+    // The order: of the fragments reported present at the sample, each once (§7).
+    let mut listed: Vec<usize> = rep.order[s]
+        .iter()
+        .copied()
+        .filter(|&e| rep.entries[e].cells[s] > 0)
+        .collect();
+    listed.sort();
+    let present: Vec<usize> = (0..rep.entries.len())
+        .filter(|&e| rep.entries[e].cells[s] > 0)
+        .collect();
+    if listed != present {
+        return Verdict::Mismatch("mismatch");
+    }
     let order: Vec<u32> = rep.order[s]
         .iter()
         .filter(|&&e| rep.entries[e].cells[s] > 0)
