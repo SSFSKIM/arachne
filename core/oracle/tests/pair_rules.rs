@@ -616,3 +616,50 @@ fn an_axis_only_pair_reads_no_own_key() {
         &off[..off.len().min(4)]
     );
 }
+
+#[test]
+fn mesh_triangles_on_one_axis_plane_are_read_on_their_own_keys() {
+    // §5, `shared_plane_read@1`: "Mesh triangles and point blocks have no rows; they are always
+    // read on their own." §7: two records with no plane of their own sharing an axis plane are an
+    // `ExactTie` "wherever both rows are read there", and two triangles read none. Two thin
+    // triangles on a line, their corners sharing `y = 0` within the grid 0.05, first points
+    // equal on it, one about `z = 1` and one about `z = 0`: where their own intervals are apart,
+    // the nearer is in front by depth, never by paint order.
+    let mut b = Build::new(true);
+    for z in [1.0, 0.0] {
+        b.mesh(
+            vec![[-3.0, 0.0, z - 0.1], [3.0, 0.0, z + 0.1], [0.0, 0.02, z]],
+            vec![[0, 1, 2]],
+            OPAQUE_BLUE,
+        );
+    }
+    let d = decide(
+        &b,
+        View {
+            input_grid: 0.05,
+            ..view_c()
+        },
+    );
+    let (p, q) = (id_of(&d, 0, 3), id_of(&d, 1, 3));
+    let own = |f: u32, x: u32, y: u32| {
+        d.bands
+            .iter()
+            .find(|r| (r.fragment, r.x, r.y, r.which) == (f, x, y, 0))
+            .unwrap()
+    };
+    let mut apart = 0;
+    for r in pairs_of(&d, p, q) {
+        let s = r.sample as usize;
+        let (a, b) = (own(p, r.x, r.y), own(q, r.x, r.y));
+        if a.status[s] != 1 || b.status[s] != 1 {
+            continue;
+        }
+        let a_hi = a.o[s] + a.s_plus[s] + 3.0 * a.r[s];
+        let b_lo = b.o[s] - b.s_minus[s] - 3.0 * b.r[s];
+        if a_hi < b_lo {
+            apart += 1;
+            assert_eq!((r.edges, r.label), (2, 1), "({}, {}) sample {s}", r.x, r.y);
+        }
+    }
+    assert!(apart > 0, "no sample where the own intervals are apart");
+}

@@ -537,8 +537,9 @@ impl Scene {
                 }
                 edges = edges.union(e);
             }
-            if self.axis_shared(i, j) {
-                // Two axis-plane rows read at one sample are one computation.
+            // Two axis-plane rows read at one sample are one computation. Mesh triangles have no
+            // rows (§5): two of them are read on their own keys alone, below.
+            if self.axis_shared(i, j) && (ra_.path || rb_.path) {
                 edges = edges.union(Edges::WEAK);
                 fold(&mut plate, Plate::Tie);
                 if !(self.attaches_somewhere(i) || self.attaches_somewhere(j)) {

@@ -1451,3 +1451,12 @@ file = "core/oracle/src/centreline.rs"
 find = "                    (0.0, 1.0)\n"
 replace = "                    (0.0, 0.0)\n"
 red = ["lib::centreline::tests::a_zero_length_segment_within_reach_gives_both_its_ends_keys"]
+
+[[plant]]
+name = "axis-triangles-own-keys"
+item = "§7"
+check = "two mesh triangles on one axis plane have no rows and are read on their own keys"
+file = "core/oracle/src/order.rs"
+find = "            if self.axis_shared(i, j) && (ra_.path || rb_.path) {\n"
+replace = "            if self.axis_shared(i, j) {\n"
+red = ["pair_rules::mesh_triangles_on_one_axis_plane_are_read_on_their_own_keys"]
