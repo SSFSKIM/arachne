@@ -210,8 +210,9 @@ pub enum Model {
     NegInf,
     /// A world plane keyed on screen: its key, its region's `M` (`R` before `ρ`, `O`, `ν` and
     /// the factor), any departure `O` (a `Nearest` face's outline's), its `S`, and for a sloped
-    /// layer the rings its fringe reads beyond (`fringe_key@1`); and the plane as rounded where
-    /// its rounding is settled.
+    /// layer the rings its fringe reads beyond (`fringe_key@1`); the plane as rounded where its
+    /// rounding is settled; and the keys of every rounded plane `gap` admits, its own first, any
+    /// of which the other computation may hold.
     Plane {
         key: ScreenKey,
         r0: f64,
@@ -219,6 +220,7 @@ pub enum Model {
         s: PlaneS,
         fringe: Option<Vec<Ring>>,
         rounded: Option<Rounded>,
+        admitted: Vec<ScreenKey>,
     },
     /// The plane on screen through a triangle's corners.
     Tri {
@@ -377,6 +379,7 @@ impl Model {
                 extra,
                 s,
                 fringe,
+                admitted,
                 ..
             } => {
                 let at: [[f64; 2]; 16] = std::array::from_fn(|k| match fringe {
@@ -385,8 +388,13 @@ impl Model {
                 });
                 let os: [f64; 16] = std::array::from_fn(|k| key.at(at[k][0], at[k][1]));
                 let omax = os.iter().map(|o| o.abs()).fold(0.0, f64::max);
-                // `R = (1 + 64u) ((M + ρ + O) + ν)`, `O` a `Nearest` face's departure (§6).
-                let r = (1.0 + 64.0 * U) * (((r0 + key.rho(px, py, &at)) + extra) + nu(omax));
+                // `R = (1 + 64u) ((M + ρ + O) + ν)`, `O` a `Nearest` face's departure, `ρ` the
+                // largest over the rounded planes `gap` admits (§6).
+                let rho = admitted
+                    .iter()
+                    .map(|plane| plane.rho(px, py, &at))
+                    .fold(0.0, f64::max);
+                let r = (1.0 + 64.0 * U) * (((r0 + rho) + extra) + nu(omax));
                 std::array::from_fn(|k| {
                     let o = os[k];
                     let s = match s {
@@ -598,6 +606,7 @@ fn plane_model(
         s,
         fringe: fringe.filter(|_| key.sloped()),
         rounded: (conforming.len() == 1).then(|| conforming[0]),
+        admitted: conforming_keys(pr, map, plane),
     })
 }
 
@@ -799,14 +808,11 @@ pub fn path_depth(view: &View, item: &PathItem, rings: &[Option<Vec<Ring>>; 3]) 
                     world_s(pr, &map, &p, &item.world, tau),
                     rings[1].clone(),
                 )?;
-                if let Model::Plane { key, extra, .. } = &mut m {
-                    *extra = nearest_departure(
-                        pr,
-                        &map,
-                        &item.shown,
-                        key,
-                        &conforming_keys(pr, &map, &p),
-                    );
+                if let Model::Plane {
+                    extra, admitted, ..
+                } = &mut m
+                {
+                    *extra = nearest_departure(pr, &map, &item.shown, admitted);
                 }
                 Some(m)
             })
@@ -925,39 +931,38 @@ pub fn path_depth(view: &View, item: &PathItem, rings: &[Option<Vec<Ring>>; 3]) 
     }
 }
 
-/// A `Nearest` face's outline departure: the largest over its subpaths' points `q` (and each
-/// closed subpath's closing point read at its first point's position) of
-/// `gap_q + ρ(q) + key_error(q) + 4u |k_q| + u gap_q`, plus `hypot(b, c) · 0.1`, on its own
-/// `key`; `gap_q` is the largest over the `rounded` planes' keys, as the other computation may
-/// hold any of them (contract §6, `band_arith@3`).
+/// A `Nearest` face's outline departure `O` (contract §6, `band_arith@3`): the largest, over the
+/// keys of the `rounded` planes `gap` admits (its own first), of that plane's departure, the
+/// largest over its subpaths' points `q` (and each closed subpath's closing point read at its
+/// first point's position) of `gap_q + ρ(q) + key_error(q) + 4u |k_q| + u gap_q`, plus
+/// `hypot(b, c) · 0.1`, with the plane, `ρ(q)`, `b` and `c` all taken on that rounded plane.
 fn nearest_departure(
     pr: &Projection,
     map: &FrameMap,
     shown: &[[f64; 3]],
-    key: &ScreenKey,
     rounded: &[ScreenKey],
 ) -> f64 {
-    let mut worst: f64 = 0.0;
+    let mut pts: Vec<([f64; 2], [f64; 3])> = Vec::new();
     for (s, e) in crate::flatten::subpaths(shown) {
-        let mut pts: Vec<([f64; 2], [f64; 3])> = shown[s..e]
-            .iter()
-            .map(|q| (map.map(q[0], q[1]), *q))
-            .collect();
+        pts.extend(shown[s..e].iter().map(|q| (map.map(q[0], q[1]), *q)));
         if crate::flatten::closes(shown, s, e) {
             let first = map.map(shown[s][0], shown[s][1]);
             pts.push((first, shown[e - 1]));
         }
-        for (at, q) in pts {
-            let k = pr.key(q[2]);
-            let gap = rounded
-                .iter()
-                .map(|kr| (kr.at(at[0], at[1]) - k).abs())
-                .fold(0.0, f64::max);
-            let rho = key.rho_at(at);
-            worst = worst.max(gap + rho + key_error(pr, q) + 4.0 * U * k.abs() + U * gap);
-        }
     }
-    worst + libm::hypot(key.b, key.c) * 0.1
+    rounded
+        .iter()
+        .map(|plane| {
+            let mut worst: f64 = 0.0;
+            for (at, q) in &pts {
+                let k = pr.key(q[2]);
+                let gap = (plane.at(at[0], at[1]) - k).abs();
+                let rho = plane.rho_at(*at);
+                worst = worst.max(gap + rho + key_error(pr, *q) + 4.0 * U * k.abs() + U * gap);
+            }
+            worst + libm::hypot(plane.b, plane.c) * 0.1
+        })
+        .fold(0.0, f64::max)
 }
 
 /// A triangle's depth: its model and, where offered, its registry facts.
@@ -1142,24 +1147,32 @@ pub fn point_depth(view: &View, item: &PointsItem, placed: [f64; 3]) -> Model {
 mod tests {
     use super::*;
     use crate::camera::IDENTITY3;
+    use crate::depth::{PLANE_GRID, fit};
+
+    fn straight(d: f64) -> Projection {
+        Projection {
+            r: IDENTITY3,
+            c: [0.0; 3],
+            d,
+            zoom: 1.0,
+            exponential: false,
+        }
+    }
+
+    fn map() -> FrameMap {
+        FrameMap {
+            xx: 4.0,
+            yy: -4.0,
+            x0: 32.0,
+            y0: 32.0,
+        }
+    }
 
     /// `gap_q` is the largest over the rounded planes `gap` admits, as the other computation may
     /// hold either (contract §6, a `Nearest` face).
     #[test]
     fn a_nearest_faces_departure_takes_the_gap_of_every_rounded_plane_it_admits() {
-        let pr = Projection {
-            r: IDENTITY3,
-            c: [0.0; 3],
-            d: 10.0,
-            zoom: 1.0,
-            exponential: false,
-        };
-        let map = FrameMap {
-            xx: 4.0,
-            yy: -4.0,
-            x0: 32.0,
-            y0: 32.0,
-        };
+        let (pr, map) = (straight(10.0), map());
         // One open cubic at depth 0, where every point keys `−1`.
         let shown = [
             [0.0, 0.0, 0.0],
@@ -1170,13 +1183,55 @@ mod tests {
         let own = ScreenKey::constant(-1.0);
         let other = ScreenKey::constant(-1.0 + 1.0e-3);
         assert!(
-            nearest_departure(&pr, &map, &shown, &own, &[own]) < 1.0e-12,
+            nearest_departure(&pr, &map, &shown, &[own]) < 1.0e-12,
             "premise"
         );
-        let both = nearest_departure(&pr, &map, &shown, &own, &[own, other]);
+        let both = nearest_departure(&pr, &map, &shown, &[own, other]);
         assert!(
             both >= 1.0e-3,
             "departure {both:e} under the other plane's gap"
+        );
+    }
+
+    /// `O` is the largest over the admitted rounded planes of each plane's whole departure: its
+    /// `ρ(q)` and flattening term move with the plane the other computation holds, so `O` over
+    /// both stands at least at the other plane's own departure. The gap test above could not show
+    /// this: its keys are constant (`b = c = 0`), so their `ρ(q)` and flattening terms are equal.
+    #[test]
+    fn a_nearest_faces_departure_takes_each_admitted_planes_rho_and_flattening_with_its_gap() {
+        let (pr, map) = (straight(20.0), map());
+        let world = [
+            [-1.0, -0.75, 0.25],
+            [1.25, -1.0, 0.5],
+            [1.0, 1.5, 0.375],
+            [-0.75, 1.0, 0.125],
+        ];
+        let plane = fit(&world, Planarity::Nearest).unwrap();
+        let q = pr.rotated(world[0]);
+        let own = key_plane(&pr, &map, &plane, q, 0.0).unwrap();
+        // The neighbouring grid value of the normal's first component, a grid step apart, on the
+        // side where the key's slope grows.
+        let mut n = plane.n;
+        n[0] -= PLANE_GRID;
+        let other = key_plane(&pr, &map, &WorldPlane { n, ..plane }, q, 0.0).unwrap();
+        let db = other.b - own.b;
+        assert!(
+            own.b.abs() > 1.0e-4
+                && other.b.abs() > own.b.abs()
+                && (1.0e-8..1.4e-8).contains(&db.abs()),
+            "premise: a sloped key a grid step from another, b {:e}, δb {db:e}",
+            own.b
+        );
+        let shown = world.map(|p| pr.project(p));
+        let alone = nearest_departure(&pr, &map, &shown, &[other]);
+        assert!(
+            alone > nearest_departure(&pr, &map, &shown, &[own]),
+            "premise: the other plane's departure is the larger"
+        );
+        let both = nearest_departure(&pr, &map, &shown, &[own, other]);
+        assert!(
+            both >= alone,
+            "O {both:e} under the other plane's departure {alone:e}"
         );
     }
 }

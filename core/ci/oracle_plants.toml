@@ -1692,8 +1692,8 @@ name = "band-arith-factor"
 item = "§6"
 check = "band_arith@3: R's sum under (1 + 64u), the factor removed"
 file = "core/oracle/src/keys.rs"
-find = "let r = (1.0 + 64.0 * U) * (((r0 + key.rho(px, py, &at)) + extra) + nu(omax));"
-replace = "let r = ((r0 + key.rho(px, py, &at)) + extra) + nu(omax);"
+find = "let r = (1.0 + 64.0 * U) * (((r0 + rho) + extra) + nu(omax));"
+replace = "let r = ((r0 + rho) + extra) + nu(omax);"
 red = ["band_arith::a_plane_reads_r_as_its_terms_summed_in_order_under_one_factor"]
 
 [[plant]]
@@ -1701,8 +1701,8 @@ name = "band-arith-departure-inside"
 item = "§6"
 check = "band_arith@3: a Nearest face's departure O inside the factor, added after it as @2 had it"
 file = "core/oracle/src/keys.rs"
-find = "let r = (1.0 + 64.0 * U) * (((r0 + key.rho(px, py, &at)) + extra) + nu(omax));"
-replace = "let r = (1.0 + 64.0 * U) * ((r0 + key.rho(px, py, &at)) + nu(omax)) + extra;"
+find = "let r = (1.0 + 64.0 * U) * (((r0 + rho) + extra) + nu(omax));"
+replace = "let r = (1.0 + 64.0 * U) * ((r0 + rho) + nu(omax)) + extra;"
 red = ["band_arith::a_plane_reads_r_as_its_terms_summed_in_order_under_one_factor"]
 
 [[plant]]
@@ -1809,8 +1809,8 @@ name = "band-arith-departure-gap"
 item = "§6"
 check = "band_arith@3: a Nearest face's gap_q over every rounded plane gap admits, the oracle's own alone"
 file = "core/oracle/src/keys.rs"
-find = ".map(|kr| (kr.at(at[0], at[1]) - k).abs())"
-replace = ".take(1).map(|kr| (kr.at(at[0], at[1]) - k).abs())"
+find = "let gap = (plane.at(at[0], at[1]) - k).abs();"
+replace = "let gap = (rounded[0].at(at[0], at[1]) - k).abs();"
 red = ["lib::keys::tests::a_nearest_faces_departure_takes_the_gap_of_every_rounded_plane_it_admits"]
 
 [[plant]]
@@ -1821,3 +1821,21 @@ file = "core/oracle/tests/contract.rs"
 find = "        Some(family) if rel.ends_with(\"/made.xf\") => format!(\"smoke-made:{family}\"),\n"
 replace = "        Some(family) if rel.is_empty() => format!(\"smoke-made:{family}\"),\n"
 red = ["contract::a_smoke_case_s_made_stream_is_its_own_family_beside_the_stream_the_core_is_handed"]
+
+[[plant]]
+name = "band-arith-departure-planes"
+item = "§6"
+check = "band_arith@3: a Nearest face's rho(q) and flattening term on each admitted rounded plane, the own plane's taken"
+file = "core/oracle/src/keys.rs"
+find = "let rho = plane.rho_at(*at);\n                worst = worst.max(gap + rho + key_error(pr, *q) + 4.0 * U * k.abs() + U * gap);\n            }\n            worst + libm::hypot(plane.b, plane.c) * 0.1\n"
+replace = "let rho = rounded[0].rho_at(*at);\n                worst = worst.max(gap + rho + key_error(pr, *q) + 4.0 * U * k.abs() + U * gap);\n            }\n            worst + libm::hypot(rounded[0].b, rounded[0].c) * 0.1\n"
+red = ["lib::keys::tests::a_nearest_faces_departure_takes_each_admitted_planes_rho_and_flattening_with_its_gap"]
+
+[[plant]]
+name = "band-arith-rho-planes"
+item = "§6"
+check = "band_arith@3: a world plane's rho the largest over the rounded planes gap admits, the own key's taken"
+file = "core/oracle/src/keys.rs"
+find = ".map(|plane| plane.rho(px, py, &at))"
+replace = ".map(|_| key.rho(px, py, &at))"
+red = ["band_arith::a_world_planes_rho_is_the_largest_over_the_rounded_planes_it_admits"]

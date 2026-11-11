@@ -1068,7 +1068,8 @@ size and never leaves it unstated.
 - A plane read at a pixel `(x, y)` adds its reading's rounding, `ρ = 4u (|a| + |b x| + |c y|)`,
   the largest of its values at the pixel's far corner `(x + 1, y + 1)` and at every point the
   read takes. A fringe read (`fringe_key@1`) takes the outline's nearest point, which may lie
-  outside the pixel.
+  outside the pixel. On a world plane keyed on screen, `ρ` is also the largest over the rounded
+  planes `gap` admits, since the other computation may hold either.
 - One `R` serves the whole pixel per fragment. For a curve, it is the largest over the 16 samples
   and the pixel's centre.
 
@@ -1182,8 +1183,10 @@ fringe reads measured, a core's own bound stood `6·10^-14` to `1.05·10^-12` of
 
 **Change from `band_arith@2`.** @2 added a `Nearest` face's outline departure after the factor,
 so `(1 + 64u)` did not cover the roundings of the departure's own sum or of the sum it joins. @3
-takes it inside, as `O`, which moves the counts to 28 and 27 and `E_k` to `γ_{2N+66}`. No verdict
-was computed under @2.
+takes it inside, as `O`, which moves the counts to 28 and 27 and `E_k` to `γ_{2N+66}`. @3 also
+takes the whole of `O`, and a world plane's `ρ`, over the rounded planes `gap` admits: @2 took only
+`gap_q` over them, though the other computation's flattening term and reading rounding move with
+the plane it holds. No verdict was computed under @2.
 
 **A plane through three keyed corners.** With corner keys `d0`, `d1`, `d2` and corner bounds
 `err_i`, let `in = max err_i`:
@@ -1217,13 +1220,14 @@ The pixel's bound is the largest over the 16 samples and the centre. The own-fil
 applied after it.
 
 **A `Nearest` face.** Its `R` takes its outline's departure `O` inside the factor,
-`R = (1 + 64u) ((M + ρ + O) + ν)`. `O` is the largest, over its subpaths' points `q` and each
-closed subpath's closing point read at its first point's position, of
+`R = (1 + 64u) ((M + ρ + O) + ν)`. `O` is the largest, over the rounded planes `gap` admits (the
+other computation may hold either), of that plane's departure: the largest, over its subpaths'
+points `q` and each closed subpath's closing point read at its first point's position, of
 
     gap_q + ρ(q) + key_error(q) + 4u |k_q| + u gap_q,    gap_q = |plane(map(q)) − k_q|
 
-plus `hypot(b, c) · 0.1` for the flattening. `gap_q` is the largest over the rounded planes `gap`
-admits, as the other computation may hold either. For every other key, `O` is 0.
+plus `hypot(b, c) · 0.1` for the flattening, with `plane`, `ρ(q)`, `b` and `c` all taken on that
+rounded plane. For every other key, `O` is 0.
 
 **A stroke adjusted on its own fill.** As `stroke_on_own_fill@2` states.
 

@@ -64,9 +64,11 @@ fn bent_quad() -> Vec<[f64; 3]> {
     ]
 }
 
-/// A plane band read at pixel `(px, py)` with no input share.
+/// A plane band read at pixel `(px, py)` with no input share, its own key and `others` the
+/// rounded planes `gap` admits.
 fn plane_band(
     key: ScreenKey,
+    others: &[ScreenKey],
     r0: f64,
     extra: f64,
     fringe: Option<Vec<Vec<[f64; 2]>>>,
@@ -80,6 +82,7 @@ fn plane_band(
         s: PlaneS::Facing { ds: 0.0 },
         fringe,
         rounded: None,
+        admitted: std::iter::once(key).chain(others.iter().copied()).collect(),
     };
     let bands = m.pixel(px, py, false);
     let r = bands[0].as_ref().expect("a bounded read").r;
@@ -115,7 +118,7 @@ fn a_plane_reads_r_as_its_terms_summed_in_order_under_one_factor() {
         .map(|p| key.at(p[0], p[1]).abs())
         .fold(0.0, f64::max);
     let want = (1.0 + 64.0 * U) * (((m + rho) + o) + nu(omax));
-    assert_eq!(plane_band(key, m, o, None, px, py), want);
+    assert_eq!(plane_band(key, &[], m, o, None, px, py), want);
 }
 
 /// `ρ` is the largest of the reading's rounding at the pixel's far corner and at every point the
@@ -133,7 +136,7 @@ fn rho_is_the_largest_over_the_far_corner_and_every_point_the_read_takes() {
         [1010.0, 1010.0],
         [1000.0, 1010.0],
     ];
-    let r = plane_band(key, 0.0, 0.0, Some(vec![ring]), 0, 0);
+    let r = plane_band(key, &[], 0.0, 0.0, Some(vec![ring]), 0, 0);
     // Every sample of pixel (0, 0) lies outside the ring, so each reads the corner (1000, 1000).
     let far_read = rho_at(&key, [1000.0, 1000.0]);
     assert!(
@@ -360,5 +363,41 @@ fn a_triangle_planes_rho_is_the_largest_over_the_far_corner_and_its_reads() {
     assert!(
         r >= rho + nu(omax),
         "R {r:e} under the reads' ρ {rho:e} and ν"
+    );
+}
+
+/// On a world plane keyed on screen, `ρ` is also the largest over the rounded planes `gap`
+/// admits, since the other computation may hold either: its reading rounding moves with the plane
+/// it holds. The departure-gap test could not show this either: its keys are constant
+/// (`b = c = 0`).
+#[test]
+fn a_world_planes_rho_is_the_largest_over_the_rounded_planes_it_admits() {
+    let own = ScreenKey {
+        a: -1.0,
+        b: 1.0e-3,
+        c: 1.0e-3,
+    };
+    let other = ScreenKey { b: 2.0e-3, ..own };
+    let (px, py) = (40, 30);
+    let pts = samples(px, py);
+    let far = [(px + 1) as f64, (py + 1) as f64];
+    let rho = |k: &ScreenKey| {
+        pts.iter()
+            .map(|p| rho_at(k, *p))
+            .fold(rho_at(k, far), f64::max)
+    };
+    assert!(
+        rho(&other) > rho(&own),
+        "premise: the other plane's ρ is the larger"
+    );
+    let omax = pts
+        .iter()
+        .map(|p| own.at(p[0], p[1]).abs())
+        .fold(0.0, f64::max);
+    let r = plane_band(own, &[other], 0.0, 0.0, None, px, py);
+    let want = (1.0 + 64.0 * U) * ((0.0 + rho(&other)) + nu(omax));
+    assert!(
+        r >= want,
+        "R {r:e} under the other plane's ρ and ν, {want:e}"
     );
 }

@@ -58,7 +58,9 @@ A point `q`'s terms:
 | `hypot(b, c_k) · 0.1` | 13 | `hypot` 12; product with the constant (an input) 12 + 0 + 1 |
 | `O` | 22 | sum |
 
-So `O` is 22 deep where it enters `R`'s sum, under the 25 that `M + ρ` reaches (below).
+So `O` is 22 deep where it enters `R`'s sum, under the 25 that `M + ρ` reaches (below). A
+largest over the admitted rounded planes is exact, so `O` is as deep as each plane's departure,
+22, and no count below moves.
 
 ## 2. `R`'s own sum
 
