@@ -69,18 +69,20 @@ pub fn lines_of(model: &Model) -> Option<LinesBound> {
     }
 }
 
-fn meets(a: &Band, b: &Band) -> bool {
-    a.lo() <= b.hi() && b.lo() <= a.hi()
+/// §7's `tied(a, e_a, b, e_b)` on two keys and their arithmetic bounds: equal, or both finite and
+/// `|a − b| <= e_a + e_b`.
+fn tied(a: &Band, b: &Band) -> bool {
+    a.o == b.o || (a.o.is_finite() && b.o.is_finite() && (a.o - b.o).abs() <= a.r + b.r)
 }
 
 /// `stroke_on_own_fill@1` at one sample: the stroke's band where its fill covers too. It is keyed
-/// at the nearer of the two keys with that key's bound, both bounds where they tie (contract
-/// §5), and its interval is the hull of both keys' intervals (§6, `band_input@1`), whether they
-/// meet or not.
+/// at the nearer of the two keys with that key's bound, both bounds where they are `tied`
+/// (contract §5), and its interval is the hull of both keys' intervals (§6, `band_input@1`),
+/// whether they meet or not.
 fn on_own_fill(own: Result<Band, Unable>, fill: Result<Band, Unable>) -> Result<Band, Unable> {
     let (o, f) = (own?, fill?);
     let taken = if f.o < o.o { f } else { o };
-    let r = if meets(&o, &f) { o.r.max(f.r) } else { taken.r };
+    let r = if tied(&o, &f) { o.r.max(f.r) } else { taken.r };
     let (lo, hi) = (o.lo().min(f.lo()), o.hi().max(f.hi()));
     Ok(Band {
         o: taken.o,
@@ -269,5 +271,31 @@ fn pixel(
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn band(o: f64, r: f64, s: f64) -> Result<Band, Unable> {
+        Ok(Band {
+            o,
+            r,
+            s_minus: s,
+            s_plus: s,
+        })
+    }
+
+    #[test]
+    fn an_adjusted_stroke_takes_both_bounds_only_where_its_keys_are_tied() {
+        // §5: the stroke takes the bound of the key it took, both where the keys tie by §7's
+        // `tied`: `|a − b| <= e_a + e_b` on the arithmetic bounds, not where the intervals meet.
+        // Keys 5e-4 apart with R 1e-6 and 1e-9: their intervals (S 1e-3) meet, the keys do not tie.
+        let apart = on_own_fill(band(-1.0, 1e-6, 1e-3), band(-1.0005, 1e-9, 1e-3)).unwrap();
+        assert_eq!((apart.o, apart.r), (-1.0005, 1e-9));
+        // 5e-7 apart: tied, both bounds count.
+        let tied = on_own_fill(band(-1.0, 1e-6, 1e-3), band(-1.0000005, 1e-9, 1e-3)).unwrap();
+        assert_eq!((tied.o, tied.r), (-1.0000005, 1e-6));
     }
 }

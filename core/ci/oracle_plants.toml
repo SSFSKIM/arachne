@@ -1190,3 +1190,12 @@ file = "core/oracle/src/draw.rs"
 find = "                Some((to, from)) => std::array::from_fn(|k| c[k] + (to[k] - from[k])),"
 replace = "                Some(_) => c,"
 red = ["key_rules::a_pre_projected_pivot_moves_as_the_record_s_first_point_moved"]
+
+[[plant]]
+name = "own-fill-meets-for-tied"
+item = "§5"
+check = "an adjusted stroke takes both bounds only where its keys are tied (§7)"
+file = "core/oracle/src/pairs.rs"
+find = "let r = if tied(&o, &f) { o.r.max(f.r) } else { taken.r };"
+replace = "let r = if o.lo() <= f.hi() && f.lo() <= o.hi() { o.r.max(f.r) } else { taken.r };"
+red = ["lib::pairs::tests::an_adjusted_stroke_takes_both_bounds_only_where_its_keys_are_tied"]
