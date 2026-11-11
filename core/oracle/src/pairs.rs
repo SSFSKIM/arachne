@@ -189,6 +189,10 @@ fn pixel(
     }
     // The `lines@1` shares, read once per fragment where a pair needs them.
     let pts = samples(px, py);
+    let at_sample: Vec<[bool; 16]> = frags
+        .iter()
+        .map(|f| std::array::from_fn(|s| scene.frags[*f].model.read_at(pts[s])))
+        .collect();
     let mut shares: Vec<Option<f64>> = vec![None; rows.len()];
     let mut share = |i: usize| -> f64 {
         *shares[i].get_or_insert_with(|| {
@@ -206,10 +210,12 @@ fn pixel(
                 let ra = Reads {
                     own: own[i][s],
                     row: row[i].map(|r| r[s]),
+                    at_sample: at_sample[i][s],
                 };
                 let rb = Reads {
                     own: own[j][s],
                     row: row[j].map(|r| r[s]),
+                    at_sample: at_sample[j][s],
                 };
                 let lines_pair = scene.lines_eligible(frags[i], frags[j]);
                 let shares_ij = if lines_pair {

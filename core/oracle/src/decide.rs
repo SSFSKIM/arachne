@@ -9,6 +9,7 @@ use crate::cover::{self, PixelCover, SAMPLE_OFFSETS, Window};
 use crate::draw::{self, Item, Layer};
 use crate::flatten;
 use crate::keys::{self, Model, Offered};
+use crate::label;
 use crate::order::{Frag, Scene};
 use crate::out::{
     COLOUR_GRADIENT, COLOUR_PER_PIXEL, COLOUR_SOLID, ColourRow, CoverRow, Decisions,
@@ -19,6 +20,11 @@ use crate::pairs;
 use crate::shift::Shift;
 use crate::source::WireDelta;
 use crate::stream::{Reason, Refusal, State};
+use std::collections::HashMap;
+
+/// A drawn path's projected centre where it is kept facing the camera, and whether it is a face
+/// of a face group: what the label rule reads of it (contract §10).
+type PathInfo = (Option<[f64; 2]>, bool);
 
 /// What a fragment's colour is computed from (contract §9).
 enum Spec {
@@ -144,6 +150,17 @@ fn unable(
 
 /// What the frame the state draws now should hold, over `window` (the whole frame by default).
 pub fn decide(state: &State, xf: (u16, u16), seq: u64, window: Option<Window>) -> Decisions {
+    decide_with_labels(state, xf, seq, window).0
+}
+
+/// [`decide`], and each camera-facing label pair's decision (contract §10), which counts compare
+/// and the file does not hold.
+pub fn decide_with_labels(
+    state: &State,
+    xf: (u16, u16),
+    seq: u64,
+    window: Option<Window>,
+) -> (Decisions, Vec<label::PairDecision>) {
     let mut refusals = state.refusals();
     if xf.0 != crate::stream::KNOWN_XF.0 || xf.1 > crate::stream::KNOWN_XF.1 {
         refusals.push(Refusal {
@@ -158,7 +175,7 @@ pub fn decide(state: &State, xf: (u16, u16), seq: u64, window: Option<Window>) -
         });
     }
     if !refusals.is_empty() {
-        return unable(state, xf, seq, window, &refusals);
+        return (unable(state, xf, seq, window, &refusals), Vec::new());
     }
     let view = state.view.as_ref().expect("a frame not refused has a view");
     let header = header(Some(view), xf, seq, window);
@@ -232,12 +249,29 @@ pub fn decide(state: &State, xf: (u16, u16), seq: u64, window: Option<Window>) -
         }));
     };
     let mut group = 0u32;
+    let mut outlines: HashMap<(u32, u32), Vec<flatten::Ring>> = HashMap::new();
+    let mut path_info: HashMap<(u32, u32), PathInfo> = HashMap::new();
     for item in &items {
         match item {
             Item::Path(p) => {
                 let c = &p.common;
                 let eps = Shift::of(c, view, &p.map, &p.shown).of_points(&p.shown);
                 let rings = flatten::layer_rings(p, size);
+                // What the label rule reads of the path (contract §10): its layers' outlines, its
+                // projected centre where it is kept facing the camera, whether it is a face.
+                let centre = match &c.placement {
+                    crate::camera::Placement::FixedOrientation { centre, .. } => {
+                        let s = c.placement.show(c.projection.as_ref(), *centre);
+                        Some(p.map.map(s[0], s[1]))
+                    }
+                    _ => None,
+                };
+                for (k, r) in rings.iter().enumerate() {
+                    if let Some(r) = r {
+                        outlines.insert((c.entry, 3 * p.index + k as u32), r.clone());
+                    }
+                }
+                path_info.insert((c.entry, p.index), (centre, p.face));
                 let pd = keys::path_depth(view, p, &rings);
                 let reg = pd.offered.clone().map(|o| {
                     offered.push(o);
@@ -390,7 +424,51 @@ pub fn decide(state: &State, xf: (u16, u16), seq: u64, window: Option<Window>) -
         &mut covers,
     );
     let (colours, pixel_colours) = colours(&specs, &covers);
-    Decisions {
+    let is_path = |f: &Fragment| f.layer <= Layer::Stroke as u8;
+    let outline: Vec<Option<Vec<flatten::Ring>>> = fragments
+        .iter()
+        .map(|f| {
+            is_path(f)
+                .then(|| outlines.get(&(f.entry, f.sub)).cloned())
+                .flatten()
+        })
+        .collect();
+    let info = |f: &Fragment| {
+        is_path(f)
+            .then(|| path_info.get(&(f.entry, f.sub / 3)).copied())
+            .flatten()
+    };
+    let centre: Vec<Option<[f64; 2]>> = fragments
+        .iter()
+        .map(|f| info(f).and_then(|i| i.0))
+        .collect();
+    let face: Vec<bool> = fragments
+        .iter()
+        .map(|f| info(f).is_some_and(|i| i.1))
+        .collect();
+    let alpha: Vec<Option<u8>> = specs
+        .iter()
+        .map(|s| match s {
+            Spec::Solid(b) => Some(b[3]),
+            Spec::Lit { alpha, .. } => Some(draw::alpha_byte(*alpha) as u8),
+            Spec::Gradient => None,
+        })
+        .collect();
+    let (label_of, labels, label_pairs) = label::place_with_pairs(&label::Input {
+        view,
+        state,
+        fragments: &fragments,
+        frags: &scene.frags,
+        covers: &covers,
+        outlines: &outline,
+        alpha: &alpha,
+        centre: &centre,
+        face: &face,
+    });
+    for (f, l) in fragments.iter_mut().zip(label_of) {
+        f.label = l;
+    }
+    let decisions = Decisions {
         header,
         fragments,
         covers,
@@ -398,9 +476,10 @@ pub fn decide(state: &State, xf: (u16, u16), seq: u64, window: Option<Window>) -
         pairs,
         colours,
         pixel_colours,
-        labels: Vec::new(),
+        labels,
         refused: Vec::new(),
-    }
+    };
+    (decisions, label_pairs)
 }
 
 /// What the frame drops for painting nothing (`alpha_round@1`): the registry facts of each such

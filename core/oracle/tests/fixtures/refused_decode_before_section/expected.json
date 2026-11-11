@@ -1,0 +1,10 @@
+{
+  "fixture": "refused_decode_before_section",
+  "kind": "refusal",
+  "frames": [
+    {"seq": 1, "outcome": "judged"},
+    {"seq": 2, "outcome": "invalid_delta"},
+    {"seq": 3, "outcome": "judged"},
+    {"seq": 4, "outcome": "judged"}
+  ]
+}

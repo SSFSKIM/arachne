@@ -812,3 +812,165 @@ file = "core/oracle/src/decide.rs"
 find = "flags: FLAG_ZERO_ALPHA,"
 replace = "flags: 0,"
 red = ["format_facts::a_mesh_triangle_whose_alpha_byte_is_0_is_written_flagged_with_no_rows", "cover::an_op_whose_alpha_rounds_to_zero_paints_nothing"]
+
+[[plant]]
+name = "exact-tie-axis-fills"
+item = "§7"
+check = "two fills on one axis plane read at the sample are an ExactTie"
+file = "core/oracle/src/order.rs"
+find = "                && exact_axis(&self.offered[i], &self.offered[j])"
+replace = "                && false"
+red = ["contract_mutation::mutation_depth_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "label-drawn-otherwise"
+item = "§10"
+check = "every pair of a label drawn otherwise is open, cause label"
+file = "core/oracle/src/label.rs"
+find = "let d = if otherwise[l as usize] {"
+replace = "let d = if false {"
+red = ["contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "label-ungrouped-open"
+item = "§10"
+check = "an ungrouped record kept facing the camera is an open sheet"
+file = "core/oracle/src/label.rs"
+find = "Class::Ungrouped => (ROLE_OPEN, PairCause::Label as u8, 0),"
+replace = "Class::Ungrouped => (ROLE_FRONT, 0, 0),"
+red = ["contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "label-mesh-open"
+item = "§10"
+check = "a sheet drawn as a mesh is open, cause mesh"
+file = "core/oracle/src/label.rs"
+find = "        } else if sheet.mesh {\n"
+replace = "        } else if false {\n"
+red = ["contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "label-folded"
+item = "§10"
+check = "two fills of a sheet holding one counted point leave the pair open, folded"
+file = "core/oracle/src/label.rs"
+find = "if fs.len() >= 2 && !sheets[sh].mesh {"
+replace = "if false {"
+red = ["contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "label-disconnected"
+item = "§10"
+check = "sheets sharing their object and winding that both meet the label are open"
+file = "core/oracle/src/label.rs"
+find = "        } else if rules15\n            && sheet.winding != 0"
+replace = "        } else if false\n            && sheet.winding != 0"
+red = ["contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "label-join-two-corners"
+item = "§10"
+check = "fills join at two shared corners"
+file = "core/oracle/src/label.rs"
+find = "cs[a].intersection(&cs[b]).count() >= 2"
+replace = "cs[a].intersection(&cs[b]).count() >= 99"
+red = ["contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "label-surface-object-outermost"
+item = "§10"
+check = "a record's surface object is the outermost surface node of its first path"
+file = "core/oracle/src/label.rs"
+find = "            .rev()\n            .find(|&i| label_classes::path_outcome"
+replace = "            .find(|&i| label_classes::path_outcome"
+red = ["contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "label-by-centre"
+item = "§10"
+check = "a sheet holding the label's centre is decided there"
+file = "core/oracle/src/label.rs"
+find = "    if stands.is_empty() {\n        return None;"
+replace = "    if true {\n        return None;"
+red = ["contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "label-centre-on-edge"
+item = "§10"
+check = "the centre on a fill's outline, a horizontal edge included, is held"
+file = "core/oracle/src/label.rs"
+find = "!(inside(rings, c) || on_outline(rings, c))"
+replace = "!inside(rings, c)"
+red = ["contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "label-insertion-at-points"
+item = "§10"
+check = "a qualifying sheet anchors the label only where it holds the order point"
+file = "core/oracle/src/label.rs"
+find = "                                } else if holds(f, p, r.cover[s]) {"
+replace = "                                } else if true {"
+red = ["contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "label-genuine-straddle"
+item = "§10"
+check = "a sheet farther at some counted point does not qualify"
+file = "core/oracle/src/label.rs"
+find = "            Some(Stand::NotNearer) => return Decision::Not,"
+replace = "            Some(Stand::NotNearer) => {}"
+red = ["contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "label-interval-open"
+item = "§10"
+check = "a point whose interval meets the label's leaves the pair open, interval"
+file = "core/oracle/src/label.rs"
+find = "            _ => open = true,"
+replace = "            _ => {}"
+red = ["contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "label-run-one-centre"
+item = "§10"
+check = "an XF 1.4 label is a run of records with one carried centre"
+file = "core/oracle/src/label.rs"
+find = "Some(c) if last == Some(c) => {"
+replace = "Some(_) if last.is_some() => {"
+red = ["contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "label-class-open"
+item = "§10"
+check = "a record whose class is open is counted under its class cause"
+file = "core/oracle/src/label.rs"
+find = "Class::Open(c) => (ROLE_OPEN, 0, class_code(c)),"
+replace = "Class::Open(_) => (ROLE_FRONT, 0, 0),"
+red = ["contract_mutation::mutation_source_witnesses_read_the_source_the_frame_holds"]
+
+[[plant]]
+name = "label-frame-draws-a-group"
+item = "§10"
+check = "a frame that draws no facing group is read as XF 1.4"
+file = "core/oracle/src/label.rs"
+find = "let rules15 = st.rules15 && st.order.iter().any(|e| group_of(e.slot) != 0);"
+replace = "let rules15 = st.rules15;"
+red = ["contract_mutation::mutation_source_witnesses_read_the_source_the_frame_holds"]
+
+[[plant]]
+name = "label-line-never-qualifies"
+item = "§10"
+check = "a line's parts never qualify"
+file = "core/oracle/src/label.rs"
+find = "                Outcome::Line => Class::Front,"
+replace = "                Outcome::Line => Class::Surface,"
+red = ["contract_mutation::mutation_source_witnesses_read_the_source_the_frame_holds"]
+
+[[plant]]
+name = "label-plate-model-named"
+item = "§10"
+check = "the label's own order is read through LABL, not as the plate model"
+file = "core/oracle/src/decide.rs"
+find = "    for (f, l) in fragments.iter_mut().zip(label_of) {\n        f.label = l;\n    }"
+replace = "    let _ = label_of;"
+red = ["contract_mutation::mutation_label_witnesses_on_the_core_s_own_report", "contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]

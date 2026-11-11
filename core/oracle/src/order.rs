@@ -132,6 +132,9 @@ pub struct Scene {
 pub struct Reads {
     pub own: Result<Band, Unable>,
     pub row: Option<Result<Band, Unable>>,
+    /// Whether its own key is read at the sample itself (§7, `ExactTie`): a triangle's, or a
+    /// plane's whose key is constant on screen or whose outline holds the sample.
+    pub at_sample: bool,
 }
 
 /// A pair's verdict at a sample.
@@ -349,6 +352,24 @@ impl Scene {
                         weak: false,
                         ..Edges::ALL
                     },
+                });
+            }
+        }
+        // `ExactTie`: two fills of flat paths, or flat triangles, on the axis plane of one
+        // coordinate through equal first points, each read at the sample itself: their keys are
+        // one computation in every scenario, rows or own keys.
+        if let Some((i, j)) = both {
+            let surface = |f: &Frag| matches!(f.layer, Layer::Fill | Layer::Mesh);
+            if surface(fa)
+                && surface(fb)
+                && ra.at_sample
+                && rb.at_sample
+                && exact_axis(&self.offered[i], &self.offered[j])
+            {
+                return Ok(PairAt {
+                    edges: Edges::WEAK,
+                    label: Label::ExactTie,
+                    via_row: Edges::default(),
                 });
             }
         }

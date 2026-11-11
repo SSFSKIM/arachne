@@ -1,0 +1,10 @@
+{
+  "fixture": "stream_refused",
+  "kind": "refusal",
+  "frames": [
+    {"seq": 1, "outcome": "judged"},
+    {"seq": 2, "outcome": "stream_refused at_seq 2 cause slot_not_held"},
+    {"seq": 3, "outcome": "stream_refused at_seq 2 cause slot_not_held"},
+    {"seq": 4, "outcome": "stream_refused at_seq 2 cause slot_not_held"}
+  ]
+}

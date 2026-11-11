@@ -1,0 +1,6 @@
+{
+  "quantity": "cell_bytes",
+  "pixel": [8, 8],
+  "samples": [2, 6, 10, 14],
+  "value": {"fragment": {"slot": 0, "layer": "fill", "sub": 1}, "cell_byte": 104}
+}

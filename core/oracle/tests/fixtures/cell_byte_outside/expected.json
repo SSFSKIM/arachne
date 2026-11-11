@@ -1,0 +1,10 @@
+{
+  "fixture": "cell_byte_outside",
+  "kind": "witness",
+  "rule": "presence_band",
+  "seq": 1,
+  "pixel": [8, 8],
+  "samples": [2, 6, 10, 14],
+  "defect_verdict": "mismatch:mismatch",
+  "twin_verdict": "agreement"
+}

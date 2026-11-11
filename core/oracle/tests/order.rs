@@ -27,6 +27,7 @@ fn band(o: f64, half: f64) -> Reads {
             s_plus: half,
         }),
         row: None,
+        at_sample: false,
     }
 }
 

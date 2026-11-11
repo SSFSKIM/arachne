@@ -4,8 +4,9 @@
 #![allow(dead_code)]
 
 use arachne_core::xf::{
-    Background, Camera, Delta, Layer, LightModel, OrderEntry, Paint, Record, RecordKind, Shape,
-    ShapeData, Space, ThreeDCamera, Time, View, wire,
+    Background, Body, Camera, Delta, FEATURE_PRE_PROJECTED, Layer, LightModel, OrderEntry, Paint,
+    Points, PreProjected, Record, RecordKind, Shape, ShapeData, Space, Stops, ThreeDCamera, Time,
+    View, wire,
 };
 
 /// §12's input grid.
@@ -111,6 +112,7 @@ pub fn rect(x: [f64; 2], y: [f64; 2], z: f64) -> Vec<[f64; 3]> {
 pub struct Build {
     pub shapes: Vec<Shape>,
     pub records: Vec<Record>,
+    pub paints: Vec<Stops>,
     world: bool,
 }
 
@@ -205,6 +207,34 @@ impl Build {
         r
     }
 
+    /// A points record: one block per position, coloured `rgba`, of CE's stroke width `radius`.
+    pub fn points(&mut self, positions: Vec<[f64; 3]>, rgba: [f64; 4], radius: f64) -> &mut Record {
+        let colors = Stops::new(vec![rgba; positions.len()]);
+        let key = colors.key();
+        self.paints.push(colors);
+        let r = self.record(RecordKind::Points, ShapeData::Path { points: positions });
+        r.body = Body::Points(Points {
+            colors: key,
+            radius,
+        });
+        r
+    }
+
+    /// A pre-projected path: its tail's points as the scene camera produced them (frame units),
+    /// filled `rgba`.
+    pub fn pre_projected(&mut self, points: Vec<[f64; 3]>, rgba: [f64; 4]) -> &mut Record {
+        let r = self.path(points);
+        r.features |= FEATURE_PRE_PROJECTED;
+        r.pre_projected = Some(PreProjected {
+            points: r.geometry.shape_a.unwrap(),
+            gradient: None,
+            fill: Paint::One(rgba),
+            stroke: Paint::None,
+            background_stroke: Paint::None,
+        });
+        r
+    }
+
     /// The delta at `seq` setting `view`, every record, and the order they were added in.
     pub fn delta(&self, seq: u64, view: View) -> Delta {
         let mut d = Delta::new(
@@ -227,6 +257,7 @@ impl Build {
                 .collect(),
         );
         d.upload = self.shapes.clone();
+        d.upload_paints = self.paints.clone();
         d.set = self.records.clone();
         d
     }
@@ -292,6 +323,35 @@ pub fn section(rows: &[Row], names: Option<&[&str]>) -> Vec<u8> {
             for (t, c) in p {
                 u32le(&mut b, *t);
                 u32le(&mut b, index(c));
+            }
+        }
+    }
+    b
+}
+
+/// A row as written: its slot, its facing group, its paths of `(token, class index)`.
+pub type RawRow = (u32, u32, Vec<Vec<(u32, u32)>>);
+
+/// A source section written as given: its class names, then rows of `(slot, facing group, paths
+/// of (token, class index))`, for a witness that writes what a writer must not.
+pub fn raw_section(names: &[&str], rows: &[RawRow]) -> Vec<u8> {
+    let mut b = Vec::new();
+    let u32le = |b: &mut Vec<u8>, v: u32| b.extend(v.to_le_bytes());
+    u32le(&mut b, names.len() as u32);
+    for n in names {
+        u32le(&mut b, n.len() as u32);
+        b.extend(n.as_bytes());
+    }
+    u32le(&mut b, rows.len() as u32);
+    for (slot, group, paths) in rows {
+        u32le(&mut b, *slot);
+        u32le(&mut b, *group);
+        u32le(&mut b, paths.len() as u32);
+        for p in paths {
+            u32le(&mut b, p.len() as u32);
+            for (t, c) in p {
+                u32le(&mut b, *t);
+                u32le(&mut b, *c);
             }
         }
     }

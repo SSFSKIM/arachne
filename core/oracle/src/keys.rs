@@ -198,7 +198,35 @@ impl Model {
     /// a sample's key is not bounded. `dist_hull` reads a row's distance from its record's hull
     /// (a stroke's row on its own plane); own reads are inside it.
     pub fn pixel(&self, px: i64, py: i64, dist_hull: bool) -> [Result<Band, Unable>; 16] {
-        let pts = samples(px, py);
+        self.at_points(samples(px, py), px, py, dist_hull)
+    }
+
+    /// Whether a key is read at the point `p` itself (contract §7, `ExactTie`): a triangle's
+    /// plane, or a world plane whose key is constant on screen (no fringe) or whose outline holds
+    /// `p`.
+    pub fn read_at(&self, p: [f64; 2]) -> bool {
+        match self {
+            Model::Tri { .. } => true,
+            Model::Plane { fringe, .. } => fringe.as_ref().is_none_or(|r| inside(r, p)),
+            _ => false,
+        }
+    }
+
+    /// The band at one screen point `p` of pixel `(px, py)`, read as at a sample there (the
+    /// label rule's reads at a centre or an order point, contract §10).
+    pub fn at(&self, p: [f64; 2]) -> Result<Band, Unable> {
+        let (px, py) = (p[0].floor() as i64, p[1].floor() as i64);
+        self.at_points([p; 16], px, py, false)[0]
+    }
+
+    /// The band at 16 points of pixel `(px, py)`, with one `R` over them.
+    fn at_points(
+        &self,
+        pts: [[f64; 2]; 16],
+        px: i64,
+        py: i64,
+        dist_hull: bool,
+    ) -> [Result<Band, Unable>; 16] {
         match self {
             Model::NegInf => std::array::from_fn(|_| Ok(Band::exact(f64::NEG_INFINITY))),
             Model::Unbounded => std::array::from_fn(|_| Err(Unable::BandUnbounded)),
