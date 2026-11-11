@@ -1,0 +1,62 @@
+# Scratch, never merged: a scene of tests/frame_ir/camera_scenes.py whose camera's line width is
+# rebound partway through a play, drawn by the core at this commit's parent and at 3ce63425,
+# by Arachne's Cairo path at both, and by Manim CE 0.20.1 from the scene's own source; per-frame
+# differences, the line width each holds, and small crops.
+name: linewidth
+on:
+  push:
+    branches: ['ci/linewidth-**']
+permissions:
+  contents: read
+jobs:
+  frames:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      UV_PYTHON: "3.12"
+      PYTHONHASHSEED: "0"
+      OLD: 3ce63425df7269eca66dd198584fefe2e99848d1
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.OLD }}
+          path: old
+          persist-credentials: false
+      - name: Apply the CI environment
+        uses: SSFSKIM/ci-kit/setup@v1
+      - name: Install (this commit's parent)
+        run: pipx install uv==0.12.3 && uv sync --all-extras --locked
+      - name: Install (3ce63425)
+        working-directory: old
+        run: uv sync --all-extras --locked
+      - name: Arachne frames
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/work"
+          for s in MidPlayStateSolids SteadyProjectingSolids; do
+            for p in core cairo; do
+              PYTHONPATH="$PWD" PYTHONWARNINGS=ignore uv run --no-sync python .github/linewidth/arachne_frames.py "$RUNNER_TEMP/work/$s-new-$p.npz" "$s" "$p"
+              (cd old && PYTHONPATH="$PWD" PYTHONWARNINGS=ignore uv run --no-sync python "$GITHUB_WORKSPACE/.github/linewidth/arachne_frames.py" "$RUNNER_TEMP/work/$s-old-$p.npz" "$s" "$p")
+            done
+          done
+      - name: Manim CE frames
+        run: |
+          set -euo pipefail
+          uv venv --python 3.12 "$RUNNER_TEMP/ce"
+          VIRTUAL_ENV="$RUNNER_TEMP/ce" uv pip install manim==0.20.1
+          "$RUNNER_TEMP/ce/bin/python" -c "import manim; print('manim', manim.__version__)"
+          cd "$RUNNER_TEMP"
+          for s in MidPlayStateSolids SteadyProjectingSolids; do
+            "$RUNNER_TEMP/ce/bin/python" "$GITHUB_WORKSPACE/.github/linewidth/ce_frames.py" "$GITHUB_WORKSPACE/tests/frame_ir/camera_scenes.py" "$RUNNER_TEMP/work/$s-ce.npz" "$s"
+          done
+      - name: Compare
+        run: uv run --no-sync python .github/linewidth/compare.py "$RUNNER_TEMP/work" crops
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linewidth-crops
+          path: crops/
+          retention-days: 30
+          if-no-files-found: error
