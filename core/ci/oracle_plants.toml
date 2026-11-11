@@ -1532,3 +1532,12 @@ file = "core/oracle/tests/contract.rs"
 find = "    m.samples += beyond.len();\n"
 replace = "    beyond.clear();\n    m.samples += beyond.len();\n"
 red = ["contract::a_fragment_whose_key_states_no_bound_is_counted_unjudged_with_a_pair_or_none"]
+
+[[plant]]
+name = "measure-completion-search"
+item = "§7"
+check = "the open share counts the completion bound only where the reported order needs the search"
+file = "core/oracle/tests/contract.rs"
+find = "                && reports.get(&(x, y)).is_some_and(|r| {\n"
+replace = "                && reports.get(&(x, y)).is_none_or(|r| r.x == r.x || {\n"
+red = ["contract::the_completion_bound_is_counted_only_where_the_reported_order_needs_the_search"]

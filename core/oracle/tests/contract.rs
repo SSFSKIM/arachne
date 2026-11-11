@@ -6,6 +6,8 @@
 
 #[path = "common/fixtures.rs"]
 mod fixtures;
+#[path = "common/judge.rs"]
+mod judge;
 #[path = "common/scenes.rs"]
 mod scenes;
 
@@ -16,6 +18,7 @@ use arachne_core::stream::Stream;
 use arachne_oracle::decide::decide_at_wire;
 use arachne_oracle::out::{BandRow, Decisions};
 use arachne_oracle::source;
+use judge::{Entry, Reported};
 
 const TILE: u32 = 64;
 
@@ -44,6 +47,38 @@ fn trace(core: &Stream, w: u32, h: u32) -> BTreeMap<(u32, u32), Pixel> {
         }
     }
     out
+}
+
+/// The core's trace of the frame `d` decides.
+fn frame_trace(core: &Stream, d: &Decisions) -> BTreeMap<(u32, u32), Pixel> {
+    trace(core, d.header.width, d.header.height)
+}
+
+/// The core's report of each traced pixel: its fragments and, at each sample, every one covering
+/// it, front first, before any cull (`samples_all`).
+fn core_reports(pixels: &BTreeMap<(u32, u32), Pixel>) -> HashMap<(u32, u32), Reported> {
+    pixels
+        .iter()
+        .filter_map(|(&(x, y), p)| {
+            let reads = p.reads.as_ref()?;
+            Some((
+                (x, y),
+                Reported {
+                    x,
+                    y,
+                    entries: p
+                        .entries
+                        .iter()
+                        .map(|e| Entry {
+                            identity: (e.leaf.0, e.leaf.1, layer_code(&e.layer), e.sub),
+                            cells: e.coverage,
+                        })
+                        .collect(),
+                    order: reads.samples_all.clone(),
+                },
+            ))
+        })
+        .collect()
 }
 
 /// One excess: where, which fragment, which row, and by how much (read through `Debug` in the
@@ -175,10 +210,8 @@ fn excesses_of(
     probe: &'static str,
     seq: u64,
     d: &Decisions,
-    core: &Stream,
+    pixels: &BTreeMap<(u32, u32), Pixel>,
 ) -> (Vec<Excess>, Tally) {
-    let (w, h) = (d.header.width, d.header.height);
-    let pixels = trace(core, w, h);
     // The oracle's fragments by identity, and its band rows by pixel and fragment.
     let ids: HashMap<(u32, u32, u8, u32), u32> = d
         .fragments
@@ -191,7 +224,7 @@ fn excesses_of(
     }
     let mut out = Vec::new();
     let mut tally = Tally::default();
-    for ((x, y), px) in &pixels {
+    for ((x, y), px) in pixels {
         let Some(r) = &px.reads else { continue };
         let frag_of = |e: usize| {
             let en = &px.entries[e];
@@ -276,7 +309,7 @@ fn core_err_within_band() {
             core.apply(delta).unwrap();
             let d = decide_at_wire(&wire, wd.seq, None).unwrap();
             assert_eq!(d.header.status, 0, "{}: {:?}", p.name, d.refused);
-            let (e, n) = excesses_of(p.name, wd.seq, &d, &core);
+            let (e, n) = excesses_of(p.name, wd.seq, &d, &frame_trace(&core, &d));
             excess.extend(e);
             tally.own += n.own;
             tally.plane += n.plane;
@@ -362,7 +395,7 @@ fn core_err_within_band_on_the_named_reads() {
         assert_eq!(d.header.status, 0, "{name}: {:?}", d.refused);
         let mut core = Stream::new();
         core.apply(&delta).unwrap();
-        let (excess, tally) = excesses_of("named", 1, &d, &core);
+        let (excess, tally) = excesses_of("named", 1, &d, &frame_trace(&core, &d));
         assert!(excess.is_empty(), "{name}: {excess:#?}");
         assert!(
             tally.own > 1000 && tally.unmatched == 0,
@@ -670,7 +703,15 @@ fn completion_ranks(
     }
 }
 
-fn measure(m: &mut Measures, d: &Decisions, excess: usize, tally: &Tally) {
+/// The measures of frame `d`, the core's reports of its pixels `reports` read where the order
+/// a sample admits needs the completion search.
+fn measure(
+    m: &mut Measures,
+    d: &Decisions,
+    excess: usize,
+    tally: &Tally,
+    reports: &HashMap<(u32, u32), Reported>,
+) {
     use std::collections::BTreeSet;
     m.frames += 1;
     m.excess += excess;
@@ -838,8 +879,14 @@ fn measure(m: &mut Measures, d: &Decisions, excess: usize, tally: &Tally) {
                     _ => {}
                 }
             }
+            // Past the completion bound, the judge searches only for a reported order that some
+            // pair's edges do not admit (`admissible`'s sufficient test): the core's, read there.
             let completions: f64 = ps.iter().map(|p| p.edges.count_ones() as f64).product();
-            if completions > 262_144.0 {
+            if completions > 262_144.0
+                && reports.get(&(x, y)).is_some_and(|r| {
+                    judge::judge(d, r, s as usize) == judge::Verdict::Unable("completion_bound")
+                })
+            {
                 why.insert("completion_bound".into());
             }
             for w in why {
@@ -896,7 +943,7 @@ fn measured(b: &scenes::Build, v: arachne_core::xf::View) -> Measures {
     let d = arachne_oracle::decide::decide_at(&[b.delta(1, v)], 1, None).unwrap();
     assert_eq!(d.header.status, 0, "{:?}", d.refused);
     let mut m = Measures::default();
-    measure(&mut m, &d, 0, &Tally::default());
+    measure(&mut m, &d, 0, &Tally::default(), &HashMap::new());
     m
 }
 
@@ -932,6 +979,78 @@ fn a_fragment_whose_key_states_no_bound_is_counted_unjudged_with_a_pair_or_none(
     let m = measured(&b, view_c());
     assert_eq!(m.samples, 64 * 64 * 16);
     assert_eq!(unbounded(&m), Some(m.samples), "{:?}", m.open);
+}
+
+#[test]
+fn the_completion_bound_is_counted_only_where_the_reported_order_needs_the_search() {
+    // The judge accepts an order that every pair's edges admit before any search, and leaves a
+    // sample unjudged at the completion bound only for an order that needs one (`admissible`).
+    // Six squares across pixel (32, 32) on near planes at grid 0.05: two on z = 0, one
+    // computation, weak alone; the rest a part in a thousand apart, every pair of them admitting
+    // every edge. Fourteen free pairs exceed the bound. Reported in paint order, the sample is
+    // judged; with the two on z = 0 reversed, it needs the search and is not.
+    use scenes::*;
+    let mut b = Build::new(true);
+    b.fill(rect([-6.0, 6.0], [-6.0, 6.0], 0.0), OPAQUE_RED);
+    b.fill(rect([-6.0, 6.0], [-6.0, 6.0], 0.0), OPAQUE_BLUE);
+    for k in 1..=4 {
+        b.fill(
+            rect([-6.0, 6.0], [-6.0, 6.0], 0.001 * k as f64),
+            OPAQUE_GREEN,
+        );
+    }
+    let v = arachne_core::xf::View {
+        input_grid: 0.05,
+        ..view_c()
+    };
+    let mut delta = b.delta(1, v);
+    let mut seen = std::collections::HashSet::new();
+    delta.upload.retain(|s| seen.insert(s.key()));
+    let d = arachne_oracle::decide::decide_at(&[delta], 1, None).unwrap();
+    assert_eq!(d.header.status, 0, "{:?}", d.refused);
+    let at: Vec<u8> = d
+        .pairs
+        .iter()
+        .filter(|p| (p.x, p.y, p.sample) == (32, 32, 0))
+        .map(|p| p.edges)
+        .collect();
+    assert_eq!(at.len(), 15);
+    assert_eq!(at.iter().filter(|e| **e == 1).count(), 1, "{at:?}");
+    assert_eq!(at.iter().filter(|e| **e == 7).count(), 14, "{at:?}");
+    // Slot `k`'s fragment and its cells at (32, 32); the report front first, later painted first.
+    let entries: Vec<Entry> = (0..6)
+        .map(|slot| {
+            let f = d.fragments.iter().find(|f| f.slot == slot).unwrap();
+            let c = d
+                .covers
+                .iter()
+                .find(|c| (c.x, c.y, c.fragment) == (32, 32, f.id))
+                .unwrap();
+            Entry {
+                identity: (f.object, f.part, f.layer, f.sub),
+                cells: c.cell_hi,
+            }
+        })
+        .collect();
+    let bound = |order: Vec<usize>| {
+        let rep = Reported {
+            x: 32,
+            y: 32,
+            entries: entries.clone(),
+            order: vec![order; 16],
+        };
+        let mut m = Measures::default();
+        measure(
+            &mut m,
+            &d,
+            0,
+            &Tally::default(),
+            &HashMap::from([((32, 32), rep)]),
+        );
+        m.open.get("completion_bound").copied().unwrap_or(0)
+    };
+    assert_eq!(bound(vec![5, 4, 3, 2, 1, 0]), 0);
+    assert_eq!(bound(vec![5, 4, 3, 2, 0, 1]), 16);
 }
 
 /// The measures `soundness.md` records, by case class: `core_err_within_band`'s excess and read
@@ -998,11 +1117,13 @@ fn soundness_measures() {
                 println!("refused {class} {name} seq {}: {:?}", wd.seq, d.refused);
                 continue;
             }
-            let (e, tally) = excesses_of("measure", wd.seq, &d, &core);
+            let pixels = frame_trace(&core, &d);
+            let (e, tally) = excesses_of("measure", wd.seq, &d, &pixels);
+            let reports = core_reports(&pixels);
             let m = by_class.entry(class.clone()).or_default();
-            measure(m, &d, e.len(), &tally);
+            measure(m, &d, e.len(), &tally, &reports);
             let mut frame = Measures::default();
-            measure(&mut frame, &d, e.len(), &tally);
+            measure(&mut frame, &d, e.len(), &tally, &reports);
             let mut kinds: BTreeMap<(u8, u8, &str, &str), usize> = BTreeMap::new();
             for x in &e {
                 *kinds.entry((x.layer, x.kind, x.row, x.what)).or_default() += 1;
