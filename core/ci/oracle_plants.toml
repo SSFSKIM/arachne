@@ -1839,3 +1839,12 @@ file = "core/oracle/src/keys.rs"
 find = ".map(|plane| plane.rho(px, py, &at))"
 replace = ".map(|_| key.rho(px, py, &at))"
 red = ["band_arith::a_world_planes_rho_is_the_largest_over_the_rounded_planes_it_admits"]
+
+[[plant]]
+name = "measure-add-every-counter"
+item = "§7"
+check = "the soundness measures add each frame's every counter to its class, exact_tie dropped"
+file = "core/oracle/tests/contract.rs"
+find = "        self.exact_tie += exact_tie;\n"
+replace = "        let _ = exact_tie;\n"
+red = ["contract::a_class_s_measures_are_the_sum_of_its_frames_measured_once_each"]

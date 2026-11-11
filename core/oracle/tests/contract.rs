@@ -554,7 +554,7 @@ fn the_core_paints_at_the_alpha_band_s_edges_as_alpha_round_says() {
 }
 
 /// One case class's measures over its frames (`soundness_measures`).
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 struct Measures {
     frames: usize,
     excess: usize,
@@ -586,6 +586,63 @@ struct Measures {
     cycle_unbounded: usize,
     /// A label's pairs at a sample: `plate` determined (1, 2 or 4) and undetermined (0).
     plate: (usize, usize),
+}
+
+impl Measures {
+    /// Adds another frame's (or class's) measures to these, every counter included. The
+    /// argument is destructured whole, so a counter added to `Measures` does not compile until
+    /// it is added here.
+    fn add(&mut self, o: &Measures) {
+        fn pair(a: &mut (usize, usize), b: &(usize, usize)) {
+            let (b0, b1) = b;
+            a.0 += b0;
+            a.1 += b1;
+        }
+        let Measures {
+            frames,
+            excess,
+            own_reads,
+            plane_reads,
+            samples,
+            tie_band,
+            either,
+            policy_tie,
+            tied,
+            exact_tie,
+            open,
+            labels,
+            on_fill,
+            either_kept,
+            cycle_row,
+            cycle_flat,
+            cycle_own,
+            cycle_unbounded,
+            plate,
+        } = o;
+        self.frames += frames;
+        self.excess += excess;
+        self.own_reads += own_reads;
+        self.plane_reads += plane_reads;
+        self.samples += samples;
+        self.tie_band += tie_band;
+        self.either += either;
+        self.policy_tie += policy_tie;
+        self.tied += tied;
+        self.exact_tie += exact_tie;
+        for (k, v) in open {
+            *self.open.entry(k.clone()).or_default() += v;
+        }
+        for (k, v) in labels {
+            *self.labels.entry(*k).or_default() += v;
+        }
+        pair(&mut self.on_fill, on_fill);
+        pair(&mut self.either_kept, either_kept);
+        pair(&mut self.cycle_row, cycle_row);
+        pair(&mut self.cycle_flat, cycle_flat);
+        pair(&mut self.cycle_own, cycle_own);
+        self.cycle_unbounded += cycle_unbounded;
+        pair(&mut self.plate, plate);
+    }
 }
 
 /// Whether some choice of strong edges at a sample can cycle: a directed cycle of three or more
@@ -1129,10 +1186,10 @@ fn soundness_measures() {
             let pixels = frame_trace(&core, &d);
             let (e, tally) = excesses_of("measure", wd.seq, &d, &pixels);
             let reports = core_reports(&pixels);
-            let m = by_class.entry(class.clone()).or_default();
-            measure(m, &d, e.len(), &tally, &reports);
+            // Each frame is measured once, then added to its class.
             let mut frame = Measures::default();
             measure(&mut frame, &d, e.len(), &tally, &reports);
+            by_class.entry(class.clone()).or_default().add(&frame);
             let mut kinds: BTreeMap<(u8, u8, &str, &str), usize> = BTreeMap::new();
             for x in &e {
                 *kinds.entry((x.layer, x.kind, x.row, x.what)).or_default() += 1;
@@ -1197,4 +1254,45 @@ fn a_smoke_case_s_made_stream_is_its_own_family_beside_the_stream_the_core_is_ha
     // Any other stream set is classed by its directory, whatever its files' names.
     let root = std::path::Path::new("/runs/streams-551");
     assert_eq!(stream_class(root, "0a1b-3.xf"), "streams-551");
+}
+
+#[test]
+fn a_class_s_measures_are_the_sum_of_its_frames_measured_once_each() {
+    // `soundness_measures` measures each frame once and adds it to its class: the sum equals the
+    // class measured frame by frame, every counter included.
+    use scenes::*;
+    let mut b = Build::new(true);
+    b.fill(rect([-6.0, 6.0], [-6.0, 6.0], 0.0), OPAQUE_RED);
+    b.fill(rect([-6.0, 6.0], [-6.0, 6.0], 0.0), OPAQUE_BLUE);
+    b.fill(rect([-2.0, 4.0], [-3.0, 3.0], 0.25), OPAQUE_GREEN);
+    let mut first = b.delta(1, view_c());
+    let mut seen = std::collections::HashSet::new();
+    first.upload.retain(|s| seen.insert(s.key()));
+    let first = arachne_oracle::decide::decide_at(&[first], 1, None).unwrap();
+    let mut b = Build::new(true);
+    b.points(vec![[0.0, 0.0, 20.0 - 1e-7]], WHITE, 1.0);
+    let second = arachne_oracle::decide::decide_at(&[b.delta(1, view_c())], 1, None).unwrap();
+    // A run's read tallies, so the counters they feed are reached too.
+    let tally = Tally {
+        own: 7,
+        plane: 5,
+        unmatched: 0,
+        either_own: 2,
+        either_taken: 3,
+    };
+    // The class as the walker used to accumulate it, `measure` into the class frame by frame,
+    // against the frames measured once each and added.
+    let mut class = Measures::default();
+    let mut sum = Measures::default();
+    for (d, excess) in [(&first, 3), (&second, 5)] {
+        measure(&mut class, d, excess, &tally, &HashMap::new());
+        let mut frame = Measures::default();
+        measure(&mut frame, d, excess, &tally, &HashMap::new());
+        sum.add(&frame);
+    }
+    // Every counter's value in the class, for the fixture's reach (`--nocapture`).
+    println!("class {class:?}");
+    assert_eq!(sum, class);
+    assert_eq!((class.frames, class.excess), (2, 8));
+    assert!(class.exact_tie > 0 && !class.open.is_empty() && !class.labels.is_empty());
 }
