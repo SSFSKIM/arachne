@@ -94,7 +94,7 @@ u32 text start  u32 text length (into TEXT)
 ```
 
 Reasons: 1 `unknown_kind`, 2 `reserved_kind`, 3 `unknown_feature`, 4 `unknown_light_model`,
-5 `xf_newer` (a delta of an XF minor above 4 at or before the frame), 6 `invalid_delta`, 7 `no_view`,
+5 `xf_newer` (a delta of an XF minor above 5 at or before the frame), 6 `invalid_delta`, 7 `no_view`,
 8 `core_refuses` (a refusal of the core's own list), 9 `stream_refused`.
 
 - **`invalid_delta`**: the frame's delta is not valid XF and is not applied; the stream keeps what it

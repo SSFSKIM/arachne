@@ -16,10 +16,12 @@ use arachne_core::xf::{
 };
 
 use crate::draw;
+use crate::source::{Section, Unread, WireDelta};
 
-/// The XF version the oracle knows: major 1, minor up to 4. A delta of a newer minor carries
-/// fields whose meaning it cannot know.
-pub const KNOWN_XF: (u16, u16) = (1, 4);
+/// The XF version the oracle knows: major 1, minor up to 5 (XF 1.5's source section, which the
+/// oracle reads itself: `source.rs`). A delta of a newer minor carries fields whose meaning it
+/// cannot know.
+pub const KNOWN_XF: (u16, u16) = (1, 5);
 
 /// The feature bits the oracle knows (contract §11): bit 0, a background-image fill (Cairo's), and
 /// bit 1, a pre-projected tail.
@@ -66,6 +68,21 @@ pub enum StreamCause {
 }
 
 impl StreamCause {
+    /// The cause a file's code names, if it names one.
+    pub fn from_code(code: u8) -> Option<StreamCause> {
+        [
+            StreamCause::ClassNamedTwice,
+            StreamCause::SlotNamedTwice,
+            StreamCause::SlotRemoved,
+            StreamCause::RowEmpty,
+            StreamCause::PathEmpty,
+            StreamCause::ClassOutOfRange,
+            StreamCause::SlotNotHeld,
+        ]
+        .into_iter()
+        .find(|c| *c as u8 == code)
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             StreamCause::ClassNamedTwice => "class_named_twice",
@@ -178,6 +195,23 @@ pub struct State {
     pub order: Vec<OrderEntry>,
     /// The first delta of a newer XF minor applied, if any: every frame from it on is refused.
     pub newer: Option<(u16, u16)>,
+    /// Each held record's source and facing group (XF 1.5), by slot; a record with neither has
+    /// none here.
+    pub meta: BTreeMap<u32, Meta>,
+    /// Whether the stream is read under XF 1.5's rules: a delta applied so far carried the source
+    /// section (contract §10, the label term), decided in stream order.
+    pub rules15: bool,
+    /// The delta that refused the stream by one of XF 1.5's seven codes, and its code: that frame
+    /// and every later one are `truth_unable` under it, and no later delta clears it.
+    pub refused: Option<(u64, StreamCause)>,
+}
+
+/// A record's source and facing group (XF 1.5): its paths of containment, each `(token, class
+/// name)` nodes owner first, and its label's token (0: none).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Meta {
+    pub source: Vec<Vec<(u32, String)>>,
+    pub facing_group: u32,
 }
 
 impl State {
@@ -185,9 +219,63 @@ impl State {
         State::default()
     }
 
-    /// Applies `d`, or refuses it whole and changes nothing.
+    /// Applies a delta built in memory (it carries no source section), or refuses it whole and
+    /// changes nothing.
     pub fn apply(&mut self, d: &Delta) -> Result<(), Refusal> {
+        self.apply_parts(d, None)
+    }
+
+    /// Applies a delta as read from the wire, or refuses it. A delta that does not read is
+    /// `invalid_delta`, or refuses the stream by its section's code. Once refused by one of the
+    /// seven codes the stream stays refused: every later delta is answered with that refusal and
+    /// changes nothing.
+    pub fn apply_wire(&mut self, w: &WireDelta) -> Result<(), Refusal> {
+        if let Some(r) = self.stream_refusal() {
+            return Err(r);
+        }
+        match &w.read {
+            Err(Unread::Ordinary { error, detail }) => Err(Refusal::new(
+                Reason::InvalidDelta,
+                format!("the delta does not read ({error}): {detail}"),
+            )),
+            Err(Unread::Code(cause)) => {
+                self.refused = Some((w.seq, *cause));
+                Err(self.stream_refusal().expect("just refused"))
+            }
+            Ok((d, section)) => self.apply_parts(d, section.as_ref()),
+        }
+    }
+
+    /// The stream's refusal by one of XF 1.5's seven codes, if a delta made one.
+    fn stream_refusal(&self) -> Option<Refusal> {
+        self.refused.map(|(seq, cause)| Refusal {
+            stream: Some((seq, cause)),
+            ..Refusal::new(
+                Reason::StreamRefused,
+                format!(
+                    "the delta at seq {seq} refused the stream: {}",
+                    cause.name()
+                ),
+            )
+        })
+    }
+
+    fn apply_parts(&mut self, d: &Delta, section: Option<&Section>) -> Result<(), Refusal> {
+        if let Some(r) = self.stream_refusal() {
+            return Err(r);
+        }
         self.check(d)?;
+        // 13. `slot_not_held`, last: a held row (for a slot the delta neither sets nor removes;
+        // the reader refused a removed one) whose slot the stream does not hold before the delta.
+        if let Some(s) = section {
+            for row in &s.rows {
+                let set = d.set.iter().any(|r| r.slot == row.slot);
+                if !set && !self.records.contains_key(&row.slot) {
+                    self.refused = Some((d.seq, StreamCause::SlotNotHeld));
+                    return Err(self.stream_refusal().expect("just refused"));
+                }
+            }
+        }
         if let Some(view) = &d.view {
             self.view = Some(view.clone());
         }
@@ -203,8 +291,30 @@ impl State {
         for r in &d.set {
             self.records.insert(r.slot, r.clone());
         }
+        // A record set has the source and facing group of its slot's row, or neither.
+        for r in &d.set {
+            self.meta.remove(&r.slot);
+        }
         for slot in &d.remove {
             self.records.remove(slot);
+            self.meta.remove(slot);
+        }
+        if let Some(s) = section {
+            self.rules15 = true;
+            for row in &s.rows {
+                if !self.records.contains_key(&row.slot) {
+                    continue;
+                }
+                let meta = Meta {
+                    source: s.named(row),
+                    facing_group: row.facing_group,
+                };
+                if meta == Meta::default() {
+                    self.meta.remove(&row.slot);
+                } else {
+                    self.meta.insert(row.slot, meta);
+                }
+            }
         }
         for key in &d.release {
             self.shapes.remove(key);
@@ -224,8 +334,8 @@ impl State {
     /// first: the major; a key uploaded twice; each uploaded shape, then paint table; a release of
     /// a key neither held nor uploaded; a removal of a slot neither held nor set; a release of a key
     /// still in use; the orders of the displays left, when records are set or removed; each record
-    /// set; the delta's view; the order. (The reader's checks come first and are the wire reader's;
-    /// the source rows are XF 1.5's, which the oracle does not read.)
+    /// set; the delta's view; the order. (The reader's checks come first: the wire reader's, then
+    /// the source section's, `source.rs`; `slot_not_held` comes after these, in `apply_parts`.)
     fn check(&self, d: &Delta) -> Result<(), Refusal> {
         let bad = |what: String| Err(Refusal::new(Reason::InvalidDelta, what));
         // 1. The major.
@@ -412,6 +522,10 @@ impl State {
     /// order; empty when the oracle judges it.
     pub fn refusals(&self) -> Vec<Refusal> {
         let mut out = Vec::new();
+        if let Some(r) = self.stream_refusal() {
+            out.push(r);
+            return out;
+        }
         if let Some(v) = self.newer {
             out.push(Refusal::new(
                 Reason::XfNewer,

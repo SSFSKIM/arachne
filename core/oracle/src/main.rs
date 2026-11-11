@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use arachne_oracle::decide::decide_at;
+use arachne_oracle::decide::decide_at_wire;
 use arachne_oracle::out::{STATUS_DECIDED, write};
 use arachne_oracle::stream::Reason;
 
@@ -56,9 +56,9 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
 
 fn run() -> Result<(), String> {
     let args = parse(std::env::args().skip(1))?;
-    let deltas = arachne_core::xf::wire::read_file(&args.xf)
-        .map_err(|e| format!("{}: {e:?}", args.xf.display()))?;
-    let d = decide_at(&deltas, args.seq, args.pixels).map_err(|e| e.to_string())?;
+    let (_, deltas) = arachne_oracle::source::read_file(&args.xf)
+        .map_err(|e| format!("{}: {}", args.xf.display(), e.0))?;
+    let d = decide_at_wire(&deltas, args.seq, args.pixels).map_err(|e| e.to_string())?;
     std::fs::write(&args.out, write(&d)).map_err(|e| format!("{}: {e}", args.out.display()))?;
     let h = &d.header;
     if h.status == STATUS_DECIDED {

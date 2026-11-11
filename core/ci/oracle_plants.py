@@ -11,6 +11,10 @@ printed; the last line is the total. It exits 1 if any plant's tests do not all 
 is not found exactly once, or the plant does not build), 2 if a source is not as it was when the
 run began.
 
+Before any plant, every target the selected plants name is run once on the unchanged tree. A test
+that fails there would read as a kill under any plant, so the run is refused (exit 3, no plant
+applied) unless each target builds, none of its tests fails, and every test a plant names passes.
+
 It builds the oracle once per plant: a development check, run on a build machine, not a CI gate.
 The plants are never built into anything: this script writes each into the source and restores it.
 """
@@ -29,8 +33,10 @@ ORACLE = ROOT / "core" / "oracle"
 PLANTS = Path(__file__).resolve().parent / "oracle_plants.toml"
 
 
-def failing(target: str) -> tuple[set[str], str]:
-    """The tests of ``target`` that fail, and the build's error where it does not build."""
+def run_target(target: str) -> tuple[set[str], set[str], str]:
+    """The tests of ``target`` that pass and that fail, and the build's error where it does not
+    build.
+    """
     which = ["--lib"] if target == "lib" else ["--test", target]
     env = dict(os.environ)
     env.pop("CARGO_TARGET_DIR", None)
@@ -43,8 +49,43 @@ def failing(target: str) -> tuple[set[str], str]:
     )
     if "could not compile" in run.stderr:
         errors = [line for line in run.stderr.splitlines() if line.startswith("error")]
-        return set(), errors[0] if errors else "did not build"
-    return set(re.findall(r"^test (\S+) \.\.\. FAILED$", run.stdout, re.M)), ""
+        return set(), set(), errors[0] if errors else "did not build"
+    passed = set(re.findall(r"^test (\S+) \.\.\. ok$", run.stdout, re.M))
+    failed = set(re.findall(r"^test (\S+) \.\.\. FAILED$", run.stdout, re.M))
+    if run.returncode != 0 and not failed:
+        return passed, failed, f"exit {run.returncode} with no test failing"
+    return passed, failed, ""
+
+
+def failing(target: str) -> tuple[set[str], str]:
+    """The tests of ``target`` that fail, and the build's error where it does not build."""
+    _, failed, broke = run_target(target)
+    return failed, broke
+
+
+def baseline(plants: list[dict]) -> list[str]:
+    """Why the unchanged tree cannot carry the plants: each target that does not build, a test of
+    it that fails, or a named test that does not pass. Empty when every target passes.
+    """
+    named: dict[str, set[str]] = {}
+    for p in plants:
+        for t in p["red"]:
+            target, test = t.split("::", 1)
+            named.setdefault(target, set()).add(test)
+    problems = []
+    for target in sorted(named):
+        passed, failed, broke = run_target(target)
+        if broke:
+            problems.append(f"{target}: {broke}")
+        problems += [
+            f"{target}::{t}: fails on the unchanged tree" for t in sorted(failed)
+        ]
+        problems += [
+            f"{target}::{t}: named by a plant, does not pass on the unchanged tree"
+            for t in sorted(named[target] - passed - failed)
+        ]
+        print(f"BASE {target}: {len(passed)} passed, {len(failed)} failed", flush=True)
+    return problems
 
 
 def main(argv: list[str]) -> int:
@@ -52,6 +93,14 @@ def main(argv: list[str]) -> int:
     if argv:
         plants = [p for p in plants if p["name"] in argv]
     sources = {f: (ROOT / f).read_bytes() for f in {p["file"] for p in plants}}
+    problems = baseline(plants)
+    if problems:
+        for problem in problems:
+            print(f"BASE {problem}", flush=True)
+        print(
+            "plants: refused, the unchanged tree does not pass every target they name"
+        )
+        return 3
     failed = 0
     for p in plants:
         path = ROOT / p["file"]

@@ -12,6 +12,7 @@ use crate::out::{
     STATUS_UNABLE,
 };
 use crate::shift::Shift;
+use crate::source::WireDelta;
 use crate::stream::{Reason, Refusal, State};
 
 /// Why the oracle could not decide a frame at all (not a refusal: a usage error).
@@ -44,16 +45,29 @@ fn refused(r: &Refusal) -> Refused {
     }
 }
 
-/// The decisions at the delta `seq` of `deltas`, applied in order from an empty stream. A delta
-/// that is not valid XF changes nothing; the frame drawn at it is refused.
+/// The decisions at the delta `seq` of `deltas` (built in memory, so carrying no source section),
+/// applied in order from an empty stream. A delta that is not valid XF changes nothing; the frame
+/// drawn at it is refused.
 pub fn decide_at(
     deltas: &[Delta],
     seq: u64,
     window: Option<Window>,
 ) -> Result<Decisions, DecideError> {
+    let wire: Vec<WireDelta> = deltas.iter().cloned().map(WireDelta::of).collect();
+    decide_at_wire(&wire, seq, window)
+}
+
+/// The decisions at the delta `seq` of a file's deltas as read (`source::read_file`), applied in
+/// order from an empty stream. A delta that does not read, or is not valid XF, changes nothing and
+/// its frame is refused; one refused by an XF 1.5 source code refuses its frame and every later one.
+pub fn decide_at_wire(
+    deltas: &[WireDelta],
+    seq: u64,
+    window: Option<Window>,
+) -> Result<Decisions, DecideError> {
     let mut state = State::new();
     for d in deltas {
-        let applied = state.apply(d);
+        let applied = state.apply_wire(d);
         if d.seq == seq {
             return Ok(match applied {
                 Ok(()) => decide(&state, d.version, seq, window),
