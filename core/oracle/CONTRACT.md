@@ -3449,8 +3449,8 @@ in the partition and shaped the identities of others". View C, drawn in this ord
   keyed planar. Its plane does not key: at its first corner,
   `|D| / (|m| |q − (0, 0, d)|) ≈ 5·10^-10`, under `min_cos = 10^-9`. So it is keyed on the screen
   plane through its corners and carries no identity.
-- `A`, an open line from `(1, −2.0625, 0)` to `(1, 2, 0)`, stroke white, width `0.5` (2 px).
-- `B`, an open line from `(1, −2.0625, −1)` to `(1, 2, −1)`, stroke blue, width `0.5`.
+- `B`, an open line from `(1, −2.0625, −1)` to `(1, 2, −1)`, stroke blue, width `0.5` (2 px).
+- `A`, an open line from `(1, −2.0625, 0)` to `(1, 2, 0)`, stroke white, width `0.5`.
 
 Pixel `(35, 32)` is covered by both strokes, whose centrelines lie at screen `x = 36` and
 `x ≈ 35.81`. `T` holds no fragment there in the core's report: its nominal triangle starts at
@@ -3459,11 +3459,15 @@ far from its triangle, but an `Either` fragment counts only where the report hol
 keys `−1`, `B` `−20/21 ≈ −0.9524`. Trace: `A` and `B` have no plane of their own. `T` is a flat
 registry-offered record that passes the width test with each of them: all three lie in `x = 1`,
 so their union is 0 wide. The pair may therefore share through a flat identity, and `E(A, B)` is every edge
-(`Policy(one_plane@1)`). Report: at its 16 samples, `A` in front of `B` by a strong relation.
-Expected: agreement. Rejects: requiring the third record to keep its identity. That leaves the pair
-to the axis rule on `x = 1`, where both lie with their first points equal: an `ExactTie` with `B`
-in front by paint order, and the report a `mismatch`. Margins: `L = 16.25` (`A`) and `≈ 15.48`
-(`B`) px, 0.25 and 0.52 px from their steps. `T` is a mesh, with no cubic.
+(`Policy(one_plane@1)`). Report: at its 16 samples, `B` in front of `A` by a strong relation.
+Expected: agreement. Rejects: requiring the third record to keep its identity. Then no flat identity
+is shared, but `T` still passes (1) with each, so the pair is not taken by the axis rule alone (as
+in `axis_rule_unless_attached`). Where both read their rows on `x = 1` at the sample, one
+computation, they admit the weak edge. Where each reads its own key, `A` (`−1`) is nearer than `B`
+(`−20/21`) by `1/21`, past both intervals and past `lines@1`'s term, whose shares are under `10^-6`
+on two lines of constant key. That leaves `E = {weak, strong A}`, both with `A` in front, as `A` is
+drawn after `B`, and the report a `mismatch`. Margins: `L = 16.25` (`A`) and `≈ 15.48` (`B`) px,
+0.25 and 0.52 px from their steps. `T` is a mesh, with no cubic.
 
 **`axis_rule_unless_attached`.** Set: §7, what may share admits, "Records with no plane of their
 own, by the axis rule alone ((3), and no flat record passes (1) with either)." With it, the

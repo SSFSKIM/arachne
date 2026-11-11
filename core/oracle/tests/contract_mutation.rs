@@ -1489,19 +1489,19 @@ fn read_path_witnesses() -> Vec<Witness> {
         Some((Defect::Order(vec![stroke(1), stroke(0)]), mismatch())),
     ));
 
-    // third_record_without_identity: T, A, B.
+    // third_record_without_identity: T, B, A.
     let mut b = Build::new(true);
     b.mesh(
         vec![[1.0, 2e9, 5.0], [1.0, -2e9, 5.0], [1.0, 0.0, 15.0]],
         vec![[0, 1, 2]],
         [0.0, 1.0, 0.0, 0.5],
     );
-    b.stroke(open(&[[1.0, -2.0625, 0.0], [1.0, 2.0, 0.0]]), WHITE, 0.5);
     b.stroke(
         open(&[[1.0, -2.0625, -1.0], [1.0, 2.0, -1.0]]),
         OPAQUE_BLUE,
         0.5,
     );
+    b.stroke(open(&[[1.0, -2.0625, 0.0], [1.0, 2.0, 0.0]]), WHITE, 0.5);
     out.push(read_path_report(
         "third_record_without_identity",
         "may_share",
