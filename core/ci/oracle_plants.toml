@@ -1055,3 +1055,12 @@ file = "core/oracle/src/label.rs"
 find = "if wind[a] != 0 && wind[a] == wind[b] &&"
 replace = "if wind[a] != 0 &&"
 red = ["contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "label-otherwise-by-outline"
+item = "§10"
+check = "a label drawn otherwise is read over the whole frame, not by its path outlines alone"
+file = "core/oracle/src/label.rs"
+find = "&& (otherwise[l as usize]"
+replace = "&& (false"
+red = ["contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]

@@ -972,6 +972,21 @@ fn label_rule_witnesses() -> Vec<Witness> {
         5,
         0,
     ));
+    // `label_drawn_otherwise`: `L` with a points record in its facing group, whose block (side 2,
+    // at screen (42.5, 31.5)) `S` covers and `L`'s glyph does not reach. The label is read over
+    // the whole frame, so `S` meets it there and the pair is open with cause `label`.
+    let mut b = Build::new(true);
+    b.fill(rect([2.0, 3.0], [-0.5, 0.5], 2.0), OPAQUE_BLUE);
+    b.label([0.0; 3]);
+    b.points(vec![[2.625, 0.125, 0.0]], WHITE, 2.0);
+    out.push(open_case(
+        "label_drawn_otherwise",
+        one15(&b, view_c(), &[1, 2], &[Some(&[(1, POLYGON)])]),
+        (42, 32),
+        Samples::All,
+        5,
+        0,
+    ));
     // Folded (rule 3; no §12 witness names it): two triangles of one surface object, wound one
     // way and sharing two corners, the second folded over the first, both holding the points
     // of pixel (30, 32).
