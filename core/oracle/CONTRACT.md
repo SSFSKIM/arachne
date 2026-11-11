@@ -2888,7 +2888,8 @@ the discrimination rests on which records are offered.
   `[128, 0, 64]`, though Cairo paints the frame byte for byte the same with and without the
   polygon. Verdict on that core: `mismatch` at those pixels' samples, counted
   `invisible_registry_offer`. The fixture holds the scene and that core's report; it needs no
-  `defect.json`.
+  `defect.json`. On its grid the lines' `ε̂` is about `0.0026` px: their cubics, `L ≈ 67.74` and
+  `67.26` px, clear their steps by 0.26 and 0.74 px against `6ε̂ ≈ 0.015`.
 - **Second, synthetic.** View C. Line `R` from `(−4.25, 0, 0)` to `(2.125, 0, 0)`, stroke
   `(1, 0, 0, 0.5)`, then line `U` from `(−2.125, 0, 0)` to `(4.25, 0, 0)`, stroke `(0, 0, 1, 0.5)`,
   both width `0.5`, then a polygon `[−6, 6]²` at `z = 0` with fill and stroke `(0, 1, 0, 0)`.
@@ -3204,7 +3205,8 @@ path outlines alone, which makes no pair and counts nothing.
 **Read-path witnesses.** Each one pins a read that §2, §5, §6 or §7 states and an implementation
 can skip without failing any witness above. Each names its rule by the sentence it instantiates.
 Every cubic below clears its step by at least the 0.06 px the views require, except in
-`axis_tie_own_reads_recut`, which sits on a step by the views' declared exception. Where a key
+`axis_tie_own_reads_recut` and the soundness fixture `lines_straight_cubic_step`, which sit on a
+step by the views' declared exception. Where a key
 decides, the band edges clear that decision by the margin stated. Each case of the `ExactTie` rule
 has a witness: two `−∞` keys, W1; two flat fills on one axis plane, W2; two records on an axis
 plane by the axis rule alone, W17's second form and `axis_rule_exact_tie`; and the rule's sentence
@@ -3575,8 +3577,8 @@ Trace: not shared, each reads its own key, and plain depth gives `{strong T}`. S
 its row (its own plane at the sample) and `T` its own key, and `within_term` admits the weak edge.
 So `E = {strong T, weak}`. Report: at its 16 samples, `P` in front by paint order. Expected:
 agreement. Rejects: dropping the shared scenario because `T` has no row. That leaves
-`{strong T}` and makes the report a `mismatch`. Margins: `P`'s edges clear their steps by 1.0 px,
-`T`'s by 0.47 px.
+`{strong T}` and makes the report a `mismatch`. Margins: on its grid `ε̂ ≈ 0.0036` px, and `P`'s
+edges clear their steps by 1.0 px against `6ε̂ ≈ 0.022`; `T` is a mesh, with no cubic.
 
 **`shared_scenario_no_row`.** Set: as `shared_scenario_one_row`, with neither record holding a row.
 §5, `shared_plane_read@1`: "Mesh triangles and point blocks have no rows; they are always read on
@@ -3597,7 +3599,8 @@ The pair may share: their union is about `0.00195` wide, under `2τ⁺ ≈ 0.002
 plain depth gives `{strong T}`. Shared, each reads its own key, and `within_term` admits the weak
 edge. So `E = {strong T, weak}`. Report: at its 16 samples, `T1` in front by paint order. Expected:
 agreement. Rejects: dropping the shared scenario because neither record has a row. That leaves
-`{strong T}` and makes the report a `mismatch`. Margins: no curve is read.
+`{strong T}` and makes the report a `mismatch`. Margins: on its grid `ε̂ ≈ 0.0036` px, and both
+records are meshes, with no cubic.
 
 ### Soundness fixtures
 
@@ -3610,7 +3613,9 @@ level would reject it.
 **`lines_straight_cubic_step`.** View C, input grid 0. An open line from `(−0.75, 0, 0)` to
 `(0.75, 0, 0)` (controls 6 px apart end to end, every key `−1`), stroke white, width `0.5`. Its
 cubic sits on a step (`L = 6`), so the core charges `320u (1 + 16u)` there. Expected: the core's
-reported share is at most `O⁺` (§7: `B` gives at least `328u`), no `share_beyond_bound`.
+reported share is at most `O⁺` (§7: `B` gives at least `328u`), no `share_beyond_bound`. It sits
+on the step by the views' declared exception: every own read of the stroke within `r` of its
+cubic's control hull is `curve_recut` (§6), so the fixture judges no order, only the share.
 
 **`selection_relations`.** Scene as W16, pixel `(32, 31)`, the conforming report. The selection
 check (§9) reads the trace's pre-drop per-sample pair relations and strengths there:
