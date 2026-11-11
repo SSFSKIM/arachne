@@ -50,12 +50,22 @@ ISOLATED_CHECKOUT: tuple[str, ...] = (
     "core/ci/toolchain.sh",
 )
 
+#: The test files that may name core paths beyond ``xf``, each by name from the oracle's root: the
+#: contract tests, which read the core's report, and the module that builds streams through the
+#: core's probe kit. No source under ``src/`` may (``check_oracle`` asserts it). A file is added
+#: here by name, and only with review.
+CORE_PATHS_ALLOWED_IN: tuple[str, ...] = (
+    "tests/contract.rs",
+    "tests/contract_join_hypot.rs",
+    "tests/contract_mutation.rs",
+    "tests/common/fixtures.rs",
+)
+
 #: Inside the list, the test files that may reach the core, and the one that builds streams through
 #: them (``probes.rs`` holds ``common/fixtures.rs``): they never enter the isolated checkout, and run
 #: in the normal tree.
 ISOLATED_EXCLUDED: tuple[str, ...] = (
-    "core/oracle/tests/contract*.rs",
-    "core/oracle/tests/common/fixtures.rs",
+    *(f"core/oracle/{f}" for f in CORE_PATHS_ALLOWED_IN),
     "core/oracle/tests/probes.rs",
 )
 
@@ -101,18 +111,9 @@ def check_isolated_checkout(root: Path) -> tuple[list[str], list[str]]:
     return problems, files
 
 
-#: The test files that may name core paths beyond ``xf``, as patterns from the oracle's root: the
-#: contract tests, which read the core's report, and the module that builds streams through the
-#: core's probe kit. No source under ``src/`` may (``check_oracle`` asserts it).
-CORE_PATHS_ALLOWED_IN: tuple[str, ...] = (
-    "tests/contract*.rs",
-    "tests/common/fixtures.rs",
-)
-
-
 def core_paths_allowed(rel: str) -> bool:
     """Whether the oracle file ``rel`` (POSIX, from the oracle's root) may name core paths."""
-    return any(Path(rel).match(pattern) for pattern in CORE_PATHS_ALLOWED_IN)
+    return rel in CORE_PATHS_ALLOWED_IN
 
 
 CRATE = re.compile(r"\barachne_core\b")
