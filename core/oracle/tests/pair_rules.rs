@@ -533,6 +533,52 @@ fn two_facing_keys_of_one_centre_are_an_exact_tie_where_the_facing_plane_does_no
     assert!(apart.iter().all(|e| *e == (7, 3)), "{apart:?}");
 }
 
+/// The pair rows, as `(edges, label)`, of two strokes of the polyline through `(−2, 0, 0)`,
+/// `(0, 0, 1)`, `(2, 1, −1)` and `(2, −1, 2)`, on no plane, red of width 0.5 then blue of width
+/// `blue_width`, in view C.
+fn two_strokes_of_one_polyline(blue_width: f64) -> Vec<(u8, u8)> {
+    let pts = open(&[
+        [-2.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [2.0, 1.0, -1.0],
+        [2.0, -1.0, 2.0],
+    ]);
+    let mut b = Build::new(true);
+    b.stroke(pts.clone(), OPAQUE_RED, 0.5);
+    b.stroke(pts, OPAQUE_BLUE, blue_width);
+    let d = decide(&b, view_c());
+    let (p, q) = (id_of(&d, 0, 2), id_of(&d, 1, 2));
+    pairs_of(&d, p, q)
+        .into_iter()
+        .map(|r| (r.edges, r.label))
+        .collect()
+}
+
+#[test]
+fn two_strokes_of_one_curve_read_at_one_point_are_an_exact_tie() {
+    // §7 `ExactTie`: "any other pair whose keys are one computation in every scenario". Two
+    // strokes of one polyline on no plane, of one width, are keyed along one centreline built
+    // from one input (§5, `curve_key@1`) and read at one sample: one computation, weak alone.
+    // Where a read is `curve_recut` (§6, per read) the pair stays unable.
+    let one = two_strokes_of_one_polyline(0.5);
+    let off: Vec<_> = one
+        .iter()
+        .filter(|e| **e != (1, 4) && **e != (7, 0))
+        .collect();
+    assert!(one.iter().any(|e| *e == (1, 4)), "{one:?}");
+    assert!(
+        off.is_empty(),
+        "{} of {}: {:?}",
+        off.len(),
+        one.len(),
+        &off[..off.len().min(4)]
+    );
+    // Of another width, the read takes another body: not one computation.
+    let wider = two_strokes_of_one_polyline(1.0);
+    assert!(!wider.is_empty());
+    assert!(wider.iter().all(|e| e.1 != 4), "{wider:?}");
+}
+
 #[test]
 fn an_axis_only_pair_reads_no_own_key() {
     // §7: two records with no plane of their own sharing an axis plane by the axis rule alone

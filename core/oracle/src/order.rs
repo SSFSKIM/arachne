@@ -128,7 +128,7 @@ pub struct Scene {
 }
 
 /// One sample's reads of a present fragment: its own band (adjusted on its own fill), its row's.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Reads {
     pub own: Result<Band, Unable>,
     pub row: Option<Result<Band, Unable>>,
@@ -422,7 +422,7 @@ impl Scene {
             Reads {
                 own: r.own.map(keep),
                 row: r.row.map(|w| w.map(keep)),
-                ..*r
+                ..r.clone()
             }
         };
         self.pair_with(a, b, &unsnapped(ra), &unsnapped(rb), lines_share, false)
@@ -504,8 +504,8 @@ impl Scene {
                 // Shared: each reads its row, or its own key where it has none (a mesh triangle,
                 // a point block: §5); `within_term` with the snap shares.
                 let read = |r: &Reads| match r.row {
-                    Some(w) => w.map(|w| (w, r.row_at)),
-                    None => r.own.map(|o| (o, r.own_at)),
+                    Some(w) => w.map(|w| (w, r.row_at.clone())),
+                    None => r.own.map(|o| (o, r.own_at.clone())),
                 };
                 let ((wa, ca), (wb, cb)) = (read(ra)?, read(rb)?);
                 let one = ca.is_some() && ca == cb;

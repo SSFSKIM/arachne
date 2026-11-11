@@ -2,6 +2,8 @@
 //! sample, its arithmetic bound `R` and its input bound `S`; and each registry-offered record's
 //! facts the tie policies read (§7).
 
+use std::sync::Arc;
+
 use arachne_core::xf::{Camera, View};
 
 use crate::band::{PlaneHull, departure_plus, kr};
@@ -93,7 +95,7 @@ pub enum PlaneS {
 
 /// A key read as one computation (contract §7, `ExactTie`): two reads of one computation are
 /// one value bit for bit in every conforming evaluation.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Computation {
     /// A world plane's key across the pixel plane, read at a point.
     World(ScreenKey, [f64; 2]),
@@ -103,6 +105,21 @@ pub enum Computation {
     NegInf,
     /// A facing centre's own key.
     Centre(CentreKey),
+    /// A curve's key along its centreline, read at a point.
+    Curve(Arc<CurveKey>, [f64; 2]),
+}
+
+/// What a curve's key along its centreline is computed from (contract §5, `curve_key@1`): its
+/// drawn points and its shown points, the projection and frame map that key and place them, and
+/// the body `h` its read holds segments by. Two reads of one such input at one point are one
+/// computation; equal keys of other inputs are not.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CurveKey {
+    pub world: Vec<[f64; 3]>,
+    pub shown: Vec<[f64; 3]>,
+    pub projection: Projection,
+    pub map: FrameMap,
+    pub h: f64,
 }
 
 /// What a facing centre's own key `−factor((centre − c) · R₂)` is computed from (contract §5,
@@ -152,7 +169,7 @@ pub enum Model {
         kmax: f64,
         eps: f64,
     },
-    /// Along a curve's centreline, at body `h`.
+    /// Along a curve's centreline, at body `h`, computed from `of`.
     Curve {
         line: Centreline,
         h: f64,
@@ -160,6 +177,7 @@ pub enum Model {
         sigma: f64,
         joints: Vec<Joint>,
         map: FrameMap,
+        of: Arc<CurveKey>,
     },
     /// One key everywhere (a facing plane that does not key: the centre's own key, computed from
     /// `at`).
@@ -236,7 +254,8 @@ impl Model {
 
     /// What its read at the point `p` computes (contract §7, `ExactTie`), where that is one
     /// computation named by its inputs: a world plane's key at the point it reads (its fringe's
-    /// outline point outside the outline), a triangle's plane on screen at `p`, or `−∞`.
+    /// outline point outside the outline), a triangle's plane on screen at `p`, a facing centre's
+    /// own key, a curve's centreline read at `p`, or `−∞`.
     pub fn computation_at(&self, p: [f64; 2]) -> Option<Computation> {
         match self {
             Model::NegInf => Some(Computation::NegInf),
@@ -249,6 +268,7 @@ impl Model {
             )),
             Model::Tri { key, .. } => Some(Computation::Screen(*key, p)),
             Model::Const { at, .. } => Some(Computation::Centre(*at)),
+            Model::Curve { of, .. } => Some(Computation::Curve(of.clone(), p)),
             _ => None,
         }
     }
@@ -357,6 +377,7 @@ impl Model {
                 sigma,
                 joints,
                 map,
+                ..
             } => {
                 if !(eps.is_finite() && sigma.is_finite()) {
                     return std::array::from_fn(|_| Err(Unable::BandUnbounded));
@@ -603,6 +624,13 @@ pub fn path_depth(view: &View, item: &PathItem, rings: &[Option<Vec<Ring>>; 3]) 
             &Centreline::of(&item.shown, pr, &map),
         ),
         map,
+        of: Arc::new(CurveKey {
+            world: item.world.clone(),
+            shown: item.shown.clone(),
+            projection: pr.clone(),
+            map,
+            h: half(k),
+        }),
     };
     match (&c.placement, pre) {
         (Placement::FixedOrientation { centre, .. }, _) => {

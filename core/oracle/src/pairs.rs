@@ -297,14 +297,14 @@ fn pixel(
                 let ra = Reads {
                     own: own[i][s],
                     row: row[i].map(|r| r[s]),
-                    own_at: own_at[i][s],
-                    row_at: row_at[i][s],
+                    own_at: own_at[i][s].clone(),
+                    row_at: row_at[i][s].clone(),
                 };
                 let rb = Reads {
                     own: own[j][s],
                     row: row[j].map(|r| r[s]),
-                    own_at: own_at[j][s],
-                    row_at: row_at[j][s],
+                    own_at: own_at[j][s].clone(),
+                    row_at: row_at[j][s].clone(),
                 };
                 let lines_pair = scene.lines_eligible(frags[i], frags[j]);
                 let shares_ij = if lines_pair {

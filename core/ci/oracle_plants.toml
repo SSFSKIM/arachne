@@ -1397,3 +1397,21 @@ file = "core/oracle/src/decide.rs"
 find = "                        Some(r) if one_colour(r) && !p.shaded => {"
 replace = "                        Some(r) if r.len() == 1 && !p.shaded => {"
 red = ["colour::a_layer_whose_rows_are_one_colour_is_that_solid"]
+
+[[plant]]
+name = "curve-key-computation"
+item = "§7"
+check = "two strokes of one curve read at one point are one computation"
+file = "core/oracle/src/keys.rs"
+find = "            Model::Curve { of, .. } => Some(Computation::Curve(of.clone(), p)),\n"
+replace = ""
+red = ["pair_rules::two_strokes_of_one_curve_read_at_one_point_are_an_exact_tie"]
+
+[[plant]]
+name = "curve-key-inputs"
+item = "§7"
+check = "a curve's computation is named by its body too: strokes of one curve and two widths are not one"
+file = "core/oracle/src/keys.rs"
+find = "            h: half(k),\n        }),\n"
+replace = "            h: 0.0,\n        }),\n"
+red = ["pair_rules::two_strokes_of_one_curve_read_at_one_point_are_an_exact_tie"]
