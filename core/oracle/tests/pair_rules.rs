@@ -5,7 +5,7 @@
 #[path = "common/scenes.rs"]
 mod scenes;
 
-use arachne_core::xf::{Paint, View};
+use arachne_core::xf::{Camera, Paint, View};
 use arachne_oracle::cover::sample_point;
 use arachne_oracle::decide::decide_at;
 use arachne_oracle::out::{Decisions, PairRow};
@@ -273,18 +273,31 @@ fn two_flat_triangles_that_may_share_tie_within_term_though_neither_has_a_row() 
 /// Two point blocks of radius 2 at (0.125, −0.125, 0), red then blue, with `between` drawn
 /// between them, at focal distance 10 and grid 0: the pair of the two blocks at pixel (32, 32).
 fn two_co_placed_blocks(between: impl FnOnce(&mut Build)) -> Vec<(u8, u8)> {
+    two_blocks([0.125, -0.125, 0.0], [0.125, -0.125, 0.0], false, between)
+}
+
+/// Point blocks of radius 2 at `p` (red) and `q` (blue), with `between` drawn between them, at
+/// focal distance 10 and grid 0, under the exponential projection where `exponential`: the pair
+/// of the two blocks at pixel (32, 32).
+fn two_blocks(
+    p: [f64; 3],
+    q: [f64; 3],
+    exponential: bool,
+    between: impl FnOnce(&mut Build),
+) -> Vec<(u8, u8)> {
     let mut b = Build::new(true);
-    b.points(vec![[0.125, -0.125, 0.0]], OPAQUE_RED, 2.0);
+    b.points(vec![p], OPAQUE_RED, 2.0);
     between(&mut b);
     let last = b.records.len() as u32;
-    b.points(vec![[0.125, -0.125, 0.0]], OPAQUE_BLUE, 2.0);
-    let d = decide(
-        &b,
-        View {
-            input_grid: 0.0,
-            ..view(10.0)
-        },
-    );
+    b.points(vec![q], OPAQUE_BLUE, 2.0);
+    let mut v = View {
+        input_grid: 0.0,
+        ..view(10.0)
+    };
+    if let Camera::ThreeD(c) = &mut v.camera {
+        c.exponential_projection = exponential;
+    }
+    let d = decide(&b, v);
     let (p, q) = (id_of(&d, 0, 4), id_of(&d, last, 4));
     pairs_of(&d, p, q)
         .into_iter()
@@ -311,6 +324,22 @@ fn two_keys_of_one_computation_in_every_scenario_are_an_exact_tie() {
     });
     assert!(!apart.is_empty());
     assert!(apart.iter().all(|e| *e == (1, 4)), "{apart:?}");
+}
+
+#[test]
+fn two_facing_keys_of_one_centre_are_an_exact_tie_where_the_facing_plane_does_not_key() {
+    // §7 `ExactTie`, as above, under the exponential projection: the facing plane does not key
+    // (§5), and each block is keyed by its centre's own key, −exp(0) = −1, from one input. One
+    // computation: weak alone.
+    let p = [0.125, -0.125, 0.0];
+    let one = two_blocks(p, p, true, |_| {});
+    assert!(!one.is_empty());
+    assert!(one.iter().all(|e| *e == (1, 4)), "{one:?}");
+    // Two centres apart in one pixel on z = 0 key −1 too, the same value from other inputs: a tie
+    // by band, not one computation.
+    let apart = two_blocks(p, [0.1875, -0.125, 0.0], true, |_| {});
+    assert!(!apart.is_empty());
+    assert!(apart.iter().all(|e| *e == (7, 3)), "{apart:?}");
 }
 
 #[test]

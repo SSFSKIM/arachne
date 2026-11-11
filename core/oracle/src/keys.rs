@@ -114,6 +114,33 @@ pub enum Computation {
     Screen(ScreenKey, [f64; 2]),
     /// The key `−∞`.
     NegInf,
+    /// A facing centre's own key.
+    Centre(CentreKey),
+}
+
+/// What a facing centre's own key `−factor((centre − c) · R₂)` is computed from (contract §5,
+/// `facing_plane@1`): the rotation's depth row, the frame centre, the focal distance, the
+/// projection's kind, and the centre. Two keys of one such input are one computation; equal keys
+/// of other inputs are not.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CentreKey {
+    pub depth_row: [f64; 3],
+    pub frame_centre: [f64; 3],
+    pub d: f64,
+    pub exponential: bool,
+    pub centre: [f64; 3],
+}
+
+impl CentreKey {
+    fn of(pr: &Projection, centre: [f64; 3]) -> CentreKey {
+        CentreKey {
+            depth_row: pr.r[2],
+            frame_centre: pr.c,
+            d: pr.d,
+            exponential: pr.exponential,
+            centre,
+        }
+    }
 }
 
 /// A key model.
@@ -147,11 +174,13 @@ pub enum Model {
         joints: Vec<Joint>,
         map: FrameMap,
     },
-    /// One key everywhere (a facing plane that does not key: the centre's own key).
+    /// One key everywhere (a facing plane that does not key: the centre's own key, computed from
+    /// `at`).
     Const {
         k: f64,
         r: f64,
         s: f64,
+        at: CentreKey,
     },
     /// No bound can be stated (an infinite screen shift or share).
     Unbounded,
@@ -232,6 +261,7 @@ impl Model {
                 },
             )),
             Model::Tri { key, .. } => Some(Computation::Screen(*key, p)),
+            Model::Const { at, .. } => Some(Computation::Centre(*at)),
             _ => None,
         }
     }
@@ -255,7 +285,7 @@ impl Model {
             Model::NegInf => std::array::from_fn(|_| Ok(Band::exact(f64::NEG_INFINITY))),
             Model::Unbounded => std::array::from_fn(|_| Err(Unable::BandUnbounded)),
             Model::PivotUnknown => std::array::from_fn(|_| Err(Unable::PivotUnknown)),
-            Model::Const { k, r, s } => std::array::from_fn(|_| {
+            Model::Const { k, r, s, .. } => std::array::from_fn(|_| {
                 if !(s.is_finite() && r.is_finite()) {
                     return Err(Unable::BandUnbounded);
                 }
@@ -548,6 +578,7 @@ fn facing_model(pr: &Projection, map: &FrameMap, centre: [f64; 3], delta_c: f64)
         k,
         r,
         s: (k.abs() + r) * ds,
+        at: CentreKey::of(pr, centre),
     }
 }
 
