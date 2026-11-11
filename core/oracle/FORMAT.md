@@ -166,8 +166,9 @@ Every pair of fragments present (`Yes` or `Either`) at a sample, `a < b` by frag
   order, and `plate` is `2`, the label's in front. A line on the label's plane ties it (`plate`
   `1`), and the plate model draws the later painted in front; a line 2^-45 nearer is inside the
   keys' bounds, and `plate` is `0`.
-- **Admissible orders** of the fragments present at a sample are the ranks (`cycle_rank@1`) of the
-  completions that pick one edge per pair; an order every pair agrees with is one. At a sample
+- **Admissible orders** of the fragments present at a sample are the ranks (`cycle_rank@2`) of the
+  completions that pick one edge per pair, a choice whose strong edges read from own keys
+  (`provenance` 0) cycle being none; an order every pair agrees with is one. At a sample
   that holds a label fragment, `PAIR` still holds every pair, the label's included, as §7 reads
   them; the label rule's order is read through `LABL`.
 - An unbounded fragment (`FRAG` flag bit 0) has no rows and no pairs: it is `truth_unable`

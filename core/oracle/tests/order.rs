@@ -1,5 +1,5 @@
 //! The order at a sample (contract §7): a pair's edges and label from its two reads, and which
-//! orders of the present fragments are admissible, through `cycle_rank@1` where edges cycle.
+//! orders of the present fragments are admissible, through `cycle_rank@2` where edges cycle.
 
 use arachne_oracle::draw::Layer;
 use arachne_oracle::keys::{Band, Model, Offered, Unable};
@@ -63,10 +63,19 @@ fn the_nontransitive_triple_ties_its_neighbours_and_orders_its_ends() {
     );
 }
 
-/// The edges of the triple, by position pair.
-fn edges_of(e: [[Edges; 3]; 3]) -> impl Fn(usize, usize) -> Edges {
-    move |i, j| e[i][j]
+/// The edges of the triple, by position pair, each strong edge read from own keys.
+fn edges_of(e: [[Edges; 3]; 3]) -> impl Fn(usize, usize) -> (Edges, u8) {
+    move |i, j| (e[i][j], 0)
 }
+
+/// The edges of the triple with `PAIR`'s provenance code of each pair: 1 for each strong edge
+/// read through a row (`shared_plane_read@1`), 0 for own keys.
+fn edges_read(e: [[Edges; 3]; 3], via: [[u8; 3]; 3]) -> impl Fn(usize, usize) -> (Edges, u8) {
+    move |i, j| (e[i][j], via[i][j])
+}
+
+/// `PAIR`'s provenance code for a pair whose strong edges are both read through a row.
+const ROW: u8 = 1 | 1 << 2;
 
 fn paint(f: usize) -> (u32, u32) {
     (f as u32, 0)
@@ -109,11 +118,11 @@ fn a_cycle_through_a_weak_order_keeps_every_strong_order() {
 }
 
 #[test]
-fn an_all_strong_cycle_is_ranked_by_wins_then_paint_order() {
+fn an_all_strong_cycle_through_a_row_read_is_ranked_by_wins_then_paint_order() {
     // 0 before 1, 1 before 2 and 2 before 0, each strong: every one has a strong edge into it and
     // each is in front of one other, so the later painted (2) comes first; then 0, free of 1.
     let none = Edges::default();
-    let e = edges_of([[none, A, B], [none, none, A], [none, none, none]]);
+    let cycle = [[none, A, B], [none, none, A], [none, none, none]];
     let present = [0, 1, 2];
     let front = vec![
         vec![false, true, false],
@@ -121,11 +130,24 @@ fn an_all_strong_cycle_is_ranked_by_wins_then_paint_order() {
         vec![true, false, false],
     ];
     assert_eq!(rank(3, &front, &front, &paint), vec![2, 0, 1]);
+    // §7 `cycle_rank@2`: a cycle through at least one edge not read from own keys stays (here the
+    // edge 1 → 2, read through a row).
+    let e = edges_read(cycle, [[0, 0, 0], [0, 0, ROW], [0, 0, 0]]);
     for order in PERMS {
         let want = order == [2, 0, 1];
         assert_eq!(
             admissible(&present, &paint, &e, &order),
             Some(want),
+            "{order:?}"
+        );
+    }
+    // Every strong edge read from own keys: the choice is not a completion, and the pairs have no
+    // other, so no order is admitted.
+    let e = edges_of(cycle);
+    for order in PERMS {
+        assert_eq!(
+            admissible(&present, &paint, &e, &order),
+            Some(false),
             "{order:?}"
         );
     }
@@ -198,38 +220,44 @@ fn lines_straight_cubic_step_charges_at_least_the_core_s_step() {
 }
 
 #[test]
-fn the_nontransitive_triple_admits_its_reversal_through_an_all_strong_cycle() {
-    // Contract §7 read literally: a completion picks any edge of each pair's E. The adjacent pairs
-    // of the triple admit both strong edges, so the completion 0 → 2, 2 → 1, 1 → 0 is an all-strong
-    // cycle; its rank (equal wins, the later painted first) is [2, 1, 0]. That order breaks the
-    // ends' strong edge, and the literal reading admits it. Whether the contract means a tighter
-    // reading is an open question; until it says so, this pins the literal one.
+fn the_nontransitive_triple_admits_its_reversal_only_through_a_row_read_cycle() {
+    // Contract §7, `cycle_rank@2`: a completion picks one edge of each pair's E, except that a
+    // choice whose strong edges, each read from own keys, form a cycle is not a completion. The
+    // adjacent pairs of the triple admit both strong edges, so 0 → 2, 2 → 1, 1 → 0 is an
+    // all-strong cycle; its rank (equal wins, the later painted first) is [2, 1, 0], which breaks
+    // the ends' strong edge.
     let s = three();
     let r = [band(0.0, 0.6), band(1.0, 0.6), band(2.0, 0.6)];
     let pair = |a: usize, b: usize| s.pair(a, b, &r[a], &r[b], NONE).unwrap().edges;
-    let e = edges_of([
+    let triple = [
         [Edges::default(), pair(0, 1), pair(0, 2)],
         [Edges::default(), Edges::default(), pair(1, 2)],
         [Edges::default(); 3],
-    ]);
+    ];
     let present = [0, 1, 2];
-    // The orders one key per fragment can give (0 is always in front of 2, the ends being strong):
-    // every one is admitted, so the literal reading makes no false failure.
+    // The orders one key per fragment can give (0 is always in front of 2, the ends being strong).
     let one_key = [[0, 1, 2], [1, 0, 2], [0, 2, 1]];
-    for order in one_key {
-        assert_eq!(
-            admissible(&present, &paint, &e, &order),
-            Some(true),
-            "{order:?}"
-        );
-    }
-    // What the literal reading admits beyond them, through all-strong cycles.
-    let added: Vec<[usize; 3]> = PERMS
-        .into_iter()
-        .filter(|o| !one_key.contains(o))
-        .filter(|o| admissible(&present, &paint, &e, o) == Some(true))
-        .collect();
-    assert_eq!(added, vec![[2, 1, 0]], "{added:?}");
+    let beyond = |e: &dyn Fn(usize, usize) -> (Edges, u8)| -> Vec<[usize; 3]> {
+        for order in one_key {
+            assert_eq!(
+                admissible(&present, &paint, e, &order),
+                Some(true),
+                "{order:?}"
+            );
+        }
+        PERMS
+            .into_iter()
+            .filter(|o| !one_key.contains(o))
+            .filter(|o| admissible(&present, &paint, e, o) == Some(true))
+            .collect()
+    };
+    // Own keys throughout: the cycle is no completion, and nothing beyond the one-key orders is
+    // admitted.
+    assert_eq!(beyond(&edges_of(triple)), Vec::<[usize; 3]>::new());
+    // The adjacent pairs read through their rows (the row-read witness): the cycle stays, and so
+    // does its order.
+    let rows = edges_read(triple, [[0, ROW, 0], [0, 0, ROW], [0, 0, 0]]);
+    assert_eq!(beyond(&rows), vec![[2, 1, 0]]);
 }
 
 /// Two strokes of records with no plane of their own on the axis plane z = 0 alone, `a` read as

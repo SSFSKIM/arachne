@@ -1,6 +1,6 @@
 //! The order at a sample (contract §7): each present pair's admitted edges `E` and label, from its
 //! keys, bands and tie policies; and whether an order of the present fragments is admissible, by
-//! the rank of some completion (`cycle_rank@1`).
+//! the rank of some completion (`cycle_rank@2`).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -599,12 +599,13 @@ impl Scene {
 }
 
 /// Whether `order` (front first, indices into `present`) is admissible at a sample, given each
-/// pair's edges (`edges(i, j)` for positions `i < j` of `present`) and paint order. `None` where
-/// the completion search would exceed its bound.
+/// pair's edges and `PAIR`'s provenance code of its strong edges (`edges(i, j)` for positions
+/// `i < j` of `present`) and paint order. `None` where the completion search would exceed its
+/// bound.
 pub fn admissible(
     present: &[usize],
     paint: &dyn Fn(usize) -> (u32, u32),
-    edges: &dyn Fn(usize, usize) -> Edges,
+    edges: &dyn Fn(usize, usize) -> (Edges, u8),
     order: &[usize],
 ) -> Option<bool> {
     let n = present.len();
@@ -620,7 +621,7 @@ pub fn admissible(
     for i in 0..n {
         for j in i + 1..n {
             let (a, b) = (present[i], present[j]);
-            let e = edges(i, j);
+            let (e, _) = edges(i, j);
             let a_first = pos[&a] < pos[&b];
             let paint_a_front = paint(a) > paint(b);
             let ok = (a_first && e.a_front)
@@ -635,10 +636,10 @@ pub fn admissible(
         return Some(true);
     }
     // Every completion's rank, within a bound.
-    let pairs: Vec<(usize, usize, Vec<u8>)> = (0..n)
+    let pairs: Vec<(usize, usize, Vec<u8>, u8)> = (0..n)
         .flat_map(|i| (i + 1..n).map(move |j| (i, j)))
         .map(|(i, j)| {
-            let e = edges(i, j);
+            let (e, provenance) = edges(i, j);
             let mut opts = Vec::new();
             if e.weak {
                 opts.push(0);
@@ -649,13 +650,13 @@ pub fn admissible(
             if e.b_front {
                 opts.push(2);
             }
-            (i, j, opts)
+            (i, j, opts, provenance)
         })
         .collect();
-    if pairs.iter().any(|(_, _, o)| o.is_empty()) {
+    if pairs.iter().any(|(_, _, o, _)| o.is_empty()) {
         return Some(false);
     }
-    let total: f64 = pairs.iter().map(|(_, _, o)| o.len() as f64).product();
+    let total: f64 = pairs.iter().map(|(_, _, o, _)| o.len() as f64).product();
     if total > 262_144.0 {
         return None;
     }
@@ -665,10 +666,12 @@ pub fn admissible(
         .collect();
     let mut choice = vec![0usize; pairs.len()];
     loop {
-        // front[i][j]: whether i is in front of j, and strong[i][j] whether strongly.
+        // front[i][j]: whether i is in front of j, strong[i][j] whether strongly, and own[i][j]
+        // whether by a strong edge read from own keys (`PAIR`'s provenance code 0).
         let mut front = vec![vec![false; n]; n];
         let mut strong = vec![vec![false; n]; n];
-        for (p, (i, j, opts)) in pairs.iter().enumerate() {
+        let mut own = vec![vec![false; n]; n];
+        for (p, (i, j, opts, provenance)) in pairs.iter().enumerate() {
             let (i, j) = (*i, *j);
             match opts[choice[p]] {
                 0 => {
@@ -679,14 +682,17 @@ pub fn admissible(
                 1 => {
                     front[i][j] = true;
                     strong[i][j] = true;
+                    own[i][j] = provenance & 3 == 0;
                 }
                 _ => {
                     front[j][i] = true;
                     strong[j][i] = true;
+                    own[j][i] = (provenance >> 2) & 3 == 0;
                 }
             }
         }
-        if rank(n, &front, &strong, &|i| paint(present[i])) == target {
+        // `cycle_rank@2`: a choice whose own-key strong edges cycle is not a completion (§7).
+        if !cycles(&own) && rank(n, &front, &strong, &|i| paint(present[i])) == target {
             return Some(true);
         }
         let mut p = 0;
@@ -704,7 +710,21 @@ pub fn admissible(
     }
 }
 
-/// `cycle_rank@1`'s rank of a completion, front first: where one order agrees with every pair,
+/// Whether the edges `g[i][j]` (`i` in front of `j`) hold a cycle.
+fn cycles(g: &[Vec<bool>]) -> bool {
+    // Remove, again and again, a vertex no remaining edge leads into; a cycle is what remains.
+    let n = g.len();
+    let mut left: Vec<bool> = vec![true; n];
+    loop {
+        let free = (0..n).find(|&j| left[j] && !(0..n).any(|i| left[i] && g[i][j]));
+        match free {
+            Some(j) => left[j] = false,
+            None => return left.iter().any(|l| *l),
+        }
+    }
+}
+
+/// `cycle_rank@2`'s rank of a completion, front first: where one order agrees with every pair,
 /// that order; otherwise, among the remaining fragments no remaining one is strongly in front
 /// of, the later painted; where every remaining one has a strong edge into it, the one in front
 /// of the most remaining, the later painted on ties.

@@ -110,10 +110,10 @@ fn every_class_probe_check_holds_in_the_oracle_s_admissible_orders() {
                     .find(|r| r.fragment == id)
                     .map_or(0, |r| r.cover[s])
             };
-            let edges: HashMap<(u32, u32, u8), u8> = d
+            let edges: HashMap<(u32, u32, u8), (u8, u8)> = d
                 .pairs
                 .iter()
-                .map(|r| ((r.a, r.b, r.sample), r.edges))
+                .map(|r| ((r.a, r.b, r.sample), (r.edges, r.provenance)))
                 .collect();
             // Whether `who` is first in some and in every admissible order at sample `s`.
             let judge = |who: u32, s: usize| -> Front {
@@ -124,12 +124,16 @@ fn every_class_probe_check_holds_in_the_oracle_s_admissible_orders() {
                     .map(|f| f.id as usize)
                     .collect();
                 let e = |i: usize, j: usize| {
-                    let bits = edges[&(present[i] as u32, present[j] as u32, s as u8)];
-                    Edges {
-                        weak: bits & 1 != 0,
-                        a_front: bits & 2 != 0,
-                        b_front: bits & 4 != 0,
-                    }
+                    let (bits, provenance) =
+                        edges[&(present[i] as u32, present[j] as u32, s as u8)];
+                    (
+                        Edges {
+                            weak: bits & 1 != 0,
+                            a_front: bits & 2 != 0,
+                            b_front: bits & 4 != 0,
+                        },
+                        provenance,
+                    )
                 };
                 let mut f = Front {
                     some: false,

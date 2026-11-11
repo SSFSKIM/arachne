@@ -404,7 +404,7 @@ fn depth_witnesses() -> Vec<Witness> {
     ));
     out.push(witness(
         "cycle_breaks_strong",
-        "cycle_rank@1",
+        "cycle_rank@2",
         cycle_scene(),
         (32, 31),
         Samples::These(vec![12, 13, 15]),

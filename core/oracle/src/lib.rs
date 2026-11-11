@@ -22,7 +22,7 @@
 //!   along its centreline; [`band`] holds the band's input terms; [`keys`] gives each fragment its
 //!   key model and band at a pixel's samples.
 //! - The order (contract §7): [`order`] gives a pair's admitted edges and label and tests an order's
-//!   admissibility through `cycle_rank@1`; [`lines`] bounds `lines@1`'s share; [`pairs`] runs a
+//!   admissibility through `cycle_rank@2`; [`lines`] bounds `lines@1`'s share; [`pairs`] runs a
 //!   frame's bands and pairs, with both stroke-depth adjustments.
 //! - [`decide`] runs a frame; [`out`] writes and reads its decisions (`ORACLE_FORMAT` 1,
 //!   `FORMAT.md`).

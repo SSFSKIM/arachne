@@ -654,7 +654,7 @@ red = ["order::keys_of_minus_infinity_tie_exactly_and_meet_any_finite_key_by_dep
 [[plant]]
 name = "cycle-rank-ties"
 item = "§7"
-check = "cycle_rank@1: the later painted on equal wins"
+check = "cycle_rank@2: the later painted on equal wins"
 file = "core/oracle/src/order.rs"
 find = "(wins, paint(x))"
 replace = "(wins, std::cmp::Reverse(paint(x)))"
@@ -663,7 +663,7 @@ red = ["order::an_all_strong_cycle_is_ranked_by_wins_then_paint_order"]
 [[plant]]
 name = "cycle-rank-weak-yields"
 item = "§7"
-check = "cycle_rank@1: free of strong edges, so weak edges yield"
+check = "cycle_rank@2: free of strong edges, so weak edges yield"
 file = "core/oracle/src/order.rs"
 find = ".filter(|&x| !left.iter().any(|&y| y != x && strong[y][x]))"
 replace = ".filter(|&x| !left.iter().any(|&y| y != x && front[y][x]))"
@@ -1271,3 +1271,21 @@ file = "core/oracle/src/keys.rs"
 find = "            frame_centre: pr.c,\n            d: pr.d,\n            exponential: pr.exponential,\n            centre,\n"
 replace = "            frame_centre: pr.c,\n            d: pr.d,\n            exponential: pr.exponential,\n            centre: [0.0, 0.0, centre[2]],\n"
 red = ["pair_rules::two_facing_keys_of_one_centre_are_an_exact_tie_where_the_facing_plane_does_not_key"]
+
+[[plant]]
+name = "cycle-own-keys-completion"
+item = "§7"
+check = "cycle_rank@2: a choice whose own-key strong edges cycle is not a completion"
+file = "core/oracle/src/order.rs"
+find = "        if !cycles(&own) && rank(n, &front, &strong, &|i| paint(present[i])) == target {"
+replace = "        if rank(n, &front, &strong, &|i| paint(present[i])) == target {"
+red = ["order::an_all_strong_cycle_through_a_row_read_is_ranked_by_wins_then_paint_order", "order::the_nontransitive_triple_admits_its_reversal_only_through_a_row_read_cycle"]
+
+[[plant]]
+name = "cycle-row-read-stays"
+item = "§7"
+check = "cycle_rank@2: a cycle through an edge read through a row stays"
+file = "core/oracle/src/order.rs"
+find = "                    own[i][j] = provenance & 3 == 0;"
+replace = "                    own[i][j] = true;"
+red = ["order::an_all_strong_cycle_through_a_row_read_is_ranked_by_wins_then_paint_order"]

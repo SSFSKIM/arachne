@@ -1,6 +1,6 @@
 //! A report judged against the oracle's decisions at one sample, by the rules `FORMAT.md` states
 //! for a reader: presence and cell bytes from `COVR`, the order from `PAIR`'s edges by
-//! `cycle_rank@1`, a label's place from `LABL`, and the named findings (`zero_alpha_fragment`,
+//! `cycle_rank@2`, a label's place from `LABL`, and the named findings (`zero_alpha_fragment`,
 //! `invisible_registry_offer`, `label_plate_model`). It recomputes nothing: depth, ties and
 //! qualification are the oracle's facts, read here.
 #![allow(dead_code)]
@@ -81,7 +81,16 @@ enum Set {
     Plate,
 }
 
-fn edges_of(d: &Decisions, x: u32, y: u32, s: usize, set: Set) -> HashMap<(u32, u32), (u8, u8)> {
+/// `PAIR`'s rows at a sample in `set`: each pair's bits, label and the provenance of its strong
+/// edges. The offered set's edges are built with other records, whose provenance `PAIR` does not
+/// write: they are read as not from own keys, so no completion there is discarded.
+fn edges_of(
+    d: &Decisions,
+    x: u32,
+    y: u32,
+    s: usize,
+    set: Set,
+) -> HashMap<(u32, u32), (u8, u8, u8)> {
     d.pairs
         .iter()
         .filter(|p| (p.x, p.y, p.sample as usize) == (x, y, s))
@@ -91,7 +100,11 @@ fn edges_of(d: &Decisions, x: u32, y: u32, s: usize, set: Set) -> HashMap<(u32, 
                 Set::Offered => p.offered,
                 Set::Plate => p.plate,
             };
-            ((p.a, p.b), (bits, p.label))
+            let provenance = match set {
+                Set::Offered => 2 | 2 << 2,
+                Set::Edges | Set::Plate => p.provenance,
+            };
+            ((p.a, p.b), (bits, p.label, provenance))
         })
         .collect()
 }
@@ -116,10 +129,10 @@ fn admits(d: &Decisions, x: u32, y: u32, s: usize, order: &[u32], set: Set) -> O
     let edge = |i: usize, j: usize| {
         let (a, b) = (present[i] as u32, present[j] as u32);
         match table.get(&(a, b)) {
-            Some((bits, _)) => edges(*bits),
+            Some((bits, _, provenance)) => (edges(*bits), *provenance),
             None => {
                 missing.set(true);
-                Edges::ALL
+                (Edges::ALL, 0)
             }
         }
     };
@@ -257,7 +270,7 @@ pub fn judge(d: &Decisions, rep: &Reported, s: usize) -> Verdict {
         .map(|&e| reported[e].unwrap())
         .collect();
     let table = edges_of(d, x, y, s, Set::Edges);
-    if table.values().any(|(_, label)| *label == LABEL_UNABLE) {
+    if table.values().any(|(_, label, _)| *label == LABEL_UNABLE) {
         return Verdict::Unable("truth_unable");
     }
     let has_label = order
