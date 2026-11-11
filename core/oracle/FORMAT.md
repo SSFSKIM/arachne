@@ -145,13 +145,24 @@ Every pair of fragments present (`Yes` or `Either`) at a sample, `a < b` by frag
   nothing offered to the registry too (contract §5). Equal to `edges` where the frame has no such
   record. A reported order outside `edges`' admissible orders and inside `offered`'s is counted
   `invisible_registry_offer`.
-- **`plate`**: the pair's edges, in `edges`' bits, as the plate model orders it (§10,
-  `facing_plane@1`): where `a` or `b` belongs to a label (`FRAG` `label`), the same sets read from
-  the two keys without their input bound (`S⁻ = S⁺ = 0`, §6) and with no snap share in a
-  policy's term, since the core reads its keys from the inputs it holds; equal to `edges` for every
-  other pair. The plate model's orders at a sample are those its `plate` sets admit, where it ties
-  a set of more than one. A label 2^-30 behind a line at its depth is inside the snap, so `edges`
-  admits either order, and `plate` the label's in front alone.
+- **`plate`**: where `a` or `b` belongs to a label (`FRAG` `label`), the pair's relation as the
+  plate model orders it (§10, `facing_plane@1`), read in the scenarios `edges` reads from the two
+  keys without their input bound (`S⁻ = S⁺ = 0`, §6) and with no snap share in a policy's term,
+  since the core reads its keys from the inputs it holds. It has three states, and is one only
+  where every scenario gives it:
+  - **tie**, `1` (`edges`' weak bit): the keys are equal (`tied`, §7), a weak order, which is
+    paint order;
+  - **strong**, `2` (`a` in front) or `4` (`b` in front): the keys are separated beyond their
+    bounds (`±3R`), and no tie policy's term holds;
+  - **undetermined**, `0`: neither. A pair whose rows hang on what the registry settles (a record
+    with no plane of its own that may share a flat identity) is undetermined.
+
+  For every other pair `plate` equals `edges`. The plate model's orders at a sample are those the
+  `plate` relations admit; where a label's pair there is undetermined, no order is the plate
+  model's. A label 2^-30 behind a line at its depth is inside the snap, so `edges` admits either
+  order, and `plate` is `2`, the label's in front. A line on the label's plane ties it (`plate`
+  `1`), and the plate model draws the later painted in front; a line 2^-45 nearer is inside the
+  keys' bounds, and `plate` is `0`.
 - **Admissible orders** of the fragments present at a sample are the ranks (`cycle_rank@1`) of the
   completions that pick one edge per pair; an order every pair agrees with is one. At a sample
   that holds a label fragment, `PAIR` still holds every pair, the label's included, as §7 reads
@@ -191,8 +202,10 @@ belongs to no label.
   label is role 2 is counted `label_rule_open` under its causes, and one with a role-4 row is
   `label_alpha_straddle`: neither is a mismatch nor an agreement.
 - A reported order outside the label rule's orders that is one of the plate model's orders
-  (admitted by `PAIR`'s `plate` sets, as `edges` admit the ordinary ones) is a `mismatch` counted
-  `label_plate_model`; any other order outside them is a `mismatch`. Past the completion bound the
+  (admitted by `PAIR`'s `plate` relations, as `edges` admit the ordinary ones) is a `mismatch`
+  counted `label_plate_model`; any other order outside them is a plain `mismatch`, every order
+  at a sample where a label's `plate` is undetermined included. So the count of
+  `label_plate_model` is exact where `plate` is determined. Past the completion bound the
   mismatch is certain and its name is not.
 
 ### `COLR`

@@ -160,6 +160,55 @@ impl Via {
     }
 }
 
+/// The plate model's relation of a pair at a sample (`PAIR`'s `plate`, contract §10's
+/// `label_plate_model`): what the keys the core orders by, read without the input snap, establish
+/// in every scenario the pair's sets allow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Plate {
+    /// The keys are equal: `tied`, a weak order, which is paint order (§7).
+    Tie,
+    /// The keys are separated beyond their bounds: `true` where `a` is in front.
+    Front(bool),
+    /// Neither: no order is the plate model's by the facts.
+    Undetermined,
+}
+
+impl Plate {
+    /// `PAIR`'s `plate` byte: a tie as `edges`' weak bit, a separation as its strong edge's bit,
+    /// undetermined as 0.
+    pub fn code(self) -> u8 {
+        match self {
+            Plate::Tie => Edges::WEAK.bits(),
+            Plate::Front(true) => 2,
+            Plate::Front(false) => 4,
+            Plate::Undetermined => 0,
+        }
+    }
+
+    /// The relation of keys `a`, `b` in one scenario; `policy` where a tie policy's term held
+    /// there, which establishes no separation.
+    fn of(a: &Band, b: &Band, policy: bool) -> Plate {
+        let e = by_depth(a, b);
+        if a.o == b.o {
+            Plate::Tie
+        } else if !policy && !e.weak && e.count() == 1 {
+            Plate::Front(e.a_front)
+        } else {
+            Plate::Undetermined
+        }
+    }
+
+    /// The relation over two scenarios: established only where both establish it.
+    fn and(self, o: Plate) -> Plate {
+        if self == o { self } else { Plate::Undetermined }
+    }
+}
+
+/// Folds one scenario's relation into the pair's.
+fn fold(acc: &mut Option<Plate>, p: Plate) {
+    *acc = Some(acc.map_or(p, |q| q.and(p)));
+}
+
 /// A pair's verdict at a sample.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PairAt {
@@ -351,11 +400,12 @@ impl Scene {
         lines_share: (f64, f64),
     ) -> Result<PairAt, Unable> {
         self.pair_with(a, b, ra, rb, lines_share, true)
+            .map(|(p, _)| p)
     }
 
-    /// The pair's edges as the plate model orders it (contract §10, `facing_plane@1`): the same
-    /// sets read from the keys without the input snap, which the core's own keys are, so that the
-    /// snap's shares in the policies' terms are 0 as well.
+    /// The pair's relation as the plate model orders it (contract §10, `facing_plane@1`), read in
+    /// the same scenarios from the keys without the input snap, which the core's own keys are, so
+    /// that the snap's shares in the policies' terms are 0 as well.
     pub fn plate_pair(
         &self,
         a: usize,
@@ -363,7 +413,7 @@ impl Scene {
         ra: &Reads,
         rb: &Reads,
         lines_share: (f64, f64),
-    ) -> Result<PairAt, Unable> {
+    ) -> Result<Plate, Unable> {
         let unsnapped = |r: &Reads| {
             let keep = |b: Band| Band {
                 s_minus: 0.0,
@@ -377,8 +427,10 @@ impl Scene {
             }
         };
         self.pair_with(a, b, &unsnapped(ra), &unsnapped(rb), lines_share, false)
+            .map(|(_, plate)| plate)
     }
 
+    /// The pair's verdict, and the relation its keys establish (`Plate`) in the scenarios read.
     fn pair_with(
         &self,
         a: usize,
@@ -387,24 +439,30 @@ impl Scene {
         rb: &Reads,
         lines_share: (f64, f64),
         snap: bool,
-    ) -> Result<PairAt, Unable> {
+    ) -> Result<(PairAt, Plate), Unable> {
         let snap_of = |o: &Offered| if snap { o.snap } else { 0.0 };
         let (fa, fb) = (&self.frags[a], &self.frags[b]);
         if own_layers(fa, fb) {
-            return Ok(PairAt {
-                edges: Edges::WEAK,
-                label: Label::OwnLayers,
-                via: [Via::Own; 2],
-            });
+            return Ok((
+                PairAt {
+                    edges: Edges::WEAK,
+                    label: Label::OwnLayers,
+                    via: [Via::Own; 2],
+                },
+                Plate::Tie,
+            ));
         }
         let oa = ra.own?;
         let ob = rb.own?;
         if oa.o == f64::NEG_INFINITY && ob.o == f64::NEG_INFINITY {
-            return Ok(PairAt {
-                edges: Edges::WEAK,
-                label: Label::ExactTie,
-                via: [Via::Own; 2],
-            });
+            return Ok((
+                PairAt {
+                    edges: Edges::WEAK,
+                    label: Label::ExactTie,
+                    via: [Via::Own; 2],
+                },
+                Plate::Tie,
+            ));
         }
         let (ia, ib) = (fa.offered, fb.offered);
         let both = ia.zip(ib);
@@ -412,11 +470,15 @@ impl Scene {
         if let Some((i, j)) = both {
             let planeless = self.offered[i].flat.is_none() || self.offered[j].flat.is_none();
             if planeless && self.may_share_flat(i, j) {
-                return Ok(PairAt {
-                    edges: Edges::ALL,
-                    label: Label::OnePlane,
-                    via: [Via::Flat; 2],
-                });
+                // Its rows hang on what the registry settles, which the facts do not hold.
+                return Ok((
+                    PairAt {
+                        edges: Edges::ALL,
+                        label: Label::OnePlane,
+                        via: [Via::Flat; 2],
+                    },
+                    Plate::Undetermined,
+                ));
             }
         }
         // `ExactTie`: two fills of flat paths, or flat triangles, on the axis plane of one
@@ -430,11 +492,14 @@ impl Scene {
                 && rb.at_sample
                 && exact_axis(&self.offered[i], &self.offered[j])
             {
-                return Ok(PairAt {
-                    edges: Edges::WEAK,
-                    label: Label::ExactTie,
-                    via: [Via::Own; 2],
-                });
+                return Ok((
+                    PairAt {
+                        edges: Edges::WEAK,
+                        label: Label::ExactTie,
+                        via: [Via::Own; 2],
+                    },
+                    Plate::Tie,
+                ));
             }
         }
         // The scenarios §7's sets allow, each giving its edges.
@@ -444,6 +509,7 @@ impl Scene {
         let mut policy: Option<Label> = None;
         let mut not_shared = true;
         let mut via = [Via::Own; 2];
+        let mut plate: Option<Plate> = None;
         if let Some((i, j)) = both {
             let (ra_, rb_) = (&self.offered[i], &self.offered[j]);
             if ra_.flat.is_some() && rb_.flat.is_some() && self.may_share_flat(i, j) {
@@ -459,13 +525,16 @@ impl Scene {
                     };
                     let (wa, wb) = (read(ra.row, oa), read(rb.row, ob));
                     let mut e = by_depth(&wa, &wb);
+                    let mut held = false;
                     if exact_axis(ra_, rb_) && wa.o == wb.o {
                         e = Edges::WEAK;
                         exact_rows = true;
                     } else if policy_term(&wa, snap_of(ra_), &wb, snap_of(rb_)) {
                         e.weak = true;
+                        held = true;
                         policy.get_or_insert(Label::OnePlane);
                     }
+                    fold(&mut plate, Plate::of(&wa, &wb, held));
                     tie_meet |= meet(&wa, &wb);
                     for (v, strong) in via.iter_mut().zip([e.a_front, e.b_front]) {
                         if strong {
@@ -479,6 +548,7 @@ impl Scene {
                 // Two axis-plane rows read at one sample are one computation.
                 edges = edges.union(Edges::WEAK);
                 exact_rows = true;
+                fold(&mut plate, Plate::Tie);
                 if !(self.attaches_somewhere(i) || self.attaches_somewhere(j)) {
                     not_shared = false;
                 }
@@ -486,6 +556,7 @@ impl Scene {
         }
         if not_shared {
             let mut e = by_depth(&oa, &ob);
+            let met = e.weak;
             tie_meet |= meet(&oa, &ob);
             if let Some((i, j)) = both {
                 let (ra_, rb_) = (&self.offered[i], &self.offered[j]);
@@ -506,6 +577,7 @@ impl Scene {
                     policy.get_or_insert(Label::Lines);
                 }
             }
+            fold(&mut plate, Plate::of(&oa, &ob, e.weak && !met));
             edges = edges.union(e);
         }
         let label = if edges.count() == 1 && !edges.weak {
@@ -517,7 +589,10 @@ impl Scene {
         } else {
             policy.unwrap_or(Label::TieBand)
         };
-        Ok(PairAt { edges, label, via })
+        Ok((
+            PairAt { edges, label, via },
+            plate.unwrap_or(Plate::Undetermined),
+        ))
     }
 }
 

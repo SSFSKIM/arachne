@@ -154,8 +154,9 @@ pub struct PairRow {
     /// The pair's edges, in `edges`' bits, in the sets built with the records that paint nothing
     /// offered to the registry too (`invisible_registry_offer`, contract §5).
     pub offered: u8,
-    /// The pair's edges, in `edges`' bits, as the plate model orders it (`facing_plane@1`, the
-    /// keys without the input snap): `edges` where neither fragment belongs to a label.
+    /// A label's pair as the plate model orders it (`facing_plane@1`, the keys without the input
+    /// snap): [`crate::order::Plate`]'s code, a tie `1`, a separation its strong edge's bit,
+    /// undetermined `0`; `edges` where neither fragment belongs to a label.
     pub plate: u8,
 }
 

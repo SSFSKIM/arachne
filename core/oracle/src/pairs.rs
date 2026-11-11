@@ -5,7 +5,7 @@
 use crate::draw::Layer;
 use crate::keys::{Band, Model, Unable, samples};
 use crate::lines::LinesBound;
-use crate::order::{Reads, Scene};
+use crate::order::{Plate, Reads, Scene};
 use crate::out::{BandRow, CoverRow, LABEL_UNABLE, PairRow};
 
 /// A band row's status at a sample.
@@ -246,12 +246,13 @@ fn pixel(
                         Err(_) => 7,
                     }
                 };
-                // A label's pair as the plate model orders it; any other pair's sets are its own.
+                // A label's pair as the plate model orders it, where its keys establish that;
+                // any other pair's sets are its own.
                 let plate = if labelled[frags[i]] || labelled[frags[j]] {
-                    match scene.plate_pair(frags[i], frags[j], &ra, &rb, shares_ij) {
-                        Ok(p) => p.edges.bits(),
-                        Err(_) => 7,
-                    }
+                    scene
+                        .plate_pair(frags[i], frags[j], &ra, &rb, shares_ij)
+                        .unwrap_or(Plate::Undetermined)
+                        .code()
                 } else {
                     edges
                 };

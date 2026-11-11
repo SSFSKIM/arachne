@@ -295,8 +295,9 @@ pub fn judge(d: &Decisions, rep: &Reported, s: usize) -> Verdict {
     if ordinary && label_orders(d, x, y, s, &order).contains(&order) {
         return Verdict::Agree;
     }
-    // Outside the label rule's orders. The plate model's orders are those `PAIR`'s `plate` sets
-    // admit, the label's pairs included. Past the completion bound the mismatch is certain and its
+    // Outside the label rule's orders. The plate model's orders are those `PAIR`'s `plate`
+    // relations admit, the label's pairs included; an undetermined one (`0`) admits none, so no
+    // order is named there. Past the completion bound the mismatch is certain and its
     // name is not.
     match admits(d, x, y, s, &order, Set::Plate) {
         Some(true) => Verdict::Mismatch("label_plate_model"),
