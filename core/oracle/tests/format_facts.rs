@@ -96,6 +96,47 @@ fn each_strong_edge_names_how_it_is_read() {
     for p in pairs_at(&d, 36, 32, t, q) {
         assert_eq!((p.label, p.edges, via(p)), (2, 4, (0, 0)), "{p:?}");
     }
+    // The axis rule (§5, `shared_plane_read@1`): a square on `x = 1` whose writer coded it a
+    // curve (code 0, decided before snapping), so it has no plane of its own yet holds `x = 1`,
+    // and a triangle on a line within the grid 0.01 on `x = 1`. No flat record bridges them, so
+    // the square's stroke reads its row on `x = 1` against the triangle's own key, a read inside
+    // the square's hull and bounded: its strong edges are row reads, code 1. The two keys are of
+    // one plane, so their bands meet and the pair is a `TieBand`. The thin triangle holds only
+    // some of each pixel's samples.
+    let mut b = Build::new(true);
+    let square = b.stroke(
+        polygon(&[
+            [1.0, -2.0, -2.0],
+            [1.0, 2.0, -2.0],
+            [1.0, 2.0, 2.0],
+            [1.0, -2.0, 2.0],
+        ]),
+        WHITE,
+        4.0,
+    );
+    square.planes = Some(vec![0]);
+    b.mesh(
+        vec![[1.0, -1.0, -3.0], [1.0, 1.0, 3.0], [1.0, 0.008, 0.0]],
+        vec![[0, 1, 2]],
+        OPAQUE_BLUE,
+    );
+    let d = decide(
+        &b,
+        arachne_core::xf::View {
+            input_grid: 0.01,
+            ..view_c()
+        },
+    );
+    let (s, t) = (id_of(&d, 0, STROKE), id_of(&d, 1, MESH));
+    let rows: Vec<_> = d
+        .pairs
+        .iter()
+        .filter(|p| (p.a, p.b) == (s.min(t), s.max(t)))
+        .collect();
+    assert!(!rows.is_empty(), "no pair rows of {s}, {t}");
+    for p in rows {
+        assert_eq!((p.label, p.edges, via(p)), (3, 7, (1, 1)), "{p:?}");
+    }
 }
 
 /// W17's synthetic form: two half-transparent lines on `z = 0`, then a square that paints

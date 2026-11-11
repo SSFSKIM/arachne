@@ -805,6 +805,15 @@ replace = "                if ra.row.is_some() || rb.row.is_some() {\n          
 red = ["format_facts::each_strong_edge_names_how_it_is_read"]
 
 [[plant]]
+name = "format-provenance-axis-row-read"
+item = "§7"
+check = "a strong edge the axis rule admits through a path's row is not read as own-key"
+file = "core/oracle/src/order.rs"
+find = "                    tie_meet |= meet(&wa, &wb);\n                    for (v, strong) in via.iter_mut().zip([e.a_front, e.b_front]) {\n                        if strong {\n                            *v = Via::Row;"
+replace = "                    tie_meet |= meet(&wa, &wb);\n                    for (v, strong) in via.iter_mut().zip([e.a_front, e.b_front]) {\n                        if strong {\n                            *v = Via::Own;"
+red = ["format_facts::each_strong_edge_names_how_it_is_read"]
+
+[[plant]]
 name = "format-offered-invisible"
 item = "§5"
 check = "the counterfactual sets offer the records that paint nothing"
