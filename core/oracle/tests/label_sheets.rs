@@ -23,10 +23,7 @@ fn arms(bridge: Option<Vec<[f64; 3]>>) -> ([Vec<u8>; 2], bool) {
     let mut s = Build::new(true);
     s.fill(rect([-3.0, -1.0], [0.0, 9.0], 2.0), OPAQUE_BLUE);
     s.fill(rect([1.0, 3.0], [0.0, 9.0], 2.0), OPAQUE_BLUE);
-    let mut rows = vec![
-        row(0, 0, &[&[(42, CUBE)]]),
-        row(1, 0, &[&[(42, CUBE)]]),
-    ];
+    let mut rows = vec![row(0, 0, &[&[(42, CUBE)]]), row(1, 0, &[&[(42, CUBE)]])];
     let label = if let Some(b) = bridge {
         s.fill(b, OPAQUE_BLUE);
         rows.push(row(2, 0, &[&[(42, CUBE)]]));
@@ -56,7 +53,10 @@ fn arms(bridge: Option<Vec<[f64; 3]>>) -> ([Vec<u8>; 2], bool) {
         assert!(!c.is_empty(), "no LABL rows for slot {slot}");
         c
     });
-    (causes, d.fragments.iter().any(|f| f.slot == 2 && label == 3))
+    (
+        causes,
+        d.fragments.iter().any(|f| f.slot == 2 && label == 3),
+    )
 }
 
 #[test]

@@ -116,7 +116,12 @@ fn an_unbounded_fragment_is_unable_at_every_sample_whether_reported_or_not() {
     for b in [square, point] {
         let d = decide_at(&[b.delta(1, view_c())], 1, None).unwrap();
         let f = &d.fragments[0];
-        assert_eq!(f.flags & arachne_oracle::out::FLAG_UNBOUNDED, 1, "{:?}", d.fragments);
+        assert_eq!(
+            f.flags & arachne_oracle::out::FLAG_UNBOUNDED,
+            1,
+            "{:?}",
+            d.fragments
+        );
         assert!(d.covers.is_empty());
         let identity = (f.object, f.part, f.layer, f.sub);
         for (x, y) in [(32, 32), (0, 0), (63, 63)] {

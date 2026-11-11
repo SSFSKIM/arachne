@@ -565,7 +565,7 @@ fn two_strokes_of_one_curve_read_at_one_point_are_an_exact_tie() {
         .iter()
         .filter(|e| **e != (1, 4) && **e != (7, 0))
         .collect();
-    assert!(one.iter().any(|e| *e == (1, 4)), "{one:?}");
+    assert!(one.contains(&(1, 4)), "{one:?}");
     assert!(
         off.is_empty(),
         "{} of {}: {:?}",

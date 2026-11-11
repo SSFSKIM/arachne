@@ -228,9 +228,9 @@ pub fn judge(d: &Decisions, rep: &Reported, s: usize) -> Verdict {
     // An unbounded fragment may stand anywhere: it is `truth_unable` at every sample of its box,
     // the window, whatever the report holds there (FORMAT `flags` bit 0, §6). It has no rows, so
     // no report can show it absent.
-    let inside = |b: [i32; 4]| (b[0]..b[2]).contains(&(x as i32)) && (b[1]..b[3]).contains(&(y as i32));
-    if d
-        .fragments
+    let inside =
+        |b: [i32; 4]| (b[0]..b[2]).contains(&(x as i32)) && (b[1]..b[3]).contains(&(y as i32));
+    if d.fragments
         .iter()
         .any(|f| f.flags & FLAG_UNBOUNDED != 0 && inside(f.bbox))
     {
