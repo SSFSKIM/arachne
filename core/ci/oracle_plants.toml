@@ -1498,6 +1498,15 @@ replace = "                if ra_.path || rb_.path {\n"
 red = ["pair_rules::a_path_and_a_mesh_triangle_on_one_axis_plane_read_the_path_s_row_against_the_triangle_s_key"]
 
 [[plant]]
+name = "axis-rule-own-scenario"
+item = "§7"
+check = "two paths with no plane of their own on one axis plane, attached to no flat record, are an ExactTie by the axis rule alone, with no own-key scenario"
+file = "core/oracle/src/order.rs"
+find = "                if !(self.attaches_somewhere(i) || self.attaches_somewhere(j)) {"
+replace = "                if false && !(self.attaches_somewhere(i) || self.attaches_somewhere(j)) {"
+red = ["contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree", "contract_mutation::mutation_depth_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
 name = "crop-fragment-by-pixel"
 item = "§10"
 check = "a window's LABL rows name the fragment present at their own pixel, a point block's candidates sharing a sub included"
