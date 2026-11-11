@@ -1219,6 +1219,15 @@ replace = "            if ra_.flat.is_some() && rb_.flat.is_some() && self.may_s
 red = ["pair_rules::two_flat_triangles_that_may_share_tie_within_term_though_neither_has_a_row", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
 
 [[plant]]
+name = "shared-scenario-one-row"
+item = "§7"
+check = "two flat records that may share read the shared scenario though only one has a row"
+file = "core/oracle/src/order.rs"
+find = "if ra_.flat.is_some() && rb_.flat.is_some() && self.may_share_flat(i, j) {"
+replace = "if ra_.flat.is_some() && rb_.flat.is_some() && self.may_share_flat(i, j) && ra.row.is_some() && rb.row.is_some() {"
+red = ["contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
 name = "exact-tie-own-unread"
 item = "§7"
 check = "two keys of one computation in every scenario are an ExactTie"
