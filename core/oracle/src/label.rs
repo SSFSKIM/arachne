@@ -78,12 +78,14 @@ enum Class {
     Ungrouped,
 }
 
-/// A sheet: fills (or a mesh's triangles) of one surface object.
+/// A sheet: fills (or a mesh's triangles) of one surface object, or an ungrouped record's.
 struct Sheet {
     object: (u8, u64),
     winding: i8,
     mesh: bool,
     kind_unknown: bool,
+    /// An ungrouped record kept facing the camera: an open sheet of its own (cause `label`).
+    ungrouped: bool,
     members: Vec<u32>,
 }
 
@@ -376,6 +378,7 @@ pub fn place_with_pairs(input: &Input) -> (Vec<u32>, Vec<LabelRow>, Vec<PairDeci
                 winding: 0,
                 mesh,
                 kind_unknown,
+                ungrouped: false,
                 members: ids,
             });
             continue;
@@ -402,6 +405,7 @@ pub fn place_with_pairs(input: &Input) -> (Vec<u32>, Vec<LabelRow>, Vec<PairDeci
                     winding: wind[k],
                     mesh: false,
                     kind_unknown,
+                    ungrouped: false,
                     members: Vec::new(),
                 });
                 sheets.len() - 1
@@ -409,6 +413,32 @@ pub fn place_with_pairs(input: &Input) -> (Vec<u32>, Vec<LabelRow>, Vec<PairDeci
             sheets[s].members.push(ids[k]);
             sheet_of[ids[k] as usize] = s;
         }
+    }
+    // An ungrouped record is an open sheet of its own: its fills and mesh triangles, counted
+    // like any sheet's, so a pair with it is made only where it holds a counted point. Its other
+    // layers form no sheet, and are read by its sheet's pair (`ungrouped_sheet`).
+    let mut ungrouped_sheet: BTreeMap<u32, usize> = BTreeMap::new();
+    for (i, f) in input.fragments.iter().enumerate() {
+        if class[i] != Class::Ungrouped
+            || !(f.layer == FILL || f.layer == MESH)
+            || i >= input.frags.len()
+        {
+            continue;
+        }
+        let s = *ungrouped_sheet.entry(f.slot).or_insert_with(|| {
+            sheets.push(Sheet {
+                object: object_of(f.slot),
+                // Wound neither way: never disconnected, nor making another sheet so.
+                winding: 0,
+                mesh: false,
+                kind_unknown: false,
+                ungrouped: true,
+                members: Vec::new(),
+            });
+            sheets.len() - 1
+        });
+        sheets[s].members.push(i as u32);
+        sheet_of[i] = s;
     }
     let holds = |i: usize, p: [f64; 2], cover: u8| -> bool {
         if input.fragments[i].layer == MESH {
@@ -481,7 +511,7 @@ pub fn place_with_pairs(input: &Input) -> (Vec<u32>, Vec<LabelRow>, Vec<PairDeci
     let mut decision: BTreeMap<(u32, usize), Decision> = BTreeMap::new();
     for (&(l, sh), points) in &counted {
         let sheet = &sheets[sh];
-        let d = if otherwise[l as usize] {
+        let d = if otherwise[l as usize] || sheet.ungrouped {
             Decision::Open(PairCause::Label)
         } else if sheet.mesh {
             // A sheet drawn as a mesh, whose faces are not read (a kind-unknown mesh read as a
@@ -529,10 +559,15 @@ pub fn place_with_pairs(input: &Input) -> (Vec<u32>, Vec<LabelRow>, Vec<PairDeci
                     if r.cover[s] == 0 || label_of[f] != NONE_U32 {
                         continue;
                     }
-                    let sh = sheet_of[f];
+                    let sh = match class[f] {
+                        Class::Ungrouped => ungrouped_sheet
+                            .get(&input.fragments[f].slot)
+                            .copied()
+                            .unwrap_or(usize::MAX),
+                        _ => sheet_of[f],
+                    };
                     let (role, pc, cc) = match class[f] {
                         Class::Open(c) => (ROLE_OPEN, 0, class_code(c)),
-                        Class::Ungrouped => (ROLE_OPEN, PairCause::Label as u8, 0),
                         _ if sh == usize::MAX => (ROLE_FRONT, 0, 0),
                         _ => match decision.get(&(l, sh)) {
                             None | Some(Decision::Not) => (ROLE_FRONT, 0, 0),
