@@ -1,0 +1,11 @@
+{
+  "fixture": "pre_projected_point_block",
+  "kind": "witness",
+  "rule": "pre_projected",
+  "seq": 1,
+  "pixel": [32, 31],
+  "samples": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+  "defect_verdict": "mismatch:mismatch",
+  "twin_verdict": "agreement",
+  "contract": "CONTRACT.md blob ebab03ac1abc377064b90780c431d1834cfd42b1"
+}

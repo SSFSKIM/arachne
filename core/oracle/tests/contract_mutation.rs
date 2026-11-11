@@ -20,7 +20,9 @@ use std::path::{Path, PathBuf};
 
 use arachne_core::diagnostics::Layer as CoreLayer;
 use arachne_core::stream::Stream;
-use arachne_core::xf::{Delta, Paint, View, wire};
+use arachne_core::xf::{
+    Delta, FEATURE_PRE_PROJECTED, Paint, PreProjected, Shape, ShapeData, View, wire,
+};
 use arachne_oracle::cover::sample_cell;
 use arachne_oracle::decide::decide_at_wire;
 use arachne_oracle::out::Decisions;
@@ -200,6 +202,8 @@ struct Witness {
     /// The conforming report's verdict, and the defect with its verdict.
     twin: Verdict,
     defect: Option<(Defect, Verdict)>,
+    /// The contract text the witness is built from, where its `expected.json` names one.
+    cites: Option<&'static str>,
 }
 
 fn mismatch() -> Verdict {
@@ -231,6 +235,7 @@ fn witness(
         conforming: Conforming::Core,
         twin: Verdict::Agree,
         defect,
+        cites: None,
     }
 }
 
@@ -1219,6 +1224,590 @@ fn source_witnesses() -> Vec<Witness> {
     out
 }
 
+/// The contract text the read-path witnesses below are built from: §12 of `CONTRACT.md` at this
+/// git blob. Each of their `expected.json` names it.
+const READ_PATH_TEXT: &str = "CONTRACT.md blob ebab03ac1abc377064b90780c431d1834cfd42b1";
+
+/// Block `i` of the points record in `slot`.
+fn block(slot: u32, i: u32) -> Frag {
+    Frag {
+        slot,
+        engine: false,
+        part: 0,
+        layer: 4,
+        sub: i,
+    }
+}
+
+/// View C's camera at `focal_distance`, on input grid `grid`, with the exponential option where
+/// `exponential`.
+fn view_c_at(focal_distance: f64, grid: f64, exponential: bool) -> View {
+    let mut camera = camera(focal_distance);
+    if let arachne_core::xf::Camera::ThreeD(c) = &mut camera {
+        c.exponential_projection = exponential;
+    }
+    View {
+        camera,
+        input_grid: grid,
+        ..view_c()
+    }
+}
+
+/// As `one`, for a scene whose records share a shape: each shape uploaded once.
+fn one_shared(mut b: Build, view: View) -> (Vec<u8>, Vec<Delta>) {
+    let mut seen = std::collections::HashSet::new();
+    b.shapes.retain(|s| seen.insert(s.key()));
+    one(&b, view)
+}
+
+/// A closed outline through `corners`, each edge one cubic written `[p, p, q, q]`.
+fn outline_at_ends(corners: &[[f64; 3]]) -> Vec<[f64; 3]> {
+    (0..corners.len())
+        .flat_map(|i| {
+            let (p, q) = (corners[i], corners[(i + 1) % corners.len()]);
+            [p, p, q, q]
+        })
+        .collect()
+}
+
+/// Makes the record in `slot` pre-projected, drawing `tail` (as the scene camera produced it) in
+/// place of its own shape.
+fn pre_project(b: &mut Build, slot: usize, tail: Vec<[f64; 3]>, fill: Paint) {
+    let shape = Shape::new(ShapeData::Path { points: tail });
+    let key = shape.key();
+    if b.shapes.iter().all(|s| s.key() != key) {
+        b.shapes.push(shape);
+    }
+    let r = &mut b.records[slot];
+    r.features |= FEATURE_PRE_PROJECTED;
+    r.pre_projected = Some(PreProjected {
+        points: key,
+        gradient: None,
+        fill,
+        stroke: Paint::None,
+        background_stroke: Paint::None,
+    });
+}
+
+/// A witness of §12's read-path cases, citing the text it is built from.
+fn read_path(
+    name: &'static str,
+    rule: &'static str,
+    xf: (Vec<u8>, Vec<Delta>),
+    pixel: (u32, u32),
+    samples: Samples,
+    defect: Option<(Defect, Verdict)>,
+) -> Witness {
+    Witness {
+        cites: Some(READ_PATH_TEXT),
+        ..witness(name, rule, xf, pixel, samples, defect)
+    }
+}
+
+/// A read-path witness whose conforming report is the order §12 gives at its samples, expected
+/// to agree.
+fn read_path_report(
+    name: &'static str,
+    rule: &'static str,
+    xf: (Vec<u8>, Vec<Delta>),
+    pixel: (u32, u32),
+    samples: Samples,
+    order: Vec<Frag>,
+) -> Witness {
+    Witness {
+        conforming: Conforming::Rule(order),
+        ..read_path(name, rule, xf, pixel, samples, None)
+    }
+}
+
+/// A read-path witness judged on the core's own report alone, with the verdict §12 expects.
+fn read_path_core(
+    name: &'static str,
+    rule: &'static str,
+    xf: (Vec<u8>, Vec<Delta>),
+    pixel: (u32, u32),
+    samples: Samples,
+    verdict: Verdict,
+) -> Witness {
+    Witness {
+        twin: verdict,
+        ..read_path(name, rule, xf, pixel, samples, None)
+    }
+}
+
+/// `own_fill_nearer`'s `P`: on `z = 4y`, fill red, stroke white of width 2 drawn after it; then
+/// `Q`, the square `[−h, h]²` at `z`, fill blue.
+fn own_fill_scene(grid: f64, h: f64, z: f64) -> (Vec<u8>, Vec<Delta>) {
+    let mut b = Build::new(true);
+    let p = b.fill(
+        polygon(&[
+            [-3.125, 0.0, 0.0],
+            [3.125, 0.0, 0.0],
+            [2.9375, 2.5, 10.0],
+            [-2.9375, 2.5, 10.0],
+        ]),
+        OPAQUE_RED,
+    );
+    p.paint.stroke = Paint::One(WHITE);
+    p.paint.stroke_width = 2.0;
+    b.fill(rect([-h, h], [-h, h], z), OPAQUE_BLUE);
+    one(&b, view_c_at(20.0, grid, false))
+}
+
+/// `point_blocks_exact_tie`'s two blocks, red then blue, with `G` drawn between them where
+/// `between`.
+fn two_blocks(view: View, between: bool) -> (Vec<u8>, Vec<Delta>) {
+    let mut b = Build::new(true);
+    b.points(vec![[0.125, -0.125, 0.0]], OPAQUE_RED, 2.0);
+    if between {
+        b.fill(rect([-5.375, 5.375], [-5.375, 5.375], -1.0), OPAQUE_GREEN);
+    }
+    b.points(vec![[0.125, -0.125, 0.0]], OPAQUE_BLUE, 2.0);
+    one_shared(b, view)
+}
+
+/// The line drawn after the label in `pre_projected_pivot_moved` and `fixed_orientation_points`:
+/// from `(−3.1875, 0.125, z)` to `(3.1875, 0.125, z)`, stroke green, width 0.5.
+fn green_line(b: &mut Build, z: f64) {
+    b.stroke(
+        open(&[[-3.1875, 0.125, z], [3.1875, 0.125, z]]),
+        OPAQUE_GREEN,
+        0.5,
+    );
+}
+
+/// §12's witnesses of the read path, from `pre_projected_unproject` to `shared_scenario_no_row`,
+/// and the two cycle witnesses, as the text `READ_PATH_TEXT` names gives them.
+fn read_path_witnesses() -> Vec<Witness> {
+    let mut out = Vec::new();
+    let all = || Samples::All;
+
+    // pre_projected_unproject: T, then W.
+    let mut b = Build::new(true);
+    b.pre_projected(
+        outline_at_ends(&[
+            [1.0, -1.0625, 0.0],
+            [2.0, -2.125, 10.0],
+            [2.0, 2.125, 10.0],
+            [1.0, 1.0625, 0.0],
+        ]),
+        OPAQUE_RED,
+    );
+    b.fill(rect([-5.5, 5.5], [-5.5, 5.5], 4.5), OPAQUE_BLUE);
+    out.push(read_path(
+        "pre_projected_unproject",
+        "pre_projected",
+        one(&b, view_c()),
+        (38, 32),
+        all(),
+        Some((Defect::Order(vec![fill(1), fill(0)]), mismatch())),
+    ));
+
+    // pre_projected_point_block: the triangle, then the block.
+    let mut b = Build::new(true);
+    b.mesh(
+        vec![[-4.0, -4.0, 5.0], [4.0, -4.0, 5.0], [0.0, 4.0, 5.0]],
+        vec![[0, 1, 2]],
+        OPAQUE_RED,
+    );
+    b.points(vec![[0.125, 0.125, 0.0]], WHITE, 3.0);
+    pre_project(&mut b, 1, vec![[0.125, 0.125, 0.0]], Paint::None);
+    out.push(read_path(
+        "pre_projected_point_block",
+        "pre_projected",
+        one(&b, view_c()),
+        (32, 31),
+        all(),
+        Some((Defect::Order(vec![block(1, 0), tri(0, 0)]), mismatch())),
+    ));
+
+    // pre_projected_pivot_moved: a path, then a point block, each before the line.
+    let s = 1.03125;
+    let mut b = Build::new(true);
+    b.fill(rect([-s, s], [-s, s], 0.0), WHITE)
+        .depth
+        .fixed_orientation_centre = Some([0.0; 3]);
+    pre_project(&mut b, 0, rect([-s, s], [-s, s], 5.0), Paint::One(WHITE));
+    green_line(&mut b, 2.5);
+    out.push(read_path(
+        "pre_projected_pivot_moved",
+        "pre_projected",
+        one(&b, view_c()),
+        (32, 31),
+        all(),
+        Some((Defect::Order(vec![stroke(1), fill(0)]), mismatch())),
+    ));
+    let mut b = Build::new(true);
+    b.points(vec![[0.125, 0.125, 0.0]], WHITE, 3.0)
+        .depth
+        .fixed_orientation_centre = Some([0.125, 0.125, 0.0]);
+    pre_project(&mut b, 0, vec![[0.125, 0.125, 5.0]], Paint::None);
+    green_line(&mut b, 2.5);
+    out.push(read_path(
+        "pre_projected_pivot_moved_block",
+        "pre_projected",
+        one(&b, view_c()),
+        (32, 31),
+        all(),
+        Some((Defect::Order(vec![stroke(1), block(0, 0)]), mismatch())),
+    ));
+
+    // fixed_orientation_points: on the core §12 describes, the nearer line over the block.
+    let mut b = Build::new(true);
+    b.points(vec![[0.125, 0.125, 0.0]], WHITE, 3.0)
+        .depth
+        .fixed_orientation_centre = Some([0.125, 0.125, 0.0]);
+    green_line(&mut b, 2.0);
+    out.push(read_path_core(
+        "fixed_orientation_points",
+        "facing_plane@1",
+        one(&b, view_c()),
+        (32, 31),
+        all(),
+        plate(),
+    ));
+
+    // axis_rows_that_form: B, then A.
+    let k = 1.0 / 256.0;
+    let mut b = Build::new(true);
+    b.stroke(
+        open(&[[-3.0625, 0.0, 1.0 - k], [3.0625, 0.0, 1.0 + k]]),
+        OPAQUE_GREEN,
+        0.75,
+    );
+    b.stroke(
+        open(&[[-3.0625, 0.0, 0.0], [3.0625, 0.0, 0.0]]),
+        WHITE,
+        0.75,
+    );
+    out.push(read_path(
+        "axis_rows_that_form",
+        "axis_rows",
+        one(&b, view_c()),
+        (32, 31),
+        all(),
+        Some((Defect::Order(vec![stroke(1), stroke(0)]), mismatch())),
+    ));
+
+    // third_record_without_identity: T, A, B.
+    let mut b = Build::new(true);
+    b.mesh(
+        vec![[1.0, 2e9, 5.0], [1.0, -2e9, 5.0], [1.0, 0.0, 15.0]],
+        vec![[0, 1, 2]],
+        [0.0, 1.0, 0.0, 0.5],
+    );
+    b.stroke(open(&[[1.0, -2.0625, 0.0], [1.0, 2.0, 0.0]]), WHITE, 0.5);
+    b.stroke(
+        open(&[[1.0, -2.0625, -1.0], [1.0, 2.0, -1.0]]),
+        OPAQUE_BLUE,
+        0.5,
+    );
+    out.push(read_path_report(
+        "third_record_without_identity",
+        "may_share",
+        one(&b, view_c()),
+        (35, 32),
+        all(),
+        vec![stroke(1), stroke(2)],
+    ));
+
+    // axis_rule_unless_attached: T, B, A.
+    let mut b = Build::new(true);
+    b.mesh(
+        vec![[2.0, 1e11, 0.0], [2.0, -1e11, 0.0], [1000.0, 0.0, 0.0]],
+        vec![[0, 1, 2]],
+        OPAQUE_GREEN,
+    );
+    b.stroke(
+        open(&[[1.0, -2.0625, 0.5], [1.0, 2.0, 0.5]]),
+        OPAQUE_BLUE,
+        0.75,
+    );
+    b.stroke(open(&[[1.0, -2.0625, 0.0], [1.0, 2.0, 0.0]]), WHITE, 0.75);
+    out.push(read_path_report(
+        "axis_rule_unless_attached",
+        "may_share",
+        one(&b, view_c()),
+        (35, 32),
+        all(),
+        vec![stroke(1), stroke(2)],
+    ));
+
+    // own_fill_nearer: the fill covers; the fill Either; the stroke Either over a covering fill.
+    let behind_stroke = Defect::Order(vec![fill(0), fill(1), stroke(0)]);
+    out.push(read_path(
+        "own_fill_nearer",
+        "stroke_on_own_fill@2",
+        own_fill_scene(GRID, 5.5, 0.9375),
+        (32, 29),
+        all(),
+        Some((behind_stroke.clone(), mismatch())),
+    ));
+    out.push(read_path_report(
+        "own_fill_nearer_fill_either",
+        "stroke_on_own_fill@2",
+        own_fill_scene(1.0 / 64.0, 5.375, 5.0 / 64.0),
+        (32, 31),
+        Samples::These(vec![12, 13]),
+        vec![fill(0), fill(1), stroke(0)],
+    ));
+    out.push(read_path(
+        "own_fill_nearer_stroke_either",
+        "stroke_on_own_fill@2",
+        own_fill_scene(1.0 / 64.0, 5.375, 1.8125),
+        (32, 28),
+        Samples::These(vec![0, 1, 2, 3]),
+        Some((behind_stroke, mismatch())),
+    ));
+
+    // outside_hull_unbounded: V on the axis plane z through its first point, then B.
+    let mut b = Build::new(true);
+    let v = b.fill(
+        polygon(&[
+            [-3.0625, 0.0, 0.0],
+            [3.0625, 0.0, 0.0234375],
+            [3.0625, 0.03125, 0.0],
+            [-3.0625, 0.03125, 0.0234375],
+        ]),
+        OPAQUE_RED,
+    );
+    v.planes = Some(vec![6]);
+    v.paint.stroke = Paint::One(WHITE);
+    v.paint.stroke_width = 0.75;
+    b.fill(rect([-2.0625, 2.0], [-1.0625, -0.015625], 0.0), OPAQUE_BLUE);
+    out.push(read_path_core(
+        "outside_hull_unbounded",
+        "band_input@2",
+        one(&b, view_c()),
+        (32, 32),
+        Samples::These((0..16).filter(|&s| s != 1).collect()),
+        Verdict::Unable("band_unbounded"),
+    ));
+
+    // constant_key_overflow, and its own layers.
+    let s = 1.5625;
+    let mut b = Build::new(true);
+    b.glyph(rect([-s, s], [-s, s], 400.0), WHITE, [0.0, 0.0, 400.0]);
+    out.push(read_path_core(
+        "constant_key_overflow",
+        "unbounded_keys",
+        one(&b, view_c_at(1.0, 0.0, true)),
+        (32, 32),
+        all(),
+        Verdict::Unable("band_unbounded"),
+    ));
+    let mut b = Build::new(true);
+    let g = b.glyph(rect([-s, s], [-s, s], 400.0), WHITE, [0.0, 0.0, 400.0]);
+    g.paint.stroke = Paint::One(WHITE);
+    g.paint.stroke_width = 1.0;
+    out.push(read_path_core(
+        "constant_key_overflow_own_layers",
+        "unbounded_keys",
+        one(&b, view_c_at(1.0, 0.0, true)),
+        (37, 32),
+        all(),
+        Verdict::Unable("band_unbounded"),
+    ));
+
+    // planeless_own_strokes: one line, its background stroke and its stroke.
+    let mut b = Build::new(true);
+    let l = b.stroke(
+        open(&[[-3.0625, 0.5, 0.0], [3.0625, 0.5, 0.0]]),
+        WHITE,
+        0.75,
+    );
+    l.paint.background_stroke = Paint::One(OPAQUE_RED);
+    l.paint.background_stroke_width = 1.0;
+    out.push(read_path(
+        "planeless_own_strokes",
+        "may_share",
+        one(&b, view_c()),
+        (32, 29),
+        all(),
+        Some((Defect::Order(vec![background(0), stroke(0)]), mismatch())),
+    ));
+
+    // axis_rule_exact_tie: R, then U.
+    let mut b = Build::new(true);
+    b.stroke(
+        open(&[[-3.0625, 0.25, 0.0], [3.0625, 0.25, 0.0]]),
+        OPAQUE_RED,
+        0.75,
+    );
+    b.stroke(
+        open(&[[-3.0625, 0.3125, 0.0], [3.0625, 0.3125, 0.0]]),
+        OPAQUE_BLUE,
+        0.75,
+    );
+    out.push(read_path(
+        "axis_rule_exact_tie",
+        "exact_tie",
+        one(&b, view_c()),
+        (32, 30),
+        all(),
+        Some((Defect::Order(vec![stroke(0), stroke(1)]), mismatch())),
+    ));
+
+    // axis_tie_own_reads_recut: two records of one cubic, on a count step.
+    let cubic = vec![
+        [-2.25, 0.0, 0.0],
+        [-0.75, 0.0, 0.0],
+        [0.75, 0.0, 0.0],
+        [2.25, 0.0, 0.0],
+    ];
+    let mut b = Build::new(true);
+    b.stroke(cubic.clone(), OPAQUE_RED, 0.5);
+    b.stroke(cubic, OPAQUE_BLUE, 0.5);
+    out.push(read_path(
+        "axis_tie_own_reads_recut",
+        "exact_tie",
+        one_shared(b, view_c_at(10.0, 0.0, false)),
+        (32, 32),
+        all(),
+        Some((Defect::Order(vec![stroke(0), stroke(1)]), mismatch())),
+    ));
+
+    // point_blocks_exact_tie: alone, with G between them, and under the exponential option.
+    let red_in_front = Defect::Order(vec![block(0, 0), block(1, 0)]);
+    out.push(read_path(
+        "point_blocks_exact_tie",
+        "exact_tie",
+        two_blocks(view_c_at(20.0, 0.0, false), false),
+        (32, 32),
+        all(),
+        Some((red_in_front.clone(), mismatch())),
+    ));
+    out.push(read_path(
+        "point_blocks_exact_tie_between",
+        "exact_tie",
+        two_blocks(view_c_at(20.0, 0.0, false), true),
+        (32, 32),
+        all(),
+        Some((
+            Defect::Order(vec![block(0, 0), block(2, 0), fill(1)]),
+            mismatch(),
+        )),
+    ));
+    out.push(read_path(
+        "point_blocks_exact_tie_exponential",
+        "exact_tie",
+        two_blocks(view_c_at(10.0, 0.0, true), false),
+        (32, 32),
+        all(),
+        Some((red_in_front, mismatch())),
+    ));
+
+    // shared_scenario_one_row and shared_scenario_no_row: T, then P or T1.
+    let t = |b: &mut Build| {
+        let e = 1.0 / 512.0;
+        b.mesh(
+            vec![[-5.75, -5.75, -e], [6.0, -5.75, e], [6.0, 6.0, e]],
+            vec![[0, 1, 2]],
+            OPAQUE_BLUE,
+        );
+    };
+    let grid_10 = view_c_at(20.0, 1.0 / 1024.0, false);
+    let mut b = Build::new(true);
+    t(&mut b);
+    b.fill(rect([-5.75, 6.0], [-5.75, 6.0], 0.0), OPAQUE_RED);
+    out.push(read_path_report(
+        "shared_scenario_one_row",
+        "shared_plane_read@1",
+        one(&b, grid_10.clone()),
+        (50, 32),
+        all(),
+        vec![fill(1), tri(0, 0)],
+    ));
+    let mut b = Build::new(true);
+    t(&mut b);
+    b.mesh(
+        vec![[-5.75, -5.75, 0.0], [6.0, -5.75, 0.0], [6.0, 6.0, 0.0]],
+        vec![[0, 1, 2]],
+        OPAQUE_RED,
+    );
+    out.push(read_path_report(
+        "shared_scenario_no_row",
+        "shared_plane_read@1",
+        one(&b, grid_10),
+        (50, 32),
+        all(),
+        vec![tri(1, 0), tri(0, 0)],
+    ));
+
+    // cycle_own_keys: F0, F1 (one face on no one plane), F2.
+    let mut b = Build::new(true);
+    b.fill(
+        polygon(&[
+            [-6.0, -5.5, -2.875],
+            [6.0, -5.5, 3.125],
+            [6.0, 5.5, 3.125],
+            [-6.0, 5.5, -2.875],
+        ]),
+        OPAQUE_RED,
+    );
+    b.face_group(
+        &[polygon(&[
+            [-6.0, -6.0, 0.25],
+            [5.75, -6.0, -0.25],
+            [5.75, 5.75, 0.25],
+            [-6.0, 5.75, -0.25],
+        ])],
+        OPAQUE_GREEN,
+    )
+    .planes = Some(vec![3]);
+    b.fill(
+        polygon(&[
+            [-6.0, -5.75, 2.875],
+            [6.0, -5.75, -3.125],
+            [6.0, 5.75, -3.125],
+            [-6.0, 5.75, 2.875],
+        ]),
+        OPAQUE_BLUE,
+    );
+    out.push(read_path(
+        "cycle_own_keys",
+        "cycle_rank@2",
+        one(&b, view_c()),
+        (32, 32),
+        all(),
+        Some((
+            Defect::Order(vec![fill(2), face(1, 0), fill(0)]),
+            mismatch(),
+        )),
+    ));
+
+    // cycle_through_row: P, Q, then A on P's plane.
+    let mut b = Build::new(true);
+    b.fill(
+        polygon(&[
+            [-6.0, -1.5, -3.0],
+            [6.0, -1.5, -3.0],
+            [6.0, 1.5, 3.0],
+            [-6.0, 1.5, 3.0],
+        ]),
+        OPAQUE_RED,
+    );
+    b.fill(
+        polygon(&[
+            [-6.0, -6.0, -1.25],
+            [6.0, -6.0, 1.75],
+            [6.0, 6.0, 1.75],
+            [-6.0, 6.0, -1.25],
+        ]),
+        OPAQUE_BLUE,
+    );
+    b.stroke(open(&[[-4.125, 0.0, 0.0], [4.0, 0.0, 0.0]]), WHITE, 1.5);
+    out.push(read_path_report(
+        "cycle_through_row",
+        "cycle_rank@2",
+        one(&b, view_c()),
+        (32, 30),
+        all(),
+        vec![stroke(2), fill(0), fill(1)],
+    ));
+    out
+}
+
 /// A delta at `seq` that sets, removes and orders nothing.
 fn bare(seq: u64) -> Delta {
     let mut d = Delta::new(
@@ -1414,8 +2003,11 @@ fn expected_json(w: &Witness, samples: &[usize]) -> String {
         .defect
         .as_ref()
         .map_or("null".to_string(), |(_, v)| format!("\"{}\"", v.word()));
+    let cites = w
+        .cites
+        .map_or(String::new(), |c| format!(",\n  \"contract\": \"{c}\""));
     format!(
-        "{{\n  \"fixture\": \"{}\",\n  \"kind\": \"witness\",\n  \"rule\": \"{}\",\n  \"seq\": {},\n  \"pixel\": [{}, {}],\n  \"samples\": {samples:?},\n  \"defect_verdict\": {defect},\n  \"twin_verdict\": \"{}\"\n}}\n",
+        "{{\n  \"fixture\": \"{}\",\n  \"kind\": \"witness\",\n  \"rule\": \"{}\",\n  \"seq\": {},\n  \"pixel\": [{}, {}],\n  \"samples\": {samples:?},\n  \"defect_verdict\": {defect},\n  \"twin_verdict\": \"{}\"{cites}\n}}\n",
         w.name,
         w.rule,
         w.seq,
@@ -1437,6 +2029,20 @@ fn run(witnesses: Vec<Witness>) {
         let mut base = core_report(&w.deltas, w.seq, w.pixel);
         if let Conforming::Rule(order) = &w.conforming {
             for &s in &samples {
+                // An order of fragments the report does not hold would be judged on fewer.
+                for f in order {
+                    let held = base
+                        .entries
+                        .iter()
+                        .any(|e| e.identity == f.identity() && e.cells[s] > 0);
+                    if !held {
+                        wrong.push(format!(
+                            "{} s{s}: {} not in the core's report",
+                            w.name,
+                            f.json()
+                        ));
+                    }
+                }
                 set_order(&mut base, s, order);
             }
         }
@@ -1510,4 +2116,9 @@ fn mutation_label_rule_witnesses_fail_and_their_twins_agree() {
 #[test]
 fn mutation_source_witnesses_read_the_source_the_frame_holds() {
     run(source_witnesses());
+}
+
+#[test]
+fn mutation_read_path_witnesses_fail_and_their_twins_agree() {
+    run(read_path_witnesses());
 }

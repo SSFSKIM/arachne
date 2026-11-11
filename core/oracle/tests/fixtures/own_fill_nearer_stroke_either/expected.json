@@ -1,0 +1,11 @@
+{
+  "fixture": "own_fill_nearer_stroke_either",
+  "kind": "witness",
+  "rule": "stroke_on_own_fill@2",
+  "seq": 1,
+  "pixel": [32, 28],
+  "samples": [0, 1, 2, 3],
+  "defect_verdict": "mismatch:mismatch",
+  "twin_verdict": "agreement",
+  "contract": "CONTRACT.md blob ebab03ac1abc377064b90780c431d1834cfd42b1"
+}
