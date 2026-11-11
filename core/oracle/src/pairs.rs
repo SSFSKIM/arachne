@@ -93,6 +93,51 @@ fn on_own_fill(own: Result<Band, Unable>, fill: Result<Band, Unable>) -> Result<
     })
 }
 
+/// A fragment's band at each of a pixel's 16 samples.
+type SampleBands = [Result<Band, Unable>; 16];
+
+/// `stroke_on_own_fill@2` over a pixel: a stroke's bands `own` adjusted on its own fill's `fill`
+/// at the samples both cover (`stroke` and `fill_cover` their `COVR` codes), and those samples;
+/// `None` where they share none.
+fn on_own_fill_pixel(
+    own: &SampleBands,
+    fill: &SampleBands,
+    stroke: &[u8; 16],
+    fill_cover: &[u8; 16],
+) -> Option<(SampleBands, [bool; 16])> {
+    let mut next = *own;
+    let mut adjusted = [false; 16];
+    for s in 0..16 {
+        if stroke[s] == 0 || fill_cover[s] == 0 {
+            continue;
+        }
+        next[s] = on_own_fill(own[s], fill[s]);
+        adjusted[s] = true;
+    }
+    if !adjusted.contains(&true) {
+        return None;
+    }
+    // Its bound becomes the largest, over the samples, of the bound it took. Where an adjusted
+    // read is not bounded (`curve_recut` is per read, §6), neither is that largest, which every
+    // sample of the stroke at the pixel takes: each is unable as that read is.
+    if let Some(u) = (0..16).filter(|&s| adjusted[s]).find_map(|s| next[s].err()) {
+        for (s, b) in next.iter_mut().enumerate() {
+            if stroke[s] != 0 {
+                *b = Err(u);
+            }
+        }
+        return Some((next, adjusted));
+    }
+    let r = (0..16)
+        .filter(|&s| stroke[s] != 0)
+        .filter_map(|s| next[s].ok().map(|b| b.r))
+        .fold(0.0, f64::max);
+    for b in next.iter_mut().flatten() {
+        b.r = b.r.max(r);
+    }
+    Some((next, adjusted))
+}
+
 /// The frame's bands and pairs over `covers` (sorted by `(y, x, fragment)`), writing each row's
 /// own key and `R` into its `depth` and `band`. `offered` is the same fragments with the records
 /// that paint nothing offered to the registry too (contract §5, `invisible_registry_offer`): each
@@ -162,29 +207,11 @@ fn pixel(
         }) else {
             continue;
         };
-        let mut adjusted = false;
-        let mut next = own[i];
-        for s in 0..16 {
-            let (cs, cf) = (rows[i].cover[s], rows[j].cover[s]);
-            if cs == 0 || cf == 0 {
-                continue;
-            }
-            next[s] = on_own_fill(own[i][s], own[j][s]);
-            on_fill[i][s] = true;
-            adjusted = true;
-        }
-        if adjusted {
-            // Its bound becomes the largest, over the samples, of the bound it took.
-            let r = next
-                .iter()
-                .zip(&rows[i].cover)
-                .filter(|(_, c)| **c != 0)
-                .filter_map(|(b, _)| b.ok().map(|b| b.r))
-                .fold(0.0, f64::max);
-            for b in next.iter_mut().flatten() {
-                b.r = b.r.max(r);
-            }
+        if let Some((next, adjusted)) =
+            on_own_fill_pixel(&own[i], &own[j], &rows[i].cover, &rows[j].cover)
+        {
             own[i] = next;
+            on_fill[i] = adjusted;
         }
     }
     for (i, r) in rows.iter_mut().enumerate() {
@@ -326,5 +353,39 @@ mod tests {
         // [−1.023, −1.017] meet, the keys do not tie, and the nearer fill's 0.001 is taken.
         let met = on_own_fill(band(-1.0, 0.01, 0.0), band(-1.02, 0.001, 0.0)).unwrap();
         assert_eq!((met.o, met.r), (-1.02, 0.001));
+    }
+
+    #[test]
+    fn an_adjusted_stroke_whose_bound_rests_on_an_unable_read_is_unable_at_the_pixel() {
+        // §5 `stroke_on_own_fill@2`: the stroke's bound is the largest, over the samples, of the
+        // bound of the key it took. Covering samples 0 to 2, its fill 1 and 2, its own read at 2
+        // `curve_recut`: the key it took at 2 is not stated, nor its bound, so neither is the
+        // pixel's, at any of its samples.
+        let mut own = [band(-1.0, 1e-13, 0.0); 16];
+        own[2] = Err(Unable::CurveRecut);
+        let fill = [band(-0.9, 1e-3, 0.0); 16];
+        let mut stroke = [0u8; 16];
+        stroke[..3].fill(1);
+        let mut cover = [0u8; 16];
+        cover[1..3].fill(1);
+        let (next, adjusted) = on_own_fill_pixel(&own, &fill, &stroke, &cover).unwrap();
+        assert_eq!(&adjusted[..3], &[false, true, true]);
+        for (s, b) in next.iter().enumerate().take(3) {
+            assert_eq!(*b, Err(Unable::CurveRecut), "sample {s}");
+        }
+        // Stated at every sample, the pixel's bound is the largest taken: the stroke's own key at
+        // 1 and 2 is nearer, its bound 1e-13; sample 0 takes the same.
+        own[2] = band(-1.0, 1e-13, 0.0);
+        let (next, _) = on_own_fill_pixel(&own, &fill, &stroke, &cover).unwrap();
+        assert_eq!(next[0].map(|b| b.r), Ok(1e-13));
+        // The fill nearer at 1: its bound counts at every sample.
+        let mut fill = fill;
+        fill[1] = band(-1.2, 1e-3, 0.0);
+        let (next, _) = on_own_fill_pixel(&own, &fill, &stroke, &cover).unwrap();
+        assert_eq!(next[0].map(|b| b.r), Ok(1e-3));
+        // A stroke its fill covers at no sample keeps its own reads, each per read.
+        let mut alone = own;
+        alone[0] = Err(Unable::CurveRecut);
+        assert_eq!(on_own_fill_pixel(&alone, &fill, &stroke, &[0; 16]), None);
     }
 }

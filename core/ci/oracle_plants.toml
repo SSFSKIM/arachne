@@ -710,7 +710,7 @@ name = "stroke-on-own-fill"
 item = "§5"
 check = "stroke_on_own_fill@1: the nearer of the stroke's and its fill's keys"
 file = "core/oracle/src/pairs.rs"
-find = "            next[s] = on_own_fill(own[i][s], own[j][s]);\n"
+find = "        next[s] = on_own_fill(own[s], fill[s]);\n"
 replace = ""
 red = ["contract::core_err_within_band"]
 
@@ -1289,3 +1289,12 @@ file = "core/oracle/src/order.rs"
 find = "                    own[i][j] = provenance & 3 == 0;"
 replace = "                    own[i][j] = true;"
 red = ["order::an_all_strong_cycle_through_a_row_read_is_ranked_by_wins_then_paint_order"]
+
+[[plant]]
+name = "own-fill-pixel-unable"
+item = "§5"
+check = "stroke_on_own_fill: an adjusted stroke whose pixel bound rests on an unable read is unable at the pixel"
+file = "core/oracle/src/pairs.rs"
+find = "    if let Some(u) = (0..16).filter(|&s| adjusted[s]).find_map(|s| next[s].err()) {"
+replace = "    if let Some(u) = None::<Unable> {"
+red = ["lib::pairs::tests::an_adjusted_stroke_whose_bound_rests_on_an_unable_read_is_unable_at_the_pixel"]
