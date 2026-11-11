@@ -3446,6 +3446,20 @@ samples of pixel `(32, 32)`. Rejects: taking a constant key's bound as finite wh
 which reports a bounded key with no interval to admit. Margins: the square's edges are 12.5 px,
 0.5 px from a step.
 
+**Its own layers.** The same glyph with a stroke of its own, white, width 1 (4 px, a body of
+2 px), drawn after its fill. Both layers take the centre's key with an infinite `R`. §6 says of
+such a fragment: "The fragment's samples are then `truth_unable` (class `band_unbounded`). They
+are never counted as ties." The pair is `own_layers@1`, which would admit only the weak edge, but
+`own_layers@1` does not override that sentence.
+
+- Pixel `(37, 32)`. Its 16 samples lie inside the fill, 0.28 to 1.22 px from its right edge
+  (screen `x = 38.25`), so they are within the stroke's body. They clear the stroke's inner edge
+  (screen `x = 36.25`) by 0.78 px or more, and the top and bottom edges by more than 5 px.
+- Expected: `truth_unable`, class `band_unbounded`, at those 16 samples, with no edge judged.
+- Rejects: deciding the pair by `own_layers@1` before its keys' bounds, which judges a weak edge
+  between two unbounded keys.
+- Margins: the square's edges are 12.5 px, 0.5 px from a step.
+
 **`planeless_own_strokes`.** Set: §7, the may-share set, "Only flat records found identities, so
 two records with no plane of their own share one only through a flat record, (2), or by the axis
 rule, (3)." View C. One open line from `(−3.0625, 0.5, 0)` to `(3.0625, 0.5, 0)`, with a background
@@ -3523,6 +3537,14 @@ Trace: `E(red, blue) = {weak}`, `blue` in front; `E(red, G) = {strong red}`;
 `E(G, blue) = {strong blue}`. The order `blue, red, G` alone is admissible. Defect: at its 16
 samples, the order `red, blue, G`. Expected: `mismatch`. Rejects: as above. Margins: `G`'s edges
 clear their steps by 0.95 px, and the blocks have no curve.
+
+**Under the exponential option.** The same two blocks, in View C with the exponential option,
+focal distance 10 and input grid 0. Each point still maps to `(32.5, 32.5)`. No facing plane keys
+under the option (§5), and each block takes the key `−exp(0/10) = −1`. That is one computation on
+the same input, so the pair is an `ExactTie` under the rule's sentence, which names no projection.
+Each key has `R ≈ 1.14·10^-13` and `S = 0`, so the intervals meet. Trace: `E = {weak}`, label
+`ExactTie`, `blue` in front. Defect: at its 16 samples, `red` in front by a strong relation.
+Expected: `mismatch`. Rejects: as above, and an `ExactTie` read only where a plane keys.
 
 **`shared_scenario_one_row`.** Set: §7, what may share admits for two flat records, "Shared: each
 reads its row, and the term is `within_term` with the snap shares". With it, §5,
