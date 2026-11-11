@@ -115,8 +115,8 @@ class CameraExtras:
         what it already holds. ``None`` for an object that is not a camera.
         Without ``evaluate``, for a state no frame draws, no centre function
         is called: each fixed-orientation mobject's centre is the one
-        ``previous`` recorded, and one it recorded none of is left
-        unoriented.
+        ``previous`` recorded for its family (the mobjects sharing its centre
+        function), and a family it recorded none of is left unoriented.
         """
         from arachne.camera.camera import Camera
         from arachne.camera.three_d_camera import ThreeDCamera
@@ -148,9 +148,13 @@ class CameraExtras:
             displays = previous.displays
         if previous.fixed_in_frame == fixed:
             fixed = previous.fixed_in_frame
-        if len(previous.centers) == len(centers) and all(
-            a is c and np.array_equal(b, d)
-            for (a, b), (c, d) in zip(previous.centers, centers, strict=True)
+        if (
+            len(previous.centers) == len(centers)
+            and all(
+                a is c and np.array_equal(b, d)
+                for (a, b), (c, d) in zip(previous.centers, centers, strict=True)
+            )
+            and _families(previous.centers) == _families(centers)
         ):
             centers = previous.centers
         if (
@@ -192,6 +196,7 @@ class CameraExtras:
                 a is c and np.array_equal(b, d)
                 for (a, b), (c, d) in zip(self.centers, other.centers, strict=True)
             )
+            and _families(self.centers) == _families(other.centers)
             and self.background is other.background
         )
 
@@ -301,12 +306,38 @@ def _recorded_centers(
     orientations: dict[Mobject, Callable[[], Any]], previous: CameraExtras | None
 ) -> tuple[tuple[Mobject, np.ndarray], ...]:
     """The centres ``previous`` recorded for the fixed-orientation mobjects
-    of ``orientations``, calling no centre function: those it recorded none
-    of are left out.
+    of ``orientations``, calling no centre function, one array per centre
+    function as :func:`_centers` gives them: each family (the mobjects
+    sharing a function) takes the centre recorded for its first member that
+    has one, and a family none of whose members has one is left out.
     """
     recorded = {id(mob): value for mob, value in previous.centers} if previous else {}
+    values: dict[int, np.ndarray] = {}
+    taken: set[int] = set()
+    for mob, center_func in orientations.items():
+        if id(center_func) in values or id(mob) not in recorded:
+            continue
+        value = recorded[id(mob)]
+        if id(value) in taken:
+            # Another family has it: an array of its own keeps the two apart.
+            value = value.copy()
+            value.flags.writeable = False
+        taken.add(id(value))
+        values[id(center_func)] = value
     return tuple(
-        (mob, recorded[id(mob)]) for mob in orientations if id(mob) in recorded
+        (mob, values[id(center_func)])
+        for mob, center_func in orientations.items()
+        if id(center_func) in values
+    )
+
+
+def _families(centers: tuple[tuple[Mobject, np.ndarray], ...]) -> tuple[int, ...]:
+    """Which of ``centers`` are one registration family: for each, the index
+    of the first holding its array (one array per centre function).
+    """
+    first: dict[int, int] = {}
+    return tuple(
+        first.setdefault(id(value), index) for index, (_, value) in enumerate(centers)
     )
 
 
