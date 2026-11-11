@@ -124,9 +124,9 @@ Elsewhere, Cairo's rules that this text relies on are restated in full.
 | `curve_key@1` | 5 | the key along a curve's centreline | |
 | `fringe_key@1` | 5 | a sloped plane-keyed layer read at its outline beyond the outline | |
 | `facing_plane@1` | 5 | camera-facing records and points keyed on the plane facing the camera | |
-| `stroke_on_own_fill@1` | 5 | a stroke at least as near as its own fill where both cover | |
+| `stroke_on_own_fill@2` | 5 | a stroke at least as near as its own fill where both cover (replaces @1; the change is stated in §5) | |
 | `shared_plane_read@1` | 5 | a layer read on a shared identity's plane against what shares it | |
-| `band_input@1` | 6 | how far the input grid's snap may move a key (`S`) | |
+| `band_input@2` | 6 | how far the input grid's snap may move a key (`S`) (replaces @1; the change is stated in §6) | |
 | `band_arith@1` | 6 | how far a conforming computation may stand from the exact key (`R`) | |
 | `own_layers@1` | 7 | a fill against its own strokes keeps paint order | ✓ |
 | `one_plane@1` | 7 | two fragments on one registered plane tie within the snap's term | ✓ |
@@ -852,7 +852,7 @@ camera-facing label is keyed on the label's facing plane. No rule belongs to gly
 
 They are different rules, and both apply.
 
-1. **`stroke_on_own_fill@1`.** This applies to a path's stroke or background stroke drawn at or
+1. **`stroke_on_own_fill@2`.** This applies to a path's stroke or background stroke drawn at or
    after its own fill: same producer, same order entry, same path, with the stroke's `sub` not
    below the fill's. A background stroke is drawn before its fill, so it is never adjusted.
    - At every sample where both cover, the stroke's key becomes the nearer of its own and the
@@ -860,8 +860,11 @@ They are different rules, and both apply.
    - Elsewhere it keeps its own.
    - Its error bound becomes the largest, over the samples, of the bound of the key it took there.
      Where the two keys tie within their bounds (§7's `tied`), both bounds count. Where they do not
-     both cover, its own bound counts.
+     both cover, its own bound counts. Where the fill's cover is `Either` (§4), its bound is the
+     larger of its own bound and the bound it takes where both cover: the core may take either.
    - Only the stroke's own row is adjusted. Rows on shared planes are not.
+   - **Change from `stroke_on_own_fill@1`.** @1 did not state the bound where the fill's cover is
+     `Either`.
 
    [Rests on: `composite::strokes_on_own_fills`; `order.rs`
    `inside_its_fill_a_stroke_is_at_least_as_near_as_its_fill`,
@@ -893,7 +896,7 @@ oracle computes three things from XF:
 
 - `o_f(k)`, the key of §5's model;
 - `R_f(k)`, its arithmetic bound (`band_arith@1`);
-- `S_f(k) = (S⁻, S⁺)`, its input bound (`band_input@1`).
+- `S_f(k) = (S⁻, S⁺)`, its input bound (`band_input@2`).
 
 These give the fragment's **interval**:
 
@@ -986,7 +989,7 @@ size and never leaves it unstated.
     `σ = ds(Δ(R_2))` (`R_k` the rotation's rows, or the points' own axes for a record not
     projected).
 
-### `S`, the input bound, by key (`band_input@1`)
+### `S`, the input bound, by key (`band_input@2`)
 
 - **On a world plane `P`.** This covers a flat path's fill, any layer's row on its own plane, a flat
   triangle, and an unregistered plane. Read at the world point `x` on `P` under the read, the
@@ -1037,7 +1040,19 @@ size and never leaves it unstated.
   - For a point of a `points` record: `Δ_c = Δ(R_2)` through the record's placements. The point is
     placed before it is keyed.
 - **A `Nearest` face.** As on a world plane, its own fitted plane.
-- **A stroke adjusted on its own fill.** The hull of the two keys' intervals.
+- **A stroke adjusted on its own fill.** Its interval encloses the nearer of its own key and the
+  fill's under input motion:
+  - where both cover certainly under input motion, from the nearer of the two intervals' near ends
+    to the nearer of their far ends;
+  - where the fill's cover is `Either` (§4), from the nearer of the two near ends to the far end of
+    the stroke's own interval: the one interval that spans the stroke's own interval and the first
+    case's.
+
+  Why: the nearer of two keys never lies past the nearer of their far ends, and where the fill's
+  cover is `Either` the core may keep the stroke's own key.
+
+  **Change from `band_input@1`.** @1 took the hull of the two intervals, which holds keys the nearer
+  of two keys can never take.
 
 ### `R`, the arithmetic bound, by key (`band_arith@1`)
 
@@ -1114,7 +1129,7 @@ subpaths' points `q`, and each closed subpath's closing point read at its first 
 
 plus `hypot(b, c) · 0.1` for the flattening.
 
-**A stroke adjusted on its own fill.** As `stroke_on_own_fill@1` states.
+**A stroke adjusted on its own fill.** As `stroke_on_own_fill@2` states.
 
 ### Contract test (soundness of `R`)
 
@@ -1532,7 +1547,7 @@ axis plane inside both outlines, each pair with its paint order reversed.
     the edges a pair admits, above), whose rows the partition fixes.
   - Why no order the core gives is lost: in any one scenario, each fragment's own key at a sample is
     one number (§5, "Each fragment carries, at each sample, a key"). That includes
-    `stroke_on_own_fill@1`, which sets the stroke's own key at the sample whatever it is read
+    `stroke_on_own_fill@2`, which sets the stroke's own key at the sample whatever it is read
     against. A strong edge puts the nearer of two keys in front (the relation of a pair at a
     sample, above), so strong edges between own keys order those numbers and never cycle. Only
     `shared_plane_read@1` makes a fragment's key at a sample a function of the pair, so only a
