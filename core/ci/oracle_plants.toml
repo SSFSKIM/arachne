@@ -983,3 +983,75 @@ file = "core/oracle/src/decide.rs"
 find = "    for (f, l) in fragments.iter_mut().zip(label_of) {\n        f.label = l;\n    }"
 replace = "    let _ = label_of;"
 red = ["contract_mutation::mutation_label_witnesses_on_the_core_s_own_report", "contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "label-window-qualifies-tile"
+item = "§10"
+check = "a window's label facts are qualified over the whole frame, not the window"
+file = "core/oracle/src/decide.rs"
+find = "if window == whole || !matches!(view.camera, Camera::ThreeD(_)) {"
+replace = "if true || !matches!(view.camera, Camera::ThreeD(_)) {"
+red = ["label_window::a_window_reads_the_whole_frames_qualification"]
+
+[[plant]]
+name = "plate-is-edges"
+item = "§10"
+check = "a label's pair carries the plate model's own edges, not PAIR's snapped sets"
+file = "core/oracle/src/pairs.rs"
+find = "let plate = if labelled[frags[i]] || labelled[frags[j]] {"
+replace = "let plate = if false && labelled[frags[i]] || labelled[frags[j]] && false {"
+red = ["judge::only_the_plate_models_own_order_is_named_label_plate_model"]
+
+[[plant]]
+name = "shared-scenario-needs-both-rows"
+item = "§5"
+check = "a shared scenario reads a fragment with no row by its own key"
+file = "core/oracle/src/order.rs"
+find = "if ra.row.is_some() || rb.row.is_some() {"
+replace = "if ra.row.is_some() && rb.row.is_some() {"
+red = ["format_facts::each_strong_edge_names_how_it_is_read"]
+
+[[plant]]
+name = "gradient-alpha-max-only"
+item = "§10"
+check = "a gradient's alpha bound runs from its least stop, not its greatest alone"
+file = "core/oracle/src/decide.rs"
+find = "(lo.saturating_sub(1), hi.saturating_add(1))"
+replace = "(hi, hi)"
+red = ["label_alpha::a_gradient_whose_alpha_bound_holds_zero_and_a_positive_byte_straddles"]
+
+[[plant]]
+name = "gradient-alpha-not-widened"
+item = "§10"
+check = "a gradient's alpha bound is one level wider each way than its stops"
+file = "core/oracle/src/decide.rs"
+find = "(lo.saturating_sub(1), hi.saturating_add(1))"
+replace = "(lo, hi)"
+red = ["label_alpha::a_gradient_whose_alpha_bound_holds_zero_and_a_positive_byte_straddles"]
+
+[[plant]]
+name = "gradient-alpha-unknown"
+item = "§10"
+check = "an opaque gradient's alpha is bounded, never read as unknown"
+file = "core/oracle/src/decide.rs"
+find = "(lo.saturating_sub(1), hi.saturating_add(1))"
+replace = "(0, 255)"
+red = ["label_alpha::an_opaque_gradient_decides_as_a_solid_does"]
+
+[[plant]]
+name = "judge-order-from-itself"
+item = "§7"
+check = "a sample's reported order lists each fragment reported present there once"
+file = "core/oracle/tests/common/judge.rs"
+find = "    if listed != present {"
+replace = "    if false && listed != present {"
+red = ["judge::a_samples_order_is_a_permutation_of_its_present_fragments"]
+
+[[plant]]
+name = "label-join-winding"
+item = "§10"
+check = "fills join only where wound one way"
+file = "core/oracle/src/label.rs"
+find = "if wind[a] != 0 && wind[a] == wind[b] &&"
+replace = "if wind[a] != 0 &&"
+red = ["contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]
