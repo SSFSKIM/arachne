@@ -100,3 +100,10 @@ gates:
     run: bash .github/c53/measure.sh
     env: {UV_PYTHON: "3.12"}
     timeout: 150
+
+  # Scratch (never lands): V10, every record facing the camera across the corpus carries a facing
+  # group, with a planted control that must go RED on exactly one record.
+  - name: c53-facing-sweep
+    run: bash .github/c53/facing_sweep.sh
+    env: {UV_PYTHON: "3.12"}
+    timeout: 120
