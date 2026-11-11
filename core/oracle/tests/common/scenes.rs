@@ -31,7 +31,8 @@ pub fn view_f() -> View {
     }
 }
 
-fn camera(focal_distance: f64) -> Camera {
+/// The 3D camera of view C (the identity rotation, zoom 1) at `focal_distance`.
+pub fn camera(focal_distance: f64) -> Camera {
     Camera::ThreeD(ThreeDCamera {
         phi: 0.0,
         theta: -std::f64::consts::FRAC_PI_2,

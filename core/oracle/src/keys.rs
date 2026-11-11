@@ -231,6 +231,9 @@ impl Model {
             Model::NegInf => std::array::from_fn(|_| Ok(Band::exact(f64::NEG_INFINITY))),
             Model::Unbounded => std::array::from_fn(|_| Err(Unable::BandUnbounded)),
             Model::Const { k, r, s } => std::array::from_fn(|_| {
+                if !(s.is_finite() && r.is_finite()) {
+                    return Err(Unable::BandUnbounded);
+                }
                 Ok(Band {
                     o: *k,
                     r: *r,
@@ -474,7 +477,8 @@ fn world_s(
         - m2 * pr.d)
         .abs();
     let hull = PlaneHull::of(plane, points);
-    let theta = if hull.width > 0.0 {
+    // A read outside a hull no wider than `2 τ_P` is unbounded (contract §6, `band_input@1`).
+    let theta = if hull.width > 2.0 * tau {
         2.0 * tau / hull.width
     } else {
         f64::INFINITY
@@ -572,21 +576,23 @@ pub fn path_depth(view: &View, item: &PathItem, rings: &[Option<Vec<Ring>>; 3]) 
                 .as_ref()
                 .and_then(|p| p.get(item.index as usize))
                 .copied();
-            let (how, plane) = planarity(&item.world, code, item.face);
+            // Each shown point put back by `unproject`, in the camera's axes (contract §2).
+            let put_back: Vec<[f64; 3]> = item.world.iter().map(|p| cam.unproject(*p)).collect();
+            let (how, plane) = planarity(&put_back, code, item.face);
             let strokes = [curve_with(&cam, 0), curve_with(&cam, 2)];
             let fill = plane
                 .filter(|_| how != Planarity::Curve)
                 .and_then(|p| {
-                    let tau = departure_of(g, p.unrounded_n, &c.placings)
-                        + departure_from(&p, &item.world);
+                    let tau =
+                        departure_of(g, p.unrounded_n, &c.placings) + departure_from(&p, &put_back);
                     plane_model(
                         &cam,
                         &map,
                         &p,
-                        cam.rotated(item.world[0]),
+                        cam.rotated(put_back[0]),
                         0.0,
                         path_region(item, widest),
-                        world_s(&cam, &map, &p, &item.world, tau),
+                        world_s(&cam, &map, &p, &put_back, tau),
                         rings[1].clone(),
                     )
                 })
@@ -710,11 +716,14 @@ pub fn path_depth(view: &View, item: &PathItem, rings: &[Option<Vec<Ring>>; 3]) 
                     axes.push((k, item.world[0][k]));
                 }
             }
+            // It keeps only the axis identities whose rows form (contract §5).
+            axes.retain(|(k, _)| {
+                key_plane(pr, &map, &WorldPlane::axis(*k, item.world[0]), q0, 0.0).is_some()
+            });
             let snap = axes
                 .iter()
-                .filter_map(|(k, _)| {
+                .map(|(k, _)| {
                     let a = WorldPlane::axis(*k, item.world[0]);
-                    key_plane(pr, &map, &a, q0, 0.0)?;
                     let dep = departure_from(&a, &item.world);
                     let n = a.unrounded_n;
                     let m2 = (pr.r[2][0] * n[0] + pr.r[2][1] * n[1]) + pr.r[2][2] * n[2];
@@ -722,7 +731,7 @@ pub fn path_depth(view: &View, item: &PathItem, rings: &[Option<Vec<Ring>>; 3]) 
                         - ((n[0] * pr.c[0] + n[1] * pr.c[1]) + n[2] * pr.c[2]))
                         - m2 * pr.d)
                         .abs();
-                    Some(kr(big_d, departure_of(g, n, &c.placings) + dep))
+                    kr(big_d, departure_of(g, n, &c.placings) + dep)
                 })
                 .fold(0.0, f64::max);
             PathDepth {
@@ -907,17 +916,37 @@ pub fn triangle_depth(view: &View, item: &MeshItem, i: usize) -> (Model, Option<
     (model, Some(offered))
 }
 
-/// A points record's block model: the facing plane through the point's placed position, its
-/// `Δ_c = Δ(R_2)` through the placements.
+/// A points record's block model (contract §5, `facing_plane@1`): the facing plane through the
+/// point's placed position, its `Δ_c = Δ(R_2)` through the placements; a fixed-orientation
+/// record's through its centre; a pre-projected record's in the camera's axes, through its pivot
+/// or else the point put back by `unproject` (§2).
 pub fn point_depth(view: &View, item: &PointsItem, placed: [f64; 3]) -> Model {
     let c = &item.common;
+    let g = view.input_grid;
     let (true, Some(pr)) = (camera_3d(view), c.projection.as_ref()) else {
         return Model::NegInf;
     };
-    if !matches!(c.placement, Placement::Projected) {
-        return Model::NegInf;
-    }
     let map = FrameMap::of_paths(view);
-    let delta_c = departure_of(view.input_grid, pr.r[2], &c.placings);
-    facing_model(pr, &map, placed, delta_c)
+    if c.record.pre_projected.is_some() {
+        let cam = pr.in_camera_axes();
+        return match c.record.depth.fixed_orientation_centre {
+            Some(pivot) => facing_model(&cam, &map, pivot, 0.0),
+            None => facing_model(
+                &cam,
+                &map,
+                cam.unproject(placed),
+                departure_of(g, cam.r[2], &c.placings),
+            ),
+        };
+    }
+    match &c.placement {
+        Placement::FixedOrientation { centre, .. } => {
+            let delta_c = (g / 2.0) * (pr.r[2][0].abs() + pr.r[2][1].abs() + pr.r[2][2].abs());
+            facing_model(pr, &map, *centre, delta_c)
+        }
+        Placement::Projected => {
+            facing_model(pr, &map, placed, departure_of(g, pr.r[2], &c.placings))
+        }
+        _ => Model::NegInf,
+    }
 }
