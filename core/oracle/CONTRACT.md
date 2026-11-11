@@ -1042,14 +1042,19 @@ size and never leaves it unstated.
 - **A `Nearest` face.** As on a world plane, its own fitted plane.
 - **A stroke adjusted on its own fill.** Its interval encloses the nearer of its own key and the
   fill's under input motion:
-  - where both cover certainly under input motion, from the nearer of the two intervals' near ends
-    to the nearer of their far ends;
+  - where the fill covers certainly under input motion, from the nearer of the two intervals' near
+    ends to the nearer of their far ends;
   - where the fill's cover is `Either` (§4), from the nearer of the two near ends to the far end of
     the stroke's own interval: the one interval that spans the stroke's own interval and the first
     case's.
 
   Why: the nearer of two keys never lies past the nearer of their far ends, and where the fill's
-  cover is `Either` the core may keep the stroke's own key.
+  cover is `Either` the core may keep the stroke's own key. The split is keyed on the fill's cover
+  alone. The stroke has a fragment at a sample only where it is present, and where the fill covers
+  certainly every such sample takes the nearer key. So the stroke's own `Either` decides only
+  whether the sample exists, never which key it takes. Where the fill does not cover, there is no
+  adjustment. The two cases therefore cover every adjusted sample, and the second is the case of
+  `stroke_on_own_fill@2`'s bound where the fill's cover is `Either`.
 
   **Change from `band_input@1`.** @1 took the hull of the two intervals, which holds keys the nearer
   of two keys can never take.
@@ -3377,8 +3382,8 @@ leaves `E = {weak}`, `A` in front by paint order, and the report a `mismatch`. M
 
 **`own_fill_nearer`.** Set: §6, `S` by key, "A stroke adjusted on its own fill. Its interval
 encloses the nearer of its own key and the fill's under input motion", in both its cases: "where
-both cover certainly under input motion, from the nearer of the two intervals' near ends to the
-nearer of their far ends", and "where the fill's cover is `Either` (§4), from the nearer of the two
+the fill covers certainly under input motion, from the nearer of the two intervals' near ends to
+the nearer of their far ends", and "where the fill's cover is `Either` (§4), from the nearer of the two
 near ends to the far end of the stroke's own interval". With it, §5, `stroke_on_own_fill@2`. View
 C, drawn in this order:
 
@@ -3388,15 +3393,15 @@ C, drawn in this order:
   (screen `y = 32`), and `s`'s own key along that edge is `−1`.
 - `Q`, a square polygon at the depth and size each case gives, fill blue.
 
-In both cases `E(F, s) = {weak}` (`own_layers@1`, the stroke over its fill), and in the paint order
+In every case `E(F, s) = {weak}` (`own_layers@1`, the stroke over its fill), and in the paint order
 `F`, `s`, `Q` the order `F, Q, s` is admissible only where `E(s, Q)` admits `Q` in front: it comes
 from the cycle `F` over `Q`, `Q` over `s`, `s` over `F`, in which the weak own-layer edge yields.
 
-- **Both cover.** Input grid `2^-20`. `Q` is `[−5.5, 5.5]²` at `z = 0.9375`, keyed
+- **The fill covers.** Input grid `2^-20`. `Q` is `[−5.5, 5.5]²` at `z = 0.9375`, keyed
   `−20/19.0625 ≈ −1.04918`.
   - Pixel `(32, 29)`. Its samples lie 2.03 to 2.97 px above `P`'s bottom edge, inside `F` and
     within `s`'s body, and `P`'s other edges are farther than 4 px: both cover every sample
-    certainly. `F` keys between about `−1.14844` and `−1.10156`. `s`'s interval runs from `F`'s
+    certainly, the fill included. `F` keys between about `−1.14844` and `−1.10156`. `s`'s interval runs from `F`'s
     near end to the nearer far end, `F`'s, and `Q` lies behind it by at least `0.0524`.
   - Trace: `E(F, Q) = {strong F}` and `E(s, Q) = {strong s}`, so `s, F, Q` alone is admissible.
   - Defect: at its 16 samples, the order `F, Q, s`.
@@ -3415,13 +3420,30 @@ from the cycle `F` over `Q`, `Q` over `s`, `s` over `F`, in which the weak own-l
   - Trace: `E(F, Q) = {strong F}`. `s`'s interval runs to its own far end, so `E(s, Q)` is every
     edge, and both `s, F, Q` and `F, Q, s` are admissible.
   - Report: at samples 12 and 13, the order `F, Q, s`. Expected: agreement.
-  - Rejects: the both-cover enclosure taken where the fill's cover is `Either`. That ends `s`'s
+  - Rejects: the first case's enclosure taken where the fill's cover is `Either`. That ends `s`'s
     interval at `F`'s far end, gives `E(s, Q) = {strong s}`, and makes the report a `mismatch`.
   - Margins: every cubic of `P` clears its step by at least 0.82 px against its `6ε̂ ≈ 0.68`, and
     each of its joints lies more than 11 px from the pixel. `Q`'s edges, `L ≈ 43.17` px, clear
     their steps by 0.83 px against its `6ε̂ ≈ 0.34`.
+- **The stroke `Either`, the fill covering.** Input grid `2^-6`, `P` as in the second case. `Q` is
+  `[−5.375, 5.375]²` at `z = 1.8125`, keyed `−20/18.1875 ≈ −1.09966`, with an interval
+  `±4.7·10^-4`.
+  - Pixel `(32, 28)`. Its top row of cells lies against `s`'s inner edge (screen `y = 28`, 4 px
+    above the bottom edge), within `ε` of `s`'s outline, where `μ_ε ≈ 2.35`: `s`'s cover there is
+    `Either`, though those cells lie wholly inside its body, and the report holds `s`. `F` covers
+    every cell of the pixel certainly: its outline lies 3 px or more away. Samples 0 to 3 lie
+    in the top row, 0.03 to 0.22 px inside `s`'s inner edge and 3.78 to 3.97 px above the bottom
+    edge, where `F` keys `−1.18906` to `−1.19844`, each `±0.0024`. `s`'s own key there is `−1`.
+  - The fill covers certainly, so `s`'s interval ends at the nearer far end, `F`'s, and `Q` lies
+    behind it by at least `0.0866`. Where `s` is present, its key is the nearer one.
+  - Trace: `E(F, Q) = {strong F}` and `E(s, Q) = {strong s}`, so `s, F, Q` alone is admissible.
+  - Defect: at samples 0 to 3, the order `F, Q, s`.
+  - Rejects: taking the second case's interval because the stroke's cover is `Either`. That runs to
+    `s`'s own far end, `0.1009` behind `Q`'s near end, and admits the defect.
+  - Margins: `P`'s as in the second case; the pixel lies more than 11 px from `P`'s joints. `Q`'s edges, `L ≈ 47.29` px, clear their steps by 0.71 px against its
+    `6ε̂ ≈ 0.38`.
 
-`R` is under `10^-5` in both cases, so it moves no edge.
+`R` is under `10^-5` in every case, so it moves no edge.
 
 **`outside_hull_unbounded`.** Set: §6, `S` on a world plane, "Where a read lies outside `H` and
 `w_P <= 2 τ_P`, the bound is infinite." View C, drawn in this order:
