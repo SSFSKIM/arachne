@@ -127,7 +127,7 @@ Elsewhere, Cairo's rules that this text relies on are restated in full.
 | `stroke_on_own_fill@2` | 5 | a stroke at least as near as its own fill where both cover (replaces @1; the change is stated in §5) | |
 | `shared_plane_read@1` | 5 | a layer read on a shared identity's plane against what shares it | |
 | `band_input@2` | 6 | how far the input grid's snap may move a key (`S`) (replaces @1; the change is stated in §6) | |
-| `band_arith@2` | 6 | how far a conforming computation may stand from the exact key (`R`) (replaces @1; the change is stated in §6) | |
+| `band_arith@3` | 6 | how far a conforming computation may stand from the exact key (`R`) (replaces @2; the change is stated in §6) | |
 | `own_layers@1` | 7 | a fill against its own strokes keeps paint order | ✓ |
 | `one_plane@1` | 7 | two fragments on one registered plane tie within the snap's term | ✓ |
 | `near_parallel@1` | 7 | two flat records whose input cannot fix their relative tilt tie | ✓ |
@@ -895,7 +895,7 @@ For each fragment `f` at each read point (a sample `k`, or the pixel's centre fo
 oracle computes three things from XF:
 
 - `o_f(k)`, the key of §5's model;
-- `R_f(k)`, its arithmetic bound (`band_arith@2`);
+- `R_f(k)`, its arithmetic bound (`band_arith@3`);
 - `S_f(k) = (S⁻, S⁺)`, its input bound (`band_input@2`).
 
 These give the fragment's **interval**:
@@ -1059,7 +1059,7 @@ size and never leaves it unstated.
   **Change from `band_input@1`.** @1 took the hull of the two intervals, which holds keys the nearer
   of two keys can never take.
 
-### `R`, the arithmetic bound, by key (`band_arith@2`)
+### `R`, the arithmetic bound, by key (`band_arith@3`)
 
 **General terms.**
 
@@ -1101,16 +1101,17 @@ differ as follows, with `γ_j = j u / (1 − j u)`, infinite where `j u >= 1`:
 - **The point.** A conforming computation may take the centroid of the face's `N` points `p_i` as
   `Σ p_i / N` or as `p_0 + Σ (p_i − p_0) / N`, in any order. Either lies within
   `γ_{N+2} (Σ_i |p_ik − p_0k| + Σ_i |p_ik|) / N` of the exact centroid along axis `k`.
-- **`E_k` and `δe`.** `R` takes `E_k = γ_{2N+64} (Σ_i |p_ik − p_0k| + Σ_i |p_ik|) / N` and
+- **`E_k` and `δe`.** `R` takes `E_k = γ_{2N+66} (Σ_i |p_ik − p_0k| + Σ_i |p_ik|) / N` and
   `δe = 2 Σ_k |û_k| E_k`, both 0 for every plane but a `Nearest` face's. `δe` bounds how far the
   two computations' offsets can differ, the share of their points and each offset's own bound
-  included. The other computation's offset bound is at most `ε = ε_e + 4u δe`. Why `γ_{2N+64}`
+  included. The other computation's offset bound is at most `ε = ε_e + 4u δe`. Why `γ_{2N+66}`
   suffices where `γ_{N+2}` does not is stated with `(1 + 64u)`, below.
 - **`Dn`** is the nearest the other computation's `D` can stand: `(|D| − δe) − 2 dD` for a
   `Nearest` face, and `|D|` for every other plane. The two offsets differ by under `δe`, and each
   computation's `D` lies within its `dD` (as in `A`, below) of the exact `D` through its offset.
 
-`R = (1 + 64u) ((M + ρ) + ν)`, where `M` is the largest, at the region's four corners `(X, Y)`, of
+`R = (1 + 64u) ((M + ρ + O) + ν)`, where `O` is a `Nearest` face's outline departure (below; 0
+for every other key) and `M` is the largest, at the region's four corners `(X, Y)`, of
 `gap + 3A + C + shift`:
 
 - **`gap`** is the largest `|K_r(X, Y) − K_u(X, Y)| + 4u (terms of both reads)`, where `K_r` is the
@@ -1147,19 +1148,22 @@ differ as follows, with `γ_j = j u / (1 − j u)`, infinite where `j u >= 1`:
   or quotient's is its operands' counts plus one, and a square root's is one more than its
   operand's.
   - **Through `E_k`.** Every path from a point's coordinate through `E_k` to `R` passes at most
-    `N + 32` roundings in the order the formulas give. The longest runs through `E_k`'s first sum,
-    `δe`, `C`'s product, `M`, `ρ`, `ν` and the factor. With `n = N + 32`,
+    `N + 33` roundings in the order the formulas give. The longest runs through `E_k`'s first sum,
+    `δe`, `C`'s product, `M`, `ρ`, `O`'s sum, `ν` and the factor. With `n = N + 33`,
     `γ_{2n} (1 − γ_n) = 2 γ_n`. So on every such path, `δe` as computed counts for at least
-    `4 γ_{N+32} G`, where `G = Σ_k |û_k| (Σ_i |p_ik − p_0k| + Σ_i |p_ik|) / N`. The two
+    `4 γ_{N+33} G`, where `G = Σ_k |û_k| (Σ_i |p_ik − p_0k| + Σ_i |p_ik|) / N`. The two
     computations' offsets differ by at most `(2 γ_{N+2} + 8u (1 + γ_{N+2})) G`: the share of their
-    points, and each offset's own bound, `4u (1 + γ_{N+2}) G` at most. `4 γ_{N+32} G` covers that
-    wherever `γ_{2N+64}` is finite, that is wherever `(2N + 64) u < 1`. Outside that domain `δe` is
+    points, and each offset's own bound, `4u (1 + γ_{N+2}) G` at most. `4 γ_{N+33} G` covers that
+    wherever `γ_{2N+66}` is finite, that is wherever `(2N + 66) u < 1`. Outside that domain `δe` is
     infinite, and so is `R`.
-  - **Every other term** reaches `R` through at most 27 roundings in the order the formulas give,
-    the factor's own included. The longest runs through `|eye|`, `dD`, `f dD`, `A`, `3A`, `M`, `ρ`
-    and `ν`. A conforming computation of the same terms, with any of their sums taken in another
-    order, passes each through at most 26. Since `(1 + 64u)(1 − γ_27) >= 1 + γ_26`, `R` stands
-    above every such evaluation.
+  - **Every other term** reaches `R` through at most 28 roundings in the order the formulas give,
+    the factor's own included. The longest runs through `|eye|`, `dD`, `f dD`, `A`, `3A`, `M`, `ρ`,
+    `O`'s sum and `ν`; `O`'s own terms reach `R` through at most 25. A conforming computation of
+    the same terms, with any of their sums taken in another order, passes each through at most
+    27. Since `(1 + 64u)(1 − γ_28) >= 1 + γ_27` for `u <= 2^-24`, `R` stands above every such
+    evaluation.
+
+  The counts are derived in [`derivations/band_arith3-departure.md`](derivations/band_arith3-departure.md).
 
 Why: `R` is compared with the core's own bound, which the core computes from its own plane (the
 contract test, below), so two conforming evaluations of one formula must stay within it. Stating
@@ -1175,6 +1179,11 @@ left every difference between conforming evaluations to `ν`. `ν` scales with t
 while the unrounded key's differences scale with the corner keys and `1/|D|`. On the `Nearest`
 fringe reads measured, a core's own bound stood `6·10^-14` to `1.05·10^-12` of itself above @1's
 `R`.
+
+**Change from `band_arith@2`.** @2 added a `Nearest` face's outline departure after the factor,
+so `(1 + 64u)` did not cover the roundings of the departure's own sum or of the sum it joins. @3
+takes it inside, as `O`, which moves the counts to 28 and 27 and `E_k` to `γ_{2N+66}`. No verdict
+was computed under @2.
 
 **A plane through three keyed corners.** With corner keys `d0`, `d1`, `d2` and corner bounds
 `err_i`, let `in = max err_i`:
@@ -1207,13 +1216,14 @@ the point's factor, `(x, y, z)` its shown position, and `r = |z| + hypot(x, y) /
 The pixel's bound is the largest over the 16 samples and the centre. The own-fill adjustment is
 applied after it.
 
-**A `Nearest` face.** It is its plane's bound plus its outline's departure: the largest over its
-subpaths' points `q`, and each closed subpath's closing point read at its first point's position, of
+**A `Nearest` face.** Its `R` takes its outline's departure `O` inside the factor,
+`R = (1 + 64u) ((M + ρ + O) + ν)`. `O` is the largest, over its subpaths' points `q` and each
+closed subpath's closing point read at its first point's position, of
 
     gap_q + ρ(q) + key_error(q) + 4u |k_q| + u gap_q,    gap_q = |plane(map(q)) − k_q|
 
 plus `hypot(b, c) · 0.1` for the flattening. `gap_q` is the largest over the rounded planes `gap`
-admits, as the other computation may hold either.
+admits, as the other computation may hold either. For every other key, `O` is 0.
 
 **A stroke adjusted on its own fill.** As `stroke_on_own_fill@2` states.
 
