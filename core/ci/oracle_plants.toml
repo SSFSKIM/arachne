@@ -640,7 +640,7 @@ check = "own_layers@1 keeps paint order"
 file = "core/oracle/src/order.rs"
 find = "        if own_layers(fa, fb) {\n"
 replace = "        if false && own_layers(fa, fb) {\n"
-red = ["order::a_fill_and_its_own_stroke_keep_paint_order_whatever_their_keys"]
+red = ["order::a_fill_and_its_own_stroke_keep_paint_order_whatever_their_keys", "contract_mutation::mutation_depth_witnesses_fail_and_their_twins_agree"]
 
 [[plant]]
 name = "order-exact-tie"
@@ -667,7 +667,7 @@ check = "cycle_rank@2: free of strong edges, so weak edges yield"
 file = "core/oracle/src/order.rs"
 find = ".filter(|&x| !left.iter().any(|&y| y != x && strong[y][x]))"
 replace = ".filter(|&x| !left.iter().any(|&y| y != x && front[y][x]))"
-red = ["order::a_cycle_through_a_weak_order_keeps_every_strong_order"]
+red = ["order::a_cycle_through_a_weak_order_keeps_every_strong_order", "contract_mutation::mutation_depth_witnesses_fail_and_their_twins_agree"]
 
 [[plant]]
 name = "band-s-world-plane"
@@ -748,7 +748,7 @@ check = "alpha_round@1: an op whose alpha byte is 0 paints nothing"
 file = "core/oracle/src/draw.rs"
 find = "        .any(|r| alpha_short(r[3] * opacity) > 0xff)"
 replace = "        .any(|r| alpha_short(r[3] * opacity) > 0)"
-red = ["colour::at_the_alpha_band_s_edges_only_an_alpha_byte_above_zero_paints"]
+red = ["colour::at_the_alpha_band_s_edges_only_an_alpha_byte_above_zero_paints", "contract_mutation::mutation_depth_witnesses_fail_and_their_twins_agree"]
 
 [[plant]]
 name = "lines-step-b"
@@ -766,7 +766,7 @@ check = "alpha_round@1 on the oracle's side of the core comparison"
 file = "core/oracle/src/draw.rs"
 find = "pub fn alpha_short(d: f64) -> u32 {\n"
 replace = "pub fn alpha_short(d: f64) -> u32 {\n    let d = d * 2.0;\n"
-red = ["contract::the_core_paints_at_the_alpha_band_s_edges_as_alpha_round_says"]
+red = ["contract::the_core_paints_at_the_alpha_band_s_edges_as_alpha_round_says", "contract_mutation::mutation_depth_witnesses_fail_and_their_twins_agree"]
 
 [[plant]]
 name = "classes-walk-stops-at-cylinder"
