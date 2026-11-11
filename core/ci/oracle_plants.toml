@@ -1286,9 +1286,18 @@ name = "own-fill-pixel-unable"
 item = "§5"
 check = "stroke_on_own_fill: an adjusted stroke whose pixel bound rests on an unable read is unable at the pixel"
 file = "core/oracle/src/pairs.rs"
-find = "    if let Some(u) = (0..16).filter(|&s| adjusted[s]).find_map(|s| next[s].err()) {"
-replace = "    if let Some(u) = None::<Unable> {"
+find = "    if let Some(u) = (0..16)\n        .filter(|&s| stroke[s] != 0)\n        .find_map(|s| next[s].err())\n    {"
+replace = "    if let Some(u) = None::<Unable>\n    {"
 red = ["lib::pairs::tests::an_adjusted_stroke_whose_bound_rests_on_an_unable_read_is_unable_at_the_pixel", "pair_rules::an_adjusted_stroke_unable_at_a_pixel_is_unable_against_others_and_judged_against_its_fill"]
+
+[[plant]]
+name = "own-fill-pixel-scope"
+item = "§5"
+check = "stroke_on_own_fill: an adjusted stroke's pixel bound counts its own reads where the fill does not cover"
+file = "core/oracle/src/pairs.rs"
+find = "        .filter(|&s| stroke[s] != 0)\n        .find_map(|s| next[s].err())"
+replace = "        .filter(|&s| adjusted[s])\n        .find_map(|s| next[s].err())"
+red = ["lib::pairs::tests::an_adjusted_stroke_whose_bound_rests_on_an_unable_read_is_unable_at_the_pixel", "pair_rules::an_adjusted_stroke_is_unable_at_a_pixel_where_one_of_its_unadjusted_reads_is"]
 
 [[plant]]
 name = "own-fill-hull"

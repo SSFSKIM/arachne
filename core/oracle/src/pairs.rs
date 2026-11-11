@@ -130,10 +130,14 @@ fn on_own_fill_pixel(
     if !adjusted.contains(&true) {
         return None;
     }
-    // Its bound becomes the largest, over the samples, of the bound it took. Where an adjusted
-    // read is not bounded (`curve_recut` is per read, §6), neither is that largest, which every
-    // sample of the stroke at the pixel takes: each is unable as that read is.
-    if let Some(u) = (0..16).filter(|&s| adjusted[s]).find_map(|s| next[s].err()) {
+    // Its bound becomes the largest, over the samples, of the bound of the key it took there,
+    // its own where the fill does not cover. Where any of those reads is not bounded
+    // (`curve_recut` is per read, §6), neither is that largest, which every sample of the stroke
+    // at the pixel takes: each is unable as that read is.
+    if let Some(u) = (0..16)
+        .filter(|&s| stroke[s] != 0)
+        .find_map(|s| next[s].err())
+    {
         for (s, b) in next.iter_mut().enumerate() {
             if stroke[s] != 0 {
                 *b = Err(u);
@@ -441,6 +445,14 @@ mod tests {
         fill[1] = band(-1.2, 1e-3, 0.0);
         let (next, _) = on_own_fill_pixel(&own, &fill, &stroke, &cover).unwrap();
         assert_eq!(next[0].map(|b| b.r), Ok(1e-3));
+        // The own bound counts where the fill does not cover: unstated at 0, the largest is not
+        // stated either, at any sample of the stroke there, the adjusted ones included.
+        let mut mixed = own;
+        mixed[0] = Err(Unable::CurveRecut);
+        let (next, _) = on_own_fill_pixel(&mixed, &fill, &stroke, &cover).unwrap();
+        for (s, b) in next.iter().enumerate().take(3) {
+            assert_eq!(*b, Err(Unable::CurveRecut), "mixed, sample {s}");
+        }
         // A stroke its fill covers at no sample keeps its own reads, each per read.
         let mut alone = own;
         alone[0] = Err(Unable::CurveRecut);

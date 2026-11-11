@@ -380,6 +380,54 @@ fn an_adjusted_stroke_unable_at_a_pixel_is_unable_against_others_and_judged_agai
 }
 
 #[test]
+fn an_adjusted_stroke_is_unable_at_a_pixel_where_one_of_its_unadjusted_reads_is() {
+    // §5 `stroke_on_own_fill@2`: the pixel's bound is the largest over the samples of the bound
+    // of the key the stroke took, its own where the fill does not cover; one `curve_recut` read
+    // there (§6) leaves that largest unstated at every sample of the stroke at the pixel. One
+    // record, filled and stroked 4 px wide: a square 17.2 px across (off a count step), and an open
+    // line 18 px long (its cubic on a step: its reads `curve_recut`) 2.25 px above the square's
+    // top edge. In the row of pixels across that edge, the line's body reaches the samples above
+    // it, outside the fill, and the samples below, inside the fill and the square's stroke, lie
+    // farther than its body from it.
+    let mut b = Build::new(true);
+    let mut points = rect([-2.15, 2.15], [-2.15, 2.15], 0.0);
+    points.extend(open(&[[-2.25, 2.7125, 0.0], [2.25, 2.7125, 0.0]]));
+    let r = b.fill(points, OPAQUE_BLUE);
+    r.paint.stroke = Paint::One(WHITE);
+    r.paint.stroke_width = 1.0;
+    let d = decide(&b, view(20.0));
+    let (fill, stroke) = (id_of(&d, 0, 1), id_of(&d, 0, 2));
+    let cover = |f: u32, x: u32, y: u32| {
+        d.covers
+            .iter()
+            .find(|c| (c.fragment, c.x, c.y) == (f, x, y))
+            .map_or([0; 16], |c| c.cover)
+    };
+    let mut mixed = 0;
+    for row in d
+        .bands
+        .iter()
+        .filter(|b| b.fragment == stroke && b.which == 0)
+    {
+        let (x, y) = (row.x, row.y);
+        let (cs, cf) = (cover(stroke, x, y), cover(fill, x, y));
+        let adjusted = (0..16).any(|k| cs[k] != 0 && cf[k] != 0);
+        let unadjusted_unable = (0..16).any(|k| cs[k] != 0 && cf[k] == 0 && row.status[k] == 3);
+        if !(adjusted && unadjusted_unable) {
+            continue;
+        }
+        for k in (0..16).filter(|&k| cs[k] != 0) {
+            assert_eq!(row.status[k], 3, "({x}, {y}) sample {k}");
+        }
+        mixed += 1;
+    }
+    assert!(
+        mixed > 0,
+        "no adjusted stroke pixel with an unable read where the fill does not cover"
+    );
+}
+
+#[test]
 fn two_flat_triangles_that_may_share_tie_within_term_though_neither_has_a_row() {
     // §7, two flat records that may share: in the shared scenario each reads its row, a triangle
     // its own key (it has none, §5), and the term is `within_term` with the snap shares. At focal
