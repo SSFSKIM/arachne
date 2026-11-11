@@ -1,7 +1,7 @@
 //! One frame's decisions: every fragment the order draws and its verdict at every sample of the
 //! window, or the frame's refusal.
 
-use arachne_core::xf::{Delta, View};
+use arachne_core::xf::{Camera, Delta, View};
 
 use crate::camera::FrameMap;
 use crate::colour::{self, Light};
@@ -13,7 +13,7 @@ use crate::label;
 use crate::order::{Frag, Scene};
 use crate::out::{
     COLOUR_GRADIENT, COLOUR_PER_PIXEL, COLOUR_SOLID, ColourRow, CoverRow, Decisions,
-    FLAG_UNBOUNDED, FLAG_ZERO_ALPHA, Fragment, Header, NONE_U32, PixelColour, Refused,
+    FLAG_UNBOUNDED, FLAG_ZERO_ALPHA, Fragment, Header, LabelRow, NONE_U32, PixelColour, Refused,
     STATUS_DECIDED, STATUS_UNABLE,
 };
 use crate::pairs;
@@ -180,6 +180,70 @@ pub fn decide_with_labels(
     let view = state.view.as_ref().expect("a frame not refused has a view");
     let header = header(Some(view), xf, seq, window);
     let window = header.window;
+    let built = build(view, state, window);
+    // Qualification is one decision per pair, made over the whole frame before any tile (contract
+    // §10): a window's label facts are the whole frame's at its pixels.
+    let whole = [0, 0, view.pixel_width, view.pixel_height];
+    let (label_of, labels, label_pairs) =
+        if window == whole || !matches!(view.camera, Camera::ThreeD(_)) {
+            labels_of(view, state, &built)
+        } else {
+            let full = build(view, state, whole);
+            crop(&full, &built, window, labels_of(view, state, &full))
+        };
+    let Built {
+        mut fragments,
+        mut covers,
+        frags,
+        offered,
+        specs,
+        extra,
+        ..
+    } = built;
+    // The registry with the records that paint nothing offered too, where there are any.
+    let with_invisible = (!extra.is_empty()).then(|| {
+        let all = offered.iter().cloned().chain(extra).collect();
+        Scene::new(frags.clone(), all)
+    });
+    let scene = Scene::new(frags, offered);
+    let (bands, pairs) = pairs::frame(
+        &scene,
+        with_invisible.as_ref().unwrap_or(&scene),
+        &mut covers,
+    );
+    let (colours, pixel_colours) = colours(&specs, &covers);
+    for (f, l) in fragments.iter_mut().zip(label_of) {
+        f.label = l;
+    }
+    let decisions = Decisions {
+        header,
+        fragments,
+        covers,
+        bands,
+        pairs,
+        colours,
+        pixel_colours,
+        labels,
+        refused: Vec::new(),
+    };
+    (decisions, label_pairs)
+}
+
+/// A frame's fragments over a window, and what the label rule reads of their paths.
+struct Built {
+    fragments: Vec<Fragment>,
+    covers: Vec<CoverRow>,
+    frags: Vec<Frag>,
+    offered: Vec<Offered>,
+    specs: Vec<Spec>,
+    outlines: HashMap<(u32, u32), Vec<flatten::Ring>>,
+    path_info: HashMap<(u32, u32), PathInfo>,
+    /// The registry facts of the records that paint nothing.
+    extra: Vec<Offered>,
+}
+
+/// Every fragment the frame draws over `window`, with its rows, depth and colour's spec.
+fn build(view: &View, state: &State, window: Window) -> Built {
     let size = [view.pixel_width, view.pixel_height];
     let items = draw::items(
         view,
@@ -412,41 +476,49 @@ pub fn decide_with_labels(
     for (f, d) in fragments.iter_mut().zip(&frags) {
         f.plane = d.offered.map_or(NONE_U32, |i| i as u32);
     }
-    // The registry with the records that paint nothing offered too, where there are any.
-    let with_invisible = (!extra.is_empty()).then(|| {
-        let all = offered.iter().cloned().chain(extra).collect();
-        Scene::new(frags.clone(), all)
-    });
-    let scene = Scene::new(frags, offered);
-    let (bands, pairs) = pairs::frame(
-        &scene,
-        with_invisible.as_ref().unwrap_or(&scene),
-        &mut covers,
-    );
-    let (colours, pixel_colours) = colours(&specs, &covers);
+    Built {
+        fragments,
+        covers,
+        frags,
+        offered,
+        specs,
+        outlines,
+        path_info,
+        extra,
+    }
+}
+
+type LabelFacts = (Vec<u32>, Vec<LabelRow>, Vec<label::PairDecision>);
+
+/// The label rule over the fragments `b` holds (contract §10).
+fn labels_of(view: &View, state: &State, b: &Built) -> LabelFacts {
     let is_path = |f: &Fragment| f.layer <= Layer::Stroke as u8;
-    let outline: Vec<Option<Vec<flatten::Ring>>> = fragments
+    let outline: Vec<Option<Vec<flatten::Ring>>> = b
+        .fragments
         .iter()
         .map(|f| {
             is_path(f)
-                .then(|| outlines.get(&(f.entry, f.sub)).cloned())
+                .then(|| b.outlines.get(&(f.entry, f.sub)).cloned())
                 .flatten()
         })
         .collect();
     let info = |f: &Fragment| {
         is_path(f)
-            .then(|| path_info.get(&(f.entry, f.sub / 3)).copied())
+            .then(|| b.path_info.get(&(f.entry, f.sub / 3)).copied())
             .flatten()
     };
-    let centre: Vec<Option<[f64; 2]>> = fragments
+    let centre: Vec<Option<[f64; 2]>> = b
+        .fragments
         .iter()
         .map(|f| info(f).and_then(|i| i.0))
         .collect();
-    let face: Vec<bool> = fragments
+    let face: Vec<bool> = b
+        .fragments
         .iter()
         .map(|f| info(f).is_some_and(|i| i.1))
         .collect();
-    let alpha: Vec<Option<u8>> = specs
+    let alpha: Vec<Option<u8>> = b
+        .specs
         .iter()
         .map(|s| match s {
             Spec::Solid(b) => Some(b[3]),
@@ -454,32 +526,42 @@ pub fn decide_with_labels(
             Spec::Gradient => None,
         })
         .collect();
-    let (label_of, labels, label_pairs) = label::place_with_pairs(&label::Input {
+    label::place_with_pairs(&label::Input {
         view,
         state,
-        fragments: &fragments,
-        frags: &scene.frags,
-        covers: &covers,
+        fragments: &b.fragments,
+        frags: &b.frags,
+        covers: &b.covers,
         outlines: &outline,
         alpha: &alpha,
         centre: &centre,
         face: &face,
-    });
-    for (f, l) in fragments.iter_mut().zip(label_of) {
-        f.label = l;
-    }
-    let decisions = Decisions {
-        header,
-        fragments,
-        covers,
-        bands,
-        pairs,
-        colours,
-        pixel_colours,
-        labels,
-        refused: Vec::new(),
-    };
-    (decisions, label_pairs)
+    })
+}
+
+/// The whole frame's label facts (`full`'s) at the window's pixels, its fragments renumbered as
+/// the window's (`tile`'s) are.
+fn crop(full: &Built, tile: &Built, window: Window, facts: LabelFacts) -> LabelFacts {
+    let (label_of, rows, pairs) = facts;
+    let key = |f: &Fragment| (f.entry, f.sub, f.layer, f.flags & FLAG_ZERO_ALPHA);
+    let in_tile: HashMap<_, u32> = tile.fragments.iter().map(|f| (key(f), f.id)).collect();
+    let in_full: HashMap<_, u32> = full.fragments.iter().map(|f| (key(f), f.id)).collect();
+    let tile_label = tile
+        .fragments
+        .iter()
+        .map(|f| label_of[in_full[&key(f)] as usize])
+        .collect();
+    let inside =
+        |x: u32, y: u32| x >= window[0] && x < window[2] && y >= window[1] && y < window[3];
+    let tile_rows = rows
+        .into_iter()
+        .filter(|r| inside(r.x, r.y))
+        .map(|r| LabelRow {
+            fragment: in_tile[&key(&full.fragments[r.fragment as usize])],
+            ..r
+        })
+        .collect();
+    (tile_label, tile_rows, pairs)
 }
 
 /// What the frame drops for painting nothing (`alpha_round@1`): the registry facts of each such
