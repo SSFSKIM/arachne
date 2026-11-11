@@ -3384,13 +3384,14 @@ C, drawn in this order:
   `(−2.9375, 2.5, 10)`. Its fill `F` is red. Its stroke `s` is white, of width 2 (8 px, a body of
   4 px), drawn after its fill. On its plane `F` keys `−(1 + t/20)` at `t` px above the bottom edge
   (screen `y = 32`), and `s`'s own key along that edge is `−1`.
-- `Q`, a polygon `[−5.5, 5.5]²` at the depth each case gives, fill blue.
+- `Q`, a square polygon at the depth and size each case gives, fill blue.
 
 In both cases `E(F, s) = {weak}` (`own_layers@1`, the stroke over its fill), and in the paint order
 `F`, `s`, `Q` the order `F, Q, s` is admissible only where `E(s, Q)` admits `Q` in front: it comes
 from the cycle `F` over `Q`, `Q` over `s`, `s` over `F`, in which the weak own-layer edge yields.
 
-- **Both cover.** Input grid `2^-20`. `Q` at `z = 0.9375`, keyed `−20/19.0625 ≈ −1.04918`.
+- **Both cover.** Input grid `2^-20`. `Q` is `[−5.5, 5.5]²` at `z = 0.9375`, keyed
+  `−20/19.0625 ≈ −1.04918`.
   - Pixel `(32, 29)`. Its samples lie 2.03 to 2.97 px above `P`'s bottom edge, inside `F` and
     within `s`'s body, and `P`'s other edges are farther than 4 px: both cover every sample
     certainly. `F` keys between about `−1.14844` and `−1.10156`. `s`'s interval runs from `F`'s
@@ -3399,8 +3400,9 @@ from the cycle `F` over `Q`, `Q` over `s`, `s` over `F`, in which the weak own-l
   - Defect: at its 16 samples, the order `F, Q, s`.
   - Rejects: the hull of the two intervals, which reaches `−1` and so admits `F, Q, s`.
   - Margins: `P`'s edges clear their steps by at least 0.82 px, `Q`'s by 0.16 px.
-- **Fill `Either`.** Input grid `2^-6`, so `P`'s screen shift is `ε ≈ 0.113` px. `Q` at
-  `z = 5/64`, keyed `≈ −1.003922`, with an interval `±3.9·10^-4`.
+- **Fill `Either`.** Input grid `2^-6`, so `P`'s screen shift is `ε ≈ 0.113` px. `Q` is
+  `[−5.375, 5.375]²` at `z = 5/64`, keyed `≈ −1.003922`, with an interval `±3.9·10^-4`; its
+  screen shift is `ε ≈ 0.056` px.
   - Pixel `(32, 31)`. Its bottom row of cells lies against `P`'s bottom edge, within `ε` of the
     outline, where `μ_ε ≈ 2.35`: `F`'s cover there is `Either`, though those cells lie wholly
     inside it, and the report holds `F`. The row above clears the outline by more than `ε` and is
@@ -3413,8 +3415,9 @@ from the cycle `F` over `Q`, `Q` over `s`, `s` over `F`, in which the weak own-l
   - Report: at samples 12 and 13, the order `F, Q, s`. Expected: agreement.
   - Rejects: the both-cover enclosure taken where the fill's cover is `Either`. That ends `s`'s
     interval at `F`'s far end, gives `E(s, Q) = {strong s}`, and makes the report a `mismatch`.
-  - Margins: every cubic of `P` clears its step by at least 0.82 px against `6ε̂ ≈ 0.68`, and each
-    of its joints lies more than 11 px from the pixel. `Q`'s edges clear their steps by 0.17 px.
+  - Margins: every cubic of `P` clears its step by at least 0.82 px against its `6ε̂ ≈ 0.68`, and
+    each of its joints lies more than 11 px from the pixel. `Q`'s edges, `L ≈ 43.17` px, clear
+    their steps by 0.83 px against its `6ε̂ ≈ 0.34`.
 
 `R` is under `10^-5` in both cases, so it moves no edge.
 
