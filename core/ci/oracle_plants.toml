@@ -1325,3 +1325,12 @@ file = "core/oracle/src/pairs.rs"
 find = "                        Ok(p) => (p.edges.bits(), p.provenance()),"
 replace = "                        Ok(p) => (p.edges.bits(), provenance),"
 red = ["format_facts::the_edges_with_the_invisible_records_offered_admit_what_their_flat_identity_allows"]
+
+[[plant]]
+name = "judge-band-status"
+item = "§6"
+check = "the judge takes truth_unable from a fragment's own BAND status, a pair or none"
+file = "core/oracle/tests/common/judge.rs"
+find = "            if let Some(name) = own.and_then(|b| unable_status(b.status[s])) {"
+replace = "            if let Some(name) = own.and(None::<&'static str>) {"
+red = ["judge::a_lone_fragment_whose_key_states_no_bound_is_unable_not_agreement"]

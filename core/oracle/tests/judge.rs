@@ -55,6 +55,51 @@ fn a_samples_order_is_a_permutation_of_its_present_fragments() {
     }
 }
 
+#[test]
+fn a_lone_fragment_whose_key_states_no_bound_is_unable_not_agreement() {
+    // §6: a fragment with no key bounded at a sample is `truth_unable` there, a pair or none. One
+    // fixed-orientation square, its centre at z = 10^300: its keys state no bound (`BAND` status
+    // 2), and alone it makes no pair. Reported alone, it is not judged.
+    let mut b = Build::new(true);
+    b.fill(rect([-6.0, 6.0], [-6.0, 6.0], 0.0), OPAQUE_RED)
+        .depth
+        .fixed_orientation_centre = Some([0.0, 0.0, 1e300]);
+    let d = decide_at(&[b.delta(1, view_c())], 1, None).unwrap();
+    let (x, y) = (32, 32);
+    let f = &d.fragments[0];
+    let c = d
+        .covers
+        .iter()
+        .find(|c| (c.x, c.y, c.fragment) == (x, y, f.id))
+        .unwrap();
+    assert_eq!(c.cover, [1; 16]);
+    let row = d
+        .bands
+        .iter()
+        .find(|r| (r.x, r.y, r.fragment, r.which) == (x, y, f.id, 0))
+        .unwrap();
+    assert_eq!(row.status, [2; 16]);
+    assert!(d.pairs.is_empty());
+    let report = Reported {
+        x,
+        y,
+        entries: vec![Entry {
+            identity: (f.object, f.part, f.layer, f.sub),
+            cells: c.cell_hi,
+        }],
+        order: vec![vec![0]; 16],
+    };
+    for s in 0..16 {
+        assert_eq!(
+            judge(&d, &report, s),
+            Verdict::Unable("band_unbounded"),
+            "sample {s}"
+        );
+    }
+    // A `curve_recut` read is unable only where a pair reads it: W's `stroke_under_own_fill`
+    // twin, judged by `own_layers@1` alone, stays judged (`contract_mutation`).
+}
+
 /// W18's label and a line at `z`, the label painted first or last, and the verdicts of the label
 /// first and the line first at the samples of pixel (32, 32), with the pair's `edges` and `plate`
 /// there.

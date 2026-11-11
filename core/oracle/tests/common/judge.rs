@@ -1,7 +1,8 @@
 //! A report judged against the oracle's decisions at one sample, by the rules `FORMAT.md` states
 //! for a reader: presence and cell bytes from `COVR`, the order from `PAIR`'s edges by
-//! `cycle_rank@2`, a label's place from `LABL`, and the named findings (`zero_alpha_fragment`,
-//! `invisible_registry_offer`, `label_plate_model`). It recomputes nothing: depth, ties and
+//! `cycle_rank@2`, a fragment's `truth_unable` from its own `BAND` status, a label's place from
+//! `LABL`, and the named findings (`zero_alpha_fragment`, `invisible_registry_offer`,
+//! `label_plate_model`). It recomputes nothing: depth, ties and
 //! qualification are the oracle's facts, read here.
 #![allow(dead_code)]
 
@@ -210,6 +211,17 @@ fn label_orders(d: &Decisions, x: u32, y: u32, s: usize, order: &[u32]) -> Vec<V
     out
 }
 
+/// `BAND`'s name for a status that leaves its fragment `truth_unable` whatever is read with it:
+/// 2 `band_unbounded` and 4 `pivot_unknown`, each by fragment (§6, §2). A `curve_recut` read (3)
+/// is unable only where a pair reads it, which its `PAIR` label says.
+fn unable_status(status: u8) -> Option<&'static str> {
+    match status {
+        2 => Some("band_unbounded"),
+        4 => Some("pivot_unknown"),
+        _ => None,
+    }
+}
+
 /// The verdict at sample `s` of the reported pixel.
 pub fn judge(d: &Decisions, rep: &Reported, s: usize) -> Verdict {
     let (x, y) = (rep.x, rep.y);
@@ -230,6 +242,15 @@ pub fn judge(d: &Decisions, rep: &Reported, s: usize) -> Verdict {
             };
             if d.fragments[f as usize].flags & FLAG_UNBOUNDED != 0 {
                 return Verdict::Unable("band_unbounded");
+            }
+            // Its own key's status at the sample: a fragment with no key bounded is
+            // `truth_unable` there, whether or not it makes a pair (§6).
+            let own = d
+                .bands
+                .iter()
+                .find(|b| (b.x, b.y, b.fragment, b.which) == (x, y, f, 0));
+            if let Some(name) = own.and_then(|b| unable_status(b.status[s])) {
+                return Verdict::Unable(name);
             }
             let Some(c) = cover_of(f) else {
                 return Verdict::Mismatch("mismatch");
