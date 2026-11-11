@@ -434,3 +434,221 @@ fn the_core_paints_at_the_alpha_band_s_edges_as_alpha_round_says() {
         assert_eq!(entries > 0, byte > 0, "core at {d:e}, byte {byte}");
     }
 }
+
+/// One case class's measures over its frames (`soundness_measures`).
+#[derive(Debug, Default)]
+struct Measures {
+    frames: usize,
+    excess: usize,
+    own_reads: usize,
+    plane_reads: usize,
+    /// Samples with a fragment present, and of them: a pair `TieBand`, a fragment `Either`, a
+    /// pair under a tie policy, any of the three (`tie_share`), and a pair `ExactTie`.
+    samples: usize,
+    tie_band: usize,
+    either: usize,
+    policy_tie: usize,
+    tied: usize,
+    exact_tie: usize,
+    /// Samples the oracle leaves unjudged, by reason (`open_share`).
+    open: BTreeMap<String, usize>,
+    /// Pair-samples by label, and stroke samples adjusted on their own fill (both `Yes`, or the
+    /// fill `Either`).
+    labels: BTreeMap<u8, usize>,
+    on_fill: (usize, usize),
+}
+
+fn measure(m: &mut Measures, d: &Decisions, excess: usize, tally: &Tally) {
+    use std::collections::BTreeSet;
+    m.frames += 1;
+    m.excess += excess;
+    m.own_reads += tally.own;
+    m.plane_reads += tally.plane;
+    let frag = |i: u32| &d.fragments[i as usize];
+    let mut pairs: HashMap<(u32, u32, u8), Vec<&arachne_oracle::out::PairRow>> = HashMap::new();
+    for p in &d.pairs {
+        pairs.entry((p.x, p.y, p.sample)).or_default().push(p);
+        *m.labels.entry(p.label).or_default() += 1;
+    }
+    let mut labl: HashMap<(u32, u32, u8), Vec<&arachne_oracle::out::LabelRow>> = HashMap::new();
+    for r in &d.labels {
+        labl.entry((r.x, r.y, r.sample)).or_default().push(r);
+    }
+    let mut status: HashMap<(u32, u32, u32), Vec<[u8; 16]>> = HashMap::new();
+    for b in &d.bands {
+        status
+            .entry((b.x, b.y, b.fragment))
+            .or_default()
+            .push(b.status);
+    }
+    let mut i0 = 0;
+    while i0 < d.covers.len() {
+        let (x, y) = (d.covers[i0].x, d.covers[i0].y);
+        let mut i1 = i0;
+        while i1 < d.covers.len() && (d.covers[i1].x, d.covers[i1].y) == (x, y) {
+            i1 += 1;
+        }
+        let rows = &d.covers[i0..i1];
+        for s in 0..16u8 {
+            let present: Vec<_> = rows.iter().filter(|r| r.cover[s as usize] != 0).collect();
+            if present.is_empty() {
+                continue;
+            }
+            m.samples += 1;
+            let ps = pairs.get(&(x, y, s)).map_or(&[][..], |v| &v[..]);
+            let tb = ps.iter().any(|p| p.label == 3);
+            let ei = present.iter().any(|r| r.cover[s as usize] == 2);
+            let po = ps.iter().any(|p| matches!(p.label, 6..=8));
+            m.tie_band += tb as usize;
+            m.either += ei as usize;
+            m.policy_tie += po as usize;
+            m.tied += (tb || ei || po) as usize;
+            m.exact_tie += ps.iter().any(|p| p.label == 4) as usize;
+            let mut why: BTreeSet<String> = BTreeSet::new();
+            // A pair `truth_unable` at the sample, by the statuses of its two fragments' reads.
+            for p in ps.iter().filter(|p| p.label == 0) {
+                let mut named = false;
+                for f in [p.a, p.b] {
+                    for st in status.get(&(x, y, f)).into_iter().flatten() {
+                        if let Some(n) = ["band_unbounded", "curve_recut", "pivot_unknown"]
+                            .get((st[s as usize] as usize).wrapping_sub(2))
+                        {
+                            why.insert(format!("truth_unable:{n}"));
+                            named = true;
+                        }
+                    }
+                }
+                if !named {
+                    why.insert("truth_unable:unnamed".into());
+                }
+            }
+            for r in &present {
+                if d.colours[r.fragment as usize].kind == 0 {
+                    why.insert("colour_unknown".into());
+                }
+            }
+            for r in labl.get(&(x, y, s)).map_or(&[][..], |v| &v[..]) {
+                match r.role {
+                    2 => {
+                        why.insert(format!(
+                            "label_rule_open:pair{}:class{}",
+                            r.pair_cause, r.class_cause
+                        ));
+                    }
+                    4 => {
+                        why.insert("label_alpha_straddle".into());
+                    }
+                    _ => {}
+                }
+            }
+            let completions: f64 = ps.iter().map(|p| p.edges.count_ones() as f64).product();
+            if completions > 262_144.0 {
+                why.insert("completion_bound".into());
+            }
+            for w in why {
+                *m.open.entry(w).or_default() += 1;
+            }
+            // A stroke adjusted on its own fill: a fill of its group present at the sample.
+            for r in &present {
+                let f = frag(r.fragment);
+                if f.layer != 2 || f.group == u32::MAX {
+                    continue;
+                }
+                if let Some(fill) = present.iter().find(|q| {
+                    let g = frag(q.fragment);
+                    g.layer == 1
+                        && g.group == f.group
+                        && g.entry == f.entry
+                        && g.sub / 3 == f.sub / 3
+                }) {
+                    if fill.cover[s as usize] == 1 && r.cover[s as usize] == 1 {
+                        m.on_fill.0 += 1;
+                    } else {
+                        m.on_fill.1 += 1;
+                    }
+                }
+            }
+        }
+        i0 = i1;
+    }
+}
+
+/// The measures `soundness.md` records, by case class: `core_err_within_band`'s excess and read
+/// counts, `tie_share`, the open share by reason, and the pair labels, over the probes and every
+/// `.xf` file under the directories `SOUNDNESS_STREAMS` names (colon-separated). Run with
+/// `--ignored --nocapture`.
+#[test]
+#[ignore]
+fn soundness_measures() {
+    fn streams(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let mut entries: Vec<_> = std::fs::read_dir(dir).unwrap().flatten().collect();
+        entries.sort_by_key(|e| e.path());
+        for e in entries {
+            let p = e.path();
+            if p.is_dir() {
+                streams(&p, out);
+            } else if p.extension().is_some_and(|x| x == "xf") {
+                out.push(p);
+            }
+        }
+    }
+    let dir = fixtures::scratch("soundness");
+    let mut inputs: Vec<(String, String, std::path::PathBuf)> = fixtures::probe_files(&dir)
+        .into_iter()
+        .map(|p| (format!("probe:{}", p.name), p.name.to_string(), p.path))
+        .collect();
+    for root in std::env::var("SOUNDNESS_STREAMS")
+        .unwrap_or_default()
+        .split(':')
+    {
+        if root.is_empty() {
+            continue;
+        }
+        let mut found = Vec::new();
+        streams(std::path::Path::new(root), &mut found);
+        for p in found {
+            let rel = p.strip_prefix(root).unwrap().to_string_lossy().to_string();
+            // `fuzz__<family>__<seed>/...`: the family is the class; otherwise the directory.
+            let class = match rel.split("__").nth(1) {
+                Some(family) => format!("smoke:{family}"),
+                None => std::path::Path::new(root)
+                    .file_name()
+                    .map_or("streams".into(), |n| n.to_string_lossy().to_string()),
+            };
+            inputs.push((class, rel, p));
+        }
+    }
+    let mut by_class: BTreeMap<String, Measures> = BTreeMap::new();
+    for (class, name, path) in &inputs {
+        let (_, wire) = source::read_file(path).unwrap();
+        let deltas = arachne_core::xf::wire::decode_file(&std::fs::read(path).unwrap()).unwrap();
+        let mut core = Stream::new();
+        for (wd, delta) in wire.iter().zip(&deltas) {
+            core.apply(delta).unwrap();
+            let d = decide_at_wire(&wire, wd.seq, None).unwrap();
+            if d.header.status != 0 {
+                println!("refused {class} {name} seq {}: {:?}", wd.seq, d.refused);
+                continue;
+            }
+            let (e, tally) = excesses_of("measure", wd.seq, &d, &core);
+            let m = by_class.entry(class.clone()).or_default();
+            measure(m, &d, e.len(), &tally);
+            let mut frame = Measures::default();
+            measure(&mut frame, &d, e.len(), &tally);
+            let mut kinds: BTreeMap<(u8, u8, &str, &str), usize> = BTreeMap::new();
+            for x in &e {
+                *kinds.entry((x.layer, x.kind, x.row, x.what)).or_default() += 1;
+            }
+            println!(
+                "frame {class} {name} seq {} samples {} open {:?} excess {kinds:?}",
+                wd.seq, frame.samples, frame.open
+            );
+            for x in e.iter().take(3) {
+                println!("  excess {x:?}");
+            }
+        }
+    }
+    for (class, m) in &by_class {
+        println!("class {class} {m:?}");
+    }
+}
