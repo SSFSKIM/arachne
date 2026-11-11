@@ -94,3 +94,18 @@ gates:
     run: bash core/ci/test.sh && bash core/ci/binding.sh 3.14
     env: {PYTHONHASHSEED: "0"}
     timeout: 30
+
+  # Scratch (never lands): the label and blend census at this revision, its rows uploaded. ci-kit
+  # uploads a gate's artifacts only when the gate fails, so this one fails on purpose once
+  # measure.sh has run; measure.sh's own exit status is c53-out/measure-status.
+  - name: c53-census
+    run: |
+      mkdir -p c53-out
+      status=0
+      bash .github/c53/measure.sh || status=$?
+      echo "$status" >c53-out/measure-status
+      echo "measure.sh exited $status; the gate fails on purpose so that c53-out/ is uploaded"
+      exit 1
+    env: {UV_PYTHON: "3.12"}
+    timeout: 180
+    artifacts: ["c53-out/**"]
