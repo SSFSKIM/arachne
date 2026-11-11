@@ -79,3 +79,41 @@ fn a_window_reads_the_whole_frames_qualification() {
         assert_eq!((rows, labels), label_facts(&whole, w), "window {w:?}");
     }
 }
+
+#[test]
+fn a_window_s_label_rows_name_the_fragments_present_where_they_stand() {
+    // As above, with a point block under the label: each pixel of a block, under each truncation
+    // candidate, is a fragment of its own, and candidates of one offset share one `sub` at other
+    // pixels. A window's `LABL` row names the fragment present at its own pixel and sample, as the
+    // whole frame's does.
+    let mut b = Build::new(true);
+    b.points(vec![[0.0; 3]], OPAQUE_BLUE, 2.0);
+    b.label([0.0; 3]);
+    let deltas = [b.delta(1, view_c())];
+    let present = |d: &Decisions, w: [u32; 4]| -> (usize, usize) {
+        let inside = |x: u32, y: u32| x >= w[0] && x < w[2] && y >= w[1] && y < w[3];
+        let rows: Vec<_> = d.labels.iter().filter(|r| inside(r.x, r.y)).collect();
+        let held = rows
+            .iter()
+            .filter(|r| {
+                d.covers.iter().any(|c| {
+                    (c.x, c.y, c.fragment) == (r.x, r.y, r.fragment)
+                        && c.cover[r.sample as usize] != 0
+                })
+            })
+            .count();
+        (held, rows.len())
+    };
+    let w = [31, 31, 34, 34];
+    let whole = decide_at(&deltas, 1, None).unwrap();
+    let (held, rows) = present(&whole, w);
+    assert!(rows > 0, "no label rows in {w:?}");
+    assert_eq!(held, rows, "whole frame");
+    let tile = decide_at(&deltas, 1, Some(w)).unwrap();
+    assert_eq!(present(&tile, w), (rows, rows), "window {w:?}");
+    assert_eq!(
+        label_facts(&tile, w),
+        label_facts(&whole, w),
+        "window {w:?}"
+    );
+}

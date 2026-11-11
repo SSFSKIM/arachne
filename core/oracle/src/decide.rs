@@ -591,12 +591,28 @@ fn labels_of(view: &View, state: &State, b: &Built) -> LabelFacts {
 fn crop(full: &Built, tile: &Built, window: Window, facts: LabelFacts) -> LabelFacts {
     let (label_of, rows, pairs) = facts;
     let key = |f: &Fragment| (f.entry, f.sub, f.layer, f.flags & FLAG_ZERO_ALPHA);
-    let in_tile: HashMap<_, u32> = tile.fragments.iter().map(|f| (key(f), f.id)).collect();
-    let in_full: HashMap<_, u32> = full.fragments.iter().map(|f| (key(f), f.id)).collect();
+    // One key may name several fragments, each at its own pixels: a point block's pixels under its
+    // truncation candidates share a `sub` across pixels. Each is found by a pixel it stands at.
+    let by_key = |b: &Built| {
+        let mut m: HashMap<_, Vec<(u32, [i32; 4])>> = HashMap::new();
+        for f in &b.fragments {
+            m.entry(key(f)).or_default().push((f.id, f.bbox));
+        }
+        m
+    };
+    let (in_tile, in_full) = (by_key(tile), by_key(full));
+    let at = |m: &HashMap<_, Vec<(u32, [i32; 4])>>, f: &Fragment, x: i32, y: i32| {
+        let named = &m[&key(f)];
+        named
+            .iter()
+            .find(|(_, b)| (b[0]..b[2]).contains(&x) && (b[1]..b[3]).contains(&y))
+            .unwrap_or(&named[0])
+            .0
+    };
     let tile_label = tile
         .fragments
         .iter()
-        .map(|f| label_of[in_full[&key(f)] as usize])
+        .map(|f| label_of[at(&in_full, f, f.bbox[0], f.bbox[1]) as usize])
         .collect();
     let inside =
         |x: u32, y: u32| x >= window[0] && x < window[2] && y >= window[1] && y < window[3];
@@ -604,7 +620,12 @@ fn crop(full: &Built, tile: &Built, window: Window, facts: LabelFacts) -> LabelF
         .into_iter()
         .filter(|r| inside(r.x, r.y))
         .map(|r| LabelRow {
-            fragment: in_tile[&key(&full.fragments[r.fragment as usize])],
+            fragment: at(
+                &in_tile,
+                &full.fragments[r.fragment as usize],
+                r.x as i32,
+                r.y as i32,
+            ),
             ..r
         })
         .collect();

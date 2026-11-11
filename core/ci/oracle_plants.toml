@@ -1487,3 +1487,12 @@ file = "core/oracle/src/order.rs"
 find = "                if ra_.path && rb_.path {\n"
 replace = "                if ra_.path || rb_.path {\n"
 red = ["pair_rules::a_path_and_a_mesh_triangle_on_one_axis_plane_read_the_path_s_row_against_the_triangle_s_key"]
+
+[[plant]]
+name = "crop-fragment-by-pixel"
+item = "§10"
+check = "a window's LABL rows name the fragment present at their own pixel, a point block's candidates sharing a sub included"
+file = "core/oracle/src/decide.rs"
+find = "            .find(|(_, b)| (b[0]..b[2]).contains(&x) && (b[1]..b[3]).contains(&y))\n"
+replace = "            .find(|(_, b)| x < 0 && y < 0 && b[0] < 0)\n"
+red = ["label_window::a_window_s_label_rows_name_the_fragments_present_where_they_stand"]
