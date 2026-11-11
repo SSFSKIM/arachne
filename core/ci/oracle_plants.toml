@@ -1550,3 +1550,12 @@ file = "core/oracle/tests/common/judge.rs"
 find = "            || (place > anchored && role(l, others[place - 1]) == Some(ROLE_KIND_UNKNOWN));\n"
 replace = "            || (place > anchored && role(l, others[place - 1]) == Some(ROLE_ANCHOR));\n"
 red = ["judge::a_label_among_many_kind_unknown_faces_is_judged_however_many_they_are"]
+
+[[plant]]
+name = "axis-mixed-own-key"
+item = "§5"
+check = "a path is read on its row for the axis plane it shares with a mesh triangle, never its own key"
+file = "core/oracle/src/order.rs"
+find = "                    let read = |r: &Reads| r.axis_row.unwrap_or(r.own);\n"
+replace = "                    let read = |r: &Reads| r.own;\n"
+red = ["pair_rules::a_path_s_row_on_a_shared_axis_plane_is_read_where_its_own_key_alone_would_order_the_pair"]

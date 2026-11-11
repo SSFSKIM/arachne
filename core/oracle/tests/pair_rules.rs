@@ -748,8 +748,9 @@ fn a_path_and_a_mesh_triangle_on_one_axis_plane_read_the_path_s_row_against_the_
     // always read on their own." §7: two records with no plane of their own on one axis plane are
     // an `ExactTie` "wherever both rows are read there", and here one is not. A line along
     // `y = 0` on `z = 0`, stroked, and a thin triangle on a line within the grid 0.05 on `z = 0`,
-    // first points equal on it: both key −1 there, each with its own bound, so the bands meet and
-    // admit every edge. Never weak alone.
+    // first points equal on it. The stroke's row on `z = 0` is read off its centreline, outside a
+    // hull no wider than `2 τ_P` (a line's), so it is unbounded (§6, `band_input@2`): the pair is
+    // `truth_unable` at every sample, every edge admitted. Never weak alone.
     let mut b = Build::new(true);
     b.stroke(
         open(&[[-3.0, 0.0, 0.0], [3.0, 0.0, 0.0]]),
@@ -773,14 +774,66 @@ fn a_path_and_a_mesh_triangle_on_one_axis_plane_read_the_path_s_row_against_the_
         .into_iter()
         .map(|r| (r.edges, r.label))
         .collect();
+    assert!(!rows.is_empty());
     assert!(
-        rows.iter().all(|e| e.1 != 4),
+        rows.iter().all(|e| *e == (7, 0)),
         "{:?}",
         &rows[..rows.len().min(4)]
     );
-    assert!(
-        rows.iter().all(|e| e.0 == 7),
-        "{:?}",
-        &rows[..rows.len().min(4)]
+}
+
+#[test]
+fn a_path_s_row_on_a_shared_axis_plane_is_read_where_its_own_key_alone_would_order_the_pair() {
+    // §5, `shared_plane_read@1`: against a fragment it shares an identity with, a path layer is
+    // read on its row for that identity, never its own key. A line along `y` on `x = 1` at
+    // `z = 0`, stroked 4 px wide (23 px long, clear of `curve_recut`), and a triangle on a line
+    // across `y` and `z` on `x = 1` within the grid 0.01: neither has a plane of its own, and they
+    // share `x = 1`, whose key changes along the screen's `x`. Off the centreline the stroke's own
+    // key keeps its centreline's, apart from the triangle's there; its row on `x = 1` is read
+    // outside a hull no wider than `2 τ_P` (a line's), so it is unbounded (§6, `band_input@2`).
+    // Every pair-sample is `truth_unable`: none is ordered by the own key.
+    let mut b = Build::new(true);
+    b.stroke(
+        open(&[[1.0, -2.875, 0.0], [1.0, 2.875, 0.0]]),
+        OPAQUE_GREEN,
+        1.0,
     );
+    b.mesh(
+        vec![[1.0, -1.0, -3.0], [1.0, 1.0, 3.0], [1.0, 0.008, 0.0]],
+        vec![[0, 1, 2]],
+        OPAQUE_BLUE,
+    );
+    let d = decide(
+        &b,
+        View {
+            input_grid: 0.01,
+            ..view_c()
+        },
+    );
+    let (p, q) = (id_of(&d, 0, 2), id_of(&d, 1, 3));
+    let rows = pairs_of(&d, p, q);
+    let interval = |f: u32, x: u32, y: u32, s: usize| {
+        let r = d
+            .bands
+            .iter()
+            .find(|r| (r.fragment, r.x, r.y, r.which) == (f, x, y, 0))
+            .unwrap();
+        assert_eq!(r.status[s], 1, "fragment {f} at ({x}, {y}) sample {s}");
+        (
+            r.o[s] - r.s_minus[s] - 3.0 * r.r[s],
+            r.o[s] + r.s_plus[s] + 3.0 * r.r[s],
+        )
+    };
+    assert!(rows.len() >= 8, "{} pair-samples", rows.len());
+    for r in &rows {
+        let s = r.sample as usize;
+        let (a, b) = (interval(p, r.x, r.y, s), interval(q, r.x, r.y, s));
+        assert!(
+            a.1 < b.0 || b.1 < a.0,
+            "own intervals meet at ({}, {}) sample {s}",
+            r.x,
+            r.y
+        );
+        assert_eq!((r.edges, r.label), (7, 0), "({}, {}) sample {s}", r.x, r.y);
+    }
 }
