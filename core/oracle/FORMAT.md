@@ -128,7 +128,7 @@ key of `−∞`.
 ### `PAIR`
 
 ```
-u32 x  u32 y  u32 a  u32 b  u8 sample  u8 edges  u8 label  u8 provenance  u8 offered  u8 plate  2 bytes pad
+u32 x  u32 y  u32 a  u32 b  u8 sample  u8 edges  u8 label  u8 provenance  u8 offered  u8 plate  u8 offered_provenance  1 byte pad
 ```
 
 Every pair of fragments present (`Yes` or `Either`) at a sample, `a < b` by fragment id (contract
@@ -148,8 +148,9 @@ Every pair of fragments present (`Yes` or `Either`) at a sample, `a < b` by frag
   (`one_plane@1`, every edge). 3 is not written. The completions rule that discards a strong cycle
   of own-key edges reads it.
 - **`offered`**: the pair's edges, in `edges`' bits, in the sets built with the records that paint
-  nothing offered to the registry too (contract §5). Equal to `edges` where the frame has no such
-  record. A reported order outside `edges`' admissible orders and inside `offered`'s is counted
+  nothing offered to the registry too (contract §5), and **`offered_provenance`** how each of its
+  strong edges is read, coded as `provenance` is. Equal to `edges` and `provenance` where the
+  frame has no such record. A reported order outside `edges`' admissible orders and inside `offered`'s is counted
   `invisible_registry_offer`.
 - **`plate`**: where `a` or `b` belongs to a label (`FRAG` `label`), the pair's relation as the
   plate model orders it (§10, `facing_plane@1`), read in the scenarios `edges` reads from the two

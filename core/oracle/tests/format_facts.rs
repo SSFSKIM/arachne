@@ -129,13 +129,22 @@ fn the_edges_with_the_invisible_records_offered_admit_what_their_flat_identity_a
     );
     let (r, u) = (id_of(&d, 0, STROKE), id_of(&d, 1, STROKE));
     for p in pairs_at(&d, 32, 32, r, u) {
-        // By the axis rule alone, an exact tie; offered the square's flat identity, every edge.
-        assert_eq!((p.label, p.edges, p.offered), (4, 1, 7), "{p:?}");
+        // By the axis rule alone, an exact tie; offered the square's flat identity, every edge,
+        // each strong edge read through it.
+        assert_eq!(
+            (p.label, p.edges, p.offered, p.offered_provenance),
+            (4, 1, 7, 2 | 2 << 2),
+            "{p:?}"
+        );
     }
     let d = decide(&registry_scene(false), view_c());
     assert!(!d.pairs.is_empty());
     for p in &d.pairs {
-        assert_eq!(p.offered, p.edges, "{p:?}");
+        assert_eq!(
+            (p.offered, p.offered_provenance),
+            (p.edges, p.provenance),
+            "{p:?}"
+        );
     }
 }
 

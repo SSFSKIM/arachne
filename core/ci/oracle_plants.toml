@@ -1316,3 +1316,12 @@ file = "core/oracle/src/pairs.rs"
 find = "    let r = if fill_either { o.r.max(took) } else { took };"
 replace = "    let r = took;"
 red = ["lib::pairs::tests::where_the_fill_s_cover_is_either_an_adjusted_stroke_takes_the_larger_bound"]
+
+[[plant]]
+name = "offered-provenance"
+item = "§7"
+check = "PAIR's offered edges carry their own provenance, read by cycle_rank@2 as the edges' is"
+file = "core/oracle/src/pairs.rs"
+find = "                        Ok(p) => (p.edges.bits(), p.provenance()),"
+replace = "                        Ok(p) => (p.edges.bits(), provenance),"
+red = ["format_facts::the_edges_with_the_invisible_records_offered_admit_what_their_flat_identity_allows"]

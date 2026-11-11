@@ -186,7 +186,8 @@ DTYPES = {
         ("provenance", "u1"),
         ("offered", "u1"),
         ("plate", "u1"),
-        ("pad", "u1", (2,)),
+        ("offered_provenance", "u1"),
+        ("pad", "u1", (1,)),
     ],
     "LABL": [
         ("x", "<u4"),
@@ -219,7 +220,7 @@ _F16 = struct.Struct("<16d")
 _PIXL = struct.Struct("<QI")
 _REFU = struct.Struct("<3Bx3I2Q2I")
 _BAND_HEAD = struct.Struct("<3IB3x")
-_PAIR = struct.Struct("<4I6B2x")
+_PAIR = struct.Struct("<4I7Bx")
 _LABL = struct.Struct("<4I4B")
 _COLR = struct.Struct("<IB4s3x")
 _COLP = struct.Struct("<3I4s4s4x")
@@ -370,9 +371,19 @@ def read_bytes(b: bytes) -> dict:
     if "PAIR" in found:
         size, off, n = found["PAIR"]
         for i in range(n):
-            x, y, a, b_, sample, edges, label, provenance, offered, plate = (
-                _PAIR.unpack_from(b, off + i * size)
-            )
+            (
+                x,
+                y,
+                a,
+                b_,
+                sample,
+                edges,
+                label,
+                provenance,
+                offered,
+                plate,
+                offered_provenance,
+            ) = _PAIR.unpack_from(b, off + i * size)
             out["pairs"].append(
                 {
                     "x": x,
@@ -386,6 +397,7 @@ def read_bytes(b: bytes) -> dict:
                     "provenance": provenance,
                     "offered": offered,
                     "plate": plate,
+                    "offered_provenance": offered_provenance,
                 }
             )
     if "LABL" in found:
@@ -501,7 +513,8 @@ def canonical(d: dict) -> str:
     lines.extend(
         f"pair x={r['x']} y={r['y']} sample={r['sample']} a={r['a']} b={r['b']} "
         f"edges={r['edges']} label={r['label']} provenance={r['provenance']} "
-        f"offered={r['offered']} plate={r['plate']}"
+        f"offered={r['offered']} plate={r['plate']} "
+        f"offered_provenance={r['offered_provenance']}"
         for r in d["pairs"]
     )
     lines.extend(

@@ -304,12 +304,12 @@ fn pixel(
                         Err(_) => (7, LABEL_UNABLE, 0),
                     };
                 // With nothing more offered, the sets are the same ones.
-                let with_invisible = if std::ptr::eq(scene, offered) {
-                    edges
+                let (with_invisible, offered_provenance) = if std::ptr::eq(scene, offered) {
+                    (edges, provenance)
                 } else {
                     match offered.pair(frags[i], frags[j], &ra, &rb, shares_ij) {
-                        Ok(p) => p.edges.bits(),
-                        Err(_) => 7,
+                        Ok(p) => (p.edges.bits(), p.provenance()),
+                        Err(_) => (7, 0),
                     }
                 };
                 // A label's pair as the plate model orders it, where its keys establish that;
@@ -333,6 +333,7 @@ fn pixel(
                     provenance,
                     offered: with_invisible,
                     plate,
+                    offered_provenance,
                 });
             }
         }

@@ -82,8 +82,7 @@ enum Set {
 }
 
 /// `PAIR`'s rows at a sample in `set`: each pair's bits, label and the provenance of its strong
-/// edges. The offered set's edges are built with other records, whose provenance `PAIR` does not
-/// write: they are read as not from own keys, so no completion there is discarded.
+/// edges (the plate model's read in the scenarios `edges`' are).
 fn edges_of(
     d: &Decisions,
     x: u32,
@@ -101,7 +100,7 @@ fn edges_of(
                 Set::Plate => p.plate,
             };
             let provenance = match set {
-                Set::Offered => 2 | 2 << 2,
+                Set::Offered => p.offered_provenance,
                 Set::Edges | Set::Plate => p.provenance,
             };
             ((p.a, p.b), (bits, p.label, provenance))

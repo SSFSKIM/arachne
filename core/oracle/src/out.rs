@@ -158,6 +158,8 @@ pub struct PairRow {
     /// snap): [`crate::order::Plate`]'s code, a tie `1`, a separation its strong edge's bit,
     /// undetermined `0`; `edges` where neither fragment belongs to a label.
     pub plate: u8,
+    /// How each strong edge of `offered` is read, as `provenance` codes them for `edges`.
+    pub offered_provenance: u8,
 }
 
 /// A label's role toward a fragment at one sample (`LABL`): the label's placement facts (contract
@@ -331,7 +333,7 @@ pub fn write(d: &Decisions) -> Vec<u8> {
     for r in &d.pairs {
         u32s(&mut pair, &[r.x, r.y, r.a, r.b]);
         pair.extend([r.sample, r.edges, r.label, r.provenance]);
-        pair.extend([r.offered, r.plate, 0, 0]);
+        pair.extend([r.offered, r.plate, r.offered_provenance, 0]);
     }
     let mut colr = Vec::with_capacity(d.colours.len() * COLOUR_SIZE);
     for r in &d.colours {
@@ -631,6 +633,7 @@ pub fn read(b: &[u8]) -> Result<Decisions, String> {
                 provenance: r.u8()?,
                 offered: r.u8()?,
                 plate: r.u8()?,
+                offered_provenance: r.u8()?,
             });
         }
     }
@@ -816,8 +819,19 @@ pub fn canonical(d: &Decisions) -> String {
     for r in &d.pairs {
         let _ = writeln!(
             s,
-            "pair x={} y={} sample={} a={} b={} edges={} label={} provenance={} offered={} plate={}",
-            r.x, r.y, r.sample, r.a, r.b, r.edges, r.label, r.provenance, r.offered, r.plate
+            "pair x={} y={} sample={} a={} b={} edges={} label={} provenance={} offered={} plate={} \
+             offered_provenance={}",
+            r.x,
+            r.y,
+            r.sample,
+            r.a,
+            r.b,
+            r.edges,
+            r.label,
+            r.provenance,
+            r.offered,
+            r.plate,
+            r.offered_provenance
         );
     }
     for r in &d.labels {

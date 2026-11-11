@@ -138,6 +138,7 @@ fn sample() -> Decisions {
                 provenance: 0,
                 offered: 7,
                 plate: 1,
+                offered_provenance: 0,
             },
             PairRow {
                 x: 2,
@@ -150,6 +151,7 @@ fn sample() -> Decisions {
                 provenance: 4,
                 offered: 3,
                 plate: 6,
+                offered_provenance: 9,
             },
         ],
         colours: vec![
