@@ -715,6 +715,15 @@ replace = ""
 red = ["contract::core_err_within_band", "contract::core_err_within_band_on_the_named_reads"]
 
 [[plant]]
+name = "own-fill-stroke-either"
+item = "§6"
+check = "band_input@2: an adjusted stroke reaches its own far end where its fill's cover is Either, not where its own is"
+file = "core/oracle/src/pairs.rs"
+find = "next[s] = on_own_fill(own[s], fill[s], fill_cover[s] == 2);"
+replace = "next[s] = on_own_fill(own[s], fill[s], fill_cover[s] == 2 || stroke[s] == 2);"
+red = ["contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
 name = "colour-premultiply"
 item = "§9"
 check = "cairo_premultiply@1: each channel times the alpha"
