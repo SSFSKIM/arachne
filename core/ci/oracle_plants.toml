@@ -647,8 +647,8 @@ name = "order-exact-tie"
 item = "§7"
 check = "two keys of minus infinity are an ExactTie"
 file = "core/oracle/src/order.rs"
-find = "        if oa.o == f64::NEG_INFINITY && ob.o == f64::NEG_INFINITY {\n"
-replace = "        if false && oa.o == f64::NEG_INFINITY && ob.o == f64::NEG_INFINITY {\n"
+find = "            && x.o == f64::NEG_INFINITY\n            && y.o == f64::NEG_INFINITY\n"
+replace = "            && false\n            && x.o == f64::NEG_INFINITY\n            && y.o == f64::NEG_INFINITY\n"
 red = ["order::keys_of_minus_infinity_tie_exactly_and_meet_any_finite_key_by_depth"]
 
 [[plant]]
@@ -710,7 +710,7 @@ name = "stroke-on-own-fill"
 item = "§5"
 check = "stroke_on_own_fill@1: the nearer of the stroke's and its fill's keys"
 file = "core/oracle/src/pairs.rs"
-find = "            next[s] = on_own_fill(own[i][s], own[j][s], cs == 1 && cf == 1);\n"
+find = "            next[s] = on_own_fill(own[i][s], own[j][s]);\n"
 replace = ""
 red = ["contract::core_err_within_band"]
 
@@ -827,8 +827,8 @@ name = "exact-tie-axis-fills"
 item = "§7"
 check = "two fills on one axis plane read at the sample are an ExactTie"
 file = "core/oracle/src/order.rs"
-find = "                && exact_axis(&self.offered[i], &self.offered[j])"
-replace = "                && false"
+find = "                let one = ca.is_some() && ca == cb;"
+replace = "                let one = false;"
 red = ["contract_mutation::mutation_depth_witnesses_fail_and_their_twins_agree"]
 
 [[plant]]
@@ -836,8 +836,8 @@ name = "label-drawn-otherwise"
 item = "§10"
 check = "every pair of a label drawn otherwise is open, cause label"
 file = "core/oracle/src/label.rs"
-find = "let d = if otherwise[l as usize] {"
-replace = "let d = if false {"
+find = "let d = if otherwise[l as usize] || sheet.ungrouped {"
+replace = "let d = if sheet.ungrouped {"
 red = ["contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]
 
 [[plant]]
@@ -845,8 +845,8 @@ name = "label-ungrouped-open"
 item = "§10"
 check = "an ungrouped record kept facing the camera is an open sheet"
 file = "core/oracle/src/label.rs"
-find = "Class::Ungrouped => (ROLE_OPEN, PairCause::Label as u8, 0),"
-replace = "Class::Ungrouped => (ROLE_FRONT, 0, 0),"
+find = "let d = if otherwise[l as usize] || sheet.ungrouped {"
+replace = "let d = if otherwise[l as usize] {"
 red = ["contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]
 
 [[plant]]
@@ -1208,3 +1208,39 @@ file = "core/oracle/src/draw.rs"
 find = "                None => Pivot::Unknown,"
 replace = "                None => Pivot::At(c),"
 red = ["key_rules::a_pre_projected_pivot_with_no_first_point_to_move_by_states_no_bound"]
+
+[[plant]]
+name = "shared-skipped-without-rows"
+item = "§7"
+check = "two flat records that may share read the shared scenario though neither has a row"
+file = "core/oracle/src/order.rs"
+find = "            if ra_.flat.is_some() && rb_.flat.is_some() && self.may_share_flat(i, j) {"
+replace = "            if ra_.flat.is_some() && rb_.flat.is_some() && self.may_share_flat(i, j) && (ra.row.is_some() || rb.row.is_some()) {"
+red = ["pair_rules::two_flat_triangles_that_may_share_tie_within_term_though_neither_has_a_row"]
+
+[[plant]]
+name = "exact-tie-own-unread"
+item = "§7"
+check = "two keys of one computation in every scenario are an ExactTie"
+file = "core/oracle/src/order.rs"
+find = "            let one = ra.own_at.is_some() && ra.own_at == rb.own_at;"
+replace = "            let one = false;"
+red = ["pair_rules::two_keys_of_one_computation_in_every_scenario_are_an_exact_tie"]
+
+[[plant]]
+name = "own-keys-read-first"
+item = "§6"
+check = "an own read no scenario uses leaves the pair judged (curve_recut is per read)"
+file = "core/oracle/src/order.rs"
+find = "        for r in [ra, rb] {\n            if let Err(u @ (Unable::BandUnbounded | Unable::PivotUnknown)) = r.own {"
+replace = "        ra.own?;\n        rb.own?;\n        for r in [ra, rb] {\n            if let Err(u @ (Unable::BandUnbounded | Unable::PivotUnknown)) = r.own {"
+red = ["pair_rules::an_axis_only_pair_reads_no_own_key", "order::an_axis_only_pair_needs_no_own_read_but_a_fragment_with_no_bound_stays_unable"]
+
+[[plant]]
+name = "band-unbounded-per-read"
+item = "§6"
+check = "a fragment with no bounded key stays truth_unable whatever the pair reads"
+file = "core/oracle/src/order.rs"
+find = "Err(u @ (Unable::BandUnbounded | Unable::PivotUnknown))"
+replace = "Err(u @ Unable::PivotUnknown)"
+red = ["order::an_axis_only_pair_needs_no_own_read_but_a_fragment_with_no_bound_stays_unable"]
