@@ -1053,11 +1053,26 @@ fn the_completion_bound_is_counted_only_where_the_reported_order_needs_the_searc
     assert_eq!(bound(vec![5, 4, 3, 2, 0, 1]), 16);
 }
 
-/// The measures `soundness.md` records, by case class: `core_err_within_band`'s excess and read
-/// counts, `tie_share`, the open share by reason, and the pair labels, over the probes and every
-/// `.xf` file under the directories `SOUNDNESS_STREAMS` names (colon-separated; with
-/// `SOUNDNESS_NO_PROBES` set, those alone). Run with
-/// `--ignored --nocapture`.
+/// The class a stream at `rel` under `root` is measured in. A smoke case's directory
+/// (`fuzz__<family>__<seed>`) holds `stream.xf`, the canonical stream the core is handed, class
+/// `smoke:<family>`, and `made.xf`, the painter's unsnapped original, a real input but not a
+/// production one: its own family, `smoke-made:<family>`, never summed with the other. Any other
+/// stream is classed by its root's directory.
+fn stream_class(root: &std::path::Path, rel: &str) -> String {
+    match rel.split("__").nth(1) {
+        Some(family) if rel.ends_with("/made.xf") => format!("smoke-made:{family}"),
+        Some(family) => format!("smoke:{family}"),
+        None => root
+            .file_name()
+            .map_or("streams".into(), |n| n.to_string_lossy().to_string()),
+    }
+}
+
+/// The measures `soundness.md` records, by case class (`stream_class`): `core_err_within_band`'s
+/// excess and read counts, `tie_share`, the open share by reason, and the pair labels, over the
+/// probes and every `.xf` file under the directories `SOUNDNESS_STREAMS` names (colon-separated;
+/// with `SOUNDNESS_NO_PROBES` set, those alone), a smoke case's `stream.xf` and `made.xf` each in
+/// its own family. Run with `--ignored --nocapture`.
 #[test]
 #[ignore]
 fn soundness_measures() {
@@ -1095,13 +1110,7 @@ fn soundness_measures() {
         streams(std::path::Path::new(root), &mut found);
         for p in found {
             let rel = p.strip_prefix(root).unwrap().to_string_lossy().to_string();
-            // `fuzz__<family>__<seed>/...`: the family is the class; otherwise the directory.
-            let class = match rel.split("__").nth(1) {
-                Some(family) => format!("smoke:{family}"),
-                None => std::path::Path::new(root)
-                    .file_name()
-                    .map_or("streams".into(), |n| n.to_string_lossy().to_string()),
-            };
+            let class = stream_class(std::path::Path::new(root), &rel);
             inputs.push((class, rel, p));
         }
     }
@@ -1170,4 +1179,22 @@ fn soundness_measures() {
     for (class, m) in &by_class {
         println!("class {class} {m:?}");
     }
+}
+
+#[test]
+fn a_smoke_case_s_made_stream_is_its_own_family_beside_the_stream_the_core_is_handed() {
+    // A smoke case holds `stream.xf`, the canonical stream the core is handed, and `made.xf`, the
+    // painter's unsnapped original: each is measured under its own class, never summed.
+    let root = std::path::Path::new("/runs/smoke");
+    assert_eq!(
+        stream_class(root, "fuzz__text__2924964735/stream.xf"),
+        "smoke:text"
+    );
+    assert_eq!(
+        stream_class(root, "fuzz__text__2924964735/made.xf"),
+        "smoke-made:text"
+    );
+    // Any other stream set is classed by its directory, whatever its files' names.
+    let root = std::path::Path::new("/runs/streams-551");
+    assert_eq!(stream_class(root, "0a1b-3.xf"), "streams-551");
 }
