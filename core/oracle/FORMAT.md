@@ -113,7 +113,8 @@ A fragment's band at each sample: `I = [o − S⁻ − 3R, o + S⁺ + 3R]` (cont
 key of `−∞`.
 
 - **`which`**: 0, its own row: its own key, a stroke's adjusted on its own fill where both cover
-  (`stroke_on_own_fill@1`; where either coverage is `Either`, the hull with its unadjusted key);
+  (`stroke_on_own_fill@1`: keyed at the nearer key, its interval the hull of both keys'
+  intervals, met or not, §6);
   1, its row on its record's plane (`shared_plane_read@1`), read against a fragment that may share
   it. A fragment has at most one of each at a pixel, its own first.
 - **`status[s]`**: 0 absent, 1 bounded, 2 `band_unbounded`, 3 `curve_recut` (the sample is

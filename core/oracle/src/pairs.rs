@@ -73,22 +73,21 @@ fn meets(a: &Band, b: &Band) -> bool {
     a.lo() <= b.hi() && b.lo() <= a.hi()
 }
 
-/// `stroke_on_own_fill@1` at one sample: the stroke's band where its fill covers too.
-fn on_own_fill(
-    own: Result<Band, Unable>,
-    fill: Result<Band, Unable>,
-    both_certain: bool,
-) -> Result<Band, Unable> {
+/// `stroke_on_own_fill@1` at one sample: the stroke's band where its fill covers too. It is keyed
+/// at the nearer of the two keys with that key's bound, both bounds where they tie (contract
+/// §5), and its interval is the hull of both keys' intervals (§6, `band_input@1`), whether they
+/// meet or not.
+fn on_own_fill(own: Result<Band, Unable>, fill: Result<Band, Unable>) -> Result<Band, Unable> {
     let (o, f) = (own?, fill?);
-    let taken = if meets(&o, &f) {
-        o.hull(&f)
-    } else if f.o < o.o {
-        f
-    } else {
-        o
-    };
-    // Where either coverage is `Either`, the stroke may keep its own key.
-    Ok(if both_certain { taken } else { o.hull(&taken) })
+    let taken = if f.o < o.o { f } else { o };
+    let r = if meets(&o, &f) { o.r.max(f.r) } else { taken.r };
+    let (lo, hi) = (o.lo().min(f.lo()), o.hi().max(f.hi()));
+    Ok(Band {
+        o: taken.o,
+        r,
+        s_minus: (taken.o - lo - 3.0 * r).max(0.0),
+        s_plus: (hi - taken.o - 3.0 * r).max(0.0),
+    })
 }
 
 /// The frame's bands and pairs over `covers` (sorted by `(y, x, fragment)`), writing each row's
@@ -165,7 +164,7 @@ fn pixel(
             if cs == 0 || cf == 0 {
                 continue;
             }
-            next[s] = on_own_fill(own[i][s], own[j][s], cs == 1 && cf == 1);
+            next[s] = on_own_fill(own[i][s], own[j][s]);
             adjusted = true;
         }
         if adjusted {

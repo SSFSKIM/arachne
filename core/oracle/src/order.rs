@@ -294,10 +294,13 @@ impl Scene {
     }
 
     /// Whether two offered records may share an identity through a flat record: (1) for a pair
-    /// with a flat one, (2) a flat record passing (1) with each of them.
+    /// with a flat one, (2) a flat record passing (1) with each of them. Only flat records found
+    /// identities, so a record with no plane of its own shares one with itself only through a
+    /// flat record too; `M` need not retain one (contract §5: it still took part in the
+    /// partition).
     fn may_share_flat(&self, i: usize, j: usize) -> bool {
-        if i == j {
-            return true;
+        if i == j && self.offered[i].flat.is_some() {
+            return self.offered[i].retains;
         }
         let (a, b) = (&self.offered[i], &self.offered[j]);
         if !(a.retains && b.retains) {
@@ -313,20 +316,16 @@ impl Scene {
         }
         (0..self.offered.len()).any(|m| {
             self.offered[m].flat.is_some()
-                && self.offered[m].retains
                 && (m == i || self.width_passes(m, i))
                 && (m == j || self.width_passes(m, j))
         })
     }
 
-    /// Whether a record with no plane of its own passes (1) with some flat record.
+    /// Whether a record with no plane of its own passes (1) with some flat record, retaining an
+    /// identity or not.
     fn attaches_somewhere(&self, i: usize) -> bool {
-        (0..self.offered.len()).any(|m| {
-            m != i
-                && self.offered[m].flat.is_some()
-                && self.offered[m].retains
-                && self.width_passes(m, i)
-        })
+        (0..self.offered.len())
+            .any(|m| m != i && self.offered[m].flat.is_some() && self.width_passes(m, i))
     }
 
     /// The axis rule: both with no plane of their own on one axis plane, first points equal.
