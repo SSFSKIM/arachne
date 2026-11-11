@@ -446,3 +446,55 @@ fn an_either_fragment_left_out_of_the_report_opens_no_label_pair() {
     let v = judge(&d, &before, 0);
     assert!(matches!(v, Verdict::Mismatch(_)), "{v:?}");
 }
+
+#[test]
+fn a_label_among_many_kind_unknown_faces_is_judged_however_many_they_are() {
+    // §10: in a stream read as XF 1.4 a face is kind unknown, read both as a surface that anchors
+    // the label and as one that does not, and both orders are admitted; no number of such faces
+    // is a limit. Thirteen face squares, each its own record, on z = 1 to 2.2 across the label
+    // about the origin: each nearer square may anchor it, so it stands in front of all of them or
+    // behind any one. Every such order agrees; the squares out of depth order do not.
+    let mut b = Build::new(true);
+    for k in 0..13 {
+        b.face_group(
+            &[rect([-3.0, 3.0], [-3.0, 3.0], 1.0 + 0.1 * k as f64)],
+            OPAQUE_BLUE,
+        );
+    }
+    b.label([0.0; 3]);
+    // Records of one paint upload it once.
+    let mut delta = b.delta(1, view_c());
+    let mut seen = std::collections::HashSet::new();
+    delta.upload_paints.retain(|p| seen.insert(p.key()));
+    let d = decide_at(&[delta], 1, None).unwrap();
+    assert_eq!(d.header.status, 0, "{:?}", d.refused);
+    let unknown = d
+        .labels
+        .iter()
+        .filter(|r| {
+            (r.x, r.y, r.sample) == (32, 32, 0) && r.role == arachne_oracle::out::ROLE_KIND_UNKNOWN
+        })
+        .count();
+    assert_eq!(unknown, 13);
+    let rep = report_of(&d, &(0..14).collect::<Vec<u32>>(), None);
+    // The squares nearest first, then the label at `place`.
+    let with_label_at = |place: usize| {
+        let mut order: Vec<usize> = (0..13).rev().collect();
+        order.insert(place, 13);
+        Reported {
+            order: vec![order; 16],
+            ..rep.clone()
+        }
+    };
+    for place in [0, 1, 7, 13] {
+        assert_eq!(
+            judge(&d, &with_label_at(place), 0),
+            Verdict::Agree,
+            "place {place}"
+        );
+    }
+    let mut out_of_order = with_label_at(0);
+    out_of_order.order = vec![(0..14).collect(); 16];
+    let v = judge(&d, &out_of_order, 0);
+    assert!(matches!(v, Verdict::Mismatch(_)), "{v:?}");
+}

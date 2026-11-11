@@ -1541,3 +1541,12 @@ file = "core/oracle/tests/contract.rs"
 find = "                && reports.get(&(x, y)).is_some_and(|r| {\n"
 replace = "                && reports.get(&(x, y)).is_none_or(|r| r.x == r.x || {\n"
 red = ["contract::the_completion_bound_is_counted_only_where_the_reported_order_needs_the_search"]
+
+[[plant]]
+name = "judge-kind-unknown-anchor"
+item = "§10"
+check = "a kind-unknown fragment is read as an anchor and not, however many there are"
+file = "core/oracle/tests/common/judge.rs"
+find = "            || (place > anchored && role(l, others[place - 1]) == Some(ROLE_KIND_UNKNOWN));\n"
+replace = "            || (place > anchored && role(l, others[place - 1]) == Some(ROLE_ANCHOR));\n"
+red = ["judge::a_label_among_many_kind_unknown_faces_is_judged_however_many_they_are"]

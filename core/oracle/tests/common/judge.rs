@@ -145,10 +145,13 @@ fn admits(d: &Decisions, x: u32, y: u32, s: usize, order: &[u32], set: Set) -> O
     r
 }
 
-/// The label rule's orders at the sample, from the reported order of the others: each label
-/// immediately behind the rearmost of its anchors there, else in front; labels at one place, and a
-/// label's own fragments, in paint order. A kind-unknown fragment is read as an anchor and not.
-fn label_orders(d: &Decisions, x: u32, y: u32, s: usize, order: &[u32]) -> Vec<Vec<u32>> {
+/// Whether `order` is one of the label rule's orders at the sample, from the reported order of
+/// the others: each label immediately behind the rearmost of its anchors there, else in front;
+/// labels at one place, and a label's own fragments, in paint order. A kind-unknown fragment is
+/// read as an anchor and not, for each label apart, so a label may stand behind any fragment it
+/// may read as an anchor with no anchor read behind it: each label's place is decided on its own,
+/// with no enumeration of the readings, however many they are.
+fn label_order_admitted(d: &Decisions, x: u32, y: u32, s: usize, order: &[u32]) -> bool {
     let frag = |i: u32| &d.fragments[i as usize];
     let others: Vec<u32> = order
         .iter()
@@ -172,48 +175,46 @@ fn label_orders(d: &Decisions, x: u32, y: u32, s: usize, order: &[u32]) -> Vec<V
                 && others.contains(&r.fragment)
         })
         .collect();
-    let unknown: Vec<(u32, u32)> = rows
-        .iter()
-        .filter(|r| r.role == ROLE_KIND_UNKNOWN)
-        .map(|r| (r.label, r.fragment))
-        .collect();
-    assert!(unknown.len() <= 12, "too many kind-unknown readings");
-    let mut out = Vec::new();
-    for mask in 0..(1u32 << unknown.len()) {
-        let anchor = |l: u32, f: u32| {
-            rows.iter()
-                .any(|r| r.label == l && r.fragment == f && r.role == ROLE_ANCHOR)
-                || unknown
-                    .iter()
-                    .enumerate()
-                    .any(|(k, u)| *u == (l, f) && mask & (1 << k) != 0)
-        };
-        // Each label's place: the number of others in front of it.
-        let mut placed: Vec<(usize, (u32, u32), u32)> = Vec::new();
-        for &l in &labels {
-            let place = others
-                .iter()
-                .rposition(|f| anchor(l, *f))
-                .map_or(0, |i| i + 1);
-            for &f in order.iter().filter(|f| frag(**f).label == l) {
-                placed.push((place, (frag(f).entry, frag(f).sub), f));
-            }
+    let role = |l: u32, f: u32| {
+        rows.iter()
+            .find(|r| r.label == l && r.fragment == f)
+            .map(|r| r.role)
+    };
+    let mut placed: Vec<(usize, (u32, u32), u32)> = Vec::new();
+    for &l in &labels {
+        // Its place in the report: the others in front of its first fragment.
+        let first = order.iter().position(|f| frag(*f).label == l).unwrap();
+        let place = order[..first]
+            .iter()
+            .filter(|f| frag(**f).label == NONE_U32)
+            .count();
+        // Behind its rearmost anchor, or a kind-unknown fragment behind that read as one.
+        let anchored = others
+            .iter()
+            .rposition(|f| role(l, *f) == Some(ROLE_ANCHOR))
+            .map_or(0, |i| i + 1);
+        let may = place == anchored
+            || (place > anchored && role(l, others[place - 1]) == Some(ROLE_KIND_UNKNOWN));
+        if !may {
+            return false;
         }
-        // Front first: by place, then the later painted first.
-        placed.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
-        let mut full = Vec::new();
-        let mut k = 0;
-        for (i, f) in others.iter().enumerate() {
-            while k < placed.len() && placed[k].0 == i {
-                full.push(placed[k].2);
-                k += 1;
-            }
-            full.push(*f);
+        for &f in order.iter().filter(|f| frag(**f).label == l) {
+            placed.push((place, (frag(f).entry, frag(f).sub), f));
         }
-        full.extend(placed[k..].iter().map(|p| p.2));
-        out.push(full);
     }
-    out
+    // Front first: by place, then the later painted first.
+    placed.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+    let mut full = Vec::new();
+    let mut k = 0;
+    for (i, f) in others.iter().enumerate() {
+        while k < placed.len() && placed[k].0 == i {
+            full.push(placed[k].2);
+            k += 1;
+        }
+        full.push(*f);
+    }
+    full.extend(placed[k..].iter().map(|p| p.2));
+    full == order
 }
 
 /// `BAND`'s name for a status that leaves its fragment `truth_unable` whatever is read with it:
@@ -368,7 +369,7 @@ pub fn judge(d: &Decisions, rep: &Reported, s: usize) -> Verdict {
     let Some(ordinary) = admits(d, x, y, s, &others, Set::Edges) else {
         return Verdict::Unable("completion_bound");
     };
-    if ordinary && label_orders(d, x, y, s, &order).contains(&order) {
+    if ordinary && label_order_admitted(d, x, y, s, &order) {
         return Verdict::Agree;
     }
     // Outside the label rule's orders. The plate model's orders are those `PAIR`'s `plate`
