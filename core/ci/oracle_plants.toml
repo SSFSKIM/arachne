@@ -1288,7 +1288,7 @@ check = "stroke_on_own_fill: an adjusted stroke whose pixel bound rests on an un
 file = "core/oracle/src/pairs.rs"
 find = "    if let Some(u) = (0..16).filter(|&s| adjusted[s]).find_map(|s| next[s].err()) {"
 replace = "    if let Some(u) = None::<Unable> {"
-red = ["lib::pairs::tests::an_adjusted_stroke_whose_bound_rests_on_an_unable_read_is_unable_at_the_pixel"]
+red = ["lib::pairs::tests::an_adjusted_stroke_whose_bound_rests_on_an_unable_read_is_unable_at_the_pixel", "pair_rules::an_adjusted_stroke_unable_at_a_pixel_is_unable_against_others_and_judged_against_its_fill"]
 
 [[plant]]
 name = "own-fill-hull"
@@ -1352,3 +1352,12 @@ file = "core/oracle/src/pairs.rs"
 find = "            bands.push(band_row(x, y, r.fragment, 2, either, before));"
 replace = "            let _ = (either, before);"
 red = ["pair_rules::over_an_either_fill_an_adjusted_stroke_s_own_key_is_written_unadjusted"]
+
+[[plant]]
+name = "curve-recut-by-fragment"
+item = "§6"
+check = "a curve_recut read is unable per read: one record's own layers, reading no key, stay judged"
+file = "core/oracle/src/order.rs"
+find = "            if let Err(u @ (Unable::BandUnbounded | Unable::PivotUnknown)) = r.own {"
+replace = "            if let Err(u) = r.own {"
+red = ["pair_rules::an_adjusted_stroke_unable_at_a_pixel_is_unable_against_others_and_judged_against_its_fill", "order::a_fragment_with_no_key_stated_is_unable_against_its_own_record_s_other_layer"]
