@@ -1160,8 +1160,8 @@ name = "const-bounds-unchecked"
 item = "§6"
 check = "a key whose bounds are not finite states no bound"
 file = "core/oracle/src/keys.rs"
-find = "            Model::Const { k, r, s } => std::array::from_fn(|_| {\n                if !(s.is_finite() && r.is_finite()) {"
-replace = "            Model::Const { k, r, s } => std::array::from_fn(|_| {\n                if false && !(s.is_finite() && r.is_finite()) {"
+find = "            Model::Const { k, r, s, .. } => std::array::from_fn(|_| {\n                if !(s.is_finite() && r.is_finite()) {"
+replace = "            Model::Const { k, r, s, .. } => std::array::from_fn(|_| {\n                if false && !(s.is_finite() && r.is_finite()) {"
 red = ["key_rules::a_facing_key_whose_bounds_overflow_states_no_bound"]
 
 [[plant]]
