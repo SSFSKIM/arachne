@@ -1064,3 +1064,30 @@ file = "core/oracle/src/label.rs"
 find = "&& (otherwise[l as usize]"
 replace = "&& (false"
 red = ["contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "label-ungrouped-uncounted"
+item = "§10"
+check = "an ungrouped record makes a pair with a label only where it holds a counted point"
+file = "core/oracle/src/label.rs"
+find = "Class::Open(c) => (ROLE_OPEN, 0, class_code(c)),"
+replace = "Class::Open(c) => (ROLE_OPEN, 0, class_code(c)),\n                        Class::Ungrouped => (ROLE_OPEN, PairCause::Label as u8, 0),"
+red = ["label_overlap::an_ungrouped_sliver_between_order_points_opens_no_sample"]
+
+[[plant]]
+name = "plate-tie-unread"
+item = "§10"
+check = "equal keys are a tie in the plate model, ordered by paint order"
+file = "core/oracle/src/order.rs"
+find = "        if a.o == b.o {\n            Plate::Tie"
+replace = "        if false {\n            Plate::Tie"
+red = ["judge::a_tied_line_painted_after_the_label_is_drawn_over_it_by_the_plate_model"]
+
+[[plant]]
+name = "plate-undetermined-admits-all"
+item = "§10"
+check = "a plate relation the keys do not establish names no deviation"
+file = "core/oracle/src/order.rs"
+find = "Plate::Undetermined => 0,"
+replace = "Plate::Undetermined => 7,"
+red = ["judge::a_plate_relation_the_keys_do_not_establish_names_no_deviation"]
