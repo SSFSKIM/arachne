@@ -1808,6 +1808,42 @@ fn read_path_witnesses() -> Vec<Witness> {
     out
 }
 
+/// A witness whose conforming report is `order` at its samples, expected to agree, built from no
+/// contract text: each holds one rule's plant to the judged verdict.
+fn uncited_report(
+    name: &'static str,
+    rule: &'static str,
+    xf: (Vec<u8>, Vec<Delta>),
+    pixel: (u32, u32),
+    samples: Samples,
+    order: Vec<Frag>,
+) -> Witness {
+    Witness {
+        conforming: Conforming::Rule(order),
+        ..witness(name, rule, xf, pixel, samples, None)
+    }
+}
+
+/// Witnesses that reach a rule no cited witness reaches, citing no text.
+fn uncited_witnesses() -> Vec<Witness> {
+    let mut out = Vec::new();
+    // point_blocks_apart_tie_by_band: red then blue, one point each, at centres 1/16 apart on
+    // z = 0 under the exponential projection. Both key −1, from other inputs: a tie by band, not
+    // one computation, so red in front of blue, against paint order, agrees.
+    let mut b = Build::new(true);
+    b.points(vec![[0.125, -0.125, 0.0]], OPAQUE_RED, 2.0);
+    b.points(vec![[0.1875, -0.125, 0.0]], OPAQUE_BLUE, 2.0);
+    out.push(uncited_report(
+        "point_blocks_apart_tie_by_band",
+        "exact_tie",
+        one_shared(b, view_c_at(10.0, 0.0, true)),
+        (32, 32),
+        Samples::All,
+        vec![block(0, 0), block(1, 0)],
+    ));
+    out
+}
+
 /// A delta at `seq` that sets, removes and orders nothing.
 fn bare(seq: u64) -> Delta {
     let mut d = Delta::new(
@@ -2121,4 +2157,9 @@ fn mutation_source_witnesses_read_the_source_the_frame_holds() {
 #[test]
 fn mutation_read_path_witnesses_fail_and_their_twins_agree() {
     run(read_path_witnesses());
+}
+
+#[test]
+fn mutation_uncited_witnesses_fail_and_their_twins_agree() {
+    run(uncited_witnesses());
 }

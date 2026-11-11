@@ -1261,7 +1261,7 @@ check = "equal facing keys of other centres are not one computation"
 file = "core/oracle/src/keys.rs"
 find = "            frame_centre: pr.c,\n            d: pr.d,\n            exponential: pr.exponential,\n            centre,\n"
 replace = "            frame_centre: pr.c,\n            d: pr.d,\n            exponential: pr.exponential,\n            centre: [0.0, 0.0, centre[2]],\n"
-red = ["pair_rules::two_facing_keys_of_one_centre_are_an_exact_tie_where_the_facing_plane_does_not_key"]
+red = ["pair_rules::two_facing_keys_of_one_centre_are_an_exact_tie_where_the_facing_plane_does_not_key", "contract_mutation::mutation_uncited_witnesses_fail_and_their_twins_agree"]
 
 [[plant]]
 name = "cycle-own-keys-completion"
