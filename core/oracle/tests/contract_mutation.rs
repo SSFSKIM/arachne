@@ -34,6 +34,8 @@ use scenes::*;
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Frag {
     slot: u32,
+    /// Its object is its slot, as the engine numbers them, not `100 + slot`, as the scene kit does.
+    engine: bool,
     /// Its order entry's part: a face group's face.
     part: u32,
     layer: u8,
@@ -48,9 +50,17 @@ const MESH: u8 = 3;
 fn fill(slot: u32) -> Frag {
     Frag {
         slot,
+        engine: false,
         part: 0,
         layer: FILL,
         sub: 1,
+    }
+}
+/// The fill of the engine's record in `slot`.
+fn engine_fill(slot: u32) -> Frag {
+    Frag {
+        engine: true,
+        ..fill(slot)
     }
 }
 /// Face `part` of the face group in `slot`: its fill.
@@ -60,6 +70,7 @@ fn face(slot: u32, part: u32) -> Frag {
 fn stroke(slot: u32) -> Frag {
     Frag {
         slot,
+        engine: false,
         part: 0,
         layer: STROKE,
         sub: 2,
@@ -68,6 +79,7 @@ fn stroke(slot: u32) -> Frag {
 fn background(slot: u32) -> Frag {
     Frag {
         slot,
+        engine: false,
         part: 0,
         layer: BG,
         sub: 0,
@@ -76,6 +88,7 @@ fn background(slot: u32) -> Frag {
 fn tri(slot: u32, i: u32) -> Frag {
     Frag {
         slot,
+        engine: false,
         part: 0,
         layer: MESH,
         sub: i,
@@ -84,7 +97,12 @@ fn tri(slot: u32, i: u32) -> Frag {
 
 impl Frag {
     fn identity(self) -> Identity {
-        (100 + self.slot, self.part, self.layer, self.sub)
+        let object = if self.engine {
+            self.slot
+        } else {
+            100 + self.slot
+        };
+        (object, self.part, self.layer, self.sub)
     }
     fn json(self) -> String {
         let layer = ["background_stroke", "fill", "stroke", "mesh", "points"][self.layer as usize];
@@ -987,6 +1005,29 @@ fn label_rule_witnesses() -> Vec<Witness> {
         5,
         0,
     ));
+    // The engine's two label scenes, drawn at the label head (`engine_stream`): the ring whose
+    // hole holds the centre, where `S2` alone makes a pair and qualifies by its points, and W5's
+    // scene through a camera class of the scene's own, every record pre-projected, the label's
+    // too, so every pair of it is open with cause `label`.
+    out.push(by_rule(
+        "no_pair_centre_without_points_engine",
+        engine_stream("no_pair_centre_without_points_engine"),
+        (36, 32),
+        Samples::Covered(vec![engine_fill(2), engine_fill(3)]),
+        vec![engine_fill(2), engine_fill(3)],
+        Some((
+            Defect::Order(vec![engine_fill(3), engine_fill(2)]),
+            mismatch(),
+        )),
+    ));
+    out.push(open_case(
+        "pair_cause_label_engine",
+        engine_stream("pair_cause_label_engine"),
+        (32, 32),
+        Samples::All,
+        5,
+        0,
+    ));
     // Folded (rule 3; no §12 witness names it): two triangles of one surface object, wound one
     // way and sharing two corners, the second folded over the first, both holding the points
     // of pixel (30, 32).
@@ -1277,6 +1318,34 @@ fn apply(rep: &Reported, defect: &Defect, samples: &[usize]) -> Reported {
         }
     }
     r
+}
+
+/// A stream the engine wrote at the label head, `30538b2e`, from the scenes of
+/// `fixtures/engine_scenes/label_witness_scenes.py` (each rendered on the core at 64 x 64 pixels
+/// over a 16 x 16 unit frame, `PYTHONHASHSEED=0`): its bytes, and its deltas as the core draws
+/// them, without the source section and read as XF 1.4, whose drawing it does not change. The
+/// bytes are kept as hex text (`stream.xf.hex`).
+fn engine_stream(name: &str) -> (Vec<u8>, Vec<Delta>) {
+    let hex: Vec<u8> = std::fs::read_to_string(dir(name).join("stream.xf.hex"))
+        .unwrap()
+        .bytes()
+        .filter(u8::is_ascii_hexdigit)
+        .collect();
+    let digit = |c: u8| (c as char).to_digit(16).unwrap() as u8;
+    let bytes: Vec<u8> = hex
+        .chunks(2)
+        .map(|p| digit(p[0]) << 4 | digit(p[1]))
+        .collect();
+    let (_, wire) = source::read_file_bytes(&bytes).unwrap();
+    let deltas = wire
+        .into_iter()
+        .map(|w| {
+            let mut d = w.read.unwrap().0;
+            d.version = (1, 4);
+            d
+        })
+        .collect();
+    (bytes, deltas)
 }
 
 fn oracle(w: &Witness) -> Decisions {
