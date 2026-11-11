@@ -290,8 +290,28 @@ pub fn judge(d: &Decisions, rep: &Reported, s: usize) -> Verdict {
         .map(|&e| reported[e].unwrap())
         .collect();
     let table = edges_of(d, x, y, s, Set::Edges);
-    if table.values().any(|(_, label, _)| *label == LABEL_UNABLE) {
-        return Verdict::Unable("truth_unable");
+    // A pair `truth_unable` at the sample is named by its fragments' reads there: the class of
+    // the first status among them that states no bound (§6).
+    let unable: Vec<u32> = table
+        .iter()
+        .filter(|(_, (_, label, _))| *label == LABEL_UNABLE)
+        .flat_map(|(&(a, b), _)| [a, b])
+        .collect();
+    if !unable.is_empty() {
+        let status_of = |st: u8| {
+            d.bands
+                .iter()
+                .any(|r| (r.x, r.y) == (x, y) && unable.contains(&r.fragment) && r.status[s] == st)
+        };
+        let name = [
+            (2, "band_unbounded"),
+            (3, "curve_recut"),
+            (4, "pivot_unknown"),
+        ]
+        .into_iter()
+        .find(|&(st, _)| status_of(st))
+        .map_or("truth_unable", |(_, n)| n);
+        return Verdict::Unable(name);
     }
     let has_label = order
         .iter()
