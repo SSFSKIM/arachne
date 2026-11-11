@@ -568,7 +568,7 @@ pub fn path_depth(view: &View, item: &PathItem, rings: &[Option<Vec<Ring>>; 3]) 
         }
         (_, true) => {
             let cam = pr.in_camera_axes();
-            if let Some(pivot) = rec.depth.fixed_orientation_centre {
+            if let Some(pivot) = c.pivot {
                 return none(facing_model(&cam, &map, pivot, 0.0));
             }
             let code = rec
@@ -929,7 +929,7 @@ pub fn point_depth(view: &View, item: &PointsItem, placed: [f64; 3]) -> Model {
     let map = FrameMap::of_paths(view);
     if c.record.pre_projected.is_some() {
         let cam = pr.in_camera_axes();
-        return match c.record.depth.fixed_orientation_centre {
+        return match c.pivot {
             Some(pivot) => facing_model(&cam, &map, pivot, 0.0),
             None => facing_model(
                 &cam,

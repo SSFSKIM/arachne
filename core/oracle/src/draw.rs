@@ -279,6 +279,9 @@ pub struct Common<'a> {
     pub projection: Option<Projection>,
     /// The placings whose departure bounds its screen shift.
     pub placings: Vec<Placing>,
+    /// A pre-projected record's pivot, the carried centre moved as the record's first point moved
+    /// to its tail's first point (contract §2).
+    pub pivot: Option<[f64; 3]>,
 }
 
 /// One path drawn: a `path` record, a face of a face group, or a path instance's member.
@@ -403,6 +406,16 @@ pub fn items_of<'a>(
             continue;
         }
         let placement = Placement::of(rec, view);
+        let pivot = rec.pre_projected.as_ref().and_then(|tail| {
+            let c = rec.depth.fixed_orientation_centre?;
+            let moved = path_shape(shapes, &tail.points)
+                .and_then(|t| t.first().copied())
+                .zip(path_points(rec, shapes).and_then(|p| p.first().copied()));
+            Some(match moved {
+                Some((to, from)) => std::array::from_fn(|k| c[k] + (to[k] - from[k])),
+                None => c,
+            })
+        });
         let common = |object: u32, placings: Vec<Placing>| Common {
             entry: entry as u32,
             record: rec,
@@ -411,6 +424,7 @@ pub fn items_of<'a>(
             placement: placement.clone(),
             projection: pr.clone(),
             placings,
+            pivot,
         };
         let shaded = rec.pre_projected.is_none() && shading && rec.depth.shade_in_3d;
         let prototype = rec

@@ -1181,3 +1181,12 @@ file = "core/oracle/src/order.rs"
 find = "        if i == j && self.offered[i].flat.is_some() {\n            return self.offered[i].retains;\n        }"
 replace = "        if i == j {\n            return true;\n        }"
 red = ["pair_rules::a_record_with_no_plane_of_its_own_is_no_flat_witness_for_itself"]
+
+[[plant]]
+name = "preprojected-pivot-unmoved"
+item = "§2"
+check = "a pre-projected pivot moves as the record's first point moved"
+file = "core/oracle/src/draw.rs"
+find = "                Some((to, from)) => std::array::from_fn(|k| c[k] + (to[k] - from[k])),"
+replace = "                Some(_) => c,"
+red = ["key_rules::a_pre_projected_pivot_moves_as_the_record_s_first_point_moved"]

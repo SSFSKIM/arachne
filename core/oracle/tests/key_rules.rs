@@ -5,7 +5,7 @@
 #[path = "common/scenes.rs"]
 mod scenes;
 
-use arachne_core::xf::{Camera, FEATURE_PRE_PROJECTED, Paint, PreProjected, View};
+use arachne_core::xf::{Camera, FEATURE_PRE_PROJECTED, Paint, PreProjected, Shape, ShapeData, View};
 use arachne_oracle::cover::sample_point;
 use arachne_oracle::decide::decide_at;
 use arachne_oracle::out::{BandRow, Decisions};
@@ -160,6 +160,50 @@ fn a_pre_projected_point_block_is_keyed_in_the_camera_s_axes() {
         .collect();
     assert!(!at.is_empty(), "no pair of the mesh and the block");
     assert!(at.iter().all(|e| *e == 2), "{at:?}");
+}
+
+#[test]
+fn a_pre_projected_pivot_moves_as_the_record_s_first_point_moved() {
+    // §2: a fixed-orientation pivot is the pivot as produced, moved as the record's first point
+    // moved; §5: a pre-projected record with a pivot is keyed on the facing plane through it, in
+    // the camera's axes. The record's square lies on z = 0 about its pivot (0, 0, 0); its tail is
+    // that square moved to z = 5. The pivot moves to (0, 0, 5) with it, keyed −2 at focal
+    // distance 10, where the unmoved pivot keys −1.
+    let mut b = Build::new(true);
+    let tail = Shape::new(ShapeData::Path {
+        points: rect([-1.0, 1.0], [-1.0, 1.0], 5.0),
+    });
+    let key = tail.key();
+    b.shapes.push(tail);
+    let r = b.fill(rect([-1.0, 1.0], [-1.0, 1.0], 0.0), OPAQUE_BLUE);
+    r.depth.fixed_orientation_centre = Some([0.0; 3]);
+    r.features |= FEATURE_PRE_PROJECTED;
+    r.pre_projected = Some(PreProjected {
+        points: key,
+        gradient: None,
+        fill: Paint::One(OPAQUE_BLUE),
+        stroke: Paint::None,
+        background_stroke: Paint::None,
+    });
+    let d = decide(&b, view(10.0, GRID));
+    let fill = id_of(&d, 0, 1);
+    let mut read = 0;
+    for row in own_rows(&d, fill) {
+        for s in 0..16 {
+            if row.status[s] != 1 {
+                continue;
+            }
+            let (lo, hi) = interval(row, s);
+            assert!(
+                lo <= -2.0 && -2.0 <= hi,
+                "({}, {}) sample {s}: [{lo}, {hi}] misses −2",
+                row.x,
+                row.y
+            );
+            read += 1;
+        }
+    }
+    assert!(read > 100, "{read} samples read");
 }
 
 #[test]
