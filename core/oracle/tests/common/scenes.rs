@@ -4,9 +4,9 @@
 #![allow(dead_code)]
 
 use arachne_core::xf::{
-    Background, Body, Camera, Delta, FEATURE_PRE_PROJECTED, Layer, LightModel, OrderEntry, Paint,
-    Points, PreProjected, Record, RecordKind, Shape, ShapeData, Space, Stops, ThreeDCamera, Time,
-    View, wire,
+    Background, Body, Camera, Delta, FEATURE_PRE_PROJECTED, FaceGroup, Layer, LightModel,
+    OrderEntry, Paint, Points, PreProjected, Record, RecordKind, Shape, ShapeData, Space, Stops,
+    ThreeDCamera, Time, View, wire,
 };
 
 /// §12's input grid.
@@ -207,6 +207,30 @@ impl Build {
         r
     }
 
+    /// A face group: one record drawing each of `faces` (closed polygons) filled `rgba`, one order
+    /// entry per face.
+    pub fn face_group(&mut self, faces: &[Vec<[f64; 3]>], rgba: [f64; 4]) -> &mut Record {
+        let fill = Stops::new(vec![rgba; faces.len()]);
+        let key = fill.key();
+        self.paints.push(fill);
+        let mut face_ends = Vec::new();
+        for f in faces {
+            face_ends.push(face_ends.last().copied().unwrap_or(0) + f.len() as u32);
+        }
+        let points = faces.concat();
+        let n = faces.len() as u32;
+        let r = self.record(RecordKind::FaceGroup, ShapeData::Path { points });
+        r.body = Body::FaceGroup(FaceGroup {
+            uv: (0..n).map(|i| [i, 0]).collect(),
+            grid: [n, 1],
+            fill: key,
+            stroke: None,
+            face_ends,
+            face_widths: Vec::new(),
+        });
+        r
+    }
+
     /// A points record: one block per position, coloured `rgba`, of CE's stroke width `radius`.
     pub fn points(&mut self, positions: Vec<[f64; 3]>, rgba: [f64; 4], radius: f64) -> &mut Record {
         let colors = Stops::new(vec![rgba; positions.len()]);
@@ -249,10 +273,16 @@ impl Build {
         d.order = Some(
             self.records
                 .iter()
-                .map(|r| OrderEntry {
-                    layer: Layer::Moving,
-                    slot: r.slot,
-                    part: 0,
+                .flat_map(|r| {
+                    let parts = match &r.body {
+                        Body::FaceGroup(f) => f.uv.len() as u32,
+                        _ => 1,
+                    };
+                    (0..parts).map(|part| OrderEntry {
+                        layer: Layer::Moving,
+                        slot: r.slot,
+                        part,
+                    })
                 })
                 .collect(),
         );

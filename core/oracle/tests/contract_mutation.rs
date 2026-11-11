@@ -34,6 +34,8 @@ use scenes::*;
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Frag {
     slot: u32,
+    /// Its order entry's part: a face group's face.
+    part: u32,
     layer: u8,
     sub: u32,
 }
@@ -46,13 +48,19 @@ const MESH: u8 = 3;
 fn fill(slot: u32) -> Frag {
     Frag {
         slot,
+        part: 0,
         layer: FILL,
         sub: 1,
     }
 }
+/// Face `part` of the face group in `slot`: its fill.
+fn face(slot: u32, part: u32) -> Frag {
+    Frag { part, ..fill(slot) }
+}
 fn stroke(slot: u32) -> Frag {
     Frag {
         slot,
+        part: 0,
         layer: STROKE,
         sub: 2,
     }
@@ -60,6 +68,7 @@ fn stroke(slot: u32) -> Frag {
 fn background(slot: u32) -> Frag {
     Frag {
         slot,
+        part: 0,
         layer: BG,
         sub: 0,
     }
@@ -67,6 +76,7 @@ fn background(slot: u32) -> Frag {
 fn tri(slot: u32, i: u32) -> Frag {
     Frag {
         slot,
+        part: 0,
         layer: MESH,
         sub: i,
     }
@@ -74,12 +84,17 @@ fn tri(slot: u32, i: u32) -> Frag {
 
 impl Frag {
     fn identity(self) -> Identity {
-        (100 + self.slot, 0, self.layer, self.sub)
+        (100 + self.slot, self.part, self.layer, self.sub)
     }
     fn json(self) -> String {
         let layer = ["background_stroke", "fill", "stroke", "mesh", "points"][self.layer as usize];
+        let part = if self.part == 0 {
+            String::new()
+        } else {
+            format!(", \"part\": {}", self.part)
+        };
         format!(
-            "{{\"slot\": {}, \"layer\": \"{layer}\", \"sub\": {}}}",
+            "{{\"slot\": {}{part}, \"layer\": \"{layer}\", \"sub\": {}}}",
             self.slot, self.sub
         )
     }
@@ -646,7 +661,56 @@ fn pre_projected_in_label(b: &mut Build) {
     b.pre_projected(rect([-6.5, -5.5], [-6.5, -5.5], 0.0), WHITE);
 }
 
-/// W19 to W26 (W20 and W25 apart) and the point reading's witnesses.
+/// W20's box: a cube of side 4 about the origin as one face group (front, back, then the four
+/// sides), each face wound outward, fill `(0, 0, 1, 0.5)`; then `L` at `centre`. Seen from the
+/// camera the front face winds one way, and the back and the sides, facing away, the other.
+fn cube(centre: [f64; 3]) -> Build {
+    let faces = [
+        [
+            [-2.0, -2.0, 2.0],
+            [2.0, -2.0, 2.0],
+            [2.0, 2.0, 2.0],
+            [-2.0, 2.0, 2.0],
+        ],
+        [
+            [-2.0, -2.0, -2.0],
+            [-2.0, 2.0, -2.0],
+            [2.0, 2.0, -2.0],
+            [2.0, -2.0, -2.0],
+        ],
+        [
+            [2.0, -2.0, -2.0],
+            [2.0, 2.0, -2.0],
+            [2.0, 2.0, 2.0],
+            [2.0, -2.0, 2.0],
+        ],
+        [
+            [-2.0, -2.0, -2.0],
+            [-2.0, -2.0, 2.0],
+            [-2.0, 2.0, 2.0],
+            [-2.0, 2.0, -2.0],
+        ],
+        [
+            [-2.0, 2.0, -2.0],
+            [-2.0, 2.0, 2.0],
+            [2.0, 2.0, 2.0],
+            [2.0, 2.0, -2.0],
+        ],
+        [
+            [-2.0, -2.0, -2.0],
+            [2.0, -2.0, -2.0],
+            [2.0, -2.0, 2.0],
+            [-2.0, -2.0, 2.0],
+        ],
+    ]
+    .map(|f| polygon(&f));
+    let mut b = Build::new(true);
+    b.face_group(&faces, [0.0, 0.0, 1.0, 0.5]);
+    b.label(centre);
+    b
+}
+
+/// W19 to W26 (W25 apart) and the point reading's witnesses.
 fn label_rule_witnesses() -> Vec<Witness> {
     let mut out = Vec::new();
     // W19.
@@ -666,6 +730,33 @@ fn label_rule_witnesses() -> Vec<Witness> {
         vec![stroke(1), fill(0), fill(2)],
         Some((Defect::Order(vec![fill(2), stroke(1), fill(0)]), mismatch())),
     ));
+    // W20, and its soundness twin with `L` behind the box.
+    for (name, centre, order, defect) in [
+        (
+            "label_inside_box",
+            [0.0; 3],
+            vec![face(0, 0), fill(1), face(0, 1)],
+            Some((
+                Defect::Order(vec![face(0, 0), face(0, 1), fill(1)]),
+                mismatch(),
+            )),
+        ),
+        (
+            "label_behind_box",
+            [0.0, 0.0, -4.0],
+            vec![face(0, 0), face(0, 1), fill(1)],
+            None,
+        ),
+    ] {
+        out.push(by_rule(
+            name,
+            one15(&cube(centre), view_c(), &[1], &[Some(&[(3, CUBE)])]),
+            (32, 32),
+            Samples::Covered(vec![face(0, 0), face(0, 1), fill(1)]),
+            order,
+            defect,
+        ));
+    }
     // W21.
     let mut b = Build::new(true);
     b.fill(
