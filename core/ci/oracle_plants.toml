@@ -1187,8 +1187,8 @@ name = "own-fill-meets-for-tied"
 item = "§5"
 check = "an adjusted stroke takes both bounds only where its keys are tied (§7)"
 file = "core/oracle/src/pairs.rs"
-find = "let r = if tied(&o, &f) { o.r.max(f.r) } else { taken.r };"
-replace = "let r = if o.lo() <= f.hi() && f.lo() <= o.hi() { o.r.max(f.r) } else { taken.r };"
+find = "let took = if tied(&o, &f) { o.r.max(f.r) } else { taken.r };"
+replace = "let took = if o.lo() <= f.hi() && f.lo() <= o.hi() { o.r.max(f.r) } else { taken.r };"
 red = ["lib::pairs::tests::an_adjusted_stroke_takes_both_bounds_only_where_its_keys_are_tied"]
 
 [[plant]]
@@ -1307,3 +1307,12 @@ file = "core/oracle/src/pairs.rs"
 find = "    let hi = if fill_either {\n        o.hi()\n    } else {\n        o.hi().min(f.hi())\n    };"
 replace = "    let hi = o.hi().min(f.hi());"
 red = ["lib::pairs::tests::where_the_fill_s_cover_is_either_an_adjusted_stroke_reaches_its_own_far_end"]
+
+[[plant]]
+name = "own-fill-either-bound"
+item = "§5"
+check = "stroke_on_own_fill@2: where the fill's cover is Either, the larger of the stroke's own bound and the taken one"
+file = "core/oracle/src/pairs.rs"
+find = "    let r = if fill_either { o.r.max(took) } else { took };"
+replace = "    let r = took;"
+red = ["lib::pairs::tests::where_the_fill_s_cover_is_either_an_adjusted_stroke_takes_the_larger_bound"]

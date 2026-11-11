@@ -115,8 +115,9 @@ key of `−∞`.
 - **`which`**: 0, its own row: its own key, a stroke's adjusted on its own fill where both cover
   (`stroke_on_own_fill@2`: keyed at the nearer key; its interval from the nearer of the two near
   ends to the nearer of the two far ends, or to its own far end where the fill's cover is
-  `Either`, `band_input@2`, §6; its bound the pixel's largest taken, and every sample of it at the
-  pixel unable where an adjusted read is);
+  `Either`, `band_input@2`, §6; its bound the pixel's largest taken, the larger of its own and
+  the taken one where the fill's cover is `Either`, and every sample of it at the pixel unable
+  where an adjusted read is);
   1, its row on its record's plane (`shared_plane_read@1`), read against a fragment that may share
   it. A fragment has at most one of each at a pixel, its own first.
 - **`status[s]`**: 0 absent, 1 bounded, 2 `band_unbounded`, 3 `curve_recut` (the sample is

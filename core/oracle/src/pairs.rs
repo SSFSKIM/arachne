@@ -78,7 +78,8 @@ fn tied(a: &Band, b: &Band) -> bool {
 
 /// `stroke_on_own_fill@2` at one sample: the stroke's band where its fill covers too, `fill_either`
 /// where the fill's cover is `Either`. It is keyed at the nearer of the two keys with that key's
-/// bound, both bounds where they are `tied` (contract §5). Its interval (§6, `band_input@2`) runs
+/// bound, both bounds where they are `tied` (contract §5), and where the fill's cover is `Either`
+/// the larger of that and its own. Its interval (§6, `band_input@2`) runs
 /// from the nearer of the two near ends to the nearer of the two far ends, or, where the fill's
 /// cover is `Either` and the core may keep the stroke's own key, to the stroke's own far end.
 fn on_own_fill(
@@ -88,7 +89,9 @@ fn on_own_fill(
 ) -> Result<Band, Unable> {
     let (o, f) = (own?, fill?);
     let taken = if f.o < o.o { f } else { o };
-    let r = if tied(&o, &f) { o.r.max(f.r) } else { taken.r };
+    let took = if tied(&o, &f) { o.r.max(f.r) } else { taken.r };
+    // Where the fill's cover is `Either` the core may keep either key: the larger bound counts.
+    let r = if fill_either { o.r.max(took) } else { took };
     let lo = o.lo().min(f.lo());
     let hi = if fill_either {
         o.hi()
@@ -385,6 +388,18 @@ mod tests {
         let b = on_own_fill(band(-1.0, 1e-9, 1e-4), band(-1.5, 1e-9, 1e-4), true).unwrap();
         assert!((b.lo() - (-1.5 - 1e-4 - 3e-9)).abs() < 1e-12, "{}", b.lo());
         assert!(b.hi() >= -1.0 + 1e-4 + 3e-9 - 1e-12, "{}", b.hi());
+    }
+
+    #[test]
+    fn where_the_fill_s_cover_is_either_an_adjusted_stroke_takes_the_larger_bound() {
+        // §5 `stroke_on_own_fill@2`: where the fill's cover is `Either`, the stroke's bound is the
+        // larger of its own and the one it takes where both cover, since the core may take either.
+        // Disjoint keys, the fill nearer and taken, the stroke's own bound the larger.
+        let b = on_own_fill(band(-1.0, 1e-6, 1e-4), band(-1.5, 1e-9, 1e-4), true).unwrap();
+        assert_eq!((b.o, b.r), (-1.5, 1e-6));
+        // Where both cover certainly, the taken key's bound alone.
+        let b = on_own_fill(band(-1.0, 1e-6, 1e-4), band(-1.5, 1e-9, 1e-4), false).unwrap();
+        assert_eq!((b.o, b.r), (-1.5, 1e-9));
     }
 
     #[test]
