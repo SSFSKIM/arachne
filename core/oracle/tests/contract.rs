@@ -6,6 +6,8 @@
 
 #[path = "common/fixtures.rs"]
 mod fixtures;
+#[path = "common/scenes.rs"]
+mod scenes;
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -211,6 +213,101 @@ fn core_err_within_band() {
         excess.len(),
         &excess[..excess.len().min(8)]
     );
+}
+
+/// The named reads `core_err_within_band` must hold on, each in a scene of its own (View C): a
+/// stroke whose own key is nearer than its fill's (`stroke_on_own_fill@1` keeps it), a stroke read
+/// on a plane its path shares, outside its own fill (`shared_plane_read@1`), and a line read on the
+/// second of the two flat identities it attaches to. Each of the last two is shown read by the
+/// plane reads it adds to the same scene without the fragment it is read against.
+#[test]
+fn core_err_within_band_on_the_named_reads() {
+    use scenes::*;
+    let tilted = |z0: f64, slope: f64| {
+        let z = |x: f64| z0 + slope * x;
+        polygon(&[
+            [-3.0, -3.0, z(-3.0)],
+            [3.0, -3.0, z(3.0)],
+            [3.0, 3.0, z(3.0)],
+            [-3.0, 3.0, z(-3.0)],
+        ])
+    };
+    // A square on z = x / 2, filled and stroked 1 unit wide: at the samples near its edges both
+    // cover, the stroke's key, its curve's, is nearer than the plane on one side.
+    let mut stroke_nearer = Build::new(true);
+    let r = stroke_nearer.fill(tilted(0.0, 0.5), OPAQUE_BLUE);
+    r.paint.stroke = arachne_core::xf::Paint::One(WHITE);
+    r.paint.stroke_width = 1.0;
+    // Two squares on z = 0 a quarter apart, the first stroked: where its stroke reaches past its own
+    // fill onto the second, it is read on their shared plane. The fills meet at no sample.
+    let stroked = |b: &mut Build| {
+        let r = b.fill(rect([-4.0, 0.0], [-2.0, 2.0], 0.0), OPAQUE_BLUE);
+        r.paint.stroke = arachne_core::xf::Paint::One(WHITE);
+        r.paint.stroke_width = 1.0;
+    };
+    let mut alone = Build::new(true);
+    stroked(&mut alone);
+    let mut shared = Build::new(true);
+    stroked(&mut shared);
+    shared.fill(rect([0.25, 4.0], [-2.0, 2.0], 0.0), OPAQUE_RED);
+    // A line along the y axis on z = 0, lying on a square on z = 0 and on a square on z = x / 2:
+    // it attaches to both identities, and against the second square reads the second.
+    let first = |b: &mut Build| {
+        b.fill(rect([-6.0, 6.0], [-6.0, 6.0], 0.0), OPAQUE_BLUE);
+    };
+    let line = |b: &mut Build| {
+        b.stroke(
+            open(&[[0.0, -3.1875, 0.0], [0.0, 3.1875, 0.0]]),
+            OPAQUE_GREEN,
+            0.5,
+        );
+    };
+    let mut one = Build::new(true);
+    first(&mut one);
+    line(&mut one);
+    let mut secondary = Build::new(true);
+    first(&mut secondary);
+    secondary.fill(tilted(0.0, 0.5), OPAQUE_RED);
+    line(&mut secondary);
+
+    let run = |name: &str, b: Build| {
+        let delta = b.delta(1, view_c());
+        let wire = [source::WireDelta::of(delta.clone())];
+        let d = decide_at_wire(&wire, 1, None).unwrap();
+        assert_eq!(d.header.status, 0, "{name}: {:?}", d.refused);
+        let mut core = Stream::new();
+        core.apply(&delta).unwrap();
+        let (excess, tally) = excesses_of("named", 1, &d, &core);
+        assert!(excess.is_empty(), "{name}: {excess:#?}");
+        assert!(
+            tally.own > 1000 && tally.unmatched == 0,
+            "{name}: {tally:?}"
+        );
+        (d, tally)
+    };
+
+    let (d, _) = run("stroke_nearer_than_fill", stroke_nearer);
+    let own: Vec<_> = d.bands.iter().filter(|b| b.which == 0).collect();
+    let nearer = own.iter().any(|s| {
+        d.fragments[s.fragment as usize].layer == 2
+            && own.iter().any(|f| {
+                (f.x, f.y) == (s.x, s.y)
+                    && d.fragments[f.fragment as usize].layer == 1
+                    && (0..16).any(|k| s.status[k] == 1 && f.status[k] == 1 && s.o[k] < f.o[k])
+            })
+    });
+    assert!(
+        nearer,
+        "no sample where the stroke's own key is nearer than its fill's"
+    );
+
+    let (_, without) = run("stroke_alone", alone);
+    let (_, with) = run("stroke_on_shared_plane_outside_fill", shared);
+    assert!(with.plane > without.plane, "{without:?} {with:?}");
+
+    let (_, without) = run("line_on_one_identity", one);
+    let (_, with) = run("secondary_identity", secondary);
+    assert!(with.plane > without.plane, "{without:?} {with:?}");
 }
 
 #[test]
