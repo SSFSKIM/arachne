@@ -1,0 +1,50 @@
+# Scratch, never merged: crops of one label pixel in four scenes of
+# tests/frame_ir/camera_scenes.py, drawn by the core at this commit's parent (label placement on
+# and off) and by Manim CE 0.20.1, uploaded as small PNGs with a JSON report.
+name: labelpair
+on:
+  push:
+    branches: ['ci/labelpair-**']
+permissions:
+  contents: read
+jobs:
+  crops:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      UV_PYTHON: "3.12"
+      PYTHONHASHSEED: "0"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Apply the CI environment
+        uses: SSFSKIM/ci-kit/setup@v1
+      - name: Install
+        run: pipx install uv==0.12.3 && uv sync --all-extras --locked
+      - name: Core frames
+        run: |
+          set -euo pipefail
+          for s in SteadyProjectingSolids ShiftedSolids PatchedSolids MidPlayStateSolids; do
+            for m in on off; do
+              PYTHONPATH="$PWD" PYTHONWARNINGS=ignore uv run --no-sync python .github/labelpair/core_frames.py "$RUNNER_TEMP/work" "$s" "$m"
+            done
+          done
+      - name: Manim CE frames
+        run: |
+          set -euo pipefail
+          uv venv --python 3.12 "$RUNNER_TEMP/ce"
+          VIRTUAL_ENV="$RUNNER_TEMP/ce" uv pip install manim==0.20.1
+          cd "$RUNNER_TEMP"
+          for s in SteadyProjectingSolids ShiftedSolids PatchedSolids MidPlayStateSolids; do
+            "$RUNNER_TEMP/ce/bin/python" "$GITHUB_WORKSPACE/.github/labelpair/ce_frames.py" "$RUNNER_TEMP/work" "$s"
+            "$RUNNER_TEMP/ce/bin/python" "$GITHUB_WORKSPACE/.github/labelpair/ce_frames.py" "$RUNNER_TEMP/work" "$s" nolabel
+          done
+      - name: Crops
+        run: uv run --no-sync python .github/labelpair/crops.py "$RUNNER_TEMP/work" crops
+      - uses: actions/upload-artifact@v7
+        with:
+          name: labelpair-crops
+          path: crops/
+          retention-days: 30
+          if-no-files-found: error
