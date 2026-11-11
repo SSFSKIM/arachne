@@ -97,8 +97,9 @@ pub enum PlaneS {
 /// one value bit for bit in every conforming evaluation.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Computation {
-    /// A world plane's key across the pixel plane, read at a point.
-    World(ScreenKey, [f64; 2]),
+    /// A world plane's key across the pixel plane, read at a point: the plane as every
+    /// conforming evaluation rounds it, and its key.
+    World(Rounded, ScreenKey, [f64; 2]),
     /// The plane on screen through a triangle's corners, read at a point.
     Screen(ScreenKey, [f64; 2]),
     /// The key `−∞`.
@@ -108,6 +109,10 @@ pub enum Computation {
     /// A curve's key along its centreline, read at a point.
     Curve(Arc<CurveKey>, [f64; 2]),
 }
+
+/// A world plane's normal and offset on the plane grid, where every conforming evaluation rounds
+/// them alike (contract §5): one conforming plane. A plane with two names no one computation.
+pub type Rounded = ([f64; 3], f64);
 
 /// What a curve's key along its centreline is computed from (contract §5, `curve_key@1`): its
 /// drawn points and its shown points, the projection and frame map that key and place them, and
@@ -153,13 +158,15 @@ pub enum Model {
     NegInf,
     /// A world plane keyed on screen: its key, its region's `R` before `ρ` and `ν`, any extra
     /// bound (a `Nearest` face's outline departure), its `S`, and for a sloped layer the rings
-    /// its fringe reads beyond (`fringe_key@1`).
+    /// its fringe reads beyond (`fringe_key@1`); and the plane as rounded where its rounding is
+    /// settled.
     Plane {
         key: ScreenKey,
         r0: f64,
         extra: f64,
         s: PlaneS,
         fringe: Option<Vec<Ring>>,
+        rounded: Option<Rounded>,
     },
     /// The plane on screen through a triangle's corners.
     Tri {
@@ -254,18 +261,27 @@ impl Model {
 
     /// What its read at the point `p` computes (contract §7, `ExactTie`), where that is one
     /// computation named by its inputs: a world plane's key at the point it reads (its fringe's
-    /// outline point outside the outline), a triangle's plane on screen at `p`, a facing centre's
-    /// own key, a curve's centreline read at `p`, or `−∞`.
+    /// outline point outside the outline), where the plane's rounding is settled; a triangle's
+    /// plane on screen at `p`, a facing centre's own key, a curve's centreline read at `p`, or
+    /// `−∞`.
     pub fn computation_at(&self, p: [f64; 2]) -> Option<Computation> {
         match self {
             Model::NegInf => Some(Computation::NegInf),
-            Model::Plane { key, fringe, .. } => Some(Computation::World(
-                *key,
-                match fringe {
-                    Some(rings) if !inside(rings, p) => nearest_on(rings, p),
-                    _ => p,
-                },
-            )),
+            Model::Plane {
+                key,
+                fringe,
+                rounded,
+                ..
+            } => rounded.map(|plane| {
+                Computation::World(
+                    plane,
+                    *key,
+                    match fringe {
+                        Some(rings) if !inside(rings, p) => nearest_on(rings, p),
+                        _ => p,
+                    },
+                )
+            }),
             Model::Tri { key, .. } => Some(Computation::Screen(*key, p)),
             Model::Const { at, .. } => Some(Computation::Centre(*at)),
             Model::Curve { of, .. } => Some(Computation::Curve(of.clone(), p)),
@@ -309,6 +325,7 @@ impl Model {
                 extra,
                 s,
                 fringe,
+                ..
             } => {
                 let at: [[f64; 2]; 16] = std::array::from_fn(|k| match fringe {
                     Some(rings) if !inside(rings, pts[k]) => nearest_on(rings, pts[k]),
@@ -517,12 +534,14 @@ fn plane_model(
 ) -> Option<Model> {
     let key = key_plane(pr, map, plane, q_first, min_cos)?;
     let r0 = plane_r_region(pr, map, plane, region);
+    let conforming = plane.conforming();
     Some(Model::Plane {
         key,
         r0,
         extra: 0.0,
         s,
         fringe: fringe.filter(|_| key.sloped()),
+        rounded: (conforming.len() == 1).then(|| conforming[0]),
     })
 }
 

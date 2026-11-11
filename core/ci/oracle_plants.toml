@@ -1460,3 +1460,21 @@ file = "core/oracle/src/order.rs"
 find = "            if self.axis_shared(i, j) && (ra_.path || rb_.path) {\n"
 replace = "            if self.axis_shared(i, j) {\n"
 red = ["pair_rules::mesh_triangles_on_one_axis_plane_are_read_on_their_own_keys"]
+
+[[plant]]
+name = "world-key-rounding-settled"
+item = "§7"
+check = "a world plane whose rounding is not settled names no one computation"
+file = "core/oracle/src/keys.rs"
+find = "        rounded: (conforming.len() == 1).then(|| conforming[0]),\n"
+replace = "        rounded: conforming.first().copied(),\n"
+red = ["pair_rules::equal_screen_keys_of_planes_whose_rounding_is_not_settled_are_not_one_computation"]
+
+[[plant]]
+name = "world-key-rounded-plane"
+item = "§7"
+check = "a world plane whose rounding is settled still names one computation"
+file = "core/oracle/src/keys.rs"
+find = "        rounded: (conforming.len() == 1).then(|| conforming[0]),\n"
+replace = "        rounded: None,\n"
+red = ["pair_rules::equal_screen_keys_of_planes_whose_rounding_is_not_settled_are_not_one_computation"]

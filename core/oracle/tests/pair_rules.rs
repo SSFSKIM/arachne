@@ -663,3 +663,80 @@ fn mesh_triangles_on_one_axis_plane_are_read_on_their_own_keys() {
     }
     assert!(apart > 0, "no sample where the own intervals are apart");
 }
+
+/// Two mesh triangles across view C's frame, each through `(−6, −6)`, `(6, −6)` and `(0, 6)` and
+/// rising along `x` by `slope`, at grid 0: their plane's conforming roundings, and the pair rows.
+fn two_sloped_triangles(slopes: [f64; 2]) -> ([usize; 2], Vec<(u8, u8)>) {
+    let mut b = Build::new(true);
+    for slope in slopes {
+        b.mesh(
+            vec![
+                [-6.0, -6.0, -6.0 * slope],
+                [6.0, -6.0, 6.0 * slope],
+                [0.0, 6.0, 0.0],
+            ],
+            vec![[0, 1, 2]],
+            OPAQUE_BLUE,
+        );
+    }
+    let v = View {
+        input_grid: 0.0,
+        ..view_c()
+    };
+    let mut delta = b.delta(1, v.clone());
+    let mut seen = std::collections::HashSet::new();
+    delta.upload.retain(|s| seen.insert(s.key()));
+    let mut state = arachne_oracle::stream::State::default();
+    state.apply(&delta).unwrap();
+    let roundings: Vec<usize> = arachne_oracle::draw::items(
+        &v,
+        &state.records,
+        &state.order,
+        &state.shapes,
+        &state.paints,
+    )
+    .iter()
+    .filter_map(|it| match it {
+        arachne_oracle::draw::Item::Mesh(m) => {
+            let (_, offered) = arachne_oracle::keys::triangle_depth(&v, m, 0);
+            Some(offered?.flat?.conforming().len())
+        }
+        _ => None,
+    })
+    .collect();
+    let d = decide_at(&[delta], 1, None).unwrap();
+    assert_eq!(d.header.status, 0, "{:?}", d.refused);
+    let (p, q) = (id_of(&d, 0, 3), id_of(&d, 1, 3));
+    let rows = pairs_of(&d, p, q)
+        .into_iter()
+        .map(|r| (r.edges, r.label))
+        .collect();
+    ([roundings[0], roundings[1]], rows)
+}
+
+#[test]
+fn equal_screen_keys_of_planes_whose_rounding_is_not_settled_are_not_one_computation() {
+    // §7 `ExactTie`: the keys are one computation "in every scenario". A plane's normal and offset
+    // are rounded to the plane grid, and where a value lies within the half-step's margin either
+    // rounding conforms. Two triangles a part in a billion and a part in a million above a half
+    // step of slope: the first plane may round either way, the second one way, and the two read
+    // one screen key as the oracle rounds them. Not one computation: no row is an `ExactTie`.
+    let half = 0.5 / 1_048_576.0;
+    let (roundings, rows) = two_sloped_triangles([half * (1.0 + 1e-9), half * (1.0 + 1e-6)]);
+    assert_eq!(roundings, [2, 1]);
+    assert!(!rows.is_empty());
+    assert!(
+        rows.iter().all(|e| e.1 != 4),
+        "{:?}",
+        &rows[..rows.len().min(4)]
+    );
+    // Two triangles of one settled plane are one computation still: weak alone.
+    let (roundings, rows) = two_sloped_triangles([half * (1.0 + 1e-6); 2]);
+    assert_eq!(roundings, [1, 1]);
+    assert!(!rows.is_empty());
+    assert!(
+        rows.iter().all(|e| *e == (1, 4)),
+        "{:?}",
+        &rows[..rows.len().min(4)]
+    );
+}
