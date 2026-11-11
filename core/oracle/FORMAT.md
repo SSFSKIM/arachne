@@ -113,8 +113,10 @@ A fragment's band at each sample: `I = [o − S⁻ − 3R, o + S⁺ + 3R]` (cont
 key of `−∞`.
 
 - **`which`**: 0, its own row: its own key, a stroke's adjusted on its own fill where both cover
-  (`stroke_on_own_fill@1`: keyed at the nearer key, its interval the hull of both keys'
-  intervals, met or not, §6);
+  (`stroke_on_own_fill@2`: keyed at the nearer key; its interval from the nearer of the two near
+  ends to the nearer of the two far ends, or to its own far end where the fill's cover is
+  `Either`, `band_input@2`, §6; its bound the pixel's largest taken, and every sample of it at the
+  pixel unable where an adjusted read is);
   1, its row on its record's plane (`shared_plane_read@1`), read against a fragment that may share
   it. A fragment has at most one of each at a pixel, its own first.
 - **`status[s]`**: 0 absent, 1 bounded, 2 `band_unbounded`, 3 `curve_recut` (the sample is
@@ -139,7 +141,7 @@ Every pair of fragments present (`Yes` or `Either`) at a sample, `a < b` by frag
 - **`provenance`**: how each strong edge is read, a two-bit code for each: bits 0–1 the edge of
   `a` in front (`edges` bit 1), bits 2–3 that of `b` in front (`edges` bit 2). 0 *own keys*: every
   scenario that admits the edge reads both fragments at their own keys (each one number at the
-  sample, `stroke_on_own_fill@1` included), or `edges` holds no such edge; 1 *row read*: some
+  sample, `stroke_on_own_fill@2` included), or `edges` holds no such edge; 1 *row read*: some
   scenario admits it through the pair's rows on a plane they may share (`shared_plane_read@1`);
   2 *flat identity*: the pair may share a flat identity with a record of no plane of its own
   (`one_plane@1`, every edge). 3 is not written. The completions rule that discards a strong cycle

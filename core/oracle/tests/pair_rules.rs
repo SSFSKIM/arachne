@@ -174,12 +174,13 @@ fn a_record_with_no_plane_of_its_own_is_no_flat_witness_for_itself() {
 }
 
 #[test]
-fn a_stroke_adjusted_on_its_own_fill_keeps_the_hull_of_both_intervals() {
-    // §6 `band_input@1`: a stroke adjusted on its own fill takes the hull of the two keys'
-    // intervals, disjoint or not. A square sloping towards the eye from its edge on x = 0 (z = 0)
-    // to x = −1.5 (z = 10), stroked 2 wide: just inside the near edge the stroke reads its
-    // centreline there, keyed −1, and the fill a nearer key, the two intervals apart. Its edges'
-    // lengths on screen keep away from a cubic count step (`curve_recut`).
+fn a_stroke_adjusted_on_its_own_fill_ends_at_the_nearer_far_end_where_both_cover() {
+    // §6 `band_input@2`: a stroke adjusted on its own fill, where both cover certainly, runs from
+    // the nearer of the two intervals' near ends to the nearer of their far ends; where the fill's
+    // cover is `Either`, to the stroke's own far end. A square sloping towards the eye from its
+    // edge on x = 0 (z = 0) to x = −1.5 (z = 10), stroked 2 wide: just inside the near edge the
+    // stroke reads its centreline there, keyed −1, and the fill a nearer key, the two intervals
+    // apart. Its edges' lengths on screen keep away from a cubic count step (`curve_recut`).
     let mut b = Build::new(true);
     let r = b.fill(
         polygon(&[
@@ -199,7 +200,13 @@ fn a_stroke_adjusted_on_its_own_fill_keeps_the_hull_of_both_intervals() {
             .iter()
             .find(|b| (b.fragment, b.x, b.y, b.which) == (f, x, y, 0))
     };
-    let mut apart = 0;
+    let cover = |f: u32, x: u32, y: u32| {
+        d.covers
+            .iter()
+            .find(|c| (c.fragment, c.x, c.y) == (f, x, y))
+            .map_or([0; 16], |c| c.cover)
+    };
+    let mut certain = 0;
     for f in d
         .bands
         .iter()
@@ -208,6 +215,7 @@ fn a_stroke_adjusted_on_its_own_fill_keeps_the_hull_of_both_intervals() {
         let Some(s) = row(stroke, f.x, f.y) else {
             continue;
         };
+        let (cs, cf) = (cover(stroke, f.x, f.y), cover(fill, f.x, f.y));
         for k in 0..16 {
             // Within a pixel of the near edge (shown x = 0), far from the far one (shown x = −3) and
             // the ends.
@@ -217,23 +225,33 @@ fn a_stroke_adjusted_on_its_own_fill_keeps_the_hull_of_both_intervals() {
                 continue;
             }
             let fill_hi = f.o[k] + f.s_plus[k] + 3.0 * f.r[k];
-            // The stroke's own key on its near edge is −1: where the fill's interval lies wholly
-            // nearer, the hull reaches −1.
-            if fill_hi >= -1.0 - 1e-6 {
+            // The stroke's own key on its near edge is −1, and the fill's interval lies wholly
+            // nearer.
+            if fill_hi >= -1.0 - 1e-6 || cs[k] == 0 {
                 continue;
             }
             let stroke_hi = s.o[k] + s.s_plus[k] + 3.0 * s.r[k];
-            assert!(
-                stroke_hi >= -1.0 - 1e-9,
-                "({}, {}) sample {k}: the stroke's interval ends at {stroke_hi}, the fill's at \
-                 {fill_hi}",
-                f.x,
-                f.y
+            let at = format!(
+                "({}, {}) sample {k}: the stroke's interval ends at {stroke_hi}, the fill's at {fill_hi}",
+                f.x, f.y
             );
-            apart += 1;
+            match cf[k] {
+                1 => {
+                    // It never reaches the stroke's own key, which the nearer of the two never
+                    // takes.
+                    assert!(stroke_hi < -1.0 - 1e-6, "{at}");
+                    certain += 1;
+                }
+                _ => {
+                    assert!(stroke_hi >= -1.0 - 1e-9, "{at}");
+                }
+            }
         }
     }
-    assert!(apart > 0, "no sample where the fill's interval is apart");
+    assert!(
+        certain > 0,
+        "no sample where both cover and the fill's interval is apart"
+    );
 }
 
 #[test]

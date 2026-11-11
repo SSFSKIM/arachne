@@ -68,19 +68,6 @@ impl Band {
     pub fn beta(&self) -> f64 {
         self.s_minus.max(self.s_plus) + 3.0 * self.r
     }
-    /// The hull of two bands (`stroke_on_own_fill@1`'s adjusted interval), keyed at the nearer.
-    pub fn hull(&self, other: &Band) -> Band {
-        let o = self.o.min(other.o);
-        let lo = self.lo().min(other.lo());
-        let hi = self.hi().max(other.hi());
-        let r = self.r.max(other.r);
-        Band {
-            o,
-            r,
-            s_minus: (o - lo - 3.0 * r).max(0.0),
-            s_plus: (hi - o - 3.0 * r).max(0.0),
-        }
-    }
 }
 
 /// A world plane's input-bound terms: `(|o| + R) kr(P, δ)`, `δ = τ_P(n_P) + θ_P dist(x, H)`.
@@ -532,7 +519,7 @@ fn world_s(
         - m2 * pr.d)
         .abs();
     let hull = PlaneHull::of(plane, points);
-    // A read outside a hull no wider than `2 τ_P` is unbounded (contract §6, `band_input@1`).
+    // A read outside a hull no wider than `2 τ_P` is unbounded (contract §6, `band_input@2`).
     let theta = if hull.width > 2.0 * tau {
         2.0 * tau / hull.width
     } else {

@@ -216,7 +216,7 @@ fn core_err_within_band() {
 }
 
 /// The named reads `core_err_within_band` must hold on, each in a scene of its own (View C): a
-/// stroke whose own key is nearer than its fill's (`stroke_on_own_fill@1` keeps it), a stroke read
+/// stroke whose own key is nearer than its fill's (`stroke_on_own_fill@2` keeps it), a stroke read
 /// on a plane its path shares, outside its own fill (`shared_plane_read@1`), and a line read on the
 /// second of the two flat identities it attaches to. Each of the last two is shown read by the
 /// plane reads it adds to the same scene without the fragment it is read against.

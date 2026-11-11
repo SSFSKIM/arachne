@@ -708,9 +708,9 @@ red = ["contract::core_err_within_band"]
 [[plant]]
 name = "stroke-on-own-fill"
 item = "§5"
-check = "stroke_on_own_fill@1: the nearer of the stroke's and its fill's keys"
+check = "stroke_on_own_fill@2: the nearer of the stroke's and its fill's keys"
 file = "core/oracle/src/pairs.rs"
-find = "        next[s] = on_own_fill(own[s], fill[s]);\n"
+find = "        next[s] = on_own_fill(own[s], fill[s], fill_cover[s] == 2);\n"
 replace = ""
 red = ["contract::core_err_within_band"]
 
@@ -1147,15 +1147,6 @@ replace = ".any(|m| m != i && self.offered[m].flat.is_some() && self.offered[m].
 red = ["pair_rules::a_flat_record_that_keeps_no_identity_still_takes_a_line_out_of_the_axis_rule_alone"]
 
 [[plant]]
-name = "own-fill-nearer-alone"
-item = "§6"
-check = "a stroke adjusted on its own fill keeps the hull of both intervals"
-file = "core/oracle/src/pairs.rs"
-find = "    let (lo, hi) = (o.lo().min(f.lo()), o.hi().max(f.hi()));"
-replace = "    let (lo, hi) = if meets(&o, &f) {\n        (o.lo().min(f.lo()), o.hi().max(f.hi()))\n    } else {\n        (taken.lo(), taken.hi())\n    };"
-red = ["pair_rules::a_stroke_adjusted_on_its_own_fill_keeps_the_hull_of_both_intervals"]
-
-[[plant]]
 name = "outside-hull-narrow"
 item = "§6"
 check = "a read outside a hull no wider than twice its tolerance is unbounded"
@@ -1298,3 +1289,21 @@ file = "core/oracle/src/pairs.rs"
 find = "    if let Some(u) = (0..16).filter(|&s| adjusted[s]).find_map(|s| next[s].err()) {"
 replace = "    if let Some(u) = None::<Unable> {"
 red = ["lib::pairs::tests::an_adjusted_stroke_whose_bound_rests_on_an_unable_read_is_unable_at_the_pixel"]
+
+[[plant]]
+name = "own-fill-hull"
+item = "§6"
+check = "band_input@2: where both cover, an adjusted stroke ends at the nearer far end, not the hull's"
+file = "core/oracle/src/pairs.rs"
+find = "    let hi = if fill_either {\n        o.hi()\n    } else {\n        o.hi().min(f.hi())\n    };"
+replace = "    let hi = o.hi().max(f.hi());"
+red = ["lib::pairs::tests::where_both_cover_an_adjusted_stroke_ends_at_the_nearer_far_end", "pair_rules::a_stroke_adjusted_on_its_own_fill_ends_at_the_nearer_far_end_where_both_cover"]
+
+[[plant]]
+name = "own-fill-either-far"
+item = "§6"
+check = "band_input@2: where the fill's cover is Either, an adjusted stroke reaches its own far end"
+file = "core/oracle/src/pairs.rs"
+find = "    let hi = if fill_either {\n        o.hi()\n    } else {\n        o.hi().min(f.hi())\n    };"
+replace = "    let hi = o.hi().min(f.hi());"
+red = ["lib::pairs::tests::where_the_fill_s_cover_is_either_an_adjusted_stroke_reaches_its_own_far_end"]

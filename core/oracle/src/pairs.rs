@@ -1,5 +1,5 @@
 //! A frame's depth at its samples (contract §5, §6, §7): every present fragment's band, its own
-//! row adjusted on its own fill (`stroke_on_own_fill@1`) and its row on its record's plane
+//! row adjusted on its own fill (`stroke_on_own_fill@2`) and its row on its record's plane
 //! (`shared_plane_read@1`), and each present pair's admitted edges and label.
 
 use crate::draw::Layer;
@@ -76,15 +76,25 @@ fn tied(a: &Band, b: &Band) -> bool {
     a.o == b.o || (a.o.is_finite() && b.o.is_finite() && (a.o - b.o).abs() <= a.r + b.r)
 }
 
-/// `stroke_on_own_fill@1` at one sample: the stroke's band where its fill covers too. It is keyed
-/// at the nearer of the two keys with that key's bound, both bounds where they are `tied`
-/// (contract §5), and its interval is the hull of both keys' intervals (§6, `band_input@1`),
-/// whether they meet or not.
-fn on_own_fill(own: Result<Band, Unable>, fill: Result<Band, Unable>) -> Result<Band, Unable> {
+/// `stroke_on_own_fill@2` at one sample: the stroke's band where its fill covers too, `fill_either`
+/// where the fill's cover is `Either`. It is keyed at the nearer of the two keys with that key's
+/// bound, both bounds where they are `tied` (contract §5). Its interval (§6, `band_input@2`) runs
+/// from the nearer of the two near ends to the nearer of the two far ends, or, where the fill's
+/// cover is `Either` and the core may keep the stroke's own key, to the stroke's own far end.
+fn on_own_fill(
+    own: Result<Band, Unable>,
+    fill: Result<Band, Unable>,
+    fill_either: bool,
+) -> Result<Band, Unable> {
     let (o, f) = (own?, fill?);
     let taken = if f.o < o.o { f } else { o };
     let r = if tied(&o, &f) { o.r.max(f.r) } else { taken.r };
-    let (lo, hi) = (o.lo().min(f.lo()), o.hi().max(f.hi()));
+    let lo = o.lo().min(f.lo());
+    let hi = if fill_either {
+        o.hi()
+    } else {
+        o.hi().min(f.hi())
+    };
     Ok(Band {
         o: taken.o,
         r,
@@ -111,7 +121,7 @@ fn on_own_fill_pixel(
         if stroke[s] == 0 || fill_cover[s] == 0 {
             continue;
         }
-        next[s] = on_own_fill(own[s], fill[s]);
+        next[s] = on_own_fill(own[s], fill[s], fill_cover[s] == 2);
         adjusted[s] = true;
     }
     if !adjusted.contains(&true) {
@@ -191,7 +201,7 @@ fn pixel(
         .iter()
         .map(|f| scene.frags[*f].row.as_ref().map(|m| m.pixel(px, py, true)))
         .collect();
-    // `stroke_on_own_fill@1`: a stroke (never a background stroke) on its own fill.
+    // `stroke_on_own_fill@2`: a stroke (never a background stroke) on its own fill.
     for i in 0..rows.len() {
         let fi = &scene.frags[frags[i]];
         if fi.layer != Layer::Stroke {
@@ -344,15 +354,37 @@ mod tests {
         // §5: the stroke takes the bound of the key it took, both where the keys tie by §7's
         // `tied`: `|a − b| <= e_a + e_b` on the arithmetic bounds, not where the intervals meet.
         // Keys 5e-4 apart with R 1e-6 and 1e-9: their intervals (S 1e-3) meet, the keys do not tie.
-        let apart = on_own_fill(band(-1.0, 1e-6, 1e-3), band(-1.0005, 1e-9, 1e-3)).unwrap();
+        let apart = on_own_fill(band(-1.0, 1e-6, 1e-3), band(-1.0005, 1e-9, 1e-3), false).unwrap();
         assert_eq!((apart.o, apart.r), (-1.0005, 1e-9));
         // 5e-7 apart: tied, both bounds count.
-        let tied = on_own_fill(band(-1.0, 1e-6, 1e-3), band(-1.0000005, 1e-9, 1e-3)).unwrap();
+        let tied =
+            on_own_fill(band(-1.0, 1e-6, 1e-3), band(-1.0000005, 1e-9, 1e-3), false).unwrap();
         assert_eq!((tied.o, tied.r), (-1.0000005, 1e-6));
         // Keys 0.02 apart with R 0.01 and 0.001 and no S: the intervals [−1.03, −0.97] and
         // [−1.023, −1.017] meet, the keys do not tie, and the nearer fill's 0.001 is taken.
-        let met = on_own_fill(band(-1.0, 0.01, 0.0), band(-1.02, 0.001, 0.0)).unwrap();
+        let met = on_own_fill(band(-1.0, 0.01, 0.0), band(-1.02, 0.001, 0.0), false).unwrap();
         assert_eq!((met.o, met.r), (-1.02, 0.001));
+    }
+
+    #[test]
+    fn where_both_cover_an_adjusted_stroke_ends_at_the_nearer_far_end() {
+        // §6 `band_input@2`: where both cover certainly, from the nearer of the two near ends to
+        // the nearer of their far ends. The fill (−1.5) wholly nearer than the stroke's own key
+        // (−1): the interval ends at the fill's far end, never reaching the stroke's own keys,
+        // which the nearer of the two never takes.
+        let b = on_own_fill(band(-1.0, 1e-9, 1e-4), band(-1.5, 1e-9, 1e-4), false).unwrap();
+        let (lo, hi) = (b.lo(), b.hi());
+        assert!((lo - (-1.5 - 1e-4 - 3e-9)).abs() < 1e-12, "{lo}");
+        assert!((hi - (-1.5 + 1e-4 + 3e-9)).abs() < 1e-12, "{hi}");
+    }
+
+    #[test]
+    fn where_the_fill_s_cover_is_either_an_adjusted_stroke_reaches_its_own_far_end() {
+        // §6 `band_input@2`: where the fill's cover is `Either`, from the nearer near end to the
+        // far end of the stroke's own interval: the core may keep the stroke's own key.
+        let b = on_own_fill(band(-1.0, 1e-9, 1e-4), band(-1.5, 1e-9, 1e-4), true).unwrap();
+        assert!((b.lo() - (-1.5 - 1e-4 - 3e-9)).abs() < 1e-12, "{}", b.lo());
+        assert!(b.hi() >= -1.0 + 1e-4 + 3e-9 - 1e-12, "{}", b.hi());
     }
 
     #[test]

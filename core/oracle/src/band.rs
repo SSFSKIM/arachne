@@ -1,4 +1,4 @@
-//! The tie band's input terms (contract §6, `band_input@1`): the departure along any normal
+//! The tie band's input terms (contract §6, `band_input@2`): the departure along any normal
 //! `Δ⁺`, a record's tolerance, what a move does to a key on a plane (`kr`), the hull of a record's
 //! points on its plane and a lower bound of two records' joint width (§7's may-share test).
 
