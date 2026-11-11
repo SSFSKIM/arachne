@@ -21,6 +21,7 @@ from arachne import (
     DOWN,
     LEFT,
     OUT,
+    PI,
     RIGHT,
     UP,
     Arrow3D,
@@ -30,6 +31,7 @@ from arachne import (
     MathTex,
     PMobject,
     Scene,
+    Sphere,
     Square,
     Surface,
     Text,
@@ -52,6 +54,7 @@ from arachne.mobject.construction_caches import (
     forget_construction_caches,
     restore_construction_caches,
 )
+from arachne.timeline.draw import CameraExtras
 from arachne.utils.bezier import interpolate
 
 from ..timeline import camera_scenes
@@ -331,6 +334,91 @@ def test_regrouping_a_held_label_s_glyph_sends_its_new_facing_group():
     assert slot in {s for s, _, _ in delta.source}, "its drawing is unchanged"
     assert _by_mobject(stream)[id(glyph)].fields["facing_group"] == carried[slot]
     assert _by_mobject(stream)[id(two[0])].fields["facing_group"] == before
+
+
+def _labels(camera, roots):
+    """The leaves of ``roots`` kept facing ``camera``, as the sets of them the
+    lowering gives one facing group each.
+    """
+    _, _, records = _framed(camera, roots)
+    found: dict[int, set[int]] = {}
+    for root in roots:
+        for mob in root.family_members_with_points():
+            group = records[id(mob)].fields.get("facing_group", 0)
+            if group:
+                found.setdefault(group, set()).add(id(mob))
+    return {frozenset(members) for members in found.values()}
+
+
+def _from_the_record(camera, previous=None):
+    """Give ``camera`` its inputs as the draw from the record gives them: its
+    centre functions evaluated in a capture (against ``previous``), then
+    installed as the recorded values. The capture's inputs are returned.
+    """
+    extras = CameraExtras.observe(camera, previous)
+    assert extras is not None
+    extras.install(camera)
+    return extras
+
+
+def _centred_at(point):
+    """A centre function of its own, returning ``point``."""
+    return lambda: np.array(point, dtype=float)
+
+
+def test_a_text_label_drawn_from_the_record_is_one_facing_group_as_drawn_live():
+    """A label's glyphs are kept facing the camera by the one centre function
+    it was registered with; drawn from the record, by its recorded value, they
+    are still one label.
+    """
+    camera = ThreeDCamera()
+    label = Text("WBFX")
+    camera.add_fixed_orientation_mobjects(label)
+    live = _labels(camera, [label])
+    glyphs = label.family_members_with_points()
+    assert len(glyphs) == 4
+    assert live == {frozenset(id(glyph) for glyph in glyphs)}
+    _from_the_record(camera)
+    assert _labels(camera, [label]) == live
+
+
+def test_labels_registered_apart_at_one_centre_stay_apart_drawn_from_the_record():
+    """Labels registered apart are two labels though their centres are equal:
+    two side by side, and a part of a label registered again on its own.
+    """
+    camera = ThreeDCamera()
+    one, two = Text("AB"), Text("CD")
+    part = VGroup(Circle(0.1), Circle(0.05))
+    whole = VGroup(Square(0.4), Square(0.2).rotate(PI / 4), part)
+    camera.add_fixed_orientation_mobjects(one, center_func=_centred_at(OUT))
+    camera.add_fixed_orientation_mobjects(two, center_func=_centred_at(OUT))
+    camera.add_fixed_orientation_mobjects(whole, center_func=_centred_at(OUT))
+    camera.add_fixed_orientation_mobjects(part, center_func=_centred_at(OUT))
+    roots = [one, two, whole]
+    live = _labels(camera, roots)
+    assert len(live) == 4
+    _from_the_record(camera)
+    assert _labels(camera, roots) == live
+
+
+def test_a_camera_observed_again_from_installed_inputs_keeps_each_label_whole():
+    """A camera given recorded inputs and observed again, evaluated anew or
+    from the record, still keeps each label facing it by one function.
+    """
+    camera = ThreeDCamera()
+    one, two = Text("WBFX"), Text("YZ").shift(DOWN)
+    camera.add_fixed_orientation_mobjects(one)
+    camera.add_fixed_orientation_mobjects(two)
+    roots = [one, two]
+    live = _labels(camera, roots)
+    assert len(live) == 2
+    _from_the_record(camera)
+    again = _from_the_record(camera)
+    assert _labels(camera, roots) == live
+    kept = CameraExtras.observe(camera, again, evaluate=False)
+    assert kept is not None
+    kept.install(camera)
+    assert _labels(camera, roots) == live
 
 
 def test_a_leaf_reparented_between_live_frames_sends_its_new_source_alone(
@@ -643,6 +731,65 @@ def test_a_label_under_a_nearer_plane_goes_behind_it(monkeypatch):
         assert [(centre, outcome) for _, _, _, centre, outcome, _ in plan] == [
             (True, "qualifies")
         ]
+
+
+class TextInSphere(ThreeDScene):
+    """A Text label of several glyphs kept facing the camera at the centre of
+    an opaque sphere, under a turn.
+    """
+
+    def construct(self):
+        self.set_camera_orientation(phi=1.0, theta=-0.7)
+        sphere = Sphere(radius=1.0, resolution=(8, 8))
+        label = Text("WBFX", font_size=36)
+        self.add(sphere, label)
+        self.add_fixed_orientation_mobjects(label)
+        self.move_camera(theta=-0.4, run_time=0.3)
+
+
+@pytest.mark.parametrize("draw_path", ["ir_cairo", "core"])
+def test_a_text_label_drawn_from_the_record_is_one_facing_group(draw_path, monkeypatch):
+    """A scene's frames are drawn from its record: its label, registered once,
+    is one facing group however many glyphs it has.
+    """
+    pytest.importorskip("arachne_core")
+    sent = []
+    for painter_class in (CorePainter, IrCairoPainter):
+        monkeypatch.setattr(painter_class, "draw", _keeping(painter_class.draw, sent))
+    render(TextInSphere, FPS, draw_path=draw_path, **MEDIUM)
+    facing = [
+        record
+        for delta in sent
+        for _, record in delta.set
+        if record.fields.get("fixed_orientation_centre") is not None
+    ]
+    assert len(facing) >= 4, "each glyph is a record"
+    groups = {record.fields["facing_group"] for record in facing}
+    groups |= {group for delta in sent for *_, group in delta.source if group}
+    assert len(groups) == 1
+
+
+def test_a_text_label_meets_each_sheet_once_drawn_from_the_record(monkeypatch):
+    """The labels' plan decides once per label and surface sheet: a label of
+    several glyphs is one label against each sheet it meets.
+    """
+    pytest.importorskip("arachne_core")
+    plans = []
+    draw = CorePainter.draw
+
+    def planned(self, delta, **kwargs):
+        frame = draw(self, delta, **kwargs)
+        height, width = np.asarray(frame).shape[:2]
+        plans.append(self.core.label_plan(width, height))
+        return frame
+
+    monkeypatch.setattr(CorePainter, "draw", planned)
+    render(TextInSphere, FPS, draw_path="core", **MEDIUM)
+    assert any(plans), "the label meets the sphere"
+    for plan in plans:
+        assert len({group for group, *_ in plan}) <= 1, plan
+        sheets = [(surface, sheet) for _, surface, sheet, *_ in plan]
+        assert len(sheets) == len(set(sheets)), plan
 
 
 #: Scenes keeping records facing the camera: labels of shapes, a label of text,
