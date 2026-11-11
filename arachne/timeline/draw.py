@@ -208,8 +208,14 @@ class CameraExtras:
             )
         if isinstance(camera, ThreeDCamera):
             camera.fixed_in_frame_mobjects = set(self.fixed_in_frame)
+            # One function per registration family, as the camera registered
+            # it: _centers evaluated each family's centre function once and
+            # gave its members one array, so the array's identity is the
+            # family's, and the lowering groups a label by function identity.
+            constants: dict[int, Callable[[], np.ndarray]] = {}
             camera.fixed_orientation_mobjects = {
-                mob: _constant(value) for mob, value in self.centers
+                mob: constants.setdefault(id(value), _constant(value))
+                for mob, value in self.centers
             }
         if self.displays is not None:
             camera.image_mobjects_from_cameras = list(self.displays)  # type: ignore[attr-defined]
