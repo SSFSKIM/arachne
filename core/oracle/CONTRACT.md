@@ -1145,6 +1145,18 @@ key:
   from XF, is at most `R_f(k)`;
 - its key lies within `2 R_f(k)` of `o_f(k)`.
 
+**A stroke adjusted on its own fill** (`stroke_on_own_fill@2`). Where the fill covers certainly
+under input motion, the test is as above. Where the fill's cover is `Either` (§4), its key passes
+when it lies within `2 R_f(k)` of the stroke's own unadjusted key or of the key it takes where both
+cover, `R_f(k)` being the bound `stroke_on_own_fill@2` states there, the larger of the two.
+
+Why: `band_input@2` and `stroke_on_own_fill@2` already admit both keys there, since the core may
+keep the stroke's own key. A test naming one `o` would fail an outcome the contract admits. This
+closes a gap in the test's text and relaxes no bound.
+
+**Change from the test as first stated.** It compared the key with the taken key alone wherever
+both cover, including where the fill's cover is `Either`.
+
 **Scope.** The rows tested are the fragment's own row and each row read on a plane the oracle
 settles from XF alone: an own plane, a flat path's fill plane, and a registered plane both records
 share in every scenario (§7). A **planeless record that may share** a registered plane (§7, the
