@@ -10,8 +10,9 @@ use crate::band::{PlaneHull, departure_plus, kr};
 use crate::camera::{FrameMap, Placement, Projection};
 use crate::centreline::{Centreline, Joint, joints};
 use crate::depth::{
-    Planarity, ScreenKey, WorldPlane, departure_from, extent, facing_plane, key_error, key_plane,
-    nu, on_a_line, planarity, plane_r_region, points_somewhere, three_corner_plane,
+    Planarity, ScreenKey, WorldPlane, conforming_keys, departure_from, extent, facing_plane,
+    key_error, key_plane, nu, on_a_line, planarity, plane_r_region, points_somewhere,
+    three_corner_plane,
 };
 use crate::draw::{MeshItem, PathItem, Pivot, Placing, PointsItem};
 use crate::flatten::Ring;
@@ -207,10 +208,10 @@ impl CentreKey {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Model {
     NegInf,
-    /// A world plane keyed on screen: its key, its region's `R` before `ρ` and `ν`, any extra
-    /// bound (a `Nearest` face's outline departure), its `S`, and for a sloped layer the rings
-    /// its fringe reads beyond (`fringe_key@1`); and the plane as rounded where its rounding is
-    /// settled.
+    /// A world plane keyed on screen: its key, its region's `M` (`R` before `ρ`, `O`, `ν` and
+    /// the factor), any departure `O` (a `Nearest` face's outline's), its `S`, and for a sloped
+    /// layer the rings its fringe reads beyond (`fringe_key@1`); and the plane as rounded where
+    /// its rounding is settled.
     Plane {
         key: ScreenKey,
         r0: f64,
@@ -384,7 +385,8 @@ impl Model {
                 });
                 let os: [f64; 16] = std::array::from_fn(|k| key.at(at[k][0], at[k][1]));
                 let omax = os.iter().map(|o| o.abs()).fold(0.0, f64::max);
-                let r = r0 + extra + key.rho(px, py) + nu(omax);
+                // `R = (1 + 64u) ((M + ρ + O) + ν)`, `O` a `Nearest` face's departure (§6).
+                let r = (1.0 + 64.0 * U) * (((r0 + key.rho(px, py, &at)) + extra) + nu(omax));
                 std::array::from_fn(|k| {
                     let o = os[k];
                     let s = match s {
@@ -424,7 +426,7 @@ impl Model {
             } => {
                 let os: [f64; 16] = std::array::from_fn(|k| key.at(pts[k][0], pts[k][1]));
                 let omax = os.iter().map(|o| o.abs()).fold(0.0, f64::max);
-                let r = bound + key.rho(px, py) + nu(omax);
+                let r = bound + key.rho(px, py, &pts) + nu(omax);
                 let s = sigma * kmax + libm::hypot(key.b, key.c) * eps;
                 std::array::from_fn(|k| {
                     if !(s.is_finite() && r.is_finite()) {
@@ -798,7 +800,13 @@ pub fn path_depth(view: &View, item: &PathItem, rings: &[Option<Vec<Ring>>; 3]) 
                     rings[1].clone(),
                 )?;
                 if let Model::Plane { key, extra, .. } = &mut m {
-                    *extra = nearest_departure(pr, &map, item, key);
+                    *extra = nearest_departure(
+                        pr,
+                        &map,
+                        &item.shown,
+                        key,
+                        &conforming_keys(pr, &map, &p),
+                    );
                 }
                 Some(m)
             })
@@ -919,22 +927,33 @@ pub fn path_depth(view: &View, item: &PathItem, rings: &[Option<Vec<Ring>>; 3]) 
 
 /// A `Nearest` face's outline departure: the largest over its subpaths' points `q` (and each
 /// closed subpath's closing point read at its first point's position) of
-/// `gap_q + ρ(q) + key_error(q) + 4u |k_q| + u gap_q`, plus `hypot(b, c) · 0.1`.
-fn nearest_departure(pr: &Projection, map: &FrameMap, item: &PathItem, key: &ScreenKey) -> f64 {
+/// `gap_q + ρ(q) + key_error(q) + 4u |k_q| + u gap_q`, plus `hypot(b, c) · 0.1`, on its own
+/// `key`; `gap_q` is the largest over the `rounded` planes' keys, as the other computation may
+/// hold any of them (contract §6, `band_arith@3`).
+fn nearest_departure(
+    pr: &Projection,
+    map: &FrameMap,
+    shown: &[[f64; 3]],
+    key: &ScreenKey,
+    rounded: &[ScreenKey],
+) -> f64 {
     let mut worst: f64 = 0.0;
-    for (s, e) in crate::flatten::subpaths(&item.shown) {
-        let mut pts: Vec<([f64; 2], [f64; 3])> = item.shown[s..e]
+    for (s, e) in crate::flatten::subpaths(shown) {
+        let mut pts: Vec<([f64; 2], [f64; 3])> = shown[s..e]
             .iter()
             .map(|q| (map.map(q[0], q[1]), *q))
             .collect();
-        if crate::flatten::closes(&item.shown, s, e) {
-            let first = map.map(item.shown[s][0], item.shown[s][1]);
-            pts.push((first, item.shown[e - 1]));
+        if crate::flatten::closes(shown, s, e) {
+            let first = map.map(shown[s][0], shown[s][1]);
+            pts.push((first, shown[e - 1]));
         }
         for (at, q) in pts {
             let k = pr.key(q[2]);
-            let gap = (key.at(at[0], at[1]) - k).abs();
-            let rho = 4.0 * U * (key.a.abs() + (key.b * at[0]).abs() + (key.c * at[1]).abs());
+            let gap = rounded
+                .iter()
+                .map(|kr| (kr.at(at[0], at[1]) - k).abs())
+                .fold(0.0, f64::max);
+            let rho = key.rho_at(at);
             worst = worst.max(gap + rho + key_error(pr, q) + 4.0 * U * k.abs() + U * gap);
         }
     }
@@ -1116,5 +1135,48 @@ pub fn point_depth(view: &View, item: &PointsItem, placed: [f64; 3]) -> Model {
             facing_model(pr, &map, placed, departure_of(g, pr.r[2], &c.placings))
         }
         _ => Model::NegInf,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::camera::IDENTITY3;
+
+    /// `gap_q` is the largest over the rounded planes `gap` admits, as the other computation may
+    /// hold either (contract §6, a `Nearest` face).
+    #[test]
+    fn a_nearest_faces_departure_takes_the_gap_of_every_rounded_plane_it_admits() {
+        let pr = Projection {
+            r: IDENTITY3,
+            c: [0.0; 3],
+            d: 10.0,
+            zoom: 1.0,
+            exponential: false,
+        };
+        let map = FrameMap {
+            xx: 4.0,
+            yy: -4.0,
+            x0: 32.0,
+            y0: 32.0,
+        };
+        // One open cubic at depth 0, where every point keys `−1`.
+        let shown = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+        let own = ScreenKey::constant(-1.0);
+        let other = ScreenKey::constant(-1.0 + 1.0e-3);
+        assert!(
+            nearest_departure(&pr, &map, &shown, &own, &[own]) < 1.0e-12,
+            "premise"
+        );
+        let both = nearest_departure(&pr, &map, &shown, &own, &[own, other]);
+        assert!(
+            both >= 1.0e-3,
+            "departure {both:e} under the other plane's gap"
+        );
     }
 }

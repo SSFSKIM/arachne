@@ -48,6 +48,9 @@ pub struct WorldPlane {
     pub unrounded_e: f64,
     /// The offset's error bound, `4u (|unit| · |p|)` (0 for an axis plane).
     pub e_err: f64,
+    /// A `Nearest` face's `δe`, how far two conforming computations' offsets can differ (its
+    /// centroid's order, contract §6); `None` for every other plane, whose offset is one value.
+    pub offset_spread: Option<f64>,
     /// For an axis plane, its axis.
     pub axis: Option<usize>,
 }
@@ -80,6 +83,7 @@ impl WorldPlane {
             unrounded_n: unit,
             unrounded_e: e,
             e_err: 4.0 * U * abs_dot(unit, p),
+            offset_spread: None,
             axis: None,
         })
     }
@@ -94,18 +98,23 @@ impl WorldPlane {
             unrounded_n: n,
             unrounded_e: p[k],
             e_err: 0.0,
+            offset_spread: None,
             axis: Some(k),
         }
     }
 
     /// The rounded planes a conforming computation can produce: the oracle's, and for each
-    /// coefficient within `2^-30` of a grid half-step, the other neighbour too.
+    /// coefficient within `2^-30` steps of a grid half-step, the other neighbour too. A `Nearest`
+    /// face's offset takes `2^-30 + δe / 2^-20` steps, as the other computation's offset may lie
+    /// up to `δe` from this one's; its normal is the same bits in both.
     pub fn conforming(&self) -> Vec<([f64; 3], f64)> {
-        let options = |v: f64| -> Vec<f64> {
+        let window = 1.0 / 1_073_741_824.0;
+        let e_window = window + self.offset_spread.unwrap_or(0.0) / PLANE_GRID;
+        let options = |v: f64, window: f64| -> Vec<f64> {
             let q = v / PLANE_GRID;
             let mine = grid(v);
             let frac = q - libm::floor(q);
-            if (frac - 0.5).abs() <= 1.0 / 1_073_741_824.0 {
+            if (frac - 0.5).abs() <= window {
                 let other = if mine / PLANE_GRID == libm::floor(q) {
                     (libm::floor(q) + 1.0) * PLANE_GRID
                 } else {
@@ -117,16 +126,16 @@ impl WorldPlane {
             }
         };
         if self.axis.is_some() {
-            return options(self.unrounded_e)
+            return options(self.unrounded_e, e_window)
                 .into_iter()
                 .map(|e| (self.n, e))
                 .collect();
         }
         let mut out = vec![];
-        for a in options(self.unrounded_n[0]) {
-            for b in options(self.unrounded_n[1]) {
-                for c in options(self.unrounded_n[2]) {
-                    for e in options(self.unrounded_e) {
+        for a in options(self.unrounded_n[0], window) {
+            for b in options(self.unrounded_n[1], window) {
+                for c in options(self.unrounded_n[2], window) {
+                    for e in options(self.unrounded_e, e_window) {
                         out.push(([a, b, c], e));
                     }
                 }
@@ -158,10 +167,16 @@ impl ScreenKey {
         ((self.a + self.b * x) + self.c * y) + 0.0
     }
 
-    /// `ρ(x, y) = 4u (|a| + |b x| + |c y|)` at the pixel's far corner.
-    pub fn rho(&self, px: i64, py: i64) -> f64 {
-        let (x, y) = ((px + 1) as f64, (py + 1) as f64);
-        4.0 * U * (self.a.abs() + (self.b * x).abs() + (self.c * y).abs())
+    /// The reading's rounding at a point, `4u (|a| + |b x| + |c y|)`.
+    pub fn rho_at(&self, p: [f64; 2]) -> f64 {
+        4.0 * U * (self.a.abs() + (self.b * p[0]).abs() + (self.c * p[1]).abs())
+    }
+
+    /// `ρ` at pixel `(px, py)`: the largest of the reading's rounding at its far corner and at
+    /// every point the read takes (a fringe read's may lie outside the pixel).
+    pub fn rho(&self, px: i64, py: i64, reads: &[[f64; 2]]) -> f64 {
+        let far = self.rho_at([(px + 1) as f64, (py + 1) as f64]);
+        reads.iter().map(|p| self.rho_at(*p)).fold(far, f64::max)
     }
 
     pub fn sloped(&self) -> bool {
@@ -229,28 +244,45 @@ pub fn key_plane(
     (k.a.is_finite() && k.b.is_finite() && k.c.is_finite()).then_some(k)
 }
 
-/// `R` for a world plane keyed on screen, before `ρ` and `ν`: the largest over the region's
-/// corners of `gap + A + shift` (contract §6). A read adds `ρ` at its pixel and `ν` of its key.
+/// The keys of the rounded planes a conforming computation can produce (`WorldPlane::conforming`),
+/// the oracle's own first.
+pub fn conforming_keys(pr: &Projection, map: &FrameMap, p: &WorldPlane) -> Vec<ScreenKey> {
+    p.conforming()
+        .into_iter()
+        .map(|(n, e)| key_of_terms(&plane_terms(pr, map, n, e), pr, map))
+        .collect()
+}
+
+/// `M` for a world plane keyed on screen (contract §6, `band_arith@3`): the largest over the
+/// region's corners of `gap + 3A + C + shift`, all of the unrounded plane, with `A`, `C` and the
+/// shift taken at `Dn`, the nearest the other computation's `D` can stand, and at `|e| + δe`.
+/// Infinite where `Dn <= ε`. A read adds `ρ` at its pixel, a `Nearest` face's departure `O`, and
+/// `ν` of its key, under `(1 + 64u)`.
 pub fn plane_r_region(pr: &Projection, map: &FrameMap, p: &WorldPlane, region: [f64; 4]) -> f64 {
     let u = plane_terms(pr, map, p.unrounded_n, p.unrounded_e);
     let ku = key_of_terms(&u, pr, map);
-    let rounded: Vec<ScreenKey> = p
-        .conforming()
-        .into_iter()
-        .map(|(n, e)| key_of_terms(&plane_terms(pr, map, n, e), pr, map))
-        .collect();
+    let rounded = conforming_keys(pr, map, p);
     let c = pr.c;
-    let n_len = norm(p.unrounded_n);
-    let dn = 8.0 * U * n_len;
-    let de = 4.0 * U * (p.unrounded_e.abs() + n_len * norm(c));
+    let spread = p.offset_spread.unwrap_or(0.0);
+    let m_len = norm(u.m);
+    let dn = 8.0 * U * m_len;
+    let de = 4.0 * U * ((p.unrounded_e.abs() + spread) + m_len * norm(c));
     let eye = [
         c[0] + pr.d * pr.r[2][0],
         c[1] + pr.d * pr.r[2][1],
         c[2] + pr.d * pr.r[2][2],
     ];
     let m2d = u.m[2] * pr.d;
-    let dd = de + dn * norm(eye) + 4.0 * U * m2d.abs();
-    let abs_d = u.big_d.abs();
+    let dd = (de + dn * norm(eye)) + 4.0 * U * m2d.abs();
+    let near = match p.offset_spread {
+        Some(spread) => (u.big_d.abs() - spread) - 2.0 * dd,
+        None => u.big_d.abs(),
+    };
+    let eps = p.e_err + 4.0 * U * spread;
+    // A NaN `Dn` bounds nothing either.
+    if near.is_nan() || near <= eps {
+        return f64::INFINITY;
+    }
     let mut worst: f64 = 0.0;
     for (x, y) in [
         (region[0], region[1]),
@@ -270,15 +302,12 @@ pub fn plane_r_region(pr: &Projection, map: &FrameMap, p: &WorldPlane, region: [
         ];
         let tx = u.gx * (x - map.x0);
         let ty = u.gy * (y - map.y0);
-        let f = (m2d - tx - ty).abs() / abs_d;
+        let f = ((m2d - tx) - ty).abs() / near;
         let dnum = dn * norm(s) + 4.0 * U * (tx.abs() + ty.abs() + m2d.abs());
-        let a_term = (dnum + f * dd) / abs_d + 4.0 * U * f;
-        let shift = if abs_d > p.e_err {
-            f * p.e_err / (abs_d - p.e_err)
-        } else {
-            f64::INFINITY
-        };
-        worst = worst.max(gap + a_term + shift);
+        let a_term = (dnum + f * dd) / near + 4.0 * U * f;
+        let c_term = (f + dnum / near) * spread / near;
+        let shift = f * eps / (near - eps);
+        worst = worst.max(((gap + 3.0 * a_term) + c_term) + shift);
     }
     worst
 }
@@ -493,9 +522,36 @@ pub fn fit(points: &[[f64; 3]], how: Planarity) -> Option<WorldPlane> {
                     c[k] += p[k];
                 }
             }
-            WorldPlane::canonical(newell(points), c.map(|v| v / n))
+            let mut plane = WorldPlane::canonical(newell(points), c.map(|v| v / n))?;
+            plane.offset_spread = Some(offset_spread(points, plane.unrounded_n));
+            Some(plane)
         }
     }
+}
+
+/// `γ_j = j u / (1 − j u)`, infinite where `j u >= 1`.
+fn gamma(j: usize) -> f64 {
+    let ju = j as f64 * U;
+    if ju >= 1.0 {
+        f64::INFINITY
+    } else {
+        ju / (1.0 - ju)
+    }
+}
+
+/// A `Nearest` face's `δe = 2 Σ_k |û_k| E_k`, with
+/// `E_k = γ_{2N+66} (Σ_i |p_ik − p_0k| + Σ_i |p_ik|) / N` over its `N` points (contract §6): how
+/// far two conforming computations' offsets can differ, their centroids' share and each offset's
+/// own bound included.
+fn offset_spread(points: &[[f64; 3]], unit: [f64; 3]) -> f64 {
+    let n = points.len();
+    let g = gamma(2 * n + 66);
+    let e: [f64; 3] = std::array::from_fn(|k| {
+        let first: f64 = points.iter().map(|q| (q[k] - points[0][k]).abs()).sum();
+        let own: f64 = points.iter().map(|q| q[k].abs()).sum();
+        g * (first + own) / n as f64
+    });
+    2.0 * ((unit[0].abs() * e[0] + unit[1].abs() * e[1]) + unit[2].abs() * e[2])
 }
 
 /// `dep_P`: the largest `|n_P · p − e_P| + 4u (|n_P| · |p| + |e_P|)` over the points, plus the

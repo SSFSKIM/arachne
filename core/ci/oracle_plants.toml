@@ -1685,3 +1685,130 @@ file = "core/oracle/src/keys.rs"
 find = "            widths: [rec.paint.stroke_width, rec.paint.background_stroke_width],\n"
 replace = "            widths: [0.0; 2],\n"
 red = ["pair_rules::recut_reads_of_one_curve_computation_are_an_exact_tie_and_of_two_stay_unable"]
+
+
+[[plant]]
+name = "band-arith-factor"
+item = "§6"
+check = "band_arith@3: R's sum under (1 + 64u), the factor removed"
+file = "core/oracle/src/keys.rs"
+find = "let r = (1.0 + 64.0 * U) * (((r0 + key.rho(px, py, &at)) + extra) + nu(omax));"
+replace = "let r = ((r0 + key.rho(px, py, &at)) + extra) + nu(omax);"
+red = ["band_arith::a_plane_reads_r_as_its_terms_summed_in_order_under_one_factor"]
+
+[[plant]]
+name = "band-arith-departure-inside"
+item = "§6"
+check = "band_arith@3: a Nearest face's departure O inside the factor, added after it as @2 had it"
+file = "core/oracle/src/keys.rs"
+find = "let r = (1.0 + 64.0 * U) * (((r0 + key.rho(px, py, &at)) + extra) + nu(omax));"
+replace = "let r = (1.0 + 64.0 * U) * ((r0 + key.rho(px, py, &at)) + nu(omax)) + extra;"
+red = ["band_arith::a_plane_reads_r_as_its_terms_summed_in_order_under_one_factor"]
+
+[[plant]]
+name = "band-arith-rho-reads"
+item = "§6"
+check = "band_arith@3: rho over every point the read takes, read at the far corner alone"
+file = "core/oracle/src/depth.rs"
+find = "reads.iter().map(|p| self.rho_at(*p)).fold(far, f64::max)"
+replace = "reads.iter().map(|p| self.rho_at(*p)).fold(far, |a, _| a)"
+red = ["band_arith::rho_is_the_largest_over_the_far_corner_and_every_point_the_read_takes", "band_arith::a_triangle_planes_rho_is_the_largest_over_the_far_corner_and_its_reads"]
+
+[[plant]]
+name = "band-arith-tri-rho-reads"
+item = "§6"
+check = "band_arith@3: a triangle plane's rho over its reads, none passed"
+file = "core/oracle/src/keys.rs"
+find = "let r = bound + key.rho(px, py, &pts) + nu(omax);"
+replace = "let r = bound + key.rho(px, py, &[]) + nu(omax);"
+red = ["band_arith::a_triangle_planes_rho_is_the_largest_over_the_far_corner_and_its_reads"]
+
+[[plant]]
+name = "band-arith-3a"
+item = "§6"
+check = "band_arith@3: M's 3A, the other computation's 2A dropped"
+file = "core/oracle/src/depth.rs"
+find = "worst = worst.max(((gap + 3.0 * a_term) + c_term) + shift);"
+replace = "worst = worst.max(((gap + a_term) + c_term) + shift);"
+red = ["band_arith::m_takes_three_a_c_and_the_shift_at_the_nearest_d_the_other_computation_can_hold"]
+
+[[plant]]
+name = "band-arith-c"
+item = "§6"
+check = "band_arith@3: M's C, the exact key's move with the offset by de, dropped"
+file = "core/oracle/src/depth.rs"
+find = "let c_term = (f + dnum / near) * spread / near;"
+replace = "let c_term = 0.0 * ((f + dnum / near) * spread / near);"
+red = ["band_arith::m_takes_three_a_c_and_the_shift_at_the_nearest_d_the_other_computation_can_hold"]
+
+[[plant]]
+name = "band-arith-dn"
+item = "§6"
+check = "band_arith@3: Dn, the nearest the other computation's D can stand, taken as |D|"
+file = "core/oracle/src/depth.rs"
+find = "Some(spread) => (u.big_d.abs() - spread) - 2.0 * dd,"
+replace = "Some(_) => u.big_d.abs(),"
+red = ["band_arith::a_nearest_face_the_other_computation_may_hold_too_near_its_eye_is_unbounded", "band_arith::m_takes_three_a_c_and_the_shift_at_the_nearest_d_the_other_computation_can_hold"]
+
+[[plant]]
+name = "band-arith-dn-unbounded"
+item = "§6"
+check = "band_arith@3: R infinite where Dn <= eps, left to the formulas"
+file = "core/oracle/src/depth.rs"
+find = "if near.is_nan() || near <= eps {"
+replace = "if false && (near.is_nan() || near <= eps) {"
+red = ["band_arith::a_nearest_face_the_other_computation_may_hold_too_near_its_eye_is_unbounded"]
+
+[[plant]]
+name = "band-arith-de-spread"
+item = "§6"
+check = "band_arith@3: de taken at |e| + de, the spread dropped"
+file = "core/oracle/src/depth.rs"
+find = "let de = 4.0 * U * ((p.unrounded_e.abs() + spread) + m_len * norm(c));"
+replace = "let de = 4.0 * U * (p.unrounded_e.abs() + m_len * norm(c));"
+red = ["band_arith::m_takes_three_a_c_and_the_shift_at_the_nearest_d_the_other_computation_can_hold"]
+
+[[plant]]
+name = "band-arith-eps-spread"
+item = "§6"
+check = "band_arith@3: the other computation's offset bound eps = eps_e + 4u de, its 4u de dropped"
+file = "core/oracle/src/depth.rs"
+find = "let eps = p.e_err + 4.0 * U * spread;"
+replace = "let eps = p.e_err + 0.0 * spread;"
+red = ["band_arith::m_takes_three_a_c_and_the_shift_at_the_nearest_d_the_other_computation_can_hold"]
+
+[[plant]]
+name = "band-arith-m-length"
+item = "§6"
+check = "band_arith@3: dn = 8u |m| and de's |m| |c|, taken at the normal's length"
+file = "core/oracle/src/depth.rs"
+find = "let m_len = norm(u.m);"
+replace = "let m_len = norm(p.unrounded_n);"
+red = ["band_arith::m_takes_three_a_c_and_the_shift_at_the_nearest_d_the_other_computation_can_hold"]
+
+[[plant]]
+name = "band-arith-window-spread"
+item = "§6"
+check = "band_arith@3: a Nearest face's offset window 2^-30 + de / 2^-20, the spread dropped"
+file = "core/oracle/src/depth.rs"
+find = "let e_window = window + self.offset_spread.unwrap_or(0.0) / PLANE_GRID;"
+replace = "let e_window = window + 0.0 * self.offset_spread.unwrap_or(0.0);"
+red = ["band_arith::a_nearest_faces_offset_rounds_either_way_within_its_spread_of_a_half_step"]
+
+[[plant]]
+name = "band-arith-ek-gamma"
+item = "§6"
+check = "band_arith@3: E_k at gamma_{2N+66}, taken at @2's gamma_{2N+64}"
+file = "core/oracle/src/depth.rs"
+find = "let g = gamma(2 * n + 66);"
+replace = "let g = gamma(2 * n + 64);"
+red = ["band_arith::a_nearest_faces_offset_spread_is_gamma_2n_plus_66_of_its_points"]
+
+[[plant]]
+name = "band-arith-departure-gap"
+item = "§6"
+check = "band_arith@3: a Nearest face's gap_q over every rounded plane gap admits, the oracle's own alone"
+file = "core/oracle/src/keys.rs"
+find = ".map(|kr| (kr.at(at[0], at[1]) - k).abs())"
+replace = ".take(1).map(|kr| (kr.at(at[0], at[1]) - k).abs())"
+red = ["lib::keys::tests::a_nearest_faces_departure_takes_the_gap_of_every_rounded_plane_it_admits"]
