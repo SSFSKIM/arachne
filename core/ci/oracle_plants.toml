@@ -658,7 +658,7 @@ check = "cycle_rank@2: the later painted on equal wins"
 file = "core/oracle/src/order.rs"
 find = "(wins, paint(x))"
 replace = "(wins, std::cmp::Reverse(paint(x)))"
-red = ["order::an_all_strong_cycle_is_ranked_by_wins_then_paint_order"]
+red = ["order::an_all_strong_cycle_through_a_row_read_is_ranked_by_wins_then_paint_order"]
 
 [[plant]]
 name = "cycle-rank-weak-yields"
