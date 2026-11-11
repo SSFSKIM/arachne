@@ -1611,6 +1611,17 @@ writes a set `E` of admitted edges, drawn from: weak (paint order), strong `a`-f
 
    These bullets are examples. The sentence above them is the rule, and any other pair whose keys
    are one computation in every scenario is an `ExactTie` too.
+
+   A read that is `curve_recut` (§6) is no bar to an `ExactTie`: two reads of one curve
+   computation (the same record inputs the curve key reads: shape content, placings, blend,
+   reveal, pre-projected points, depth space, fixed-orientation centre, kind and its face ends
+   and the stroke-width inputs; under one projection, frame map and line-width multiple; read at
+   one point) give one key bit for bit however input motion rebuilds the centreline, so the pair
+   is an `ExactTie` though a recut read's band is not bounded. This lifts `curve_recut` alone: a
+   read that is `truth_unable` for another class (`band_unbounded`, `pivot_unknown`) stays so.
+   The inputs that parenthesis names are the core's obligation: a curve's key reads no record
+   input beyond them, so a change to the core that makes it read another is a change to this
+   contract.
 3. **A pair that may share an identity with a record of no plane of its own, through a flat
    identity:** every edge (`one_plane@1`, above).
 4. **Otherwise**, `E` is the union, over every scenario of §5's pair-dependent reads that §7's sets
@@ -3802,7 +3813,8 @@ These are reported by class for a human to view, never counted as ties:
 - **Unbounded bands.** Samples whose band is unbounded (`band_unbounded`, §6). They are
   `truth_unable` per sample.
 - **Rebuilt centrelines.** Reads exposed to a change of a cubic's count or of a joint's join
-  (`curve_recut`, §6). They are `truth_unable` per sample.
+  (`curve_recut`, §6). They are `truth_unable` per sample, unless their pair is an `ExactTie`
+  (§7).
 - **Far gradient ends.** Gradient layers with an end or a pixel's point beyond the fit limit
   (`gradient_far_ends`, §9). They are `truth_unable` for that layer's pixels.
 - **Open label cases.** Samples counted `label_rule_open` (§10), only by its named cases: the
