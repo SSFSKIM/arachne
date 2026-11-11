@@ -135,7 +135,7 @@ Elsewhere, Cairo's rules that this text relies on are restated in full.
 | `nearest_plane_departure@1` | 7 | a face on no one plane carries its outline's departure | ✓ |
 | `paint_order@1` | 7 | the order where no depth decides: later drawn in front | ✓ |
 | `majority@1` | 7 | one order for the pixel where its sub-samples disagree | |
-| `cycle_rank@1` | 7 | the order where pairwise orders cycle | ✓ |
+| `cycle_rank@2` | 7 | the order where pairwise orders cycle (replaces @1; the change is stated in §7) | ✓ |
 | `join_mask@1` | 8 | Cairo's join decisions carried on the wire (XF 1.4) | ✓ |
 | `miter_limit_10@1` | 8 | Cairo's miter limit, joints and caps | |
 | `dash_start_least_length@1` | 8 | dashes laid on the whole outline; gaps under 1/512 stroke solid | ✓ |
@@ -157,7 +157,7 @@ How the counted rules are counted:
   edited, a dash laid, a dot drawn).
 - **`paint_order@1`:** the sub-samples at which a pair's label is `TieBand` or `ExactTie`.
 - **`nearest_plane_departure@1`:** those at which the label is `TieBand` only by that term.
-- **`cycle_rank@1`:** the sub-samples whose admissible orders include one that only a cycle
+- **`cycle_rank@2`:** the sub-samples whose admissible orders include one that only a cycle
   produces.
 
 ## 1. The frame and its pixels
@@ -1457,7 +1457,7 @@ the units and the coverage resolve (§9). It never decides a sample's own order.
 `order.rs::a_pair_crossing_inside_the_pixel_takes_the_order_most_shared_sub_samples_give`,
 `a_stroke_one_ulp_nearer_where_it_does_not_cover_keeps_paint_order`.]
 
-### `cycle_rank@1`: the rank
+### `cycle_rank@2`: the rank
 
 **Core rule.** Pairwise orders are edges, strong or weak.
 
@@ -1522,19 +1522,41 @@ axis plane inside both outlines, each pair with its paint order reversed.
 
 ### Oracle reading: the admissible orders at a sample
 
-- **Completions.** A **completion** picks one edge from each present pair's `E`.
+- **Completions.** A **completion** picks one edge from each present pair's `E`, except that a
+  choice whose strong edges, each read from own keys, form a cycle is not a completion. A cycle
+  through at least one edge not read from own keys stays.
+  - A strong edge is **read from own keys** where every scenario that admits it reads both
+    fragments of the pair at their own keys (§5). An edge admitted through a row,
+    `shared_plane_read@1`'s pair-dependent read, is not. Neither is an edge of a pair that may share
+    an identity with a record of no plane of its own through a flat identity (the third case of
+    the edges a pair admits, above), whose rows the partition fixes.
+  - Why no order the core gives is lost: in any one scenario, each fragment's own key at a sample is
+    one number (§5, "Each fragment carries, at each sample, a key"). That includes
+    `stroke_on_own_fill@1`, which sets the stroke's own key at the sample whatever it is read
+    against. A strong edge puts the nearer of two keys in front (the relation of a pair at a
+    sample, above), so strong edges between own keys order those numbers and never cycle. Only
+    `shared_plane_read@1` makes a fragment's key at a sample a function of the pair, so only a
+    cycle through such a read can be the core's.
 - **Admissible orders.** An order of the present fragments is **admissible** where the rank
-  (`cycle_rank@1`, through cycles) of some completion produces it.
+  (`cycle_rank@2`, through cycles) of some completion produces it.
 - **A sufficient test.** An order is admissible if every pair agrees with some edge in its `E`. The
   agreeing edge is a strong edge in that order's direction, or a weak edge whose paint order matches.
   A comparator may test this first.
-- **Cycles.** Other orders may be admissible through a completion whose weak edges yield in a cycle.
+- **Cycles.** Other orders may be admissible through a completion whose weak edges yield in a cycle,
+  or whose strong edges cycle through an edge not read from own keys.
 - **Every pair.** The check covers every pair, not adjacent pairs alone. Intervals are not
   transitive: keys 0, 1 and 2 with half-widths 0.6 let the adjacent pairs meet while the ends are
-  strong.
+  strong. Read from own keys, the strong cycle this allows (0 over 2, 2 over 1, 1 over 0) is not a
+  completion, and the order its rank gives, 2, 1, 0, is not admitted through it (`cycle_own_keys`,
+  §12).
 - **Mismatch.** A sample's order that no completion produces is a `mismatch`.
 
-**Rejects:** an order that breaks a strong edge where a weak edge could have yielded.
+**Change from `cycle_rank@1`.** @1 took every choice of edges as a completion. A cycle of strong
+edges read from own keys, which no scenario gives, then admitted the order its rank produced. The
+core's rank is unchanged.
+
+**Rejects:** an order that breaks a strong edge where a weak edge could have yielded; an order that
+only a cycle of strong edges read from own keys produces (`cycle_own_keys`).
 
 ## 8. Stroke policies
 
@@ -1746,7 +1768,7 @@ All of this arithmetic is binary64 in the order written, so the vertices an edit
 2. **One fragment:** if opaque and full, its colour (`Fast`); otherwise
    `blend(colour, coverage, bg)` (`Coverage`).
 3. **Several fragments:** compute every fragment's keys (§5, both adjustments) and every pair's
-   pixel order (`majority@1`, or paint order on a flat pixel). Rank the pixel (`cycle_rank@1`).
+   pixel order (`majority@1`, or paint order on a flat pixel). Rank the pixel (`cycle_rank@2`).
    Where the strong orders alone cycle, take the **sample resolve** over every fragment.
 4. **`opaque_drop@1`.** Where the pixel's order holds a fragment that is opaque and full, the first
    such at place `p`:
@@ -2745,7 +2767,7 @@ whole by the fill and by the stroke along `x = 4`, and by nothing else. Trace: `
 stroke in front. Defect: at its 16 samples, the fill in front. Escapes: two fragments, so no cycle
 in which the weak edge could yield.
 
-**W16, `cycle_breaks_strong`.** Set: completions and `cycle_rank@1` (§7). View C. A closed polygon
+**W16, `cycle_breaks_strong`.** Set: completions and `cycle_rank@2` (§7). View C. A closed polygon
 `P` through `(−3.1875, 0, 1.5)`, `(3.1875, 0, 1.5)`, `(3.1875, 3/64, −1.5)`,
 `(−3.1875, 3/64, −1.5)`, coded `planes` Curve (no plane of its own), fill green, background
 stroke red of width `0.25` (1 px), no stroke; then a polygon `B` = `[−6, 6]²` at `z = 0`, coded on
@@ -2763,12 +2785,68 @@ about 31.33 to 32.5) covers them too, and `B` covers every sample.
 Trace at samples 12, 13 and 15: `E(A, C) = {weak}` with `C` in front (`own_layers@1`: the
 background stroke under its fill); `E(A, B) = {strong A}` and `E(B, C) = {strong B}` (no shared
 plane: the union with `B` is over 2 units wide, `B` is the only flat record, and `P` holds no axis
-coordinate). The one completion cycles, and `cycle_rank@1` lets the weak edge yield: the order is
+coordinate). The one completion cycles, and `cycle_rank@2` lets the weak edge yield: the order is
 `A, B, C`, and the conforming report passes by that route. At sample 14, `E(C, B) = {strong C}`,
 the completion does not cycle, and the order is `C, A, B`. Nothing is opaque and full there, so
 nothing is dropped. Defect: at samples 12, 13 and 15 the order `C, A, B`, which keeps the weak edge
 and breaks `B` over `C`; no completion gives it there. Sample 14 already has that order and is not
 part of the defect.
+
+**`cycle_own_keys`.** Set: completions, a cycle of strong edges read from own keys (§7). View C,
+fills only, drawn in this order:
+
+- `F0`, a polygon on `z = 0.125 + x / 2` with corners `(−6, −5.5, −2.875)`, `(6, −5.5, 3.125)`,
+  `(6, 5.5, 3.125)`, `(−6, 5.5, −2.875)`, fill red;
+- `F1`, a face group of one face, `planes` code 3 (a face on no one plane), with corners
+  `(−6, −6, 0.25)`, `(5.75, −6, −0.25)`, `(5.75, 5.75, 0.25)`, `(−6, 5.75, −0.25)`, fill green.
+  Newell's normal through its centroid gives the plane `z = 0`, keyed `−1`, and its corners depart
+  from it by `0.25`, so its bound carries `R ≈ 0.0127` (`nearest_plane_departure@1`) and its
+  interval is about `−1 ± 0.038`;
+- `F2`, a polygon on `z = −0.125 − x / 2` with corners `(−6, −5.75, 2.875)`, `(6, −5.75, −3.125)`,
+  `(6, 5.75, −3.125)`, `(−6, 5.75, 2.875)`, fill blue.
+
+Each edge's `L` clears its step by at least 0.10 px (`F0`), 0.97 px (`F1`) and 0.21 px (`F2`).
+
+Pixel `(32, 32)`: at its 16 samples `F0` keys between about `−1.0124` and `−1.0065`, `F1` `−1`,
+and `F2` between about `−0.9936` and `−0.9878`. Trace: `F1` is never offered to the registry; `F0`
+and `F2` share no plane (their union is at least 1 unit wide, with no third flat record) and are
+far from parallel (dihedral `2 atan(1/2) ≈ 53°`); no strokes. `F0` and `F2` each lie inside `F1`'s
+interval, by at least `0.025`, and part from each other by at least `0.0128` against bands under
+`10^-5`. So `E(F0, F1)` and `E(F1, F2)` are every edge (`TieBand`), and `E(F0, F2) = {strong F0}`,
+every one read from own keys. The choice of `F1` over `F0`, `F2` over `F1` and `F0` over `F2` is a
+cycle of strong edges read from own keys, so it is not a completion. It alone would rank to
+`F2, F1, F0`: the cycle is broken by paint order, `F2` drawn last. The completions give
+`F0, F1, F2`; `F0, F2, F1`; and `F1, F0, F2`. Defect: at its 16 samples, the order `F2, F1, F0`.
+Escapes: three fragments and no label; the cycle has no pair-dependent edge. Rejects: taking every
+choice of edges as a completion (`cycle_rank@1`), which admits it.
+
+**`cycle_through_row`.** Set: a cycle through a pair-dependent edge stays a completion (§7). View C,
+drawn in this order:
+
+- `P`, a polygon on `z = 2y` with corners `(−6, −1.5, −3)`, `(6, −1.5, −3)`, `(6, 1.5, 3)`,
+  `(−6, 1.5, 3)`, fill red;
+- `Q`, a polygon on `z = 0.25 + x / 4` with corners `(−6, −6, −1.25)`, `(6, −6, 1.75)`,
+  `(6, 6, 1.75)`, `(−6, 6, −1.25)`, fill blue;
+- `A`, an open line from `(−4.125, 0, 0)` to `(4, 0, 0)`, on `P`'s plane, stroke white, width
+  `1.5` (6 px), no fill.
+
+`A`'s cubic has `L = 32.5`, 0.5 px from its step of 32, so no read near it is `curve_recut`. It has
+no joints, and every edge of `P` and `Q` clears its step by at least 0.26 px. From `(−4, 0, 0)`,
+`A` would have `L = 32` exactly, and every read in its body would be `truth_unable`.
+
+Pixel `(32, 30)`, inside `A`'s stroke: at its 16 samples `P` keys between about `−1.0492` and
+`−1.0258`, `Q` between about `−1.0157` and `−1.0128`, and `A` `−1` along its centreline. Trace:
+`A` has no plane of its own and lies on `P`'s plane, so their union is flat and passes the width
+test. The pair may share through `P`'s identity, and `E(P, A)` is every edge
+(`Policy(one_plane@1)`), not read from own keys. `Q` shares with neither: its union with `P` and
+its union with `A` are each over 1 unit wide, so no flat record passes the width test with `Q` and
+`A` both, and `Q` is flat, so the axis rule does not pair it with `A`. The planes are far from
+parallel, and there is one stroke, so no `lines@1`. The keys part by at least `0.011` against bands
+under `10^-5`: `E(P, Q) = {strong P}` and `E(Q, A) = {strong Q}`. The choice of `A` over `P`, `P`
+over `Q` and `Q` over `A` is a cycle of strong edges through `E(P, A)`, so it stays a completion.
+It ranks to `A, P, Q`, the cycle broken by paint order (`A` drawn last), which no other completion
+gives (they give `P, Q, A`). Report: at its 16 samples, the order `A, P, Q`. Expected: agreement.
+Rejects: dropping every cycle of strong edges, which refuses it as a `mismatch`.
 
 **W17, `invisible_registry_offer`.** Set: registry eligibility (§5). Two forms. Neither relies on
 the width test failing: every record lies on `z = 0`, so the width test passes for every pair, and
