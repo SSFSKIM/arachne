@@ -421,6 +421,88 @@ def test_a_camera_observed_again_from_installed_inputs_keeps_each_label_whole():
     assert _labels(camera, roots) == live
 
 
+def _observed_again(camera, previous, evaluate):
+    """Give ``camera`` its inputs observed against ``previous``, the capture
+    before (evaluating its centre functions, or carrying the centres
+    ``previous`` recorded), as the draw from the record gives them.
+    """
+    extras = CameraExtras.observe(camera, previous, evaluate=evaluate)
+    assert extras is not None
+    extras.install(camera)
+
+
+@pytest.mark.parametrize("evaluate", [True, False], ids=["evaluated", "carried"])
+def test_a_glyph_registered_apart_at_its_label_s_centre_splits_drawn_from_the_record(
+    evaluate,
+):
+    """A glyph registered again on its own, by a function whose centre equals
+    its label's, leaves the label in the next capture though no centre moved.
+    """
+    camera = ThreeDCamera()
+    label = Text("WBFX")
+    camera.add_fixed_orientation_mobjects(label)
+    previous = CameraExtras.observe(camera, None)
+    camera.add_fixed_orientation_mobjects(label[2], center_func=label.get_center)
+    live = _labels(camera, [label])
+    assert len(live) == 2
+    _observed_again(camera, previous, evaluate)
+    assert _labels(camera, [label]) == live
+
+
+@pytest.mark.parametrize("evaluate", [True, False], ids=["evaluated", "carried"])
+def test_a_part_registered_again_with_its_label_s_function_joins_drawn_from_the_record(
+    evaluate,
+):
+    """A part of a label registered apart, at an equal centre, then registered
+    again with the label's own function joins the label in the next capture.
+    """
+    camera = ThreeDCamera()
+    part = VGroup(Circle(0.1), Circle(0.05))
+    whole = VGroup(Square(0.4), Square(0.2).rotate(PI / 4), part)
+    camera.add_fixed_orientation_mobjects(whole, center_func=_centred_at(OUT))
+    camera.add_fixed_orientation_mobjects(part, center_func=_centred_at(OUT))
+    previous = CameraExtras.observe(camera, None)
+    shared = camera.fixed_orientation_mobjects[whole]
+    camera.add_fixed_orientation_mobjects(part, center_func=shared)
+    live = _labels(camera, [whole])
+    assert len(live) == 1
+    _observed_again(camera, previous, evaluate)
+    assert _labels(camera, [whole]) == live
+
+
+def test_a_member_added_to_a_label_carries_its_label_s_centre_drawn_from_the_record():
+    """A member added to a label's family after a capture is kept facing the
+    camera with it when the next capture carries the recorded centres.
+    """
+    camera = ThreeDCamera()
+    label = VGroup(Square(0.2), Square(0.1).rotate(PI / 4))
+    camera.add_fixed_orientation_mobjects(label)
+    previous = CameraExtras.observe(camera, None)
+    added = Circle(0.1)
+    label.add(added)
+    shared = camera.fixed_orientation_mobjects[label]
+    camera.add_fixed_orientation_mobjects(added, center_func=shared)
+    live = _labels(camera, [label])
+    assert live == {frozenset(id(m) for m in label.family_members_with_points())}
+    _observed_again(camera, previous, evaluate=False)
+    assert _labels(camera, [label]) == live
+
+
+def test_a_glyph_registered_again_on_its_own_splits_carrying_the_recorded_centres():
+    """A glyph registered again by its own centre leaves its label when the
+    next capture carries the recorded centres, calling no centre function.
+    """
+    camera = ThreeDCamera()
+    label = Text("WBFX")
+    camera.add_fixed_orientation_mobjects(label)
+    previous = CameraExtras.observe(camera, None)
+    camera.add_fixed_orientation_mobjects(label[1])
+    live = _labels(camera, [label])
+    assert len(live) == 2
+    _observed_again(camera, previous, evaluate=False)
+    assert _labels(camera, [label]) == live
+
+
 def test_a_leaf_reparented_between_live_frames_sends_its_new_source_alone(
     monkeypatch,
 ):
