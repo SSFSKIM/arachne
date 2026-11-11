@@ -1361,3 +1361,12 @@ file = "core/oracle/src/order.rs"
 find = "            if let Err(u @ (Unable::BandUnbounded | Unable::PivotUnknown)) = r.own {"
 replace = "            if let Err(u) = r.own {"
 red = ["pair_rules::an_adjusted_stroke_unable_at_a_pixel_is_unable_against_others_and_judged_against_its_fill", "order::a_fragment_with_no_key_stated_is_unable_against_its_own_record_s_other_layer"]
+
+[[plant]]
+name = "colour-unknown-opens-order"
+item = "§9"
+check = "a fragment whose colour is unknown (COLR kind 0) is still judged for its presence and order"
+file = "core/oracle/tests/common/judge.rs"
+find = "            if d.fragments[f as usize].flags & FLAG_UNBOUNDED != 0 {"
+replace = "            if d.colours[f as usize].kind == 0 || d.fragments[f as usize].flags & FLAG_UNBOUNDED != 0 {"
+red = ["judge::a_fragment_whose_colour_is_unknown_is_still_judged_for_its_order"]

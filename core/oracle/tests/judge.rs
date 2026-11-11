@@ -100,6 +100,62 @@ fn a_lone_fragment_whose_key_states_no_bound_is_unable_not_agreement() {
     // twin, judged by `own_layers@1` alone, stays judged (`contract_mutation`).
 }
 
+#[test]
+fn a_fragment_whose_colour_is_unknown_is_still_judged_for_its_order() {
+    // `FORMAT.md`, `COLR` kind 0: a shaded path's colour is not computed, its colour verdict
+    // alone is open. Its presence and its order stay judged. Two opaque squares as in the first
+    // test, the nearer one shaded in 3D under a shading camera (kind 0).
+    let mut b = Build::new(true);
+    b.fill(rect([-6.0, 6.0], [-6.0, 6.0], 0.0), OPAQUE_RED);
+    b.fill(rect([-3.0, 3.0], [-3.0, 3.0], 2.0), OPAQUE_BLUE)
+        .depth
+        .shade_in_3d = true;
+    let mut view = view_c();
+    if let arachne_core::xf::Camera::ThreeD(c) = &mut view.camera {
+        c.should_apply_shading = true;
+    }
+    let d = decide_at(&[b.delta(1, view)], 1, None).unwrap();
+    let (x, y) = (32, 32);
+    let ids: Vec<u32> = [0, 1]
+        .map(|slot| d.fragments.iter().find(|f| f.slot == slot).unwrap().id)
+        .into();
+    assert_eq!(d.colours[ids[0] as usize].kind, 1);
+    assert_eq!(d.colours[ids[1] as usize].kind, 0);
+    let entries: Vec<Entry> = ids
+        .iter()
+        .map(|&id| {
+            let f = &d.fragments[id as usize];
+            let c = d
+                .covers
+                .iter()
+                .find(|c| (c.x, c.y, c.fragment) == (x, y, id))
+                .unwrap();
+            Entry {
+                identity: (f.object, f.part, f.layer, f.sub),
+                cells: c.cell_hi,
+            }
+        })
+        .collect();
+    let report = |order: Vec<usize>| Reported {
+        x,
+        y,
+        entries: entries.clone(),
+        order: vec![order; 16],
+    };
+    for s in 0..16 {
+        assert_eq!(
+            judge(&d, &report(vec![1, 0]), s),
+            Verdict::Agree,
+            "sample {s}"
+        );
+        assert_eq!(
+            judge(&d, &report(vec![0, 1]), s),
+            Verdict::Mismatch("mismatch"),
+            "sample {s}"
+        );
+    }
+}
+
 /// W18's label and a line at `z`, the label painted first or last, and the verdicts of the label
 /// first and the line first at the samples of pixel (32, 32), with the pair's `edges` and `plate`
 /// there.
