@@ -1424,3 +1424,21 @@ file = "core/oracle/src/decide.rs"
 find = "            uncovered.push(fragment);\n"
 replace = ""
 red = ["label_sheets::a_fill_outside_the_frame_joins_the_sheets_it_shares_corners_with"]
+
+[[plant]]
+name = "pivot-path-carried-precision"
+item = "§6"
+check = "a pre-projected path's facing key at its pivot takes the carried centre's precision"
+file = "core/oracle/src/keys.rs"
+find = "                    let delta_c = carried_centre_delta(&cam, g);\n"
+replace = "                    let delta_c = 0.0;\n"
+red = ["key_rules::a_pre_projected_pivot_s_facing_key_takes_its_carried_centre_s_precision"]
+
+[[plant]]
+name = "pivot-block-carried-precision"
+item = "§6"
+check = "a pre-projected point block's facing key at its pivot takes the carried centre's precision"
+file = "core/oracle/src/keys.rs"
+find = "                facing_model(&cam, &map, pivot, carried_centre_delta(&cam, g))\n"
+replace = "                facing_model(&cam, &map, pivot, 0.0)\n"
+red = ["key_rules::a_pre_projected_pivot_s_facing_key_takes_its_carried_centre_s_precision"]

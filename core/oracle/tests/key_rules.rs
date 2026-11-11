@@ -246,6 +246,63 @@ fn a_pre_projected_point_block_s_pivot_moves_as_its_first_point_moved() {
     assert!(at.iter().all(|e| *e == 4), "{at:?}");
 }
 
+/// Every read sample of `fragment`'s own rows: `(S⁻, S⁺)`.
+fn input_bounds(d: &Decisions, fragment: u32) -> Vec<(f64, f64)> {
+    own_rows(d, fragment)
+        .iter()
+        .flat_map(|row| {
+            (0..16)
+                .filter(|&s| row.status[s] == 1)
+                .map(|s| (row.s_minus[s], row.s_plus[s]))
+        })
+        .collect()
+}
+
+#[test]
+fn a_pre_projected_pivot_s_facing_key_takes_its_carried_centre_s_precision() {
+    // §5: a pre-projected record with a pivot is keyed on the facing plane through it, in the
+    // camera's axes; §6, on a facing plane, for a label: `S⁻ = S⁺ = (|o| + R) ds(Δ_c)`, with
+    // `Δ_c = (g/2) |R_2|_1` for its centre as carried. Under the identity camera at focal distance
+    // 20, a pivot at the origin keys −1 and `Δ_c = g/2`: `S ≈ (g/2) / (20 − g/2)`, the `R` term
+    // far below it.
+    let ds = (GRID / 2.0) / (20.0 - GRID / 2.0);
+    let near = |(lo, hi): (f64, f64)| lo == hi && (lo - ds).abs() <= ds * 1e-6;
+    // A path, its tail its own square.
+    let mut b = Build::new(true);
+    b.pre_projected(rect([-1.0, 1.0], [-1.0, 1.0], 0.0), OPAQUE_BLUE)
+        .depth
+        .fixed_orientation_centre = Some([0.0; 3]);
+    let d = decide(&b, view(20.0, GRID));
+    let path = input_bounds(&d, id_of(&d, 0, 1));
+    assert!(path.len() > 100, "{} samples read", path.len());
+    assert!(path.iter().all(|s| near(*s)), "{:?}", &path[..4]);
+    // A point block, its tail its own point.
+    let mut b = Build::new(true);
+    let tail = Shape::new(ShapeData::Path {
+        points: vec![[0.125, -0.125, 0.0]],
+    });
+    let key = tail.key();
+    b.shapes.push(tail);
+    let r = b.points(vec![[0.125, -0.125, 0.0]], OPAQUE_GREEN, 2.0);
+    r.depth.fixed_orientation_centre = Some([0.125, -0.125, 0.0]);
+    r.features |= FEATURE_PRE_PROJECTED;
+    r.pre_projected = Some(PreProjected {
+        points: key,
+        gradient: None,
+        fill: Paint::None,
+        stroke: Paint::None,
+        background_stroke: Paint::None,
+    });
+    let mut delta = b.delta(1, view(20.0, GRID));
+    let mut seen = std::collections::HashSet::new();
+    delta.upload.retain(|s| seen.insert(s.key()));
+    let d = decide_at(&[delta], 1, None).unwrap();
+    assert_eq!(d.header.status, 0, "{:?}", d.refused);
+    let block = input_bounds(&d, id_of(&d, 0, 4));
+    assert!(!block.is_empty());
+    assert!(block.iter().all(|s| near(*s)), "{block:?}");
+}
+
 #[test]
 fn a_pre_projected_pivot_with_no_first_point_to_move_by_states_no_bound() {
     // §2 moves a pivot as the record's first point moved; a record whose own shape is empty has

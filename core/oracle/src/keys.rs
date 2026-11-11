@@ -556,6 +556,12 @@ fn world_s(
     }))
 }
 
+/// `Δ_c = (g/2) |R_2|_1`: how far a centre as carried, on the input grid `g`, may move along the
+/// depth row of `pr` (contract §6, on a facing plane, for a label).
+fn carried_centre_delta(pr: &Projection, g: f64) -> f64 {
+    (g / 2.0) * (pr.r[2][0].abs() + pr.r[2][1].abs() + pr.r[2][2].abs())
+}
+
 /// The facing model through a world `centre` (contract §5, `facing_plane@1`): its plane keyed
 /// with min_cos 0 where it keys, else the centre's own key everywhere; `S` from `ds(Δ_c)`.
 fn facing_model(pr: &Projection, map: &FrameMap, centre: [f64; 3], delta_c: f64) -> Model {
@@ -634,13 +640,16 @@ pub fn path_depth(view: &View, item: &PathItem, rings: &[Option<Vec<Ring>>; 3]) 
     };
     match (&c.placement, pre) {
         (Placement::FixedOrientation { centre, .. }, _) => {
-            let delta_c = (g / 2.0) * (pr.r[2][0].abs() + pr.r[2][1].abs() + pr.r[2][2].abs());
+            let delta_c = carried_centre_delta(pr, g);
             return none(facing_model(pr, &map, *centre, delta_c));
         }
         (_, true) => {
             let cam = pr.in_camera_axes();
             match c.pivot {
-                Some(Pivot::At(pivot)) => return none(facing_model(&cam, &map, pivot, 0.0)),
+                Some(Pivot::At(pivot)) => {
+                    let delta_c = carried_centre_delta(&cam, g);
+                    return none(facing_model(&cam, &map, pivot, delta_c));
+                }
                 Some(Pivot::Unknown) => return none(Model::PivotUnknown),
                 None => {}
             }
@@ -869,7 +878,7 @@ pub fn triangle_depth(view: &View, item: &MeshItem, i: usize) -> (Model, Option<
     let eps = shown.iter().map(|q| shift.at(*q)).fold(0.0, f64::max);
     match &c.placement {
         Placement::FixedOrientation { centre, .. } => {
-            let delta_c = (g / 2.0) * (pr.r[2][0].abs() + pr.r[2][1].abs() + pr.r[2][2].abs());
+            let delta_c = carried_centre_delta(pr, g);
             return (facing_model(pr, &map, *centre, delta_c), None);
         }
         Placement::Projected => {}
@@ -1003,7 +1012,9 @@ pub fn point_depth(view: &View, item: &PointsItem, placed: [f64; 3]) -> Model {
     if c.record.pre_projected.is_some() {
         let cam = pr.in_camera_axes();
         return match c.pivot {
-            Some(Pivot::At(pivot)) => facing_model(&cam, &map, pivot, 0.0),
+            Some(Pivot::At(pivot)) => {
+                facing_model(&cam, &map, pivot, carried_centre_delta(&cam, g))
+            }
             Some(Pivot::Unknown) => Model::PivotUnknown,
             None => facing_model(
                 &cam,
@@ -1015,7 +1026,7 @@ pub fn point_depth(view: &View, item: &PointsItem, placed: [f64; 3]) -> Model {
     }
     match &c.placement {
         Placement::FixedOrientation { centre, .. } => {
-            let delta_c = (g / 2.0) * (pr.r[2][0].abs() + pr.r[2][1].abs() + pr.r[2][2].abs());
+            let delta_c = carried_centre_delta(pr, g);
             facing_model(pr, &map, *centre, delta_c)
         }
         Placement::Projected => {
