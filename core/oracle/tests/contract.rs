@@ -54,6 +54,7 @@ struct Excess {
     probe: &'static str,
     seq: u64,
     at: (u32, u32, usize),
+    fragment: u32,
     layer: u8,
     kind: u8,
     row: &'static str,
@@ -203,6 +204,7 @@ fn excesses_of(
                 probe,
                 seq,
                 at: (*x, *y, s),
+                fragment: b.fragment,
                 layer: f.layer,
                 kind: f.kind,
                 row,
@@ -542,6 +544,130 @@ struct Measures {
     /// Own reads over an `Either` fill that the stroke's own key explains, and that the taken key
     /// does.
     either_kept: (usize, usize),
+    /// Samples (and orders) whose admitted orders hold one that only a cycle through a row read
+    /// produces, one that only a cycle through a flat identity does, and one that only an own-key
+    /// cycle would (the orders `cycle_rank@2` removes); samples past the completion bound.
+    cycle_row: (usize, usize),
+    cycle_flat: (usize, usize),
+    cycle_own: (usize, usize),
+    cycle_unbounded: usize,
+    /// A label's pairs at a sample: `plate` determined (1, 2 or 4) and undetermined (0).
+    plate: (usize, usize),
+}
+
+/// Whether some choice of strong edges at a sample can cycle: a directed cycle of three or more
+/// fragments in the graph of every strong edge the pairs admit.
+fn strong_cycle_possible(n: usize, pairs: &[(usize, usize, u8, u8)]) -> bool {
+    let mut g = vec![vec![false; n]; n];
+    for (i, j, e, _) in pairs {
+        g[*i][*j] |= e & 2 != 0;
+        g[*j][*i] |= e & 4 != 0;
+    }
+    (0..n).any(|i| {
+        (0..n).filter(|&j| g[i][j]).any(|j| {
+            // From j back to i, never through the pair {i, j}.
+            let mut seen = vec![false; n];
+            let mut stack = vec![j];
+            seen[j] = true;
+            while let Some(v) = stack.pop() {
+                for w in 0..n {
+                    if !g[v][w] || seen[w] || (v == j && w == i) {
+                        continue;
+                    }
+                    if w == i {
+                        return true;
+                    }
+                    seen[w] = true;
+                    stack.push(w);
+                }
+            }
+            false
+        })
+    })
+}
+
+/// The completion bound of the cycle lines: samples with more completions are counted apart.
+const CYCLE_BOUND: f64 = 1024.0;
+
+/// The ranks of every completion at a sample, as `admissible` forms them (§7), under four
+/// readings: `cycle_rank@2` (a choice whose own-key strong edges cycle discarded), the same
+/// discarding cycles through row reads too, the same discarding cycles through flat identities
+/// too, and `cycle_rank@1` (none discarded). `None` past [`CYCLE_BOUND`].
+#[allow(clippy::type_complexity)]
+fn completion_ranks(
+    n: usize,
+    paint: &dyn Fn(usize) -> (u32, u32),
+    pairs: &[(usize, usize, u8, u8)],
+) -> Option<[std::collections::BTreeSet<Vec<usize>>; 4]> {
+    let opts: Vec<Vec<u8>> = pairs
+        .iter()
+        .map(|(_, _, e, _)| [1u8, 2, 4].into_iter().filter(|b| e & b != 0).collect())
+        .collect();
+    let mut out: [std::collections::BTreeSet<Vec<usize>>; 4] = Default::default();
+    if opts.iter().any(|o| o.is_empty()) {
+        return Some(out);
+    }
+    if opts.iter().map(|o| o.len() as f64).product::<f64>() > CYCLE_BOUND {
+        return None;
+    }
+    let cycles = |g: &[Vec<u8>], codes: &[u8]| {
+        let mut left = vec![true; n];
+        loop {
+            let free = (0..n).find(|&j| {
+                left[j]
+                    && !(0..n).any(|i| left[i] && g[i][j] != 0 && codes.contains(&(g[i][j] - 1)))
+            });
+            match free {
+                Some(j) => left[j] = false,
+                None => return left.iter().any(|l| *l),
+            }
+        }
+    };
+    let mut choice = vec![0usize; pairs.len()];
+    loop {
+        let mut front = vec![vec![false; n]; n];
+        let mut strong = vec![vec![false; n]; n];
+        // A chosen strong edge, its provenance code plus 1; 0 for none.
+        let mut code = vec![vec![0u8; n]; n];
+        for (k, (i, j, _, prov)) in pairs.iter().enumerate() {
+            let (i, j) = (*i, *j);
+            match opts[k][choice[k]] {
+                1 => {
+                    let i_front = paint(i) > paint(j);
+                    front[i][j] = i_front;
+                    front[j][i] = !i_front;
+                }
+                2 => {
+                    front[i][j] = true;
+                    strong[i][j] = true;
+                    code[i][j] = (prov & 3) + 1;
+                }
+                _ => {
+                    front[j][i] = true;
+                    strong[j][i] = true;
+                    code[j][i] = ((prov >> 2) & 3) + 1;
+                }
+            }
+        }
+        let r = arachne_oracle::order::rank(n, &front, &strong, &paint);
+        for (set, codes) in out.iter_mut().zip([&[0u8][..], &[0, 1], &[0, 2], &[]]) {
+            if codes.is_empty() || !cycles(&code, codes) {
+                set.insert(r.clone());
+            }
+        }
+        let mut k = 0;
+        loop {
+            if k == pairs.len() {
+                return Some(out);
+            }
+            choice[k] += 1;
+            if choice[k] < opts[k].len() {
+                break;
+            }
+            choice[k] = 0;
+            k += 1;
+        }
+    }
 }
 
 fn measure(m: &mut Measures, d: &Decisions, excess: usize, tally: &Tally) {
@@ -592,6 +718,53 @@ fn measure(m: &mut Measures, d: &Decisions, excess: usize, tally: &Tally) {
             m.policy_tie += po as usize;
             m.tied += (tb || ei || po) as usize;
             m.exact_tie += ps.iter().any(|p| p.label == 4) as usize;
+            for p in ps {
+                let labelled =
+                    |f: u32| d.fragments[f as usize].label != arachne_oracle::out::NONE_U32;
+                if labelled(p.a) || labelled(p.b) {
+                    if p.plate == 0 {
+                        m.plate.1 += 1;
+                    } else {
+                        m.plate.0 += 1;
+                    }
+                }
+            }
+            // The cycle lines: three or more fragments, two pairs or more with a choice.
+            let ids: Vec<u32> = present.iter().map(|r| r.fragment).collect();
+            if ids.len() >= 3 && ps.iter().filter(|p| p.edges.count_ones() > 1).count() >= 2 && {
+                let pos = |f: u32| ids.iter().position(|&g| g == f).unwrap();
+                let cp: Vec<(usize, usize, u8, u8)> = ps
+                    .iter()
+                    .map(|p| (pos(p.a), pos(p.b), p.edges, p.provenance))
+                    .collect();
+                strong_cycle_possible(ids.len(), &cp)
+            } {
+                let pos = |f: u32| ids.iter().position(|&g| g == f).unwrap();
+                let cp: Vec<(usize, usize, u8, u8)> = ps
+                    .iter()
+                    .map(|p| (pos(p.a), pos(p.b), p.edges, p.provenance))
+                    .collect();
+                let paint = |i: usize| {
+                    let f = frag(ids[i]);
+                    (f.entry, f.sub)
+                };
+                match completion_ranks(ids.len(), &paint, &cp) {
+                    Some([two, no_row, no_flat, one]) => {
+                        let row = two.difference(&no_row).count();
+                        let flat = two.difference(&no_flat).count();
+                        let own = one.difference(&two).count();
+                        for (line, k) in [
+                            (&mut m.cycle_row, row),
+                            (&mut m.cycle_flat, flat),
+                            (&mut m.cycle_own, own),
+                        ] {
+                            line.0 += (k > 0) as usize;
+                            line.1 += k;
+                        }
+                    }
+                    None => m.cycle_unbounded += 1,
+                }
+            }
             let mut why: BTreeSet<String> = BTreeSet::new();
             // A pair `truth_unable` at the sample, by the statuses of its two fragments' reads.
             for p in ps.iter().filter(|p| p.label == 0) {
@@ -663,7 +836,8 @@ fn measure(m: &mut Measures, d: &Decisions, excess: usize, tally: &Tally) {
 
 /// The measures `soundness.md` records, by case class: `core_err_within_band`'s excess and read
 /// counts, `tie_share`, the open share by reason, and the pair labels, over the probes and every
-/// `.xf` file under the directories `SOUNDNESS_STREAMS` names (colon-separated). Run with
+/// `.xf` file under the directories `SOUNDNESS_STREAMS` names (colon-separated; with
+/// `SOUNDNESS_NO_PROBES` set, those alone). Run with
 /// `--ignored --nocapture`.
 #[test]
 #[ignore]
@@ -681,7 +855,13 @@ fn soundness_measures() {
         }
     }
     let dir = fixtures::scratch("soundness");
-    let mut inputs: Vec<(String, String, std::path::PathBuf)> = fixtures::probe_files(&dir)
+    // `SOUNDNESS_NO_PROBES` set: the streams alone (for a run split over processes).
+    let probes = if std::env::var_os("SOUNDNESS_NO_PROBES").is_some() {
+        Vec::new()
+    } else {
+        fixtures::probe_files(&dir)
+    };
+    let mut inputs: Vec<(String, String, std::path::PathBuf)> = probes
         .into_iter()
         .map(|p| (format!("probe:{}", p.name), p.name.to_string(), p.path))
         .collect();
@@ -733,6 +913,36 @@ fn soundness_measures() {
             );
             for x in e.iter().take(3) {
                 println!("  excess {x:?}");
+            }
+            if let Ok(out) = std::env::var("SOUNDNESS_EXCESS") {
+                use std::io::Write;
+                let mut f = std::fs::OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open(out)
+                    .unwrap();
+                for x in &e {
+                    let fr = &d.fragments[x.fragment as usize];
+                    writeln!(
+                        f,
+                        "{}	{}	{}	{}	{}	{}	{}	{}	{}	{}	{:e}	{:e}	{:e}	{:e}",
+                        path.display(),
+                        wd.seq,
+                        x.at.0,
+                        x.at.1,
+                        x.at.2,
+                        x.fragment,
+                        fr.entry,
+                        fr.sub,
+                        x.layer,
+                        x.what,
+                        x.core.0,
+                        x.core.1,
+                        x.oracle.0,
+                        x.oracle.1
+                    )
+                    .unwrap();
+                }
             }
         }
     }
