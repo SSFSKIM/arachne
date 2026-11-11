@@ -53,9 +53,9 @@ pub struct Input<'a> {
     pub covers: &'a [CoverRow],
     /// A path layer's flattened outline on screen, in frame pixels.
     pub outlines: &'a [Option<Vec<Ring>>],
-    /// A fill's premultiplied alpha byte where one colour paints it everywhere; `None` where it
-    /// varies with the pixel and the oracle does not compute it (a gradient).
-    pub alpha: &'a [Option<u8>],
+    /// The bounds of a fill's premultiplied alpha byte at any pixel: one byte where one colour
+    /// paints it everywhere, a gradient's stops' range, widened, where it varies.
+    pub alpha: &'a [(u8, u8)],
     /// A fragment's record's projected centre, in frame pixels, for a path kept facing the
     /// camera.
     pub centre: &'a [Option<[f64; 2]>],
@@ -414,7 +414,7 @@ pub fn place_with_pairs(input: &Input) -> (Vec<u32>, Vec<LabelRow>, Vec<PairDeci
         if input.fragments[i].layer == MESH {
             return cover != 0;
         }
-        input.alpha[i] != Some(0) && input.outlines[i].as_ref().is_some_and(|r| inside(r, p))
+        input.alpha[i].1 > 0 && input.outlines[i].as_ref().is_some_and(|r| inside(r, p))
     };
     // Pixel by pixel: each label's counted points with each sheet, folded points, straddles.
     let mut counted: BTreeMap<(u32, usize), Vec<Point>> = BTreeMap::new();
@@ -440,7 +440,8 @@ pub fn place_with_pairs(input: &Input) -> (Vec<u32>, Vec<LabelRow>, Vec<PairDeci
                 let f = r.fragment as usize;
                 if sheet_of[f] != usize::MAX
                     && input.fragments[f].layer == FILL
-                    && input.alpha[f].is_none()
+                    && input.alpha[f].0 == 0
+                    && input.alpha[f].1 > 0
                 {
                     straddle.insert((x, y, r.fragment));
                 }
@@ -601,7 +602,7 @@ fn by_centre(input: &Input, sheet: &Sheet, c: [f64; 2], label: &Band) -> Option<
         let Some(rings) = &input.outlines[i] else {
             continue;
         };
-        if input.alpha[i] == Some(0) || !(inside(rings, c) || on_outline(rings, c)) {
+        if input.alpha[i].1 == 0 || !(inside(rings, c) || on_outline(rings, c)) {
             continue;
         }
         stands.push(plane_read(&input.frags[i].model, c).map(|b| stand(&b, label)));

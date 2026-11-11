@@ -175,7 +175,10 @@ belongs to no label.
   (`label_rule_open`), the causes below; 3 *kind unknown* (`label_kind_unknown`, a stream read as
   XF 1.4): an anchor under one reading and not under the other; 4 *alpha straddle*
   (`label_alpha_straddle`): the fill's admitted alpha at the pixel holds 0 and a positive byte, and
-  the oracle cannot place it.
+  the oracle cannot place it. A gradient fill's admitted alpha (its colour is not computed, `COLR`
+  kind 0) is bounded by its stops: their premultiplied alpha bytes at the record's group opacity,
+  as a solid's (`cairo_premultiply@1`), from the least to the greatest, one level wider each way
+  for the walker's single-precision interpolation; pad extend keeps every pixel within them.
 - **`pair_cause`** (role 2): 1 `interval`, 2 `folded`, 3 `disconnected`, 4 `mesh`, 5 `label`; 0
   where the class is open instead. **`class_cause`** (role 2): 1 `unmapped`, 2 `generic_only`,
   3 `paths_disagree`, 4 `no_source`, 5 `cylinder_grouped`, 6 `point_cloud`; 0 where the pair is

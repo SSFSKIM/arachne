@@ -37,7 +37,27 @@ enum Spec {
         alpha: f64,
         linear: bool,
     },
-    Gradient,
+    /// A colour this oracle does not compute (a gradient), with the bounds of its alpha byte at
+    /// any pixel: what the label rule reads of it.
+    Gradient {
+        alpha: (u8, u8),
+    },
+}
+
+/// A gradient's alpha byte at a pixel lies between its stops' bytes (each `cairo_premultiply@1`'s
+/// alpha at the record's group opacity, as a solid's is), one level wider each way for the
+/// walker's single-precision interpolation; pad extend keeps it within them (contract §9). A
+/// shaded layer's stops are its first two rows.
+fn gradient_alpha(rows: &[[f64; 4]], opacity: f64, shaded: bool) -> (u8, u8) {
+    let stops = if shaded {
+        &rows[..rows.len().min(2)]
+    } else {
+        rows
+    };
+    let bytes = stops.iter().map(|r| colour::premultiply(*r, opacity)[3]);
+    let lo = bytes.clone().min().unwrap_or(0);
+    let hi = bytes.max().unwrap_or(255);
+    (lo.saturating_sub(1), hi.saturating_add(1))
 }
 
 /// Why the oracle could not decide a frame at all (not a refusal: a usage error).
@@ -376,7 +396,10 @@ fn build(view: &View, state: &State, window: Window) -> Built {
                         Some(r) if r.len() == 1 && !p.shaded => {
                             Spec::Solid(colour::premultiply(r[0], c.record.opacity))
                         }
-                        _ => Spec::Gradient,
+                        Some(r) => Spec::Gradient {
+                            alpha: gradient_alpha(r, c.record.opacity, p.shaded),
+                        },
+                        None => Spec::Gradient { alpha: (0, 255) },
                     };
                     add(
                         fragment(c, layer, sub, group, eps),
@@ -519,13 +542,16 @@ fn labels_of(view: &View, state: &State, b: &Built) -> LabelFacts {
         .iter()
         .map(|f| info(f).is_some_and(|i| i.1))
         .collect();
-    let alpha: Vec<Option<u8>> = b
+    let alpha: Vec<(u8, u8)> = b
         .specs
         .iter()
         .map(|s| match s {
-            Spec::Solid(b) => Some(b[3]),
-            Spec::Lit { alpha, .. } => Some(draw::alpha_byte(*alpha) as u8),
-            Spec::Gradient => None,
+            Spec::Solid(b) => (b[3], b[3]),
+            Spec::Lit { alpha, .. } => {
+                let a = draw::alpha_byte(*alpha) as u8;
+                (a, a)
+            }
+            Spec::Gradient { alpha } => *alpha,
         })
         .collect();
     label::place_with_pairs(&label::Input {
@@ -658,7 +684,10 @@ fn mesh_spec(view: &View, m: &draw::MeshItem, i: usize, at: [[f64; 2]; 3]) -> Sp
             alpha: m.fill[3] * opacity,
             linear: light.linear(),
         },
-        None => Spec::Gradient,
+        None => {
+            let a = draw::alpha_byte(m.fill[3] * opacity) as u8;
+            Spec::Gradient { alpha: (a, a) }
+        }
     }
 }
 
@@ -672,7 +701,7 @@ fn colours(specs: &[Spec], covers: &[CoverRow]) -> (Vec<ColourRow>, Vec<PixelCol
             let (kind, rgba) = match s {
                 Spec::Solid(b) => (COLOUR_SOLID, *b),
                 Spec::Lit { .. } => (COLOUR_PER_PIXEL, [0; 4]),
-                Spec::Gradient => (COLOUR_GRADIENT, [0; 4]),
+                Spec::Gradient { .. } => (COLOUR_GRADIENT, [0; 4]),
             };
             ColourRow {
                 fragment: id as u32,
