@@ -19,6 +19,10 @@ A name given that matches no plant refuses the run too (exit 3).
 
 It builds the oracle once per plant: a development check, run on a build machine, not a CI gate.
 The plants are never built into anything: this script writes each into the source and restores it.
+
+``python3 core/ci/oracle_plants.py --anchors`` is the CI gate's part: it reads every plant's text,
+writes and builds nothing, prints each plant that does not apply as ``STALE`` with its reason and
+then the total, and exits 1 if any plant does not apply.
 """
 
 from __future__ import annotations
@@ -104,8 +108,26 @@ def not_applied(plant: dict, root: Path) -> str:
     return ""
 
 
+def anchors(plants: list[dict], root: Path) -> int:
+    """Every plant's text read against its file, nothing written or built: each one that does not
+    apply printed as the run prints it, then the total. 1 if any does not apply.
+    """
+    stale = 0
+    for p in plants:
+        if why := not_applied(p, root):
+            stale += 1
+            print(f"STALE {p['name']} [{p['item']}] {p['check']}: {why}", flush=True)
+    if stale:
+        print(f"anchors: {stale} of {len(plants)} plants do not apply")
+        return 1
+    print(f"anchors: each of {len(plants)} plants applies")
+    return 0
+
+
 def main(argv: list[str], plants_file: Path = PLANTS, root: Path = ROOT) -> int:
     plants = tomllib.loads(plants_file.read_text(encoding="utf-8"))["plant"]
+    if argv == ["--anchors"]:
+        return anchors(plants, root)
     if argv:
         unknown = sorted(set(argv) - {p["name"] for p in plants})
         if unknown:

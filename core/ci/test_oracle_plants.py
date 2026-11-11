@@ -1,4 +1,5 @@
-"""The plant runner fails a plant that does not apply: ``python3 core/ci/test_oracle_plants.py``."""
+"""The plant runner, and its anchor check, fail a plant that does not apply:
+``python3 core/ci/test_oracle_plants.py``."""
 
 from __future__ import annotations
 
@@ -75,6 +76,34 @@ def test_a_name_no_plant_has_applies_nothing() -> None:
     code, out = run_plants(plant("real", "true"), names=("unreal",))
     assert code == 3, out
     assert "plants: refused, no plant is named unreal" in out
+
+
+def anchors(*plants: str) -> tuple[int, str]:
+    """The anchor check's exit and output over ``plants``: it reads every plant's text and builds
+    nothing.
+    """
+    return run_plants(*plants, names=("--anchors",))
+
+
+def test_the_anchor_check_fails_a_plant_whose_text_is_gone_by_name() -> None:
+    code, out = anchors(plant("real", "true"), plant("gone", "    if checked {"))
+    assert code == 1, out
+    assert "STALE gone [§0] a check: its text is not in core/oracle/src/lib.rs" in out
+    assert "real" not in out, out
+    assert out.rstrip().endswith("anchors: 1 of 2 plants do not apply"), out
+
+
+def test_the_anchor_check_fails_a_plant_whose_text_occurs_twice_by_name() -> None:
+    code, out = anchors(plant("real", "true"), plant("twice", "e"))
+    assert code == 1, out
+    assert "STALE twice [§0] a check: its text occurs 2 times in core/oracle/src/lib.rs" in out
+    assert out.rstrip().endswith("anchors: 1 of 2 plants do not apply"), out
+
+
+def test_the_anchor_check_passes_where_every_text_occurs_once() -> None:
+    code, out = anchors(plant("real", "true"), plant("other", "fn check"))
+    assert code == 0, out
+    assert out.rstrip() == "anchors: each of 2 plants applies", out
 
 
 if __name__ == "__main__":
