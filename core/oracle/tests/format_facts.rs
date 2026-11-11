@@ -62,6 +62,19 @@ fn each_strong_edge_names_how_it_is_read() {
     for p in pairs_at(&d, 32, 31, id_of(&d, 0, FILL), id_of(&d, 1, FILL)) {
         assert_eq!((p.label, p.edges, via(p)), (3, 7, (1, 1)), "{p:?}");
     }
+    // A flat triangle and a flat square a hair above it: they may share a plane, where the
+    // square reads its row and the triangle, which has none, its own key (§5): still a row read.
+    let mut b = Build::new(true);
+    b.mesh(
+        vec![[-6.0, -6.0, 0.0], [6.0, -6.0, 0.0], [0.0, 6.0, 0.0]],
+        vec![[0, 1, 2]],
+        OPAQUE_RED,
+    );
+    b.fill(rect([-6.0, 6.0], [-6.0, 6.0], ROW_GAP), OPAQUE_BLUE);
+    let d = decide(&b, view_c());
+    for p in pairs_at(&d, 32, 31, id_of(&d, 0, MESH), id_of(&d, 1, FILL)) {
+        assert_eq!((p.edges, via(p)), (7, (1, 1)), "{p:?}");
+    }
     // W4's surfaces: no shared plane, so the strong edge is read from the own keys alone.
     let mut b = Build::new(true);
     b.mesh(

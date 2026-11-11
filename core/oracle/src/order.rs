@@ -408,8 +408,17 @@ impl Scene {
         if let Some((i, j)) = both {
             let (ra_, rb_) = (&self.offered[i], &self.offered[j]);
             if ra_.flat.is_some() && rb_.flat.is_some() && self.may_share_flat(i, j) {
-                // Shared: each reads its row; `within_term` with the snap shares.
-                if let (Some(Ok(wa)), Some(Ok(wb))) = (ra.row, rb.row) {
+                // Shared: each reads its row, or its own key where it has none (a mesh triangle,
+                // a point block: §5); `within_term` with the snap shares.
+                if let (Some(Err(u)), _) | (_, Some(Err(u))) = (ra.row, rb.row) {
+                    return Err(u);
+                }
+                if ra.row.is_some() || rb.row.is_some() {
+                    let read = |row: Option<Result<Band, Unable>>, own: Band| match row {
+                        Some(Ok(w)) => w,
+                        _ => own,
+                    };
+                    let (wa, wb) = (read(ra.row, oa), read(rb.row, ob));
                     let mut e = by_depth(&wa, &wb);
                     if exact_axis(ra_, rb_) && wa.o == wb.o {
                         e = Edges::WEAK;
@@ -425,8 +434,6 @@ impl Scene {
                         }
                     }
                     edges = edges.union(e);
-                } else if let (Some(Err(u)), _) | (_, Some(Err(u))) = (ra.row, rb.row) {
-                    return Err(u);
                 }
             }
             if self.axis_shared(i, j) {
