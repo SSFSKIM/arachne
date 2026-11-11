@@ -740,3 +740,47 @@ fn equal_screen_keys_of_planes_whose_rounding_is_not_settled_are_not_one_computa
         &rows[..rows.len().min(4)]
     );
 }
+
+#[test]
+fn a_path_and_a_mesh_triangle_on_one_axis_plane_read_the_path_s_row_against_the_triangle_s_key() {
+    // §5, `shared_plane_read@1`: against a fragment it shares an identity with, a path layer is
+    // read on its row for that identity; "Mesh triangles and point blocks have no rows; they are
+    // always read on their own." §7: two records with no plane of their own on one axis plane are
+    // an `ExactTie` "wherever both rows are read there", and here one is not. A line along
+    // `y = 0` on `z = 0`, stroked, and a thin triangle on a line within the grid 0.05 on `z = 0`,
+    // first points equal on it: both key −1 there, each with its own bound, so the bands meet and
+    // admit every edge. Never weak alone.
+    let mut b = Build::new(true);
+    b.stroke(
+        open(&[[-3.0, 0.0, 0.0], [3.0, 0.0, 0.0]]),
+        OPAQUE_GREEN,
+        0.5,
+    );
+    b.mesh(
+        vec![[-3.0, -0.02, 0.0], [3.0, -0.02, 0.0], [0.0, 0.02, 0.0]],
+        vec![[0, 1, 2]],
+        OPAQUE_BLUE,
+    );
+    let d = decide(
+        &b,
+        View {
+            input_grid: 0.05,
+            ..view_c()
+        },
+    );
+    let (p, q) = (id_of(&d, 0, 2), id_of(&d, 1, 3));
+    let rows: Vec<_> = pairs_of(&d, p, q)
+        .into_iter()
+        .map(|r| (r.edges, r.label))
+        .collect();
+    assert!(
+        rows.iter().all(|e| e.1 != 4),
+        "{:?}",
+        &rows[..rows.len().min(4)]
+    );
+    assert!(
+        rows.iter().all(|e| e.0 == 7),
+        "{:?}",
+        &rows[..rows.len().min(4)]
+    );
+}

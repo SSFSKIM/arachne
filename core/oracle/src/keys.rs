@@ -462,6 +462,9 @@ pub struct Offered {
     /// The axis planes a record with no plane of its own holds, `(axis, its first point's
     /// coordinate)`.
     pub axes: Vec<(usize, f64)>,
+    /// A path's row on each axis plane of `axes`, by that plane, in order (read with no fringe);
+    /// a mesh triangle has none (§5, `shared_plane_read@1`).
+    pub axis_rows: Vec<((usize, f64), Model)>,
     /// Its snap share: `kr(P, τ_P(n_P))` for a flat record; the largest over its keyed axis planes
     /// of `kr(A, Δ(n_A) + dep_A)` for one on axis planes.
     pub snap: f64,
@@ -795,6 +798,7 @@ pub fn path_depth(view: &View, item: &PathItem, rings: &[Option<Vec<Ring>>; 3]) 
                     tau_plus: tau_plus + dep,
                     tau_own: tau,
                     axes: Vec::new(),
+                    axis_rows: Vec::new(),
                     snap: kr(big_d, tau),
                     path: true,
                 }),
@@ -835,6 +839,18 @@ pub fn path_depth(view: &View, item: &PathItem, rings: &[Option<Vec<Ring>>; 3]) 
                     kr(big_d, departure_of(g, n, &c.placings) + dep)
                 })
                 .fold(0.0, f64::max);
+            // Its row on each, read against a fragment that shares it (`shared_plane_read@1`).
+            let region = path_region(item, widest);
+            let axis_rows = axes
+                .iter()
+                .filter_map(|&(k, v)| {
+                    let a = WorldPlane::axis(k, item.world[0]);
+                    let tau = departure_of(g, a.unrounded_n, &c.placings)
+                        + departure_from(&a, &item.world);
+                    let s = world_s(pr, &map, &a, &item.world, tau);
+                    Some(((k, v), plane_model(pr, &map, &a, q0, 0.0, region, s, None)?))
+                })
+                .collect();
             PathDepth {
                 layers: [curve(0), curve(1), curve(2)],
                 row: None,
@@ -845,6 +861,7 @@ pub fn path_depth(view: &View, item: &PathItem, rings: &[Option<Vec<Ring>>; 3]) 
                     tau_plus,
                     tau_own: 0.0,
                     axes,
+                    axis_rows,
                     snap,
                     path: true,
                 }),
@@ -999,6 +1016,7 @@ pub fn triangle_depth(view: &View, item: &MeshItem, i: usize) -> (Model, Option<
                 tau_plus: tau_plus + dep,
                 tau_own: tau,
                 axes: Vec::new(),
+                axis_rows: Vec::new(),
                 snap: kr(big_d, tau),
                 path: false,
             }
@@ -1007,6 +1025,7 @@ pub fn triangle_depth(view: &View, item: &MeshItem, i: usize) -> (Model, Option<
             flat: None,
             retains: true,
             axes: axis.map(|k| vec![(k, corners[0][k])]).unwrap_or_default(),
+            axis_rows: Vec::new(),
             points: pts,
             tau_plus,
             tau_own: 0.0,

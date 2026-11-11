@@ -132,6 +132,9 @@ pub struct Scene {
 pub struct Reads {
     pub own: Result<Band, Unable>,
     pub row: Option<Result<Band, Unable>>,
+    /// Against a fragment it shares an axis plane with by the axis rule, its row on the first such
+    /// plane of its list, where it is a path with no plane of its own (`shared_plane_read@1`).
+    pub axis_row: Option<Result<Band, Unable>>,
     /// What its own read and its row's compute, where each is one computation (§7, `ExactTie`).
     pub own_at: Option<Computation>,
     pub row_at: Option<Computation>,
@@ -338,6 +341,22 @@ impl Scene {
                 .any(|(k, v)| b.axes.iter().any(|(k2, v2)| k == k2 && v == v2))
     }
 
+    /// Fragment `a`'s row against fragment `b` on the first axis plane of its record's list that
+    /// `b`'s record holds too, where the two share one by the axis rule and `a` is a path with no
+    /// plane of its own (§5, `shared_plane_read@1`).
+    pub fn axis_row(&self, a: usize, b: usize) -> Option<&Model> {
+        let (i, j) = (self.frags[a].offered?, self.frags[b].offered?);
+        if !self.axis_shared(i, j) {
+            return None;
+        }
+        let held = &self.offered[j].axes;
+        self.offered[i]
+            .axis_rows
+            .iter()
+            .find(|(axis, _)| held.contains(axis))
+            .map(|(_, row)| row)
+    }
+
     /// `near_parallel@1`'s test, admitting both outcomes within `2^-40 (high + 1)`.
     fn near_parallel_may(&self, i: usize, j: usize) -> bool {
         let (a, b) = (&self.offered[i], &self.offered[j]);
@@ -537,11 +556,33 @@ impl Scene {
                 }
                 edges = edges.union(e);
             }
-            // Two axis-plane rows read at one sample are one computation. Mesh triangles have no
-            // rows (§5): two of them are read on their own keys alone, below.
+            // The axis rule: a path reads its row on the shared axis plane, a mesh triangle its
+            // own key, having no rows (§5, `shared_plane_read@1`). Two rows read at one sample are
+            // one computation; two triangles are read on their own keys alone, below.
             if self.axis_shared(i, j) && (ra_.path || rb_.path) {
-                edges = edges.union(Edges::WEAK);
-                fold(&mut plate, Plate::Tie);
+                if ra_.path && rb_.path {
+                    edges = edges.union(Edges::WEAK);
+                    fold(&mut plate, Plate::Tie);
+                } else {
+                    // A path's row against a triangle's own key: `within_term` with their shares.
+                    let read = |r: &Reads| r.axis_row.unwrap_or(r.own);
+                    let (wa, wb) = (read(ra)?, read(rb)?);
+                    one_computation = false;
+                    let mut e = by_depth(&wa, &wb);
+                    let held = policy_term(&wa, snap_of(ra_), &wb, snap_of(rb_));
+                    if held {
+                        e.weak = true;
+                        policy.get_or_insert(Label::OnePlane);
+                    }
+                    fold(&mut plate, Plate::of(&wa, &wb, held));
+                    tie_meet |= meet(&wa, &wb);
+                    for (v, strong) in via.iter_mut().zip([e.a_front, e.b_front]) {
+                        if strong {
+                            *v = Via::Row;
+                        }
+                    }
+                    edges = edges.union(e);
+                }
                 if !(self.attaches_somewhere(i) || self.attaches_somewhere(j)) {
                     not_shared = false;
                 }

@@ -27,6 +27,7 @@ fn band(o: f64, half: f64) -> Reads {
             s_plus: half,
         }),
         row: None,
+        axis_row: None,
         own_at: None,
         row_at: None,
     }
@@ -274,6 +275,7 @@ fn axis_only(own: Result<Band, Unable>) -> Result<(Edges, Label), Unable> {
         tau_plus: 0.0,
         tau_own: 0.0,
         axes: vec![(2, 0.0)],
+        axis_rows: Vec::new(),
         snap: 0.0,
         path: true,
     };

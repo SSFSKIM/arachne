@@ -2,6 +2,8 @@
 //! row adjusted on its own fill (`stroke_on_own_fill@2`) and its row on its record's plane
 //! (`shared_plane_read@1`), and each present pair's admitted edges and label.
 
+use std::collections::HashMap;
+
 use crate::draw::Layer;
 use crate::keys::{Band, Computation, Model, Unable, samples};
 use crate::lines::LinesBound;
@@ -290,6 +292,16 @@ fn pixel(
             }
         })
     };
+    // A path's row against a fragment it shares an axis plane with, read once per pair.
+    type AxisRow = Option<[Result<Band, Unable>; 16]>;
+    let mut axis_rows: HashMap<(usize, usize), AxisRow> = HashMap::new();
+    let mut axis_row = |i: usize, j: usize| -> AxisRow {
+        *axis_rows.entry((i, j)).or_insert_with(|| {
+            scene
+                .axis_row(frags[i], frags[j])
+                .map(|m| m.pixel(px, py, true))
+        })
+    };
     for s in 0..16 {
         let present: Vec<usize> = (0..rows.len()).filter(|&i| rows[i].cover[s] != 0).collect();
         for (n, &i) in present.iter().enumerate() {
@@ -297,12 +309,14 @@ fn pixel(
                 let ra = Reads {
                     own: own[i][s],
                     row: row[i].map(|r| r[s]),
+                    axis_row: axis_row(i, j).map(|r| r[s]),
                     own_at: own_at[i][s].clone(),
                     row_at: row_at[i][s].clone(),
                 };
                 let rb = Reads {
                     own: own[j][s],
                     row: row[j].map(|r| r[s]),
+                    axis_row: axis_row(j, i).map(|r| r[s]),
                     own_at: own_at[j][s].clone(),
                     row_at: row_at[j][s].clone(),
                 };

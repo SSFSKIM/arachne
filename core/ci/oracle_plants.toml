@@ -1457,8 +1457,8 @@ name = "axis-triangles-own-keys"
 item = "§7"
 check = "two mesh triangles on one axis plane have no rows and are read on their own keys"
 file = "core/oracle/src/order.rs"
-find = "            if self.axis_shared(i, j) && (ra_.path || rb_.path) {\n"
-replace = "            if self.axis_shared(i, j) {\n"
+find = "            if self.axis_shared(i, j) && (ra_.path || rb_.path) {\n                if ra_.path && rb_.path {\n"
+replace = "            if self.axis_shared(i, j) {\n                if ra_.path == rb_.path {\n"
 red = ["pair_rules::mesh_triangles_on_one_axis_plane_are_read_on_their_own_keys"]
 
 [[plant]]
@@ -1478,3 +1478,12 @@ file = "core/oracle/src/keys.rs"
 find = "        rounded: (conforming.len() == 1).then(|| conforming[0]),\n"
 replace = "        rounded: None,\n"
 red = ["pair_rules::equal_screen_keys_of_planes_whose_rounding_is_not_settled_are_not_one_computation"]
+
+[[plant]]
+name = "axis-path-triangle-row"
+item = "§7"
+check = "a path and a mesh triangle on one axis plane read the path's row against the triangle's key, never weak alone"
+file = "core/oracle/src/order.rs"
+find = "                if ra_.path && rb_.path {\n"
+replace = "                if ra_.path || rb_.path {\n"
+red = ["pair_rules::a_path_and_a_mesh_triangle_on_one_axis_plane_read_the_path_s_row_against_the_triangle_s_key"]
