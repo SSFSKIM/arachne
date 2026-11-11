@@ -274,10 +274,11 @@ impl Centreline {
             let ab = [b[0] - a[0], b[1] - a[1]];
             let l2 = ab[0] * ab[0] + ab[1] * ab[1];
             let ap = [p[0] - a[0], p[1] - a[1]];
-            // |a + t ab − p|² <= r²: l2 t² − 2 (ap·ab) t + |ap|² − r² <= 0.
+            // |a + t ab − p|² <= r²: l2 t² − 2 (ap·ab) t + |ap|² − r² <= 0. A zero-length
+            // segment within reach is so at every parameter: its keys run end to end.
             let (t0, t1) = if l2 == 0.0 {
                 if ap[0] * ap[0] + ap[1] * ap[1] <= r * r {
-                    (0.0, 0.0)
+                    (0.0, 1.0)
                 } else {
                     continue;
                 }
@@ -468,4 +469,38 @@ pub fn hull_distance(x: &[[f64; 2]; 4], p: [f64; 2]) -> f64 {
     (0..hull.len())
         .map(|i| seg(hull[i], hull[(i + 1) % hull.len()]))
         .fold(f64::INFINITY, f64::min)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn one_segment(a: [f64; 2], ka: f64, b: [f64; 2], kb: f64) -> Centreline {
+        let v = |at, key| Vertex { at, key, err: 0.0 };
+        Centreline {
+            segments: vec![Segment {
+                a: v(a, ka),
+                b: v(b, kb),
+                err: 0.0,
+                cubic: usize::MAX,
+                joint: false,
+            }],
+            cubics: Vec::new(),
+            infinite: false,
+            scale: 0.0,
+        }
+    }
+
+    #[test]
+    fn a_zero_length_segment_within_reach_gives_both_its_ends_keys() {
+        // §6, along a curve: `K` is the keys of every centreline point within `r`, each a moved
+        // point's unmoved twin, same segment and same parameter. A zero-length segment's points
+        // run from one end's key to the other's: input motion may part its ends on screen.
+        let line = one_segment([0.0, 0.0], -2.0, [0.0, 0.0], -1.0);
+        assert_eq!(line.keys_within([0.0, 0.0], 1.0), Some((-2.0, -1.0, 2.0)));
+        assert_eq!(line.keys_within([2.0, 0.0], 1.0), None);
+        // A segment of length keeps the keys of its parameters within reach alone.
+        let line = one_segment([0.0, 0.0], -2.0, [4.0, 0.0], -1.0);
+        assert_eq!(line.keys_within([0.0, 0.0], 1.0), Some((-2.0, -1.75, 2.0)));
+    }
 }

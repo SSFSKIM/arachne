@@ -1442,3 +1442,12 @@ file = "core/oracle/src/keys.rs"
 find = "                facing_model(&cam, &map, pivot, carried_centre_delta(&cam, g))\n"
 replace = "                facing_model(&cam, &map, pivot, 0.0)\n"
 red = ["key_rules::a_pre_projected_pivot_s_facing_key_takes_its_carried_centre_s_precision"]
+
+[[plant]]
+name = "zero-length-segment-keys"
+item = "§6"
+check = "a zero-length segment within reach gives K both its ends' keys"
+file = "core/oracle/src/centreline.rs"
+find = "                    (0.0, 1.0)\n"
+replace = "                    (0.0, 0.0)\n"
+red = ["lib::centreline::tests::a_zero_length_segment_within_reach_gives_both_its_ends_keys"]
