@@ -938,6 +938,19 @@ it as absence, and never as `Either`: every sample of the record within the wind
 asked to judge is `truth_unable`, class `band_unbounded`. A move of unbounded size can bring the
 record anywhere in the window, so no sample there is known to be clear of it.
 
+### The margin `η`
+
+The oracle decides with one fixed margin, `η = 2^-20`, taken relative to the magnitude of a
+decision's inputs, so that a decision whose inputs cancel is covered. A sign or comparison
+decision within `η` times its inputs' scale of its degenerate point reads as unable: `Either`, an
+infinite bound, or the decision's existing unable outcome. An upper-bound quotient is multiplied by
+`(1 + 2η)`. The oracle's rounding counts are in the hundreds of `u = 2^-53`, so `η` leaves slack
+above `2^20` of them and covers any count up to 4096; no quantity carries a count of its own. At
+coordinates up to 4096 px, `η` is about `4·10^-3` px, far below what a viewer sees, so the margin
+costs a few more unable samples and never a definite verdict a picture would contradict. It is
+taken at the key reach and the depth share (below) and at a plane through three keyed corners
+(`R`).
+
 ### The snap's departure
 
 Write `g` for `input_grid` (0 when the view states none), and write the record's placements as
@@ -977,10 +990,12 @@ size and never leaves it unstated.
 
 ### What a move does to a key
 
-- **Key reach.** On a world plane `P`, `kr(P, δ) = δ / (|D_P| − δ)`, infinite where `|D_P| <= δ`.
+- **Key reach.** On a world plane `P`, `kr(P, δ) = δ / (|D_P| − δ) (1 + 2η)`, infinite where
+  `|D_P| − δ <= η (|D_P| + δ)`.
 - **Depth share.** Along the sight axis, for points at rotated depths `z_i`,
-  `ds(δ) = max_i δ / (d − z_i − δ)`, infinite where a denominator is not positive. Under the
-  exponential option it is `δ / (d − δ)`.
+  `ds(δ) = max_i δ / (d − z_i − δ) (1 + 2η)`, infinite where a denominator
+  `d − z_i − δ <= η (|d| + |z_i| + δ)`. Under the exponential option it is `δ / (d − δ) (1 + 2η)`,
+  infinite where `d − δ <= η (|d| + δ)`.
 - **Screen shift.** Take a point whose inputs move by `a_0`, `a_1` along the camera's first two
   axes, with factor `f` and factor share `σ`. For a projected point `q`,
   `x_k = |f z0| (1 + σ) a_k + |q_k| σ`; for a point not projected, `x_k = a_k`. Then:
@@ -1198,6 +1213,8 @@ the plane it holds. No verdict was computed under @2.
   `det = e1x e2y − e2x e1y`.
   - **`det` zero or not finite:** the plane is the constant `mean = ((d0 + d1) + d2) / 3`, with bound
     `spread + in + 4u |mean|`, where `spread` is the largest `|d_i − mean|`.
+  - **`det` within its rounding:** where `|det| <= max(d_det, η (|e1x e2y| + |e2x e1y|))`, with
+    `d_det` as below, the determinant's sign is not known and the plane states no bound.
   - **Otherwise:** with `g1 = d1 − d0` and `g2 = d2 − d0`, the bound is
     `in + max(d_b |e1x| + d_c |e1y|, d_b |e2x| + d_c |e2y|) + 3u (|d0| + |b x0| + |c y0|)`, where:
     - `d_det = 4u (|e1x e2y| + |e2x e1y|)`;

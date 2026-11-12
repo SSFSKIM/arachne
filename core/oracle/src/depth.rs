@@ -357,7 +357,13 @@ pub fn three_corner_plane(c: [[f64; 2]; 3], d: [f64; 3], err: [f64; 3]) -> (Scre
     let b = (g1 * e2[1] - g2 * e1[1]) / det;
     let cc = (e1[0] * g2 - e2[0] * g1) / det;
     let a = d[0] - b * c[0][0] - cc * c[0][1];
-    let d_det = 4.0 * U * ((e1[0] * e2[1]).abs() + (e2[0] * e1[1]).abs());
+    let products = (e1[0] * e2[1]).abs() + (e2[0] * e1[1]).abs();
+    let d_det = 4.0 * U * products;
+    // Within its rounding, or within `η` of its products, the determinant's sign is not known:
+    // the plane states no bound (§6, the margin).
+    if det.abs() <= crate::bound::max(d_det, crate::bound::ETA * products) {
+        return (ScreenKey { a, b, c: cc }, f64::INFINITY);
+    }
     let d_b = (4.0 * U * ((g1 * e2[1]).abs() + (g2 * e1[1]).abs()) + b.abs() * d_det) / det.abs()
         + U * b.abs();
     let d_c = (4.0 * U * ((e1[0] * g2).abs() + (e2[0] * g1).abs()) + cc.abs() * d_det) / det.abs()

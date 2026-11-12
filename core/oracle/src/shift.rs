@@ -76,20 +76,13 @@ pub fn departure_of(g: f64, n: [f64; 3], placings: &[Placing]) -> f64 {
 }
 
 /// The depth share `ds(δ)` along the sight axis for points at rotated depths `zs`: the largest
-/// `δ / (d − z − δ)`, infinite where a denominator is not positive; `δ / (d − δ)` under the
-/// exponential option.
+/// `δ / (d − z − δ)` times `(1 + 2η)`, infinite where a denominator is within `η (|d| + |z| + δ)`
+/// of zero; `δ / (d − δ)` under the exponential option, at the scale `|d| + δ` (§6, the margin).
 pub fn depth_share(p: &Projection, delta: f64, zs: impl Iterator<Item = f64>) -> f64 {
-    let share = |den: f64| {
-        if den > 0.0 {
-            delta / den
-        } else {
-            f64::INFINITY
-        }
-    };
     if p.exponential {
-        return share(p.d - delta);
+        return crate::bound::quotient(delta, p.d - delta, p.d.abs() + delta);
     }
-    zs.map(|z| share(p.d - z - delta))
+    zs.map(|z| crate::bound::quotient(delta, p.d - z - delta, p.d.abs() + z.abs() + delta))
         .fold(0.0, crate::bound::max)
 }
 
@@ -176,16 +169,11 @@ impl Shift {
 mod tests {
     use super::*;
 
-    /// `ds(δ)` over the shown points `shown`. At GREEN `depth_share` takes the shown points
-    /// themselves, not their depths alone; this stands for it until then.
-    fn share_at(p: &Projection, delta: f64, shown: &[[f64; 3]]) -> f64 {
-        depth_share(p, delta, shown.iter().map(|q| q[2]))
-    }
-
     #[test]
     fn a_depth_share_whose_denominator_is_within_its_rounding_is_unbounded() {
         // §6: `ds(δ)` is infinite where a denominator is not positive, and that is the exact
-        // `d − z − δ` of the record's point, not the one its depth rounds to. A rotation about x
+        // `d − z − δ` of the record's point, not the one its depth rounds to; the margin `η`
+        // reads a denominator within `η (|d| + |z| + δ)` of zero as not positive. A rotation about x
         // with third row `(0, s, c)`, `s = fl(0.6)`, `c = fl(0.8)`, no frame centre, `d = 38.6`;
         // the world point `(0, 31, 25)` has the exact depth `z* = 31 s + 25 c`, which rounds 55u
         // low, and `δ = 2^-49`. Exactly `d − z* − δ = −7u`, not positive (checked below in
@@ -217,10 +205,39 @@ mod tests {
             computed > 0.0,
             "premise: the computed denominator {computed:e} is positive"
         );
-        let share = share_at(&p, delta, &shown);
+        let share = depth_share(&p, delta, shown.iter().map(|q| q[2]));
         assert!(
             share.is_infinite(),
             "ds {share} over a denominator of {exact} u"
+        );
+    }
+
+    #[test]
+    fn a_depth_share_of_a_shift_rounded_low_still_bounds_the_exact_share() {
+        // §6, the margin: an upper-bound quotient is taken times `(1 + 2η)`, which covers the
+        // roundings of its inputs. At `d = 2^20` and a depth of 0, a shift `δ* = 1` computed
+        // `8u` low as `δ = 1 − 8u` gives the denominator `fl(d − δ) = 2^20 − 1` and the quotient
+        // `fl(δ / (2^20 − 1))`, below the exact share `1 / (2^20 − 1)`; the share taken holds it,
+        // checked in integers as `share · (2^20 − 1) >= 1`.
+        let p = Projection {
+            r: crate::camera::IDENTITY3,
+            c: [0.0; 3],
+            d: 1_048_576.0, // 2^20
+            zoom: 1.0,
+            exponential: false,
+        };
+        let delta = 1.0 - 8.0 * U;
+        let share = depth_share(&p, delta, std::iter::once(0.0));
+        // `share = m · 2^e` exactly, with `m < 2^53` and `e < 0`.
+        let bits = share.to_bits();
+        let (m, e) = (
+            (bits & ((1 << 52) - 1)) | (1 << 52),
+            ((bits >> 52) & 0x7ff) as i32 - 1075,
+        );
+        assert!(share.is_finite() && share > 0.0 && e < 0, "{share}");
+        assert!(
+            (m as i128) * 1_048_575 >= 1i128 << (-e),
+            "the share {share:e} is below 1/1048575"
         );
     }
 }

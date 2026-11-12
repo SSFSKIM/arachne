@@ -357,6 +357,8 @@ pub struct BlockPoint {
     pub shown: [f64; 3],
     /// Its pixel position (not yet truncated).
     pub at: [f64; 2],
+    /// Shown at a position or a key that is not a number: it states no bound.
+    pub unbounded: bool,
 }
 
 /// A `points` record's points that draw blocks.
@@ -721,7 +723,10 @@ pub fn items_of<'a>(
                         && c.projection
                             .as_ref()
                             .is_some_and(|pr| pr.key(shown[2]).is_nan());
-                    if at.iter().any(|v| !v.is_finite() || v.abs() > 4e18) || key_nan {
+                    // Shown at a position or a key that is not a number, the point is kept: the
+                    // producer's, within its departure, may be finite, so it states no bound.
+                    let unbounded = at.iter().any(|v| !v.is_finite()) || key_nan;
+                    if !unbounded && at.iter().any(|v| v.abs() > 4e18) {
                         continue;
                     }
                     pts.push(BlockPoint {
@@ -729,6 +734,7 @@ pub fn items_of<'a>(
                         placed,
                         shown,
                         at,
+                        unbounded,
                     });
                 }
                 if side >= 1 && !pts.is_empty() {

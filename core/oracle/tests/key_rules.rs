@@ -263,9 +263,9 @@ fn a_pre_projected_pivot_s_facing_key_takes_its_carried_centre_s_precision() {
     // §5: a pre-projected record with a pivot is keyed on the facing plane through it, in the
     // camera's axes; §6, on a facing plane, for a label: `S⁻ = S⁺ = (|o| + R) ds(Δ_c)`, with
     // `Δ_c = (g/2) |R_2|_1` for its centre as carried. Under the identity camera at focal distance
-    // 20, a pivot at the origin keys −1 and `Δ_c = g/2`: `S ≈ (g/2) / (20 − g/2)`, the `R` term
-    // far below it.
-    let ds = (GRID / 2.0) / (20.0 - GRID / 2.0);
+    // 20, a pivot at the origin keys −1 and `Δ_c = g/2`: `S ≈ (g/2) / (20 − g/2)`, taken times
+    // `(1 + 2η)` as an upper-bound quotient (§6, the margin), the `R` term far below it.
+    let ds = (GRID / 2.0) / (20.0 - GRID / 2.0) * (1.0 + 2.0 * arachne_oracle::bound::ETA);
     let near = |(lo, hi): (f64, f64)| lo == hi && (lo - ds).abs() <= ds * 1e-6;
     // A path, its tail its own square.
     let mut b = Build::new(true);

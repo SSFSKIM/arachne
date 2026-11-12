@@ -479,7 +479,7 @@ fn build(view: &View, state: &State, window: Window) -> Built {
                         lines: None,
                     };
                     let eps = shift.at(q.shown);
-                    if !(eps.is_finite() && q.at.iter().all(|v| v.is_finite())) {
+                    if q.unbounded || !eps.is_finite() {
                         // Its truncation is not bounded: one fragment, its first offset's `sub`.
                         add(
                             fragment(c, Layer::Points, q.index, NONE_U32, eps),

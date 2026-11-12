@@ -69,14 +69,10 @@ pub fn tolerance(g: f64, plane: &WorldPlane, placings: &[Placing], dep: f64) -> 
     departure_of(g, plane.unrounded_n, placings) + dep
 }
 
-/// `kr(P, δ) = δ / (|D_P| − δ)`, infinite where `|D_P| <= δ`.
+/// `kr(P, δ) = δ / (|D_P| − δ)` times `(1 + 2η)`, infinite where `|D_P| − δ <= η (|D_P| + δ)`
+/// (§6, the margin).
 pub fn kr(big_d: f64, delta: f64) -> f64 {
-    let room = big_d.abs() - delta;
-    if room > 0.0 {
-        delta / room
-    } else {
-        f64::INFINITY
-    }
+    crate::bound::quotient(delta, big_d.abs() - delta, big_d.abs() + delta)
 }
 
 /// A record's points on its plane, in two coordinates of the plane, and their convex hull.
@@ -318,6 +314,34 @@ mod tests {
     /// A convex hull at the scale where an edge's cross products overflow: the edge from
     /// `(1e200, 0)` to `(1, 1e200)` reads `∞ − ∞` at the far vertices.
     const OVERFLOWING: [[f64; 2]; 4] = [[0.0, 0.0], [1e200, 0.0], [1.0, 1e200], [0.0, 1.0]];
+
+    #[test]
+    fn a_key_reach_whose_room_is_within_its_rounding_is_unbounded() {
+        // §6, the margin, at `kr`: the depth share's witness with the depth taken into the move.
+        // `|D| = 38.6` against `δ = fl(z + 2^-49)`, `z` the depth `fl(31 s + 25 c)` for
+        // `s = fl(0.6)`, `c = fl(0.8)`: exactly `|D| − (31 s + 25 c) − 2^-49 = −7u`, not positive
+        // (checked in integers at the scale `2^53`), while the computed room `|D| − δ` is `64u`.
+        let (s, c, big_d) = (0.6, 0.8, 38.6);
+        let tiny = 1.0 / 562_949_953_421_312.0; // 2^-49
+        let delta = (31.0 * s + 25.0 * c) + tiny;
+        let scale = 9_007_199_254_740_992.0; // 2^53
+        let int = |v: f64| {
+            let n = v * scale;
+            assert_eq!(n.fract(), 0.0, "{v} is not a multiple of 2^-53");
+            n as i128
+        };
+        let exact = int(big_d) - (31 * int(s) + 25 * int(c)) - int(tiny);
+        assert!(
+            exact <= 0,
+            "premise: the exact room {exact} u is not positive"
+        );
+        assert!(
+            big_d - delta > 0.0,
+            "premise: the computed room is positive"
+        );
+        let reach = kr(big_d, delta);
+        assert!(reach.is_infinite(), "kr {reach} over a room of {exact} u");
+    }
 
     #[test]
     fn a_hull_width_with_a_nan_term_is_zero() {
