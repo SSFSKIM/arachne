@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use arachne_core::xf::{Body, Camera, Key, RecordKind, Space, View};
+use arachne_core::xf::{Affine, Body, Camera, Key, RecordKind, Space, View};
 
 use crate::band::{PlaneHull, departure_plus, kr};
 use crate::camera::{FrameMap, Placement, Projection};
@@ -117,20 +117,24 @@ pub type Rounded = ([f64; 3], f64);
 
 /// What a curve's key along its centreline is computed from (contract §5, `curve_key@1`; §7): the
 /// record inputs the core reads to place and key a curve's points, which it places itself, so two
-/// records shown at equal points may still be two computations; the view's projection (the
-/// camera's axes for a pre-projected record), frame map and line-width multiple; and the shown
-/// points and body `h` the oracle's own read takes. Two reads of one such input at one point are
-/// one computation; equal keys of other inputs are not. Compared as values.
+/// records shown at equal points may still be two computations; the view's camera as recorded
+/// (its lighting included) and frame centre, the projection read from them (the camera's axes for
+/// a pre-projected record), frame map and line-width multiple; and the shown points and body `h`
+/// the oracle's own read takes. Two reads of one such input at one point are one computation;
+/// equal keys of other inputs are not. Compared as values.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CurveKey {
     pub kind: RecordKind,
     /// Each shape's points under the record's placements, with its blend coefficient: the shape
     /// contents, the placements and the blend (`shape_b`, `place_b`, `t`).
     pub placings: Vec<Placing>,
+    /// The blend's `t`, signed: the coefficients `|1 − t|`, `|t|` the placings carry do not hold
+    /// its sign.
+    pub blend_t: Option<f64>,
     pub reveal: Option<(f64, f64)>,
-    /// A pre-projected record's tail points, and its own shape, which its placings (its tail's)
-    /// do not hold.
-    pub pre_projected: Option<(Key, Option<Key>)>,
+    /// A pre-projected record's tail points, and its own shape and placement, which its placings
+    /// (its tail's) do not hold.
+    pub pre_projected: Option<(Key, Option<Key>, Affine)>,
     pub space: Space,
     pub fixed_orientation_centre: Option<[f64; 3]>,
     /// A face group's face ends and face widths.
@@ -138,6 +142,8 @@ pub struct CurveKey {
     /// The stroke and background-stroke widths, and a paint blend's two widths and `mix`.
     pub widths: [f64; 2],
     pub paint_b: Option<[f64; 3]>,
+    pub camera: Camera,
+    pub frame_center: [f64; 3],
     pub projection: Projection,
     pub map: FrameMap,
     pub line_width_multiple: f64,
@@ -156,11 +162,12 @@ impl CurveKey {
         CurveKey {
             kind: rec.kind,
             placings: item.common.placings.clone(),
+            blend_t: rec.geometry.blend.as_ref().map(|b| b.t),
             reveal: rec.geometry.reveal,
             pre_projected: rec
                 .pre_projected
                 .as_ref()
-                .map(|t| (t.points, rec.geometry.shape_a)),
+                .map(|t| (t.points, rec.geometry.shape_a, rec.geometry.place_a)),
             space: rec.depth.space,
             fixed_orientation_centre: rec.depth.fixed_orientation_centre,
             faces,
@@ -170,6 +177,8 @@ impl CurveKey {
                 .paint_b
                 .as_ref()
                 .map(|b| [b.stroke_width, b.background_stroke_width, rec.paint.mix]),
+            camera: view.camera.clone(),
+            frame_center: view.frame_center,
             projection: pr.clone(),
             map: item.map,
             line_width_multiple: view.cairo_line_width_multiple,

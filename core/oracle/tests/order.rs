@@ -350,6 +350,7 @@ fn curve_key() -> arachne_oracle::keys::CurveKey {
             points: points.clone(),
             weight: 1.0,
         }],
+        blend_t: None,
         reveal: None,
         pre_projected: None,
         space: arachne_core::xf::Space::World,
@@ -357,6 +358,18 @@ fn curve_key() -> arachne_oracle::keys::CurveKey {
         faces: (Vec::new(), Vec::new()),
         widths: [0.5, 0.0],
         paint_b: None,
+        camera: arachne_core::xf::Camera::ThreeD(arachne_core::xf::ThreeDCamera {
+            phi: 0.0,
+            theta: -std::f64::consts::FRAC_PI_2,
+            gamma: 0.0,
+            focal_distance: 20.0,
+            zoom: 1.0,
+            exponential_projection: false,
+            light_source: [-7.0, -9.0, 10.0],
+            shading_factor: 0.2,
+            should_apply_shading: false,
+        }),
+        frame_center: [0.0; 3],
         projection: Projection {
             r: IDENTITY3,
             c: [0.0; 3],
@@ -428,16 +441,29 @@ fn a_recut_read_of_one_curve_computation_is_an_exact_tie_and_of_another_stays_un
     );
     // Each component of the computation changed alone.
     type Edit = fn(&mut arachne_oracle::keys::CurveKey);
-    let edits: [(&str, Edit); 16] = [
+    let edits: [(&str, Edit); 20] = [
         ("kind", |k| k.kind = arachne_core::xf::RecordKind::FaceGroup),
         ("placings", |k| k.placings[0].points[0][0] = -1.5),
         ("blend weight", |k| k.placings[0].weight = 0.5),
+        ("blend sign", |k| k.blend_t = Some(-0.5)),
         ("reveal", |k| k.reveal = Some((0.0, 1.0))),
         ("pre-projected", |k| {
             let shape = arachne_core::xf::ShapeData::Path {
                 points: vec![[0.0; 3]; 4],
             };
-            k.pre_projected = Some((arachne_core::xf::Shape::new(shape).key(), None))
+            k.pre_projected = Some((
+                arachne_core::xf::Shape::new(shape).key(),
+                None,
+                arachne_core::xf::IDENTITY,
+            ))
+        }),
+        ("pre-projected placement", |k| {
+            let shape = arachne_core::xf::ShapeData::Path {
+                points: vec![[0.0; 3]; 4],
+            };
+            let mut place = arachne_core::xf::IDENTITY;
+            place[0][3] = 1.0;
+            k.pre_projected = Some((arachne_core::xf::Shape::new(shape).key(), None, place))
         }),
         ("space", |k| k.space = arachne_core::xf::Space::Screen),
         ("centre", |k| k.fixed_orientation_centre = Some([0.0; 3])),
@@ -445,6 +471,12 @@ fn a_recut_read_of_one_curve_computation_is_an_exact_tie_and_of_another_stays_un
         ("face widths", |k| k.faces.1 = vec![0.5]),
         ("widths", |k| k.widths = [0.5, 1.0]),
         ("paint blend", |k| k.paint_b = Some([0.5, 0.0, 0.5])),
+        ("camera lighting", |k| {
+            if let arachne_core::xf::Camera::ThreeD(c) = &mut k.camera {
+                c.light_source[0] = 7.0;
+            }
+        }),
+        ("frame centre", |k| k.frame_center = [1.0, 0.0, 0.0]),
         ("projection", |k| k.projection.d = 10.0),
         ("map", |k| k.map.x0 = 64.0),
         ("line width multiple", |k| k.line_width_multiple = 0.02),
@@ -461,4 +493,11 @@ fn a_recut_read_of_one_curve_computation_is_an_exact_tie_and_of_another_stays_un
             "{what}"
         );
     }
+    // The pre-projected placement changed alone: one tail and shape, two placements.
+    let edited = |what: &str| {
+        let mut k = curve_key();
+        (edits.iter().find(|(w, _)| *w == what).unwrap().1)(&mut k);
+        k
+    };
+    assert_ne!(edited("pre-projected"), edited("pre-projected placement"));
 }
