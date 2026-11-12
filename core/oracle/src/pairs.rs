@@ -107,7 +107,7 @@ fn tied(a: &Band, b: &Band) -> bool {
 /// `stroke_on_own_fill@2` at one sample: the stroke's band where its fill covers too, `fill_either`
 /// where the fill's cover is `Either`. It is keyed at the nearer of the two keys with that key's
 /// bound, both bounds where they are `tied` (contract §5), and where the fill's cover is `Either`
-/// the larger of that and its own. Its interval (§6, `band_input@2`) runs
+/// the larger of that and its own. Its interval (§6, `band_input@3`) runs
 /// from the nearer of the two near ends to the nearer of the two far ends, or, where the fill's
 /// cover is `Either` and the core may keep the stroke's own key, to the stroke's own far end.
 fn on_own_fill(
@@ -454,7 +454,7 @@ mod tests {
 
     #[test]
     fn where_both_cover_an_adjusted_stroke_ends_at_the_nearer_far_end() {
-        // §6 `band_input@2`: where both cover certainly, from the nearer of the two near ends to
+        // §6 `band_input@3`: where both cover certainly, from the nearer of the two near ends to
         // the nearer of their far ends. The fill (−1.5) wholly nearer than the stroke's own key
         // (−1): the interval ends at the fill's far end, never reaching the stroke's own keys,
         // which the nearer of the two never takes.
@@ -466,7 +466,7 @@ mod tests {
 
     #[test]
     fn where_the_fill_s_cover_is_either_an_adjusted_stroke_reaches_its_own_far_end() {
-        // §6 `band_input@2`: where the fill's cover is `Either`, from the nearer near end to the
+        // §6 `band_input@3`: where the fill's cover is `Either`, from the nearer near end to the
         // far end of the stroke's own interval: the core may keep the stroke's own key.
         let b = on_own_fill(band(-1.0, 1e-9, 1e-4), band(-1.5, 1e-9, 1e-4), true).unwrap();
         assert!((b.lo() - (-1.5 - 1e-4 - 3e-9)).abs() < 1e-12, "{}", b.lo());

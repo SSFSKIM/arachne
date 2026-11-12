@@ -403,7 +403,7 @@ fn a_record_whose_keys_have_no_bound_leaves_its_layers_unable_against_each_other
 
 #[test]
 fn a_row_read_outside_a_hull_no_wider_than_twice_its_tolerance_is_unbounded() {
-    // §6 `band_input@2`: where a read lies outside H and w_P <= 2 τ_P, the bound is infinite. A
+    // §6 `band_input@3`: where a read lies outside H and w_P <= 2 τ_P, the bound is infinite. A
     // unit square on z = 0 placed through diag(1, 1, 1000) at grid 0.01 has width 1 and a normal
     // tolerance near 5. Its stroke, 0.25 wide, reaches 0.125 past its right edge (x = 0.5) onto a
     // second square on z = 0, against which it reads its row on their shared plane.

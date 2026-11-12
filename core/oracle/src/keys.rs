@@ -397,13 +397,13 @@ impl Model {
                 });
                 let os: [f64; 16] = std::array::from_fn(|k| key.at(at[k][0], at[k][1]));
                 let omax = os.iter().map(|o| o.abs()).fold(0.0, crate::bound::max);
-                // `R = (1 + 64u) ((M + ρ + O) + ν)`, `O` a `Nearest` face's departure, `ρ` the
+                // `R = (1 + 128u) ((M + ρ + O) + ν)`, `O` a `Nearest` face's departure, `ρ` the
                 // largest over the rounded planes `gap` admits (§6).
                 let rho = admitted
                     .iter()
                     .map(|plane| plane.rho(px, py, &at))
                     .fold(0.0, crate::bound::max);
-                let r = (1.0 + 64.0 * U) * (((r0 + rho) + extra) + nu(omax));
+                let r = (1.0 + 128.0 * U) * (((r0 + rho) + extra) + nu(omax));
                 std::array::from_fn(|k| {
                     let o = os[k];
                     let s = match s {
@@ -636,7 +636,7 @@ fn world_s(
         - m2 * pr.d)
         .abs();
     let hull = PlaneHull::of(plane, points);
-    // A read outside a hull no wider than `2 τ_P` is unbounded (contract §6, `band_input@2`).
+    // A read outside a hull no wider than `2 τ_P` is unbounded (contract §6, `band_input@3`).
     let theta = if hull.width > 2.0 * tau {
         2.0 * tau / hull.width
     } else {
@@ -946,7 +946,7 @@ pub fn path_depth(view: &View, item: &PathItem, rings: &[Option<Vec<Ring>>; 3]) 
     }
 }
 
-/// A `Nearest` face's outline departure `O` (contract §6, `band_arith@3`): the largest, over the
+/// A `Nearest` face's outline departure `O` (contract §6, `band_arith@4`): the largest, over the
 /// keys of the `rounded` planes `gap` admits (its own first), of that plane's departure, the
 /// largest over its subpaths' points `q` (and each closed subpath's closing point read at its
 /// first point's position) of `gap_q + ρ(q) + key_error(q) + 4u |k_q| + u gap_q`, plus

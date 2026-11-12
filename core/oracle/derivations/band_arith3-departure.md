@@ -1,6 +1,8 @@
 # `band_arith@3`: the rounding counts with a `Nearest` face's departure `O` inside `(1 + 64u)`
 
-This note supports `CONTRACT.md` §6 (`band_arith@3`); §5 and §6 below are that file's.
+This note supports `CONTRACT.md` §6 (`band_arith@3`); §5 and §6 below are that file's. Its counts
+are `band_arith@3`'s; `band_arith@4` recounts them from the code, in the last section, "Change from
+`band_arith@3`".
 
 A `Nearest` face's `R` is `(1 + 64u) ((M + ρ + O) + ν)`: its outline's departure `O` is a term of
 the sum the factor covers, not an addition after it, as `band_arith@2` had it. This note derives
@@ -121,3 +123,36 @@ would need a further bound to state.
   `m`, `D`, `g`); if §5 pinned another order the table would move, and only `O <= 25` matters.
 - The counts without `O` (27, 26 and `N + 32`), as `band_arith@2` stated them: this note adds
   one rounding to each and derives `O`'s depth fresh.
+
+## Change from `band_arith@3`
+
+The counts above are wrong: the note carried an earlier version's counts; the dD path was never
+counted from the code. `band_arith@4` recounts them from the code.
+
+**The convention.** §6's rule read literally: every floating operation the code performs counts
+one rounding, an exact one included (a product by a power of two, `x + 0.0`, the `−0.0` a sum
+starts from), and the inputs listed above count 0.
+
+**The counts.** Under it, the longest path to `R` is 35 roundings in the order the formulas give,
+the factor included, and 35 in any other order, without it. It runs through `m_i` 3, the normal's
+length 10, `dn` 11, `dD` 22, `f dD` 24, `A` 27, `3A` 28, `M` 31, then `+ ρ` 32, `+ O` 33, `+ ν` 34
+and the factor 35. A recount from the code alone, by a counter who had not seen these, reads the
+exact operations as exact and gives 34 and 34.
+
+**The factor.** `(1 + 64u)(1 − γ_35) >= 1 + γ_35` fails at every small `u`: cross-multiplied as in
+§3, its difference is `u` times a polynomial whose constant term is `64 − 70 < 0`. With `128u` the
+polynomial is `58 − 10990 u + 313600 u²`, positive over `0 < u <= 2^-24`. So `band_arith@4` takes
+`(1 + 128u)`.
+
+**`E_k`.** From a point's coordinate, `δe` itself counts `N + 12`, and the path through it reaches
+`R` at `N + 45`, not `N + 33`: §4 counted `E_k`'s first sum alone, not the rest of `δe`'s
+operations. With `n = N + 45`, §4's identity gives `E_k = γ_{2N+90}`, over the domain
+`(2N + 90) u < 1`, outside which the face states no bound. The one-sided certificate
+`(1 − u)^n >= 1 − n u` is a sharper proof of the cover, under which the index could return to
+`2N + 66` in a later version.
+
+**`lines@1`.** Its constant widening `2^-40` is claimed at binary64 only: a later binary32
+statement needs WIDEN = 8192u.
+
+**The margin.** Decisions near a degenerate point now take §6's fixed margin `η = 2^-20` ("The
+margin `η`"), which covers any count up to 4096. This note derives no count beyond the ones above.

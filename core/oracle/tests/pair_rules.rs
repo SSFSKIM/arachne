@@ -175,7 +175,7 @@ fn a_record_with_no_plane_of_its_own_is_no_flat_witness_for_itself() {
 
 #[test]
 fn a_stroke_adjusted_on_its_own_fill_ends_at_the_nearer_far_end_where_both_cover() {
-    // §6 `band_input@2`: a stroke adjusted on its own fill, where both cover certainly, runs from
+    // §6 `band_input@3`: a stroke adjusted on its own fill, where both cover certainly, runs from
     // the nearer of the two intervals' near ends to the nearer of their far ends; where the fill's
     // cover is `Either`, to the stroke's own far end. A square sloping towards the eye from its
     // edge on x = 0 (z = 0) to x = −1.5 (z = 10), stroked 2 wide: just inside the near edge the
@@ -1119,7 +1119,7 @@ fn a_path_and_a_mesh_triangle_on_one_axis_plane_read_the_path_s_row_against_the_
     // an `ExactTie` "wherever both rows are read there", and here one is not. A line along
     // `y = 0` on `z = 0`, stroked, and a thin triangle on a line within the grid 0.05 on `z = 0`,
     // first points equal on it. The stroke's row on `z = 0` is read off its centreline, outside a
-    // hull no wider than `2 τ_P` (a line's), so it is unbounded (§6, `band_input@2`): the pair is
+    // hull no wider than `2 τ_P` (a line's), so it is unbounded (§6, `band_input@3`): the pair is
     // `truth_unable` at every sample, every edge admitted. Never weak alone.
     let mut b = Build::new(true);
     b.stroke(
@@ -1160,7 +1160,7 @@ fn a_path_s_row_on_a_shared_axis_plane_is_read_where_its_own_key_alone_would_ord
     // across `y` and `z` on `x = 1` within the grid 0.01: neither has a plane of its own, and they
     // share `x = 1`, whose key changes along the screen's `x`. Off the centreline the stroke's own
     // key keeps its centreline's, apart from the triangle's there; its row on `x = 1` is read
-    // outside a hull no wider than `2 τ_P` (a line's), so it is unbounded (§6, `band_input@2`).
+    // outside a hull no wider than `2 τ_P` (a line's), so it is unbounded (§6, `band_input@3`).
     // Every pair-sample is `truth_unable`: none is ordered by the own key.
     let mut b = Build::new(true);
     b.stroke(

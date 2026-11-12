@@ -256,11 +256,11 @@ pub fn conforming_keys(pr: &Projection, map: &FrameMap, p: &WorldPlane) -> Vec<S
         .collect()
 }
 
-/// `M` for a world plane keyed on screen (contract §6, `band_arith@3`): the largest over the
+/// `M` for a world plane keyed on screen (contract §6, `band_arith@4`): the largest over the
 /// region's corners of `gap + 3A + C + shift`, all of the unrounded plane, with `A`, `C` and the
 /// shift taken at `Dn`, the nearest the other computation's `D` can stand, and at `|e| + δe`.
 /// Infinite where `Dn <= ε`. A read adds `ρ` at its pixel, a `Nearest` face's departure `O`, and
-/// `ν` of its key, under `(1 + 64u)`.
+/// `ν` of its key, under `(1 + 128u)`.
 pub fn plane_r_region(pr: &Projection, map: &FrameMap, p: &WorldPlane, region: [f64; 4]) -> f64 {
     let u = plane_terms(pr, map, p.unrounded_n, p.unrounded_e);
     let ku = key_of_terms(&u, pr, map);
@@ -550,9 +550,10 @@ pub fn fit(points: &[[f64; 3]], how: Planarity) -> Option<WorldPlane> {
     }
 }
 
-/// `γ_j = j u / (1 − j u)`, infinite where `j u >= 1`.
-fn gamma(j: usize) -> f64 {
-    let ju = j as f64 * U;
+/// `γ_j = j u / (1 − j u)` at the unit roundoff `u`, infinite where `j u >= 1`. The oracle
+/// takes it at `U`.
+pub fn gamma_at(j: usize, u: f64) -> f64 {
+    let ju = j as f64 * u;
     if ju >= 1.0 {
         f64::INFINITY
     } else {
@@ -560,13 +561,23 @@ fn gamma(j: usize) -> f64 {
     }
 }
 
+/// Whether a `Nearest` face of `n_points` points lies in `E_k`'s domain at the unit roundoff `u`,
+/// `(2N + 90) u < 1` (contract §6). The oracle takes it at `U`.
+pub fn e_k_domain(n_points: usize, u: f64) -> bool {
+    ((2 * n_points + 90) as f64) * u < 1.0
+}
+
 /// A `Nearest` face's `δe = 2 Σ_k |û_k| E_k`, with
-/// `E_k = γ_{2N+66} (Σ_i |p_ik − p_0k| + Σ_i |p_ik|) / N` over its `N` points (contract §6): how
+/// `E_k = γ_{2N+90} (Σ_i |p_ik − p_0k| + Σ_i |p_ik|) / N` over its `N` points (contract §6): how
 /// far two conforming computations' offsets can differ, their centroids' share and each offset's
-/// own bound included.
+/// own bound included. Outside `E_k`'s domain the face states no bound: `δe` is infinite, and so
+/// is its `R`.
 fn offset_spread(points: &[[f64; 3]], unit: [f64; 3]) -> f64 {
     let n = points.len();
-    let g = gamma(2 * n + 66);
+    if !e_k_domain(n, U) {
+        return f64::INFINITY;
+    }
+    let g = gamma_at(2 * n + 90, U);
     let e: [f64; 3] = std::array::from_fn(|k| {
         let first: f64 = points.iter().map(|q| (q[k] - points[0][k]).abs()).sum();
         let own: f64 = points.iter().map(|q| q[k].abs()).sum();

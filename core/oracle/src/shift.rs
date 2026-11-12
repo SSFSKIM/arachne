@@ -86,7 +86,7 @@ pub fn depth_share(p: &Projection, delta: f64, zs: impl Iterator<Item = f64>) ->
         .fold(0.0, crate::bound::max)
 }
 
-/// A record's screen shift, read per point: `ε(q) = hypot(|xx| x₀, |yy| y₀) (1 + 64u)`.
+/// A record's screen shift, read per point: `ε(q) = hypot(|xx| x₀, |yy| y₀) (1 + 256u)`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Shift {
     /// `a_0`, `a_1`: the departures along the camera's first two axes (the points' own axes for
@@ -153,7 +153,7 @@ impl Shift {
             }
             None => std::array::from_fn(|k| self.a[k] + self.carried[k]),
         };
-        libm::hypot(self.xx.abs() * x[0], self.yy.abs() * x[1]) * (1.0 + 64.0 * U)
+        libm::hypot(self.xx.abs() * x[0], self.yy.abs() * x[1]) * (1.0 + 256.0 * U)
     }
 
     /// The record's `ε`: the largest over its points.

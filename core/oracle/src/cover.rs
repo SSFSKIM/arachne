@@ -349,7 +349,7 @@ pub fn triangle(corners: [[f64; 2]; 3], eps: [f64; 3], window: Window) -> Vec<Pi
     out
 }
 
-/// A point block's pixels (contract §3, `point_blocks@1`): for a point at pixel position `at`
+/// A point block's pixels (contract §3, `point_blocks@2`): for a point at pixel position `at`
 /// with screen shift `eps`, block side `t`, each candidate truncation `(X, Y)` and the pixels its
 /// block covers with their offsets `(o, o')` from it. A pixel is `Yes` where the truncation cannot
 /// move, else `Either` under each candidate.

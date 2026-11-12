@@ -1,11 +1,12 @@
-//! `band_arith@3` (contract §6, "`R`, the arithmetic bound, by key"): a world plane's `R` read
+//! `band_arith@4` (contract §6, "`R`, the arithmetic bound, by key"): a world plane's `R` read
 //! term by term from the contract's text, against the oracle's.
 
 use arachne_oracle::camera::{
     FrameMap, IDENTITY3, Projection, matmul, rotation_about_x, rotation_about_z,
 };
 use arachne_oracle::depth::{
-    PLANE_GRID, Planarity, ScreenKey, WorldPlane, fit, key_plane, nu, plane_r_region,
+    PLANE_GRID, Planarity, ScreenKey, WorldPlane, e_k_domain, fit, gamma_at, key_plane, nu,
+    plane_r_region,
 };
 use arachne_oracle::keys::{Model, PlaneS, samples};
 use arachne_oracle::shift::U;
@@ -97,7 +98,7 @@ fn rho_at(k: &ScreenKey, p: [f64; 2]) -> f64 {
     4.0 * U * (k.a.abs() + (k.b * p[0]).abs() + (k.c * p[1]).abs())
 }
 
-/// `R = (1 + 64u) ((M + ρ + O) + ν)`, in the order the formula gives: `O` is a term of the sum the
+/// `R = (1 + 128u) ((M + ρ + O) + ν)`, in the order the formula gives: `O` is a term of the sum the
 /// factor covers.
 #[test]
 fn a_plane_reads_r_as_its_terms_summed_in_order_under_one_factor() {
@@ -117,7 +118,7 @@ fn a_plane_reads_r_as_its_terms_summed_in_order_under_one_factor() {
         .iter()
         .map(|p| key.at(p[0], p[1]).abs())
         .fold(0.0, f64::max);
-    let want = (1.0 + 64.0 * U) * (((m + rho) + o) + nu(omax));
+    let want = (1.0 + 128.0 * U) * (((m + rho) + o) + nu(omax));
     assert_eq!(plane_band(key, &[], m, o, None, px, py), want);
 }
 
@@ -150,7 +151,7 @@ fn rho_is_the_largest_over_the_far_corner_and_every_point_the_read_takes() {
     );
 }
 
-/// A `Nearest` face's `E_k = γ_{2N+66} (Σ_i |p_ik − p_0k| + Σ_i |p_ik|) / N` and
+/// A `Nearest` face's `E_k = γ_{2N+90} (Σ_i |p_ik − p_0k| + Σ_i |p_ik|) / N` and
 /// `δe = 2 Σ_k |û_k| E_k`; every other plane's is 0.
 #[test]
 fn a_nearest_faces_offset_spread_is_gamma_2n_plus_66_of_its_points() {
@@ -160,7 +161,7 @@ fn a_nearest_faces_offset_spread_is_gamma_2n_plus_66_of_its_points() {
     let e: [f64; 3] = std::array::from_fn(|k| {
         let first: f64 = pts.iter().map(|q| (q[k] - pts[0][k]).abs()).sum();
         let own: f64 = pts.iter().map(|q| q[k].abs()).sum();
-        gamma(2 * n + 66) * (first + own) / n as f64
+        gamma(2 * n + 90) * (first + own) / n as f64
     });
     let u = p.unrounded_n;
     let de = 2.0 * ((u[0].abs() * e[0] + u[1].abs() * e[1]) + u[2].abs() * e[2]);
@@ -395,7 +396,7 @@ fn a_world_planes_rho_is_the_largest_over_the_rounded_planes_it_admits() {
         .map(|p| own.at(p[0], p[1]).abs())
         .fold(0.0, f64::max);
     let r = plane_band(own, &[other], 0.0, 0.0, None, px, py);
-    let want = (1.0 + 64.0 * U) * ((0.0 + rho(&other)) + nu(omax));
+    let want = (1.0 + 128.0 * U) * ((0.0 + rho(&other)) + nu(omax));
     assert!(
         r >= want,
         "R {r:e} under the other plane's ρ and ν, {want:e}"
@@ -462,22 +463,6 @@ fn the_screen_shift_factor_is_its_count_s() {
     };
     let want = libm::hypot(4.0, 8.0) * (1.0 + 256.0 * U);
     assert_eq!(shift.at([0.0; 3]), want);
-}
-
-/// `γ_j = j u / (1 − j u)` at the unit roundoff `u`, infinite where `j u >= 1`, and whether a
-/// `Nearest` face of `n` points lies in `E_k`'s domain, `(2N + 90) u < 1`. At d061a532 the oracle
-/// has neither as a function of `u`, and keys `E_k` at `γ_{2N+66}`: these stand for its code as it
-/// is (`depth.rs` `gamma`, `offset_spread`) until `depth::gamma_at` and `depth::e_k_domain` exist.
-fn gamma_at(j: usize, u: f64) -> f64 {
-    let ju = j as f64 * u;
-    if ju >= 1.0 {
-        f64::INFINITY
-    } else {
-        ju / (1.0 - ju)
-    }
-}
-fn e_k_domain(n: usize, u: f64) -> bool {
-    gamma_at(2 * n + 66, u).is_finite()
 }
 
 #[test]
