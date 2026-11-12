@@ -7,5 +7,5 @@
   "samples": [0, 1, 2, 3],
   "defect_verdict": "mismatch:mismatch",
   "twin_verdict": "agreement",
-  "contract": "CONTRACT.md blob 45703f37440a0d1eee7142195812cdaeed77850d"
+  "contract": "CONTRACT.md blob f96e2ffce0e9b74239fbd31d9506c0e108b6ecf2"
 }

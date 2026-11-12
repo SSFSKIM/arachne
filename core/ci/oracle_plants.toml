@@ -2087,8 +2087,26 @@ red = ["lib::shift::tests::a_depth_share_whose_denominator_is_within_its_roundin
 [[plant]]
 name = "point-block-edge-rounded-away"
 item = "§3"
-check = "point_blocks@2: within ε of an integer the candidates run from trunc(next_down(a − ε)) to trunc(next_up(a + ε)), the rounded a ± ε taken"
+check = "point_blocks@3: where at ∓ ε' is an exact integer the candidates reach the truncation past it, next_down/next_up dropped"
 file = "core/oracle/src/cover.rs"
-find = "trunc((a - eps).next_down())..=trunc((a + eps).next_up()),"
-replace = "trunc(a - eps)..=trunc(a + eps),"
+find = "trunc((a - m).next_down())..=trunc((a + m).next_up()),"
+replace = "trunc(a - m)..=trunc(a + m),"
 red = ["lib::cover::tests::a_point_block_on_an_integer_coordinate_lists_both_truncations"]
+
+[[plant]]
+name = "point-block-move-margin"
+item = "§3"
+check = "point_blocks@3: a coordinate within ε' = ε + η max(|at|, ε) of an integer may move, η dropped"
+file = "core/oracle/src/cover.rs"
+find = "let m = eps + crate::bound::ETA * a.abs().max(eps);"
+replace = "let m = eps;"
+red = ["lib::cover::tests::a_point_block_clearing_its_shift_by_less_than_the_margin_lists_both_truncations", "lib::cover::tests::a_point_block_on_an_integer_coordinate_lists_both_truncations"]
+
+[[plant]]
+name = "own-fill-sentinel"
+item = "§6"
+check = "a stroke and its fill both at the −∞ sentinel keep their exact zero bounds, not an infinite S or none"
+file = "core/oracle/src/pairs.rs"
+find = "    if o.o == f64::NEG_INFINITY && f.o == f64::NEG_INFINITY {\n        return Ok(Band::exact(f64::NEG_INFINITY));\n    }\n"
+replace = ""
+red = ["pair_rules::a_flat_path_stroked_on_its_own_fill_keeps_its_exact_bounds"]

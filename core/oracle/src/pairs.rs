@@ -116,6 +116,11 @@ fn on_own_fill(
     fill_either: bool,
 ) -> Result<Band, Unable> {
     let (o, f) = (own?, fill?);
+    // Both at the `−∞` sentinel (`Model::NegInf`): that key is exact (§6), and so are the ends
+    // of its interval, which no difference of them may widen.
+    if o.o == f64::NEG_INFINITY && f.o == f64::NEG_INFINITY {
+        return Ok(Band::exact(f64::NEG_INFINITY));
+    }
     let taken = if f.o < o.o { f } else { o };
     let took = if tied(&o, &f) {
         crate::bound::max(o.r, f.r)
@@ -134,12 +139,18 @@ fn on_own_fill(
     } else {
         crate::bound::least([o.hi(), f.hi()], f64::INFINITY)
     };
-    Ok(Band {
+    let band = Band {
         o: taken.o,
         r,
         s_minus: crate::bound::max(taken.o - lo - 3.0 * r, 0.0),
         s_plus: crate::bound::max(hi - taken.o - 3.0 * r, 0.0),
-    })
+    };
+    // Any other adjusted bound that is not finite states no bound (§6): one read at `−∞` and
+    // one finite leave an interval with an infinite end.
+    if !(band.r.is_finite() && band.s_minus.is_finite() && band.s_plus.is_finite()) {
+        return Err(Unable::BandUnbounded);
+    }
+    Ok(band)
 }
 
 /// A fragment's band at each of a pixel's 16 samples.
@@ -544,6 +555,44 @@ mod tests {
         let (next, _) = on_own_fill_pixel(&own, &fill, &stroke, &cover).unwrap();
         for (s, b) in next.iter().enumerate().take(3) {
             assert_eq!(*b, Err(Unable::BandUnbounded), "sample {s}");
+        }
+    }
+
+    #[test]
+    fn a_stroke_and_its_fill_both_at_minus_infinity_keep_their_exact_bounds() {
+        // §6: a key of `−∞` (`Model::NegInf`) is exact, with `R = S− = S+ = 0`. A stroke adjusted
+        // on its own fill where both read `−∞` takes that key and those bounds; its interval's
+        // ends are `−∞` too, and `−∞ − (−∞)` is no bound to widen by.
+        for fill_either in [false, true] {
+            let b = on_own_fill(
+                Ok(Band::exact(f64::NEG_INFINITY)),
+                Ok(Band::exact(f64::NEG_INFINITY)),
+                fill_either,
+            );
+            assert_eq!(
+                b,
+                Ok(Band::exact(f64::NEG_INFINITY)),
+                "fill Either {fill_either}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_stroke_at_minus_infinity_on_a_finite_fill_is_unable() {
+        // §6: an adjusted bound that is not finite states no bound. A stroke read at `−∞` on a
+        // fill read at a finite key (and the other way round): the adjusted interval runs from
+        // `−∞` to a finite end, so its `S` is infinite and the read is `band_unbounded`.
+        for (own, fill) in [
+            (Ok(Band::exact(f64::NEG_INFINITY)), band(1.0, 0.0, 0.0)),
+            (band(1.0, 0.0, 0.0), Ok(Band::exact(f64::NEG_INFINITY))),
+        ] {
+            for fill_either in [false, true] {
+                assert_eq!(
+                    on_own_fill(own, fill, fill_either),
+                    Err(Unable::BandUnbounded),
+                    "own {own:?}, fill {fill:?}, fill Either {fill_either}"
+                );
+            }
         }
     }
 }

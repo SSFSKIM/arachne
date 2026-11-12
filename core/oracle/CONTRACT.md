@@ -118,7 +118,7 @@ Elsewhere, Cairo's rules that this text relies on are restated in full.
 | `alpha_round@1` | 1 | an op whose alpha rounds to zero paints nothing | |
 | `mesh_fixed_point@1` | 3 | triangle corners rounded to 1/256 px before the sample test | |
 | `mesh_edge_ownership@1` | 3 | a sample on an edge belongs to one triangle | |
-| `point_blocks@2` | 3 | a point is CE's square block of whole pixels (replaces @1; the change is stated in §3) | |
+| `point_blocks@3` | 3 | a point is CE's square block of whole pixels (replaces @2; the change is stated in §3) | |
 | `cell_presence@1` | 4 | a path fragment covers a sample where its cell byte is not 0 | |
 | `guard_chords@1` | 4 | curves far beyond the frame drawn as chords | |
 | `curve_key@1` | 5 | the key along a curve's centreline | |
@@ -421,7 +421,7 @@ closed forms, and against the engine's `arachne.camera.projection` (screen boxes
 record's member `i` of a `t`-triangle prototype, it is `t i` plus that index. All the triangles of
 one mesh drawn form one **surface**, and they may merge into one unit (§9).
 
-**Point blocks (`point_blocks@2`).** For a `points` record's point `i`:
+**Point blocks (`point_blocks@3`).** For a `points` record's point `i`:
 
 - **Position.** It is placed and shown, mapped as a point cloud (§2), and truncated toward zero to
   the pixel `(X, Y)`.
@@ -458,15 +458,19 @@ one mesh drawn form one **surface**, and they may merge into one unit (§9).
     the rules above, but a verdict never depends on which way a rounding near a half-step went.
 - **Point blocks.**
   - A block pixel is `Yes` at every sample.
-  - Where a point's screen coordinate lies within `ε` of an integer, the block's pixels along that
-    side are `Either`. Its truncation can then move by a pixel. The distance is read exactly, as
-    `|at − round(at)|`, whatever `at ± ε` rounds to.
+  - Let `ε' = ε + η max(|at|, ε)`, the screen shift widened by the margin `η` (§6) at the scale of
+    the move test's inputs. Where a point's screen coordinate lies within `ε'` of an integer, the
+    block's pixels along that side are `Either`. Its truncation can then move by a pixel. The
+    distance is read exactly, as `|at − round(at)|`, whatever `at ± ε'` rounds to.
   - The candidate truncations along a side whose truncation can move run from
-    `trunc(next_down(at − ε))` to `trunc(next_up(at + ε))`, truncating toward zero as the producer
-    does. Along a side where no integer lies within `ε`, the one candidate is `trunc(at)`.
+    `trunc(next_down(at − ε'))` to `trunc(next_up(at + ε'))`, truncating toward zero as the
+    producer does. Along a side where no integer lies within `ε'`, the one candidate is `trunc(at)`.
   - **Change from `point_blocks@1`.** @1 left the candidates to `trunc(at ± ε)`, which list one
     truncation wherever `at ± ε` rounds to `at` itself, a coordinate within `ε` of an integer
     included.
+  - **Change from `point_blocks@2`.** @2 compared the distance with `ε` alone, so a coordinate
+    clearing `ε` by less than the margin listed one truncation where the move is undecided. @3
+    compares it with `ε'` and lists the candidates out to `at ± ε'`.
 
 **Rejects:** a mesh triangle missing from the core's fragments at a sample farther than `m` inside
 it (witness W7, §12).
@@ -969,7 +973,8 @@ infinite bound, or the decision's existing unable outcome. An upper-bound quotie
 leaves slack above `2^20` over counts in the hundreds and covers any count up to 4096; no quantity
 carries a count of its own. At coordinates up to 4096 px, `η` is about `4·10^-3` px, far below
 what a viewer sees: the margin costs a few more unable samples. It is taken at the key reach and
-the depth share (below) and at a plane through three keyed corners (`R`).
+the depth share (below), at a plane through three keyed corners (`R`), and at a point block's move
+test (§3).
 
 ### The snap's departure
 

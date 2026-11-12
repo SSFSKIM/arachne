@@ -1461,3 +1461,79 @@ fn two_pre_projected_records_of_other_placements_are_two_computations() {
         b.records[1].geometry.place_a[0][3] = 1.0;
     });
 }
+
+#[test]
+fn a_point_clearing_its_shift_by_less_than_the_margin_is_either() {
+    // §3, point blocks, `point_blocks@3`: within `ε' = ε + η max(|at|, ε)` of an integer the
+    // truncation's move is undecided. A 2D view of 4096 x 64 px over 4096 x 64 units about the
+    // origin, input grid 1/256: a point at (1/256, 1/2) is shown at x = 2048.00390625, which
+    // clears its screen shift by less than `η · 2048`. Its block's pixels are `Either`, never
+    // `Yes`.
+    let mut b = Build::new(false);
+    b.points(vec![[1.0 / 256.0, 0.5, 0.0]], WHITE, 1.0);
+    let d = decide(
+        &b,
+        View {
+            pixel_width: 4096,
+            pixel_height: 64,
+            frame_width: 4096.0,
+            frame_height: 64.0,
+            input_grid: 1.0 / 256.0,
+            ..view_f()
+        },
+    );
+    let ids: Vec<u32> = d
+        .fragments
+        .iter()
+        .filter(|f| f.slot == 0)
+        .map(|f| f.id)
+        .collect();
+    let codes: Vec<u8> = d
+        .covers
+        .iter()
+        .filter(|c| ids.contains(&c.fragment))
+        .flat_map(|c| c.cover)
+        .filter(|&c| c != 0)
+        .collect();
+    assert!(
+        !codes.is_empty() && codes.iter().all(|&c| c == 2),
+        "the point's block: {} covered samples, codes {:?}",
+        codes.len(),
+        codes.iter().collect::<std::collections::BTreeSet<_>>()
+    );
+}
+
+#[test]
+fn a_flat_path_stroked_on_its_own_fill_keeps_its_exact_bounds() {
+    // §6: under a flat camera every key is `−∞` (`Model::NegInf`), exact, with `S− = S+ = 0`. A
+    // path filled and stroked: where the stroke is read adjusted on its own fill, both reads are
+    // `−∞`, and every read of the stroke states that key, bounded, with no widening: never an
+    // infinite `S`, and never unable.
+    let mut b = Build::new(false);
+    let r = b.fill(rect([-3.0, 3.0], [-3.0, 3.0], 0.0), OPAQUE_BLUE);
+    r.paint.stroke = Paint::One(OPAQUE_RED);
+    r.paint.stroke_width = 1.0;
+    let d = decide(&b, view_f());
+    let stroke = id_of(&d, 0, 2);
+    let mut read = 0;
+    for row in d.bands.iter().filter(|r| r.fragment == stroke) {
+        for s in (0..16).filter(|&s| row.status[s] != 0) {
+            read += 1;
+            assert!(
+                row.status[s] == 1
+                    && row.o[s] == f64::NEG_INFINITY
+                    && row.s_minus[s] == 0.0
+                    && row.s_plus[s] == 0.0,
+                "({}, {}) which {} sample {s}: status {} o {} S- {} S+ {}",
+                row.x,
+                row.y,
+                row.which,
+                row.status[s],
+                row.o[s],
+                row.s_minus[s],
+                row.s_plus[s]
+            );
+        }
+    }
+    assert!(read > 0, "no read of the stroke");
+}

@@ -7,5 +7,5 @@
   "samples": [0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
   "defect_verdict": null,
   "twin_verdict": "truth_unable:band_unbounded",
-  "contract": "CONTRACT.md blob 45703f37440a0d1eee7142195812cdaeed77850d"
+  "contract": "CONTRACT.md blob f96e2ffce0e9b74239fbd31d9506c0e108b6ecf2"
 }
