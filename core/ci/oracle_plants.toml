@@ -436,6 +436,15 @@ replace = "    alpha + storage + moved + 0.04\n"
 red = ["contract_mutation::mutation_depth_witnesses_fail_and_their_twins_agree", "cover::a_half_planes_cells_take_their_exact_areas", "cover::a_discs_coverage_is_its_area_within_the_flattening_tolerance"]
 
 [[plant]]
+name = "presence-band-plus-0.75"
+item = "§4"
+check = "the presence band μ is α + 2^-24 + μ_ε, no wider: a cell half covered is present"
+file = "core/oracle/src/cover.rs"
+find = "    alpha + storage + moved\n"
+replace = "    alpha + storage + moved + 0.75\n"
+red = ["contract_mutation::mutation_depth_witnesses_fail_and_their_twins_agree", "cover::a_half_planes_cells_take_their_exact_areas", "cover::a_discs_coverage_is_its_area_within_the_flattening_tolerance"]
+
+[[plant]]
 name = "join-first-to-both"
 item = "§8"
 check = "each occurrence of a join key takes the next unused decision, not its first"
