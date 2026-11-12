@@ -262,8 +262,9 @@ struct Built {
     path_info: HashMap<(u32, u32), PathInfo>,
     /// The registry facts of the records that paint nothing.
     extra: Vec<Offered>,
-    /// The bounded fragments that cover no pixel of the window, which `fragments` leaves out.
-    uncovered: Vec<Fragment>,
+    /// The bounded fragments that cover no pixel of the window, which `fragments` leaves out,
+    /// each with its depth and its colour's spec.
+    uncovered: Vec<(Fragment, Model, Spec)>,
 }
 
 /// Every fragment the frame draws over `window`, with its rows, depth and colour's spec.
@@ -281,7 +282,7 @@ fn build(view: &View, state: &State, window: Window) -> Built {
     let mut frags: Vec<Frag> = Vec::new();
     let mut offered: Vec<Offered> = Vec::new();
     let mut specs: Vec<Spec> = Vec::new();
-    let mut uncovered: Vec<Fragment> = Vec::new();
+    let mut uncovered: Vec<(Fragment, Model, Spec)> = Vec::new();
     // A fragment, its depth and its rows; `None` for an unbounded one, which is `truth_unable` at
     // every sample of the window and carries no rows (contract §6: never absent, never bounded).
     let mut add = |fragment: Fragment, depth: Frag, spec: Spec, rows: Option<Vec<PixelCover>>| {
@@ -304,7 +305,7 @@ fn build(view: &View, state: &State, window: Window) -> Built {
             return;
         };
         if rows.is_empty() {
-            uncovered.push(fragment);
+            uncovered.push((fragment, depth.model, spec));
             return;
         }
         frags.push(depth);
@@ -548,27 +549,26 @@ fn labels_of(view: &View, state: &State, b: &Built) -> LabelFacts {
         .iter()
         .map(|f| info(f).is_some_and(|i| i.1))
         .collect();
-    let alpha: Vec<(u8, u8)> = b
-        .specs
-        .iter()
-        .map(|s| match s {
-            Spec::Solid(b) => (b[3], b[3]),
-            Spec::Lit { alpha, .. } => {
-                let a = draw::alpha_byte(*alpha) as u8;
-                (a, a)
-            }
-            Spec::Gradient { alpha } => *alpha,
-        })
-        .collect();
+    let alpha_of = |s: &Spec| match s {
+        Spec::Solid(b) => (b[3], b[3]),
+        Spec::Lit { alpha, .. } => {
+            let a = draw::alpha_byte(*alpha) as u8;
+            (a, a)
+        }
+        Spec::Gradient { alpha } => *alpha,
+    };
+    let alpha: Vec<(u8, u8)> = b.specs.iter().map(alpha_of).collect();
     let uncovered: Vec<label::Uncovered> = b
         .uncovered
         .iter()
-        .filter(|f| f.layer == Layer::Fill as u8)
-        .filter_map(|f| {
+        .filter(|(f, _, _)| f.layer == Layer::Fill as u8)
+        .filter_map(|(f, model, spec)| {
             Some(label::Uncovered {
                 slot: f.slot,
                 outline: b.outlines.get(&(f.entry, f.sub))?.clone(),
                 face: info(f).is_some_and(|i| i.1),
+                model: model.clone(),
+                alpha: alpha_of(spec),
             })
         })
         .collect();

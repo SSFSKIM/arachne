@@ -73,6 +73,10 @@ pub struct Uncovered {
     pub outline: Vec<Ring>,
     /// Whether it is a face of a face group.
     pub face: bool,
+    /// Its depth, which rule 5 reads where it holds a label's centre.
+    pub model: Model,
+    /// The bounds of its premultiplied alpha byte, as [`Input::alpha`]'s.
+    pub alpha: (u8, u8),
 }
 
 /// What a record is to the label rule.
@@ -99,6 +103,9 @@ struct Sheet {
     /// An ungrouped record kept facing the camera: an open sheet of its own (cause `label`).
     ungrouped: bool,
     members: Vec<u32>,
+    /// The fills it joins that cover none of the frame's pixels, by index in `Input::uncovered`:
+    /// they hold no point, but one may hold a label's centre (rule 5).
+    connectors: Vec<usize>,
 }
 
 /// A counted point: its pixel, its sample, and the fill of the sheet that holds it.
@@ -404,6 +411,7 @@ pub fn place_with_pairs(input: &Input) -> (Vec<u32>, Vec<LabelRow>, Vec<PairDeci
                 kind_unknown,
                 ungrouped: false,
                 members: ids,
+                connectors: Vec::new(),
             });
             continue;
         }
@@ -434,11 +442,18 @@ pub fn place_with_pairs(input: &Input) -> (Vec<u32>, Vec<LabelRow>, Vec<PairDeci
                     kind_unknown,
                     ungrouped: false,
                     members: Vec::new(),
+                    connectors: Vec::new(),
                 });
                 sheets.len() - 1
             });
             sheets[s].members.push(ids[k]);
             sheet_of[ids[k] as usize] = s;
+        }
+        for k in (0..ids.len()).filter(|&k| (ids[k] as usize) >= n) {
+            let root = find(&mut parent, k);
+            if let Some(&s) = class_sheet.get(&root) {
+                sheets[s].connectors.push(ids[k] as usize - n);
+            }
         }
     }
     // An ungrouped record is an open sheet of its own: its fills and mesh triangles, counted
@@ -461,6 +476,7 @@ pub fn place_with_pairs(input: &Input) -> (Vec<u32>, Vec<LabelRow>, Vec<PairDeci
                 kind_unknown: false,
                 ungrouped: true,
                 members: Vec::new(),
+                connectors: Vec::new(),
             });
             sheets.len() - 1
         });
@@ -668,6 +684,14 @@ fn by_centre(input: &Input, sheet: &Sheet, c: [f64; 2], label: &Band) -> Option<
             continue;
         }
         stands.push(plane_read(&input.frags[i].model, c).map(|b| stand(&b, label)));
+    }
+    // A fill of the sheet the frame does not reach is still one of its fills.
+    for &j in &sheet.connectors {
+        let u = &input.uncovered[j];
+        if u.alpha.1 == 0 || !(inside(&u.outline, c) || on_outline(&u.outline, c)) {
+            continue;
+        }
+        stands.push(plane_read(&u.model, c).map(|b| stand(&b, label)));
     }
     if stands.is_empty() {
         return None;
