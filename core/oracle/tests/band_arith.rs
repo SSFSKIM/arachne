@@ -154,7 +154,7 @@ fn rho_is_the_largest_over_the_far_corner_and_every_point_the_read_takes() {
 /// A `Nearest` face's `E_k = γ_{2N+90} (Σ_i |p_ik − p_0k| + Σ_i |p_ik|) / N` and
 /// `δe = 2 Σ_k |û_k| E_k`; every other plane's is 0.
 #[test]
-fn a_nearest_faces_offset_spread_is_gamma_2n_plus_66_of_its_points() {
+fn a_nearest_faces_offset_spread_is_gamma_2n_plus_90_of_its_points() {
     let pts = bent_quad();
     let p = fit(&pts, Planarity::Nearest).expect("the face's plane");
     let n = pts.len();
