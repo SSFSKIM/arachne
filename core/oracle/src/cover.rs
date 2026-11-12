@@ -818,4 +818,66 @@ mod tests {
             "winding {sign:?}, inradius at most {bound:e} against {r:e}"
         );
     }
+
+    /// The block candidates `block` lists for a point, read from its pixels' offsets, and
+    /// whether every pixel it lists is `Either`.
+    fn candidates(at: [f64; 2], eps: f64) -> (std::collections::BTreeSet<i64>, bool) {
+        let pixels = block(at, eps, 2, [4096, 64], [0, 0, 4096, 64]);
+        let xs = pixels
+            .iter()
+            .map(|b| b.cover.x as i64 - b.offset.0)
+            .collect();
+        let either = !pixels.is_empty()
+            && pixels
+                .iter()
+                .all(|b| b.cover.cover.iter().all(|&c| c == Cover::Either as u8));
+        (xs, either)
+    }
+
+    #[test]
+    fn a_point_block_on_an_integer_coordinate_lists_both_truncations() {
+        // §3, point blocks: within `ε` of an integer the truncation can move by a pixel, so the
+        // block's pixels there are `Either` and both blocks are candidates. At `x = 2048` with
+        // `ε = 10^-14`, under half of 2048's ulp, `2048 ± ε` both round to 2048, yet the point
+        // may truncate to 2047 (the producer truncates toward zero): both blocks are listed.
+        let (xs, either) = candidates([2048.0, 10.5], 1e-14);
+        assert!(
+            either && xs == [2047, 2048].into(),
+            "candidates {xs:?}, every pixel Either: {either}"
+        );
+    }
+
+    #[test]
+    fn a_point_block_within_its_shift_of_zero_is_either() {
+        // §3, point blocks, as the contract states it: a coordinate within `ε` of an integer makes
+        // the block's pixels `Either`. At `x = 0.1` with `ε = 0.2` the producer's truncation
+        // toward zero gives block 0 over all of `[−0.1, 0.3]`, so the block cannot in fact move:
+        // this pins the contract's conservative form, not a missing candidate.
+        let (xs, either) = candidates([0.1, 10.5], 0.2);
+        assert!(
+            either && xs == [0].into(),
+            "candidates {xs:?}, every pixel Either: {either}"
+        );
+    }
+
+    #[test]
+    fn a_point_block_far_beyond_its_shift_s_ulp_is_either() {
+        // §3, point blocks, rule (a): a point within `ε` of an integer is `Either` along that side
+        // whatever `at ± ε` rounds to. Past 2^52 every binary64 value is an integer, so a point at
+        // `(4·10^18, 4·10^18)` with `ε = 100`, under half of its 512 ulp, is `Either` though
+        // `trunc(at ± ε)` is `at` at both ends. This calls `block` directly to pin the rule: no
+        // stream reaches it, since a stream refuses a side above 2^16 (side² · points <= 2^32),
+        // and this side, about 8·10^18 px, is what lets the block reach the one-pixel window.
+        let side = 8_000_000_000_000_000_000;
+        let pixels = block([4e18, 4e18], 100.0, side, [64, 64], [1, 1, 2, 2]);
+        assert!(
+            !pixels.is_empty()
+                && pixels
+                    .iter()
+                    .all(|b| b.cover.cover.iter().all(|&c| c == Cover::Either as u8)),
+            "{} pixels, first {:?}",
+            pixels.len(),
+            pixels.first().map(|b| b.cover.cover[0])
+        );
+    }
 }

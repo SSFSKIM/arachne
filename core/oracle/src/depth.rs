@@ -572,3 +572,21 @@ pub fn departure_from(p: &WorldPlane, points: &[[f64; 3]]) -> f64 {
 pub fn facing_plane(pr: &Projection, centre: [f64; 3]) -> Option<WorldPlane> {
     WorldPlane::canonical(pr.r[2], centre)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_three_corner_plane_whose_determinant_is_within_its_rounding_states_no_bound() {
+        // §6, a plane through three keyed corners: `d_b` and `d_c` divide by `|det|`, so they
+        // bound the plane only where `det` stands clear of its own rounding `d_det`; within it the
+        // determinant's sign is not known and the plane states no bound. Corners `(0, 0)`, `(3, 1)`
+        // and `(6, 2 + 2^-50)`: every operation is exact, `det = 3·2^-50` and
+        // `d_det = 4u (6 + 3·2^-50 + 6)`, about `6·2^-50`.
+        let tilt = 1.0 / 1_125_899_906_842_624.0; // 2^-50
+        let corners = [[0.0, 0.0], [3.0, 1.0], [6.0, 2.0 + tilt]];
+        let (_, bound) = three_corner_plane(corners, [-1.0, -1.5, -2.25], [0.0; 3]);
+        assert!(bound.is_infinite(), "bound {bound:e} with |det| = 3·2^-50");
+    }
+}

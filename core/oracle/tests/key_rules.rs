@@ -568,3 +568,24 @@ fn a_pre_projected_curve_beyond_the_exponential_range_states_no_bound() {
     let d = pre_projected_stroke_at(16_000.0, true);
     states_no_bound(&d, id_of(&d, 0, 2));
 }
+
+#[test]
+fn a_point_shown_at_a_non_finite_position_states_no_bound() {
+    // §6, unbounded keys: a point whose screen position is not finite is skipped only where the
+    // producer's is not finite either. A point at rotated depth `d` (here `(10^-300, 0, 20)` at
+    // focal distance 20) has an infinite factor, so its shown position is `(∞, NaN)`; the
+    // producer's depth may differ within its departure and give a finite factor. The point is
+    // kept as one fragment that states no bound.
+    let mut b = Build::new(true);
+    b.points(vec![[1e-300, 0.0, 20.0]], OPAQUE_BLUE, 2.0);
+    let d = decide(&b, view(20.0, GRID));
+    let frags: Vec<_> = d.fragments.iter().filter(|f| f.slot == 0).collect();
+    let unbounded = frags
+        .iter()
+        .all(|f| f.flags & arachne_oracle::out::FLAG_UNBOUNDED != 0);
+    assert!(
+        !frags.is_empty() && unbounded,
+        "{} fragments, all unbounded: {unbounded}",
+        frags.len()
+    );
+}
