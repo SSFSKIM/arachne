@@ -1309,6 +1309,15 @@ replace = "if ra_.flat.is_some() && rb_.flat.is_some() && self.may_share_flat(i,
 red = ["contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
 
 [[plant]]
+name = "near-parallel-may-always"
+item = "§7"
+check = "near_parallel@1 holds only within θ_A + θ_B: two faces 14° apart read Depth"
+file = "core/oracle/src/order.rs"
+find = "        high <= rhs + (high + 1.0) / 1_099_511_627_776.0\n"
+replace = "        true || high <= rhs + (high + 1.0) / 1_099_511_627_776.0\n"
+red = ["format_facts::each_strong_edge_names_how_it_is_read"]
+
+[[plant]]
 name = "exact-tie-own-unread"
 item = "§7"
 check = "two keys of one computation in every scenario are an ExactTie"

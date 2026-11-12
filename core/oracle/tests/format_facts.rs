@@ -137,6 +137,31 @@ fn each_strong_edge_names_how_it_is_read() {
     for p in rows {
         assert_eq!((p.label, p.edges, via(p)), (3, 7, (1, 1)), "{p:?}");
     }
+    // W11's faces at the grid 0.05: a square on z = 0 and a face on z = x / 4, 14° apart, far past
+    // `near_parallel@1`'s bound. At (30, 32) their keys are apart by more than their bands yet
+    // within the policy's term, so only the angle test keeps the pair `Depth`: the square in
+    // front, read from the own keys.
+    let mut b = Build::new(true);
+    b.fill(rect([-6.0, 6.0], [-6.0, 6.0], 0.0), OPAQUE_RED);
+    b.fill(
+        polygon(&[
+            [-6.0, -6.0, -1.5],
+            [6.0, -6.0, 1.5],
+            [6.0, 6.0, 1.5],
+            [-6.0, 6.0, -1.5],
+        ]),
+        OPAQUE_BLUE,
+    );
+    let d = decide(
+        &b,
+        arachne_core::xf::View {
+            input_grid: 0.05,
+            ..view_c()
+        },
+    );
+    for p in pairs_at(&d, 30, 32, id_of(&d, 0, FILL), id_of(&d, 1, FILL)) {
+        assert_eq!((p.label, p.edges, via(p)), (1, 2, (0, 0)), "{p:?}");
+    }
     // A flat camera keys every record minus infinity. A stroke adjusted on its own fill reads no
     // one computation, so its pair with another fill is an `ExactTie` by the two keys of minus
     // infinity alone: weak, at (11, 8), where the red square's stroke lies on its fill under the
