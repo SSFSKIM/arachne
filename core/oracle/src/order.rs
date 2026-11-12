@@ -290,7 +290,7 @@ impl Scene {
         let (a, b) = (&self.offered[i], &self.offered[j]);
         let v = (a.flat.is_some() || b.flat.is_some()) && {
             let w = width_lower_bound(&a.points, &b.points);
-            w <= 2.0 * a.tau_plus.max(b.tau_plus) * (1.0 + 1.0 / 1_099_511_627_776.0)
+            w <= 2.0 * crate::bound::max(a.tau_plus, b.tau_plus) * (1.0 + 1.0 / 1_099_511_627_776.0)
         };
         self.width_cache.borrow_mut().insert(key, v);
         v
@@ -386,13 +386,16 @@ impl Scene {
                     (d[0] * along[0] + d[1] * along[1]) + d[2] * along[2]
                 })
                 .collect();
-            let lo = ts.iter().copied().fold(f64::INFINITY, f64::min);
-            let hi = ts.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            let lo = crate::bound::least(ts.iter().copied(), f64::NEG_INFINITY);
+            let hi = ts
+                .iter()
+                .copied()
+                .fold(f64::NEG_INFINITY, crate::bound::max);
             let far = r
                 .points
                 .iter()
                 .map(|p| crate::depth::norm([p[0] - first[0], p[1] - first[1], p[2] - first[2]]))
-                .fold(0.0, f64::max);
+                .fold(0.0, crate::bound::max);
             let extent = if s > 0.0 { hi - lo } else { 2.0 * far };
             let read = if off <= 1.0 {
                 extent + 2.0 * far * (off + 16.0 * U)

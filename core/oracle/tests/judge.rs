@@ -58,12 +58,14 @@ fn a_samples_order_is_a_permutation_of_its_present_fragments() {
 #[test]
 fn a_lone_fragment_whose_key_states_no_bound_is_unable_not_agreement() {
     // §6: a fragment with no key bounded at a sample is `truth_unable` there, a pair or none. One
-    // fixed-orientation square, its centre at z = 10^300: its keys state no bound (`BAND` status
-    // 2), and alone it makes no pair. Reported alone, it is not judged.
+    // pre-projected square, its pivot at z = 25, behind the eye at focal distance 20: its points
+    // are kept as given, so its screen shift is the grid's and it covers, but the facing plane
+    // through its pivot has no depth share, so its keys state no bound (`BAND` status 2), and
+    // alone it makes no pair. Reported alone, it is not judged.
     let mut b = Build::new(true);
-    b.fill(rect([-6.0, 6.0], [-6.0, 6.0], 0.0), OPAQUE_RED)
+    b.pre_projected(rect([-6.0, 6.0], [-6.0, 6.0], 0.0), OPAQUE_RED)
         .depth
-        .fixed_orientation_centre = Some([0.0, 0.0, 1e300]);
+        .fixed_orientation_centre = Some([0.0, 0.0, 25.0]);
     let d = decide_at(&[b.delta(1, view_c())], 1, None).unwrap();
     let (x, y) = (32, 32);
     let f = &d.fragments[0];

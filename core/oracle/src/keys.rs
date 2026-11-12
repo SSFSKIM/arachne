@@ -69,7 +69,7 @@ impl Band {
     }
     /// `β = max(S⁻, S⁺) + 3R`.
     pub fn beta(&self) -> f64 {
-        self.s_minus.max(self.s_plus) + 3.0 * self.r
+        crate::bound::max(self.s_minus, self.s_plus) + 3.0 * self.r
     }
 }
 
@@ -387,13 +387,13 @@ impl Model {
                     _ => pts[k],
                 });
                 let os: [f64; 16] = std::array::from_fn(|k| key.at(at[k][0], at[k][1]));
-                let omax = os.iter().map(|o| o.abs()).fold(0.0, f64::max);
+                let omax = os.iter().map(|o| o.abs()).fold(0.0, crate::bound::max);
                 // `R = (1 + 64u) ((M + ρ + O) + ν)`, `O` a `Nearest` face's departure, `ρ` the
                 // largest over the rounded planes `gap` admits (§6).
                 let rho = admitted
                     .iter()
                     .map(|plane| plane.rho(px, py, &at))
-                    .fold(0.0, f64::max);
+                    .fold(0.0, crate::bound::max);
                 let r = (1.0 + 64.0 * U) * (((r0 + rho) + extra) + nu(omax));
                 std::array::from_fn(|k| {
                     let o = os[k];
@@ -433,7 +433,7 @@ impl Model {
                 eps,
             } => {
                 let os: [f64; 16] = std::array::from_fn(|k| key.at(pts[k][0], pts[k][1]));
-                let omax = os.iter().map(|o| o.abs()).fold(0.0, f64::max);
+                let omax = os.iter().map(|o| o.abs()).fold(0.0, crate::bound::max);
                 let r = bound + key.rho(px, py, &pts) + nu(omax);
                 let s = sigma * kmax + libm::hypot(key.b, key.c) * eps;
                 std::array::from_fn(|k| {
@@ -466,7 +466,7 @@ impl Model {
                     .chain(std::iter::once(&centre))
                     .map(|p| line.read(*p, *h, [px, py]))
                     .collect();
-                let r = reads.iter().map(|rd| rd.r).fold(0.0, f64::max);
+                let r = reads.iter().map(|rd| rd.r).fold(0.0, crate::bound::max);
                 std::array::from_fn(|k| {
                     let o = reads[k].key;
                     if o == f64::NEG_INFINITY {
@@ -474,13 +474,13 @@ impl Model {
                     }
                     let p = pts[k];
                     let d = line.distance(p);
-                    let rr = h.max(d + eps) + eps;
+                    let rr = crate::bound::max(*h, d + eps) + eps;
                     if line.recut(p, rr, *eps, map, joints) {
                         return Err(Unable::CurveRecut);
                     }
                     let (lo, hi, m) = line.keys_within(p, rr).unwrap_or((o, o, o.abs()));
-                    let sm = (o - lo).max(0.0) + sigma * m;
-                    let sp = (hi - o).max(0.0) + sigma * m;
+                    let sm = crate::bound::max(o - lo, 0.0) + sigma * m;
+                    let sp = crate::bound::max(hi - o, 0.0) + sigma * m;
                     if !(sm.is_finite() && sp.is_finite() && r.is_finite()) {
                         return Err(Unable::BandUnbounded);
                     }
@@ -700,7 +700,7 @@ pub fn path_depth(view: &View, item: &PathItem, rings: &[Option<Vec<Ring>>; 3]) 
     };
     let rec = c.record;
     let half = |k: usize| item.layers[k].unwrap_or(0.0) * map.xx.abs() / 2.0;
-    let widest = half(0).max(half(2));
+    let widest = crate::bound::max(half(0), half(2));
     let pre = rec.pre_projected.is_some();
     let curve_with = |pr: &Projection, k: usize| Model::Curve {
         line: Centreline::of(&item.shown, pr, &map),
@@ -958,7 +958,10 @@ fn nearest_departure(
                 let k = pr.key(q[2]);
                 let gap = (plane.at(at[0], at[1]) - k).abs();
                 let rho = plane.rho_at(*at);
-                worst = worst.max(gap + rho + key_error(pr, *q) + 4.0 * U * k.abs() + U * gap);
+                worst = crate::bound::max(
+                    worst,
+                    gap + rho + key_error(pr, *q) + 4.0 * U * k.abs() + U * gap,
+                );
             }
             worst + libm::hypot(plane.b, plane.c) * 0.1
         })
@@ -980,7 +983,10 @@ pub fn triangle_depth(view: &View, item: &MeshItem, i: usize) -> (Model, Option<
         &item.triangles.iter().flatten().copied().collect::<Vec<_>>(),
     );
     let shown = item.triangles[i];
-    let eps = shown.iter().map(|q| shift.at(*q)).fold(0.0, f64::max);
+    let eps = shown
+        .iter()
+        .map(|q| shift.at(*q))
+        .fold(0.0, crate::bound::max);
     match &c.placement {
         Placement::FixedOrientation { centre, .. } => {
             let delta_c = carried_centre_delta(pr, g);
@@ -1002,7 +1008,7 @@ pub fn triangle_depth(view: &View, item: &MeshItem, i: usize) -> (Model, Option<
             key,
             bound,
             sigma: shift.sigma,
-            kmax: keys.iter().map(|k| k.abs()).fold(0.0, f64::max),
+            kmax: keys.iter().map(|k| k.abs()).fold(0.0, crate::bound::max),
             eps,
         }
     };

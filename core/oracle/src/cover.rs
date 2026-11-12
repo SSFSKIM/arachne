@@ -251,8 +251,9 @@ fn inradius_above(corners: [[f64; 2]; 3]) -> f64 {
 /// The clipped corners lie on the nominal edges, and their rounding to the 1/256 px grid is within
 /// the margin as the triangle's own corners' is.
 pub fn triangle(corners: [[f64; 2]; 3], eps: [f64; 3], window: Window) -> Vec<PixelCover> {
-    let margins: [f64; 3] = std::array::from_fn(|e| eps[e].max(eps[(e + 1) % 3]) + 1.0 / 256.0);
-    let reach = margins.iter().copied().fold(0.0, f64::max);
+    let margins: [f64; 3] =
+        std::array::from_fn(|e| crate::bound::max(eps[e], eps[(e + 1) % 3]) + 1.0 / 256.0);
+    let reach = margins.iter().copied().fold(0.0, crate::bound::max);
     let lo = |k: usize| corners.iter().map(|c| c[k]).fold(f64::INFINITY, f64::min);
     let hi = |k: usize| {
         corners

@@ -422,7 +422,7 @@ fn build(view: &View, state: &State, window: Window) -> Built {
                 for (i, t) in m.triangles.iter().enumerate() {
                     let corners = t.map(|q| map(&m.map, q));
                     let eps = t.map(|q| shift.at(q));
-                    let worst = eps.iter().copied().fold(0.0, f64::max);
+                    let worst = eps.iter().copied().fold(0.0, crate::bound::max);
                     let bounded =
                         worst.is_finite() && corners.iter().flatten().all(|v| v.is_finite());
                     let (model, o) = keys::triangle_depth(view, m, i);
@@ -670,7 +670,7 @@ fn invisible(
                     }
                     let corners = t.map(|q| map(&m.map, q));
                     let eps = t.map(|q| shift.at(q));
-                    let worst = eps.iter().copied().fold(0.0, f64::max);
+                    let worst = eps.iter().copied().fold(0.0, crate::bound::max);
                     if !(worst.is_finite() && corners.iter().flatten().all(|v| v.is_finite())) {
                         continue;
                     }

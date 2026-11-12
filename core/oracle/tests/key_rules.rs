@@ -377,15 +377,17 @@ fn a_pivot_with_no_move_leaves_its_record_s_layers_unable_against_each_other() {
 
 #[test]
 fn a_record_whose_keys_have_no_bound_leaves_its_layers_unable_against_each_other() {
-    // §6: `band_unbounded` is per fragment. A fixed-orientation square with an opaque stroke 0.25
-    // wide, its centre at z = 10^300: the facing model through it states no bound, for either
-    // layer, and where they meet the pair is `truth_unable`.
+    // §6: `band_unbounded` is per fragment. A pre-projected square with an opaque stroke 0.25
+    // wide, its pivot at z = 25, behind the eye at focal distance 20: the facing plane through
+    // its pivot states no bound, for either layer, and where they meet the pair is
+    // `truth_unable`.
     let mut b = Build::new(true);
-    let r = b.fill(rect([-1.0, 1.0], [-1.0, 1.0], 0.0), OPAQUE_BLUE);
+    let r = b.pre_projected(rect([-1.0, 1.0], [-1.0, 1.0], 0.0), OPAQUE_BLUE);
     r.paint.stroke = Paint::One(WHITE);
     r.paint.stroke_width = 0.25;
-    r.depth.fixed_orientation_centre = Some([0.0, 0.0, 1e300]);
-    let d = decide(&b, view(10.0, GRID));
+    r.depth.fixed_orientation_centre = Some([0.0, 0.0, 25.0]);
+    r.pre_projected.as_mut().unwrap().stroke = Paint::One(WHITE);
+    let d = decide(&b, view(20.0, GRID));
     let fill = id_of(&d, 0, 1);
     for row in own_rows(&d, fill) {
         for s in 0..16 {

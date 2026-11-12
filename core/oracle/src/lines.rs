@@ -37,7 +37,7 @@ fn kappa(s: &Segment, p: [f64; 2]) -> (f64, f64) {
 /// `step⁺` of a cubic (`lines@1`): control points on screen `x`, keys `k`, its `L`, with `ε̂`, `σ̂`
 /// and the centreline's `scale`.
 pub fn step_plus(x: &[[f64; 2]; 4], k: &[f64; 4], l: f64, eh: f64, sh: f64, scale: f64) -> f64 {
-    let room = |v: f64| 128.0 * U * scale.max(v).max(1.0);
+    let room = |v: f64| 128.0 * U * crate::bound::max(crate::bound::max(scale, v), 1.0);
     let step = 2.0 * libm::round(l / 2.0).clamp(1.0, 63.0);
     let exposed = (l - step).abs() <= 6.0 * eh * (1.0 + 1e-9) + 2.0 * room(l);
     if !exposed {
@@ -46,7 +46,10 @@ pub fn step_plus(x: &[[f64; 2]; 4], k: &[f64; 4], l: f64, eh: f64, sh: f64, scal
     let d3 = [x[3][0] - x[0][0], x[3][1] - x[0][1]];
     let v = libm::hypot(d3[0], d3[1]);
     let dj = |j: usize| [x[j][0] - x[0][0], x[j][1] - x[0][1]];
-    let far = libm::hypot(dj(1)[0], dj(1)[1]).max(libm::hypot(dj(2)[0], dj(2)[1]));
+    let far = crate::bound::max(
+        libm::hypot(dj(1)[0], dj(1)[1]),
+        libm::hypot(dj(2)[0], dj(2)[1]),
+    );
     let along: [f64; 2] = std::array::from_fn(|i| {
         if v == 0.0 {
             0.0
@@ -62,19 +65,19 @@ pub fn step_plus(x: &[[f64; 2]; 4], k: &[f64; 4], l: f64, eh: f64, sh: f64, scal
             k[i + 1] - k[0] - (k[3] - k[0]) * along[i]
         }
     });
-    let low = 0.0f64.min(r[0]).min(r[1]);
-    let high = 0.0f64.max(r[0]).max(r[1]);
-    let kmax = k.iter().map(|v| v.abs()).fold(0.0, f64::max);
+    let low = crate::bound::least([0.0, r[0], r[1]], f64::NEG_INFINITY);
+    let high = crate::bound::max(crate::bound::max(0.0, r[0]), r[1]);
+    let kmax = k.iter().map(|v| v.abs()).fold(0.0, crate::bound::max);
     let kends = (k[3] - k[0]).abs();
-    let span = k.iter().copied().fold(f64::NEG_INFINITY, f64::max)
-        - k.iter().copied().fold(f64::INFINITY, f64::min);
+    let span = k.iter().copied().fold(f64::NEG_INFINITY, crate::bound::max)
+        - crate::bound::least(k.iter().copied(), f64::NEG_INFINITY);
     let e = sh * (1.0 + sh) * kmax;
     let lean = 2.0 * eh;
     let a = span + 2.0 * e;
-    let amax = along[0].abs().max(along[1].abs());
+    let amax = crate::bound::max(along[0].abs(), along[1].abs());
     let (b, c) = if v > 2.0 * lean {
         let eps = 128.0 * U * (kmax + kends * (1.0 + amax) * (1.0 + scale / v));
-        let b = (1.0 + sh).max(2.0) * (high - low + eps);
+        let b = crate::bound::max(1.0 + sh, 2.0) * (high - low + eps);
         let short = v - lean;
         let du = (lean * (v + far) + lean * lean) / (short * short)
             + far * v * (2.0 * v + lean) * lean / (v * v * (short * short));
@@ -84,7 +87,9 @@ pub fn step_plus(x: &[[f64; 2]; 4], k: &[f64; 4], l: f64, eh: f64, sh: f64, scal
     } else {
         (0.0, 0.0)
     };
-    (1.0 + 16.0 * U) * (a.max(b).max(c) + 72.0 * U * (kmax + span)) * (1.0 + WIDEN)
+    (1.0 + 16.0 * U)
+        * (crate::bound::max(crate::bound::max(a, b), c) + 72.0 * U * (kmax + span))
+        * (1.0 + WIDEN)
 }
 
 impl LinesBound {
@@ -101,7 +106,7 @@ impl LinesBound {
             );
             let tol = libm::hypot(j.tol[0], j.tol[1]) * (1.0 + 1e-9);
             if j.joined || gap - tol <= (2.0 + 2e-5) * eh + (gap + tol) / 1_073_741_824.0 {
-                slack_plus = slack_plus.max(gap + 2e-5 * eh);
+                slack_plus = crate::bound::max(slack_plus, gap + 2e-5 * eh);
             }
         }
         let steps: Vec<f64> = line
@@ -122,7 +127,7 @@ impl LinesBound {
             .iter()
             .map(|s| {
                 let spread = (s.a.key - s.b.key).abs();
-                let kmax = s.a.key.abs().max(s.b.key.abs());
+                let kmax = crate::bound::max(s.a.key.abs(), s.b.key.abs());
                 let first = s.cubic != usize::MAX && seen.insert(s.cubic);
                 let slack = if first {
                     (1.0 + sh) * keygap(s.cubic)
@@ -154,7 +159,7 @@ impl LinesBound {
         let mut slide: f64 = 0.0;
         for p in samples.iter().chain(std::iter::once(&centre)) {
             let reads: Vec<(f64, f64)> = line.segments.iter().map(|s| kappa(s, *p)).collect();
-            let d_min = reads.iter().map(|r| r.0).fold(f64::INFINITY, f64::min);
+            let d_min = crate::bound::least(reads.iter().map(|r| r.0), f64::INFINITY);
             let limit = (self.h + reach).max(d_min + 2.0 * reach) + room;
             let (mut lo, mut hi, mut kmax, mut m) =
                 (f64::INFINITY, f64::NEG_INFINITY, 0.0f64, 0.0f64);
@@ -162,15 +167,19 @@ impl LinesBound {
                 if *d > limit {
                     continue;
                 }
+                // A read key that is not a number bounds nothing: the term holds.
+                if k.is_nan() {
+                    return f64::INFINITY;
+                }
                 lo = lo.min(*k);
                 hi = hi.max(*k);
                 kmax = kmax.max(k.abs());
-                m = m.max(self.moves[i]);
+                m = crate::bound::max(m, self.moves[i]);
                 l_minus = l_minus.min(k.abs());
             }
             let j = hi - lo;
             let s = ((1.0 + self.sigma_hat) * (j + 8.0 * U * kmax) + m) * (1.0 + 64.0 * U);
-            slide = slide.max(s);
+            slide = crate::bound::max(slide, s);
         }
         if l_minus == 0.0 || !l_minus.is_finite() {
             return f64::INFINITY;

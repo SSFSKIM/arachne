@@ -28,6 +28,7 @@
 //!   `FORMAT.md`).
 
 pub mod band;
+pub mod bound;
 pub mod camera;
 pub mod centreline;
 pub mod colour;

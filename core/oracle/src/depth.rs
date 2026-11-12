@@ -176,7 +176,10 @@ impl ScreenKey {
     /// every point the read takes (a fringe read's may lie outside the pixel).
     pub fn rho(&self, px: i64, py: i64, reads: &[[f64; 2]]) -> f64 {
         let far = self.rho_at([(px + 1) as f64, (py + 1) as f64]);
-        reads.iter().map(|p| self.rho_at(*p)).fold(far, f64::max)
+        reads
+            .iter()
+            .map(|p| self.rho_at(*p))
+            .fold(far, crate::bound::max)
     }
 
     pub fn sloped(&self) -> bool {
@@ -294,7 +297,7 @@ pub fn plane_r_region(pr: &Projection, map: &FrameMap, p: &WorldPlane, region: [
         let gap = rounded
             .iter()
             .map(|kr| (kr.at(x, y) - ku.at(x, y)).abs() + 4.0 * U * (terms(kr) + terms(&ku)))
-            .fold(0.0, f64::max);
+            .fold(0.0, crate::bound::max);
         let s = [
             (x - map.x0) / (pr.zoom * map.xx),
             (y - map.y0) / (pr.zoom * map.yy),
@@ -307,7 +310,7 @@ pub fn plane_r_region(pr: &Projection, map: &FrameMap, p: &WorldPlane, region: [
         let a_term = (dnum + f * dd) / near + 4.0 * U * f;
         let c_term = (f + dnum / near) * spread / near;
         let shift = f * eps / (near - eps);
-        worst = worst.max(((gap + 3.0 * a_term) + c_term) + shift);
+        worst = crate::bound::max(worst, ((gap + 3.0 * a_term) + c_term) + shift);
     }
     worst
 }
@@ -328,7 +331,7 @@ pub fn key_error(pr: &Projection, shown: [f64; 3]) -> f64 {
 /// The plane on screen through three keyed corners (`(x, y)` in pixels, `key`, its bound), with
 /// its own bound before `ρ` (contract §6, "A plane through three keyed corners").
 pub fn three_corner_plane(c: [[f64; 2]; 3], d: [f64; 3], err: [f64; 3]) -> (ScreenKey, f64) {
-    let inb = err[0].max(err[1]).max(err[2]);
+    let inb = crate::bound::max(crate::bound::max(err[0], err[1]), err[2]);
     if d[0] == d[1] && d[1] == d[2] {
         return (ScreenKey::constant(d[0]), inb);
     }
@@ -340,7 +343,10 @@ pub fn three_corner_plane(c: [[f64; 2]; 3], d: [f64; 3], err: [f64; 3]) -> (Scre
     let det = e1[0] * e2[1] - e2[0] * e1[1];
     if det == 0.0 || !det.is_finite() {
         let mean = ((d[0] + d[1]) + d[2]) / 3.0;
-        let spread = d.iter().map(|v| (v - mean).abs()).fold(0.0, f64::max);
+        let spread = d
+            .iter()
+            .map(|v| (v - mean).abs())
+            .fold(0.0, crate::bound::max);
         return (
             ScreenKey::constant(mean),
             spread + inb + 4.0 * U * mean.abs(),
@@ -356,9 +362,11 @@ pub fn three_corner_plane(c: [[f64; 2]; 3], d: [f64; 3], err: [f64; 3]) -> (Scre
         + U * b.abs();
     let d_c = (4.0 * U * ((e1[0] * g2).abs() + (e2[0] * g1).abs()) + cc.abs() * d_det) / det.abs()
         + U * cc.abs();
-    let bound = inb
-        + (d_b * e1[0].abs() + d_c * e1[1].abs()).max(d_b * e2[0].abs() + d_c * e2[1].abs())
-        + 3.0 * U * (d[0].abs() + (b * c[0][0]).abs() + (cc * c[0][1]).abs());
+    let bound =
+        inb + crate::bound::max(
+            d_b * e1[0].abs() + d_c * e1[1].abs(),
+            d_b * e2[0].abs() + d_c * e2[1].abs(),
+        ) + 3.0 * U * (d[0].abs() + (b * c[0][0]).abs() + (cc * c[0][1]).abs());
     (ScreenKey { a, b, c: cc }, bound)
 }
 
@@ -398,7 +406,7 @@ pub fn extent(points: &[[f64; 3]]) -> f64 {
                 .fold(f64::NEG_INFINITY, f64::max);
             hi - lo
         })
-        .fold(0.0, f64::max)
+        .fold(0.0, crate::bound::max)
 }
 
 /// The closed polygon's length.

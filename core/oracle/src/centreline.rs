@@ -95,8 +95,11 @@ impl Centreline {
                 } else {
                     1
                 };
-                let err = c.iter().map(|q| key_error(pr, *q)).fold(0.0, f64::max)
-                    + 4.0 * U * k.iter().map(|v| v.abs()).fold(0.0, f64::max);
+                let err = c
+                    .iter()
+                    .map(|q| key_error(pr, *q))
+                    .fold(0.0, crate::bound::max)
+                    + 4.0 * U * k.iter().map(|v| v.abs()).fold(0.0, crate::bound::max);
                 let prev = (!first_cubic).then_some(last);
                 let idx = cubics.len();
                 let mut fv = last;
@@ -117,7 +120,7 @@ impl Centreline {
                     let seg = Segment {
                         a: last,
                         b: vert,
-                        err: last.err.max(vert.err),
+                        err: crate::bound::max(last.err, vert.err),
                         cubic: idx,
                         joint: step == 1 && !first_cubic,
                     };
@@ -139,7 +142,8 @@ impl Centreline {
         for sg in &segments {
             for v in [sg.a, sg.b] {
                 if v.at.iter().all(|c| c.is_finite()) {
-                    scale = scale.max(v.at[0].abs()).max(v.at[1].abs());
+                    scale =
+                        crate::bound::max(crate::bound::max(scale, v.at[0].abs()), v.at[1].abs());
                     if finite_first.is_none() && v.key.is_finite() {
                         finite_first = Some(v);
                     }
@@ -241,7 +245,7 @@ impl Centreline {
                     None => read,
                     Some(h0) => Read {
                         key: h0.key.min(read.key),
-                        r: h0.r.max(read.r),
+                        r: crate::bound::max(h0.r, read.r),
                     },
                 });
             }
@@ -258,11 +262,11 @@ impl Centreline {
 
     /// `P`'s distance from the centreline.
     pub fn distance(&self, p: [f64; 2]) -> f64 {
-        self.segments
-            .iter()
-            .map(|s| Self::foot(s, p).1)
-            .fold(f64::INFINITY, f64::min)
-            .sqrt()
+        crate::bound::least(
+            self.segments.iter().map(|s| Self::foot(s, p).1),
+            f64::INFINITY,
+        )
+        .sqrt()
     }
 
     /// The keys of every centreline point within `r` of `p`: `(min, max, max |k|)`, or `None`
@@ -299,9 +303,15 @@ impl Centreline {
             };
             for t in [t0, t1] {
                 let k = s.a.key + (s.b.key - s.a.key) * t;
+                // A key that is not a number holds every key and bounds nothing.
+                let (klo, khi) = if k.is_nan() {
+                    (f64::NEG_INFINITY, f64::INFINITY)
+                } else {
+                    (k, k)
+                };
                 out = Some(match out {
-                    None => (k, k, k.abs()),
-                    Some((lo, hi, m)) => (lo.min(k), hi.max(k), m.max(k.abs())),
+                    None => (klo, khi, crate::bound::max(0.0, k.abs())),
+                    Some((lo, hi, m)) => (lo.min(klo), hi.max(khi), crate::bound::max(m, k.abs())),
                 });
             }
         }
@@ -310,7 +320,7 @@ impl Centreline {
 
     /// `room(x) = 128u max(scale, x, 1)`.
     pub fn room(&self, x: f64) -> f64 {
-        128.0 * U * self.scale.max(x).max(1.0)
+        128.0 * U * crate::bound::max(crate::bound::max(self.scale, x), 1.0)
     }
 
     /// Whether a read at `p` within `r` is exposed to a rebuilt centreline (`curve_recut`, §6):

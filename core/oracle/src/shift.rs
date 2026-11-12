@@ -49,7 +49,7 @@ pub fn departure(g: f64, n: [f64; 3], placing: &Placing) -> f64 {
                         norm1(*p)
                     }
                 })
-                .fold(0.0, f64::max);
+                .fold(0.0, crate::bound::max);
             total += norm1(v) * (g / 2.0 + reach * LINEAR_SNAP);
             v = std::array::from_fn(|j| m[0][j] * v[0] + m[1][j] * v[1] + m[2][j] * v[2]);
         }
@@ -62,7 +62,7 @@ pub fn departure(g: f64, n: [f64; 3], placing: &Placing) -> f64 {
             let r = abs_place(outer, abs_place(inner, p.map(f64::abs)));
             n[0].abs() * r[0] + n[1].abs() * r[1] + n[2].abs() * r[2]
         })
-        .fold(0.0, f64::max);
+        .fold(0.0, crate::bound::max);
     total + 8.0 * U * rounding
 }
 
@@ -89,7 +89,8 @@ pub fn depth_share(p: &Projection, delta: f64, zs: impl Iterator<Item = f64>) ->
     if p.exponential {
         return share(p.d - delta);
     }
-    zs.map(|z| share(p.d - z - delta)).fold(0.0, f64::max)
+    zs.map(|z| share(p.d - z - delta))
+        .fold(0.0, crate::bound::max)
 }
 
 /// A record's screen shift, read per point: `ε(q) = hypot(|xx| x₀, |yy| y₀) (1 + 64u)`.
@@ -164,7 +165,10 @@ impl Shift {
 
     /// The record's `ε`: the largest over its points.
     pub fn of_points(&self, shown: &[[f64; 3]]) -> f64 {
-        shown.iter().map(|q| self.at(*q)).fold(0.0, f64::max)
+        shown
+            .iter()
+            .map(|q| self.at(*q))
+            .fold(0.0, crate::bound::max)
     }
 }
 

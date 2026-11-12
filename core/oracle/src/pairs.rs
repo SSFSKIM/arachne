@@ -91,20 +91,28 @@ fn on_own_fill(
 ) -> Result<Band, Unable> {
     let (o, f) = (own?, fill?);
     let taken = if f.o < o.o { f } else { o };
-    let took = if tied(&o, &f) { o.r.max(f.r) } else { taken.r };
+    let took = if tied(&o, &f) {
+        crate::bound::max(o.r, f.r)
+    } else {
+        taken.r
+    };
     // Where the fill's cover is `Either` the core may keep either key: the larger bound counts.
-    let r = if fill_either { o.r.max(took) } else { took };
-    let lo = o.lo().min(f.lo());
+    let r = if fill_either {
+        crate::bound::max(o.r, took)
+    } else {
+        took
+    };
+    let lo = crate::bound::least([o.lo(), f.lo()], f64::NEG_INFINITY);
     let hi = if fill_either {
         o.hi()
     } else {
-        o.hi().min(f.hi())
+        crate::bound::least([o.hi(), f.hi()], f64::INFINITY)
     };
     Ok(Band {
         o: taken.o,
         r,
-        s_minus: (taken.o - lo - 3.0 * r).max(0.0),
-        s_plus: (hi - taken.o - 3.0 * r).max(0.0),
+        s_minus: crate::bound::max(taken.o - lo - 3.0 * r, 0.0),
+        s_plus: crate::bound::max(hi - taken.o - 3.0 * r, 0.0),
     })
 }
 
@@ -150,9 +158,9 @@ fn on_own_fill_pixel(
     let r = (0..16)
         .filter(|&s| stroke[s] != 0)
         .filter_map(|s| next[s].ok().map(|b| b.r))
-        .fold(0.0, f64::max);
+        .fold(0.0, crate::bound::max);
     for b in next.iter_mut().flatten() {
-        b.r = b.r.max(r);
+        b.r = crate::bound::max(b.r, r);
     }
     Some((next, adjusted))
 }

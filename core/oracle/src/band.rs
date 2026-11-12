@@ -45,7 +45,7 @@ pub fn departure_plus(g: f64, placings: &[Placing]) -> f64 {
                             norm1(*p)
                         }
                     })
-                    .fold(0.0, f64::max);
+                    .fold(0.0, crate::bound::max);
                 total += libm::sqrt(3.0) * frob(&c) * (g / 2.0 + reach / 33_554_432.0);
                 let l: [[f64; 3]; 3] = std::array::from_fn(|i| [m[i][0], m[i][1], m[i][2]]);
                 c = std::array::from_fn(|i| {
@@ -58,7 +58,7 @@ pub fn departure_plus(g: f64, placings: &[Placing]) -> f64 {
             .points
             .iter()
             .map(|p| norm(abs_place(outer, abs_place(inner, p.map(f64::abs)))))
-            .fold(0.0, f64::max);
+            .fold(0.0, crate::bound::max);
         (total + 8.0 * U * rounding) * (1.0 + 1e-12)
     };
     placings.iter().map(|p| p.weight * one(p)).sum()
@@ -184,10 +184,15 @@ pub fn least_width(hull: &[[f64; 2]]) -> f64 {
         if l == 0.0 {
             continue;
         }
-        let far = hull
-            .iter()
-            .map(|p| ((p[0] - a[0]) * e[1] - (p[1] - a[1]) * e[0]).abs() / l)
-            .fold(0.0, f64::max);
+        let mut far: f64 = 0.0;
+        for p in hull {
+            let t = ((p[0] - a[0]) * e[1] - (p[1] - a[1]) * e[0]).abs() / l;
+            // A term that is not a number states no width: the hull is as narrow as can be.
+            if t.is_nan() {
+                return 0.0;
+            }
+            far = far.max(t);
+        }
         best = best.min(far);
     }
     if best.is_finite() { best } else { 0.0 }
@@ -216,9 +221,10 @@ pub fn distance_to_polygon(hull: &[[f64; 2]], p: [f64; 2]) -> f64 {
         };
         libm::hypot(p[0] - (a[0] + ab[0] * t), p[1] - (a[1] + ab[1] * t))
     };
-    (0..hull.len())
-        .map(|i| seg(hull[i], hull[(i + 1) % hull.len()]))
-        .fold(f64::INFINITY, f64::min)
+    crate::bound::least(
+        (0..hull.len()).map(|i| seg(hull[i], hull[(i + 1) % hull.len()])),
+        f64::INFINITY,
+    )
 }
 
 /// A lower bound of the least width of a set of 3D points: the least width of tetrahedra drawn
@@ -282,7 +288,11 @@ pub fn tetra_width(t: [[f64; 3]; 4]) -> f64 {
         let n = cross(sub(f[1], f[0]), sub(f[2], f[0]));
         let nl = norm(n);
         if nl > 0.0 {
-            best = best.min(dot(sub(t[i], f[0]), n).abs() / nl);
+            let h = dot(sub(t[i], f[0]), n).abs() / nl;
+            if h.is_nan() {
+                return 0.0;
+            }
+            best = best.min(h);
         } else {
             return 0.0;
         }
@@ -291,7 +301,11 @@ pub fn tetra_width(t: [[f64; 3]; 4]) -> f64 {
         let n = cross(sub(t[b], t[a]), sub(t[d], t[c]));
         let nl = norm(n);
         if nl > 0.0 {
-            best = best.min(dot(sub(t[c], t[a]), n).abs() / nl);
+            let h = dot(sub(t[c], t[a]), n).abs() / nl;
+            if h.is_nan() {
+                return 0.0;
+            }
+            best = best.min(h);
         }
     }
     best
