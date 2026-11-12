@@ -360,19 +360,31 @@ pub struct BlockPixel {
 
 /// The pixels a block covers in the frame `size`, per candidate truncation, for a finite `eps`
 /// (a point with an infinite one is unbounded, which the caller writes).
+///
+/// The truncation may move along a side where the coordinate lies within `eps` of an integer,
+/// read exactly (`|a − round(a)|` is exact in binary64), whatever `a ± eps` rounds to. There the
+/// candidates run from `trunc(next_down(a − eps))` to `trunc(next_up(a + eps))`, the producer
+/// truncating toward zero; elsewhere no integer lies within `eps`, and `trunc(a)` is the one.
 pub fn block(at: [f64; 2], eps: f64, side: i64, size: [u32; 2], window: Window) -> Vec<BlockPixel> {
     let trunc = |v: f64| v.trunc() as i64;
+    let candidates = |a: f64| {
+        if (a - a.round()).abs() <= eps {
+            (
+                trunc((a - eps).next_down())..=trunc((a + eps).next_up()),
+                true,
+            )
+        } else {
+            (trunc(a)..=trunc(a), false)
+        }
+    };
     let lo = (-side as f64 / 2.0).floor() as i64 + 1;
     let (w0, h0) = (window[0] as i64, window[1] as i64);
     let (w1, h1) = (
         (window[2].min(size[0])) as i64,
         (window[3].min(size[1])) as i64,
     );
-    let (xs, ys) = (
-        trunc(at[0] - eps)..=trunc(at[0] + eps),
-        trunc(at[1] - eps)..=trunc(at[1] + eps),
-    );
-    let moves = xs.start() != xs.end() || ys.start() != ys.end();
+    let ((xs, x_moves), (ys, y_moves)) = (candidates(at[0]), candidates(at[1]));
+    let moves = x_moves || y_moves;
     let code = if moves { Cover::Either } else { Cover::Yes };
     // Only the candidates whose block reaches the window: a wide `eps` lists no more than it shows.
     let reaching = |r: std::ops::RangeInclusive<i64>, w0: i64, w1: i64| {
