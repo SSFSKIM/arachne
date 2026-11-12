@@ -395,18 +395,25 @@ impl Planarity {
     }
 }
 
-/// The points' widest extent along an axis.
+/// The points' widest extent along an axis; unbounded where a coordinate is not a number.
 pub fn extent(points: &[[f64; 3]]) -> f64 {
     (0..3)
         .map(|k| {
-            let lo = points.iter().map(|p| p[k]).fold(f64::INFINITY, f64::min);
+            let lo = crate::bound::least(points.iter().map(|p| p[k]), f64::NEG_INFINITY);
             let hi = points
                 .iter()
                 .map(|p| p[k])
-                .fold(f64::NEG_INFINITY, f64::max);
+                .fold(f64::NEG_INFINITY, crate::bound::max);
             hi - lo
         })
         .fold(0.0, crate::bound::max)
+}
+
+/// Whether the points' plane can be known (contract §5): their extent and its square are finite.
+/// Where either is not, `tol` and the `points_somewhere` floor say nothing about the points.
+pub fn extent_known(points: &[[f64; 3]]) -> bool {
+    let e = extent(points);
+    (e * e).is_finite()
 }
 
 /// The closed polygon's length.
@@ -489,7 +496,7 @@ pub fn planarity(
     code: Option<u8>,
     face: bool,
 ) -> (Planarity, Option<WorldPlane>) {
-    if points.is_empty() {
+    if points.is_empty() || !extent_known(points) {
         return (Planarity::Curve, None);
     }
     let tol = 1e-9 * extent(points).max(1.0);

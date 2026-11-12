@@ -741,6 +741,9 @@ pub fn path_depth(view: &View, item: &PathItem, rings: &[Option<Vec<Ring>>; 3]) 
                 .copied();
             // Each shown point put back by `unproject`, in the camera's axes (contract §2).
             let put_back: Vec<[f64; 3]> = item.world.iter().map(|p| cam.unproject(*p)).collect();
+            if !crate::depth::extent_known(&put_back) {
+                return none(Model::Unbounded);
+            }
             let (how, plane) = planarity(&put_back, code, item.face);
             let strokes = [curve_with(&cam, 0), curve_with(&cam, 2)];
             let fill = plane
@@ -772,7 +775,7 @@ pub fn path_depth(view: &View, item: &PathItem, rings: &[Option<Vec<Ring>>; 3]) 
         (Placement::Projected, false) => {}
         _ => return none(Model::NegInf),
     }
-    if !eps.is_finite() || !sigma.is_finite() {
+    if !eps.is_finite() || !sigma.is_finite() || !crate::depth::extent_known(&item.world) {
         return none(Model::Unbounded);
     }
     let curve = |k: usize| curve_with(pr, k);
@@ -1020,6 +1023,9 @@ pub fn triangle_depth(view: &View, item: &MeshItem, i: usize) -> (Model, Option<
         return (screen(), None);
     }
     let pts = corners.to_vec();
+    if !crate::depth::extent_known(&pts) {
+        return (Model::Unbounded, None);
+    }
     let tol = 1e-9 * extent(&pts).max(1.0);
     let share = |k: usize| {
         corners
