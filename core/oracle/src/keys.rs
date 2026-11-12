@@ -900,7 +900,7 @@ pub fn path_depth(view: &View, item: &PathItem, rings: &[Option<Vec<Ring>>; 3]) 
                         .abs();
                     kr(big_d, departure_of(g, n, &c.placings) + dep)
                 })
-                .fold(0.0, f64::max);
+                .fold(0.0, crate::bound::max);
             // Its row on each, read against a fragment that shares it (`shared_plane_read@1`).
             let region = path_region(item, widest);
             let axis_rows = axes
@@ -968,7 +968,7 @@ fn nearest_departure(
             }
             worst + libm::hypot(plane.b, plane.c) * 0.1
         })
-        .fold(0.0, f64::max)
+        .fold(0.0, crate::bound::max)
 }
 
 /// A triangle's depth: its model and, where offered, its registry facts.

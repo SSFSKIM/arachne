@@ -476,9 +476,10 @@ pub fn hull_distance(x: &[[f64; 2]; 4], p: [f64; 2]) -> f64 {
     if hull.is_empty() {
         return dist2(p, pts[0]).sqrt();
     }
-    (0..hull.len())
-        .map(|i| seg(hull[i], hull[(i + 1) % hull.len()]))
-        .fold(f64::INFINITY, f64::min)
+    crate::bound::least(
+        (0..hull.len()).map(|i| seg(hull[i], hull[(i + 1) % hull.len()])),
+        0.0,
+    )
 }
 
 #[cfg(test)]

@@ -571,7 +571,7 @@ pub fn departure_from(p: &WorldPlane, points: &[[f64; 3]]) -> f64 {
             (dot(p.unrounded_n, *q) - p.unrounded_e).abs()
                 + 4.0 * U * (abs_dot(p.unrounded_n, *q) + p.unrounded_e.abs())
         })
-        .fold(0.0, f64::max)
+        .fold(0.0, crate::bound::max)
         + p.e_err
 }
 

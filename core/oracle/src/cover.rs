@@ -172,7 +172,7 @@ impl Line {
             Some((side, along))
                 if along.v + along.err >= 0.0 && along.v - along.err <= self.len =>
             {
-                ends.min(side.v.abs() - side.err)
+                crate::bound::least([ends, side.v.abs() - side.err], 0.0)
             }
             _ => ends,
         }
