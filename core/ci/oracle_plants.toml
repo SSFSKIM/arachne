@@ -445,6 +445,15 @@ replace = "decision(joins.get(last_cubic).copied()),"
 red = ["stroke_fixtures::join_closing_takes_the_first_cubics_byte", "lib::joins::tests::a_closed_subpaths_closing_join_takes_its_first_cubics_byte", "lib::joins::tests::a_skipped_first_cubic_still_decides_the_closing_join"]
 
 [[plant]]
+name = "guarded-seam-unjoined"
+item = "§8"
+check = "a guarded closed subpath's seam is stroked as a join, its last run's dash joined onto its first"
+file = "core/oracle/src/guard.rs"
+find = "let seam = sub.closed && runs.len() > 1"
+replace = "let seam = false && sub.closed && runs.len() > 1"
+red = ["stroke_fixtures::guarded_seam_strokes_the_seam_as_a_join", "lib::guard::tests::a_guarded_seam_joins_the_last_runs_dash_onto_the_first"]
+
+[[plant]]
 name = "dash-gap-off-entry"
 item = "§8"
 check = "a dash's gap is the total less the on length, not its off entry"
