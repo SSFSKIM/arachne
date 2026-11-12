@@ -167,3 +167,56 @@ impl Shift {
         shown.iter().map(|q| self.at(*q)).fold(0.0, f64::max)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `ds(δ)` over the shown points `shown`. At GREEN `depth_share` takes the shown points
+    /// themselves, not their depths alone; this stands for it until then.
+    fn share_at(p: &Projection, delta: f64, shown: &[[f64; 3]]) -> f64 {
+        depth_share(p, delta, shown.iter().map(|q| q[2]))
+    }
+
+    #[test]
+    fn a_depth_share_whose_denominator_is_within_its_rounding_is_unbounded() {
+        // §6: `ds(δ)` is infinite where a denominator is not positive, and that is the exact
+        // `d − z − δ` of the record's point, not the one its depth rounds to. A rotation about x
+        // with third row `(0, s, c)`, `s = fl(0.6)`, `c = fl(0.8)`, no frame centre, `d = 38.6`;
+        // the world point `(0, 31, 25)` has the exact depth `z* = 31 s + 25 c`, which rounds 55u
+        // low, and `δ = 2^-49`. Exactly `d − z* − δ = −7u`, not positive (checked below in
+        // integers at the scale `2^53`, where `s`, `c`, `d` and `δ` are all integers); the
+        // computed one is `(d − z) − δ = 48u`, positive, so today's share is `1/3`.
+        let (s, c) = (0.6, 0.8);
+        let p = Projection {
+            r: [[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]],
+            c: [0.0; 3],
+            d: 38.6,
+            zoom: 1.0,
+            exponential: false,
+        };
+        let delta = 1.0 / 562_949_953_421_312.0; // 2^-49
+        let shown = [p.project([0.0, 31.0, 25.0])];
+        let scale = 9_007_199_254_740_992.0; // 2^53
+        let int = |v: f64| {
+            let n = v * scale;
+            assert_eq!(n.fract(), 0.0, "{v} is not a multiple of 2^-53");
+            n as i128
+        };
+        let exact = int(p.d) - (31 * int(s) + 25 * int(c)) - int(delta);
+        assert!(
+            exact <= 0,
+            "premise: the exact denominator {exact} u is not positive"
+        );
+        let computed = (p.d - shown[0][2]) - delta;
+        assert!(
+            computed > 0.0,
+            "premise: the computed denominator {computed:e} is positive"
+        );
+        let share = share_at(&p, delta, &shown);
+        assert!(
+            share.is_infinite(),
+            "ds {share} over a denominator of {exact} u"
+        );
+    }
+}

@@ -296,3 +296,30 @@ pub fn tetra_width(t: [[f64; 3]; 4]) -> f64 {
     }
     best
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A convex hull at the scale where an edge's cross products overflow: the edge from
+    /// `(1e200, 0)` to `(1, 1e200)` reads `∞ − ∞` at the far vertices.
+    const OVERFLOWING: [[f64; 2]; 4] = [[0.0, 0.0], [1e200, 0.0], [1.0, 1e200], [0.0, 1.0]];
+
+    #[test]
+    fn a_hull_width_with_a_nan_term_is_zero() {
+        // The P-NaN invariant: a NaN term of the least width states no width (0, so `θ` is
+        // infinite and the read outside the hull states no bound), not the width of the terms
+        // that stayed finite.
+        assert_eq!(least_width(&OVERFLOWING), 0.0);
+    }
+
+    #[test]
+    fn a_polygon_distance_with_a_nan_term_is_unbounded() {
+        // The P-NaN invariant: a NaN segment distance states no distance (`∞`), not the least of
+        // the segments that stayed finite.
+        assert_eq!(
+            distance_to_polygon(&OVERFLOWING, [-1.0, -1.0]),
+            f64::INFINITY
+        );
+    }
+}

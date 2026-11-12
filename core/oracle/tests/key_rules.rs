@@ -468,3 +468,103 @@ fn a_facing_key_whose_bounds_overflow_states_no_bound() {
         }
     }
 }
+
+/// `fragment` has own rows, and none of their present samples states a bound: each is
+/// `band_unbounded` (status 2).
+fn states_no_bound(d: &Decisions, fragment: u32) {
+    let rows = own_rows(d, fragment);
+    assert!(!rows.is_empty(), "fragment {fragment} has no own rows");
+    for row in rows {
+        for s in 0..16 {
+            if row.status[s] == 0 {
+                continue;
+            }
+            assert_eq!(
+                row.status[s], 2,
+                "({}, {}) sample {s}: status {}, o {} r {} s {} {}",
+                row.x, row.y, row.status[s], row.o[s], row.r[s], row.s_minus[s], row.s_plus[s]
+            );
+        }
+    }
+}
+
+/// View C at `focal_distance` and `zoom`.
+fn view_zoomed(focal_distance: f64, zoom: f64) -> View {
+    let mut v = view(focal_distance, GRID);
+    if let Camera::ThreeD(c) = &mut v.camera {
+        c.zoom = zoom;
+    }
+    v
+}
+
+#[test]
+fn a_triangle_whose_extent_overflows_has_no_plane() {
+    // §5: an extent that is not finite makes the record's plane unknown, and its layers state no
+    // bound. A triangle 1.8·10^308 wide in x on z = 0, shown through zoom 10^-10 (x ±0.9·10^298, y
+    // ±10 units): its extent is ∞, so `tol = 1e-9 · max(extent, 1)` is ∞ and every point lies
+    // "on" every axis plane.
+    let mut b = Build::new(true);
+    b.mesh(
+        vec![
+            [-0.9e308, -1e11, 0.0],
+            [0.9e308, -1e11, 0.0],
+            [0.0, 1e11, 0.0],
+        ],
+        vec![[0, 1, 2]],
+        OPAQUE_BLUE,
+    );
+    let d = decide(&b, view_zoomed(20.0, 1e-10));
+    states_no_bound(&d, id_of(&d, 0, 3));
+}
+
+#[test]
+fn a_triangle_whose_extent_squared_overflows_has_no_plane() {
+    // §5: an extent whose square is not finite makes the record's plane unknown. A triangle 10^160
+    // across, tilted (z to 10^159) under focal distance 10^200 and zoom 10^-158 (about 50 units
+    // on screen): its extent is finite, `extent²` is ∞, so `|n| > 1e-9 · extent²` can never hold.
+    let mut b = Build::new(true);
+    b.mesh(
+        vec![
+            [-0.5e160, -0.5e160, 0.0],
+            [0.5e160, -0.5e160, 0.0],
+            [0.0, 0.5e160, 1e159],
+        ],
+        vec![[0, 1, 2]],
+        OPAQUE_RED,
+    );
+    let d = decide(&b, view_zoomed(1e200, 1e-158));
+    states_no_bound(&d, id_of(&d, 0, 3));
+}
+
+/// A pre-projected stroke whose tail's points all lie at rotated depth `z` (a square, outlined
+/// 0.5 wide), decided under view C at focal distance 20, linear or exponential.
+fn pre_projected_stroke_at(z: f64, exponential: bool) -> Decisions {
+    let mut b = Build::new(true);
+    let r = b.pre_projected(rect([-2.0, 2.0], [-2.0, 2.0], z), OPAQUE_BLUE);
+    r.paint.stroke_width = 0.5;
+    if let Some(tail) = r.pre_projected.as_mut() {
+        tail.stroke = Paint::One(WHITE);
+    }
+    let mut v = view(20.0, GRID);
+    if let Camera::ThreeD(c) = &mut v.camera {
+        c.exponential_projection = exponential;
+    }
+    decide(&b, v)
+}
+
+#[test]
+fn a_pre_projected_curve_at_the_eye_plane_states_no_bound() {
+    // §5 (l.811 as amended): a centreline with no finite vertex has no bounded key; only a
+    // placement that declares −∞ keys −∞, and none reaches a centreline. A pre-projected stroke at
+    // z = d keys every vertex −d / 0 = −∞: its stroke reads band_unbounded, not an exact −∞.
+    let d = pre_projected_stroke_at(20.0, false);
+    states_no_bound(&d, id_of(&d, 0, 2));
+}
+
+#[test]
+fn a_pre_projected_curve_beyond_the_exponential_range_states_no_bound() {
+    // As above under the exponential option: at z = 800 d, `exp(z / d)` overflows, every vertex
+    // keys −∞, and the stroke reads band_unbounded.
+    let d = pre_projected_stroke_at(16_000.0, true);
+    states_no_bound(&d, id_of(&d, 0, 2));
+}

@@ -332,3 +332,61 @@ fn a_refused_frame_writes_its_refusal() {
         "{text}"
     );
 }
+
+/// `read.py --canonical` on `file`: whether it read it, and its error output.
+fn read_py_result(file: &Path) -> (bool, String) {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("read.py");
+    let out = Command::new("python3")
+        .arg("-I")
+        .arg(script)
+        .arg("--canonical")
+        .arg(file)
+        .output()
+        .expect("python3 runs");
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn a_section_this_reader_does_not_know_is_refused() {
+    // FORMAT.md: a reader refuses a tag it does not know; a new section comes with a new
+    // version. The sample's `LABL` directory entry renamed `ZZZZ`: both readers refuse the file,
+    // naming the tag, rather than read it without the section.
+    let mut b = write(&sample());
+    let n = u32::from_le_bytes(b[80..84].try_into().unwrap()) as usize;
+    let at = (0..n)
+        .map(|i| 88 + 24 * i)
+        .find(|&at| &b[at..at + 4] == b"LABL")
+        .expect("a LABL section");
+    b[at..at + 4].copy_from_slice(b"ZZZZ");
+    // Both readers are asked before either is judged, so a failure names each one's answer.
+    let rust = read(&b).err();
+    let file = scratch("unknown-tag").join("d.oracle");
+    std::fs::write(&file, &b).unwrap();
+    let (ok, err) = read_py_result(&file);
+    assert!(
+        rust.as_deref().is_some_and(|e| e.contains("ZZZZ")) && !ok && err.contains("ZZZZ"),
+        "the unknown tag ZZZZ: the Rust reader refused {rust:?}; read.py read {ok}, {err}"
+    );
+}
+
+#[test]
+fn a_format_this_reader_does_not_know_is_refused() {
+    // FORMAT.md: a reader refuses a version it does not know. `ORACLE_FORMAT` is 2: a file
+    // stating format 1 (before `AXBD`) or 3 is refused by both readers.
+    for format in [1u16, 3] {
+        let mut b = write(&sample());
+        b[4..6].copy_from_slice(&format.to_le_bytes());
+        // Both readers are asked before either is judged, so a failure names each one's answer.
+        let rust = read(&b).err();
+        let file = scratch(&format!("format-{format}")).join("d.oracle");
+        std::fs::write(&file, &b).unwrap();
+        let (ok, err) = read_py_result(&file);
+        assert!(
+            rust.is_some() && !ok,
+            "format {format}: the Rust reader refused {rust:?}; read.py read {ok}, {err}"
+        );
+    }
+}

@@ -1276,3 +1276,185 @@ fn recut_reads_of_one_curve_computation_are_an_exact_tie_and_of_two_stay_unable(
             .collect::<Vec<_>>()
     );
 }
+
+/// The decisions' axis band rows (FORMAT.md `AXBD`), as `(x, y, fragment, against, status)`: a
+/// fragment's row on the axis plane it shares with `against`, the read §5 `shared_plane_read@1`
+/// takes against it. The decisions at d061a532 carry none.
+fn axis_rows(_d: &Decisions) -> Vec<(u32, u32, u32, u32, [u8; 16])> {
+    Vec::new()
+}
+
+#[test]
+fn an_unbounded_axis_read_names_its_pair_band_unbounded() {
+    // §6: a pair `truth_unable` at a sample is named by the first status among its reads there
+    // that states no bound. The scene of
+    // `a_path_s_row_on_a_shared_axis_plane_is_read_where_its_own_key_alone_would_order_the_pair`:
+    // the stroke's row on `x = 1`, read against the triangle, is unbounded at every pair-sample.
+    // That read reaches the facts as an axis row of the stroke against the triangle, status 2,
+    // so the pair is named `band_unbounded`, not left unnamed.
+    let mut b = Build::new(true);
+    b.stroke(
+        open(&[[1.0, -2.875, 0.0], [1.0, 2.875, 0.0]]),
+        OPAQUE_GREEN,
+        1.0,
+    );
+    b.mesh(
+        vec![[1.0, -1.0, -3.0], [1.0, 1.0, 3.0], [1.0, 0.008, 0.0]],
+        vec![[0, 1, 2]],
+        OPAQUE_BLUE,
+    );
+    let d = decide(
+        &b,
+        View {
+            input_grid: 0.01,
+            ..view_c()
+        },
+    );
+    let (p, q) = (id_of(&d, 0, 2), id_of(&d, 1, 3));
+    let axis = axis_rows(&d);
+    for r in pairs_of(&d, p, q) {
+        let s = r.sample as usize;
+        let row = axis
+            .iter()
+            .find(|a| (a.0, a.1, a.2, a.3) == (r.x, r.y, p, q));
+        assert!(
+            row.is_some_and(|a| a.4[s] == 2),
+            "({}, {}) sample {s}: the stroke's axis read against the triangle {:?}",
+            r.x,
+            r.y,
+            row.map(|a| a.4[s])
+        );
+    }
+}
+
+#[test]
+fn a_face_group_s_curve_keys_share_one_face_list() {
+    // A face group's face ends and widths are one list per record: every face's curve key holds
+    // the record's one copy, not a copy of its own (a group of N faces would hold N lists of N).
+    let n = 256;
+    let faces: Vec<Vec<[f64; 3]>> = (0..n)
+        .map(|i| {
+            let x = -6.0 + 12.0 * (i as f64) / (n as f64);
+            rect([x, x + 0.03], [-1.0, 1.0], 0.0)
+        })
+        .collect();
+    let mut b = Build::new(true);
+    let r = b.face_group(&faces, OPAQUE_BLUE);
+    r.paint.stroke_width = 0.25;
+    let stroke = arachne_core::xf::Stops::new(vec![OPAQUE_RED; n]);
+    let key = stroke.key();
+    if let arachne_core::xf::Body::FaceGroup(f) = &mut r.body {
+        f.stroke = Some(key);
+        f.face_widths = vec![0.25; n];
+    }
+    b.paints.push(stroke);
+    let v = view_c_exact();
+    let delta = b.delta(1, v.clone());
+    let mut state = arachne_oracle::stream::State::default();
+    state.apply(&delta).unwrap();
+    let items = arachne_oracle::draw::items(
+        &v,
+        &state.records,
+        &state.order,
+        &state.shapes,
+        &state.paints,
+    );
+    // Every face's depth is kept alive while the lists are compared, so no freed list's address is
+    // reused by the next face's.
+    let depths: Vec<_> = items
+        .iter()
+        .filter_map(|it| match it {
+            arachne_oracle::draw::Item::Path(p) => {
+                Some(arachne_oracle::keys::path_depth(&v, p, &[None, None, None]))
+            }
+            _ => None,
+        })
+        .collect();
+    let mut lists = Vec::new();
+    for depth in &depths {
+        if let arachne_oracle::keys::Model::Curve { of, .. } = &depth.layers[2] {
+            assert_eq!(of.faces.0.len(), n, "face ends");
+            lists.push((of.faces.0.as_ptr(), of.faces.1.as_ptr()));
+        }
+    }
+    assert_eq!(lists.len(), n, "a stroke curve key per face");
+    assert!(
+        lists.iter().all(|l| *l == lists[0]),
+        "{} distinct face lists",
+        lists.iter().collect::<std::collections::HashSet<_>>().len()
+    );
+}
+
+#[test]
+fn a_recut_read_with_an_unbounded_bound_is_band_unbounded() {
+    // §6: where `R` is infinite the oracle states no bound, `curve_recut` included, so no pair is
+    // lifted to an `ExactTie` over a read that states no bound. Two pre-projected, pivotless
+    // strokes of the polyline of `recut_pair` under zoom 0: their screen geometry and shift stay
+    // finite, but every key error off the origin is infinite (`hypot(x, y) / |f z0|`), so every
+    // read off the origin, recut or not, has `R = ∞`.
+    let pts = open(&[
+        [-2.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [2.0, 1.0, -1.0],
+        [2.0, -1.0, 2.0],
+    ]);
+    let mut b = Build::new(true);
+    for rgba in [OPAQUE_RED, OPAQUE_BLUE] {
+        let r = b.pre_projected(pts.clone(), rgba);
+        if let Some(tail) = &mut r.pre_projected {
+            tail.fill = Paint::None;
+            tail.stroke = Paint::One(rgba);
+        }
+        r.paint.stroke_width = 0.5;
+    }
+    let mut v = view_c();
+    if let Camera::ThreeD(c) = &mut v.camera {
+        c.zoom = 0.0;
+    }
+    let d = decide(&b, v);
+    let (p, q) = (id_of(&d, 0, 2), id_of(&d, 1, 2));
+    let own: Vec<_> = d
+        .bands
+        .iter()
+        .filter(|r| (r.fragment == p || r.fragment == q) && r.which == 0)
+        .collect();
+    let recut: Vec<_> = own
+        .iter()
+        .flat_map(|r| (0..16).filter(|&s| r.status[s] == 3).map(|s| (r.x, r.y, s)))
+        .collect();
+    assert!(
+        recut.is_empty(),
+        "{} recut reads with R infinite, first {:?}",
+        recut.len(),
+        recut.first()
+    );
+    let ties = pairs_of(&d, p, q).iter().filter(|r| r.label == 4).count();
+    assert_eq!(ties, 0, "ExactTie pair-samples over unbounded reads");
+}
+
+#[test]
+fn two_blends_of_opposite_sign_are_two_computations() {
+    // §7, `curve_key@1`: a curve's computation is its record's inputs as recorded. Two records
+    // blending their shape toward itself at `t = +2^-60` and `t = −2^-60` are shown alike, and
+    // their blend weights `|1 − t|`, `|t|` are equal; their signed `t` is not.
+    not_one_computation(false, "blend sign", |b| {
+        let t60 = 1.0 / 1_152_921_504_606_846_976.0; // 2^-60
+        for (i, t) in [(0, t60), (1, -t60)] {
+            let r = &mut b.records[i];
+            r.geometry.blend = Some(arachne_core::xf::Blend {
+                shape_b: r.geometry.shape_a.unwrap(),
+                place_b: arachne_core::xf::IDENTITY,
+                t,
+            });
+        }
+    });
+}
+
+#[test]
+fn two_pre_projected_records_of_other_placements_are_two_computations() {
+    // §7, `curve_key@1`: a pre-projected record is shown at its tail's points; the core still reads
+    // its own placement. One tail, two `place_a`: two computations.
+    not_one_computation(true, "pre-projected placement", |b| {
+        b.records[1].geometry.place_a[0][3] = 1.0;
+    });
+}

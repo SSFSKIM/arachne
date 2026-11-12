@@ -472,4 +472,24 @@ mod tests {
         alone[0] = Err(Unable::CurveRecut);
         assert_eq!(on_own_fill_pixel(&alone, &fill, &stroke, &[0; 16]), None);
     }
+
+    #[test]
+    fn an_adjusted_stroke_takes_its_most_severe_unable_class() {
+        // §6: an unbounded read leaves the pixel's bound unbounded, whatever the other reads are;
+        // the stroke's samples there take `band_unbounded`, the class a pair is first named by, not
+        // the class of whichever unable read comes first in sample order. A `curve_recut` read at
+        // sample 0 and an unbounded one at 1, the fill covering 2.
+        let mut own = [band(-1.0, 1e-13, 0.0); 16];
+        own[0] = Err(Unable::CurveRecut);
+        own[1] = Err(Unable::BandUnbounded);
+        let fill = [band(-0.9, 1e-3, 0.0); 16];
+        let mut stroke = [0u8; 16];
+        stroke[..3].fill(1);
+        let mut cover = [0u8; 16];
+        cover[2] = 1;
+        let (next, _) = on_own_fill_pixel(&own, &fill, &stroke, &cover).unwrap();
+        for (s, b) in next.iter().enumerate().take(3) {
+            assert_eq!(*b, Err(Unable::BandUnbounded), "sample {s}");
+        }
+    }
 }

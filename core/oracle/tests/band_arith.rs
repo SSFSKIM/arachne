@@ -401,3 +401,114 @@ fn a_world_planes_rho_is_the_largest_over_the_rounded_planes_it_admits() {
         "R {r:e} under the other plane's ρ and ν, {want:e}"
     );
 }
+
+/// Whether `(1 + k u)(1 − γ_N) >= 1 + γ_N'` holds for every `0 < u <= 2^-24`, exactly. Cross
+/// multiplied, the difference is `u q(u)` with `q(u) = (k − N − N') + (2 N N' − k (2N + N')) u
+/// + 2 k N N' u²`, a parabola opening upwards: it holds where `q(0) > 0`, `q(2^-24) > 0` and, where
+/// its vertex lies inside the interval, `q` is positive there (`4 q(0) a_2 > a_1²`).
+fn factor_holds(k: i128, n: i128, n2: i128) -> bool {
+    let (a0, a1, a2) = (k - n - n2, 2 * n * n2 - k * (2 * n + n2), 2 * k * n * n2);
+    let m: i128 = 1 << 24;
+    // q(2^-24) 2^48 = a0 2^48 + a1 2^24 + a2
+    let at_top = a0 * m * m + a1 * m + a2;
+    // The vertex −a1 / (2 a2) inside (0, 2^-24] where 0 < −a1 and −a1 m <= 2 a2.
+    let vertex_inside = a1 < 0 && -a1 * m <= 2 * a2;
+    a0 > 0 && at_top > 0 && (!vertex_inside || 4 * a0 * a2 > a1 * a1)
+}
+
+#[test]
+fn the_departure_factor_is_the_derivation_s() {
+    // §6 `band_arith@4`: `R = (1 + 128u) ((M + ρ + O) + ν)`. Counted by §6's rule from the code,
+    // the order the formulas give reaches `R` through 35 roundings with the factor and any other
+    // order through 35 without it (the derivation note): `(1 + 64u)` does not
+    // cover them and `(1 + 128u)` does, exactly over `0 < u <= 2^-24`.
+    assert!(!factor_holds(64, 35, 35), "64u covers 35 and 35");
+    assert!(factor_holds(128, 35, 35), "128u does not cover 35 and 35");
+    let key = ScreenKey {
+        a: -1.25,
+        b: 1.0e-3,
+        c: -2.0e-3,
+    };
+    let (m, o) = (1.0e-12, 0.75e-12);
+    let (px, py) = (3, 5);
+    let pts = samples(px, py);
+    let rho = pts
+        .iter()
+        .map(|p| rho_at(&key, *p))
+        .fold(rho_at(&key, [(px + 1) as f64, (py + 1) as f64]), f64::max);
+    let omax = pts
+        .iter()
+        .map(|p| key.at(p[0], p[1]).abs())
+        .fold(0.0, f64::max);
+    let want = (1.0 + 128.0 * U) * (((m + rho) + o) + nu(omax));
+    assert_eq!(plane_band(key, &[], m, o, None, px, py), want);
+}
+
+#[test]
+fn the_screen_shift_factor_is_its_count_s() {
+    // §6 "Screen shift": `ε(q) = hypot(|xx| x_0, |yy| y_0) (1 + 256u)`. Counted by §6's rule from
+    // the inputs (`Δ`, `σ`, `f` with them), ε reaches 63 roundings in the code's order and 69 in
+    // another: `(1 + 64u)` and `(1 + 128u)` do not cover them, `(1 + 256u)` does.
+    assert!(!factor_holds(64, 63, 69), "64u covers 63 and 69");
+    assert!(!factor_holds(128, 63, 69), "128u covers 63 and 69");
+    assert!(factor_holds(256, 63, 69), "256u does not cover 63 and 69");
+    let shift = arachne_oracle::shift::Shift {
+        a: [1.0, 2.0],
+        sigma: 0.0,
+        projected: None,
+        carried: [0.0; 2],
+        xx: 4.0,
+        yy: -4.0,
+    };
+    let want = libm::hypot(4.0, 8.0) * (1.0 + 256.0 * U);
+    assert_eq!(shift.at([0.0; 3]), want);
+}
+
+/// `γ_j = j u / (1 − j u)` at the unit roundoff `u`, infinite where `j u >= 1`, and whether a
+/// `Nearest` face of `n` points lies in `E_k`'s domain, `(2N + 90) u < 1`. At d061a532 the oracle
+/// has neither as a function of `u`, and keys `E_k` at `γ_{2N+66}`: these stand for its code as it
+/// is (`depth.rs` `gamma`, `offset_spread`) until `depth::gamma_at` and `depth::e_k_domain` exist.
+fn gamma_at(j: usize, u: f64) -> f64 {
+    let ju = j as f64 * u;
+    if ju >= 1.0 {
+        f64::INFINITY
+    } else {
+        ju / (1.0 - ju)
+    }
+}
+fn e_k_domain(n: usize, u: f64) -> bool {
+    gamma_at(2 * n + 66, u).is_finite()
+}
+
+#[test]
+fn the_e_k_domain_ends_where_its_gamma_does() {
+    // §6: `E_k = γ_{2N+90}` with `n = N + 45`, and wherever `(2N + 90) u >= 1` the face states no
+    // bound. This tests the domain predicate's arithmetic through its `u` seam, not a claim at
+    // binary32: `u = 2^-24` only puts the edge at a face size a test can name. There the edge is
+    // `N = (2^24 − 90) / 2`: `(2N + 90) u = 1`, no bound; one point fewer, a bound.
+    let u = 1.0 / 16_777_216.0;
+    let edge = (16_777_216 - 90) / 2;
+    assert!(!e_k_domain(edge, u), "N = {edge} inside the domain");
+    assert!(gamma_at(2 * edge + 90, u).is_infinite());
+    assert!(
+        e_k_domain(edge - 1, u),
+        "N = {} outside the domain",
+        edge - 1
+    );
+    assert!(gamma_at(2 * (edge - 1) + 90, u).is_finite());
+}
+
+#[test]
+fn a_nan_term_leaves_the_departure_bound_unbounded() {
+    // §6: a term of `M` that is NaN states no bound (P-NaN): `M` is not the largest of the corners
+    // whose sum stayed a number. The axis plane z = 0 under the identity rotation at a positive
+    // subnormal focal distance: at every corner off the centre `dN / Dn` overflows, so `A` is ∞
+    // and `C = ∞ · 0` (no `Nearest` spread) is NaN.
+    let pr = Projection {
+        d: 5e-324,
+        ..straight(1.0)
+    };
+    let plane = WorldPlane::axis(2, [0.0; 3]);
+    let m = plane_r_region(&pr, &map(), &plane, [40.0, 40.0, 48.0, 48.0]);
+    assert!(m.is_infinite(), "M {m:e}");
+}

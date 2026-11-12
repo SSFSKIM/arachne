@@ -503,4 +503,15 @@ mod tests {
         let line = one_segment([0.0, 0.0], -2.0, [4.0, 0.0], -1.0);
         assert_eq!(line.keys_within([0.0, 0.0], 1.0), Some((-2.0, -1.75, 2.0)));
     }
+
+    #[test]
+    fn a_distance_with_a_nan_segment_is_unbounded() {
+        // The P-NaN invariant: a segment whose foot reads NaN (here `∞ / ∞`, its length squared
+        // and its projection both overflowing) states no distance (`∞`), not the least of the
+        // segments that stayed finite.
+        let mut line = one_segment([0.0, 0.0], -2.0, [1.0, 0.0], -1.0);
+        let far = one_segment([1e200, 1e200], -2.0, [-1e200, -1e200], -1.0);
+        line.segments.extend(far.segments);
+        assert_eq!(line.distance([0.0, 0.5]), f64::INFINITY);
+    }
 }

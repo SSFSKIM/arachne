@@ -1296,3 +1296,172 @@ fn a_class_s_measures_are_the_sum_of_its_frames_measured_once_each() {
     assert_eq!((class.frames, class.excess), (2, 8));
     assert!(class.exact_tie > 0 && !class.open.is_empty() && !class.labels.is_empty());
 }
+
+/// Measures whose every field and component is nonzero and distinct: field `k` holds `b + k`,
+/// the maps two keys each, `keys` and `labels`.
+fn every_field(b: usize, keys: [&str; 2], labels: [u8; 2]) -> Measures {
+    Measures {
+        frames: b + 1,
+        excess: b + 2,
+        own_reads: b + 3,
+        plane_reads: b + 4,
+        samples: b + 5,
+        tie_band: b + 6,
+        either: b + 7,
+        policy_tie: b + 8,
+        tied: b + 9,
+        exact_tie: b + 10,
+        open: BTreeMap::from([(keys[0].to_string(), b + 11), (keys[1].to_string(), b + 12)]),
+        labels: BTreeMap::from([(labels[0], b + 13), (labels[1], b + 14)]),
+        on_fill: (b + 15, b + 16),
+        either_kept: (b + 17, b + 18),
+        cycle_row: (b + 19, b + 20),
+        cycle_flat: (b + 21, b + 22),
+        cycle_own: (b + 23, b + 24),
+        cycle_unbounded: b + 25,
+        plate: (b + 26, b + 27),
+    }
+}
+
+#[test]
+fn measures_add_sums_every_field_and_component() {
+    // `Measures::add` sums every counter and both components of every pair, and merges each map
+    // by key: two measures whose every field differs, added, give each field's sum. The scenes of
+    // `a_class_s_measures_are_the_sum_of_its_frames_measured_once_each` leave `on_fill`, `plate`
+    // and `cycle_unbounded` at 0; this reaches them.
+    let (a, b) = (
+        every_field(0, ["x", "y"], [1, 4]),
+        every_field(100, ["y", "z"], [4, 7]),
+    );
+    let mut sum = Measures::default();
+    sum.add(&a);
+    sum.add(&b);
+    let p = |x: (usize, usize), y: (usize, usize)| (x.0 + y.0, x.1 + y.1);
+    let want = Measures {
+        frames: a.frames + b.frames,
+        excess: a.excess + b.excess,
+        own_reads: a.own_reads + b.own_reads,
+        plane_reads: a.plane_reads + b.plane_reads,
+        samples: a.samples + b.samples,
+        tie_band: a.tie_band + b.tie_band,
+        either: a.either + b.either,
+        policy_tie: a.policy_tie + b.policy_tie,
+        tied: a.tied + b.tied,
+        exact_tie: a.exact_tie + b.exact_tie,
+        open: BTreeMap::from([
+            ("x".to_string(), a.open["x"]),
+            ("y".to_string(), a.open["y"] + b.open["y"]),
+            ("z".to_string(), b.open["z"]),
+        ]),
+        labels: BTreeMap::from([
+            (1, a.labels[&1]),
+            (4, a.labels[&4] + b.labels[&4]),
+            (7, b.labels[&7]),
+        ]),
+        on_fill: p(a.on_fill, b.on_fill),
+        either_kept: p(a.either_kept, b.either_kept),
+        cycle_row: p(a.cycle_row, b.cycle_row),
+        cycle_flat: p(a.cycle_flat, b.cycle_flat),
+        cycle_own: p(a.cycle_own, b.cycle_own),
+        cycle_unbounded: a.cycle_unbounded + b.cycle_unbounded,
+        plate: p(a.plate, b.plate),
+    };
+    assert_eq!(sum, want);
+}
+
+/// Adds `row` to `d` as its fragment's axis band row against `against` (FORMAT.md `AXBD`). The
+/// decisions at d061a532 carry no axis rows: it adds nothing.
+fn with_axis_row(_d: &mut Decisions, _against: u32, _row: BandRow) {}
+
+#[test]
+fn an_against_read_on_a_shared_axis_is_held_to_its_axis_row() {
+    // §6, the soundness test of `R`: a core read of a fragment against another, on the axis plane
+    // they share, is checked against the oracle's axis row for that pair; with neither an axis row
+    // nor a row on the record's plane it is counted, never skipped. The scene of
+    // `an_axis_only_pair_reads_no_own_key`: two strokes of one straight cubic on `z = 0` at focal
+    // distance 10, neither with a plane of its own, so no row on either record's plane; the first
+    // one's reads against the second are on the axis plane they share. One of them moved a unit
+    // off, against an axis row that holds the read as made, is an excess.
+    use scenes::*;
+    let cubic = vec![
+        [-2.25, 0.0, 0.0],
+        [-0.75, 0.0, 0.0],
+        [0.75, 0.0, 0.0],
+        [2.25, 0.0, 0.0],
+    ];
+    let mut b = Build::new(true);
+    b.stroke(cubic.clone(), OPAQUE_GREEN, 0.5);
+    b.stroke(cubic, OPAQUE_RED, 0.5);
+    let mut delta = b.delta(
+        1,
+        arachne_core::xf::View {
+            camera: camera(10.0),
+            input_grid: 0.0,
+            ..view_c()
+        },
+    );
+    // The two records share one shape: it is uploaded once.
+    let mut seen = std::collections::HashSet::new();
+    delta.upload.retain(|s| seen.insert(s.key()));
+    let wire = [source::WireDelta::of(delta.clone())];
+    let mut d = decide_at_wire(&wire, 1, None).unwrap();
+    assert_eq!(d.header.status, 0, "{:?}", d.refused);
+    let mut core = Stream::new();
+    core.apply(&delta).unwrap();
+    let mut pixels = frame_trace(&core, &d);
+    let id = |slot: u32, layer: u8| {
+        d.fragments
+            .iter()
+            .find(|f| f.slot == slot && f.layer == layer)
+            .unwrap()
+            .id
+    };
+    let (stroke, other) = (id(0, 2), id(1, 2));
+    let identity = |f: u32| {
+        let f = &d.fragments[f as usize];
+        (f.object, f.part, f.layer, f.sub)
+    };
+    let (ks, kt) = (identity(stroke), identity(other));
+    let mut moved = None;
+    'find: for (&(x, y), px) in pixels.iter_mut() {
+        let of = |e: usize| {
+            let en = &px.entries[e];
+            (en.leaf.0, en.leaf.1, layer_code(&en.layer), en.sub)
+        };
+        let keys: Vec<_> = (0..px.entries.len()).map(of).collect();
+        let Some(reads) = px.reads.as_mut() else {
+            continue;
+        };
+        for a in reads.against.iter_mut() {
+            if keys[a.entry] != ks || keys[a.other] != kt {
+                continue;
+            }
+            if let Some(s) = (0..16).find(|&s| a.depths[s].is_finite()) {
+                let row = BandRow {
+                    x,
+                    y,
+                    fragment: stroke,
+                    which: 3,
+                    o: [a.depths[s]; 16],
+                    r: [a.err.max(1e-12); 16],
+                    s_minus: [1e-9; 16],
+                    s_plus: [1e-9; 16],
+                    status: [1; 16],
+                };
+                a.depths[s] += 1.0;
+                moved = Some((x, y, s, row));
+                break 'find;
+            }
+        }
+    }
+    let (x, y, s, row) =
+        moved.expect("premise: a core read of the first stroke against the second");
+    with_axis_row(&mut d, other, row);
+    let (excess, _) = excesses_of("axis", 1, &d, &pixels);
+    assert!(
+        excess
+            .iter()
+            .any(|e| e.at == (x, y, s) && e.fragment == stroke),
+        "the moved read at ({x}, {y}) sample {s} is not an excess: {excess:#?}"
+    );
+}
