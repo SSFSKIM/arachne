@@ -427,6 +427,15 @@ replace = "eps[e].max(eps[(e + 1) % 3]) + 4.0"
 red = ["contract_mutation::mutation_depth_witnesses_fail_and_their_twins_agree", "cover::a_collinear_triangle_is_absent_past_its_segments_ends", "cover::a_triangle_whose_corners_coincide_is_absent_past_the_margin", "cover::a_mesh_sample_is_yes_beyond_the_margin_inside_and_either_within_it", "cover::a_triangle_with_corners_far_out_keeps_its_verdicts", "cover::the_guard_clips_a_triangle_at_65536_px", "cover::a_triangle_whose_corners_differ_past_binary64_keeps_its_winding"]
 
 [[plant]]
+name = "presence-band-plus-0.04"
+item = "§4"
+check = "the presence band μ is α + 2^-24 + μ_ε, no wider: a cell byte 8/255 off its area is refused"
+file = "core/oracle/src/cover.rs"
+find = "    alpha + storage + moved\n"
+replace = "    alpha + storage + moved + 0.04\n"
+red = ["contract_mutation::mutation_depth_witnesses_fail_and_their_twins_agree", "cover::a_half_planes_cells_take_their_exact_areas", "cover::a_discs_coverage_is_its_area_within_the_flattening_tolerance"]
+
+[[plant]]
 name = "join-first-to-both"
 item = "§8"
 check = "each occurrence of a join key takes the next unused decision, not its first"
