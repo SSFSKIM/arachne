@@ -1327,6 +1327,15 @@ replace = "if ra_.flat.is_some() && rb_.flat.is_some() && self.may_share_flat(i,
 red = ["contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
 
 [[plant]]
+name = "may-share-width-plus-1.25"
+item = "§7"
+check = "two records may share a flat identity only when their width lower bound is within 2τ⁺: a line 1.08 from a square may not"
+file = "core/oracle/src/order.rs"
+find = "w <= 2.0 * a.tau_plus.max(b.tau_plus)"
+replace = "w <= 1.25 + 2.0 * a.tau_plus.max(b.tau_plus)"
+red = ["contract_mutation::mutation_depth_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
 name = "near-parallel-may-always"
 item = "§7"
 check = "near_parallel@1 holds only within θ_A + θ_B: two faces 14° apart read Depth"
