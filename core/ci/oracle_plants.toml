@@ -1717,10 +1717,10 @@ red = ["pair_rules::equal_shown_points_placed_from_another_shape_are_not_one_com
 [[plant]]
 name = "curve-key-blend-t"
 item = "§7"
-check = "a curve's computation is named by its blend's t: equal shown points blended at another t are not one"
+check = "curve_key@1: a curve's computation is named by its blend's t, held in its placings' weights and its signed blend_t: equal shown points blended at another t are not one"
 file = "core/oracle/src/keys.rs"
-find = "            placings: item.common.placings.clone(),\n"
-replace = "            placings: item.common.placings.iter().map(|p| Placing { weight: 0.0, ..p.clone() }).collect(),\n"
+find = "            placings: item.common.placings.clone(),\n            blend_t: rec.geometry.blend.as_ref().map(|b| b.t),\n"
+replace = "            placings: item.common.placings.iter().map(|p| Placing { weight: 0.0, ..p.clone() }).collect(),\n            blend_t: None,\n"
 red = ["pair_rules::equal_shown_points_blended_at_another_t_are_not_one_computation"]
 
 [[plant]]
