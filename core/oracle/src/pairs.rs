@@ -143,11 +143,17 @@ fn on_own_fill_pixel(
     // Its bound becomes the largest, over the samples, of the bound of the key it took there,
     // its own where the fill does not cover. Where any of those reads is not bounded
     // (`curve_recut` is per read, §6), neither is that largest, which every sample of the stroke
-    // at the pixel takes: each is unable as that read is.
-    if let Some(u) = (0..16)
-        .filter(|&s| stroke[s] != 0)
-        .find_map(|s| next[s].err())
-    {
+    // at the pixel takes: each is unable as the most severe of those reads, a class a pair is
+    // named by first (`band_unbounded`, `pivot_unknown`) over `curve_recut`.
+    let unable = || {
+        (0..16)
+            .filter(|&s| stroke[s] != 0)
+            .filter_map(|s| next[s].err())
+    };
+    let worst = unable()
+        .find(|u| *u != Unable::CurveRecut)
+        .or_else(|| unable().next());
+    if let Some(u) = worst {
         for (s, b) in next.iter_mut().enumerate() {
             if stroke[s] != 0 {
                 *b = Err(u);

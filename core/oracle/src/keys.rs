@@ -457,7 +457,9 @@ impl Model {
                 map,
                 ..
             } => {
-                if !(eps.is_finite() && sigma.is_finite()) {
+                // §5: a centreline with no finite vertex has no bounded key; only a placement
+                // that declares `−∞` keys `−∞`, and none reaches a centreline.
+                if !(eps.is_finite() && sigma.is_finite()) || line.infinite {
                     return std::array::from_fn(|_| Err(Unable::BandUnbounded));
                 }
                 let centre = [px as f64 + 0.5, py as f64 + 0.5];
@@ -468,10 +470,11 @@ impl Model {
                     .collect();
                 let r = reads.iter().map(|rd| rd.r).fold(0.0, crate::bound::max);
                 std::array::from_fn(|k| {
-                    let o = reads[k].key;
-                    if o == f64::NEG_INFINITY {
-                        return Ok(Band::exact(o));
+                    // §6: where `R` is infinite no bound is stated, `curve_recut` included.
+                    if !r.is_finite() {
+                        return Err(Unable::BandUnbounded);
                     }
+                    let o = reads[k].key;
                     let p = pts[k];
                     let d = line.distance(p);
                     let rr = crate::bound::max(*h, d + eps) + eps;
@@ -481,7 +484,7 @@ impl Model {
                     let (lo, hi, m) = line.keys_within(p, rr).unwrap_or((o, o, o.abs()));
                     let sm = crate::bound::max(o - lo, 0.0) + sigma * m;
                     let sp = crate::bound::max(hi - o, 0.0) + sigma * m;
-                    if !(sm.is_finite() && sp.is_finite() && r.is_finite()) {
+                    if !(sm.is_finite() && sp.is_finite()) {
                         return Err(Unable::BandUnbounded);
                     }
                     Ok(Band {
