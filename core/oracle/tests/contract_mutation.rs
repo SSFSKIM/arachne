@@ -1226,7 +1226,7 @@ fn source_witnesses() -> Vec<Witness> {
 
 /// The contract text the read-path witnesses below are built from: §12 of `CONTRACT.md` at this
 /// git blob. Each of their `expected.json` names it.
-const READ_PATH_TEXT: &str = "CONTRACT.md blob ebab03ac1abc377064b90780c431d1834cfd42b1";
+const READ_PATH_TEXT: &str = "CONTRACT.md blob 0198d16ce8ca2721cd9a18998e71757b3ab3419e";
 
 /// Block `i` of the points record in `slot`.
 fn block(slot: u32, i: u32) -> Frag {
