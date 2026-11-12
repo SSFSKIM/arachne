@@ -90,3 +90,9 @@ gates:
     paths: ["core/**", ".github/ci-kit.yml"]
     run: bash core/ci/test.sh && bash core/ci/binding.sh 3.14
     timeout: 30
+
+  # Scratch (never lands): C5.3 frame identity measured against 3ce63425.
+  - name: c53-measure
+    run: bash .github/c53/measure.sh
+    env: {UV_PYTHON: "3.12"}
+    timeout: 45
