@@ -436,6 +436,15 @@ replace = "let d = *list.last()?;"
 red = ["stroke_fixtures::join_occurrences_each_occurrence_takes_its_own_decision"]
 
 [[plant]]
+name = "join-closing-last-byte"
+item = "§8"
+check = "a closed subpath's closing join takes its first cubic's join byte, not its last's"
+file = "core/oracle/src/joins.rs"
+find = "decision(joins.get(first_cubic).copied()),"
+replace = "decision(joins.get(last_cubic).copied()),"
+red = ["stroke_fixtures::join_closing_takes_the_first_cubics_byte", "lib::joins::tests::a_closed_subpaths_closing_join_takes_its_first_cubics_byte", "lib::joins::tests::a_skipped_first_cubic_still_decides_the_closing_join"]
+
+[[plant]]
 name = "dash-gap-off-entry"
 item = "§8"
 check = "a dash's gap is the total less the on length, not its off entry"
