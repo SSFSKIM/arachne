@@ -6,6 +6,7 @@
 //! paints at all (`alpha_round@1`). Colour beyond that is not.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use arachne_core::xf::{
     Affine, Body, Camera, Cap, Dash, IDENTITY, Joint, Key, Paint, PaintBlock, Record, RecordKind,
@@ -293,6 +294,9 @@ pub enum Pivot {
     Unknown,
 }
 
+/// A face group's face ends and face widths: one copy per record, shared by its faces.
+pub type FaceLists = (Arc<[u32]>, Arc<[f64]>);
+
 /// One path drawn: a `path` record, a face of a face group, or a path instance's member.
 #[derive(Clone, Debug)]
 pub struct PathItem<'a> {
@@ -314,6 +318,8 @@ pub struct PathItem<'a> {
     pub joins: Option<Vec<u8>>,
     /// A face of a face group (`round_cap_dot@1` reads it).
     pub face: bool,
+    /// For a face, its record's face lists.
+    pub face_lists: Option<FaceLists>,
     /// Per layer, its straight RGBA rows (`paint_rows@1`), for colour (§9).
     pub rows: [Option<Vec<[f64; 4]>>; 3],
     /// Whether the camera shades it (`ce_shading@1`).
@@ -409,6 +415,7 @@ pub fn items_of<'a>(
     let mut out = Vec::new();
     let pr = projection(view);
     let shading = matches!(&view.camera, Camera::ThreeD(c) if c.should_apply_shading);
+    let mut face_lists: HashMap<u32, FaceLists> = HashMap::new();
     for (entry, e) in order.iter().enumerate() {
         let rec = &records[&e.slot];
         if crate::stream::is_overlay(rec) {
@@ -532,7 +539,7 @@ pub fn items_of<'a>(
                     points: run.to_vec(),
                     weight: 1.0,
                 };
-                if let Some(item) = path_item(
+                if let Some(mut item) = path_item(
                     view,
                     common(rec.object, vec![placing]),
                     0,
@@ -543,6 +550,13 @@ pub fn items_of<'a>(
                     shaded,
                     which,
                 ) {
+                    let lists = face_lists.entry(e.slot).or_insert_with(|| {
+                        (
+                            faces.face_ends.as_slice().into(),
+                            faces.face_widths.as_slice().into(),
+                        )
+                    });
+                    item.face_lists = Some(lists.clone());
                     out.push(Item::Path(item));
                 }
             }
@@ -794,6 +808,7 @@ fn path_item<'a>(
         dash: rec.dash,
         joins,
         face,
+        face_lists: None,
         rows: [
             paint.background_stroke.clone(),
             paint.fill.clone(),

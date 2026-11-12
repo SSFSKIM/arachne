@@ -355,7 +355,7 @@ fn curve_key() -> arachne_oracle::keys::CurveKey {
         pre_projected: None,
         space: arachne_core::xf::Space::World,
         fixed_orientation_centre: None,
-        faces: (Vec::new(), Vec::new()),
+        faces: (Vec::new().into(), Vec::new().into()),
         widths: [0.5, 0.0],
         paint_b: None,
         camera: arachne_core::xf::Camera::ThreeD(arachne_core::xf::ThreeDCamera {
@@ -467,8 +467,8 @@ fn a_recut_read_of_one_curve_computation_is_an_exact_tie_and_of_another_stays_un
         }),
         ("space", |k| k.space = arachne_core::xf::Space::Screen),
         ("centre", |k| k.fixed_orientation_centre = Some([0.0; 3])),
-        ("face ends", |k| k.faces.0 = vec![3]),
-        ("face widths", |k| k.faces.1 = vec![0.5]),
+        ("face ends", |k| k.faces.0 = vec![3].into()),
+        ("face widths", |k| k.faces.1 = vec![0.5].into()),
         ("widths", |k| k.widths = [0.5, 1.0]),
         ("paint blend", |k| k.paint_b = Some([0.5, 0.0, 0.5])),
         ("camera lighting", |k| {

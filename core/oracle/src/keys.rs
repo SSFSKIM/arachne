@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use arachne_core::xf::{Affine, Body, Camera, Key, RecordKind, Space, View};
+use arachne_core::xf::{Affine, Camera, Key, RecordKind, Space, View};
 
 use crate::band::{PlaneHull, departure_plus, kr};
 use crate::camera::{FrameMap, Placement, Projection};
@@ -14,7 +14,7 @@ use crate::depth::{
     key_error, key_plane, nu, on_a_line, planarity, plane_r_region, points_somewhere,
     three_corner_plane,
 };
-use crate::draw::{MeshItem, PathItem, Pivot, Placing, PointsItem};
+use crate::draw::{FaceLists, MeshItem, PathItem, Pivot, Placing, PointsItem};
 use crate::flatten::Ring;
 use crate::shift::{Shift, U, departure_of, depth_share};
 
@@ -137,8 +137,8 @@ pub struct CurveKey {
     pub pre_projected: Option<(Key, Option<Key>, Affine)>,
     pub space: Space,
     pub fixed_orientation_centre: Option<[f64; 3]>,
-    /// A face group's face ends and face widths.
-    pub faces: (Vec<u32>, Vec<f64>),
+    /// A face group's face ends and face widths, its record's one copy (empty for any other).
+    pub faces: FaceLists,
     /// The stroke and background-stroke widths, and a paint blend's two widths and `mix`.
     pub widths: [f64; 2],
     pub paint_b: Option<[f64; 3]>,
@@ -155,10 +155,10 @@ impl CurveKey {
     /// The key of path item `item`'s layer of body `h`, keyed under `pr`, in `view`.
     fn of(view: &View, item: &PathItem, pr: &Projection, h: f64) -> CurveKey {
         let rec = item.common.record;
-        let faces = match &rec.body {
-            Body::FaceGroup(f) => (f.face_ends.clone(), f.face_widths.clone()),
-            _ => (Vec::new(), Vec::new()),
-        };
+        let faces = item
+            .face_lists
+            .clone()
+            .unwrap_or_else(|| (Arc::from(Vec::new()), Arc::from(Vec::new())));
         CurveKey {
             kind: rec.kind,
             placings: item.common.placings.clone(),
