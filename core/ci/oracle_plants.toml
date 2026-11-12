@@ -607,6 +607,15 @@ replace = "if false && !set && !self.records.contains_key(&row.slot) {"
 red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states", "xf15_fixtures::xf15_fixtures_a_refused_stream_stays_refused", "refusal_witnesses::a_refused_delta_refuses_what_its_code_says_and_valid_deltas_after_it_clear_nothing"]
 
 [[plant]]
+name = "slot-not-held-before-apply"
+item = "13"
+check = "apply's own checks come before slot_not_held, which is last"
+file = "core/oracle/src/stream.rs"
+find = "        self.check(d)?;\n        // 13. `slot_not_held`, last: a held row (for a slot the delta neither sets nor removes;\n        // the reader refused a removed one) whose slot the stream does not hold before the delta.\n        if let Some(s) = section {\n            for row in &s.rows {\n                let set = d.set.iter().any(|r| r.slot == row.slot);\n                if !set && !self.records.contains_key(&row.slot) {\n                    self.refused = Some((d.seq, StreamCause::SlotNotHeld));\n                    return Err(self.stream_refusal().expect(\"just refused\"));\n                }\n            }\n        }\n"
+replace = "        // 13. `slot_not_held`, last: a held row (for a slot the delta neither sets nor removes;\n        // the reader refused a removed one) whose slot the stream does not hold before the delta.\n        if let Some(s) = section {\n            for row in &s.rows {\n                let set = d.set.iter().any(|r| r.slot == row.slot);\n                if !set && !self.records.contains_key(&row.slot) {\n                    self.refused = Some((d.seq, StreamCause::SlotNotHeld));\n                    return Err(self.stream_refusal().expect(\"just refused\"));\n                }\n            }\n        }\n        self.check(d)?;\n"
+red = ["refusal_witnesses::a_refused_delta_refuses_what_its_code_says_and_valid_deltas_after_it_clear_nothing"]
+
+[[plant]]
 name = "xf15-sticky"
 item = "XF 1.5"
 check = "a refused stream stays refused"
