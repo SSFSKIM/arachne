@@ -841,6 +841,15 @@ replace = "        let b = 0.0 * eps;\n"
 red = ["order::lines_straight_cubic_step_charges_at_least_the_core_s_step"]
 
 [[plant]]
+name = "lines-share-plus-0.1"
+item = "§7"
+check = "lines@1's share O⁺ is its slide over L⁻, no wider: two lines 1/19 apart in key read Depth"
+file = "core/oracle/src/lines.rs"
+find = "(self.sigma_hat + (1.0 + 4.0 * U) * slide / l_minus) * (1.0 + WIDEN)"
+replace = "(self.sigma_hat + (1.0 + 4.0 * U) * slide / l_minus) * (1.0 + WIDEN) + 0.1"
+red = ["format_facts::each_strong_edge_names_how_it_is_read", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree", "pair_rules::an_axis_identity_whose_row_does_not_form_is_not_kept"]
+
+[[plant]]
 name = "core-alpha-edge"
 item = "§1"
 check = "alpha_round@1 on the oracle's side of the core comparison"
