@@ -721,7 +721,7 @@ check = "two keys of minus infinity are an ExactTie"
 file = "core/oracle/src/order.rs"
 find = "            && x.o == f64::NEG_INFINITY\n            && y.o == f64::NEG_INFINITY\n"
 replace = "            && false\n            && x.o == f64::NEG_INFINITY\n            && y.o == f64::NEG_INFINITY\n"
-red = ["order::keys_of_minus_infinity_tie_exactly_and_meet_any_finite_key_by_depth"]
+red = ["format_facts::each_strong_edge_names_how_it_is_read", "order::keys_of_minus_infinity_tie_exactly_and_meet_any_finite_key_by_depth"]
 
 [[plant]]
 name = "cycle-rank-ties"

@@ -137,6 +137,19 @@ fn each_strong_edge_names_how_it_is_read() {
     for p in rows {
         assert_eq!((p.label, p.edges, via(p)), (3, 7, (1, 1)), "{p:?}");
     }
+    // A flat camera keys every record minus infinity. A stroke adjusted on its own fill reads no
+    // one computation, so its pair with another fill is an `ExactTie` by the two keys of minus
+    // infinity alone: weak, at (11, 8), where the red square's stroke lies on its fill under the
+    // green square.
+    let mut b = Build::new(false);
+    let r = b.fill(rect([-4.0, 4.0], [-4.0, 4.0], 0.0), OPAQUE_RED);
+    r.paint.stroke = arachne_core::xf::Paint::One(OPAQUE_BLUE);
+    r.paint.stroke_width = 2.0;
+    b.fill(rect([2.0, 6.0], [-2.0, 2.0], 0.0), OPAQUE_GREEN);
+    let d = decide(&b, view_f());
+    for p in pairs_at(&d, 11, 8, id_of(&d, 0, STROKE), id_of(&d, 1, FILL)) {
+        assert_eq!((p.label, p.edges, via(p)), (4, 1, (0, 0)), "{p:?}");
+    }
 }
 
 /// W17's synthetic form: two half-transparent lines on `z = 0`, then a square that paints
