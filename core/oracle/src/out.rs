@@ -1,4 +1,4 @@
-//! The oracle's decisions for one frame and their file, `ORACLE_FORMAT` 1 (`FORMAT.md`).
+//! The oracle's decisions for one frame and their file, `ORACLE_FORMAT` 2 (`FORMAT.md`).
 //!
 //! Little-endian fixed-size records in sections a directory locates, so each section reads with
 //! `numpy.fromfile` at its offset. The file carries decisions (and, once depth lands, depths and
@@ -7,7 +7,7 @@
 
 use std::fmt::Write as _;
 
-pub const ORACLE_FORMAT: u16 = 1;
+pub const ORACLE_FORMAT: u16 = 2;
 pub const MAGIC: &[u8; 4] = b"AROR";
 /// The fixed header's size, before the section directory.
 pub const HEADER_SIZE: usize = 88;
@@ -17,6 +17,7 @@ pub const COVER_SIZE: usize = 456;
 pub const PIXEL_SIZE: usize = 12;
 pub const REFUSAL_SIZE: usize = 40;
 pub const BAND_SIZE: usize = 544;
+pub const AXIS_BAND_SIZE: usize = 544;
 pub const PAIR_SIZE: usize = 24;
 pub const COLOUR_SIZE: usize = 12;
 pub const PIXEL_COLOUR_SIZE: usize = 24;
@@ -115,6 +116,23 @@ pub struct BandRow {
     pub s_minus: [f64; 16],
     pub s_plus: [f64; 16],
     /// 0 absent, 1 bounded, 2 `band_unbounded`, 3 `curve_recut`, 4 `pivot_unknown`.
+    pub status: [u8; 16],
+}
+
+/// A fragment's row on the axis plane it shares with `against` at one pixel: the read
+/// `shared_plane_read@1` takes of it against that fragment, which is read per pair. Its band and
+/// statuses are a [`BandRow`]'s, at the samples where the fragment is not absent.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AxisBandRow {
+    pub x: u32,
+    pub y: u32,
+    pub fragment: u32,
+    pub against: u32,
+    pub o: [f64; 16],
+    pub r: [f64; 16],
+    pub s_minus: [f64; 16],
+    pub s_plus: [f64; 16],
+    /// As [`BandRow::status`].
     pub status: [u8; 16],
 }
 
@@ -234,6 +252,8 @@ pub struct Decisions {
     pub covers: Vec<CoverRow>,
     /// Sorted as their cover rows, own row before plane row.
     pub bands: Vec<BandRow>,
+    /// Sorted by `(y, x, fragment, against)`.
+    pub axis_bands: Vec<AxisBandRow>,
     /// Sorted by `(y, x, sample, a, b)`.
     pub pairs: Vec<PairRow>,
     /// One per fragment, by id.
@@ -331,6 +351,14 @@ pub fn write(d: &Decisions) -> Vec<u8> {
         }
         band.extend(r.status);
     }
+    let mut axbd = Vec::with_capacity(d.axis_bands.len() * AXIS_BAND_SIZE);
+    for r in &d.axis_bands {
+        u32s(&mut axbd, &[r.x, r.y, r.fragment, r.against]);
+        for v in [&r.o, &r.r, &r.s_minus, &r.s_plus] {
+            f64s(&mut axbd, v);
+        }
+        axbd.extend(r.status);
+    }
     let mut pair = Vec::with_capacity(d.pairs.len() * PAIR_SIZE);
     for r in &d.pairs {
         u32s(&mut pair, &[r.x, r.y, r.a, r.b]);
@@ -381,6 +409,12 @@ pub fn write(d: &Decisions) -> Vec<u8> {
             record_size: BAND_SIZE as u32,
             count: d.bands.len() as u64,
             bytes: band,
+        },
+        Section {
+            tag: *b"AXBD",
+            record_size: AXIS_BAND_SIZE as u32,
+            count: d.axis_bands.len() as u64,
+            bytes: axbd,
         },
         Section {
             tag: *b"PAIR",
@@ -497,7 +531,13 @@ impl Reader<'_> {
     }
 }
 
-/// The file read back (sections it does not know are skipped).
+/// Every section tag this reader knows. `PIXL` is known and not read: it indexes `COVR`.
+const TAGS: [&[u8; 4]; 11] = [
+    b"FRAG", b"COVR", b"PIXL", b"BAND", b"AXBD", b"PAIR", b"COLR", b"COLP", b"LABL", b"REFU",
+    b"TEXT",
+];
+
+/// The file read back. A tag or a version this reader does not know is refused.
 pub fn read(b: &[u8]) -> Result<Decisions, String> {
     let mut r = Reader { b, at: 0 };
     if &r.take::<4>()? != MAGIC {
@@ -528,6 +568,12 @@ pub fn read(b: &[u8]) -> Result<Decisions, String> {
         let size = r.u32()? as usize;
         let off = r.u64()? as usize;
         let count = r.u64()? as usize;
+        if !TAGS.contains(&&tag) {
+            return Err(format!(
+                "section {} is not one this reader knows",
+                String::from_utf8_lossy(&tag)
+            ));
+        }
         dir.push((tag, size, off, count));
     }
     let section = |tag: &[u8; 4]| dir.iter().find(|d| &d.0 == tag).copied();
@@ -544,6 +590,7 @@ pub fn read(b: &[u8]) -> Result<Decisions, String> {
         fragments: Vec::new(),
         covers: Vec::new(),
         bands: Vec::new(),
+        axis_bands: Vec::new(),
         pairs: Vec::new(),
         colours: Vec::new(),
         pixel_colours: Vec::new(),
@@ -610,6 +657,25 @@ pub fn read(b: &[u8]) -> Result<Decisions, String> {
                 y,
                 fragment,
                 which,
+                o: r.f64s()?,
+                r: r.f64s()?,
+                s_minus: r.f64s()?,
+                s_plus: r.f64s()?,
+                status: r.take::<16>()?,
+            });
+        }
+    }
+    if let Some((_, size, off, count)) = section(b"AXBD") {
+        for i in 0..count {
+            let mut r = Reader {
+                b,
+                at: off + i * size,
+            };
+            d.axis_bands.push(AxisBandRow {
+                x: r.u32()?,
+                y: r.u32()?,
+                fragment: r.u32()?,
+                against: r.u32()?,
                 o: r.f64s()?,
                 r: r.f64s()?,
                 s_minus: r.f64s()?,
@@ -811,6 +877,21 @@ pub fn canonical(d: &Decisions) -> String {
             r.y,
             r.fragment,
             r.which,
+            list(r.o.iter().map(|v| hex(*v))),
+            list(r.r.iter().map(|v| hex(*v))),
+            list(r.s_minus.iter().map(|v| hex(*v))),
+            list(r.s_plus.iter().map(|v| hex(*v))),
+            list(r.status)
+        );
+    }
+    for r in &d.axis_bands {
+        let _ = writeln!(
+            s,
+            "axis_band x={} y={} fragment={} against={} o={} r={} s_minus={} s_plus={} status={}",
+            r.x,
+            r.y,
+            r.fragment,
+            r.against,
             list(r.o.iter().map(|v| hex(*v))),
             list(r.r.iter().map(|v| hex(*v))),
             list(r.s_minus.iter().map(|v| hex(*v))),

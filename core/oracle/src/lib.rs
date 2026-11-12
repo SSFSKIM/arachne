@@ -24,7 +24,7 @@
 //! - The order (contract §7): [`order`] gives a pair's admitted edges and label and tests an order's
 //!   admissibility through `cycle_rank@2`; [`lines`] bounds `lines@1`'s share; [`pairs`] runs a
 //!   frame's bands and pairs, with both stroke-depth adjustments.
-//! - [`decide`] runs a frame; [`out`] writes and reads its decisions (`ORACLE_FORMAT` 1,
+//! - [`decide`] runs a frame; [`out`] writes and reads its decisions (`ORACLE_FORMAT` 2,
 //!   `FORMAT.md`).
 
 pub mod band;

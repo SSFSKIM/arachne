@@ -160,6 +160,7 @@ fn unable(
         fragments: Vec::new(),
         covers: Vec::new(),
         bands: Vec::new(),
+        axis_bands: Vec::new(),
         pairs: Vec::new(),
         colours: Vec::new(),
         pixel_colours: Vec::new(),
@@ -227,7 +228,7 @@ pub fn decide_with_labels(
     });
     let scene = Scene::new(frags, offered);
     let labelled: Vec<bool> = label_of.iter().map(|l| *l != NONE_U32).collect();
-    let (bands, pairs) = pairs::frame(
+    let (bands, axis_bands, pairs) = pairs::frame(
         &scene,
         with_invisible.as_ref().unwrap_or(&scene),
         &labelled,
@@ -242,6 +243,7 @@ pub fn decide_with_labels(
         fragments,
         covers,
         bands,
+        axis_bands,
         pairs,
         colours,
         pixel_colours,

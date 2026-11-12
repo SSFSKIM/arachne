@@ -1,4 +1,4 @@
-# The oracle's decisions file: `ORACLE_FORMAT` 1
+# The oracle's decisions file: `ORACLE_FORMAT` 2
 
 `arachne-oracle decide --xf <file> --seq <delta seq> --out <file> [--pixels x0,y0,x1,y1]` applies the
 XF file's deltas in order, from an empty stream, up to and including the delta whose `seq` is given,
@@ -17,12 +17,13 @@ input error (an XF file that does not read, a `seq` it does not hold).
 ## Layout
 
 Little-endian throughout. A fixed header of 88 bytes, a directory of sections, then each section
-on an 8-byte boundary. Sections are arrays of fixed-size records; a reader skips a tag it does not
-know, and treats a section that is absent as empty. Later sections arrive as new tags.
+on an 8-byte boundary. Sections are arrays of fixed-size records; a reader refuses a tag or a
+version it does not know, and treats a section that is absent as empty. A new section bumps the
+version.
 
 ```
 header     4s  magic "AROR"
-           u16 format (1)          u16 header size (88)
+           u16 format (2)          u16 header size (88)
            u16 XF major            u16 XF minor       (the decided delta's version)
            u32 width               u32 height         (the view's pixel size)
            u32 x0, y0, x1, y1                         (the window decided, [x0, x1) x [y0, y1))
@@ -42,6 +43,7 @@ cell `((dx + 8) div 4, (dy + 8) div 4)` of the pixel's 4 x 4 grid.
 | `COVR` | 456 bytes | one per fragment at a pixel, sorted by `(y, x, fragment)` |
 | `PIXL` | 12 bytes | one per pixel of the window, row by row: its first `COVR` row and their count |
 | `BAND` | 544 bytes | one per `COVR` row, in its order (its own row), then one more where the fragment has a row on its record's plane |
+| `AXBD` | 544 bytes | one per ordered pair of fragments at a pixel where one is read on an axis plane it shares with the other, sorted by `(y, x, fragment, against)` |
 | `PAIR` | 24 bytes | one per pair of fragments present at a sample, sorted by `(y, x, sample, a, b)` |
 | `COLR` | 12 bytes | one per fragment, by id: its colour's kind and a solid's bytes |
 | `COLP` | 24 bytes | one per `COVR` row of a per-pixel fragment, in `COVR`'s order |
@@ -129,6 +131,19 @@ key of `−∞`.
   `truth_unable`, contract §6), 4 `pivot_unknown` (`truth_unable` too: a pre-projected record's
   pivot moves as its first point moved, §2, and the record or its tail has none). The floats are
   NaN unless the status is 1.
+
+### `AXBD`
+
+```
+u32 x  u32 y  u32 fragment  u32 against
+f64 o[16]  f64 r[16]  f64 s_minus[16]  f64 s_plus[16]  u8 status[16]
+```
+
+A fragment's row on the axis plane it shares with `against` (`shared_plane_read@1`): the read the
+pair takes of it against that fragment, which depends on the pair and so is not one of the
+fragment's `BAND` rows. Its band, floats and `status` are as a `BAND` row's, at the samples where
+the fragment is not absent. A pair `truth_unable` at a sample is named by the first status that
+states no bound among its fragments' `BAND` rows and their `AXBD` rows against each other there.
 
 ### `PAIR`
 
@@ -278,7 +293,7 @@ A 16 x 16 flat view whose frame units are pixels, and one path record filling th
 $ arachne-oracle decide --xf stream.xf --seq 4 --out d.oracle
 decide: seq 4 16x16 window [0, 0, 16, 16]: 1 fragments, 20 rows
 $ python3 read.py --canonical d.oracle
-header format=1 xf=1.0 size=16x16 window=0,0,16,16 status=decided seq=4
+header format=2 xf=1.0 size=16x16 window=0,0,16,16 status=decided seq=4
 offsets -8,-7 -1,-8 3,-6 5,-5 -6,-1 -4,-4 0,-3 6,-2 -7,2 -2,0 2,3 4,1 -5,5 -3,4 1,7 7,6
 fragment id=0 entry=0 slot=0 object=100 part=0 sub=1 layer=1 kind=1 flags=0 group=0 plane=4294967295 epsilon=3d00f876ccdf6cfb bbox=2,2,7,6
 cover x=2 y=2 fragment=0 cover=1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 cell=255-255,... pixel=255-255 area=3ff0000000000000 ...

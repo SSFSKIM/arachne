@@ -1,4 +1,4 @@
-"""The reader of the oracle's decisions files (``ORACLE_FORMAT`` 1, ``FORMAT.md`` beside this file).
+"""The reader of the oracle's decisions files (``ORACLE_FORMAT`` 2, ``FORMAT.md`` beside this file).
 
 Dependency-free: the standard library only. ``read(path)`` returns a dictionary::
 
@@ -8,6 +8,7 @@ Dependency-free: the standard library only. ``read(path)`` returns a dictionary:
         "covers": [...],
         "pixels": [...],
         "bands": [...],
+        "axis_bands": [...],
         "pairs": [...],
         "colours": [...],
         "pixel_colours": [...],
@@ -28,7 +29,7 @@ from __future__ import annotations
 import struct
 import sys
 
-ORACLE_FORMAT = 1
+ORACLE_FORMAT = 2
 MAGIC = b"AROR"
 HEADER_SIZE = 88
 NONE_U32 = 0xFFFFFFFF
@@ -161,6 +162,17 @@ DTYPES = {
         ("s_plus", "<f8", (16,)),
         ("status", "u1", (16,)),
     ],
+    "AXBD": [
+        ("x", "<u4"),
+        ("y", "<u4"),
+        ("fragment", "<u4"),
+        ("against", "<u4"),
+        ("o", "<f8", (16,)),
+        ("r", "<f8", (16,)),
+        ("s_minus", "<f8", (16,)),
+        ("s_plus", "<f8", (16,)),
+        ("status", "u1", (16,)),
+    ],
     "COLR": [
         ("fragment", "<u4"),
         ("kind", "u1"),
@@ -220,6 +232,7 @@ _F16 = struct.Struct("<16d")
 _PIXL = struct.Struct("<QI")
 _REFU = struct.Struct("<3Bx3I2Q2I")
 _BAND_HEAD = struct.Struct("<3IB3x")
+_AXBD_HEAD = struct.Struct("<4I")
 _PAIR = struct.Struct("<4I7Bx")
 _LABL = struct.Struct("<4I4B")
 _COLR = struct.Struct("<IB4s3x")
@@ -229,12 +242,15 @@ _SIZES = {
     "COVR": 456,
     "PIXL": 12,
     "BAND": 544,
+    "AXBD": 544,
     "PAIR": 24,
     "COLR": 12,
     "COLP": 24,
     "LABL": 20,
     "REFU": 40,
 }
+#: Every section tag this reader knows: the fixed-size records and ``TEXT``.
+_TAGS = frozenset(_SIZES) | {"TEXT"}
 
 
 class FormatError(ValueError):
@@ -258,7 +274,10 @@ def _header(b: bytes) -> tuple[dict, list[tuple[str, int, int, int]]]:
     directory = []
     for i in range(count):
         tag, size, off, n = struct.unpack_from("<4sIQQ", b, header_size + 24 * i)
-        directory.append((tag.decode("ascii"), size, off, n))
+        name = tag.decode("latin-1")
+        if name not in _TAGS:
+            raise FormatError(f"section {name} is not one this reader knows")
+        directory.append((name, size, off, n))
     header = {
         "format": fmt,
         "xf": [xf_major, xf_minor],
@@ -297,6 +316,7 @@ def read_bytes(b: bytes) -> dict:
         "covers": [],
         "pixels": [],
         "bands": [],
+        "axis_bands": [],
         "pairs": [],
         "colours": [],
         "pixel_colours": [],
@@ -361,6 +381,24 @@ def read_bytes(b: bytes) -> dict:
                     "y": y,
                     "fragment": fragment,
                     "which": which,
+                    "o": list(_F16.unpack_from(b, at + 16)),
+                    "r": list(_F16.unpack_from(b, at + 144)),
+                    "s_minus": list(_F16.unpack_from(b, at + 272)),
+                    "s_plus": list(_F16.unpack_from(b, at + 400)),
+                    "status": list(b[at + 528 : at + 544]),
+                }
+            )
+    if "AXBD" in found:
+        size, off, n = found["AXBD"]
+        for i in range(n):
+            at = off + i * size
+            x, y, fragment, against = _AXBD_HEAD.unpack_from(b, at)
+            out["axis_bands"].append(
+                {
+                    "x": x,
+                    "y": y,
+                    "fragment": fragment,
+                    "against": against,
                     "o": list(_F16.unpack_from(b, at + 16)),
                     "r": list(_F16.unpack_from(b, at + 144)),
                     "s_minus": list(_F16.unpack_from(b, at + 272)),
@@ -509,6 +547,13 @@ def canonical(d: dict) -> str:
         f"s_minus={_list(_hex(v) for v in r['s_minus'])} "
         f"s_plus={_list(_hex(v) for v in r['s_plus'])} status={_list(r['status'])}"
         for r in d["bands"]
+    )
+    lines.extend(
+        f"axis_band x={r['x']} y={r['y']} fragment={r['fragment']} against={r['against']} "
+        f"o={_list(_hex(v) for v in r['o'])} r={_list(_hex(v) for v in r['r'])} "
+        f"s_minus={_list(_hex(v) for v in r['s_minus'])} "
+        f"s_plus={_list(_hex(v) for v in r['s_plus'])} status={_list(r['status'])}"
+        for r in d["axis_bands"]
     )
     lines.extend(
         f"pair x={r['x']} y={r['y']} sample={r['sample']} a={r['a']} b={r['b']} "

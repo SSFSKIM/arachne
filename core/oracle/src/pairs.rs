@@ -8,7 +8,7 @@ use crate::draw::Layer;
 use crate::keys::{Band, Computation, Model, Unable, samples};
 use crate::lines::LinesBound;
 use crate::order::{Plate, Reads, Scene};
-use crate::out::{BandRow, CoverRow, LABEL_UNABLE, PairRow};
+use crate::out::{AxisBandRow, BandRow, CoverRow, LABEL_UNABLE, PairRow};
 
 /// A band row's status at a sample.
 pub const STATUS_ABSENT: u8 = 0;
@@ -55,6 +55,32 @@ fn band_row(
         }
     }
     row
+}
+
+/// `fragment`'s row on the axis plane it shares with `against`, as `AXBD` holds it.
+fn axis_band_row(row: BandRow, against: u32) -> AxisBandRow {
+    let BandRow {
+        x,
+        y,
+        fragment,
+        o,
+        r,
+        s_minus,
+        s_plus,
+        status,
+        ..
+    } = row;
+    AxisBandRow {
+        x,
+        y,
+        fragment,
+        against,
+        o,
+        r,
+        s_minus,
+        s_plus,
+        status,
+    }
 }
 
 /// The `lines@1` share terms of a stroke whose model reads a centreline.
@@ -171,17 +197,18 @@ fn on_own_fill_pixel(
     Some((next, adjusted))
 }
 
-/// The frame's bands and pairs over `covers` (sorted by `(y, x, fragment)`), writing each row's
-/// own key and `R` into its `depth` and `band`. `offered` is the same fragments with the records
-/// that paint nothing offered to the registry too (contract §5, `invisible_registry_offer`): each
-/// pair's edges there are written beside its own.
+/// The frame's bands, axis bands and pairs over `covers` (sorted by `(y, x, fragment)`), writing
+/// each row's own key and `R` into its `depth` and `band`. `offered` is the same fragments with the
+/// records that paint nothing offered to the registry too (contract §5,
+/// `invisible_registry_offer`): each pair's edges there are written beside its own.
 pub fn frame(
     scene: &Scene,
     offered: &Scene,
     labelled: &[bool],
     covers: &mut [CoverRow],
-) -> (Vec<BandRow>, Vec<PairRow>) {
+) -> (Vec<BandRow>, Vec<AxisBandRow>, Vec<PairRow>) {
     let mut bands = Vec::new();
+    let mut axis_bands = Vec::new();
     let mut pairs = Vec::new();
     let mut i0 = 0;
     while i0 < covers.len() {
@@ -196,11 +223,12 @@ pub fn frame(
             labelled,
             &mut covers[i0..i1],
             &mut bands,
+            &mut axis_bands,
             &mut pairs,
         );
         i0 = i1;
     }
-    (bands, pairs)
+    (bands, axis_bands, pairs)
 }
 
 fn pixel(
@@ -209,6 +237,7 @@ fn pixel(
     labelled: &[bool],
     rows: &mut [CoverRow],
     bands: &mut Vec<BandRow>,
+    axis_bands: &mut Vec<AxisBandRow>,
     pairs: &mut Vec<PairRow>,
 ) {
     let (x, y) = (rows[0].x, rows[0].y);
@@ -379,6 +408,17 @@ fn pixel(
                 });
             }
         }
+    }
+    // Each axis row read at the pixel, a pair's read of one fragment against the other: in the
+    // facts, with its statuses, so a pair it leaves unable is named by them (§6).
+    let mut read: Vec<_> = axis_rows
+        .into_iter()
+        .filter_map(|(k, r)| Some((k, r?)))
+        .collect();
+    read.sort_by_key(|(k, _)| *k);
+    for ((i, j), r) in &read {
+        let row = band_row(x, y, rows[*i].fragment, 0, &rows[*i].cover, r);
+        axis_bands.push(axis_band_row(row, rows[*j].fragment));
     }
 }
 

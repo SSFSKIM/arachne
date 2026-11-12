@@ -1,4 +1,4 @@
-//! `ORACLE_FORMAT` 1 round-trips: the oracle's own reader and `read.py` read back exactly what it
+//! `ORACLE_FORMAT` 2 round-trips: the oracle's own reader and `read.py` read back exactly what it
 //! wrote, and the command line writes a file `read.py` reads.
 
 mod common;
@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use arachne_oracle::out::{
-    BandRow, ColourRow, CoverRow, Decisions, Fragment, Header, LabelRow, PairRow, PixelColour,
-    Refused, STATUS_UNABLE, canonical, read, write,
+    AxisBandRow, BandRow, ColourRow, CoverRow, Decisions, Fragment, Header, LabelRow, PairRow,
+    PixelColour, Refused, STATUS_UNABLE, canonical, read, write,
 };
 use common::*;
 
@@ -126,6 +126,17 @@ fn sample() -> Decisions {
                 status: [1; 16],
             },
         ],
+        axis_bands: vec![AxisBandRow {
+            x: 2,
+            y: 0,
+            fragment: 1,
+            against: 0,
+            o: std::array::from_fn(|s| 2.0 + s as f64 / 32.0),
+            r: [f64::MIN_POSITIVE; 16],
+            s_minus: std::array::from_fn(|s| if s == 5 { f64::INFINITY } else { 0.125 }),
+            s_plus: [0.375; 16],
+            status: std::array::from_fn(|s| (s % 5) as u8),
+        }],
         pairs: vec![
             PairRow {
                 x: 2,
@@ -247,7 +258,7 @@ fn every_section_starts_where_numpy_can_read_it_and_the_pixel_index_counts_rows(
     assert_eq!(
         tags,
         [
-            "FRAG", "COVR", "PIXL", "BAND", "PAIR", "COLR", "COLP", "LABL", "REFU", "TEXT"
+            "FRAG", "COVR", "PIXL", "BAND", "AXBD", "PAIR", "COLR", "COLP", "LABL", "REFU", "TEXT"
         ]
     );
     // The window is 3 x 3 pixels; pixel (2, 0) holds rows 1 and 2.

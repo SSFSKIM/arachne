@@ -1279,9 +1279,12 @@ fn recut_reads_of_one_curve_computation_are_an_exact_tie_and_of_two_stay_unable(
 
 /// The decisions' axis band rows (FORMAT.md `AXBD`), as `(x, y, fragment, against, status)`: a
 /// fragment's row on the axis plane it shares with `against`, the read §5 `shared_plane_read@1`
-/// takes against it. The decisions at d061a532 carry none.
-fn axis_rows(_d: &Decisions) -> Vec<(u32, u32, u32, u32, [u8; 16])> {
-    Vec::new()
+/// takes against it.
+fn axis_rows(d: &Decisions) -> Vec<(u32, u32, u32, u32, [u8; 16])> {
+    d.axis_bands
+        .iter()
+        .map(|a| (a.x, a.y, a.fragment, a.against, a.status))
+        .collect()
 }
 
 #[test]

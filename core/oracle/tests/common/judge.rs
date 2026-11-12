@@ -307,18 +307,26 @@ pub fn judge(d: &Decisions, rep: &Reported, s: usize) -> Verdict {
     // A pair `truth_unable` at the sample is named by its fragments' reads there: the class of
     // the first status among them that states no bound (§6). Only a pair of fragments the report
     // holds present is present (§7): an `Either` one it leaves out is in no pair.
-    let unable: Vec<u32> = table
+    let unable_pairs: Vec<(u32, u32)> = table
         .iter()
         .filter(|&(&(a, b), &(_, label, _))| {
             label == LABEL_UNABLE && order.contains(&a) && order.contains(&b)
         })
-        .flat_map(|(&(a, b), _)| [a, b])
+        .map(|(&pair, _)| pair)
         .collect();
+    let unable: Vec<u32> = unable_pairs.iter().flat_map(|&(a, b)| [a, b]).collect();
     if !unable.is_empty() {
+        // A pair's reads: its fragments' own rows, and their axis rows against each other.
         let status_of = |st: u8| {
             d.bands
                 .iter()
                 .any(|r| (r.x, r.y) == (x, y) && unable.contains(&r.fragment) && r.status[s] == st)
+                || d.axis_bands.iter().any(|r| {
+                    (r.x, r.y) == (x, y)
+                        && (unable_pairs.contains(&(r.fragment, r.against))
+                            || unable_pairs.contains(&(r.against, r.fragment)))
+                        && r.status[s] == st
+                })
         };
         let name = [
             (2, "band_unbounded"),

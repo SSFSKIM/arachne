@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, HashMap};
 use arachne_core::diagnostics::{Layer as CoreLayer, Pixel};
 use arachne_core::stream::Stream;
 use arachne_oracle::decide::decide_at_wire;
-use arachne_oracle::out::{BandRow, Decisions};
+use arachne_oracle::out::{AxisBandRow, BandRow, Decisions};
 use arachne_oracle::source;
 use judge::{Entry, Reported};
 
@@ -129,6 +129,9 @@ struct Tally {
     /// stroke's own unadjusted key explains, and those the key it takes does.
     either_own: usize,
     either_taken: usize,
+    /// Core reads of a fragment against another with neither an axis row for the pair nor a row
+    /// on its record's plane: counted, so none is skipped unseen.
+    unmatched_against: usize,
 }
 
 /// Which of an adjusted stroke's two keys over an `Either` fill a core's key matched.
@@ -222,6 +225,25 @@ fn excesses_of(
     for b in &d.bands {
         bands.insert((b.x, b.y, b.fragment, b.which), b);
     }
+    // Its axis rows by pixel, fragment and the fragment read against, each as a band row.
+    let axis: HashMap<(u32, u32, u32, u32), BandRow> = d
+        .axis_bands
+        .iter()
+        .map(|a| {
+            let row = BandRow {
+                x: a.x,
+                y: a.y,
+                fragment: a.fragment,
+                which: 3,
+                o: a.o,
+                r: a.r,
+                s_minus: a.s_minus,
+                s_plus: a.s_plus,
+                status: a.status,
+            };
+            ((a.x, a.y, a.fragment, a.against), row)
+        })
+        .collect();
     let mut out = Vec::new();
     let mut tally = Tally::default();
     for ((x, y), px) in pixels {
@@ -270,17 +292,25 @@ fn excesses_of(
         }
         for a in &r.against {
             let Some(f) = frag_of(a.entry) else { continue };
-            let Some(row) = bands.get(&(*x, *y, f, 1)) else {
-                continue;
-            };
             let (ca, cb) = (&px.entries[a.entry], &px.entries[a.other]);
+            let both = |s: usize| ca.coverage[s] != 0 && cb.coverage[s] != 0;
+            // The pair's axis row where it reads one, else the row on the record's plane.
+            let axis_row = frag_of(a.other).and_then(|g| axis.get(&(*x, *y, f, g)));
+            let (kind, row) = match (axis_row, bands.get(&(*x, *y, f, 1))) {
+                (Some(row), _) => ("axis", row),
+                (None, Some(row)) => ("plane", *row),
+                (None, None) => {
+                    tally.unmatched_against += (0..16).any(both) as usize;
+                    continue;
+                }
+            };
             for s in 0..16 {
-                if ca.coverage[s] == 0 || cb.coverage[s] == 0 {
+                if !both(s) {
                     continue;
                 }
                 tally.plane += 1;
                 if let Some(what) = check_read(a.depths[s], a.err, row, s) {
-                    push(s, "plane", what, (a.depths[s], a.err), row);
+                    push(s, kind, what, (a.depths[s], a.err), row);
                 }
             }
         }
@@ -314,6 +344,7 @@ fn core_err_within_band() {
             tally.own += n.own;
             tally.plane += n.plane;
             tally.unmatched += n.unmatched;
+            tally.unmatched_against += n.unmatched_against;
         }
     }
     let mut classes: BTreeMap<(u8, u8, &str, &str), usize> = BTreeMap::new();
@@ -331,6 +362,7 @@ fn core_err_within_band() {
         excess.len(),
         &excess[..excess.len().min(8)]
     );
+    assert_eq!(tally.unmatched_against, 0, "{tally:?}");
 }
 
 /// The named reads `core_err_within_band` must hold on, each in a scene of its own (View C): a
@@ -793,6 +825,11 @@ fn measure(
             .or_default()
             .push(b.status);
     }
+    let axis_status: HashMap<(u32, u32, u32, u32), [u8; 16]> = d
+        .axis_bands
+        .iter()
+        .map(|a| ((a.x, a.y, a.fragment, a.against), a.status))
+        .collect();
     // The fragments `truth_unable` whatever is read with them (§6): by their own rows' statuses,
     // and an unbounded one at every sample of its box, the window, rows or none.
     let own_status: HashMap<(u32, u32, u32), [u8; 16]> = d
@@ -886,11 +923,13 @@ fn measure(
                 }
             }
             let mut why: BTreeSet<String> = BTreeSet::new();
-            // A pair `truth_unable` at the sample, by the statuses of its two fragments' reads.
+            // A pair `truth_unable` at the sample, by the statuses of its two fragments' reads:
+            // their own rows, and their axis rows against each other.
             for p in ps.iter().filter(|p| p.label == 0) {
                 let mut named = false;
-                for f in [p.a, p.b] {
-                    for st in status.get(&(x, y, f)).into_iter().flatten() {
+                for (f, g) in [(p.a, p.b), (p.b, p.a)] {
+                    let axis = axis_status.get(&(x, y, f, g));
+                    for st in status.get(&(x, y, f)).into_iter().flatten().chain(axis) {
                         if let Some(n) = ["band_unbounded", "curve_recut", "pivot_unknown"]
                             .get((st[s as usize] as usize).wrapping_sub(2))
                         {
@@ -1279,6 +1318,7 @@ fn a_class_s_measures_are_the_sum_of_its_frames_measured_once_each() {
         unmatched: 0,
         either_own: 2,
         either_taken: 3,
+        unmatched_against: 0,
     };
     // The class as the walker used to accumulate it, `measure` into the class frame by frame,
     // against the frames measured once each and added.
@@ -1369,9 +1409,23 @@ fn measures_add_sums_every_field_and_component() {
     assert_eq!(sum, want);
 }
 
-/// Adds `row` to `d` as its fragment's axis band row against `against` (FORMAT.md `AXBD`). The
-/// decisions at d061a532 carry no axis rows: it adds nothing.
-fn with_axis_row(_d: &mut Decisions, _against: u32, _row: BandRow) {}
+/// Sets `row` as its fragment's axis band row against `against` (FORMAT.md `AXBD`), in place of
+/// the oracle's own for that pair at that pixel.
+fn with_axis_row(d: &mut Decisions, against: u32, row: BandRow) {
+    d.axis_bands
+        .retain(|a| (a.x, a.y, a.fragment, a.against) != (row.x, row.y, row.fragment, against));
+    d.axis_bands.push(AxisBandRow {
+        x: row.x,
+        y: row.y,
+        fragment: row.fragment,
+        against,
+        o: row.o,
+        r: row.r,
+        s_minus: row.s_minus,
+        s_plus: row.s_plus,
+        status: row.status,
+    });
+}
 
 #[test]
 fn an_against_read_on_a_shared_axis_is_held_to_its_axis_row() {
