@@ -760,6 +760,15 @@ replace = "                    let o = 2.0 * reads[k].key;\n"
 red = ["closed_form_depth::a_stroke_crossing_a_surface_is_in_front_on_its_near_side_and_ties_only_at_the_crossing"]
 
 [[plant]]
+name = "curve-s-plus-0.06"
+item = "§6"
+check = "a curve's S is the keys within reach plus σ·max|k|, no wider: a line 1/19 nearer in key than a surface stays in front"
+file = "core/oracle/src/keys.rs"
+find = "let sp = (hi - o).max(0.0) + sigma * m;"
+replace = "let sp = (hi - o).max(0.0) + (sigma + 0.06) * m;"
+red = ["contract_mutation::mutation_depth_witnesses_fail_and_their_twins_agree", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree", "format_facts::each_strong_edge_names_how_it_is_read", "closed_form_depth::a_stroke_crossing_a_surface_is_in_front_on_its_near_side_and_ties_only_at_the_crossing", "pair_rules::a_path_s_row_on_a_shared_axis_plane_is_read_where_its_own_key_alone_would_order_the_pair", "pair_rules::an_axis_identity_whose_row_does_not_form_is_not_kept"]
+
+[[plant]]
 name = "order-strong-edge"
 item = "§7"
 check = "strong a-front only where min I_a < max I_b"
